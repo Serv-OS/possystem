@@ -76,6 +76,13 @@ export default function SyncBridge({ onSyncPulse }) {
     // Apply config snapshot on mount
     // In mock mode: read from localStorage snapshot
     // In real mode: fetch latest push from Supabase for this location
+    //
+    // v5.5.962: the boot config-push apply is captured as a promise so the
+    // location-settings loader below can run strictly AFTER it. The last push
+    // snapshot goes stale by design (quick-screen saves write locations
+    // directly, no new push), so the fresh locations read must always land
+    // last or a reboot could revert quick screen / mode to last-push values.
+    let bootConfigLoad = Promise.resolve();
     if (isMock) {
       try {
         const snap = localStorage.getItem('rpos-config-snapshot');
@@ -87,7 +94,7 @@ export default function SyncBridge({ onSyncPulse }) {
       } catch {}
     } else {
       // Load latest config push from Supabase for this location
-      (async () => {
+      bootConfigLoad = (async () => {
         try {
           // v5.5.235: respect rpos-bo-location override BEFORE rpos-device.
           // Previously this read rpos-device.locationId directly, skipping the BO
@@ -479,20 +486,32 @@ export default function SyncBridge({ onSyncPulse }) {
     if (!isMock) {
       (async () => {
         try {
+          // v5.5.962: wait for the boot config-push apply so the fresh locations
+          // read below deterministically WINS over a stale snapshot (see note at
+          // the bootConfigLoad declaration). The IIFE try/catches, so this always
+          // settles; belt-and-braces catch anyway.
+          await bootConfigLoad.catch(() => {});
           const { getLocationId } = await import('../lib/supabase.js');
           const locId = await getLocationId().catch(() => null);
           if (locId && supabase) {
             // Load image display setting
             const show = await getShowItemImages(supabase, locId);
             useStore.getState().setShowItemImages(show);
-            // Load quick screen IDs directly — single source of truth
+            // Load quick screen directly — single source of truth
             const { data: locData } = await supabase
               .from('locations')
-              .select('quick_screen_ids, pos_settings')
+              .select('quick_screen_ids, quick_screen_mode, quick_screen_auto, pos_settings')
               .eq('id', locId)
               .single();
             if (locData?.quick_screen_ids?.length) {
               useStore.getState().setQuickScreenIds(locData.quick_screen_ids);
+            }
+            // v5.5.962 Smart Quick Screen: mode + precomputed best-seller lists
+            if (['manual','auto','hybrid'].includes(locData?.quick_screen_mode)) {
+              useStore.getState().setQuickScreenMode(locData.quick_screen_mode);
+            }
+            if (locData?.quick_screen_auto?.lists) {
+              useStore.getState().setQuickScreenAuto(locData.quick_screen_auto);
             }
             // v5.5.799: takeaway customer-details level (setter sanitises to 'full')
             useStore.getState().setTakeawayCustomerDetails(locData?.pos_settings?.takeaway_customer_details);

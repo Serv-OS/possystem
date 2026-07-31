@@ -782,17 +782,25 @@ function PushToPOSButton() {
     // v5.5.799: takeaway customer-details level rides the snapshot so tills refresh
     // on push (fallback: whatever this session already has, default 'full').
     let takeawayCustomerDetails = useStore.getState().takeawayCustomerDetails || 'full';
+    // v5.5.962: quick-screen mode is read from the DB at push time, NOT from the
+    // BO store — an unhydrated store defaults to 'manual' and a push would flip
+    // every till in an auto/hybrid venue back to manual. null = omit from the
+    // snapshot entirely (absent fields are a no-op on tills).
+    let quickScreenModePush = null;
     try {
       const locId = await getLocationId();
       if (locId && supabase) {
         const [rtRes, prnRes, locRes] = await Promise.all([
           supabase.from('print_routing').select('centres,routing').eq('location_id', locId).single(),
           supabase.from('printers').select('*').eq('location_id', locId),
-          supabase.from('locations').select('pos_settings').eq('id', locId).maybeSingle(),
+          supabase.from('locations').select('pos_settings, quick_screen_mode').eq('id', locId).maybeSingle(),
         ]);
         if (rtRes.data) printRouting = { centres: rtRes.data.centres||[], routing: rtRes.data.routing||{} };
         if (prnRes.data) printers = prnRes.data.map(r => ({ id:r.id, name:r.name, model:r.meta?.model, connectionType:r.connection, address:r.ip, port:r.port||9100, paperWidth:r.paper_width||80, roles:r.meta?.roles||[], location:r.meta?.location||'' }));
-        if (locRes.data) takeawayCustomerDetails = locRes.data.pos_settings?.takeaway_customer_details || 'full';
+        if (locRes.data) {
+          takeawayCustomerDetails = locRes.data.pos_settings?.takeaway_customer_details || 'full';
+          quickScreenModePush = ['manual','auto','hybrid'].includes(locRes.data.quick_screen_mode) ? locRes.data.quick_screen_mode : null;
+        }
       }
     } catch {}
     // Fallback to localStorage if Supabase failed
@@ -833,6 +841,11 @@ function PushToPOSButton() {
       discountPresets: useStore.getState().discountPresets || [],
       discountRules: useStore.getState().discountRules || [],
       quickScreenIds: useStore.getState().quickScreenIds || [],
+      // v5.5.962 Smart Quick Screen — mode (from the DB read above, omitted when
+      // unknown) + best-seller lists ride the push. quickScreenAuto null is
+      // filtered till-side by the hasEntries guard.
+      ...(quickScreenModePush ? { quickScreenMode: quickScreenModePush } : {}),
+      quickScreenAuto: useStore.getState().quickScreenAuto || null,
       takeawayCustomerDetails,
       changeCount: pendingBOChanges,
       profiles: deviceProfiles,

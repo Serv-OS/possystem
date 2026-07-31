@@ -441,6 +441,14 @@ export const useStore = create((set, get) => ({
       // up a Location settings change without a reboot (boot path: SyncBridge).
       ...(snap.takeawayCustomerDetails ? { takeawayCustomerDetails: snap.takeawayCustomerDetails } : {}),
 
+      // v5.5.962: quick screen rides the push. quickScreenIds was in every snapshot
+      // since day one but this merge silently dropped it — tills only ever picked
+      // pins up on reboot. Same non-empty guard as menus: a push can never CLEAR a
+      // till's quick screen, only replace it.
+      ...(snap.quickScreenIds?.length ? { quickScreenIds: snap.quickScreenIds } : {}),
+      ...(['manual','auto','hybrid'].includes(snap.quickScreenMode) ? { quickScreenMode: snap.quickScreenMode } : {}),
+      ...(hasEntries(snap.quickScreenAuto?.lists) ? { quickScreenAuto: snap.quickScreenAuto } : {}),
+
       configVersion: snap.version,
       configUpdateAvailable: false,
       configUpdateSnapshot: null,
@@ -844,11 +852,19 @@ export const useStore = create((set, get) => ({
   //
   // Quick Screen — list of item IDs shown on the ⚡ Quick tab, ordered
   quickScreenIds: isMock ? QUICK_IDS : [],
+  // v5.5.962 Smart Quick Screen: 'manual' = pins only (default), 'auto' = best
+  // sellers for the current daypart, 'hybrid' = pins first + best-seller fill.
+  // quickScreenAuto = { computed_at, days, lists: { breakfast/lunch/dinner/late: [ids] } }
+  // — computed in Back Office from closed_checks, stored on locations, read-only here.
+  quickScreenMode: 'manual',
+  quickScreenAuto: null,
   locationConfig: { timezone: 'Europe/London', businessDayStart: '06:00', shifts: [] },
   taxRates: [],
   discountPresets: [],   // from discounts table — manual presets staff can apply
   discountRules: [],     // from discount_rules table — auto-discount rules
   setQuickScreenIds: (ids) => set({ quickScreenIds: ids }),
+  setQuickScreenMode: (m) => set({ quickScreenMode: m }),
+  setQuickScreenAuto: (a) => set({ quickScreenAuto: a }),
 
   menuItems: (isMock ? MENU_ITEMS : []).map((item, idx) => ({
     ...item,

@@ -25,6 +25,8 @@ import { useStore, findDuplicateProductName } from '../../store';
 import { ALLERGENS } from '../../data/seed';
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../../lib/supabase';
 import { upsertMenuItem, uploadProductImage, deleteProductImage, saveQuickScreenIds, setMenuItemScope, linkCategoryToMenu, unlinkCategoryFromMenu, fetchMenuCategoryLinks } from '../../lib/db';
+import { reportSave } from '../../lib/saveHealth';
+import { rankQuickPicks, DAYPARTS } from '../../lib/quickRank';
 // v4.7.8: per-menu pricing tier UI (item-level)
 import PerMenuPricingTiers from './PerMenuPricingTiers';
 import MenuImportModal from '../components/MenuImportModal';
@@ -3378,11 +3380,13 @@ function MoveCatModal({ cat, allCats, onSave, onClose }) {
 // QUICK SCREEN MANAGER — single grid, drag or click to add
 // ═══════════════════════════════════════════════════════════════════════════
 function QuickScreenManager() {
-  const { menuItems, menuCategories, quickScreenIds, setQuickScreenIds, showToast, markBOChange } = useStore();
+  const { menuItems, menuCategories, quickScreenIds, setQuickScreenIds, showToast, markBOChange,
+          quickScreenMode, setQuickScreenMode, quickScreenAuto, setQuickScreenAuto } = useStore();
   const [catFilter, setCatFilter] = useState('');
   const [search, setSearch]       = useState('');
   const [dragSrc, setDragSrc]     = useState(null);
   const [overSlot, setOverSlot]   = useState(null);
+  const [ranking, setRanking]     = useState(false);   // v5.5.962 recompute in flight
 
   const COLS  = 4;
   const SLOTS = 16;
@@ -3417,9 +3421,82 @@ function QuickScreenManager() {
           .from('locations')
           .update({ quick_screen_ids: filtered })
           .eq('id', locId);
+        reportSave('quick screen', error);   // v5.5.962: was a silent console.error swallow
         if (error) console.error('[QuickScreen] save error:', error.message);
       }
-    } catch (e) { console.error('[QuickScreen] save failed:', e.message); }
+    } catch (e) { reportSave('quick screen', e); console.error('[QuickScreen] save failed:', e.message); }
+  };
+
+  // v5.5.962 Smart Quick Screen — mode switch + best-seller recompute.
+  // Ranking runs HERE (Back Office) and is stored on the location row; the till
+  // only ever reads the small stored lists, so it stays fast and offline-safe.
+  const RANK_DAYS = 28;
+  const saveSmart = async (mode, auto) => {
+    setQuickScreenMode(mode);
+    if (auto !== undefined) setQuickScreenAuto(auto);
+    markBOChange();
+    if (isMock) return true;
+    try {
+      const locId = await getLocationId();
+      if (!locId || !supabase) return false;
+      const patch = { quick_screen_mode: mode };
+      if (auto !== undefined) patch.quick_screen_auto = auto;
+      const { error } = await supabase.from('locations').update(patch).eq('id', locId);
+      reportSave('quick screen', error);
+      if (error) { showToast('Quick Screen settings NOT saved — check connection', 'error'); return false; }
+      return true;
+    } catch (e) {
+      reportSave('quick screen', e);
+      showToast('Quick Screen settings NOT saved — check connection', 'error');
+      return false;
+    }
+  };
+
+  const recompute = async (mode = quickScreenMode) => {
+    if (isMock) {
+      await saveSmart(mode);   // still switch the mode locally in demo
+      showToast('Demo mode — no sales history to rank', 'info');
+      return;
+    }
+    setRanking(true);
+    try {
+      const locId = await getLocationId();
+      const since = new Date(Date.now() - RANK_DAYS * 864e5).toISOString();
+      // Same fetch shape the AI shift assistant uses; voided checks are filtered
+      // client-side (a .neq would also drop rows with NULL status).
+      const { data, error } = await supabase
+        .from('closed_checks')
+        .select('items, closed_at, status')
+        .eq('location_id', locId)
+        .gte('closed_at', since)
+        .order('closed_at', { ascending: false })
+        .limit(5000);
+      if (error) throw error;
+      const checks = (data || []).filter(c => c.status !== 'voided');
+      const lists = rankQuickPicks(checks, { top: 24 });
+      const auto = { computed_at: new Date().toISOString(), days: RANK_DAYS, checks: checks.length, lists };
+      // Success toast ONLY once the persist really landed — saveSmart already
+      // toasted the failure (and showToast is single-slot: a success here would
+      // overwrite the error and lie to the operator).
+      const ok = await saveSmart(mode, auto);
+      if (!ok) return;
+      const total = DAYPARTS.reduce((s, d) => s + lists[d].length, 0);
+      showToast(total
+        ? `Ranked ${checks.length} checks from the last ${RANK_DAYS} days`
+        : 'No sales history yet — pins will show until there is', 'success');
+    } catch (e) {
+      reportSave('quick screen', e);
+      showToast('Could not rank sales — check connection', 'error');
+    } finally { setRanking(false); }
+  };
+
+  const pickMode = (mode) => {
+    if (mode === quickScreenMode) return;
+    // Switching into a smart mode with stale/no rankings recomputes on the spot.
+    const stale = !quickScreenAuto?.computed_at
+      || (Date.now() - new Date(quickScreenAuto.computed_at).getTime()) > 24 * 3600e3;
+    if (mode !== 'manual' && stale) recompute(mode);
+    else saveSmart(mode);
   };
 
   const clearSlot = idx => {
@@ -3460,6 +3537,58 @@ function QuickScreenManager() {
             <span style={{ fontSize:11, color:'var(--t4)' }}>{quickScreenIds.filter(Boolean).length}/{SLOTS} slots used</span>
           </div>
           <div style={{ fontSize:11, color:'var(--t3)' }}>Click an item to add it, or drag it onto a slot. Drag within the grid to reorder. ✕ to remove.</div>
+
+          {/* v5.5.962 Smart Quick Screen — mode + best-seller rankings */}
+          <div style={{ marginTop:10, display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+            {[['manual','Manual','Only your pinned items'],
+              ['hybrid','Hybrid','Your pins first, best sellers fill the empty slots'],
+              ['auto','Auto','Best sellers for the current daypart']].map(([id,label,desc])=>(
+              <button key={id} onClick={()=>pickMode(id)} title={desc}
+                style={{ padding:'5px 12px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:700,
+                  background:quickScreenMode===id?'var(--acc-d)':'var(--bg3)',
+                  border:`1.5px solid ${quickScreenMode===id?'var(--acc)':'var(--bdr)'}`,
+                  color:quickScreenMode===id?'var(--acc)':'var(--t3)' }}>
+                {label}
+              </button>
+            ))}
+            <span style={{ fontSize:10.5, color:'var(--t4)' }}>
+              {quickScreenMode==='manual' ? 'Pins only — exactly what you set below.'
+               : quickScreenMode==='auto' ? 'Best sellers per daypart from real sales. Pins show only until sales data exists.'
+               : 'Pins keep their slots; best sellers for the daypart fill the rest.'}
+            </span>
+          </div>
+
+          {quickScreenMode!=='manual' && (
+            <div style={{ marginTop:8, padding:'8px 10px', borderRadius:10, background:'var(--bg2)', border:'1px solid var(--bdr)' }}>
+              <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
+                <span style={{ fontSize:10.5, color:'var(--t3)' }}>
+                  {quickScreenAuto?.computed_at
+                    ? `Ranked ${quickScreenAuto.checks ?? '?'} checks · last ${quickScreenAuto.days ?? RANK_DAYS} days · ${new Date(quickScreenAuto.computed_at).toLocaleString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}`
+                    : 'No sales ranking computed yet.'}
+                </span>
+                <button onClick={()=>recompute()} disabled={ranking}
+                  style={{ padding:'4px 10px', borderRadius:7, cursor:ranking?'wait':'pointer', fontFamily:'inherit', fontSize:10.5, fontWeight:700,
+                    background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)' }}>
+                  {ranking?'Ranking…':'↻ Refresh from sales'}
+                </button>
+              </div>
+              {quickScreenAuto?.lists && (
+                <div style={{ marginTop:6, display:'flex', gap:12, flexWrap:'wrap' }}>
+                  {DAYPARTS.map(dp=>{
+                    const names=(quickScreenAuto.lists[dp]||[]).slice(0,3)
+                      .map(id=>{const it=menuItems.find(m=>m.id===id);return it?(it.menuName||it.name):null;})
+                      .filter(Boolean);
+                    return (
+                      <span key={dp} style={{ fontSize:10, color:'var(--t4)' }}>
+                        <span style={{ fontWeight:800, color:'var(--t3)', textTransform:'capitalize' }}>{dp}:</span>{' '}
+                        {names.length?names.join(', '):'—'}
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <div style={{ flex:1, overflowY:'auto', padding:'16px' }}>

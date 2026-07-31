@@ -12,6 +12,7 @@ import { captureLoyaltyByPhone } from '../lib/customerLookup';
 import { getAssignedNetworkReader } from '../lib/networkReader';
 import { CATEGORIES, MENU_ITEMS as SEED_MENU_ITEMS, ALLERGENS, QUICK_IDS, getDaypart, CAT_META } from '../data/seed';
 import { calculateOrderTax } from '../lib/tax';
+import { resolveQuickItems } from '../lib/quickRank';
 import ProductModal, { AllergenModal } from '../components/ProductModal';
 import InlineItemFlow from '../components/InlineItemFlow';
 import CheckoutModal from './CheckoutModal';
@@ -67,6 +68,8 @@ export default function POSSurface() {
     menuItems: storeMenuItems,
     menuCategories,
     quickScreenIds,
+    quickScreenMode,
+    quickScreenAuto,
     menus,
     taxRates,
     showItemImages,
@@ -510,20 +513,21 @@ export default function POSSurface() {
   const catMeta = CAT_META[cat] || CAT_META.quick;
   const activeQueueCount = orderQueue.filter(o=>o.status!=='collected').length;
 
-  // Smart quick screen: filter to assigned section, exclude 86'd, show available items
-  // For bar terminal (assignedSection='bar'), show bar/drinks items first
+  // Smart quick screen (v5.5.962): manual = pins only; auto = best sellers for the
+  // current daypart (computed in Back Office, stored on the location); hybrid = pins
+  // first, best sellers fill the empty slots. resolveQuickItems is the shared pure
+  // resolver — same truth the BO preview uses.
   const assignedSection = deviceConfig?.assignedSection;
-  const quickItems = useMemo(() => {
-    // If quick screen has been explicitly configured in back office, show ONLY those items
-    if (quickScreenIds && quickScreenIds.length > 0) {
-      return quickScreenIds
-        .map(id => MENU_ITEMS.find(i => i.id === id))
-        .filter(i => i && !eightySixIds.includes(i.id) && !i.archived)
-        .slice(0, 16);
-    }
-    // Not configured yet — show nothing (empty quick screen prompts setup)
-    return [];
-  }, [quickScreenIds, MENU_ITEMS, eightySixIds]);
+  const quickResolved = useMemo(() => resolveQuickItems({
+    mode: quickScreenMode,
+    pinnedIds: quickScreenIds,
+    autoLists: quickScreenAuto?.lists,
+    daypart,
+    findItem: id => MENU_ITEMS.find(i => i.id === id),
+    isBlocked: i => eightySixIds.includes(i.id) || i.archived || i.visibility?.pos === false,
+    slots: 16,
+  }), [quickScreenMode, quickScreenIds, quickScreenAuto, daypart, MENU_ITEMS, eightySixIds]);
+  const quickItems = quickResolved.items;
 
   // When the main category changes, reset the subcategory selection
   useEffect(() => { setSubCat(null); }, [cat]);
@@ -1529,12 +1533,19 @@ export default function POSSurface() {
                 <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12,paddingBottom:10,borderBottom:'1px solid var(--bdr)'}}>
                   <div>
                     <div style={{fontSize:14,fontWeight:700,color:'var(--t1)'}}>Quick picks</div>
-                    {/* v5.5.961: was "AI-curated · Live" — there is no AI behind this grid
-                        (it renders exactly locations.quick_screen_ids, hand-picked in
-                        Back Office → Menu Manager → Quick Screen). Label the truth. */}
-                    <div style={{fontSize:11,color:'var(--t3)',marginTop:1}}>Set in Back Office · {daypart}</div>
+                    {/* v5.5.962: label keys on what the resolver ACTUALLY returned
+                        (source), not the configured mode — auto mode falling back to
+                        pins (no sales for this daypart, demo, everything 86'd) must
+                        never claim "Best sellers". */}
+                    <div style={{fontSize:11,color:'var(--t3)',marginTop:1}}>
+                      {quickResolved.source==='ranked' ? 'Best sellers' : quickResolved.source==='mixed' ? 'Pins + best sellers' : 'Set in Back Office'} · {daypart}
+                    </div>
                   </div>
-                  <span style={{fontSize:11,fontWeight:700,padding:'3px 10px',borderRadius:20,background:'var(--acc-d)',border:'1px solid var(--acc-b)',color:'var(--acc)',display:'inline-flex',alignItems:'center',gap:4}}><Icon name="bolt" size={11}/>{quickItems.length} pinned</span>
+                  <span style={{fontSize:11,fontWeight:700,padding:'3px 10px',borderRadius:20,background:'var(--acc-d)',border:'1px solid var(--acc-b)',color:'var(--acc)',display:'inline-flex',alignItems:'center',gap:4}}><Icon name="bolt" size={11}/>
+                    {quickResolved.source==='pins' ? `${quickItems.length} pinned`
+                     : quickResolved.source==='ranked' ? `${quickItems.length} ranked`
+                     : `${quickResolved.pinnedCount} pinned + ${quickResolved.rankedCount} ranked`}
+                  </span>
                 </div>
               )}
               {search&&displayItems.length>0&&(
@@ -1694,11 +1705,17 @@ export default function POSSurface() {
               </div>
               {displayItems.length===0&&(
                 <div style={{textAlign:'center',padding:'80px 0',color:'var(--t3)'}}>
-                  {cat === 'quick' && (!quickScreenIds || quickScreenIds.length === 0) ? (
+                  {cat === 'quick' && quickItems.length === 0 ? (
                     <>
                       <div style={{marginBottom:12,opacity:.4,display:'flex',justifyContent:'center',color:'var(--t3)'}}><Icon name="bolt" size={40}/></div>
-                      <div style={{fontSize:15,fontWeight:700,color:'var(--t2)',marginBottom:6}}>Quick screen not configured</div>
-                      <div style={{fontSize:12,color:'var(--t4)',marginBottom:4}}>Go to Back Office → Menu Manager → Quick Screen to add items</div>
+                      <div style={{fontSize:15,fontWeight:700,color:'var(--t2)',marginBottom:6}}>
+                        {quickScreenMode==='manual' ? 'Quick screen not configured' : 'No sales history yet'}
+                      </div>
+                      <div style={{fontSize:12,color:'var(--t4)',marginBottom:4}}>
+                        {quickScreenMode==='manual'
+                          ? 'Go to Back Office → Menu Manager → Quick Screen to add items'
+                          : 'Best sellers appear as checks close — or pin items in Back Office → Quick Screen'}
+                      </div>
                     </>
                   ) : (
                     <>

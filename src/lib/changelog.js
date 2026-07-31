@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.962', date: '31 Jul 2026', label: 'Smart Quick Screen — real best sellers, per daypart, from your actual sales',
+    changes: [
+      'THE QUICK SCREEN NOW HAS A BRAIN (a real one this time): Menu Manager → Quick Screen has three modes. MANUAL = exactly your pinned items, as today. AUTO = the till shows the venue\'s genuine best sellers for the current daypart (breakfast/lunch/dinner/late), ranked from the last 28 days of closed checks. HYBRID = your pins keep their slots and best sellers fill the empty ones. Default is Manual — nothing changes until you flip it.',
+      'HOW IT WORKS: the ranking runs in the Back Office (↻ Refresh from sales, or automatically when you switch into Auto/Hybrid with stale data) and is stored on the venue — the till just reads the stored lists, so it stays fast and works offline. Sold-out (86\'d), archived and POS-hidden items are always skipped; ad-hoc custom lines never rank.',
+      'THE TILL TELLS YOU WHICH IT IS: the Quick tab header now reads "Best sellers · dinner" / "Pins + best sellers · dinner" / "Set in Back Office", with a live count badge.',
+      'BONUS FIX FOUND ON THE WAY: quick screen changes pushed from the Back Office never actually reached tills — the config-push apply silently dropped the field (since day one; tills only picked pins up on reboot). Pins, mode and rankings all ride the push now. The quick-screen save was also a silent-swallow writer — it now reports into the red banner system (task #82 sweep continues).',
+      'A venue with no sales history yet just shows your pins (Auto falls back rather than going blank), and the empty state explains itself.',
+      'TEST: Menu → Quick Screen → click Hybrid → it ranks your checks and shows a per-daypart preview (Breakfast/Lunch/Dinner/Late). Push to POS → the till\'s ⚡ Quick tab shows pins + best sellers for the current daypart with the "Pins + best sellers" label. Flip back to Manual → pins only.',
+    ],
+  },
+  {
     version: '5.5.961', date: '30 Jul 2026', label: 'Tax in one click, courses hide properly, terminals can\'t vanish, and the Quick screen stops claiming AI',
     changes: [
       'ITEMS TAB — FIX MISSING TAX IN ONE CLICK: when any items have no tax rate, an amber strip appears above the list ("54 items have no tax rate"): pick a rate → Apply to all. Only fills the gaps — items with a rate already set are untouched. Built for pricing the menu before setting up tax.',

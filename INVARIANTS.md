@@ -61,7 +61,7 @@ If a proposed change would violate any rule here, **stop and ask** before procee
 ```
 
 ### Config push snapshot (what Back Office sends to POS)
-Must include: `menus`, `menuItems`, `menuCategories`, `tables`, `sections`, `quickScreenIds`, `profiles`, `modifierGroupDefs`, `instructionGroupDefs`, `taxRates`
+Must include: `menus`, `menuItems`, `menuCategories`, `tables`, `sections`, `quickScreenIds`, `quickScreenMode`, `quickScreenAuto`, `profiles`, `modifierGroupDefs`, `instructionGroupDefs`, `taxRates`
 
 ### Gift card redeem response
 ```js
