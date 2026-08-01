@@ -420,12 +420,20 @@ function LocationCard({ location, companyName, msa, rya, bs, defaults, onError,
           <div style={S.seg}>
             <button style={S.segBtn(processor === 'stripe')} onClick={() => processor !== 'stripe' && onSetProcessor('stripe')}>Stripe</button>
             <button style={S.segBtn(processor === 'ryft')} onClick={() => processor !== 'ryft' && onSetProcessor('ryft')}>Ryft</button>
+            <button style={S.segBtn(processor === 'adyen')} onClick={() => processor !== 'adyen' && onSetProcessor('adyen')}>Adyen</button>
           </div>
         </div>
       </div>
 
       {processor === 'stripe'
         ? <StripeBlock msa={msa} bs={bs} currency={currency} defaults={defaults} onLink={onLink} onUnlink={onUnlink} onSavePricing={onSavePricing} />
+        : processor === 'adyen'
+        ? <div style={{ padding: '14px 16px', borderRadius: 12, background: 'var(--bg2)', border: '1px dashed var(--bdr2)', fontSize: 12.5, color: 'var(--t3)' }}>
+            {/* v5.5.966 Phase 0: routing + schema are live; the onboarding/admin fns land in Phase 1 (ADYEN_INTEGRATION_PLAN.md). */}
+            <b style={{ color: 'var(--t1)' }}>Adyen — plumbing ready, onboarding coming.</b><br/>
+            This venue now routes as an Adyen venue. Account onboarding, rates and payouts wire up when the Adyen test keys land (Phase 1).
+            Until then no card path is enabled for this venue — switch back to its previous processor for live trading.
+          </div>
         : <RyftBlock rya={rya} currency={currency} defaults={defaults} onError={onError} onConnect={onRyftConnect} onSync={onRyftSync} onUnlink={onRyftUnlink} onOnboardingLink={onRyftOnboardingLink} onSavePricing={onRyftSavePricing} onFees={onRyftFees} />}
     </div>
   );

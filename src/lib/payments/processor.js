@@ -26,7 +26,7 @@ export async function getLocationProcessorInfo(locationId) {
     // Only a clean response with a recognised processor is definitive. An invoke
     // error, a fn-level error field, or an unknown value is NOT cached — the
     // next call retries instead of pinning the wrong processor for the session.
-    if (!error && !data?.error && (data?.processor === 'ryft' || data?.processor === 'stripe')) {
+    if (!error && !data?.error && (data?.processor === 'ryft' || data?.processor === 'stripe' || data?.processor === 'adyen')) {
       _cache.set(locationId, data.processor);
       return { processor: data.processor, definitive: true };
     }

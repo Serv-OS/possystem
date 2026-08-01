@@ -135,7 +135,7 @@ Deno.serve(async (req) => {
   // ── set_processor (works for both processors; no Ryft needed) ───────────
   if (action === 'set_processor') {
     const processor = body?.processor;
-    if (processor !== 'stripe' && processor !== 'ryft') return json({ error: "processor must be 'stripe' or 'ryft'" }, 400);
+    if (processor !== 'stripe' && processor !== 'ryft' && processor !== 'adyen') return json({ error: "processor must be 'stripe', 'ryft' or 'adyen'" }, 400);
     const { error } = await platformAdmin.from('locations').update({ payment_processor: processor }).eq('id', loc.id);
     if (error) return json({ error: `processor update failed: ${error.message}` }, 500);
     return json({ success: true, processor });

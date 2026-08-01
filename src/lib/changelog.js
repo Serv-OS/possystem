@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.966', date: '1 Aug 2026', label: 'Adyen Phase 0 — all the plumbing that needs no keys, live and fail-closed',
+    changes: [
+      'ADYEN FOUNDATION SHIPPED (see ADYEN_INTEGRATION_PLAN.md). Both databases migrated live: three-way processor switch (stripe/ryft/adyen) at every layer — the platform CHECK constraint, the payments-processor resolver, the client whitelist and the admin portal (which gets an Adyen segment button with an honest "onboarding coming in Phase 1" panel).',
+      'Per-venue Adyen account map (merchant_adyen_accounts), payments ledger, payout + settlement-line tables, disputes queue and webhook dedupe tables created. Terminal pairing carries an Adyen POIID exactly like the Ryft link — including the re-pair carry-forward and the till-facing RPC (re-granted, per the July lesson).',
+      'Bar-tab pre-auth holds now have real columns (pre_auth_ref / processor / held_minor) — the hold reference no longer lives only in one till\'s memory.',
+      'adyen-webhook DEPLOYED and fail-closed (401s everything until the HMAC keys exist). Handles both webhook families — per-item field-signed standard events (authorisation, capture, refund with double-count-proof reflection into closed checks, chargebacks with response deadlines, report-available) and raw-body-signed balance-platform payout events. Includes the same server-side terminal-job settle backstop the Ryft webhook earned in v866.',
+      'Shared Adyen protocol module (_shared/adyen.ts): endpoints for Checkout v72 / Management v3 / LEM v4 / Balance Platform v2 / cloud Terminal API (device-api hosts), BOTH HMAC schemes, nexo 3.0 message builders (payment with tip + pre-auth + partial-approval + store routing, status recovery, abort, reversal) and EMV receipt extraction — 18 unit assertions passing.',
+      'TEST: nothing venue-facing changes. Admin portal → a venue card now shows a third "Adyen" processor button. When the test keys arrive next week: set the secrets, and Phase 1 (onboarding) starts on live rails.',
+    ],
+  },
+  {
     version: '5.5.965', date: '31 Jul 2026', label: 'Flow order part 2 — the DISPLAYS stop re-sorting instructions to the bottom',
     changes: [
       'v964 fixed the ORDER LINE itself, but three renderers were quietly re-splitting every line back into "modifiers first, instructions last" before showing it: the POS check rail, the KDS/kitchen-ticket text builder in the store, and the MPOS cart + order-queue views. However the line was stored, cooking preferences displayed and printed at the bottom.',

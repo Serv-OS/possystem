@@ -45,6 +45,9 @@ Deno.serve(async (req) => {
   // the client would cache. Default to 'stripe' ONLY when the row exists and
   // has no processor set (backward-compatible contract).
   if (!loc) return json({ error: 'location not found' }, 404);
-  const processor = loc.payment_processor === 'ryft' ? 'ryft' : 'stripe';
+  // v5.5.966: three-way — 'adyen' joins the switch (unknown values still fall
+  // back to 'stripe', the backward-compatible contract).
+  const processor = (loc.payment_processor === 'ryft' || loc.payment_processor === 'adyen')
+    ? loc.payment_processor : 'stripe';
   return json({ processor });
 });
