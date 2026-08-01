@@ -113,6 +113,12 @@ public class MainActivity extends Activity {
             @android.webkit.JavascriptInterface
             public void loadReal() { runOnUiThread(() -> webView.loadUrl(MPOS_URL)); }
         }, "Probe");
+
+        // v5.5.967 — Adyen local Terminal API transport for MPOS running ON an
+        // Adyen Android terminal (S1E4 Pro / S1E2L). Harmless elsewhere: the web
+        // seam feature-probes isAvailable() before showing any Adyen payment UI.
+        webView.addJavascriptInterface(new AdyenNexoBridge(this, webView), "RposAdyenNexo");
+
         webView.loadDataWithBaseURL(null, bootProbeHtml(), "text/html", "utf-8", null);
 
         // Self-update: check shortly after launch (throttled, no-op when already current).

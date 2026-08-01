@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.967', date: '1 Aug 2026', label: 'Adyen charge paths + the MPOS-on-terminal bridge — every transport built ahead of keys',
+    changes: [
+      'ADYEN-TERMINAL-CHARGE: the in-person charge engine, sibling of the PAX one and sharing its exact money contract (CAS write-ahead so a charge can never double-initiate, DB-owned amounts, single settle-writer RPC, unknown outcomes stay in-flight for recovery). THREE transports through one contract: cloud sync for AMS1s the till drives; prepare_local/report_local for our app running ON an Adyen terminal; and the same pair serves Tap to Pay later. Includes TransactionStatusRequest recovery keyed on a ServiceID that now PERSISTS on the job row, drift-reconciled POIIDs, and abort.',
+      'MPOS ON THE S1E4 PRO: AdyenNexoBridge added to the MPOS Android wrapper — the web app posts server-built nexo messages to the terminal\'s local payment core (localhost:8443). Trust is scoped to loopback only; the bridge never builds or alters a payment. Web seam: src/lib/payments/adyenLocalTerminal.js (prepare → present card → server-verified settle, with recovery polling — never assumes declined on a lost response). Harmless on non-Adyen hardware: feature-probed before any UI shows.',
+      'ADYEN-TERMINAL-EVENTS deployed (fail-closed behind Basic auth): async cloud results settle server-side by persisted ServiceID, and SaleWakeUp — a waiter starting Pay-at-table ON the terminal — is durably recorded, ready for the Phase-3 POS answer.',
+      'ADYEN-CREATE-SESSION (Checkout v72 /sessions for Drop-in: store routing, tokenization for QR-tab overage, manual-capture holds) and ADYEN-MODIFY (capture / cancel / refund / bar-tab step-up via amountUpdates, with the same graceful-fallback contract the Stripe increment call has) deployed, fail-closed until keys.',
+      'BAR-TAB HOLDS SURVIVE RELOADS: QueueSync now persists and rehydrates the hold reference, processor and held amount (columns from v966) — on every processor, the tab hold can be captured or released from ANY till, not just the one that opened it.',
+      'Hardware plan updated: AMS1 = till-driven terminal; S1E4 Pro (UK) / S1E2L = MPOS running our app on-terminal over local nexo (which also brings offline store-and-forward); Tap to Pay committed — iPhone UK+US, Android US-only. Pay-at-table printer question named for the Adyen call.',
+      'TEST: nothing live-facing changes until keys+hardware arrive. Then: bench script in ADYEN_INTEGRATION_PLAN.md Phase 3.',
+    ],
+  },
+  {
     version: '5.5.966', date: '1 Aug 2026', label: 'Adyen Phase 0 — all the plumbing that needs no keys, live and fail-closed',
     changes: [
       'ADYEN FOUNDATION SHIPPED (see ADYEN_INTEGRATION_PLAN.md). Both databases migrated live: three-way processor switch (stripe/ryft/adyen) at every layer — the platform CHECK constraint, the payments-processor resolver, the client whitelist and the admin portal (which gets an Adyen segment button with an honest "onboarding coming in Phase 1" panel).',

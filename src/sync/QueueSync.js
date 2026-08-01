@@ -86,6 +86,13 @@ function tabToRow(t, locationId) {
     status: t.status || 'open',
     pre_auth: !!t.preAuth,
     pre_auth_amount: t.preAuthAmount ?? 0,
+    // v5.5.967: the HOLD IDENTIFIERS finally persist (migration 20260801b). Until
+    // now they lived only in the opening till's Zustand — a reload on another
+    // device lost the reference and the hold could never be captured/released
+    // from there. Works for every processor (pi_ / ps_ / Adyen pspReference).
+    pre_auth_ref: t.preAuthPaymentIntentId || t.preAuthRef || null,
+    pre_auth_processor: t.preAuthProcessor || null,
+    pre_auth_held_minor: t.preAuthHeldMinor ?? null,
     rounds: t.rounds || [],
     note: t.note || '',
     total: t.total ?? 0,
@@ -104,6 +111,11 @@ function rowToTab(row) {
     status: row.status,
     preAuth: !!row.pre_auth,
     preAuthAmount: Number(row.pre_auth_amount) || 0,
+    // v5.5.967: hydrate the persisted hold identifiers (see tabToRow)
+    preAuthPaymentIntentId: row.pre_auth_ref || null,
+    preAuthRef: row.pre_auth_ref || null,
+    preAuthProcessor: row.pre_auth_processor || null,
+    preAuthHeldMinor: row.pre_auth_held_minor != null ? Number(row.pre_auth_held_minor) : null,
     rounds: row.rounds || [],
     note: row.note || '',
     total: Number(row.total) || 0,

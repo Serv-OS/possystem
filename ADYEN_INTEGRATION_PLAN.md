@@ -15,7 +15,7 @@
 | Model | **Adyen for Platforms — "Platform" flavour** (not Marketplace: no in-person; not Classic: legacy). Adyen's own docs recommend it for "ordering or point-of-sale solution" ISVs. |
 | Onboarding | **Venues onboard THEMSELVES** via Adyen **hosted onboarding v4**, link generated from our Back Office (API-initiated). ServOS never touches KYC documents; **Adyen carries the KYC obligation**. |
 | Pricing | **We set per-venue rates in the ServOS admin portal** (same as Ryft today) → implemented as Adyen **split configuration profiles** per store (basis points + fixed) with our margin booked as `Commission` to our **liable balance account**. |
-| Hardware | **Adyen AMS1 only** (Android handheld, Castles-made, battery, camera, no printer — receipts print on OUR printers, same as the PAX decision v5.5.72x). |
+| Hardware | **Adyen fleet, three roles** (updated 1 Aug): **AMS1** = payment terminal driven from the till (cloud Terminal API; no printer — receipts on OUR printers). **S1E4 Pro** (UK; S1E2L where US needs it — S1E4 Pro is UK-only per catalog) = **MPOS**: our app runs ON the terminal via Adyen app distribution, payments over LOCAL nexo (`localhost:8443`) through the AdyenNexoBridge — which also unlocks store-and-forward offline support (local comms). **Tap to Pay** via POS Mobile SDK = phone-based MPOS: iPhone UK+US; Android **US-only (not UK)**. All three transports consume the SAME server-built nexo PaymentRequest from `adyen-terminal-charge`. |
 | Terminal comms | **Cloud Terminal API** via the current `device-api-*` regional endpoints (NOT legacy `terminal-api-*` hosts). Our tills are web apps — local `terminal-ip:8443/nexo` is impossible from a browser; cloud fits the existing `terminal_jobs` server-dispatch architecture exactly. |
 | Edge functions | **Raw REST from Deno** (X-API-Key header). The Adyen Node SDK requires Node 18+/node-https — no Deno support. Same pattern we proved with Ryft. |
 | Gift cards | **STAY OURS.** Adyen's gift machinery only routes to external processors (Givex/SVS/etc.). We keep redeeming from our platform-DB ledger and send only the card remainder to Adyen. Zero gift rebuild. |
@@ -130,6 +130,17 @@ Client routing (the three-way switch):
 - **Capital** — placeholder tab (Adyen Capital for platforms — commercial discussion later).
 
 **Phase 6 — cutover machinery:** per-venue switch runbook (`set_processor 'adyen'` after capabilities green + terminal boarded), coexistence guarantees (Stripe/Ryft venues untouched), go-live checklists (34-item online + POS list from docs), SaaS billing collector moved to balance-account debits.
+
+## 5b. Pay-at-table + bar tabs (verified against live docs 1 Aug)
+
+- **Adyen's terminal-initiated Pay-at-table** (staff starts on the terminal → `SaleWakeUp` → POS answers with the bill → splits/tips on terminal) — requirement verbatim: *"The payment terminal must have an integrated printer and support both Wi-Fi and cellular connections."* AMS1 has the connectivity but no printer; **whether Adyen gates the feature on the printer is ambiguous** (bill printing is "optional" in the same flow) → named question for the Adyen call + a 5-minute bench test on the test unit. S1E4 Pro also has no printer; **S1F2** is the printer model if the answer is "printer required".
+- Our **till-initiated Table Pay** (send check → terminal) is a plain `PaymentRequest` — works on every model, tips on terminal, per-leg splits. The `SaleWakeUp` listener ships in `adyen-terminal-events` regardless, so terminal-initiated mode is a Phase-3 POS wiring job, not a rebuild.
+- **Bar tabs**: card-present **PreAuth** (`authorisationType=PreAuth`) + step-up (`/amountUpdates`) + capture-with-tip + cancel — restores tabs on non-Stripe venues. Hold identifiers persist on `bar_tabs` (migration 20260801b + QueueSync v5.5.967).
+
+## 5c. Tap to Pay (POS Mobile SDK) — committed
+
+- Phone-as-terminal for both platforms; **UK: iPhone only** (XS+, iOS 18.4+, Apple entitlement — apply early, LIVE takes weeks); **US: iPhone + Android** (Google-certified NFC phone, no integrated reader — Sunmi payment devices excluded). Session endpoint: `softposconfig/v3` (NOT the deprecated `/possdk/v68`).
+- Architecture: the SDK **consumes Terminal API PaymentRequests** — the exact payload `adyen-terminal-charge 'prepare_local'` already returns. Native shells (iOS new; Android wrapper exists) embed the SDK and reuse the `prepare_local`/`report_local` contract. Phase 3b.
 
 ## 6. Hardware + ops runbook (AMS1)
 
