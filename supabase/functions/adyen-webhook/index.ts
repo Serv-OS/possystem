@@ -87,12 +87,26 @@ async function handleAuthorisation(item: any) {
   }, { onConflict: 'psp_reference' });
 
   // B1-backstop parity (ryft-webhook v5.5.866): a terminal job whose device died
-  // mid-tender still settles server-side. terminal_jobs.payment_session_id holds
-  // the pspReference for Adyen jobs (set by adyen-terminal-charge). Success only —
-  // a failed AUTHORISATION never force-declines a job that may retry another tender.
+  // mid-tender still settles server-side. Success only — a failed AUTHORISATION
+  // never force-declines a job that may retry another tender.
+  // v968 (review finding): match by the `tj-{id}` merchantReference FIRST —
+  // payment_session_id only exists AFTER settle, so it can never find the
+  // in-flight job this backstop exists for. The session-id match remains for
+  // late duplicates (harmless idempotent no-op on settled rows).
   if (success) {
     try {
-      const { data: tj } = await opsAdmin.from('terminal_jobs').select('id, processor').eq('payment_session_id', psp).maybeSingle();
+      let tj: any = null;
+      const mref = String(item.merchantReference ?? '');
+      if (mref.startsWith('tj-')) {
+        const byRef = await opsAdmin.from('terminal_jobs')
+          .select('id, processor, status').eq('id', mref.slice(3)).maybeSingle();
+        tj = byRef.data ?? null;
+      }
+      if (!tj) {
+        const bySession = await opsAdmin.from('terminal_jobs')
+          .select('id, processor, status').eq('payment_session_id', psp).maybeSingle();
+        tj = bySession.data ?? null;
+      }
       if (tj?.id && tj.processor === 'adyen') {
         const ad = item?.additionalData ?? {};
         const { error: settleErr } = await opsAdmin.rpc('terminal_job_settle_from_processor', {

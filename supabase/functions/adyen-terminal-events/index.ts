@@ -64,9 +64,21 @@ Deno.serve(async (req) => {
     const poiid = resp?.MessageHeader?.POIID ?? null;
     if (serviceId) {
       const { data: tj } = await opsAdmin.from('terminal_jobs')
-        .select('id, status, charge_minor, processor')
+        .select('id, status, charge_minor, processor, target_terminal_id')
         .eq('nexo_service_id', serviceId).eq('processor', 'adyen').maybeSingle();
-      if (tj && tj.status === 'charging') {
+      // v968 review hardening: ServiceIDs are now random+DB-unique, and the match
+      // is additionally scoped to the sending terminal's POIID; swept 'unknown'
+      // jobs recover here too (they had NO automated recovery path before).
+      let poiidOk = true;
+      if (tj && poiid) {
+        const { data: td } = await opsAdmin.from('terminal_devices')
+          .select('adyen_terminal_id').eq('id', tj.target_terminal_id).maybeSingle();
+        if (td?.adyen_terminal_id && td.adyen_terminal_id !== poiid) {
+          poiidOk = false;
+          console.error(`[adyen-terminal-events] POIID mismatch: response from ${poiid}, job terminal ${td.adyen_terminal_id}`);
+        }
+      }
+      if (tj && poiidOk && (tj.status === 'charging' || tj.status === 'unknown')) {
         const parsed = parsePaymentResponse(body);
         if (parsed.result !== 'Unknown') {
           const success = parsed.result === 'Success';

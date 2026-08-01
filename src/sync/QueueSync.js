@@ -93,6 +93,9 @@ function tabToRow(t, locationId) {
     pre_auth_ref: t.preAuthPaymentIntentId || t.preAuthRef || null,
     pre_auth_processor: t.preAuthProcessor || null,
     pre_auth_held_minor: t.preAuthHeldMinor ?? null,
+    // v968: Stripe holds also need the connected-account id to be captured or
+    // released from another till (review finding — ref alone 400s at Stripe).
+    pre_auth_account: t.preAuthStripeAccount || t.preAuthAccount || null,
     rounds: t.rounds || [],
     note: t.note || '',
     total: t.total ?? 0,
@@ -116,6 +119,8 @@ function rowToTab(row) {
     preAuthRef: row.pre_auth_ref || null,
     preAuthProcessor: row.pre_auth_processor || null,
     preAuthHeldMinor: row.pre_auth_held_minor != null ? Number(row.pre_auth_held_minor) : null,
+    preAuthStripeAccount: row.pre_auth_account || null,
+    preAuthAccount: row.pre_auth_account || null,
     rounds: row.rounds || [],
     note: row.note || '',
     total: Number(row.total) || 0,

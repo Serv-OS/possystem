@@ -89,10 +89,20 @@ function settleCard(p: ReturnType<typeof parsePaymentResponse>) {
 // transport. Declines settle 'declined'; Success settles 'approved'. A Partial
 // result is settled DECLINED for now: partial approval on a till flow needs the
 // staff-alert UX (plan Phase 3) before we can safely leave a remainder unpaid.
+//
+// REVIEW HARDENING (v968): the authorised-amount fallback to chargeMinor exists
+// ONLY for trusted server-side sources (a sync/status/webhook response that came
+// from Adyen). A DEVICE-supplied response must carry a real AmountsResp — the
+// fallback would let a forged Success blob with no amounts vacuously pass the
+// RPC's mismatch check.
+const TRUSTED_AMOUNT_SOURCES = new Set(['charge_sync', 'status_recovery', 'event_notification']);
 async function settleFromResponse(jobId: string, p: ReturnType<typeof parsePaymentResponse>, source: string, chargeMinor: number) {
   const success = p.result === 'Success';
   if (p.result === 'Partial') {
     console.log(`adyen-terminal-charge: PARTIAL approval on job ${jobId} (${p.authorizedMinor}/${chargeMinor}) — settling declined until partial UX exists`);
+  }
+  if (success && p.authorizedMinor == null && !TRUSTED_AMOUNT_SOURCES.has(source)) {
+    throw new Error('device report has no AuthorizedAmount — refusing to settle approved');
   }
   if (success && p.authorizedMinor != null && p.authorizedMinor !== chargeMinor) {
     // Tip added ON the terminal (AskGratuity mode, later) legitimately raises the
@@ -221,7 +231,10 @@ Deno.serve(async (req) => {
       poiid,
       saleId: `servos-${String(job.location_id).slice(0, 8)}`,
       serviceId,
-      transactionId: String(job.closed_check_id ?? job.check_key ?? job.id).slice(0, 40),
+      // v968: merchantReference IS the job pointer — `tj-{id}` lets the
+      // AUTHORISATION webhook find and settle an in-flight job (review finding:
+      // payment_session_id only exists AFTER settle, so it could never backstop).
+      transactionId: `tj-${job.id}`,
       amountMinor: chargeMinor,
       currency: String(job.currency || 'GBP').toUpperCase(),
       storeId: maa.store_id ?? undefined,
@@ -256,6 +269,14 @@ Deno.serve(async (req) => {
     }
 
     const parsed = parsePaymentResponse(res.data);
+    // REVIEW HARDENING (v968, critical): a 200 with an empty/non-PaymentResponse
+    // body (documented when the terminal is unreachable or the response timed
+    // out mid-tender) parses 'Unknown'. Settling that as DECLINED while the
+    // tender may still be LIVE is the double-charge — leave the row 'charging'
+    // and let 'result'/events/webhook recovery own the truth.
+    if (parsed.result === 'Unknown') {
+      return json({ ok: false, error: 'terminal_unreachable — result pending recovery', code: 'UNKNOWN_OUTCOME' }, 502);
+    }
     try { await settleFromResponse(job.id, parsed, 'charge_sync', chargeMinor); }
     catch (e) { return json({ ok: false, error: (e as Error).message }, 500); }
     const { data: settled } = await opsAdmin.from('terminal_jobs').select('*').eq('id', job.id).maybeSingle();
@@ -263,14 +284,52 @@ Deno.serve(async (req) => {
   }
 
   // ── report_local (device returns the terminal's PaymentResponse) ───────────
+  // REVIEW HARDENING (v968, critical): the device's report is ADVISORY. Three
+  // gates before it can settle: (1) the response must carry THIS job's ServiceID
+  // — a 51-bit random capability only the prepare_local caller ever received, so
+  // stale attempts, other jobs and other devices can't bind; (2) POIID must match
+  // the job's terminal when both are known; (3) a Success settle needs a real
+  // AuthorizedAmount (enforced in settleFromResponse — no fallback for
+  // 'device_report'). We ALSO try a cloud TransactionStatusRequest first: when
+  // Adyen itself can answer, its answer wins over the device's claim.
   if (action === 'report_local') {
     if (SETTLED.includes(job.status)) return json(settledBody(job));
-    if (job.status !== 'charging') return json({ ok: false, error: `job is ${job.status} — nothing in flight` }, 409);
+    if (job.status !== 'charging' && job.status !== 'unknown') {
+      return json({ ok: false, error: `job is ${job.status} — nothing in flight` }, 409);
+    }
     if (!body.response) return json({ error: 'response (nexo PaymentResponse) required' }, 400);
     const parsed = parsePaymentResponse(body.response);
     if (parsed.result === 'Unknown') return json({ ok: false, error: 'unparseable PaymentResponse' }, 400);
+    if (!job.nexo_service_id || parsed.serviceId !== job.nexo_service_id) {
+      return json({ ok: false, error: 'response does not match this job\'s attempt (ServiceID)' }, 409);
+    }
+    const { term: rTerm, maa: rMaa, poiid: rPoiid } = await resolveTarget();
+    if (parsed.poiid && rPoiid && parsed.poiid !== rPoiid) {
+      return json({ ok: false, error: 'response came from a different terminal (POIID)' }, 409);
+    }
+    void rTerm;
+    // Prefer Adyen's own answer when reachable (boarded terminals stay cloud-
+    // addressable even when the app used local comms).
+    if (rMaa?.merchant_account && rPoiid) {
+      try {
+        const statusReq = buildTransactionStatusRequest({
+          poiid: rPoiid, saleId: `servos-${String(job.location_id).slice(0, 8)}`,
+          serviceId: newServiceId(), origServiceId: job.nexo_service_id,
+        });
+        const sres = await adyenFetch('POST', terminalEndpoint(rMaa.merchant_account, rPoiid, 'sync', rMaa.region === 'US' ? 'us' : 'eu'), statusReq, { timeoutMs: 15_000 });
+        const ts = sres.ok ? (sres.data?.SaleToPOIResponse?.TransactionStatusResponse ?? null) : null;
+        if (ts?.Response?.Result === 'Success') {
+          const inner = parsePaymentResponse(ts?.RepeatedMessageResponse?.RepeatedResponseMessageBody ?? {});
+          if (inner.result !== 'Unknown') {
+            await settleFromResponse(job.id, inner, 'status_recovery', Number(job.charge_minor));
+            const { data: settled } = await opsAdmin.from('terminal_jobs').select('*').eq('id', job.id).maybeSingle();
+            return json(settledBody(settled ?? job));
+          }
+        }
+      } catch { /* cloud unreachable — fall through to the gated device report */ }
+    }
     try { await settleFromResponse(job.id, parsed, 'device_report', Number(job.charge_minor)); }
-    catch (e) { return json({ ok: false, error: (e as Error).message }, 500); }
+    catch (e) { return json({ ok: false, error: (e as Error).message }, 409); }
     const { data: settled } = await opsAdmin.from('terminal_jobs').select('*').eq('id', job.id).maybeSingle();
     return json(settledBody(settled ?? job));
   }
@@ -278,7 +337,9 @@ Deno.serve(async (req) => {
   // ── result (recovery via TransactionStatusRequest) ─────────────────────────
   if (action === 'result') {
     if (SETTLED.includes(job.status)) return json(settledBody(job));
-    if (job.status !== 'charging' || !job.nexo_service_id) {
+    // v968: also recover jobs the sweeper flipped charging→'unknown' — that was
+    // a dead end (review finding: no automated recovery path existed for them).
+    if ((job.status !== 'charging' && job.status !== 'unknown') || !job.nexo_service_id) {
       return json({ ok: true, state: 'processing', status: job.status });
     }
     const { maa, poiid } = await resolveTarget();
@@ -296,10 +357,10 @@ Deno.serve(async (req) => {
     if (cond === 'in_progress' || cond === 'unknown') return json({ ok: true, state: 'processing', status: job.status });
     if (cond === 'not_found') {
       // The terminal never saw the request — provably nothing charged. Revert so
-      // the till can retry (the one branch where reverting 'charging' is safe).
+      // the till can retry (the one branch where reverting in-flight is safe).
       await opsAdmin.from('terminal_jobs')
         .update({ status: 'charging_unsent', nexo_service_id: null, updated_at: new Date().toISOString() })
-        .eq('id', job.id).eq('status', 'charging');
+        .eq('id', job.id).in('status', ['charging', 'unknown']);
       return json({ ok: false, safe: true, error: 'terminal never received the payment — retry' }, 409);
     }
     const inner = ts?.RepeatedMessageResponse?.RepeatedResponseMessageBody ?? {};

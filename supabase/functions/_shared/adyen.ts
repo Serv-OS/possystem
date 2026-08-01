@@ -145,11 +145,20 @@ export async function verifyRawBodyHmac(rawBody: string, headerSig: string, key:
 
 export const minorToMajor = (minor: number): number => Math.round(minor) / 100;
 
-let _svcSeq = 0;
 export function newServiceId(): string {
-  // 10 chars max: base36 seconds (6-7) + 2-digit sequence — unique within 48h.
-  _svcSeq = (_svcSeq + 1) % 100;
-  return (Math.floor(Date.now() / 1000).toString(36) + String(_svcSeq).padStart(2, '0')).slice(-10);
+  // 10 RANDOM base36 chars (~51 bits). Three jobs in one review finding hang off
+  // this: (1) uniqueness within Adyen's 48h/POIID window — randomness beats the
+  // old time+per-isolate-counter scheme, which collided across fresh isolates in
+  // the same second; (2) idx_tj_nexo_service enforces it DB-side (a collision
+  // fails the CAS stamp and the initiator re-mints); (3) it doubles as the
+  // report_local capability token — only the device that received prepare_local's
+  // response can present it, so a forged report from another device at the venue
+  // can't bind to the job.
+  const bytes = new Uint8Array(10);
+  crypto.getRandomValues(bytes);
+  let out = '';
+  for (const b of bytes) out += (b % 36).toString(36);
+  return out;
 }
 
 export interface NexoPaymentOpts {
@@ -264,6 +273,8 @@ export function parseAdditionalResponse(raw: unknown): Record<string, string> {
 // and the EMV receipt block (same shape src/lib/cardReceipt.js renders today).
 export function parsePaymentResponse(body: any): {
   result: 'Success' | 'Partial' | 'Failure' | 'Unknown';
+  serviceId: string | null;   // MessageHeader.ServiceID — binds a response to ITS attempt
+  poiid: string | null;       // MessageHeader.POIID — binds it to ITS terminal
   errorCondition: string | null;
   pspReference: string | null;
   poiTransactionId: string | null;
@@ -274,6 +285,7 @@ export function parsePaymentResponse(body: any): {
   additional: Record<string, string>;
 } {
   const resp = body?.SaleToPOIResponse?.PaymentResponse ?? body?.PaymentResponse ?? {};
+  const header = body?.SaleToPOIResponse?.MessageHeader ?? {};
   const response = resp?.Response ?? {};
   const result = (response?.Result === 'Success' || response?.Result === 'Partial' || response?.Result === 'Failure')
     ? response.Result : 'Unknown';
@@ -287,6 +299,8 @@ export function parsePaymentResponse(body: any): {
   const last4 = maskedPan ? maskedPan.replace(/[^0-9]/g, '').slice(-4) || null : (additional['cardSummary'] ?? null);
   return {
     result,
+    serviceId: header?.ServiceID ?? null,
+    poiid: header?.POIID ?? null,
     errorCondition: response?.ErrorCondition ?? additional['refusalReason'] ?? null,
     pspReference: additional['pspReference'] ?? null,
     poiTransactionId: poiTx?.TransactionID ?? null,

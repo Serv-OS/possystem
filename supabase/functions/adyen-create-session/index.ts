@@ -82,8 +82,11 @@ Deno.serve(async (req) => {
       recurringProcessingModel: 'UnscheduledCardOnFile',
       shopperInteraction: 'Ecommerce',
     } : {}),
-    // Bar-tab style online holds (delayed capture) when asked for explicitly.
-    ...(body.manual_capture ? { captureDelayHours: 168 } : {}),
+    // v968 review hardening: manual_capture is REFUSED for now. The old code sent
+    // captureDelayHours:168 — which is Adyen's scheduled AUTO-capture delay, i.e.
+    // an abandoned hold would have captured the customer's full amount at 7 days.
+    // True holds arrive with the Phase-2 QR-tab design (authorisation + adjust +
+    // explicit capture/cancel, mirrored on the terminal PreAuth path).
     metadata: {
       channel: String(body.channel || 'online').slice(0, 80),
       ops_location: String(locationId).slice(0, 80),

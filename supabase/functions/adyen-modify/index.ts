@@ -67,9 +67,25 @@ Deno.serve(async (req) => {
     .select('merchant_account').eq('location_id', ploc.id).maybeSingle();
   if (!maa?.merchant_account) return json({ error: 'venue has no Adyen account' }, 409);
 
+  // v968 review hardening: bind the pspReference to the CALLER'S venue. Under
+  // AfP every venue shares the regional merchant account, so Adyen itself will
+  // NOT reject a cross-venue reference — our ledger must. Service role bypasses
+  // (server flows can act before the AUTHORISATION webhook lands).
+  if (!isServiceRole) {
+    const { data: ledger } = await platformAdmin.from('adyen_payments')
+      .select('location_id').eq('psp_reference', psp).maybeSingle();
+    if (!ledger) return json({ error: 'unknown payment — not yet in the ledger for this venue' }, 404);
+    if (ledger.location_id !== ploc.id) return json({ error: 'payment belongs to a different venue' }, 403);
+  }
+
   const amountMinor = body.amount_minor != null ? Math.round(Number(body.amount_minor)) : null;
   const currency = String(body.currency || 'GBP').toUpperCase();
   const reference = String(body.reference || `${action}:${psp}:${amountMinor ?? 'full'}`).slice(0, 80);
+  // v968: the Idempotency-Key is only deterministic when the CALLER supplied a
+  // reference (their operation id). A derived (action,psp,amount) key made two
+  // legitimate equal-amount refunds collapse into one — the second was silently
+  // swallowed by Adyen's replay semantics and no money moved.
+  const idempotencyKey = body.reference ? `mod:${reference}` : `mod:${action}:${psp}:${crypto.randomUUID()}`;
   const base = checkoutBase();
 
   let path: string; let payload: any;
@@ -90,7 +106,7 @@ Deno.serve(async (req) => {
     payload = { merchantAccount: maa.merchant_account, amount: { value: amountMinor, currency }, reason: 'delayedCharge', reference };
   }
 
-  const res = await adyenFetch('POST', `${base}${path}`, payload, { idempotencyKey: reference });
+  const res = await adyenFetch('POST', `${base}${path}`, payload, { idempotencyKey });
   if (!res.ok) {
     // Graceful-fallback contract (mirrors stripe-increment-authorization): the
     // caller decides what a refusal means — never a thrown 5xx for a scheme

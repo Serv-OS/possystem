@@ -7,6 +7,19 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.968', date: '1 Aug 2026', label: 'Adyen hardening — 22-agent adversarial review, 14 confirmed money-safety findings fixed',
+    changes: [
+      'Ran a 3-lens (double-charge / auth-fence / amounts) adversarial review over the new Adyen payment code with per-finding refutation; 14 findings survived verification and ALL are fixed:',
+      'CRITICAL — an empty HTTP-200 from the cloud terminal call (documented when a terminal drops mid-tender) used to settle the job DECLINED while the customer\'s tap could still complete → classic double-charge. Now an unknown outcome stays in-flight and recovery owns the truth.',
+      'CRITICAL — a device could settle a job "approved" with a forged response. Device reports now require the job\'s random ServiceID (a capability only the initiating device ever receives, DB-unique), the right terminal\'s POIID, and a real authorised amount; the server also asks Adyen directly first and prefers Adyen\'s answer.',
+      'Webhook backstop could NEVER rescue an in-flight terminal job (it matched on a column only written at settle) — payments now carry a tj-{job} reference the webhook matches directly. Jobs swept to \'unknown\' now recover via events, result-polling and the webhook (previously a dead end).',
+      'adyen-modify: refunds/captures are now bound to the CALLER\'S venue through the payments ledger (under Adyen-for-Platforms all venues share a merchant account, so Adyen itself would NOT reject a cross-venue reference), and two legitimate identical refunds no longer collapse into one silently-swallowed idempotent replay.',
+      'Online sessions: removed a flag that would have AUTO-CAPTURED abandoned holds at 7 days (captureDelayHours is scheduled capture, not manual capture — the real hold design lands with the QR-tab phase).',
+      'Bar tabs: the Stripe connected-account id persists with the hold now too — cross-till capture/release genuinely works for existing Stripe holds, not just future Adyen ones.',
+      'All five Adyen edge functions redeployed (still fail-closed pre-keys); migration adds the ServiceID unique index + the hold-account column.',
+    ],
+  },
+  {
     version: '5.5.967', date: '1 Aug 2026', label: 'Adyen charge paths + the MPOS-on-terminal bridge — every transport built ahead of keys',
     changes: [
       'ADYEN-TERMINAL-CHARGE: the in-person charge engine, sibling of the PAX one and sharing its exact money contract (CAS write-ahead so a charge can never double-initiate, DB-owned amounts, single settle-writer RPC, unknown outcomes stay in-flight for recovery). THREE transports through one contract: cloud sync for AMS1s the till drives; prepare_local/report_local for our app running ON an Adyen terminal; and the same pair serves Tap to Pay later. Includes TransactionStatusRequest recovery keyed on a ServiceID that now PERSISTS on the job row, drift-reconciled POIIDs, and abort.',
