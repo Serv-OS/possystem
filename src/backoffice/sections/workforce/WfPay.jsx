@@ -32,9 +32,27 @@ export default function WfPay({ ctx, staff, roles, sections, settings, week, sho
   const [editing, setEditing] = useState(null);     // role object being edited (or new)
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
+  // v5.5.970 — future-dated rate changes (wf_rate_changes)
+  const [rateChanges, setRateChanges] = useState([]);
+  const [scheduling, setScheduling] = useState(false);
 
   // Seed local roles from props; refresh when the location's roles change.
   useEffect(() => { setRoleList(roles?.list || []); }, [roles]);
+
+  // On open: apply any change that fell due since 03:05 (idempotent, server-side),
+  // then load the schedule list. A same-day schedule lands without waiting for cron.
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      const applied = await wf.applyDueRateChanges();
+      const list = await wf.loadRateChanges(ctx.locationId);
+      if (dead) return;
+      setRateChanges(list);
+      if (applied > 0) { showToast(`${applied} scheduled rate change${applied === 1 ? '' : 's'} applied`, 'success'); reloadRoles(); }
+    })();
+    return () => { dead = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctx.locationId]);
 
   const reloadRoles = async () => {
     setLoading(true);
@@ -156,6 +174,70 @@ export default function WfPay({ ctx, staff, roles, sections, settings, week, sho
         )}
       </Card>
 
+      {/* ── (1b) SCHEDULED RATE CHANGES — future-dated rises (v5.5.970) ── */}
+      <Card>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700 }}>Scheduled rate changes</div>
+            <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>
+              Plan NMW or pay rises in advance — the new rate applies automatically on the date you set. Future rota weeks already use it.
+            </div>
+          </div>
+          <button className="btn btn-acc btn-sm" onClick={() => setScheduling(true)} disabled={!roleList.length}>
+            <Icon name="plus" size={14} /> Schedule change
+          </button>
+        </div>
+        {(() => {
+          const staffName = (id) => (staff || []).find(s => s.id === id)?.name || 'staff member';
+          const rows = rateChanges
+            .filter(c => c.status !== 'cancelled')
+            .sort((a, b) => (a.effectiveFrom < b.effectiveFrom ? -1 : 1))
+            .slice(-20);
+          if (!rows.length) return <div style={{ fontSize: 12.5, color: 'var(--t4)' }}>Nothing scheduled. Example: set the new NMW rate today with an effective date of 1 April — it applies itself.</div>;
+          return rows.map(c => {
+            const role = roleMap[c.roleKey];
+            const who = c.targetKind === 'role' ? (role?.lbl || c.roleKey) : staffName(c.staffId);
+            const current = c.targetKind === 'role'
+              ? (c.newSalaryAnnual != null ? (role?.salary != null ? `${money(role.salary)}/yr` : '—') : (role?.rate != null ? `${money(role.rate, 2)}/h` : '—'))
+              : '—';
+            const next = c.newSalaryAnnual != null ? `${money(c.newSalaryAnnual)}/yr` : `${money(c.newRate, 2)}/h`;
+            return (
+              <div key={c.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 0', borderBottom: '1px solid var(--bdr)', fontSize: 13 }}>
+                <Badge tone={c.status === 'applied' ? 'green' : 'amber'}>{c.status === 'applied' ? 'Applied' : 'Scheduled'}</Badge>
+                <span style={{ fontWeight: 700, color: 'var(--t1)' }}>{who}</span>
+                <span className="mono" style={{ color: 'var(--t3)' }}>{c.status === 'applied' ? '' : `${current} → `}{next}</span>
+                <span style={{ color: 'var(--t3)' }}>from {c.effectiveFrom}</span>
+                {c.note && <span style={{ color: 'var(--t4)', fontSize: 12 }}>· {c.note}</span>}
+                <span style={{ flex: 1 }} />
+                {c.status === 'scheduled' && (
+                  <button className="btn btn-ghost btn-xs" onClick={async () => {
+                    try { await wf.cancelRateChange(c.id); setRateChanges(list => list.map(x => x.id === c.id ? { ...x, status: 'cancelled' } : x)); showToast('Scheduled change cancelled', 'info'); }
+                    catch (e) { showToast(e.message || 'Could not cancel', 'error'); }
+                  }}>Cancel</button>
+                )}
+              </div>
+            );
+          });
+        })()}
+      </Card>
+
+      {scheduling && (
+        <ScheduleRateModal
+          roles={roleList} staff={staff || []} busy={busy}
+          onClose={() => setScheduling(false)}
+          onSave={async (payload) => {
+            setBusy(true);
+            try {
+              const row = await wf.scheduleRateChange(payload, ctx.locationId, ctx.orgId);
+              setRateChanges(list => [...list, row]);
+              setScheduling(false);
+              showToast(`Rate change scheduled for ${payload.effectiveFrom}`, 'success');
+            } catch (e) { showToast(e.message || 'Could not schedule', 'error'); }
+            finally { setBusy(false); }
+          }}
+        />
+      )}
+
       {/* Payroll runs (wages + tips) live in Workforce → Payroll. */}
 
       {editing && (
@@ -263,6 +345,98 @@ function RoleEditor({ role, busy, onClose, onSave, onDelete }) {
           <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
           <button className="btn btn-acc" onClick={submit} disabled={busy || !valid}>
             <Icon name="check" size={14} /> {busy ? 'Saving…' : 'Save role'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── v5.5.970 — Schedule a future-dated rate change ───────────────────────────
+// Position-level (the customer ask: NMW/salary rises "at position level so they
+// apply automatically") or a single staff member's override. On the effective
+// date apply_due_wf_rate_changes() lands it on the live rate card; before then
+// the rota already stamps the new rate for shifts on/after the date.
+function ScheduleRateModal({ roles, staff, busy, onClose, onSave }) {
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const [kind, setKind] = useState('role');
+  const [roleKey, setRoleKey] = useState(roles[0]?.key || '');
+  const [staffId, setStaffId] = useState('');
+  const [rate, setRate] = useState('');
+  const [salary, setSalary] = useState('');
+  const [date, setDate] = useState('');
+  const [note, setNote] = useState('');
+
+  const role = roles.find(r => r.key === roleKey);
+  const salaried = kind === 'role' && role?.payType === 'salaried';
+  const valid = date >= todayIso
+    && (kind === 'role' ? !!roleKey : !!staffId)
+    && (salaried ? Number(salary) > 0 : Number(rate) > 0);
+
+  function submit() {
+    if (!valid) return;
+    onSave({
+      targetKind: kind,
+      roleKey: kind === 'role' ? roleKey : null,
+      staffId: kind === 'staff' ? staffId : null,
+      newRate: salaried ? null : Number(rate),
+      newSalaryAnnual: salaried ? Number(salary) : null,
+      effectiveFrom: date,
+      note: note.trim() || null,
+    });
+  }
+
+  return (
+    <div className="modal-back" onClick={e => e.target === e.currentTarget && onClose()}>
+      <div style={{ background: 'var(--bg1)', border: '1px solid var(--bdr2)', borderRadius: 16, width: '100%', maxWidth: 420, padding: 20, boxShadow: 'var(--sh3)' }}>
+        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Schedule a rate change</div>
+        <div style={{ fontSize: 12, color: 'var(--t3)', marginBottom: 14 }}>
+          The new amount applies automatically on the date you pick. History and past pay are never touched.
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+          <button className={`btn btn-sm ${kind === 'role' ? 'btn-acc' : 'btn-ghost'}`} onClick={() => setKind('role')}>Position</button>
+          <button className={`btn btn-sm ${kind === 'staff' ? 'btn-acc' : 'btn-ghost'}`} onClick={() => setKind('staff')}>Individual</button>
+        </div>
+
+        {kind === 'role' ? (
+          <label style={labelStyle}>Position
+            <select style={inputStyle} value={roleKey} onChange={e => setRoleKey(e.target.value)}>
+              {roles.map(r => <option key={r.key} value={r.key}>{r.lbl}</option>)}
+            </select>
+          </label>
+        ) : (
+          <label style={labelStyle}>Staff member
+            <select style={inputStyle} value={staffId} onChange={e => setStaffId(e.target.value)}>
+              <option value="">Choose…</option>
+              {staff.filter(s => s.status !== 'leaver').map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+          </label>
+        )}
+
+        {salaried ? (
+          <label style={labelStyle}>New salary (per year)
+            <input style={inputStyle} type="number" min="0" step="100" value={salary} onChange={e => setSalary(e.target.value)}
+              placeholder={role?.salary != null ? `currently ${role.salary}` : ''} />
+          </label>
+        ) : (
+          <label style={labelStyle}>New hourly rate
+            <input style={inputStyle} type="number" min="0" step="0.01" value={rate} onChange={e => setRate(e.target.value)}
+              placeholder={kind === 'role' && role?.rate != null ? `currently ${role.rate}` : ''} />
+          </label>
+        )}
+
+        <label style={labelStyle}>Starts on
+          <input style={inputStyle} type="date" min={todayIso} value={date} onChange={e => setDate(e.target.value)} />
+        </label>
+        <label style={labelStyle}>Note (optional)
+          <input style={inputStyle} value={note} onChange={e => setNote(e.target.value)} placeholder="e.g. NMW April increase" />
+        </label>
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
+          <button className="btn btn-ghost" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="btn btn-acc" onClick={submit} disabled={!valid || busy}>
+            <Icon name={busy ? 'clock' : 'check'} size={14} /> {busy ? 'Scheduling…' : 'Schedule'}
           </button>
         </div>
       </div>

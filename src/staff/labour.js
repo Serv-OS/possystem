@@ -52,6 +52,35 @@ export function effectiveRate(staff, role, contractedWeekFallback) {
 }
 
 /**
+ * v5.5.970 — DATE-AWARE rate resolution for future-dated pay changes.
+ * `changes` = wf_rate_changes rows (camelCase via wfData.loadRateChanges).
+ * Only rows still status 'scheduled' are considered: once the daily applier
+ * lands a change on the live rate card, resolveRate already returns it — and
+ * respecting an 'applied' row here would stomp any later manual edit.
+ * Rules: a scheduled STAFF change acts like an override for that person; a
+ * scheduled ROLE change applies via the role unless the person has a live
+ * manual override (overrides beat role rates, matching resolveRate).
+ */
+export function resolveRateOn(staff, role, dateIso, changes, contractedWeekFallback) {
+  const base = resolveRate(staff, role, contractedWeekFallback);
+  if (!dateIso || !Array.isArray(changes) || changes.length === 0) return base;
+  const due = changes
+    .filter(c => c.status === 'scheduled' && c.effectiveFrom && c.effectiveFrom <= dateIso)
+    .sort((a, b) => (a.effectiveFrom < b.effectiveFrom ? 1 : a.effectiveFrom > b.effectiveFrom ? -1 : 0));
+  const staffCh = staff ? due.find(c => c.targetKind === 'staff' && c.staffId === staff.id && c.newRate != null) : null;
+  if (staffCh) return { rate: Number(staffCh.newRate), source: 'scheduled', contractedWeek: base.contractedWeek };
+  if (staff && staff.rateOverride != null) return base;   // live manual override wins over role-level schedules
+  const roleCh = role ? due.find(c => c.targetKind === 'role' && c.roleKey === role.key) : null;
+  if (roleCh) {
+    if (roleCh.newRate != null) return { rate: Number(roleCh.newRate), source: 'scheduled', contractedWeek: base.contractedWeek };
+    if (roleCh.newSalaryAnnual != null) {
+      return { rate: Number(roleCh.newSalaryAnnual) / 52 / base.contractedWeek, source: 'scheduled', contractedWeek: base.contractedWeek };
+    }
+  }
+  return base;
+}
+
+/**
  * Holiday pay accrued from hours actually worked (statutory 12.07% default).
  * Rounded to 2dp. Pair with accrual_rate stored on the row for auditability.
  */

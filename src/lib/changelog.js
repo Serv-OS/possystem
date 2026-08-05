@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.970', date: '4 Aug 2026', label: 'Future-dated pay rises — schedule NMW/salary changes that apply themselves',
+    changes: [
+      'Workforce → Positions & rates grows a SCHEDULED RATE CHANGES card: pick a position (or an individual), enter the new hourly rate or salary, set the start date — done. Example: enter next April\'s NMW rate today and forget about it.',
+      'ON THE DATE it applies itself: a daily 03:05 job writes the new rate onto the live rate card (plus a same-day catch-up whenever the rates screen opens). Scheduled changes can be cancelled any time before they land; applied ones show in the history list.',
+      'THE ROTA IS ALREADY DATE-AWARE: publishing next week\'s rota when a rise lands mid-week stamps the OLD rate on shifts before the date and the NEW rate on shifts from the date — labour forecasts and wage costs are right in advance, not after the fact.',
+      'History is never touched: existing shifts and timesheets keep the rate they were created with (the snapshot protection that already existed), and a manual per-person override always beats a position-level schedule.',
+      'Salaried positions schedule a new annual salary the same way; individuals schedule an hourly override.',
+      'TEST: Positions & rates → Schedule change → e.g. Bartender £13.50 from a future date → row shows "Scheduled" with current → new. Build a rota week that straddles the date → shifts after it cost £13.50, before it the old rate. On the morning of the date the rate card itself updates automatically.',
+    ],
+  },
+  {
     version: '5.5.969', date: '4 Aug 2026', label: 'Venue break policy — configurable default + auto-deduct at clock-out, with the UK statutory floor built in',
     changes: [
       'Workforce → Settings grows a BREAK POLICY block: "Default break" (minutes — feeds new rota shifts, shift templates and manual timesheets; replaces the hardcoded 30) and "Auto-deduct the default break at clock-out" with a configurable shift-length trigger (default 6h).',

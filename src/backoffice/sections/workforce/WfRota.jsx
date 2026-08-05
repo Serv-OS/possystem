@@ -10,7 +10,7 @@ import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, RoleChip, money, th, td, inputStyle, labelStyle, groupColor, cellTint, GRP_SECTION, initials, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
 import { buildWeek, addWeeks, weekRangeLabel, ymd } from '../../../staff/wfWeek';
-import { hoursOf, resolveRate, labourPct } from '../../../staff/labour';
+import { hoursOf, resolveRate, resolveRateOn, labourPct } from '../../../staff/labour';
 // Clash logic (shift overlap = hard block; approved leave / unavailable day =
 // soft warning, place anyway) is pure + unit-tested in wfClash.js.
 import { findClash, clashWarnings } from '../../../staff/wfClash';
@@ -290,6 +290,9 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   const [avail, setAvail] = useState([]);           // wf_availability — weekly pattern drives warnings
   const [tplOpen, setTplOpen] = useState(false);    // Standard shifts manager
   const [copying, setCopying] = useState(null);     // shift being duplicated
+  // v5.5.970: scheduled future-dated rate changes — shifts on/after a change's
+  // effective date stamp the NEW rate at publish (resolveRateOn).
+  const [rateChanges, setRateChanges] = useState([]);
   const [copyWeekOpen, setCopyWeekOpen] = useState(false);
 
   const targetPct = settings?.labourTargetPct ?? 0.3;
@@ -299,7 +302,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   async function reload(w) {
     setLoading(true);
     try {
-      const [sh, fc, ac, sc, ts, lv, av] = await Promise.all([
+      const [sh, fc, ac, sc, ts, lv, av, rc] = await Promise.all([
         wf.loadShifts(ctx.locationId, w.startIso, w.endIso),
         wf.loadForecast(ctx.locationId, w.startIso, w.endIso),
         wf.loadActualSales(ctx.locationId, w.startIso, w.endIso),
@@ -307,6 +310,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
         wf.loadTimesheets(ctx.locationId, w.startIso, w.endIso),
         wf.loadTimeOff(ctx.locationId),
         wf.loadAvailability(ctx.locationId),
+        wf.loadRateChanges(ctx.locationId),
       ]);
       setShifts(sh || []);
       setForecast(fc || {});
@@ -315,6 +319,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       setTimesheets(ts || []);
       setTimeOff(lv || []);
       setAvail(av || []);
+      setRateChanges(rc || []);
     } catch (e) {
       showToast('Could not load the rota: ' + e.message, 'error');
     } finally {
@@ -374,7 +379,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       return;
     }
     const role = roles.map[s.role];
-    const { rate, source } = resolveRate(s, role);
+    const { rate, source } = resolveRateOn(s, role, day.iso, rateChanges);
     const hours = Math.max(0, hoursOf(payload.start, payload.finish) - payload.breakMins / 60);
     const next = {
       ...(shift || {}),
@@ -431,7 +436,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   async function copyShift(target, dateIso) {
     const src = copying;
     const role = roles.map[target.role];
-    const { rate, source } = resolveRate(target, role);
+    const { rate, source } = resolveRateOn(target, role, dateIso, rateChanges);
     const hours = Math.max(0, hoursOf(src.start, src.finish) - (src.breakMins || 0) / 60);
     const next = {
       id: 'tmp-' + Date.now(),
@@ -473,7 +478,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
         if (findClash(working, s.staffId, dateIso, s.start, s.finish)) { skipped++; continue; }
         if (clashWarnings({ staffName: person.name, staffId: s.staffId, dateIso, timeOff, availability: avail }).length) warned++;
         const role = roles.map[person.role];
-        const { rate, source } = resolveRate(person, role);
+        const { rate, source } = resolveRateOn(person, role, dateIso, rateChanges);
         const hours = Math.max(0, hoursOf(s.start, s.finish) - (s.breakMins || 0) / 60);
         const copy = {
           staffId: s.staffId, roleKey: person.role, date: dateIso,
@@ -571,7 +576,8 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       (availability || []).forEach(a => { avByStaff[a.staffId] = (avByStaff[a.staffId] || []).concat(a.perDay || []); });
       const staffInfo = staff.map(s => {
         const role = roles.map[s.role] || {};
-        const { rate } = resolveRate(s, role);
+        // AI generation plans the VISIBLE week — cost with that week's rates
+        const { rate } = resolveRateOn(s, role, wk?.days?.[0]?.iso, rateChanges);
         return {
           staffId: s.id, name: s.name, position: role.lbl || s.role, section: GRP_SECTION[role.grp] || role.grp || 'Floor',
           rate: Math.round((rate || 0) * 100) / 100, maxWeeklyHours: s.weeklyHoursTarget || s.contractedWeek || null,
@@ -609,7 +615,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
         if (findClash(working, p.staffId, p.date, p.start, p.finish)) { skippedClash++; continue; }
         const s = staff.find(x => x.id === p.staffId);
         const role = roles.map[s.role];
-        const { rate, source } = resolveRate(s, role);
+        const { rate, source } = resolveRateOn(s, role, p.date, rateChanges);
         const breakMins = Number(p.breakMins) || 0;
         const hours = Math.max(0, hoursOf(p.start, p.finish) - breakMins / 60);
         const shift = {

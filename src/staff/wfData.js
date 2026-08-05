@@ -867,3 +867,64 @@ export async function logAudit(entry, locationId, orgId, actor) {
   const { error } = await supabase.from('wf_audit').insert(row);
   if (error) console.warn('[wf] logAudit:', error.message);
 }
+
+// ── v5.5.970 — Future-dated pay rate changes (wf_rate_changes) ───────────────
+// Scheduled intents applied to the live rate card on their effective date by
+// apply_due_wf_rate_changes() (pg_cron daily + lazily from the rates screen).
+// The rota resolves rates date-aware against the 'scheduled' rows via
+// labour.resolveRateOn so future weeks stamp the correct rate at publish.
+
+const mapRateChange = (r) => ({
+  id: r.id, targetKind: r.target_kind, roleKey: r.role_key, staffId: r.staff_id,
+  newRate: r.new_rate != null ? Number(r.new_rate) : null,
+  newSalaryAnnual: r.new_salary_annual != null ? Number(r.new_salary_annual) : null,
+  effectiveFrom: r.effective_from, status: r.status, note: r.note || '',
+  appliedAt: r.applied_at, createdAt: r.created_at, createdBy: r.created_by || null,
+});
+
+export async function loadRateChanges(locationId) {
+  if (isMock || !supabase) return lsGet('rateChanges');
+  if (!locationId) return [];
+  const { data, error } = await supabase.from('wf_rate_changes')
+    .select('*').eq('location_id', locationId)
+    .order('effective_from', { ascending: true });
+  if (error) { console.warn('[wf] loadRateChanges:', error.message); return []; }
+  return (data || []).map(mapRateChange);
+}
+
+export async function scheduleRateChange(change, locationId, orgId, createdBy) {
+  if (isMock || !supabase) {
+    const list = lsGet('rateChanges');
+    const row = { id: 'rc-' + Date.now(), status: 'scheduled', createdAt: new Date().toISOString(), ...change };
+    lsSet('rateChanges', [...list, row]);
+    return row;
+  }
+  const org = await resolveOrgForLocation(locationId, orgId);
+  const { data, error } = await supabase.from('wf_rate_changes').insert({
+    location_id: locationId, org_id: org,
+    target_kind: change.targetKind, role_key: change.roleKey || null, staff_id: change.staffId || null,
+    new_rate: change.newRate ?? null, new_salary_annual: change.newSalaryAnnual ?? null,
+    effective_from: change.effectiveFrom, note: change.note || null, created_by: createdBy || null,
+  }).select().single();
+  if (error) throw new Error(error.message);
+  return mapRateChange(data);
+}
+
+export async function cancelRateChange(id) {
+  if (isMock || !supabase) {
+    lsSet('rateChanges', lsGet('rateChanges').map(r => r.id === id ? { ...r, status: 'cancelled' } : r));
+    return;
+  }
+  const { error } = await supabase.from('wf_rate_changes')
+    .update({ status: 'cancelled' }).eq('id', id).eq('status', 'scheduled');
+  if (error) throw new Error(error.message);
+}
+
+// Lazy same-day apply: cron runs 03:05, but a change scheduled for TODAY after
+// that should land the moment the rates screen opens. Idempotent server-side.
+export async function applyDueRateChanges() {
+  if (isMock || !supabase) return 0;
+  const { data, error } = await supabase.rpc('apply_due_wf_rate_changes');
+  if (error) { console.warn('[wf] applyDueRateChanges:', error.message); return 0; }
+  return Number(data) || 0;
+}
