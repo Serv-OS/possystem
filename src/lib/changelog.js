@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.976', date: '5 Aug 2026', label: 'Marketing + review-ask schedules switched ON — blast radius checked, not assumed',
+    changes: [
+      'v5.5.974 shipped the marketing and review-ask schedules switched OFF, on my assumption that enabling them would repeatedly mail real customers. That assumption was wrong, and checking the live data proved it: there are ZERO workflows, and the one active campaign is a one-off aimed at a segment that has already run — all four of its runs were manual. A one-off does not re-fire on a timer, and each send is unique per occurrence, so the hourly runner cannot re-mail anyone who already received it.',
+      'Hourly is the cadence of the CHECK, not of any send. Both jobs are now switched on in the migration.',
+      'Also verified rather than assumed: of 7 customers, 4 are opted in — the owner\'s own address, two @test.com addresses that go nowhere, and one real address already in that campaign\'s sent history. The only two rows carrying real mobile numbers are opted OUT, and both the campaign engine and the review-ask honour that, so the only number SMS can reach today is the owner\'s own.',
+      'If you ever want the engine to run without delivering, set the MARKETING_SANDBOX=true edge secret — every campaign executes and logs exactly what it would have sent, and nothing leaves the building.',
+    ],
+  },
+  {
     version: '5.5.975', date: '5 Aug 2026', label: 'Hotfix: v5.5.974 broke the Vercel deploy',
     changes: [
       'v5.5.974 removed the four background jobs from vercel.json and left a note in their place explaining where they had gone. vercel.json is strict JSON — it allows no comments and rejects any key it does not recognise — so the deployment failed schema validation and never built. The note is gone; the explanation now lives in the migration file and at the top of each api/*-cron.js route.',

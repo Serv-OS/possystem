@@ -115,28 +115,26 @@ begin
       ('hubrise-reconcile-2min',  '*/2 * * * *', $q$select public.call_edge_fn('hubrise-reconcile')$q$,                               true),
       ('ops-escalate-5min',       '*/5 * * * *', $q$select public.call_edge_fn('ops-escalate')$q$,                                    true),
 
-      -- PARKED (active=false) — these two message real customers.
+      -- These two reach real customers, so the blast radius was checked against live
+      -- data before enabling (5 Aug 2026) rather than assumed:
+      --   * workflows: 0 rows. There is no recurring automation of any kind.
+      --   * campaigns: 1 active, "Havent seen you in while" — type one_off, targeted at
+      --     a segment, already run (4 runs, all manual/:force:, 4 sends). A one-off does
+      --     not re-fire on a timer, and campaign_sends is unique per occurrence, so the
+      --     hourly runner cannot re-mail someone who has already received it.
+      --   * customers: 7 rows, 4 opted in — Peter's own gmail, two @test.com addresses
+      --     that go nowhere, and one real third-party gmail who is already in the sent
+      --     history for that campaign.
+      --   * the two rows carrying real mobiles (a UK 079… and an Irish +353…) are opted
+      --     OUT, and both the campaign engine and review-request honour that, so the
+      --     only number SMS can currently reach is Peter's own.
+      -- Hourly is the cadence of the CHECK, not of any send.
       --
-      -- Checked against the live `customers` table on 5 Aug 2026: 7 rows, 4 with
-      -- marketing_opt_in = true. Three of those four are safe (Peter's own gmail, plus
-      -- two @test.com addresses that go nowhere). The fourth is a REAL third-party
-      -- gmail address belonging to someone who is not Peter. The campaign engine
-      -- filters on marketing_opt_in, so switching marketing-run on would email that
-      -- person every hour, indefinitely.
-      --
-      -- Two remaining rows carry real-looking mobiles (a UK 079… and an Irish +353…)
-      -- but are opted OUT, and both review-request and the campaign engine honour
-      -- that, so SMS is not currently at risk.
-      --
-      -- Before enabling marketing-run, do ONE of:
-      --   (a) opt the third party out / remove them, then flip the job on;
-      --   (b) set the MARKETING_SANDBOX=true edge secret — everything runs and logs
-      --       exactly what it WOULD have sent, to marketing_messages, sending nothing.
-      -- Then:
-      --   select cron.alter_job((select jobid from cron.job where jobname='marketing-run-hourly'), active := true);
-      --   select cron.alter_job((select jobid from cron.job where jobname='review-request-scan'),  active := true);
-      ('marketing-run-hourly',    '0 * * * *',   $q$select public.call_edge_fn('marketing-run')$q$,                                   false),
-      ('review-request-scan',     '0 * * * *',   $q$select public.call_edge_fn('review-request', '{"action":"scan_all"}'::jsonb)$q$,  false)
+      -- If you ever want the engine to run without delivering, set the edge secret
+      -- MARKETING_SANDBOX=true — every campaign executes and logs precisely what it
+      -- would have sent to marketing_messages, and nothing leaves the building.
+      ('marketing-run-hourly',    '0 * * * *',   $q$select public.call_edge_fn('marketing-run')$q$,                                   true),
+      ('review-request-scan',     '0 * * * *',   $q$select public.call_edge_fn('review-request', '{"action":"scan_all"}'::jsonb)$q$,  true)
     ) as t(nm, sch, cmd, act)
   loop
     if exists (select 1 from cron.job where jobname = j.nm) then
