@@ -18,7 +18,7 @@
 
 import {
   cors, json, opsAdmin, platformAdmin, authenticateCaller,
-  resolveCompanyForLocation, updateBalance,
+  resolveCompanyForLocation,
 } from '../_shared/loyalty-utils.ts';
 
 Deno.serve(async (req) => {
@@ -221,71 +221,108 @@ Deno.serve(async (req) => {
   }
 
   // ── Deduct points ──────────────────────────────────────────────────────
-  // The ledger row is the GUARD, not the epilogue (same shape as the stamp path above):
-  // write it FIRST so its UNIQUE idempotency_key rejects a retry before anything is
-  // deducted. Writing it last left the whole deduct window uncovered, so a 5xx retry
-  // deducted twice. balance_after is projected here and patched after the deduct lands.
+  // The debit, its idempotency claim, points_redeemed_total and the reward counter are ONE
+  // transaction — loyalty_redeem_points on the PLATFORM db (migration 20260806c).
+  //
+  // ⚠ The Ops ledger row CANNOT be in that transaction: loyalty_transactions is on Ops and
+  // customer_loyalty is on Platform, two separate Postgres clusters. So the claim is taken
+  // FIRST and the ledger written after, which is the only ordering that heals itself. Ledger
+  // first (what this did before) left a dead isolate holding a guard row over points that
+  // were never deducted, silently; and the rollback DELETE that covered a failed deduct could
+  // erase a row a concurrent replay had already reported as successful. Nothing is deleted
+  // now, and a retry under the same key re-runs the RPC as a no-op and re-lands the ledger row.
   const pointsToDeduct = reward.points_cost;
-  const projectedBalance = membership.points_balance - pointsToDeduct;
 
-  const { data: ledgerRow, error: ledgerErr } = await opsAdmin
-    .from('loyalty_transactions')
-    .insert({
-      customer_id,
-      company_id: companyId,
-      location_id,
-      type: 'redeem',
-      points: -pointsToDeduct,
-      balance_after: projectedBalance,
-      source: 'reward',
-      channel,
-      closed_check_id: closed_check_id || null,
-      reward_id,
-      idempotency_key: idempotencyKey,
-      staff_id: staff_id || null,
-      note: `Redeemed: ${reward.name}`,
-    })
-    .select('id')
-    .single();
-
-  if (ledgerErr?.code === '23505') {
-    // A concurrent call or an in-flight retry already owns this key — do NOT deduct again.
+  const { data: debit, error: debitErr } = await platformAdmin.rpc('loyalty_redeem_points', {
+    p_membership_id: membership.id,
+    p_points: pointsToDeduct,
+    p_idempotency_key: idempotencyKey,
+    p_reward_id: reward.id,
+  });
+  if (debitErr || !debit?.result) {
+    console.error('[loyalty-redeem] loyalty_redeem_points failed:', debitErr?.message);
+    return json({ error: 'Failed to deduct points' }, 500);
+  }
+  if (debit.result === 'not_found') return json({ error: 'Customer not enrolled in loyalty' }, 404);
+  if (debit.result === 'insufficient') {
     return json({
-      status: 'already_processed',
-      points_deducted: pointsToDeduct,
-      balance: membership.points_balance,
-      reward: { id: reward.id, name: reward.name, type: reward.reward_type, value: reward.reward_value },
+      error: 'Insufficient points',
+      points_balance: debit.balance,
+      points_required: pointsToDeduct,
+    }, 400);
+  }
+
+  const newBalance = debit.balance;
+
+  // Audit ledger (Ops) — written after the money moved, idempotent on its own UNIQUE
+  // idempotency_key so a replay is a no-op. A failure here is never RETURNED: the points are
+  // already gone, and refusing would cost the customer the points AND the reward.
+  //
+  // ⚠ But it is not fire-and-forget either. loyalty-refund finds what to reverse by querying
+  // loyalty_transactions on closed_check_id, so a redemption whose ledger row never landed would be
+  // invisible to it: debited, refunded, points never given back. Two things stop that, and only
+  // these two — there is NO reconciler job, and nothing reads the ledger_pending flag below:
+  //   1. the retry loop here, and
+  //   2. loyalty-refund reading platform.loyalty_redemption_claims directly when the Ops ledger has
+  //      no redeem row for the check. That is what actually makes the money recoverable.
+  // If both the retry and the claim row are lost the points are gone, so the failure is also
+  // written to activity_events and logged under LEDGER_WRITE_FAILED to be findable by hand.
+  // A scheduled anti-join of platform.loyalty_redemption_claims against ops.loyalty_transactions on
+  // idempotency_key would close the gap properly; it does not exist yet.
+  const ledgerRow = {
+    customer_id,
+    company_id: companyId,
+    location_id,
+    type: 'redeem',
+    points: -pointsToDeduct,
+    balance_after: newBalance,
+    source: 'reward',
+    channel,
+    closed_check_id: closed_check_id || null,
+    reward_id,
+    idempotency_key: idempotencyKey,
+    staff_id: staff_id || null,
+    note: `Redeemed: ${reward.name}`,
+  };
+  let ledgerErr: { message: string } | null = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const { error } = await opsAdmin
+      .from('loyalty_transactions')
+      .upsert(ledgerRow, { onConflict: 'idempotency_key', ignoreDuplicates: true });
+    ledgerErr = error;
+    if (!ledgerErr) break;
+    if (attempt < 3) await new Promise((r) => setTimeout(r, 150 * attempt));
+  }
+  if (ledgerErr) {
+    console.error(
+      '[loyalty-redeem] LEDGER_WRITE_FAILED — points debited on Platform, Ops ledger row missing:',
+      JSON.stringify({
+        idempotency_key: idempotencyKey,
+        customer_id,
+        company_id: companyId,
+        location_id,
+        closed_check_id: closed_check_id || null,
+        points: -pointsToDeduct,
+        balance_after: newBalance,
+        error: ledgerErr.message,
+      }),
+    );
+    // Raise it on the operator's activity feed as well, so it is a row someone can find rather
+    // than a line in the function logs. Best-effort, and on the SAME database that just refused
+    // the ledger row — the Platform claim row remains the authority either way.
+    const { error: alertErr } = await opsAdmin.from('activity_events').insert({
+      location_id,
+      kind: 'system',
+      severity: 'urgent',
+      title: 'Loyalty ledger write failed',
+      body: `${pointsToDeduct} points were deducted for "${reward.name}" but the audit row did not save. Reference ${idempotencyKey}.`,
+      ref_type: 'loyalty_redemption',
+      ref_id: idempotencyKey,
     });
+    if (alertErr) {
+      console.error('[loyalty-redeem] could not raise the operator alert either:', alertErr.message);
+    }
   }
-  if (ledgerErr || !ledgerRow) {
-    console.error('[loyalty-redeem] ledger insert failed:', ledgerErr?.message);
-    return json({ error: 'Failed to record redemption' }, 500);
-  }
-
-  const newBalance = await updateBalance(membership.id, -pointsToDeduct);
-  if (newBalance === null) {
-    // Nothing was deducted — drop our guard row so a legitimate retry isn't locked out.
-    await opsAdmin.from('loyalty_transactions').delete().eq('id', ledgerRow.id);
-    return json({ error: 'Failed to deduct points — concurrent modification or insufficient balance' }, 409);
-  }
-
-  if (newBalance !== projectedBalance) {
-    await opsAdmin.from('loyalty_transactions').update({ balance_after: newBalance }).eq('id', ledgerRow.id);
-  }
-
-  // ── Update redemption stats ────────────────────────────────────────────
-  await platformAdmin
-    .from('customer_loyalty')
-    .update({
-      points_redeemed_total: (membership.points_redeemed_total || 0) + pointsToDeduct,
-    })
-    .eq('id', membership.id);
-
-  // Increment reward total_redeemed
-  await platformAdmin
-    .from('loyalty_rewards')
-    .update({ total_redeemed: (reward.total_redeemed || 0) + 1 })
-    .eq('id', reward.id);
 
   // ── Build discount info for POS ────────────────────────────────────────
   const rewardInfo = {
@@ -297,10 +334,14 @@ Deno.serve(async (req) => {
   };
 
   return json({
-    status: 'ok',
-    points_deducted: pointsToDeduct,
+    status: debit.result === 'already_redeemed' ? 'already_processed' : 'ok',
+    points_deducted: debit.points_deducted ?? pointsToDeduct,
     balance: newBalance,
     reward: rewardInfo,
     idempotency_key: idempotencyKey,
+    // Still a success — the debit settled; only the Ops audit row is outstanding. Nothing reads
+    // this flag today; it is here so the condition is visible in logs and to any future caller,
+    // NOT because a self-heal is listening for it.
+    ...(ledgerErr ? { ledger_pending: true } : {}),
   });
 });

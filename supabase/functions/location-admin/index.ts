@@ -33,6 +33,7 @@
 //
 //   save_location             { ops_location_id, patch:{...} }  → whitelisted cols
 //   patch_branding            { ops_location_id, patch:{...} }  → online_branding MERGE
+//                                                                (BRANDING_FIELDS, same discipline)
 //   reset_challenge21_counter { ops_location_id }               → counter = 0
 //
 // Requires migration 20260806_PLATFORM_location_rpcs.sql on the platform DB
@@ -89,6 +90,83 @@ const DENIED = new Set([
   'id', 'company_id', 'ops_location_id', 'ops_db_url', 'payment_processor',
   'challenge_21_counter', 'created_at', 'updated_at', 'latitude', 'longitude',
 ]);
+
+// ── online_branding whitelist ───────────────────────────────────────────────
+// online_branding is PUBLICLY READABLE by design and every /online/<slug> page
+// load pulls it on the critical path, so it is not a free-form bag: an unbounded
+// jsonb here lets ONE Back Office account push megabytes into the page weight of
+// every customer of that venue. Unknown keys are REJECTED, not dropped — same
+// reason as LOCATION_FIELDS: a silent drop is how an operator ends up believing
+// a setting saved when it didn't.
+//
+// 's' = string (null or '' clears it), 'b' = boolean. Values are deliberately NOT
+// enum-checked: every reader already falls back on an unrecognised value
+// (menuTheme.js readTheme, giftHelpers.js buildGiftTheme), and a function that
+// rejected a value the UI offers would be a silent save failure.
+//
+// Maps, not object literals — `BRANDING_FIELDS['constructor']` on a literal
+// returns an inherited function and would sail through as a known key.
+const BRANDING_FIELDS = new Map<string, 's' | 'b'>([
+  // menuTheme.js THEME_DEFAULTS / readTheme  (MenuAppearance.jsx:207-256)
+  ['brand_color', 's'], ['header_style', 's'], ['hero_url', 's'], ['logo_url', 's'],
+  ['logo_shape', 's'], ['show_open_status', 'b'], ['background', 's'],
+  // giftHelpers.js buildGiftTheme — loyalty portal + gift pages
+  ['display_name', 's'], ['show_powered_by', 'b'],
+  // review/ReviewCard.jsx:171
+  ['review_logo_url', 's'],
+  // Pre-MenuTheme keys still read as fallbacks (OnlineSurface.jsx:353,
+  // ReviewSurface.jsx:33, WaitlistJoinSurface.jsx:63/171). MenuAppearance re-sends
+  // whatever it loaded, so rejecting these would break Save outright on any venue
+  // branded before v5.5.744.
+  ['accent_color', 's'], ['primary_color', 's'], ['foreground', 's'], ['bg_image_url', 's'],
+]);
+
+// The only nested objects. A two-level whitelist IS the depth cap — nothing
+// deeper is reachable, so there is no recursion to bound.
+const BRANDING_SUBFIELDS = new Map<string, Map<string, 's' | 'b'>>([
+  // MenuAppearance.jsx:265-279
+  ['portal', new Map<string, 's' | 'b'>([['scheme', 's'], ['background', 's'], ['show_hero', 'b']])],
+  // MenuAppearance.jsx:287-291
+  ['gift', new Map<string, 's' | 'b'>([['card_art_url', 's']])],
+]);
+
+const BRANDING_MAX_BYTES = 64 * 1024;   // whole patch, serialised
+const BRANDING_MAX_STR = 2048;          // one value — asset URLs are storage URLs, never data: URIs
+
+/** '' when the leaf is acceptable, else why it isn't. */
+function badLeaf(t: 's' | 'b', v: unknown): string {
+  if (v === null) return '';
+  if (t === 'b') return typeof v === 'boolean' ? '' : 'expected true or false';
+  if (typeof v !== 'string') return 'expected a string';
+  return v.length > BRANDING_MAX_STR ? `longer than ${BRANDING_MAX_STR} characters` : '';
+}
+
+/** null when the branding patch is acceptable, else the 400 body. */
+function checkBranding(patch: Record<string, unknown>): Record<string, unknown> | null {
+  const bytes = new TextEncoder().encode(JSON.stringify(patch)).length;
+  if (bytes > BRANDING_MAX_BYTES) {
+    return { error: 'branding_too_large', detail: `${bytes} bytes, limit ${BRANDING_MAX_BYTES}` };
+  }
+  for (const [k, v] of Object.entries(patch)) {
+    const sub = BRANDING_SUBFIELDS.get(k);
+    if (sub) {
+      if (v === null) continue;
+      if (!isPlainObject(v)) return { error: 'invalid_value', field: k, detail: 'expected an object' };
+      for (const [sk, sv] of Object.entries(v)) {
+        const st = sub.get(sk);
+        if (!st) return { error: 'unknown_field', field: `${k}.${sk}` };
+        const why = badLeaf(st, sv);
+        if (why) return { error: 'invalid_value', field: `${k}.${sk}`, detail: why };
+      }
+      continue;
+    }
+    const t = BRANDING_FIELDS.get(k);
+    if (!t) return { error: 'unknown_field', field: k };
+    const why = badLeaf(t, v);
+    if (why) return { error: 'invalid_value', field: k, detail: why };
+  }
+  return null;
+}
 
 // Same shape the BO validates against (src/lib/customerUrl.js:216): lowercase
 // a-z / digits / hyphens, 3-40 chars, no leading or trailing hyphen.
@@ -339,12 +417,13 @@ Deno.serve(async (req) => {
   // Menu appearance and the Review card both write online_branding. Replacing
   // the whole object from a stale snapshot is how one screen wipes the other's
   // edit, so the column is not settable as a whole — only merged, server-side.
+  // The patch is whitelisted and size-capped first: this column is public and on
+  // every storefront page load's critical path (see BRANDING_FIELDS).
   if (action === 'patch_branding') {
     const patch = body.patch;
     if (!isPlainObject(patch)) return json({ error: 'patch must be an object' }, 400);
-    for (const k of Object.keys(patch)) {
-      if (k.startsWith('__') || k.startsWith('$')) return json({ error: 'unknown_field', field: k }, 400);
-    }
+    const bad = checkBranding(patch);
+    if (bad) return json(bad, 400);
     const { data, error } = await platformAdmin.rpc('location_branding_merge', { p_location_id: loc.id, p_patch: patch });
     if (error) return json({ error: error.message }, 500);
     if (!data) return json({ error: 'update matched 0 rows' }, 500);

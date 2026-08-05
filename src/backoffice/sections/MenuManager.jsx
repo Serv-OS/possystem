@@ -3767,9 +3767,11 @@ function QuickScreenManager() {
           </div>
 
           <div style={{ marginTop:14, display:'flex', gap:8 }}>
-            <button onClick={()=>{ save([]); showToast('Quick Screen cleared','info'); }}
+            {/* Same rule as addItem: toast only once the write has landed — save() toasts
+                its own failure and showToast is single-slot, so a premature success lies. */}
+            <button onClick={async()=>{ if (await save([])) showToast('Quick Screen cleared','info'); }}
               style={{ padding:'6px 14px',borderRadius:9,cursor:'pointer',fontFamily:'inherit',background:'var(--red-d)',border:'1px solid var(--red-b)',color:'var(--red)',fontSize:12,fontWeight:600 }}>Clear all</button>
-            <button onClick={()=>{ const ids=allItems.slice(0,SLOTS).map(i=>i.id); save(ids); showToast('Auto-filled','success'); }}
+            <button onClick={async()=>{ const ids=allItems.slice(0,SLOTS).map(i=>i.id); if (await save(ids)) showToast('Auto-filled','success'); }}
               style={{ padding:'6px 14px',borderRadius:9,cursor:'pointer',fontFamily:'inherit',background:'var(--bg3)',border:'1px solid var(--bdr2)',color:'var(--t2)',fontSize:12,fontWeight:600 }}>Auto-fill from menu</button>
           </div>
         </div>

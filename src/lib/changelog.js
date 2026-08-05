@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.979', date: '6 Aug 2026', label: 'A refunded reward gives the points back, and a slow venue can no longer starve the review sync',
+    changes: [
+      'Loyalty points and the ledger that records them live in two SEPARATE databases, so no single transaction can cover both. The deduction is now atomic where the money is, and the record follows. If that record fails to land, refunding the sale would previously have found nothing to reverse and the customer would never get their points back — the refund now falls back to the deduction record itself, so the money is recoverable either way.',
+      'The review sync used to work through venues oldest-first and only mark one done when it SUCCEEDED. Three consistently slow venues would therefore take the same slots on every run and every other venue would stop syncing, permanently. It now marks each attempt, so a failing venue rotates to the back and everyone gets a turn.',
+      'A review sync that failed before it started reported itself as a completed run that simply had nothing to do. It now fails loudly.',
+      'Catering sales recorded their promotions against an identifier that appeared in no other table, so those redemptions could never be traced back to the sale.',
+      'Corrected several comments that claimed more than the code delivered — including one describing a safety mechanism that had since been replaced. Three separate reviews caught these; a comment the next reader trusts is worse than none.',
+    ],
+  },
+  {
     version: '5.5.978', date: '5 Aug 2026', label: 'Venue settings move behind the server; rewards can no longer be given without being deducted',
     changes: [
       'THE SETTINGS HOLE IS CLOSED PROPERLY. Every venue setting — opening hours, online ordering, QR, age verification, menu theming, the venue name — was editable by anyone who opened the POS in a browser, because the key that allows it ships inside the page. Someone could have switched off age verification at every venue, or pointed a venue\'s online orders at a different tenant. All eleven of those writes now go through the server, which checks you actually have access to that venue and refuses any field outside a fixed list. The venue id, company and database pointer can no longer be set by anyone, from anywhere.',

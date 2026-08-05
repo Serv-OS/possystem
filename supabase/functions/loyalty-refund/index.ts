@@ -16,6 +16,11 @@
 //   - earn → clawback (negative points)
 //   - redeem → restore (positive points)
 //
+// Redemptions the Ops ledger is missing are picked up from the Platform redemption
+// claims: loyalty-redeem debits the balance on Platform and writes the Ops ledger row
+// afterwards (two clusters, no shared transaction), so a redemption can exist with no
+// ledger row to find.
+//
 // Idempotent via refund:{closed_check_id}
 
 import {
@@ -74,22 +79,79 @@ Deno.serve(async (req) => {
   }
 
   // ── Find original transactions for this check ──────────────────────────
-  const { data: originalTxs } = await opsAdmin
+  // The error MUST be checked. This read used to be harmless to lose: a null result answered
+  // 'no_transactions' having written nothing, so a retry could still do the whole job. Now that the
+  // Platform claims fallback below merges into this list, a failed read produces a PARTIAL reversal
+  // — the claim rows reverse, the earn row does not — and the refund ledger row it writes makes that
+  // partial state permanent, because the next attempt short-circuits on it as already refunded.
+  const { data: originalTxs, error: txReadErr } = await opsAdmin
     .from('loyalty_transactions')
     .select('*')
     .eq('closed_check_id', closed_check_id)
     .eq('customer_id', customer_id)
     .eq('company_id', companyId)
     .order('created_at');
+  if (txReadErr) {
+    return json({ error: `could not read the loyalty ledger — refund not attempted: ${txReadErr.message}` }, 500);
+  }
 
-  if (!originalTxs || originalTxs.length === 0) {
+  // ── Get membership ─────────────────────────────────────────────────────
+  // Read before the reversal maths because the claims fallback below is fenced on
+  // membership.id. The 404 stays where it was, after the "nothing found" answers.
+  const { data: membership } = await platformAdmin
+    .from('customer_loyalty')
+    .select('id, points_balance, points_earned_total, points_redeemed_total, visit_count, lifetime_spend_minor, tier_id')
+    .eq('customer_id', customer_id)
+    .eq('company_id', companyId)
+    .maybeSingle();
+
+  // ── Fill the gaps from the Platform redemption claims ──────────────────
+  // The points debit and its ledger row are on two different Postgres clusters, so
+  // loyalty-redeem can take the points and then fail to land the Ops ledger row. Such a
+  // redemption is invisible to the query above — the customer would be debited, the sale
+  // refunded, and the points never given back. The claim row
+  // (platform.loyalty_redemption_claims, migration 20260806c) holds the membership, the points
+  // and the reward, which is exactly what a reversal needs. Its primary key is the redeem
+  // idempotency key, shape `redeem:<closed_check_id>:<reward_id>`.
+  //
+  // Checked on EVERY refund, not just when the ledger came back empty: the earn row is written
+  // by a different function, so the usual shape of this failure is a check that HAS its earn
+  // row and is missing only the redeem one.
+  let claimTxs: any[] = [];
+  if (membership) {
+    const prefix = `redeem:${closed_check_id}:`;
+    const { data: claims } = await platformAdmin
+      .from('loyalty_redemption_claims')
+      .select('idempotency_key, points, reward_id')
+      .eq('membership_id', membership.id)
+      .like('idempotency_key', `${prefix}%`);
+    const ledgerKeys = new Set((originalTxs || []).map((t) => t.idempotency_key));
+    claimTxs = (claims || [])
+      // `_` is a LIKE wildcard and check ids can contain one, so re-check the prefix literally:
+      // a claim from a different check of the same length must never be reversed here.
+      .filter((c) => String(c.idempotency_key).startsWith(prefix) && !ledgerKeys.has(c.idempotency_key))
+      .map((c) => ({
+        type: 'redeem',
+        points: -Math.abs(c.points),   // ledger rows store redeems negative; claims store the magnitude
+        reward_id: c.reward_id,
+        channel: null,
+        location_id: null,
+      }));
+    if (claimTxs.length > 0) {
+      console.warn(`[loyalty-refund] ${claimTxs.length} redemption(s) on check ${closed_check_id} have no Ops ledger row — reversing them from the Platform claim rows`);
+    }
+  }
+
+  const sourceTxs = [...(originalTxs || []), ...claimTxs];
+
+  if (sourceTxs.length === 0) {
     return json({ status: 'no_transactions', points_reversed: 0 });
   }
 
   // Calculate net reversal: earned points get clawed back (negative),
   // redeemed points get restored (positive)
   let netReversal = 0;
-  for (const tx of originalTxs) {
+  for (const tx of sourceTxs) {
     if (tx.type === 'earn' || tx.type === 'bonus') {
       // Clawback: reverse the earn
       netReversal -= tx.points;
@@ -102,14 +164,6 @@ Deno.serve(async (req) => {
   if (netReversal === 0) {
     return json({ status: 'nothing_to_reverse', points_reversed: 0 });
   }
-
-  // ── Get membership ─────────────────────────────────────────────────────
-  const { data: membership } = await platformAdmin
-    .from('customer_loyalty')
-    .select('id, points_balance, points_earned_total, points_redeemed_total, visit_count, lifetime_spend_minor, tier_id')
-    .eq('customer_id', customer_id)
-    .eq('company_id', companyId)
-    .maybeSingle();
 
   if (!membership) {
     return json({ error: 'Membership not found' }, 404);
@@ -154,7 +208,7 @@ Deno.serve(async (req) => {
   // limited-availability rewards). A refund must give that stock back, else a
   // limited reward reports "sold out" earlier than it should after refunds.
   try {
-    for (const tx of originalTxs) {
+    for (const tx of sourceTxs) {
       if (tx.type === 'redeem' && tx.reward_id) {
         const { data: rw } = await platformAdmin
           .from('loyalty_rewards')
@@ -217,12 +271,12 @@ Deno.serve(async (req) => {
   await opsAdmin.from('loyalty_transactions').insert({
     customer_id,
     company_id: companyId,
-    location_id: location_id || originalTxs[0].location_id,
+    location_id: location_id || sourceTxs[0].location_id,
     type: 'refund',
     points: effectiveReversal,
     balance_after: newBalance,
     source: 'purchase',
-    channel: originalTxs[0].channel,
+    channel: sourceTxs[0].channel,
     closed_check_id,
     idempotency_key: idempotencyKey,
     staff_id: staff_id || null,
@@ -233,6 +287,7 @@ Deno.serve(async (req) => {
     status: 'ok',
     points_reversed: effectiveReversal,
     balance: newBalance,
-    original_transactions: originalTxs.length,
+    original_transactions: sourceTxs.length,
+    ...(claimTxs.length > 0 ? { claims_reversed: claimTxs.length } : {}),
   });
 });

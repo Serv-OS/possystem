@@ -794,7 +794,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // and they place one order per session, so nothing ever fires the replay. A failure therefore
   // has to reach the venue NOW, via the activity feed the order itself is logged to. Not the
   // guest: their order went through and the discount stands. Both are fired WITHOUT await for
-  // that reason — an edge-function call with no timeout must never hold up the confirmation.
+  // that reason: commitRedemption awaits the edge function behind an 8s deadline and spends a
+  // second one when the first attempt fails on transport, so up to ~16s could sit between payment
+  // and the confirmation screen if these were awaited here.
   const redeemPromoAfterOrder = async () => {
     if (!promoApplied?.code) return;
     const r = await commitRedemption({

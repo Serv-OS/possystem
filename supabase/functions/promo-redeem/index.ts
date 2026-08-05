@@ -8,8 +8,9 @@
 //   redeem   { code, order_id, location_id, customer_id?, staff_id?, basket_value?, idempotency_key? }
 //       → { ok, redeemed:true, discount, reason? }
 //
-// Redemption is RACE-SAFE: a compare-and-swap UPDATE guarded on uses_count means only ONE concurrent
-// till can win a single-use code; a second attempt gets reason 'already_used'. Idempotent on retry via
+// Redemption is RACE-SAFE and CRASH-SAFE: the ledger row and the use consumption happen inside one
+// transaction, the promo_redeem_atomic RPC (migration 20260806c). Only ONE concurrent till can win a
+// single-use code; a second attempt gets reason 'already_used'. Idempotent on retry via
 // promo_redemptions.idempotency_key (default `${order_id}:${code}`).
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
@@ -95,43 +96,33 @@ Deno.serve(async (req) => {
     // Attribution: prefer the adopted owner (personal codes) over the till's null.
     const redemptionCustomerId = (ev as any).effectiveCustomerId ?? customerId;
 
-    // Append-only ledger FIRST — its UNIQUE idempotency_key is the retry guard. Written AFTER
-    // the CAS it left a window where the code was already consumed with nothing to dedupe
-    // against, so a retry consumed a second use. A single-use code is covered by the CAS
-    // itself; a MULTI-use one is not.
-    const { data: ledger, error: ledgerErr } = await opsAdmin.from('promo_redemptions').insert({
-      promo_code_id: row.id, offer_id: offer.id, org_id: row.org_id, code: row.code,
-      customer_id: redemptionCustomerId, location_id: locationId, order_id: orderId, staff_id: staffId,
-      basket_value: subtotal, discount_value: discount.amount ?? 0, idempotency_key: idemKey,
-    }).select('id').single();
-    if (ledgerErr?.code === '23505') return json({ ok: true, redeemed: true, idempotent: true });
-    if (ledgerErr || !ledger) {
-      console.error('[promo-redeem] ledger insert failed:', ledgerErr?.message);
+    // The ledger row, the compare-and-swap on uses_count and the offer counter are ONE
+    // transaction. As two round trips there was a window either way round: ledger-first, a
+    // dead isolate stranded a guard row over an unconsumed code (spendable again, and
+    // nothing said so); and the rollback DELETE that covered a lost CAS could erase a row a
+    // concurrent replay had already reported success on. A transaction cannot leave half of
+    // itself behind, so neither window exists. p_expected_uses is the CAS anchor.
+    const { data: res, error: rpcErr } = await opsAdmin.rpc('promo_redeem_atomic', {
+      p_code_id: row.id,
+      p_expected_uses: row.uses_count ?? 0,
+      p_offer_id: offer.id,
+      p_org_id: row.org_id,
+      p_code: row.code,
+      p_customer_id: redemptionCustomerId,
+      p_location_id: locationId,
+      p_order_id: orderId,
+      p_staff_id: staffId,
+      p_basket_value: subtotal,
+      p_discount_value: discount.amount ?? 0,
+      p_idempotency_key: idemKey,
+    });
+    if (rpcErr || !res?.result) {
+      console.error('[promo-redeem] promo_redeem_atomic failed:', rpcErr?.message);
       return json({ error: 'Failed to record redemption' }, 500);
     }
-
-    // RACE-SAFE compare-and-swap: only succeeds if uses_count is still what we read.
-    const newCount = (row.uses_count ?? 0) + 1;
-    const { data: updated } = await opsAdmin.from('promo_codes')
-      .update({
-        uses_count: newCount,
-        status: newCount >= (row.uses_allowed ?? 1) ? 'redeemed' : row.status,
-        redeemed_at: new Date().toISOString(),
-        redeemed_order_id: orderId, redeemed_location_id: locationId,
-        redeemed_value: discount.amount ?? 0, redeemed_staff_id: staffId,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', row.id)
-      .eq('uses_count', row.uses_count ?? 0)   // <-- CAS guard: the race anchor
-      .select('id').maybeSingle();
-    if (!updated) {
-      // Lost the race / already used — nothing was consumed, so drop our guard row.
-      await opsAdmin.from('promo_redemptions').delete().eq('id', ledger.id);
-      return json({ ok: false, redeemed: false, reason: 'already_used' });
-    }
-
-    // Best-effort offer counter.
-    try { await opsAdmin.from('offers').update({ redeemed_count: (offer.redeemed_count ?? 0) + 1, updated_at: new Date().toISOString() }).eq('id', offer.id); } catch (_e) {}
+    if (res.result === 'idempotent_hit') return json({ ok: true, redeemed: true, idempotent: true });
+    // 'already_used' (lost the CAS or the code is spent) and 'not_found' are both terminal.
+    if (res.result !== 'redeemed') return json({ ok: false, redeemed: false, reason: res.result });
 
     return json({ ok: true, redeemed: true, discount, offer: { id: offer.id, name: offer.name } });
   }

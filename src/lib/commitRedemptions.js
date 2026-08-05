@@ -43,9 +43,10 @@ function browserOnline() {
   return typeof navigator === 'undefined' || navigator.onLine !== false;
 }
 
-// Will anything in THIS browser ever actually replay a parked item? The only replay trigger is a
-// later successful commitRedemption here — a till or kiosk takes the next order minutes later, a
-// one-order-per-visit checkout never comes back. A surface can answer explicitly with canReplay.
+// Will anything in THIS browser ever actually replay a parked item? Two things can: a later
+// successful commitRedemption here, and SyncBridge's boot/reconnect flush. A till gets both, a
+// standalone kiosk mounts no SyncBridge but takes the next order minutes later — a one-order-per-
+// visit customer checkout gets neither. A surface can answer explicitly with canReplay.
 function isReplayable(spec) {
   if (typeof spec?.canReplay === 'boolean') return spec.canReplay;
   return !NON_REPLAYABLE_CHANNELS.has(String(spec?.channel || 'pos'));
@@ -102,10 +103,13 @@ function buildCall(spec) {
   };
 }
 
-// A hung socket does NOT reject — it hangs until the browser's own ~300s timeout, and these calls
-// are awaited on the paid-order critical path where a promo and a loyalty reward run back to back.
-// The deadline turns that into a prompt AbortError, which every caller already treats as a
-// retryable transport failure. Durability is unaffected: the parked body replays verbatim.
+// A hung socket does NOT reject — it hangs until the browser's own ~300s timeout. No surface
+// awaits commitRedemption (POS, kiosk, online and catering all fire it alongside the sale), so the
+// damage isn't a stalled order: it is that for those five minutes NOTHING happens — no park, no
+// reportSave, and no "discounted but not deducted" warning to whoever is standing there — while in
+// the replay loop one hung POST holds the pass's latch for just as long. The deadline turns that
+// into a prompt AbortError, which both callers in this file treat as a retryable transport
+// failure. Durability is unaffected: the parked body replays verbatim.
 async function post(fn, body, { functionsUrl, token }) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), POST_TIMEOUT_MS);
@@ -159,7 +163,9 @@ function outcome(res, j, bodyRead) {
 //
 // The queue key is derived from the check id + target, so a repeat failure REPLACES the
 // buffered copy instead of stacking a second deduction. Takes either a fresh call or a queue
-// item read back out — same five fields, so a re-park is a straight rewrite.
+// item read back out — same five fields, so a re-park is a straight rewrite. `attempts` at
+// MAX_RETRIES is the TERMINAL park: the replay loop's guard skips it, so it is stored purely as
+// the record that a discount was given and never deducted.
 async function park(entry, lastError, attempts) {
   try {
     await queueWrite({
@@ -184,7 +190,8 @@ async function park(entry, lastError, attempts) {
 /**
  * Fire the real deduction for a staged loyalty reward or promo code. NEVER THROWS — a
  * redemption failure must not stop an order the customer has already paid for — but unlike the
- * old fire-and-forget calls it AWAITS the result, checks it, and makes the failure durable.
+ * old fire-and-forget calls it awaits the edge function's REPLY, checks it, and makes the failure
+ * durable. No surface blocks the order on it — see post() for what that costs on a hung socket.
  *
  * @param {object} spec
  * @param {'loyalty'|'promo'} spec.kind
@@ -204,9 +211,14 @@ async function park(entry, lastError, attempts) {
  * @param {string} opts.token        bearer token (anon session is fine)
  * @returns {Promise<{ ok:boolean, queued:boolean, error:string|null }>}
  *          ok       — the reward/code is provably consumed server-side
- *          queued   — not consumed, but buffered AND this channel can actually replay it. Only
- *                     'pos'/'kiosk'/'qr' qualify; a customer-browser checkout never gets a second
- *                     order to trigger the replay, so it reports false even though it parked.
+ *          queued   — not consumed, but buffered AND a replay really will be attempted. Once
+ *                     buildCall() has produced a call every failure parks (including 'no auth
+ *                     session', which never reaches the network); only some claim queued. False
+ *                     for a terminal refusal (parked for the record, never re-sent) and for
+ *                     'online'/'catering' (a customer-browser checkout never gets a second order
+ *                     to trigger the replay). A spec buildCall() CAN'T turn into a call is the one
+ *                     failure that parks nothing: there is no body to replay, so it returns
+ *                     immediately with ok:false, queued:false and the caller must surface it.
  *          error    — what went wrong; !ok && !queued means the caller MUST surface it
  */
 export async function commitRedemption(spec, { functionsUrl, token } = {}) {
@@ -216,11 +228,15 @@ export async function commitRedemption(spec, { functionsUrl, token } = {}) {
   const replayable = isReplayable(spec);
   const fail = async (error, retryable) => {
     reportSave(call.entity, new Error(`${call.name} was discounted but NOT deducted — ${error}`));
-    // Park either way — a returning customer's next order would flush it — but only CLAIM queued
-    // when a replay is actually going to happen, because queued:true is what tells the caller to
-    // stay silent. On online/catering that silence hid the failure completely.
-    const parked = retryable ? await park(call, error, 0) : false;
-    return { ok: false, queued: parked && replayable, error };
+    // Park either way, at different attempt counts. Retryable → 0, so the replay loop picks it up.
+    // Terminal business refusal ('already_used', 'Reward already redeemed', any other 4xx) → the
+    // cap, which the replay loop skips: not a retry, but the only DURABLE trace that a discount
+    // was given away and never deducted. saveHealth is in-memory and no POS shell renders it, so
+    // without this park a terminal refusal left nothing behind for the venue to find.
+    const parked = await park(call, error, retryable ? 0 : MAX_RETRIES);
+    // Only CLAIM queued when a replay is actually going to happen, because queued:true is what
+    // tells the caller to stay silent. On online/catering that silence hid the failure completely.
+    return { ok: false, queued: parked && retryable && replayable, error };
   };
 
   if (!functionsUrl || !token) return fail('no auth session', true);
@@ -229,8 +245,8 @@ export async function commitRedemption(spec, { functionsUrl, token } = {}) {
   try {
     result = await post(call.fn, call.body, { functionsUrl, token });
   } catch (e) {
-    // A timeout has already spent the deadline; retrying it inline would just double the wait on
-    // an order the customer has paid for. Park it and get out — the replay is the durability.
+    // A timeout has already spent the deadline; retrying inline would spend a second one before
+    // anything is parked or reported. Park it and get out — the replay is the durability.
     if (e?.name === 'AbortError') return fail(`timed out after ${POST_TIMEOUT_MS / 1000}s`, true);
     // One retry on a TRANSPORT failure, same as giftCommit. The idempotency key is fixed, so a
     // first call that landed but lost its response comes back already-redeemed, not deducted twice.
@@ -247,7 +263,8 @@ export async function commitRedemption(spec, { functionsUrl, token } = {}) {
 
   reportSave(call.entity, null);
   // This call proves the network and the token are good — flush anything an earlier sale left
-  // stranded. It is the ONLY replay trigger: OfflineQueue's own engine cannot call an edge function.
+  // stranded. OfflineQueue's own engine cannot call an edge function, so this and SyncBridge's
+  // boot/reconnect flush are the only two things that ever replay a parked deduction.
   retryPendingRedemptions({ functionsUrl, token }).catch(() => {});
   return { ok: true, queued: false, error: null };
 }
@@ -255,13 +272,22 @@ export async function commitRedemption(spec, { functionsUrl, token } = {}) {
 // Two passes must never be in the air at once. This is fired unawaited after EVERY successful
 // commit, so back-to-back sales overlap trivially — and both passes would read the same
 // getFailedItems() snapshot and POST the same parked body, because dismissItem() only runs once
-// the POST has returned. loyalty-redeem does NOT survive that: its existing-transaction check and
-// its idempotency-row insert are several round-trips apart, so both requests pass the check and
-// both deduct. Same latch as OfflineQueue.replayQueue.
+// the POST has returned. The SERVERS survive that: each path claims the idempotency key in ONE
+// indivisible write, so the loser of a duplicate POST reports success having consumed nothing —
+// promo-redeem in promo_redeem_atomic (Ops; the promo_codes row is locked FOR UPDATE and the
+// ledger row + the use are one transaction) → 'idempotent_hit'; loyalty-redeem's POINTS path in
+// loyalty_redeem_points (Platform; customer_loyalty locked, claim row + debit one transaction) →
+// 'already_redeemed', with the Ops ledger row written AFTERWARDS as audit (upserted, so a replay
+// re-lands it rather than colliding); loyalty-redeem's STAMP path still on the ledger insert
+// itself, whose UNIQUE idempotency_key violation becomes 'already_processed'. This side is what
+// doesn't survive it — two passes double-count redeemAttempts, and a slow pass's park() can
+// rewrite a row the fast pass has already dismissed, resurrecting a deduction that is settled.
+// Same latch as OfflineQueue.replayQueue.
 let _replaying = false;
-// Per-item ownership, held across the await. The latch alone only serialises whole passes; this is
-// what guarantees no two POSTs of the same deduction can overlap, including via the exported entry
-// point a surface calls on boot or reconnect.
+// Per-item ownership, held across the await. Belt-and-braces only: the latch above already turns
+// every overlapping caller away, including SyncBridge's, so nothing reaches here concurrently
+// today. It exists so that relaxing the latch (e.g. to queue a pass rather than drop it) cannot
+// silently re-open the double-POST it was added to close.
 const _inFlight = new Set();
 
 // A replay has no caller to hand a result to, and nothing in the app renders getFailedItems() —
@@ -290,7 +316,7 @@ export async function retryPendingRedemptions({ functionsUrl, token } = {}) {
     try { items = await getFailedItems(); } catch { return; }
     for (const it of items) {
       if (it.kind !== KIND || !it.fn || !it.body) continue;
-      if ((it.redeemAttempts || 0) >= MAX_RETRIES) continue;   // stop pestering; the row stays for review
+      if ((it.redeemAttempts || 0) >= MAX_RETRIES) continue;   // retried out, or parked terminally — never re-send
       if (_inFlight.has(it.id)) continue;                      // someone else already owns this deduction
       _inFlight.add(it.id);
       try {
@@ -310,8 +336,8 @@ export async function retryPendingRedemptions({ functionsUrl, token } = {}) {
           reportSave(it.entity || 'redemption', null);
           continue;
         }
-        // A business refusal can never succeed later — park it at the cap rather than re-firing it
-        // on every subsequent sale.
+        // A business refusal can never succeed later — park it at the cap (the terminal state the
+        // guard above skips) rather than re-firing it on every subsequent sale.
         const attempts = o.retryable ? (it.redeemAttempts || 0) + 1 : MAX_RETRIES;
         await park(it, o.error, attempts);
         if (attempts >= MAX_RETRIES) reportTerminal(it, o.error);   // out of retries, or never had any

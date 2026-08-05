@@ -1262,15 +1262,25 @@ export const useStore = create((set, get) => ({
     const unarchive = (ids) => set(s => ({
       menuItems: s.menuItems.map(it => ids.includes(it.id) ? { ...it, archived: false } : it),
     }));
-    // v5.5.279: location_id guard on archive operations
-    const locId = getActiveLocationSync();
+    // v5.5.279: location_id guard on archive operations. Fall back to the async
+    // resolve (same as archiveVariantRow) — with the 0-row check below, an
+    // unresolved sync cache would otherwise read as a refused archive.
+    const locId = getActiveLocationSync() || await getLocationId().catch(() => null);
     const patch = { archived: true, parent_id: null, updated_at: new Date().toISOString() };
-    const { error } = await supabase.from('menu_items')
+    const { data, error } = await supabase.from('menu_items')
       .update(patch)
       .eq('id', id)
-      .eq('location_id', locId);
-    reportSave('item archive', error);
-    if (error) {
+      .eq('location_id', locId)
+      .select('id');
+    // An update that matched NO rows comes back as a plain success with an empty body —
+    // an RLS refusal, or a row scoped to another location, reads exactly like a save, and
+    // the caller toasts "Archived" for an item still selling on every till. Ask for the id
+    // back and treat nothing as the failure it is.
+    const err = error || (!data?.length
+      ? new Error('Item archive matched 0 rows — RLS blocked it or the row is scoped to another location')
+      : null);
+    reportSave('item archive', err);
+    if (err) {
       unarchive([id, ...flippedChildIds]);
       useStore.getState().showToast?.(`"${itemName}" was NOT archived — it will come back on refresh. Check you're signed in, then try again`, 'error');
       return false;
@@ -1278,12 +1288,16 @@ export const useStore = create((set, get) => ({
     // Archive children in DB too
     const children = useStore.getState().menuItems.filter(i => i.parentId === id);
     if (children.length > 0) {
-      const { error: childErr } = await supabase.from('menu_items')
+      const { data: childRows, error: childErr } = await supabase.from('menu_items')
         .update(patch)
         .in('id', children.map(c => c.id))
-        .eq('location_id', locId);
-      reportSave('item archive (variants)', childErr);
-      if (childErr) {
+        .eq('location_id', locId)
+        .select('id');
+      const cErr = childErr || (!childRows?.length
+        ? new Error('Variant archive matched 0 rows — RLS blocked it or the rows are scoped to another location')
+        : null);
+      reportSave('item archive (variants)', cErr);
+      if (cErr) {
         // The parent DID archive, so only the variants are rolled back.
         unarchive(flippedChildIds);
         useStore.getState().showToast?.(`"${itemName}" was archived but its variants were NOT — they will reappear on refresh`, 'error');

@@ -93,14 +93,23 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
   const valid = name.trim() && /^\+?[0-9 ]{7,}$/.test(phone) && (!isDelivery || (addr1.trim() && postcode.trim())) && (payMode === 'later' || email.trim()) && !belowMin;
 
   const ref = useMemo(() => `CA-${Math.random().toString(36).slice(2, 7).toUpperCase()}`, []);
-  // The guest-facing ref is 5 base36 chars (~26 bits) — fine as an order number, far too narrow
-  // to key a redemption on: promo_redemptions.idempotency_key is unique across EVERY order, so
-  // `<ref>:<CODE>` collides with any other order that used the same code (~1% likely after ~1,100
-  // of them) and the collision reads as an already-processed duplicate — discount given, nothing
-  // deducted. `idem` keeps the ref in front (the ledger's order_id is read by a human in Back
-  // Office → Promotions) and appends a UUID. Memoised alongside the ref so a retry sends the
-  // same key.
-  const idem = useMemo(() => `${ref}-${wideId()}`, [ref]);
+  // ONE id for the order: on the PAY-NOW path it is both the closed_checks row id and the
+  // redemption anchor (same shape as OnlineCheckout's orderShape.checkId). Sharing one value is
+  // what keeps the ledger row joinable to the sale — it lands in promo_redemptions.order_id,
+  // which the schema documents as closed_checks.id. Nothing reverses it: there is no promo
+  // sibling to loyalty-refund/gift-reverse-redeem anywhere in supabase/functions, so unlike
+  // online's loyalty rows this id is only ever read by a human or a report, never to give a code
+  // back. ⚠ The PAY-LATER path writes only an order_queue row and NO closed_checks row at all, so
+  // its order_id points at an id that exists in no table — the `ref` inside it is the only way
+  // back to the order.
+  // Minted alongside the ref so it is stable across payment retries: a retried card write reuses
+  // the same check id and re-sends the same redemption key instead of deducting twice.
+  // Not the ref alone, and not `chk-<ts>-<5 chars>` either: promo_redemptions.idempotency_key is
+  // unique across EVERY order, so a narrow key collides with any other order that used the same
+  // code and the collision reads as an already-processed duplicate — discount given, nothing
+  // deducted. The ref stays in front because a human reads the ledger's order_id in Back Office
+  // → Promotions; the UUID is what makes it unique.
+  const checkId = useMemo(() => `chk-${ref}-${wideId()}`, [ref]);
   const buildItems = () => cart.map((l) => ({ itemId: l.itemId, name: l.name, price: l.price, qty: l.qty || 1, mods: l.mods || [], notes: l.notes || '', cat: l.cat || null, cats: l.cats || null, parentId: l.parentId || null, kitchenName: l.kitchenName || null, receiptName: l.receiptName || null, status: 'received', fired: false, course: 1 }));
   const buildCustomer = (pay) => ({
     name: name.trim(), phone: phone.replace(/\s+/g, ''), email: email.trim() || null,
@@ -125,21 +134,23 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
   // The result used to be discarded ("best-effort"), so a refused or 500'd deduction left the
   // code unspent and re-usable after the guest had already been given the discount. Via
   // lib/commitRedemptions the outcome is checked and a retryable failure is parked durably.
-  // Never throws, so the order still completes. `idem` is the idempotency anchor in both the
+  // Never throws, so the order still completes. `checkId` is the idempotency anchor in both the
   // pay-now and pay-later paths — it is memoised for the life of the checkout, so a retry of
   // the same order sends the same key. `orderRef` stays the human-readable ref for the message.
   //
-  // Catering cannot replay a parked retry — the durable queue is IndexedDB in the guest's
-  // browser and they place one order per session, so nothing ever fires the replay. A failure
-  // that won't retry itself therefore goes to the venue's activity feed (where the order is
+  // Catering never REPORTS a parked retry as queued — the durable queue is IndexedDB in the
+  // guest's browser and they place one order per session, so within this visit nothing will ever
+  // fire the replay (only a later catering/online order from the same browser would, which may
+  // never come). A failure therefore goes to the venue's activity feed (where the order is
   // already logged), never to the guest: their order went through and the discount stands.
-  // Called WITHOUT await — an edge-function call with no timeout must not hold up the
+  // Called WITHOUT await — commitRedemption awaits the edge function behind an 8s deadline, and
+  // spends a second one when the first attempt fails on transport, so it must not hold up the
   // confirmation, and must not land in the caller's catch and show a failure for a good order.
   const redeemPromo = async (orderRef) => {
     if (!promoApplied) return;
     const r = await commitRedemption({
       kind: 'promo',
-      closedCheckId: idem,
+      closedCheckId: checkId,
       locationId: opsId,
       channel: 'catering',
       code: promoApplied.code,
@@ -244,7 +255,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
       const taxBk = calculateOrderTax(cart.map((l) => ({ price: l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0), qty: l.qty || 1, taxRateId: l.taxRateId, taxOverrides: l.taxOverrides })), taxRates || [], fulfilment);
       const closedAt = isNaN(eventMs) ? new Date().toISOString() : new Date(eventMs).toISOString();
       const closedCheck = {
-        id: `chk-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`, ref, location_id: opsId, server: 'Catering', staff_id: null, covers: 1,
+        id: checkId, ref, location_id: opsId, server: 'Catering', staff_id: null, covers: 1,
         order_type: fulfilment, customer: buildCustomer(pay), items: buildItems().map((i) => ({ ...i, voided: false })), discounts: discountLine,
         subtotal, service: deliveryFee, tip, tax_amount: taxBk?.totalTax || null, total, method: 'card',
         closed_at: closedAt, status: 'paid', refunds: [], table_id: null, table_label: `Catering ${ref}`,
