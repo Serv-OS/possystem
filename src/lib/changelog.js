@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.980', date: '6 Aug 2026', label: 'Food-safety alerts stop chasing ancient breaches',
+    changes: [
+      'The escalation ladder had no age limit. It has never once run, so the moment it was given a working contact it would have fired on every unacknowledged alert ever raised — including three from June — and paged someone about a freezer that broke six weeks ago. Alerts older than seven days now stay in the app and are counted in the run summary instead of being chased out of hours.',
+      'All four database migrations from this run are applied, and every edge function is redeployed. Redemptions are atomic, Menu appearance and the Challenge 21 reset work again, and the review sync can no longer starve itself.',
+    ],
+  },
+  {
     version: '5.5.979', date: '6 Aug 2026', label: 'A refunded reward gives the points back, and a slow venue can no longer starve the review sync',
     changes: [
       'Loyalty points and the ledger that records them live in two SEPARATE databases, so no single transaction can cover both. The deduction is now atomic where the money is, and the record follows. If that record fails to land, refunding the sale would previously have found nothing to reverse and the customer would never get their points back — the refund now falls back to the deduction record itself, so the money is recoverable either way.',

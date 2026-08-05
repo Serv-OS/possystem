@@ -28,6 +28,8 @@ const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: 
 
 const RANK: Record<string, number> = { none: 0, minor: 1, major: 2, critical: 3 };
 const MAX_STEPS = 3;
+// Alerts older than this are never escalated out of band — see the check in the scan loop.
+const STALE_ALERT_MAX_AGE_MIN = 7 * 24 * 60;   // 7 days
 // UK local → E.164 (07… → +447…), else assume already international.
 const toE164 = (p: string) => {
   const d = (p || '').replace(/[^\d+]/g, '');
@@ -137,7 +139,7 @@ Deno.serve(async (req) => {
   const { data: alerts, error: alertsErr } = await sb.from('ops_alerts').select('*').eq('status', 'sent').limit(500);
   if (alertsErr) return json({ ok: false, error: `could not read ops_alerts: ${alertsErr.message}` }, 500);
 
-  let notified = 0, escalated = 0, failed = 0;
+  let notified = 0, escalated = 0, failed = 0, stale = 0;
   // Alerts that matched a rule but reached nobody. These deliberately do NOT advance
   // the ladder, so they keep reporting until the rule is given contactable recipients.
   const unreachable: unknown[] = [];
@@ -172,6 +174,15 @@ Deno.serve(async (req) => {
     if (!wantsSms && !wantsEmail) continue;                // in-app only by design → no ladder to climb
 
     const elapsedMin = (now - new Date(a.created_at).getTime()) / 60000;
+
+    // Don't start chasing an alert that is already ancient. The ladder exists to chase an
+    // UNacknowledged breach while it still matters; paging someone at 3am about a freezer
+    // that broke six weeks ago tells them nothing they can act on, and it is exactly what
+    // would have happened the first time this function was given contactable recipients —
+    // it had never run, so every stale alert sitting at step 0 would have fired at once.
+    // Stale alerts stay in-app and are reported in the response so they remain visible.
+    if (elapsedMin > STALE_ALERT_MAX_AGE_MIN) { stale++; continue; }
+
     const step = a.escalation_step ?? 0;
     if (step >= MAX_STEPS) continue;
     const dueAt = (rule.escalate_after_min ?? 15) * step;   // step 0 = send now, then every interval
@@ -203,5 +214,5 @@ Deno.serve(async (req) => {
     notified++; if (step > 0) escalated++;
   }
 
-  return json({ ok: true, scanned: alerts?.length || 0, notified, escalated, failed, unreachable });
+  return json({ ok: true, scanned: alerts?.length || 0, notified, escalated, failed, stale, unreachable });
 });
