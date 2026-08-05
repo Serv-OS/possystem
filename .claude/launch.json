@@ -1,7 +1,0 @@
-{
-  "version": "0.0.1",
-  "configurations": [
-    { "name": "pos-dev", "runtimeExecutable": "npm", "runtimeArgs": ["run", "dev"], "port": 5173 },
-    { "name": "preview-dist", "runtimeExecutable": "npm", "runtimeArgs": ["run", "preview", "--", "--port", "4173", "--strictPort"], "port": 4173 }
-  ]
-}

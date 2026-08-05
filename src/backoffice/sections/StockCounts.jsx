@@ -12,6 +12,7 @@ import { money } from '../../lib/currency';
 import { fetchInventoryItems } from '../../lib/stock/data';
 import { fetchCounts, fetchCount, createCount, saveCountLine, approveCount, deleteCount, removeCountLine } from '../../lib/stock/counts';
 import { toBase, fromBase, formatToken } from '../../lib/stock/uom';
+import { reportSave } from '../../lib/saveHealth';
 
 const field = { background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 8, padding: '10px 12px', fontSize: 16, outline: 'none', boxSizing: 'border-box', textAlign: 'right' };
 const r3 = (v) => Math.round((Number(v) || 0) * 1000) / 1000;
@@ -61,6 +62,7 @@ export default function StockCounts() {
     setBusy(true);
     const { error } = await deleteCount(c.id, locId);
     setBusy(false);
+    reportSave('stock count delete', error);
     if (error) { showToast(error.message || 'Could not delete the count', 'error'); return; }
     if (active?.id === c.id) setActive(null);
     showToast(`"${c.name}" deleted`, 'info');
@@ -71,6 +73,7 @@ export default function StockCounts() {
     const name = itemName(line.inventoryItemId);
     if (!window.confirm(`Remove ${name} from this count?`)) return;
     const { error } = await removeCountLine(line.id, locId);
+    reportSave('stock count line delete', error);
     if (error) { showToast(error.message || 'Could not remove that item', 'error'); return; }
     setActive(a => a ? { ...a, lines: a.lines.filter(l => l.id !== line.id) } : a);
     setEdits(prev => { const n = { ...prev }; delete n[line.id]; return n; });
@@ -91,6 +94,7 @@ export default function StockCounts() {
     setBusy(true);
     const { data, error } = await createCount({ name: `Count ${new Date().toLocaleDateString()}`, countType: 'FULL' }, locId);
     setBusy(false);
+    reportSave('stock count', error);
     if (error) { showToast?.(error.message, 'error'); return; }
     await reload();
     if (data) openCount(data.id);
@@ -99,17 +103,42 @@ export default function StockCounts() {
   const onBlur = async (line) => {
     if (!edits[line.id]) return;
     const base = countedBase(line);
-    await saveCountLine(line.id, base == null ? '' : base, locId);
+    const { error } = await saveCountLine(line.id, base == null ? '' : base, locId);
+    reportSave('stock count line', error);
+    // The typed figure stays in `edits` so the shelf walk isn't lost — Save progress retries it.
+    if (error) showToast?.(`${itemName(line.inventoryItemId)} count NOT saved`, 'error');
   };
+  /** Push every edited line; returns how many the database refused. */
   const flush = async () => {
-    for (const line of active.lines) { if (edits[line.id]) { const base = countedBase(line); await saveCountLine(line.id, base == null ? '' : base, locId); } }
+    let failed = 0;
+    for (const line of active.lines) {
+      if (!edits[line.id]) continue;
+      const base = countedBase(line);
+      const { error } = await saveCountLine(line.id, base == null ? '' : base, locId);
+      reportSave('stock count line', error);
+      if (error) failed++;
+    }
+    return failed;
+  };
+  const saveProgress = async () => {
+    const failed = await flush();
+    if (failed) { showToast?.(`${failed} line${failed === 1 ? '' : 's'} NOT saved — check the connection`, 'error'); return; }
+    showToast?.('Progress saved', 'success');
   };
   const approve = async () => {
     if (!confirm('Approve this count? It will adjust on-hand to your counted figures and post the differences to the ledger.')) return;
     setBusy(true);
-    await flush();
+    // Approving reconciles on-hand to what is STORED on the lines, so a line that
+    // failed to save would silently reconcile stock to the old figure.
+    const failed = await flush();
+    if (failed) {
+      setBusy(false);
+      showToast?.(`${failed} line${failed === 1 ? '' : 's'} could not be saved — not approved, so no stock was changed`, 'error');
+      return;
+    }
     const { error } = await approveCount(active.id, locId);
     setBusy(false);
+    reportSave('stock count approval', error);
     if (error) { showToast?.(error.message, 'error'); return; }
     showToast?.('Count approved — stock reconciled', 'success');
     const { data } = await fetchCount(active.id, locId);
@@ -180,7 +209,7 @@ export default function StockCounts() {
 
         {!approved && (
           <div style={{ position: 'sticky', bottom: 0, background: 'var(--bg0)', padding: '12px 0', borderTop: '1px solid var(--bdr)', display: 'flex', gap: 10 }}>
-            <button onClick={flush} style={{ flex: 1, padding: '12px', borderRadius: 10, background: 'var(--bg2)', border: '1px solid var(--bdr)', color: 'var(--t1)', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>Save progress</button>
+            <button onClick={saveProgress} style={{ flex: 1, padding: '12px', borderRadius: 10, background: 'var(--bg2)', border: '1px solid var(--bdr)', color: 'var(--t1)', fontSize: 14, fontWeight: 600, cursor: 'pointer' }}>Save progress</button>
             <button onClick={approve} disabled={busy} style={{ flex: 2, padding: '12px', borderRadius: 10, background: 'var(--grn, #16a34a)', color: '#fff', border: 0, fontSize: 14, fontWeight: 700, cursor: 'pointer', opacity: busy ? 0.6 : 1 }}>{busy ? 'Approving…' : 'Approve & reconcile stock'}</button>
           </div>
         )}

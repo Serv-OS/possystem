@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import { UK_DEFAULT_RATES, US_DEFAULT_RATES } from '../../lib/tax';
+import { reportSave } from '../../lib/saveHealth';
 import { useStore } from '../../store';
 
 const ORDER_TYPES = ['dine-in', 'takeaway', 'delivery', 'bar', 'counter'];
@@ -130,15 +131,43 @@ export default function TaxManager() {
   const [loading, setLoading] = useState(true);
   const [editId, setEditId]   = useState(null);   // null | 'new' | uuid
   const [deleting, setDeleting] = useState(null);
+  const [seeding, setSeeding] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [error, setError]     = useState('');
   const [msg, setMsg]         = useState('');
 
-  const load = async () => {
+  // VAT is HMRC-relevant, so a read that didn't work must never be mistaken for "this venue
+  // charges no tax": the old version discarded the read error, pushed a possibly-EMPTY table
+  // into the running POS and re-offered the Seed buttons, inviting a duplicate set of rates.
+  // `expectEmpty` is passed by the delete path, which is the only place zero rows is news.
+  const load = async ({ expectEmpty = false } = {}) => {
     setLoading(true);
     if (isMock) { setLoading(false); return; }
-    const locId = await getLocationId();
-    const { data } = await supabase.from('tax_rates').select('*').eq('location_id', locId).order('rate', { ascending:false });
+    const locId = await getLocationId().catch(() => null);
+    if (!locId) {
+      setLoadFailed(true);
+      setError('Could not resolve this location — tax rates were NOT loaded. Nothing on this screen is live; reload before editing.');
+      setLoading(false);
+      return;
+    }
+    const { data, error: err } = await supabase.from('tax_rates').select('*').eq('location_id', locId).order('rate', { ascending:false });
+    if (err) {
+      console.error('[TaxManager] load failed:', err.message);
+      setLoadFailed(true);
+      setError(`Tax rates could NOT be loaded — ${err.message}. The till is still using the rates it already has; do not re-seed.`);
+      setLoading(false);
+      return;
+    }
     const fetched = data || [];
+    // A tightened RLS SELECT policy returns zero rows with NO error. Silently publishing that
+    // would switch the running POS to "no tax" mid-service.
+    if (!fetched.length && !expectEmpty && (useStore.getState().taxRates || []).length) {
+      setLoadFailed(true);
+      setError('Tax rates came back EMPTY while the till still has rates loaded — not applying them. Check your sign-in/access before seeding anything.');
+      setLoading(false);
+      return;
+    }
+    setLoadFailed(false);
     setRates(fetched);
     // Sync to Zustand store so POS/checkout/order panel pick up name changes immediately
     useStore.setState({ taxRates: fetched.map(r => ({
@@ -156,21 +185,43 @@ export default function TaxManager() {
 
   const handleSave = async (form) => {
     setError('');
-    const locId = await getLocationId();
-    if (!locId) { setError('No location ID'); return; }
+    const locId = await getLocationId().catch(() => null);
+    if (!locId || locId === 'loc-demo') { setError('No location ID — nothing was saved.'); return; }
 
     // If setting as default, unset all others first
+    let clearedDefaults = false;
     if (form.is_default) {
-      await supabase.from('tax_rates').update({ is_default:false }).eq('location_id', locId);
+      const { data: cleared, error: unsetErr } = await supabase
+        .from('tax_rates').update({ is_default:false }).eq('location_id', locId).select('id');
+      // Zero rows means the update was blocked (this matches EVERY rate at the location), and
+      // carrying on would leave two rows flagged default — an ambiguous tax table. Only a venue
+      // with no rates yet legitimately matches nothing.
+      const unsetFailed = unsetErr || (rates.length > 0 && (!cleared || cleared.length === 0)
+        ? new Error('Clearing the previous default matched 0 rows — RLS blocked it') : null);
+      reportSave('tax rates', unsetFailed);
+      if (unsetFailed) {
+        setError(`Nothing was saved — the previous default rate could not be cleared (${unsetFailed.message}).`);
+        return;
+      }
+      clearedDefaults = (cleared || []).length > 0;
     }
 
+    // If the write below fails after the defaults were cleared, the venue is left with NO
+    // default rate — say so explicitly rather than leaving it to be discovered at the till.
+    const tail = clearedDefaults ? ' The previous default was already cleared — set a default rate before taking payments.' : '';
+
     if (form.id) {
-      const { error: err } = await supabase.from('tax_rates').update({ ...form, location_id:locId }).eq('id', form.id);
-      if (err) { setError(err.message); return; }
+      const { data, error: err } = await supabase.from('tax_rates').update({ ...form, location_id:locId }).eq('id', form.id).select('id');
+      const failure = err || (!data || data.length === 0 ? new Error('Update matched 0 rows — RLS blocked it or the rate no longer exists') : null);
+      reportSave('tax rate', failure);
+      if (failure) { setError(`"${form.name}" was NOT saved — ${failure.message}.${tail}`); return; }
     } else {
-      const { error: err } = await supabase.from('tax_rates').insert({ ...form, location_id:locId });
-      if (err) { setError(err.message); return; }
+      const { data, error: err } = await supabase.from('tax_rates').insert({ ...form, location_id:locId }).select('id');
+      const failure = err || (!data || data.length === 0 ? new Error('Insert returned no row — RLS blocked it') : null);
+      reportSave('tax rate', failure);
+      if (failure) { setError(`"${form.name}" was NOT saved — ${failure.message}.${tail}`); return; }
     }
+    reportSave('tax rate', null);
     setEditId(null);
     flash('✓ Saved');
     await load();
@@ -178,18 +229,43 @@ export default function TaxManager() {
 
   const handleDelete = async (id) => {
     if (!confirm('Delete this tax rate? Items assigned to it will lose their tax setting.')) return;
+    setError('');
     setDeleting(id);
-    await supabase.from('tax_rates').delete().eq('id', id);
+    const { data, error: err } = await supabase.from('tax_rates').delete().eq('id', id).select('id');
     setDeleting(null);
-    await load();
+    const failure = err || (!data || data.length === 0 ? new Error('Delete matched 0 rows — RLS blocked it') : null);
+    reportSave('tax rate delete', failure);
+    if (failure) {
+      setError(`Tax rate was NOT deleted — ${failure.message}. Nothing has changed.`);
+      return;
+    }
+    // The only place an empty tax table is expected news.
+    await load({ expectEmpty: true });
   };
 
   const seedRates = async (defaults) => {
-    const locId = await getLocationId();
-    if (!locId) return;
+    if (seeding) return;
+    setError('');
+    const locId = await getLocationId().catch(() => null);
+    if (!locId || locId === 'loc-demo') { setError('Could not resolve this location — no rates were added.'); return; }
+    setSeeding(true);
+    // Was a bare loop of unchecked inserts followed by an unconditional "✓ N rates added" —
+    // a blocked insert left a half-seeded (or completely empty) tax table looking complete.
+    let added = 0;
     for (const r of defaults) {
-      await supabase.from('tax_rates').insert({ ...r, location_id: locId });
+      const { data, error: err } = await supabase.from('tax_rates').insert({ ...r, location_id: locId }).select('id');
+      const failure = err || (!data || data.length === 0 ? new Error('Insert returned no row — RLS blocked it') : null);
+      if (failure) {
+        reportSave('tax rates', failure);
+        setSeeding(false);
+        setError(`Only ${added} of ${defaults.length} rates were added — ${failure.message}. Delete any partial rates, fix the error, then seed again.`);
+        await load();
+        return;
+      }
+      added++;
     }
+    reportSave('tax rates', null);
+    setSeeding(false);
     flash(`✓ ${defaults.length} rates added`);
     await load();
   };
@@ -209,10 +285,12 @@ export default function TaxManager() {
             Price shown on POS includes tax. VAT is extracted at checkout. Standard 20%, Reduced 5%, Zero 0%.
             Items can be zero-rated for takeaway but standard-rated for dine-in.
           </div>
-          {!rates.length && !loading && (
-            <button onClick={() => seedRates(UK_DEFAULT_RATES)}
-              style={{ ...S.btn, background:'var(--acc)', color:'#fff', marginTop:10, padding:'7px 14px', fontSize:12 }}>
-              Seed UK rates
+          {/* Only offered when we KNOW the table is empty — after a failed read it would seed a
+              duplicate set on top of rates that are already there. */}
+          {!rates.length && !loading && !loadFailed && (
+            <button onClick={() => seedRates(UK_DEFAULT_RATES)} disabled={seeding}
+              style={{ ...S.btn, background:'var(--acc)', color:'#fff', marginTop:10, padding:'7px 14px', fontSize:12, opacity: seeding ? .6 : 1 }}>
+              {seeding ? 'Adding…' : 'Seed UK rates'}
             </button>
           )}
         </div>
@@ -222,10 +300,10 @@ export default function TaxManager() {
             Tax is added on top of the item price at checkout. Rate varies by state/city.
             The customer-facing total is subtotal + tax.
           </div>
-          {!rates.length && !loading && (
-            <button onClick={() => seedRates(US_DEFAULT_RATES)}
-              style={{ ...S.btn, background:'var(--acc)', color:'#fff', marginTop:10, padding:'7px 14px', fontSize:12 }}>
-              Seed US rates
+          {!rates.length && !loading && !loadFailed && (
+            <button onClick={() => seedRates(US_DEFAULT_RATES)} disabled={seeding}
+              style={{ ...S.btn, background:'var(--acc)', color:'#fff', marginTop:10, padding:'7px 14px', fontSize:12, opacity: seeding ? .6 : 1 }}>
+              {seeding ? 'Adding…' : 'Seed US rates'}
             </button>
           )}
         </div>

@@ -83,10 +83,12 @@ export default function WfLeave({ ctx, staff = [], roles, sections, settings, we
     const before = leave;
     setLeave(prev => prev.map(l => l.id === id ? { ...l, status } : l));
     try {
+      // decideTimeOff throws now (it used to console.warn), so a rejected write
+      // no longer reports "Leave approved" and leaves the row stuck on pending.
       await wf.decideTimeOff(id, status, ctx?.actor?.id);
       showToast?.(status === 'approved' ? 'Leave approved' : 'Leave denied', 'success');
     } catch (e) {
-      showToast?.(e.message || 'Could not update request', 'error');
+      showToast?.(`Leave NOT ${status === 'approved' ? 'approved' : 'denied'} — ${e.message || 'the change was rejected'}`, 'error');
       setLeave(before);
     }
   }

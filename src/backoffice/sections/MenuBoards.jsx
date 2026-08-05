@@ -8,6 +8,7 @@
 
 import { useEffect, useMemo, useState, useCallback, useRef, useLayoutEffect } from 'react';
 import { supabase, isMock, getActiveLocationSync } from '../../lib/supabase';
+import { reportSave } from '../../lib/saveHealth';
 import { fetchMenuCategories, fetchMenuItems, fetch86List } from '../../lib/db';
 import { money } from '../../lib/currency';
 
@@ -100,8 +101,14 @@ export default function MenuBoards() {
   const retireScreen = async (screenId) => {
     if (!window.confirm('Remove this screen? It will show a fresh pairing code next time it loads.')) return;
     setBusy('scr-' + screenId);
-    try { await supabase.from('menu_board_screens').delete().eq('id', screenId); await load(); }
-    catch (e) { setErr(e.message || 'Could not remove screen'); }
+    try {
+      const { data, error } = await supabase.from('menu_board_screens').delete().eq('id', screenId).select('id');
+      if (error) throw error;
+      if (!data || data.length === 0) throw new Error('Remove matched 0 rows — RLS may have blocked it. The screen is still paired.');
+      reportSave('menu board screen', null);
+      await load();
+    }
+    catch (e) { reportSave('menu board screen', e); setErr(e.message || 'Could not remove screen'); }
     finally { setBusy(''); }
   };
 
@@ -136,14 +143,22 @@ export default function MenuBoards() {
       if (editing.id) res = await supabase.from('menu_boards').update(row).eq('id', editing.id).select().single();
       else res = await supabase.from('menu_boards').insert(row).select().single();
       if (res.error) throw res.error;
+      reportSave('menu board', null);
       setEditing(null); await load();
-    } catch (e) { setErr(e.message || 'Save failed'); }
+    } catch (e) { reportSave('menu board', e); setErr(e.message || 'Save failed'); }
     finally { setBusy(''); }
   };
 
   const del = async (id) => {
     if (!window.confirm('Delete this menu board screen?')) return;
-    await supabase.from('menu_boards').delete().eq('id', id);
+    setErr('');
+    const { data, error } = await supabase.from('menu_boards').delete().eq('id', id).select('id');
+    const failure = error || (!data || data.length === 0
+      ? new Error(`Delete matched 0 rows for board ${id} — RLS may have blocked it`)
+      : null);
+    reportSave('menu board delete', failure);
+    // Without this the board silently reappears when load() re-reads the DB.
+    if (failure) { setErr(`Board NOT deleted — ${failure.message}`); return; }
     await load();
   };
 

@@ -1,6 +1,10 @@
 import { useState, useEffect } from 'react';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import { useStore } from '../../store';
+import { reportSave } from '../../lib/saveHealth';
+// Static imports — a click-time dynamic import can fail silently in the Vite bundle, and the
+// old try/catch around it swallowed that too (CLAUDE.md: static imports only).
+import { upsertDiscount, deleteDiscount, upsertDiscountRule, deleteDiscountRule } from '../../lib/db';
 import { money, currencySymbol } from '../../lib/currency';
 
 /* ── Style constants (match TaxManager / LocationSettings pattern) ────────── */
@@ -493,6 +497,7 @@ function RuleForm({ rule, categories, onSave, onCancel }) {
 
 export default function DiscountManager() {
   const { menuCategories } = useStore();
+  const showToast = useStore(s => s.showToast);
   const [tab, setTab] = useState('presets'); // 'presets' | 'rules'
   const [discounts, setDiscounts] = useState([]);
   const [rules, setRules] = useState([]);
@@ -516,6 +521,12 @@ export default function DiscountManager() {
           supabase.from('discounts').select('*').eq('location_id', locationId).order('sort_order'),
           supabase.from('discount_rules').select('*').eq('location_id', locationId).order('priority', { ascending: false }),
         ]);
+        // Say so rather than showing an empty list — an operator who believes the list is
+        // empty re-creates everything and ends up with duplicates.
+        if (discRes.error || rulesRes.error) {
+          console.error('[DiscountManager] load error:', discRes.error?.message || rulesRes.error?.message);
+          showToast?.('Discounts could not be loaded — this list may be incomplete. Reload before editing.', 'error');
+        }
         setDiscounts((discRes.data || []).map(d => ({
           id: d.id, name: d.name, type: d.type, value: parseFloat(d.value),
           scope: d.scope, categoryIds: d.category_ids || [],
@@ -548,34 +559,65 @@ export default function DiscountManager() {
     });
   };
 
+  // A delete that RLS filters out resolves with no error and no rows, which is exactly what a
+  // successful delete looks like from here (db.js doesn't .select()). Probe the row instead.
+  const stillThere = async (table, id) => {
+    if (isMock || !supabase) return false;
+    const { data } = await supabase.from(table).select('id').eq('id', id).maybeSingle();
+    return !!data;
+  };
+
   // ── Save discount ──
   const saveDiscount = async (form) => {
-    try {
-      const locationId = await getLocationId();
-      const { upsertDiscount } = await import('../../lib/db.js');
-      await upsertDiscount(form, locationId);
-      // Re-fetch
-      const { data } = await supabase.from('discounts').select('*').eq('location_id', locationId).order('sort_order');
-      const mapped = (data || []).map(d => ({
-        id: d.id, name: d.name, type: d.type, value: parseFloat(d.value),
-        scope: d.scope, categoryIds: d.category_ids || [],
-        requiresManager: d.requires_manager, active: d.active, sortOrder: d.sort_order ?? 0,
-      }));
-      setDiscounts(mapped);
-      syncToStore(mapped, null);
+    const locationId = await getLocationId().catch(() => null);
+    if (!locationId || locationId === 'loc-demo') {
+      reportSave('discount', new Error('Could not resolve the location for this venue'));
+      showToast?.(`"${form.name}" was NOT saved — could not resolve this location`, 'error');
+      return;
+    }
+    const { error } = await upsertDiscount(form, locationId);
+    reportSave('discount', error);
+    if (error) {
+      // Nothing local changed yet, so there is nothing to roll back — just don't pretend.
+      showToast?.(`"${form.name}" was NOT saved — the database rejected it`, 'error');
+      return;
+    }
+    // Re-fetch
+    const { data, error: readErr } = await supabase.from('discounts').select('*').eq('location_id', locationId).order('sort_order');
+    if (readErr) {
+      // The write landed; only the read-back failed. Don't publish a half-list to the POS.
+      console.error('[DiscountManager] reload after save failed:', readErr.message);
       setEditingDiscount(null);
-    } catch (e) { console.error('[DiscountManager] save discount error:', e); }
+      showToast?.(`"${form.name}" saved, but the list could not be refreshed — reload the page`, 'warning');
+      return;
+    }
+    const mapped = (data || []).map(d => ({
+      id: d.id, name: d.name, type: d.type, value: parseFloat(d.value),
+      scope: d.scope, categoryIds: d.category_ids || [],
+      requiresManager: d.requires_manager, active: d.active, sortOrder: d.sort_order ?? 0,
+    }));
+    setDiscounts(mapped);
+    syncToStore(mapped, null);
+    setEditingDiscount(null);
+    showToast?.(`"${form.name}" saved`, 'success');
   };
 
   // ── Delete discount ──
   const removeDiscount = async (id) => {
-    try {
-      const { deleteDiscount } = await import('../../lib/db.js');
-      await deleteDiscount(id);
-      const next = discounts.filter(d => d.id !== id);
-      setDiscounts(next);
-      syncToStore(next, null);
-    } catch (e) { console.error('[DiscountManager] delete error:', e); }
+    const disc = discounts.find(d => d.id === id);
+    const { error } = await deleteDiscount(id);
+    let failure = error;
+    if (!failure && await stillThere('discounts', id)) failure = new Error('Discount delete matched 0 rows — RLS blocked it');
+    reportSave('discount delete', failure);
+    if (failure) {
+      // Store untouched — the POS keeps offering a discount that still exists.
+      showToast?.(`"${disc?.name || 'Discount'}" was NOT deleted`, 'error');
+      return;
+    }
+    const next = discounts.filter(d => d.id !== id);
+    setDiscounts(next);
+    syncToStore(next, null);
+    showToast?.(`"${disc?.name || 'Discount'}" deleted`, 'info');
   };
 
   // ── Toggle discount active ──
@@ -585,38 +627,58 @@ export default function DiscountManager() {
 
   // ── Save rule ──
   const saveRule = async (form) => {
-    try {
-      const locationId = await getLocationId();
-      const { upsertDiscountRule } = await import('../../lib/db.js');
-      await upsertDiscountRule(form, locationId);
-      // Re-fetch
-      const { data } = await supabase.from('discount_rules').select('*').eq('location_id', locationId).order('priority', { ascending: false });
-      const mapped = (data || []).map(r => ({
-        id: r.id, name: r.name, active: r.active,
-        triggerType: r.trigger_type, triggerCategoryIds: r.trigger_category_ids || [],
-        triggerQty: r.trigger_qty, rewardType: r.reward_type,
-        rewardValue: parseFloat(r.reward_value), rewardQty: r.reward_qty,
-        rewardCategoryIds: r.reward_category_ids || [],
-        channels: r.channels || { pos:true, online:true, qr:true, kiosk:true },
-        triggerGroups: r.trigger_groups || null,
-        schedule: r.schedule || null,
-        priority: r.priority ?? 0, sortOrder: r.sort_order ?? 0,
-      }));
-      setRules(mapped);
-      syncToStore(null, mapped);
+    const locationId = await getLocationId().catch(() => null);
+    if (!locationId || locationId === 'loc-demo') {
+      reportSave('auto-discount rule', new Error('Could not resolve the location for this venue'));
+      showToast?.(`"${form.name}" was NOT saved — could not resolve this location`, 'error');
+      return;
+    }
+    const { error } = await upsertDiscountRule(form, locationId);
+    reportSave('auto-discount rule', error);
+    if (error) {
+      showToast?.(`"${form.name}" was NOT saved — the database rejected it`, 'error');
+      return;
+    }
+    // Re-fetch
+    const { data, error: readErr } = await supabase.from('discount_rules').select('*').eq('location_id', locationId).order('priority', { ascending: false });
+    if (readErr) {
+      console.error('[DiscountManager] reload after save failed:', readErr.message);
       setEditingRule(null);
-    } catch (e) { console.error('[DiscountManager] save rule error:', e); }
+      showToast?.(`"${form.name}" saved, but the list could not be refreshed — reload the page`, 'warning');
+      return;
+    }
+    const mapped = (data || []).map(r => ({
+      id: r.id, name: r.name, active: r.active,
+      triggerType: r.trigger_type, triggerCategoryIds: r.trigger_category_ids || [],
+      triggerQty: r.trigger_qty, rewardType: r.reward_type,
+      rewardValue: parseFloat(r.reward_value), rewardQty: r.reward_qty,
+      rewardCategoryIds: r.reward_category_ids || [],
+      channels: r.channels || { pos:true, online:true, qr:true, kiosk:true },
+      triggerGroups: r.trigger_groups || null,
+      schedule: r.schedule || null,
+      priority: r.priority ?? 0, sortOrder: r.sort_order ?? 0,
+    }));
+    setRules(mapped);
+    syncToStore(null, mapped);
+    setEditingRule(null);
+    showToast?.(`"${form.name}" saved`, 'success');
   };
 
   // ── Delete rule ──
   const removeRule = async (id) => {
-    try {
-      const { deleteDiscountRule } = await import('../../lib/db.js');
-      await deleteDiscountRule(id);
-      const next = rules.filter(r => r.id !== id);
-      setRules(next);
-      syncToStore(null, next);
-    } catch (e) { console.error('[DiscountManager] delete rule error:', e); }
+    const rule = rules.find(r => r.id === id);
+    const { error } = await deleteDiscountRule(id);
+    let failure = error;
+    if (!failure && await stillThere('discount_rules', id)) failure = new Error('Rule delete matched 0 rows — RLS blocked it');
+    reportSave('auto-discount rule delete', failure);
+    if (failure) {
+      showToast?.(`"${rule?.name || 'Rule'}" was NOT deleted — it is still live`, 'error');
+      return;
+    }
+    const next = rules.filter(r => r.id !== id);
+    setRules(next);
+    syncToStore(null, next);
+    showToast?.(`"${rule?.name || 'Rule'}" deleted`, 'info');
   };
 
   // ── Toggle rule active ──

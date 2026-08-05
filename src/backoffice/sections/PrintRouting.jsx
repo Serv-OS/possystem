@@ -1,6 +1,7 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useStore } from '../../store';
 import { isMock, supabase, getLocationId } from '../../lib/supabase';
+import { reportSave } from '../../lib/saveHealth';
 import { money } from '../../lib/currency';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -36,14 +37,23 @@ async function loadRoutingFromDB() {
   return load();
 }
 
-async function saveRoutingToDB(data) {
-  if (isMock || !supabase) return;
-  save(data); // update local cache immediately
-  try {
-    const locationId = await getLocationId();
-    if (!locationId) return;
-    await supabase.from('print_routing').upsert({ location_id:locationId, centres:data.centres, routing:data.routing, updated_at:new Date().toISOString() }, { onConflict:'location_id' });
-  } catch(e) { console.warn('routing save failed', e); }
+// Returns { error } — the caller reverts the screen (and this localStorage mirror, which
+// the POS reads at print time) when the row never landed. A swallowed failure here routed
+// tickets by a rule set that only ever existed on one browser.
+async function saveRoutingToDB(data, previous) {
+  const mirror = (cfg) => { if (cfg) { try { save(cfg); } catch {} } };
+  mirror(data); // update local cache immediately — printing must feel instant
+  if (isMock || !supabase) return { error: null };
+  const rollback = (err) => { mirror(previous); return { error: err }; };
+  const locationId = await getLocationId().catch(() => null);
+  if (!locationId) return rollback(new Error('Could not resolve the location for this venue'));
+  const { data: rows, error } = await supabase
+    .from('print_routing')
+    .upsert({ location_id:locationId, centres:data.centres, routing:data.routing, updated_at:new Date().toISOString() }, { onConflict:'location_id' })
+    .select('location_id');
+  if (error) return rollback(error);
+  if (!rows || rows.length === 0) return rollback(new Error('Print routing write matched 0 rows — RLS blocked it'));
+  return { error: null };
 }
 
 // v5.5.835: VENUE DEFAULT RECEIPT PRINTER.
@@ -70,20 +80,25 @@ async function loadVenueReceiptPrinter() {
   } catch (e) { console.warn('venue receipt printer load failed', e); return ''; }
 }
 
-async function saveVenueReceiptPrinter(printerId) {
+async function saveVenueReceiptPrinter(printerId, previousId) {
+  const mirror = (id) => { try { id ? localStorage.setItem(VENUE_PRINTER_KEY, id) : localStorage.removeItem(VENUE_PRINTER_KEY); } catch {} };
   // Mirror locally first so the setting is live on this browser immediately.
-  try { printerId ? localStorage.setItem(VENUE_PRINTER_KEY, printerId) : localStorage.removeItem(VENUE_PRINTER_KEY); } catch {}
-  if (isMock || !supabase) return;
-  try {
-    const locationId = await getLocationId();
-    if (!locationId) return;
-    // Read-modify-merge so we never clobber other pos_settings keys (the pattern
-    // LocationSettings.jsx uses for takeaway_customer_details).
-    const { data } = await supabase.from('locations').select('pos_settings').eq('id', locationId).maybeSingle();
-    await supabase.from('locations').update({
-      pos_settings: { ...(data?.pos_settings || {}), default_receipt_printer_id: printerId || null },
-    }).eq('id', locationId);
-  } catch (e) { console.warn('venue receipt printer save failed', e); }
+  mirror(printerId);
+  if (isMock || !supabase) return { error: null };
+  const rollback = (err) => { mirror(previousId); return { error: err }; };
+  const locationId = await getLocationId().catch(() => null);
+  if (!locationId) return rollback(new Error('Could not resolve the location for this venue'));
+  // Read-modify-merge so we never clobber other pos_settings keys (the pattern
+  // LocationSettings.jsx uses for takeaway_customer_details). The READ must be checked
+  // too — merging onto {} after a failed read would wipe every other pos_settings key.
+  const { data, error: readErr } = await supabase.from('locations').select('pos_settings').eq('id', locationId).maybeSingle();
+  if (readErr) return rollback(readErr);
+  const { data: rows, error } = await supabase.from('locations').update({
+    pos_settings: { ...(data?.pos_settings || {}), default_receipt_printer_id: printerId || null },
+  }).eq('id', locationId).select('id');
+  if (error) return rollback(error);
+  if (!rows || rows.length === 0) return rollback(new Error('Location update matched 0 rows — RLS blocked it'));
+  return { error: null };
 }
 
 // Default routing entry for a centre
@@ -231,6 +246,7 @@ function CategoryRouter({ centreId, routing, setRouting, menuCategories, menuIte
 // ─── Main component ────────────────────────────────────────────────────────────
 export default function PrintRouting() {
   const { menuCategories, menuItems, markBOChange } = useStore();
+  const showToast = useStore(s => s.showToast);
   const [data, setData] = useState(() => ({ centres:[], routing:{} }));
   const [routing, setRouting] = useState({});
   const [selected, setSelected] = useState(null);
@@ -243,17 +259,28 @@ export default function PrintRouting() {
   // v5.5.835: venue default receipt printer (online / delivery / HubRise receipts)
   const [venuePrinterId, setVenuePrinterId] = useState('');
   useEffect(() => { loadVenueReceiptPrinter().then(setVenuePrinterId); }, []);
-  const changeVenuePrinter = (id) => {
+  const changeVenuePrinter = async (id) => {
+    const previous = venuePrinterId;
     setVenuePrinterId(id);
-    saveVenueReceiptPrinter(id);
+    const { error } = await saveVenueReceiptPrinter(id, previous);
+    reportSave('default receipt printer', error);
+    if (error) {
+      setVenuePrinterId(previous); // never leave a destination on screen the DB rejected
+      showToast?.('Default receipt printer NOT saved — the old setting is still in force', 'error');
+      return;
+    }
     markBOChange?.();
   };
+
+  // Last config the database accepted — what we roll the screen back to on a failed save.
+  const lastGoodRouting = useRef(null);
 
   // Load routing from Supabase on mount
   useEffect(() => {
     loadRoutingFromDB().then(config => {
       setData(config);
       setRouting(config.routing || {});
+      lastGoodRouting.current = { centres: config.centres || [], routing: config.routing || {} };
       setLoaded(true);
     });
   }, []);
@@ -281,8 +308,24 @@ export default function PrintRouting() {
   useEffect(() => {
     if (!_loaded) return; // don't save on initial load
     const saved = { centres: data.centres, routing };
-    saveRoutingToDB(saved);
-    markBOChange?.();
+    const previous = lastGoodRouting.current;
+    // The revert below puts the last accepted objects straight back into state, which re-runs
+    // this effect — skip that pass (same references) or a rejected write would loop forever.
+    if (previous && previous.centres === saved.centres && previous.routing === saved.routing) return;
+    (async () => {
+      const { error } = await saveRoutingToDB(saved, previous);
+      reportSave('print routing', error);
+      if (error) {
+        if (previous) {
+          setData(d => ({ ...d, centres: previous.centres }));
+          setRouting(previous.routing);
+        }
+        showToast?.('Print routing NOT saved — reverted to the last saved version', 'error');
+        return;
+      }
+      lastGoodRouting.current = saved;
+      markBOChange?.();
+    })();
   }, [data.centres, routing]);
 
   const f = (k,v) => setForm(p => ({ ...p, [k]:v }));

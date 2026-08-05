@@ -1,11 +1,13 @@
 import { useState, useEffect } from 'react';
 import { supabase, isMock, platformSupabase, setResolvedLocationId, enforceTenantFence } from '../lib/supabase';
+import { reportSave } from '../lib/saveHealth';
 import { fetchAccessibleLocations } from '../lib/db';
 
 export default function LocationSwitcher({ onClose }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [switching, setSwitching] = useState(null);
+  const [switchError, setSwitchError] = useState('');
   const [isSuperAdmin, setIsSuperAdmin] = useState(false);
 
   const currentLocationId = (() => {
@@ -117,19 +119,36 @@ export default function LocationSwitcher({ onClose }) {
   };
 
   const switchTo = async (loc) => {
-    setSwitching(loc.id);
+    setSwitching(loc.id); setSwitchError('');
     const opsLocId = loc.ops_location_id || loc.id;
-    // v5.5.3: explicit tenant fence BEFORE we write the new location override.
+    // Write the PROFILE first, and touch nothing local until it lands. The BO sections
+    // that read user_profiles.location_id directly (staff, devices, registries) follow
+    // the profile rather than the local override, so switching locally against a refused
+    // write lands half-switched — one venue's screens against another venue's data.
+    // Order matters for a second reason: enforceTenantFence() purges every rpos-* cache
+    // key, and that purge cannot be undone. Doing it before the write meant a failed
+    // switch left the caches wiped with no way back short of a reload.
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        const { data, error } = await supabase.from('user_profiles')
+          .update({ location_id: opsLocId }).eq('id', user.id).select('id');
+        if (error) throw error;
+        if (!data || data.length === 0) throw new Error('Profile update matched 0 rows — RLS may have blocked it');
+      }
+    } catch (e) {
+      reportSave('location switch', e);
+      setSwitching(null);
+      setSwitchError(`Could not switch to ${loc.name} — ${e?.message || e}. You're still on your previous location.`);
+      return;                       // nothing local was changed, so there is nothing to roll back
+    }
+    // v5.5.3: explicit tenant fence before we write the new location override.
     // The wipe also happens inside setResolvedLocationId, but routing through
     // enforceTenantFence directly keeps boot/pair/switch on the same code path
     // and writes the rpos-active-location tag in one place.
     enforceTenantFence(opsLocId);
     localStorage.setItem('rpos-bo-location', JSON.stringify(opsLocId));
     setResolvedLocationId(opsLocId);
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user) await supabase.from('user_profiles').update({ location_id: opsLocId }).eq('id', user.id);
-    } catch {}
     window.location.reload();
   };
 
@@ -154,6 +173,11 @@ export default function LocationSwitcher({ onClose }) {
         </div>
 
         <div style={{ flex:1, overflowY:'auto', padding:'12px 16px 20px' }}>
+          {switchError && (
+            <div style={{ margin:'0 0 12px', padding:'10px 12px', borderRadius:10, background:'var(--red-d, #fef2f2)', border:'1px solid var(--red-b, #fca5a5)', color:'var(--red, #b91c1c)', fontSize:12, fontWeight:600, lineHeight:1.5 }}>
+              {switchError}
+            </div>
+          )}
           {loading ? (
             <div style={{ textAlign:'center', padding:'32px 0', color:'var(--t4)', fontSize:13 }}>Loading…</div>
           ) : items.length === 0 ? (

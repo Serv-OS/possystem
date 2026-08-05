@@ -5,6 +5,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useStore } from '../../../store';
 import { getActiveLocationSync, getLocationId } from '../../../lib/supabase';
 import { fetchMaintenance, setMaintenanceStatus, addMaintenanceNote, createMaintenance, assignMaintenance, fetchOpsAssignees } from '../../../lib/ops/data';
+import { reportSave } from '../../../lib/saveHealth';
 
 const STATUSES = ['open', 'assigned', 'in_progress', 'resolved', 'cancelled'];
 const STATUS_COL = { open: 'var(--red)', assigned: 'var(--orn)', in_progress: 'var(--blu)', resolved: 'var(--grn)', cancelled: 'var(--t4)' };
@@ -36,14 +37,36 @@ export default function OpsMaintenance() {
   const shown = rows
     .filter(r => filter === 'all' ? true : filter === 'open-ish' ? !['resolved', 'cancelled'].includes(r.status) : r.status === filter)
     .filter(r => prioFilter === 'all' ? true : r.priority === prioFilter);
-  const setStatus = async (r, status) => { await setMaintenanceStatus(r.id, status, me?.name, locId); reload(); };
-  const assign = async (r, staffId) => { const a = assignees.find(x => x.id === staffId); await assignMaintenance(r.id, a ? { id: a.id, name: a.name } : null, me?.name, locId); showToast?.(a ? `Assigned to ${a.name}` : 'Unassigned', 'success'); reload(); };
+  const setStatus = async (r, status) => {
+    const { error } = await setMaintenanceStatus(r.id, status, me?.name, locId);
+    reportSave('maintenance status', error);
+    // reload() either way: the dropdown is bound to the row, so a refetch is what
+    // puts a rejected change back to the status the database actually holds.
+    if (error) { showToast?.(`"${r.title}" is still ${String(r.status || 'unchanged').replace('_', ' ')} — status NOT changed`, 'error'); }
+    reload();
+  };
+  const assign = async (r, staffId) => {
+    const a = assignees.find(x => x.id === staffId);
+    const { error } = await assignMaintenance(r.id, a ? { id: a.id, name: a.name } : null, me?.name, locId);
+    reportSave('maintenance assignment', error);
+    if (error) { showToast?.(a ? `NOT assigned to ${a.name} — try again` : 'Could not unassign', 'error'); reload(); return; }
+    showToast?.(a ? `Assigned to ${a.name}` : 'Unassigned', 'success'); reload();
+  };
   const create = async () => {
     if (!draft.title.trim()) { showToast?.('Title required', 'error'); return; }
-    await createMaintenance({ ...draft, reporterName: me?.name, source: 'manual' }, locId);
+    const { error } = await createMaintenance({ ...draft, reporterName: me?.name, source: 'manual' }, locId);
+    reportSave('maintenance request', error);
+    // Keep the typed draft on failure so the report isn't lost with it.
+    if (error) { showToast?.(`"${draft.title.trim()}" was NOT raised — try again`, 'error'); return; }
     setDraft({ title: '', description: '', priority: 'normal' }); setAdding(false); reload(); showToast?.('Raised', 'success');
   };
-  const saveNote = async (r) => { if (!noteText.trim()) return; await addMaintenanceNote(r.id, noteText.trim(), me?.name, locId); setNoteText(''); setNoteFor(null); showToast?.('Note added', 'success'); };
+  const saveNote = async (r) => {
+    if (!noteText.trim()) return;
+    const { error } = await addMaintenanceNote(r.id, noteText.trim(), me?.name, locId);
+    reportSave('maintenance note', error);
+    if (error) { showToast?.('Note NOT saved — try again', 'error'); return; }
+    setNoteText(''); setNoteFor(null); showToast?.('Note added', 'success');
+  };
 
   return (
     <div style={{ height: '100%', overflowY: 'auto', background: 'var(--bg0)', padding: '22px 26px' }}>

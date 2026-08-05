@@ -31,6 +31,7 @@ import {
   setInventoryOnHand, fetchItemMovements, movementLabel,
 } from '../../lib/stock/data';
 import { fetchParLevels, upsertParLevel } from '../../lib/stock/counts';
+import { reportSave } from '../../lib/saveHealth';
 import { fetchRecipes, upsertRecipe, replaceRecipeLines, recomputeMadeItemCost } from '../../lib/stock/recipes';
 import { toBase, fromBase, unitOptions, formatToken, unitLabel, displayInUnits } from '../../lib/stock/uom';
 
@@ -132,6 +133,7 @@ export default function StockItems() {
     setSaving(true);
     const { data, error } = await upsertInventoryItem(draft, locId);
     setSaving(false);
+    reportSave('stock item', error);
     if (error) { showToast?.('Save failed: ' + error.message, 'error'); return; }
     showToast?.('Saved', 'success');
     await reload(data?.id || selectedId);
@@ -141,6 +143,7 @@ export default function StockItems() {
     if (!draft?.id) return;
     const next = !draft.archivedAt;
     const { error } = await setInventoryItemArchived(draft.id, next, locId);
+    reportSave('stock item archive', error);
     if (error) { showToast?.(error.message, 'error'); return; }
     showToast?.(next ? 'Archived' : 'Restored', 'info');
     setSelectedId(null); setDraft(null);
@@ -409,8 +412,13 @@ function StockTab({ draft, locId, onChanged, showToast }) {
       try { const b = toBase(Number(v), countUnit, uomItem); return Number.isFinite(b) ? b : ''; } catch { return ''; }
     };
     const nextBase = { parLevel: conv(edit.parLevel), reorderPoint: conv(edit.reorderPoint) };
+    const prevBase = parBase;
     setParBase(nextBase);
-    await upsertParLevel(draft.id, nextBase, locId);
+    const { error } = await upsertParLevel(draft.id, nextBase, locId);
+    reportSave('par level', error);
+    // Par/reorder drive suggested ordering and the low-stock alert — a rejected value
+    // left in the box would have staff ordering to a number the system doesn't hold.
+    if (error) { setParBase(prevBase); showToast?.('Par / reorder point NOT saved', 'error'); }
   };
   const parUnitLabel = (countOpts.find(o => o.token === countUnit)?.label) || draft.baseUnit;
 
@@ -419,6 +427,7 @@ function StockTab({ draft, locId, onChanged, showToast }) {
     setBusy(true);
     const { error } = await setInventoryOnHand(draft.id, countBase, 'Set via Stock items', locId);
     setBusy(false);
+    reportSave('stock on-hand', error);
     if (error) { showToast?.(error.message, 'error'); return; }
     setCount(''); showToast?.('Stock updated', 'success');
     onChanged(); await loadMoves();
@@ -508,11 +517,17 @@ function DimensionTab({ draft, locId, onChanged, showToast }) {
   const add = async () => {
     if (!(Number(row.fromQty) > 0) || !(Number(row.toQty) > 0)) { showToast?.('Enter both quantities', 'error'); return; }
     const { error } = await upsertItemConversion({ inventoryItemId: draft.id, ...row }, locId);
+    reportSave('unit conversion', error);
     if (error) { showToast?.(error.message, 'error'); return; }
     setRow({ fromQty: 1, fromUnit: draft.baseUnit, toQty: '', toUnit: 'g' });
     onChanged();
   };
-  const remove = async (id) => { await deleteItemConversion(id, draft.id, locId); onChanged(); };
+  const remove = async (id) => {
+    const { error } = await deleteItemConversion(id, draft.id, locId);
+    reportSave('unit conversion delete', error);
+    if (error) { showToast?.('Bridge NOT removed — recipe conversions still use it', 'error'); return; }
+    onChanged();
+  };
 
   return (
     <div style={{ maxWidth: 680 }}>
@@ -562,16 +577,30 @@ function UnitsTab({ draft, locId, onChanged, showToast }) {
     setAdding(true);
     try {
       const { error } = await upsertPackagingFormat({ inventoryItemId: draft.id, name: row.name.trim(), qtyInBase, parentFormatId, isCountDefault: isFirst, isPurchaseDefault: isFirst }, locId);
+      reportSave('packaging unit', error);
       if (error) { showToast?.('Could not add unit: ' + (error.message || error), 'error'); return; }
       showToast?.(`Unit added: ${row.name.trim()}`, 'success');
       setRow({ name: '', qty: '', of: draft.baseUnit });
       onChanged();
     } catch (e) {
+      reportSave('packaging unit', e);
       showToast?.('Could not add unit: ' + (e?.message || e), 'error');
     } finally { setAdding(false); }
   };
-  const remove = async (id) => { await deletePackagingFormat(id, locId); onChanged(); };
-  const makeDefault = async (id, kind) => { await setUnitDefault(id, draft.id, kind, locId); onChanged(); };
+  const remove = async (id) => {
+    const { error } = await deletePackagingFormat(id, locId);
+    reportSave('packaging unit delete', error);
+    if (error) { showToast?.('Unit NOT removed', 'error'); return; }
+    onChanged();
+  };
+  const makeDefault = async (id, kind) => {
+    const { error } = await setUnitDefault(id, draft.id, kind, locId);
+    reportSave('default unit', error);
+    // The buy default decides the quantities and prices that go onto purchase orders,
+    // so a badge that moved without the row moving would misprice every future PO.
+    if (error) { showToast?.(`Could not set the ${kind === 'purchase' ? 'buy' : 'count'} unit`, 'error'); return; }
+    onChanged();
+  };
 
   const sizeLabel = (p) => {
     if (p.parentFormatId) {
@@ -663,6 +692,7 @@ function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
       isPreferred: row.isPreferred,
     };
     const { error } = await upsertSupplierProduct(sp, locId);
+    reportSave('supplier pack', error);
     if (error) { showToast?.(error.message, 'error'); return; }
     setAdding(false); setRow(null); onChanged();
   };
@@ -677,11 +707,24 @@ function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
     setRow({ id: sp.id, inventoryItemId: draft.id, supplierId: sp.supplierId, supplierSku: sp.supplierSku || '', buyQty, buyUnit, packPrice: sp.packPrice, priceIncludesTax: sp.priceIncludesTax === true, purchaseTaxRateId: sp.purchaseTaxRateId || '', isPreferred: sp.isPreferred });
     setAdding(true);
   };
-  const removeRow = async (sp) => { await deleteSupplierProduct(sp.id, draft.id, locId); onChanged(); };
-  const setPreferred = async (sp) => { await upsertSupplierProduct({ ...sp, inventoryItemId: draft.id, isPreferred: true }, locId); onChanged(); };
+  const removeRow = async (sp) => {
+    const { error } = await deleteSupplierProduct(sp.id, draft.id, locId);
+    reportSave('supplier pack delete', error);
+    if (error) { showToast?.('Supplier pack NOT removed — it still sets this cost', 'error'); return; }
+    onChanged();
+  };
+  const setPreferred = async (sp) => {
+    const { error } = await upsertSupplierProduct({ ...sp, inventoryItemId: draft.id, isPreferred: true }, locId);
+    reportSave('preferred supplier pack', error);
+    // The preferred pack IS this item's cost — a badge that moved on screen only
+    // would leave every recipe costed off the old pack.
+    if (error) { showToast?.('Preferred pack NOT changed — cost is unchanged', 'error'); return; }
+    onChanged();
+  };
   const addSupplier = async () => {
     if (!newSupplier.trim()) return;
     const { data, error } = await upsertSupplier({ name: newSupplier.trim() }, locId);
+    reportSave('supplier', error);
     if (error) { showToast?.(error.message, 'error'); return; }
     setNewSupplier('');
     if (data) { setRow(r => ({ ...r, supplierId: data.id })); }
@@ -822,10 +865,12 @@ function RecipeTab({ draft, items, locId, showToast, onChanged }) {
       name: `${draft.name} (batch)`, recipeType: 'BATCH', outputItemId: draft.id,
       yieldQty: Number(yieldQty) || 1, yieldUnit: yieldUnit || draft.baseUnit || 'each',
     }, locId);
+    reportSave('recipe', error);
     if (error || !saved) { setSaving(false); showToast?.(error?.message || 'Recipe save failed', 'error'); return; }
     const { error: e2 } = await replaceRecipeLines(saved.id, keep.map((l, i) => ({
       componentItemId: l.componentItemId, qty: Number(l.qty), unit: l.unit || 'each', sortOrder: i,
     })), locId);
+    reportSave('recipe ingredients', e2);
     if (e2) { setSaving(false); showToast?.(e2.message, 'error'); return; }
     // Roll the component costs up into this item so its valuation is real.
     try { await recomputeMadeItemCost(draft.id, locId); } catch { /* cost roll-up is best-effort */ }

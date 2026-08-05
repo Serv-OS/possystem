@@ -7,6 +7,7 @@ import { useStore } from '../../../store';
 import { getActiveLocationSync, getLocationId } from '../../../lib/supabase';
 import { fetchTempUnits, upsertTempUnit, archiveTempUnit, fetchSchedules, upsertSchedule, deleteSchedule } from '../../../lib/ops/data';
 import { TYPE_DEFAULTS, typeDefault, displayTemp, toStoredC } from '../../../lib/ops/temp';
+import { reportSave } from '../../../lib/saveHealth';
 import { Icon } from '../../../components/ServOSIcons';
 
 const TYPES = Object.entries(TYPE_DEFAULTS).map(([id, d]) => ({ id, label: d.label }));
@@ -122,14 +123,34 @@ function UnitEditor({ locId, unit, schedules, dispUnit, onClose, onSaved, showTo
     if (!d.name.trim()) { showToast?.('Name required', 'error'); return; }
     setBusy(true);
     const { data: saved, error } = await upsertTempUnit(d, locId);
+    reportSave('temperature unit', error);
     if (error || !saved) { setBusy(false); showToast?.(error?.message || 'Save failed', 'error'); return; }
-    // sync schedules
-    for (const r of rows) { if (r.timeOfDay) await upsertSchedule({ ...r, tempUnitId: saved.id }, locId); }
+    // sync schedules — a rejected schedule write means this unit is never DUE for a
+    // check on the floor app, so it must never be reported as "Saved".
+    for (const r of rows) {
+      if (!r.timeOfDay) continue;
+      const { error: sErr } = await upsertSchedule({ ...r, tempUnitId: saved.id }, locId);
+      reportSave('temperature check schedule', sErr);
+      if (sErr) {
+        setBusy(false);
+        showToast?.(`Unit saved, but the ${r.label || r.timeOfDay} check was NOT scheduled`, 'error');
+        onSaved(); return;
+      }
+    }
     setBusy(false); showToast?.('Saved', 'success'); onSaved();
   };
   const addRow = () => setRows(r => [...r, { label: '', timeOfDay: '', daysOfWeek: [], graceMinutes: 60 }]);
   const upRow = (i, k, v) => setRows(r => r.map((x, j) => j === i ? { ...x, [k]: v } : x));
-  const rmRow = async (i) => { const r = rows[i]; if (r.id) await deleteSchedule(r.id, locId); setRows(rows.filter((_, j) => j !== i)); };
+  const rmRow = async (i) => {
+    const r = rows[i];
+    if (r.id) {
+      const { error } = await deleteSchedule(r.id, locId);
+      reportSave('temperature check schedule delete', error);
+      // Keep the row visible when the delete was refused — it is still a live check.
+      if (error) { showToast?.('Check time NOT removed', 'error'); return; }
+    }
+    setRows(rows.filter((_, j) => j !== i));
+  };
   const toggleDay = (i, day) => setRows(r => r.map((x, j) => j === i ? { ...x, daysOfWeek: x.daysOfWeek?.includes(Number(day)) ? x.daysOfWeek.filter(dd => dd !== Number(day)) : [...(x.daysOfWeek || []), Number(day)] } : x));
 
   return (
@@ -171,7 +192,12 @@ function UnitEditor({ locId, unit, schedules, dispUnit, onClose, onSaved, showTo
         <button onClick={addRow} style={{ background: 'var(--bg2)', border: '1px solid var(--bdr)', borderRadius: 8, padding: '7px 14px', fontSize: 12, color: 'var(--t1)', cursor: 'pointer', fontFamily: 'inherit' }}>+ Add a check time</button>
 
         <div style={{ display: 'flex', gap: 10, marginTop: 20 }}>
-          {unit && <button onClick={async () => { await archiveTempUnit(unit.id, locId); onSaved(); }} className="btn btn-red" style={{ padding: '10px 14px', borderRadius: 8, background: 'var(--red-d)', border: '1px solid var(--red-b)', color: 'var(--red)', cursor: 'pointer', fontFamily: 'inherit' }}>Archive</button>}
+          {unit && <button onClick={async () => {
+            const { error } = await archiveTempUnit(unit.id, locId);
+            reportSave('temperature unit archive', error);
+            if (error) { showToast?.(`"${unit.name}" was NOT archived`, 'error'); return; }
+            onSaved();
+          }} className="btn btn-red" style={{ padding: '10px 14px', borderRadius: 8, background: 'var(--red-d)', border: '1px solid var(--red-b)', color: 'var(--red)', cursor: 'pointer', fontFamily: 'inherit' }}>Archive</button>}
           <button onClick={save} disabled={busy} className="btn btn-acc" style={{ marginLeft: 'auto', padding: '10px 22px', borderRadius: 8, background: 'var(--acc)', color: '#fff', border: 0, fontWeight: 700, cursor: 'pointer', opacity: busy ? 0.6 : 1, fontFamily: 'inherit' }}>{busy ? 'Saving…' : 'Save unit'}</button>
         </div>
       </div>

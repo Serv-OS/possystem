@@ -511,10 +511,14 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   async function saveForecastCell(iso, raw) {
     const amt = Number(raw);
     if (!Number.isFinite(amt)) return;
+    const prevAmt = forecast[iso];
     setForecast(prev => ({ ...prev, [iso]: amt }));
     try {
       await wf.saveForecast(iso, amt, ctx.locationId, ctx.orgId);
     } catch (e) {
+      // Put the old figure back immediately — the labour % rows read off this
+      // map, so a rejected forecast would keep showing a (reassuring) wrong %.
+      setForecast(prev => ({ ...prev, [iso]: prevAmt }));
       showToast('Forecast not saved: ' + e.message, 'error');
       reload(wk);
     }
@@ -523,10 +527,23 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   async function publish() {
     if (!draftIds.length) { showToast('No draft shifts to publish', 'info'); return; }
     setPublishing(true);
+    // PHASE 1 — the server-side publish, on its own, and it THROWS now.
+    // Everything below it (audit row, local "published" flags, staff SMS AND
+    // email) is downstream of the write actually landing: publishShifts used to
+    // only console.warn, so staff were told about a rota the database had
+    // rejected and the audit trail claimed it was live.
     try {
       await wf.publishShifts(draftIds);
-      await wf.logAudit({ action: 'rota.publish', entity: 'wf_shifts', entityId: wk.startIso, reason: `Published ${draftIds.length} shift(s) for ${weekRangeLabel(wk)}`, after: { ids: draftIds, week: wk.startIso } }, ctx.locationId, ctx.orgId);
+    } catch (e) {
+      showToast('Publish failed — nothing was published and no-one was notified: ' + e.message, 'error');
+      reload(wk);          // back to server truth; the shifts stay drafts
+      setPublishing(false);
+      return;
+    }
+    // PHASE 2 — the rota IS live from here on.
+    try {
       setShifts(prev => prev.map(s => draftIds.includes(s.id) ? { ...s, status: 'published' } : s));
+      await wf.logAudit({ action: 'rota.publish', entity: 'wf_shifts', entityId: wk.startIso, reason: `Published ${draftIds.length} shift(s) for ${weekRangeLabel(wk)}`, after: { ids: draftIds, week: wk.startIso } }, ctx.locationId, ctx.orgId);
 
       // Notify each affected staff member of their week's shifts — by SMS AND
       // email (whichever contact details are on file), so no-one is missed.
@@ -561,7 +578,9 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       const tail = bits.length ? ` · ${bits.join(', ')}` : '';
       showToast(`Published ${draftIds.length} shift${draftIds.length === 1 ? '' : 's'}${tail}`, 'success');
     } catch (e) {
-      showToast('Publish failed: ' + e.message, 'error');
+      // The shifts ARE published (phase 1 succeeded) — only the notifications
+      // fell over, so don't tell the operator the publish failed.
+      showToast('Rota published, but notifying the team failed: ' + e.message, 'error');
       reload(wk);
     } finally { setPublishing(false); }
   }

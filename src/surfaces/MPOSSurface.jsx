@@ -82,8 +82,33 @@ export default function MPOSSurface() {
     };
   }, []);
 
-  if (!staff) return <PINScreen />;
-  return <MPOSRouter />;
+  // v5.5.971 — MPOS NEVER RENDERED TOASTS (see MPOSToast below).
+  if (!staff) return <><PINScreen /><MPOSToast /></>;
+  return <><MPOSRouter /><MPOSToast /></>;
+}
+
+// v5.5.971 — store.showToast() sets `toast`, but the only <Toast> in the app lives
+// inside the POS shell (App.jsx ValidatedPOSApp) and MPOS returns from an EARLIER
+// branch (App.jsx:284) — so every confirmation AND every error raised anywhere in
+// the MPOS tree has been silently discarded since MPOS was built. Same family as
+// the vanishing-categories saga: the app knew, the server never did.
+// Mirrors BackOfficeToast in src/backoffice/BackOfficeApp.jsx.
+function MPOSToast() {
+  const toast = useStore(s => s.toast);
+  if (!toast) return null;
+  const map = {
+    success: { bg:'var(--grn-d)', bdr:'var(--grn-b)', color:'var(--grn)' },
+    error:   { bg:'var(--red-d)', bdr:'var(--red-b)', color:'var(--red)' },
+    warning: { bg:'var(--acc-d)', bdr:'var(--acc-b)', color:'var(--acc)' },
+    info:    { bg:'var(--bg3)',   bdr:'var(--bdr2)',  color:'var(--t1)'  },
+  };
+  const c = map[toast.type] || map.info;
+  return (
+    <div className="toast" key={toast.key}
+      style={{ background:c.bg, border:`1px solid ${c.bdr}`, color:c.color, zIndex:100003 }}>
+      {toast.msg}
+    </div>
+  );
 }
 
 function MPOSRouter() {

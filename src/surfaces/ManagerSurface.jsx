@@ -10,6 +10,7 @@
 // this slice is the shell, role gating, theme, Home, and a live Ops tab (reuses the ops engine).
 
 import { useEffect, useState } from 'react';
+import { useStore } from '../store';
 import { opsHeartbeat, opsRegisterDevice, opsPinLogin } from '../lib/ops/data';
 import { ensureAuthToken } from '../lib/supabase';
 import { fetchManagerSnapshot } from '../lib/manager/data';
@@ -114,8 +115,32 @@ export default function ManagerSurface() {
 }
 
 // ── chrome ───────────────────────────────────────────────────────────────────
+// v5.5.971 — THE MANAGER APP NEVER RENDERED TOASTS. store.showToast() sets `toast`,
+// but the only <Toast> in the app lives inside the POS shell (App.jsx ValidatedPOSApp)
+// and this surface returns from an EARLIER branch (App.jsx:272) — so every message
+// raised anywhere in the Manager tree (the Ops tab included) has been silently
+// discarded. Same family as the vanishing-categories saga: the app knew, the manager
+// never did. Mirrors BackOfficeToast in src/backoffice/BackOfficeApp.jsx.
+function ManagerToast() {
+  const toast = useStore(s => s.toast);
+  if (!toast) return null;
+  const map = {
+    success: { bg: 'var(--grn-d)', bdr: 'var(--grn-b)', color: 'var(--grn)' },
+    error:   { bg: 'var(--red-d)', bdr: 'var(--red-b)', color: 'var(--red)' },
+    warning: { bg: 'var(--acc-d)', bdr: 'var(--acc-b)', color: 'var(--acc)' },
+    info:    { bg: 'var(--bg3)',   bdr: 'var(--bdr2)',  color: 'var(--t1)'  },
+  };
+  const c = map[toast.type] || map.info;
+  return (
+    <div className="toast" key={toast.key}
+      style={{ background: c.bg, border: `1px solid ${c.bdr}`, color: c.color, zIndex: 100003 }}>
+      {toast.msg}
+    </div>
+  );
+}
+
 function Screen({ children }) {
-  return <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 24, background: 'var(--bg)', color: 'var(--t1)' }}>{children}</div>;
+  return <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 24, background: 'var(--bg)', color: 'var(--t1)' }}>{children}<ManagerToast /></div>;
 }
 
 function Shell({ ctx, tabs, active, onTab, onLogout, children }) {
@@ -136,6 +161,7 @@ function Shell({ ctx, tabs, active, onTab, onLogout, children }) {
       </div>
       {children}
       <TabBar tabs={tabs} active={active} onTab={onTab} />
+      <ManagerToast />
     </div>
   );
 }

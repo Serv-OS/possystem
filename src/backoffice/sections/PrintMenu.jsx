@@ -9,6 +9,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase, isMock, platformSupabase, getActiveLocationSync } from '../../lib/supabase';
+import { reportSave } from '../../lib/saveHealth';
 import { fetchMenuCategories, fetchMenuItems } from '../../lib/db';
 import { DEFAULT_PRINT_CONFIG, PRINT_FONTS, PAPER } from '../../lib/printMenu';
 import { buildMenuPdf } from '../../lib/printMenuPdf';
@@ -76,7 +77,7 @@ export default function PrintMenu() {
   const [currencySymbol, setCurrencySymbol] = useState('£');
   const [cfg, setCfg] = useState(DEFAULT_PRINT_CONFIG);
   const [loading, setLoading] = useState(true);
-  const [saveState, setSaveState] = useState('');   // '', 'saving', 'saved'
+  const [saveState, setSaveState] = useState('');   // '', 'saving', 'saved', 'error'
   const saveTimer = useRef(null);
   const loadedRef = useRef(false);
   const [logo, setLogo] = useState({ dataUri: null, aspect: 3 });   // logo fetched to a data-URI for the PDF
@@ -148,9 +149,19 @@ export default function PrintMenu() {
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       try {
-        await supabase.from('locations').update({ print_menu_config: cfg }).eq('id', locId);
+        // "Saved" must mean the row actually changed — a rejected or 0-row update
+        // used to land in an empty catch and the label just went quiet.
+        const { data, error } = await supabase.from('locations')
+          .update({ print_menu_config: cfg }).eq('id', locId).select('id');
+        if (error) throw error;
+        if (!data || data.length === 0) throw new Error(`Print-menu save matched 0 rows for location ${locId} — RLS may be blocking UPDATE`);
+        reportSave('print menu', null);
         setSaveState('saved'); setTimeout(() => setSaveState(s => (s === 'saved' ? '' : s)), 1800);
-      } catch { setSaveState(''); }
+      } catch (e) {
+        console.error('[PrintMenu] save failed:', e.message || e);
+        reportSave('print menu', e);
+        setSaveState('error');
+      }
     }, 700);
     return () => clearTimeout(saveTimer.current);
   }, [cfg, locId]);
@@ -325,8 +336,8 @@ export default function PrintMenu() {
         <div style={{ position: 'sticky', top: 8 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 10 }}>
             <button style={S.btn} onClick={printNow}>Print / Save as PDF</button>
-            <span style={{ fontSize: 11.5, color: 'var(--t3)' }}>
-              {saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? '✓ Saved' : `${paper.label} · ${land ? 'Landscape' : 'Portrait'} · ${cfg.columns} col`}
+            <span style={{ fontSize: 11.5, color: saveState === 'error' ? 'var(--red)' : 'var(--t3)', fontWeight: saveState === 'error' ? 700 : 400 }}>
+              {saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? '✓ Saved' : saveState === 'error' ? '⚠ NOT saved — this design will be lost' : `${paper.label} · ${land ? 'Landscape' : 'Portrait'} · ${cfg.columns} col`}
             </span>
           </div>
           <div style={{ background: 'var(--bg0)', border: '1px solid var(--bdr)', borderRadius: 12, padding: 8, height: 780 }}>

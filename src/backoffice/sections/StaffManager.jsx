@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useStore } from '../../store';
 import { supabase, isMock } from '../../lib/supabase';
+import { reportSave } from '../../lib/saveHealth';
 import { nfcAvailable, scanCardOnce, normalizeCardId } from '../../lib/nfc';
 
 const ROLES = ['Manager','Server','Bartender','Cashier','Kitchen','Host'];
@@ -154,41 +155,75 @@ export default function StaffManager() {
 
   const sel = staffMembers.find(s => s.id === selId);
 
-  const save = (id, patch) => {
+  // The name box commits on blur, not per keystroke. save() now rolls the panel back
+  // when the database refuses a write, and a per-keystroke save fires one request per
+  // character — each closing over its own already-stale snapshot, so a single refusal
+  // mid-word would rewind the field to whatever it held several letters ago. Every
+  // other control here writes one discrete value, so only this field needs a draft.
+  const [nameDraft, setNameDraft] = useState(null);
+  useEffect(() => { setNameDraft(null); }, [selId]);
+  const commitName = () => {
+    const next = (nameDraft ?? '').trim();
+    setNameDraft(null);
+    if (!sel || !next || next === sel.name) return;
+    save(sel.id, { name: next, initials: initials(next) });
+  };
+
+  // Resolves true only when the change is actually persisted (or we're in mock mode) —
+  // callers must not claim success before awaiting it.
+  const save = async (id, patch) => {
     // The store keeps some fields camelCase but the DB columns are snake_case. Mirror the snake-case
     // patch onto the camelCase the UI reads, so the change shows immediately (toggle moves, card
     // status updates). The DB still receives the snake-case `patch` below.
     const localPatch = { ...patch };
     if ('auth_method' in patch) localPatch.authMethod = patch.auth_method;
     if ('nfc_card_id' in patch) localPatch.nfcCardId = patch.nfc_card_id;
+    // Snapshot the fields we're about to overwrite so a rejected write can be undone —
+    // the panel must never keep showing a PIN/role/card the database refused.
+    const before = staffMembers.find(s => s.id === id);
+    const undo = () => {
+      if (!before) return;
+      const revert = {};
+      for (const k of Object.keys(localPatch)) if (k in before) revert[k] = before[k];
+      if (Object.keys(revert).length) updateStaffMember(id, revert);
+    };
     updateStaffMember(id, localPatch);
     markBOChange();
 
-    // Persist patch to Supabase (real mode only). Fire-and-forget but
-    // surface silent 0-row updates (v4.4.1 lesson) via a toast.
-    if (isMock) return;
+    // Persist patch to Supabase (real mode only), surfacing silent 0-row
+    // updates (v4.4.1 lesson) via a toast + the saveHealth banner.
+    if (isMock) return true;
     if (String(id).startsWith('s-')) {
-      // In-memory row that was never inserted to Supabase (addMember fallback
-      // path when locationId was unavailable). Nothing to update server-side.
-      return;
+      // In-memory row whose UUID hasn't come back from Supabase yet (the store stamps
+      // a local `s-…` id on add). There is nothing to update server-side, so undo the
+      // optimistic change and say so instead of letting the edit look saved.
+      undo();
+      showToast('Not saved on the server yet — refresh the page, then edit this staff member', 'error');
+      return false;
     }
-    (async () => {
-      try {
-        const { data, error } = await supabase
-          .from('staff_members')
-          .update(patch)
-          .eq('id', id)
-          .select('id');
-        if (error) throw error;
-        if (!data || data.length === 0) {
-          console.warn('[StaffManager] save: 0 rows updated for id', id, 'patch', patch);
-          showToast('Save did not land — row not found on server', 'error');
-        }
-      } catch (e) {
-        console.error('[StaffManager] save failed:', e.message, 'patch', patch);
-        showToast(`Save failed: ${e.message}`, 'error');
+    try {
+      const { data, error } = await supabase
+        .from('staff_members')
+        .update(patch)
+        .eq('id', id)
+        .select('id');
+      if (error) throw error;
+      if (!data || data.length === 0) {
+        console.warn('[StaffManager] save: 0 rows updated for id', id, 'patch', patch);
+        reportSave('staff member', new Error(`Update matched 0 rows for id=${id}`));
+        undo();
+        showToast('Save did not land — row not found on server', 'error');
+        return false;
       }
-    })();
+      reportSave('staff member', null);
+      return true;
+    } catch (e) {
+      console.error('[StaffManager] save failed:', e.message, 'patch', patch);
+      reportSave('staff member', e);
+      undo();
+      showToast(`Save failed: ${e.message}`, 'error');
+      return false;
+    }
   };
 
   // Assign an NFC card by tapping it on a reader (works when BO runs on a till). Card UIDs are
@@ -201,22 +236,20 @@ export default function StaffManager() {
     if (!r.ok) { showToast(r.error === 'timeout' ? 'No card detected — try again' : 'Card scanning isn’t available on this device', 'error'); return; }
     const taken = staffMembers.find(s => s.id !== id && s.nfcCardId && s.nfcCardId === r.cardId);
     if (taken) { showToast(`That card is already assigned to ${taken.name}`, 'error'); return; }
-    save(id, { nfc_card_id: r.cardId });
-    showToast('Card assigned', 'success');
+    if (await save(id, { nfc_card_id: r.cardId })) showToast('Card assigned', 'success');
   };
 
   // Back-Office enrolment: a USB NFC reader (keyboard-wedge) types the card UID into the box; save it.
-  const saveCardEntry = (id) => {
+  const saveCardEntry = async (id) => {
     const cid = normalizeCardId(cardEntry);
     if (!cid) { showToast('Tap a card on the reader, or type its ID first', 'error'); return; }
     const taken = staffMembers.find(s => s.id !== id && s.nfcCardId && s.nfcCardId === cid);
     if (taken) { showToast(`That card is already assigned to ${taken.name}`, 'error'); return; }
-    save(id, { nfc_card_id: cid });
-    setCardEntry('');
-    showToast('Card assigned', 'success');
+    // Keep the typed card ID in the box if the write failed, so it can be retried.
+    if (await save(id, { nfc_card_id: cid })) { setCardEntry(''); showToast('Card assigned', 'success'); }
   };
 
-  const addMember = () => {
+  const addMember = async () => {
     if (!newForm.name.trim()) return;
     // v5.5.292: Block duplicate PINs
     if (newForm.pin && newForm.pin.length === 4 && isPinTaken(newForm.pin, null)) {
@@ -226,45 +259,63 @@ export default function StaffManager() {
     const perms = newForm.permissions.length ? newForm.permissions : ROLE_DEFAULTS[newForm.role] || [];
     const member = { ...newForm, name:newForm.name.trim(), permissions:perms, initials:initials(newForm.name) };
     addStaffMember(member);
-    // Save to Supabase
-    if (!isMock) {
-      (async () => {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!user) return;
-        const { data: profile } = await supabase.from('user_profiles').select('org_id, location_id').eq('id', user.id).single();
-        // Get location_id — from profile, or find first location in their org
-        let locationId = profile?.location_id;
-        if (!locationId && profile?.org_id) {
-          const { data: locs } = await supabase.from('locations').select('id').eq('org_id', profile.org_id).limit(1);
-          locationId = locs?.[0]?.id;
-          // Also update user profile so we don't have to look this up again
-          if (locationId) await supabase.from('user_profiles').update({ location_id: locationId }).eq('id', user.id);
-        }
-        if (locationId) {
-          const { error } = await supabase.from('staff_members').insert({
-            location_id: locationId, org_id: profile?.org_id,
-            name: member.name, role: member.role, pin: member.pin,
-            color: member.color || '#3b82f6', initials: member.initials,
-            permissions: member.permissions || [],
-            active: true,
-          });
-          if (error) console.error('Staff save failed:', error.message);
-        } else {
-          console.warn('Cannot save staff — no location_id found for this user');
-        }
-      })();
-    }
+    // The store stamps its own local `s-…` id; grab it so a rejected insert can be
+    // rolled straight back off the screen instead of leaving a phantom staff member.
+    const st = useStore.getState().staffMembers;
+    const localId = st[st.length - 1]?.id;
     markBOChange();
-    showToast(`${newForm.name} added`, 'success');
     setShowAdd(false);
     setNewForm({ name:'', role:'Server', color:'#3b82f6', pin:'', permissions:[] });
+
+    if (isMock) { showToast(`${member.name} added`, 'success'); return; }
+
+    // Save to Supabase — the success toast fires only once the row has landed.
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('Not signed in');
+      const { data: profile } = await supabase.from('user_profiles').select('org_id, location_id').eq('id', user.id).single();
+      // Get location_id — from profile, or find first location in their org
+      let locationId = profile?.location_id;
+      if (!locationId && profile?.org_id) {
+        const { data: locs } = await supabase.from('locations').select('id').eq('org_id', profile.org_id).limit(1);
+        locationId = locs?.[0]?.id;
+        // Also update user profile so we don't have to look this up again
+        if (locationId) await supabase.from('user_profiles').update({ location_id: locationId }).eq('id', user.id);
+      }
+      if (!locationId) throw new Error('No location found for this user');
+      const { error } = await supabase.from('staff_members').insert({
+        location_id: locationId, org_id: profile?.org_id,
+        name: member.name, role: member.role, pin: member.pin,
+        color: member.color || '#3b82f6', initials: member.initials,
+        permissions: member.permissions || [],
+        active: true,
+      });
+      if (error) throw error;
+      reportSave('staff member', null);
+      showToast(`${member.name} added`, 'success');
+    } catch (e) {
+      console.error('Staff save failed:', e.message);
+      reportSave('staff member', e);
+      if (localId) removeStaffMember(localId);
+      showToast(`"${member.name}" was NOT saved — fix the problem and add them again`, 'error');
+    }
   };
 
-  const deleteMember = (id) => {
-    removeStaffMember(id);
+  const deleteMember = async (id) => {
+    // Remove from the DB FIRST: if the soft-delete is rejected the person can still
+    // sign in on the till, so the list must keep showing them.
     if (!isMock && !String(id).startsWith('s-')) {
-      supabase.from('staff_members').update({ active: false }).eq('id', id);
+      const { data, error } = await supabase.from('staff_members').update({ active: false }).eq('id', id).select('id');
+      const failure = error || (!data || data.length === 0
+        ? new Error(`Remove matched 0 rows for id=${id} — RLS may have blocked it`)
+        : null);
+      reportSave('staff member remove', failure);
+      if (failure) {
+        showToast('Remove failed — this person can still sign in on the till', 'error');
+        return;
+      }
     }
+    removeStaffMember(id);
     markBOChange();
     if (selId === id) setSelId(null);
     showToast('Staff member removed', 'info');
@@ -438,7 +489,8 @@ export default function StaffManager() {
             </div>
             <div style={{ flex:1 }}>
               <input style={{ ...inp, fontSize:16, fontWeight:800, border:'none', background:'transparent', padding:'0 0 3px', width:'auto', maxWidth:260 }}
-                value={sel.name} onChange={e=>save(sel.id,{name:e.target.value,initials:initials(e.target.value)})}/>
+                value={nameDraft ?? sel.name} onChange={e=>setNameDraft(e.target.value)}
+                onBlur={commitName} onKeyDown={e=>{ if (e.key==='Enter') e.currentTarget.blur(); }}/>
               <div style={{ display:'flex', gap:6, alignItems:'center' }}>
                 {ROLES.map(r=>(
                   <button key={r} onClick={()=>save(sel.id,{role:r})} style={{ padding:'2px 8px', borderRadius:12, cursor:'pointer', fontFamily:'inherit', fontSize:10, fontWeight:sel.role===r?700:400, border:`1px solid ${sel.role===r?ROLE_COLORS[r]:'var(--bdr)'}`, background:sel.role===r?ROLE_COLORS[r]+'22':'transparent', color:sel.role===r?ROLE_COLORS[r]:'var(--t4)' }}>{r}</button>
@@ -710,7 +762,7 @@ export default function StaffManager() {
             </div>
             <div style={{ display:'flex', gap:8 }}>
               <button onClick={()=>{setShowPin(null);setPinInput('');setPinError('');}} style={{ flex:1, padding:'9px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:13 }}>Cancel</button>
-              <button onClick={()=>{ if(pinInput.length===4 && !isPinTaken(pinInput,showPin)){ save(showPin,{pin:pinInput}); showToast('PIN updated','success'); setShowPin(null); setPinInput(''); setPinError(''); } }} disabled={pinInput.length!==4||isPinTaken(pinInput,showPin)} style={{ flex:2, padding:'9px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:isPinTaken(pinInput,showPin)?'var(--red)':'var(--acc)', border:'none', color:'#0b0c10', fontSize:14, fontWeight:800, opacity:(pinInput.length===4&&!isPinTaken(pinInput,showPin))?1:.4 }}>Save PIN</button>
+              <button onClick={async ()=>{ if(pinInput.length===4 && !isPinTaken(pinInput,showPin)){ const id=showPin, pin=pinInput; setShowPin(null); setPinInput(''); setPinError(''); if (await save(id,{pin})) showToast('PIN updated','success'); } }} disabled={pinInput.length!==4||isPinTaken(pinInput,showPin)} style={{ flex:2, padding:'9px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:isPinTaken(pinInput,showPin)?'var(--red)':'var(--acc)', border:'none', color:'#0b0c10', fontSize:14, fontWeight:800, opacity:(pinInput.length===4&&!isPinTaken(pinInput,showPin))?1:.4 }}>Save PIN</button>
             </div>
           </div>
         </div>

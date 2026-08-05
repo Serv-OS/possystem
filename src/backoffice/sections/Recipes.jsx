@@ -25,6 +25,7 @@ import {
   linkMenuItemRecipe, buildCostingCtx, recomputeMadeItemCost, costRecipeWith,
 } from '../../lib/stock/recipes';
 import { resolveTaxRate, netOf } from '../../lib/tax';
+import { reportSave } from '../../lib/saveHealth';
 import { PageHeader } from './reports/reportKit';
 
 const UNIT_OPTS = Object.entries(UNITS).map(([code, u]) => ({ code, ...u }));
@@ -156,10 +157,19 @@ export default function Recipes() {
     if (!draft.name?.trim()) upd('name', draft.recipeType === 'MENU' ? 'Dish' : 'Prep');
     setSaving(true);
     const { data, error } = await upsertRecipe({ ...draft, name: draft.name?.trim() || (draft.recipeType === 'MENU' ? menuMeta.label(menuMeta.byId[String(draft.menuItemId)] || {}) : 'Prep') }, locId);
+    reportSave('recipe', error);
     if (error) { setSaving(false); showToast?.('Save failed: ' + error.message, 'error'); return; }
     const rid = data?.id || draft.id;
-    await replaceRecipeLines(rid, draft.lines, locId);
-    if (draft.recipeType === 'MENU' && draft.menuItemId) await linkMenuItemRecipe(draft.menuItemId, rid, draft.portion || 1, locId);
+    // The ingredients ARE the recipe — "Recipe saved" over a rejected line write is
+    // how a dish ends up costed at zero.
+    const { error: lineErr } = await replaceRecipeLines(rid, draft.lines, locId);
+    reportSave('recipe ingredients', lineErr);
+    if (lineErr) { setSaving(false); showToast?.('Ingredients NOT saved — the recipe is incomplete', 'error'); return; }
+    if (draft.recipeType === 'MENU' && draft.menuItemId) {
+      const { error: linkErr } = await linkMenuItemRecipe(draft.menuItemId, rid, draft.portion || 1, locId);
+      reportSave('recipe → menu item link', linkErr);
+      if (linkErr) { setSaving(false); showToast?.('Saved, but NOT linked to the menu product — cost & GP won’t show', 'error'); return; }
+    }
     if (draft.recipeType === 'PREP' && draft.outputItemId) await recomputeMadeItemCost(draft.outputItemId, locId);
     setSaving(false); showToast?.('Recipe saved', 'success');
     await reload(draft.recipeType === 'MENU' ? { menuItemId: draft.menuItemId } : { recipeId: rid });
@@ -167,7 +177,10 @@ export default function Recipes() {
   const archive = async () => {
     if (!draft?.id) return;
     if (!confirm('Remove this recipe?')) return;
-    await setRecipeArchived(draft.id, true, locId);
+    const { error } = await setRecipeArchived(draft.id, true, locId);
+    reportSave('recipe archive', error);
+    // Don't clear the editor on a refused archive — the recipe is still costing dishes.
+    if (error) { showToast?.('Recipe NOT removed', 'error'); return; }
     showToast?.('Recipe removed', 'info'); setDraft(null); setSelectedKey(null); await reload();
   };
 

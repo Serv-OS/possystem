@@ -237,6 +237,30 @@ function BigBtn({ icon, label, tone, onClick, busy }) {
   );
 }
 
+// v5.5.971 — THE TIME CLOCK NEVER RENDERED TOASTS. store.showToast() sets `toast`,
+// but the only <Toast> in the app lives inside the POS shell (App.jsx ValidatedPOSApp)
+// and this surface returns from an EARLIER branch (App.jsx:288), so anything raised
+// through the store from here was silently discarded. Mirrors BackOfficeToast in
+// src/backoffice/BackOfficeApp.jsx. (Punch errors still show inline — this is for
+// everything that goes through the store.)
+function ClockToast() {
+  const toast = useStore(s => s.toast);
+  if (!toast) return null;
+  const map = {
+    success: { bg: 'var(--grn-d)', bdr: 'var(--grn-b)', color: 'var(--grn)' },
+    error:   { bg: 'var(--red-d)', bdr: 'var(--red-b)', color: 'var(--red)' },
+    warning: { bg: 'var(--acc-d)', bdr: 'var(--acc-b)', color: 'var(--acc)' },
+    info:    { bg: 'var(--bg3)',   bdr: 'var(--bdr2)',  color: 'var(--t1)'  },
+  };
+  const c = map[toast.type] || map.info;
+  return (
+    <div className="toast" key={toast.key}
+      style={{ background: c.bg, border: `1px solid ${c.bdr}`, color: c.color, zIndex: 100003 }}>
+      {toast.msg}
+    </div>
+  );
+}
+
 function Shell({ venue, tz, children }) {
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 24, position: 'relative' }}>
@@ -251,6 +275,7 @@ function Shell({ venue, tz, children }) {
         {fmtTime(new Date().toISOString(), tz)}
       </div>
       {children}
+      <ClockToast />
     </div>
   );
 }

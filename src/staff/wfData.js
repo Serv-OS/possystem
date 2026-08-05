@@ -15,9 +15,19 @@
 // every flow is testable without a backend. Production always hits Supabase.
 
 import { supabase, isMock } from '../lib/supabase';
+import { reportSave } from '../lib/saveHealth';
 import { ROLES as SEED_ROLES } from './seed';
 
 const orgCache = {};
+
+/** Report a write's outcome to saveHealth (red Back Office banner + best-effort
+ *  session refresh) and THROW on failure so the caller can revert. Writers that
+ *  only console.warn'd let the UI claim "Saved" while the row never landed —
+ *  the v5.5.951 vanishing-categories class of bug. */
+function checkWrite(entity, error) {
+  reportSave(entity, error || null);
+  if (error) throw new Error(error.message || String(error));
+}
 
 // ── localStorage mock layer ─────────────────────────────────────────────────
 const lsKey = t => `rpos-wf-${t}`;
@@ -212,8 +222,10 @@ export async function saveStaff(member, locationId, orgId) {
 export async function softDeleteStaff(id) {
   if (isMock || !supabase) return lsDelete('staff', id);
   const today = new Date().toISOString().slice(0, 10);
-  const { error } = await supabase.from('wf_staff').update({ status: 'leaver', leaver_date: today }).eq('id', id);
-  if (error) console.warn('[wf] softDeleteStaff:', error.message);
+  // .select() so an RLS-blocked update can't "succeed" against 0 rows — the
+  // person would vanish from the list and be back on the next refresh.
+  const { data, error } = await supabase.from('wf_staff').update({ status: 'leaver', leaver_date: today }).eq('id', id).select('id');
+  checkWrite('staff leaver', error || (!data?.length ? new Error('Marking them as a leaver matched 0 rows — RLS blocked it, or the record is gone') : null));
 }
 export async function markPosUser(staffId, posUserId) {
   if (isMock || !supabase) { const a = lsGet('staff'); const i = a.findIndex(x => x.id === staffId); if (i >= 0) { a[i].posUserId = posUserId; lsSet('staff', a); } return; }
@@ -320,7 +332,7 @@ export async function saveSection(section, locationId, orgId) {
 export async function deleteSection(id) {
   if (isMock || !supabase) return lsDelete('sections', id);
   const { error } = await supabase.from('wf_sections').delete().eq('id', id);
-  if (error) console.warn('[wf] deleteSection:', error.message);
+  checkWrite('section delete', error);
 }
 
 // ============================================================================
@@ -393,13 +405,17 @@ export async function saveShift(shift, locationId, orgId) {
 export async function deleteShift(id) {
   if (isMock || !supabase) return lsDelete('shifts', id);
   const { error } = await supabase.from('wf_shifts').delete().eq('id', id);
-  if (error) console.warn('[wf] deleteShift:', error.message);
+  checkWrite('shift delete', error);
 }
 export async function publishShifts(ids) {
   if (!ids?.length) return;
   if (isMock || !supabase) { const a = lsGet('shifts'); a.forEach(s => { if (ids.includes(s.id)) s.status = 'published'; }); lsSet('shifts', a); return; }
-  const { error } = await supabase.from('wf_shifts').update({ status: 'published' }).in('id', ids);
-  if (error) console.warn('[wf] publishShifts:', error.message);
+  // Staff get SMS + email off the back of this, so a publish that lands on FEWER
+  // rows than asked (RLS matching nothing) has to fail loudly, not warn. .select()
+  // is the only way to tell "updated nothing" from "updated everything".
+  const { data, error } = await supabase.from('wf_shifts').update({ status: 'published' }).in('id', ids).select('id');
+  const rows = data?.length || 0;
+  checkWrite('rota publish', error || (rows !== ids.length ? new Error(`Published ${rows} of ${ids.length} shift(s) — the rest were rejected`) : null));
 }
 
 // ============================================================================
@@ -508,8 +524,8 @@ export async function saveTimeOff(leave, locationId, orgId) {
 }
 export async function decideTimeOff(id, status, decidedBy) {
   if (isMock || !supabase) { const a = lsGet('timeoff'); const i = a.findIndex(x => x.id === id); if (i >= 0) { a[i].status = status; lsSet('timeoff', a); } return; }
-  const { error } = await supabase.from('wf_time_off').update({ status, decided_by: decidedBy || null, decided_at: new Date().toISOString() }).eq('id', id);
-  if (error) console.warn('[wf] decideTimeOff:', error.message);
+  const { data, error } = await supabase.from('wf_time_off').update({ status, decided_by: decidedBy || null, decided_at: new Date().toISOString() }).eq('id', id).select('id');
+  checkWrite('leave decision', error || (!data?.length ? new Error('The decision matched 0 rows — RLS blocked it, or the request is gone') : null));
 }
 const mapAvail = r => ({ id: r.id, staffId: r.staff_id, weekStart: r.week_start, recurring: r.recurring, perDay: r.per_day || [] });
 export async function loadAvailability(locationId) {
@@ -593,7 +609,7 @@ export async function saveDocument(doc, locationId, orgId) {
 export async function deleteDocument(id) {
   if (isMock || !supabase) return lsDelete('documents', id);
   const { error } = await supabase.from('wf_documents').delete().eq('id', id);
-  if (error) console.warn('[wf] deleteDocument:', error.message);
+  checkWrite('document delete', error);
 }
 
 /** Bulk-insert shifts in ONE request — the AI rota builder was inserting one
@@ -813,7 +829,7 @@ export async function saveForecast(dateIso, amount, locationId, orgId) {
   const org = await resolveOrgForLocation(locationId, orgId);
   const row = { location_id: locationId, org_id: org, forecast_date: dateIso, amount: Number(amount) || 0 };
   const { error } = await supabase.from('wf_sales_forecast').upsert(row, { onConflict: 'location_id,forecast_date' });
-  if (error) console.warn('[wf] saveForecast:', error.message);
+  checkWrite('sales forecast', error);
 }
 /** Actual revenue per day (YYYY-MM-DD → £) from closed_checks (excludes voids). */
 export async function loadActualSales(locationId, fromIso, toIso) {
@@ -870,7 +886,12 @@ export async function logAudit(entry, locationId, orgId, actor) {
     before: entry.before || null, after: entry.after || null,
   };
   const { error } = await supabase.from('wf_audit').insert(row);
-  if (error) console.warn('[wf] logAudit:', error.message);
+  // Deliberately does NOT throw: the audit row is a record OF a business write
+  // that has already landed, so throwing here would make a successful publish
+  // report as failed. It does go up on the saveHealth banner — an audit trail
+  // that silently misses entries is worse than no audit trail.
+  reportSave('audit trail', error || null);
+  return !error;
 }
 
 // ── v5.5.970 — Future-dated pay rate changes (wf_rate_changes) ───────────────

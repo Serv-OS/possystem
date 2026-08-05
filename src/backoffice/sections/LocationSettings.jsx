@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { platformSupabase, supabase, getLocationId } from '../../lib/supabase';
+import { reportSave } from '../../lib/saveHealth';
 import { clearLocationConfigCache } from '../../lib/locationTime';
 import { defaultOpeningHours, emptyOpeningHours, isOpenNow, formatHoursPreview } from '../../lib/openingHours';
 import { isValidSlug, suggestSlug } from '../../lib/customerUrl';
@@ -300,24 +301,32 @@ export default function LocationSettings() {
 
     // Save show_item_images + pos_settings to ops DB (separate concern).
     // pos_settings merges over the loaded jsonb so future keys survive this save.
+    // Checked separately from the platform write above: this half failing on its own
+    // used to leave the screen saying "✓ Saved" while the address / POS settings were
+    // never written.
     const locId = await getLocationId().catch(() => null);
+    let opsErr = null;
     if (locId && supabase) {
-      try {
-        await supabase.from('locations').update({
-          show_item_images: showItemImages,
-          address: venueAddress.trim() || null,
-          pos_settings: { ...(posSettingsRaw || {}), takeaway_customer_details: takeawayDetails },
-        }).eq('id', locId);
-      } catch {}
+      const { data: opsRows, error: oErr } = await supabase.from('locations').update({
+        show_item_images: showItemImages,
+        address: venueAddress.trim() || null,
+        pos_settings: { ...(posSettingsRaw || {}), takeaway_customer_details: takeawayDetails },
+      }).eq('id', locId).select('id');
+      opsErr = oErr || (!opsRows || opsRows.length === 0
+        ? new Error(`Ops-DB update matched 0 rows for location ${locId} — RLS may be blocking UPDATE`)
+        : null);
+      reportSave('location settings', opsErr);
     }
     setSaving(false);
 
     if (err) {
       console.warn('[LocationSettings] save failed:', err);
+      reportSave('location settings', err);
       setError(err.message || 'Save failed (check console)');
       return;
     }
     if (!data) {
+      reportSave('location settings', new Error(`Platform-DB update matched 0 rows for location ${location.id}`));
       // Update affected 0 rows even though SELECT found the location — almost
       // always RLS denying UPDATE for the (anon) platformSupabase session.
       // Surface a copy-pasteable SQL fix the user can run in Supabase SQL editor.
@@ -342,6 +351,10 @@ export default function LocationSettings() {
     setQrEnabled(!!data.qr_enabled);
     clearLocationConfigCache(); // force refresh on next read
     setActiveCurrency(currency); // v5.5.326: reflect the new currency immediately in this session
+    if (opsErr) {
+      setError(`Timezone & service periods saved, but venue address / item images / POS settings did NOT save: ${opsErr.message}`);
+      return;
+    }
     setSaved(true);
     setTimeout(() => setSaved(false), 3000);
   };

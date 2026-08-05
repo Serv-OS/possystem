@@ -6,6 +6,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useStore } from '../../../store';
 import { getActiveLocationSync, getLocationId } from '../../../lib/supabase';
 import { fetchOpsDevices, opsClaimDevice, renameOpsDevice, removeOpsDevice } from '../../../lib/ops/data';
+import { reportSave } from '../../../lib/saveHealth';
 import { Icon } from '../../../components/ServOSIcons';
 
 const field = { background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 8, padding: '9px 12px', fontSize: 14, outline: 'none', fontFamily: 'inherit' };
@@ -45,17 +46,26 @@ export default function OpsDevices() {
     setClaiming(true);
     const { error } = await opsClaimDevice(c, loc);
     setClaiming(false);
+    reportSave('ops device pairing', error);
     if (error) { showToast?.(error.message === 'code not found' ? 'That code wasn’t found — check the tablet' : (error.message || 'Could not pair'), 'error'); return; }
     setCode(''); showToast?.('Tablet paired', 'success'); reload();
   };
   const saveName = async () => {
     if (!renaming) return;
-    await renameOpsDevice(renaming.id, renaming.name.trim() || 'Ops tablet', locId);
-    setRenaming(null); showToast?.('Renamed', 'success'); reload();
+    const { error } = await renameOpsDevice(renaming.id, renaming.name.trim() || 'Ops tablet', locId);
+    reportSave('ops device rename', error);
+    // reload() puts the stored name back on screen so the list never shows a name
+    // the database refused.
+    setRenaming(null);
+    if (error) { showToast?.('Name NOT saved', 'error'); reload(); return; }
+    showToast?.('Renamed', 'success'); reload();
   };
   const remove = async (d) => {
     if (!window.confirm(`Unpair “${d.name || 'this tablet'}”? It will return to the pairing screen next time it opens.`)) return;
-    await removeOpsDevice(d.id, locId); showToast?.('Tablet unpaired', 'success'); reload();
+    const { error } = await removeOpsDevice(d.id, locId);
+    reportSave('ops device unpair', error);
+    if (error) { showToast?.(`“${d.name || 'This tablet'}” is STILL paired — unpair failed`, 'error'); return; }
+    showToast?.('Tablet unpaired', 'success'); reload();
   };
 
   const opsUrl = `${typeof window !== 'undefined' ? window.location.origin : ''}/?mode=manager`;

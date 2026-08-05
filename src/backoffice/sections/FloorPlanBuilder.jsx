@@ -1,6 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useStore } from '../../store';
-import { getLocationId } from '../../lib/supabase';
+import { supabase, isMock, getLocationId } from '../../lib/supabase';
+import { upsertFloorTable } from '../../lib/db';
+import { reportSave } from '../../lib/saveHealth';
 
 const SHAPES = [{ id:'sq', label:'Square/Rect' }, { id:'rd', label:'Round' }];
 const SECTION_PALETTE = ['#3b82f6','#e8a020','#22c55e','#a855f7','#ef4444','#22d3ee','#f97316','#ec4899'];
@@ -30,9 +32,10 @@ export default function FloorPlanBuilder() {
   const [showAddTable, setShowAddTable] = useState(false);
   const [showAddSection, setShowAddSection] = useState(false);
   const [editingSection, setEditingSection] = useState(null);
-  const [saveStatus, setSaveStatus] = useState('saved'); // 'saved' | 'saving' | 'pushed'
+  const [saveStatus, setSaveStatus] = useState('saved'); // 'saved' | 'saving' | 'pushed' | 'failed'
   const saveTimer = useRef(null);
   const canvasRef  = useRef(null);
+  const dragStart  = useRef(null);   // pre-drag position, for reverting a rejected move
 
   const { markBOChange } = useStore();
 
@@ -46,6 +49,30 @@ export default function FloorPlanBuilder() {
       setTimeout(() => setSaveStatus('saved'), 2500);
     }, 300);
   }, [markBOChange]);
+
+  // Table mutations are applied to the store first (the canvas has to feel instant) and the
+  // store's own write is fire-and-forget — it reported nothing, so a rejected save still
+  // showed "✓ Staged" and the table was simply gone at the next boot. Re-issue the SAME row
+  // as an awaited, checked upsert and UNDO the canvas when it fails: what is on screen must
+  // be what the database accepted (INVARIANTS.md — tables must never be lost).
+  const confirmTable = useCallback(async (id, undo) => {
+    setSaveStatus('saving');
+    markBOChange();
+    clearTimeout(saveTimer.current);
+    const table = useStore.getState().tables.find(t => t.id === id);
+    if (!table) { setSaveStatus('saved'); return false; }
+    const { error } = await upsertFloorTable(table);
+    reportSave('floor plan table', error);
+    if (error) {
+      undo?.();
+      setSaveStatus('failed');
+      showToast(`“${table.label}” was NOT saved — the floor plan has been put back`, 'error');
+      return false;
+    }
+    setSaveStatus('pushed');
+    saveTimer.current = setTimeout(() => setSaveStatus('saved'), 2500);
+    return true;
+  }, [markBOChange, showToast]);
 
   // v5.5.2: only show tables that belong to the active location. A table without a locationId
   // is a freshly-added one (stamped on save) and is OK to show. Pre-v5.5.2 data lacks
@@ -67,6 +94,7 @@ export default function FloorPlanBuilder() {
     if (!table) return;
     setDragging(tableId);
     setSelected(tableId);
+    dragStart.current = { id: tableId, x: table.x, y: table.y };
     setDragOffset({ x: e.clientX - rect.left - table.x, y: e.clientY - rect.top - table.y });
   }, [tables]);
 
@@ -79,13 +107,22 @@ export default function FloorPlanBuilder() {
   }, [dragging, dragOffset, updateTableLayout]);
 
   const handleMouseUp = useCallback(() => {
-    if (dragging) { markChanged(); setDragging(null); }
-  }, [dragging, markChanged]);
+    if (!dragging) return;
+    const id = dragging;
+    const from = dragStart.current;
+    setDragging(null);
+    dragStart.current = null;
+    const now = useStore.getState().tables.find(t => t.id === id);
+    // A plain click to select isn't a change — don't write, and don't claim a save either.
+    if (!now || (from && from.id === id && from.x === now.x && from.y === now.y)) return;
+    confirmTable(id, from && from.id === id ? () => updateTableLayout(id, { x: from.x, y: from.y }) : undefined);
+  }, [dragging, confirmTable, updateTableLayout]);
 
   const upd = (key, val) => {
     if (!selected) return;
+    const before = useStore.getState().tables.find(t => t.id === selected)?.[key];
     updateTableLayout(selected, { [key]: val });
-    markChanged();
+    confirmTable(selected, () => updateTableLayout(selected, { [key]: before }));
   };
 
   // v5.5.739: table labels must be unique per location (a duplicate "number" breaks seating,
@@ -100,6 +137,20 @@ export default function FloorPlanBuilder() {
   // "T10" just because "T1" exists. Duplicates are rejected only on commit.
   const [labelDraft, setLabelDraft] = useState('');
   useEffect(() => { setLabelDraft(selectedTable?.label || ''); }, [selected, selectedTable?.label]);
+  // Width/height commit on blur, like the label above. upd() reverts to a snapshot when
+  // the write is refused, and firing it per keystroke means one request per digit — each
+  // holding its own stale "before", so a single refusal mid-type would snap the table back
+  // to a size from several keystrokes ago.
+  const [sizeDraft, setSizeDraft] = useState({});
+  useEffect(() => { setSizeDraft({}); }, [selected]);
+  const commitSize = (key) => {
+    const raw = sizeDraft[key];
+    setSizeDraft(d => { const n = { ...d }; delete n[key]; return n; });
+    if (raw == null || !selectedTable) return;
+    const v = Math.min(200, Math.max(40, parseInt(raw, 10) || 64));
+    if (v !== selectedTable[key]) upd(key, v);
+  };
+
   const commitLabel = () => {
     if (!selectedTable) return;
     const v = labelDraft.trim();
@@ -110,6 +161,39 @@ export default function FloorPlanBuilder() {
       return;
     }
     upd('label', v);
+  };
+
+  // Delete DB-first: the store's remover drops the table from state and fires a delete whose
+  // .catch() can never run (PostgREST resolves with { error }, it never rejects), so a blocked
+  // delete looked done and the table walked back in on the next boot.
+  const removeSelectedTable = async () => {
+    const table = tablesForThisLocation.find(t => t.id === selected);
+    if (!table) return;
+    if (!isMock && supabase) {
+      setSaveStatus('saving');
+      const locId = table.locationId || activeLocationId || null;
+      let q = supabase.from('floor_tables').delete().eq('id', table.id);
+      if (locId) q = q.eq('location_id', locId);   // same tenant scoping as db.deleteFloorTable
+      const { data, error } = await q.select('id');
+      // Zero rows is what an RLS-filtered delete looks like — and also what a table that never
+      // reached the DB looks like. Probe before refusing, or a phantom becomes undeletable.
+      let blocked = null;
+      if (error) blocked = error;
+      else if (!data || data.length === 0) {
+        const { data: still } = await supabase.from('floor_tables').select('id').eq('id', table.id).maybeSingle();
+        if (still) blocked = new Error('Table delete matched 0 rows — RLS blocked it');
+      }
+      reportSave('floor plan table delete', blocked);
+      if (blocked) {
+        setSaveStatus('failed');
+        showToast(`“${table.label}” was NOT deleted — it is still on the floor plan`, 'error');
+        return;
+      }
+    }
+    removeTableFromLayout(table.id);
+    setSelected(null);
+    markChanged();
+    showToast(`Table “${table.label}” removed`, 'info');
   };
 
   const sectionColor = (id) => locationSections.find(s => s.id === id)?.color || '#888780';
@@ -247,12 +331,15 @@ export default function FloorPlanBuilder() {
                     <label style={{ display:'block', fontSize:10, color:'var(--t4)', marginBottom:4 }}>{label}px</label>
                     <input type="number" min="40" max="200" step="8"
                       style={{ width:'100%', background:'var(--bg3)', border:'1px solid var(--bdr2)', borderRadius:8, padding:'6px 9px', color:'var(--t1)', fontSize:12, fontFamily:'inherit', outline:'none', boxSizing:'border-box' }}
-                      value={selectedTable[key]} onChange={e => upd(key, parseInt(e.target.value)||64)}/>
+                      value={sizeDraft[key] ?? selectedTable[key]}
+                      onChange={e => setSizeDraft(d => ({ ...d, [key]: e.target.value }))}
+                      onBlur={() => commitSize(key)}
+                      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}/>
                   </div>
                 ))}
               </div>
 
-              <button onClick={() => { removeTableFromLayout(selected); setSelected(null); markChanged(); }} style={{
+              <button onClick={removeSelectedTable} style={{
                 width:'100%', padding:'7px', borderRadius:8, cursor:'pointer', fontFamily:'inherit',
                 background:'var(--red-d)', border:'1px solid var(--red-b)', color:'var(--red)', fontSize:12, fontWeight:700,
               }}>Remove table</button>
@@ -282,6 +369,12 @@ export default function FloorPlanBuilder() {
               <span style={{ display:'flex', alignItems:'center', gap:5, color:'var(--acc)', fontWeight:700 }}>
                 <div style={{ width:6, height:6, borderRadius:'50%', background:'var(--acc)' }}/>
                 ✓ Staged — hit "Push to POS" to go live
+              </span>
+            )}
+            {saveStatus === 'failed' && (
+              <span style={{ display:'flex', alignItems:'center', gap:5, color:'var(--red)', fontWeight:700 }}>
+                <div style={{ width:6, height:6, borderRadius:'50%', background:'var(--red)' }}/>
+                ✕ Not saved — the change was undone
               </span>
             )}
             {saveStatus === 'saved' && (
@@ -359,11 +452,22 @@ export default function FloorPlanBuilder() {
           defaultSection={viewSection === 'all' ? locationSections[0]?.id : viewSection}
           labelTaken={labelTaken}
           onClose={() => setShowAddTable(false)}
-          onAdd={table => {
+          onAdd={async table => {
             if (labelTaken(table.label)) { showToast(`Table “${String(table.label).trim()}” already exists`, 'error'); return; }
-            addTableToLayout(table);
-            markChanged();
+            const before = new Set(useStore.getState().tables.map(t => t.id));
+            await addTableToLayout(table);
             setShowAddTable(false);
+            // The store may have refused it (duplicate label) — then there is nothing to confirm.
+            const created = useStore.getState().tables.find(t => !before.has(t.id));
+            if (!created) return;
+            // Revert on failure so a table the DB rejected can't sit on the canvas all evening
+            // and "vanish" on refresh — same phantom-create bug as DeviceProfiles v5.5.961.
+            // The rollback drops the row from local state ONLY. It must not call
+            // removeTableFromLayout: that is now a checked DB writer which would fire a
+            // delete for a row that was never inserted, put the table back when that delete
+            // found nothing, and clear the red banner confirmTable had just raised.
+            await confirmTable(created.id, () =>
+              useStore.setState(s => ({ tables: s.tables.filter(t => t.id !== created.id) })));
           }}
         />
       )}

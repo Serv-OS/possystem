@@ -8,6 +8,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useStore } from '../../../store';
 import { getActiveLocationSync, getLocationId } from '../../../lib/supabase';
 import { fetchNotificationRules, upsertNotificationRule, deleteNotificationRule, fetchOpsRecipients } from '../../../lib/ops/data';
+import { reportSave } from '../../../lib/saveHealth';
 import { Icon } from '../../../components/ServOSIcons';
 
 const EVENT_TYPES = [
@@ -60,13 +61,21 @@ export default function OpsNotifications() {
     setSavingType(type);
     const { data, error } = await upsertNotificationRule(drafts[type], locId);
     setSavingType(null);
+    reportSave('alert rule', error);
     if (error) { showToast?.(error.message || 'Save failed', 'error'); return; }
     if (data) setDrafts(d => ({ ...d, [type]: { ...d[type], id: data.id || d[type].id } }));
     showToast?.('Alert rule saved', 'success');
   };
   const turnOff = async (type) => {
     const r = drafts[type];
-    if (r.id) { await deleteNotificationRule(r.id, locId); showToast?.('Rule removed — in-app only', 'success'); }
+    if (r.id) {
+      const { error } = await deleteNotificationRule(r.id, locId);
+      reportSave('alert rule delete', error);
+      // Only blank the card once the row is really gone — otherwise the screen says
+      // "in-app only" while the rule keeps sending SMS/email.
+      if (error) { showToast?.('Rule NOT removed — it is still sending', 'error'); return; }
+      showToast?.('Rule removed — in-app only', 'success');
+    }
     setDrafts(d => ({ ...d, [type]: blankRule(type) }));
   };
 

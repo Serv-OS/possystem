@@ -7,6 +7,7 @@
 import { useState } from 'react';
 import { useStore } from '../../store';
 import { supabase, platformSupabase, isMock } from '../../lib/supabase';
+import { reportSave } from '../../lib/saveHealth';
 
 const TIMEZONES = [
   'Europe/London', 'Europe/Dublin', 'Europe/Paris', 'Europe/Berlin',
@@ -43,20 +44,34 @@ export default function MultiLocation() {
   const save = async () => {
     if (!form.name?.trim()) { showToast('Location name required', 'error'); return; }
     if (editId) {
+      const before = locations?.find(l => l.id === editId);
       updateLocation(editId, form);
       // Persist the venue name to BOTH databases: ops (tills, back office, receipts)
       // and platform (online ordering / gift / loyalty read the name from the platform
       // row, matched by ops_location_id) — otherwise a rename never reaches the
-      // customer-facing ordering pages. Best-effort: the local save stands either way.
+      // customer-facing ordering pages.
       if (!isMock && supabase) {
         const name = form.name.trim();
+        const { data, error: oErr } = await supabase.from('locations').update({ name }).eq('id', editId).select('id');
+        const opsFail = oErr || (!data || data.length === 0
+          ? new Error(`Rename matched 0 rows for location ${editId} — RLS may have blocked it`)
+          : null);
+        reportSave('location', opsFail);
+        if (opsFail) {
+          // Revert: the tills and receipts still carry the old name, so this screen must too.
+          if (before) updateLocation(editId, before);
+          showToast(`Location NOT saved — ${opsFail.message}`, 'error');
+          return;
+        }
         try {
-          await supabase.from('locations').update({ name }).eq('id', editId);
           const { error: pErr } = await platformSupabase.from('locations').update({ name })
             .or(`ops_location_id.eq.${editId},id.eq.${editId}`);
-          if (pErr) showToast('Saved, but the online-ordering name didn’t sync — try again', 'error');
-        } catch {
-          showToast('Saved here, but the name didn’t sync everywhere — check your connection', 'error');
+          if (pErr) throw pErr;
+        } catch (e) {
+          reportSave('location (online ordering name)', e);
+          showToast('Saved, but the online-ordering name didn’t sync — try again', 'error');
+          setView('overview');
+          return;
         }
       }
       showToast('Location updated', 'success');

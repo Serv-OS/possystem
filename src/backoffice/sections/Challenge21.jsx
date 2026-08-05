@@ -16,6 +16,7 @@
 
 import { useEffect, useState } from 'react';
 import { platformSupabase, supabase, isMock, getLocationId } from '../../lib/supabase';
+import { reportSave } from '../../lib/saveHealth';
 import { useStore } from '../../store';
 import Challenge21Report from './Challenge21Report';
 
@@ -24,7 +25,7 @@ export default function Challenge21() {
   // meant the store fallback was always empty, leaving us with the
   // DB-direct path which returns 0 if the BO's ops_location_id doesn't
   // match the menu_categories rows.
-  const { menuCategories: storeCats } = useStore();
+  const { menuCategories: storeCats, showToast } = useStore();
   const [loading, setLoading]       = useState(true);
   const [saving, setSaving]         = useState(false);
   const [savedAt, setSavedAt]       = useState(null);
@@ -137,6 +138,7 @@ export default function Challenge21() {
         challenge_21_alcohol_category_ids: categoryIds,
         challenge_21_trigger_every: Math.max(1, Math.min(1000, Math.round(Number(triggerEvery) || 10))),
       }).eq('id', locationId);
+      reportSave('Challenge 21 settings', uErr);
       if (uErr) {
         if (/column .* does not exist/i.test(uErr.message)) {
           setError('DB migration missing — run the Challenge 21 SQL on the platform DB.');
@@ -156,7 +158,19 @@ export default function Challenge21() {
   const resetCounter = async () => {
     if (!locationId) return;
     if (!confirm('Reset the Challenge ID counter to 0? The next alcohol sale will start fresh.')) return;
-    await platformSupabase.from('locations').update({ challenge_21_counter: 0 }).eq('id', locationId);
+    const { data, error } = await platformSupabase.from('locations')
+      .update({ challenge_21_counter: 0 }).eq('id', locationId).select('id');
+    const failure = error || (!data || data.length === 0
+      ? new Error(`Counter reset matched 0 rows for location ${locationId} — RLS may be blocking UPDATE`)
+      : null);
+    reportSave('Challenge 21 counter', failure);
+    if (failure) {
+      // The POS reads the counter from the DB, so showing 0 here would be a lie.
+      setError(`Counter NOT reset — ${failure.message}`);
+      showToast('Counter NOT reset — the POS will keep counting from where it was', 'error');
+      return;
+    }
+    setError('');
     setCounter(0);
   };
 

@@ -8,6 +8,7 @@ import { useStore } from '../../store';
 import { getActiveLocationSync, getLocationId } from '../../lib/supabase';
 import { money } from '../../lib/currency';
 import { fetchSuppliers, upsertSupplier, setSupplierArchived } from '../../lib/stock/data';
+import { reportSave } from '../../lib/saveHealth';
 import { PageHeader, SearchField } from './reports/reportKit';
 
 const DAYS = [['mon', 'Mon'], ['tue', 'Tue'], ['wed', 'Wed'], ['thu', 'Thu'], ['fri', 'Fri'], ['sat', 'Sat'], ['sun', 'Sun']];
@@ -46,11 +47,19 @@ export default function Suppliers() {
     setSaving(true);
     const { data, error } = await upsertSupplier(draft, locId);
     setSaving(false);
+    reportSave('supplier', error);
     if (error) { showToast?.(error.message, 'error'); return; }
     showToast?.('Saved', 'success');
     await reload(data?.id || selId);
   };
-  const archive = async () => { if (draft?.id) { await setSupplierArchived(draft.id, true, locId); showToast?.('Archived', 'info'); setDraft(null); setSelId(null); await reload(); } };
+  const archive = async () => {
+    if (!draft?.id) return;
+    const { error } = await setSupplierArchived(draft.id, true, locId);
+    reportSave('supplier archive', error);
+    // Don't clear the pane on a refused archive — the supplier is still orderable.
+    if (error) { showToast?.(`"${draft.name}" was NOT archived`, 'error'); return; }
+    showToast?.('Archived', 'info'); setDraft(null); setSelId(null); await reload();
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, background: 'var(--bg)' }}>

@@ -7,6 +7,26 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.974', date: '5 Aug 2026', label: 'Pre-stage hardening: saves that failed silently now tell you, and the scheduled jobs actually run',
+    changes: [
+      'THE BIG ONE: around 50 places in the Back Office told you "Saved" without ever checking whether the database accepted the write. If it was rejected you got a green tick and lost the change. Every one of them now checks, and shows a red banner naming what did NOT save.',
+      'Affected screens — Print routing, Printers, Floor plan, Discounts, Tax rates, Staff, Devices, Location settings, Multi-location, Challenge 21, Customers, Menu boards, Print menu, Location switcher, Stock items, Stock counts, Purchase orders, Suppliers, Recipes, Maintenance, Ops notifications, Temperature schedules, Ops devices, Rota, Time off.',
+      'Optimistic screens now REVERT when the write fails, so the screen can no longer show data the database rejected.',
+      'Tax: seeding rates no longer reports "12 rates added" when none were, a half-finished default change can no longer leave TWO default rates, and a failed read can no longer replace a good tax table with an empty one.',
+      'Cash: insertCashMovement returned a valid-looking id even when the insert failed, so petty cash, cash drops and paid-outs could be counted as booked while the database rejected them — drawer variance, end-of-day and the Z report all inherited the error. It now fails honestly.',
+      'Rota: publishing a rota that failed to save no longer sends staff their shift SMS and email anyway.',
+      'Temperature readings recorded on the Operations tablet were being discarded silently — a manager ticked a fridge check, saw it tick, and no food-safety record was written. Now it saves or it says so.',
+      'The Manager app, MPOS and Time Clock could not display any error or success message at all (same bug fixed in the Back Office in v5.5.971). All three can now.',
+      'Scheduling: the terminal job sweeper had failed 20,538 times in a row since 21 July — every minute, always the same permission error — so abandoned card payments were never expired and terminals could wedge. Fixed.',
+      'The four background jobs declared in vercel.json had never run even once: Vercel only runs them on Production, and develop/staging are Previews. They move into the database itself (pg_cron), so staging schedules staging and production schedules production.',
+      'Operations escalation was reading staff phone numbers and emails from a table that has neither column. The query failed, the error was swallowed, and the food-safety escalation ladder quietly notified nobody while reporting success. It now reads the real HR records — and refuses to mark an alert "escalated" when nothing was actually delivered.',
+      'The four cron routes silently fell back to the production database URL when a setting was missing, so a staging deploy could have driven production every few minutes. They now refuse to run rather than guess.',
+      'FOUND WHILE FIXING THE ABOVE — transferring a table has never told the kitchen. The transfer-notice code called a routing helper that only existed inside a different function, so it threw immediately; the throw landed in a catch that only logged to the console. You saw "Transferred to Table 12" and the kitchen was never notified the food had moved. The helper is now shared and the notice prints.',
+      'ALSO FOUND — the What\'s New list could not open at all. One old April 2026 entry referenced a version constant that was never imported, so the whole changelog file failed to load. Every release note written since has been unreadable in the app.',
+      'TEST: see TEST_PLAN_v5.5.974.md — the short version is that every "Saved" you see in the Back Office is now real, and a red banner appears when it is not.',
+    ],
+  },
+  {
     version: '5.5.973', date: '4 Aug 2026', label: 'Bank account NAME captured alongside sort code and account number',
     changes: [
       'Staff bank details now hold the ACCOUNT NAME — the name as it appears at the bank. When paying manually you check it against the bank\'s payee warning before sending, and it is often not the person\'s own name (joint or parent accounts).',
@@ -8619,7 +8639,11 @@ export const CHANGELOG = [
       'Qty +/- lag: BroadcastChannel and localStorage writes now skipped for qty-only changes — only meaningful changes (adds, voids, sends, opens, closes) trigger cross-tab sync',
     ],
   },
-  { version: VERSION, date: 'Apr 2026', label: 'Fix: master correctly identifies itself every time', changes: ['Device validation already fetches device_profiles from Supabase on every boot — now reads is_master from that and writes it into rpos-device-config', 'Master boot reads cfg.isMaster from rpos-device-config — always set correctly because validation runs before this fires', 'No more Supabase queries or localStorage guessing in boot path'] },
+  // v5.5.974: this entry read `version: VERSION` — a bare identifier that was never
+  // imported here. Evaluating the array threw a ReferenceError, so the lazy import in
+  // WhatsNewModal failed and the What's New list could not open at all. The literal is
+  // the version this April 2026 entry actually shipped as.
+  { version: '3.7.3', date: 'Apr 2026', label: 'Fix: master correctly identifies itself every time', changes: ['Device validation already fetches device_profiles from Supabase on every boot — now reads is_master from that and writes it into rpos-device-config', 'Master boot reads cfg.isMaster from rpos-device-config — always set correctly because validation runs before this fires', 'No more Supabase queries or localStorage guessing in boot path'] },
   { version: '3.7.2', date: 'Apr 2026', label: 'Fix: master device correctly identifies itself', changes: ['Master detection now queries Supabase devices+device_profiles directly at boot — never relies on stale localStorage cache which was missing isMaster field', 'Fallback to localStorage only if Supabase query fails'] },
   {
     version: '3.7.1', date: 'Apr 2026', label: 'Master-child: hard block, fixed false positives, device counts',

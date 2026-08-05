@@ -9,6 +9,7 @@
 // Thresholds/units/schedules are READ from admin config; this surface never defines them.
 
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
+import { useStore } from '../store';
 import {
   opsHeartbeat, opsRegisterDevice, opsPinLogin,
   fetchTempUnits, fetchSchedules, fetchReadings, submitReading,
@@ -20,6 +21,7 @@ import {
 } from '../lib/ops/temp';
 import { Icon } from '../components/ServOSIcons';
 import { ensureAuthToken } from '../lib/supabase';
+import { reportSave } from '../lib/saveHealth';
 
 // unit-type → glyph + category hue (the OKLCH identity scale, --h)
 const TYPE_META = {
@@ -412,6 +414,7 @@ function LogUnit({ loc, unit, operator, onDone, onSaved }) {
     setBusy(true); setErr('');
     const { error } = await submitReading({ unitId: unit.id, readingC, source: 'manual', operatorId: operator?.id, operatorName: operator?.name, corrective: corr }, loc);
     setBusy(false);
+    reportSave('temperature reading', error);
     if (error) { setErr(error.message || 'Could not save'); return; }
     onSaved?.(readingC, corr || null);
     onDone();
@@ -517,6 +520,7 @@ function DeliveryCheck({ loc, operator, row, onDone }) {
       rejectionReason: accept ? null : `Over ${ACCEPT_MAX}°C on arrival`,
     }, loc);
     setBusy(false);
+    reportSave('delivery check', error);
     if (error) { setErr(error.message || 'Could not record'); return; }
     onDone();
   };
@@ -584,10 +588,20 @@ function ChecklistRun({ loc, operator, checklist, onDone }) {
   // ops_submit_reading chain (breach → corrective → maintenance → alert) and
   // the task only completes once the reading exists.
   const [tempTask, setTempTask] = useState(null);   // { task, unit }
+  const showToast = useStore(s => s.showToast);
   const unitsRef = useRef(null);
   const fileRef = useRef(null);
   const pendingTaskRef = useRef(null);
-  useEffect(() => { if (!run) openRun(checklist.id, loc).then(({ data }) => setRun(data)); }, []);
+  // A failed openRun leaves run=null, and every tap below silently early-returns on
+  // that — the checklist looks alive and records nothing. Say so instead.
+  useEffect(() => {
+    if (run) return;
+    openRun(checklist.id, loc).then(({ data, error }) => {
+      reportSave('checklist run', error);
+      if (error) { setErr(error.message || 'Could not open this checklist — go back and try again'); return; }
+      setRun(data);
+    });
+  }, []);
   const total = checklist.tasks.length;
   // A photo-required task only counts as complete once it actually carries a photo —
   // so the progress bar AND the sign-off gate can't be satisfied without the evidence.
@@ -596,7 +610,16 @@ function ChecklistRun({ loc, operator, checklist, onDone }) {
 
   const markDone = async (task) => {
     setDone(d => ({ ...d, [task.id]: { taskId: task.id, by: operator?.name, at: new Date().toISOString() } }));
-    await completeTask(run.id, task.id, { done: true, by: operator?.name, byId: operator?.id }, loc);
+    const { error } = await completeTask(run.id, task.id, { done: true, by: operator?.name, byId: operator?.id }, loc);
+    reportSave('checklist task', error);
+    if (error) {
+      // The tick was optimistic. Take it back rather than leave a compliance record
+      // on screen that no report will ever show (only this task — a concurrent tap
+      // on another task must keep its own state).
+      setDone(d => { const n = { ...d }; delete n[task.id]; return n; });
+      setErr(error.message || 'That tick was NOT recorded — try again');
+      showToast?.('Task NOT recorded — try again', 'error');
+    }
   };
 
   // Tap behaviour: a completed task unticks; a photo-required task that isn't done
@@ -608,8 +631,17 @@ function ChecklistRun({ loc, operator, checklist, onDone }) {
       // A recorded temperature is a fact — the task doesn't untick (the reading
       // already lives in the temperature log; managers amend there, not here).
       if (task.tempUnitId) return;
+      const prev = done[task.id];
       const n = { ...done }; delete n[task.id]; setDone(n);
-      await completeTask(run.id, task.id, { done: false, by: operator?.name, byId: operator?.id }, loc);
+      const { error } = await completeTask(run.id, task.id, { done: false, by: operator?.name, byId: operator?.id }, loc);
+      reportSave('checklist task', error);
+      if (error) {
+        // Untick was optimistic and the row is still `done` in the database — put the
+        // tick back so the screen matches the record staff will be audited against.
+        setDone(d => ({ ...d, [task.id]: prev }));
+        setErr(error.message || 'Could not untick that task — try again');
+        showToast?.('Task still recorded as done — untick failed', 'error');
+      }
       return;
     }
     if (task.tempUnitId) { // v5.5.971 — real reading required
@@ -643,7 +675,16 @@ function ChecklistRun({ loc, operator, checklist, onDone }) {
     if (!task || !run) return;
     const valueText = `${readingC}°C`;
     setDone(d => ({ ...d, [task.id]: { taskId: task.id, by: operator?.name, at: new Date().toISOString(), valueText } }));
-    await completeTask(run.id, task.id, { done: true, valueText, by: operator?.name, byId: operator?.id }, loc);
+    const { error } = await completeTask(run.id, task.id, { done: true, valueText, by: operator?.name, byId: operator?.id }, loc);
+    reportSave('checklist temperature task', error);
+    if (error) {
+      // The READING itself is already committed (LogUnit only calls back after
+      // ops_submit_reading succeeded) — it's the task tick that failed. Untick, and
+      // say exactly that: a food-safety checklist must never show a check it can't produce.
+      setDone(d => { const n = { ...d }; delete n[task.id]; return n; });
+      setErr('Reading saved, but the checklist tick was NOT recorded — tap the task again');
+      showToast?.('Checklist tick NOT recorded — the reading was saved', 'error');
+    }
   };
 
   const onPhotoPicked = async (e) => {
@@ -657,14 +698,16 @@ function ChecklistRun({ loc, operator, checklist, onDone }) {
     const { url, path, error } = await uploadChecklistPhoto(file, { locationId: loc, runId: run.id, taskId: task.id });
     if (error || !path) { setUploadingId(null); setErr(error?.message || 'Photo upload failed — check signal and try again'); return; }
     const { error: saveErr } = await completeTask(run.id, task.id, { done: true, photoUrl: path, by: operator?.name, byId: operator?.id }, loc);
-    if (saveErr) { setUploadingId(null); setErr('Saved the photo but could not record completion — try again'); return; }
+    reportSave('checklist photo task', saveErr);
+    if (saveErr) { setUploadingId(null); setErr('Saved the photo but could not record completion — try again'); showToast?.('Completion NOT recorded — try the photo again', 'error'); return; }
     setDone(d => ({ ...d, [task.id]: { taskId: task.id, by: operator?.name, at: new Date().toISOString(), photoUrl: url } }));
     setUploadingId(null);
   };
   const sign = async () => {
     if (completed < total) { setErr('Complete every task before signing off'); return; }
     setBusy(true); const { error } = await signOffRun(run.id, operator?.name, operator?.id, loc); setBusy(false);
-    if (error) { setErr(error.message || 'Could not sign off'); return; }
+    reportSave('checklist sign-off', error);
+    if (error) { setErr(error.message || 'Could not sign off'); showToast?.('Sign-off NOT recorded — try again', 'error'); return; }
     onDone();
   };
   const cadence = (checklist.frequency || checklist.cadence || 'Daily').toUpperCase();
@@ -802,9 +845,15 @@ function MaintRow({ m, muted }) {
 // ── Notifications (the bell): ops alerts, acknowledge inline ──────────────────
 function Alerts({ loc, operator, onBack }) {
   const [rows, setRows] = useState(null);
+  const showToast = useStore(s => s.showToast);
   const reload = useCallback(() => fetchAlerts(loc, false).then(({ data }) => setRows(data || [])), [loc]);
   useEffect(() => { reload(); }, [reload]);
-  const ack = async (a) => { await ackAlert(a.id, 'Acknowledged', operator?.name); reload(); };
+  const ack = async (a) => {
+    const { error } = await ackAlert(a.id, 'Acknowledged', operator?.name);
+    reportSave('alert acknowledgement', error);
+    if (error) showToast?.('Could not acknowledge that alert — try again', 'error');
+    reload();
+  };
   const unreadN = (rows || []).filter(a => a.status === 'sent').length;
   return (
     <div>
@@ -856,6 +905,7 @@ function RaiseMaintenance({ loc, operator, prefill, onBack }) {
     const desc = [note, prefill ? `Flagged from temp alert (${prefill.unitName} ${prefill.temp})` : ''].filter(Boolean).join(' · ');
     const res = await createMaintenance({ title, description: desc, priority: prio, reporterName: operator?.name, source: prefill ? 'temp_breach' : 'manual' }, loc);
     setBusy(false);
+    reportSave('maintenance request', res?.error);
     if (res?.error) { setErr(res.error.message || 'Could not raise request'); return; }
     setOkMsg('Maintenance request raised'); setTimeout(onBack, 900);
   };

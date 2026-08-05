@@ -11,6 +11,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../store';
 import { supabase, platformSupabase, isMock, getLocationId, getActiveLocationSync } from '../../lib/supabase';
+import { reportSave } from '../../lib/saveHealth';
 import { money } from '../../lib/currency';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
@@ -516,20 +517,31 @@ function DetailPanel({ customer, loyalty, tier, stampCards = [], stampPrograms =
       }
       const { data, error } = await supabase.from('customers').update(patch).eq('id', customer.id).select().single();
       if (error) throw error;
+      reportSave('customer', null);
       onChanged?.(data);
       setEditing(false);
     } catch (err) {
+      reportSave('customer', err);
       alert('Save failed: ' + (err?.message || err));
     }
   };
 
   const handleDelete = async () => {
     if (!confirm('Soft-delete this customer? Their order history stays for audit, but they\'ll disappear from search and reports. (GDPR right-to-be-forgotten.)')) return;
+    if (isMock || !supabase) { alert('Not connected to the database — this customer was NOT deleted.'); return; }
     try {
-      await supabase.from('customers').update({ deleted_at: new Date().toISOString() }).eq('id', customer.id);
+      // GDPR: closing the panel implies the record is gone. Only say that if the
+      // row really was stamped — a rejected or 0-row update leaves the customer
+      // fully searchable, which is a compliance failure, not a cosmetic one.
+      const { data, error } = await supabase.from('customers')
+        .update({ deleted_at: new Date().toISOString() }).eq('id', customer.id).select('id');
+      if (error) throw error;
+      if (!data || data.length === 0) throw new Error(`Update matched 0 rows for customer ${customer.id} — RLS may have blocked it`);
+      reportSave('customer erasure', null);
       onDeleted?.();
     } catch (err) {
-      alert('Delete failed: ' + (err?.message || err));
+      reportSave('customer erasure', err);
+      alert('NOT deleted — this customer is still in the database and still appears in search and reports.\n\n' + (err?.message || err));
     }
   };
 

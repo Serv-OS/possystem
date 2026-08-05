@@ -9,6 +9,7 @@ import { getActiveLocationSync, getLocationId, supabase } from '../../lib/supaba
 import { money, currencySymbol } from '../../lib/currency';
 import { fetchSuppliers, fetchInventoryItems } from '../../lib/stock/data';
 import { fetchPurchaseOrders, savePurchaseOrder, setPOStatus, receivePurchaseOrder, attachInvoiceToPO, fetchPOInvoices } from '../../lib/stock/purchasing';
+import { reportSave } from '../../lib/saveHealth';
 import { PageHeader, PrimaryBtn, Tag } from './reports/reportKit';
 
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1px solid var(--bdr)', borderRadius: 6, padding: '8px 10px', fontSize: 13, outline: 'none', boxSizing: 'border-box' };
@@ -88,6 +89,7 @@ export default function PurchaseOrders() {
     setBusy(true);
     const { data, error } = await savePurchaseOrder({ ...draft, status: status || draft.status }, draft.lines, locId);
     setBusy(false);
+    reportSave('purchase order', error);
     if (error) { showToast?.(error.message, 'error'); return; }
     showToast?.(status === 'SENT' ? 'Marked sent' : 'Saved', 'success');
     await reload(data?.id || selId);
@@ -132,6 +134,7 @@ export default function PurchaseOrders() {
     setBusy(true);
     const { error, data } = await receivePurchaseOrder(draft.id, locId, receipts);
     setBusy(false);
+    reportSave('goods receipt', error);
     if (error) { showToast?.(error.message, 'error'); return; }
     setReceiving(null);
     showToast?.(data?.shortedCount
@@ -144,6 +147,7 @@ export default function PurchaseOrders() {
     setBusy(true);
     const { error } = await attachInvoiceToPO(draft.id, file, { supplierId: draft.supplierId }, locId);
     setBusy(false);
+    reportSave('purchase invoice', error);
     if (error) { showToast?.(error.message, 'error'); return; }
     showToast?.('Invoice attached', 'success');
     const { data } = await fetchPOInvoices(draft.id, locId);
@@ -154,7 +158,15 @@ export default function PurchaseOrders() {
     if (draft?.id) fetchPOInvoices(draft.id, locId).then(({ data }) => setPoInvoices(data)); else setPoInvoices([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft?.id]);
-  const cancel = async () => { if (draft?.id) { await setPOStatus(draft.id, 'CANCELLED', locId); await reload(draft.id); } };
+  const cancel = async () => {
+    if (!draft?.id) return;
+    const { error } = await setPOStatus(draft.id, 'CANCELLED', locId);
+    reportSave('purchase order status', error);
+    // A cancel that didn't land leaves a live order the supplier will still deliver.
+    if (error) { showToast?.('Order NOT cancelled — it is still open', 'error'); return; }
+    showToast?.('Order cancelled', 'info');
+    await reload(draft.id);
+  };
 
   const editable = !draft?.id || draft.status === 'DRAFT';
 

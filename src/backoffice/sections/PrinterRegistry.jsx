@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
+import { useStore } from '../../store';
+import { reportSave } from '../../lib/saveHealth';
 import { printService } from '../../lib/printer';
 
 const MODELS = [
@@ -71,17 +73,29 @@ async function loadPrintersFromDB() {
   } catch(e) { console.warn('printers load failed', e); }
   return loadPrinters();
 }
+// Both DB helpers return { error } so the caller can revert the list + its localStorage
+// mirror. They used to console.warn and carry on, so a printer could live in this browser's
+// cache all week and be missing from every other terminal.
 async function savePrinterToDB(printer) {
-  if (isMock || !supabase) return;
-  try {
-    const locationId = await getLocationId();
-    if (!locationId) return;
-    await supabase.from('printers').upsert({ id:printer.id, location_id:locationId, name:printer.name, type:'escpos', connection:printer.connectionType, ip:printer.address||null, port:printer.port||9100, paper_width:printer.paperWidth||80, meta:{ model:printer.model, roles:printer.roles, location:printer.location, status:printer.status, addedAt:printer.addedAt, cashDrawerAttached:!!printer.cashDrawerAttached }, updated_at:new Date().toISOString() });
-  } catch(e) { console.warn('printer save failed', e); }
+  if (isMock || !supabase) return { error: null };
+  const locationId = await getLocationId().catch(() => null);
+  if (!locationId) return { error: new Error('Could not resolve the location for this venue') };
+  const { data, error } = await supabase.from('printers').upsert({ id:printer.id, location_id:locationId, name:printer.name, type:'escpos', connection:printer.connectionType, ip:printer.address||null, port:printer.port||9100, paper_width:printer.paperWidth||80, meta:{ model:printer.model, roles:printer.roles, location:printer.location, status:printer.status, addedAt:printer.addedAt, cashDrawerAttached:!!printer.cashDrawerAttached }, updated_at:new Date().toISOString() }).select('id');
+  if (error) return { error };
+  if (!data || data.length === 0) return { error: new Error('Printer write matched 0 rows — RLS blocked it') };
+  return { error: null };
 }
 async function deletePrinterFromDB(id) {
-  if (isMock || !supabase) return;
-  try { await supabase.from('printers').delete().eq('id', id); } catch(e) { console.warn('printer delete failed', e); }
+  if (isMock || !supabase) return { error: null };
+  const { data, error } = await supabase.from('printers').delete().eq('id', id).select('id');
+  if (error) return { error };
+  // A DELETE that RLS filters out reports success with zero rows — which is also what a
+  // printer that never reached the DB looks like. Probe before calling it a failure.
+  if (!data || data.length === 0) {
+    const { data: still } = await supabase.from('printers').select('id').eq('id', id).maybeSingle();
+    if (still) return { error: new Error('Printer delete matched 0 rows — RLS blocked it') };
+  }
+  return { error: null };
 }
 function savePrinters(list) {
   localStorage.setItem('rpos-printers', JSON.stringify(list));
@@ -263,6 +277,7 @@ function PrinterForm({ initial, onSave, onCancel }) {
 }
 
 export default function PrinterRegistry() {
+  const showToast = useStore(s => s.showToast);
   const [printers, setPrinters] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -280,24 +295,41 @@ export default function PrinterRegistry() {
   };
 
   const handleSave = async (form) => {
-    let updated;
-    if (form.id) {
-      updated = printers.map(p => p.id === form.id ? { ...form, port:9100 } : p);
-    } else {
-      const newPrinter = { ...form, port:9100, id:`prn-${Date.now()}`, status:'unknown', addedAt:Date.now() };
-      updated = [...printers, newPrinter];
-      await savePrinterToDB(newPrinter);
-    }
-    if (form.id) await savePrinterToDB({ ...form, port:9100 });
+    const printer = form.id
+      ? { ...form, port:9100 }
+      : { ...form, port:9100, id:`prn-${Date.now()}`, status:'unknown', addedAt:Date.now() };
+    const previous = printers;
+    const updated = form.id
+      ? printers.map(p => p.id === printer.id ? printer : p)
+      : [...printers, printer];
+
+    // Applied first so the list feels instant — and rolled back below if the row never
+    // landed, because persist() also rewrites the localStorage cache the POS prints from.
     persist(updated);
     setShowForm(false);
     setEditId(null);
+
+    const { error } = await savePrinterToDB(printer);
+    reportSave('printer', error);
+    if (error) {
+      persist(previous);
+      showToast?.(`"${printer.name}" was NOT saved — fix the connection and try again`, 'error');
+      return;
+    }
+    showToast?.(`"${printer.name}" saved`, 'success');
   };
 
   const handleDelete = async (id) => {
     if (!confirm('Remove this printer?')) return;
-    await deletePrinterFromDB(id);
+    const printer = printers.find(p => p.id === id);
+    const { error } = await deletePrinterFromDB(id);
+    reportSave('printer delete', error);
+    if (error) {
+      showToast?.(`"${printer?.name || 'Printer'}" was NOT removed — it is still registered`, 'error');
+      return;
+    }
     persist(printers.filter(p => p.id !== id));
+    showToast?.(`"${printer?.name || 'Printer'}" removed`, 'info');
   };
 
   const handleTest = async (printer) => {

@@ -33,7 +33,12 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: 'MARKETING_RUN_SECRET not set on Vercel (must match the Supabase edge secret of the same name)' });
   }
 
-  const base = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || 'https://tbetcegmszzotrwdtqhi.supabase.co').replace(/\/$/, '');
+  // No fallback: an unset SUPABASE_URL on a staging/preview project used to silently
+  // resolve to the dev Ops database, so a staging cron drove dev data every few minutes
+  // with no error anywhere. Fail loudly instead, matching how this route already 500s
+  // on a missing run-secret.
+  const base = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '').replace(/\/$/, '');
+  if (!base) return res.status(500).json({ error: 'SUPABASE_URL not set on this deployment — refusing to guess which database to drive' });
 
   try {
     const r = await fetch(`${base}/functions/v1/marketing-run`, {

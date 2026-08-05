@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react';
+import { useStore } from '../../store';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
+import { reportSave } from '../../lib/saveHealth';
 
 const DEFAULT_PRODUCTION_CENTRES = [
   { id:'pc1', name:'Hot kitchen',  icon:'🔥' },
@@ -117,6 +119,7 @@ function ProfileSelect({ value, onChange }) {
 }
 
 export default function DeviceRegistry() {
+  const showToast = useStore(s => s.showToast);
   const [devices, setDevices] = useState([]);
   const [locationId, setLocationId] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -169,6 +172,7 @@ export default function DeviceRegistry() {
       status: 'unpaired',
     }).select().single();
     setWorking(false);
+    reportSave('device', err);
     if (err) return setError(err.message);
     setPairingCode(code);
     setPairedDeviceId(data.id);
@@ -177,7 +181,16 @@ export default function DeviceRegistry() {
   };
 
   const cancelPairing = async () => {
-    if (pairedDeviceId) await supabase.from('devices').delete().eq('id', pairedDeviceId);
+    if (pairedDeviceId) {
+      const { data, error } = await supabase.from('devices').delete().eq('id', pairedDeviceId).select('id');
+      const failure = error || (!data || data.length === 0
+        ? new Error(`Delete matched 0 rows for id=${pairedDeviceId} — RLS may have blocked it`)
+        : null);
+      reportSave('device delete', failure);
+      // The half-created terminal is still registered (and still pairable) — the list
+      // below reloads and shows it, so say so rather than implying it's gone.
+      if (failure) showToast('Could not cancel — the terminal is still registered. Remove it from the list below.', 'error');
+    }
     setShowAdd(false); setPairStep(1); setPairingCode(''); setPairedDeviceId(null);
     setNewDevice({ name:'', type:'pos', profileId:'', centreId:'', receiptPrinterId:'' });
     if (locationId) await loadDevices(locationId);
@@ -185,14 +198,33 @@ export default function DeviceRegistry() {
 
   const regenerateCode = async (deviceId) => {
     const code = genCode();
-    await supabase.from('devices').update({ pairing_code:code, status:'unpaired', paired_at:null }).eq('id', deviceId);
+    const { data, error } = await supabase.from('devices')
+      .update({ pairing_code:code, status:'unpaired', paired_at:null })
+      .eq('id', deviceId).select('id');
+    const failure = error || (!data || data.length === 0
+      ? new Error(`Pairing-code update matched 0 rows for id=${deviceId} — RLS may have blocked it`)
+      : null);
+    reportSave('device pairing code', failure);
+    if (failure) {
+      // Never reveal a code the DB didn't accept — the OLD code is still the live one.
+      showToast('Could not issue a new code — the previous code is still the valid one', 'error');
+      return;
+    }
     setShowCodeFor(deviceId);
     if (locationId) await loadDevices(locationId);
   };
 
   const removeDevice = async (id) => {
     if (!confirm('Remove this device? The terminal will be locked out immediately.')) return;
-    await supabase.from('devices').delete().eq('id', id);
+    const { data, error } = await supabase.from('devices').delete().eq('id', id).select('id');
+    const failure = error || (!data || data.length === 0
+      ? new Error(`Delete matched 0 rows for id=${id} — RLS may have blocked it`)
+      : null);
+    reportSave('device delete', failure);
+    if (failure) {
+      showToast('Remove failed — this terminal is still paired and can still take orders', 'error');
+      return;
+    }
     if (locationId) await loadDevices(locationId);
   };
 
@@ -204,15 +236,24 @@ export default function DeviceRegistry() {
   const saveEdit = async () => {
     if (!editForm.name?.trim()) return;
     setWorking(true);
-    await supabase.from('devices').update({
+    const { data, error } = await supabase.from('devices').update({
       name: editForm.name.trim(),
       type: editForm.type,
       profile_id: editForm.type !== 'kds' ? (editForm.profileId || null) : null,
       centre_id: editForm.type === 'kds' ? (editForm.centreId || null) : null,
       receipt_printer_id: editForm.receiptPrinterId || null,
-    }).eq('id', editId);
-    setEditId(null);
+    }).eq('id', editId).select('id');
+    const failure = error || (!data || data.length === 0
+      ? new Error(`Device update matched 0 rows for id=${editId} — RLS may have blocked it`)
+      : null);
+    reportSave('device', failure);
     setWorking(false);
+    if (failure) {
+      // Leave the edit row open so the operator keeps their changes and can retry.
+      showToast(`"${editForm.name.trim()}" NOT saved — the server rejected the change`, 'error');
+      return;
+    }
+    setEditId(null);
     if (locationId) await loadDevices(locationId);
   };
 

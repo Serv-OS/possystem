@@ -273,6 +273,69 @@ export const findDuplicateProductName = (items, name, excludeId = null) => {
   ) || null;
 };
 
+// ── Kitchen print routing: which production centre(s) does an item belong to? ──
+// v5.5.974: these three were declared with `const` INSIDE sendToKitchen, but
+// transferTable also calls getCentresForItem — from a different function scope, so it
+// threw "getCentresForItem is not defined" every time. The throw landed in
+// transferTable's `catch (err) { console.warn(...) }`, so transferring a table has
+// never printed the transfer notice: the operator saw "Transferred to Table 12" and
+// the kitchen was never told the food had moved. Lifted to module scope so both
+// callers share one implementation.
+// NOTE: two further near-copies of this logic still live inside other store actions
+// (the KDS ticket builder and the kiosk print router). They work; folding them in is a
+// separate cleanup, deliberately not bundled into a pre-stage hardening pass.
+
+// catId → parentId, for walking the category hierarchy.
+const buildCatParentMap = () => {
+  try {
+    const snap = JSON.parse(localStorage.getItem('rpos-config-snapshot') || '{}');
+    const cats = snap.menuCategories || useStore.getState().menuCategories || [];
+    const map = {};
+    cats.forEach(c => { map[c.id] = c.parentId || null; });
+    return map;
+  } catch { return {}; }
+};
+
+// Is catId, or any ancestor of it, in the assigned set?
+const catOrAncestorMatches = (catId, assignedSet, parentMap, depth = 0) => {
+  if (!catId || depth > 5) return false;
+  if (assignedSet.has(catId)) return true;
+  const parentId = parentMap[catId];
+  if (!parentId) return false;
+  return catOrAncestorMatches(parentId, assignedSet, parentMap, depth + 1);
+};
+
+const getCentresForItem = (item, config) => {
+  const { centres, routing } = config;
+  if (!centres?.length || !routing) return [];
+
+  // Order line items only carry itemId — look up the full menu item to get cat/parentId
+  const allItems = useStore.getState().menuItems || [];
+  const menuItem = allItems.find(i => i.id === (item.itemId || item.id));
+
+  // Direct category from the item (or looked-up menu item)
+  let itemCat = item.cat || item.cats?.[0] || menuItem?.cat || menuItem?.cats?.[0] || null;
+
+  // For variant items (e.g. Small Latte), also check the parent item's category
+  // (variants often inherit their routing from the parent: Latte → Coffee → Hot Drinks → KDS Bar)
+  const parentId = item.parentId || menuItem?.parentId || null;
+  const parentMenuItem = parentId ? allItems.find(i => i.id === parentId) : null;
+  const parentCat = parentMenuItem?.cat || parentMenuItem?.cats?.[0] || null;
+
+  const parentMap = buildCatParentMap();
+  const matched = [];
+  centres.forEach(centre => {
+    const r = routing[centre.id];
+    if (!r?.assignedCategories?.length) return;
+    if (r.excludedItems?.includes(item.id) || r.excludedItems?.includes(item.itemId)) return;
+    const assignedSet = new Set(r.assignedCategories);
+    const catMatches = (itemCat && catOrAncestorMatches(itemCat, assignedSet, parentMap)) ||
+                       (parentCat && catOrAncestorMatches(parentCat, assignedSet, parentMap));
+    if (catMatches) matched.push(centre.id);
+  });
+  return matched;
+};
+
 export const useStore = create((set, get) => ({
   // Tables Ready — walk-in waitlist / live table-queue (slice in ./waitlistSlice.js).
   ...waitlistSlice(set, get),
@@ -755,9 +818,13 @@ export const useStore = create((set, get) => ({
     if (isMock) return true;
     try {
       const { error } = await upsertModifierGroup(group);
+      reportSave('modifier group', error);   // v5.5.971 — toast alone; now raises the banner too
       if (error) { console.warn('modifier group save failed:', error.message); return false; }
       return true;
-    } catch (e) { console.warn('modifier group save failed', e); return false; }
+    } catch (e) {
+      reportSave('modifier group', e);
+      console.warn('modifier group save failed', e); return false;
+    }
   },
 
   // v5.5.834: a failed modifier-group write must be VISIBLE. The old code
@@ -799,8 +866,21 @@ export const useStore = create((set, get) => ({
     // straight back on the next refresh.
     const warn = () => useStore.getState().showToast?.(`"${removed?.name || 'Modifier group'}" was NOT deleted — it will come back on refresh. Check you're signed in, then try again`, 'error');
     deleteModifierGroup(id)
-      .then(({ error }) => { if (error) { console.warn('modifier group delete failed:', error.message); warn(); } })
-      .catch(e => { console.warn('modifier group delete failed', e); warn(); });
+      .then(({ error }) => {
+        reportSave('modifier group delete', error);   // v5.5.971
+        if (error) {
+          console.warn('modifier group delete failed:', error.message);
+          // Put it back — the row still exists and returns on the next refresh.
+          if (removed) set(s => (s.modifierGroupDefs.some(g => g.id === id) ? {} : { modifierGroupDefs: [...s.modifierGroupDefs, removed] }));
+          warn();
+        }
+      })
+      .catch(e => {
+        reportSave('modifier group delete', e);
+        console.warn('modifier group delete failed', e);
+        if (removed) set(s => (s.modifierGroupDefs.some(g => g.id === id) ? {} : { modifierGroupDefs: [...s.modifierGroupDefs, removed] }));
+        warn();
+      });
   },
   reorderModifierGroupDefs: (fromIdx, toIdx) => set(s => {
     const arr = [...s.modifierGroupDefs];
@@ -1151,15 +1231,22 @@ export const useStore = create((set, get) => ({
     const dupe = { ...source, id:`m-${Date.now()}`, menuName:`${source.menuName} (copy)`, receiptName:`${source.receiptName} (copy)`, kitchenName:`${source.kitchenName} (copy)` };
     set(s => ({ menuItems: [...s.menuItems, dupe] }));
   },
-  archiveMenuItem: id => {
+  // v5.5.971: was two fire-and-forget .then(console.error) writes behind an optimistic
+  // set() — the archive looked done and came straight back on the next refresh. Now
+  // awaited, reported to saveHealth, and REVERTED locally when the DB refuses.
+  archiveMenuItem: async id => {
     // v5.5.261: CASCADE — archiving a parent also archives all its variants.
     // Orphaned variants with no parent would break the menu display and create
     // ghost items that appear in reports but not on the POS.
+    const _target = useStore.getState().menuItems.find(i => i.id === id);
+    const itemName = _target?.menuName || _target?.name || 'Item';
+    let flippedChildIds = [];
     set(s => {
       const target = s.menuItems.find(i => i.id === id);
       const childIds = target && !target.parentId
         ? s.menuItems.filter(i => i.parentId === id && !i.archived).map(i => i.id)
         : [];
+      flippedChildIds = childIds;
       return {
         menuItems: s.menuItems.map(item => {
           if (item.id === id) return { ...item, archived: true };
@@ -1168,25 +1255,41 @@ export const useStore = create((set, get) => ({
         }),
       };
     });
-    if (!isMock) {
-      // v5.5.279: location_id guard on archive operations
-      const locId = getActiveLocationSync();
-      supabase.from('menu_items')
-        .update({ archived: true, parent_id: null, updated_at: new Date().toISOString() })
-        .eq('id', id)
-        .eq('location_id', locId)
-        .then(({ error }) => { if (error) console.error('[Store] archiveMenuItem failed:', error.message); });
-      // Archive children in DB too
-      const children = useStore.getState().menuItems.filter(i => i.parentId === id);
-      if (children.length > 0) {
-        const childIds = children.map(c => c.id);
-        supabase.from('menu_items')
-          .update({ archived: true, parent_id: null, updated_at: new Date().toISOString() })
-          .in('id', childIds)
-          .eq('location_id', locId)
-          .then(({ error }) => { if (error) console.error('[Store] archiveMenuItem children failed:', error.message); });
+    if (isMock) return true;
+    // Only un-archive the rows THIS call flipped — anything already archived
+    // before we started must stay archived.
+    const unarchive = (ids) => set(s => ({
+      menuItems: s.menuItems.map(it => ids.includes(it.id) ? { ...it, archived: false } : it),
+    }));
+    // v5.5.279: location_id guard on archive operations
+    const locId = getActiveLocationSync();
+    const patch = { archived: true, parent_id: null, updated_at: new Date().toISOString() };
+    const { error } = await supabase.from('menu_items')
+      .update(patch)
+      .eq('id', id)
+      .eq('location_id', locId);
+    reportSave('item archive', error);
+    if (error) {
+      unarchive([id, ...flippedChildIds]);
+      useStore.getState().showToast?.(`"${itemName}" was NOT archived — it will come back on refresh. Check you're signed in, then try again`, 'error');
+      return false;
+    }
+    // Archive children in DB too
+    const children = useStore.getState().menuItems.filter(i => i.parentId === id);
+    if (children.length > 0) {
+      const { error: childErr } = await supabase.from('menu_items')
+        .update(patch)
+        .in('id', children.map(c => c.id))
+        .eq('location_id', locId);
+      reportSave('item archive (variants)', childErr);
+      if (childErr) {
+        // The parent DID archive, so only the variants are rolled back.
+        unarchive(flippedChildIds);
+        useStore.getState().showToast?.(`"${itemName}" was archived but its variants were NOT — they will reappear on refresh`, 'error');
+        return false;
       }
     }
+    return true;
   },
 
   // ── Editable floor plan ────────────────────────────────────────────────────
@@ -1229,9 +1332,21 @@ export const useStore = create((set, get) => ({
     // can be scoped to that exact location (defense against the cross-location-leak class).
     const tbl = useStore.getState().tables.find(t => t.id === id);
     const locId = tbl?.locationId || null;
+    const removed = useStore.getState().tables.filter(t => t.id === id || t.parentId === id);
     set(s => ({ tables: s.tables.filter(t => t.id!==id && t.parentId!==id) }));
     // v4.6.5 Bug 6: previously removed from local state only, so it re-appeared on every boot.
-    deleteFloorTable(id, locId).catch(e => console.warn('[removeTableFromLayout] DB delete failed:', e?.message || e));
+    // v5.5.971: PostgREST returns { error } on a RESOLVED promise, so the old
+    // .catch()-only handler never saw an RLS refusal — the table vanished from the
+    // screen and came back on the next boot. Report the outcome, not just throws.
+    const failed = (err) => {
+      reportSave('table delete', err);
+      // Put them back — the rows still exist and WILL reappear at next boot.
+      set(s => ({ tables: [...s.tables, ...removed.filter(r => !s.tables.some(t => t.id === r.id))] }));
+      useStore.getState().showToast?.(`"${tbl?.label || 'Table'}" was NOT deleted — check you're signed in, then try again`, 'error');
+    };
+    Promise.resolve(deleteFloorTable(id, locId))
+      .then(({ error }) => { if (error) failed(error); else reportSave('table delete', null); })
+      .catch(e => { console.warn('[removeTableFromLayout] DB delete failed:', e?.message || e); failed(e); });
   },
 
   // ── Tables (source of truth for all orders) ──────────
@@ -1926,57 +2041,9 @@ export const useStore = create((set, get) => ({
       } catch { return { centres:[], routing:{} }; }
     };
 
-    // Build a map of catId → parentId for hierarchy traversal
-    const buildCatParentMap = () => {
-      try {
-        const snap = JSON.parse(localStorage.getItem('rpos-config-snapshot') || '{}');
-        const cats = snap.menuCategories || useStore.getState().menuCategories || [];
-        const map = {};
-        cats.forEach(c => { map[c.id] = c.parentId || null; });
-        return map;
-      } catch { return {}; }
-    };
-
-    // Check if catId or any of its ancestors is in the assignedCategories set
-    const catOrAncestorMatches = (catId, assignedSet, parentMap, depth = 0) => {
-      if (!catId || depth > 5) return false;
-      if (assignedSet.has(catId)) return true;
-      const parentId = parentMap[catId];
-      if (!parentId) return false;
-      return catOrAncestorMatches(parentId, assignedSet, parentMap, depth + 1);
-    };
-
-    // Determine which production center(s) an item routes to based on its category
-    const getCentresForItem = (item, config) => {
-      const { centres, routing } = config;
-      if (!centres?.length || !routing) return [];
-
-      // Order line items only carry itemId — look up the full menu item to get cat/parentId
-      const allItems = useStore.getState().menuItems || [];
-      const menuItem = allItems.find(i => i.id === (item.itemId || item.id));
-
-      // Direct category from the item (or looked-up menu item)
-      let itemCat = item.cat || item.cats?.[0] || menuItem?.cat || menuItem?.cats?.[0] || null;
-
-      // For variant items (e.g. Small Latte), also check the parent item's category
-      // (variants often inherit their routing from the parent: Latte → Coffee → Hot Drinks → KDS Bar)
-      const parentId = item.parentId || menuItem?.parentId || null;
-      const parentMenuItem = parentId ? allItems.find(i => i.id === parentId) : null;
-      const parentCat = parentMenuItem?.cat || parentMenuItem?.cats?.[0] || null;
-
-      const parentMap = buildCatParentMap();
-      const matched = [];
-      centres.forEach(centre => {
-        const r = routing[centre.id];
-        if (!r?.assignedCategories?.length) return;
-        if (r.excludedItems?.includes(item.id) || r.excludedItems?.includes(item.itemId)) return;
-        const assignedSet = new Set(r.assignedCategories);
-        const catMatches = (itemCat && catOrAncestorMatches(itemCat, assignedSet, parentMap)) ||
-                           (parentCat && catOrAncestorMatches(parentCat, assignedSet, parentMap));
-        if (catMatches) matched.push(centre.id);
-      });
-      return matched;
-    };
+    // buildCatParentMap / catOrAncestorMatches / getCentresForItem now live at module
+    // scope (see the block above useStore) — transferTable needs them too and could not
+    // see these local copies.
 
     // v5.5.191: compute which courses auto-fire on send. Always includes 0
     // (immediate) and 1 (starters). If the lowest occupied course is higher
@@ -3172,8 +3239,11 @@ export const useStore = create((set, get) => ({
     try {
       const locId = getActiveLocationSync();
       if (supabase && locId && ref) {
+        // v5.5.971: PostgREST resolves with { error } — the old .catch()-only handler
+        // never saw a refusal, which is exactly how the order RESURRECTS at next boot.
         Promise.resolve(supabase.from('order_queue').delete().eq('ref', ref).eq('location_id', locId))
-          .catch(e => console.warn('[removeFromQueue] db delete:', e?.message));
+          .then(({ error }) => reportSave('order queue delete', error))
+          .catch(e => { reportSave('order queue delete', e); console.warn('[removeFromQueue] db delete:', e?.message); });
       }
     } catch { /* non-fatal */ }
   },
@@ -3234,6 +3304,7 @@ export const useStore = create((set, get) => ({
     const n = parseInt(count);
     if (!n || n <= 0) return;
     const was86 = get().eightySixIds.includes(itemId);
+    const prevCount = get().dailyCounts?.[itemId];   // v5.5.971 — for the revert below
     set(s => ({
       dailyCounts: { ...s.dailyCounts, [itemId]: { par: n, remaining: n } },
       eightySixIds: was86 ? s.eightySixIds.filter(x => x !== itemId) : s.eightySixIds,
@@ -3244,24 +3315,61 @@ export const useStore = create((set, get) => ({
     // so PostgREST errors are visible (the previous .catch() only caught
     // thrown errors — Supabase returns { data, error } as resolved promises).
     const _loc = getActiveLocationSync();
+    // v5.5.971: a rejected stock write used to be console-only — the count sat on
+    // screen all service and was gone after refresh. Report + roll the count back.
+    // Setting a count also un-86s the item, so the revert has to put the 86 back too —
+    // otherwise a refused write leaves the item ORDERABLE on every till with no stock
+    // behind it, which is worse than the lost count.
+    const restore86 = () => set(s => ({
+      eightySixIds: was86 && !s.eightySixIds.includes(itemId) ? [...s.eightySixIds, itemId] : s.eightySixIds,
+    }));
+    const stockFailed = (err) => {
+      reportSave('stock count', err);
+      set(s => ({ dailyCounts: { ...s.dailyCounts, [itemId]: prevCount } }));
+      restore86();
+      get().showToast?.(
+        was86
+          ? 'Stock count was NOT saved — the item is still 86\'d. Check you\'re signed in, then try again'
+          : 'Stock count was NOT saved — check you\'re signed in, then try again',
+        'error',
+      );
+    };
     upsertStockLevel(itemId, n, null, _loc).then(res => {
-      if (res?.error) console.error('[setDailyCount] upsertStockLevel error:', res.error.message, res.error);
-    }).catch(err => console.error('[setDailyCount] upsertStockLevel threw:', err?.message));
+      if (res?.error) { console.error('[setDailyCount] upsertStockLevel error:', res.error.message, res.error); stockFailed(res.error); }
+      else reportSave('stock count', null);
+    }).catch(err => { console.error('[setDailyCount] upsertStockLevel threw:', err?.message); stockFailed(err); });
     // Un-86 in DB too if applicable
     if (was86) {
-      toggle86DB(itemId, true).catch(err =>
-        console.warn('[setDailyCount] toggle86DB un-86:', err?.message));
+      Promise.resolve(toggle86DB(itemId, true))
+        .then(res => {
+          reportSave('86 list', res?.error || null);
+          // The un-86 was refused but the item already left the 86 list on screen — put it
+          // back, or this till sells something every other till still shows as unavailable.
+          if (res?.error) { restore86(); get().showToast?.('Could not take the item off the 86 list — it is still marked unavailable', 'error'); }
+        })
+        .catch(err => {
+          reportSave('86 list', err);
+          restore86();
+          console.warn('[setDailyCount] toggle86DB un-86:', err?.message);
+        });
     }
   },
   clearDailyCount: (itemId) => {
+    const prevCount = get().dailyCounts?.[itemId];
     set(s => ({
       dailyCounts: { ...s.dailyCounts, [itemId]: undefined },
     }));
     // v5.5.241: remove from stock_levels — pass location directly
     const _loc2 = getActiveLocationSync();
+    const clearFailed = (err) => {
+      reportSave('stock count clear', err);
+      set(s => ({ dailyCounts: { ...s.dailyCounts, [itemId]: prevCount } }));
+      get().showToast?.('Stock count was NOT cleared — it will come back on refresh', 'error');
+    };
     deleteStockLevel(itemId, _loc2).then(res => {
-      if (res?.error) console.error('[clearDailyCount] deleteStockLevel error:', res.error.message);
-    }).catch(err => console.error('[clearDailyCount] deleteStockLevel threw:', err?.message));
+      if (res?.error) { console.error('[clearDailyCount] deleteStockLevel error:', res.error.message); clearFailed(res.error); }
+      else reportSave('stock count clear', null);
+    }).catch(err => { console.error('[clearDailyCount] deleteStockLevel threw:', err?.message); clearFailed(err); });
   },
   decrementDailyCount: (itemId, qty = 1) => {
     // v4.6.11: single source of truth for daily-count adjustments.
@@ -3315,14 +3423,18 @@ export const useStore = create((set, get) => ({
     // v5.5.241: DB-level atomic decrement — pass location directly.
     const _loc3 = getActiveLocationSync();
     ids.forEach(id => {
+      // v5.5.971: no toast on this path — it runs mid-service on every sale — but the
+      // saveHealth banner must light up, or stock silently drifts away from the DB.
       if (qty > 0) {
         decrementStockRPC(id, qty, _loc3).then(res => {
           if (res?.error) console.error('[decrementDailyCount] decrement RPC error:', res.error.message);
-        }).catch(err => console.error('[decrementDailyCount] decrement RPC threw:', err?.message));
+          reportSave('stock decrement', res?.error || null);
+        }).catch(err => { reportSave('stock decrement', err); console.error('[decrementDailyCount] decrement RPC threw:', err?.message); });
       } else {
         restoreStockRPC(id, Math.abs(qty), _loc3).then(res => {
           if (res?.error) console.error('[decrementDailyCount] restore RPC error:', res.error.message);
-        }).catch(err => console.error('[decrementDailyCount] restore RPC threw:', err?.message));
+          reportSave('stock restore', res?.error || null);
+        }).catch(err => { reportSave('stock restore', err); console.error('[decrementDailyCount] restore RPC threw:', err?.message); });
       }
     });
   },
@@ -3570,49 +3682,92 @@ export const useStore = create((set, get) => ({
     if (!isMock && supabase) {
       try {
         const { error } = await supabase.from('cash_drawers').insert(row);
+        reportSave('cash drawer', error);
         if (error) throw error;
         get().showToast?.(`Drawer "${row.name}" created`, 'success');
       } catch (err) {
+        reportSave('cash drawer', err);
         console.warn('[createCashDrawer] failed:', err?.message || err);
-        get().showToast?.(`Save failed: ${err?.message || 'unknown error'}`, 'error');
+        // v5.5.971: drop the optimistic row — a drawer that only exists on this
+        // screen still gets picked in the cash-up UI and books money nowhere.
+        set(s => ({ cashDrawers: (s.cashDrawers||[]).filter(d => d.id !== row.id) }));
+        get().showToast?.(`Drawer "${row.name}" was NOT created: ${err?.message || 'unknown error'}`, 'error');
+        return null;
       }
     }
     return row.id;
   },
 
+  // v5.5.971: returns true/false. Was console.warn-only — an RLS-refused float or
+  // status change left the screen showing a drawer state the DB never accepted, so
+  // cash-up compared a phantom float against a real count.
   updateCashDrawer: async (id, patch) => {
+    const prev = (get().cashDrawers || []).find(d => d.id === id) || null;
     // Optimistic local update
     set(s => ({ cashDrawers: (s.cashDrawers||[]).map(d => d.id === id ? { ...d, ...patch } : d) }));
-    if (!isMock && supabase) {
-      try {
-        const row = {};
-        if ('name' in patch)          row.name = patch.name;
-        if ('printerId' in patch)     row.printer_id = patch.printerId;
-        if ('deviceId' in patch)      row.device_id = patch.deviceId;
-        if ('status' in patch)        row.status = patch.status;
-        if ('currentFloat' in patch)  row.current_float = patch.currentFloat;
-        if ('openedAt' in patch)      row.opened_at = patch.openedAt;
-        if ('openedByStaffId' in patch) row.opened_by_staff_id = patch.openedByStaffId;
-        row.updated_at = new Date().toISOString();
-        // v5.5.279: location_id guard on cash drawer updates
-        const locId = getActiveLocationSync() || await getLocationId();
-        await supabase.from('cash_drawers').update(row).eq('id', id).eq('location_id', locId);
-      } catch (err) {
-        console.warn('[updateCashDrawer] failed:', err?.message || err);
-      }
+    if (isMock || !supabase) return true;
+    try {
+      const row = {};
+      if ('name' in patch)          row.name = patch.name;
+      if ('printerId' in patch)     row.printer_id = patch.printerId;
+      if ('deviceId' in patch)      row.device_id = patch.deviceId;
+      if ('status' in patch)        row.status = patch.status;
+      if ('currentFloat' in patch)  row.current_float = patch.currentFloat;
+      if ('openedAt' in patch)      row.opened_at = patch.openedAt;
+      if ('openedByStaffId' in patch) row.opened_by_staff_id = patch.openedByStaffId;
+      row.updated_at = new Date().toISOString();
+      // v5.5.279: location_id guard on cash drawer updates
+      const locId = getActiveLocationSync() || await getLocationId();
+      const { data, error } = await supabase.from('cash_drawers')
+        .update(row).eq('id', id).eq('location_id', locId).select();
+      if (error) throw error;
+      // An UPDATE that matches zero rows is a failed write wearing a success mask
+      // (RLS silently filtering, or the drawer belongs to another location).
+      if (!data || data.length === 0) throw new Error('no matching drawer row — permission denied or wrong location');
+      reportSave('cash drawer', null);
+      return true;
+    } catch (err) {
+      reportSave('cash drawer', err);
+      console.warn('[updateCashDrawer] failed:', err?.message || err);
+      // Roll back only the keys this call touched, so a concurrent update isn't clobbered.
+      if (prev) set(s => ({ cashDrawers: (s.cashDrawers||[]).map(d => {
+        if (d.id !== id) return d;
+        const restored = { ...d };
+        Object.keys(patch || {}).forEach(k => { restored[k] = prev[k]; });
+        return restored;
+      }) }));
+      get().showToast?.(`Drawer not saved: ${err?.message || 'unknown error'}`, 'error');
+      return false;
     }
   },
 
   deleteCashDrawer: async (id) => {
+    // Capture position as well as the row — a failed delete must put the drawer
+    // back exactly where the operator saw it, not at the end of the list.
+    const before = get().cashDrawers || [];
+    const idx = before.findIndex(d => d.id === id);
+    const removed = idx >= 0 ? before[idx] : null;
     set(s => ({ cashDrawers: (s.cashDrawers||[]).filter(d => d.id !== id) }));
-    if (!isMock && supabase) {
-      try {
-        // v5.5.279: location_id guard — never delete across tenants
-        const locId = getActiveLocationSync() || await getLocationId();
-        await supabase.from('cash_drawers').delete().eq('id', id).eq('location_id', locId);
-      } catch (err) {
-        console.warn('[deleteCashDrawer] failed:', err?.message || err);
-      }
+    if (isMock || !supabase) return true;
+    try {
+      // v5.5.279: location_id guard — never delete across tenants
+      const locId = getActiveLocationSync() || await getLocationId();
+      const { data, error } = await supabase.from('cash_drawers')
+        .delete().eq('id', id).eq('location_id', locId).select();
+      if (error) throw error;
+      if (!data || data.length === 0) throw new Error('no matching drawer row — permission denied or wrong location');
+      reportSave('cash drawer delete', null);
+      return true;
+    } catch (err) {
+      reportSave('cash drawer delete', err);
+      console.warn('[deleteCashDrawer] failed:', err?.message || err);
+      if (removed) set(s => {
+        const list = (s.cashDrawers || []).filter(d => d.id !== id);
+        list.splice(Math.min(idx < 0 ? list.length : idx, list.length), 0, removed);
+        return { cashDrawers: list };
+      });
+      get().showToast?.(`Drawer not deleted: ${err?.message || 'unknown error'}`, 'error');
+      return false;
     }
   },
 
@@ -3694,14 +3849,14 @@ export const useStore = create((set, get) => ({
         throw error;
       }
       // Flip the drawer to open
-      await get().updateCashDrawer?.(drawerId, {
+      const drawerOk = await get().updateCashDrawer?.(drawerId, {
         status: 'open',
         currentFloat: Number(openingFloat) || 0,
         openedAt: now,
         openedByStaffId: staff?.id || null,
       });
       // Float-in movement
-      await get().insertCashMovement?.({
+      const movementId = await get().insertCashMovement?.({
         type: 'float_in',
         amount: Number(openingFloat) || 0,
         drawerId,
@@ -3712,9 +3867,20 @@ export const useStore = create((set, get) => ({
         staffName: staff?.name || 'Unknown',
       });
       set({ currentDrawerSession: data });
+      // v5.5.971: the session row landed, so the drawer IS open — but without the
+      // float_in movement the session's expected cash reads £0 and cash-up reports a
+      // fictional surplus. Never claim success when either half didn't write.
+      if (!movementId || drawerOk === false) {
+        get().showToast?.(
+          `Drawer opened but the ${!movementId ? 'opening float was NOT recorded' : 'drawer state did not save'} — expected cash will be wrong at cash-up. Check you're signed in`,
+          'error',
+        );
+        return data;
+      }
       get().showToast?.(`Drawer opened with ${money(Number(openingFloat) || 0)}`, 'success');
       return data;
     } catch (err) {
+      reportSave('drawer session', err);   // v5.5.971
       console.warn('[cashInDrawer] failed:', err?.message || err);
       get().showToast?.(`Cash in failed: ${err?.message}`, 'error');
       return null;
@@ -3821,8 +3987,9 @@ export const useStore = create((set, get) => ({
       if (updErr) throw updErr;
 
       // 2. Log variance as an adjustment movement (always — even £0.00 for audit)
+      let varianceLogged = true;
       if (Math.abs(variance) >= 0.01) {
-        await get().insertCashMovement?.({
+        const movementId = await get().insertCashMovement?.({
           type: 'adjustment',
           amount: Math.abs(variance),
           drawerId,
@@ -3832,10 +3999,11 @@ export const useStore = create((set, get) => ({
           staffId: staff?.id || null,
           staffName: staff?.name || 'Unknown',
         });
+        varianceLogged = !!movementId;
       }
 
       // 3. Flip drawer to idle, zero float
-      await get().updateCashDrawer?.(drawerId, {
+      const drawerOk = await get().updateCashDrawer?.(drawerId, {
         status: 'idle',
         currentFloat: 0,
         openedAt: null,
@@ -3843,10 +4011,22 @@ export const useStore = create((set, get) => ({
       });
       set({ currentDrawerSession: null });
 
-      get().showToast?.(
-        Math.abs(variance) < 0.01 ? 'Drawer closed — balanced' : `Drawer closed — variance ${money(Math.abs(variance))} ${variance > 0 ? 'over' : 'short'}`,
-        Math.abs(variance) < 0.01 ? 'success' : 'warning',
-      );
+      // v5.5.971: the session closed (step 1 is checked above), so the cash-up stands —
+      // but an unlogged variance or a drawer left 'open' in the DB has to be said out
+      // loud, not reported as a clean close.
+      if (!varianceLogged || drawerOk === false) {
+        get().showToast?.(
+          !varianceLogged
+            ? `Drawer closed but the ${money(Math.abs(variance))} variance was NOT logged to the cash ledger — record it manually`
+            : 'Drawer closed but its status did not save — it may still show as open on other devices',
+          'error',
+        );
+      } else {
+        get().showToast?.(
+          Math.abs(variance) < 0.01 ? 'Drawer closed — balanced' : `Drawer closed — variance ${money(Math.abs(variance))} ${variance > 0 ? 'over' : 'short'}`,
+          Math.abs(variance) < 0.01 ? 'success' : 'warning',
+        );
+      }
 
       // v4.6.49: removed auto-finalise. Shift stays open after all drawers
       // cash up. Manager must manually run Close day from Back Office, which
@@ -3855,6 +4035,7 @@ export const useStore = create((set, get) => ({
 
       return { expected, declared, variance };
     } catch (err) {
+      reportSave('drawer cash-up', err);   // v5.5.971
       console.warn('[cashOutDrawer] failed:', err?.message || err);
       get().showToast?.(`Cash out failed: ${err?.message}`, 'error');
       return null;
@@ -3963,7 +4144,11 @@ export const useStore = create((set, get) => ({
       get().showToast?.(`Shift opened`, 'success');
       return get().currentShift;
     } catch (err) {
+      // v5.5.971: a failed shift open is silent money damage — every cash movement
+      // taken afterwards is written with shift_id null and drops out of the Z report.
+      reportSave('shift open', err);
       console.warn('[openShift] failed:', err?.message || err);
+      get().showToast?.(`Shift did not open: ${err?.message || 'unknown error'} — cash takings will not be attributed to a shift`, 'error');
       return null;
     }
   },
@@ -4045,6 +4230,7 @@ export const useStore = create((set, get) => ({
       get().showToast?.(auto ? 'Shift auto-closed at business day start' : 'Shift closed', 'success');
       return true;
     } catch (err) {
+      reportSave('shift close', err);   // v5.5.971
       console.warn('[closeShift] failed:', err?.message || err);
       get().showToast?.(`Shift close failed: ${err?.message}`, 'error');
       return null;
@@ -4131,7 +4317,10 @@ export const useStore = create((set, get) => ({
   // Pulse the cash drawer via the printer (if a cash-drawer-attached printer
   // is configured) AND log to the petty cash ledger. Swallow print failures —
   // the drawer pulse is best-effort and should never block a payment flow.
-  openCashDrawer: ({ reason = 'Manual open', amount = 0, type = 'drawer_open', ref = null, note = '', force = false, drawerId = null } = {}) => {
+  // v5.5.971: async so the cash_movements mirror can be AWAITED and checked. Everything
+  // before the first await still runs synchronously, so callers that don't await (the
+  // cash-sale auto-fire paths) see the pulse and the local ledger entry exactly as before.
+  openCashDrawer: async ({ reason = 'Manual open', amount = 0, type = 'drawer_open', ref = null, note = '', force = false, drawerId = null } = {}) => {
     // TRAINING MODE: don't pulse the physical drawer or write a petty_cash / cash
     // movement row — keeps the cash ledger + EOD reconciliation clean.
     if (isTrainingMode()) return;
@@ -4166,12 +4355,6 @@ export const useStore = create((set, get) => ({
         get().showToast?.(`Drawer pulse failed: ${err?.message || 'no printer'}`, 'error');
       });
     } catch (err) { console.warn('[openCashDrawer] pulse threw:', err); }
-    // v4.6.39: visible feedback for manual opens. Auto-fire on cash sale
-    // skips the toast (the sale already renders a 'paid' toast).
-    if (type === 'drawer_open' && !force) {
-      const _drawerName = resolvedDrawer?.name;
-      get().showToast?.(_drawerName ? `${_drawerName} opened` : 'Drawer opened', 'success');
-    }
     // Legacy pettyCashEntries for backwards-compat UI; also mirror to
     // cash_movements (Supabase-backed, per-drawer, per-shift).
     const entry = get().addPettyCashEntry({
@@ -4180,29 +4363,63 @@ export const useStore = create((set, get) => ({
       staffId: staff?.id || null,
       drawerId: resolvedDrawerId,
     });
-    // Mirror to cash_movements (async, fire-and-forget)
-    get().insertCashMovement?.({
+    // Mirror to cash_movements — AWAITED and CHECKED (v5.5.971). This row is what
+    // drawer variance, EOD close and the Z report are computed from; losing it
+    // silently is the difference between a balanced till and an unexplained short.
+    const movementId = await get().insertCashMovement?.({
       type, amount,
       drawerId: resolvedDrawerId,
       reason, note, ref,
       staffId: staff?.id || null,
       staffName: staff?.name || 'Unknown',
     });
-    // Update drawer's current_float locally + in DB
-    if (resolvedDrawerId && type !== 'drawer_open') {
+    // insertCashMovement also returns null in mock mode (training already returned above),
+    // where no row is expected — only complain when a row really should have landed.
+    const movementLost = !isMock && !!supabase && !movementId;
+    if (movementLost) {
+      get().showToast?.(
+        amount > 0
+          ? `${money(Number(amount) || 0)} was NOT recorded in the cash ledger — the drawer will not balance. Check you're signed in, then re-enter it`
+          : 'Drawer event was NOT recorded in the cash ledger — check you\'re signed in',
+        'error',
+      );
+    }
+    // v4.6.39: visible feedback for manual opens. Auto-fire on cash sale
+    // skips the toast (the sale already renders a 'paid' toast).
+    // v5.5.971: moved BELOW the awaited write and suppressed when it failed — a green
+    // toast next to a rejected ledger row is exactly the lie this sweep is removing.
+    if (type === 'drawer_open' && !force && !movementLost) {
+      const _drawerName = resolvedDrawer?.name;
+      get().showToast?.(_drawerName ? `${_drawerName} opened` : 'Drawer opened', 'success');
+    }
+    // Update drawer's current_float locally + in DB. Skipped when the movement was
+    // lost — moving the float without its ledger row just manufactures a variance.
+    if (resolvedDrawerId && type !== 'drawer_open' && !movementLost) {
       const SIGN = { cash_sale: +1, float_in: +1, adjustment: +1, drop: -1, cash_drop: -1, expense: -1, uplift_to_safe: -1, downlift_from_safe: +1 };
       const delta = (SIGN[type] || 0) * (Number(amount) || 0);
       if (delta !== 0) {
-        const current = resolvedDrawer.currentFloat || 0;
-        get().updateCashDrawer?.(resolvedDrawerId, { currentFloat: current + delta });
+        // Re-read the float HERE, not from the resolvedDrawer captured at function entry:
+        // there is now an awaited cash_movements insert in between, and a concurrent sale
+        // on the same drawer during that round-trip would be overwritten by a stale base.
+        const current = (get().cashDrawers || []).find(d => d.id === resolvedDrawerId)?.currentFloat
+          ?? resolvedDrawer.currentFloat ?? 0;
+        await get().updateCashDrawer?.(resolvedDrawerId, { currentFloat: current + delta });
       }
     }
     return entry;
   },
 
-  // v4.6.36: persist a movement row to Supabase cash_movements. Fire-and-forget;
-  // failure is logged not fatal. Dual-writes here: Zustand (via addPettyCashEntry
-  // above which still populates pettyCashEntries) and Supabase (this function).
+  // v4.6.36: persist a movement row to Supabase cash_movements. Dual-writes here:
+  // Zustand (via addPettyCashEntry above which still populates pettyCashEntries)
+  // and Supabase (this function).
+  //
+  // v5.5.971: RETURNS THE ROW ID ONLY IF THE ROW LANDED. It used to return row.id
+  // after a console.warn even when the insert was rejected, so petty cash, cash
+  // drops, paid-outs and cash sales were all counted as booked while the DB held
+  // nothing — drawer variance, EOD close and the Z report then disagreed with the
+  // physical cash and nobody could see why. null now means NOT SAVED; callers must
+  // say so. (null is also returned in mock/training mode, where nothing is expected
+  // to persist — callers guard on isMock/isTrainingMode before complaining.)
   insertCashMovement: async ({ type, amount, drawerId = null, shiftId = null, sessionId = null, fromDrawerId = null, toDrawerId = null, reason = '', note = '', ref = null, staffId = null, staffName = '' }) => {
     if (isMock || !supabase) return null;
     if (isTrainingMode()) return null;   // TRAINING MODE: no real cash_movements row
@@ -4213,7 +4430,10 @@ export const useStore = create((set, get) => ({
     const resolvedSessionId = sessionId || get().currentDrawerSession?.id || null;
     try {
       const locId = getActiveLocationSync() || await getLocationId();
-      if (!locId) return null;
+      if (!locId) {
+        reportSave('cash movement', new Error('no location resolved — cash movement not saved'));
+        return null;
+      }
       const row = {
         id: `mov-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,
         location_id: locId,
@@ -4229,9 +4449,14 @@ export const useStore = create((set, get) => ({
         session_id: resolvedSessionId,
       };
       const { error } = await supabase.from('cash_movements').insert(row);
-      if (error) console.warn('[insertCashMovement] DB error:', error.message);
+      reportSave('cash movement', error);
+      if (error) {
+        console.warn('[insertCashMovement] DB error:', error.message);
+        return null;
+      }
       return row.id;
     } catch (err) {
+      reportSave('cash movement', err);
       console.warn('[insertCashMovement] failed:', err?.message || err);
       return null;
     }
@@ -5781,7 +6006,12 @@ export const useStore = create((set, get) => ({
       }));
       if (tickets.length) {
         const { error: kdsErr } = await supabase.from('kds_tickets').insert(tickets);
-        if (kdsErr) console.warn('[routeKioskOrderPrints] kds insert', kdsErr);
+        // v5.5.971: a rejected ticket insert means the kitchen never sees the order.
+        reportSave('kitchen ticket', kdsErr);
+        if (kdsErr) {
+          console.warn('[routeKioskOrderPrints] kds insert', kdsErr);
+          useStore.getState().showToast?.(`${order.ref} did NOT reach the kitchen screen — ${kdsErr.message}`, 'error');
+        }
       }
       // v5.5.128: log routing outcome so silent failures (no centres / no
       // matching cats / printer not mapped) surface clearly in DevTools.
@@ -6131,7 +6361,7 @@ export const useStore = create((set, get) => ({
       const locId = getActiveLocationSync();
       const { menuItems = [], taxRates = [] } = get();
       const f = buildChannelCloseFields(o, { menuItems, taxRates });
-      await supabase.from('closed_checks').insert({
+      const { error } = await supabase.from('closed_checks').insert({
         id: `chk-hr-${o.ref}`, ref: o.ref, location_id: locId,
         server: o.customer?.channel || 'HubRise', staff_id: null, covers: 1,
         order_type: o._raw?.type || o.type || 'delivery',
@@ -6145,7 +6375,20 @@ export const useStore = create((set, get) => ({
         table_label: `${o.customer?.channel || 'HubRise'} ${o.customer?.collectionCode || o.ref}`,
         source: 'hubrise',
       });
-    } catch { /* duplicate id = already booked — exactly what we want */ }
+      // v5.5.971: PostgREST RESOLVES with { error }, so the old bare try/catch caught
+      // nothing at all — a duplicate AND an RLS refusal looked identical (silence), and
+      // an unbooked channel sale is revenue missing from every report. Only 23505
+      // (deterministic id already booked) is the expected, harmless outcome.
+      if (error && error.code !== '23505') {
+        reportSave('channel sale', error);
+        get().showToast?.(`Channel order ${o.ref} was NOT booked to sales — ${error.message}`, 'error');
+      } else if (!error) {
+        reportSave('channel sale', null);
+      }
+    } catch (err) {
+      reportSave('channel sale', err);
+      console.warn('[bookChannelSale] failed:', err?.message || err);
+    }
   },
   rejectOrderByRef: (ref) => {
     const o = (get().orderQueue || []).find(x => x.ref === ref);
