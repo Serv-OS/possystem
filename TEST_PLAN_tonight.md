@@ -1,16 +1,22 @@
-# What to test — v5.5.974 → v5.5.976
+# What to test — v5.5.974 → v5.5.979
 
-Everything changed tonight, and how to prove each piece works.
-Supersedes `TEST_PLAN_v5.5.974.md`.
+Everything changed across this run, and how to prove each piece works.
 
-**Live on develop:** `1f27944` (974) → `24db301` (975) → `3e5dfb4` (976).
-**Applied to the Ops database:** both scheduler migrations.
+**Live on develop:** `1f27944` (974) · `24db301` (975) · `3e5dfb4` (976) · `93aee7a` (977) · `5bdf9ff` (978) · `73b467f` (979)
+
+**Applied to the databases so far:** both scheduler migrations, and `20260805c` (the anon-key fences, both sections).
+
+**Still to apply — two pastes, order matters:**
+1. **Ops batch** — `20260806c` Section A + `20260806d`
+2. **Platform batch** — `20260806c` Section B + `20260806_PLATFORM_location_rpcs`
+
+Four edge functions are committed but **deliberately not deployed** until those land, because a function deployed before its migration returns 500 on every call.
 
 ---
 
 ## Part 1 — The one method that covers most of it
 
-Around **50 places** used to say "Saved" without ever checking the database. So each screen gets **two passes**.
+Around **50 places** used to say "Saved" without ever checking the database. Each screen gets **two passes**.
 
 **Pass 1 — offline. This is the test that proves the fix.**
 1. DevTools → **Network → Offline** (or drop wifi)
@@ -18,125 +24,113 @@ Around **50 places** used to say "Saved" without ever checking the database. So 
 3. **Expect:** a red banner naming what did **not** save, **no** green tick, and any value you changed **snaps back**
 4. **Fail =** a green tick, or silence, or the value staying changed on screen
 
-**Pass 2 — online. Proves nothing broke.**
-1. Back online, same action
-2. **Expect:** saves normally, **and survives a hard refresh**
-
-> The red banner is the existing **saveHealth** banner — top of screen, can't be dismissed until a save succeeds.
+**Pass 2 — online.** Same action. Expect it to save **and survive a hard refresh**.
 
 ---
 
-## Part 2 — Back Office screens
+## Part 2 — Money. Do these first.
 
-### Money and tax — highest value, do these first
-| Screen | Action |
-|---|---|
-| **Tax rates** | Change the **default** rate; delete a rate; on a fresh venue press **Seed rates** |
-| **Discounts** | Create, edit, **delete** |
-| **Cash drawers** | Edit a drawer; delete a drawer |
-| **Petty cash** | Record a **paid-out** and a **cash drop** |
-| **Purchase orders** | **Cancel** a PO |
-| **Stock items** | Change a **par level**; change the **default purchase unit**; delete a packaging format; change the **preferred supplier pack** |
-| **Stock counts** | Type a **counted quantity**; press **Save progress**; **Approve** a count |
-| **Suppliers / Recipes** | **Archive** one of each |
+### Petty cash — it was never reaching the database at all
+1. Back Office → **Petty cash** → record a **Float added** and a **Cash drop**
+2. **Expect:** they appear in **Reports → Cash drawer** and in the **EOD** pay-ins figure
 
-**Three separate old Tax bugs — check all three:**
-- Seeding on a venue that already has rates must **not** claim "12 rates added" when it added none
-- Setting a new default must **never** leave **two** defaults — check the list after
-- If the tax list fails to load, the POS must **keep the rates it already had** (it used to blank them)
+Previously every manual entry went into an in-memory list and nowhere else — invisible to drawer variance, EOD and the Z report.
 
-**Stock counts, specifically:** approving now **aborts** if any line failed to save. Previously a lost line meant stock silently reconciled to the old number.
+> ⚠️ Watch for one specific thing: the Back Office calls a pay-in **"Float"**, but the reports read a different name internally. That mapping was added — so if a Float you record **doesn't** show as opening float in the Cash drawer report, tell me, because that's the bit to check.
 
-### Configuration
-| Screen | Action |
-|---|---|
-| **Print routing** | Change a rule; set the **venue receipt printer** |
-| **Printers** | Add, rename, **delete** |
-| **Floor plan** | Move a table, add a table, **delete** a table, rename one, change **width/height** |
-| **Devices** | Rename; change **profile**; **remove**; **regenerate** a pairing code |
-| **Location settings** | Change **address**, **show item images** |
-| **Multi-location** | Rename a venue |
-| **Challenge 21** | Change the setting |
-| **Menu boards** | Save a board; publish |
-| **Print menu** | Edit anything (autosaves — watch for a false "saved") |
-| **Location switcher** | Switch venue |
+### MPOS — a card taken without the sale recorded
+1. MPOS, take a **card payment**
+2. Kill the network **immediately after approval**
+3. **Expect:** a blocking screen saying the payment was taken but the sale isn't recorded, and it retries. **Fail =** it goes to the receipt screen as if nothing happened
+4. Then let it retry and confirm **exactly one** sale in Transactions — not two
 
-**Floor plan + Staff — I changed how typing commits.** Table **width/height** and the **staff name** field now save when you **click away or press Enter**, not on every keystroke. Type a new name, click away, confirm it saves. Previously each character fired its own save.
+### Rewards must be deducted
+1. Apply a **loyalty reward** and a **promo code**, complete the sale
+2. **Expect:** points/stamps deducted, promo code marked used
+3. Try the **same code again** — it must be refused
 
-**Location switcher — order changed.** It now writes your profile **first** and only then switches. Offline it should say it failed and **leave you where you were**, with your cached data intact.
+### Refund gives the points back
+Refund a sale that used a loyalty reward. **Expect the points returned.**
 
-### Staff and workforce
-| Screen | Action |
-|---|---|
-| **Staff** | **Add**; **delete**; edit role / PIN |
-| **Rota** | **Publish** |
-| **Time off** | **Approve** and **decline** |
+### Other money screens (offline pass)
+Tax rates (default, delete, seed) · Discounts · Cash drawers · Purchase orders (cancel) · Stock items (par level, purchase unit, preferred pack) · Stock counts · Suppliers/Recipes archive
 
-**⚠ The important one — Rota publish.** Offline, press Publish.
-**Expect:** it fails visibly and **no SMS or email reaches staff**.
-It used to message everyone about a rota that hadn't saved.
-
-### Operations
-| Screen | Action |
-|---|---|
-| **Maintenance** | Change status; **assign**; raise a job; add a note |
-| **Ops notifications** | **Delete** a rule |
-| **Temperature** | Save a **schedule**; delete one |
-| **Ops devices** | **Unpair** a tablet |
-
-### Customers
-**Delete a customer** offline. It must say it failed.
-**⚠ GDPR path** — it used to vanish the row from screen while leaving the person in the database. You'd have told someone they were erased when they weren't.
+**Three separate old Tax bugs:** seeding on a venue that already has rates must not claim "12 rates added"; setting a new default must never leave **two** defaults; a failed load must **keep** the rates the POS already had.
 
 ---
 
-## Part 3 — Other surfaces
+## Part 3 — Kitchen and printing
 
-### Operations tablet (inside the Manager app)
-**The most serious fix in this release.**
-1. Open a checklist containing a **temperature check**
-2. Offline, enter a reading and save
-3. **Expect:** an error. **Fail =** it ticks green
+### Firing a course — this has never worked for some items
+1. Put items on a table across **two courses**
+2. **Fire course 2**
+3. **Expect a docket at the kitchen station**
 
-A manager used to enter a fridge temperature, watch it tick, and **no food-safety record was written**. Also test **ticking** and **unticking** an ordinary task, and the **photo** and **sign-off** steps.
+Affected here: **30 live items** — Coffee 13, Draught 10, Bottles 6, Cider 1. Anything whose production centre is set on a *parent* category. The screen said "fired" and the kitchen was never told.
 
-### Manager app / MPOS / Time Clock
-These three could not display **any** message at all — no errors, no confirmations.
+### Transfer a table
+Put sent items on a table, transfer it. **Expect a transfer notice to print.** Also test **combining** into an occupied table.
 
-- **Manager** (`?mode=manager`) — approve a timesheet
-- **MPOS** (`?mode=mpos`) — send an order
-- **Time Clock** (`?mode=clock`) — clock in with a **wrong PIN**
-
-**Expect:** you now see a message. Before: total silence.
+### Kitchen tickets shouldn't double-print
+Normal service. Watch for any ticket printing **twice** — the retry logic couldn't see rejected writes and would resend.
 
 ---
 
-## Part 4 — Two crashes that were never noticed
+## Part 4 — The two that need real hardware
 
-### Transfer a table → the kitchen is told
-**This has never worked.** The transfer-notice code called a helper that only existed inside a different function, so it threw instantly into a catch that only logged to the console.
+### ⚠️ Cash drawer lock — this can stop a till trading
+The sign-in lock has been **absent from the app for months** and is now back.
 
-1. Put sent items on a table
-2. **Transfer it** to another table
-3. **Expect:** a transfer notice **prints at the kitchen/bar station**
-4. Before: you saw "Transferred to Table 12" and the kitchen learned nothing
+1. On a till with a drawer **not open**, sign in
+2. **Expect:** a lock screen asking for the opening float, **with a Sign out button**
+3. Declare a float → till unlocks
+4. **Cash up** → drawer goes idle → lock returns → **Sign out works**
 
-Test **combining** into an occupied table too.
+**If anything traps you with no way out, tell me immediately** — that's the failure mode I most want to hear about.
 
-### What's New opens
-Open **What's New**. It should now list the releases. The whole file used to throw on load, so every release note you've written has been unreadable in the app.
+### ⚠️ Challenge 21 on a real till
+1. Sell enough alcohol to reach the trigger count
+2. **Expect the ID prompt** to fire
+3. Do an ID check → counter resets
+
+The count is now decided **by the server**, not the till. If a till's pairing has quietly lapsed you'll get a red *"counter NOT recorded"* toast on every alcohol sale — deliberate, but it will look like a new fault.
 
 ---
 
-## Part 5 — Scheduled jobs (now live, and verifiable)
+## Part 5 — Back Office screens (offline pass)
 
-All nine jobs run automatically. Verify with:
+**Config:** Print routing · Printers · Floor plan (move/add/delete/resize a table) · Devices · Location settings · Multi-location · Challenge 21 · Menu boards · Print menu · Location switcher
+
+**Menu:** remove a **variant** and a **size** · archive an item · quick screen · item images
+
+**Staff:** add/delete staff · **Rota publish** · Time off approve/decline
+
+> **⚠️ Rota publish, offline.** It must fail visibly and **no SMS or email may reach staff.** It used to message everyone about a rota that hadn't saved.
+
+**Operations:** Maintenance (status, assign, raise, note) · Ops notifications · Temperature schedules · Unpair a tablet
+
+**Customers:** delete a customer offline — it must say it failed. This is the **GDPR** path; it used to vanish the row on screen while leaving the person in the database.
+
+**After the Platform paste:** Menu appearance · Challenge 21 reset · Review card logo
+
+---
+
+## Part 6 — Things that had never worked
+
+- **What's New** — open it. The whole file used to throw, so every release note you've written has been unreadable in the app
+- **"Needed today"** prep panel in Batches — a missing import meant it never appeared
+- **Pizza tab** — opening it crashed the **entire application** to a red error page. No venue has a pizza product yet, so it had never fired
+- **Manager / MPOS / Time Clock** — these three could not display **any** message at all. Try a wrong PIN on the Time Clock; you should now see an error
+
+---
+
+## Part 7 — Scheduled jobs
 
 ```sql
 select jobname, schedule, active from cron.job order by jobname;
 ```
 
-Then, after a few minutes:
+Then after a few minutes:
 
 ```sql
 select j.jobname, d.status, d.return_message, d.start_time
@@ -145,42 +139,24 @@ select j.jobname, d.status, d.return_message, d.start_time
  order by d.start_time desc;
 ```
 
-**Expect every row `succeeded`.** Already confirmed tonight: `paxpay-sweep` **succeeded** for the first time after **20,538 consecutive failures**, and `hubrise-reconcile` returned **HTTP 200**.
+**Expect every row `succeeded`.** Confirmed already: `paxpay-sweep` succeeded for the first time after **20,538 consecutive failures**, and the edge-function bridge returned **HTTP 200**.
 
-To see what the edge functions actually replied:
-
-```sql
-select id, status_code, left(content, 200), created from net._http_response order by id desc limit 10;
-```
-
-**Cadence:** paxpay every minute · hubrise every 2 min · catering + ops-escalate every 5 min · marketing + review-ask hourly · log purge, pay-rate changes and Xero nightly.
-
-**Marketing is hourly *checking*, not hourly sending.** A send only happens when a campaign is genuinely due.
+**Marketing is hourly *checking*, not hourly sending.**
 
 ---
 
-## Part 6 — Things worth watching rather than testing
+## Part 8 — Known and deliberately not fixed
 
-- **Ops escalation reaches nobody right now.** The one live rule targets role **"MOD"** and no staff member has that role. The code is fixed; the *configuration* isn't. Give the rule a real recipient, then trigger a temperature breach and confirm the email arrives.
-- **Your "Haven't seen you in a while" campaign never fires by itself** — it's a one-off, and the scheduler only picks up automations and scheduled sends. It needs converting to a **lapsed automation**.
-- **Three June temperature alerts** are still unacknowledged. `ops-escalate` now runs every 5 minutes and will act on them.
-
----
-
-## Part 7 — Known and deliberately not fixed tonight
-
-Tracked as task #86:
-
-- **Petty cash entries added from Back Office may never reach `cash_movements`** — being verified. If confirmed, they're missing from drawer variance, EOD and the Z report.
-- Helper internals in `lib/ops/data.js` and `lib/stock/*.js` still swallow partial failures — `setUnitDefault` can leave **two** buy defaults.
-- No 0-row check in those helpers: an RLS policy matching nothing still reads as success.
-- **MPOS payment path** proceeds to the receipt screen even if closing the check failed.
-- Two more copies of the kitchen-routing helper remain (one of them caused tonight's transfer bug).
-- Four surfaces now carry a near-identical toast component — should be one component above the surface switch.
+- **Ops escalation reaches nobody** — the only rule targets role **"MOD"**, which no staff member has. The code works; the configuration points at no one
+- **Your "Haven't seen you in a while" campaign never fires by itself** — it's a one-off, and the scheduler only picks up automations and scheduled sends
+- **Pay-later catering** promos reference an id that exists nowhere, because there's no sale record until payment is taken later
+- **`promo-redeem` crash window** — if the function dies mid-call a code can be recorded as used but never consumed. Under-deduction, the safer direction, but it needs the reconciler
+- **`payment_devices`** still leaks every terminal's pairing code to the anon key. Migration written (`20260805d`), not applied
 
 ---
 
-## How I verified, and what I did not
+## How this was verified, and what was not
 
-- **Verified:** clean build; **eslint clean of `no-undef`** across every changed file (that check is what found both crashes — the Vite build does *not* catch them); an independent adversarial review of the full diff, which found **7 regressions the fix agents had introduced**, all fixed before commit; and the scheduler proven live against the real database.
-- **Not verified:** no hands-on UI clicking. There's no test framework here and local dev runs in mock mode where writes short-circuit. **Part 1's offline pass is the real proof and still needs doing.**
+**Verified:** clean build at every commit · **crash-class lint went from ~70 to 0** repo-wide (that check found two live crashes the build does not catch) · multiple adversarial review rounds, which found **real defects in every single pass** including one worse than the bug it replaced · the schedulers proven live · both new migrations executed against a scratch PostgreSQL 17 before shipping.
+
+**Not verified:** no hands-on clicking. There is no test framework here and local dev runs in mock mode where writes short-circuit. **Part 1's offline pass, and Part 4's two hardware tests, are the real proof and still need doing.**
