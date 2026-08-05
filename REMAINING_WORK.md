@@ -1,5 +1,12 @@
 # What's left to be 100% ready
 
+> **Status 5 Aug 2026, v5.5.977.** Groups 2, 3.3, 3.4, 3.5, 4 and 5 (part) are **DONE** — see
+> the strikethrough markers below. Group 1 is written and committed as
+> `supabase/migrations/20260805c_anon_fences.sql` but **needs Peter to run it** (schema changes
+> are blocked in the agent environment). Section B of that migration carries a real trade-off
+> that needs a decision — see the note in Group 1.
+
+
 Verified live on 5 Aug 2026 by five independent auditors, against the real databases — not copied from the earlier audit. Staging work is **out of scope**; this is product correctness only.
 
 Tonight's fixes (v5.5.974–976) are **not** repeated here. Where an auditor checked an old claim and found it already fixed, it's listed under *Already closed* at the bottom.
