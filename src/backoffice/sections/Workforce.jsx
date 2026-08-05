@@ -466,13 +466,16 @@ function BankPanel({ s, ctx, showToast, onPatch }) {
   const [editing, setEditing] = useState(false);
   const [sort, setSort] = useState('');
   const [acct, setAcct] = useState('');
+  const [acctName, setAcctName] = useState('');   // v5.5.973 account holder name
   const [busy, setBusy] = useState(false);
-  const open = () => { setSort(s.bankSortCode || ''); setAcct(s.bankAccount || ''); setEditing(true); };
+  // Default the holder name to the staff member's own name — right most of the
+  // time, and the manager only edits it for joint / parent accounts.
+  const open = () => { setSort(s.bankSortCode || ''); setAcct(s.bankAccount || ''); setAcctName(s.bankAccountName || s.name || ''); setEditing(true); };
   const save = async () => {
     setBusy(true);
     try {
-      const { masked, sort: savedSort, account } = await saveStaffBank(s.id, sort, acct);
-      onPatch?.({ bankSortCode: savedSort, bankAccount: account, bankMasked: masked });
+      const { masked, sort: savedSort, account, accountName } = await saveStaffBank(s.id, sort, acct, acctName);
+      onPatch?.({ bankSortCode: savedSort, bankAccount: account, bankMasked: masked, bankAccountName: accountName });
       setEditing(false);
       showToast?.('Bank details saved', 'success');
     } catch (e) { showToast?.(e.message || 'Could not save', 'error'); }
@@ -481,6 +484,9 @@ function BankPanel({ s, ctx, showToast, onPatch }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 14px', borderRadius: 12, background: 'var(--inset)', border: '1px solid var(--inset-border)', marginBottom: 16 }}>
       <div style={{ flex: 1, minWidth: 0 }}>
+        {s.bankAccountName && (s.bankAccount || s.bankMasked) && (
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)', marginBottom: 2 }}>{s.bankAccountName}</div>
+        )}
         {s.bankAccount ? (
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 15, fontWeight: 700 }}>{s.bankSortCode || '——'}&ensp;{s.bankAccount}</div>
         ) : s.bankMasked ? (
@@ -498,6 +504,9 @@ function BankPanel({ s, ctx, showToast, onPatch }) {
           <div className="modal-box" style={{ maxWidth: 400 }}>
             <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Bank details — {s.name}</div>
             <div style={{ fontSize: 12.5, color: 'var(--t3)', marginBottom: 16 }}>For payroll. Stored in full on the staff record (org-fenced) so you can pay them via BACS.</div>
+            <div style={{ marginBottom: 12 }}><label style={labelStyle}>Account name</label><input style={inputStyle} value={acctName} onChange={e => setAcctName(e.target.value)} placeholder="Name on the bank account" />
+              <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 4 }}>As it appears at the bank — checked against the payee warning when paying manually. May differ from their own name (joint or parent account).</div>
+            </div>
             <div style={{ marginBottom: 12 }}><label style={labelStyle}>Sort code</label><input style={inputStyle} value={sort} onChange={e => setSort(e.target.value)} placeholder="00-00-00" inputMode="numeric" /></div>
             <div style={{ marginBottom: 18 }}><label style={labelStyle}>Account number</label><input style={inputStyle} value={acct} onChange={e => setAcct(e.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="12345678" inputMode="numeric" /></div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>

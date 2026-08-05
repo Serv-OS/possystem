@@ -400,14 +400,15 @@ function BankAction({ c, member, ctx, showToast, markStep, done }) {
   const [open, setOpen] = useState(false);
   const [sort, setSort] = useState('');
   const [acct, setAcct] = useState('');
+  const [acctName, setAcctName] = useState(member?.name || '');   // v5.5.973 holder name
   const [busy, setBusy] = useState(false);
   if (done) return <Badge tone="green">Captured</Badge>;
   const save = async () => {
     setBusy(true);
     try {
-      const { masked } = await wf.saveStaffBank(member.id, sort, acct);
+      const { masked } = await wf.saveStaffBank(member.id, sort, acct, acctName);
       await markStep(c, 'bank', 'complete', { bankMasked: masked, bankCapturedAt: new Date().toISOString() });
-      setOpen(false); setSort(''); setAcct('');
+      setOpen(false); setSort(''); setAcct(''); setAcctName(member?.name || '');
       showToast('Bank details captured (stored masked)', 'success');
     } catch (e) { showToast(e.message || 'Could not save', 'error'); }
     finally { setBusy(false); }
@@ -419,6 +420,7 @@ function BankAction({ c, member, ctx, showToast, markStep, done }) {
         <div className="modal-box" style={{ maxWidth: 400 }}>
           <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 4 }}>Bank details — {member.name}</div>
           <div style={{ fontSize: 12.5, color: 'var(--t3)', marginBottom: 16 }}>For payroll. Stored on their staff profile (org-fenced) — you can view or change them there any time.</div>
+          <div style={{ marginBottom: 12 }}><label style={labelStyle}>Account name</label><input style={inputStyle} value={acctName} onChange={e => setAcctName(e.target.value)} placeholder="Name on the bank account" /></div>
           <div style={{ marginBottom: 12 }}><label style={labelStyle}>Sort code</label><input style={inputStyle} value={sort} onChange={e => setSort(e.target.value)} placeholder="00-00-00" inputMode="numeric" /></div>
           <div style={{ marginBottom: 18 }}><label style={labelStyle}>Account number</label><input style={inputStyle} value={acct} onChange={e => setAcct(e.target.value.replace(/\D/g, '').slice(0, 10))} placeholder="12345678" inputMode="numeric" /></div>
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>

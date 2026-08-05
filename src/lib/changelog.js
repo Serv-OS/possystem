@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.973', date: '4 Aug 2026', label: 'Bank account NAME captured alongside sort code and account number',
+    changes: [
+      'Staff bank details now hold the ACCOUNT NAME — the name as it appears at the bank. When paying manually you check it against the bank\'s payee warning before sending, and it is often not the person\'s own name (joint or parent accounts).',
+      'Captured in both places bank details are entered: the staff profile\'s Bank panel and the Onboarding "Bank details" step. It defaults to the staff member\'s own name, so most of the time you just confirm it.',
+      'It shows on the profile above the sort code/account number, in the Payroll run table next to each person\'s bank line, and as its own "Account name" column in the payroll CSV export.',
+      'TEST: Workforce → Staff → open someone → Bank → Enter/Edit → "Account name" is the first field, pre-filled with their name. Save, then run payroll → the name appears in the Bank column and in the exported CSV.',
+    ],
+  },
+  {
     version: '5.5.972', date: '4 Aug 2026', label: 'Probe calibration is a temperature type — and picking a type finally applies its range',
     changes: [
       'NEW UNIT TYPE — "Probe calibration". Operations → Temperature → Add unit → Type now offers it alongside Fridge/Freezer/etc. Default is the ice-water test: a probe in melting ice must read 0°C (±1°C). Out of tolerance raises the normal corrective action + maintenance job + manager alert, which is exactly right — the probe must be recalibrated or taken out of use. For the boiling test instead, edit that unit\'s range to 99–101°C.',

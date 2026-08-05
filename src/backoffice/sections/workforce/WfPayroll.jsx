@@ -102,15 +102,15 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
     const troncCol = !isUK ? 'Pooled tips' : troncFree ? 'Tronc tips (PAYE, no NIC - independent troncmaster)' : 'Pooled tips (PAYE + NIC - employer allocated)';
     const directCol = !isUK ? 'Direct tips' : troncFree ? 'Direct tips via tronc (PAYE, no NIC)' : 'Direct tips (PAYE + NIC - employer allocated)';
     const rows = [
-      ['First name', 'Surname', 'NI number', 'Period start', 'Period end', 'Hours', 'Basic pay', troncCol, directCol, 'Gross total', 'Sort code', 'Account number'],
+      ['First name', 'Surname', 'NI number', 'Period start', 'Period end', 'Hours', 'Basic pay', troncCol, directCol, 'Gross total', 'Account name', 'Sort code', 'Account number'],
       ...run.staff.map(r => {
         const s = staffById[r.staff_id] || {};
         const parts = String(s.name || nameOf(r.staff_id)).trim().split(/\s+/);
         const first = parts.slice(0, -1).join(' ') || parts[0] || '';
         const last = parts.length > 1 ? parts[parts.length - 1] : '';
-        return [first, last, s.niNumber || '', period.startIso, period.endIso, r.hours.toFixed(2), r.pay.toFixed(2), r.tips_tronc.toFixed(2), r.tips_direct.toFixed(2), r.total.toFixed(2), s.bankSortCode || '', s.bankAccount || s.bankMasked || ''];
+        return [first, last, s.niNumber || '', period.startIso, period.endIso, r.hours.toFixed(2), r.pay.toFixed(2), r.tips_tronc.toFixed(2), r.tips_direct.toFixed(2), r.total.toFixed(2), s.bankAccountName || '', s.bankSortCode || '', s.bankAccount || s.bankMasked || ''];
       }),
-      ['TOTAL', '', '', '', '', '', run.totals.pay.toFixed(2), run.totals.tips_tronc.toFixed(2), run.totals.tips_direct.toFixed(2), run.totals.total.toFixed(2), '', ''],
+      ['TOTAL', '', '', '', '', '', run.totals.pay.toFixed(2), run.totals.tips_tronc.toFixed(2), run.totals.tips_direct.toFixed(2), run.totals.total.toFixed(2), '', '', ''],
       [],
       ['Notes for payroll:'],
       [isUK ? 'Tips are separate pay elements and must not count toward National Minimum Wage.' : 'Tips are reported separately from wages; managers/supervisors must not receive pooled tips (FLSA). State tip-credit rules vary.'],
@@ -234,7 +234,14 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
                   {run.staff.map(r => (
                     <tr key={r.staff_id}>
                       <td style={td}>{nameOf(r.staff_id)}</td>
-                      <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 11.5, color: bankOf(r.staff_id) ? 'var(--t3)' : 'var(--red)' }}>{bankOf(r.staff_id) || 'No bank on file'}</td>
+                      <td style={{ ...td, fontFamily: 'var(--font-mono)', fontSize: 11.5, color: bankOf(r.staff_id) ? 'var(--t3)' : 'var(--red)' }}>
+                        {/* v5.5.973: show the ACCOUNT NAME above the numbers — it is what
+                            the payer checks against the bank's payee warning. */}
+                        {staffById[r.staff_id]?.bankAccountName && bankOf(r.staff_id) && (
+                          <div style={{ fontFamily: 'inherit', color: 'var(--t2)', fontWeight: 600 }}>{staffById[r.staff_id].bankAccountName}</div>
+                        )}
+                        {bankOf(r.staff_id) || 'No bank on file'}
+                      </td>
                       <td style={{ ...td, textAlign: 'right' }} className="mono">{Number(r.hours || 0).toFixed(2)}</td>
                       <td style={{ ...td, textAlign: 'right' }} className="mono">{money(r.pay)}</td>
                       <td style={{ ...td, textAlign: 'right' }} className="mono">{r.tips_direct ? money(r.tips_direct) : <span style={{ color: 'var(--t4)' }}>—</span>}</td>

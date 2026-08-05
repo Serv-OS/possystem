@@ -128,17 +128,21 @@ export async function sendEmail(to, subject, html, locationId) {
 /** Store bank details on the staff record — full sort code + account number
  *  (org-RLS-fenced, needed to actually pay staff) plus a masked copy for
  *  compact display. */
-export async function saveStaffBank(staffId, sortCode, accountFull) {
+export async function saveStaffBank(staffId, sortCode, accountFull, accountName) {
   const digits = String(accountFull || '').replace(/\D/g, '');
   const masked = digits.length >= 4 ? `****${digits.slice(-4)}` : null;
   const sort = String(sortCode || '').replace(/[^0-9]/g, '').replace(/(\d{2})(\d{2})(\d{2})/, '$1-$2-$3') || null;
-  if (isMock || !supabase) { const a = lsGet('staff'); const i = a.findIndex(x => x.id === staffId); if (i >= 0) { a[i].bankMasked = masked; a[i].bankAccount = digits; a[i].bankSortCode = sort; lsSet('staff', a); } return { masked, sort, account: digits }; }
+  // v5.5.973: account HOLDER name — checked against the bank's Confirmation of
+  // Payee warning when paying manually, and often NOT the staff member's own
+  // name (joint / parent accounts).
+  const name = String(accountName || '').trim() || null;
+  if (isMock || !supabase) { const a = lsGet('staff'); const i = a.findIndex(x => x.id === staffId); if (i >= 0) { a[i].bankMasked = masked; a[i].bankAccount = digits; a[i].bankSortCode = sort; a[i].bankAccountName = name; lsSet('staff', a); } return { masked, sort, account: digits, accountName: name }; }
   if (!staffId || !masked) throw new Error('Enter a valid sort code + account number');
   // Full account is stored (org-RLS-fenced) so staff can actually be paid via BACS;
   // masked is kept for compact display.
-  const { error } = await supabase.from('wf_staff').update({ bank_sort_code: sort, bank_account: digits, bank_account_masked: masked }).eq('id', staffId);
+  const { error } = await supabase.from('wf_staff').update({ bank_sort_code: sort, bank_account: digits, bank_account_masked: masked, bank_account_name: name }).eq('id', staffId);
   if (error) throw new Error(error.message);
-  return { masked, sort, account: digits };
+  return { masked, sort, account: digits, accountName: name };
 }
 
 /** Call the Claude proxy (/api/ai). Returns the Anthropic Messages response. */
@@ -166,6 +170,7 @@ function mapStaff(r) {
     holidayEntitlementDays: r.holiday_entitlement_days != null ? Number(r.holiday_entitlement_days) : null,
     address: r.address || null, emergencyContact: r.emergency_contact || null,
     bankSortCode: r.bank_sort_code || null, bankAccount: r.bank_account || null, bankMasked: r.bank_account_masked || null,
+    bankAccountName: r.bank_account_name || null,
     niNumber: r.ni_number || null,
     days: {},
   };
@@ -174,7 +179,7 @@ export async function loadStaff(locationId) {
   if (isMock || !supabase) return lsGet('staff');
   if (!locationId) return [];
   const { data, error } = await supabase.from('wf_staff')
-    .select('id,name,role_key,contract_type,mobile,email,dob,start_date,status,pos_user_id,section_ids,rate_override,contracted_week,weekly_hours_target,holiday_entitlement_days,address,emergency_contact,bank_sort_code,bank_account,bank_account_masked,ni_number,created_at')
+    .select('id,name,role_key,contract_type,mobile,email,dob,start_date,status,pos_user_id,section_ids,rate_override,contracted_week,weekly_hours_target,holiday_entitlement_days,address,emergency_contact,bank_sort_code,bank_account,bank_account_masked,bank_account_name,ni_number,created_at')
     .eq('location_id', locationId).neq('status', 'leaver').order('created_at', { ascending: true });
   if (error) { console.warn('[wf] loadStaff:', error.message); return []; }
   return (data || []).map(mapStaff);
