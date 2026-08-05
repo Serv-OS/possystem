@@ -173,17 +173,56 @@ Deno.serve(async (req) => {
       let breakTaken = open.break_taken || 0;
       if (open.break_open_at) breakTaken += Math.max(0, Math.round((now.getTime() - new Date(open.break_open_at).getTime()) / 60000));
       const grossHrs = (now.getTime() - new Date(open.clock_in).getTime()) / 3600000;
+
+      // v5.5.969 — VENUE BREAK POLICY at clock-out.
+      // (a) Auto-deduct: no break punched + shift over the venue threshold →
+      //     deduct the venue default, FLOORED at the UK statutory minimum for
+      //     the worker's age (WTR 1998: 20 min over 6h; under-18s 30 min over
+      //     4.5h) so a venue cannot configure itself below the law.
+      // (b) Paid breaks: the existing "Breaks are paid" venue setting finally
+      //     applies to CLOCK-PUNCHED sheets too (it always promised "new
+      //     timesheets" but only BO-created ones honoured it).
+      // OFF by default — no venue's pay records change until they opt in.
+      const { data: vsRow } = await admin.from('wf_venue_settings')
+        .select('settings').eq('location_id', location_id).maybeSingle();
+      const vs = vsRow?.settings || {};
+      let autoApplied = 0;
+      if (breakTaken === 0 && vs.autoBreak === true) {
+        const defMins = Math.max(0, Number(vs.defaultBreakMins ?? 30));
+        const threshold = Math.max(1, Number(vs.autoBreakHours ?? 6));
+        if (grossHrs > threshold && defMins > 0) {
+          let statutory = grossHrs > 6 ? 20 : 0;
+          const dob = staff?.dob ? new Date(staff.dob) : null;
+          if (dob && !isNaN(dob.getTime())) {
+            const age = (now.getTime() - dob.getTime()) / (365.25 * 86400000);
+            if (age < 18 && grossHrs > 4.5) statutory = Math.max(statutory, 30);
+          }
+          autoApplied = Math.max(defMins, statutory);
+          breakTaken = autoApplied;
+        }
+      }
+
       const actual = round2(Math.max(0, grossHrs - breakTaken / 60));
       const scheduled = open.scheduled_hours != null ? Number(open.scheduled_hours) : null;
       const variance = scheduled != null ? round2(actual - scheduled) : null;
       const rate = open.effective_rate != null ? Number(open.effective_rate) : 0;
-      const pay = round2(actual * rate);
-      const { error } = await admin.from('wf_timesheets').update({
+      // Paid-break venues pay the break minutes on top of worked hours — the
+      // exact formula the timesheet editor uses (WfTimesheets editCalc).
+      const paidBreakMins = vs.paidBreaks === true ? breakTaken : 0;
+      const pay = round2(Math.max(0, actual + paidBreakMins / 60) * rate);
+      const update: Record<string, unknown> = {
         clock_out: now.toISOString(), break_taken: breakTaken, break_open_at: null,
         actual_hours: actual, variance, pay_amount: pay, status: 'pending',
-      }).eq('id', open.id);
+        paid_break_mins: paidBreakMins,
+      };
+      if (autoApplied > 0) {
+        // Visible audit trail: managers see WHY 30 min vanished with no punches.
+        const segs = Array.isArray(open.breaks) ? open.breaks : [];
+        update.breaks = [...segs, { auto: true, mins: autoApplied, at: now.toISOString() }];
+      }
+      const { error } = await admin.from('wf_timesheets').update(update).eq('id', open.id);
       if (error) return json({ error: error.message }, 500);
-      return json({ ok: true, staff: who, state: 'out', actualHours: actual, breakMins: breakTaken, pay });
+      return json({ ok: true, staff: who, state: 'out', actualHours: actual, breakMins: breakTaken, autoBreak: autoApplied || undefined, pay });
     }
 
     return json({ error: `unknown action "${action}"` }, 400);

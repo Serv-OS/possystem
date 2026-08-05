@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.969', date: '4 Aug 2026', label: 'Venue break policy — configurable default + auto-deduct at clock-out, with the UK statutory floor built in',
+    changes: [
+      'Workforce → Settings grows a BREAK POLICY block: "Default break" (minutes — feeds new rota shifts, shift templates and manual timesheets; replaces the hardcoded 30) and "Auto-deduct the default break at clock-out" with a configurable shift-length trigger (default 6h).',
+      'AUTO-DEDUCT: when a staff member clocks out having never punched a break and the shift is over the trigger, the venue default break is deducted automatically — and it is FLOORED at the UK statutory minimum for the worker\'s age (WTR 1998: 20 min over 6h; 30 min for under-18s over 4.5h, using their date of birth), so a venue cannot configure itself below the law. The deduction is recorded in the break audit trail as auto-applied, and managers can still edit any timesheet.',
+      'OFF by default — no venue\'s pay records change until they switch it on. The customer scenario ("30 minutes unpaid as standard, applied automatically") is now: set Default break 30 + tick auto-deduct. Done.',
+      'BONUS FIX: the existing "Breaks are paid" venue setting now applies to CLOCK-PUNCHED timesheets too — it always promised paid breaks on new timesheets but only Back-Office-created ones honoured it; clock-out now pays break minutes on top of worked hours using the same formula as the timesheet editor.',
+      'The red "break due (WTR)" compliance badge is unchanged and remains the statutory backstop.',
+      'TEST: Workforce → Settings → set Default break 30, tick auto-deduct, save. Clock in on the Time Clock, clock out after 6h+ with no break → timesheet shows 30 min deducted with an auto marker. New rota shifts default to 30. Under-18 staff on a 5h shift auto-deduct at least 30.',
+    ],
+  },
+  {
     version: '5.5.968', date: '1 Aug 2026', label: 'Adyen hardening — 22-agent adversarial review, 14 confirmed money-safety findings fixed',
     changes: [
       'Ran a 3-lens (double-charge / auth-fence / amounts) adversarial review over the new Adyen payment code with per-finding refutation; 14 findings survived verification and ALL are fixed:',

@@ -65,6 +65,11 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
   const [payDayDom, setPayDayDom] = useState('');       // monthly: day-of-month paid (0 = last day)
   const [payDayOffset, setPayDayOffset] = useState(''); // fixed-length: days after period end
   const [paidBreaks, setPaidBreaks] = useState(false);  // venue policy: breaks paid by default
+  // v5.5.969 break policy: venue default break length + auto-deduct when no
+  // break was punched (customer ask: "30 min unpaid as standard, automatic").
+  const [defaultBreakMins, setDefaultBreakMins] = useState('30');
+  const [autoBreak, setAutoBreak] = useState(false);
+  const [autoBreakHours, setAutoBreakHours] = useState('6');
   // Tipping policy (Employment (Allocation of Tips) Act 2023): how card tips
   // are distributed + who decides allocation (drives NIC treatment).
   const [tipMode, setTipMode] = useState('pool');           // pool | direct | hybrid
@@ -86,6 +91,9 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
     setPayDayDom(!fixed && settings?.payDay != null ? String(settings.payDay) : '');
     setPayDayOffset(fixed && settings?.payDay != null ? String(settings.payDay) : '');
     setPaidBreaks(!!settings?.settings?.paidBreaks);
+    setDefaultBreakMins(String(settings?.settings?.defaultBreakMins ?? 30));
+    setAutoBreak(!!settings?.settings?.autoBreak);
+    setAutoBreakHours(String(settings?.settings?.autoBreakHours ?? 6));
     const sj = settings?.settings || {};
     setTipMode(['pool', 'direct', 'hybrid'].includes(sj.tipMode) ? sj.tipMode : 'pool');
     setDirectPct(sj.directPct != null ? String(sj.directPct) : '50');
@@ -138,6 +146,12 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
       settings: {
         ...(settings?.settings || {}),
         paidBreaks,
+        // Break policy — the default is clamped 0–120; the auto-deduct floor to
+        // the STATUTORY minimum happens at clock-out (workforce-clock), so a
+        // venue can never configure itself below UK law on a triggering shift.
+        defaultBreakMins: Math.min(120, Math.max(0, parseInt(defaultBreakMins, 10) || 0)),
+        autoBreak,
+        autoBreakHours: Math.min(13, Math.max(1, Number(autoBreakHours) || 6)),
         tipMode,
         directPct: Math.min(100, Math.max(0, parseInt(directPct, 10) || 0)),
         tipAllocator,
@@ -346,6 +360,28 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
             <b>Breaks are paid</b>
             <span style={{ display: 'block', fontSize: 11.5, color: 'var(--t3)', marginTop: 2 }}>
               When on, break minutes are paid on top of worked hours on new timesheets (changeable per timesheet). UK law requires a 20-minute rest break when working over 6 hours (30 minutes for under-18s over 4.5 hours) but does not require it to be paid — timesheets flag missing statutory breaks either way.
+            </span>
+          </span>
+        </label>
+
+        {/* v5.5.969 — venue break policy: default length + auto-deduct */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12, fontSize: 13, color: 'var(--t1)' }}>
+          <b>Default break</b>
+          <input type="number" min="0" max="120" value={defaultBreakMins}
+            onChange={e => setDefaultBreakMins(e.target.value)} disabled={savingVenue}
+            style={{ width: 64, padding: '5px 8px', borderRadius: 8, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t1)', fontFamily: 'inherit', fontSize: 13 }} />
+          <span style={{ fontSize: 12, color: 'var(--t3)' }}>minutes — used for new rota shifts and manual timesheets</span>
+        </div>
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginTop: 10, cursor: 'pointer', fontSize: 13, color: 'var(--t1)' }}>
+          <input type="checkbox" checked={autoBreak} onChange={e => setAutoBreak(e.target.checked)} disabled={savingVenue} style={{ marginTop: 3 }} />
+          <span>
+            <b>Auto-deduct the default break at clock-out</b>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4, fontSize: 11.5, color: 'var(--t3)' }}>
+              when no break was punched and the shift is over
+              <input type="number" min="1" max="13" step="0.5" value={autoBreakHours}
+                onChange={e => setAutoBreakHours(e.target.value)} disabled={savingVenue || !autoBreak}
+                style={{ width: 52, padding: '3px 6px', borderRadius: 6, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t1)', fontFamily: 'inherit', fontSize: 12 }} />
+              hours. Never deducts less than the UK statutory minimum for the worker's age; managers can still edit any timesheet.
             </span>
           </span>
         </label>

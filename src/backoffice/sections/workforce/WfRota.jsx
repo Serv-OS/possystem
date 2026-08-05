@@ -30,10 +30,11 @@ function WarnBox({ warnings }) {
 }
 
 // ── Shift editor modal ──────────────────────────────────────────────────────
-function ShiftModal({ staff, day, shift, sections, templates, warnings, onSave, onDelete, onDuplicate, onClose, saving }) {
+function ShiftModal({ staff, day, shift, sections, templates, warnings, onSave, onDelete, onDuplicate, onClose, saving, defaultBreakMins = 30 }) {
   const [start, setStart] = useState(shift?.start || '09:00');
   const [finish, setFinish] = useState(shift?.finish || '17:00');
-  const [breakMins, setBreakMins] = useState(shift?.breakMins ?? 30);
+  // v5.5.969: new shifts default to the VENUE break policy (was hardcoded 30)
+  const [breakMins, setBreakMins] = useState(shift?.breakMins ?? defaultBreakMins);
   const [sectionId, setSectionId] = useState(shift?.sectionId || sections[0]?.id || '');
   const hrs = useMemo(() => Math.max(0, hoursOf(start, finish) - (Number(breakMins) || 0) / 60), [start, finish, breakMins]);
 
@@ -102,10 +103,10 @@ function ShiftModal({ staff, day, shift, sections, templates, warnings, onSave, 
 
 // ── Standard shifts (templates) manager ─────────────────────────────────────
 // Presets live on wf_venue_settings.settings.shiftTemplates — no new table.
-function TemplatesModal({ templates, sections, onSave, onClose, saving }) {
+function TemplatesModal({ templates, sections, onSave, onClose, saving, defaultBreakMins = 30 }) {
   const [list, setList] = useState(templates || []);
   const [form, setForm] = useState(null); // { id?, name, start, finish, breakMins, sectionId, color }
-  const blank = { name: '', start: '09:00', finish: '17:00', breakMins: 30, sectionId: '', color: TPL_COLOURS[0] };
+  const blank = { name: '', start: '09:00', finish: '17:00', breakMins: defaultBreakMins, sectionId: '', color: TPL_COLOURS[0] };
 
   const upsert = () => {
     if (!form.name.trim()) return;
@@ -688,13 +689,14 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
         <ShiftModal
           staff={editing.staff} day={editing.day} shift={editing.shift}
           sections={secs} templates={templates} saving={saving}
+          defaultBreakMins={settings?.settings?.defaultBreakMins ?? 30}
           warnings={clashWarnings({ staffName: editing.staff.name, staffId: editing.staff.id, dateIso: editing.day.iso, timeOff, availability: avail })}
           onSave={saveShift} onDelete={removeShift} onClose={() => setEditing(null)}
           onDuplicate={(sh) => { setEditing(null); setCopying(sh); }}
         />
       )}
       {tplOpen && (
-        <TemplatesModal templates={templates} sections={secs} saving={saving} onSave={saveTemplates} onClose={() => setTplOpen(false)} />
+        <TemplatesModal templates={templates} sections={secs} saving={saving} defaultBreakMins={settings?.settings?.defaultBreakMins ?? 30} onSave={saveTemplates} onClose={() => setTplOpen(false)} />
       )}
       {copying && (
         <CopyShiftModal source={copying} staff={staff} wk={wk} shifts={shifts} timeOff={timeOff} avail={avail} saving={saving} onCopy={copyShift} onClose={() => setCopying(null)} />

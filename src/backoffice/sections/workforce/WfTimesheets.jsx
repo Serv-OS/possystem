@@ -439,6 +439,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
       {adding && (
         <AddTimesheetModal
           staff={staff} paidDefault={paidBreaksDefault}
+          breakDefault={settings?.settings?.defaultBreakMins ?? 0}
           onClose={() => setAdding(false)}
           onSave={async (form) => {
             const breakMins = Number(form.breakMins) || 0;
@@ -491,10 +492,11 @@ function BreakCell({ r, staffMap, tz }) {
 }
 
 // Free-standing manual timesheet — for hours worked off-rota (no shift).
-function AddTimesheetModal({ staff, paidDefault = false, onClose, onSave }) {
+function AddTimesheetModal({ staff, paidDefault = false, breakDefault = 0, onClose, onSave }) {
   const today = new Date();
   const todayIso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-  const [form, setForm] = useState({ staffId: staff?.[0]?.id || '', date: todayIso, start: '09:00', finish: '17:00', breakMins: '0', breakPaid: paidDefault });
+  // v5.5.969: manual timesheets start from the venue's default break policy
+  const [form, setForm] = useState({ staffId: staff?.[0]?.id || '', date: todayIso, start: '09:00', finish: '17:00', breakMins: String(breakDefault || 0), breakPaid: paidDefault });
   const [busy, setBusy] = useState(false);
   const set = (k, v) => setForm(f => ({ ...f, [k]: v }));
   const valid = form.staffId && form.date && form.start && form.finish;
