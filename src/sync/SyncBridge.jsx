@@ -5,13 +5,16 @@ import { loadReservations, scheduleReservationFlush, subscribeToReservations, te
 import { loadQueues, scheduleQueueFlush, teardownQueueSync } from './QueueSync';
 import { loadWaitlistSync, scheduleWaitlistFlush, teardownWaitlistSync } from './WaitlistSync';
 import { initOfflineQueue } from './OfflineQueue';
-import { isMock, supabase, getActiveLocationSync } from '../lib/supabase';
+import { isMock, supabase, getActiveLocationSync, ensureAuthToken } from '../lib/supabase';
+import { retryPendingRedemptions } from '../lib/commitRedemptions';
 import { startSessionReconciler, stopSessionReconciler } from './SessionReconciler';
 import { startTerminalJobReconciler, stopTerminalJobReconciler } from './TerminalJobReconciler';
 // v4.6.27: static import per ADR-008. Dynamic imports inside callbacks silently
 // fail in production bundles and have caused multiple data-loss bugs.
 import { reconcilePendingChecks, onReconnect, periodicSync } from './DataSafe.js';
 import { getShowItemImages } from '../lib/locationTime';
+
+const OPS_URL = import.meta.env.VITE_SUPABASE_URL;
 
 export const CHANNEL_NAME = 'rpos-sync';
 export const STORAGE_KEY  = 'rpos-shared-state';
@@ -520,6 +523,20 @@ export default function SyncBridge({ onSyncPulse }) {
       })();
     }
 
+    // Drain loyalty/promo deductions parked by lib/commitRedemptions. OfflineQueue's own replay
+    // engine only speaks Supabase table ops and cannot POST to an edge function, so without this
+    // the ONLY thing that ever retries a lost deduction is the next successful redemption on the
+    // same device. ensureAuthToken() returns null in back-office mode and retryPendingRedemptions
+    // no-ops without a token, so this can't fire un-authenticated.
+    const flushRedemptions = async () => {
+      try {
+        const token = await ensureAuthToken().catch(() => null);
+        if (!token) return;
+        await retryPendingRedemptions({ functionsUrl: `${OPS_URL}/functions/v1`, token });
+      } catch { /* best-effort */ }
+    };
+    if (!isMock) flushRedemptions();
+
     // On reconnect — replay pending data
     if (!isMock) {
       window.addEventListener('online', async () => {
@@ -527,6 +544,7 @@ export default function SyncBridge({ onSyncPulse }) {
           // v4.6.27: static import above (ADR-008)
           await onReconnect();
           await loadReservations();   // v5.5.740: realtime can miss reservation events while offline — reconcile on reconnect
+          await flushRedemptions();
         } catch {}
       });
     }

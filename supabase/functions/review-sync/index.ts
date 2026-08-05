@@ -7,6 +7,9 @@
 // create a pending review_replies row so it shows in the Approval Queue with an
 // AI draft to approve. Idempotent: re-running never double-imports.
 //
+//   (no action) { ops_location_id }  — one venue (staff or service-role)
+//   sync_all    {}                   — every venue with a connected platform (service-role; cron)
+//
 // Auth: a staff user with access to the location (user_locations or super_admin),
 // OR the service-role key (for a scheduled cron). `simulated_reviews` lets an
 // authed caller inject test reviews so the whole loop is exercisable before
@@ -48,33 +51,11 @@ async function authorize(req: Request, opsLocationId: string): Promise<boolean> 
   return prof?.role === 'super_admin';
 }
 
-Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
-  if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
-
-  let body: any;
-  try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
-  const opsLocationId = String(body.ops_location_id ?? '').trim();
-  if (!opsLocationId) return json({ error: 'ops_location_id required' }, 400);
-  if (!(await authorize(req, opsLocationId))) return json({ error: 'no access to this location' }, 403);
-
+async function syncLocation(opsLocationId: string, injected: Record<string, PlatformReview[]> = {}) {
   const { data: links } = await opsAdmin.from('review_platform_links')
     .select('platform, url, external_place_id, company_id, enabled')
     .eq('location_id', opsLocationId).eq('enabled', true);
-  if (!links?.length) return json({ ok: true, synced: 0, by_platform: {}, note: 'no connected platforms' });
-
-  const injected: Record<string, PlatformReview[]> = {};
-  if (Array.isArray(body.simulated_reviews)) {
-    for (const r of body.simulated_reviews) {
-      const p = String(r.platform);
-      (injected[p] ||= []).push({
-        external_review_id: String(r.external_review_id),
-        rating: Math.max(1, Math.min(5, Math.round(Number(r.rating)))),
-        comment: r.comment ?? null, customer_name: r.customer_name ?? null,
-        created_at: r.created_at ?? new Date().toISOString(),
-      });
-    }
-  }
+  if (!links?.length) return { synced: 0, by_platform: {}, note: 'no connected platforms' };
 
   const byPlatform: Record<string, number> = {};
   let synced = 0;
@@ -109,5 +90,46 @@ Deno.serve(async (req) => {
       .eq('location_id', opsLocationId).eq('platform', platform);
   }
 
-  return json({ ok: true, synced, by_platform: byPlatform, caps: PLATFORM_CAPS });
+  return { synced, by_platform: byPlatform };
+}
+
+Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
+
+  let body: any;
+  try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
+  const action = String(body?.action ?? '').trim();
+
+  // sync_all — cron only (service-role). Bounded to venues with a connected
+  // platform; one location can have several links, so sync each venue once.
+  if (action === 'sync_all') {
+    const token = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim();
+    // !token matters: SERVICE_ROLE is '' when the env var is unset, so a bare
+    // unauthenticated POST would otherwise compare equal and walk straight through.
+    if (!token || token !== SERVICE_ROLE) return json({ error: 'service role required' }, 403);
+    const { data: rows } = await opsAdmin.from('review_platform_links').select('location_id').eq('enabled', true);
+    const out: Record<string, unknown> = {};
+    for (const id of new Set((rows || []).map((r) => r.location_id))) out[id] = await syncLocation(id);
+    return json({ ok: true, locations: out });
+  }
+
+  const opsLocationId = String(body.ops_location_id ?? '').trim();
+  if (!opsLocationId) return json({ error: 'ops_location_id required' }, 400);
+  if (!(await authorize(req, opsLocationId))) return json({ error: 'no access to this location' }, 403);
+
+  const injected: Record<string, PlatformReview[]> = {};
+  if (Array.isArray(body.simulated_reviews)) {
+    for (const r of body.simulated_reviews) {
+      const p = String(r.platform);
+      (injected[p] ||= []).push({
+        external_review_id: String(r.external_review_id),
+        rating: Math.max(1, Math.min(5, Math.round(Number(r.rating)))),
+        comment: r.comment ?? null, customer_name: r.customer_name ?? null,
+        created_at: r.created_at ?? new Date().toISOString(),
+      });
+    }
+  }
+
+  return json({ ok: true, ...(await syncLocation(opsLocationId, injected)), caps: PLATFORM_CAPS });
 });

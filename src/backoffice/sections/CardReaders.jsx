@@ -83,7 +83,12 @@ export default function CardReaders() {
       const [{ data: loc }, { data: rdrs }, { data: devs }] = await Promise.all([
         platformSupabase.from('locations').select('id, name, company_id').eq('id', platformId).maybeSingle(),
         platformSupabase.from('payment_devices')
-          .select('id, stripe_reader_id, label, device_type, connection_kind, serial_number, status, last_seen_at, bound_pos_device_id, created_at, registration_code, ip_address, firmware_version, last_status_check_at, customer_display_enabled')
+          // registration_code is deliberately NOT selected: it is a pairing secret, and the
+          // browser reaches this table with the public anon key, so anything readable here is
+          // readable by anyone who opens the POS. Withheld at the database by a column-level
+          // grant (migration 20260805d). It is written only by the service-role
+          // stripe-register-network-reader function and is spent once the reader is paired.
+          .select('id, stripe_reader_id, label, device_type, connection_kind, serial_number, status, last_seen_at, bound_pos_device_id, created_at, ip_address, firmware_version, last_status_check_at, customer_display_enabled')
           .eq('location_id', platformId)
           .order('created_at', { ascending: false }),
         // Devices live in Ops DB. Pull POS + kiosk types only — those are what can take payments.
@@ -453,7 +458,6 @@ function ReaderRow({ reader, devices, onUnregister, onReassign, platformLocation
           <DiagRow label="Last seen by Stripe" value={lastSeen ? lastSeen.toLocaleString() : 'never'}/>
           <DiagRow label="Last status check" value={lastCheck ? lastCheck.toLocaleString() : 'never'}/>
           <DiagRow label="Registered" value={reader.created_at ? new Date(reader.created_at).toLocaleString() : '—'}/>
-          {isNetwork && <DiagRow label="Pairing code" value={reader.registration_code || '—'} mono/>}
 
           {isNetwork && reader.ip_address && (
             <div style={{ gridColumn: 'span 2', marginTop: 8, padding: 10, background: 'var(--bg3)', borderRadius: 8, fontSize: 11, color: 'var(--t3)', lineHeight: 1.5 }}>

@@ -13,6 +13,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { platformSupabase, supabase, getLocationId } from '../../lib/supabase';
+import { patchBranding } from '../../lib/locationAdmin';
 import MenuHeader from '../../surfaces/menu/MenuHeader';
 import { readTheme, deriveVars, THEME_DEFAULTS, DISPLAY_FONT, BODY_FONT, FIXED } from '../../surfaces/menu/menuTheme';
 import { buildGiftTheme } from '../../surfaces/gift/giftHelpers';
@@ -162,13 +163,17 @@ export default function MenuAppearance() {
   };
 
   const saveAll = async () => {
-    if (!platformSupabase || !row) { setSave({ err: 'No customer-facing location found — set a slug in Online ordering first.' }); return; }
+    if (!platformSupabase || !row || !opsLocId) { setSave({ err: 'No customer-facing location found — set a slug in Online ordering first.' }); return; }
     setSave({ busy: true });
     try {
-      const next = { ...(row.online_branding || {}), ...branding, brand_color: mt.brandColor, header_style: mt.headerStyle, logo_shape: mt.logoShape, show_open_status: mt.showOpenStatus, logo_url: branding.logo_url || null, hero_url: branding.hero_url || null, background: branding.background || null };
-      const { error } = await platformSupabase.from('locations').update({ online_branding: next }).eq('id', row.id);
+      // Send only the keys this editor owns. The edge fn merges them server-side
+      // over the row's CURRENT online_branding, so we can no longer clobber keys
+      // another screen (Review card) wrote after this page loaded.
+      const patch = { ...branding, brand_color: mt.brandColor, header_style: mt.headerStyle, logo_shape: mt.logoShape, show_open_status: mt.showOpenStatus, logo_url: branding.logo_url || null, hero_url: branding.hero_url || null, background: branding.background || null };
+      const { data, error } = await patchBranding(opsLocId, patch);
       if (error) throw error;
-      setRow((r) => ({ ...r, online_branding: next }));
+      if (!data) throw new Error('Save returned no branding — reload the page and try again.');
+      setRow((r) => ({ ...r, online_branding: data }));
       setSave({ done: true }); setTimeout(() => setSave((s) => (s.done ? {} : s)), 2500);
     } catch (e) { setSave({ err: e.message || 'Save failed' }); }
   };

@@ -285,7 +285,10 @@ export async function ensureMembership(
 
 // ── Atomic balance update ──────────────────────────────────────────────────
 // Updates customer_loyalty.points_balance atomically using an RPC-like pattern.
-// Returns the new balance, or null on failure.
+// Returns the new balance, or null if nothing was applied (row gone, insufficient
+// balance, or the optimistic compare-and-swap lost the race). Callers MUST treat
+// null as "the balance did not move" — loyalty-redeem rolls its ledger guard row
+// back on it.
 export async function updateBalance(
   membershipId: string,
   pointsDelta: number,
@@ -312,13 +315,17 @@ export async function updateBalance(
     updates.last_redeem_at = new Date().toISOString();
   }
 
-  const { error } = await platformAdmin
+  // .select() is load-bearing: without it PostgREST answers 204 and supabase-js reports
+  // { error: null } whether the CAS matched one row or ZERO. The returned row is the only
+  // proof the write landed — a lost race must surface as null, not as a fake new balance.
+  const { data: applied, error } = await platformAdmin
     .from('customer_loyalty')
     .update(updates)
     .eq('id', membershipId)
-    .eq('points_balance', current.points_balance); // optimistic concurrency
+    .eq('points_balance', current.points_balance) // optimistic concurrency
+    .select('id');
 
-  if (error) return null;
+  if (error || !applied?.length) return null;
 
   return newBalance;
 }

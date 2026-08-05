@@ -338,6 +338,7 @@ function MenuTab() {
       setShowLinkPicker(false); return;
     }
     const result = await linkCategoryToMenu(selMenuId, catId, menuCategories.length);
+    reportSave('menu category link', result.ok ? null : (result.error || new Error('Link failed')));
     if (result.ok) {
       setCategoryLinks(prev => [...prev, { menu_id: selMenuId, category_id: catId, sort_order: menuCategories.length }]);
       const cat = menuCategories.find(c => c.id === catId);
@@ -352,6 +353,7 @@ function MenuTab() {
     const cat = menuCategories.find(c => c.id === catId);
     if (!confirm(`Unlink "${cat?.label || 'category'}" from this menu? Items in this category will stop showing on this menu.`)) return;
     const result = await unlinkCategoryFromMenu(selMenuId, catId);
+    reportSave('menu category link', result.ok ? null : (result.error || new Error('Unlink failed')));
     if (result.ok) {
       setCategoryLinks(prev => prev.filter(l => !(l.menu_id === selMenuId && l.category_id === catId)));
       showToast(`"${cat?.label || 'Category'}" unlinked`, 'info');
@@ -1190,11 +1192,13 @@ function MenuTab() {
       </div>
 
       {/* ── PANEL 3: Item editor ────────────────────────────────────────── */}
+      {/* onArchive: archiveMenuItem is async and toasts its own failure — the
+          "Archived" confirmation must wait for the row to actually flip. */}
       {selItem && (
         <ItemEditor key={selItem.id} item={selItem}
           allCategories={menuCategories.filter(c=>!c.isSpecial)}
           onUpdate={patch=>{updateMenuItem(selItem.id,patch);markBOChange();}}
-          onArchive={()=>{archiveMenuItem(selItem.id);setSelItemId(null);markBOChange();showToast('Archived','info');}}
+          onArchive={async ()=>{const id=selItem.id;setSelItemId(null);markBOChange();if(await archiveMenuItem(id))showToast('Archived','info');}}
           onClone={()=>cloneItem(selItem,menuItems,addMenuItem,updateMenuItem,markBOChange,showToast,setSelItemId)}
           onClose={()=>setSelItemId(null)}
           is86={eightySixIds.includes(selItem.id)} onToggle86={()=>toggle86(selItem.id)}
@@ -1901,7 +1905,7 @@ function ItemsLibrary() {
           item={selItem}
           allCategories={allCats}
           onUpdate={patch=>{ updateMenuItem(selItem.id,patch); markBOChange(); }}
-          onArchive={()=>{ archiveMenuItem(selItem.id); setSelItemId(null); markBOChange(); showToast('Archived','info'); }}
+          onArchive={async ()=>{ const id=selItem.id; setSelItemId(null); markBOChange(); if (await archiveMenuItem(id)) showToast('Archived','info'); }}
           onClone={()=>cloneItem(selItem,menuItems,addMenuItem,updateMenuItem,markBOChange,showToast,setSelItemId)}
           onClose={()=>setSelItemId(null)}
           is86={eightySixIds.includes(selItem.id)}
@@ -1937,9 +1941,11 @@ function ItemImageUpload({ item, onUpdate, markBOChange, showToast }) {
     if (!file.type.startsWith('image/')) return showToast('Please select an image file', 'error');
     if (file.size > 5 * 1024 * 1024) return showToast('Image must be under 5MB', 'error');
 
-    // Re-resolve locId fresh every time — don't rely on stale state
+    // Re-resolve locId fresh every time — don't rely on stale state.
+    // 'loc-demo' is truthy, so it has to be rejected explicitly or the storage
+    // path and the row filter below both get written against a fake location.
     const resolvedLocId = locId || await getLocationId().catch(() => null);
-    if (!resolvedLocId) return showToast('Could not resolve location', 'error');
+    if (!resolvedLocId || resolvedLocId === 'loc-demo') return showToast('Could not resolve location', 'error');
 
     setUploading(true);
     const { url, error } = await uploadProductImage(item.id, resolvedLocId, file);
@@ -1951,20 +1957,28 @@ function ItemImageUpload({ item, onUpdate, markBOChange, showToast }) {
       return;
     }
 
+    const prevImage = item.image ?? null;
     // 1. Update local store state
     onUpdate({ image: url });
 
     // 2. Directly write image to Supabase — targeted UPDATE, no full upsert needed
     // This bypasses any store/locationId timing issues
-    const { supabase } = await import('../../lib/supabase.js');
     if (supabase) {
-      const { error: dbErr } = await supabase
+      const { data, error: dbErr } = await supabase
         .from('menu_items')
         .update({ image: url, updated_at: new Date().toISOString() })
-        .eq('id', item.id);
-      if (dbErr) {
-        console.error('[ItemImageUpload] DB write failed:', dbErr.message);
-        showToast('Image saved locally but not synced — try again', 'warning');
+        .eq('id', item.id)
+        .eq('location_id', resolvedLocId)
+        .select('id');
+      // Same two traps as archiveVariantRow: `id` alone is cross-tenant, and an
+      // update that matched NO rows comes back as a plain success with an empty body.
+      const err = dbErr || (!data?.length
+        ? new Error('Image update matched 0 rows — RLS blocked it or the row is scoped to another location')
+        : null);
+      reportSave('item image', err);
+      if (err) {
+        onUpdate({ image: prevImage });
+        showToast('Image was NOT saved — the tills still show the old one. Check you\'re signed in, then try again', 'error');
         return;
       }
     }
@@ -1976,17 +1990,32 @@ function ItemImageUpload({ item, onUpdate, markBOChange, showToast }) {
   const handleRemove = async () => {
     if (!confirm('Remove this image?')) return;
     const resolvedLocId = locId || await getLocationId().catch(() => null);
-    await deleteProductImage(item.id, resolvedLocId);
+    if (!resolvedLocId || resolvedLocId === 'loc-demo') return showToast('Could not resolve location', 'error');
+
+    const prevImage = item.image ?? null;
     onUpdate({ image: null });
 
-    // Direct DB write for remove too
-    const { supabase } = await import('../../lib/supabase.js');
+    // The row is the record — clear it FIRST. Deleting the storage object before a
+    // failed/blocked UPDATE would leave every surface pointing at a dead URL.
     if (supabase) {
-      await supabase
+      const { data, error } = await supabase
         .from('menu_items')
         .update({ image: null, updated_at: new Date().toISOString() })
-        .eq('id', item.id);
+        .eq('id', item.id)
+        .eq('location_id', resolvedLocId)
+        .select('id');
+      const err = error || (!data?.length
+        ? new Error('Image removal matched 0 rows — RLS blocked it or the row is scoped to another location')
+        : null);
+      reportSave('item image', err);
+      if (err) {
+        onUpdate({ image: prevImage });
+        showToast('Image was NOT removed — it is still live on POS, kiosk and online. Check you\'re signed in, then try again', 'error');
+        return;
+      }
     }
+    // Best-effort: probes four extensions, so most of these 404 by design.
+    await deleteProductImage(item.id, resolvedLocId);
 
     markBOChange();
     showToast('Image removed', 'info');
@@ -2324,6 +2353,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                       onUpdate({ scope: s.id });
                       try {
                         const result = await setMenuItemScope(item, s.id);
+                        reportSave('item scope', result.ok ? null : (result.error || new Error('Scope change failed')));
                         if (!result.ok) {
                           showToast(`Couldn't change scope: ${result.error?.message || result.error || 'unknown'}`, 'error');
                           onUpdate({ scope: prev }); // revert
@@ -2334,6 +2364,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                         else if (result.action === 'rescoped') showToast(`"${item.name}" rescoped to ${s.id} across ${result.updatedSiblings + 1} location(s)`, 'success');
                         markBOChange();
                       } catch (e) {
+                        reportSave('item scope', e);
                         console.warn('[MenuManager] scope change failed:', e?.message || e);
                         showToast('Scope change failed: ' + (e?.message || 'unknown error'), 'error');
                         onUpdate({ scope: prev });
@@ -3468,20 +3499,32 @@ function QuickScreenManager() {
 
   const save = async (newIds) => {
     const filtered = newIds.filter(Boolean);
+    const prevIds  = quickScreenIds;
     setQuickScreenIds(filtered);
     markBOChange();
+    if (isMock) return true;
     // Write directly using the supabase client already in scope — same as image uploads
+    let err = null;
     try {
       const locId = await getLocationId();
-      if (locId && supabase) {
-        const { error } = await supabase
-          .from('locations')
-          .update({ quick_screen_ids: filtered })
-          .eq('id', locId);
-        reportSave('quick screen', error);   // v5.5.962: was a silent console.error swallow
-        if (error) console.error('[QuickScreen] save error:', error.message);
-      }
-    } catch (e) { reportSave('quick screen', e); console.error('[QuickScreen] save failed:', e.message); }
+      if (!locId || locId === 'loc-demo' || !supabase) throw new Error('Could not resolve location');
+      const { data, error } = await supabase
+        .from('locations')
+        .update({ quick_screen_ids: filtered })
+        .eq('id', locId)
+        .select('id');
+      // 0 rows is a plain success with an empty body — a policy matching nothing
+      // reads exactly like a save. Ask for the id back and treat nothing as failure.
+      err = error || (!data?.length ? new Error('Quick Screen update matched 0 rows') : null);
+    } catch (e) { err = e; }
+    reportSave('quick screen', err);   // v5.5.962: was a silent console.error swallow
+    if (err) {
+      console.error('[QuickScreen] save failed:', err.message);
+      setQuickScreenIds(prevIds);      // the tills keep the grid that is actually stored
+      showToast('Quick Screen was NOT saved — check you\'re signed in, then try again', 'error');
+      return false;
+    }
+    return true;
   };
 
   // v5.5.962 Smart Quick Screen — mode switch + best-seller recompute.
@@ -3489,24 +3532,31 @@ function QuickScreenManager() {
   // only ever reads the small stored lists, so it stays fast and offline-safe.
   const RANK_DAYS = 28;
   const saveSmart = async (mode, auto) => {
+    const prevMode = quickScreenMode;
+    const prevAuto = quickScreenAuto;
     setQuickScreenMode(mode);
     if (auto !== undefined) setQuickScreenAuto(auto);
     markBOChange();
     if (isMock) return true;
+    let err = null;
     try {
       const locId = await getLocationId();
-      if (!locId || !supabase) return false;
+      // Was a bare `return false` — no report, no toast, and the optimistic mode
+      // switch left in place, so an unresolved location looked like a mode change.
+      if (!locId || locId === 'loc-demo' || !supabase) throw new Error('Could not resolve location');
       const patch = { quick_screen_mode: mode };
       if (auto !== undefined) patch.quick_screen_auto = auto;
-      const { error } = await supabase.from('locations').update(patch).eq('id', locId);
-      reportSave('quick screen', error);
-      if (error) { showToast('Quick Screen settings NOT saved — check connection', 'error'); return false; }
-      return true;
-    } catch (e) {
-      reportSave('quick screen', e);
+      const { data, error } = await supabase.from('locations').update(patch).eq('id', locId).select('id');
+      err = error || (!data?.length ? new Error('Quick Screen settings update matched 0 rows') : null);
+    } catch (e) { err = e; }
+    reportSave('quick screen', err);
+    if (err) {
+      setQuickScreenMode(prevMode);
+      if (auto !== undefined) setQuickScreenAuto(prevAuto);
       showToast('Quick Screen settings NOT saved — check connection', 'error');
       return false;
     }
+    return true;
   };
 
   const recompute = async (mode = quickScreenMode) => {
@@ -3568,14 +3618,15 @@ function QuickScreenManager() {
     const next = [...slots]; next[idx] = null; save(next);
   };
 
-  const addItem = itemId => {
+  const addItem = async itemId => {
     if (slots.includes(itemId)) { showToast('Already on Quick Screen','warning'); return; }
     const next = [...slots];
     const firstEmpty = next.findIndex(s => !s);
     if (firstEmpty === -1) { showToast('Quick Screen is full — remove an item first','warning'); return; }
     next[firstEmpty] = itemId;
-    save(next);
-    showToast('Added to Quick Screen','success');
+    // Toast only once the write has landed — save() toasts its own failure, and
+    // showToast is single-slot, so a premature success would overwrite it.
+    if (await save(next)) showToast('Added to Quick Screen','success');
   };
 
   const onSlotDrop = (e, idx) => {

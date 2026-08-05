@@ -9,7 +9,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { supabase, ensureAuthToken } from '../../lib/supabase';
-import { logOrderActivity } from '../../lib/activity';
+import { logOrderActivity, logActivity } from '../../lib/activity';
 import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient';
 import { getLocationProcessor } from '../../lib/payments/processor';
 import RyftPaymentForm from '../../components/RyftPaymentForm';
@@ -17,8 +17,18 @@ import { calculateOrderTax } from '../../lib/tax';
 import { sendEmailReceipt } from '../../lib/sendReceipt';
 import { getDeliveryQuote, recordDeliverySurcharge } from '../../lib/delivery/quoteService';
 import AddressAutocomplete from '../../components/AddressAutocomplete';
+import { commitRedemption } from '../../lib/commitRedemptions';
 
+const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 const money = (n, cur) => `${({ gbp: '£', usd: '$', eur: '€' }[cur] || '£')}${Number(n || 0).toFixed(2)}`;
+
+// randomUUID needs a secure context (https / localhost) — the fallback keeps the value wide
+// everywhere else. Same shape as lib/giftCommit's newId().
+const wideId = () => (
+  typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+);
 
 // Build the UTC instant for a wall-clock time in the VENUE timezone (not the customer's
 // browser). Used for the kitchen fire time (sent_at) and the sale date (closed_at) so a
@@ -83,6 +93,14 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
   const valid = name.trim() && /^\+?[0-9 ]{7,}$/.test(phone) && (!isDelivery || (addr1.trim() && postcode.trim())) && (payMode === 'later' || email.trim()) && !belowMin;
 
   const ref = useMemo(() => `CA-${Math.random().toString(36).slice(2, 7).toUpperCase()}`, []);
+  // The guest-facing ref is 5 base36 chars (~26 bits) — fine as an order number, far too narrow
+  // to key a redemption on: promo_redemptions.idempotency_key is unique across EVERY order, so
+  // `<ref>:<CODE>` collides with any other order that used the same code (~1% likely after ~1,100
+  // of them) and the collision reads as an already-processed duplicate — discount given, nothing
+  // deducted. `idem` keeps the ref in front (the ledger's order_id is read by a human in Back
+  // Office → Promotions) and appends a UUID. Memoised alongside the ref so a retry sends the
+  // same key.
+  const idem = useMemo(() => `${ref}-${wideId()}`, [ref]);
   const buildItems = () => cart.map((l) => ({ itemId: l.itemId, name: l.name, price: l.price, qty: l.qty || 1, mods: l.mods || [], notes: l.notes || '', cat: l.cat || null, cats: l.cats || null, parentId: l.parentId || null, kitchenName: l.kitchenName || null, receiptName: l.receiptName || null, status: 'received', fired: false, course: 1 }));
   const buildCustomer = (pay) => ({
     name: name.trim(), phone: phone.replace(/\s+/g, ''), email: email.trim() || null,
@@ -104,9 +122,37 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
       setPromoApplied({ code: code.toUpperCase(), amount: Number(data.discount?.amount || 0), name: data.offer?.name || 'Promo' });
     } catch (e) { setPromoErr(e?.message || 'Could not check that code.'); } finally { setPromoBusy(false); }
   };
+  // The result used to be discarded ("best-effort"), so a refused or 500'd deduction left the
+  // code unspent and re-usable after the guest had already been given the discount. Via
+  // lib/commitRedemptions the outcome is checked and a retryable failure is parked durably.
+  // Never throws, so the order still completes. `idem` is the idempotency anchor in both the
+  // pay-now and pay-later paths — it is memoised for the life of the checkout, so a retry of
+  // the same order sends the same key. `orderRef` stays the human-readable ref for the message.
+  //
+  // Catering cannot replay a parked retry — the durable queue is IndexedDB in the guest's
+  // browser and they place one order per session, so nothing ever fires the replay. A failure
+  // that won't retry itself therefore goes to the venue's activity feed (where the order is
+  // already logged), never to the guest: their order went through and the discount stands.
+  // Called WITHOUT await — an edge-function call with no timeout must not hold up the
+  // confirmation, and must not land in the caller's catch and show a failure for a good order.
   const redeemPromo = async (orderRef) => {
     if (!promoApplied) return;
-    try { await supabase.functions.invoke('promo-redeem', { body: { action: 'redeem', code: promoApplied.code, order_id: orderRef, location_id: opsId, basket_value: subtotal, idempotency_key: `${orderRef}:${promoApplied.code}` } }); } catch { /* best-effort; discount already shown to the guest */ }
+    const r = await commitRedemption({
+      kind: 'promo',
+      closedCheckId: idem,
+      locationId: opsId,
+      channel: 'catering',
+      code: promoApplied.code,
+      basketValue: subtotal,
+    }, { functionsUrl: FUNCTIONS_URL, token: await ensureAuthToken().catch(() => null) });
+    if (!r.ok && !r.queued) {
+      logActivity(opsId, {
+        kind: 'system', severity: 'action',
+        title: 'Promo code not deducted',
+        body: `Catering order ${orderRef}: ${promoApplied.code} discounted the bill but was NOT recorded (${r.error}) — it can still be used again.`,
+        refType: 'order', refId: orderRef,
+      }).catch(() => {});
+    }
   };
   const discountLine = promoApplied ? [{ type: 'promo', code: promoApplied.code, label: promoApplied.name, amount: promoApplied.amount }] : [];
   // v5.5.653: log the delivery quote + surcharge for margin reporting (best-effort). The
@@ -154,7 +200,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
       const { error } = await supabase.from('order_queue').insert(cateringRow);
       if (error) throw error;
       try { logOrderActivity(opsId, cateringRow); } catch { /* feed best-effort */ }
-      await redeemPromo(ref);
+      redeemPromo(ref);
       logDeliverySurcharge();
       setPlaced(placedSnapshot(false, null));
     } catch (e) { setErr(e?.message || 'Could not place the order.'); } finally { setBusy(false); }
@@ -205,7 +251,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
         source: 'catering', stripe_payment_intent_id: payId, payment_intents: payId ? [{ id: payId, amountMinor: totalMinor }] : null, processor,
       };
       await supabase.from('closed_checks').insert(closedCheck);
-      await redeemPromo(ref);
+      redeemPromo(ref);
       // Email the customer their confirmation/receipt (best-effort; never blocks the
       // on-screen confirmation). Reuses the receipt pipeline; the just-inserted
       // closed_checks row clears the send-receipt tenant fence via check_id.

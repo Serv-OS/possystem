@@ -32,6 +32,7 @@ import { displayName, kitchenOverride, receiptOverride } from '../lib/itemDispla
 import { fetchCustomerByPhone } from '../lib/customerLookup';
 import { fetchKioskTables, groupKioskTables } from '../lib/kioskTables';
 import { stageGiftCard, commitGiftCard, giftCardCheckRecord } from '../lib/giftCommit';
+import { commitRedemption } from '../lib/commitRedemptions';
 import { money, stripeCurrency } from '../lib/currency';
 import { getLocationProcessor } from '../lib/payments/processor';
 import { findPaxTerminal, dispatchTerminalJob, pollTerminalJob, cancelTerminalJob, buildCheckKey } from '../lib/payments/terminalJobs';
@@ -411,7 +412,8 @@ export default function KioskApp({ kioskId, onUnpair }) {
   // debit, and a fresh id per attempt would let a retry debit the card twice.
   const checkIdRef = useRef(null);
   // v5.5.887: promo/offer code — validated at entry (no write), REDEEMED in submitOrder once
-  // the order exists (promo-redeem is race-safe + idempotent on `${ref}:${code}`).
+  // the order exists (promo-redeem is race-safe + idempotent on `${checkId}:${code}` — the
+  // check id above, not the recycling R1–R99 ref).
   const [promoApplied, setPromoApplied] = useState(null); // { code, code_id, offer_id, label, amount }
   // giftCardPayment: { card_id, code, applied (minor), remaining_balance }
   // v5.5.265: Verified customer loyalty data (from OTP flow)
@@ -915,48 +917,48 @@ export default function KioskApp({ kioskId, onUnpair }) {
       });
       if (e3) console.warn('[kiosk] order_queue insert failed:', e3);
       else { try { logOrderActivity(locationId, { source: 'kiosk', total: grandTotal, ref: num, customer: { name: (nameOverride ?? customerName) || null } }); } catch { /* feed best-effort */ } }
-      // v5.5.887: promo code — record the redemption now the order exists. Server-side it's
-      // race-safe (compare-and-swap on uses_count). Fire-and-forget: never blocks the order.
-      // v5.5.888: the idempotency key carries a per-submission UUID — order refs recycle
-      // R1–R99 (next_order_number), so a `${ref}:${code}` key silently skips counting a
-      // multi-use code the second time the same ref comes around. Redeem fires exactly once
-      // per submission, so a unique key is the correct dedup scope here.
+      // Promo code + loyalty reward redeem at COMMIT, now the order exists. Both go through
+      // lib/commitRedemptions: result-checked, and parked in the durable retry queue when the
+      // deduction fails. The old calls were bare `fetch().catch()`, and fetch does not reject on
+      // 4xx/5xx — a 401 or 500 was invisible, so the discount was given away and the code/stamp
+      // stayed spendable.
+      //
+      // FIRE-AND-FORGET, deliberately: by this point the card is charged and order_queue is
+      // written, so nothing here may hold the customer on the paying spinner. Awaiting put up to
+      // four unbounded round-trips (token + post, twice) between here and setScreen('done'), and a
+      // stall longer than idleTimeoutSec + 10s lets the idle watchdog fire resetSession() and clear
+      // checkIdRef mid-flight. commitRedemption reports, parks and never throws, and nothing
+      // downstream reads its result.
+      //
+      // `checkId` is the idempotency anchor, NOT the R1–R99 order ref: refs recycle via
+      // next_order_number, and a recycled key would collapse two different orders into one
+      // redemption. (v5.5.888 dodged that with a random per-submission key, which stopped the
+      // collision but also stopped retries from ever deduping — now they do.)
       if (promoApplied?.code) {
-        try {
-          const pToken = await ensureAuthToken();
-          fetch(`${OPS_URL}/functions/v1/promo-redeem`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json', authorization: `Bearer ${pToken}` },
-            body: JSON.stringify({
-              action: 'redeem', code: promoApplied.code, location_id: locationId,
-              customer_id: verifiedLoyalty?.customer?.id || null,
-              order_id: num, basket_value: subtotal, channel: 'kiosk',
-              idempotency_key: `${num}:${promoApplied.code}:${crypto.randomUUID()}`,
-            }),
-          }).catch(err => console.warn('[kiosk] promo redeem failed:', err?.message));
-        } catch (pe) { console.warn('[kiosk] promo redeem dispatch failed:', pe?.message); }
+        ensureAuthToken().catch(() => null).then(token => commitRedemption({
+          kind: 'promo',
+          closedCheckId: checkId,
+          locationId,
+          customerId: verifiedLoyalty?.customer?.id || null,
+          channel: 'kiosk',
+          code: promoApplied.code,
+          basketValue: subtotal,
+        }, { functionsUrl: `${OPS_URL}/functions/v1`, token }))
+          .catch(err => console.warn('[kiosk] promo redeem dispatch failed:', err?.message || err));
       }
-      // v5.5.897: loyalty reward — redeem at COMMIT, exactly like the promo code above.
-      // The loyalty-screen tap is apply-only now (stages the discount, consumes nothing),
-      // so an abandoned/failed payment can never burn points or a stamp card. loyalty-redeem
-      // is idempotent on closed_check_id server-side, so a retry can't double-deduct.
+      // The loyalty-screen tap is apply-only (stages the discount, consumes nothing), so an
+      // abandoned/failed payment can never burn points or a stamp card.
       if (loyaltyRedemption?.pending_commit && (loyaltyRedemption.stampProgramId || loyaltyRedemption.reward_id)) {
-        try {
-          const lToken = await ensureAuthToken();
-          fetch(`${OPS_URL}/functions/v1/loyalty-redeem`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json', authorization: `Bearer ${lToken}` },
-            body: JSON.stringify({
-              customer_id: loyaltyRedemption.customer_id || verifiedLoyalty?.customer?.id || null,
-              location_id: locationId,
-              ...(loyaltyRedemption.stampProgramId
-                ? { stamp_program_id: loyaltyRedemption.stampProgramId }
-                : { reward_id: loyaltyRedemption.reward_id }),
-              channel: 'kiosk',
-              closed_check_id: checkId,
-            }),
-          }).catch(err => console.warn('[kiosk] loyalty redeem failed:', err?.message));
-        } catch (le) { console.warn('[kiosk] loyalty redeem dispatch failed:', le?.message); }
+        ensureAuthToken().catch(() => null).then(token => commitRedemption({
+          kind: 'loyalty',
+          closedCheckId: checkId,
+          locationId,
+          customerId: loyaltyRedemption.customer_id || verifiedLoyalty?.customer?.id || null,
+          channel: 'kiosk',
+          stampProgramId: loyaltyRedemption.stampProgramId || null,
+          rewardId: loyaltyRedemption.reward_id || null,
+        }, { functionsUrl: `${OPS_URL}/functions/v1`, token }))
+          .catch(err => console.warn('[kiosk] loyalty redeem dispatch failed:', err?.message || err));
       }
       // 4. Heartbeat
       await supabase.from('devices').update({ last_seen: new Date().toISOString() }).eq('id', kioskId);

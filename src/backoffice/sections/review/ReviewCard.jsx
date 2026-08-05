@@ -9,6 +9,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { supabase, platformSupabase, getActiveLocationSync } from '../../../lib/supabase';
+import { patchBranding } from '../../../lib/locationAdmin';
 import { customerUrl } from '../../../lib/env';
 import QRCode from 'qrcode';
 
@@ -146,18 +147,23 @@ export default function ReviewCard() {
 
   // v5.5.752: the review-card logo lives on the venue's online_branding jsonb
   // (review_logo_url) — no new table/column, and the customer card reads it directly.
+  // The write goes through the location-admin edge fn (service_role): the browser no
+  // longer holds UPDATE on platform.locations, and the fn MERGES the patch server-side,
+  // so this screen and Menu appearance can't clobber each other's keys. We pass the OPS
+  // location id — the fn resolves the platform row itself.
   const persistBranding = async (patch) => {
-    setVenue(v => ({ ...v, branding: { ...(v.branding || {}), ...patch } }));   // optimistic — snappy preview
     if (!venue.id) { setSave({ err: 'No customer-facing location yet — set a slug in Online ordering first.' }); return; }
-    try {
-      // Re-read the latest branding first so we merge onto it (never clobber a
-      // concurrent Menu appearance edit — online_branding is a shared jsonb).
-      const { data: cur } = await platformSupabase.from('locations').select('online_branding').eq('id', venue.id).maybeSingle();
-      const nextBranding = { ...(cur?.online_branding || venue.branding || {}), ...patch };
-      const { error } = await platformSupabase.from('locations').update({ online_branding: nextBranding }).eq('id', venue.id);
-      if (error) throw error;
-      setVenue(v => ({ ...v, branding: nextBranding }));
-    } catch (e) { setSave({ err: e.message || 'Save failed' }); }
+    const before = venue.branding || {};
+    setVenue(v => ({ ...v, branding: { ...(v.branding || {}), ...patch } }));   // optimistic — snappy preview
+    const { data, error } = await patchBranding(locId, patch);
+    if (error || !data) {
+      // Roll the preview back: a logo left on screen that the live card will never
+      // serve is worse than no logo at all.
+      setVenue(v => ({ ...v, branding: before }));
+      setSave({ err: error?.message || 'Save failed' });
+      return;
+    }
+    setVenue(v => ({ ...v, branding: data }));
   };
   const onLogoFile = async (e) => {
     const file = e.target.files?.[0]; if (!file) return;

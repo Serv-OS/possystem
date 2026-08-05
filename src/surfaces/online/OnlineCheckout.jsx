@@ -20,7 +20,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { supabase, platformSupabase } from '../../lib/supabase';
 import { decrementStockRPC, fetchActiveDiscountRules } from '../../lib/db';
-import { logOrderActivity } from '../../lib/activity';
+import { logOrderActivity, logActivity } from '../../lib/activity';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../../lib/discountEngine';
 import { buildScheduleCtx } from '../../lib/locationTime';
 import { depleteForSaleServer } from '../../lib/stock/deplete';
@@ -30,6 +30,7 @@ import RyftPaymentForm from '../../components/RyftPaymentForm';
 import AddressAutocomplete from '../../components/AddressAutocomplete';
 import { attributeOnlineOrder } from '../../lib/customerLookup';
 import { stageGiftCard, commitGiftCard, giftCardCheckRecord } from '../../lib/giftCommit';
+import { commitRedemption } from '../../lib/commitRedemptions';
 import { getDeliveryQuote, recordDeliverySurcharge } from '../../lib/delivery/quoteService';
 import { dispatchDelivery } from '../../lib/delivery/dispatch';
 import { sendEmailReceipt } from '../../lib/sendReceipt';
@@ -38,6 +39,14 @@ import { calculateOrderTax } from '../../lib/tax';
 import { money, stripeCurrency } from '../../lib/currency';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
+
+// randomUUID needs a secure context (https / localhost) — the fallback keeps the value wide
+// everywhere else. Same shape as lib/giftCommit's newId().
+const wideId = () => (
+  typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+);
 
 // v5.5.287: Decrement stock for each item in an online order.
 // Fire-and-forget — stock decrement failures never block order confirmation.
@@ -282,6 +291,19 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       : (slot ? new Date(slot.iso) : new Date(Date.now() + leadMin * 60_000));
     const sentAt = new Date(collectionAt.getTime() - leadMin * 60_000);
     const ref = `OL-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
+    // ONE id for the order: the closed_checks row id AND the idempotency anchor for the promo +
+    // loyalty redemptions. They MUST be the same value — loyalty-refund finds the rows to reverse
+    // by closed_check_id and the POS refund sends closed_checks.id, so a redemption filed under
+    // any other key is unreachable when the venue refunds and the points/stamp are never restored.
+    // Minted HERE so it freezes with the ref for the life of the checkout: a retried payment
+    // writes the same check and re-sends the same redemption key instead of deducting twice.
+    // Not the ref alone, and not `chk-<ts>-<5 chars>` either: loyalty_transactions.idempotency_key
+    // and promo_redemptions.idempotency_key are unique across EVERY order, so a narrow key collides
+    // with any other order that used the same reward or code, and the collision reads as an
+    // already-processed duplicate — the guest gets the reward and nothing is deducted, or the
+    // deduction is refused outright. The ref stays in front because a human reads the ledger's
+    // order_id / order_ref in Back Office → Promotions; the UUID is what makes it unique.
+    const checkId = `chk-${ref}-${wideId()}`;
     const customer = {
       name: name.trim(),
       phone: phone.replace(/\s+/g, ''),
@@ -317,9 +339,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       fired: true,
       course: 1,
     }));
-    return { ref, collectionAt, sentAt, customer, items };
+    return { ref, checkId, collectionAt, sentAt, customer, items };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step]); // freeze on step transition so ref stays stable
+  }, [step]); // freeze on step transition so ref + checkId stay stable
 
   // ── Auth helper — get or create anonymous Supabase session ──────────
   const getAuthToken = async () => {
@@ -758,65 +780,68 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     setRewardError('');
   };
 
-  // v5.5.887: record the promo redemption once the order exists. Server-side it's race-safe
-  // (compare-and-swap) + idempotent on `online-<ref>:<code>` — a retry can't burn the code twice.
-  const redeemPromoAfterOrder = () => {
+  // Record the promo + loyalty redemptions once the order exists. Both run through
+  // lib/commitRedemptions so all four channels behave the same way: the result is checked and a
+  // retryable failure is parked in the durable queue instead of being console.warn'd away and
+  // leaving the code/stamp spendable again. Neither throws, so the confirmation flow is unaffected.
+  //
+  // orderShape.checkId is the idempotency anchor, and it is also the id of the closed_checks row
+  // these redemptions belong to — see the memo for why it has to be one value and why it is that
+  // wide. It is frozen on the step transition, so a second run of this order sends the SAME
+  // server-side key and the second attempt collapses onto the first instead of deducting again.
+  //
+  // Online cannot replay a parked retry — the durable queue is IndexedDB in the guest's browser
+  // and they place one order per session, so nothing ever fires the replay. A failure therefore
+  // has to reach the venue NOW, via the activity feed the order itself is logged to. Not the
+  // guest: their order went through and the discount stands. Both are fired WITHOUT await for
+  // that reason — an edge-function call with no timeout must never hold up the confirmation.
+  const redeemPromoAfterOrder = async () => {
     if (!promoApplied?.code) return;
-    (async () => {
-      try {
-        const token = await getAuthToken();
-        const baseUrl = import.meta.env.VITE_SUPABASE_URL;
-        const res = await fetch(`${baseUrl}/functions/v1/promo-redeem`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', 'authorization': `Bearer ${token}` },
-          body: JSON.stringify({
-            action: 'redeem', code: promoApplied.code, location_id: opsLocationId,
-            // v5.5.888: same customer identity as validate — without it a customer-locked
-            // code fails redeem with customer_required AFTER the discount was granted,
-            // and per-customer limits lose their attribution in the ledger.
-            customer_id: loyalty?.loyalty?.customer_id || null,
-            order_id: `online-${orderShape.ref}`, basket_value: discountedSubtotalMinor / 100,
-            channel: 'online', idempotency_key: `online-${orderShape.ref}:${promoApplied.code}`,
-          }),
-        });
-        const rj = await res.json().catch(() => ({}));
-        if (!rj.ok) console.warn('[OnlineCheckout] promo redeem not recorded:', rj.reason || res.status);
-      } catch (e) {
-        console.warn('[OnlineCheckout] promo redeem failed:', e?.message);
-      }
-    })();
+    const r = await commitRedemption({
+      kind: 'promo',
+      closedCheckId: orderShape.checkId,
+      locationId: opsLocationId,
+      // v5.5.888: same customer identity as validate — without it a customer-locked
+      // code fails redeem with customer_required AFTER the discount was granted,
+      // and per-customer limits lose their attribution in the ledger.
+      customerId: loyalty?.loyalty?.customer_id || null,
+      channel: 'online',
+      code: promoApplied.code,
+      basketValue: discountedSubtotalMinor / 100,
+    }, { functionsUrl: FUNCTIONS_URL, token: await getAuthToken().catch(() => null) });
+    if (!r.ok && !r.queued) {
+      logActivity(opsLocationId, {
+        kind: 'system', severity: 'action',
+        title: 'Promo code not deducted',
+        body: `Online order ${orderShape.ref}: ${promoApplied.code} discounted the bill but was NOT recorded (${r.error}) — it can still be used again.`,
+        refType: 'order', refId: orderShape.ref,
+      }).catch(() => {});
+    }
   };
 
-  // v5.5.897: record the loyalty redemption once the order exists — the rewards-step tap
-  // is apply-only now (nothing consumed server-side), so an abandoned/failed payment can
-  // never burn points or a stamp card. Idempotent server-side on closed_check_id, so a
-  // retry can't double-deduct. Fire-and-forget: never blocks the confirmation flow.
-  const redeemLoyaltyAfterOrder = (closedCheckId) => {
+  // The rewards-step tap is apply-only (nothing consumed server-side), so an abandoned or
+  // failed payment can never burn points or a stamp card.
+  const redeemLoyaltyAfterOrder = async () => {
     if (!rewardApplied?.pending_commit) return;
     if (!rewardApplied.stamp_program_id && !rewardApplied.reward_id) return;
-    (async () => {
-      try {
-        const token = await getAuthToken();
-        const res = await fetch(`${FUNCTIONS_URL}/loyalty-redeem`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-          body: JSON.stringify({
-            customer_id: loyalty?.loyalty?.customer_id || null,
-            // v5.5.885: loyalty-redeem REQUIRES location_id (it 400s without one).
-            location_id: opsLocationId,
-            ...(rewardApplied.stamp_program_id
-              ? { stamp_program_id: rewardApplied.stamp_program_id }
-              : { reward_id: rewardApplied.reward_id }),
-            channel: 'online',
-            closed_check_id: closedCheckId || `online-${orderShape.ref}`,
-          }),
-        });
-        const rj = await res.json().catch(() => ({}));
-        if (!res.ok || rj.error) console.warn('[OnlineCheckout] loyalty redeem not recorded:', rj.error || res.status);
-      } catch (e) {
-        console.warn('[OnlineCheckout] loyalty redeem failed:', e?.message);
-      }
-    })();
+    const r = await commitRedemption({
+      kind: 'loyalty',
+      closedCheckId: orderShape.checkId,
+      // v5.5.885: loyalty-redeem REQUIRES location_id (it 400s without one).
+      locationId: opsLocationId,
+      customerId: loyalty?.loyalty?.customer_id || null,
+      channel: 'online',
+      stampProgramId: rewardApplied.stamp_program_id || null,
+      rewardId: rewardApplied.reward_id || null,
+    }, { functionsUrl: FUNCTIONS_URL, token: await getAuthToken().catch(() => null) });
+    if (!r.ok && !r.queued) {
+      logActivity(opsLocationId, {
+        kind: 'system', severity: 'action',
+        title: 'Loyalty reward not deducted',
+        body: `Online order ${orderShape.ref}: ${rewardApplied.reward_name || 'reward'} discounted the bill but was NOT deducted (${r.error}) — check the customer's balance in Back Office.`,
+        refType: 'order', refId: orderShape.ref,
+      }).catch(() => {});
+    }
   };
 
   // Email + SMS the customer their order confirmation / receipt (best-effort; never blocks the
@@ -852,7 +877,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     const gate = deliveryGateError();
     if (gate) { setError(gate); setStep('details'); return; }
     try {
-      const { ref, collectionAt, sentAt, customer, items } = orderShape;
+      const { ref, checkId, collectionAt, sentAt, customer, items } = orderShape;
       // v5.5.901: this is the NO-CARD path — the gift card IS the payment. Debit it BEFORE
       // the order is written (INVARIANTS.md: "gift card redeem before order close") and bail
       // out if it fails, so a card that's been drained elsewhere can't buy a free order.
@@ -892,7 +917,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
 
       try {
         const closedCheck = {
-          id: `chk-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
+          id: checkId,
           ref,
           location_id: opsLocationId,
           server: 'Online',
@@ -938,7 +963,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         // v5.5.677: email + SMS the customer their confirmation/receipt (gift-only path).
         sendOrderConfirmation(closedCheck);
         redeemPromoAfterOrder();
-        redeemLoyaltyAfterOrder(closedCheck.id);
+        redeemLoyaltyAfterOrder();
       } catch (e) {
         console.warn('[OnlineCheckout] closed_checks write threw:', e?.message);
       }
@@ -968,7 +993,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // shows the live OrderTracker.
   const onPaymentSuccess = async (paymentIntent) => {
     try {
-      const { ref, collectionAt, sentAt, customer, items } = orderShape;
+      const { ref, checkId, collectionAt, sentAt, customer, items } = orderShape;
       // The success payload is a Stripe PaymentIntent OR a Ryft payment-session.
       // Store the right id + processor so the order is refundable later.
       const payId = processor === 'ryft' ? (paymentIntent?.sessionId || paymentIntent?.id || null) : (paymentIntent?.id || null);
@@ -1018,7 +1043,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       // The receipt formatter prints check.ref as "ORDER #" — no extra wiring.
       try {
         const closedCheck = {
-          id: `chk-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
+          id: checkId,
           ref,
           location_id: opsLocationId,
           server: 'Online',
@@ -1073,7 +1098,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         // v5.5.677: email + SMS the customer their confirmation/receipt (was never wired for online).
         sendOrderConfirmation(closedCheck);
         redeemPromoAfterOrder();
-        redeemLoyaltyAfterOrder(closedCheck.id);
+        redeemLoyaltyAfterOrder();
       } catch (e) {
         console.warn('[OnlineCheckout] closed_checks write threw:', e?.message);
       }

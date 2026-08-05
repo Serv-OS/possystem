@@ -13,7 +13,9 @@
 // to show that for licensing compliance.
 
 import { useState } from 'react';
-import { supabase, platformSupabase } from '../lib/supabase';
+import { supabase } from '../lib/supabase';
+import { resetChallenge21 } from '../lib/challenge21Counter';
+import { reportSave } from '../lib/saveHealth';
 import { useStore } from '../store';
 
 const ID_TYPES = [
@@ -27,8 +29,8 @@ const ID_TYPES = [
 
 const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
 
-export default function Challenge21Modal({ open, onClose, locationId, opsLocationId, triggerCount }) {
-  const { staff } = useStore();
+export default function Challenge21Modal({ open, onClose, opsLocationId, triggerCount }) {
+  const { staff, showToast } = useStore();
   const [firstName, setFirstName] = useState('');
   const [lastInitial, setLastInitial] = useState('');
   const [idType, setIdType] = useState('driving_license');
@@ -40,13 +42,19 @@ export default function Challenge21Modal({ open, onClose, locationId, opsLocatio
 
   if (!open) return null;
 
+  // v5.5.972: the counter lives on platform.locations, which the till no longer
+  // has write access to — the reset goes via the challenge21-counter edge function.
+  // A failed reset is not cosmetic: the SERVER counter is what decides the next
+  // prompt, so a silent failure means the modal reappears on the very next alcohol
+  // sale with no explanation. Say so instead of swallowing it.
   const resetCounter = async () => {
-    if (!locationId) return;
-    try {
-      await platformSupabase.from('locations')
-        .update({ challenge_21_counter: 0 })
-        .eq('id', locationId);
-    } catch (e) { console.warn('[Challenge21] reset counter failed:', e?.message); }
+    if (!opsLocationId) return;
+    const { data, error: rErr } = await resetChallenge21(opsLocationId);
+    const failure = rErr || (data?.ok ? null : new Error(data?.reason || data?.error || 'counter reset matched no location'));
+    reportSave('Challenge 21 counter', failure);
+    if (failure) {
+      showToast?.('Counter NOT reset — the ID prompt will fire again on the next alcohol sale', 'error');
+    }
   };
 
   const submit = async () => {

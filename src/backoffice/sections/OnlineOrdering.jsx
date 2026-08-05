@@ -10,6 +10,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { platformSupabase, supabase, getLocationId } from '../../lib/supabase';
+import { saveLocation } from '../../lib/locationAdmin';
 import { CUSTOMER_ROOT, customerUrl, groupOrderUrl } from '../../lib/env';
 import QRCode from 'qrcode';
 
@@ -235,7 +236,7 @@ export default function OnlineOrdering({ setSection }) {
   };
 
   const save = async () => {
-    if (!platformSupabase || !row) {
+    if (!platformSupabase || !row || !opsLocId) {
       setError('No platform location loaded — open Location Settings first.');
       return;
     }
@@ -244,29 +245,27 @@ export default function OnlineOrdering({ setSection }) {
     // v5.5.744: branding (logo / colours / header / background) is now edited ONLY in Menu appearance,
     // so the two screens can no longer clobber each other's online_branding. This screen keeps the
     // operational settings and deliberately does NOT write online_branding.
-    const { data, error: err } = await platformSupabase
-      .from('locations')
-      .update({
-        online_menu_id:             menuId || null,
-        online_collection_lead_min: Math.max(0, parseInt(leadMin, 10) || 0),
-        online_delivery_enabled:    !!deliveryOn,
-      })
-      .eq('id', row.id)
-      .select('id, online_branding, online_menu_id, online_collection_lead_min, online_delivery_enabled')
-      .maybeSingle();
+    // All three writes below go through the location-admin edge fn (service_role);
+    // the browser no longer holds UPDATE on platform.locations. The fn resolves the
+    // platform row from the ops id, so we pass opsLocId, not row.id.
+    const { data, error: err } = await saveLocation(opsLocId, {
+      online_menu_id:             menuId || null,
+      online_collection_lead_min: Math.max(0, parseInt(leadMin, 10) || 0),
+      online_delivery_enabled:    !!deliveryOn,
+    });
 
     // v5.5.153: QR settings save now SURFACES errors to the BO UI instead
     // of silently swallowing them. Most common cause was the column
     // migration not having been run — settings appeared to save but the
     // customer surface kept reading defaults. Operator now sees a clear
     // "Run this SQL" message instead of a silent no-op.
-    const qrCoreUpd = await platformSupabase.from('locations').update({
+    const qrCoreUpd = await saveLocation(opsLocId, {
       qr_payment_mode: qrPaymentMode,
       qr_table_mode: qrTableMode,
       qr_service_charge_pct: Math.max(0, Math.min(50, Number(qrServicePct) || 0)),
-    }).eq('id', row.id).select('qr_payment_mode').maybeSingle();
-    if (qrCoreUpd.error) {
-      const msg = qrCoreUpd.error.message || '';
+    });
+    if (qrCoreUpd.error || !qrCoreUpd.data) {
+      const msg = qrCoreUpd.error?.message || 'the platform DB returned no row';
       if (msg.includes('column') && msg.includes('schema')) {
         setError('QR settings can\'t save — DB migration missing. Run the SQL from the v5.5.151 changelog (qr_payment_mode / qr_table_mode / qr_service_charge_pct columns).');
       } else {
@@ -275,15 +274,15 @@ export default function OnlineOrdering({ setSection }) {
       setSaving(false);
       return;
     }
-    const qrTabUpd = await platformSupabase.from('locations').update({
+    const qrTabUpd = await saveLocation(opsLocId, {
       qr_tab_pre_auth_amount:           Math.max(0, Number(qrTabPreAuth) || 0),
       qr_tab_warning_message:           (qrTabWarning || '').trim() || null,
       qr_tab_left_open_surcharge_pct:   Math.max(0, Math.min(50, Number(qrTabSurchargePct) || 0)),
       qr_tab_left_open_surcharge_fixed: Math.max(0, Number(qrTabSurchargeFixed) || 0),
       qr_tab_force_close_after_minutes: Math.max(0, parseInt(qrTabForceCloseMin, 10) || 0),
-    }).eq('id', row.id).select('qr_tab_pre_auth_amount').maybeSingle();
-    if (qrTabUpd.error) {
-      const msg = qrTabUpd.error.message || '';
+    });
+    if (qrTabUpd.error || !qrTabUpd.data) {
+      const msg = qrTabUpd.error?.message || 'the platform DB returned no row';
       if (msg.includes('column') && msg.includes('schema')) {
         setError('Open-tab settings can\'t save — DB migration missing. Run the SQL from the v5.5.151 changelog (qr_tab_* columns).');
       } else {
@@ -295,10 +294,12 @@ export default function OnlineOrdering({ setSection }) {
 
     setSaving(false);
     if (err) { setError(err.message || 'Save failed'); return; }
-    if (!data) { setError('Update returned 0 rows — check RLS UPDATE policy on locations.'); return; }
+    if (!data) { setError('Update returned 0 rows — reload this page, the venue record may have moved.'); return; }
 
-    // Sync local state to what was actually persisted
-    setBranding({ ...BLANK_BRANDING, ...(data.online_branding || {}) });
+    // Sync local state to what was actually persisted. Branding is only re-synced
+    // when the echo carries it — this screen never writes it, and blanking the
+    // local copy would wipe the preview.
+    if (data.online_branding) setBranding({ ...BLANK_BRANDING, ...data.online_branding });
     setMenuId(data.online_menu_id || '');
     setLeadMin(typeof data.online_collection_lead_min === 'number' ? data.online_collection_lead_min : 30);
     setDeliveryOn(!!data.online_delivery_enabled);

@@ -6,7 +6,8 @@
  */
 import { useState } from 'react';
 import { useStore } from '../../store';
-import { supabase, platformSupabase, isMock } from '../../lib/supabase';
+import { supabase, isMock } from '../../lib/supabase';
+import { saveLocation } from '../../lib/locationAdmin';
 import { reportSave } from '../../lib/saveHealth';
 
 const TIMEZONES = [
@@ -64,9 +65,12 @@ export default function MultiLocation() {
           return;
         }
         try {
-          const { error: pErr } = await platformSupabase.from('locations').update({ name })
-            .or(`ops_location_id.eq.${editId},id.eq.${editId}`);
+          // Via the location-admin edge fn (service_role) — the browser no longer
+          // holds UPDATE on platform.locations. It resolves the platform row from
+          // the ops id (ops_location_id first, then legacy id).
+          const { data: pRow, error: pErr } = await saveLocation(editId, { name });
           if (pErr) throw pErr;
+          if (!pRow) throw new Error('the platform DB returned no row');
         } catch (e) {
           reportSave('location (online ordering name)', e);
           showToast('Saved, but the online-ordering name didn’t sync — try again', 'error');

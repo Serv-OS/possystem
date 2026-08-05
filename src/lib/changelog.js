@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.978', date: '5 Aug 2026', label: 'Venue settings move behind the server; rewards can no longer be given without being deducted',
+    changes: [
+      'THE SETTINGS HOLE IS CLOSED PROPERLY. Every venue setting — opening hours, online ordering, QR, age verification, menu theming, the venue name — was editable by anyone who opened the POS in a browser, because the key that allows it ships inside the page. Someone could have switched off age verification at every venue, or pointed a venue\'s online orders at a different tenant. All eleven of those writes now go through the server, which checks you actually have access to that venue and refuses any field outside a fixed list. The venue id, company and database pointer can no longer be set by anyone, from anywhere.',
+      'AGE VERIFICATION NOW COUNTS ON THE SERVER. The till used to increment its own counter and decide for itself when to prompt. It now asks the server, which owns the count and the decision — and if the count cannot be recorded, staff are told instead of the prompt quietly never appearing again. The till proves which venue it is by its own paired-device record, so it can only ever touch its own counter and nothing else.',
+      'A REWARD CAN NO LONGER BE GIVEN WITHOUT BEING TAKEN. Every channel showed the discount, took the payment, then fired the deduction without checking it. A failure meant the stamp, points or one-time code were never consumed and could be used again — indefinitely. All four channels now go through one path that waits for the answer, retries durably where a retry can actually happen, and says so plainly where it cannot.',
+      'Behind that: the two redemption functions deducted BEFORE writing the record that makes a retry safe, so they were never safe to call twice. Both now write the record first. This was a latent fault in the payment path, not something introduced here.',
+      'Refunding an online order restores the customer\'s points and stamps again — the reference the refund searches by and the one the redemption recorded had drifted apart.',
+      'The Review card\'s logo and branding save again, and now say so honestly if they do not.',
+    ],
+  },
+  {
     version: '5.5.977', date: '5 Aug 2026', label: 'Money that went missing, two crashes, and a course that never reached the kitchen',
     changes: [
       'PETTY CASH NOW REACHES THE DATABASE. Every manual float, cash drop, expense paid out and adjustment recorded in the Back Office was appended to an in-memory list and nothing else — no row was ever written, so none of it appeared in drawer variance, the end-of-day close or the Z report. The ledger core that the POS drawer already used correctly is now shared, and the Back Office writes through it. A recording that fails now says so and leaves nothing behind.',

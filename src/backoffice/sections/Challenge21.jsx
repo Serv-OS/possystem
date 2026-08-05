@@ -16,6 +16,7 @@
 
 import { useEffect, useState } from 'react';
 import { platformSupabase, supabase, isMock, getLocationId } from '../../lib/supabase';
+import { saveLocation, resetChallenge21Counter } from '../../lib/locationAdmin';
 import { reportSave } from '../../lib/saveHealth';
 import { useStore } from '../../store';
 import Challenge21Report from './Challenge21Report';
@@ -31,6 +32,9 @@ export default function Challenge21() {
   const [savedAt, setSavedAt]       = useState(null);
   const [error, setError]           = useState('');
   const [locationId, setLocationId] = useState(null);
+  // Writes go through the location-admin edge fn, which keys off the OPS id and
+  // resolves the platform row itself — so we keep both ids.
+  const [opsLocId, setOpsLocId]     = useState(null);
   const [tab, setTab]               = useState('config'); // config | report
 
   // Form state
@@ -55,6 +59,7 @@ export default function Challenge21() {
           setError('Not signed in — open the back office (?mode=office) and sign in first');
           setLoading(false); return;
         }
+        setOpsLocId(opsId);
 
         // v5.5.165: categories — prefer the store (already hydrated by
         // SyncBridge from the BO's resolved location, matches what Menu
@@ -130,14 +135,14 @@ export default function Challenge21() {
   };
 
   const save = async () => {
-    if (!locationId) return;
+    if (!locationId || !opsLocId) return;
     setSaving(true); setError(''); setSavedAt(null);
     try {
-      const { error: uErr } = await platformSupabase.from('locations').update({
+      const { error: uErr } = await saveLocation(opsLocId, {
         challenge_21_enabled: enabled,
         challenge_21_alcohol_category_ids: categoryIds,
         challenge_21_trigger_every: Math.max(1, Math.min(1000, Math.round(Number(triggerEvery) || 10))),
-      }).eq('id', locationId);
+      });
       reportSave('Challenge 21 settings', uErr);
       if (uErr) {
         if (/column .* does not exist/i.test(uErr.message)) {
@@ -156,12 +161,11 @@ export default function Challenge21() {
   };
 
   const resetCounter = async () => {
-    if (!locationId) return;
+    if (!locationId || !opsLocId) return;
     if (!confirm('Reset the Challenge ID counter to 0? The next alcohol sale will start fresh.')) return;
-    const { data, error } = await platformSupabase.from('locations')
-      .update({ challenge_21_counter: 0 }).eq('id', locationId).select('id');
-    const failure = error || (!data || data.length === 0
-      ? new Error(`Counter reset matched 0 rows for location ${locationId} — RLS may be blocking UPDATE`)
+    const { data, error } = await resetChallenge21Counter(opsLocId);
+    const failure = error || (!data
+      ? new Error(`Counter reset returned no result for location ${locationId}`)
       : null);
     reportSave('Challenge 21 counter', failure);
     if (failure) {

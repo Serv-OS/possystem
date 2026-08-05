@@ -95,6 +95,21 @@ Deno.serve(async (req) => {
     // Attribution: prefer the adopted owner (personal codes) over the till's null.
     const redemptionCustomerId = (ev as any).effectiveCustomerId ?? customerId;
 
+    // Append-only ledger FIRST — its UNIQUE idempotency_key is the retry guard. Written AFTER
+    // the CAS it left a window where the code was already consumed with nothing to dedupe
+    // against, so a retry consumed a second use. A single-use code is covered by the CAS
+    // itself; a MULTI-use one is not.
+    const { data: ledger, error: ledgerErr } = await opsAdmin.from('promo_redemptions').insert({
+      promo_code_id: row.id, offer_id: offer.id, org_id: row.org_id, code: row.code,
+      customer_id: redemptionCustomerId, location_id: locationId, order_id: orderId, staff_id: staffId,
+      basket_value: subtotal, discount_value: discount.amount ?? 0, idempotency_key: idemKey,
+    }).select('id').single();
+    if (ledgerErr?.code === '23505') return json({ ok: true, redeemed: true, idempotent: true });
+    if (ledgerErr || !ledger) {
+      console.error('[promo-redeem] ledger insert failed:', ledgerErr?.message);
+      return json({ error: 'Failed to record redemption' }, 500);
+    }
+
     // RACE-SAFE compare-and-swap: only succeeds if uses_count is still what we read.
     const newCount = (row.uses_count ?? 0) + 1;
     const { data: updated } = await opsAdmin.from('promo_codes')
@@ -109,14 +124,12 @@ Deno.serve(async (req) => {
       .eq('id', row.id)
       .eq('uses_count', row.uses_count ?? 0)   // <-- CAS guard: the race anchor
       .select('id').maybeSingle();
-    if (!updated) return json({ ok: false, redeemed: false, reason: 'already_used' });   // lost the race / already used
+    if (!updated) {
+      // Lost the race / already used — nothing was consumed, so drop our guard row.
+      await opsAdmin.from('promo_redemptions').delete().eq('id', ledger.id);
+      return json({ ok: false, redeemed: false, reason: 'already_used' });
+    }
 
-    // Append-only ledger (idempotency_key unique). If a concurrent winner already inserted, ignore.
-    await opsAdmin.from('promo_redemptions').insert({
-      promo_code_id: row.id, offer_id: offer.id, org_id: row.org_id, code: row.code,
-      customer_id: redemptionCustomerId, location_id: locationId, order_id: orderId, staff_id: staffId,
-      basket_value: subtotal, discount_value: discount.amount ?? 0, idempotency_key: idemKey,
-    }).then(() => {}, () => {});
     // Best-effort offer counter.
     try { await opsAdmin.from('offers').update({ redeemed_count: (offer.redeemed_count ?? 0) + 1, updated_at: new Date().toISOString() }).eq('id', offer.id); } catch (_e) {}
 

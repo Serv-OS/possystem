@@ -95,18 +95,12 @@ Deno.serve(async (req) => {
       return json({ error: 'No stamp card reward available for this customer' }, 400);
     }
 
-    // Idempotency — same double-tap shape as the points path.
+    // Idempotency — same insert-first shape as the points path below. A SELECT-then-INSERT
+    // let two concurrent calls both pass the lookup; the ledger row IS the redemption here,
+    // so its UNIQUE idempotency_key is the only thing that can settle the race.
     const idemKey = closed_check_id
       ? `stampredeem:${closed_check_id}:${prog.id}`
       : `stampredeem:${customer_id}:${prog.id}:${Math.floor(Date.now() / 30000)}`;
-    const { data: dup } = await opsAdmin
-      .from('stamp_transactions')
-      .select('id')
-      .eq('idempotency_key', idemKey)
-      .maybeSingle();
-    if (dup) {
-      return json({ status: 'already_processed', stamp: true, points_deducted: 0, balance: null, reward: rewardInfo, idempotency_key: idemKey });
-    }
 
     const { data: ins, error: insErr } = await opsAdmin
       .from('stamp_transactions')
@@ -122,13 +116,19 @@ Deno.serve(async (req) => {
       })
       .select('id')
       .single();
+
+    if (insErr?.code === '23505') {
+      // A concurrent call or an in-flight retry already owns this key — the reward has
+      // already been handed over and recorded, so do NOT redeem a second card.
+      return json({ status: 'already_processed', stamp: true, points_deducted: 0, balance: null, reward: rewardInfo, idempotency_key: idemKey });
+    }
     if (insErr || !ins) {
       console.error('[loyalty-redeem] stamp redeem insert failed:', insErr?.message);
       return json({ error: 'Failed to record redemption' }, 500);
     }
 
-    // Race guard: two concurrent redeems can both pass the pre-check — recount after insert
-    // and roll back our own row if the ledger over-shot the completed count.
+    // Race guard: two redeems under DIFFERENT keys can both pass the availability pre-check —
+    // recount after insert and roll back our own row if the ledger over-shot the completed count.
     if ((await countRedeemed()) > completed) {
       await opsAdmin.from('stamp_transactions').delete().eq('id', ins.id);
       return json({ error: 'Reward already redeemed' }, 409);
@@ -221,10 +221,56 @@ Deno.serve(async (req) => {
   }
 
   // ── Deduct points ──────────────────────────────────────────────────────
+  // The ledger row is the GUARD, not the epilogue (same shape as the stamp path above):
+  // write it FIRST so its UNIQUE idempotency_key rejects a retry before anything is
+  // deducted. Writing it last left the whole deduct window uncovered, so a 5xx retry
+  // deducted twice. balance_after is projected here and patched after the deduct lands.
   const pointsToDeduct = reward.points_cost;
+  const projectedBalance = membership.points_balance - pointsToDeduct;
+
+  const { data: ledgerRow, error: ledgerErr } = await opsAdmin
+    .from('loyalty_transactions')
+    .insert({
+      customer_id,
+      company_id: companyId,
+      location_id,
+      type: 'redeem',
+      points: -pointsToDeduct,
+      balance_after: projectedBalance,
+      source: 'reward',
+      channel,
+      closed_check_id: closed_check_id || null,
+      reward_id,
+      idempotency_key: idempotencyKey,
+      staff_id: staff_id || null,
+      note: `Redeemed: ${reward.name}`,
+    })
+    .select('id')
+    .single();
+
+  if (ledgerErr?.code === '23505') {
+    // A concurrent call or an in-flight retry already owns this key — do NOT deduct again.
+    return json({
+      status: 'already_processed',
+      points_deducted: pointsToDeduct,
+      balance: membership.points_balance,
+      reward: { id: reward.id, name: reward.name, type: reward.reward_type, value: reward.reward_value },
+    });
+  }
+  if (ledgerErr || !ledgerRow) {
+    console.error('[loyalty-redeem] ledger insert failed:', ledgerErr?.message);
+    return json({ error: 'Failed to record redemption' }, 500);
+  }
+
   const newBalance = await updateBalance(membership.id, -pointsToDeduct);
   if (newBalance === null) {
+    // Nothing was deducted — drop our guard row so a legitimate retry isn't locked out.
+    await opsAdmin.from('loyalty_transactions').delete().eq('id', ledgerRow.id);
     return json({ error: 'Failed to deduct points — concurrent modification or insufficient balance' }, 409);
+  }
+
+  if (newBalance !== projectedBalance) {
+    await opsAdmin.from('loyalty_transactions').update({ balance_after: newBalance }).eq('id', ledgerRow.id);
   }
 
   // ── Update redemption stats ────────────────────────────────────────────
@@ -240,23 +286,6 @@ Deno.serve(async (req) => {
     .from('loyalty_rewards')
     .update({ total_redeemed: (reward.total_redeemed || 0) + 1 })
     .eq('id', reward.id);
-
-  // ── Write transaction ledger ───────────────────────────────────────────
-  await opsAdmin.from('loyalty_transactions').insert({
-    customer_id,
-    company_id: companyId,
-    location_id,
-    type: 'redeem',
-    points: -pointsToDeduct,
-    balance_after: newBalance,
-    source: 'reward',
-    channel,
-    closed_check_id: closed_check_id || null,
-    reward_id,
-    idempotency_key: idempotencyKey,
-    staff_id: staff_id || null,
-    note: `Redeemed: ${reward.name}`,
-  });
 
   // ── Build discount info for POS ────────────────────────────────────────
   const rewardInfo = {

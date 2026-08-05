@@ -514,6 +514,19 @@ $guard$;
 --    also flip challenge_21_enabled itself, which is worse and is not detectable.
 --    Applying the drop is still the right call, but read the alternative below
 --    first and decide deliberately.
+--
+-- ══ DECISION (Peter, 5 Aug 2026): APPLY THE DROP. ═════════════════════════
+--    Reason given: there are no live customers yet, so losing age verification
+--    costs nothing today and the clean fence is worth more than the workaround.
+--
+--    ⚠ THIS IS A DEBT WITH A HARD DEADLINE. Challenge 21 is a LICENSING control.
+--    It must be working again BEFORE the first real venue takes a live order —
+--    not before staging, not before a demo, before the first real ALCOHOL sale.
+--    Restoring it means moving the two counter writes
+--    (src/store/index.js:4586 and src/components/Challenge21Modal.jsx:46) behind
+--    a service_role edge function; the same bridge that has to be built for the
+--    nine Back Office location saves listed above, so it is one piece of work,
+--    not two. Tracked as a task in the session that applied this migration.
 drop policy if exists locations_anon_update on public.locations;
 
 -- Defence in depth: with no UPDATE policy, RLS blocks the write anyway, but

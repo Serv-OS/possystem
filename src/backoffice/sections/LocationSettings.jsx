@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { platformSupabase, supabase, getLocationId } from '../../lib/supabase';
+import { saveLocation } from '../../lib/locationAdmin';
 import { reportSave } from '../../lib/saveHealth';
 import { clearLocationConfigCache } from '../../lib/locationTime';
 import { defaultOpeningHours, emptyOpeningHours, isOpenNow, formatHoursPreview } from '../../lib/openingHours';
@@ -270,8 +271,8 @@ export default function LocationSettings() {
     // expect, coerce times to HH:MM strings. The Service Periods bug was
     // caused by the update silently no-op'ing: .update().eq() returns success
     // (no error) even when RLS denies the write OR when the row id mismatches.
-    // Adding .select().single() forces a round-trip on the actual mutated
-    // row, so we can confirm shifts came back persisted.
+    // The edge fn still round-trips the mutated row, so we can confirm shifts
+    // came back persisted.
     const cleanShifts = (shifts || []).map(sh => ({
       id:    sh.id || `shift-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       name:  String(sh.name || 'Shift').slice(0, 60),
@@ -279,34 +280,35 @@ export default function LocationSettings() {
       end:   String(sh.end   || '00:00').slice(0, 5),
     }));
 
-    const { data, error: err } = await platformSupabase
-      .from('locations')
-      .update({
-        timezone,
-        currency,
-        business_day_start:      bizDayStart,
-        shifts:                  cleanShifts,
-        collection_lead_minutes: collectionLeadMin,
-        opening_hours:           sanitiseOpeningHours(openingHours),
-        online_slug:             onlineSlug ? onlineSlug.toLowerCase() : null,
-        online_enabled:          !!onlineEnabled,
-        qr_enabled:              !!qrEnabled,
-      })
-      .eq('id', location.id)
-      .select('id, shifts, timezone, business_day_start, collection_lead_minutes, opening_hours, online_slug, online_enabled, qr_enabled')
-      // maybeSingle so a 0-row return doesn't throw "Cannot coerce" — it
-      // resolves to data:null which we then handle with a specific error
-      // pointing at the RLS UPDATE policy (the most common cause).
-      .maybeSingle();
+    // The browser no longer holds UPDATE on platform.locations — the write goes
+    // through the location-admin edge fn under service_role. It takes the OPS id
+    // and resolves the platform row itself (never trusting a client-supplied
+    // platform id), so a stale/wrong location.id can't retarget another tenant.
+    const locId = await getLocationId().catch(() => null);
+    if (!locId) {
+      setSaving(false);
+      setError('No location resolved for this back-office session — sign out and back in, then try again.');
+      return;
+    }
+    const { data, error: err } = await saveLocation(locId, {
+      timezone,
+      currency,
+      business_day_start:      bizDayStart,
+      shifts:                  cleanShifts,
+      collection_lead_minutes: collectionLeadMin,
+      opening_hours:           sanitiseOpeningHours(openingHours),
+      online_slug:             onlineSlug ? onlineSlug.toLowerCase() : null,
+      online_enabled:          !!onlineEnabled,
+      qr_enabled:              !!qrEnabled,
+    });
 
     // Save show_item_images + pos_settings to ops DB (separate concern).
     // pos_settings merges over the loaded jsonb so future keys survive this save.
     // Checked separately from the platform write above: this half failing on its own
     // used to leave the screen saying "✓ Saved" while the address / POS settings were
     // never written.
-    const locId = await getLocationId().catch(() => null);
     let opsErr = null;
-    if (locId && supabase) {
+    if (supabase) {
       const { data: opsRows, error: oErr } = await supabase.from('locations').update({
         show_item_images: showItemImages,
         address: venueAddress.trim() || null,
@@ -322,19 +324,18 @@ export default function LocationSettings() {
     if (err) {
       console.warn('[LocationSettings] save failed:', err);
       reportSave('location settings', err);
-      setError(err.message || 'Save failed (check console)');
+      // online_slug is UNIQUE platform-wide; the fn reports the collision as a
+      // code rather than a raw Postgres unique-violation.
+      setError(err.message === 'slug_taken'
+        ? 'That web address is already used by another venue — pick a different one.'
+        : (err.message || 'Save failed (check console)'));
       return;
     }
     if (!data) {
       reportSave('location settings', new Error(`Platform-DB update matched 0 rows for location ${location.id}`));
-      // Update affected 0 rows even though SELECT found the location — almost
-      // always RLS denying UPDATE for the (anon) platformSupabase session.
-      // Surface a copy-pasteable SQL fix the user can run in Supabase SQL editor.
-      setError(
-        'Save reached the DB but updated 0 rows. This is an RLS policy on the platform DB locations table — UPDATE is blocked. Open Supabase → SQL editor and run: ' +
-        `CREATE POLICY locations_anon_update ON public.locations FOR UPDATE USING (true) WITH CHECK (true); ` +
-        '(Tighten the predicate later — this unblocks Save right now.)'
-      );
+      // The write was accepted but came back with no row — the platform row was
+      // deleted or re-keyed underneath this session. Re-loading re-resolves it.
+      setError('Save reached the platform DB but updated 0 rows. Reload this page — the venue record may have moved.');
       return;
     }
     // Verify shifts round-tripped — surfaces the bug instead of hiding it

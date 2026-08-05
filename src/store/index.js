@@ -20,8 +20,10 @@ import { getDeliveryQuote, recordDeliverySurcharge } from '../lib/delivery/quote
 import { dispatchDelivery, sendDeliveryTrackingSMS } from '../lib/delivery/dispatch';
 import { STALE_ORDER_FLOOR_MS } from '../sync/staleness';
 import { giftRecordFrom, giftLegs, reverseGiftCard } from '../lib/giftCommit';
+import { commitRedemption } from '../lib/commitRedemptions';
 import { waitlistSlice } from './waitlistSlice';
 import { reportSave } from '../lib/saveHealth';
+import { bumpChallenge21 } from '../lib/challenge21Counter';
 
 // v5.5.944: terminal jobs whose closed_check upsert failed and were flagged to the
 // activity feed — once per job per boot, so the 8s retry loop doesn't spam the feed.
@@ -4600,10 +4602,18 @@ export const useStore = create((set, get) => ({
   },
 
   // Called from every recordClosedCheck path. Checks for alcohol-flagged
-  // items in the closed record, increments the counter on platform.locations
-  // if found, and opens the prompt when the counter hits triggerEvery.
-  // Best-effort — wrapped in try/catch so any failure here never blocks
-  // the close flow.
+  // items in the closed record, and if found asks the server to increment the
+  // counter and decide whether the ID prompt is due.
+  //
+  // v5.5.972: the increment used to be a direct platformSupabase UPDATE from the
+  // till. That needed anon UPDATE on platform.locations — the same grant that let
+  // any holder of the bundled anon key rewrite every column of every venue — and
+  // it failed SILENTLY: an RLS-blocked PostgREST UPDATE resolves with 0 rows
+  // rather than throwing, so the catch never fired and the licensing prompt
+  // simply stopped appearing. It now goes through the challenge21-counter edge
+  // function (service_role), the server owns the prompt decision, and a failure
+  // raises the save-health banner AND a POS toast. Never let this one go quiet
+  // again — a dead Challenge 21 counter is a licensing failure.
   triggerChallenge21Check: async (record) => {
     try {
       if (isMock || !platformSupabase) return;
@@ -4626,16 +4636,27 @@ export const useStore = create((set, get) => ({
       });
       if (!hasAlcohol) return;
 
-      const next = (cfg.counter || 0) + 1;
-      try {
-        await platformSupabase.from('locations')
-          .update({ challenge_21_counter: next })
-          .eq('id', cfg.locationId);
-      } catch (e) { console.warn('[challenge21] counter update failed:', e?.message); }
+      // The server increments atomically and returns the authoritative counter, so
+      // two tills closing alcohol checks at the same moment can no longer lose one
+      // (the old read-modify-write wrote the same `next` twice).
+      const { data, error } = await bumpChallenge21(cfg.opsLocationId);
+      // `ok:false` with no error is the 0-rows case — treat it as a failure, same
+      // discipline as the Back Office writers.
+      const failure = error || (data?.ok ? null : new Error(data?.reason || data?.error || 'counter bump matched no location'));
+      reportSave('Challenge 21 counter', failure);
+      if (failure) {
+        get().showToast('Challenge ID counter NOT recorded — tell a manager', 'error');
+        return;
+      }
 
+      const next = Number(data.counter) || 0;
       set({ challenge21Config: { ...cfg, counter: next } });
 
-      if (next >= cfg.triggerEvery) {
+      // should_prompt is the SERVER's decision against the stored threshold, not
+      // local arithmetic against a possibly-stale cfg.triggerEvery. Two tills
+      // crossing the threshold together may both prompt — over-prompting is the
+      // right way to fail on an age-verification control.
+      if (data.should_prompt) {
         set({
           challenge21Prompt: {
             open: true,
@@ -4645,7 +4666,12 @@ export const useStore = create((set, get) => ({
           },
         });
       }
-    } catch (e) { console.warn('[challenge21] trigger failed:', e?.message); }
+    } catch (e) {
+      // A throw here (no auth session, network down) is still a counter that
+      // didn't record — surface it rather than logging it into the void.
+      reportSave('Challenge 21 counter', e);
+      get().showToast('Challenge ID counter NOT recorded — tell a manager', 'error');
+    }
   },
 
   dismissChallenge21Prompt: (resetCounter = true) => {
@@ -5050,41 +5076,55 @@ export const useStore = create((set, get) => ({
     }
   },
 
-  // Redeem a held promo code against a recorded check — atomic + race-safe server-side, bound to the
-  // order id. Fire-and-forget: validate already confirmed eligibility at apply time; never blocks a sale.
-  // v5.5.896: loyalty rewards redeem AT COMMIT, exactly like promo codes. The checkout tap
-  // only stages the discount in-memory (lib/loyaltyRedeem.js is apply-only now) — so a
-  // mis-tap or abandoned checkout can never consume points or a stamp card. loyalty-redeem
-  // is idempotent on closed_check_id server-side, so a retry can't double-deduct.
-  redeemLoyaltyAtCommit: (loy, record, customer) => {
+  // Redeem a held promo code / loyalty reward against a recorded check — atomic + race-safe
+  // server-side, bound to the check id. Never blocks the sale (the callers don't await), but
+  // these no longer FORGET the outcome: lib/commitRedemptions awaits the call, checks
+  // transport AND payload, and parks a failure in the durable queue so the deduction is retried.
+  // Both used to console.warn only, so a 401/500 left the reward unconsumed and re-redeemable.
+  redeemLoyaltyAtCommit: async (loy, record, customer) => {
     if (!loy?.pending_commit || !supabase || !record?.id) return;
     if (!loy.stampProgramId && !loy.reward_id) return;
     if (isTrainingMode()) return;   // TRAINING MODE: never consume real points/stamps
     const { staff } = get();
     let locId = getActiveLocationSync(); if (!locId) { try { locId = localStorage.getItem('rpos-active-location') || null; } catch {} }
-    supabase.functions.invoke('loyalty-redeem', { body: {
-      customer_id: loy.customer_id || customer?.customerId || customer?.id || null,
-      location_id: locId,
-      ...(loy.stampProgramId ? { stamp_program_id: loy.stampProgramId } : { reward_id: loy.reward_id }),
+    const token = await ensureAuthToken().catch(() => null);
+    const r = await commitRedemption({
+      kind: 'loyalty',
+      customerId: loy.customer_id || customer?.customerId || customer?.id || null,
+      locationId: locId,
+      stampProgramId: loy.stampProgramId || null,
+      rewardId: loy.reward_id || null,
       channel: 'pos',
-      closed_check_id: record.id,
-      staff_id: staff?.id || null,
-    } }).then(({ data, error }) => {
-      if (error || data?.error) console.warn('[loyalty redeem@commit]', error?.message || data?.error);
-    }).catch(err => console.warn('[loyalty redeem@commit]', err?.message || err));
+      closedCheckId: record.id,
+      staffId: staff?.id || null,
+    }, { functionsUrl: `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`, token });
+    // Queued failures retry themselves; a refusal never will, so say what didn't happen.
+    if (!r.ok && !r.queued) {
+      get().showToast?.(`Reward discount given but NOT deducted (${r.error}) — check the customer's balance in Back Office.`, 'error');
+    }
+    return r;
   },
 
-  redeemPromoCode: (promo, record, customer) => {
+  redeemPromoCode: async (promo, record, customer) => {
     if (!promo?.code || !supabase || !record?.id) return;
     if (isTrainingMode()) return;   // TRAINING MODE: don't consume a one-time / limited promo code
     const { staff } = get();
     let locId = getActiveLocationSync(); if (!locId) { try { locId = localStorage.getItem('rpos-active-location') || null; } catch {} }
-    supabase.functions.invoke('promo-redeem', { body: {
-      action: 'redeem', code: promo.code, order_id: record.id, location_id: locId,
-      customer_id: customer?.customerId || customer?.id || null, staff_id: staff?.id || null,
-      basket_value: record.subtotal || 0, idempotency_key: `${record.id}:${promo.code}`,
-    } }).then(({ data }) => { if (data && !data.ok && !data.redeemed) console.warn('[promo redeem]', data.reason); })
-      .catch(err => console.warn('[promo redeem]', err?.message || err));
+    const token = await ensureAuthToken().catch(() => null);
+    const r = await commitRedemption({
+      kind: 'promo',
+      code: promo.code,
+      locationId: locId,
+      customerId: customer?.customerId || customer?.id || null,
+      staffId: staff?.id || null,
+      basketValue: record.subtotal || 0,
+      channel: 'pos',
+      closedCheckId: record.id,
+    }, { functionsUrl: `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`, token });
+    if (!r.ok && !r.queued) {
+      get().showToast?.(`Promo code ${promo.code} was applied but NOT recorded (${r.error}) — it can still be used again.`, 'error');
+    }
+    return r;
   },
 
   // Direct record insertion — used by bar tabs and other ad-hoc payment flows
