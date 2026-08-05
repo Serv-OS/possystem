@@ -61,6 +61,37 @@
 -- turned out to be stale.
 --
 --
+-- IT WAS THEN ACTUALLY RUN, NOT JUST READ
+-- This file was applied to a scratch PostgreSQL 17.10 seeded with the three
+-- Supabase roles (anon / authenticated / service_role), an `extensions` schema, a
+-- stub auth.uid(), and Supabase's own `alter default privileges ... grant all` on
+-- schema public — so the grant behaviour was tested against the same default ACL
+-- the real project has, not a clean one.
+--
+--   • Applied to an empty database: clean, no errors.
+--   • Applied a SECOND time over itself: clean, no errors (idempotent).
+--   • The rebuilt database was then compared against the live catalogs on 913
+--     facts — every column with its type / nullability / default, every constraint
+--     definition, every index definition, every policy with its roles, USING and
+--     WITH CHECK, every trigger, every function body by md5, every table, column
+--     and function ACL, both RLS flags per table, and every COMMENT.
+--     Differences: ZERO.
+--   • The fences were then exercised as the `anon` role. Confirmed on the rebuild:
+--       UPDATE locations                  → permission denied for table (8b)
+--       SELECT loyalty_otp_codes          → permission denied for table (8c)
+--       SELECT loyalty_redemption_claims  → permission denied for table (8c)
+--       EXECUTE increment_gmv             → permission denied for function (8e)
+--       EXECUTE challenge21_reset         → permission denied for function (8e)
+--       INSERT locations / payment_devices→ RLS policy violation
+--     and, just as importantly, the KNOWN HOLES reproduced too:
+--       SELECT payment_devices.registration_code → ALLOWED (20260805d unapplied)
+--       SELECT / DELETE customer_loyalty         → ALLOWED (service_all to public)
+--       EXECUTE get_effective_markup             → ALLOWED (SECURITY DEFINER, anon)
+--     A rebuild that quietly closed those would not be a copy of production.
+--   • The wrong-database guard was tested against a database carrying Ops tables:
+--     it aborted naming them, and the transaction rolled back with nothing created.
+--
+--
 -- ⚠⚠ THE THING THAT MATTERS MOST ON THIS DATABASE: THE GRANTS (section 8)
 --
 -- The browser reaches THIS project as the `anon` DB role with no JWT at all.
@@ -197,12 +228,16 @@ as $function$
 begin new.updated_at = now(); return new; end;
 $function$;
 
+-- Body kept byte-identical to live — no semicolon after `end`, and the closing
+-- delimiter on the same line — so pg_get_functiondef matches on a rebuilt project.
+-- That difference from set_updated_at() above is the ONLY thing distinguishing the
+-- two functions, and it was found by md5-diffing the rebuild against live rather
+-- than by reading them.
 create or replace function public._touch_location_reader_settings_updated_at()
 returns trigger
 language plpgsql
 as $function$
-begin new.updated_at = now(); return new; end
-$function$;
+begin new.updated_at = now(); return new; end $function$;
 
 
 -- ══════════════════════════════════════════════════════════════════════════
@@ -2155,13 +2190,28 @@ create policy ps_read on public.platform_settings
 -- privilege matrix VISIBLE and makes this file independent of the target project's
 -- pg_default_acl. It is a statement of what is, not an endorsement.
 --
--- WHAT ACTUALLY PROTECTS EACH TABLE, given anon holds ALL on nearly all of them:
---   • 17 tables have RLS on and NO policies      → service_role only. Safe.
---   • 14 tables are reached by the browser       → their policies are the fence,
---     and 6 of those policies are USING(true)    → NOT safe. Listed in section 7.
---   •  2 tables have the grant itself revoked    → loyalty_otp_codes,
---                                                  loyalty_redemption_claims. Safe.
---   •  1 table has a partial revoke              → locations (no UPDATE for anon).
+-- WHAT ACTUALLY PROTECTS EACH TABLE, given anon holds ALL on nearly all of them.
+-- (These are overlapping descriptions, not a partition — loyalty_otp_codes appears
+-- twice because it is protected twice, which is the point.)
+--
+--   • 17 tables: RLS on, NO policies → service_role only. Effectively closed.
+--   •  2 tables: the GRANT itself revoked from anon and authenticated →
+--        loyalty_otp_codes, loyalty_redemption_claims. Closed at both layers.
+--   •  1 table: a PARTIAL revoke → locations, where anon lost UPDATE only.
+--
+--   •  7 tables carry a `FOR ALL ... TO public USING(true) WITH CHECK(true)` policy,
+--      and `public` includes anon. On these the anon key can READ, REWRITE AND
+--      DELETE every row on the platform:
+--        customer_loyalty · loyalty_config · loyalty_tiers · stamp_card_programs
+--        customer_stamp_cards · gift_card_purchases · location_reader_settings
+--      Every one of them is a known, documented hole (20260805c B5b) that is open
+--      because the Back Office reaches it as anon. See section 7.
+--
+--   •  3 tables are open to anon for READ only, deliberately:
+--        locations, companies  — public slug resolution before any session exists
+--                                (20260805c B6, kept on purpose)
+--        payment_devices       — reader discovery; this is the one 20260805d is
+--                                meant to narrow to 21 of 24 columns, and has not.
 --
 -- The 14 tables a browser can reach on this project, with call-site counts taken
 -- from a grep of src/ for `platformSupabase ... .from('<table>')` on 6 Aug 2026:

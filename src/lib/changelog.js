@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.981', date: '6 Aug 2026', label: 'Writing the databases down found two faults that reading them never would',
+    changes: [
+      'Both databases are now written down in the repo — 161 tables plus every constraint, index, policy and function. Twenty-five of them had existed only in the live database, so until now the schema could not be rebuilt from source, reviewed, or used to stand up a test copy. Each file was proven by building a throwaway database from it and comparing the result against the real one, fact by fact.',
+      'That rebuild immediately found two things reading the code had missed. A signed-in user could set their own access row to "owner" — the rule pinned WHICH row you could edit but not WHICH columns. Nothing today grants anything from that field, so nobody could actually gain access by it, but the next person to write a check against it would have turned a dormant gap into a real one. It is now pinned to super admins.',
+      'And the new loyalty tidy-up job would never have reached recent records: it read oldest-first from a fixed window and restarted at the beginning every hour, so once a week of activity outgrew one pass it re-read the same old rows forever. Since a missing record is always caused by something that just failed, it now reads newest first.',
+      'The tidy-up job is now live and runs hourly. Its table also gained the index it needs — without it every pass scanned the whole thing.',
+    ],
+  },
+  {
     version: '5.5.980', date: '6 Aug 2026', label: 'Food-safety alerts stop chasing ancient breaches',
     changes: [
       'The escalation ladder had no age limit. It has never once run, so the moment it was given a working contact it would have fired on every unacknowledged alert ever raised — including three from June — and paged someone about a freezer that broke six weeks ago. Alerts older than seven days now stay in the app and are counted in the run summary instead of being chased out of hours.',

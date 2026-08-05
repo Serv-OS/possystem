@@ -16,7 +16,7 @@
 // row. This function closes that.
 //
 // WHAT IT DOES
-//   * pages claim rows off Platform, oldest first, inside a closed time window
+//   * pages claim rows off Platform, NEWEST first, inside a closed time window
 //   * anti-joins them against ops.loyalty_transactions on idempotency_key — the join has
 //     to happen HERE, in the function, because the two sides are different projects and no
 //     SQL join can reach across them
@@ -26,7 +26,7 @@
 //   * returns counts, so a human can tell whether it is finding anything
 //
 // Body (all optional):
-//   { lookback_hours?, after?, min_age_minutes?, max_scan?, max_backfill?, dry_run? }
+//   { lookback_hours?, after?, before?, min_age_minutes?, max_scan?, max_backfill?, dry_run? }
 //
 // Auth: SERVICE ROLE ONLY. It reads and writes ledger rows for every tenant.
 //
@@ -42,11 +42,14 @@
 // one row per redemption and are never deleted — so a run that always started at the oldest
 // claim would eventually spend its whole budget re-reading ancient reconciled rows and never
 // reach today's. Hence a LOOKBACK WINDOW: the default tick only looks at the last 7 days,
-// which it can walk completely, and every claim gets 168 hourly chances inside it. Older
-// ground is swept by hand with an explicit `after` or a large `lookback_hours`.
+// which it walks NEWEST FIRST. That direction is the correctness argument, not a preference:
+// `offset` restarts at 0 every tick, so an oldest-first scan whose window outgrows max_scan
+// re-reads the same ancient reconciled rows forever and never reaches today's. A missing ledger
+// row is always created by a redemption that just failed, so newest-first catches a miss on the
+// very next tick. Older ground is swept by passing back `next_before` as `before`.
 //
 // `complete` is true only if the whole window was walked. When it is false, `stopped_on`
-// says which bound was hit and `next_after` is the resume cursor to pass back as `after`.
+// says which bound was hit and `next_before` is the resume cursor to pass back as `before`.
 // The window is closed at the top (created_at < now - min_age), so no row can be inserted
 // into it mid-run and offset paging is stable for the length of an invocation.
 //
@@ -75,7 +78,7 @@ const MAX_BACKFILL_CAP = 1_000;
 // 20260805b). pg_net giving up does not stop the isolate — the backfills still land — but the
 // RESPONSE is discarded, and this function's response IS the report a human reads out of
 // net._http_response. A scheduled tick that would run long therefore stops early and SAYS so,
-// rather than doing its work invisibly. A hand-run sweep costs a few passes with `after`.
+// rather than doing its work invisibly. A hand-run sweep costs a few passes with `before`.
 const RUN_BUDGET_MS    = 20_000;   // stop starting pages past this
 const MIN_AGE_MIN      = 5;        // never touch a redemption younger than this
 const LOOKBACK_HOURS   = 168;      // 7 days
@@ -142,8 +145,15 @@ Deno.serve(async (req) => {
   const maxBackfill   = clamp(body.max_backfill, 1, MAX_BACKFILL_CAP, MAX_BACKFILL);
   const dryRun        = body.dry_run === true;
 
-  const now        = Date.now();
-  const windowEnd  = new Date(now - minAgeMin * 60_000).toISOString();
+  const now      = Date.now();
+  const ageBound = new Date(now - minAgeMin * 60_000).toISOString();
+  // `before` walks FURTHER BACK from where a truncated run stopped. It is the resume cursor now
+  // that the scan runs newest-first: pass back the `next_before` a previous run returned. It can
+  // only ever pull the top of the window DOWN — never past the min-age bound, which is what stops
+  // an in-flight redemption being mistaken for a miss.
+  const windowEnd = typeof body.before === 'string' && body.before.trim()
+    ? (new Date(body.before).toISOString() < ageBound ? new Date(body.before).toISOString() : ageBound)
+    : ageBound;
   const windowStart = typeof body.after === 'string' && body.after.trim()
     // Inclusive resume: re-examining the boundary row costs one probe and cannot double-write,
     // whereas an exclusive cursor would skip any row sharing that exact timestamp.
@@ -177,8 +187,17 @@ Deno.serve(async (req) => {
       .select('idempotency_key, membership_id, company_id, reward_id, points, balance_after, created_at')
       .gte('created_at', windowStart)
       .lt('created_at', windowEnd)
-      .order('created_at', { ascending: true })
-      .order('idempotency_key', { ascending: true })
+      // NEWEST FIRST — deliberately, and this is the whole correctness argument for the scan.
+      // Oldest-first looks natural but is wrong here: `offset` restarts at 0 on every tick, so
+      // the moment a week of claims exceeds max_scan the run spends its entire budget re-reading
+      // the same ancient (already reconciled) rows and never reaches today's. Measured on a
+      // rebuilt copy seeded to 300k claims: 8,075 of the 10,075 rows inside the window — 80% —
+      // were unreachable by any tick.
+      // A missing ledger row is created by a redemption that JUST failed, so the freshest claims
+      // are exactly where misses live. Newest-first means a miss is caught on the very next tick,
+      // and an older stray is still recoverable because loyalty-refund reads the claim directly.
+      .order('created_at', { ascending: false })
+      .order('idempotency_key', { ascending: false })
       .range(offset, offset + pageSize - 1);
 
     if (claimErr) {
@@ -383,7 +402,9 @@ Deno.serve(async (req) => {
   return json({
     ok: true,
     // True only if the whole window was walked. Anything else means rows were not looked at,
-    // and `next_after` is where to pick up.
+    // and `next_before` is where to pick up — pass it back as `before` to continue further back
+    // in time. The scan runs newest-first, so a truncated run has covered the MOST RECENT rows,
+    // which is where a just-failed ledger write lives.
     complete: exhausted,
     stopped_on: stoppedOn,
     scanned,
@@ -395,7 +416,8 @@ Deno.serve(async (req) => {
     dry_run: dryRun || undefined,
     window_start: windowStart,
     window_end: windowEnd,
-    next_after: exhausted ? null : (resumeAt ?? lastSeen),
+    // Oldest row this run reached. Pass it back as `before` to continue further into history.
+    next_before: exhausted ? null : (resumeAt ?? lastSeen),
     samples: {
       unresolved_keys: unresolvedKeys,
       backfilled_keys: backfilledKeys,
