@@ -1,7 +1,9 @@
 /**
  * Restaurant OS — Catering scheduled-fire safety net
  *
- * Invoked by Vercel Cron (see vercel.json → crons). Drives the catering-release edge
+ * MANUAL / EMERGENCY TRIGGER ONLY. The Vercel cron was removed in v5.5.974 (it never
+ * ran — Production-only), replaced by the pg_cron job `catering-release-5min` in the
+ * Ops DB. Drives the catering-release edge
  * function, which (server-side, no device dependency) fires any catering pre-order whose
  * kitchen fire time has passed but that no POS device fired — claiming the order and
  * dropping a KDS ticket so the kitchen always sees it.

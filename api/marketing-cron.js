@@ -1,7 +1,9 @@
 /**
  * Restaurant OS — Marketing daily cron (slice 4)
  *
- * Invoked by Vercel Cron (see vercel.json → crons, daily 08:00 UTC). Triggers the campaign engine,
+ * MANUAL / EMERGENCY TRIGGER ONLY. The Vercel cron was removed in v5.5.974 (it never
+ * ran — Production-only), replaced by the pg_cron job `marketing-run-hourly` in the Ops
+ * DB, which ships PARKED until the recipient list is confirmed. Triggers the campaign engine,
  * which runs every active automation campaign for "today" (birthday-within-N-days, lapsed, …). The
  * engine is idempotent, so an accidental double-fire is a no-op.
  *

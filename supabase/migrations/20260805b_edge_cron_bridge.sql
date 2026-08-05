@@ -115,13 +115,26 @@ begin
       ('hubrise-reconcile-2min',  '*/2 * * * *', $q$select public.call_edge_fn('hubrise-reconcile')$q$,                               true),
       ('ops-escalate-5min',       '*/5 * * * *', $q$select public.call_edge_fn('ops-escalate')$q$,                                    true),
 
-      -- PARKED (active=false). These two message real customers, and nobody has
-      -- confirmed the recipient list or the sandbox posture for this environment.
-      -- The plumbing is complete; enabling is one line each:
+      -- PARKED (active=false) — these two message real customers.
+      --
+      -- Checked against the live `customers` table on 5 Aug 2026: 7 rows, 4 with
+      -- marketing_opt_in = true. Three of those four are safe (Peter's own gmail, plus
+      -- two @test.com addresses that go nowhere). The fourth is a REAL third-party
+      -- gmail address belonging to someone who is not Peter. The campaign engine
+      -- filters on marketing_opt_in, so switching marketing-run on would email that
+      -- person every hour, indefinitely.
+      --
+      -- Two remaining rows carry real-looking mobiles (a UK 079… and an Irish +353…)
+      -- but are opted OUT, and both review-request and the campaign engine honour
+      -- that, so SMS is not currently at risk.
+      --
+      -- Before enabling marketing-run, do ONE of:
+      --   (a) opt the third party out / remove them, then flip the job on;
+      --   (b) set the MARKETING_SANDBOX=true edge secret — everything runs and logs
+      --       exactly what it WOULD have sent, to marketing_messages, sending nothing.
+      -- Then:
       --   select cron.alter_job((select jobid from cron.job where jobname='marketing-run-hourly'), active := true);
       --   select cron.alter_job((select jobid from cron.job where jobname='review-request-scan'),  active := true);
-      -- Before enabling marketing-run, either set the MARKETING_SANDBOX=true edge
-      -- secret (logs instead of sends) or confirm every `customers` row is safe to mail.
       ('marketing-run-hourly',    '0 * * * *',   $q$select public.call_edge_fn('marketing-run')$q$,                                   false),
       ('review-request-scan',     '0 * * * *',   $q$select public.call_edge_fn('review-request', '{"action":"scan_all"}'::jsonb)$q$,  false)
     ) as t(nm, sch, cmd, act)

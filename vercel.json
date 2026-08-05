@@ -2,7 +2,6 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "framework": "vite",
-  "_crons_moved_to_pg_cron": "These four jobs were declared here but never ran: Vercel only executes crons on Production deployments, and develop/staging are Previews. Ownership moved to pg_cron inside the Ops database (supabase/migrations/20260805b_edge_cron_bridge.sql) so each environment schedules its own work. Left in place, this block would double-fire the day main ships. The api/*-cron.js routes remain as manual/emergency triggers.",
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/$1" },
     { "source": "/(.*)", "destination": "/index.html" }

@@ -1,7 +1,9 @@
 /**
  * Restaurant OS — HubRise reconcile cron
  *
- * Invoked by Vercel Cron (see vercel.json → crons, every minute). Drains each connected
+ * MANUAL / EMERGENCY TRIGGER ONLY. The Vercel cron was removed in v5.5.974 (it never
+ * ran — Production-only), replaced by the pg_cron job `hubrise-reconcile-2min` in the
+ * Ops DB. Drains each connected
  * venue's PASSIVE HubRise event log (recovering anything the active webhook missed) and
  * retries failed outbound status pushes. The reconcile edge function is idempotent.
  *

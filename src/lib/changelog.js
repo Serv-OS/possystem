@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.975', date: '5 Aug 2026', label: 'Hotfix: v5.5.974 broke the Vercel deploy',
+    changes: [
+      'v5.5.974 removed the four background jobs from vercel.json and left a note in their place explaining where they had gone. vercel.json is strict JSON — it allows no comments and rejects any key it does not recognise — so the deployment failed schema validation and never built. The note is gone; the explanation now lives in the migration file and at the top of each api/*-cron.js route.',
+      'Those four route files still described themselves as "Invoked by Vercel Cron", which is no longer true and would have sent the next person looking in the wrong place. Each now says it is a manual/emergency trigger and names the pg_cron job that actually owns the schedule.',
+      'No functional change — v5.5.974\'s fixes are unaffected.',
+    ],
+  },
+  {
     version: '5.5.974', date: '5 Aug 2026', label: 'Pre-stage hardening: saves that failed silently now tell you, and the scheduled jobs actually run',
     changes: [
       'THE BIG ONE: around 50 places in the Back Office told you "Saved" without ever checking whether the database accepted the write. If it was rejected you got a green tick and lost the change. Every one of them now checks, and shows a red banner naming what did NOT save.',

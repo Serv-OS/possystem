@@ -1,7 +1,10 @@
 /**
  * Restaurant OS — Operations alerts/escalation cron
  *
- * Invoked by Vercel Cron (see vercel.json → crons, every ~5 min). Drives the
+ * MANUAL / EMERGENCY TRIGGER ONLY. The Vercel cron that used to drive this was
+ * removed in v5.5.974 — it never actually ran (Vercel schedules crons on Production
+ * deployments only, and develop/staging are Previews). The live schedule is now the
+ * pg_cron job `ops-escalate-5min` inside the Ops DB. Drives the
  * ops-escalate edge function, which notifies + escalates unacknowledged Operations
  * alerts (temperature breaches, missed checks) via SMS/email per notification rules.
  *
