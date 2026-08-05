@@ -125,6 +125,12 @@ function Editor({ locId, units, list, onClose, onSaved, showToast }) {
 
   const save = async () => {
     if (!d.name.trim()) { showToast?.('Name required', 'error'); return; }
+    // v5.5.971 — scheduling honesty: a Weekly checklist with no day ticked used
+    // to silently appear EVERY day. Refuse to save the misconfiguration.
+    if (d.frequency === 'weekly' && !(d.daysOfWeek?.length > 0)) {
+      showToast?.('Weekly checklists need at least one day ticked (e.g. Mon for probe calibration)', 'error');
+      return;
+    }
     setBusy(true);
     const { error } = await upsertChecklist(d, tasks, locId);
     setBusy(false);
@@ -214,22 +220,42 @@ function Editor({ locId, units, list, onClose, onSaved, showToast }) {
               <div><label style={lbl}>Due time</label><input style={field} value={d.timeOfDay || ''} onChange={e => up('timeOfDay', e.target.value)} placeholder="09:00" /></div>
               <div><label style={lbl}>Grace (min)</label><input type="number" style={field} value={d.graceMinutes ?? 120} onChange={e => up('graceMinutes', Number(e.target.value) || 0)} /></div>
             </div>
-            <div style={{ marginTop: 12 }}><label style={lbl}>Days (blank = every day)</label>
-              <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>{DAYS.map(([dv, dl]) => { const on = (d.daysOfWeek || []).includes(Number(dv)); return <button key={dv} onClick={() => toggleDay(dv)} style={{ padding: '5px 10px', borderRadius: 6, fontSize: 11, cursor: 'pointer', fontFamily: 'inherit', border: `1px solid ${on ? 'var(--acc)' : 'var(--bdr)'}`, background: on ? 'var(--acc-d)' : 'var(--bg1)', color: on ? 'var(--acc)' : 'var(--t3)' }}>{dl}</button>; })}</div>
-            </div>
-            {/* per-task temp-unit linking */}
-            <div style={{ marginTop: 14 }}>
-              <label style={lbl}>Temp-link tasks</label>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                {tasks.map((t, i) => (
-                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ flex: 1, fontSize: 12, color: 'var(--t2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.label || `Task ${i + 1}`}</span>
-                    <select style={{ ...field, width: 180, padding: '4px 6px' }} value={t.tempUnitId || ''} onChange={e => upTask(i, 'tempUnitId', e.target.value || null)}>
-                      <option value="">none</option>{units.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
-                    </select>
-                  </div>
-                ))}
+            {d.frequency === 'monthly' ? (
+              <div style={{ marginTop: 12 }}><label style={lbl}>Day of month (1–28)</label>
+                <input type="number" min="1" max="28" style={{ ...field, width: 90 }} value={d.dayOfMonth ?? 1}
+                  onChange={e => up('dayOfMonth', Math.min(28, Math.max(1, Number(e.target.value) || 1)))} />
+                <span style={{ fontSize: 11, color: 'var(--t4)', marginLeft: 8 }}>e.g. 1 = due on the 1st of every month</span>
               </div>
+            ) : (
+              <div style={{ marginTop: 12 }}><label style={lbl}>{d.frequency === 'weekly' ? 'Days (pick at least one)' : 'Days (blank = every day)'}</label>
+                <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>{DAYS.map(([dv, dl]) => { const on = (d.daysOfWeek || []).includes(Number(dv)); return <button key={dv} onClick={() => toggleDay(dv)} style={{ padding: '5px 10px', borderRadius: 6, fontSize: 11, cursor: 'pointer', fontFamily: 'inherit', border: `1px solid ${on ? 'var(--acc)' : 'var(--bdr)'}`, background: on ? 'var(--acc-d)' : 'var(--bg1)', color: on ? 'var(--acc)' : 'var(--t3)' }}>{dl}</button>; })}</div>
+              </div>
+            )}
+            {/* Per-task temperature reading (v5.5.971 — was an unexplained
+                "Temp-link tasks" list of bare dropdowns; the rows are simply
+                THIS template's tasks, and until now linking did nothing on the
+                floor app. Now a linked task opens the probe keypad.) */}
+            <div style={{ marginTop: 14 }}>
+              <label style={lbl}>Take a temperature on a task</label>
+              <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: -4, marginBottom: 8, lineHeight: 1.5 }}>
+                Pick a unit next to a task and it becomes a real temperature check: staff tap it, the probe keypad opens, and the reading is logged to the temperature record (an out-of-range reading still forces a corrective action). Leave as “none” for a plain tick-box.
+              </div>
+              {units.length === 0 ? (
+                <div style={{ fontSize: 12, color: 'var(--t4)', padding: '10px 12px', borderRadius: 8, background: 'var(--bg2)', border: '1px dashed var(--bdr2)' }}>
+                  No temperature units set up yet — add your fridges, freezers and probes in <b style={{ color: 'var(--t2)' }}>Operations → Temperature</b>, then link them here.
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {tasks.map((t, i) => (
+                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ flex: 1, fontSize: 12, color: 'var(--t2)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.label || `Task ${i + 1}`}</span>
+                      <select style={{ ...field, width: 180, padding: '4px 6px' }} value={t.tempUnitId || ''} onChange={e => upTask(i, 'tempUnitId', e.target.value || null)}>
+                        <option value="">none — plain tick</option>{units.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+                      </select>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}

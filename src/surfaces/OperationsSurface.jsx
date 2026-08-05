@@ -389,7 +389,10 @@ function Temperature({ loc, onBack, onPick }) {
 }
 
 // ── Log a unit: keypad → in-range save, or BLOCKED corrective on breach ───────
-function LogUnit({ loc, unit, operator, onDone }) {
+// onSaved (optional, v5.5.971): fires ONLY after a successful save, with the
+// recorded °C — lets a temp-linked checklist task complete off the real reading
+// while onDone stays the plain back/close signal for every existing caller.
+function LogUnit({ loc, unit, operator, onDone, onSaved }) {
   const dUnit = unit._displayUnit || 'C';
   const [raw, setRaw] = useState('');
   const [phase, setPhase] = useState('enter');   // enter | corrective
@@ -410,6 +413,7 @@ function LogUnit({ loc, unit, operator, onDone }) {
     const { error } = await submitReading({ unitId: unit.id, readingC, source: 'manual', operatorId: operator?.id, operatorName: operator?.name, corrective: corr }, loc);
     setBusy(false);
     if (error) { setErr(error.message || 'Could not save'); return; }
+    onSaved?.(readingC, corr || null);
     onDone();
   };
 
@@ -575,6 +579,12 @@ function ChecklistRun({ loc, operator, checklist, onDone }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [uploadingId, setUploadingId] = useState(null);
+  // v5.5.971 — a temp-linked task opens the REAL probe keypad (LogUnit) instead
+  // of being a cosmetic tickbox: the reading is recorded through the normal
+  // ops_submit_reading chain (breach → corrective → maintenance → alert) and
+  // the task only completes once the reading exists.
+  const [tempTask, setTempTask] = useState(null);   // { task, unit }
+  const unitsRef = useRef(null);
   const fileRef = useRef(null);
   const pendingTaskRef = useRef(null);
   useEffect(() => { if (!run) openRun(checklist.id, loc).then(({ data }) => setRun(data)); }, []);
@@ -590,12 +600,32 @@ function ChecklistRun({ loc, operator, checklist, onDone }) {
   };
 
   // Tap behaviour: a completed task unticks; a photo-required task that isn't done
-  // opens the camera (it can only be ticked once a photo is captured); otherwise tick.
+  // opens the camera (it can only be ticked once a photo is captured); a temp-linked
+  // task opens the probe keypad; otherwise tick.
   const tap = async (task) => {
     if (!run || uploadingId) return;
-    if (done[task.id]) { // untick
+    if (done[task.id]) {
+      // A recorded temperature is a fact — the task doesn't untick (the reading
+      // already lives in the temperature log; managers amend there, not here).
+      if (task.tempUnitId) return;
       const n = { ...done }; delete n[task.id]; setDone(n);
       await completeTask(run.id, task.id, { done: false, by: operator?.name, byId: operator?.id }, loc);
+      return;
+    }
+    if (task.tempUnitId) { // v5.5.971 — real reading required
+      setErr('');
+      if (!unitsRef.current) {
+        const { data } = await fetchTempUnits(loc);
+        unitsRef.current = data || [];
+      }
+      const unit = unitsRef.current.find(u => u.id === task.tempUnitId);
+      if (!unit) {
+        // Linked unit was deleted — don't dead-end the checklist; plain tick + note.
+        console.warn('[checklist] temp unit missing for task', task.id);
+        await markDone(task);
+        return;
+      }
+      setTempTask({ task, unit });
       return;
     }
     if (task.evidenceRequired) { // require a photo before completing
@@ -605,6 +635,15 @@ function ChecklistRun({ loc, operator, checklist, onDone }) {
       return;
     }
     await markDone(task);
+  };
+
+  const onTempSaved = async (readingC) => {
+    const task = tempTask?.task;
+    setTempTask(null);
+    if (!task || !run) return;
+    const valueText = `${readingC}°C`;
+    setDone(d => ({ ...d, [task.id]: { taskId: task.id, by: operator?.name, at: new Date().toISOString(), valueText } }));
+    await completeTask(run.id, task.id, { done: true, valueText, by: operator?.name, byId: operator?.id }, loc);
   };
 
   const onPhotoPicked = async (e) => {
@@ -630,6 +669,20 @@ function ChecklistRun({ loc, operator, checklist, onDone }) {
   };
   const cadence = (checklist.frequency || checklist.cadence || 'Daily').toUpperCase();
   const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+
+  // v5.5.971 — temp-linked task in flight: show the REAL probe keypad. Saving
+  // records the reading through the normal breach chain AND completes the task;
+  // backing out leaves the task unticked.
+  if (tempTask) {
+    return (
+      <LogUnit
+        loc={loc} unit={tempTask.unit} operator={operator}
+        onSaved={onTempSaved}
+        onDone={() => setTempTask(null)}
+      />
+    );
+  }
+
   return (
     <div>
       <Header title={checklist.name} sub={`${cadence} · ${completed} / ${total}`} right={checklist.timeOfDay || null} rightState="due" onBack={onDone} />
@@ -646,9 +699,9 @@ function ChecklistRun({ loc, operator, checklist, onDone }) {
           const uploading = uploadingId === t.id;
           const photo = cm && cm.photoUrl;
           const meta = uploading ? 'Uploading photo…'
-            : on ? [cm.by, timeStr].filter(Boolean).join(' · ')
+            : on ? [cm.valueText, cm.by, timeStr].filter(Boolean).join(' · ')
             : t.evidenceRequired ? 'Tap to add photo'
-            : t.tempUnitId ? (t.tempUnitCount ? `Linked · ${t.tempUnitCount} units` : 'Linked')
+            : t.tempUnitId ? 'Tap to take the temperature'
             : overdue ? `Was due ${t.dueBy}` : null;
           const metaCol = uploading ? 'var(--acc)' : overdue ? 'var(--red)' : (t.evidenceRequired && !on) ? 'var(--amber, var(--orn))' : (t.tempUnitId && !on) ? 'var(--uv)' : 'var(--t3)';
           return (

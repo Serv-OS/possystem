@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.971', date: '4 Aug 2026', label: 'Weekly + monthly checks are real, temperature checks work inside checklists — and the Back Office can finally talk to you',
+    changes: [
+      'TEMPERATURE INSIDE A CHECKLIST — now genuinely works. Link a task to a fridge/freezer/probe (Checklists → Advanced → "Take a temperature on a task") and on the floor that task opens the REAL probe keypad: the reading is logged to the temperature record, an out-of-range reading still forces a corrective action and alerts the manager, and the task only ticks once a reading exists. Previously the link existed in the builder but the task was a plain tick-box that recorded nothing — exactly what the customer meant by "you can\'t add temperature checks to daily checks".',
+      'That builder section was also unexplained: it now says what it does, shows the recorded temperature on the completed task, and when no units exist it points you to Operations → Temperature instead of showing dead "none" dropdowns.',
+      'WEEKLY CHECKS: picking "Weekly" with no day ticked used to make the checklist appear EVERY day. It is now refused at save with a clear message — weekly means the days you tick (e.g. Mon for probe calibration).',
+      'MONTHLY CHECKS: "Monthly" was cosmetic — the engine ignored it entirely. It now has a real day-of-month setting (1–28) and is due on that date each month.',
+      'BACK OFFICE MESSAGES WERE INVISIBLE — FIXED. The whole Back Office never rendered toasts: store messages were only displayed inside the POS shell, and the Back Office runs as its own screen. Every confirmation AND every error in every Back Office screen — "Save failed", "Could not save to cloud", "Rate card saved" — has been silently discarded since the Back Office was built. Found while testing the weekly guard (its message never appeared, and neither did the pre-existing ones). Now rendered, so failures announce themselves.',
+      'TEST: Operations → Checklists → Advanced → link a task to a temp unit → open that checklist on the ops device → tapping the task opens the keypad and the reading appears on the task. Try saving a Weekly checklist with no days → clear refusal message (and you can now SEE messages in the Back Office at all).',
+    ],
+  },
+  {
     version: '5.5.970', date: '4 Aug 2026', label: 'Future-dated pay rises — schedule NMW/salary changes that apply themselves',
     changes: [
       'Workforce → Positions & rates grows a SCHEDULED RATE CHANGES card: pick a position (or an individual), enter the new hourly rate or salary, set the start date — done. Example: enter next April\'s NMW rate today and forget about it.',

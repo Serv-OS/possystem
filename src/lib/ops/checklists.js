@@ -21,6 +21,7 @@ async function ensureLoc(locationId) {
 const clFromRow = (r) => ({
   id: r.id, locationId: r.location_id, name: r.name, area: r.area, frequency: r.frequency,
   daysOfWeek: Array.isArray(r.days_of_week) ? r.days_of_week : [], timeOfDay: r.time_of_day,
+  dayOfMonth: r.day_of_month ?? null,
   graceMinutes: r.grace_minutes, assigneeRole: r.assignee_role, active: r.active !== false, archivedAt: r.archived_at,
   updatedAt: r.updated_at,
 });
@@ -70,6 +71,7 @@ export const upsertChecklist = async (checklist, tasks, locationId = null) => {
     ...(checklist.id ? { id: checklist.id } : {}), location_id: locationId, org_id: checklist.orgId || null,
     name: (checklist.name || '').trim(), area: checklist.area || 'BOH', frequency: checklist.frequency || 'daily',
     days_of_week: Array.isArray(checklist.daysOfWeek) ? checklist.daysOfWeek : [], time_of_day: checklist.timeOfDay || null,
+    day_of_month: checklist.frequency === 'monthly' ? Math.min(28, Math.max(1, Number(checklist.dayOfMonth) || 1)) : null,
     grace_minutes: checklist.graceMinutes ?? 120, assignee_role: checklist.assigneeRole || null, active: checklist.active !== false, updated_at: nowIso(),
   };
   const { data: saved, error } = await supabase.from('ops_checklists').upsert(row).select().maybeSingle();
@@ -95,7 +97,17 @@ export const fetchTodayChecklists = async (locationId = null) => {
   if (!locationId) return { data: [], error: null };
   const today = ymd(new Date()); const now = new Date(); const nowMin = now.getHours() * 60 + now.getMinutes();
   const { data: lists } = await fetchChecklists(locationId);
-  const due = (lists || []).filter(l => runsOnDay(l.daysOfWeek, now));
+  // v5.5.971 — the frequency field finally MEANS something:
+  //   daily   → weekday chips as before (empty = every day)
+  //   weekly  → ONLY the ticked weekdays (no days = never due; the builder now
+  //             refuses to save that, and the old silent-daily behaviour was a lie)
+  //   monthly → the configured day of month (1-28)
+  const dueOn = (l) => {
+    if (l.frequency === 'monthly') return now.getDate() === (l.dayOfMonth || 1);
+    if (l.frequency === 'weekly') return (l.daysOfWeek?.length > 0) && runsOnDay(l.daysOfWeek, now);
+    return runsOnDay(l.daysOfWeek, now);
+  };
+  const due = (lists || []).filter(dueOn);
   const ids = due.map(l => l.id);
   const [{ data: runs }, { data: compls }] = await Promise.all([
     supabase.from('ops_checklist_runs').select('*').eq('location_id', locationId).eq('run_date', today).in('checklist_id', ids.length ? ids : ['00000000-0000-0000-0000-000000000000']),

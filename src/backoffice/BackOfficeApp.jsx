@@ -169,6 +169,31 @@ const NAV_IA = [
 // refresh (reads stay alive on anon policies, so the app still looked signed in).
 // This banner is undismissable while saves are failing and clears itself on the
 // next successful save. saveHealth also auto-kicks a session refresh on auth errors.
+// v5.5.971 — THE BACK OFFICE NEVER RENDERED TOASTS.
+// store.showToast() sets `toast`, but the only <Toast> in the app lives inside
+// the POS shell (App.jsx ValidatedPOSApp). The Back Office returns from an
+// EARLIER branch (App.jsx:275), so every confirmation AND every error message
+// in every BO screen — "Save failed", "Could not save to cloud", "Rate card
+// saved" — has been silently discarded since the BO was built. Same family as
+// the vanishing-categories saga: the app knew, the operator never did.
+function BackOfficeToast() {
+  const toast = useStore(s => s.toast);
+  if (!toast) return null;
+  const map = {
+    success: { bg:'var(--grn-d)', bdr:'var(--grn-b)', color:'var(--grn)' },
+    error:   { bg:'var(--red-d)', bdr:'var(--red-b)', color:'var(--red)' },
+    warning: { bg:'var(--acc-d)', bdr:'var(--acc-b)', color:'var(--acc)' },
+    info:    { bg:'var(--bg3)',   bdr:'var(--bdr2)',  color:'var(--t1)'  },
+  };
+  const c = map[toast.type] || map.info;
+  return (
+    <div className="toast" key={toast.key}
+      style={{ background:c.bg, border:`1px solid ${c.bdr}`, color:c.color, zIndex:100003 }}>
+      {toast.msg}
+    </div>
+  );
+}
+
 function SaveHealthBanner() {
   const [health, setHealth] = useState({ broken: false });
   useEffect(() => subscribeSaveHealth(setHealth), []);
@@ -493,6 +518,7 @@ export default function BackOfficeApp() {
       fontFamily:'inherit', overflow:'hidden',
     }}>
       <SaveHealthBanner />
+      <BackOfficeToast />
       {/* ── Sidebar (glass) ─────────────────────────────── */}
       <div style={{
         width:236, background:'var(--glass-bg)',
