@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.972', date: '4 Aug 2026', label: 'Probe calibration is a temperature type — and picking a type finally applies its range',
+    changes: [
+      'NEW UNIT TYPE — "Probe calibration". Operations → Temperature → Add unit → Type now offers it alongside Fridge/Freezer/etc. Default is the ice-water test: a probe in melting ice must read 0°C (±1°C). Out of tolerance raises the normal corrective action + maintenance job + manager alert, which is exactly right — the probe must be recalibrated or taken out of use. For the boiling test instead, edit that unit\'s range to 99–101°C.',
+      'This is the missing piece for weekly probe calibration: create the probe unit, then link it to a task on a Weekly checklist (Checklists → Advanced → "Take a temperature on a task") and staff get the probe keypad on the day you set.',
+      'FIX (affected every type, not just probe): choosing a Type never applied that type\'s temperature range. A new unit is pre-filled with the FRIDGE range, and the code only filled defaults when the range was empty — so creating a Freezer silently left it alarming at 1–5°C instead of −25 to −18°C, unless someone noticed and typed the range by hand. Picking a type now applies that type\'s FSA range and guidance (still editable underneath).',
+      'TEST: Operations → Temperature → Add unit → Type → Probe calibration → range shows −1 to 1°C with the ice-water guidance. Switch Type to Freezer → range switches to −25 to −18°C.',
+    ],
+  },
+  {
     version: '5.5.971', date: '4 Aug 2026', label: 'Weekly + monthly checks are real, temperature checks work inside checklists — and the Back Office can finally talk to you',
     changes: [
       'TEMPERATURE INSIDE A CHECKLIST — now genuinely works. Link a task to a fridge/freezer/probe (Checklists → Advanced → "Take a temperature on a task") and on the floor that task opens the REAL probe keypad: the reading is logged to the temperature record, an out-of-range reading still forces a corrective action and alerts the manager, and the task only ticks once a reading exists. Previously the link existed in the builder but the task was a plain tick-box that recorded nothing — exactly what the customer meant by "you can\'t add temperature checks to daily checks".',

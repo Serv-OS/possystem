@@ -107,7 +107,13 @@ function UnitEditor({ locId, unit, schedules, dispUnit, onClose, onSaved, showTo
   const [rows, setRows] = useState(() => schedules.length ? schedules.map(s => ({ ...s })) : (unit ? [] : [{ label: 'Daily check', timeOfDay: '09:00', daysOfWeek: [], graceMinutes: 120 }]));
   const [busy, setBusy] = useState(false);
   const up = (k, v) => setD(x => ({ ...x, [k]: v }));
-  const pickType = (t) => { const def = typeDefault(t); setD(x => ({ ...x, type: t, targetMinC: x.targetMinC ?? def.min, targetMaxC: x.targetMaxC ?? def.max, guidance: x.guidance || def.guidance })); };
+  // v5.5.972 — changing the TYPE now re-applies that type's FSA range and guidance.
+  // It used to be `x.targetMinC ?? def.min`, but a new unit is pre-filled with the
+  // FRIDGE defaults (1–5°C) — so the coalesce always kept them: picking Freezer
+  // silently left the unit alarming at 1–5°C instead of −25 to −18. Picking a type
+  // means "use this type's profile"; hand-tuned ranges are still editable below,
+  // and this only fires when the type actually changes.
+  const pickType = (t) => { const def = typeDefault(t); setD(x => ({ ...x, type: t, targetMinC: def.min, targetMaxC: def.max, guidance: def.guidance })); };
   // edit ranges in the chosen display unit, store °C
   const minDisp = d.targetMinC == null ? '' : displayTemp(d.targetMinC, dispUnit).value;
   const maxDisp = d.targetMaxC == null ? '' : displayTemp(d.targetMaxC, dispUnit).value;

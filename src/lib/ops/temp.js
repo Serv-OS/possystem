@@ -38,6 +38,12 @@ export const TYPE_DEFAULTS = {
   cooking:   { min: 75,   max: 200, label: 'Cooking',    guidance: 'Core temp ≥75°C (or 70°C for 2 min) when cooking/reheating.' },
   chill_down:{ min: 0,    max: 8,   label: 'Chill-down', guidance: 'Chill from 63°C to below 8°C within 90 minutes.' },
   delivery:  { min: 0,    max: 8,   label: 'Delivery',   guidance: 'Chilled deliveries ≤8°C; frozen ≤−15°C. Reject if over.' },
+  // v5.5.972 — probe calibration: the textbook weekly HACCP check. Default is
+  // the ICE-WATER test (melting ice = 0°C ±1). For the boiling test instead,
+  // edit this unit's range to 99–101. An out-of-tolerance probe trips the normal
+  // corrective + maintenance + alert chain, which is exactly right: it must be
+  // adjusted or taken out of use.
+  probe:     { min: -1,   max: 1,   label: 'Probe calibration', guidance: 'Ice-water test: probe in melting ice must read 0°C (±1°C). Out of tolerance → recalibrate or replace the probe before use. (Boiling test: set this unit\'s range to 99–101°C.)' },
 };
 export const typeDefault = (type) => TYPE_DEFAULTS[type] || { min: null, max: null, label: type || 'Unit', guidance: '' };
 
