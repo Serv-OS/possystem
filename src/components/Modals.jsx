@@ -122,9 +122,3 @@ export function ModifierModal({ item, onConfirm, onCancel }) {
     </div>
   );
 }
-
-// ── Order panel ───────────────────────────────────────────────────────────────
-export function OrderPanel({ onPay }) {
-  const { useStore } = require('../store');
-  return null; // will use inline in POS surface
-}

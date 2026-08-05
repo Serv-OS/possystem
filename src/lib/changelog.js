@@ -7,6 +7,20 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.977', date: '5 Aug 2026', label: 'Money that went missing, two crashes, and a course that never reached the kitchen',
+    changes: [
+      'PETTY CASH NOW REACHES THE DATABASE. Every manual float, cash drop, expense paid out and adjustment recorded in the Back Office was appended to an in-memory list and nothing else — no row was ever written, so none of it appeared in drawer variance, the end-of-day close or the Z report. The ledger core that the POS drawer already used correctly is now shared, and the Back Office writes through it. A recording that fails now says so and leaves nothing behind.',
+      'MPOS NO LONGER TAKES A CARD PAYMENT WITHOUT RECORDING THE SALE. If closing the check failed after the card was approved, it advanced to the receipt screen anyway: money captured, no sale on record, table still showing occupied, and the server none the wiser. It now stops on a blocking screen, buffers the sale for retry, and books it exactly once however many times you retry.',
+      'FIRING A COURSE NOW REACHES THE KITCHEN. The fallback that tells the kitchen to fire a course was matching menu items against a map of categories — two different kinds of id, so the lookup could never succeed. Any item whose production centre is set on a parent category resolved to no centre and no docket printed, while the screen still said the course had been fired. Thirty items at this venue were affected. It now uses the same routing the original send used, and says so plainly when nothing can be routed.',
+      'A cash drawer left closed no longer lets a till trade. The sign-in lock had been stranded inside a function nothing called, so it was absent from the app entirely and staff could take cash sales with no declared opening float, making every cash-up on that till meaningless. It is back — with a Sign out button, so cashing up at close of trade cannot trap you behind a float prompt.',
+      'Opening the Pizza tab crashed the ENTIRE application to a red error screen, POS included, because four constants were never imported. No venue had a pizza product yet, so it had never fired.',
+      'Removing a variant or a size said "Removed" whether or not the database agreed, so it would reappear on every till at the next config load. It is now checked, and reverts if it did not save.',
+      'Kitchen tickets could print twice. A rejected "mark as printed" write was invisible to the code watching for it, so the job looked stuck and the retrier sent it again. Assigning a maintenance job also reported success over an alert the assignee never received.',
+      'The "Needed today" prep panel never appeared — a missing import meant it failed before it could load anything.',
+      'Removed about 1,200 lines of dead code that carried guaranteed crashes. It was also the noise hiding real faults: the repository now reports ZERO undefined-reference errors, which is what caught most of the above. The build alone never flags them.',
+    ],
+  },
+  {
     version: '5.5.976', date: '5 Aug 2026', label: 'Marketing + review-ask schedules switched ON — blast radius checked, not assumed',
     changes: [
       'v5.5.974 shipped the marketing and review-ask schedules switched OFF, on my assumption that enabling them would repeatedly mail real customers. That assumption was wrong, and checking the live data proved it: there are ZERO workflows, and the one active campaign is a one-off aimed at a segment that has already run — all four of its runs were manual. A one-off does not re-fire on a timer, and each send is unique per occurrence, so the hourly runner cannot re-mail anyone who already received it.',

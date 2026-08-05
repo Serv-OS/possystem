@@ -375,25 +375,12 @@ function StockTab({ draft, locId, onChanged, showToast }) {
   }, [draft.id, locId]);
   useEffect(() => { loadMoves(); loadPar(); }, [loadMoves, loadPar]);
 
-  if (!draft.id) return <NeedSaveFirst />;
-
-  const onHand = Number(draft.onHand || 0);
-  const cost = draft.currentCost;
-  const belowReorder = parBase.reorderPoint !== '' && onHand <= Number(parBase.reorderPoint);
-
   // Count in whatever unit the operator picks (Keg / Case / base) — convert to base.
   const uomItem = {
     baseUnit: draft.baseUnit,
     itemConversions: (draft.conversions || []).map(c => ({ fromQty: c.fromQty, fromUnit: c.fromUnit, toQty: c.toQty, toUnit: c.toUnit })),
     formats: (draft.packaging || []).map(f => ({ id: f.id, name: f.name, qtyInBase: f.qtyInBase })),
   };
-  // Count only in the item's named units when it has them; ml/base stays hidden.
-  const countOpts = uomItem.formats.length
-    ? [...uomItem.formats].sort((a, b) => b.qtyInBase - a.qtyInBase).map(f => ({ token: formatToken(f.id), label: f.name }))
-    : [{ token: uomItem.baseUnit, label: uomItem.baseUnit }];
-  let countBase = null;
-  if (count !== '' && Number(count) >= 0) { try { countBase = toBase(Number(count), countUnit, uomItem); } catch { countBase = null; } }
-
   // Par shown in the same unit the operator counts in (Bottle, Case…), never raw ml/g.
   // fromBase/toBase are exact multiply/divide against the pack size, so round-tripping a
   // whole number of bottles is lossless. Stored values remain BASE UNITS — see above.
@@ -402,10 +389,25 @@ function StockTab({ draft, locId, onChanged, showToast }) {
     const v = fromBase(Number(base), countUnit, uomItem);
     return v == null ? String(base) : String(Math.round(v * 1000) / 1000);
   };
+  // Every hook must sit above the `!draft.id` early return below, or the hook order
+  // changes the first time an unsaved item gets an id.
   useEffect(() => {
     setParEdit({ parLevel: parToEdit(parBase.parLevel), reorderPoint: parToEdit(parBase.reorderPoint) });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [parBase.parLevel, parBase.reorderPoint, countUnit]);
+
+  if (!draft.id) return <NeedSaveFirst />;
+
+  const onHand = Number(draft.onHand || 0);
+  const cost = draft.currentCost;
+  const belowReorder = parBase.reorderPoint !== '' && onHand <= Number(parBase.reorderPoint);
+
+  // Count only in the item's named units when it has them; ml/base stays hidden.
+  const countOpts = uomItem.formats.length
+    ? [...uomItem.formats].sort((a, b) => b.qtyInBase - a.qtyInBase).map(f => ({ token: formatToken(f.id), label: f.name }))
+    : [{ token: uomItem.baseUnit, label: uomItem.baseUnit }];
+  let countBase = null;
+  if (count !== '' && Number(count) >= 0) { try { countBase = toBase(Number(count), countUnit, uomItem); } catch { countBase = null; } }
   const savePar = async (edit) => {
     const conv = (v) => {
       if (v === '' || v == null) return '';
@@ -516,9 +518,13 @@ function DimensionTab({ draft, locId, onChanged, showToast }) {
 
   const add = async () => {
     if (!(Number(row.fromQty) > 0) || !(Number(row.toQty) > 0)) { showToast?.('Enter both quantities', 'error'); return; }
-    const { error } = await upsertItemConversion({ inventoryItemId: draft.id, ...row }, locId);
+    const { error, partial } = await upsertItemConversion({ inventoryItemId: draft.id, ...row }, locId);
     reportSave('unit conversion', error);
     if (error) { showToast?.(error.message, 'error'); return; }
+    // `partial` means the bridge saved but its cost recompute did not. Clear the form and
+    // reload anyway — treating it as a failure would leave the operator re-saving a row
+    // that already exists.
+    if (partial) showToast?.(partial, 'warning');
     setRow({ fromQty: 1, fromUnit: draft.baseUnit, toQty: '', toUnit: 'g' });
     onChanged();
   };
@@ -559,13 +565,15 @@ function DimensionTab({ draft, locId, onChanged, showToast }) {
 
 // ── Packaging tab (pack-of-packs) ─────────────────────────────────────────────
 function UnitsTab({ draft, locId, onChanged, showToast }) {
+  // Both useStates must sit above the `!draft.id` early return below, or the hook
+  // order changes the first time an unsaved item gets an id.
   const [row, setRow] = useState({ name: '', qty: '', of: draft.baseUnit });
+  const [adding, setAdding] = useState(false);
   if (!draft.id) return <NeedSaveFirst />;
   const formats = draft.packaging || [];
   const ofOptions = [{ value: draft.baseUnit, label: draft.baseUnit, qtyInBase: 1 }, ...formats.map(f => ({ value: String(f.id), label: f.name, qtyInBase: f.qtyInBase }))];
   const previewBase = (() => { const o = ofOptions.find(o => String(o.value) === String(row.of)); return (Number(row.qty) || 0) * (o?.qtyInBase || 0); })();
 
-  const [adding, setAdding] = useState(false);
   const add = async () => {
     if (!row.name.trim()) { showToast?.('Give the unit a name (e.g. Keg)', 'error'); return; }
     if (!(Number(row.qty) > 0)) { showToast?.('Enter a size (e.g. 50)', 'error'); return; }
@@ -691,9 +699,12 @@ function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
       purchaseTaxRateId: row.purchaseTaxRateId || null, priceIncludesTax: row.priceIncludesTax === true,
       isPreferred: row.isPreferred,
     };
-    const { error } = await upsertSupplierProduct(sp, locId);
+    const { error, partial } = await upsertSupplierProduct(sp, locId);
     reportSave('supplier pack', error);
     if (error) { showToast?.(error.message, 'error'); return; }
+    // The pack saved; only its cost recompute didn't. Close the form regardless — leaving
+    // it open invites a re-save, and a new pack carries no id, so that inserts a duplicate.
+    if (partial) showToast?.(partial, 'warning');
     setAdding(false); setRow(null); onChanged();
   };
   const editRow = (sp) => {
@@ -714,11 +725,14 @@ function SuppliersTab({ draft, suppliers, locId, onChanged, showToast }) {
     onChanged();
   };
   const setPreferred = async (sp) => {
-    const { error } = await upsertSupplierProduct({ ...sp, inventoryItemId: draft.id, isPreferred: true }, locId);
+    const { error, partial } = await upsertSupplierProduct({ ...sp, inventoryItemId: draft.id, isPreferred: true }, locId);
     reportSave('preferred supplier pack', error);
     // The preferred pack IS this item's cost — a badge that moved on screen only
     // would leave every recipe costed off the old pack.
     if (error) { showToast?.('Preferred pack NOT changed — cost is unchanged', 'error'); return; }
+    // The preference DID move; only the recompute failed. Saying "NOT changed" here would
+    // be the opposite of what happened.
+    if (partial) showToast?.(`Preferred pack changed, but the cost was NOT recalculated: ${partial}`, 'warning');
     onChanged();
   };
   const addSupplier = async () => {

@@ -62,6 +62,19 @@ let _inflight       = new Set();       // jobIds currently being dispatched on T
 // up the key here and skip dispatch — the upsert path will mark the row done.
 const _broadcastHandled = new Map();
 const _BROADCAST_DEDUP_TTL_MS = 5 * 60_000;
+// LAST-RESORT REPRINT GUARD: jobId → { warnedAt } for jobs this device put on paper
+// but could not record as printed in the database (every write rejected). Never
+// re-dispatched here, so a kitchen ticket can't come back round a second time while
+// the writes are failing. Only cleared when the park write finally lands (the row is
+// then failed_permanent, which nothing reclaims) or when an operator deliberately
+// asks for the job again — forgetting one otherwise is what prints food twice.
+const _printedLocally = new Map();
+
+// PrintRetrier runs in this same page on the master and re-dispatches on its own
+// schedule, so the guard above only holds if it can see it too.
+export function printedLocallyIds() {
+  return [..._printedLocally.keys()];
+}
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 export async function startPrintOrchestrator({ deviceId, locationId, isMaster }) {
@@ -101,7 +114,7 @@ export async function startPrintOrchestrator({ deviceId, locationId, isMaster })
       // realtime fanout often races ahead of that update, so we also do a
       // local in-memory check here.
       if (job.idempotency_key && _broadcastHandled.has(job.idempotency_key)) {
-        markRowPrinted(job.id).catch(() => {});
+        markPrintedDurable(job.id);
         return;
       }
       // Master picks up immediately; child waits slightly before attempting
@@ -182,6 +195,14 @@ async function handleFastBroadcast(payload) {
     // Upsert the audit row to status='printed'. ON CONFLICT (idempotency_key)
     // means whether MPOS's INSERT lands first or this upsert lands first,
     // the row ends up correct: status='printed', no double dispatch.
+    // NOTE the error handling: PostgREST RESOLVES with { data, error } when the
+    // database rejects a write — it does not reject — so the old second .then()
+    // callback never ran. The error lives in the resolved value; read it there.
+    // Still fire-and-forget, and deliberately NOT awaited inside this try: a throw
+    // here would hit the catch below, which drops the dedup key and hands the job
+    // to the durable path — printing a ticket that is already on paper.
+    // If the upsert is lost, the row stays 'pending' and MPOS's own INSERT arrives
+    // on the realtime channel, where the dedup map routes it to markPrintedDurable.
     supabase.from('print_jobs').upsert({
       location_id:     payload.location_id,
       printer_id:      payload.printer_id,
@@ -194,9 +215,10 @@ async function handleFastBroadcast(payload) {
       processed_at:    new Date().toISOString(),
       attempts:        1,
       metadata:        payload.metadata || null,
-    }, { onConflict: 'idempotency_key' }).then(() => {}, (e) => {
-      console.warn('[PrintOrchestrator] broadcast upsert failed:', e?.message);
-    });
+    }, { onConflict: 'idempotency_key' }).then(
+      ({ error }) => { if (error) console.warn('[PrintOrchestrator] broadcast upsert failed (job is on paper):', error.message || error); },
+      (e) => console.warn('[PrintOrchestrator] broadcast upsert threw (job is on paper):', e?.message || e),
+    );
     printService.recordPrinterHealth(payload.printer_id, 'online').catch(() => {});
   } catch (e) {
     // Broadcast print failed — drop the dedup entry so the postgres-INSERT
@@ -210,16 +232,103 @@ async function handleFastBroadcast(payload) {
   }
 }
 
-// ─── Helper: mark a row as printed (used when broadcast already handled it) ──
-async function markRowPrinted(jobId) {
-  if (!supabase) return;
-  await supabase.from('print_jobs').update({
-    status: 'printed',
-    processed_at: new Date().toISOString(),
-    claimed_by: null,
-    claim_expires_at: null,
-    error_message: null,
-  }).eq('id', jobId);
+// ─── print_jobs bookkeeping ──────────────────────────────────────────────────
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * One print_jobs write, with the two failure modes this file used to be blind to:
+ *   1. PostgREST RESOLVES with { data, error } when the database rejects a write —
+ *      it does NOT reject. Every `.then(ok, err)` and `.catch()` around these
+ *      updates was dead code for RLS and constraint failures.
+ *   2. A policy that matches zero rows is a plain success with an empty body, so
+ *      even a correct `if (error)` check passes. Ask for the id back and treat
+ *      nothing coming back as a failure.
+ * (The claim update already relies on select-after-update, so SELECT is available
+ * on this table wherever UPDATE is.)
+ */
+async function updateJobRow(jobId, patch) {
+  if (!supabase) return { error: new Error('no supabase client') };
+  try {
+    const { data, error } = await supabase.from('print_jobs').update(patch).eq('id', jobId).select('id, idempotency_key');
+    if (error) return { error };
+    if (!data || data.length === 0) return { error: new Error(`matched 0 rows for job ${jobId} — RLS blocked it or the row is gone`) };
+    return { error: null, row: data[0] };
+  } catch (e) {
+    return { error: e instanceof Error ? e : new Error(String(e)) };
+  }
+}
+
+// Mark a row as printed (also used when the broadcast fast path already printed it).
+const markRowPrinted = (jobId) => updateJobRow(jobId, {
+  status: 'printed',
+  processed_at: new Date().toISOString(),
+  claimed_by: null,
+  claim_expires_at: null,
+  error_message: null,
+});
+
+// Park a job that IS on paper outside the reclaimable statuses. failed_permanent is in
+// neither reclaimStuck's ('claimed','sending') filter, nor the poll's ('pending','failed'),
+// nor PrintRetrier's — so nothing anywhere reprints it.
+const parkPrinted = (jobId) => updateJobRow(jobId, {
+  status: 'failed_permanent',
+  processed_at: new Date().toISOString(),
+  claimed_by: null,
+  claim_expires_at: null,
+  error_message: 'PRINTED but not recorded — the ticket IS on paper. Dismiss this; Retry would print it a second time.',
+});
+
+const PARK_RETRY_MS = 30_000;
+
+// Keep trying to park until the write lands. Until it does, _printedLocally is the only
+// thing stopping a reprint, and it covers just this page — a reload or a child device
+// would print the ticket again. Once the row is parked the guard is no longer needed.
+function scheduleParkRetry(jobId) {
+  setTimeout(async () => {
+    if (!_printedLocally.has(jobId)) return;   // operator already overrode it
+    const { error } = await parkPrinted(jobId);
+    if (!error) {
+      _printedLocally.delete(jobId);
+      return;
+    }
+    if (_running) scheduleParkRetry(jobId);
+  }, PARK_RETRY_MS);
+}
+
+/**
+ * Durably record that a job is ON PAPER — the one write in this file that must not
+ * be lost quietly.
+ *
+ * WHY: a job left in 'claimed' past claim_expires_at is exactly what reclaimStuck
+ * resets to 'pending', and the next poll prints it again. A lost mark-printed is
+ * therefore a DUPLICATE KITCHEN TICKET, not a cosmetic status glitch. So:
+ *   1. mark it printed
+ *   2. one retry after a beat — rides out a transient blip, well inside the 30s claim
+ *   3. park it as failed_permanent with an explicit message. That status is in
+ *      neither reclaimStuck's ('claimed','sending') filter nor the poll's
+ *      ('pending','failed') filter, so nothing reprints it, and the operator sees it
+ *      in Action Required and dismisses it
+ *   4. if even that write is refused, remember the id locally so THIS device never
+ *      re-dispatches it, and log loudly
+ * Fire-and-forget by design: paper is already out, so no caller waits on this.
+ */
+async function markPrintedDurable(jobId) {
+  let { error } = await markRowPrinted(jobId);
+  if (!error) return;
+  console.warn('[PrintOrchestrator] mark-printed failed (job is on paper), retrying:', error.message || error);
+
+  await sleep(750);
+  ({ error } = await markRowPrinted(jobId));
+  if (!error) return;
+
+  // Out of retries. Park the job OUTSIDE the reclaimable statuses — a ticket sitting
+  // in Action Required is recoverable, a second identical food order is not.
+  const { error: parkErr } = await parkPrinted(jobId);
+  if (parkErr) {
+    _printedLocally.set(jobId, { warnedAt: Date.now() });
+    console.error('[PrintOrchestrator] job printed but NOT recorded and could not be parked — guarding it locally and retrying:', jobId, parkErr.message || parkErr);
+    scheduleParkRetry(jobId);
+  }
 }
 
 // (base64ToBytes + findPrinter helpers defined further down — reused here)
@@ -285,6 +394,17 @@ async function tick() {
 // ─── Claim + dispatch one job ────────────────────────────────────────────────
 async function claimAndDispatch(jobId) {
   if (!_running || _inflight.has(jobId)) return;
+  // Already on paper from this device, with the bookkeeping refused — see
+  // markPrintedDurable. The poll retries this every couple of seconds, so say so
+  // once a minute rather than on every pass.
+  const printed = _printedLocally.get(jobId);
+  if (printed) {
+    if (Date.now() - printed.warnedAt > 60_000) {
+      printed.warnedAt = Date.now();
+      console.warn('[PrintOrchestrator] NOT re-dispatching a job this device already printed:', jobId);
+    }
+    return;
+  }
   _inflight.add(jobId);
 
   try {
@@ -306,6 +426,16 @@ async function claimAndDispatch(jobId) {
 
     if (claimErr || !claimed) {
       // Someone else claimed it first — no problem
+      return;
+    }
+
+    // The poll only has an id to go on, so it can't consult the broadcast dedup map
+    // before claiming — check now that we have the row. Without this, a fast-path
+    // print whose 'printed' write was lost comes back round as a second ticket.
+    // (handleFastBroadcast removes the key when ITS print failed, so anything still
+    // in the map is genuinely on paper.)
+    if (claimed.idempotency_key && _broadcastHandled.has(claimed.idempotency_key)) {
+      markPrintedDurable(claimed.id);
       return;
     }
 
@@ -360,15 +490,11 @@ async function dispatchJob(job) {
   // the dispatch loop now lets the next queued job start ~500ms sooner,
   // which compounds visibly during a service rush.
   if (ok) {
-    supabase.from('print_jobs').update({
-      status:       'printed',
-      processed_at: new Date().toISOString(),
-      claimed_by:   null,
-      claim_expires_at: null,
-      error_message: null,
-    }).eq('id', job.id).then(() => {}, (e) => {
-      console.warn('[PrintOrchestrator] mark-printed failed (job already on paper):', e?.message || e);
-    });
+    // Still fire-and-forget for latency, but markPrintedDurable now actually sees a
+    // rejected write (PostgREST resolves with { error }, it never rejected here) and
+    // guarantees the row ends up somewhere reclaimStuck won't turn back into a
+    // second copy of this ticket.
+    markPrintedDurable(job.id);
     printService.recordPrinterHealth(job.printer_id, 'online').catch(() => {});
   } else {
     // Failures still need to be awaited — recordFailure schedules retry, and
@@ -384,30 +510,44 @@ async function recordFailure(job, errMsg) {
   const max = job.max_attempts || MAX_ATTEMPTS;
 
   if (nextAttempt >= max) {
-    // Exhausted — goes to Action Required queue
-    await supabase.from('print_jobs').update({
+    // Exhausted — goes to Action Required queue. This write is the ONLY thing that
+    // ends the retry loop, and its rejection used to be discarded: the row stayed
+    // 'claimed', reclaimStuck put it back to 'pending', and the job cycled forever
+    // instead of surfacing to an operator. Nothing printed, so a retry here is safe.
+    const patch = {
       status:            'failed_permanent',
       attempts:          nextAttempt,
       error_message:     errMsg,
       claimed_by:        null,
       claim_expires_at:  null,
       processed_at:      new Date().toISOString(),
-    }).eq('id', job.id);
-    return;
+    };
+    let { error } = await updateJobRow(job.id, patch);
+    if (error) {
+      await sleep(750);
+      ({ error } = await updateJobRow(job.id, patch));
+    }
+    if (error) console.error('[PrintOrchestrator] could not mark job failed_permanent — it will keep retrying:', job.id, error.message || error);
+    return { error };
   }
 
   // Schedule next retry
   const delayMs = RETRY_SCHEDULE_MS[nextAttempt] ?? RETRY_SCHEDULE_MS[RETRY_SCHEDULE_MS.length - 1];
   const nextRetryAt = new Date(Date.now() + delayMs).toISOString();
 
-  await supabase.from('print_jobs').update({
+  const { error } = await updateJobRow(job.id, {
     status:            'failed',
     attempts:          nextAttempt,
     error_message:     errMsg,
     next_retry_at:     nextRetryAt,
     claimed_by:        null,
     claim_expires_at:  null,
-  }).eq('id', job.id);
+  });
+  // A lost retry-schedule write leaves the row 'claimed' — reclaimStuck picks it up
+  // 30s later, so the job isn't stranded, but the attempt count and the operator's
+  // error message are gone. Worth saying out loud rather than swallowing.
+  if (error) console.warn('[PrintOrchestrator] could not record print failure:', job.id, error.message || error);
+  return { error };
 }
 
 // ─── Reclaim stuck jobs ──────────────────────────────────────────────────────
@@ -418,7 +558,9 @@ async function reclaimStuck() {
 
   try {
     const nowIso = new Date().toISOString();
-    await supabase.from('print_jobs')
+    // 0 rows is the normal case here (nothing stuck), so there's nothing to detect —
+    // but a rejected reclaim means genuinely stuck jobs never come back, so log it.
+    const { error } = await supabase.from('print_jobs')
       .update({
         status: 'pending',
         claimed_by: null,
@@ -427,7 +569,10 @@ async function reclaimStuck() {
       .eq('location_id', _locationId)
       .in('status', ['claimed', 'sending'])
       .lt('claim_expires_at', nowIso);
-  } catch {}
+    if (error) console.warn('[PrintOrchestrator] reclaim failed:', error.message || error);
+  } catch (e) {
+    console.warn('[PrintOrchestrator] reclaim threw:', e?.message || e);
+  }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -446,9 +591,16 @@ function findPrinter(printerId) {
 }
 
 // ─── Operator actions (called from StatusDrawer) ─────────────────────────────
+// A deliberate Retry/Reroute must clear every reason this device would otherwise
+// skip the dispatch, or the operator's reprint silently does nothing.
+function clearReprintGuards(jobId, row) {
+  _printedLocally.delete(jobId);
+  if (row?.idempotency_key) _broadcastHandled.delete(row.idempotency_key);
+}
+
 export async function operatorRetryJob(jobId) {
   if (!supabase) return { ok: false, error: 'offline' };
-  const { error } = await supabase.from('print_jobs').update({
+  const { error, row } = await updateJobRow(jobId, {
     status:        'pending',
     attempts:      0,
     next_retry_at: null,
@@ -456,17 +608,21 @@ export async function operatorRetryJob(jobId) {
     claimed_by:    null,
     claim_expires_at: null,
     dismissed_at:  null,
-  }).eq('id', jobId);
+  });
   if (error) return { ok: false, error: error.message };
+  // An operator asking for this job again overrides BOTH dedup guards — they can see
+  // the ticket (or its absence) and we can't. Miss the broadcast one and the retry is
+  // claimed, marked printed by claimAndDispatch and never dispatched.
+  clearReprintGuards(jobId, row);
   return { ok: true };
 }
 
 export async function operatorDismissJob(jobId) {
   if (!supabase) return { ok: false, error: 'offline' };
-  const { error } = await supabase.from('print_jobs').update({
+  const { error } = await updateJobRow(jobId, {
     status:       'dismissed',
     dismissed_at: new Date().toISOString(),
-  }).eq('id', jobId);
+  });
   if (error) return { ok: false, error: error.message };
   return { ok: true };
 }
@@ -474,7 +630,7 @@ export async function operatorDismissJob(jobId) {
 export async function operatorRerouteJob(jobId, newPrinterId) {
   if (!supabase) return { ok: false, error: 'offline' };
   const printer = findPrinter(newPrinterId);
-  const { error } = await supabase.from('print_jobs').update({
+  const { error, row } = await updateJobRow(jobId, {
     printer_id:        newPrinterId,
     printer_ip:        printer?.address || null,
     printer_port:      printer?.port || 9100,
@@ -485,7 +641,8 @@ export async function operatorRerouteJob(jobId, newPrinterId) {
     claimed_by:        null,
     claim_expires_at:  null,
     dismissed_at:      null,
-  }).eq('id', jobId);
+  });
   if (error) return { ok: false, error: error.message };
+  clearReprintGuards(jobId, row);   // deliberate operator action, same as Retry
   return { ok: true };
 }

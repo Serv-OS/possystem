@@ -36,8 +36,15 @@ export default function PettyCash() {
   // without permission don't see live buttons they can't use. The store
   // also enforces this (see openCashDrawer).
   const canOpenDrawer = Array.isArray(staff?.permissions) && staff.permissions.includes('openDrawer');
-  const addEntry = useStore(s => s.addPettyCashEntry);
+  // v5.5.977: recordCashEntry, NOT addPettyCashEntry. addPettyCashEntry only pushes onto
+  // an in-memory array, so every entry added here used to be invisible to cash_movements
+  // — and therefore to drawer variance, EOD close and the Z report — and was gone on
+  // refresh. recordCashEntry is the shared core of openCashDrawer: local entry + awaited
+  // cash_movements insert + drawer float update, without the POS permission gate or the
+  // printer pulse (neither belongs in the Back Office).
+  const recordCashEntry = useStore(s => s.recordCashEntry);
   const openDrawer = useStore(s => s.openCashDrawer);
+  const showToast = useStore(s => s.showToast);
 
   const [showAdd, setShowAdd] = useState(false);
   const [filterType, setFilterType] = useState('all');
@@ -66,6 +73,25 @@ export default function PettyCash() {
 
   const handleManualPulse = () => {
     openDrawer({ type: 'drawer_open', amount: 0, reason: 'Manual open from Petty Cash', note: '' });
+  };
+
+  // v5.5.977: awaited, and the modal stays open when the write is lost — an entry that
+  // never reached cash_movements must not close as though it saved. recordCashEntry
+  // raises its own error toast describing exactly what was not recorded.
+  const handleSaveEntry = async (entry) => {
+    const res = await recordCashEntry({
+      ...entry,
+      // Attach to the drawer the operator has filtered to, if any. That is what makes
+      // the entry move that drawer's float and land in its variance. On 'All' it is
+      // deliberately drawer-less — an office-safe entry that touches no till.
+      drawerId: filterDrawer !== 'all' ? filterDrawer : null,
+    });
+    if (!res?.ok) return;
+    // Training mode reports ok but deliberately writes nothing, so a green "recorded"
+    // would sit above a ledger that stays empty.
+    if (res.skipped) { showToast?.('Training mode — nothing was recorded', 'info'); setShowAdd(false); return; }
+    showToast?.(`${TYPE_META[entry.type]?.label || 'Entry'} recorded`, 'success');
+    setShowAdd(false);
   };
 
   return (
@@ -167,7 +193,7 @@ export default function PettyCash() {
         </div>
       )}
 
-      {showAdd && <AddEntryModal onClose={() => setShowAdd(false)} onSave={(entry) => { addEntry({ ...entry, staff: staff?.name || 'Unknown', staffId: staff?.id || null }); setShowAdd(false); }} />}
+      {showAdd && <AddEntryModal onClose={() => setShowAdd(false)} onSave={handleSaveEntry} />}
     </div>
   );
 }
@@ -207,20 +233,28 @@ function AddEntryModal({ onClose, onSave }) {
   const [amount, setAmount] = useState('');
   const [reason, setReason] = useState('');
   const [note, setNote] = useState('');
+  const [saving, setSaving] = useState(false);
 
   const meta = TYPE_META[type] || TYPE_META.float;
   const valid = Number(amount) > 0 && reason.trim().length > 0;
 
-  const handleSubmit = () => {
-    if (!valid) return;
-    onSave({
-      type, amount: Number(amount),
-      reason: reason.trim(), note: note.trim(),
-    });
+  // onSave is awaited and only closes the modal on a confirmed write, so hold the
+  // form (and the values the operator typed) until it comes back.
+  const handleSubmit = async () => {
+    if (!valid || saving) return;
+    setSaving(true);
+    try {
+      await onSave({
+        type, amount: Number(amount),
+        reason: reason.trim(), note: note.trim(),
+      });
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
-    <div className="modal-back" onClick={e => e.target === e.currentTarget && onClose()}>
+    <div className="modal-back" onClick={e => e.target === e.currentTarget && !saving && onClose()}>
       <div style={{
         background:'var(--bg1)', border:'1px solid var(--bdr2)', borderRadius:20,
         width:'100%', maxWidth:460, padding:'20px 22px', boxShadow:'var(--sh3)',
@@ -270,16 +304,17 @@ function AddEntryModal({ onClose, onSave }) {
         </div>
 
         <div style={{ display:'flex', gap:8 }}>
-          <button onClick={onClose} style={{ flex:1, padding:'10px', borderRadius:8, background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t2)', fontFamily:'inherit', cursor:'pointer', fontWeight:600 }}>Cancel</button>
-          <button onClick={handleSubmit} disabled={!valid}
+          <button onClick={onClose} disabled={saving}
+            style={{ flex:1, padding:'10px', borderRadius:8, background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t2)', fontFamily:'inherit', cursor: saving ? 'not-allowed' : 'pointer', fontWeight:600, opacity: saving ? 0.6 : 1 }}>Cancel</button>
+          <button onClick={handleSubmit} disabled={!valid || saving}
             style={{
               flex:2, padding:'10px', borderRadius:8, border:'none',
-              background: valid ? meta.color : 'var(--bg4)',
-              color: valid ? '#fff' : 'var(--t4)',
-              fontFamily:'inherit', cursor: valid ? 'pointer' : 'not-allowed', fontWeight:700,
-              opacity: valid ? 1 : 0.6,
+              background: valid && !saving ? meta.color : 'var(--bg4)',
+              color: valid && !saving ? '#fff' : 'var(--t4)',
+              fontFamily:'inherit', cursor: valid && !saving ? 'pointer' : 'not-allowed', fontWeight:700,
+              opacity: valid && !saving ? 1 : 0.6,
             }}>
-            Add {meta.label.toLowerCase()}
+            {saving ? 'Recording…' : `Add ${meta.label.toLowerCase()}`}
           </button>
         </div>
       </div>

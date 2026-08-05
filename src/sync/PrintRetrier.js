@@ -41,6 +41,7 @@
 
 import { supabase, getLocationId, isMock } from '../lib/supabase';
 import { printService, isNativeBridgeAvailable } from '../lib/printer';
+import { printedLocallyIds } from './PrintOrchestrator';
 
 const POLL_INTERVAL_MS = 5_000;
 const FIRST_TICK_DELAY = 3_000;
@@ -102,11 +103,18 @@ async function tick() {
 async function reapStaleClaims() {
   const cutoff = new Date(Date.now() - CLAIM_TIMEOUT_MS).toISOString();
   try {
-    await supabase.from('print_jobs')
+    let q = supabase.from('print_jobs')
       .update({ status: 'failed', error_message: 'Worker timeout — reclaimed', claimed_by: null, claimed_at: null })
       .eq('location_id', _locationId)
       .in('status', ['sending', 'claimed'])
       .lt('claimed_at', cutoff);
+    // A job the orchestrator printed but couldn't record is left 'claimed' ON PURPOSE
+    // (see markPrintedDurable). It looks exactly like a crashed worker from here, and
+    // flipping it to 'failed' feeds it straight to processFailedJobs — which reprints
+    // a ticket that is already on paper.
+    const printed = printedLocallyIds();
+    if (printed.length) q = q.not('id', 'in', `(${printed.join(',')})`);
+    await q;
   } catch (e) {
     console.warn('[PrintRetrier] reapStaleClaims failed:', e.message);
   }
@@ -132,10 +140,14 @@ async function processFailedJobs() {
     return;
   }
 
+  // Never re-dispatch a job the orchestrator already put on paper — it can reach 'failed'
+  // by a route this loop didn't take (another device's reaper, a pre-guard sweep).
+  const printed = new Set(printedLocallyIds());
+
   // Scale: dispatch the candidate batch concurrently — a slow/declining printer must not block
   // every other failed ticket behind it. Each job is guarded by its own atomic 'failed'->claim,
   // so parallelism can't double-dispatch (only one device/loop wins each job).
-  await Promise.allSettled(candidates.map(job => processRetry(job)));
+  await Promise.allSettled(candidates.filter(job => !printed.has(job.id)).map(job => processRetry(job)));
 }
 
 async function processRetry(job) {

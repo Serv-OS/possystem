@@ -20,68 +20,6 @@ export default function ProductModal({ item, activeAllergens = [], onConfirm, on
 }
 
 // ── Shared shell ──────────────────────────────────────────────────────────────
-function ModalShell({ item, price, children, onAdd, canAdd, onCancel, addLabel = 'Add to order' }) {
-  const flagged = (item.allergens || []).filter(a => activeAllergens.includes(a));
-
-  return (
-    <div className="modal-back" onClick={e => e.target === e.currentTarget && onCancel()}>
-      <div style={{
-        background:'var(--bg2)', border:'1px solid var(--bdr2)', borderRadius:24,
-        width:'100%', maxWidth:500, maxHeight:'90vh', overflow:'auto',
-        boxShadow:'var(--sh3)', display:'flex', flexDirection:'column',
-      }}>
-        {/* Header */}
-        <div style={{ padding:'20px 24px 16px', borderBottom:'1px solid var(--bdr)', flexShrink:0 }}>
-          <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:12 }}>
-            <div style={{ flex:1 }}>
-              <div style={{ fontSize:19, fontWeight:700, lineHeight:1.2, marginBottom:4 }}>{item.name}</div>
-              {item.description && <div style={{ fontSize:13, color:'var(--t2)', lineHeight:1.5 }}>{item.description}</div>}
-            </div>
-            <button onClick={onCancel} style={{ fontSize:20, color:'var(--t3)', background:'none', border:'none', cursor:'pointer', lineHeight:1, padding:0, flexShrink:0 }}>×</button>
-          </div>
-
-          {/* Allergen flags */}
-          {item.allergens?.length > 0 && (
-            <div style={{ display:'flex', flexWrap:'wrap', gap:4, marginTop:10 }}>
-              {item.allergens.map(a => {
-                const al = ALLERGENS.find(x => x.id === a);
-                const isFlagged = activeAllergens.includes(a);
-                return (
-                  <span key={a} style={{
-                    fontSize:11, padding:'2px 7px', borderRadius:6, fontWeight:500,
-                    background: isFlagged ? 'var(--red-d)' : 'var(--bg3)',
-                    border: `1px solid ${isFlagged ? 'var(--red-b)' : 'var(--bdr)'}`,
-                    color: isFlagged ? 'var(--red)' : 'var(--t3)',
-                  }}>{al?.icon} {al?.label}</span>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        {/* Content */}
-        <div style={{ flex:1, overflowY:'auto', padding:'16px 24px' }}>{children}</div>
-
-        {/* Footer */}
-        <div style={{ padding:'16px 24px', borderTop:'1px solid var(--bdr)', flexShrink:0 }}>
-          <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-            <button className="btn btn-ghost" onClick={onCancel} style={{ minWidth:80 }}>Cancel</button>
-            <button
-              className="btn btn-acc"
-              style={{ flex:1, fontSize:15, height:48, borderRadius:12, opacity: canAdd ? 1 : 0.4 }}
-              disabled={!canAdd}
-              onClick={canAdd ? onAdd : undefined}
-            >
-              {addLabel} · <strong>{money(price)}</strong>
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// Need to pass activeAllergens through to ModalShell
 function ModalShellWrapper({ item, price, children, onAdd, canAdd, onCancel, addLabel, cancelLabel, activeAllergens }) {
   const flagged = (item.allergens || []).filter(a => activeAllergens.includes(a));
 

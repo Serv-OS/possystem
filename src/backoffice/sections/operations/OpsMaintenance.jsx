@@ -38,19 +38,24 @@ export default function OpsMaintenance() {
     .filter(r => filter === 'all' ? true : filter === 'open-ish' ? !['resolved', 'cancelled'].includes(r.status) : r.status === filter)
     .filter(r => prioFilter === 'all' ? true : r.priority === prioFilter);
   const setStatus = async (r, status) => {
-    const { error } = await setMaintenanceStatus(r.id, status, me?.name, locId);
+    const { error, partial, message } = await setMaintenanceStatus(r.id, status, me?.name, locId);
     reportSave('maintenance status', error);
     // reload() either way: the dropdown is bound to the row, so a refetch is what
     // puts a rejected change back to the status the database actually holds.
     if (error) { showToast?.(`"${r.title}" is still ${String(r.status || 'unchanged').replace('_', ' ')} — status NOT changed`, 'error'); }
+    // partial = the status moved but a side write didn't. Warn, never "try again":
+    // retrying re-alerts the reporter for a job that is already marked done.
+    else if (partial) { showToast?.(message, 'warning'); }
     reload();
   };
   const assign = async (r, staffId) => {
     const a = assignees.find(x => x.id === staffId);
-    const { error } = await assignMaintenance(r.id, a ? { id: a.id, name: a.name } : null, me?.name, locId);
+    const { error, partial, message } = await assignMaintenance(r.id, a ? { id: a.id, name: a.name } : null, me?.name, locId);
     reportSave('maintenance assignment', error);
     if (error) { showToast?.(a ? `NOT assigned to ${a.name} — try again` : 'Could not unassign', 'error'); reload(); return; }
-    showToast?.(a ? `Assigned to ${a.name}` : 'Unassigned', 'success'); reload();
+    if (partial) showToast?.(message, 'warning');
+    else showToast?.(a ? `Assigned to ${a.name}` : 'Unassigned', 'success');
+    reload();
   };
   const create = async () => {
     if (!draft.title.trim()) { showToast?.('Title required', 'error'); return; }

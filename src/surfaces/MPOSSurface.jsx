@@ -21,6 +21,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useStore } from '../store';
 import useSupabaseInit from '../lib/useSupabaseInit';
+import { queueWrite, dismissItem } from '../sync/OfflineQueue';
+import { getActiveLocationSync, isMock } from '../lib/supabase';
+import { isTrainingMode } from '../lib/trainingMode';
+import { getNextOrderRefLocal } from '../lib/db';
+import { calculateOrderTax } from '../lib/tax';
 import PINScreen from './PINScreen';
 import MHome from './mpos/MHome';
 import MOrdersList from './mpos/MOrdersList';
@@ -42,7 +47,7 @@ import MDone from './mpos/MDone';
 import MOrderHistory from './mpos/MOrderHistory';
 import MOrderDetail from './mpos/MOrderDetail';
 import MQueueDetail from './mpos/MQueueDetail';
-import { Sx } from './mpos/MShellStyles';
+import { Sx, money } from './mpos/MShellStyles';
 
 const TABS = [
   { id:'home',   label:'Home',   icon:'🏠' },
@@ -111,6 +116,18 @@ function MPOSToast() {
   );
 }
 
+// Which courses a plain send actually fires: 0 (immediate) plus every course up to
+// the lowest occupied one. MIRRORS computeFiredOnSend in store/index.js — later
+// courses are held back deliberately, so "still pending" is only evidence of a lost
+// send for a course that was in this set.
+function firedCoursesOnSend(items) {
+  const live = (items || []).filter(i => !i.voided && (i.status === 'pending' || i.status === 'sent'));
+  const lowest = [...new Set(live.map(i => i.course ?? 1))].filter(c => c >= 1).sort((a, b) => a - b)[0] || 1;
+  const fired = [0];
+  for (let c = 1; c <= lowest; c++) fired.push(c);
+  return fired;
+}
+
 function MPOSRouter() {
   const { deviceConfig, activeTableId, setActiveTableId, showToast } = useStore();
   const runnerMode = !!deviceConfig?.runnerMode;
@@ -119,6 +136,13 @@ function MPOSRouter() {
   // flow.screen: null | 'newOrder' | 'covers' | 'tableView' | 'menu' | 'item' | 'cart'
   // flow.context carries flow-specific state (selected table, item, etc.)
   const [flow, setFlow] = useState({ screen: null });
+
+  // v5.5.977 — the two failures the server must never be able to walk past.
+  // closeFailure: the card was APPROVED and the sale did not record (money gone,
+  // no closed_checks row, nothing in the Z report). kitchenFailure: the kitchen
+  // never saw food the customer is about to pay for. Both were console-only.
+  const [closeFailure, setCloseFailure]     = useState(null);
+  const [kitchenFailure, setKitchenFailure] = useState(null);
 
   const closeFlow = useCallback(() => {
     setFlow({ screen: null });
@@ -214,61 +238,285 @@ function MPOSRouter() {
     setFlow({ screen: 'sentConfirm', context: { tableId, ticketCount, totalSent } });
   };
 
+  // Fire the kitchen for the live walk-in order and REPORT whether it worked.
+  // sendToKitchen is synchronous and can throw (routing / print / KDS insert), and
+  // it can also quietly do nothing — either way the lines stay 'pending' and the
+  // customer is about to pay for food nobody is cooking. Returns null on success,
+  // otherwise a failure descriptor for the blocking screen.
+  const sendWalkInToKitchen = () => {
+    const before = useStore.getState();
+    const items = before.walkInOrder?.items || [];
+    const pending = items.filter(i => i.status !== 'sent' && !i.voided);
+    if (!pending.length) return null;
+    const fired = firedCoursesOnSend(items);
+    let err = null;
+    try { before.sendToKitchen?.(); } catch (e) { err = e; }
+    const after = useStore.getState();
+    // A non-ASAP collection is held back ON PURPOSE: sendToKitchen parks it in the
+    // queue as status 'scheduled' and a background tick fires the kitchen nearer
+    // the time. Lines still pending in that case are correct, not lost.
+    if (!err && after.customer?.collectionTime && !after.customer?.isASAP) return null;
+    // Only lines whose course this send was supposed to FIRE count as lost. Later
+    // courses stay 'pending' by design on every multi-course order.
+    const lost = (after.walkInOrder?.items || []).filter(i =>
+      i.status === 'pending' && !i.voided && fired.includes(i.course ?? 1));
+    if (!err && !lost.length) return null;
+    return {
+      count: lost.length || pending.length,
+      message: err ? String(err.message || err) : null,
+    };
+  };
+
   // Walk-in "Send & take payment" or table "Take payment" → tender flow (1C)
   const onSendAndPay = () => {
     // For walk-in flows, fire to kitchen first if anything is still pending. The
     // tender wizard then takes over.
-    const { walkInOrder } = useStore.getState();
-    if (!activeTableId && walkInOrder?.items?.length) {
-      const pending = walkInOrder.items.filter(i => i.status !== 'sent' && !i.voided);
-      if (pending.length) {
-        try { useStore.getState().sendToKitchen?.(); } catch {}
-      }
+    // v5.5.977: this was `try { sendToKitchen() } catch {}` — a throw opened the
+    // tender wizard anyway and the customer paid for food the kitchen never saw.
+    if (!activeTableId) {
+      const fail = sendWalkInToKitchen();
+      if (fail) { setKitchenFailure({ ...fail, next: 'tender' }); return; }
     }
     setFlow({ screen: 'tender', context: flow.context || {} });
+  };
+
+  // Rebuild the record a healthy close would have written, so a failed close can
+  // still be replayed. Table closes reuse the store's OWN builder — the recovered
+  // row must not drift from the real one.
+  const buildRecoveryRecord = (paymentInfo, tableId) => {
+    const st = useStore.getState();
+    if (tableId) {
+      const table = st.tables.find(t => t.id === tableId);
+      if (!table?.session) return null;
+      // A QR tab's money story is the held pre-auth plus its order_queue rounds. A
+      // plain closed_check queued from here would double-book it and orphan the
+      // capture — Orders Hub → Open QR tabs is the only correct closer.
+      if (table.session.source === 'qr') return null;
+      return st.buildCloseRecord(table.session, table, paymentInfo);
+    }
+    const order = st.walkInOrder;
+    if (!order?.items?.length) return null;
+    const items = order.items.filter(i => !i.voided).map(i => ({ ...i }));
+    const subtotal = items.reduce((s, i) => s + (i.price || 0) * (i.qty || 0), 0);
+    const orderType = st.orderType || 'takeaway';
+    let taxBreakdown = null;
+    if (st.taxRates?.length) {
+      try { taxBreakdown = calculateOrderTax(items, st.taxRates, orderType); }
+      catch { /* leave VAT unsplit rather than book a guess */ }
+    }
+    return {
+      // onPaymentApproved guarantees this — the recovery row and the row a retry
+      // writes MUST share an id or the upsert books the sale twice.
+      id:         paymentInfo.closedCheckId,
+      ref:        order.ref || getNextOrderRefLocal(),
+      tableId:    null,
+      tableLabel: null,
+      server:     st.staff?.name || 'Staff',
+      staffId:    st.staff?.id || null,
+      covers:     1,
+      orderType,
+      customer:   st.customer || null,
+      items,
+      discounts:  order.discounts || [],
+      subtotal,
+      service:    0,
+      tip:        paymentInfo?.tip || 0,
+      total:      paymentInfo?.grand || subtotal,
+      taxAmount:  taxBreakdown?.totalTax != null ? taxBreakdown.totalTax : null,
+      taxBreakdown,
+      method:     paymentInfo?.method || 'card',
+      giftCard:   paymentInfo?.giftCard || null,
+      stripePaymentIntentId: paymentInfo?.stripePaymentIntentId || paymentInfo?.paymentIntentId || null,
+      processor:  paymentInfo?.processor || 'stripe',
+      cardReceipt: paymentInfo?.cardReceipt || null,
+      drawerId:   st.myDrawer?.()?.id || null,
+      shiftId:    st.currentShift?.id || null,
+      closedAt:   Date.now(),
+      status:     'paid',
+      refunds:    [],
+      // NO custom `source` — closed_checks_source_check rejects unknown values and
+      // this row must land. null falls back to the 'pos' default.
+    };
+  };
+
+  // Durable last resort for a sale whose close failed AFTER the card was approved.
+  // Same IndexedDB queue every other offline write uses; kind 'closed_check' puts it
+  // in OfflineQueue's ALWAYS_REPLAY set so the staleness guard can never quarantine a
+  // sale. The queue key is derived from the check id so a second attempt REPLACES the
+  // buffered copy instead of stacking another one. Returns whether it is buffered.
+  const queueCloseRecovery = async (paymentInfo, tableId) => {
+    if (isMock || isTrainingMode()) return true;   // nothing was ever going to persist
+    try {
+      const locationId = getActiveLocationSync();
+      const record = buildRecoveryRecord(paymentInfo, tableId);
+      if (!locationId || !record) return false;
+      await queueWrite({
+        id: recoveryQueueId(record.id),
+        type: 'upsert',
+        table: 'closed_checks',
+        onConflict: 'id',
+        kind: 'closed_check',
+        label: `MPOS ${money(Number(paymentInfo?.grand) || 0)} — close failed after card approval`,
+        payload: recoveryCheckRow(record, locationId),
+      });
+      return true;
+    } catch (e) {
+      console.error('[mpos] could not buffer the unrecorded sale', e);
+      return false;
+    }
+  };
+
+  // The card is approved and the money is gone — nothing here can undo that, so the
+  // goal is only "never lose the sale record". Buffer it and hold the operator on the
+  // payment screen.
+  const onCloseFailed = async (err, paymentInfo, tableId) => {
+    console.error('[mpos] close failed after card approval', err);
+    const amount = Number(paymentInfo?.grand) || 0;
+    setCloseFailure({ amount, paymentInfo, tableId, message: String(err?.message || err), queued: null });
+    showToast?.(`${money(amount)} was taken but the sale was NOT recorded — do not charge again`, 'error');
+    const queued = await queueCloseRecovery(paymentInfo, tableId);
+    setCloseFailure(f => (f ? { ...f, queued } : f));   // null = operator already retried
   };
 
   // After payment is approved (card REST or simulated). Closes the check AND
   // releases the table session so the table goes back to "available". Earlier
   // versions called recordClosedCheck only, which left the table stuck on the
   // floor plan as occupied even though the customer had paid.
+  //
+  // v5.5.977 — EVERYTHING HERE RUNS AFTER THE CARD IS APPROVED. The old body
+  // swallowed a close failure with console.warn and advanced to the receipt screen
+  // with closedCheck = null: money captured, no closed_checks row, nothing in the Z
+  // report, table still occupied — behind a completely normal-looking receipt
+  // prompt. There is no rollback, so a failure now stops the flow dead.
   const onPaymentApproved = (paymentInfo) => {
     const state = useStore.getState();
-    let closedCheck = null;
+    const tableId = activeTableId;
+    const isQrTab = !!tableId && state.tables.find(t => t.id === tableId)?.session?.source === 'qr';
+    // ONE id per payment attempt, minted BEFORE the close and carried through the
+    // failure state into the retry. buildCloseRecord and recordWalkInClosed both adopt
+    // paymentInfo.closedCheckId, so a retry rewrites the SAME closed_checks row instead
+    // of minting a second one the upsert can't collapse (= the sale counted twice).
+    const pi = paymentInfo?.closedCheckId
+      ? paymentInfo
+      : { ...paymentInfo, closedCheckId: `chk-${Date.now()}` };
+    // A first attempt can book the record and still throw on a later step (loyalty,
+    // drawer, Challenge 21…). The id is stable, so a retry adopts that row instead of
+    // closing the same sale twice.
+    let closedCheck = state.closedChecks.find(c => c.id === pi.closedCheckId) || null;
+    let failure = null;
     try {
-      if (activeTableId) {
+      if (closedCheck) {
+        /* already recorded — nothing to redo */
+      } else if (tableId) {
         // clearTable internally calls recordClosedCheck AND resets the table
         // session/status so the table flips to available + walkInOrder/customer
         // get cleared. Same path the desktop POS uses on close.
-        state.clearTable(activeTableId, paymentInfo);
-        closedCheck = useStore.getState().closedChecks?.[0] || null;
+        state.clearTable(tableId, pi);
+        // clearTable returns nothing and refuses outright for a QR tab, so look our
+        // OWN check up by id — head-of-list would hand the PREVIOUS customer's check
+        // to the receipt, and on a retry it also proves the first attempt did land.
+        closedCheck = useStore.getState().closedChecks.find(c => c.id === pi.closedCheckId) || null;
       } else if (state.walkInOrder) {
-        state.recordWalkInClosed(state.walkInOrder, state.orderType || 'takeaway', state.customer, paymentInfo);
-        closedCheck = useStore.getState().closedChecks?.[0] || null;
-        // Walk-in-side cleanup: drop the now-paid order from local state.
-        useStore.setState({ walkInOrder: null, customer: null });
+        // Take the record the store returns rather than looking it up: a HubRise
+        // channel close mints its own deterministic chk-hr-<ref> id.
+        closedCheck = state.recordWalkInClosed(
+          state.walkInOrder, state.orderType || 'takeaway', state.customer, pi,
+        ) || null;
+      }
+      if (!closedCheck) {
+        throw new Error(isQrTab
+          ? 'this is a QR tab — it can only be closed from Orders Hub → Open QR tabs'
+          : 'the close produced no sale record');
       }
     } catch (e) {
-      console.warn('[mpos] close check failed', e);
+      failure = e;
     }
+
+    if (failure) { onCloseFailed(failure, pi, tableId); return; }
+
+    // A retry landed on the same id, so the buffered copy is now redundant — left in
+    // the queue it would later replay the lossy rebuild over the real row. Dropped
+    // unconditionally: the buffering is async, so `queued` may not be set yet.
+    if (closeFailure) {
+      dismissItem(recoveryQueueId(pi.closedCheckId)).catch(() => {});
+      setCloseFailure(null);
+    }
+    // Walk-in-side cleanup: drop the now-paid order from local state. Only once the
+    // record exists — on failure the cart has to survive so a retry can rebuild it.
+    if (!tableId) useStore.setState({ walkInOrder: null, customer: null });
     // Belt-and-braces: clear activeTableId so the next "Take next order" lands
     // on a clean slate even if clearTable's reducer hasn't propagated yet.
     setActiveTableId(null);
+    // The sale is safe but the floor may not be: a partial clearTable can record the
+    // check and still leave the table sat occupied with nobody knowing why.
+    if (tableId && useStore.getState().tables.find(t => t.id === tableId)?.session) {
+      showToast?.('Sale recorded, but the table did not clear — clear it on the floor plan', 'warning');
+    }
     setFlow({ screen: 'receipt', context: { check: closedCheck } });
   };
+
+  // closeFailure.paymentInfo already carries the closedCheckId minted for the first
+  // attempt — replaying it is what makes the retry idempotent. onPaymentApproved
+  // clears closeFailure itself, but only once the sale is genuinely recorded.
+  const retryClose = () => onPaymentApproved(closeFailure?.paymentInfo || {});
 
   // After receipt prompt resolves
   const onReceiptDone = (deliveredVia) => {
     setFlow({ screen: 'done', context: { ...flow.context, deliveredVia: deliveredVia?.deliveredVia ?? deliveredVia } });
   };
 
-  // "Take next order" on MDone → reset to home
+  // "Take next order" on MDone → reset to home.
+  // Must clear closeFailure too: the blocking screen below is checked BEFORE flow.screen,
+  // so leaving it set sends the operator straight back to it and the handheld takes no
+  // further orders until the page is reloaded.
   const onAllDone = () => {
+    setCloseFailure(null);
     setActiveTableId(null);
     useStore.setState({ walkInOrder: null, customer: null });
     setFlow({ screen: null });
     setTab(runnerMode ? 'orders' : 'home');
   };
+
+  // ── Blocking post-authorisation failures ─────────────────────────────────
+  // These sit ABOVE every other branch. flow.screen is left exactly where it was
+  // (still 'card' for a failed close), so nothing has navigated — the server simply
+  // cannot get past this screen without dealing with it.
+
+  if (closeFailure) {
+    return (
+      <MCloseFailed
+        amount={closeFailure.amount}
+        queued={closeFailure.queued}
+        message={closeFailure.message}
+        onRetry={retryClose}
+        onContinue={onAllDone}
+      />
+    );
+  }
+
+  if (kitchenFailure) {
+    return (
+      <MKitchenSendFailed
+        count={kitchenFailure.count}
+        message={kitchenFailure.message}
+        continueLabel={kitchenFailure.next === 'tender' ? 'Take payment anyway' : 'Carry on anyway'}
+        onRetry={() => {
+          const next = kitchenFailure.next;
+          setKitchenFailure(null);
+          if (next === 'tender') { onSendAndPay(); return; }
+          const fail = sendWalkInToKitchen();
+          if (fail) { setKitchenFailure({ ...fail, next: 'sent' }); return; }
+          onSentToKitchen();
+        }}
+        onContinue={() => {
+          const next = kitchenFailure.next;
+          setKitchenFailure(null);
+          if (next === 'tender') setFlow({ screen: 'tender', context: flow.context || {} });
+          else onSentToKitchen();
+        }}
+      />
+    );
+  }
 
   // ── Render flow overlays first so they sit above everything ──────────────
 
@@ -403,7 +651,15 @@ function MPOSRouter() {
         }}
         onAddMore={goMenu}
         onSend={() => {
-          useStore.getState().sendToKitchen?.();
+          // Same unchecked send as onSendAndPay had — a walk-in that never reached
+          // the kitchen must not reach the "sent" confirmation with its Take-payment
+          // button. Table sends keep their existing behaviour.
+          if (!tableId) {
+            const fail = sendWalkInToKitchen();
+            if (fail) { setKitchenFailure({ ...fail, next: 'sent' }); return; }
+          } else {
+            useStore.getState().sendToKitchen?.();
+          }
           onSentToKitchen();
         }}
         onSendAndPay={onSendAndPay}
@@ -593,4 +849,144 @@ function MPOSRouter() {
 // something to draw over without the user seeing an empty state.
 function BlankBg() {
   return <div style={{ flex:1, background:'var(--bg)' }}/>;
+}
+
+// Explicit OfflineQueue key (the store's keyPath, normally auto-incremented) so the
+// buffered copy of a sale can be replaced on a re-attempt and dropped once a retry
+// records it for real.
+function recoveryQueueId(checkId) {
+  return `mpos-recovery-${checkId}`;
+}
+
+// snake_case row for the recovery write in queueCloseRecovery. This MIRRORS
+// closedCheckRow() in src/lib/db.js, which is module-private there — if a column is
+// added to that map it has to be added here too. It only ever runs on the path where
+// the alternative is no row at all.
+function recoveryCheckRow(check, locationId) {
+  return {
+    id:            check.id,
+    location_id:   locationId,
+    ref:           check.ref,
+    server:        check.server,
+    staff_id:      check.staffId || null,
+    covers:        check.covers,
+    order_type:    check.orderType,
+    customer:      check.customer,
+    items:         check.items,
+    discounts:     check.discounts,
+    subtotal:      check.subtotal,
+    service:       check.service,
+    tip:           check.tip,
+    tax_amount:    check.taxAmount != null ? check.taxAmount : null,
+    tax_breakdown: check.taxBreakdown || null,
+    total:         check.total,
+    method:        check.method,
+    drawer_id:     check.drawerId || null,
+    shift_id:      check.shiftId || null,
+    closed_at:     check.closedAt ? new Date(check.closedAt).toISOString() : new Date().toISOString(),
+    seated_at:     check.seatedAt ? new Date(check.seatedAt).toISOString() : null,
+    status:        check.status || 'paid',
+    refunds:       check.refunds || [],
+    table_id:      check.tableId || null,
+    table_label:   check.tableLabel || null,
+    gift_card:     check.giftCard || null,
+    loyalty:       check.loyalty || null,
+    source:        check.source || null,
+    stripe_payment_intent_id: check.stripePaymentIntentId || null,
+    payment_intents: check.paymentIntents || null,
+    processor:     check.processor || 'stripe',
+  };
+}
+
+// v5.5.977 — the card was APPROVED and the sale did not record. Deliberately a
+// dead end: there is no rollback, so the one thing the operator must not be given
+// is a normal receipt prompt. Continue is a two-tap confirmation.
+function MCloseFailed({ amount, queued, message, onRetry, onContinue }) {
+  const [armed, setArmed] = useState(false);
+  return (
+    <div style={Sx.shell}>
+      <div style={{ ...Sx.header, background:'var(--red-d)', borderBottom:'1px solid var(--red-b)' }}>
+        <div style={{ ...Sx.hTitle, color:'var(--red)' }}>Sale NOT recorded</div>
+      </div>
+      <div style={{ ...Sx.scroller, padding:'22px 14px' }}>
+        <div style={{ fontSize:46, textAlign:'center', marginBottom:8 }}>⚠️</div>
+        <div style={{ fontSize:34, fontWeight:800, fontFamily:'var(--font-mono)', color:'var(--t1)', textAlign:'center' }}>
+          {money(amount)}
+        </div>
+        <div style={{ fontSize:14, fontWeight:800, color:'var(--red)', textAlign:'center', margin:'4px 0 16px' }}>
+          WAS taken from the customer's card
+        </div>
+        <div style={{ ...Sx.card, borderColor:'var(--red-b)', background:'var(--red-d)' }}>
+          <div style={{ fontSize:13, color:'var(--t1)', lineHeight:1.55 }}>
+            The payment went through, but the sale could not be saved.{' '}
+            <b>Do not take the payment again.</b>
+          </div>
+        </div>
+        <div style={Sx.card}>
+          <div style={{ fontSize:13, color:'var(--t2)', lineHeight:1.55 }}>
+            {queued === null && 'Saving a backup copy on this device…'}
+            {queued === true && 'A backup is saved on this device and will be sent automatically. Keep the handheld online and signed in until it clears.'}
+            {queued === false && 'The backup could NOT be saved on this device either. Write the order and the amount down now and tell a manager.'}
+          </div>
+        </div>
+        {message && (
+          <div style={{ fontSize:11, color:'var(--t4)', marginTop:10, wordBreak:'break-word' }}>
+            Reason: {message}
+          </div>
+        )}
+      </div>
+      <div style={Sx.bottom}>
+        <button onClick={onRetry} style={Sx.btnPrim}>↻ Try recording the sale again</button>
+        <button
+          onClick={() => (armed ? onContinue?.() : setArmed(true))}
+          style={{ ...Sx.btnGhost, marginTop:8, ...(armed ? { borderColor:'var(--red-b)', color:'var(--red)' } : null) }}
+        >
+          {armed ? 'Tap again to confirm — no receipt for this sale' : 'Continue without a receipt'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// v5.5.977 — the kitchen never got the food. Blocks the tender wizard (and the
+// post-send confirmation, which carries its own Take-payment button) until the
+// server has either re-sent or explicitly accepted it.
+function MKitchenSendFailed({ count, message, continueLabel, onRetry, onContinue }) {
+  const [armed, setArmed] = useState(false);
+  return (
+    <div style={Sx.shell}>
+      <div style={{ ...Sx.header, background:'var(--red-d)', borderBottom:'1px solid var(--red-b)' }}>
+        <div style={{ ...Sx.hTitle, color:'var(--red)' }}>Kitchen never got this order</div>
+      </div>
+      <div style={{ ...Sx.scroller, padding:'22px 14px' }}>
+        <div style={{ fontSize:46, textAlign:'center', marginBottom:8 }}>🍳</div>
+        <div style={{ ...Sx.card, borderColor:'var(--red-b)', background:'var(--red-d)' }}>
+          <div style={{ fontSize:13, color:'var(--t1)', lineHeight:1.55 }}>
+            {count === 1 ? '1 line' : `${count} lines`} could not be sent to the kitchen.
+            Nothing is being cooked. <b>Do not take payment until this is sorted.</b>
+          </div>
+        </div>
+        <div style={Sx.card}>
+          <div style={{ fontSize:13, color:'var(--t2)', lineHeight:1.55 }}>
+            Try again. If it keeps failing, tell the kitchen the order verbally before
+            you carry on.
+          </div>
+        </div>
+        {message && (
+          <div style={{ fontSize:11, color:'var(--t4)', marginTop:10, wordBreak:'break-word' }}>
+            Reason: {message}
+          </div>
+        )}
+      </div>
+      <div style={Sx.bottom}>
+        <button onClick={onRetry} style={Sx.btnPrim}>↻ Send to kitchen again</button>
+        <button
+          onClick={() => (armed ? onContinue?.() : setArmed(true))}
+          style={{ ...Sx.btnGhost, marginTop:8, ...(armed ? { borderColor:'var(--red-b)', color:'var(--red)' } : null) }}
+        >
+          {armed ? 'Tap again to confirm — the kitchen has not seen this' : continueLabel}
+        </button>
+      </div>
+    </div>
+  );
 }

@@ -2,6 +2,7 @@ import { useCompact } from '../lib/useCompact';
 import { createPortal } from 'react-dom';
 import { useState, useMemo, useRef, useEffect } from 'react';
 import DrawerCashModal from '../components/DrawerCashModal';
+import POSLockOverlay from '../components/POSLockOverlay';
 import PosWasteModal from '../components/PosWasteModal';
 import { useStore } from '../store';
 import { fetchMenuCategoryLinks } from '../lib/db';
@@ -54,7 +55,7 @@ export default function POSSurface() {
     getPOSItems, getPOSTotals, getPOSOrderNote, quoteDelivery,
     activeTableId, tables, clearTable, clearDraftItems, clearWalkIn, setActiveTableId, recordWalkInClosed,
     orderType, setOrderType, customer, setCustomer, setAllergens, clearCustomer,
-    orderQueue, updateQueueStatus, removeFromQueue, showToast,
+    orderQueue, showToast,
     pendingItem, setPendingItem, clearPendingItem,
     eightySixIds, toggle86,
     dailyCounts, setDailyCount, clearDailyCount,
@@ -855,8 +856,23 @@ export default function POSSurface() {
       {/* v5.5.163: Challenge 21 prompt — fires when the alcohol-sale counter hits the threshold */}
       <Challenge21PromptHost/>
 
-      {/* v5.5.190: removed duplicate POS lock overlay (v4.6.53) — the canonical
-          version is in the overlay section near the end of POSSurface return. */}
+      {/* Role-aware sign-in lock. A drawer bound to this device that isn't in a
+          tradable state (idle/closed) locks the whole POS: Manager/Admin/cashup gets
+          the cash-in denomination screen, everyone else a read-only "ask a manager"
+          screen they can only leave by signing out. No drawer bound = no lock (the
+          till trades card-only).
+
+          v5.5.190 deleted the copy that used to live here, saying the canonical one
+          was "near the end of POSSurface return" — but that copy sat inside the dead
+          OrdersHub function, so no till has actually locked since. POSLockOverlay is
+          the extracted component; it portals to document.body and re-resolves the
+          drawer itself. Mounted ONLY while the lock is needed, so its internal 15s
+          drawer poll doesn't run during normal trading (the 60s poll above is the
+          steady-state one — see the v5.5.890 note about the leaked poll). !showCashIn
+          stops it stacking on the dismissable cash-in opened from the drawer menu. */}
+      {_myDrw && _myDrw.status !== 'open' && _myDrw.status !== 'counting' && staff && !showCashIn && (
+        <POSLockOverlay />
+      )}
 
       {/* v4.6.54: drawer menu (POSSurface main return) */}
       {showDrawerMenu && (() => {
@@ -1054,6 +1070,12 @@ export default function POSSurface() {
             onComplete={async ({ amount, denominations, notes }) => {
               await cashOutDrawer?.(_mDrw.id, { declaredCash: amount, denominations, notes });
               setShowCashOut(false);
+              // Deliberately NOT logging out here. Cashing up flips the drawer to 'idle',
+              // which arms POSLockOverlay — but that overlay carries its own Sign out, so
+              // nobody is trapped. Auto-logout would swap the tree to PINScreen, which
+              // renders no Toast, destroying the messages cashOutDrawer just set: the
+              // variance figure, "variance NOT logged to the cash ledger", and the
+              // no-open-session error it returns without cashing up at all.
             }} />
         );
       })()}
@@ -1211,6 +1233,10 @@ export default function POSSurface() {
                     <div style={{height:1,flex:1,background:'var(--bdr)'}}/>
                   </div>
                 )}
+                {/* No onDiscount: OrderItem renders no per-line discount control, and the
+                    handler that used to sit here called a setDiscountTarget that never existed
+                    in this component. Line discounts are applied from the Discount button →
+                    "Selected items" (DiscountModal, scope 'items' → addItemDiscount). */}
                 {byCourse[courseNum].map(item=>(
                   <OrderItem key={item.uid} item={item} covers={covers} orderType={orderType} seatList={seatList} namesOnly={namesOnly}
                     hideCourses={hideCourses}
@@ -1221,7 +1247,6 @@ export default function POSSurface() {
                     onSeat={s=>updateItemSeat(item.uid,s)}
                     onCourse={c=>updateItemCourse(item.uid,c)}
                     onVoid={()=>setVoidTarget({type:'item',item})}
-                    onDiscount={()=>setDiscountTarget({scope:'item',item})}
                     onRemoveDiscount={()=>removeItemDiscount(activeTableId,item.uid)}
                   />
                 ))}
@@ -1975,7 +2000,7 @@ export default function POSSurface() {
 }
 
 function OrderItem({
-  item, covers, orderType, seatList, onQty, onRemove, onNote, onSeat, onCourse, onVoid, onDiscount, onRemoveDiscount, namesOnly=false, flash=false, hideCourses=false }) {
+  item, covers, orderType, seatList, onQty, onRemove, onNote, onSeat, onCourse, onVoid, onRemoveDiscount, namesOnly=false, flash=false, hideCourses=false }) {
   const compact = useCompact();
   const [showMenu, setShowMenu] = useState(false);
   const [editNote, setEditNote] = useState(false);
@@ -2174,281 +2199,6 @@ function OrderItem({
         )}
       </div>
     </div>
-  );
-}
-
-// ── Inline Orders Hub ─────────────────────────────────────────────────────────
-const ORDER_STATUS = {
-  received: { label:'Received',  color:'#3b82f6', bg:'rgba(59,130,246,.1)',  next:'Start prep',  icon:'📥' },
-  prep:     { label:'In prep',   color:'#f97316', bg:'rgba(249,115,22,.1)',   next:'Mark ready',  icon:'👨‍🍳' },
-  ready:    { label:'Ready',     color:'#22c55e', bg:'rgba(34,197,94,.1)',    next:'Collected',   icon:'✅' },
-  collected:{ label:'Collected', color:'#5c5a64', bg:'rgba(92,90,100,.1)',    next:null,          icon:'👋' },
-};
-
-function OrdersHub({ orderQueue, updateQueueStatus, removeFromQueue, showToast }) {
-  const [filter, setFilter] = useState('active');
-  const now = new Date();
-  // v5.5.134: manual re-send button needs the routing function from the store.
-  const routeKioskOrderPrints = useStore(s => s.routeKioskOrderPrints);
-
-  const resendToKitchen = (order) => {
-    // Fire the same path the realtime handler fires — but on demand. The
-    // routing function emits on-screen toasts at every decision point so
-    // the operator can see exactly what's happening (no DevTools needed).
-    routeKioskOrderPrints?.({
-      ref: order.ref,
-      source: order.source || 'pos',
-      tableLabel: order.customer?.tableLabel || null,
-      items: order.items || [],
-      customer: order.customer || null,
-      sentAt: order.sentAt || Date.now(),
-    });
-  };
-
-  const filtered = [...(orderQueue||[])].filter(o =>
-    filter==='active' ? o.status!=='collected' :
-    filter==='collected' ? o.status==='collected' : true
-  );
-
-  const counts = {
-    received: orderQueue.filter(o=>o.status==='received').length,
-    prep:     orderQueue.filter(o=>o.status==='prep').length,
-    ready:    orderQueue.filter(o=>o.status==='ready').length,
-  };
-
-  const advance = (o) => {
-    const flow = ['received','prep','ready','collected'];
-    const idx = flow.indexOf(o.status);
-    if (idx < flow.length-1) {
-      const next = flow[idx+1];
-      updateQueueStatus(o.ref, next);
-      if (next==='ready') showToast(`${o.ref} ready for ${o.customer?.name}`, 'success');
-      else if (next==='collected') { showToast(`${o.ref} collected`, 'info'); setTimeout(()=>removeFromQueue(o.ref), 5000); }
-      else showToast(`${o.ref} in prep`, 'info');
-    }
-  };
-
-  return (
-    <div style={{flex:1,display:'flex',flexDirection:'column',overflow:'hidden'}}>
-      {/* Summary pills */}
-      <div style={{padding:'10px 14px',borderBottom:'1px solid var(--bdr)',background:'var(--bg1)',flexShrink:0}}>
-        <div style={{display:'flex',gap:6,marginBottom:10,flexWrap:'wrap'}}>
-          {Object.entries(ORDER_STATUS).filter(([k])=>k!=='collected').map(([s,m])=>(
-            <div key={s} style={{display:'flex',alignItems:'center',gap:5,padding:'4px 10px',borderRadius:20,background:m.bg,border:`1px solid ${m.color}44`}}>
-              <span style={{fontSize:13}}>{m.icon}</span>
-              <span style={{fontSize:11,fontWeight:600,color:m.color}}>{m.label}</span>
-              <span style={{fontSize:13,fontWeight:800,color:m.color}}>{counts[s]||0}</span>
-            </div>
-          ))}
-        </div>
-        <div style={{display:'flex',gap:4}}>
-          {[['active','Active'],['collected','Completed'],['all','All']].map(([f,l])=>(
-            <button key={f} onClick={()=>setFilter(f)} style={{padding:'4px 12px',borderRadius:20,cursor:'pointer',fontFamily:'inherit',background:filter===f?'var(--acc-d)':'transparent',border:`1px solid ${filter===f?'var(--acc-b)':'var(--bdr)'}`,color:filter===f?'var(--acc)':'var(--t3)',fontSize:12,fontWeight:600}}>{l}</button>
-          ))}
-        </div>
-      </div>
-
-      {/* Orders list */}
-      <div style={{flex:1,overflowY:'auto',padding:'10px 14px'}}>
-        {filtered.length===0&&(
-          <div style={{textAlign:'center',padding:'60px 0',color:'var(--t3)'}}>
-            <div style={{fontSize:40,marginBottom:12,opacity:.4}}>📦</div>
-            <div style={{fontSize:14,fontWeight:600,color:'var(--t2)',marginBottom:6}}>No orders</div>
-            <div style={{fontSize:12,lineHeight:1.6}}>Takeaway and collection orders appear here after Send</div>
-          </div>
-        )}
-        {filtered.map(order=>{
-          const sm = ORDER_STATUS[order.status] || ORDER_STATUS.received;
-          const isOverdue = order.status!=='collected' && !order.isASAP && order.collectionTime && false; // placeholder
-          return (
-            <div key={order.ref} style={{background:'var(--bg2)',border:'1px solid var(--bdr)',borderRadius:12,marginBottom:10,overflow:'hidden',opacity:order.status==='collected'?.55:1}}>
-              {/* Header */}
-              <div style={{display:'flex',alignItems:'center',gap:10,padding:'10px 12px',borderBottom:'1px solid var(--bdr)'}}>
-                <span style={{fontSize:18}}>{order.type==='collection'?'📦':'🥡'}</span>
-                <div style={{flex:1}}>
-                  <div style={{display:'flex',alignItems:'baseline',gap:8}}>
-                    <span style={{fontSize:13,fontWeight:800,color:'var(--t1)',fontFamily:'DM Mono,monospace'}}>{order.ref}</span>
-                    <span style={{fontSize:13,fontWeight:600,color:'var(--t2)'}}>{order.customer?.name}</span>
-                  </div>
-                  <div style={{fontSize:11,color:'var(--t3)',marginTop:1}}>{order.customer?.phone}</div>
-                </div>
-                <div style={{textAlign:'right'}}>
-                  <div style={{fontSize:13,fontWeight:700,color:'var(--acc)',fontFamily:'DM Mono,monospace'}}>{money((order.total||0))}</div>
-                  <div style={{fontSize:10,color:'var(--t3)',textTransform:'capitalize'}}>{order.type}</div>
-                </div>
-              </div>
-
-              {/* Body */}
-              <div style={{padding:'8px 12px',display:'flex',alignItems:'flex-start',gap:10}}>
-                <div style={{flex:1}}>
-                  <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:6,flexWrap:'wrap'}}>
-                    <span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:20,background:sm.bg,color:sm.color}}>{sm.icon} {sm.label}</span>
-                    {order.type==='collection'&&(
-                      <span style={{fontSize:12,fontWeight:700,color:order.isASAP?'var(--acc)':'var(--t2)'}}>
-                        {order.isASAP ? '⚡ ASAP' : `🕐 ${order.collectionTime||'—'}`}
-                      </span>
-                    )}
-                    <span style={{fontSize:10,color:'var(--t4)'}}>by {order.staff}</span>
-                  </div>
-                  <div style={{fontSize:11,color:'var(--t3)',lineHeight:1.6}}>
-                    {(order.items||[]).slice(0,4).map((i,idx)=>(
-                      <span key={idx}>{i.qty>1?`${i.qty}× `:''}{i.name}{idx<Math.min((order.items||[]).length,4)-1?', ':''}</span>
-                    ))}
-                    {(order.items||[]).length>4&&<span style={{color:'var(--t4)'}}> +{(order.items||[]).length-4} more</span>}
-                  </div>
-                  {order.customer?.notes&&<div style={{fontSize:11,color:'#f97316',marginTop:4,fontStyle:'italic'}}>📝 {order.customer.notes}</div>}
-                </div>
-                {sm.next&&(
-                  <button onClick={()=>advance(order)} style={{padding:'7px 14px',borderRadius:9,cursor:'pointer',fontFamily:'inherit',whiteSpace:'nowrap',fontSize:12,fontWeight:700,background:order.status==='prep'?'var(--grn-d)':'var(--bg3)',border:`1px solid ${order.status==='prep'?'var(--grn-b)':'var(--bdr2)'}`,color:order.status==='prep'?'var(--grn)':'var(--t2)'}}>
-                    {sm.next} →
-                  </button>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-      
-{/* v4.6.49: role-aware sign-in gate. When the POS has a drawer bound
-          and it's not in a usable state (idle/closed), lock the whole POS.
-          Manager/Admin or staff with cashup permission → shown the cash-in
-          modal. Other roles → shown a read-only "ask a manager" screen
-          that can't be dismissed without signing out. No drawer bound =
-          no gate (POS trades card-only). */}
-      {_myDrw && _myDrw.status !== 'open' && _myDrw.status !== 'counting' && staff && !showCashIn && (
-        _canCashup || staff?.role === 'Manager' || staff?.role === 'Admin' ? (
-          <DrawerCashModal
-            mode="in"
-            drawer={_myDrw}
-            locked={true}
-            onComplete={async ({ amount, denominations }) => {
-              await cashInDrawer?.(_myDrw.id, { openingFloat: amount, denominations });
-              await loadCurrentDrawerSession?.();
-              if (typeof useStore.getState().loadCashDrawers === 'function') await useStore.getState().loadCashDrawers();
-            }}
-          />
-        ) : (
-          <div className="modal-back" style={{ zIndex:9999 }}>
-            <div style={{
-              background:'var(--bg1)', border:'1.5px solid var(--bdr2)', borderRadius:20,
-              padding:'32px 28px', maxWidth:440, textAlign:'center',
-              boxShadow:'var(--sh3)',
-            }}>
-              <div style={{ fontSize:42, marginBottom:14 }}>&#128274;</div>
-              <div style={{ fontSize:18, fontWeight:800, color:'var(--t1)', marginBottom:8 }}>POS locked</div>
-              <div style={{ fontSize:13, color:'var(--t3)', marginBottom:6, lineHeight:1.5 }}>
-                <b>{_myDrw.name}</b> needs to be cashed in before this POS can trade.
-              </div>
-              <div style={{ fontSize:13, color:'var(--t3)', marginBottom:22, lineHeight:1.5 }}>
-                Ask a manager to cash in the drawer, or sign out and let them sign in.
-              </div>
-              <button
-                onClick={() => { try { useStore.getState().logout?.(); } catch {} }}
-                style={{ padding:'10px 24px', borderRadius:10, border:'1px solid var(--bdr)', background:'var(--bg3)', color:'var(--t2)', fontFamily:'inherit', fontWeight:700, fontSize:13, cursor:'pointer' }}>
-                Sign out
-              </button>
-            </div>
-          </div>
-        )
-      )}
-      {/* Explicit cash-in flow from the drawer menu (always dismissable). */}
-      {showCashIn && _myDrw && (
-        <DrawerCashModal
-          mode="in"
-          drawer={_myDrw}
-          locked={false}
-          onClose={() => setShowCashIn(false)}
-          onComplete={async ({ amount, denominations }) => {
-            await cashInDrawer?.(_myDrw.id, { openingFloat: amount, denominations });
-            await loadCurrentDrawerSession?.();
-            if (typeof useStore.getState().loadCashDrawers === 'function') await useStore.getState().loadCashDrawers();
-            setShowCashIn(false);
-          }}
-        />
-      )}
-
-      {/* v4.6.40: drawer action sheet — opens from the 🔓 Drawer button */}
-      {showDrawerMenu && _myDrw && (
-        <div className="modal-back" onClick={e => e.target === e.currentTarget && setShowDrawerMenu(false)}>
-          <div style={{
-            background:'var(--bg1)', border:'1px solid var(--bdr2)', borderRadius:20,
-            width:'100%', maxWidth:380, padding:'18px 20px', boxShadow:'var(--sh3)',
-          }}>
-            <div style={{ fontSize:16, fontWeight:800, color:'var(--t1)', marginBottom:4 }}>{_myDrw.name}</div>
-            <div style={{ fontSize:12, color:'var(--t3)', marginBottom:16 }}>
-              Status: <b style={{color: _myDrw.status === 'open' ? 'var(--grn)' : 'var(--t3)'}}>{_myDrw.status || 'idle'}</b>
-              {' · '}Float: <b style={{color:'var(--t1)', fontFamily:'var(--font-mono)'}}>{money(Number(_myDrw.currentFloat || 0))}</b>
-            </div>
-            <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-              {/* v4.6.48: status-aware actions */}
-              {(!_myDrw.status || _myDrw.status === 'idle') && (
-                <button
-                  onClick={() => { setShowDrawerMenu(false); setShowCashIn(true); }}
-                  style={{ padding:'12px 14px', borderRadius:10, border:'1px solid var(--grn-b)', background:'var(--grn-d)', color:'var(--grn)', fontFamily:'inherit', fontWeight:700, fontSize:13, cursor:'pointer', textAlign:'left' }}>
-                  Cash in drawer
-                  <div style={{ fontSize:11, color:'var(--grn)', fontWeight:500, marginTop:2, opacity:.8 }}>Declare opening float. Drawer opens for trading.</div>
-                </button>
-              )}
-              {_myDrw.status === 'open' && (
-                <>
-                  <button
-                    onClick={() => { setShowDrawerMenu(false); openCashDrawer?.({ type:'drawer_open', reason:'Manual open (POS)', amount:0 }); }}
-                    style={{ padding:'12px 14px', borderRadius:10, border:'1px solid var(--bdr)', background:'var(--bg3)', color:'var(--t1)', fontFamily:'inherit', fontWeight:700, fontSize:13, cursor:'pointer', textAlign:'left' }}>
-                    Open drawer (pulse)
-                    <div style={{ fontSize:11, color:'var(--t3)', fontWeight:500, marginTop:2 }}>Pops the drawer open. Logged as a drawer_open event.</div>
-                  </button>
-                  <button
-                    onClick={async () => {
-                      if (!_canCashup) { useStore.getState().showToast?.('Cashup permission required', 'error'); return; }
-                      setShowDrawerMenu(false);
-                      const exp = typeof computeExpectedCash === 'function' ? await computeExpectedCash(_myDrw.id) : 0;
-                      setExpectedForCashOut(exp);
-                      setShowCashOut(true);
-                    }}
-                    disabled={!_canCashup}
-                    style={{ padding:'12px 14px', borderRadius:10, border:'1px solid var(--red-b)', background: _canCashup ? 'var(--red-d)' : 'var(--bg3)', color: _canCashup ? 'var(--red)' : 'var(--t4)', fontFamily:'inherit', fontWeight:700, fontSize:13, cursor: _canCashup ? 'pointer' : 'not-allowed', textAlign:'left' }}>
-                    Cash up drawer
-                    <div style={{ fontSize:11, color: _canCashup ? 'var(--red)' : 'var(--t4)', fontWeight:500, marginTop:2, opacity:.8 }}>
-                      {_canCashup ? 'Count cash, declare variance, close this drawer.' : 'Manager / cashup permission required.'}
-                    </div>
-                  </button>
-                </>
-              )}
-              {_myDrw.status === 'counting' && (
-                <div style={{ padding:'12px 14px', borderRadius:10, background:'rgba(232,160,32,.12)', border:'1px solid var(--amb,#e8a020)', color:'var(--amb,#e8a020)', fontSize:13, fontWeight:600 }}>
-                  Cash-up in progress. Finish the count from Back Office &rarr; Cash drawers.
-                </div>
-              )}
-            </div>
-            <button onClick={() => setShowDrawerMenu(false)}
-              style={{ marginTop:14, width:'100%', padding:'9px', borderRadius:8, background:'transparent', border:'1px solid var(--bdr)', color:'var(--t3)', fontFamily:'inherit', fontWeight:600, fontSize:12, cursor:'pointer' }}>
-              Cancel
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* v4.6.40: cash-out flow */}
-      {showCashOut && _myDrw && (
-        <DrawerCashModal
-          mode="out"
-          drawer={_myDrw}
-          expectedCash={expectedForCashOut}
-          onClose={() => setShowCashOut(false)}
-          onComplete={async ({ amount, denominations, notes }) => {
-            await cashOutDrawer?.(_myDrw.id, { declaredCash: amount, denominations, notes });
-            setShowCashOut(false);
-            // v5.5.190: after cash-up, log the user out so the POS returns to
-            // the PINScreen. The next person logging in will see the drawer-idle
-            // blocker — non-managers get a "POS locked" message, managers get
-            // the cash-in denomination screen to open the next trading day.
-            try { useStore.getState().logout?.(); } catch {}
-          }}
-        />
-      )}
-    </div>
-
-
   );
 }
 

@@ -433,33 +433,8 @@ function BankAction({ c, member, ctx, showToast, markStep, done }) {
   </>);
 }
 
-function FirstShiftActionRemoved() { return null; /* first-shift step removed from onboarding */ }
-function _UnusedFirstShift({ c, showToast, patchCase, done }) {
-  const [open, setOpen] = useState(false);
-  const [date, setDate] = useState('');
-  if (done) return <Badge tone="green">Booked</Badge>;
-  const save = async () => {
-    if (!date) return;
-    await patchCase(c, { firstShiftDate: date, meta: { ...(c.meta || {}), firstShiftDate: date }, steps: (c.steps || []) });
-    setOpen(false);
-    showToast('First shift date set', 'success');
-  };
-  return (<>
-    <button className="btn btn-acc btn-xs" onClick={() => setOpen(true)}>Set date</button>
-    {open && (
-      <div className="modal-back" onClick={e => e.target === e.currentTarget && setOpen(false)}>
-        <div className="modal-box" style={{ maxWidth: 360 }}>
-          <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 12 }}>First shift date</div>
-          <input type="date" style={inputStyle} value={date} onChange={e => setDate(e.target.value)} />
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 16 }}>
-            <button className="btn btn-ghost" onClick={() => setOpen(false)}>Cancel</button>
-            <button className="btn btn-acc" disabled={!date} onClick={save}>Save</button>
-          </div>
-        </div>
-      </div>
-    )}
-  </>);
-}
+// The first-shift onboarding step was removed. Both the placeholder and the
+// original implementation are gone; nothing referenced either.
 
 function PickStaffModal({ candidates, rolesMap, onClose, onPick }) {
   return (

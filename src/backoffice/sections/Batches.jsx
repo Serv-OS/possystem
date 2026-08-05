@@ -9,7 +9,7 @@
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useStore } from '../../store';
-import { getActiveLocationSync, getLocationId , isMock } from '../../lib/supabase';
+import { getActiveLocationSync, getLocationId , isMock, supabase } from '../../lib/supabase';
 import { money, currencySymbol } from '../../lib/currency';
 import { buildCostingCtx } from '../../lib/stock/recipes';
 import { fetchRecipes } from '../../lib/stock/recipes';

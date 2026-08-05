@@ -967,7 +967,6 @@ export const useStore = create((set, get) => ({
     image: item.image || null,
     tags: item.tags || [],
     visibility: item.visibility || { pos:true, kiosk:true, online:true, onlineDelivery:true },
-    sortOrder: item.sortOrder || 0,
   })),
 
   updateMenuItem: (id, patch) => {
@@ -2486,44 +2485,32 @@ export const useStore = create((set, get) => ({
       // Fire course on a later course there may be no ticket left to read centres from.
       // The session items are still there and still carry their categories, so we can
       // route them ourselves using the SAME routing config used at send time.
+      // Resolve exactly as sendToKitchen's getRoutingConfig does — store first, then
+      // localStorage. Reading the snapshot first meant a device whose routing arrived by
+      // Push-to-POS but whose snapshot was stale saw centres:[], which resolved no centre
+      // for every item AND suppressed the guard below, so the green "fired to kitchen"
+      // came back with nothing printed — the exact failure the guard exists to catch.
+      const routingConfig = (() => {
+        try {
+          const stored = useStore.getState().printRouting;
+          if (stored?.centres?.length) return stored;
+          const snap = JSON.parse(localStorage.getItem('rpos-config-snapshot') || '{}')?.printRouting;
+          if (snap?.centres?.length) return snap;
+          return JSON.parse(localStorage.getItem('rpos-print-routing') || 'null') || { centres: [], routing: {} };
+        } catch { return { centres: [], routing: {} }; }
+      })();
+      const courseItems = (table?.session?.items || []).filter(i => i.course === courseNum && i.status !== 'voided');
       if (centresInCourse.size === 0) {
         try {
-          const routingConfig = (() => {
-            try {
-              const snap = JSON.parse(localStorage.getItem('rpos-config-snapshot') || '{}')?.printRouting;
-              if (snap?.centres?.length) return snap;
-              return JSON.parse(localStorage.getItem('rpos-print-routing') || 'null') || { centres: [], routing: {} };
-            } catch { return { centres: [], routing: {} }; }
-          })();
-          const { centres = [], routing = {} } = routingConfig;
-          // Local copy of the centre-resolution logic. Same behaviour as the inline one
-          // used inside sendToKitchen, just reused here.
-          const menu = get().menuItems || [];
-          const menuById = new Map(menu.map(m => [m.id, m]));
-          const parentMap = new Map(menu.filter(m => m.parentId).map(m => [m.id, m.parentId]));
-          const catOrAncestorMatches = (cat, assignedSet, pm) => {
-            let cur = cat; let depth = 0;
-            while (cur && depth < 10) {
-              if (assignedSet.has(cur)) return true;
-              cur = pm.get(cur) || null;
-              depth++;
-            }
-            return false;
-          };
-          const courseItems = (table?.session?.items || []).filter(i => i.course === courseNum && i.status !== 'voided');
+          // v5.5.977: this used to be a LOCAL near-copy of the routing walk, and it was
+          // handed a MENU-ITEM parent map where the walk expects a CATEGORY parent map.
+          // Different key spaces, so the ancestor step could never fire and every item
+          // whose production centre is assigned on a PARENT category resolved to no
+          // centre at all — no fire docket, while the toast still said "fired to
+          // kitchen". Call the shared module-level helper instead: it is the same one
+          // sendToKitchen routed these items with, so the marker lands where the food did.
           courseItems.forEach(item => {
-            const full = menuById.get(item.id) || menuById.get(item.itemId) || item;
-            const cat = full.cat || full.category;
-            const parentCat = full.parentId ? (menuById.get(full.parentId)?.cat || menuById.get(full.parentId)?.category) : null;
-            centres.forEach(centre => {
-              const r = routing?.[centre.id];
-              if (!r?.assignedCategories?.length) return;
-              if (r.excludedItems?.includes(item.id) || r.excludedItems?.includes(item.itemId)) return;
-              const assignedSet = new Set(r.assignedCategories);
-              const matches = (cat && catOrAncestorMatches(cat, assignedSet, parentMap))
-                           || (parentCat && catOrAncestorMatches(parentCat, assignedSet, parentMap));
-              if (matches) centresInCourse.add(centre.id);
-            });
+            getCentresForItem(item, routingConfig).forEach(cid => centresInCourse.add(cid));
           });
           if (centresInCourse.size > 0) {
             console.log('[fireCourse] derived centres from session items:', [...centresInCourse]);
@@ -2540,6 +2527,16 @@ export const useStore = create((set, get) => ({
           type: 'fire-marker',
         });
       });
+      // v5.5.977: the course has food and this venue routes to production centres, but
+      // nothing resolved — no docket printed and the kitchen has NOT been told. Say so
+      // rather than showing the success toast that hid this for so long.
+      if (centresInCourse.size === 0 && courseItems.length > 0 && (routingConfig.centres || []).length > 0) {
+        get().showToast(
+          `Course ${courseNum} was NOT sent to the kitchen — no production centre matched these items. Check Print routing, and tell the kitchen directly.`,
+          'error',
+        );
+        return;
+      }
     }
     get().showToast('Course ' + courseNum + ' fired to kitchen', 'success');
   },
@@ -4295,6 +4292,13 @@ export const useStore = create((set, get) => ({
   //   'drop'            — cash removed to safe / deposit
   //   'expense'         — cash paid out for supplies etc
   //   'adjustment'      — manual reconciliation tweak
+  //
+  // ⚠ IN-MEMORY ONLY. This writes to the local pettyCashEntries array and NOTHING
+  // else — no cash_movements row, so nothing it records reaches drawer variance, EOD
+  // close or the Z report. The Back Office petty cash page called it directly for a
+  // long time and every float / drop / paid-out / adjustment entered there vanished on
+  // refresh. Money-moving callers must use recordCashEntry (or openCashDrawer, which
+  // wraps it); this stays public only because recordCashEntry itself calls it.
   addPettyCashEntry: (entry) => {
     const full = {
       id: `pc-${Date.now()}-${Math.random().toString(36).slice(2,6)}`,
@@ -4314,61 +4318,74 @@ export const useStore = create((set, get) => ({
     return (get().pettyCashEntries || []).reduce((s, e) => s + (SIGN[e.type] ?? 0) * (Number(e.amount) || 0), 0);
   },
 
-  // Pulse the cash drawer via the printer (if a cash-drawer-attached printer
-  // is configured) AND log to the petty cash ledger. Swallow print failures —
-  // the drawer pulse is best-effort and should never block a payment flow.
-  // v5.5.971: async so the cash_movements mirror can be AWAITED and checked. Everything
-  // before the first await still runs synchronously, so callers that don't await (the
-  // cash-sale auto-fire paths) see the pulse and the local ledger entry exactly as before.
-  openCashDrawer: async ({ reason = 'Manual open', amount = 0, type = 'drawer_open', ref = null, note = '', force = false, drawerId = null } = {}) => {
-    // TRAINING MODE: don't pulse the physical drawer or write a petty_cash / cash
-    // movement row — keeps the cash ledger + EOD reconciliation clean.
-    if (isTrainingMode()) return;
-    // v4.6.32: permission gate. 'force' is passed by the automatic cash-sale
-    // firing path — no permission check needed there (the sale itself was
-    // already authorised). Manual opens from the POS or the petty cash page
-    // must have the 'openDrawer' staff permission.
-    // v4.6.36: drawer-aware routing. If drawerId is provided (or myDrawer()
-    // resolves one) the pulse fires at that drawer's printer, and the
-    // movement row carries drawer_id + shift_id.
+  // ── The one way money enters the cash ledger (v5.5.977) ───────────────
+  // Local pettyCashEntries row + the cash_movements row that drawer variance, EOD
+  // close and the Z report are all computed from + the drawer float move. Every cash
+  // entry goes through here.
+  //
+  // Extracted from openCashDrawer, which is now this plus the POS-only bits it owns:
+  // the 'openDrawer' permission gate and the physical printer pulse. The Back Office
+  // petty cash page calls this directly — it has no POS staff object to gate on and
+  // no drawer in front of the operator to pulse. Before the extraction it called
+  // addPettyCashEntry on its own, so every manual float / drop / paid-out / adjustment
+  // lived in an in-memory array and NOTHING reached cash_movements.
+  //
+  // Returns { ok, entry, drawer }. ok === false means the cash_movements row did NOT
+  // land: an error toast has already been shown, entry is null and the drawer float
+  // was deliberately left alone. Callers MUST NOT report success on ok === false.
+  recordCashEntry: async ({ type = 'drawer_open', amount = 0, reason = '', note = '', ref = null, drawerId = null } = {}) => {
+    // TRAINING MODE: no ledger entry, no cash_movements row, no float move — keeps
+    // the cash ledger + EOD reconciliation clean. Not a failure, so ok stays true.
+    if (isTrainingMode()) return { ok: true, entry: null, drawer: null, skipped: true };
     const { staff } = get();
-    if (!force) {
-      const allowed = Array.isArray(staff?.permissions) && staff.permissions.includes('openDrawer');
-      if (!allowed) {
-        get().showToast?.('No permission — drawer open requires manager override', 'error');
-        return null;
+    // cash_movements has ONE vocabulary and every reader keys off it: float_in,
+    // cash_sale, adjustment, downlift_from_safe, cash_drop, drop, expense,
+    // uplift_to_safe, drawer_open (see reports/CashDrawer.jsx + EODClose.jsx). The Back
+    // Office petty cash UI has always called a pay-in 'float' in its own local labels,
+    // and a row typed 'float' would land in the table and then be counted by nothing —
+    // present in the data, absent from variance, EOD and the Z report. Normalise for
+    // the DB row; the local pettyCashEntries row keeps the caller's own type so its UI
+    // labels and running balance still resolve.
+    const dbType = ({ float: 'float_in' })[type] || type;
+    // Use ONLY the drawer the caller named — no myDrawer() fallback. myDrawer() reads
+    // the paired terminal out of localStorage, and the Back Office runs on the SAME
+    // origin as the till, so a fallback here would silently bind an office entry (a
+    // safe drop, say) to that terminal's drawer and move its float. openCashDrawer
+    // resolves myDrawer() itself and passes the id in.
+    const resolvedDrawer = (drawerId
+      ? (get().cashDrawers || []).find(d => d.id === drawerId)
+      : null) || null;
+    const resolvedDrawerId = resolvedDrawer?.id || null;
+    // Readers key movements off session_id and DROP rows that have none (see
+    // reports/CashDrawer.jsx), and EODClose.jsx additionally fetches by shift_id —
+    // insertCashMovement defaults both from THIS device's state, which is empty in the
+    // Back Office. Take them from the target drawer's own open session instead.
+    let sessionId = null;
+    let sessionShiftId = null;
+    if (resolvedDrawerId) {
+      const cur = get().currentDrawerSession;
+      if (cur?.drawer_id === resolvedDrawerId) {
+        sessionId = cur.id;
+        sessionShiftId = cur.shift_id || null;
+      } else if (!isMock && supabase) {
+        const { data: sessions } = await supabase
+          .from('drawer_sessions')
+          .select('id, shift_id')
+          .eq('drawer_id', resolvedDrawerId)
+          .in('status', ['open', 'counting'])
+          .order('cash_in_at', { ascending: false })
+          .limit(1);
+        sessionId = sessions?.[0]?.id || null;
+        sessionShiftId = sessions?.[0]?.shift_id || null;
       }
     }
-    // Resolve the drawer: explicit drawerId > myDrawer() > null
-    const resolvedDrawer = drawerId
-      ? (get().cashDrawers || []).find(d => d.id === drawerId)
-      : get().myDrawer?.() || null;
-    const resolvedDrawerId = resolvedDrawer?.id || null;
-    const resolvedPrinterId = resolvedDrawer?.printerId || null;
-    try {
-      // printService.openCashDrawer accepts printerId as its first arg.
-      // If we have the drawer's printer, use it; else fall back to legacy
-      // behaviour (search for cashDrawerAttached flag).
-      const pulsePromise = printService?.openCashDrawer?.(resolvedPrinterId);
-      pulsePromise?.catch?.(err => {
-        console.warn('[openCashDrawer] pulse failed:', err?.message || err);
-        get().showToast?.(`Drawer pulse failed: ${err?.message || 'no printer'}`, 'error');
-      });
-    } catch (err) { console.warn('[openCashDrawer] pulse threw:', err); }
-    // Legacy pettyCashEntries for backwards-compat UI; also mirror to
-    // cash_movements (Supabase-backed, per-drawer, per-shift).
-    const entry = get().addPettyCashEntry({
-      type, amount, reason, ref, note,
-      staff: staff?.name || 'Unknown',
-      staffId: staff?.id || null,
-      drawerId: resolvedDrawerId,
-    });
     // Mirror to cash_movements — AWAITED and CHECKED (v5.5.971). This row is what
     // drawer variance, EOD close and the Z report are computed from; losing it
     // silently is the difference between a balanced till and an unexplained short.
     const movementId = await get().insertCashMovement?.({
-      type, amount,
+      type: dbType, amount,
       drawerId: resolvedDrawerId,
+      sessionId, shiftId: sessionShiftId,
       reason, note, ref,
       staffId: staff?.id || null,
       staffName: staff?.name || 'Unknown',
@@ -4383,20 +4400,24 @@ export const useStore = create((set, get) => ({
           : 'Drawer event was NOT recorded in the cash ledger — check you\'re signed in',
         'error',
       );
+      // Float deliberately untouched — moving it without its ledger row just
+      // manufactures a variance. No local row either: the UI keeps the modal open and
+      // asks for a re-entry, so an up-front row would leave a phantom entry (and a
+      // wrong running balance) behind every retry.
+      return { ok: false, entry: null, drawer: resolvedDrawer };
     }
-    // v4.6.39: visible feedback for manual opens. Auto-fire on cash sale
-    // skips the toast (the sale already renders a 'paid' toast).
-    // v5.5.971: moved BELOW the awaited write and suppressed when it failed — a green
-    // toast next to a rejected ledger row is exactly the lie this sweep is removing.
-    if (type === 'drawer_open' && !force && !movementLost) {
-      const _drawerName = resolvedDrawer?.name;
-      get().showToast?.(_drawerName ? `${_drawerName} opened` : 'Drawer opened', 'success');
-    }
-    // Update drawer's current_float locally + in DB. Skipped when the movement was
-    // lost — moving the float without its ledger row just manufactures a variance.
-    if (resolvedDrawerId && type !== 'drawer_open' && !movementLost) {
+    // Legacy pettyCashEntries for backwards-compat UI — added only now the movement
+    // has landed. Keeps the caller's own type so its labels and running balance resolve.
+    const entry = get().addPettyCashEntry({
+      type, amount, reason, ref, note,
+      staff: staff?.name || 'Unknown',
+      staffId: staff?.id || null,
+      drawerId: resolvedDrawerId,
+    });
+    // Update drawer's current_float locally + in DB.
+    if (resolvedDrawerId && dbType !== 'drawer_open') {
       const SIGN = { cash_sale: +1, float_in: +1, adjustment: +1, drop: -1, cash_drop: -1, expense: -1, uplift_to_safe: -1, downlift_from_safe: +1 };
-      const delta = (SIGN[type] || 0) * (Number(amount) || 0);
+      const delta = (SIGN[dbType] || 0) * (Number(amount) || 0);
       if (delta !== 0) {
         // Re-read the float HERE, not from the resolvedDrawer captured at function entry:
         // there is now an awaited cash_movements insert in between, and a concurrent sale
@@ -4406,7 +4427,62 @@ export const useStore = create((set, get) => ({
         await get().updateCashDrawer?.(resolvedDrawerId, { currentFloat: current + delta });
       }
     }
-    return entry;
+    return { ok: true, entry, drawer: resolvedDrawer };
+  },
+
+  // Pulse the cash drawer via the printer (if a cash-drawer-attached printer
+  // is configured) AND log to the petty cash ledger. Swallow print failures —
+  // the drawer pulse is best-effort and should never block a payment flow.
+  // v5.5.971: async so the cash_movements mirror can be AWAITED and checked. The pulse
+  // still fires synchronously, so callers that don't await (the cash-sale auto-fire
+  // paths) see the drawer open exactly as before; the local ledger entry now appears
+  // once the movement lands rather than up front.
+  // v5.5.977: the ledger half now lives in recordCashEntry (shared with Back Office
+  // petty cash). Return value here is unchanged.
+  openCashDrawer: async ({ reason = 'Manual open', amount = 0, type = 'drawer_open', ref = null, note = '', force = false, drawerId = null } = {}) => {
+    // TRAINING MODE: don't pulse the physical drawer or write a petty_cash / cash
+    // movement row — keeps the cash ledger + EOD reconciliation clean.
+    if (isTrainingMode()) return;
+    // v4.6.32: permission gate. 'force' is passed by the automatic cash-sale
+    // firing path — no permission check needed there (the sale itself was
+    // already authorised). Manual opens from the POS must have the 'openDrawer'
+    // staff permission.
+    // v4.6.36: drawer-aware routing. If drawerId is provided (or myDrawer()
+    // resolves one) the pulse fires at that drawer's printer, and the
+    // movement row carries drawer_id + shift_id.
+    const { staff } = get();
+    if (!force) {
+      const allowed = Array.isArray(staff?.permissions) && staff.permissions.includes('openDrawer');
+      if (!allowed) {
+        get().showToast?.('No permission — drawer open requires manager override', 'error');
+        return null;
+      }
+    }
+    // Resolve the drawer HERE — this is the POS, so the device-bound drawer is the
+    // right default. recordCashEntry never guesses one; it gets the id from us.
+    const resolvedDrawer = (drawerId
+      ? (get().cashDrawers || []).find(d => d.id === drawerId)
+      : get().myDrawer?.()) || null;
+    try {
+      // printService.openCashDrawer accepts printerId as its first arg.
+      // If we have the drawer's printer, use it; else fall back to legacy
+      // behaviour (search for cashDrawerAttached flag).
+      const pulsePromise = printService?.openCashDrawer?.(resolvedDrawer?.printerId || null);
+      pulsePromise?.catch?.(err => {
+        console.warn('[openCashDrawer] pulse failed:', err?.message || err);
+        get().showToast?.(`Drawer pulse failed: ${err?.message || 'no printer'}`, 'error');
+      });
+    } catch (err) { console.warn('[openCashDrawer] pulse threw:', err); }
+    const res = await get().recordCashEntry({ type, amount, reason, note, ref, drawerId: resolvedDrawer?.id || null });
+    // v4.6.39: visible feedback for manual opens. Auto-fire on cash sale
+    // skips the toast (the sale already renders a 'paid' toast).
+    // v5.5.971: moved BELOW the awaited write and suppressed when it failed — a green
+    // toast next to a rejected ledger row is exactly the lie this sweep is removing.
+    if (type === 'drawer_open' && !force && res?.ok) {
+      const _drawerName = res.drawer?.name;
+      get().showToast?.(_drawerName ? `${_drawerName} opened` : 'Drawer opened', 'success');
+    }
+    return res?.entry ?? null;
   },
 
   // v4.6.36: persist a movement row to Supabase cash_movements. Dual-writes here:
@@ -4426,8 +4502,17 @@ export const useStore = create((set, get) => ({
     // v4.6.39: if no shiftId was passed, default to the currently open shift.
     // v4.6.40: also default session_id to the currentDrawerSession when the caller
     // didn't specify. This is what links every cash-sale to the session it occurred in.
+    // v5.5.977: only inherit currentDrawerSession when the row belongs to THIS device's
+    // drawer (or to no drawer at all). A Back Office row against another drawer that
+    // borrowed this session would be counted against the wrong till at cash-up.
+    const _curSession = get().currentDrawerSession;
     const resolvedShiftId = shiftId || get().currentShift?.id || null;
-    const resolvedSessionId = sessionId || get().currentDrawerSession?.id || null;
+    // A row with NO drawer must NOT borrow this device's session either. Back Office
+    // petty cash sends drawerId:null on the default 'All' filter, and ?mode=office runs
+    // on the same origin as the till — so inheriting here would bucket an office cash
+    // drop into that till's drawer session and manufacture a shortage at cash-up.
+    const resolvedSessionId = sessionId
+      || (drawerId && drawerId === _curSession?.drawer_id ? _curSession?.id || null : null);
     try {
       const locId = getActiveLocationSync() || await getLocationId();
       if (!locId) {

@@ -67,17 +67,24 @@ export default function POSLockOverlay() {
     (Array.isArray(staff?.permissions) && staff.permissions.includes('cashup'));
 
   const overlay = canCashIn ? (
-    // Authorised → show the cash-in modal (locked, cannot be dismissed)
-    <DrawerCashModal
-      mode="in"
-      drawer={drawer}
-      locked={true}
-      onComplete={async ({ amount, denominations }) => {
-        await cashInDrawer?.(drawer.id, { openingFloat: amount, denominations });
-        await loadCurrentDrawerSession?.();
-        await loadCashDrawers?.();
-      }}
-    />
+    // Authorised → show the cash-in modal (locked, cannot be dismissed).
+    // The Sign out button is the ONLY way past this without declaring a float. Without it
+    // a manager who cashes up at close of trade is trapped: the drawer goes 'idle', this
+    // modal covers the till, and `locked` hides DrawerCashModal's Cancel — leaving no exit
+    // but inventing an opening float or clearing browser storage.
+    <>
+      <DrawerCashModal
+        mode="in"
+        drawer={drawer}
+        locked={true}
+        onComplete={async ({ amount, denominations }) => {
+          await cashInDrawer?.(drawer.id, { openingFloat: amount, denominations });
+          await loadCurrentDrawerSession?.();
+          await loadCashDrawers?.();
+        }}
+      />
+      <LockSignOut />
+    </>
   ) : (
     // Not authorised → read-only lock screen
     <AskManagerLock drawerName={drawer.name} />
@@ -85,6 +92,22 @@ export default function POSLockOverlay() {
 
   // Render via portal so it sits above everything regardless of parent CSS.
   return createPortal(overlay, document.body);
+}
+
+// Sits above the locked cash-in modal so cashing up at close of trade lands the till
+// on the PIN screen instead of an undismissable float prompt.
+function LockSignOut() {
+  const logout = useStore(s => s.logout);
+  return createPortal(
+    <button
+      className="btn btn-ghost"
+      onClick={() => logout?.()}
+      style={{ position: 'fixed', top: 16, right: 16, zIndex: 100010 }}
+    >
+      Sign out
+    </button>,
+    document.body,
+  );
 }
 
 function AskManagerLock({ drawerName }) {

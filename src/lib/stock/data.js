@@ -39,6 +39,20 @@ async function ensureLoc(locationId) {
   return locationId;
 }
 
+/**
+ * A write that matched NO rows comes back from PostgREST as a plain success with an
+ * empty body — an RLS policy that matches nothing is indistinguishable from a save,
+ * so the caller's `if (error)` passes and the UI says "done". Every write below asks
+ * for the id back and treats nothing coming back as the failure it is.
+ * (Same check as src/backoffice/sections/DeviceProfiles.jsx.)
+ */
+const zeroRows = (what, data) => (!data || data.length === 0)
+  ? new Error(`${what} matched 0 rows — RLS blocked it or the row no longer exists`)
+  : null;
+/** Same check for .select().maybeSingle(), which returns data:null with error:null. */
+const noRow = (what, row) => row ? null
+  : new Error(`${what} returned no row — RLS blocked it or it matched nothing`);
+
 const num = (v) => (v === '' || v == null ? null : Number(v));
 
 // ── mappers ──────────────────────────────────────────────────────────────────
@@ -133,8 +147,11 @@ export const fetchInventoryItems = async (locationId = null) => {
   const [{ data: items, error }, { data: convs }, { data: sps }, { data: packs }, ratesById] = await Promise.all([
     supabase.from('inventory_items').select('*').eq('location_id', locationId).order('name'),
     supabase.from('inventory_item_conversions').select('*').eq('location_id', locationId),
-    supabase.from('supplier_products').select('*').eq('location_id', locationId),
-    supabase.from('item_packaging_formats').select('*').eq('location_id', locationId),
+    // Ordered, not incidental: readers pick the buy/count default and the preferred
+    // supplier with .find(), so an unordered fetch let two devices resolve a different
+    // row from the same data — and price purchase orders off a different pack size.
+    supabase.from('supplier_products').select('*').eq('location_id', locationId).order('created_at').order('id'),
+    supabase.from('item_packaging_formats').select('*').eq('location_id', locationId).order('created_at').order('id'),
     fetchTaxRateMap(locationId),
   ]);
   if (error) return { data: [], error };
@@ -171,16 +188,20 @@ export const upsertInventoryItem = async (item, locationId = null) => {
   if (isMock || !supabase) return { data: null, error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
-  return supabase.from('inventory_items').upsert(itemToRow(item, locationId)).select().maybeSingle();
+  // maybeSingle() hands back data:null with error:null when nothing came back —
+  // a blocked write reads exactly like a save. Report it.
+  const { data, error } = await supabase.from('inventory_items').upsert(itemToRow(item, locationId)).select().maybeSingle();
+  return { data, error: error || noRow('Item save', data) };
 };
 
 export const setInventoryItemArchived = async (id, archived, locationId = null) => {
   if (isMock || !supabase) return { data: null, error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
-  return supabase.from('inventory_items')
+  const { data, error } = await supabase.from('inventory_items')
     .update({ archived_at: archived ? nowIso() : null, updated_at: nowIso() })
-    .eq('location_id', locationId).eq('id', id);
+    .eq('location_id', locationId).eq('id', id).select('id');
+  return { data, error: error || zeroRows(archived ? 'Archive item' : 'Restore item', data) };
 };
 
 // ── suppliers ─────────────────────────────────────────────────────────────────
@@ -198,15 +219,16 @@ export const upsertSupplier = async (supplier, locationId = null) => {
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
   const { data, error } = await supabase.from('suppliers').upsert(supplierToRow(supplier, locationId)).select().maybeSingle();
-  return { data: data ? supplierFromRow(data) : null, error };
+  return { data: data ? supplierFromRow(data) : null, error: error || noRow('Supplier save', data) };
 };
 
 export const setSupplierArchived = async (id, archived, locationId = null) => {
   if (isMock || !supabase) return { data: null, error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
-  return supabase.from('suppliers').update({ archived_at: archived ? nowIso() : null, updated_at: nowIso() })
-    .eq('location_id', locationId).eq('id', id);
+  const { data, error } = await supabase.from('suppliers').update({ archived_at: archived ? nowIso() : null, updated_at: nowIso() })
+    .eq('location_id', locationId).eq('id', id).select('id');
+  return { data, error: error || zeroRows(archived ? 'Archive supplier' : 'Restore supplier', data) };
 };
 
 // ── supplier products (the pack→unit cost source) ─────────────────────────────
@@ -215,22 +237,41 @@ export const upsertSupplierProduct = async (sp, locationId = null) => {
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
   // Only one preferred per item: clear others first when this one is preferred.
+  // Abort if that clear fails — carrying on would leave TWO preferred suppliers, and
+  // recomputeItemCost takes the first preferred it walks past, so the item's cost
+  // would depend on which row the fetch happened to return first.
   if (sp.isPreferred && sp.inventoryItemId) {
-    await supabase.from('supplier_products').update({ is_preferred: false })
+    let clear = supabase.from('supplier_products').update({ is_preferred: false })
       .eq('location_id', locationId).eq('inventory_item_id', sp.inventoryItemId);
+    if (sp.id) clear = clear.neq('id', sp.id);   // leave the row we're about to write
+    const { error: clearErr } = await clear.select('id');
+    if (clearErr) return { data: null, error: clearErr };
   }
   const { data, error } = await supabase.from('supplier_products').upsert(spToRow(sp, locationId)).select().maybeSingle();
-  if (!error && sp.inventoryItemId) await recomputeItemCost(sp.inventoryItemId, locationId);
-  return { data: data ? spFromRow(data) : null, error };
+  const saveErr = error || noRow('Supplier product save', data);
+  if (saveErr) return { data: null, error: saveErr };
+  let partial = null;
+  if (sp.inventoryItemId) {
+    // The pack IS the cost source, so a lost recompute has to reach the operator. But it
+    // is reported as `partial`, NOT as `error`: the pack row DID save, and callers treat
+    // `error` as "nothing happened" and leave the form populated — so the operator saves
+    // again and, because spToRow omits `id` for a new pack, inserts a SECOND row for the
+    // same pack. Two rows, and recomputeItemCost then picks whichever it walks first.
+    const { error: costErr } = await recomputeItemCost(sp.inventoryItemId, locationId);
+    if (costErr) partial = `Pack saved, but the item cost was NOT updated: ${costErr.message || costErr}`;
+  }
+  return { data: data ? spFromRow(data) : null, error: null, partial };
 };
 
 export const deleteSupplierProduct = async (id, inventoryItemId, locationId = null) => {
   if (isMock || !supabase) return { data: null, error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
-  const res = await supabase.from('supplier_products').delete().eq('location_id', locationId).eq('id', id);
-  if (!res.error && inventoryItemId) await recomputeItemCost(inventoryItemId, locationId);
-  return res;
+  const { data, error } = await supabase.from('supplier_products').delete()
+    .eq('location_id', locationId).eq('id', id).select('id');
+  const delErr = error || zeroRows('Delete supplier product', data);
+  if (!delErr && inventoryItemId) await recomputeItemCost(inventoryItemId, locationId);
+  return { data, error: delErr };
 };
 
 // ── item unit conversions (cross-dimension bridges) ───────────────────────────
@@ -244,21 +285,58 @@ export const upsertItemConversion = async (conv, locationId = null) => {
     from_qty: Number(conv.fromQty) || 0, from_unit: conv.fromUnit,
     to_qty: Number(conv.toQty) || 0, to_unit: conv.toUnit,
   };
-  const res = await supabase.from('inventory_item_conversions').upsert(row).select().maybeSingle();
-  if (!res.error && conv.inventoryItemId) await recomputeItemCost(conv.inventoryItemId, locationId);
-  return res;
+  const { data, error } = await supabase.from('inventory_item_conversions').upsert(row).select().maybeSingle();
+  const saveErr = error || noRow('Conversion save', data);
+  if (saveErr) return { data: null, error: saveErr };
+  let partial = null;
+  if (conv.inventoryItemId) {
+    // Same rule as supplier products: the bridge DID save, so this is `partial`, not
+    // `error` — reporting it as a failure makes the operator re-save and duplicate the row.
+    const { error: costErr } = await recomputeItemCost(conv.inventoryItemId, locationId);
+    if (costErr) partial = `Bridge saved, but the item cost was NOT updated: ${costErr.message || costErr}`;
+  }
+  return { data, error: null, partial };
 };
 
 export const deleteItemConversion = async (id, inventoryItemId, locationId = null) => {
   if (isMock || !supabase) return { data: null, error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
-  const res = await supabase.from('inventory_item_conversions').delete().eq('location_id', locationId).eq('id', id);
-  if (!res.error && inventoryItemId) await recomputeItemCost(inventoryItemId, locationId);
-  return res;
+  const { data, error } = await supabase.from('inventory_item_conversions').delete()
+    .eq('location_id', locationId).eq('id', id).select('id');
+  const delErr = error || zeroRows('Delete conversion', data);
+  if (!delErr && inventoryItemId) await recomputeItemCost(inventoryItemId, locationId);
+  return { data, error: delErr };
 };
 
 // ── packaging / "units you use" (named packs: Keg, Case, Bottle, glass…) ──────
+//
+// THE INVARIANT: exactly one format per item may hold is_purchase_default, and one
+// is_count_default. There is no unique partial index behind either column yet, and
+// PostgREST gives the client no transaction — clear-others and set-this are two
+// separate round trips. So the rule here is ORDER + CHECK:
+//   • clear first, set second — if the second write is lost the item is left with NO
+//     default (readers fall back to the base unit) instead of TWO, where which one
+//     wins is whatever the fetch returned first and can differ between devices
+//   • never continue past a failed clear — that is the write that creates the duplicate
+//   • read back afterwards, because an RLS policy matching zero rows looks exactly
+//     like a successful clear
+// The buy default decides the pack size and price on every purchase order, which is
+// why this is worth three round trips on an operation staff perform once per pack.
+
+/** Confirm exactly one format holds `col` for this item, and that it is `expectedId`. */
+async function verifySingleDefault(col, inventoryItemId, expectedId, locationId) {
+  const { data, error } = await supabase.from('item_packaging_formats')
+    .select('id').eq('location_id', locationId).eq('inventory_item_id', inventoryItemId).eq(col, true);
+  if (error) return null;                    // can't verify — don't invent a failure
+  const ids = (data || []).map((r) => String(r.id));
+  if (ids.length === 1 && ids[0] === String(expectedId)) return null;
+  const what = col === 'is_purchase_default' ? 'buy' : 'count';
+  return new Error(ids.length === 0
+    ? `No ${what} unit is set for this item — the change did not stick.`
+    : `${ids.length} units are flagged as the ${what} unit — the previous one was not cleared.`);
+}
+
 export const upsertPackagingFormat = async (pack, locationId = null) => {
   if (isMock || !supabase) return { data: null, error: null };
   locationId = await ensureLoc(locationId);
@@ -268,7 +346,12 @@ export const upsertPackagingFormat = async (pack, locationId = null) => {
     const patch = {};
     if (pack.isCountDefault) patch.is_count_default = false;
     if (pack.isPurchaseDefault) patch.is_purchase_default = false;
-    await supabase.from('item_packaging_formats').update(patch).eq('location_id', locationId).eq('inventory_item_id', pack.inventoryItemId);
+    let clear = supabase.from('item_packaging_formats').update(patch)
+      .eq('location_id', locationId).eq('inventory_item_id', pack.inventoryItemId);
+    if (pack.id) clear = clear.neq('id', pack.id);   // leave the row we're about to write
+    const { error: clearErr } = await clear.select('id');
+    // Refuse the save rather than add a second default on top of the old one.
+    if (clearErr) return { data: null, error: clearErr };
   }
   const row = {
     ...(pack.id ? { id: pack.id } : {}),
@@ -277,7 +360,8 @@ export const upsertPackagingFormat = async (pack, locationId = null) => {
     parent_format_id: pack.parentFormatId || null,
     is_count_default: pack.isCountDefault === true, is_purchase_default: pack.isPurchaseDefault === true,
   };
-  return supabase.from('item_packaging_formats').upsert(row).select().maybeSingle();
+  const { data, error } = await supabase.from('item_packaging_formats').upsert(row).select().maybeSingle();
+  return { data, error: error || noRow('Unit save', data) };
 };
 
 /** Set one format as the count-default or purchase-default (clears the others). */
@@ -285,16 +369,29 @@ export const setUnitDefault = async (formatId, inventoryItemId, kind, locationId
   if (isMock || !supabase) return { error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { error: new Error('No locationId') };
+  // Without the item id the clear below matches nothing, which is precisely how a
+  // second default gets created — refuse instead.
+  if (!inventoryItemId) return { error: new Error('No inventory item') };
   const col = kind === 'purchase' ? 'is_purchase_default' : 'is_count_default';
-  await supabase.from('item_packaging_formats').update({ [col]: false }).eq('location_id', locationId).eq('inventory_item_id', inventoryItemId);
-  return supabase.from('item_packaging_formats').update({ [col]: true }).eq('location_id', locationId).eq('id', formatId);
+  const { error: clearErr } = await supabase.from('item_packaging_formats').update({ [col]: false })
+    .eq('location_id', locationId).eq('inventory_item_id', inventoryItemId)
+    .neq('id', formatId)                     // don't clear the one we're about to set
+    .select('id');                           // (0 rows here is normal — nothing else was flagged)
+  if (clearErr) return { error: clearErr };
+  const { data, error } = await supabase.from('item_packaging_formats').update({ [col]: true })
+    .eq('location_id', locationId).eq('id', formatId).select('id');
+  const setErr = error || zeroRows('Default unit', data);
+  if (setErr) return { error: setErr };
+  return { error: await verifySingleDefault(col, inventoryItemId, formatId, locationId) };
 };
 
 export const deletePackagingFormat = async (id, locationId = null) => {
   if (isMock || !supabase) return { data: null, error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
-  return supabase.from('item_packaging_formats').delete().eq('location_id', locationId).eq('id', id);
+  const { data, error } = await supabase.from('item_packaging_formats').delete()
+    .eq('location_id', locationId).eq('id', id).select('id');
+  return { data, error: error || zeroRows('Delete unit', data) };
 };
 
 // ── stock movements ledger (slice 2) ─────────────────────────────────────────
@@ -447,9 +544,13 @@ export const fetchItemMovements = async (inventoryItemId, locationId = null, lim
  * products of their own.
  */
 export async function recomputeItemCost(itemId, locationId = null) {
-  if (isMock || !supabase || !itemId) return { ok: false };
+  // Callers read `.error`, so a bare { ok:false } reads to them as success. Mock mode is a
+  // genuine no-op; the rest are real failures and must carry one — an item hidden by RLS
+  // used to come back silent and leave a stale cost behind a clean save toast.
+  if (isMock || !supabase) return { ok: true, skipped: true };
+  if (!itemId) return { ok: false, error: new Error('no item id') };
   locationId = await ensureLoc(locationId);
-  if (!locationId) return { ok: false };
+  if (!locationId) return { ok: false, error: new Error('no location resolved') };
   const [{ data: itemRows }, { data: sps }, { data: convs }, ratesById] = await Promise.all([
     supabase.from('inventory_items').select('*').eq('location_id', locationId).eq('id', itemId).limit(1),
     supabase.from('supplier_products').select('*').eq('location_id', locationId).eq('inventory_item_id', itemId),
@@ -457,7 +558,7 @@ export async function recomputeItemCost(itemId, locationId = null) {
     fetchTaxRateMap(locationId),
   ]);
   const item = itemRows?.[0];
-  if (!item) return { ok: false };
+  if (!item) return { ok: false, error: new Error('inventory item not found or not readable') };
   if (!sps || !sps.length) return { ok: true, unchanged: true };
   const bridges = (convs || []).map((c) => ({ fromQty: Number(c.from_qty), fromUnit: c.from_unit, toQty: Number(c.to_qty), toUnit: c.to_unit }));
   // NET pack price per supplier: strip VAT only when the price was entered inc-VAT.
@@ -481,14 +582,24 @@ export async function recomputeItemCost(itemId, locationId = null) {
   const prev = item.current_cost == null ? null : Number(item.current_cost);
   const changed = prev == null || Math.abs(prev - chosenCost) > 1e-9;
   if (changed) {
-    await supabase.from('item_cost_history').update({ effective_to: nowIso() })
+    // These three writes ARE the cost record. Silently losing one leaves the history
+    // and inventory_items.current_cost disagreeing, and every recipe cost and PO
+    // priced off whichever of the two a screen happens to read. Stop at the first
+    // failure and hand the error back instead of half-writing the trail.
+    // (No 0-row check on the close: there is legitimately no open row the first time.)
+    const { error: closeErr } = await supabase.from('item_cost_history').update({ effective_to: nowIso() })
       .eq('location_id', locationId).eq('inventory_item_id', itemId).is('effective_to', null);
-    await supabase.from('item_cost_history').insert({
+    if (closeErr) return { ok: false, error: closeErr };
+    const { error: histErr } = await supabase.from('item_cost_history').insert({
       location_id: locationId, inventory_item_id: itemId, supplier_product_id: chosen.id,
       pack_price: chosenNetPack, base_unit_cost: chosenCost, source: 'CATALOG', effective_from: nowIso(),
     });
-    await supabase.from('inventory_items').update({ current_cost: chosenCost, updated_at: nowIso() })
-      .eq('location_id', locationId).eq('id', itemId);
+    if (histErr) return { ok: false, error: histErr };
+    const { data: upd, error: costErr } = await supabase.from('inventory_items')
+      .update({ current_cost: chosenCost, updated_at: nowIso() })
+      .eq('location_id', locationId).eq('id', itemId).select('id');
+    const err = costErr || zeroRows('Item cost update', upd);
+    if (err) return { ok: false, error: err };
   }
   return { ok: true, baseUnitCost: chosenCost, changed };
 }

@@ -22,7 +22,10 @@
  */
 import { useState, useMemo, useCallback, useEffect } from 'react';
 import { useStore, findDuplicateProductName } from '../../store';
-import { ALLERGENS } from '../../data/seed';
+// PIZZA_* are used by PizzaBuilder below in unconditional JSX — without them the
+// pizza tab throws ReferenceError during render and main.jsx's ErrorBoundary
+// swaps the WHOLE app (POS shell included) for the red error page.
+import { ALLERGENS, PIZZA_SIZES, PIZZA_BASES, PIZZA_CRUSTS, PIZZA_TOPPINGS } from '../../data/seed';
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../../lib/supabase';
 import { upsertMenuItem, uploadProductImage, deleteProductImage, saveQuickScreenIds, setMenuItemScope, linkCategoryToMenu, unlinkCategoryFromMenu, fetchMenuCategoryLinks } from '../../lib/db';
 import { reportSave } from '../../lib/saveHealth';
@@ -132,6 +135,40 @@ async function cloneItem(item, menuItems, addMenuItem, updateMenuItem, markBOCha
   }, 150);
 }
 
+
+// ── Archive a variant / size row ──────────────────────────────────────────────
+// Detaches a size from its parent and archives it. Two callers: the list view's
+// inline × and the item editor's Variants tab — both used to fire this as
+// `.then(({error}) => console.error(...))` under an unconditional green toast, so
+// a rejected write left the size selling on every other till while the operator
+// was told it was gone.
+//   • reportSave so a failing session raises the Back Office save-health banner
+//   • .eq('location_id') — the v5.5.834 modifier-group precedent (store/index.js
+//     ~862): filtering on `id` alone is a cross-tenant hazard the moment two
+//     venues share a row id
+// Returns { error }; the caller reverts its optimistic state and warns on error.
+async function archiveVariantRow(id) {
+  if (isMock) return { error: null };
+  const locId = getActiveLocationSync() || await getLocationId().catch(() => null);
+  if (!locId || locId === 'loc-demo') {
+    const error = new Error('No location');
+    reportSave('variant archive', error);
+    return { error };
+  }
+  const { data, error } = await supabase.from('menu_items')
+    .update({ archived: true, parent_id: null, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .eq('location_id', locId)
+    .select('id');
+  // An update that matched NO rows comes back as a plain success with an empty body —
+  // a row RLS hides, or one carrying a different location_id than this session resolved,
+  // reads exactly like a save. Ask for the id back and treat nothing as the failure it is.
+  const err = error || (!data || data.length === 0
+    ? new Error('Variant archive matched 0 rows — RLS blocked it or the row is scoped to another location')
+    : null);
+  reportSave('variant archive', err);
+  return { error: err };
+}
 
 const ORDER_TYPES_TAX = ['dine-in', 'takeaway', 'delivery', 'bar', 'counter'];
 
@@ -1317,7 +1354,7 @@ function ListItemView({ items, menuItems, selItemId, setSelItemId, catColor, add
                       <div style={{ display:'flex', alignItems:'center', gap:2 }}>
                         <span style={{ fontSize:11, color:'var(--t4)', fontWeight:700 }}>£</span>
                         <input type="number" step="0.01" min="0"
-                          style={{ fontSize:12, fontWeight:700, color:catColor, fontFamily:'var(--font-mono)', background:'transparent', border:'none', outline:'none', width:55, fontFamily:'inherit', cursor:'text' }}
+                          style={{ fontSize:12, fontWeight:700, color:catColor, background:'transparent', border:'none', outline:'none', width:55, fontFamily:'inherit', cursor:'text' }}
                           value={vp.base!==undefined?vp.base:''}
                           onClick={e=>e.stopPropagation()}
                           onChange={e=>{updateMenuItem(v.id,{pricing:{...vp,base:parseFloat(e.target.value)||0},price:parseFloat(e.target.value)||0});markBOChange();}}
@@ -1327,7 +1364,24 @@ function ListItemView({ items, menuItems, selItemId, setSelItemId, catColor, add
                       <span style={{ fontSize:10, color:(v.allergens||[]).length>0?'var(--red)':'var(--t4)' }}>
                         {(v.allergens||[]).length>0?(v.allergens||[]).length:''}
                       </span>
-                      <button onClick={e=>{e.stopPropagation();if(confirm('Remove this size?')){updateMenuItem(v.id,{archived:true,parentId:null});if(!isMock){supabase.from('menu_items').update({archived:true,parent_id:null,updated_at:new Date().toISOString()}).eq('id',v.id).then(({error})=>{if(error)console.error('[MenuManager] size archive failed:',error.message);});}markBOChange();showToast('Size removed','info');}}} style={{ width:18,height:18,borderRadius:4,border:'1px solid var(--red-b)',background:'var(--red-d)',color:'var(--red)',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',justifyContent:'center' }}>×</button>
+                      <button
+                        onClick={async e => {
+                          e.stopPropagation();
+                          if (!confirm('Remove this size?')) return;
+                          const prevParentId = v.parentId;
+                          updateMenuItem(v.id, { archived:true, parentId:null });
+                          markBOChange();
+                          const { error } = await archiveVariantRow(v.id);
+                          if (error) {
+                            // The row is untouched in the DB — it comes straight back on
+                            // the next config load and every other till is still selling it.
+                            updateMenuItem(v.id, { archived:false, parentId:prevParentId });
+                            showToast(`"${v.menuName||v.name||'Size'}" was NOT removed — it is still on sale. Check you're signed in, then try again`, 'error');
+                            return;
+                          }
+                          showToast('Size removed', 'info');
+                        }}
+                        style={{ width:18,height:18,borderRadius:4,border:'1px solid var(--red-b)',background:'var(--red-d)',color:'var(--red)',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',justifyContent:'center' }}>×</button>
                     </div>
                   );
                 })}
@@ -2040,15 +2094,18 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
     markBOChange();
   };
   const updVariant   = (id, patch) => { updateMenuItem(id, patch); markBOChange(); };
-  const removeVariant = id => {
+  const removeVariant = async id => {
+    const removed = variants.find(v => v.id === id);
     updateMenuItem(id, { archived: true, parentId: null });
-    if (!isMock) {
-      supabase.from('menu_items')
-        .update({ archived: true, parent_id: null, updated_at: new Date().toISOString() })
-        .eq('id', id)
-        .then(({ error }) => { if (error) console.error('[MenuManager] variant archive failed:', error.message); });
-    }
     markBOChange();
+    const { error } = await archiveVariantRow(id);
+    if (error) {
+      // Nothing was archived — the variant returns on the next config load and
+      // every other till carries on selling it. Put it back rather than lie.
+      updateMenuItem(id, { archived: false, parentId: removed?.parentId ?? item.id });
+      showToast(`"${removed?.menuName || removed?.name || 'Variant'}" was NOT removed — it is still on sale. Check you're signed in, then try again`, 'error');
+      return;
+    }
     showToast('Variant removed', 'info');
     if (variants.filter(v => v.id !== id).length === 0) onUpdate({ type: 'simple' });
   };

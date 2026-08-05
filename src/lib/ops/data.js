@@ -21,6 +21,21 @@ async function ensureLoc(locationId) {
   return locationId;
 }
 
+/**
+ * A write that matched NO rows comes back from PostgREST as a plain success with an
+ * empty body — an RLS policy that matches nothing is indistinguishable from a save,
+ * so the caller's `if (error)` passes and the UI says "done". Every write below asks
+ * for the id back and treats nothing coming back as the failure it is.
+ * (Same check as src/backoffice/sections/DeviceProfiles.jsx.)
+ */
+const zeroRows = (what, data) => (!data || data.length === 0)
+  ? new Error(`${what} matched 0 rows — RLS blocked it or the row no longer exists`)
+  : null;
+/** Same check for .select().maybeSingle(), which returns data:null with error:null. */
+const noRow = (what, row) => row ? null
+  : new Error(`${what} returned no row — RLS blocked it or it matched nothing`);
+const noLoc = () => new Error('No locationId');
+
 // ── mappers ──────────────────────────────────────────────────────────────────
 const unitFromRow = (r) => ({
   id: r.id, locationId: r.location_id, name: r.name, type: r.type, area: r.area,
@@ -106,13 +121,21 @@ export const fetchOpsDevices = async (locationId = null) => {
 export const renameOpsDevice = async (id, name, locationId = null) => {
   if (isMock || !supabase) return { error: null };
   locationId = await ensureLoc(locationId);
-  return supabase.from('ops_devices').update({ name }).eq('location_id', locationId).eq('id', id);
+  if (!locationId) return { error: noLoc() };
+  const { data, error } = await supabase.from('ops_devices').update({ name })
+    .eq('location_id', locationId).eq('id', id).select('id');
+  return { error: error || zeroRows('Device rename', data) };
 };
 /** Unpair: delete the row (RLS passes on the existing venue-scoped row). The tablet re-registers with a fresh code next time it opens. */
 export const removeOpsDevice = async (id, locationId = null) => {
   if (isMock || !supabase) return { error: null };
   locationId = await ensureLoc(locationId);
-  return supabase.from('ops_devices').delete().eq('location_id', locationId).eq('id', id);
+  if (!locationId) return { error: noLoc() };
+  // A blocked DELETE also comes back clean — the tablet just reappears on the next
+  // reload, still paired, after the operator was told it was unpaired.
+  const { data, error } = await supabase.from('ops_devices').delete()
+    .eq('location_id', locationId).eq('id', id).select('id');
+  return { error: error || zeroRows('Unpair', data) };
 };
 
 // ── temperature units (admin config = source of truth) ───────────────────────
@@ -130,12 +153,17 @@ export const upsertTempUnit = async (unit, locationId = null) => {
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
   const { data, error } = await supabase.from('temp_units').upsert(unitToRow(unit, locationId)).select().maybeSingle();
-  return { data: data ? unitFromRow(data) : null, error };
+  // maybeSingle() hands back data:null with error:null when the row comes back empty —
+  // the upsert silently touched nothing. Treat that as the failed save it is.
+  return { data: data ? unitFromRow(data) : null, error: error || noRow('Unit save', data) };
 };
 export const archiveTempUnit = async (id, locationId = null) => {
   if (isMock || !supabase) return { error: null };
   locationId = await ensureLoc(locationId);
-  return supabase.from('temp_units').update({ archived_at: nowIso() }).eq('location_id', locationId).eq('id', id);
+  if (!locationId) return { error: noLoc() };
+  const { data, error } = await supabase.from('temp_units').update({ archived_at: nowIso() })
+    .eq('location_id', locationId).eq('id', id).select('id');
+  return { error: error || zeroRows('Archive unit', data) };
 };
 
 // ── schedules ────────────────────────────────────────────────────────────────
@@ -151,11 +179,15 @@ export const upsertSchedule = async (sched, locationId = null) => {
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
   const { data, error } = await supabase.from('temp_check_schedules').upsert(schedToRow(sched, locationId)).select().maybeSingle();
-  return { data: data ? schedFromRow(data) : null, error };
+  return { data: data ? schedFromRow(data) : null, error: error || noRow('Schedule save', data) };
 };
 export const deleteSchedule = async (id, locationId = null) => {
+  if (isMock || !supabase) return { error: null };
   locationId = await ensureLoc(locationId);
-  return supabase.from('temp_check_schedules').delete().eq('location_id', locationId).eq('id', id);
+  if (!locationId) return { error: noLoc() };
+  const { data, error } = await supabase.from('temp_check_schedules').delete()
+    .eq('location_id', locationId).eq('id', id).select('id');
+  return { error: error || zeroRows('Delete schedule', data) };
 };
 
 // ── readings (via the breach-atomic RPC) ─────────────────────────────────────
@@ -235,23 +267,36 @@ export const createMaintenance = async (m, locationId = null) => {
   if (!error && data) {
     try { logActivity(locationId, { kind: 'ops', severity: 'action', title: `Maintenance: ${(m.title || 'request').trim()}`, body: `${m.priority || 'normal'} priority${m.source === 'temp_breach' ? ' · auto from temp breach' : ''}`, actorName: m.reporterName, refType: 'maintenance', refId: data.id }); } catch { /* feed best-effort */ }
   }
-  return { data: data ? maintFromRow(data) : null, error };
+  return { data: data ? maintFromRow(data) : null, error: error || noRow('Maintenance request', data) };
 };
 export const setMaintenanceStatus = async (id, status, who, locationId = null) => {
   if (isMock || !supabase) return { error: null };
   // TRAINING MODE: don't mutate a live request, write status history, or fire a resolved alert.
   if (isTrainingMode()) return { error: null };
   locationId = await ensureLoc(locationId);
+  if (!locationId) return { error: noLoc() };
   const patch = { status, updated_at: nowIso() };
   if (status === 'resolved') patch.resolved_at = nowIso();
   const { data: prev } = await supabase.from('maintenance_requests').select('status, title, reporter_id').eq('id', id).maybeSingle();
-  const { error } = await supabase.from('maintenance_requests').update(patch).eq('location_id', locationId).eq('id', id);
-  if (!error) {
-    await supabase.from('maintenance_status_history').insert({ location_id: locationId, request_id: id, from_status: prev?.status || null, to_status: status, changed_by_name: who || null });
-    // notify the reporter when their request is resolved
-    if (status === 'resolved' && prev?.reporter_id) await supabase.from('ops_alerts').insert({ location_id: locationId, type: 'maintenance', severity: 'minor', title: `Resolved: ${prev.title || 'maintenance'}`, body: `Marked resolved${who ? ` by ${who}` : ''}.`, source_type: 'maintenance_request', source_id: id, target_user_id: prev.reporter_id });
+  const { data: upd, error } = await supabase.from('maintenance_requests').update(patch)
+    .eq('location_id', locationId).eq('id', id).select('id');
+  const updErr = error || zeroRows('Status change', upd);
+  if (updErr) return { error: updErr };
+  // The history row and the reporter's "resolved" alert used to be awaited with their
+  // errors discarded: the status moved, the HACCP audit trail didn't, and whoever
+  // raised the job was never told it was done. Both are part of the change.
+  const { error: histErr } = await supabase.from('maintenance_status_history').insert({ location_id: locationId, request_id: id, from_status: prev?.status || null, to_status: status, changed_by_name: who || null });
+  // notify the reporter when their request is resolved
+  let alertErr = null;
+  if (status === 'resolved' && prev?.reporter_id) {
+    ({ error: alertErr } = await supabase.from('ops_alerts').insert({ location_id: locationId, type: 'maintenance', severity: 'minor', title: `Resolved: ${prev.title || 'maintenance'}`, body: `Marked resolved${who ? ` by ${who}` : ''}.`, source_type: 'maintenance_request', source_id: id, target_user_id: prev.reporter_id }));
   }
-  return { error };
+  // The status DID change, so these come back as `partial`, not `error`: an error would
+  // have the caller tell the operator to retry, and a retry re-inserts the history row
+  // AND sends the reporter a second "Resolved" alert.
+  if (alertErr) return { error: null, partial: 'alert', message: `Status is now "${status}", but the reporter was NOT told: ${alertErr.message || alertErr}` };
+  if (histErr) return { error: null, partial: 'history', message: `Status is now "${status}", but the audit entry failed: ${histErr.message || histErr}` };
+  return { error: null };
 };
 
 /** Assign a maintenance request to a person → status 'assigned' + alert the assignee. */
@@ -260,14 +305,24 @@ export const assignMaintenance = async (id, assignee, by, locationId = null) => 
   // TRAINING MODE: don't assign a live request, write history, or alert the assignee.
   if (isTrainingMode()) return { error: null };
   locationId = await ensureLoc(locationId);
+  if (!locationId) return { error: noLoc() };
   const { data: prev } = await supabase.from('maintenance_requests').select('status, title').eq('id', id).maybeSingle();
-  const { error } = await supabase.from('maintenance_requests').update({
+  const { data: upd, error } = await supabase.from('maintenance_requests').update({
     assignee_id: assignee?.id || null, assignee_name: assignee?.name || null,
     status: (prev?.status === 'open' ? 'assigned' : prev?.status) || 'assigned', updated_at: nowIso(),
-  }).eq('location_id', locationId).eq('id', id);
-  if (error) return { error };
-  await supabase.from('maintenance_status_history').insert({ location_id: locationId, request_id: id, from_status: prev?.status || null, to_status: 'assigned', changed_by_name: by || null });
-  if (assignee?.id) await supabase.from('ops_alerts').insert({ location_id: locationId, type: 'maintenance', severity: 'major', title: `Assigned: ${prev?.title || 'maintenance'}`, body: `Assigned to ${assignee.name}${by ? ` by ${by}` : ''}.`, source_type: 'maintenance_request', source_id: id, target_role: null, target_user_id: assignee.id });
+  }).eq('location_id', locationId).eq('id', id).select('id');
+  const updErr = error || zeroRows('Assignment', upd);
+  if (updErr) return { error: updErr };
+  const { error: histErr } = await supabase.from('maintenance_status_history').insert({ location_id: locationId, request_id: id, from_status: prev?.status || null, to_status: 'assigned', changed_by_name: by || null });
+  let alertErr = null;
+  if (assignee?.id) {
+    ({ error: alertErr } = await supabase.from('ops_alerts').insert({ location_id: locationId, type: 'maintenance', severity: 'major', title: `Assigned: ${prev?.title || 'maintenance'}`, body: `Assigned to ${assignee.name}${by ? ` by ${by}` : ''}.`, source_type: 'maintenance_request', source_id: id, target_role: null, target_user_id: assignee.id }));
+  }
+  // This used to return a hardcoded { error: null }: the manager saw "Assigned to X"
+  // while the alert insert had been rejected and X was never told the job existed.
+  // `partial`, not `error` — the assignment itself landed (see setMaintenanceStatus).
+  if (alertErr) return { error: null, partial: 'alert', message: `Assigned to ${assignee?.name || 'them'}, but they were NOT alerted: ${alertErr.message || alertErr}` };
+  if (histErr) return { error: null, partial: 'history', message: `Assigned, but the audit entry failed: ${histErr.message || histErr}` };
   return { error: null };
 };
 
@@ -280,10 +335,13 @@ export const fetchOpsAssignees = async (locationId = null) => {
   return { data: (data || []).filter(s => s.name), error };
 };
 export const addMaintenanceNote = async (id, note, who, locationId = null) => {
+  if (isMock || !supabase) return { error: null };
   // TRAINING MODE: don't write a note onto a live maintenance request.
   if (isTrainingMode()) return { error: null };
   locationId = await ensureLoc(locationId);
-  return supabase.from('maintenance_notes').insert({ location_id: locationId, request_id: id, note, author_name: who || null });
+  if (!locationId) return { error: noLoc() };
+  const { error } = await supabase.from('maintenance_notes').insert({ location_id: locationId, request_id: id, note, author_name: who || null });
+  return { error };
 };
 export const fetchAlerts = async (locationId = null, openOnly = false) => {
   if (isMock || !supabase) return { data: [], error: null };
@@ -331,16 +389,22 @@ export const upsertNotificationRule = async (rule, locationId = null) => {
     active: rule.active !== false,
   };
   if (rule.id) {
-    const { error } = await supabase.from('ops_notification_rules').update(row).eq('location_id', locationId).eq('id', rule.id);
-    return { data: rule.id ? { ...rule } : null, error };
+    const { data: upd, error } = await supabase.from('ops_notification_rules').update(row)
+      .eq('location_id', locationId).eq('id', rule.id).select('id');
+    // These rules ARE the escalation ladder — a silently dropped edit leaves the old
+    // recipients live while the screen shows the new ones.
+    return { data: { ...rule }, error: error || zeroRows('Notification rule', upd) };
   }
   const { data, error } = await supabase.from('ops_notification_rules').insert(row).select().maybeSingle();
-  return { data: data ? ruleFromRow(data) : null, error };
+  return { data: data ? ruleFromRow(data) : null, error: error || noRow('Notification rule', data) };
 };
 export const deleteNotificationRule = async (id, locationId = null) => {
   if (isMock || !supabase) return { error: null };
   locationId = await ensureLoc(locationId);
-  return supabase.from('ops_notification_rules').delete().eq('location_id', locationId).eq('id', id);
+  if (!locationId) return { error: noLoc() };
+  const { data, error } = await supabase.from('ops_notification_rules').delete()
+    .eq('location_id', locationId).eq('id', id).select('id');
+  return { error: error || zeroRows('Delete rule', data) };
 };
 /** Staff at this location WITH contact details, for the rule recipient picker. */
 export const fetchOpsRecipients = async (locationId = null) => {
@@ -394,13 +458,24 @@ export const checkDelivery = async ({ poId, supplierId, deliveryUnitId, temperat
     if (readingRes.error) return { data: null, error: readingRes.error };
   }
 
+  // The closing update is the goods-in record itself — a delivery stuck on 'pending'
+  // is a missing HACCP entry, and its error used to be discarded. Retrying is safe:
+  // receivePurchaseOrder dedupes server-side on the `po:<po>:<line>` idempotency key.
   if (accept) {
     const { error: rErr } = await receivePurchaseOrder(poId, locationId);   // existing stock receive
     if (rErr) return { data: null, error: rErr };
-    await supabase.from('deliveries').update({ status: 'accepted', in_range: readingRes.data?.inRange ?? true, received_at: nowIso() }).eq('id', del.id);
+    const { data: acc, error: aErr } = await supabase.from('deliveries')
+      .update({ status: 'accepted', in_range: readingRes.data?.inRange ?? true, received_at: nowIso() })
+      .eq('id', del.id).select('id');
+    const accErr = aErr || zeroRows('Delivery accept', acc);
+    if (accErr) return { data: null, error: new Error(`Stock WAS received, but the delivery was not recorded as accepted: ${accErr.message || accErr}`) };
     return { data: { deliveryId: del.id, status: 'accepted' }, error: null };
   }
   // reject: no stock movement is ever posted
-  await supabase.from('deliveries').update({ status: 'rejected', in_range: readingRes.data?.inRange ?? false, rejection_reason: rejectionReason || 'Out of temperature range' }).eq('id', del.id);
+  const { data: rej, error: jErr } = await supabase.from('deliveries')
+    .update({ status: 'rejected', in_range: readingRes.data?.inRange ?? false, rejection_reason: rejectionReason || 'Out of temperature range' })
+    .eq('id', del.id).select('id');
+  const rejErr = jErr || zeroRows('Delivery reject', rej);
+  if (rejErr) return { data: null, error: rejErr };
   return { data: { deliveryId: del.id, status: 'rejected' }, error: null };
 };
