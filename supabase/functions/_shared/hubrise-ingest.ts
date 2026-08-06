@@ -53,7 +53,9 @@ export async function ingestOrder(sb: any, opsLocationId: string, order: any, ev
     ? (terminal ? 'cancelled' : existingRow.status)
     : (terminal ? 'cancelled' : (autoAccept ? 'prep' : hrToQueueStatus(order.status || 'new')));
 
-  await sb.from('order_queue').upsert(queuePayload({ ...row, status }, !existingRow), { onConflict: 'ref' });
+  await sb.from('order_queue').upsert(queuePayload({ ...row, status }, !existingRow), // v5.5.986: order_queue's PK became (location_id, ref) — a ref alone is no longer unique,
+  // and 'ref' here would throw 42P10 and drop every inbound channel order on the floor.
+  { onConflict: 'location_id,ref' });
 
   await sb.from('hubrise_order_links').upsert({
     ...link, hr_status: order.status || 'new',

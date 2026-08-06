@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.988', date: '6 Aug 2026', label: 'Repairs the fallout from keying the order queue per venue',
+    changes: [
+      'Changing the order queue to be keyed per venue (v5.5.986) broke inbound Deliveroo, UberEats and JustEat orders: the code that receives them still matched on the order number alone, which is no longer unique on its own. Every incoming channel order would have been rejected. Fixed and all five affected functions redeployed.',
+      'Also found two places that updated orders by number with no venue attached. Closing a QR tab, or collecting one from the resume screen, could have marked ANOTHER venue\'s live orders as collected. Both now check the venue first.',
+      'Swept every remaining write to the order queue to confirm nothing else matches on the number alone.',
+    ],
+  },
+  {
     version: '5.5.987', date: '6 Aug 2026', label: 'Two-digit order numbers everywhere, including search',
     changes: [
       'Finishes v5.5.986. POS history now shows the same two-digit number as the receipt and the collection board, rather than the full one.',

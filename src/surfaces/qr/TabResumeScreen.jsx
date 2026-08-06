@@ -126,8 +126,12 @@ export default function TabResumeScreen({
       try {
         const refs = (rounds || []).map(r => r.ref).filter(Boolean);
         if (refs.length) {
+          // v5.5.988: fenced on the venue. Refs are not globally unique — the queue's key is
+          // (location_id, ref) — so ref alone would mark another venue's live orders collected.
+          // locId comes off the rounds themselves, so it is always this tab's venue.
           await supabase.from('order_queue')
             .update({ status: 'collected' })
+            .eq('location_id', locId)
             .in('ref', refs);
         }
       } catch (e) { console.warn('[TabResume] mark-collected:', e?.message); }

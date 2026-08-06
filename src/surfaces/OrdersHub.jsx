@@ -515,7 +515,11 @@ export default function OrdersHub() {
       try {
         const refs = tab.rows.map(r => r.ref).filter(Boolean);
         if (refs.length) {
-          await supabase.from('order_queue').update({ status: 'collected' }).in('ref', refs);
+          // v5.5.988: MUST be fenced on the venue. Order refs are not globally unique — the queue's
+          // key is (location_id, ref) — so matching on ref alone would mark another venue's live
+          // orders collected. Same class as the delete paths fixed in QueueSync.
+          await supabase.from('order_queue').update({ status: 'collected' })
+            .eq('location_id', getActiveLocationSync()).in('ref', refs);
           refs.forEach(ref => updateQueueStatus(ref, 'collected'));
         }
       } catch (e) { console.warn('[forceCloseQrTab] mark-collected:', e?.message); }
