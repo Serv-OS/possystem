@@ -12,6 +12,7 @@
  */
 
 import { supabase, getLocationId } from './supabase';
+import { shortOrderRef } from './db.js';
 import { loadLocationBranding, mergeBrandingIntoLocation, invalidateBrandingCache } from './receiptBranding';
 import { money } from './currency.js';
 import { consolidateReceiptLines } from './receiptLines.js';
@@ -151,7 +152,9 @@ export async function buildCustomerReceipt({ location, check, items, totals }) {
 
   // ── Check header ────────────────────────────────────────────────────────
   // Order number — prominent, centered, double-height so it's impossible to miss.
-  b.bold(true).doubleHeight().center().line(`ORDER # ${check?.ref||''}`).normal().left();
+  // Short display form: the number staff call out, matching the kiosk reveal and
+  // the collection board. The full ref stays the identity everywhere else.
+  b.bold(true).doubleHeight().center().line(`ORDER # ${shortOrderRef(check?.ref)||''}`).normal().left();
   b.twoCol('Date', `${dateStr} ${timeStr}`);
   if (header?.show_server_name !== false) {
     b.twoCol(`Server: ${check?.server||''}`, check?.covers>1 && header?.show_covers !== false ? `${check.covers} covers` : '');
@@ -480,7 +483,7 @@ function buildReceiptHtml({ location, check, items, totals }) {
     <div class="center bold big">${location?.name||'Restaurant'}</div>
     <div class="center">${location?.address||''}</div>
     <div class="divider"></div>
-    <div class="row"><span>${check?.ref}</span><span>${now.toLocaleString('en-GB',{dateStyle:'short',timeStyle:'short'})}</span></div>
+    <div class="row"><span>ORDER # ${shortOrderRef(check?.ref) ?? ''}</span><span>${now.toLocaleString('en-GB',{dateStyle:'short',timeStyle:'short'})}</span></div>
     <div class="row"><span>Server: ${check?.server}</span><span>${check?.tableLabel||check?.orderType}</span></div>
     <div class="divider"></div>${rows}
     <div class="divider"></div>
@@ -583,17 +586,17 @@ function genIdempotencyKey() {
 // BroadcastChannel listener would not — a tab that wasn't running never heard the
 // message). Nothing here touches the database or the idempotency key.
 //
-// TTL is deliberately tiny, and that is the whole safety argument. Order refs are
-// recycled — db.js mints R1..R99 from a local counter — so a key built from a ref
-// only means anything for as long as that ref cannot have come round again. That
-// takes ~99 orders, so a few seconds is unambiguous; a permanent key on a ref is
-// not, and would eventually suppress a real customer's receipt. When the window
-// lapses the worst case is the current behaviour: an extra receipt.
+// TTL is deliberately tiny, and that is the whole safety argument. The key says
+// "this receipt went to this printer moments ago", not "this order has been
+// printed" — a permanent key would eventually suppress a reprint someone
+// genuinely asked for. When the window lapses the worst case is the current
+// behaviour: an extra receipt.
 const RECEIPT_GUARD_STORE = 'rpos-recent-receipts';
 const RECEIPT_GUARD_TTL_MS = 10_000;
 
 // location + ref + pennies + the printer it resolved to. The total keeps two
-// genuinely different sales that happen to share a recycled ref apart; the printer
+// genuinely different sales apart if a ref is ever duplicated (the offline
+// fallback in db.js mints per-device and can repeat a number); the printer
 // keeps a deliberate same-receipt-to-two-printers dispatch out of it. Every part is
 // derived the same way in every tab (the printer list and this device's assignment
 // are shared localStorage), so tabs on one machine agree on the key for one order.

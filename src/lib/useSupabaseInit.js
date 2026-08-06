@@ -13,6 +13,7 @@ import { supabase, isMock, getLocationId, ensureAuthToken, claimPairedDeviceOnBo
 import {
   fetchMenuItems, fetchFloorPlan, fetch86List,
   fetchKDSTickets, fetchClosedChecks, fetchLatestConfigPush, getPosHistorySince,
+  primeOrderRefLease,
 } from './db';
 import { getLocationConfig, getBusinessDayStart } from './locationTime';
 
@@ -127,6 +128,12 @@ export default function useSupabaseInit() {
       // realtime may have already prepended fresh checks, and a wiped-then-empty
       // fetch (RLS denial, transient network glitch, locId still resolving) would
       // erase them. Merge with existing instead, dedup by id.
+      // v5.5.986: lease a block of order numbers up front. The synchronous mint paths
+      // (closed checks, walk-ins, MPOS, bar tabs) cannot await, so without a warm block the
+      // first sale of the day falls back to the per-device counter — which is exactly how two
+      // tills came to mint the same number. Not awaited: a slow lease must not delay boot.
+      if (locId) { void primeOrderRefLease(locId); }
+
       if (locId) {
         // v5.5.985: the FULL history window, not just today. todayStart is still used for
         // the business-day figures above; history has to reach back as far as the POS

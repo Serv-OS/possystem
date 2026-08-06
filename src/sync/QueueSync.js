@@ -153,14 +153,15 @@ export async function flushQueues() {
     const payload = JSON.stringify(row);
     if (_lastSentQueue[o.ref] === payload) continue;
     _lastSentQueue[o.ref] = payload;
-    queueWrite({ type: 'upsert', table: 'order_queue', payload: row, onConflict: 'ref' });
+    // order_queue is keyed (location_id, ref), not ref alone — see the batch write below.
+    queueWrite({ type: 'upsert', table: 'order_queue', payload: row, onConflict: 'location_id,ref' });
     queueUpserts.push(row);
   }
   for (const ref of Object.keys(_lastSentQueue)) {
     if (activeQueueRefs.has(ref)) continue;
     if (_lastSentQueue[ref] === 'cleared') continue;
     _lastSentQueue[ref] = 'cleared';
-    queueWrite({ type: 'delete', table: 'order_queue', match: { ref } });
+    queueWrite({ type: 'delete', table: 'order_queue', match: { location_id: _locationId, ref } });
     queueDeletes.push(ref);
   }
 
@@ -184,8 +185,12 @@ export async function flushQueues() {
   }
 
   if (online) {
-    if (queueUpserts.length) Promise.resolve(supabase.from('order_queue').upsert(queueUpserts, { onConflict: 'ref' })).catch(e => console.warn('[QueueSync] order_queue batch upsert:', e.message));
-    if (queueDeletes.length) Promise.resolve(supabase.from('order_queue').delete().in('ref', queueDeletes)).catch(e => console.warn('[QueueSync] order_queue batch delete:', e.message));
+    // order_queue is keyed (location_id, ref). A ref alone is one global namespace
+    // shared by every venue, so both statements MUST carry the location: an upsert
+    // on 'ref' would land this venue's order on top of another venue's live order,
+    // and a delete on 'ref' would remove theirs when this venue clears its own.
+    if (queueUpserts.length) Promise.resolve(supabase.from('order_queue').upsert(queueUpserts, { onConflict: 'location_id,ref' })).catch(e => console.warn('[QueueSync] order_queue batch upsert:', e.message));
+    if (queueDeletes.length) Promise.resolve(supabase.from('order_queue').delete().eq('location_id', _locationId).in('ref', queueDeletes)).catch(e => console.warn('[QueueSync] order_queue batch delete:', e.message));
     if (tabUpserts.length) Promise.resolve(supabase.from('bar_tabs').upsert(tabUpserts, { onConflict: 'id' })).catch(e => console.warn('[QueueSync] bar_tabs batch upsert:', e.message));
     if (tabDeletes.length) Promise.resolve(supabase.from('bar_tabs').delete().in('id', tabDeletes)).catch(e => console.warn('[QueueSync] bar_tabs batch delete:', e.message));
   }

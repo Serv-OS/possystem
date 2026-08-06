@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.986', date: '6 Aug 2026', label: 'Order numbers are finally unique. They were never meant to repeat.',
+    changes: [
+      'The R number was only ever meant to be a convenience — the last two digits so staff can call "order 47" across a counter. The number underneath was supposed to be unlimited. It was not. It counted 1 to 99 and started again, and each till kept its own count in its own browser, so two tills would happily hand out the same number. 27 sales already share a number with another sale.',
+      'Worse, the order queue was keyed on that number ALONE, with no venue attached. So a repeat did not raise an error — it quietly wrote over the earlier order. That was one namespace shared by every venue on the platform.',
+      'The queue is now keyed on the venue AND the number. All existing orders were counted before and after the change to prove none were lost.',
+      'And the counter that makes numbers unique has finally been switched on. It was written in April and never applied, which is why every till fell back to counting on its own. Numbers now come from one place per venue, never repeat, and start well clear of every number already used.',
+      'Because a till cannot wait for the server mid-sale, each one now reserves a block of numbers in advance and hands them out instantly. Two tills can never be inside the same block. If the connection drops it falls back to counting locally and says so loudly, rather than pretending.',
+      'Staff still see two digits. Nothing about calling orders out changes.',
+    ],
+  },
+  {
     version: '5.5.985', date: '6 Aug 2026', label: 'Two tills at one venue were showing different sales history',
     changes: [
       'A newly opened till showed an empty history while the Sunmi beside it showed weeks. Same venue, same day, different answers. The cause: the boot query only ever asked the server for TODAY, and everything older came from whatever that particular device had accumulated in its own storage. History was not the venue\'s record, it was a record of what that one screen happened to witness.',

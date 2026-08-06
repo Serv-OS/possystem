@@ -16,6 +16,7 @@ import { isTrainingMode } from '../lib/trainingMode';
 import CardErrorBoundary from '../components/CardErrorBoundary';
 import { syncQrTableSession } from '../lib/qrTableSession';
 import { money, currencySymbol } from '../lib/currency';
+import { shortOrderRef } from '../lib/db';
 import { ryftTab } from '../lib/payments/ryft';
 import { getActiveLocationSync } from '../lib/supabase';
 import { hubrisePushStatus } from '../lib/hubrise';
@@ -194,7 +195,10 @@ export default function OrdersHub() {
       out.push({
         _kind: 'queue', id: `q-${o.ref}`,
         ref: o.ref, channel: o.type || 'dine-in',
-        displayName: o.customer?.name || o.ref,
+        // displayName is read only by the UI (card title, detail header, toasts), so the
+        // un-named fallback is the short number staff call out. `ref` above stays the
+        // full identity — every lookup, write and status update keys on that.
+        displayName: o.customer?.name || shortOrderRef(o.ref),
         server: o.staff, customer: o.customer,
         items: o.items || [], total: o.total || 0,
         status: o.status || 'received',
@@ -320,7 +324,7 @@ export default function OrdersHub() {
     // with no payment taken). Route to the POS pay flow instead — once paid + closed, it leaves
     // the queue. Paid / prepaid-channel orders advance to collected as before.
     if (next === 'collected' && !isOrderPaid(o)) {
-      showToast(`Take payment for ${o.ref} before marking collected`, 'info');
+      showToast(`Take payment for ${shortOrderRef(o.ref)} before marking collected`, 'info');
       openOrder(o);
       return;
     }
@@ -335,7 +339,7 @@ export default function OrdersHub() {
     if (next === 'ready')     showToast(`${o.displayName} — ready!`, 'success');
     if (next === 'collected') {
       if (o.source === 'hubrise' && !training) bookHubriseSale(o);   // record the sale in history/reports
-      showToast(`${o.ref} collected`, 'info');
+      showToast(`${shortOrderRef(o.ref)} collected`, 'info');
       setTimeout(() => removeFromQueue(o.ref), 8000);
     }
   };
@@ -348,7 +352,7 @@ export default function OrdersHub() {
   // (edge fn sends confirmed_time = now + mins in store-local time).
   const acceptHubriseDelay = (o, mins) => acceptOrderByRefWithDelay(o.ref, mins);
   const rejectHubrise = (o) => {
-    if (!confirm(`Reject ${o.customer?.channel || 'this'} order ${o.ref}? The channel will be notified.`)) return;
+    if (!confirm(`Reject ${o.customer?.channel || 'this'} order ${shortOrderRef(o.ref)}? The channel will be notified.`)) return;
     rejectOrderByRef(o.ref);
   };
 
@@ -628,7 +632,7 @@ export default function OrdersHub() {
     const pi = o.customer?.payment_intent_id;
     const acct = o.customer?.stripe_account;
     if (!pi || !acct) {
-      showToast(`${o.ref}: no payment intent on this tab — can't capture`, 'error');
+      showToast(`${shortOrderRef(o.ref)}: no payment intent on this tab — can't capture`, 'error');
       return;
     }
 
@@ -713,8 +717,8 @@ export default function OrdersHub() {
       updateQueueStatus(o.ref, 'collected');
       showToast(
         surcharge > 0
-          ? `${o.ref} captured ${money(captureAmount)} (incl ${money(surcharge)} surcharge)`
-          : `${o.ref} captured ${money(captureAmount)}`,
+          ? `${shortOrderRef(o.ref)} captured ${money(captureAmount)} (incl ${money(surcharge)} surcharge)`
+          : `${shortOrderRef(o.ref)} captured ${money(captureAmount)}`,
         'success'
       );
       setTimeout(() => removeFromQueue(o.ref), 8000);
@@ -957,10 +961,13 @@ export default function OrdersHub() {
         <div onClick={(e) => { if (e.target === e.currentTarget) setViewOrder(null); }} style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.55)', display:'grid', placeItems:'center', zIndex:9999, padding:16 }}>
           <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:16, width:'100%', maxWidth:440, maxHeight:'85vh', overflowY:'auto', padding:20 }}>
             <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:4 }}>
-              <div style={{ fontSize:17, fontWeight:800, color:'var(--t1)', flex:1, minWidth:0 }}>{viewOrder.displayName || viewOrder.ref}</div>
+              <div style={{ fontSize:17, fontWeight:800, color:'var(--t1)', flex:1, minWidth:0 }}>{viewOrder.displayName || shortOrderRef(viewOrder.ref)}</div>
               <span style={{ fontSize:9, fontWeight:700, padding:'2px 8px', borderRadius:8, background:'#22c55e18', border:'1px solid #22c55e44', color:'#22c55e' }}>PAID</span>
               <button onClick={() => setViewOrder(null)} style={{ background:'transparent', border:0, fontSize:22, color:'var(--t3)', cursor:'pointer', lineHeight:1 }}>×</button>
             </div>
+            {/* The one place the FULL ref stays on screen: the detail metadata line, so support
+                and reprints can still quote the identity the DB stores. Every called-out number
+                (card titles, the header above, toasts) is the short form. */}
             <div style={{ fontSize:12, color:'var(--t3)', marginBottom:12 }}>
               {viewOrder.ref} · {viewOrder.source === 'catering' ? 'Catering' : viewOrder.channel}
               {viewOrder.customer?.event_date ? ` · ${viewOrder.customer.event_date}${(viewOrder.customer?.event_time || viewOrder.collectionTime) ? ` at ${viewOrder.customer.event_time || viewOrder.collectionTime}` : ''}` : ''}
@@ -1208,6 +1215,9 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
   const qs     = Q_STATUS[order.status] || Q_STATUS.received;
   const el     = elapsed(order.sentAt || order.createdAt);
   const items  = order.items || [];
+  // The number staff call out. Suppressed when the title already is it (an un-named
+  // queue order falls back to the same short number) so the card doesn't read "47 47".
+  const shortRef = shortOrderRef(order.ref);
 
   let statusText  = qs.label;
   let statusColor = qs.color;
@@ -1253,7 +1263,7 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
             <span style={{ fontSize:13, fontWeight:800, color:'var(--t1)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:150 }}>
               {order.displayName}
             </span>
-            <span style={{ fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono)', flexShrink:0 }}>{order.ref}</span>
+            {shortRef !== order.displayName && <span style={{ fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono)', flexShrink:0 }}>{shortRef}</span>}
             {order.isChild && <span style={{ fontSize:9, padding:'1px 5px', borderRadius:8, background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t4)' }}>split</span>}
             {order.source === 'kiosk' && <span style={{ fontSize:9, fontWeight:700, padding:'1px 6px', borderRadius:8, background:'#8b5cf618', border:'1px solid #8b5cf644', color:'#8b5cf6' }}>KIOSK</span>}
             {order.source === 'hubrise' && <span style={{ fontSize:9, fontWeight:800, padding:'1px 6px', borderRadius:8, background:'#ef444418', border:'1px solid #ef444455', color:'#ef4444', letterSpacing:'.03em' }}>{(order.customer?.channel || 'HUBRISE').toUpperCase()}</span>}

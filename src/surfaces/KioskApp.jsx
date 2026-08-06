@@ -21,7 +21,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { supabase, platformSupabase, getLocationId, ensureAuthToken } from '../lib/supabase';
 import { useStore } from '../store';
-import { decrementStockRPC, fetchActiveDiscountRules } from '../lib/db';
+import { decrementStockRPC, fetchActiveDiscountRules, shortOrderRef } from '../lib/db';
 import { logOrderActivity } from '../lib/activity';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
 import { buildScheduleCtx } from '../lib/locationTime';
@@ -413,7 +413,8 @@ export default function KioskApp({ kioskId, onUnpair }) {
   const checkIdRef = useRef(null);
   // v5.5.887: promo/offer code — validated at entry (no write), REDEEMED in submitOrder once
   // the order exists (promo-redeem is race-safe + idempotent on `${checkId}:${code}` — the
-  // check id above, not the recycling R1–R99 ref).
+  // check id above, which is stable across retries of the same basket; the order ref is
+  // minted fresh inside each submitOrder attempt and so cannot anchor idempotency).
   const [promoApplied, setPromoApplied] = useState(null); // { code, code_id, offer_id, label, amount }
   // giftCardPayment: { card_id, code, applied (minor), remaining_balance }
   // v5.5.265: Verified customer loyalty data (from OTP flow)
@@ -744,12 +745,14 @@ export default function KioskApp({ kioskId, onUnpair }) {
           console.warn('[kiosk] gift card commit partial — uncollected minor:', giftCommit.shortfall);
         }
       }
-      // v5.5.8: use atomic per-location counter instead of (Date.now() % 1000).
-      // Old approach collided every ~1 second (millis-of-current-second wraps fast)
-      // and gave 3-digit numbers that customers found confusing. New format: R1-R99
-      // cycle, single source of truth across kiosk + POS + bar at this location.
+      // v5.5.8: use the atomic per-location counter instead of (Date.now() % 1000), which
+      // collided every ~1 second. `num` is the order's IDENTITY — unique per location and
+      // unlimited. The short two-digit form customers read is applied at display time only
+      // (shortOrderRef), never here. getNextOrderRef always returns a ref or throws, so the
+      // old `|| ('R' + (Date.now() % 99 + 1))` tail was unreachable — and it minted exactly
+      // the wrapped, colliding number this counter exists to stop.
       const { getNextOrderRef } = await import('../lib/db');
-      const num = (await getNextOrderRef(locationId)) || ('R' + (Date.now() % 99 + 1));
+      const num = await getNextOrderRef(locationId);
       const orderTypeOut = orderType === 'dineIn' ? 'dine-in' : 'takeaway';
       const itemsPayload = cart.map(l => ({
         id: l.item.id,
@@ -930,10 +933,11 @@ export default function KioskApp({ kioskId, onUnpair }) {
       // checkIdRef mid-flight. commitRedemption reports, parks and never throws, and nothing
       // downstream reads its result.
       //
-      // `checkId` is the idempotency anchor, NOT the R1–R99 order ref: refs recycle via
-      // next_order_number, and a recycled key would collapse two different orders into one
-      // redemption. (v5.5.888 dodged that with a random per-submission key, which stopped the
-      // collision but also stopped retries from ever deduping — now they do.)
+      // `checkId` is the idempotency anchor, NOT the order ref: the ref is minted fresh on
+      // every submitOrder attempt, so a retry of the same basket would carry a different one
+      // and redeem twice. checkId is minted once per basket. (v5.5.888 dodged that with a
+      // random per-submission key, which stopped the double-redeem but also stopped retries
+      // from ever deduping — now they do.)
       if (promoApplied?.code) {
         ensureAuthToken().catch(() => null).then(token => commitRedemption({
           kind: 'promo',
@@ -4324,7 +4328,8 @@ function ScreenDone({ brandColor, customerName, customerPhone, orderNumber, orde
         <div style={{ width: 120, height: 120, borderRadius: '50%', background: '#22c55e', display: 'grid', placeItems: 'center', fontSize: 60, color: W, marginBottom: 30, boxShadow: '0 0 80px rgba(34,197,94,0.5)' }}>✓</div>
         <div style={{ fontSize: 'clamp(22px, 3.6vw, 32px)', fontWeight: 700, marginBottom: 4, color: W }}>{customerName ? 'Thank you, ' + customerName + '!' : 'Thank you!'}</div>
         <div style={{ fontSize: 13, color: Wm, letterSpacing: '0.1em', textTransform: 'uppercase', marginTop: 40, marginBottom: 12 }}>Your order number</div>
-        <div style={{ fontSize: 'clamp(120px, 22vw, 220px)', fontWeight: 900, letterSpacing: '-0.05em', lineHeight: 0.9, marginBottom: 20, fontVariantNumeric: 'tabular-nums', color: W }}>{orderNumber || '—'}</div>
+        {/* Short display form — must match what prints on the receipt in the customer's hand. */}
+        <div style={{ fontSize: 'clamp(120px, 22vw, 220px)', fontWeight: 900, letterSpacing: '-0.05em', lineHeight: 0.9, marginBottom: 20, fontVariantNumeric: 'tabular-nums', color: W }}>{shortOrderRef(orderNumber) || '—'}</div>
         <div style={{ fontSize: 16, color: Wm, maxWidth: 360, lineHeight: 1.5, marginBottom: 8 }}>
           {orderType === 'dineIn' && tableNumber ? 'Your order will be brought to table ' + tableNumber + '.' : 'We will call your number when ready.'}
         </div>

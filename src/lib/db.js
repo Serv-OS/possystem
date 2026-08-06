@@ -17,20 +17,21 @@ import { reportSave } from './saveHealth';
 import { describeMenuChange } from './menuDiff';
 import { money } from './currency';
 
-// ── Order number generation (v5.5.8) ─────────────────────────────────────────
-// Replaces three pre-existing colliding ref generators (kiosk Date.now() % 1000,
-// POS Math.random()*9000, in-memory ++_orderNum) with a single atomic per-location
-// counter cycling R1-R99.
+// ── Order number generation ──────────────────────────────────────────────────
+// The order number is the order's IDENTITY: unique per location and unlimited.
+// R1, R2, ... R1247 — it never wraps. The two-digit form staff call across a
+// collection counter ("order 47") is a DISPLAY convenience only — see
+// shortOrderRef below. Never store or match on the short form.
 //
 // Primary path: server-side SQL function next_order_number(p_location_id) — atomic
 // via INSERT ON CONFLICT on the location_order_counters row. Returns 'R<n>'.
 //
-// Fallback path: if the function doesn't exist (migration not applied yet), or
-// if there's no network, we use a per-tab in-memory counter seeded from
-// localStorage. This is per-device only — two devices at the same location may
-// briefly issue the same number until the migration is in place. Significantly
-// better than the old generators (no random collisions, no second-of-millis
-// collisions) but not as good as the DB path.
+// Fallback path: a per-device counter persisted to localStorage, used only when
+// the RPC is unreachable. It is monotonic, but it is NOT coordinated between
+// devices: two tills minting while offline at the same location can still land
+// on the same number, and the queue key is (location_id, ref), so the second
+// order would upsert over the first. That cannot be fixed on the client, so
+// every use is logged loudly rather than disguised.
 let _localCounterMemo = null;
 function _readLocalCounter() {
   if (_localCounterMemo != null) return _localCounterMemo;
@@ -42,9 +43,12 @@ function _readLocalCounter() {
 }
 function _bumpLocalCounter() {
   const cur = _readLocalCounter();
-  const next = (cur % 99) + 1;
+  // Monotonic. The old `(cur % 99) + 1` wrap is what made the number a reused
+  // label instead of an identity — 185 closed checks share 99 refs because of it.
+  const next = cur + 1;
   _localCounterMemo = next;
   try { localStorage.setItem('rpos-order-counter-fallback', String(next)); } catch (e) { void e; }
+  console.error('[getNextOrderRef] MINTED LOCALLY (R' + next + ') — this number is unique to THIS device only. Another device at the same location can mint it too, and the second order would overwrite the first. Fix the next_order_number RPC / connectivity.');
   return next;
 }
 
@@ -62,36 +66,92 @@ export const getNextOrderRef = async (locationId = null) => {
         return data;
       }
       if (error) {
-        console.warn('[getNextOrderRef] RPC next_order_number failed:', error.message, '— using local fallback. Apply v5.5.8 migration to fix.');
+        console.warn('[getNextOrderRef] RPC next_order_number failed:', error.message, '— using local fallback.');
       }
     } catch (e) {
       console.warn('[getNextOrderRef] RPC threw:', e?.message, '— using local fallback');
     }
   }
-  // Fallback path — local counter, persisted to localStorage so it survives reloads.
-  // Each device at the same location runs its own counter; collisions possible if
-  // two devices both fire orders before the migration is applied. Acceptable
-  // short-term as an upgrade from Date.now()%1000 / Math.random().
+  // Fallback path — see the section header. Last resort only; _bumpLocalCounter logs.
   return 'R' + _bumpLocalCounter();
 };
 
-// v5.5.8: synchronous variant for callers that can't go async without major
-// refactoring (recordClosedCheck, recordWalkInClosed, recordWalkInClosedCheck —
-// these are called from React handlers that read store state immediately after,
-// so awaiting inside them breaks the read-after-write timing). Returns 'R<n>'
-// from the local counter, persisted to localStorage. No DB call.
+// Synchronous variant for callers that can't go async without major refactoring
+// (recordClosedCheck, recordWalkInClosed, recordWalkInClosedCheck — called from
+// React handlers that read store state immediately after, so awaiting inside them
+// breaks the read-after-write timing). No DB call, so it ALWAYS takes the local
+// fallback and always logs — every caller of this is a device-local number.
+// Moving these callers to async getNextOrderRef is the real fix and is out of
+// scope here.
+// ── The lease ────────────────────────────────────────────────────────────────
+// The synchronous callers (recordClosedCheck, walk-ins, MPOS, bar tabs) cannot await
+// mid-handler — they read store state immediately after and an await breaks that
+// read-after-write ordering. But minting locally is what let two tills at one venue
+// land on the same number.
 //
-// Tradeoff: per-device counter, so two devices at the same location can briefly
-// issue the same number while at the same point in their independent 1-99 cycles
-// (~1% collision rate). For single-device shops this is identical to the atomic
-// DB path. Multi-device shops should run the v5.5.8 migration AND we'll move POS
-// callers to async getNextOrderRef in a follow-up commit.
+// So the device LEASES a contiguous block from the server up front and hands numbers
+// out synchronously from it. One round trip per block instead of per order, and no two
+// devices can ever be inside the same block — reserve_order_numbers bumps the shared
+// counter by the block size under the same row lock next_order_number uses.
 //
-// In any case this is dramatically better than what we replaced:
-//   kiosk  Date.now() % 1000 → collides every 1 second
-//   POS    Math.random()*9000 → birthday-paradox collisions at ~95 orders
+// The block is deliberately NOT persisted. A reload abandons whatever is left of it,
+// which costs a few unused numbers and guarantees a device can never replay a block it
+// already spent. Gaps in the sequence are free; collisions are not.
+const LEASE_SIZE = 25;
+const LEASE_REFILL_AT = 5;      // top up before it runs dry, so a busy service never stalls
+let _leased = [];               // numbers still available to hand out
+let _leaseInFlight = false;
+
+async function _refillLease(locationId = null) {
+  if (_leaseInFlight || isMock || !supabase) return;
+  _leaseInFlight = true;
+  try {
+    if (!locationId || locationId === 'loc-demo') locationId = await getLocationId();
+    if (!locationId || locationId === 'loc-demo') return;
+    const { data, error } = await supabase.rpc('reserve_order_numbers', {
+      p_location_id: locationId, p_count: LEASE_SIZE,
+    });
+    if (error || typeof data !== 'number') {
+      console.warn('[orderRef] lease failed:', error?.message || 'unexpected reply', '— falling back to the local counter until it recovers.');
+      return;
+    }
+    for (let i = 0; i < LEASE_SIZE; i++) _leased.push(data + i);
+  } catch (e) {
+    console.warn('[orderRef] lease threw:', e?.message || e);
+  } finally {
+    _leaseInFlight = false;
+  }
+}
+
+/** Warm the first block at boot so the very first sale of the day is server-numbered. */
+export function primeOrderRefLease(locationId = null) {
+  return _refillLease(locationId);
+}
+
 export function getNextOrderRefLocal() {
+  // Top up in the background before the block runs out. Not awaited: the whole point
+  // of the lease is that this function stays synchronous.
+  if (_leased.length <= LEASE_REFILL_AT) { void _refillLease(); }
+  if (_leased.length) return 'R' + _leased.shift();
+  // Nothing leased — genuinely offline, or the RPC is unreachable. _bumpLocalCounter
+  // logs loudly; see the note above it for why this number is only unique to this device.
   return 'R' + _bumpLocalCounter();
+}
+
+/**
+ * Display-only short form of an order ref: the last two digits of the numeric
+ * part. 'R1247' → '47', 'R7' → '7'. This is the number staff call across a
+ * collection counter; it is NOT an identity and must never be written or matched.
+ *
+ * Channel refs (HR-/OL-/CA-/TAB-…) and anything else unparseable come back
+ * UNCHANGED — a wrong-but-long number is recoverable, a blank one at the counter
+ * is not, so this never returns an empty string.
+ */
+export function shortOrderRef(ref) {
+  if (typeof ref !== 'string') return ref;
+  const m = /^R(\d+)$/.exec(ref);
+  if (!m) return ref;
+  return m[1].length > 2 ? m[1].slice(-2) : m[1];
 }
 
 // ── Menu ──────────────────────────────────────────────────────────────────────
