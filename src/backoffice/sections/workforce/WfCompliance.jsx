@@ -7,7 +7,7 @@
 // expiry traffic-light apply. Flags staff missing legally-required docs
 // (Right to Work always; SIA licence when their role requires it).
 
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, Fragment } from 'react';
 import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, RoleChip, th, td, inputStyle, labelStyle, initials, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
@@ -32,6 +32,17 @@ const DOC_LABEL = {
   firstAid: 'First Aid',
   other: 'Other',
 };
+// v5.5.994 — the vault was one flat alphabetical list per person, so legal
+// documents (RTW, SIA) sat interleaved with training certificates. Grouped by
+// what the document IS: legal-to-employ vs evidence-of-training. 'other' gets
+// its own tail group rather than polluting either.
+const DOC_GROUP = {
+  RTW: 'compliance', SIA: 'compliance',
+  foodHygieneL2: 'training', allergenTraining: 'training', firstAid: 'training',
+  other: 'other',
+};
+const GROUP_ORDER = ['compliance', 'training', 'other'];
+const GROUP_LABEL = { compliance: 'Compliance', training: 'Training', other: 'Other' };
 const EXPIRING_DAYS = 30;
 
 const todayIso = () => new Date().toISOString().slice(0, 10);
@@ -97,7 +108,9 @@ export default function WfCompliance({ ctx, staff, roles, sections, settings, we
     const missing = req
       .filter(t => !held.some(d => d.type === t))
       .map(t => ({ id: `req-${member.id}-${t}`, staffId: member.id, type: t, expiry: null, issuedOn: null, fileUrl: null, _placeholder: true }));
-    return [...held, ...missing].sort((a, b) => a.type.localeCompare(b.type));
+    // Grouped (Compliance → Training → Other), alphabetical within each group.
+    const gIdx = d => GROUP_ORDER.indexOf(DOC_GROUP[d.type] || 'other');
+    return [...held, ...missing].sort((a, b) => gIdx(a) - gIdx(b) || String(a.type).localeCompare(String(b.type)));
   };
 
   const attentionCount = useMemo(() => {
@@ -203,11 +216,24 @@ export default function WfCompliance({ ctx, staff, roles, sections, settings, we
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map(d => {
+                  {rows.map((d, i) => {
                     const st = docStatus(d);
                     const req = requiredTypes(member, rolesMap).includes(d.type);
+                    // A thin heading row whenever the group changes (v5.5.994) —
+                    // legal documents first, then training certificates.
+                    const grp = DOC_GROUP[d.type] || 'other';
+                    const prevGrp = i > 0 ? (DOC_GROUP[rows[i - 1].type] || 'other') : null;
+                    const heading = grp !== prevGrp ? (
+                      <tr key={`${d.id}-hdr`}>
+                        <td colSpan={6} style={{ padding: '8px 8px 3px', fontSize: 10, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--t4)', borderBottom: '1px solid var(--inset-border)' }}>
+                          {GROUP_LABEL[grp]}
+                        </td>
+                      </tr>
+                    ) : null;
                     return (
-                      <tr key={d.id}>
+                      <Fragment key={d.id}>
+                      {heading}
+                      <tr>
                         <td style={td}>
                           <span style={{ fontWeight: 600 }}>{DOC_LABEL[d.type] || d.type}</span>
                           {req && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: 'var(--t4)', fontFamily: 'var(--font-mono)' }}>REQ</span>}
@@ -227,6 +253,7 @@ export default function WfCompliance({ ctx, staff, roles, sections, settings, we
                           </>)}
                         </td>
                       </tr>
+                      </Fragment>
                     );
                   })}
                 </tbody>
@@ -351,7 +378,11 @@ function AddDocModal({ staff, ctx, onClose, onSave }) {
         <div style={{ marginBottom: 12 }}>
           <label style={labelStyle}>Document type</label>
           <select style={inputStyle} value={form.type} onChange={e => set('type', e.target.value)}>
-            {DOC_TYPES.map(t => <option key={t} value={t}>{DOC_LABEL[t]}</option>)}
+            {GROUP_ORDER.map(g => (
+              <optgroup key={g} label={GROUP_LABEL[g]}>
+                {DOC_TYPES.filter(t => (DOC_GROUP[t] || 'other') === g).map(t => <option key={t} value={t}>{DOC_LABEL[t]}</option>)}
+              </optgroup>
+            ))}
           </select>
         </div>
 

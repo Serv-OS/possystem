@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.994', date: '6 Aug 2026', label: 'Compliance vault: documents grouped into Compliance and Training',
+    changes: [
+      'Each staff member\u2019s documents were one flat alphabetical list, so Right to Work sat between First Aid and Food Hygiene. Now grouped under Compliance (legal-to-employ: Right to Work, SIA), Training (Food Hygiene, Allergen, First Aid) and Other, with headings.',
+      'The Add document type picker groups the same way.',
+      'No data change. Purely how the list reads.',
+    ],
+  },
+  {
     version: '5.5.993', date: '6 Aug 2026', label: 'You can finally say which section a staff member works in',
     changes: [
       'DEAD FIELD: staff records have always had a "sections they work in" field. The app READ it in three places, but nothing could ever WRITE it. There was no box for it on any screen, and the save routine did not include it, so it was empty for every staff member at every venue since the day the feature shipped.',
