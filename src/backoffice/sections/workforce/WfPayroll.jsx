@@ -15,18 +15,13 @@ import { useState, useEffect, useMemo } from 'react';
 import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, th, td, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
-import { payPeriod, shiftPayPeriod } from '../../../staff/wfWeek';
+import { payPeriod, payCfgFrom, shiftPayPeriod } from '../../../staff/wfWeek';
 
 const money = (n, dp = 2) => '£' + Number(n || 0).toLocaleString('en-GB', { minimumFractionDigits: dp, maximumFractionDigits: dp });
 const fmtDay = iso => new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
 
 export default function WfPayroll({ ctx, staff = [], roles, sections, settings, week, showToast }) {
-  const payCfg = useMemo(() => ({
-    payPeriodType: settings?.payPeriodType || 'monthly',
-    payPeriodStartDay: settings?.payPeriodStartDay ?? 1,
-    payPeriodAnchor: settings?.payPeriodAnchor || null,
-    payDay: settings?.payDay ?? null,
-  }), [settings?.payPeriodType, settings?.payPeriodStartDay, settings?.payPeriodAnchor, settings?.payDay]);
+  const payCfg = useMemo(() => payCfgFrom(settings), [settings]);
 
   const [period, setPeriod] = useState(() => payPeriod(payCfg));
   const [run, setRun] = useState(null);     // { staff, totals, tronc } | null

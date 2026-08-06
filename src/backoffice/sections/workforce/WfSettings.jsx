@@ -15,7 +15,7 @@ import { payPeriod, shiftPayPeriod } from '../../../staff/wfWeek';
 // Live "what you'll get" line under the pay-period fields — current period,
 // the next one, and the computed pay day, straight from the same function
 // "Run payroll" uses, so what you see here is exactly what payroll runs on.
-function PayPeriodPreview({ payType, payStartDay, payAnchor, payDayDom, payDayOffset }) {
+function PayPeriodPreview({ payType, payStartDay, payAnchor, payDayDom, payDayOffset, payDayMonthOffset, payDayShift }) {
   const fixed = payType !== 'monthly';
   if (fixed && !payAnchor) return <div style={{ fontSize: 11.5, color: 'var(--t4)', marginTop: 10 }}>Set the first period start date to see the schedule.</div>;
   const cfg = {
@@ -24,6 +24,8 @@ function PayPeriodPreview({ payType, payStartDay, payAnchor, payDayDom, payDayOf
     payPeriodAnchor: fixed ? payAnchor : null,
     payDay: fixed ? (payDayOffset === '' ? null : parseInt(payDayOffset, 10) || 0)
       : (payDayDom === '' ? null : parseInt(payDayDom, 10) || 0),
+    payDayMonthOffset: parseInt(payDayMonthOffset, 10) || 0,
+    payDayShift: payDayShift || 'none',
   };
   let cur, next;
   try { cur = payPeriod(cfg); next = shiftPayPeriod(cfg, cur.startIso, 1); } catch { return null; }
@@ -64,6 +66,11 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
   const [payAnchor, setPayAnchor] = useState('');       // fixed-length: first period start (date)
   const [payDayDom, setPayDayDom] = useState('');       // monthly: day-of-month paid (0 = last day)
   const [payDayOffset, setPayDayOffset] = useState(''); // fixed-length: days after period end
+  // v5.5.989 — pay DATE policy. The day-of-month resolves in the month the
+  // period ENDS; this offset pushes it a further whole month on, and the shift
+  // implements the "paid on the last working day" ask.
+  const [payDayMonthOffset, setPayDayMonthOffset] = useState('0');
+  const [payDayShift, setPayDayShift] = useState('none');
   const [paidBreaks, setPaidBreaks] = useState(false);  // venue policy: breaks paid by default
   // v5.5.969 break policy: venue default break length + auto-deduct when no
   // break was punched (customer ask: "30 min unpaid as standard, automatic").
@@ -90,6 +97,8 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
     const fixed = ['weekly', 'fortnightly', 'fourweekly'].includes(settings?.payPeriodType);
     setPayDayDom(!fixed && settings?.payDay != null ? String(settings.payDay) : '');
     setPayDayOffset(fixed && settings?.payDay != null ? String(settings.payDay) : '');
+    setPayDayMonthOffset(String(settings?.settings?.payDayMonthOffset ?? 0));
+    setPayDayShift(settings?.settings?.payDayShift === 'prevWorkingDay' ? 'prevWorkingDay' : 'none');
     setPaidBreaks(!!settings?.settings?.paidBreaks);
     setDefaultBreakMins(String(settings?.settings?.defaultBreakMins ?? 30));
     setAutoBreak(!!settings?.settings?.autoBreak);
@@ -145,6 +154,10 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
       premiums: settings?.premiums || {},
       settings: {
         ...(settings?.settings || {}),
+        // Pay DATE policy. Lives here rather than in its own column — same home
+        // as the other venue policy knobs (COGS%, overhead, break policy).
+        payDayMonthOffset: Math.min(1, Math.max(0, parseInt(payDayMonthOffset, 10) || 0)),
+        payDayShift: payDayShift === 'prevWorkingDay' ? 'prevWorkingDay' : 'none',
         paidBreaks,
         // Break policy — the default is clamped 0–120; the auto-deduct floor to
         // the STATUTORY minimum happens at clock-out (workforce-clock), so a
@@ -281,8 +294,26 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
                 <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>0 = paid on the period’s last day.</div>
               </div>
             </>)}
+            {payType === 'monthly' && (
+              <div>
+                <label style={labelStyle}>Paid in</label>
+                <select style={inputStyle} value={payDayMonthOffset} onChange={e => setPayDayMonthOffset(e.target.value)} disabled={savingVenue}>
+                  <option value="0">The month the period ends</option>
+                  <option value="1">The month after it ends</option>
+                </select>
+                <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>A 23rd–22nd period ends in the following month, so that is its pay run.</div>
+              </div>
+            )}
+            <div>
+              <label style={labelStyle}>If the pay day is not a working day</label>
+              <select style={inputStyle} value={payDayShift} onChange={e => setPayDayShift(e.target.value)} disabled={savingVenue}>
+                <option value="none">Leave it (pay on the date)</option>
+                <option value="prevWorkingDay">Pay on the previous working day</option>
+              </select>
+              <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>Skips weekends and <b>England &amp; Wales</b> bank holidays. Scotland and Northern Ireland differ.</div>
+            </div>
           </div>
-          <PayPeriodPreview payType={payType} payStartDay={payStartDay} payAnchor={payAnchor} payDayDom={payDayDom} payDayOffset={payDayOffset} />
+          <PayPeriodPreview payType={payType} payStartDay={payStartDay} payAnchor={payAnchor} payDayDom={payDayDom} payDayOffset={payDayOffset} payDayMonthOffset={payDayMonthOffset} payDayShift={payDayShift} />
         </div>
 
         {/* ── Tipping policy (Employment (Allocation of Tips) Act 2023) ──

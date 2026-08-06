@@ -15,7 +15,7 @@ import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, RoleChip, money, th, td, inputStyle, labelStyle, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
 import { hoursOf, resolveRate, statutoryBreakMins } from '../../../staff/labour';
-import { buildWeek, addWeeks, payPeriod, shiftPayPeriod, weekRangeLabel } from '../../../staff/wfWeek';
+import { buildWeek, addWeeks, payPeriod, payCfgFrom, shiftPayPeriod, weekRangeLabel } from '../../../staff/wfWeek';
 import { getLocationConfig } from '../../../lib/locationTime';
 
 const VAR_TOL = 0.17; // ≈ ±10 min — beyond this we flag the variance.
@@ -63,12 +63,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
   useEffect(() => { let alive = true; getLocationConfig(ctx?.locationId).then(c => { if (alive && c?.timezone) setTz(c.timezone); }).catch(() => {}); return () => { alive = false; }; }, [ctx?.locationId]);
 
   // ── range filter: by week or by pay period ────────────────────────────────
-  const payCfg = useMemo(() => ({
-    payPeriodType: settings?.payPeriodType || 'monthly',
-    payPeriodStartDay: settings?.payPeriodStartDay ?? 1,
-    payPeriodAnchor: settings?.payPeriodAnchor || null,
-    payDay: settings?.payDay ?? null,
-  }), [settings?.payPeriodType, settings?.payPeriodStartDay, settings?.payPeriodAnchor, settings?.payDay]);
+  const payCfg = useMemo(() => payCfgFrom(settings), [settings]);
   const [mode, setMode] = useState('week'); // week | period
   const [statusFilter, setStatusFilter] = useState('all'); // all | pending | approved | paid
   const [wk, setWk] = useState(() => buildWeek());

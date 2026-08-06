@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.989', date: '6 Aug 2026', label: 'The Announcements SMS toggle now actually sends, and pay dates land in the right month',
+    changes: [
+      'The SMS option on Workforce \u2192 Announcements never sent anything. It saved your choice to the database and stopped there, so anyone who ticked it believed their team had been texted when no message had left the building. It now texts everyone in the audience who has a mobile on file.',
+      'The composer shows who the announcement reaches BEFORE you send it \u2014 how many people match the audience, and how many of those can actually be texted \u2014 so a team with no mobiles on file is obvious up front rather than a surprise afterwards.',
+      'The result is reported honestly. "Announcement posted \u00b7 texted 12" when it worked, and a plain warning when some failed, when nobody in the audience has a mobile, or when the audience is empty. Posting the notice and texting the team are separate steps, so a texting failure can never read as "nothing was posted".',
+      'PAY DATE BUG: for any pay period that does not start on the 1st, the pay date was worked out in the month the period STARTS. A 23 July \u2013 22 August period asking to be paid on the last day resolved to 31 JULY \u2014 nine days before the period even closed, and that wrong date was stored on the payroll run. Pay dates now resolve in the month the period ENDS, which is the pay run it belongs to. The common 1st\u201331st period is unaffected.',
+      'NEW: "paid on the last working day". A pay date that lands on a weekend or an England & Wales bank holiday can now move back to the previous working day, with Easter and the Christmas/New Year substitute days calculated properly. Off by default.',
+      'NEW: monthly pay runs can be set to pay in the month after the period ends, for venues that close the period first and pay the following month.',
+      'The Settings preview shows the resulting dates live, straight from the same code payroll runs on, so what you see is what you get.',
+    ],
+  },
+  {
     version: '5.5.988', date: '6 Aug 2026', label: 'Repairs the fallout from keying the order queue per venue',
     changes: [
       'Changing the order queue to be keyed per venue (v5.5.986) broke inbound Deliveroo, UberEats and JustEat orders: the code that receives them still matched on the order number alone, which is no longer unique on its own. Every incoming channel order would have been rejected. Fixed and all five affected functions redeployed.',

@@ -30,6 +30,24 @@ in yet.
 ### 4a. Their 23rd → 22nd pay period ✅
 Any monthly start day from 1 to 28 is supported. **They can set this themselves today.**
 
+⚠️ *Fixed on 6 Aug (v5.5.989) before this goes anywhere near them.* The pay DATE for a 23rd→22nd
+period was being worked out in the month the period **starts**, so 23 Jul–22 Aug paid "on the last
+day" resolved to **31 July** — nine days before the period closed — and that wrong date was written
+onto the payroll run. It now resolves in the month the period ends. The standard 1st–31st period was
+never affected, which is exactly why it went unnoticed.
+
+### 4b. "Paid on the last working day" ✅ *(built 6 Aug, v5.5.989)*
+Workforce → Settings → **"If the pay day is not a working day"** → *Pay on the previous working day*.
+Skips weekends and England & Wales bank holidays, with Easter and the Christmas/New Year substitute
+days computed properly. Off by default.
+
+Also added: a monthly pay run can now be set to pay **in the month after** the period ends, for
+venues that close the period first and pay the following month.
+
+*Two things to say plainly:* the bank holiday list is **England & Wales** — Scotland and Northern
+Ireland differ and are not covered. And **no-one has run a payroll through this yet**, so do one dated
+test run before promising it.
+
 ---
 
 ## Built, but switched off — two minutes, no code
@@ -84,18 +102,9 @@ prior written authorisation (their contract clause), it must not take anyone bel
 it must **never** come out of tips — the Tipping Act requires all tips to reach staff, which this app
 already states on screen.
 
-### 4b. "Paid on the last working day" — 1 day
-No concept of a working day anywhere: no weekend skip, no bank holidays.
-
-⚠️ **And there is a real bug underneath it.** For a period starting on the 23rd, the pay date resolves
-in the **wrong month** — a 23 Jul–22 Aug period would show and store 31 July rather than the end of
-August. Worth fixing regardless of whether they ask.
-
 ### 5. Attachments on announcements — 1 day
 No column, no picker, no display. Straightforward: the document upload used elsewhere can be reused
 with the same security fence. Add another half day to also deliver them to staff on the Time Clock.
-
-⚠️ **See the SMS toggle below before demoing this screen.**
 
 ### 6. Training Documents grouping — 0.5 day
 Documents exist but are one flat list with no grouping. A cosmetic version — grouping the existing
@@ -112,14 +121,20 @@ alongside the small items.
 
 ---
 
-## ⚠️ One thing to fix before they see the system again
+## ✅ The thing that had to be fixed before they saw the system again — done
 
-**The Announcements screen has an SMS toggle that does nothing.** It saves the setting, and no message
-is ever sent. A customer who ticks it will believe their team was texted.
+**The Announcements screen had an SMS toggle that did nothing.** It saved the setting and sent no
+message, so anyone who ticked it believed their team had been texted. That is worse than a missing
+feature, because it is a promise the screen makes and does not keep.
 
-This is worse than a missing feature, because it is a promise the screen makes and does not keep.
-**Half a day to remove the toggle, 1.5 days to make it actually send.** Either is fine; leaving it is
-not.
+**Built properly on 6 Aug (v5.5.989).** It now texts everyone in the audience with a mobile on file,
+and the screen is honest at both ends: the composer shows the reach *before* you send ("Goes to 14
+people · 11 can be texted, 3 have no mobile on file"), and the result reports what actually happened
+instead of an unconditional "sent". Posting the notice and texting the team are separate steps, so a
+texting failure can never read as "nothing was posted".
+
+⚠️ **No handset has received one yet.** It goes through the same `send-sms` function the rota
+notifications already use, so the path is proven, but send one to your own mobile before demoing it.
 
 ---
 
@@ -128,15 +143,16 @@ not.
 | | Feature | Effort |
 |---|---|---|
 | ✅ | Future-dated pay rises, weekly checks, bank account name, their 23→22 pay period | none |
+| ✅ | Pay on the last working day *(+ the wrong-month pay date bug underneath it)* | **done 6 Aug** |
+| ✅ | Announcements SMS actually sending | **done 6 Aug** |
 | ⚙️ | Breaks | **switch it on** |
 | 🟠 | Price alerts | 2 days |
 | 🟠 | Delivery checks | 3–5 days |
 | 🔴 | Deductions | 2–3 days |
-| 🔴 | Pay on last working day | 1 day |
 | 🔴 | Announcement attachments | 1 day |
 | 🔴 | Training document grouping | 0.5 day |
 | 🔴 | Barcode scanning | 2–3 days |
 | 🔴 | Storage locations | **2–3 weeks** |
 
-Everything except storage locations totals roughly **two working weeks**. Storage locations on its own
-is as large as all the rest combined.
+Everything except storage locations is now roughly **nine working days**. Storage locations on its own
+is still larger than all the rest combined.

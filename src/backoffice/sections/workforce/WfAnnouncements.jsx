@@ -54,6 +54,16 @@ export default function WfAnnouncements({ ctx, staff, roles, sections, settings,
 
   const roleList = useMemo(() => roles?.list || [], [roles]);
 
+  // Who this actually reaches, resolved live so the operator sees the audience
+  // BEFORE sending rather than discovering it afterwards.
+  const audience = useMemo(
+    () => (audKind === 'all' ? { kind: 'all' } : { kind: audKind, value: audValue }),
+    [audKind, audValue],
+  );
+  const recipients = useMemo(() => wf.announcementRecipients(audience, staff), [audience, staff]);
+  const textable = useMemo(() => recipients.filter(s => wf.toE164(s.mobile)).length, [recipients]);
+  const smsOn = channels.includes('sms');
+
   async function reload() {
     const rows = await wf.loadAnnouncements(ctx?.locationId);
     setFeed(rows || []);
@@ -84,16 +94,43 @@ export default function WfAnnouncements({ ctx, staff, roles, sections, settings,
     const text = body.trim();
     if (!text) { showToast('Write a message first', 'error'); return; }
     if (!channels.length) { showToast('Pick at least one channel', 'error'); return; }
-    const audience = audKind === 'all' ? { kind: 'all' } : { kind: audKind, value: audValue };
     setSending(true);
+    // PHASE 1 — the record. If this fails nothing was posted and nobody was texted.
+    let saved;
     try {
-      await wf.saveAnnouncement({ audience, channels, body: text }, ctx?.locationId, ctx?.orgId, ctx?.actor?.name);
+      saved = await wf.saveAnnouncement({ audience, channels, body: text }, ctx?.locationId, ctx?.orgId, ctx?.actor?.name);
+    } catch (e) {
+      showToast(e?.message || 'Could not post the announcement — nothing was sent', 'error');
+      await reload();
+      setSending(false);
+      return;
+    }
+    // PHASE 2 — the announcement IS posted from here on, so a texting failure
+    // must never read as "nothing happened".
+    try {
       setBody('');
       await reload();
-      showToast('Announcement sent', 'success');
+      if (!smsOn) {
+        showToast('Announcement posted to the Time Clock', 'success');
+        return;
+      }
+      // The text is prefixed with the venue so staff know who it is from. ctx
+      // falls back to the placeholder 'our team' when no location name is set —
+      // don't put that on the front of a text message.
+      const venue = ctx?.locName && ctx.locName !== 'our team' ? ctx.locName : null;
+      const r = await wf.sendAnnouncementSms({ ...saved, audience, body: text }, staff, ctx?.locationId, venue);
+      if (!r.total) {
+        showToast('Announcement posted, but no-one matches this audience — nobody was texted', 'error');
+      } else if (r.failed) {
+        showToast(`Announcement posted · texted ${r.sent}, ${r.failed} failed`, 'error');
+      } else if (!r.sent) {
+        showToast(`Announcement posted, but no-one in this audience has a mobile on file (${r.noMobile})`, 'error');
+      } else {
+        const tail = r.noMobile ? `, ${r.noMobile} with no mobile` : '';
+        showToast(`Announcement posted · texted ${r.sent}${tail}`, 'success');
+      }
     } catch (e) {
-      showToast(e?.message || 'Could not send announcement', 'error');
-      await reload();
+      showToast('Announcement posted, but texting the team failed: ' + (e?.message || 'unknown error'), 'error');
     } finally {
       setSending(false);
     }
@@ -162,6 +199,15 @@ export default function WfAnnouncements({ ctx, staff, roles, sections, settings,
             </div>
             <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 6, lineHeight: 1.5 }}>
               In-app = the staff <b>Time Clock</b>: the latest messages (last 14 days) show whenever someone enters their PIN. SMS texts everyone in the audience with a mobile on file.
+            </div>
+            {/* Reach, resolved live. The SMS toggle used to save the setting and
+                send nothing (fixed v5.5.989); showing the real count keeps the
+                promise on screen honest. */}
+            <div style={{ fontSize: 10.5, marginTop: 6, lineHeight: 1.5, color: smsOn && !textable ? 'var(--warn, #d97706)' : 'var(--t4)' }}>
+              Goes to <b>{recipients.length}</b> {recipients.length === 1 ? 'person' : 'people'}
+              {smsOn && (textable === recipients.length
+                ? <> · all can be texted</>
+                : <> · <b>{textable}</b> can be texted{recipients.length - textable > 0 && <>, {recipients.length - textable} have no mobile on file</>}</>)}
             </div>
           </div>
         </div>

@@ -810,6 +810,41 @@ export async function saveAnnouncement(ann, locationId, orgId, authorName) {
   return mapAnn(data);
 }
 
+/** Who an announcement is addressed to: the stored audience jsonb resolved
+ *  against the location's staff. `{}` / `{kind:'all'}` means everyone. Pure, so
+ *  the composer can show the recipient count BEFORE the operator hits Send. */
+export function announcementRecipients(audience, staff) {
+  const list = (staff || []).filter(s => s && s.status !== 'leaver');
+  const a = audience || {};
+  if (!a.kind || a.kind === 'all') return list;
+  if (a.kind === 'section') return list.filter(s => (s.sectionIds || []).includes(a.value));
+  if (a.kind === 'role') return list.filter(s => s.role === a.value);
+  return list;
+}
+
+/** Text an announcement to everyone in its audience who has a usable mobile.
+ *
+ *  Until v5.5.989 the SMS channel was a lie: the screen offered the toggle, the
+ *  chosen channels were written to the row, and nothing was ever sent. This is
+ *  the send. It never throws — the announcement row is already committed by the
+ *  time this runs, so a texting failure must not read as "nothing was posted" —
+ *  and it returns a per-recipient tally so the screen can report what actually
+ *  happened instead of an unconditional "sent". */
+export async function sendAnnouncementSms(ann, staff, locationId, venueName) {
+  const recipients = announcementRecipients(ann?.audience, staff);
+  const reachable = recipients.filter(s => toE164(s.mobile));
+  const noMobile = recipients.length - reachable.length;
+  const tally = { sent: 0, failed: 0, noMobile, total: recipients.length };
+  if (!reachable.length) return tally;
+  const body = `${venueName ? `${venueName}: ` : ''}${ann?.body || ''}`;
+  // In parallel — a 30-person team sent one at a time is 30× a single send's latency.
+  const results = await Promise.allSettled(reachable.map(s =>
+    sendStaffSms(s.mobile, body, locationId, 'announcement', ann?.id || null)
+  ));
+  results.forEach(r => { if (r.status === 'fulfilled' && r.value?.ok) tally.sent++; else tally.failed++; });
+  return tally;
+}
+
 // ============================================================================
 // SALES FORECAST (wf_sales_forecast) + ACTUAL sales (closed_checks)
 // ============================================================================
