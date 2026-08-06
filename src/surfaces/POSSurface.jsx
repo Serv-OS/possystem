@@ -51,7 +51,7 @@ export default function POSSurface() {
     openCashDrawer,
     cashDrawers, myDrawer, needsCashIn,
     cashInDrawer, cashOutDrawer, computeExpectedCash, currentDrawerSession,
-    loadCurrentDrawerSession,
+    loadCurrentDrawerSession, signOutAfterCashUp,
     getPOSItems, getPOSTotals, getPOSOrderNote, quoteDelivery,
     activeTableId, tables, clearTable, clearDraftItems, clearWalkIn, setActiveTableId, recordWalkInClosed,
     orderType, setOrderType, customer, setCustomer, setAllergens, clearCustomer,
@@ -940,7 +940,20 @@ export default function POSSurface() {
                       style={{ padding:'14px 8px', borderRadius:10, border:'1.5px solid var(--bdr2)', background:'var(--bg2)', color:'var(--t2)', fontFamily:'inherit', fontWeight:800, fontSize:13, cursor:'pointer', display:'flex', flexDirection:'column', alignItems:'center', gap:2 }}>
                       <span>No sale</span><span style={{ fontSize:10, fontWeight:500, opacity:.75 }}>open drawer</span>
                     </button>
-                    <button disabled={!_mCan} onClick={async () => { if (!requirePerm()) return; setShowDrawerMenu(false); const exp = typeof computeExpectedCash === 'function' ? await computeExpectedCash(_mDrw.id) : 0; setExpectedForCashOut(exp); setShowCashOut(true); }}
+                    <button disabled={!_mCan} onClick={async () => {
+                        if (!requirePerm()) return;
+                        setShowDrawerMenu(false);
+                        // Pop the drawer so the operator can physically count it — that is the
+                        // whole point of cashing up. force:true because requirePerm() has already
+                        // gated this on the 'cashup' permission, and openCashDrawer's own check is
+                        // for 'openDrawer', which a cashier who may cash up might not hold. force
+                        // also suppresses its "Drawer opened" toast, keeping the screen clear for
+                        // the variance message that lands at the end.
+                        openCashDrawer?.({ type:'drawer_open', reason:'Cash up', amount:0, force:true, drawerId:_mDrw.id });
+                        const exp = typeof computeExpectedCash === 'function' ? await computeExpectedCash(_mDrw.id) : 0;
+                        setExpectedForCashOut(exp);
+                        setShowCashOut(true);
+                      }}
                       style={{ padding:'14px 8px', borderRadius:10, border:`1.5px solid ${_mCan?'var(--red,#cc5959)':'var(--bdr)'}`, background:_mCan?'var(--red-d, rgba(235,97,97,0.12))':'var(--bg3)', color:_mCan?'var(--red,#cc5959)':'var(--t4)', fontFamily:'inherit', fontWeight:800, fontSize:13, cursor:_mCan?'pointer':'not-allowed', display:'flex', flexDirection:'column', alignItems:'center', gap:2 }}>
                       <span>Cash up</span><span style={{ fontSize:10, fontWeight:500, opacity:.75 }}>close drawer</span>
                     </button>
@@ -1068,14 +1081,17 @@ export default function POSSurface() {
         return (
           <DrawerCashModal mode="out" drawer={_mDrw} expectedCash={expectedForCashOut} onClose={() => setShowCashOut(false)}
             onComplete={async ({ amount, denominations, notes }) => {
-              await cashOutDrawer?.(_mDrw.id, { declaredCash: amount, denominations, notes });
+              const result = await cashOutDrawer?.(_mDrw.id, { declaredCash: amount, denominations, notes });
               setShowCashOut(false);
-              // Deliberately NOT logging out here. Cashing up flips the drawer to 'idle',
-              // which arms POSLockOverlay — but that overlay carries its own Sign out, so
-              // nobody is trapped. Auto-logout would swap the tree to PINScreen, which
-              // renders no Toast, destroying the messages cashOutDrawer just set: the
-              // variance figure, "variance NOT logged to the cash ledger", and the
-              // no-open-session error it returns without cashing up at all.
+              // Sign out ONLY when the cash-up actually landed. cashOutDrawer returns
+              // { expected, declared, variance } on success and null on every failure — no open
+              // session, a thrown error, mock/training mode — having already toasted the reason.
+              // Signing out on a failure would swap the tree to PINScreen, which renders no Toast,
+              // and the operator would never see that the drawer did NOT close, or that the
+              // variance was not written to the cash ledger. They would walk away believing it was
+              // done. On success the sign-out is delayed past the toast lifetime by
+              // signOutAfterCashUp, so the variance figure is always read first.
+              if (result) signOutAfterCashUp?.();
             }} />
         );
       })()}

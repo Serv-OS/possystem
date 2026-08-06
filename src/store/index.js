@@ -396,6 +396,34 @@ export const useStore = create((set, get) => ({
     }
   },
 
+  // v5.5.983: sign out after a successful cash-up. Separate from maybeAutoSignout because that one
+  // is gated on the per-device signout policy (onPay / onSend) and cashing up should always end the
+  // operator's session — the drawer is counted and closed, there is nothing left for them to do.
+  //
+  // The delay is the whole reason this is not a bare logout() at the call site. Logging out swaps
+  // the tree to PINScreen, which renders no Toast, so an immediate logout destroys the message
+  // cashOutDrawer just set — and that message is the variance figure, or the warning that the
+  // variance was NOT written to the cash ledger. Toasts clear themselves at 2800ms (showToast), so
+  // this waits longer than that and the operator always sees the number before the screen changes.
+  //
+  // Same two guards as maybeAutoSignout: cancel any pending timer, and only sign out if the SAME
+  // operator is still signed in, so a card-swap during the wait cannot sign the new person out.
+  signOutAfterCashUp: () => {
+    const { staff } = get();
+    if (!staff) return;
+    const who = staff.name?.split(' ')[0] || '';
+    const sid = staff.id;
+    if (_autoSignoutTimer) clearTimeout(_autoSignoutTimer);
+    _autoSignoutTimer = setTimeout(() => {
+      _autoSignoutTimer = null;
+      const now = get().staff;
+      if (now && String(now.id) === String(sid)) {
+        get().logout();
+        get().showToast?.(`Drawer closed. Signed out ${who}`.trim(), 'info');
+      }
+    }, 3200);
+  },
+
   // v5.5.731: a re-entrant guard that stops the idle auto-sign-out from firing mid-transaction.
   // Any open payment surface (CheckoutModal, CardTerminal collect) holds this while mounted, so a
   // customer taking >15s to tap the reader — which is NOT POS DOM activity — can never sign the

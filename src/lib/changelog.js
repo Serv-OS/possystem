@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.983', date: '6 Aug 2026', label: 'Cash up now opens the drawer, and signs you out when it is done',
+    changes: [
+      'Pressing Cash up pops the cash drawer, so you can count it without a separate No sale first. It is logged as a drawer-open event like any other, so the audit trail still shows the till was opened.',
+      'Once the count is saved and the drawer is closed, you are signed out automatically. The next person has to sign in and declare their own opening float, which is the point of the lock.',
+      'The sign-out waits a few seconds first, deliberately. Closing a drawer reports your variance, or warns you that the variance could NOT be recorded, and signing out immediately would wipe that message off the screen before you had read it.',
+      'It also only signs you out if the cash-up actually worked. If it failed, you stay on the till with the error in front of you, rather than being logged out believing the drawer was closed when it was not.',
+    ],
+  },
+  {
     version: '5.5.982', date: '6 Aug 2026', label: 'Workflows are now called Automations',
     changes: [
       'Renamed throughout Marketing, as asked: the nav item, the page, every button and message, and the Marketing report column. "Workflow" described how it was built; "Automation" describes what it does for you.',
