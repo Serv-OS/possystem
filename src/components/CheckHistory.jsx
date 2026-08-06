@@ -3,6 +3,7 @@ import { useStore } from '../store';
 import { printService } from '../lib/printer';
 import { money } from '../lib/currency';
 import { calculateOrderTax } from '../lib/tax';
+import { shortOrderRef } from '../lib/db';
 
 const REFUND_REASONS = [
   'Wrong item served','Quality issue','Customer complaint',
@@ -118,7 +119,7 @@ function RefundModal({check, onConfirm, onCancel}){
               :step==='cash_confirm'?'Hand back cash'
               :'Return to card'}
             </div>
-            <div style={{fontSize:11,color:'var(--t3)',marginTop:2}}>{check.ref} · {check.tableLabel||check.orderType} · {check.server}</div>
+            <div style={{fontSize:11,color:'var(--t3)',marginTop:2}}>{shortOrderRef(check.ref)} · {check.tableLabel||check.orderType} · {check.server}</div>
           </div>
           <button onClick={onCancel} style={{background:'none',border:'none',color:'var(--t3)',cursor:'pointer',fontSize:22}}>×</button>
         </div>
@@ -366,7 +367,9 @@ export default function CheckHistory(){
     if(dateFilter!=='today'&&dateFilter!=='week'&&d<startOf30Days)return false;
     if(search){
       const q=search.toLowerCase();
-      return c.ref?.toLowerCase().includes(q)||c.tableLabel?.toLowerCase().includes(q)||c.server?.toLowerCase().includes(q)||c.customer?.name?.toLowerCase().includes(q);
+      // Match the FULL ref and the short form. Staff read '47' off the screen, so typing 47
+      // has to find R1147; an operator with the full ref must still find it too.
+      return c.ref?.toLowerCase().includes(q)||shortOrderRef(c.ref)?.toLowerCase().includes(q)||c.tableLabel?.toLowerCase().includes(q)||c.server?.toLowerCase().includes(q)||c.customer?.name?.toLowerCase().includes(q);
     }
     return true;
   }),[closedChecks,dateFilter,search]);
@@ -430,7 +433,7 @@ export default function CheckHistory(){
       if (result?.ok === false) {
         showToast(`Reprint failed: ${result.error || 'unknown error'}`, 'error');
       } else {
-        showToast(`Reprinted ${selectedCheck.ref}`, 'success');
+        showToast(`Reprinted ${shortOrderRef(selectedCheck.ref)}`, 'success');
       }
     } catch (err) {
       showToast(`Reprint failed: ${err?.message || err}`, 'error');
@@ -487,7 +490,7 @@ export default function CheckHistory(){
               }}>
                 <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:3}}>
                   <div style={{display:'flex',alignItems:'center',gap:6}}>
-                    <span style={{fontSize:12,fontWeight:800,color:'var(--t1)',fontFamily:'DM Mono,monospace'}}>{chk.ref}</span>
+                    <span style={{fontSize:12,fontWeight:800,color:'var(--t1)',fontFamily:'DM Mono,monospace'}}>{shortOrderRef(chk.ref)}</span>
                     <span style={{fontSize:10,fontWeight:700,padding:'1px 6px',borderRadius:20,background:sm.bg,color:sm.color,border:`1px solid ${sm.border}`}}>{sm.label}</span>
                   </div>
                   <span style={{fontSize:13,fontWeight:700,color:'var(--acc)',fontFamily:'DM Mono,monospace'}}>{money(chk.total)}</span>

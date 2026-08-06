@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.987', date: '6 Aug 2026', label: 'Two-digit order numbers everywhere, including search',
+    changes: [
+      'Finishes v5.5.986. POS history now shows the same two-digit number as the receipt and the collection board, rather than the full one.',
+      'Search takes either. Type 47 and you find it, because that is what is on the screen and on the customer\'s receipt. Type the full number and you still find it, for anyone working from a report.',
+    ],
+  },
+  {
     version: '5.5.986', date: '6 Aug 2026', label: 'Order numbers are finally unique. They were never meant to repeat.',
     changes: [
       'The R number was only ever meant to be a convenience — the last two digits so staff can call "order 47" across a counter. The number underneath was supposed to be unlimited. It was not. It counted 1 to 99 and started again, and each till kept its own count in its own browser, so two tills would happily hand out the same number. 27 sales already share a number with another sale.',
