@@ -22,22 +22,34 @@ export const UNASSIGNED = '__unassigned__';
 /**
  * Resolve one shift to a section id.
  *   1. its own sectionId, if that section still exists
- *   2. a section whose NAME matches the person's role group (a Chef lands in
+ *   2. the PERSON's own section (wf_staff.section_ids) — "Jane works Runner",
+ *      so her unsectioned shifts belong under Runner. Only when they belong to
+ *      exactly one section; someone in two could go either way and guessing
+ *      would put them in the wrong place half the time.
+ *   3. a section whose NAME matches the person's role group (a Chef lands in
  *      "Kitchen" when a Kitchen section exists), case-insensitive
- *   3. UNASSIGNED
+ *   4. UNASSIGNED
  *
- * @param shift      { sectionId?, roleKey?, staffId }
- * @param sections   wf_sections rows [{ id, name }]
+ * @param shift       { sectionId?, roleKey?, staffId }
+ * @param sections    wf_sections rows [{ id, name }]
  * @param groupNameOf (shift) => role-group display name or null, e.g. 'Kitchen'
+ * @param staffSectionsOf (shift) => that person's section id array
  */
-export function sectionIdForShift(shift, sections = [], groupNameOf = () => null) {
+export function sectionIdForShift(shift, sections = [], groupNameOf = () => null, staffSectionsOf = () => []) {
   if (!shift) return UNASSIGNED;
-  if (shift.sectionId && sections.some(x => x.id === shift.sectionId)) return shift.sectionId;
+  const live = id => id && sections.some(x => x.id === id);
+  if (live(shift.sectionId)) return shift.sectionId;
+
+  const mine = (staffSectionsOf(shift) || []).filter(live);
+  if (mine.length === 1) return mine[0];
+
   const grpName = groupNameOf(shift);
   if (grpName) {
     const hit = sections.find(x => String(x.name || '').toLowerCase() === String(grpName).toLowerCase());
     if (hit) return hit.id;
   }
+  // Someone in several sections with no shift section and no role-group match
+  // is genuinely ambiguous. Say so rather than picking one.
   return UNASSIGNED;
 }
 
@@ -46,11 +58,11 @@ export function sectionIdForShift(shift, sections = [], groupNameOf = () => null
  * Every shift lands in exactly one bucket — that is the whole point, and
  * `bucketedCount` exists so a caller can assert it.
  */
-export function bucketShiftsBySection(shifts = [], sections = [], groupNameOf = () => null) {
+export function bucketShiftsBySection(shifts = [], sections = [], groupNameOf = () => null, staffSectionsOf = () => []) {
   const map = new Map();
   let unassigned = 0;
   (shifts || []).forEach(sh => {
-    const secId = sectionIdForShift(sh, sections, groupNameOf);
+    const secId = sectionIdForShift(sh, sections, groupNameOf, staffSectionsOf);
     if (secId === UNASSIGNED) unassigned++;
     const k = `${secId}|${sh.date}`;
     if (!map.has(k)) map.set(k, []);

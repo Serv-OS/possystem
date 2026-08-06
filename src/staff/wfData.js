@@ -208,6 +208,15 @@ export async function saveStaff(member, locationId, orgId) {
   // NI number: only write when the form actually carried the field (avoid
   // wiping it from save paths that don't know about it).
   if (member.niNumber !== undefined) row.ni_number = member.niNumber || null;
+  // v5.5.993 — which section(s) this person works in. The column has existed
+  // since the workforce build and was READ in three places, but no save path
+  // ever wrote it and no screen ever offered it, so it was empty for every
+  // staff member at every venue. That silently broke the Announcements
+  // "By section" audience (it could never match anyone) and left the rota's
+  // By-section view with nothing to fall back on. Same "only when present"
+  // guard as the fields above, so save paths that don't know about it can't
+  // wipe it.
+  if (member.sectionIds !== undefined) row.section_ids = Array.isArray(member.sectionIds) ? member.sectionIds : [];
   // Per-staff pay-rate override: same "only when present" guard. Without this the override was NEVER
   // persisted, so resolveRate always fell back to the position's default rate (the "default takes over"
   // bug). '' / null clears it (→ back to the position default on purpose).

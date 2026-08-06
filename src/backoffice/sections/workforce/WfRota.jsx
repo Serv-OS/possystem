@@ -423,9 +423,15 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   // Bucketed once, so the cells and the footer total read the SAME map and can
   // never disagree. Logic + the "nothing is dropped" invariant are unit-tested
   // in src/staff/rotaSections.test.js.
+  // The person's OWN sections (wf_staff.section_ids). "Jane works Runner", so
+  // her shifts with no section of their own belong under Runner.
+  const staffSectionsOf = useCallback(
+    (sh) => staffById[sh.staffId]?.sectionIds || [],
+    [staffById],
+  );
   const { map: sectionGrid, unassigned: unassignedCount } = useMemo(
-    () => bucketShiftsBySection(shifts, secs, groupNameOf),
-    [shifts, secs, groupNameOf],
+    () => bucketShiftsBySection(shifts, secs, groupNameOf, staffSectionsOf),
+    [shifts, secs, groupNameOf, staffSectionsOf],
   );
 
   // Who can be added to a section on a given day, already-scheduled people last

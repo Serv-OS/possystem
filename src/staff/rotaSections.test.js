@@ -30,6 +30,33 @@ test('a stale section id does not swallow the shift', () => {
   assert.equal(sectionIdForShift({ sectionId: 'sec-deleted', roleKey: 'chef' }, SECTIONS, groupNameOf), 'sec-kitchen');
 });
 
+test('the PERSON’s own section places their unsectioned shifts', () => {
+  // "Jane works Runner." Her Friday shift carries Runner explicitly; her Tue and
+  // Wed shifts carry nothing and used to land in "No section assigned" because
+  // a Server’s role group is Floor and there is no Floor section.
+  const janeInRunner = () => ['sec-runner'];
+  assert.equal(sectionIdForShift({ roleKey: 'server' }, SECTIONS, groupNameOf, janeInRunner), 'sec-runner');
+});
+
+test('the shift’s own section still beats the person’s', () => {
+  const janeInRunner = () => ['sec-runner'];
+  assert.equal(sectionIdForShift({ roleKey: 'server', sectionId: 'sec-bar' }, SECTIONS, groupNameOf, janeInRunner), 'sec-bar');
+});
+
+test('someone in TWO sections is not guessed at', () => {
+  // Picking one would be wrong half the time. Say unassigned and let a human
+  // set the shift’s section.
+  const both = () => ['sec-runner', 'sec-bar'];
+  assert.equal(sectionIdForShift({ roleKey: 'server' }, SECTIONS, groupNameOf, both), UNASSIGNED);
+  // ...unless their role group names a section, which is a real signal.
+  assert.equal(sectionIdForShift({ roleKey: 'chef' }, SECTIONS, groupNameOf, both), 'sec-kitchen');
+});
+
+test('a person’s stale section id is ignored, not trusted', () => {
+  const gone = () => ['sec-deleted'];
+  assert.equal(sectionIdForShift({ roleKey: 'server' }, SECTIONS, groupNameOf, gone), UNASSIGNED);
+});
+
 test('no section falls back to a section named after the role group', () => {
   assert.equal(sectionIdForShift({ roleKey: 'chef' }, SECTIONS, groupNameOf), 'sec-kitchen');
   assert.equal(sectionIdForShift({ roleKey: 'bartender' }, SECTIONS, groupNameOf), 'sec-bar');

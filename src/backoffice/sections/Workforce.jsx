@@ -178,7 +178,7 @@ export default function Workforce({ section, orgCtx }) {
 
       {viewing && <StaffDetailModal staff={viewing} roles={rolesMap} ctx={ctx} showToast={showToast} onClose={() => setViewing(null)} onEdit={(s) => { setViewing(null); setEditing(s); }} onSetPos={(s) => { setViewing(null); setPosFor(s); }}
         onPatch={(patch) => { setStaff(st => st.map(x => x.id === viewing.id ? { ...x, ...patch } : x)); setViewing(v => v ? { ...v, ...patch } : v); }} />}
-      {(addOpen || editing) && <AddStaffModal locName={locName} staff={editing} roles={rolesMap} onClose={() => { setAddOpen(false); setEditing(null); }} onSave={saveMember} />}
+      {(addOpen || editing) && <AddStaffModal locName={locName} staff={editing} roles={rolesMap} sections={sections} onClose={() => { setAddOpen(false); setEditing(null); }} onSave={saveMember} />}
       {posFor && <PosUserModal staff={posFor} onClose={() => setPosFor(null)} onSave={(opts) => setAsPosUser(posFor, opts)} />}
     </div>
   );
@@ -270,7 +270,7 @@ function WfStaff({ staff, roles = ROLES, holidayHours = {}, onAdd, onView, onEdi
 const inputStyle = { width: '100%', background: 'var(--bg3)', border: '1.5px solid var(--bdr2)', borderRadius: 10, padding: '10px 12px', height: 42, fontSize: 13, color: 'var(--t1)', fontFamily: 'inherit', outline: 'none' };
 const labelStyle = { display: 'block', fontFamily: 'var(--font-mono)', fontSize: 9.5, fontWeight: 700, letterSpacing: '.1em', textTransform: 'uppercase', color: 'var(--t3)', marginBottom: 6 };
 
-function AddStaffModal({ locName, staff, roles = ROLES, onClose, onSave }) {
+function AddStaffModal({ locName, staff, roles = ROLES, sections = [], onClose, onSave }) {
   const isEdit = !!staff;
   const roleOpts = Object.entries(roles);
   const ec = (isEdit && staff.emergencyContact) || {};
@@ -278,12 +278,16 @@ function AddStaffModal({ locName, staff, roles = ROLES, onClose, onSave }) {
     ? { name: staff.name || '', role: staff.role || roleOpts[0]?.[0] || 'server', contractType: staff.contractType || 'partTime', mobile: staff.mobile || '', email: staff.email || '', dob: staff.dob || '', startDate: staff.startDate || '', rateOverride: staff.rateOverride != null ? String(staff.rateOverride) : '', address: staff.address || '', niNumber: staff.niNumber || '', ecName: ec.name || '', ecPhone: ec.phone || '', ecRelation: ec.relationship || '' }
     : { name: '', role: roleOpts[0]?.[0] || 'server', contractType: 'partTime', mobile: '', email: '', dob: '', startDate: '', rateOverride: '', address: '', niNumber: '', ecName: '', ecPhone: '', ecRelation: '' });
   const set = (k, v) => setF(p => ({ ...p, [k]: v }));
+  // v5.5.993 — which sections this person works in. Never settable before,
+  // so the column was empty everywhere and anything keyed on it was dead.
+  const [secIds, setSecIds] = useState((isEdit && Array.isArray(staff.sectionIds)) ? staff.sectionIds : []);
+  const toggleSec = (id) => setSecIds(cur => cur.includes(id) ? cur.filter(x => x !== id) : [...cur, id]);
   const valid = f.name.trim().length > 1;
   const roleRate = roles[f.role]?.rate;
   const submit = () => {
     const { ecName, ecPhone, ecRelation, ...rest } = f;
     const emergencyContact = (ecName || ecPhone || ecRelation) ? { name: ecName || null, phone: ecPhone || null, relationship: ecRelation || null } : null;
-    const payload = { ...rest, rateOverride: f.rateOverride === '' ? null : Number(f.rateOverride), emergencyContact };
+    const payload = { ...rest, rateOverride: f.rateOverride === '' ? null : Number(f.rateOverride), emergencyContact, sectionIds: secIds };
     if (isEdit) payload.id = staff.id;
     onSave(payload);
   };
@@ -297,6 +301,29 @@ function AddStaffModal({ locName, staff, roles = ROLES, onClose, onSave }) {
           <div><label style={labelStyle}>Position</label><select style={inputStyle} value={f.role} onChange={e => set('role', e.target.value)}>{roleOpts.map(([k, r]) => <option key={k} value={k}>{r.lbl}</option>)}</select></div>
           <div><label style={labelStyle}>Pay rate override (£/h)</label><input style={inputStyle} value={f.rateOverride} onChange={e => set('rateOverride', e.target.value.replace(/[^0-9.]/g, ''))} placeholder={roleRate != null ? `Position default £${Number(roleRate).toFixed(2)}` : 'Position default'} inputMode="decimal" /></div>
           <div><label style={labelStyle}>Contract</label><select style={inputStyle} value={f.contractType} onChange={e => set('contractType', e.target.value)}><option value="zeroHours">Zero hours</option><option value="partTime">Part time</option><option value="fullTime">Full time</option><option value="salaried">Salaried</option></select></div>
+          {sections.length > 0 && (
+            <div style={{ gridColumn: '1 / -1' }}>
+              <label style={labelStyle}>Sections they work in</label>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {sections.map(sec => {
+                  const on = secIds.includes(sec.id);
+                  return (
+                    <button
+                      key={sec.id} type="button" onClick={() => toggleSec(sec.id)}
+                      className={on ? 'btn btn-acc btn-sm' : 'btn btn-ghost btn-sm'}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 6, borderRadius: 999 }}
+                    >
+                      <span style={{ width: 8, height: 8, borderRadius: '50%', background: sec.color || 'var(--t3)', flexShrink: 0 }} />
+                      {sec.name}
+                    </button>
+                  );
+                })}
+              </div>
+              <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 6, lineHeight: 1.5 }}>
+                Used to place their shifts on the rota’s <b>By section</b> view when a shift has no section of its own, and to target them with a section announcement. A shift’s own section always wins.
+              </div>
+            </div>
+          )}
           <div><label style={labelStyle}>Mobile (SMS)</label><input style={inputStyle} value={f.mobile} onChange={e => set('mobile', e.target.value)} placeholder="+44 7700 900000" /></div>
           <div><label style={labelStyle}>Email</label><input style={inputStyle} value={f.email} onChange={e => set('email', e.target.value)} placeholder="name@email.com" /></div>
           <div><label style={labelStyle}>Date of birth</label><input style={inputStyle} type="date" value={f.dob} onChange={e => set('dob', e.target.value)} /></div>

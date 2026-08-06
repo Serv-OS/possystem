@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.993', date: '6 Aug 2026', label: 'You can finally say which section a staff member works in',
+    changes: [
+      'DEAD FIELD: staff records have always had a "sections they work in" field. The app READ it in three places, but nothing could ever WRITE it. There was no box for it on any screen, and the save routine did not include it, so it was empty for every staff member at every venue since the day the feature shipped.',
+      'Two things quietly depended on it and therefore could never work. Sending an announcement to a SECTION could never match anybody, however you set it up. And the rota\u2019s By-section view had nothing to fall back on, which is why Jane\u2019s shifts sat under "No section assigned" even though she works Runner.',
+      'There is now a section picker on the staff record, under Position. Tick the sections someone works in and their shifts land there on the rota automatically.',
+      'The order of precedence is: the shift\u2019s own section always wins, then the person\u2019s section, then a section matching their job. Someone who works two sections is left as unassigned rather than guessed at, because picking one would be wrong half the time.',
+      '\u26a0 Nobody has sections set yet, because until now nobody could. Open each staff member once and tick their sections.',
+    ],
+  },
+  {
     version: '5.5.992', date: '6 Aug 2026', label: 'The rota\u2019s By-section view was hiding most of the shifts',
     changes: [
       'BUG: "By section" only showed shifts that had a section explicitly assigned to them, and most do not, because the field is optional and rarely set. A week showing twelve shifts under "By staff" showed three under "By section". Nine were simply not on the screen, with nothing to say they existed.',
