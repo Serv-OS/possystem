@@ -127,6 +127,14 @@ export async function sendStaffSms(to, message, locationId, type = 'rota_notific
   return { ok: true, ...(data || {}) };
 }
 
+/** Invite a staff member to the staff self-service app (?mode=staff).
+ *  Server-side: stamps a one-use 7-day token on their record and emails the
+ *  create-your-login link. The BO caller's JWT proves location access. */
+export async function sendPortalInvite(staffId) {
+  if (isMock || !supabase) return { ok: true, mock: true };
+  return invokeFn('staff-portal', { action: 'invite', staff_id: staffId });
+}
+
 /** Send a transactional email via the send-receipt edge function (generic html). */
 export async function sendEmail(to, subject, html, locationId) {
   if (isMock || !supabase) return { ok: true, mock: true };

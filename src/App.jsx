@@ -30,6 +30,7 @@ import OwnerSurface from './surfaces/OwnerSurface';
 import MenuBoardSurface from './surfaces/MenuBoardSurface';
 import WaitlistSurface from './surfaces/waitlist/WaitlistSurface';
 import ManagerSurface from './surfaces/ManagerSurface';
+import StaffSurface from './surfaces/StaffSurface';
 import KioskAutoUpdate from './components/KioskAutoUpdate';
 import ChangeDueOverlay from './components/ChangeDueOverlay';
 import OnboardingSignSurface from './surfaces/OnboardingSignSurface';
@@ -265,6 +266,12 @@ export default function App() {
     return null;
   }
   if (deviceMode === 'waitlist') return <><KioskAutoUpdate /><WaitlistSurface /></>;
+
+  // ServOS Staff — the staff SELF-SERVICE app on their own phone (v5.5.996):
+  // shifts, announcements, timesheets, own details; training joins later.
+  // Email+password login (invited from Onboarding), no device pairing, no
+  // SyncBridge — the staff-portal edge fn serves only that person's data.
+  if (deviceMode === 'staff') return <StaffSurface />;
 
   // ServOS Manager — owner app + ops tablet merged into one role-adaptive phone app. Pairs itself
   // (ops_devices claim-code + heartbeat) then staff PIN; role gates the bottom tabs. Read-only-ish

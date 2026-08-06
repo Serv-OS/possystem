@@ -71,12 +71,13 @@ new-starter flag), assign to staff (individually / by section / everyone), and a
 matrix (staff × modules, traffic-lit: done / in progress / overdue). Assignment + verification
 recorded in `wf_audit`.
 
-**2. Staff-facing on the Time Clock (~1 day)**
-Exactly where announcements already appear. `workforce-clock` gains:
-- `status` response includes `training: [{module, tasks, due, done}]` for the PIN'd person
-- new action `training_tick` — server-side, PIN-authenticated, stamps `tasks_done`, flips
-  `completed_at` when the last task ticks, writes `wf_audit`.
-PINs never reach the client, same trust model as punches. **Edge fn — deploys manually.**
+**2. Staff-facing in the STAFF APP (~0.5–1 day)** *(revised 6 Aug — Peter's call)*
+The Time Clock is the wrong surface: a 20-minute module would hold the shared clock-in tablet
+hostage. Training delivers into the new **staff self-service app** (`?mode=staff`, built 6 Aug,
+v5.5.996) instead — a Training tab on the phone they log into with their own account. The
+`staff-portal` fn's snapshot already reserves `training: []`; add the assignments to it plus a
+`training_tick` action (JWT-authenticated, stamps `tasks_done`, writes `wf_audit`). One fn +
+one tab, cheaper than the clock plan and it can be done on a sofa at home.
 
 **3. New-starter auto-apply (~0.5 day)**
 On staff creation, auto-assign every active module with `auto_assign_new_starters`,

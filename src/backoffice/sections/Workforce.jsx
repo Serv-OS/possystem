@@ -14,7 +14,7 @@ import { supabase } from '../../lib/supabase';
 import { Icon } from '../../components/ServOSIcons';
 import { DAYS, TODAY, SECTIONS, ROLES, SECTION_REQ, FORECAST, PAYROWS } from '../../staff/seed';
 import { hoursOf, effectiveRate, wageByDay, labourPct, LABOUR_TARGET, troncRun, tsVariance, isHourly, FIXED_HOLIDAY_DAYS } from '../../staff/labour';
-import { loadStaff, saveStaff, softDeleteStaff, markPosUser, loadRoles, loadSections, loadSettings, loadDocuments, loadTimesheets, loadOnboarding, loadAccrual, accrualBalances, signedDocUrl, saveStaffBank, saveOnboarding, sendEmail } from '../../staff/wfData';
+import { loadStaff, saveStaff, softDeleteStaff, markPosUser, loadRoles, loadSections, loadSettings, loadDocuments, loadTimesheets, loadOnboarding, loadAccrual, accrualBalances, signedDocUrl, saveStaffBank, saveOnboarding, sendEmail, sendPortalInvite } from '../../staff/wfData';
 import { buildWeek } from '../../staff/wfWeek';
 import WfRota from './workforce/WfRota';
 import { PickTemplateModal, freshSteps, genToken, toHtml, signEmailHtml } from './workforce/WfOnboarding';
@@ -374,6 +374,7 @@ function DetailDocView({ path }) {
 function StaffDetailModal({ staff: s, roles = ROLES, ctx, showToast, onClose, onEdit, onSetPos, onPatch }) {
   const role = roles[s.role];
   const [data, setData] = useState({ docs: [], timesheets: [], onb: null, holidayHrs: 0, loading: true });
+  const [inviteBusy, setInviteBusy] = useState(false);
   useEffect(() => {
     let live = true;
     (async () => {
@@ -443,6 +444,22 @@ function StaffDetailModal({ staff: s, roles = ROLES, ctx, showToast, onClose, on
         <SectionTitle>Contract</SectionTitle>
         <ContractPanel s={s} role={role} onb={data.onb} loading={data.loading} ctx={ctx} showToast={showToast}
           onCase={(c) => setData(d => ({ ...d, onb: c }))} />
+
+        <SectionTitle>Staff app</SectionTitle>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12.5, color: 'var(--t3)' }}>
+            {s.email ? 'Email them a link to create (or reset) their staff app login.' : 'Add an email address to invite them to the staff app.'}
+          </span>
+          <button className="btn btn-ghost btn-sm" disabled={!s.email || inviteBusy}
+            onClick={async () => {
+              setInviteBusy(true);
+              try { await sendPortalInvite(s.id); showToast(`Staff app invite emailed to ${s.email}`, 'success'); }
+              catch (e) { showToast(e.message || 'Could not send the invite', 'error'); }
+              finally { setInviteBusy(false); }
+            }}>
+            <Icon name="status" size={13} /> {inviteBusy ? 'Sending…' : 'Send app invite'}
+          </button>
+        </div>
 
         <SectionTitle>Documents</SectionTitle>
         {data.loading ? <Muted>Loading…</Muted> : data.docs.length === 0 ? <Muted>No documents on file.</Muted> : (

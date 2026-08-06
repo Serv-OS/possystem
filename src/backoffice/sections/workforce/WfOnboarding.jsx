@@ -143,7 +143,20 @@ export default function WfOnboarding({ ctx, staff = [], roles, sections, setting
     setPicking(false);
     const tmp = { id: `tmp-${Date.now()}`, staffId: member.id, roleKey: member.role, steps: freshSteps(), status: 'inProgress', meta: {} };
     setCases(prev => [tmp, ...prev]);
-    try { const saved = await wf.saveOnboarding(tmp, ctx.locationId, ctx.orgId); setCases(prev => prev.map(x => x.id === tmp.id ? saved : x)); }
+    try {
+      const saved = await wf.saveOnboarding(tmp, ctx.locationId, ctx.orgId);
+      setCases(prev => prev.map(x => x.id === tmp.id ? saved : x));
+      // v5.5.996 — starting onboarding also invites them to the STAFF APP: they
+      // get an email with a one-use link to create their login (shifts,
+      // announcements, timesheets, details, and training when it lands).
+      // Best-effort: the onboarding case exists either way.
+      if (member.email) {
+        try { await wf.sendPortalInvite(member.id); showToast(`Onboarding started · staff app invite emailed to ${member.email}`, 'success'); }
+        catch (e) { showToast(`Onboarding started, but the staff app invite failed: ${e.message}`, 'error'); }
+      } else {
+        showToast('Onboarding started. Add an email to their record to invite them to the staff app.', 'info');
+      }
+    }
     catch (e) { showToast(e.message || 'Could not start onboarding', 'error'); setCases(prev => prev.filter(x => x.id !== tmp.id)); }
   };
 

@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.996', date: '6 Aug 2026', label: 'NEW: the staff self-service app',
+    changes: [
+      'A brand-new surface: the ServOS Staff app (?mode=staff), for every staff member on their own phone. Until now the only thing staff could see was the shared clock-in tablet, which is the wrong place for anything longer than a glance.',
+      'They log in with their own email and password. Starting someone\u2019s ONBOARDING now emails them a one-use link to create their login \u2014 so new starters set themselves up. Existing staff can be invited from their profile: Workforce \u2192 Staff \u2192 open the person \u2192 Send app invite.',
+      'What they see: their published SHIFTS for the next two weeks, ANNOUNCEMENTS (matched to them by role and section), their TIMESHEETS for the last four weeks with hours, and their own DETAILS.',
+      'What they can change: home address, emergency contact, and BANK DETAILS. Every change is written to the tamper-evident audit log, and a bank change also pings the venue activity feed \u2014 a quiet bank swap before payday is the classic payroll fraud, so it is deliberately loud.',
+      'Forgotten password: they type their email and get a fresh setup link. No manager involvement needed.',
+      'Security: a staff login has no access to any Back Office data. Everything the app shows goes through a server function that serves only that person\u2019s own records.',
+      'TRAINING lands here next as its own tab \u2014 this app is the delivery surface for the training module, so the clock-in tablet is never tied up.',
+    ],
+  },
+  {
     version: '5.5.995', date: '6 Aug 2026', label: 'Document grouping reaches the staff profile too',
     changes: [
       'The staff profile popup (Workforce \u2192 Staff \u2192 open a person) had its own separate copy of the documents list \u2014 still flat, and its labels had already drifted from the Compliance vault (\u201cAllergen\u201d vs \u201cAllergen Training\u201d). It now uses the same Compliance / Training / Other grouping and the same labels, from one shared definition, so the two screens can no longer disagree.',
