@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.985', date: '6 Aug 2026', label: 'Two tills at one venue were showing different sales history',
+    changes: [
+      'A newly opened till showed an empty history while the Sunmi beside it showed weeks. Same venue, same day, different answers. The cause: the boot query only ever asked the server for TODAY, and everything older came from whatever that particular device had accumulated in its own storage. History was not the venue\'s record, it was a record of what that one screen happened to witness.',
+      'Every device now asks the server for the same 30 days, so they agree. The database is the record and the device is a cache of it.',
+      'Second and more serious: sales held on a device that the server does not know about were kept for ever and shown as history. Those are now bounded to the same 30 days. A recent one is kept, because an unsynced sale may be the only copy in existence and must never be dropped. One with no timestamp is also kept, since not knowing its age is not evidence it is stale.',
+      'This is why the totals on two tills could differ. They should now match each other and match Reports.',
+    ],
+  },
+  {
     version: '5.5.984', date: '6 Aug 2026', label: 'Six receipts printed for two old orders. Fixed, twice.',
     changes: [
       'Opening Back Office printed six receipts that looked like new Deliveroo orders. They were two orders from 22 July, printed three times each. Two things had to both be true: three browser tabs each queued the same receipt at once, and the duplicate check could never fire because the key it compared included the current clock, so every attempt looked new.',

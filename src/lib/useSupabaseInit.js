@@ -12,7 +12,7 @@ import { useStore } from '../store';
 import { supabase, isMock, getLocationId, ensureAuthToken, claimPairedDeviceOnBoot } from './supabase';
 import {
   fetchMenuItems, fetchFloorPlan, fetch86List,
-  fetchKDSTickets, fetchClosedChecks, fetchLatestConfigPush,
+  fetchKDSTickets, fetchClosedChecks, fetchLatestConfigPush, getPosHistorySince,
 } from './db';
 import { getLocationConfig, getBusinessDayStart } from './locationTime';
 
@@ -128,7 +128,12 @@ export default function useSupabaseInit() {
       // fetch (RLS denial, transient network glitch, locId still resolving) would
       // erase them. Merge with existing instead, dedup by id.
       if (locId) {
-        const { data: checks } = await fetchClosedChecks(locId, 500, todayStart);
+        // v5.5.985: the FULL history window, not just today. todayStart is still used for
+        // the business-day figures above; history has to reach back as far as the POS
+        // history panel can filter, or a till that was not open yesterday shows nothing
+        // while the one next to it shows weeks. getPosHistorySince() is the single
+        // definition of that window.
+        const { data: checks } = await fetchClosedChecks(locId, 500, getPosHistorySince());
         if (Array.isArray(checks) && checks.length) {
           const existing = useStore.getState().closedChecks || [];
           const byId = new Map();

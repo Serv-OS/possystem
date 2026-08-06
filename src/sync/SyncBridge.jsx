@@ -423,19 +423,38 @@ export default function SyncBridge({ onSyncPulse }) {
 
           // Load today's closed checks from Supabase — CRITICAL for sales history
           try {
-            const { fetchClosedChecks } = await import('../lib/db.js');
-            const checksRes = await fetchClosedChecks(locationId, 500);
+            const { fetchClosedChecks, getPosHistorySince } = await import('../lib/db.js');
+            // v5.5.985: ask the SERVER for the full history window. This used to default to
+            // today only, which is why two tills at one venue disagreed: the server supplied
+            // today, and everything older came from whatever THIS browser had accumulated
+            // locally. Supabase is the record; the device is a cache of it.
+            const historySince = getPosHistorySince();
+            const checksRes = await fetchClosedChecks(locationId, 500, historySince);
             if (checksRes.data?.length) {
               // Merge with any localStorage checks not yet written to Supabase
               // v5.5.279: location filter on localStorage checks — prevents cross-location
               // bleed when a browser was previously used for a different location.
               const supabaseIds = new Set(checksRes.data.map(c => c.id));
+              const historyFloor = historySince.getTime();
               const lsChecks = (() => {
                 try {
                   const s = JSON.parse(localStorage.getItem('rpos-shared-state') || '{}');
                   return (s.closedChecks || []).filter(c =>
                     !supabaseIds.has(c.id) &&
-                    (!c.locationId || c.locationId === locationId)
+                    (!c.locationId || c.locationId === locationId) &&
+                    // v5.5.985: and inside the SAME window we just asked the server for.
+                    //
+                    // A local check that Supabase does not return is one of two things: a sale
+                    // taken offline that has not synced yet, or a leftover from months ago. This
+                    // list is never pruned, so without a floor the second kind accumulates for
+                    // the life of the device and is displayed as history that exists on no other
+                    // till and in no report. That is what made two tills at one venue disagree.
+                    //
+                    // The floor keeps recent unsynced sales (which must never be dropped — they
+                    // are the only copy) and discards anything older than the window the server
+                    // is authoritative for. A check with no timestamp is KEPT: unknown age is not
+                    // evidence of staleness, and losing a real sale is far worse than showing one.
+                    (!c.closedAt || c.closedAt >= historyFloor)
                   );
                 } catch { return []; }
               })();

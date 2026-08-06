@@ -614,10 +614,29 @@ export const updateClosedCheckRefunds = async (checkId, refunds, status) => {
   }
 };
 
+// How far back a till loads sales history at boot. The POS history panel offers
+// Today / Week / 30 days, so the boot load has to cover the widest of those or the
+// filter silently shows nothing.
+//
+// This is DELIBERATELY a server-side window, not a device one. Until v5.5.985 the boot
+// query only ever asked for TODAY, and every till then merged whatever it happened to
+// have accumulated in its own localStorage — never pruned. So a Sunmi that had been open
+// for weeks showed weeks of history, while a freshly-opened browser at the same venue
+// showed an empty list. Same venue, same day, different answers per device.
+export const POS_HISTORY_DAYS = 30;
+
+export function getPosHistorySince() {
+  const d = new Date();
+  d.setDate(d.getDate() - POS_HISTORY_DAYS);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
 export const fetchClosedChecks = async (locationId = null, limit = 500, sinceDate = null) => {
   if (isMock) return { data: null, error: null };
-  // Use provided date or fall back to today's start (will be refined by locationTime once config loads)
-  const since = sinceDate || getTodayStartFallback();
+  // Callers that care pass their own window (the business-day boot path, MPOS history).
+  // Everything else gets the full history window rather than just today — see above.
+  const since = sinceDate || getPosHistorySince();
   const result = await supabase
     .from('closed_checks')
     .select('*')
