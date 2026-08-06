@@ -354,11 +354,16 @@ export default function CheckHistory(){
   const now=new Date();
   const startOfDay=new Date(now.getFullYear(),now.getMonth(),now.getDate());
   const startOfWeek=new Date(startOfDay.getTime()-startOfDay.getDay()*86400000);
+  // 30 days is the furthest back the till will look. See the filter buttons below for why.
+  const startOf30Days=new Date(startOfDay.getTime()-30*86400000);
 
   const filtered=useMemo(()=>closedChecks.filter(c=>{
     const d=new Date(c.closedAt);
     if(dateFilter==='today'&&d<startOfDay)return false;
     if(dateFilter==='week'&&d<startOfWeek)return false;
+    // Applies to '30d' AND to any unrecognised value, so the cap cannot be escaped by a stale
+    // saved filter or a future button that forgets to add its own branch.
+    if(dateFilter!=='today'&&dateFilter!=='week'&&d<startOf30Days)return false;
     if(search){
       const q=search.toLowerCase();
       return c.ref?.toLowerCase().includes(q)||c.tableLabel?.toLowerCase().includes(q)||c.server?.toLowerCase().includes(q)||c.customer?.name?.toLowerCase().includes(q);
@@ -446,7 +451,11 @@ export default function CheckHistory(){
             {search&&<button onClick={()=>setSearch('')} style={{position:'absolute',right:8,top:'50%',transform:'translateY(-50%)',background:'none',border:'none',color:'var(--t3)',cursor:'pointer',fontSize:14}}>×</button>}
           </div>
           <div style={{display:'flex',gap:4,marginBottom:8}}>
-            {[['today','Today'],['week','Week'],['all','All']].map(([f,l])=>(
+            {/* v5.5.984: "All" replaced by "30 days". There is no unbounded option on the till:
+                as a venue accumulates years of sales, an all-time view is the one query that
+                grows without limit, and the POS is the worst place to discover that. Anything
+                older belongs in Back Office → Reports, which is built for ranged queries. */}
+            {[['today','Today'],['week','Week'],['30d','30 days']].map(([f,l])=>(
               <button key={f} onClick={()=>setDateFilter(f)} style={{flex:1,padding:'4px',borderRadius:7,cursor:'pointer',fontFamily:'inherit',border:`1px solid ${dateFilter===f?'var(--acc-b)':'var(--bdr)'}`,background:dateFilter===f?'var(--acc-d)':'transparent',color:dateFilter===f?'var(--acc)':'var(--t3)',fontSize:11,fontWeight:600}}>{l}</button>
             ))}
           </div>

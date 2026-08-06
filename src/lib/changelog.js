@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.984', date: '6 Aug 2026', label: 'Six receipts printed for two old orders. Fixed, twice.',
+    changes: [
+      'Opening Back Office printed six receipts that looked like new Deliveroo orders. They were two orders from 22 July, printed three times each. Two things had to both be true: three browser tabs each queued the same receipt at once, and the duplicate check could never fire because the key it compared included the current clock, so every attempt looked new.',
+      'Receipts are now checked against a short shared record on the machine, so several screens open at once produce ONE receipt. It expires after ten seconds, and anything unexpected prints rather than staying silent. A receipt printed twice is a nuisance; one that never prints is a customer without proof of payment.',
+      'And an order more than six hours old will no longer print itself just because a screen opened. Pressing Print on an old order still works, because that is a person deciding.',
+      'POS order history no longer offers an unlimited view. Today, this week, or the last 30 days. As a venue builds up years of sales, an all-time search is the one that grows without limit, and a till in the middle of service is the worst place to find that out. Older sales live in Back Office reports, which are built for it.',
+      'Worth recording what did NOT ship: the first attempt at this keyed receipts on the order reference. Those references recycle, so it would eventually have matched two unrelated sales and silently suppressed a real receipt. A companion job to tidy old queue rows would have deleted future catering bookings, because catering orders live in that same queue permanently. Both were caught in review and abandoned.',
+    ],
+  },
+  {
     version: '5.5.983', date: '6 Aug 2026', label: 'Cash up now opens the drawer, and signs you out when it is done',
     changes: [
       'Pressing Cash up pops the cash drawer, so you can count it without a separate No sale first. It is logged as a drawer-open event like any other, so the audit trail still shows the till was opened.',

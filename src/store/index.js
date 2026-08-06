@@ -29,6 +29,32 @@ import { bumpChallenge21 } from '../lib/challenge21Counter';
 // activity feed — once per job per boot, so the 8s retry loop doesn't spam the feed.
 const _closeFailFlagged = new Set();
 
+// ── Auto-print age gate ──────────────────────────────────────────────────────
+// An order that has been sitting around for hours must never produce a receipt
+// just because a screen opened. (Three tabs opening Back Office re-printed two
+// orders from 22 July — six receipts in 0.6s.) The clock that decides is the
+// ORDER's own created_at, never this device's boot/read time.
+//
+// 6h: comfortably longer than any legitimate placed-to-printed lag inside one
+// service — a channel order still unprinted 6h after it was placed is not being
+// cooked — and far short of the ~24h back to the same point in yesterday's
+// service.
+const AUTO_PRINT_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+
+// True when <order> is too old to print WITHOUT a human asking for it. Fails
+// OPEN in every uncertain case (no created_at, unparseable, clock skew putting
+// it in the future): an extra receipt is an annoyance, a missing one is not.
+const tooOldToAutoPrint = (order, label) => {
+  const raw = order?.createdAt ?? order?.created_at;
+  if (raw == null) return false;
+  const ms = typeof raw === 'number' ? raw : Date.parse(raw);
+  if (!Number.isFinite(ms)) return false;
+  const ageMs = Date.now() - ms;
+  if (ageMs <= AUTO_PRINT_MAX_AGE_MS) return false;
+  console.warn(`[${label}] auto-print BLOCKED — ${order?.ref || '(no ref)'} was created ${(ageMs / 3_600_000).toFixed(1)}h ago (limit ${AUTO_PRINT_MAX_AGE_MS / 3_600_000}h). Print it from Orders if that was intended.`);
+  return true;
+};
+
 // ── Payment-intent normaliser ────────────────────────────────────────────────
 // v5.5.323: a check can have MULTIPLE card PaymentIntents — one per card portion
 // of a split. Collapse whatever the checkout flow handed us into a single array
@@ -6281,9 +6307,13 @@ export const useStore = create((set, get) => ({
   // Print a customer/dispatch receipt for a HubRise delivery order — order number +
   // channel + customer/address details + itemised totals + PAID. Triggered on Accept
   // (or auto-accept) when the venue's "auto-print receipt" setting is on.
-  printHubriseReceipt: async (order) => {
+  // opts.manual = a person asked for this print; the age gate below is skipped.
+  printHubriseReceipt: async (order, opts = {}) => {
     try {
       if (!order) return;
+      // Automatic path only. A stale order reaching this function means a screen was
+      // opened/re-read, not that a customer is waiting at the counter.
+      if (!opts.manual && tooOldToAutoPrint(order, 'hubrise')) return;
       const c = order.customer || {};
       const items = (order.items || []).map(i => ({ ...i, voided: false }));
       const subtotal = items.reduce((s, it) => s + (Number(it.qty) || 1) * ((Number(it.price) || 0) + (it.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0)), 0);
@@ -6492,7 +6522,9 @@ export const useStore = create((set, get) => ({
       sentAt: Date.now(),
     });
     if (o.source === 'hubrise') {
-      if (isHubriseAutoReceipt(locId)) get().printHubriseReceipt?.(o);
+      // manual: staff pressed Accept. Accepting a channel order placed days ahead is a
+      // deliberate act, so its receipt is not subject to the auto-print age gate.
+      if (isHubriseAutoReceipt(locId)) get().printHubriseReceipt?.(o, { manual: true });
       get().updateQueueStatus(o.ref, 'prep');
       hubrisePushStatus(locId, o.ref, 'accept', delayMinutes ? { delay_minutes: delayMinutes } : {}).catch(() => {});
       // v5.5.854: a FULLY-PAID channel order is revenue the moment the venue accepts

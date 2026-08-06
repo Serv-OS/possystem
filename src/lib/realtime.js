@@ -520,6 +520,10 @@ export function startRealtime(store, locationId = LOCATION_ID) {
             store.getState().printHubriseReceipt?.({
               ref: row.ref, customer: row.customer || null, items: row.items || [],
               total: row.total, collectionTime: row.collection_time || null, isASAP: !!row.is_asap,
+              // created_at is what printHubriseReceipt's age gate reads. This is the ONLY
+              // automatic caller, so without it the gate silently never fires and a two-week-old
+              // order re-read from the queue prints as if it had just arrived.
+              created_at: row.created_at,
             });
           }
         }

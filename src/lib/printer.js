@@ -570,6 +570,86 @@ function genIdempotencyKey() {
   return `ik-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+// ─── Cross-tab duplicate-receipt guard ────────────────────────────────────────
+// Several tabs of the app open on one machine each run the same AUTOMATIC receipt
+// print for the same order — boot-loading the order queue does exactly that, and on
+// 6 Aug 2026 three Back Office tabs printed two July orders three times each inside
+// 0.6s. Nothing downstream catches it: the print_jobs idempotency key carries
+// Date.now(), so it is unique per attempt by construction and the DB unique index
+// never fires.
+//
+// This is a machine-local note that a given receipt was just printed, kept in
+// localStorage so a tab opened AFTER the first print still sees it (a live
+// BroadcastChannel listener would not — a tab that wasn't running never heard the
+// message). Nothing here touches the database or the idempotency key.
+//
+// TTL is deliberately tiny, and that is the whole safety argument. Order refs are
+// recycled — db.js mints R1..R99 from a local counter — so a key built from a ref
+// only means anything for as long as that ref cannot have come round again. That
+// takes ~99 orders, so a few seconds is unambiguous; a permanent key on a ref is
+// not, and would eventually suppress a real customer's receipt. When the window
+// lapses the worst case is the current behaviour: an extra receipt.
+const RECEIPT_GUARD_STORE = 'rpos-recent-receipts';
+const RECEIPT_GUARD_TTL_MS = 10_000;
+
+// location + ref + pennies + the printer it resolved to. The total keeps two
+// genuinely different sales that happen to share a recycled ref apart; the printer
+// keeps a deliberate same-receipt-to-two-printers dispatch out of it. Every part is
+// derived the same way in every tab (the printer list and this device's assignment
+// are shared localStorage), so tabs on one machine agree on the key for one order.
+function receiptGuardKey(locationId, ref, grand, printerId) {
+  return `${locationId || 'no-loc'}|${ref}|${Math.round((Number(grand) || 0) * 100)}|${printerId || 'no-printer'}`;
+}
+
+function readReceiptGuard() {
+  const raw = JSON.parse(localStorage.getItem(RECEIPT_GUARD_STORE) || '{}');
+  return (raw && typeof raw === 'object' && !Array.isArray(raw)) ? raw : {};
+}
+
+// FAILS OPEN in every direction: no entry, an unreadable store, localStorage
+// throwing (private mode / quota / disabled), or an age that isn't a sane recent
+// interval (NaN, or a timestamp in the future after a clock change) all return
+// false, which prints.
+function receiptPrintedRecently(key) {
+  try {
+    const age = Date.now() - Number(readReceiptGuard()[key]);
+    return Number.isFinite(age) && age >= 0 && age < RECEIPT_GUARD_TTL_MS;
+  } catch { return false; }
+}
+
+function markReceiptPrinted(key) {
+  try {
+    const now = Date.now();
+    const map = readReceiptGuard();
+    // Drop anything outside the window — including future-dated entries, so a clock
+    // jump can't leave a guard sitting there suppressing receipts.
+    for (const k of Object.keys(map)) {
+      const age = now - Number(map[k]);
+      if (!(Number.isFinite(age) && age >= 0 && age < RECEIPT_GUARD_TTL_MS)) delete map[k];
+    }
+    map[key] = now;
+    localStorage.setItem(RECEIPT_GUARD_STORE, JSON.stringify(map));
+  } catch { /* guard is a nicety; printing is not */ }
+}
+
+// A print the operator asked for must never be swallowed by the guard. It can't be
+// signalled by the caller: two of the four Print buttons reach printReceipt through
+// store.printCustomerReceipt / store.reprintOrderReceipt, which forward no opts at
+// all. So read the browser instead. A button press happens in a tab that is on
+// screen and holds a live user activation; a background tab replaying the order
+// queue has neither. Anything we cannot determine counts as a press.
+//
+// Must be called synchronously at the top of printReceipt — user activation is
+// transient (a few seconds) and every Print button reaches that first line inside
+// its own click handler.
+function isUserInitiatedPrint() {
+  try {
+    if (typeof document === 'undefined' || typeof navigator === 'undefined') return true;
+    if (!navigator.userActivation) return true;   // not supported here — assume a press
+    return document.visibilityState !== 'hidden' && navigator.userActivation.isActive === true;
+  } catch { return true; }
+}
+
 // ─── Print Service ────────────────────────────────────────────────────────────
 class PrintService {
   constructor() {
@@ -1016,6 +1096,10 @@ class PrintService {
 
   // Public API — opts: { idempotencyKey?, metadata?, label?, skipBranding? }
   async printReceipt({ location, check, items, totals }, printerId = null, opts = {}) {
+    // Read BEFORE the first await — user activation is transient and the awaits
+    // below (branding fetch) can outlast it. See isUserInitiatedPrint.
+    const userInitiated = isUserInitiatedPrint();
+
     // Auto-fetch per-location branding so callers don't have to. Non-blocking:
     // if the branding fetch fails for any reason we fall through to the plain
     // text receipt using the location fields already present.
@@ -1043,6 +1127,19 @@ class PrintService {
     // never by a role scan across the whole venue. See _receiptTarget.
     const { printer, src } = this._receiptTarget(printerId, opts);
     if (printer?.address) {
+      // Cross-tab duplicate guard (see RECEIPT_GUARD_STORE). Only the automatic path
+      // is ever suppressed — a press always prints — but BOTH paths leave the mark, so
+      // a receipt the operator printed also stops the automatic copy behind it. Marked
+      // before dispatch, not after: the six duplicates arrived inside 0.6s, so a mark
+      // that waits for the printer is too late to stop the tab beside it.
+      const guardKey = check?.ref ? receiptGuardKey(effectiveLocationId, check.ref, totals?.grand, printer.id) : null;
+      if (guardKey) {
+        if (!userInitiated && receiptPrintedRecently(guardKey)) {
+          console.info(`[Print] Receipt ${check.ref} was printed on this machine seconds ago — skipping this automatic copy.`);
+          return { ok: true, transport: 'duplicate-suppressed', printer: printer.name };
+        }
+        markReceiptPrinted(guardKey);
+      }
       const bytes = await buildCustomerReceipt({ location: locationWithBranding, check, items, totals });
       return this._submitJob(printer, 'receipt', bytes, {
         idempotencyKey: opts.idempotencyKey || (check?.ref ? `receipt-${check.ref}-${Date.now()}` : undefined),

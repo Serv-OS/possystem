@@ -1,0 +1,13 @@
+-- RETRACTED. Do not reinstate without reading this.
+-- Two migrations (20260806h, 20260806i) proposed deleting 'completed' order_queue rows.
+-- Both were WRONG and were removed before anything ran.
+--
+-- order_queue is NOT only a work queue. It is the PERMANENT STORE for catering orders:
+--   src/backoffice/sections/CateringOrders.jsx:40 reads it directly, .eq('source','catering').
+-- A catering booking paid in advance therefore has a closed_checks row AND ages past any
+-- floor long before its event. Both migrations would have deleted live future bookings.
+-- The 'safe to clear' list generated on 6 Aug included CA-5BEPG, a real catering order.
+--
+-- If order_queue ever needs pruning, it must exclude source='catering' and be judged per
+-- source, not by age plus a ref match. Refs also recycle (R1..R99, src/lib/db.js:93), so a
+-- ref match is not proof of identity.
