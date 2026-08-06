@@ -10,6 +10,7 @@ import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, RoleChip, money, th, td, inputStyle, labelStyle, groupColor, cellTint, GRP_SECTION, initials, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
 import { buildWeek, addWeeks, weekRangeLabel, ymd } from '../../../staff/wfWeek';
+import { bucketShiftsBySection, UNASSIGNED } from '../../../staff/rotaSections.js';
 import { hoursOf, resolveRate, resolveRateOn, labourPct, venueBreakPolicy } from '../../../staff/labour';
 // Clash logic (shift overlap = hard block; approved leave / unavailable day =
 // soft warning, place anyway) is pure + unit-tested in wfClash.js.
@@ -401,6 +402,32 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
     [timeOff, avail],
   );
 
+  // ── Section view: every shift MUST land in a row ──────────────────────────
+  // v5.5.992 — the section grid filtered on `shift.sectionId === section.id`, so
+  // any shift with no section assigned (which is most of them) was silently
+  // dropped. A week showing 12 shifts under "By staff" showed 3 under
+  // "By section". The two views also group by different things entirely: By
+  // staff groups by the person's ROLE GROUP (Floor / Kitchen, from wfUi's
+  // GRP_SECTION), By section groups by the shift's own section.
+  //
+  // Resolution order for a shift: its explicit section → a section whose NAME
+  // matches the person's role group (a Chef lands in "Kitchen") → Unassigned.
+  // The Unassigned row is what makes the drop impossible rather than unlikely.
+  // The person's role-group display name ('Kitchen', 'Floor'), which is what the
+  // By-staff view groups on. Bridging the two models is the whole fix.
+  const groupNameOf = useCallback((sh) => {
+    const grp = roles?.map?.[sh.roleKey || staffById[sh.staffId]?.role]?.grp;
+    return grp ? (GRP_SECTION[grp] || grp) : null;
+  }, [roles, staffById]);
+
+  // Bucketed once, so the cells and the footer total read the SAME map and can
+  // never disagree. Logic + the "nothing is dropped" invariant are unit-tested
+  // in src/staff/rotaSections.test.js.
+  const { map: sectionGrid, unassigned: unassignedCount } = useMemo(
+    () => bucketShiftsBySection(shifts, secs, groupNameOf),
+    [shifts, secs, groupNameOf],
+  );
+
   // Who can be added to a section on a given day, already-scheduled people last
   // and marked, so you can still add a split shift but won't pick them by accident.
   const staffOptionsFor = useCallback((dayIso) => {
@@ -785,37 +812,42 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       <Card>
         {Header}
         {Modals}
-        {secs.length === 0
+        {secs.length === 0 && !unassignedCount
           ? <EmptyState icon="floor" title="No sections yet" body="Create sections (Bar, Floor, Kitchen…) in Settings to track coverage per area. Then assign each shift to a section and we'll flag any day that's understaffed." />
           : (
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 640 }}>
                 <thead><tr><th style={th}>Section</th>{dayCols}</tr></thead>
                 <tbody>
-                  {secs.map(sec => (
+                  {[...secs, ...(unassignedCount ? [{ id: UNASSIGNED, name: 'No section assigned', color: 'var(--t4)', minCoverage: 0, ghost: true }] : [])].map(sec => (
                     <tr key={sec.id}>
-                      <td style={{ ...td, verticalAlign: 'top' }}><span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontWeight: 600 }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: sec.color || 'var(--t3)' }} />{sec.name}</span></td>
+                      <td style={{ ...td, verticalAlign: 'top' }}>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontWeight: 600, color: sec.ghost ? 'var(--t3)' : undefined }}>
+                          <span style={{ width: 8, height: 8, borderRadius: '50%', background: sec.color || 'var(--t3)', opacity: sec.ghost ? 0.6 : 1 }} />{sec.name}
+                        </span>
+                        {sec.ghost && (
+                          <div style={{ fontSize: 10, color: 'var(--t4)', marginTop: 3, lineHeight: 1.4, maxWidth: 190 }}>
+                            These shifts exist on the rota but aren’t in any section. Open one to assign it.
+                          </div>
+                        )}
+                      </td>
                       {wk.days.map(d => {
-                        // v5.5.990 — this used to show a bare count, so you could see
-                        // that Bar was short on Wednesday but not who was on it or
-                        // where anyone was meant to be. Now it names them, and the
-                        // cell is the place you add someone to that section.
-                        const on = shifts
-                          .filter(s => s.date === d.iso && s.sectionId === sec.id)
-                          .sort((a, b) => (a.start || '').localeCompare(b.start || ''));
+                        const on = sectionGrid.get(`${sec.id}|${d.iso}`) || [];
                         const under = sec.minCoverage > 0 && on.length < sec.minCoverage;
                         return (
                           <td key={d.iso} style={{ ...td, verticalAlign: 'top', padding: '7px 8px', background: under ? cellTint('var(--red)', 9) : 'transparent' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                               <span className="mono" style={{ fontWeight: 700, fontSize: 12, color: under ? 'var(--red)' : 'var(--t2)' }}>
                                 {on.length}{sec.minCoverage > 0 && <span style={{ fontSize: 10, color: 'var(--t4)' }}>/{sec.minCoverage}</span>}
                               </span>
-                              <button
-                                className="btn btn-ghost btn-xs"
-                                title={`Add someone to ${sec.name} on ${d.label} ${d.dom}`}
-                                onClick={() => setEditing({ staff: null, day: d, shift: null, sectionId: sec.id, staffOptions: staffOptionsFor(d.iso) })}
-                                style={{ padding: '0 5px', minWidth: 0, lineHeight: 1.5, fontSize: 13, opacity: 0.7 }}
-                              >+</button>
+                              {!sec.ghost && (
+                                <button
+                                  className="btn btn-ghost btn-xs"
+                                  title={`Add someone to ${sec.name} on ${d.label} ${d.dom}`}
+                                  onClick={() => setEditing({ staff: null, day: d, shift: null, sectionId: sec.id, staffOptions: staffOptionsFor(d.iso) })}
+                                  style={{ padding: '0 5px', minWidth: 0, lineHeight: 1.5, fontSize: 13, opacity: 0.6 }}
+                                >+</button>
+                              )}
                             </div>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: on.length ? 5 : 0 }}>
                               {on.map(s => {
@@ -825,7 +857,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
                                   <button
                                     key={s.id}
                                     onClick={() => p && setEditing({ staff: p, day: d, shift: s })}
-                                    title={`${p?.name || 'Unknown'} · ${s.start}–${s.finish}${draft ? ' · draft' : ''}`}
+                                    title={`${p?.name || 'Unknown'} · ${s.start}–${s.finish}${draft ? ' · draft' : ''}${sec.ghost ? ' · no section assigned' : ''}`}
                                     style={{
                                       display: 'flex', alignItems: 'center', gap: 5, width: '100%', textAlign: 'left',
                                       padding: '3px 5px', borderRadius: 7, cursor: p ? 'pointer' : 'default',
@@ -852,6 +884,20 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
                     </tr>
                   ))}
                 </tbody>
+                {/* The invariant made visible: this total must equal the number of
+                    shifts the By-staff view shows. Before v5.5.992 a week with 12
+                    shifts rendered 3 here and nothing said so. */}
+                <tfoot>
+                  <tr>
+                    <td style={{ ...td, fontSize: 11, color: 'var(--t3)' }}>
+                      {shifts.length} shift{shifts.length === 1 ? '' : 's'} this week
+                      {unassignedCount > 0 && <>, <b style={{ color: 'var(--amber)' }}>{unassignedCount} unassigned</b></>}
+                    </td>
+                    <td colSpan={wk.days.length} style={{ ...td, fontSize: 11, color: 'var(--t4)' }}>
+                      Same shifts as “By staff”, arranged by section.
+                    </td>
+                  </tr>
+                </tfoot>
               </table>
             </div>
           )}

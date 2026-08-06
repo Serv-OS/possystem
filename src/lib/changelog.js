@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.992', date: '6 Aug 2026', label: 'The rota\u2019s By-section view was hiding most of the shifts',
+    changes: [
+      'BUG: "By section" only showed shifts that had a section explicitly assigned to them, and most do not, because the field is optional and rarely set. A week showing twelve shifts under "By staff" showed three under "By section". Nine were simply not on the screen, with nothing to say they existed.',
+      'The two views were also grouping by different things, so they were never going to agree. "By staff" groups people by their ROLE (Floor, Kitchen). "By section" groups shifts by the section set on the shift itself (Runner, Bar, Kitchen). Those are separate ideas.',
+      'Every shift now lands somewhere. A shift with no section falls back to the section matching the person\u2019s role, so a chef appears under Kitchen. Anything still without a home appears in a "No section assigned" row rather than vanishing, and you can click it to assign it.',
+      'A count at the bottom shows the week\u2019s total, so if the two views ever disagree again it is visible on screen instead of silent.',
+      'A shift pointing at a deleted section used to disappear too. It now falls back like any other.',
+      'A venue with no sections at all used to show only "No sections yet", hiding a full rota behind it.',
+    ],
+  },
+  {
     version: '5.5.991', date: '6 Aug 2026', label: 'The Manager app now uses the same break rule as the Back Office',
     changes: [
       'The Manager app had its own idea of when a break was owed: six hours, hardcoded, with no regard for the person\u2019s age or for anything the venue had configured. It now uses the same rule as the Back Office.',
