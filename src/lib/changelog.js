@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.997', date: '6 Aug 2026', label: 'FIX: opening the staff app signed the Back Office out',
+    changes: [
+      'BUG (mine, introduced in v5.5.996 an hour earlier): the whole system shares one login session per browser. Opening the new staff app in the same browser as the Back Office made the app reject the Back Office session as \u201cnot a staff login\u201d and sign it out \u2014 killing the Back Office login underneath you. Every save then failed with a red \u201cchanges are not saving\u201d banner (the row-level security error on shifts).',
+      'The staff app now keeps its login in its OWN separate storage. Staff signing in or out can never touch the Back Office or POS session again, and vice versa \u2014 both can live in the same browser.',
+      'If you were hit: refresh the Back Office tab and sign in again. Nothing was lost server-side \u2014 the banner exists precisely to stop silent losses.',
+    ],
+  },
+  {
     version: '5.5.996', date: '6 Aug 2026', label: 'NEW: the staff self-service app',
     changes: [
       'A brand-new surface: the ServOS Staff app (?mode=staff), for every staff member on their own phone. Until now the only thing staff could see was the shared clock-in tablet, which is the wrong place for anything longer than a glance.',

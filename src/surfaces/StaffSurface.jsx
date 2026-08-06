@@ -14,7 +14,7 @@
 // training module lands (TRAINING_MODULE_PLAN.md).
 
 import { useEffect, useState, useCallback } from 'react';
-import { supabase, isMock } from '../lib/supabase';
+import { staffSupabase as supabase, isMock } from '../lib/supabase';
 import { Icon } from '../components/ServOSIcons';
 
 const glass = { padding: '14px 16px', borderRadius: 16 };
@@ -58,7 +58,9 @@ export default function StaffSurface() {
       const s = await callPortal({ action: 'snapshot' }, jwt);
       setSnap(s); setStage('app');
     } catch (e) {
-      // A BO user's session (or a signed-out one) isn't a staff login.
+      // An expired or revoked staff login → back to the login screen. This
+      // client's storage is isolated ('rpos-staff-auth'), so signing out here
+      // can never touch a Back Office or POS session — see lib/supabase.js.
       if (/not signed in/i.test(e.message)) { await supabase.auth.signOut().catch(() => {}); setStage('login'); }
       else setErr(e.message);
     }

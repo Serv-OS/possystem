@@ -5,6 +5,18 @@ const SUPABASE_URL  = import.meta.env.VITE_SUPABASE_URL  || '';
 const SUPABASE_ANON = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 export const isMock  = import.meta.env.VITE_USE_MOCK === 'true' || !SUPABASE_URL || !SUPABASE_ANON;
 
+// STAFF APP client (v5.5.997) — its OWN auth storage. The main client keeps one
+// session per browser ('rpos-auth'); when the staff app used it, opening
+// ?mode=staff next to the Back Office SIGNED THE BO OUT (the app rejected the
+// BO session as not-a-staff-login and called signOut on the SHARED session),
+// after which a POS tab minted an anonymous session and every BO write started
+// failing RLS — the 6 Aug "changes are not saving / shifts" incident. An
+// isolated storageKey means staff logins and logouts can never touch the BO or
+// POS session, and vice versa.
+export const staffSupabase = isMock ? null : createClient(SUPABASE_URL, SUPABASE_ANON, {
+  auth: { storageKey: 'rpos-staff-auth', persistSession: true, autoRefreshToken: true },
+});
+
 export const supabase = isMock ? null : createClient(SUPABASE_URL, SUPABASE_ANON, {
   auth: {
     persistSession: true,

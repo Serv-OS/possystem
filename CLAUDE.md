@@ -405,6 +405,15 @@ Modifier options link to menu items via `opt.itemId`. If `itemId` isn't explicit
 ### Gift Card Code Lookup
 Gift cards use HMAC-SHA256 for code lookup (indexed via `code_lookup` column). The edge function tries three fallback paths: (1) HMAC lookup, (2) `card_id` direct, (3) `code_plain` direct. This handles HMAC secret rotation and cards with null `code_plain`.
 
+### One Auth Session Per Browser (the 6 Aug "shifts RLS" incident)
+The main Supabase client stores ONE session per browser (`storageKey: 'rpos-auth'`), shared by
+every tab — Back Office, POS, everything. Any surface that calls `signInWithPassword`/`signOut`
+on that client clobbers the session for ALL tabs: the staff app doing this signed the Back Office
+out, a POS tab then minted an anonymous session, and every BO write started failing RLS.
+**Any surface with its own login (staff app: `staffSupabase`, `storageKey: 'rpos-staff-auth'`)
+MUST use a dedicated client with an isolated storageKey.** Never call auth sign-in/out on the
+shared client from a new surface.
+
 ### Tables MUST Never Be Lost
 Tables MUST never be lost between updates (config push, refresh, wake-from-sleep). Multiple safeguards exist: SessionSync flush debounce, SessionReconciler 10s poll, activeTableId skip, seatedAt timestamp guards on Realtime DELETE handlers, 3-second grace period before Supabase row deletion.
 
