@@ -148,6 +148,7 @@ Deno.serve(async (req) => {
         return json({ error: 'This link has expired — ask your manager to send a new one' }, 400);
       }
       let userId = staff.portal_user_id as string | null;
+      let existing = false;
       if (userId) {
         const { error } = await admin.auth.admin.updateUserById(userId, { password });
         if (error) return json({ error: error.message }, 400);
@@ -156,19 +157,30 @@ Deno.serve(async (req) => {
           email: staff.email, password, email_confirm: true,
           user_metadata: { staff_portal: true, staff_id: staff.id },
         });
-        if (error) {
-          // The email may already have an auth user (e.g. re-invite after a
-          // partial run). Never attach to an account we didn't create here.
+        if (!error) {
+          userId = created.user.id;
+        } else if (/already|registered|exists/i.test(error.message)) {
+          // The email already has a ServOS account (e.g. an owner-operator who
+          // is ALSO a Back Office user — one email is one account). The invite
+          // link proves control of that inbox, which is exactly what password
+          // recovery proves, so link the accounts and set the password they
+          // just chose. That password now applies to the account everywhere.
+          const { data: lk, error: lkErr } = await admin.auth.admin.generateLink({ type: 'magiclink', email: staff.email });
+          if (lkErr || !lk?.user?.id) return json({ error: `Could not link the existing login: ${lkErr?.message || 'user lookup failed'}` }, 400);
+          userId = lk.user.id;
+          const { error: pwErr } = await admin.auth.admin.updateUserById(userId, { password });
+          if (pwErr) return json({ error: pwErr.message }, 400);
+          existing = true;
+        } else {
           return json({ error: `Could not create the login: ${error.message}` }, 400);
         }
-        userId = created.user.id;
       }
       const { error: linkErr } = await admin.from('wf_staff')
         .update({ portal_user_id: userId, portal_invite_hash: null, portal_invite_expires: null })
         .eq('id', staff.id);
       if (linkErr) return json({ error: linkErr.message }, 500);
-      await audit(staff, 'portal.login_created', null, { email: staff.email });
-      return json({ ok: true, email: staff.email });
+      await audit(staff, existing ? 'portal.login_linked' : 'portal.login_created', null, { email: staff.email, existingAccount: existing });
+      return json({ ok: true, email: staff.email, existing });
     }
 
     // ── reset_start: forgot password. Same email, fresh link, no enumeration ──

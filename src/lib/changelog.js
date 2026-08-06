@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.998', date: '6 Aug 2026', label: 'FIX: staff app invites now work when the email already has a ServOS login',
+    changes: [
+      'An owner or manager who is ALSO on the staff rota has one email with a ServOS login already attached. The invite refused to touch that account, so they could neither create a password nor sign in to the staff app.',
+      'One email is one account. The invite link proves you control the inbox \u2014 the same proof password recovery uses \u2014 so accepting it now links the staff record to the existing account and sets the password you chose.',
+      'Plainly: the password you pick on the invite screen becomes THE password for that email everywhere, including the Back Office if that email is a Back Office login.',
+      'Pure staff members (email not already registered) are unaffected \u2014 their account is created fresh, as before.',
+      'Server-side only \u2014 already deployed (staff-portal version 2). An invite link you were already sent still works: just click it again.',
+    ],
+  },
+  {
     version: '5.5.997', date: '6 Aug 2026', label: 'FIX: opening the staff app signed the Back Office out',
     changes: [
       'BUG (mine, introduced in v5.5.996 an hour earlier): the whole system shares one login session per browser. Opening the new staff app in the same browser as the Back Office made the app reject the Back Office session as \u201cnot a staff login\u201d and sign it out \u2014 killing the Back Office login underneath you. Every save then failed with a red \u201cchanges are not saving\u201d banner (the row-level security error on shifts).',
