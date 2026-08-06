@@ -14,7 +14,7 @@ import { useState, useEffect, useMemo, Fragment } from 'react';
 import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, RoleChip, money, th, td, inputStyle, labelStyle, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
-import { hoursOf, resolveRate, statutoryBreakMins } from '../../../staff/labour';
+import { hoursOf, resolveRate, breakShortfall, venueBreakPolicy, grossFromNet } from '../../../staff/labour';
 import { buildWeek, addWeeks, payPeriod, payCfgFrom, shiftPayPeriod, weekRangeLabel } from '../../../staff/wfWeek';
 import { getLocationConfig } from '../../../lib/locationTime';
 
@@ -74,6 +74,8 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
   const gotoNow = () => mode === 'week' ? setWk(buildWeek()) : setPp(payPeriod(payCfg));
 
   const staffMap = useMemo(() => Object.fromEntries((staff || []).map(s => [s.id, s])), [staff]);
+  // The venue's break policy, resolved once for every row on the screen.
+  const breakPolicy = useMemo(() => venueBreakPolicy(settings?.settings), [settings?.settings]);
 
   async function reload() {
     setLoading(true);
@@ -119,6 +121,10 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
         scheduled, actual, variance: ts ? round2((actual ?? 0) - scheduled) : null,
         rate, rateSource: source,
         breakMins: ts ? (ts.breakTaken || 0) : (shift.breakMins || 0),
+        // v5.5.990 — keep the ROSTERED break alongside the actual. These used to
+        // collapse into one field the moment a timesheet existed, so "took 10 of
+        // a planned 30" could not be expressed, let alone flagged.
+        plannedBreakMins: shift.breakMins ?? null,
         paidBreak: ts ? (ts.paidBreakMins || 0) > 0 : false,
         breaks: ts?.breaks || [],
         pay: ts ? payOf(actual, ts.paidBreakMins, rate) : null,
@@ -140,6 +146,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
         actual, variance: ts.scheduledHours != null ? round2(actual - ts.scheduledHours) : null,
         rate: eff, rateSource: ts.rateSource || source,
         breakMins: ts.breakTaken || 0,
+        plannedBreakMins: null,          // clock-only row: never rostered, so no plan to miss
         paidBreak: (ts.paidBreakMins || 0) > 0,
         breaks: ts.breaks || [],
         pay: ts.payAmount != null && ts.status !== 'pending' ? round2(ts.payAmount) : payOf(actual, ts.paidBreakMins, eff),
@@ -164,6 +171,17 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
 
   const totals = useMemo(() => visibleRows.reduce((a, r) => ({ hours: a.hours + (r.ts ? (r.actual || 0) : 0), pay: a.pay + (r.ts ? (r.pay || 0) : 0) }), { hours: 0, pay: 0 }), [visibleRows]);
   const undatedCount = rows.filter(r => r.kind === 'undated').length;
+  // Short breaks in the visible range. Without a count you have to eyeball every
+  // row to notice one, which in practice means nobody ever does.
+  const breakFlags = useMemo(() => {
+    let statutory = 0, policy = 0;
+    visibleRows.forEach(r => {
+      const lvl = breakFor(r, staffMap, breakPolicy).level;
+      if (lvl === 'statutory') statutory++;
+      else if (lvl === 'policy') policy++;
+    });
+    return { statutory, policy, total: statutory + policy };
+  }, [visibleRows, staffMap, breakPolicy]);
 
   // ── actions ────────────────────────────────────────────────────────────────
   const paidBreaksDefault = !!settings?.settings?.paidBreaks;
@@ -308,6 +326,28 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
         </div>
       )}
 
+      {/* v5.5.990 — short breaks, counted. The per-row badges existed before but
+          only for the legal minimum, and only if you happened to scan the column. */}
+      {breakFlags.total > 0 && (
+        <div style={{
+          display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 12px', borderRadius: 10, marginBottom: 14,
+          background: breakFlags.statutory ? 'rgba(224,49,49,.10)' : 'rgba(245,166,35,.10)',
+          border: `1px solid ${breakFlags.statutory ? 'var(--red)' : 'var(--amber)'}`,
+        }}>
+          <span style={{ color: breakFlags.statutory ? 'var(--red)' : 'var(--amber)', marginTop: 1 }}><Icon name="warn" size={15} /></span>
+          <div style={{ fontSize: 12.5, color: 'var(--t2)', lineHeight: 1.55 }}>
+            {breakFlags.statutory > 0 && (
+              <><b>{breakFlags.statutory} short of the legal break</b> (UK Working Time Regs: 20 minutes over 6 hours, 30 for under-18s over 4.5). </>
+            )}
+            {breakFlags.policy > 0 && (
+              <><b>{breakFlags.policy} short of the break {breakFlags.statutory ? 'they were ' : ''}rostered or expected.</b> </>
+            )}
+            Look for the badge in the <b>Break</b> column. Editing a row lets you correct the minutes.
+            {!breakPolicy.isSet && <> This venue has no default break set, so {breakPolicy.defaultMins} minutes is assumed — set it in <b>Workforce settings</b>.</>}
+          </div>
+        </div>
+      )}
+
       {visibleRows.length === 0 ? (
         <EmptyState
           icon="clock"
@@ -369,7 +409,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
                       <td style={td}>
                         {r.ts ? <span className="mono">{hm(r.actual ?? 0)}</span> : <span style={{ color: 'var(--t4)' }}>—</span>}
                       </td>
-                      <td style={td}><BreakCell r={r} staffMap={staffMap} tz={tz} /></td>
+                      <td style={td}><BreakCell r={r} staffMap={staffMap} tz={tz} policy={breakPolicy} /></td>
                       <td style={td}><VarianceCell variance={r.ts ? r.variance : null} /></td>
                       <td style={{ ...td, textAlign: 'right' }}>
                         {r.ts ? <span className="mono" style={{ fontWeight: 600 }}>{money(r.pay, 2)}</span> : <span style={{ color: 'var(--t4)' }}>—</span>}
@@ -434,7 +474,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
       {adding && (
         <AddTimesheetModal
           staff={staff} paidDefault={paidBreaksDefault}
-          breakDefault={settings?.settings?.defaultBreakMins ?? 0}
+          breakDefault={breakPolicy.defaultMins}
           onClose={() => setAdding(false)}
           onSave={async (form) => {
             const breakMins = Number(form.breakMins) || 0;
@@ -461,27 +501,71 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
   );
 }
 
+// One place that turns a table row into a break verdict, so the cell badge, the
+// header count and anything added later can never drift apart.
+//
+// The statutory test needs GROSS time on shift. `r.actual` is stored NET of the
+// break, so it is reconstituted here — passing the net figure straight in is
+// what made the Back Office and the clock-out rule disagree at the 6h boundary.
+function breakFor(r, staffMap, policy) {
+  const dob = staffMap?.[r.staffId]?.dob || null;
+  const taken = r.breakMins || 0;
+  const gross = r.ts
+    ? grossFromNet(r.actual ?? 0, taken)
+    : (r.scheduled ?? 0) + taken;          // rota-only row: scheduled is net too
+  return breakShortfall({
+    grossHours: gross,
+    breakMins: taken,
+    dob,
+    // On a row with no timesheet the number shown IS the plan, so comparing it
+    // against itself would never flag. Only the legal test applies there.
+    plannedBreakMins: r.ts ? r.plannedBreakMins : null,
+    policy,
+  });
+}
+
 // Break detail (READ-ONLY): total minutes, when each break ran (Time Clock
-// segments), whether it's paid, and a UK Working Time Regulations check —
-// 20 mins due over 6h worked (30 mins over 4.5h for under-18s). Editing the
-// break is done via the row's Edit panel.
-function BreakCell({ r, staffMap, tz }) {
-  if (!r.ts) return <span style={{ color: 'var(--t4)' }}>{r.breakMins ? `${r.breakMins}m planned` : '—'}</span>;
-  const dob = staffMap[r.staffId]?.dob || null;
-  const due = statutoryBreakMins(r.actual ?? 0, dob);
-  const short = due > 0 && (r.breakMins || 0) < due;
+// segments), whether it's paid, and TWO shortfall checks — see breakFor().
+// Editing the break is done via the row's Edit panel.
+//
+// v5.5.990: this used to flag only the legal minimum, so a 30-minute rostered
+// break taken as 10 read as perfectly fine at any venue whose shifts were under
+// 6 hours. It now flags short-against-plan too, in amber, kept visually apart
+// from the red legal one because they are different problems.
+function BreakCell({ r, staffMap, tz, policy }) {
+  const sf = breakFor(r, staffMap, policy);
+  // Rota row with no timesheet yet: the plan itself can still be unlawful.
+  if (!r.ts) {
+    return (
+      <div>
+        <span style={{ color: 'var(--t4)' }}>{r.breakMins ? `${r.breakMins}m planned` : '—'}</span>
+        {sf.level === 'statutory' && (
+          <div style={{ marginTop: 3 }}><Badge tone="red">{sf.statutory}m due (WTR)</Badge></div>
+        )}
+      </div>
+    );
+  }
   const segs = (r.breaks || []).map(b => {
     const t = x => new Intl.DateTimeFormat('en-GB', { timeZone: tz || 'Europe/London', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(x));
     return b.start && b.end ? `${t(b.start)}–${t(b.end)}` : null;
   }).filter(Boolean);
+  const auto = (r.breaks || []).some(b => b && b.auto);
   return (
-    <div title={segs.length ? `Breaks: ${segs.join(', ')}` : 'No break segments recorded'}>
+    <div title={segs.length ? `Breaks: ${segs.join(', ')}` : auto ? 'Auto-deducted at clock-out — no break was punched' : 'No break segments recorded'}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         <span className="mono">{r.breakMins || 0}m</span>
         {r.paidBreak && <Badge tone="green">paid</Badge>}
+        {auto && <Badge tone="grey">auto</Badge>}
       </div>
       {segs.length > 0 && <div style={{ fontSize: 10, color: 'var(--t4)', marginTop: 2, fontFamily: 'var(--font-mono)' }}>{segs.join(' · ')}</div>}
-      {short && <div style={{ marginTop: 3 }}><Badge tone="red">{due}m break due (WTR)</Badge></div>}
+      {sf.level === 'statutory' && (
+        <div style={{ marginTop: 3 }}><Badge tone="red">{sf.shortStatutory}m under the {sf.statutory}m due (WTR)</Badge></div>
+      )}
+      {sf.level === 'policy' && (
+        <div style={{ marginTop: 3 }}>
+          <Badge tone="amber">{sf.shortExpected}m short of {sf.expected}m {sf.expectedFrom === 'shift' ? 'rostered' : 'expected'}</Badge>
+        </div>
+      )}
     </div>
   );
 }

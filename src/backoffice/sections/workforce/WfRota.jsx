@@ -5,12 +5,12 @@
 // forecast / actual sales / wage cost / labour %. Publish pushes draft shifts
 // live. A "By section" view checks coverage against minCoverage.
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, RoleChip, money, th, td, inputStyle, labelStyle, groupColor, cellTint, GRP_SECTION, initials, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
 import { buildWeek, addWeeks, weekRangeLabel, ymd } from '../../../staff/wfWeek';
-import { hoursOf, resolveRate, resolveRateOn, labourPct } from '../../../staff/labour';
+import { hoursOf, resolveRate, resolveRateOn, labourPct, venueBreakPolicy } from '../../../staff/labour';
 // Clash logic (shift overlap = hard block; approved leave / unavailable day =
 // soft warning, place anyway) is pure + unit-tested in wfClash.js.
 import { findClash, clashWarnings } from '../../../staff/wfClash';
@@ -30,13 +30,21 @@ function WarnBox({ warnings }) {
 }
 
 // ── Shift editor modal ──────────────────────────────────────────────────────
-function ShiftModal({ staff, day, shift, sections, templates, warnings, onSave, onDelete, onDuplicate, onClose, saving, defaultBreakMins = 30 }) {
+// `staff` is the person when you opened this from their row. Opening from the
+// SECTION grid instead means the day + section are known but the person is not,
+// so pass `staffOptions` and the modal picks them here (v5.5.990).
+function ShiftModal({ staff, staffOptions, presetSectionId, day, shift, sections, templates, warningsFor, onSave, onDelete, onDuplicate, onClose, saving, defaultBreakMins = 30 }) {
+  const picking = !staff;
+  const [pickedId, setPickedId] = useState(staff?.id || staffOptions?.[0]?.id || '');
+  const person = staff || (staffOptions || []).find(p => p.id === pickedId) || null;
   const [start, setStart] = useState(shift?.start || '09:00');
   const [finish, setFinish] = useState(shift?.finish || '17:00');
   // v5.5.969: new shifts default to the VENUE break policy (was hardcoded 30)
   const [breakMins, setBreakMins] = useState(shift?.breakMins ?? defaultBreakMins);
-  const [sectionId, setSectionId] = useState(shift?.sectionId || sections[0]?.id || '');
+  const [sectionId, setSectionId] = useState(shift?.sectionId || presetSectionId || sections[0]?.id || '');
   const hrs = useMemo(() => Math.max(0, hoursOf(start, finish) - (Number(breakMins) || 0) / 60), [start, finish, breakMins]);
+  // Clash / time-off / availability warnings follow whoever is currently picked.
+  const warnings = useMemo(() => (person && warningsFor ? warningsFor(person, day) : []), [person, day, warningsFor]);
 
   // One tap fills the times from a standard shift (Morning / Evening / …).
   const applyTpl = (t) => {
@@ -51,10 +59,23 @@ function ShiftModal({ staff, day, shift, sections, templates, warnings, onSave, 
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
           <div>
             <div style={{ fontSize: 16, fontWeight: 700 }}>{shift ? 'Edit shift' : 'Add shift'}</div>
-            <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>{staff.name} · {day.label} {day.dom}</div>
+            <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>
+              {picking
+                ? <>{sections.find(s => s.id === presetSectionId)?.name || 'Rota'} · {day.label} {day.dom}</>
+                : <>{staff.name} · {day.label} {day.dom}</>}
+            </div>
           </div>
           <button className="btn btn-ghost btn-sm" onClick={onClose}><Icon name="close" size={14} /></button>
         </div>
+        {picking && (
+          <div style={{ marginTop: 12 }}>
+            <label style={labelStyle}>Who is working</label>
+            <select style={inputStyle} value={pickedId} onChange={e => setPickedId(e.target.value)}>
+              {(staffOptions || []).length === 0 && <option value="">— everyone is already on this day —</option>}
+              {(staffOptions || []).map(p => <option key={p.id} value={p.id}>{p.name}{p.busy ? ' (already on today)' : ''}</option>)}
+            </select>
+          </div>
+        )}
         {!!templates?.length && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 12 }}>
             {templates.map(t => (
@@ -91,7 +112,7 @@ function ShiftModal({ staff, day, shift, sections, templates, warnings, onSave, 
           )}
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn btn-ghost btn-sm" onClick={onClose} disabled={saving}>Cancel</button>
-            <button className="btn btn-acc btn-sm" disabled={saving} onClick={() => onSave({ start, finish, breakMins: Number(breakMins) || 0, sectionId, section: sections.find(s => s.id === sectionId)?.name || null })}>
+            <button className="btn btn-acc btn-sm" disabled={saving || !person} onClick={() => onSave({ staffId: person?.id, start, finish, breakMins: Number(breakMins) || 0, sectionId, section: sections.find(s => s.id === sectionId)?.name || null })}>
               <Icon name="check" size={13} /> {saving ? 'Saving…' : warnings?.length ? 'Save anyway' : 'Save shift'}
             </button>
           </div>
@@ -367,10 +388,35 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   }, [timesheets, wk]);
 
   const draftIds = useMemo(() => shifts.filter(s => s.status !== 'published').map(s => s.id), [shifts]);
+  const staffById = useMemo(() => Object.fromEntries((staff || []).map(s => [s.id, s])), [staff]);
+  // Same resolved venue break policy the Timesheets screen uses, so a new rota
+  // shift and a new manual timesheet can no longer disagree about the default.
+  const breakPolicy = useMemo(() => venueBreakPolicy(settings?.settings), [settings?.settings]);
+
+  // Time-off / availability warnings for a given person on a given day. Passed
+  // to ShiftModal as a callback so it re-runs when the modal's own person picker
+  // changes (the section grid opens the modal before anyone is chosen).
+  const warningsFor = useCallback(
+    (person, day) => clashWarnings({ staffName: person.name, staffId: person.id, dateIso: day.iso, timeOff, availability: avail }),
+    [timeOff, avail],
+  );
+
+  // Who can be added to a section on a given day, already-scheduled people last
+  // and marked, so you can still add a split shift but won't pick them by accident.
+  const staffOptionsFor = useCallback((dayIso) => {
+    const onDay = new Set(shifts.filter(s => s.date === dayIso).map(s => s.staffId));
+    return (staff || [])
+      .map(p => ({ ...p, busy: onDay.has(p.id) }))
+      .sort((a, b) => (a.busy === b.busy ? a.name.localeCompare(b.name) : a.busy ? 1 : -1));
+  }, [staff, shifts]);
 
   // ── handlers ────────────────────────────────────────────────────────────
   async function saveShift(payload) {
-    const { staff: s, day, shift } = editing;
+    const { day, shift } = editing;
+    // The person comes from the row you clicked, or from the modal's picker when
+    // you started from a SECTION cell and only the day + section were known.
+    const s = editing.staff || staff.find(x => x.id === payload.staffId);
+    if (!s) { showToast('Pick who is working this shift', 'error'); return; }
     // No clashing shifts: a person can work split shifts, but the times must
     // not overlap an existing shift that day (editing a shift ignores itself).
     const clash = findClash(shifts, s.id, day.iso, payload.start, payload.finish, shift?.id);
@@ -713,15 +759,16 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       {editing && (
         <ShiftModal
           staff={editing.staff} day={editing.day} shift={editing.shift}
+          staffOptions={editing.staffOptions} presetSectionId={editing.sectionId}
           sections={secs} templates={templates} saving={saving}
-          defaultBreakMins={settings?.settings?.defaultBreakMins ?? 30}
-          warnings={clashWarnings({ staffName: editing.staff.name, staffId: editing.staff.id, dateIso: editing.day.iso, timeOff, availability: avail })}
+          defaultBreakMins={breakPolicy.defaultMins}
+          warningsFor={warningsFor}
           onSave={saveShift} onDelete={removeShift} onClose={() => setEditing(null)}
           onDuplicate={(sh) => { setEditing(null); setCopying(sh); }}
         />
       )}
       {tplOpen && (
-        <TemplatesModal templates={templates} sections={secs} saving={saving} defaultBreakMins={settings?.settings?.defaultBreakMins ?? 30} onSave={saveTemplates} onClose={() => setTplOpen(false)} />
+        <TemplatesModal templates={templates} sections={secs} saving={saving} defaultBreakMins={breakPolicy.defaultMins} onSave={saveTemplates} onClose={() => setTplOpen(false)} />
       )}
       {copying && (
         <CopyShiftModal source={copying} staff={staff} wk={wk} shifts={shifts} timeOff={timeOff} avail={avail} saving={saving} onCopy={copyShift} onClose={() => setCopying(null)} />
@@ -747,14 +794,58 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
                 <tbody>
                   {secs.map(sec => (
                     <tr key={sec.id}>
-                      <td style={td}><span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontWeight: 600 }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: sec.color || 'var(--t3)' }} />{sec.name}</span></td>
+                      <td style={{ ...td, verticalAlign: 'top' }}><span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontWeight: 600 }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: sec.color || 'var(--t3)' }} />{sec.name}</span></td>
                       {wk.days.map(d => {
-                        const count = shifts.filter(s => s.date === d.iso && s.sectionId === sec.id).length;
-                        const under = sec.minCoverage > 0 && count < sec.minCoverage;
+                        // v5.5.990 — this used to show a bare count, so you could see
+                        // that Bar was short on Wednesday but not who was on it or
+                        // where anyone was meant to be. Now it names them, and the
+                        // cell is the place you add someone to that section.
+                        const on = shifts
+                          .filter(s => s.date === d.iso && s.sectionId === sec.id)
+                          .sort((a, b) => (a.start || '').localeCompare(b.start || ''));
+                        const under = sec.minCoverage > 0 && on.length < sec.minCoverage;
                         return (
-                          <td key={d.iso} style={{ ...td, textAlign: 'center', background: under ? cellTint('var(--red)', 9) : 'transparent' }}>
-                            <span className="mono" style={{ fontWeight: 700, color: under ? 'var(--red)' : 'var(--t1)' }}>{count}</span>
-                            {sec.minCoverage > 0 && <span style={{ fontSize: 10.5, color: 'var(--t4)' }}> /{sec.minCoverage}</span>}
+                          <td key={d.iso} style={{ ...td, verticalAlign: 'top', padding: '7px 8px', background: under ? cellTint('var(--red)', 9) : 'transparent' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+                              <span className="mono" style={{ fontWeight: 700, fontSize: 12, color: under ? 'var(--red)' : 'var(--t2)' }}>
+                                {on.length}{sec.minCoverage > 0 && <span style={{ fontSize: 10, color: 'var(--t4)' }}>/{sec.minCoverage}</span>}
+                              </span>
+                              <button
+                                className="btn btn-ghost btn-xs"
+                                title={`Add someone to ${sec.name} on ${d.label} ${d.dom}`}
+                                onClick={() => setEditing({ staff: null, day: d, shift: null, sectionId: sec.id, staffOptions: staffOptionsFor(d.iso) })}
+                                style={{ padding: '0 5px', minWidth: 0, lineHeight: 1.5, fontSize: 13, opacity: 0.7 }}
+                              >+</button>
+                            </div>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginTop: on.length ? 5 : 0 }}>
+                              {on.map(s => {
+                                const p = staffById[s.staffId];
+                                const draft = s.status !== 'published';
+                                return (
+                                  <button
+                                    key={s.id}
+                                    onClick={() => p && setEditing({ staff: p, day: d, shift: s })}
+                                    title={`${p?.name || 'Unknown'} · ${s.start}–${s.finish}${draft ? ' · draft' : ''}`}
+                                    style={{
+                                      display: 'flex', alignItems: 'center', gap: 5, width: '100%', textAlign: 'left',
+                                      padding: '3px 5px', borderRadius: 7, cursor: p ? 'pointer' : 'default',
+                                      border: `1px ${draft ? 'dashed' : 'solid'} var(--inset-border)`,
+                                      background: 'var(--inset)', color: 'var(--t1)', font: 'inherit', fontSize: 11,
+                                    }}
+                                  >
+                                    <span style={{
+                                      width: 16, height: 16, borderRadius: '50%', flexShrink: 0,
+                                      background: sec.color || 'var(--t3)', color: '#fff',
+                                      fontSize: 8, fontWeight: 700, display: 'grid', placeItems: 'center',
+                                    }}>{initials(p?.name)}</span>
+                                    <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontWeight: 600 }}>
+                                      {(p?.name || 'Unknown').split(' ')[0]}
+                                    </span>
+                                    <span className="mono" style={{ fontSize: 9.5, color: 'var(--t3)', flexShrink: 0 }}>{s.start}</span>
+                                  </button>
+                                );
+                              })}
+                            </div>
                           </td>
                         );
                       })}

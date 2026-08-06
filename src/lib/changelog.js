@@ -7,6 +7,20 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.990', date: '6 Aug 2026', label: 'Short breaks are flagged, and the rota shows who is actually on',
+    changes: [
+      'BREAKS: the system only ever checked a break against the LEGAL minimum of 20 minutes. If you rostered someone a 30-minute break and they took 10, nothing anywhere said so. It now flags both, and keeps them apart: red when the break is under the law, amber when it is under what you rostered or what the venue expects.',
+      'A banner at the top of Timesheets counts them, so you no longer have to scan the Break column row by row to notice.',
+      'The five-minute break that defeated every check is now caught. The clock-out auto-deduct only ever fired when NO break was punched, and the Manager app only warned when none was logged, so any break at all made the problem invisible.',
+      'A rota shift with no break on it is now flagged before anyone works it, not after.',
+      'The legal check was reading the wrong number. It used hours worked AFTER the break was taken off, while the clock-out rule used the full time on shift, so the two disagreed around the six-hour mark. Both now use time on shift, which is what the law is about.',
+      'One rule now, in one place. There were three different answers to "was that break long enough" living in the Back Office, the clock-out function and the Manager app, one of which ignored age entirely.',
+      'DEFAULT BREAK: a venue that had never set one got 30 minutes on new rota shifts but 0 on manual timesheets. Same venue, same setting, two different answers. Both now use the same value.',
+      'ROTA BY SECTION: the grid showed a bare count, so you could see Bar was short on Wednesday but not who was on it or where anyone was meant to be. It now names everyone in each section with their start time, marks unpublished shifts, and clicking a name opens that shift.',
+      'You can now schedule straight from that grid. The + on any section and day opens a new shift with the section already chosen and a list of who is free, with anyone already working that day listed last.',
+    ],
+  },
+  {
     version: '5.5.989', date: '6 Aug 2026', label: 'The Announcements SMS toggle now actually sends, and pay dates land in the right month',
     changes: [
       'The SMS option on Workforce \u2192 Announcements never sent anything. It saved your choice to the database and stopped there, so anyone who ticked it believed their team had been texted when no message had left the building. It now texts everyone in the audience who has a mobile on file.',

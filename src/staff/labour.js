@@ -8,6 +8,11 @@
 // the server (spec: never trust client math for pay).
 
 import { GROUPS, ROLES, FORECAST, LABOUR_TARGET } from './seed';
+// The break rule lives in its own dependency-free module so it can be unit
+// tested and shared with the Manager app. Re-exported here so existing
+// `from '../staff/labour'` imports keep working.
+export { statutoryBreakMins, breakShortfall, venueBreakPolicy, grossFromNet,
+         DEFAULT_BREAK_MINS, DEFAULT_BREAK_THRESHOLD_HRS } from './breaks.js';
 
 // Fallback salaried divisor when neither the staff record nor the role stores a
 // contracted week. The real value is persisted (wf_staff.contracted_week /
@@ -103,22 +108,6 @@ export function isHourly(staff, role) {
   if (role && role.rate != null) return true;
   if (role && role.salary != null && role.rate == null) return false;
   return true; // default: hourly (accrues)
-}
-
-/**
- * UK statutory rest break due for a worked stretch (Working Time Regulations
- * 1998, reg 12): adults get a 20-min uninterrupted break when working MORE
- * than 6 hours; under-18s (young workers) get 30 mins when working more than
- * 4.5 hours. The break need not be paid — that's venue policy. Returns the
- * minutes due (0 if none). `dob` optional ISO date for the under-18 rule.
- */
-export function statutoryBreakMins(workedHours, dob) {
-  const hrs = Number(workedHours) || 0;
-  if (dob) {
-    const age = (Date.now() - new Date(dob + 'T00:00:00').getTime()) / (365.25 * 86400000);
-    if (age < 18 && hrs > 4.5) return 30;
-  }
-  return hrs > 6 ? 20 : 0;
 }
 
 /**
