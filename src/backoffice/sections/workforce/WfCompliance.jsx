@@ -23,8 +23,8 @@ function ViewDocLink({ path }) {
   return <button className="btn btn-ghost btn-xs" disabled={busy} onClick={open}><Icon name="tag" size={13} /> {busy ? '…' : 'View'}</button>;
 }
 
-const DOC_TYPES = ['RTW', 'foodHygieneL2', 'allergenTraining', 'SIA', 'firstAid', 'other'];
-const DOC_LABEL = {
+export const DOC_TYPES = ['RTW', 'foodHygieneL2', 'allergenTraining', 'SIA', 'firstAid', 'other'];
+export const DOC_LABEL = {
   RTW: 'Right to Work',
   foodHygieneL2: 'Food Hygiene L2',
   allergenTraining: 'Allergen Training',
@@ -36,13 +36,13 @@ const DOC_LABEL = {
 // documents (RTW, SIA) sat interleaved with training certificates. Grouped by
 // what the document IS: legal-to-employ vs evidence-of-training. 'other' gets
 // its own tail group rather than polluting either.
-const DOC_GROUP = {
+export const DOC_GROUP = {
   RTW: 'compliance', SIA: 'compliance',
   foodHygieneL2: 'training', allergenTraining: 'training', firstAid: 'training',
   other: 'other',
 };
-const GROUP_ORDER = ['compliance', 'training', 'other'];
-const GROUP_LABEL = { compliance: 'Compliance', training: 'Training', other: 'Other' };
+export const GROUP_ORDER = ['compliance', 'training', 'other'];
+export const GROUP_LABEL = { compliance: 'Compliance', training: 'Training', other: 'Other' };
 const EXPIRING_DAYS = 30;
 
 const todayIso = () => new Date().toISOString().slice(0, 10);

@@ -8,7 +8,7 @@
 //     states until populated. POS-sourced numbers (sales, clock-ins, tips) wire
 //     to the POS in the hardening pass.
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, Fragment } from 'react';
 import { useStore } from '../../store';
 import { supabase } from '../../lib/supabase';
 import { Icon } from '../../components/ServOSIcons';
@@ -24,7 +24,7 @@ import WfTronc from './workforce/WfTronc';
 import WfPay from './workforce/WfPay';
 import WfLeave from './workforce/WfLeave';
 import WfOnboarding from './workforce/WfOnboarding';
-import WfCompliance from './workforce/WfCompliance';
+import WfCompliance, { DOC_LABEL, DOC_GROUP, GROUP_ORDER, GROUP_LABEL } from './workforce/WfCompliance';
 import WfAnnouncements from './workforce/WfAnnouncements';
 import WfSettings from './workforce/WfSettings';
 
@@ -346,7 +346,9 @@ function AddStaffModal({ locName, staff, roles = ROLES, sections = [], onClose, 
 }
 
 const CONTRACT_LABEL = { zeroHours: 'Zero hours', partTime: 'Part time', fullTime: 'Full time', salaried: 'Salaried' };
-const DOC_LABEL = { RTW: 'Right to Work', foodHygieneL2: 'Food Hygiene L2', allergenTraining: 'Allergen', SIA: 'SIA Licence', firstAid: 'First Aid', other: 'Other' };
+// v5.5.995 — one source of truth. This modal had its OWN copy of the label map
+// (already drifted: 'Allergen' vs 'Allergen Training') and no grouping.
+// Shared constants live in WfCompliance.
 function docStat(doc) {
   // Review state wins (mirrors WfCompliance.docStatus): an upload only counts
   // once a manager has approved it.
@@ -446,13 +448,23 @@ function StaffDetailModal({ staff: s, roles = ROLES, ctx, showToast, onClose, on
         {data.loading ? <Muted>Loading…</Muted> : data.docs.length === 0 ? <Muted>No documents on file.</Muted> : (
           <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: 16 }}>
             <tbody>
-              {data.docs.map(d => { const [lbl, tone] = docStat(d); return (
-                <tr key={d.id}>
+              {[...data.docs]
+                .sort((a, b) => GROUP_ORDER.indexOf(DOC_GROUP[a.type] || 'other') - GROUP_ORDER.indexOf(DOC_GROUP[b.type] || 'other') || String(a.type).localeCompare(String(b.type)))
+                .map((d, i, arr) => { const [lbl, tone] = docStat(d);
+                const grp = DOC_GROUP[d.type] || 'other';
+                const prevGrp = i > 0 ? (DOC_GROUP[arr[i - 1].type] || 'other') : null;
+                return (
+                <Fragment key={d.id}>
+                {grp !== prevGrp && (
+                  <tr><td colSpan={4} style={{ padding: '8px 8px 3px', fontSize: 10, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', color: 'var(--t4)' }}>{GROUP_LABEL[grp]}</td></tr>
+                )}
+                <tr>
                   <td style={{ ...td, padding: '7px 8px' }}>{DOC_LABEL[d.type] || d.type}</td>
                   <td style={{ ...td, padding: '7px 8px' }}><Badge tone={tone}>{lbl}</Badge></td>
                   <td style={{ ...td, padding: '7px 8px', fontFamily: 'var(--font-mono)', color: 'var(--t3)', fontSize: 12 }}>{d.expiry || '—'}</td>
                   <td style={{ ...td, padding: '7px 8px', textAlign: 'right' }}><DetailDocView path={d.fileUrl} /></td>
                 </tr>
+                </Fragment>
               ); })}
             </tbody>
           </table>

@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.995', date: '6 Aug 2026', label: 'Document grouping reaches the staff profile too',
+    changes: [
+      'The staff profile popup (Workforce \u2192 Staff \u2192 open a person) had its own separate copy of the documents list \u2014 still flat, and its labels had already drifted from the Compliance vault (\u201cAllergen\u201d vs \u201cAllergen Training\u201d). It now uses the same Compliance / Training / Other grouping and the same labels, from one shared definition, so the two screens can no longer disagree.',
+      'Also added: TRAINING_MODULE_PLAN.md \u2014 the full plan for the training module (staff-facing on the Time Clock, AI training from reviews, due dates + manager alerts, new-starter templates), mapped against what already exists in the system.',
+    ],
+  },
+  {
     version: '5.5.994', date: '6 Aug 2026', label: 'Compliance vault: documents grouped into Compliance and Training',
     changes: [
       'Each staff member\u2019s documents were one flat alphabetical list, so Right to Work sat between First Aid and Food Hygiene. Now grouped under Compliance (legal-to-employ: Right to Work, SIA), Training (Food Hygiene, Allergen, First Aid) and Other, with headings.',
