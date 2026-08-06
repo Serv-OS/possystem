@@ -76,7 +76,7 @@ export default function Workflows() {
   const openEdit = (w) => { setEditing({ ...BLANK(), ...w, entry_trigger: w.entry_trigger || { type: 'signup' }, segment_id: w.segment_id || '', steps: (Array.isArray(w.steps) && w.steps.length ? w.steps : [newStep(0)]).map(ensureStepBlocks) }); setExpanded(0); setSave({}); };
 
   const saveWf = async () => {
-    if (!editing?.name?.trim()) { setSave({ err: 'Give the workflow a name.' }); return; }
+    if (!editing?.name?.trim()) { setSave({ err: 'Give the automation a name.' }); return; }
     if (!editing.steps.length) { setSave({ err: 'Add at least one step.' }); return; }
     setSave({ busy: true });
     try {
@@ -88,7 +88,7 @@ export default function Workflows() {
   };
 
   const setStatus = async (w, status) => { try { await call('set_status', { id: w.id, status }); await load(); } catch (e) { alert(e.message); } };
-  const del = async (w) => { if (!window.confirm(`Delete workflow "${w.name}"?`)) return; try { await call('delete_workflow', { id: w.id }); await load(); } catch (e) { alert(e.message); } };
+  const del = async (w) => { if (!window.confirm(`Delete automation "${w.name}"?`)) return; try { await call('delete_workflow', { id: w.id }); await load(); } catch (e) { alert(e.message); } };
   const runNow = async (w) => { setRunMsg((s) => ({ ...s, [w.id]: { busy: true } })); try { const d = await call('run_now', { id: w.id }); setRunMsg((s) => ({ ...s, [w.id]: { summary: d.summary } })); await load(); } catch (e) { setRunMsg((s) => ({ ...s, [w.id]: { err: e.message } })); } };
   const viewEnroll = async (w) => { try { const d = await call('list_enrollments', { workflow_id: w.id }); setEnrollView({ workflow: w, ...d }); } catch (e) { alert(e.message); } };
 
@@ -102,21 +102,21 @@ export default function Workflows() {
   const setTrigger = (patch) => setEditing((e) => ({ ...e, entry_trigger: { ...e.entry_trigger, ...patch } }));
 
   if (loading) return <div style={S.empty}>Loading…</div>;
-  if (!supabase || !locId) return <div style={S.empty}>Pick a location to manage workflows.</div>;
+  if (!supabase || !locId) return <div style={S.empty}>Pick a location to manage automations.</div>;
 
   return (
     <div>
-      <h1 style={S.h1}>Workflows</h1>
-      <div style={S.sub}>Automated drip sequences — e.g. a welcome series or post-visit follow-ups. Customers join on a trigger and move through the steps over time. Consent &amp; suppression are checked at every send.</div>
+      <h1 style={S.h1}>Automations</h1>
+      <div style={S.sub}>A sequence of messages sent over time, such as a welcome series or a post-visit follow-up. Customers join on a trigger and move through the steps automatically. Consent &amp; suppression are checked at every send.</div>
 
       {/* List */}
       {!editing && !enrollView && (
         <div style={S.card}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <h2 style={{ ...S.h2, margin: 0 }}>Your workflows</h2>
-            <button style={S.btn} onClick={() => { setEditing(BLANK()); setExpanded(0); setSave({}); }}>+ New workflow</button>
+            <h2 style={{ ...S.h2, margin: 0 }}>Your automations</h2>
+            <button style={S.btn} onClick={() => { setEditing(BLANK()); setExpanded(0); setSave({}); }}>+ New automation</button>
           </div>
-          {workflows.length === 0 && <div style={{ ...S.hint, padding: '14px 0' }}>No workflows yet. Create a welcome series to greet new sign-ups automatically.</div>}
+          {workflows.length === 0 && <div style={{ ...S.hint, padding: '14px 0' }}>No automations yet. Create a welcome series to greet new sign-ups automatically.</div>}
           {workflows.map((w) => {
             const rm = runMsg[w.id] || {};
             return (
@@ -144,7 +144,7 @@ export default function Workflows() {
       {/* Editor */}
       {editing && (
         <div style={S.card}>
-          <h2 style={S.h2}>{editing.id ? 'Edit workflow' : 'New workflow'}</h2>
+          <h2 style={S.h2}>{editing.id ? 'Edit automation' : 'New automation'}</h2>
           <div style={S.field}><label style={S.label}>Name</label><input style={S.input} value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="Welcome series" /></div>
           <div style={S.row3}>
             <div style={S.field}><label style={S.label}>Enrol customers on…</label>
@@ -160,7 +160,7 @@ export default function Workflows() {
               <select style={S.input} value={tr.segment_id || ''} onChange={(e) => setTrigger({ segment_id: e.target.value })}><option value="">Select…</option>{segmentOptions()}</select>
             </div>}
           </div>
-          {(tr.type === 'wifi_connect' || tr.type === 'wifi_not_loyal') && <div style={{ ...S.hint, marginTop: -4, marginBottom: 8 }}>Tip: a “review request” drip = trigger “Connected to WiFi”, step 1 delay ≈ 0.17 days (4h), message asking for a review. Enrols once per guest.</div>}
+          {(tr.type === 'wifi_connect' || tr.type === 'wifi_not_loyal') && <div style={{ ...S.hint, marginTop: -4, marginBottom: 8 }}>Tip: a “review request” automation = trigger “Connected to WiFi”, step 1 delay ≈ 0.17 days (4h), message asking for a review. Enrols once per guest.</div>}
 
           <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--t1)', margin: '8px 0' }}>Steps</div>
           {editing.steps.map((st, i) => (
@@ -201,7 +201,7 @@ export default function Workflows() {
           <button style={S.ghost} onClick={addStep}>+ Add step</button>
 
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginTop: 16 }}>
-            <button style={S.btn} onClick={saveWf} disabled={save.busy}>{save.busy ? 'Saving…' : (editing.id ? 'Save workflow' : 'Create workflow')}</button>
+            <button style={S.btn} onClick={saveWf} disabled={save.busy}>{save.busy ? 'Saving…' : (editing.id ? 'Save automation' : 'Create automation')}</button>
             <button style={S.ghost} onClick={() => { setEditing(null); setSave({}); }}>Cancel</button>
             {save.err && <span style={S.err}>{save.err}</span>}
           </div>
@@ -213,7 +213,7 @@ export default function Workflows() {
       {enrollView && (
         <div style={S.card}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-            <h2 style={{ ...S.h2, margin: 0 }}>Enrollments — {enrollView.workflow.name}</h2>
+            <h2 style={{ ...S.h2, margin: 0 }}>Enrollments: {enrollView.workflow.name}</h2>
             <button style={S.ghost} onClick={() => setEnrollView(null)}>← Back</button>
           </div>
           <div style={{ fontSize: 13, color: 'var(--t2)' }}><b>{enrollView.active}</b> active · <b>{enrollView.completed}</b> completed</div>

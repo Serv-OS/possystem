@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.982', date: '6 Aug 2026', label: 'Workflows are now called Automations',
+    changes: [
+      'Renamed throughout Marketing, as asked: the nav item, the page, every button and message, and the Marketing report column. "Workflow" described how it was built; "Automation" describes what it does for you.',
+      'Rewrote the wording on that page while renaming it. It previously described itself as "automated drip sequences", which is jargon. It now says what it is: a sequence of messages sent over time, such as a welcome series or a post-visit follow-up.',
+      'Internal names, saved links and the reporting data are untouched, so nothing you have already set up is affected.',
+    ],
+  },
+  {
     version: '5.5.981', date: '6 Aug 2026', label: 'Writing the databases down found two faults that reading them never would',
     changes: [
       'Both databases are now written down in the repo — 161 tables plus every constraint, index, policy and function. Twenty-five of them had existed only in the live database, so until now the schema could not be rebuilt from source, reviewed, or used to stand up a test copy. Each file was proven by building a throwaway database from it and comparing the result against the real one, fact by fact.',
