@@ -65,9 +65,21 @@ legal minimum badge: UK law requires 20 minutes over a 6-hour shift. **30 is a p
 correction.** The code already refuses to auto-deduct below the statutory minimum, so a venue cannot
 configure itself into breaking the law.
 
-**Three real gaps if they push:** a staff member who punches a *short* break is not topped up to the
-default (it is all-or-nothing); an unconfigured venue gets 0 minutes on manual timesheets but 30 on
-rota shifts; and turning the policy on does not touch existing timesheets. ~3–4 hours.
+**Two of the three gaps here are now fixed** (6 Aug, v5.5.990–991):
+
+- ✅ *An unconfigured venue gave 0 minutes on manual timesheets but 30 on rota shifts.* One shared
+  value now, so the two screens cannot disagree.
+- ✅ *A short break was invisible.* Nothing anywhere compared a break against what was **rostered** —
+  only against the legal 20 minutes, and only if the break was exactly zero. Timesheets now flag both,
+  red for under the law and amber for under what you expected, with a count at the top of the screen.
+  The Manager app uses the same rule (it previously hardcoded six hours and ignored age entirely).
+- ⚠️ *Still open:* a short punched break is **flagged** but not auto-topped-up to the default, and
+  turning the policy on does not retrospectively touch existing timesheets. ~2 hours if wanted.
+
+**Worth saying plainly:** the "never deducts below the statutory minimum" line on the settings screen
+is narrower than it sounds. It only holds once a shift clears the venue's own hours threshold and the
+default is above zero, and the under-18 rule needs a **date of birth on file** — which auto-created
+staff records do not have.
 
 ---
 

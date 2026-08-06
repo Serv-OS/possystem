@@ -20,13 +20,24 @@ test('no-show: scheduled start past grace + never clocked in', () => {
   // within grace → not yet a no-show
   assert.equal(noShows([{ staffId: 'y', startMs: min(5), endMs: min(-180) }], [], {}, NOW).length, 0);
 });
-test('break-due: open punch worked past threshold, no break logged', () => {
+test('break-due: open punch past the statutory threshold with no break', () => {
   const r = breaksDue([{ staffId: 'a', inMs: min(420), breakMins: 0, breakOpen: false }], {}, NOW);
   assert.equal(r.length, 1);
-  // already took a break → not due
+  assert.equal(r[0].owedMins, 20);
+  // already took enough → not due
   assert.equal(breaksDue([{ staffId: 'a', inMs: min(420), breakMins: 30 }], {}, NOW).length, 0);
   // under threshold → not due
   assert.equal(breaksDue([{ staffId: 'a', inMs: min(120), breakMins: 0 }], {}, NOW).length, 0);
+});
+test('break-due: a PARTIAL break still leaves them owed the difference', () => {
+  // v5.5.990: the old rule required breakMins === 0, so 5 minutes at hour two
+  // meant this person never appeared however long they then worked.
+  const r = breaksDue([{ staffId: 'a', inMs: min(600), breakMins: 5, breakOpen: false }], {}, NOW);
+  assert.equal(r.length, 1);
+  assert.equal(r[0].owedMins, 15);
+});
+test('break-due: someone currently ON a break is not chased', () => {
+  assert.equal(breaksDue([{ staffId: 'a', inMs: min(420), breakMins: 0, breakOpen: true }], {}, NOW).length, 0);
 });
 test('liveLabourMinor: pennies, pro-rata, minus break', () => {
   // 2h worked at £12/h (1200p) = £24 = 2400p

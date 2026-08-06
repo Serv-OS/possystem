@@ -66,10 +66,15 @@ Deno.serve(async (req) => {
       sb.from('wf_sales_forecast').select('forecast_date, amount').eq('location_id', loc).eq('forecast_date', today).maybeSingle(),
       sb.from('wf_timesheets').select('staff_id, clock_in, clock_out, break_taken, break_open_at, pay_amount, status, effective_rate').eq('location_id', loc).gte('clock_in', startIso).limit(5000),
       sb.from('wf_shifts').select('staff_id, role_key, shift_date, start_time, finish_time, status').eq('location_id', loc).eq('shift_date', today).limit(2000),
-      sb.from('wf_staff').select('id, name').eq('location_id', loc).limit(2000),
+      sb.from('wf_staff').select('id, name, dob').eq('location_id', loc).limit(2000),
       sb.from('active_sessions').select('table_id, session').eq('location_id', loc).limit(2000),
       sb.from('floor_tables').select('id, label').eq('location_id', loc).limit(2000),
     ]);
+    // v5.5.990 — the Manager app used to hardcode 'a break is due after 6h with
+    // none logged', blind to age and to the venue's own policy. Ship both so it
+    // uses the same rule as the Back Office.
+    const { data: vsRow } = await sb.from('wf_venue_settings').select('settings').eq('location_id', loc).maybeSingle();
+    const breakPolicy = (vsRow?.settings ?? {}) as Record<string, unknown>;
     // table_id on a session IS the floor_tables.id → resolve the friendly label ("T2", "B3", …).
     const tableLabel: Record<string, string> = {};
     for (const f of ftables ?? []) if (f?.id) tableLabel[f.id] = f.label;
@@ -116,7 +121,8 @@ Deno.serve(async (req) => {
 
     // ── Team (timesheets + today's shifts → team.js input shape) ──
     const nameOf: Record<string, string> = {};
-    for (const m of staff ?? []) nameOf[m.id] = m.name;
+    const dobOf: Record<string, string | null> = {};
+    for (const m of staff ?? []) { nameOf[m.id] = m.name; dobOf[m.id] = m.dob ?? null; }
     // "On shift now" must include anyone STILL clocked in (clock_out null) even if they clocked in
     // before midnight venue-time — otherwise a late/overnight shift vanishes the moment the venue
     // date rolls over (clocked in 23:48, it's now 00:12 → punch date != today). Today's completed
@@ -128,6 +134,7 @@ Deno.serve(async (req) => {
         staffId: t.staff_id, name: nameOf[t.staff_id] || 'Staff',
         inMs: ms(t.clock_in), outMs: ms(t.clock_out),
         breakMins: Number(t.break_taken) || 0, breakOpen: !!t.break_open_at,
+        dob: dobOf[t.staff_id] || null,
       }));
     const parseShiftMs = (date: string, time: string) => (date && time ? ms(`${date}T${time}`) : null);
     const teamShifts = (shifts ?? [])
@@ -155,6 +162,7 @@ Deno.serve(async (req) => {
       pendingTimesheets = (pts ?? []).map((t: any) => ({
         id: t.id, staffId: t.staff_id, name: nameOf[t.staff_id] || 'Staff',
         inMs: ms(t.clock_in), outMs: ms(t.clock_out), breakMins: Number(t.break_taken) || 0, status: t.status,
+        dob: dobOf[t.staff_id] || null,
       }));
       pendingTimeOff = (pto ?? []).map((l: any) => ({
         id: l.id, staffId: l.staff_id, name: nameOf[l.staff_id] || 'Staff', type: l.type,
@@ -269,7 +277,7 @@ Deno.serve(async (req) => {
 
     return json({
       ok: true, location_id: loc, venueName: locRow?.name || '', tz,
-      money, floor, team: { punches, shifts: teamShifts, ratesMinor, pendingTimesheets, pendingTimeOff },
+      money, floor, team: { punches, shifts: teamShifts, ratesMinor, pendingTimesheets, pendingTimeOff, breakPolicy },
       kitchen: { items: kitchenItems, deliveries: kitchenDeliveries, batches: kitchenBatches },
       ops,
       generated_at: new Date().toISOString(),

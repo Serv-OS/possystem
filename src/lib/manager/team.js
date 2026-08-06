@@ -8,9 +8,10 @@
 //
 // Thresholds align to UK working-time norms; both configurable per venue.
 
+import { breakShortfall } from '../../staff/breaks.js';
+
 export const DEFAULT_TEAM_OPTS = {
   noShowGraceMin: 15,     // a scheduled shift this far past start with no clock-in = no-show
-  breakDueAfterMin: 360,  // 6h worked with no break logged = break due
 };
 
 const open = (p) => p && p.outMs == null;
@@ -34,14 +35,36 @@ export function noShows(shifts, punches, opts = {}, nowMs = Date.now()) {
     .map((sh) => ({ staffId: sh.staffId, name: sh.name, role: sh.role, lateMins: Math.round((nowMs - sh.startMs) / 60000) }));
 }
 
-/** Open punches that have worked past the break threshold with no break logged. */
+/**
+ * People currently on shift who are owed more break than they have had.
+ *
+ * v5.5.990 — this used to require the break to be exactly ZERO and hardcoded
+ * 6 hours regardless of age, so someone who took five minutes at hour two and
+ * then worked ten hours never appeared, and an under-18 never appeared at all.
+ * It now uses the shared rule (staff/breaks.js) against time ON SHIFT, so a
+ * partial break still leaves them owed the difference.
+ *
+ * Someone currently ON a break is skipped — they are taking it right now.
+ */
 export function breaksDue(punches, opts = {}, nowMs = Date.now()) {
-  const o = { ...DEFAULT_TEAM_OPTS, ...opts };
   return (punches || [])
     .filter(open)
-    .map((p) => ({ ...p, workedMins: Math.max(0, Math.round((nowMs - p.inMs) / 60000) - (Number(p.breakMins) || 0)) }))
-    .filter((p) => !p.breakOpen && (Number(p.breakMins) || 0) === 0 && p.workedMins >= o.breakDueAfterMin)
-    .map((p) => ({ staffId: p.staffId, workedMins: p.workedMins }));
+    .filter((p) => !p.breakOpen)
+    .map((p) => {
+      const sf = breakShortfall({
+        grossHours: Math.max(0, (nowMs - p.inMs) / 3600000),
+        breakMins: p.breakMins,
+        dob: p.dob || null,
+        policy: opts.policy || null,
+      });
+      return {
+        staffId: p.staffId,
+        workedMins: Math.max(0, Math.round((nowMs - p.inMs) / 60000) - (Number(p.breakMins) || 0)),
+        owedMins: Math.max(sf.shortStatutory, sf.shortExpected),
+        level: sf.level,
+      };
+    })
+    .filter((p) => p.owedMins > 0);
 }
 
 /** Live labour cost so far today, in MINOR units (pennies). rateMinorPerHour keyed by staffId. */

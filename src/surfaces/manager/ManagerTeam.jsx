@@ -4,7 +4,8 @@
 // Pure flags come from timesheets.js; the approvals inbox comes from the shared snapshot.
 import { useState } from 'react';
 import { onShiftNow, noShows, breaksDue, liveLabourMinor } from '../../lib/manager/team';
-import { timesheetWorkedMins, timesheetAnomalies } from '../../lib/manager/timesheets';
+import { venueBreakPolicy } from '../../staff/breaks.js';
+import { timesheetWorkedMins, timesheetBreakShortfall } from '../../lib/manager/timesheets';
 import { managerApprove } from '../../lib/manager/data';
 import { money } from '../../lib/currency';
 import { Header, Stat, SectionTitle, mono } from './ui';
@@ -59,7 +60,9 @@ export default function ManagerTeam({ ctx }) {
   const tz = snap?.tz || TZ_DEFAULT;   // render + rebuild timesheet times in the VENUE tz, not the viewer's
   const on = team ? onShiftNow(team.punches) : [];
   const noshow = team ? noShows(team.shifts, team.punches) : [];
-  const breaks = team ? breaksDue(team.punches) : [];
+  // Same venue policy the Back Office uses, shipped by manager-snapshot.
+  const breakOpts = { policy: team?.breakPolicy ? venueBreakPolicy(team.breakPolicy) : null };
+  const breaks = team ? breaksDue(team.punches, breakOpts) : [];
   const labourMinor = team ? liveLabourMinor(team.punches, team.ratesMinor) : 0;
   const nameOf = {}; (team?.punches || []).forEach((p) => { nameOf[p.staffId] = p.name; }); (team?.shifts || []).forEach((s) => { nameOf[s.staffId] = s.name; });
 
@@ -148,7 +151,7 @@ export default function ManagerTeam({ ctx }) {
                   {actErr && <div className="sv-glass" style={{ padding: '10px 14px', marginBottom: 8, color: 'var(--red)', fontSize: 12.5, border: '1px solid var(--red-b)' }}>{actErr}</div>}
                   {pendingTs.map((t) => {
                     const worked = timesheetWorkedMins(t);
-                    const noBreak = timesheetAnomalies(t).includes('no_break');
+                    const bsf = timesheetBreakShortfall(t, breakOpts);
                     const busy = acting === `ts-${t.id}`;
                     const isEd = editId === t.id;
                     const pv = isEd ? previewFor(t) : null;
@@ -163,7 +166,13 @@ export default function ManagerTeam({ ctx }) {
                             <div style={{ fontSize: 11, color: 'var(--t3)', ...mono }}>
                               {timeLbl(t.inMs, tz)} → {timeLbl(t.outMs, tz)} · {hm(worked)}{t.breakMins ? ` · ${t.breakMins}m break` : ''}
                             </div>
-                            {noBreak && !isEd && <div style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--orn)', marginTop: 3, ...mono }}>⚠ No break logged</div>}
+                            {bsf.level !== 'none' && !isEd && (
+                              <div style={{ fontSize: 10.5, fontWeight: 700, marginTop: 3, ...mono, color: bsf.level === 'statutory' ? 'var(--red)' : 'var(--orn)' }}>
+                                {bsf.level === 'statutory'
+                                  ? `\u26a0 ${bsf.shortStatutory}m under the ${bsf.statutory}m break due`
+                                  : `\u26a0 ${bsf.shortExpected}m short of the ${bsf.expected}m expected`}
+                              </div>
+                            )}
                           </div>
                           {!isEd && (
                             <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>

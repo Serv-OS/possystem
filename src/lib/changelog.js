@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.991', date: '6 Aug 2026', label: 'The Manager app now uses the same break rule as the Back Office',
+    changes: [
+      'The Manager app had its own idea of when a break was owed: six hours, hardcoded, with no regard for the person\u2019s age or for anything the venue had configured. It now uses the same rule as the Back Office.',
+      'It also required the break to be exactly ZERO before it said anything. Someone who took five minutes at hour two and then worked ten hours never appeared on the list. It now tells you how many minutes they are still owed.',
+      'Under-18s can now trigger in the Manager app at all. Their date of birth was never sent to it, so the 30-minute rule could never fire there.',
+      'The approvals list says how short the break was and against what, instead of just "No break logged".',
+      'Someone who is on their break right now is no longer chased for one.',
+      'Requires the manager-snapshot function, which has been deployed (version 16).',
+    ],
+  },
+  {
     version: '5.5.990', date: '6 Aug 2026', label: 'Short breaks are flagged, and the rota shows who is actually on',
     changes: [
       'BREAKS: the system only ever checked a break against the LEGAL minimum of 20 minutes. If you rostered someone a 30-minute break and they took 10, nothing anywhere said so. It now flags both, and keeps them apart: red when the break is under the law, amber when it is under what you rostered or what the venue expects.',
