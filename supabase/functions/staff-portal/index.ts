@@ -203,7 +203,7 @@ Deno.serve(async (req) => {
       const horizon = new Date(Date.now() + 14 * 86400000).toISOString().slice(0, 10);
       const monthAgo = new Date(Date.now() - 28 * 86400000).toISOString();
       const fortnightAgo = new Date(Date.now() - 14 * 86400000).toISOString();
-      const [{ data: shifts }, { data: ts }, { data: ann }] = await Promise.all([
+      const [{ data: shifts }, { data: ts }, { data: ann }, { data: onbRows }, { data: trainRows }] = await Promise.all([
         admin.from('wf_shifts').select('shift_date, start_time, finish_time, break_mins, section, status')
           .eq('staff_id', staff.id).eq('status', 'published').gte('shift_date', today).lte('shift_date', horizon)
           .order('shift_date').limit(50),
@@ -212,7 +212,65 @@ Deno.serve(async (req) => {
         admin.from('wf_announcements').select('body, audience, author_name, created_at')
           .eq('location_id', staff.location_id).gte('created_at', fortnightAgo)
           .order('created_at', { ascending: false }).limit(20),
+        admin.from('wf_onboarding').select('*').eq('staff_id', staff.id)
+          .order('created_at', { ascending: false }).limit(1),
+        admin.from('wf_training_assignments')
+          .select('id, module_id, assigned_at, due_date, tasks_done, completed_at, status, wf_training_modules(name, description, tasks)')
+          .eq('staff_id', staff.id).order('due_date', { ascending: true }).limit(50),
       ]);
+      // Their leave, accrued holiday and pay rate — small follow-ups, not worth
+      // widening the main Promise.all's failure surface.
+      const [{ data: leave }, { data: accrual }, { data: roleRow }] = await Promise.all([
+        admin.from('wf_time_off').select('id, type, start_date, end_date, days, note, status, created_at')
+          .eq('staff_id', staff.id).order('created_at', { ascending: false }).limit(20),
+        admin.from('wf_holiday_accrual').select('hours').eq('staff_id', staff.id).limit(5000),
+        staff.role_key
+          ? admin.from('wf_roles').select('base_rate, salary_annual').eq('location_id', staff.location_id).eq('key', staff.role_key).maybeSingle()
+          : Promise.resolve({ data: null }),
+      ]);
+      const accruedHours = (accrual ?? []).reduce((a: number, r: any) => a + (Number(r.hours) || 0), 0);
+      const payRate = staff.rate_override != null
+        ? { kind: 'hourly', rate: Number(staff.rate_override), source: 'personal' }
+        : roleRow?.base_rate != null
+          ? { kind: 'hourly', rate: Number(roleRow.base_rate), source: 'position' }
+          : roleRow?.salary_annual != null
+            ? { kind: 'salary', annual: Number(roleRow.salary_annual), source: 'position' }
+            : null;
+
+      // Onboarding to-dos THEY can act on. Mirrors the BO's evidence-derived
+      // statuses (WfOnboarding normalizeCase): meta is the truth, steps a cache.
+      const onb = onbRows?.[0] ?? null;
+      let onboarding = null;
+      if (onb) {
+        const meta = onb.meta || {};
+        const signed = !!meta.signature;
+        const contractReady = !!(meta.contractHtml || meta.contractPath);
+        const steps = [
+          { key: 'offer', label: 'Offer letter', done: !!meta.offerAccepted || !!meta.offerSentAt },
+          {
+            key: 'contract', label: 'Sign your contract', done: signed,
+            action: !signed && contractReady && meta.signToken ? 'sign' : null,
+            signUrl: !signed && contractReady && meta.signToken ? `${APP_BASE}/sign/${meta.signToken}` : null,
+            waiting: !signed && !contractReady ? 'Your manager is preparing it' : null,
+          },
+          { key: 'rtw', label: 'Upload your Right to Work', done: !!meta.rtwPath, action: !meta.rtwPath ? 'rtw' : null },
+          { key: 'bank', label: 'Add your bank details', done: !!meta.bankMasked || !!staff.bank_account_masked, action: (!meta.bankMasked && !staff.bank_account_masked) ? 'bank' : null },
+          { key: 'posUser', label: 'Till access', done: !!staff.pos_user_id, waiting: !staff.pos_user_id ? 'Your manager sets this up' : null },
+        ];
+        onboarding = { open: steps.some(s => !s.done), steps };
+      }
+
+      const training = (trainRows ?? []).map((a: any) => {
+        const mod = a.wf_training_modules || {};
+        const doneIds = new Set((Array.isArray(a.tasks_done) ? a.tasks_done : []).map((t: any) => t.taskId));
+        return {
+          id: a.id,
+          name: mod.name, description: mod.description,
+          tasks: (Array.isArray(mod.tasks) ? mod.tasks : []).map((t: any) => ({ id: t.id, title: t.title, detail: t.detail || null, done: doneIds.has(t.id) })),
+          due: a.due_date, completedAt: a.completed_at, status: a.status,
+          overdue: a.status !== 'complete' && a.due_date && a.due_date < today,
+        };
+      });
       // Audience filter: all | their role | their section(s) — mirrors the clock.
       const roleLc = String(staff.role_key || '').toLowerCase();
       const mySections = new Set(staff.section_ids || []);
@@ -235,8 +293,92 @@ Deno.serve(async (req) => {
         shifts: (shifts ?? []).map((s: any) => ({ date: s.shift_date, start: String(s.start_time || '').slice(0, 5), finish: String(s.finish_time || '').slice(0, 5), breakMins: s.break_mins || 0, section: s.section })),
         timesheets: (ts ?? []).map((t: any) => ({ in: t.clock_in, out: t.clock_out, breakMins: t.break_taken || 0, hours: t.actual_hours != null ? Number(t.actual_hours) : null, pay: t.pay_amount != null ? Number(t.pay_amount) : null, status: t.status })),
         announcements,
-        training: [],  // lands with the training module (see TRAINING_MODULE_PLAN.md)
+        onboarding,
+        training,
+        leave: {
+          accruedHours: Math.round(accruedHours * 100) / 100,
+          requests: (leave ?? []).map((l: any) => ({ id: l.id, type: l.type, from: l.start_date, to: l.end_date, days: l.days != null ? Number(l.days) : null, note: l.note, status: l.status, at: l.created_at })),
+        },
+        payRate,
       });
+    }
+
+    // ── training_tick: tick/untick one task; completion stamped server-side ──
+    if (action === 'training_tick') {
+      const { data: a } = await admin.from('wf_training_assignments')
+        .select('*, wf_training_modules(name, tasks)').eq('id', body.assignment_id).eq('staff_id', staff.id).maybeSingle();
+      if (!a) return json({ error: 'assignment not found' }, 404);
+      const taskIds = (Array.isArray(a.wf_training_modules?.tasks) ? a.wf_training_modules.tasks : []).map((t: any) => t.id);
+      if (!taskIds.includes(body.task_id)) return json({ error: 'task not found' }, 404);
+      let done = (Array.isArray(a.tasks_done) ? a.tasks_done : []).filter((t: any) => taskIds.includes(t.taskId));
+      done = done.filter((t: any) => t.taskId !== body.task_id);
+      if (body.done !== false) done.push({ taskId: body.task_id, at: new Date().toISOString() });
+      const complete = taskIds.length > 0 && taskIds.every(id => done.some((t: any) => t.taskId === id));
+      const patch: Record<string, unknown> = { tasks_done: done, status: complete ? 'complete' : 'assigned', completed_at: complete ? (a.completed_at || new Date().toISOString()) : null };
+      const { error } = await admin.from('wf_training_assignments').update(patch).eq('id', a.id);
+      if (error) return json({ error: error.message }, 500);
+      if (complete && !a.completed_at) {
+        await audit(staff, 'training.completed', null, { module: a.wf_training_modules?.name, assignment: a.id });
+        // Managers hear about completions in the activity feed (informational,
+        // no chime — unlike bank changes this is good news, not a risk).
+        try {
+          await admin.from('activity_events').insert({
+            location_id: staff.location_id, kind: 'staff', severity: 'info',
+            title: `${staff.name} completed training: ${a.wf_training_modules?.name || 'a module'}`,
+            ref_type: 'wf_training_assignments', ref_id: String(a.id), actor_name: `${staff.name} (staff app)`,
+          });
+        } catch { /* best effort */ }
+      }
+      return json({ ok: true, complete });
+    }
+
+    // ── timeoff_request: lands as 'pending' in BO Leave AND Manager approvals ──
+    if (action === 'timeoff_request') {
+      const from = String(body.from || ''); const to = String(body.to || from);
+      const type = ['holiday', 'sick', 'unpaid', 'parental'].includes(body.type) ? body.type : 'holiday';
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || to < from) {
+        return json({ error: 'Pick valid dates' }, 400);
+      }
+      const days = Math.round((new Date(to + 'T00:00:00').getTime() - new Date(from + 'T00:00:00').getTime()) / 86400000) + 1;
+      if (days > 60) return json({ error: 'That is more than 60 days — talk to your manager directly' }, 400);
+      const { error } = await admin.from('wf_time_off').insert({
+        location_id: staff.location_id, org_id: staff.org_id, staff_id: staff.id,
+        type, start_date: from, end_date: to, days, note: String(body.note || '').slice(0, 500) || null, status: 'pending',
+      });
+      if (error) return json({ error: error.message }, 500);
+      return json({ ok: true });
+    }
+
+    // ── RTW upload from their phone: signed upload URL, then registration ──────
+    if (action === 'rtw_upload_url') {
+      const ext = String(body.ext || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 5) || 'jpg';
+      const path = `${staff.location_id}/${staff.id}/RTW-${Date.now()}.${ext}`;
+      const { data, error } = await admin.storage.from('wf-documents').createSignedUploadUrl(path);
+      if (error) return json({ error: error.message }, 500);
+      return json({ ok: true, path, uploadUrl: data.signedUrl, token: data.token });
+    }
+    if (action === 'rtw_submit') {
+      const path = String(body.path || '');
+      if (!path.startsWith(`${staff.location_id}/${staff.id}/`)) return json({ error: 'invalid path' }, 400);
+      // Mirrors the manager-side upload exactly: one current doc per person per
+      // type, lands 'pending' — a manager approves it in Compliance (that IS
+      // the RTW check), and the onboarding step follows the evidence.
+      const { data: existingDoc } = await admin.from('wf_documents').select('id')
+        .eq('staff_id', staff.id).eq('type', 'RTW').limit(1);
+      const docRow = { location_id: staff.location_id, org_id: staff.org_id, staff_id: staff.id, type: 'RTW', file_url: path, status: 'pending', updated_at: new Date().toISOString() };
+      const w = existingDoc?.[0]
+        ? await admin.from('wf_documents').update(docRow).eq('id', existingDoc[0].id)
+        : await admin.from('wf_documents').insert(docRow);
+      if (w.error) return json({ error: w.error.message }, 500);
+      const { data: onbRow } = await admin.from('wf_onboarding').select('*').eq('staff_id', staff.id)
+        .order('created_at', { ascending: false }).limit(1);
+      if (onbRow?.[0]) {
+        const meta = { ...(onbRow[0].meta || {}), rtwPath: path };
+        const steps = (onbRow[0].steps || []).map((st: any) => st.key === 'rtw' ? { ...st, status: 'complete', completedAt: new Date().toISOString() } : st);
+        await admin.from('wf_onboarding').update({ meta, steps }).eq('id', onbRow[0].id);
+      }
+      await audit(staff, 'portal.rtw_uploaded', null, { path });
+      return json({ ok: true });
     }
 
     if (action === 'update_details') {
@@ -269,15 +411,29 @@ Deno.serve(async (req) => {
         ...patch, bank_account: undefined,  // never the full account number in the audit row
       });
       if (bankChanged) {
-        // Bank swaps are THE payroll fraud vector — make it loud where managers look.
+        // Bank swaps are THE payroll fraud vector — but that is a MANAGER
+        // concern, not a till one (Peter, 6 Aug: "shouldn't go to the POS").
+        // ops_alerts surfaces in the Manager app (Need-you-now count + alerts
+        // list with acknowledge) and BO Operations; tills never see it.
         try {
-          await admin.from('activity_events').insert({
-            location_id: staff.location_id, kind: 'staff', severity: 'action',
+          await admin.from('ops_alerts').insert({
+            location_id: staff.location_id, org_id: staff.org_id, type: 'staff_change', severity: 'major',
             title: `${staff.name} changed their bank details`,
             body: `Updated from the staff app. New account ending ${String(patch.bank_account_masked).slice(-4)}. If this wasn't them, act before the next pay run.`,
-            ref_type: 'wf_staff', ref_id: String(staff.id), actor_name: `${staff.name} (staff app)`,
+            source_type: 'wf_staff', source_id: staff.id, target_role: 'manager',
           });
-        } catch (e) { console.error('[staff-portal] activity:', (e as Error).message); }
+        } catch (e) { console.error('[staff-portal] ops alert:', (e as Error).message); }
+        // Close the onboarding "bank details" step if a case is open — the case
+        // derives from evidence, and the evidence now exists.
+        try {
+          const { data: onbRow } = await admin.from('wf_onboarding').select('*').eq('staff_id', staff.id)
+            .order('created_at', { ascending: false }).limit(1);
+          if (onbRow?.[0] && !(onbRow[0].meta || {}).bankMasked) {
+            const meta = { ...(onbRow[0].meta || {}), bankMasked: patch.bank_account_masked, bankCapturedAt: new Date().toISOString() };
+            const steps = (onbRow[0].steps || []).map((st: any) => st.key === 'bank' ? { ...st, status: 'complete', completedAt: new Date().toISOString() } : st);
+            await admin.from('wf_onboarding').update({ meta, steps }).eq('id', onbRow[0].id);
+          }
+        } catch { /* best effort */ }
       }
       return json({ ok: true });
     }

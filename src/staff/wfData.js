@@ -863,6 +863,92 @@ export async function sendAnnouncementSms(ann, staff, locationId, venueName) {
 }
 
 // ============================================================================
+// TRAINING (wf_training_modules + wf_training_assignments) — v5.5.999
+// A module is a course built in the BO; an assignment is one module for one
+// person. Staff tick tasks from the staff app via the staff-portal fn (server-
+// stamped); the BO reads/builds/assigns here under normal location RLS.
+// ============================================================================
+const mapModule = r => ({
+  id: r.id, name: r.name, description: r.description || '',
+  tasks: Array.isArray(r.tasks) ? r.tasks : [], dueDays: r.due_days ?? 14,
+  status: r.status, source: r.source,
+  autoAssign: !!r.auto_assign, autoAssignRoles: r.auto_assign_roles || [],
+  createdAt: r.created_at,
+});
+export async function loadTrainingModules(locationId) {
+  if (isMock || !supabase) return lsGet('train_mods');
+  if (!locationId) return [];
+  const { data, error } = await supabase.from('wf_training_modules').select('*')
+    .eq('location_id', locationId).neq('status', 'archived').order('created_at', { ascending: false });
+  if (error) { console.warn('[wf] loadTrainingModules:', error.message); return []; }
+  return (data || []).map(mapModule);
+}
+export async function saveTrainingModule(mod, locationId, orgId) {
+  if (isMock || !supabase) return lsUpsert('train_mods', mod);
+  const org = await resolveOrgForLocation(locationId, orgId);
+  const row = {
+    location_id: locationId, org_id: org, name: mod.name,
+    description: mod.description || null,
+    tasks: (mod.tasks || []).filter(t => t && t.title),
+    due_days: Math.min(365, Math.max(1, parseInt(mod.dueDays, 10) || 14)),
+    status: mod.status || 'active', source: mod.source || 'manual',
+    auto_assign: !!mod.autoAssign, auto_assign_roles: mod.autoAssignRoles || [],
+    updated_at: new Date().toISOString(),
+  };
+  const real = mod.id && !String(mod.id).startsWith('tmp-') && !String(mod.id).startsWith('wf-');
+  if (real) row.id = mod.id;
+  const q = real ? supabase.from('wf_training_modules').upsert(row, { onConflict: 'id' }) : supabase.from('wf_training_modules').insert(row);
+  const { data, error } = await q.select().single();
+  checkWrite('training module', error);
+  return mapModule(data);
+}
+export async function archiveTrainingModule(id) {
+  if (isMock || !supabase) return lsDelete('train_mods', id);
+  const { error } = await supabase.from('wf_training_modules').update({ status: 'archived' }).eq('id', id);
+  checkWrite('training module', error);
+}
+const mapAssignment = r => ({
+  id: r.id, moduleId: r.module_id, staffId: r.staff_id,
+  assignedAt: r.assigned_at, dueDate: r.due_date,
+  tasksDone: Array.isArray(r.tasks_done) ? r.tasks_done : [],
+  completedAt: r.completed_at, status: r.status,
+});
+export async function loadTrainingAssignments(locationId) {
+  if (isMock || !supabase) return lsGet('train_assign');
+  if (!locationId) return [];
+  const { data, error } = await supabase.from('wf_training_assignments').select('*').eq('location_id', locationId);
+  if (error) { console.warn('[wf] loadTrainingAssignments:', error.message); return []; }
+  return (data || []).map(mapAssignment);
+}
+/** Assign a module to a set of people. Already-assigned pairs are skipped
+ *  (unique on module+staff), so re-assigning is safe and idempotent. */
+export async function assignTraining(module, staffIds, locationId, orgId, assignedBy) {
+  if (isMock || !supabase) return { assigned: staffIds.length };
+  const org = await resolveOrgForLocation(locationId, orgId);
+  const due = new Date(); due.setDate(due.getDate() + (module.dueDays || 14));
+  const rows = (staffIds || []).map(sid => ({
+    location_id: locationId, org_id: org, module_id: module.id, staff_id: sid,
+    due_date: due.toISOString().slice(0, 10), assigned_by: assignedBy || null,
+  }));
+  if (!rows.length) return { assigned: 0 };
+  const { error } = await supabase.from('wf_training_assignments')
+    .upsert(rows, { onConflict: 'module_id,staff_id', ignoreDuplicates: true });
+  checkWrite('training assignment', error);
+  return { assigned: rows.length };
+}
+/** New-starter hook: assign every active auto-assign module that matches this
+ *  person's position. Called when onboarding starts. Best-effort by design. */
+export async function autoAssignTraining(member, locationId, orgId, assignedBy) {
+  if (isMock || !supabase || !member?.id) return { assigned: 0 };
+  const mods = (await loadTrainingModules(locationId)).filter(m =>
+    m.status === 'active' && m.autoAssign &&
+    (!m.autoAssignRoles.length || m.autoAssignRoles.includes(member.role)));
+  let n = 0;
+  for (const m of mods) { await assignTraining(m, [member.id], locationId, orgId, assignedBy); n++; }
+  return { assigned: n };
+}
+
+// ============================================================================
 // SALES FORECAST (wf_sales_forecast) + ACTUAL sales (closed_checks)
 // ============================================================================
 export async function loadForecast(locationId, fromIso, toIso) {

@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    version: '5.5.999', date: '7 Aug 2026', label: 'Training system + staff app onboarding, time off, pay \u2014 and the rota onboarding gate',
+    changes: [
+      'TRAINING: new Back Office screen (Workforce \u2192 Training). Build a module \u2014 a named list of tasks with a deadline in days \u2014 then assign it by POSITION or by person. A completion table under each module shows who has it, their progress, and who is overdue.',
+      'Modules can be flagged \u201capply to new starters\u201d (optionally limited to certain positions): the moment onboarding starts, they are assigned automatically.',
+      'STAFF APP \u2014 new Tasks tab: onboarding to-dos they can actually do themselves \u2014 SIGN THE CONTRACT (opens the e-sign page), UPLOAD RIGHT TO WORK from their phone (lands as pending for manager review in Compliance, exactly like a manager upload), add bank details \u2014 plus every training module assigned to them, ticked off task by task. Completing a module notifies the venue activity feed.',
+      'STAFF APP \u2014 time off: they can request holiday/unpaid/sick leave with dates and a note. It lands as pending in Workforce \u2192 Time off AND in the Manager app\u2019s approvals \u2014 no new manager screen needed. They also see their accrued holiday and their current pay rate.',
+      'ROTA GATE (Peter\u2019s ask): someone whose onboarding is still open CANNOT be put on a shift \u2014 the save is refused with the exact missing steps named. Applies to the add/edit modal, the section grid, copy-shift and copy-week. People with no onboarding case at all (your existing staff) are unaffected.',
+      'FIXED: changing bank details no longer pings the POS tills. It now raises a MANAGER alert (Manager app \u2192 Need you now / alerts, with acknowledge) \u2014 the tills never see it.',
+      'Requires the staff-portal function (deployed, version 3) and two applied migrations (training tables + alert types).',
+    ],
+  },
+  {
     version: '5.5.998', date: '6 Aug 2026', label: 'FIX: staff app invites now work when the email already has a ServOS login',
     changes: [
       'An owner or manager who is ALSO on the staff rota has one email with a ServOS login already attached. The invite refused to touch that account, so they could neither create a password nor sign in to the staff app.',

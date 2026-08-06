@@ -28,6 +28,11 @@ export const freshSteps = () => STEPS.map(s => ({ key: s.key, status: 'pending',
 // done if the staff record is already linked to a till user (that step is
 // inferred from posUserId rather than ticked by hand).
 export const caseDone = (c, member) => (c.steps || []).length > 0 && (c.steps || []).every(s => s.status === 'complete' || (s.key === 'posUser' && !!member?.posUserId));
+/** Which onboarding steps are still outstanding, as human labels — the rota
+ *  gate names them so "you can't schedule Jane" comes with a reason. */
+export const missingSteps = (c, member) => (c?.steps || [])
+  .filter(s => !(s.status === 'complete' || (s.key === 'posUser' && !!member?.posUserId)))
+  .map(s => (STEPS.find(x => x.key === s.key)?.label || s.key));
 
 // Older cases stored label-style step keys ("Right to work", "Bank & tax
 // details", 7 steps). markStep matches on the short keys above, so against a
@@ -156,6 +161,12 @@ export default function WfOnboarding({ ctx, staff = [], roles, sections, setting
       } else {
         showToast('Onboarding started. Add an email to their record to invite them to the staff app.', 'info');
       }
+      // New-starter training templates: any active module flagged auto-assign
+      // (matching their position) lands in their staff app right away.
+      try {
+        const { assigned } = await wf.autoAssignTraining(member, ctx.locationId, ctx.orgId, ctx?.actor?.name);
+        if (assigned > 0) showToast(`${assigned} training module${assigned === 1 ? '' : 's'} assigned automatically`, 'info');
+      } catch (e) { console.warn('[onboarding] auto-assign training:', e?.message); }
     }
     catch (e) { showToast(e.message || 'Could not start onboarding', 'error'); setCases(prev => prev.filter(x => x.id !== tmp.id)); }
   };

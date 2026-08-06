@@ -11,6 +11,7 @@ import { Card, EmptyState, Badge, RoleChip, money, th, td, inputStyle, labelStyl
 import * as wf from '../../../staff/wfData';
 import { buildWeek, addWeeks, weekRangeLabel, ymd } from '../../../staff/wfWeek';
 import { bucketShiftsBySection, UNASSIGNED } from '../../../staff/rotaSections.js';
+import { caseDone, missingSteps } from './WfOnboarding';
 import { hoursOf, resolveRate, resolveRateOn, labourPct, venueBreakPolicy } from '../../../staff/labour';
 // Clash logic (shift overlap = hard block; approved leave / unavailable day =
 // soft warning, place anyway) is pure + unit-tested in wfClash.js.
@@ -73,7 +74,7 @@ function ShiftModal({ staff, staffOptions, presetSectionId, day, shift, sections
             <label style={labelStyle}>Who is working</label>
             <select style={inputStyle} value={pickedId} onChange={e => setPickedId(e.target.value)}>
               {(staffOptions || []).length === 0 && <option value="">— everyone is already on this day —</option>}
-              {(staffOptions || []).map(p => <option key={p.id} value={p.id}>{p.name}{p.busy ? ' (already on today)' : ''}</option>)}
+              {(staffOptions || []).map(p => <option key={p.id} value={p.id}>{p.name}{p.gated ? ' (onboarding not finished)' : p.busy ? ' (already on today)' : ''}</option>)}
             </select>
           </div>
         )}
@@ -324,7 +325,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   async function reload(w) {
     setLoading(true);
     try {
-      const [sh, fc, ac, sc, ts, lv, av, rc] = await Promise.all([
+      const [sh, fc, ac, sc, ts, lv, av, rc, ob] = await Promise.all([
         wf.loadShifts(ctx.locationId, w.startIso, w.endIso),
         wf.loadForecast(ctx.locationId, w.startIso, w.endIso),
         wf.loadActualSales(ctx.locationId, w.startIso, w.endIso),
@@ -333,6 +334,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
         wf.loadTimeOff(ctx.locationId),
         wf.loadAvailability(ctx.locationId),
         wf.loadRateChanges(ctx.locationId),
+        wf.loadOnboarding(ctx.locationId),
       ]);
       setShifts(sh || []);
       setForecast(fc || {});
@@ -342,6 +344,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       setTimeOff(lv || []);
       setAvail(av || []);
       setRateChanges(rc || []);
+      setOnbCases(ob || []);
     } catch (e) {
       showToast('Could not load the rota: ' + e.message, 'error');
     } finally {
@@ -390,6 +393,20 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
 
   const draftIds = useMemo(() => shifts.filter(s => s.status !== 'published').map(s => s.id), [shifts]);
   const staffById = useMemo(() => Object.fromEntries((staff || []).map(s => [s.id, s])), [staff]);
+  const [onbCases, setOnbCases] = useState([]);
+
+  // ── The onboarding gate (Peter, 6 Aug): someone whose onboarding is OPEN
+  // cannot be put on a shift. People with NO case at all (added before
+  // onboarding existed) stay schedulable — otherwise the existing roster
+  // would lock up. Returns null when clear, or the human reason when gated.
+  const onboardingBlock = useCallback((staffId) => {
+    const member = staffById[staffId];
+    const c = (onbCases || []).filter(x => x.staffId === staffId)
+      .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')))[0];
+    if (!c || caseDone(c, member)) return null;
+    const missing = missingSteps(c, member);
+    return `${member?.name || 'They'} can't be scheduled yet — onboarding isn't finished (${missing.join(', ') || 'steps outstanding'}). Complete it in Workforce → Onboarding.`;
+  }, [onbCases, staffById]);
   // Same resolved venue break policy the Timesheets screen uses, so a new rota
   // shift and a new manual timesheet can no longer disagree about the default.
   const breakPolicy = useMemo(() => venueBreakPolicy(settings?.settings), [settings?.settings]);
@@ -439,9 +456,9 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   const staffOptionsFor = useCallback((dayIso) => {
     const onDay = new Set(shifts.filter(s => s.date === dayIso).map(s => s.staffId));
     return (staff || [])
-      .map(p => ({ ...p, busy: onDay.has(p.id) }))
+      .map(p => ({ ...p, busy: onDay.has(p.id), gated: !!onboardingBlock(p.id) }))
       .sort((a, b) => (a.busy === b.busy ? a.name.localeCompare(b.name) : a.busy ? 1 : -1));
-  }, [staff, shifts]);
+  }, [staff, shifts, onboardingBlock]);
 
   // ── handlers ────────────────────────────────────────────────────────────
   async function saveShift(payload) {
@@ -450,6 +467,8 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
     // you started from a SECTION cell and only the day + section were known.
     const s = editing.staff || staff.find(x => x.id === payload.staffId);
     if (!s) { showToast('Pick who is working this shift', 'error'); return; }
+    const gate = onboardingBlock(s.id);
+    if (gate) { showToast(gate, 'error'); return; }
     // No clashing shifts: a person can work split shifts, but the times must
     // not overlap an existing shift that day (editing a shift ignores itself).
     const clash = findClash(shifts, s.id, day.iso, payload.start, payload.finish, shift?.id);
@@ -513,6 +532,8 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   // Duplicate one shift to another day and/or person — lands as a DRAFT with
   // the rate re-snapshotted for the target person (never carried across).
   async function copyShift(target, dateIso) {
+    const gate = onboardingBlock(target.id);
+    if (gate) { showToast(gate, 'error'); return; }
     const src = copying;
     const role = roles.map[target.role];
     const { rate, source } = resolveRateOn(target, role, dateIso, rateChanges);
@@ -553,6 +574,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
         const idx = wk.days.findIndex(d => d.iso === s.date);
         const person = staffById[s.staffId];
         if (idx < 0 || !person) { skipped++; continue; }             // leaver / out of week
+        if (onboardingBlock(s.staffId)) { skipped++; continue; }     // onboarding gate
         const dateIso = target.days[idx].iso;
         if (findClash(working, s.staffId, dateIso, s.start, s.finish)) { skipped++; continue; }
         if (clashWarnings({ staffName: person.name, staffId: s.staffId, dateIso, timeOff, availability: avail }).length) warned++;

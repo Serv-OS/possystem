@@ -25,6 +25,7 @@ import WfPay from './workforce/WfPay';
 import WfLeave from './workforce/WfLeave';
 import WfOnboarding from './workforce/WfOnboarding';
 import WfCompliance, { DOC_LABEL, DOC_GROUP, GROUP_ORDER, GROUP_LABEL } from './workforce/WfCompliance';
+import WfTraining from './workforce/WfTraining';
 import WfAnnouncements from './workforce/WfAnnouncements';
 import WfSettings from './workforce/WfSettings';
 
@@ -43,6 +44,7 @@ const SUBS = {
   'wf-staff': ['Staff', 'HR records'],
   'wf-onboarding': ['Onboarding', 'New starter setup'],
   'wf-compliance': ['Compliance', 'Documents & expiries'],
+  'wf-training': ['Training', 'Modules, assignment & completion'],
   'wf-pay': ['Positions & rates', 'Add, edit & remove positions and their pay'],
   'wf-tronc': ['Tronc / tips', 'Pooled tip distribution'],
   'wf-announce': ['Announcements', 'Team messaging'],
@@ -171,6 +173,7 @@ export default function Workforce({ section, orgCtx }) {
       {key === 'pay' && <WfPay {...sectionProps} />}
       {key === 'tronc' && <WfTronc {...sectionProps} />}
       {key === 'compliance' && <WfCompliance {...sectionProps} />}
+      {key === 'training' && <WfTraining {...sectionProps} />}
       {key === 'timeoff' && <WfLeave {...sectionProps} />}
       {key === 'onboarding' && <WfOnboarding {...sectionProps} />}
       {key === 'announce' && <WfAnnouncements {...sectionProps} />}
