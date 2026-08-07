@@ -252,8 +252,11 @@ export async function softDeleteStaff(id) {
 }
 export async function markPosUser(staffId, posUserId) {
   if (isMock || !supabase) { const a = lsGet('staff'); const i = a.findIndex(x => x.id === staffId); if (i >= 0) { a[i].posUserId = posUserId; lsSet('staff', a); } return; }
+  // v5.6.2: this used to console.warn and carry on — the caller then told the
+  // operator the person was a POS user while pos_user_id stayed null, which
+  // also kept their onboarding "Till access" step pending forever.
   const { error } = await supabase.from('wf_staff').update({ pos_user_id: posUserId }).eq('id', staffId);
-  if (error) console.warn('[wf] markPosUser:', error.message);
+  checkWrite('staff', error);
 }
 
 // ============================================================================

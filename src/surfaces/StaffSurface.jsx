@@ -13,7 +13,7 @@
 // Tabs: Shifts · News · Timesheets · Me. Training joins as a tab when the
 // training module lands (TRAINING_MODULE_PLAN.md).
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { staffSupabase as supabase, isMock } from '../lib/supabase';
 import { Icon } from '../components/ServOSIcons';
 
@@ -41,14 +41,27 @@ export default function StaffSurface() {
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+  // Per-device theme, same pattern as the Manager app. Dark is the default.
+  const [dark, setDark] = useState(() => localStorage.getItem('staff-theme') !== 'light');
 
   // The staff app deliberately uses the servos glass skin (same as Manager).
   useEffect(() => {
     const el = document.documentElement;
-    const prev = el.getAttribute('data-skin');
+    const prevSkin = el.getAttribute('data-skin'), prevTheme = el.getAttribute('data-theme');
     el.setAttribute('data-skin', 'servos');
-    return () => { if (prev) el.setAttribute('data-skin', prev); else el.removeAttribute('data-skin'); };
-  }, []);
+    if (dark) el.removeAttribute('data-theme'); else el.setAttribute('data-theme', 'light');
+    localStorage.setItem('staff-theme', dark ? 'dark' : 'light');
+    return () => {
+      if (prevSkin) el.setAttribute('data-skin', prevSkin); else el.removeAttribute('data-skin');
+      if (prevTheme) el.setAttribute('data-theme', prevTheme); else el.removeAttribute('data-theme');
+    };
+  }, [dark]);
+
+  const refresh = useCallback(async () => {
+    setRefreshing(true);
+    try { await loadSnapshot(); } finally { setRefreshing(false); }
+  }, [loadSnapshot]);
 
   const loadSnapshot = useCallback(async () => {
     const { data: sess } = await supabase.auth.getSession();
@@ -137,8 +150,21 @@ export default function StaffSurface() {
   const overdueCount = (snap?.training || []).filter(t => t.overdue).length;
   return (
     <Shell
+      onRefresh={refresh} refreshing={refreshing}
       title={`Hi, ${String(me.name || '').split(' ')[0]}`}
-      right={<button onClick={async () => { await supabase.auth.signOut(); setSnap(null); setStage('login'); }} className="sv-glass" style={{ padding: '7px 12px', borderRadius: 999, border: '1px solid var(--bdr)', color: 'var(--t3)', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>Sign out</button>}
+      right={
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button onClick={() => setDark(d => !d)} title={dark ? 'Light mode' : 'Dark mode'} className="sv-glass"
+            style={{ padding: '7px 10px', borderRadius: 999, border: '1px solid var(--bdr)', color: 'var(--t3)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, lineHeight: 1 }}>
+            {dark ? '\u2600\ufe0e' : '\u263e'}
+          </button>
+          <button onClick={refresh} disabled={refreshing} title="Refresh" className="sv-glass"
+            style={{ padding: '7px 10px', borderRadius: 999, border: '1px solid var(--bdr)', color: 'var(--t3)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, lineHeight: 1 }}>
+            <span style={{ display: 'inline-block', animation: refreshing ? 'spin 0.9s linear infinite' : 'none' }}>\u21bb</span>
+          </button>
+          <button onClick={async () => { await supabase.auth.signOut(); setSnap(null); setStage('login'); }} className="sv-glass" style={{ padding: '7px 12px', borderRadius: 999, border: '1px solid var(--bdr)', color: 'var(--t3)', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>Sign out</button>
+        </div>
+      }
     >
       {outstanding > 0 && tab !== 'tasks' && (
         <button onClick={() => setTab('tasks')} className="sv-glass" style={{
@@ -158,7 +184,7 @@ export default function StaffSurface() {
       {tab === 'news' && <NewsTab snap={snap} />}
       {tab === 'sheets' && <SheetsTab snap={snap} />}
       {tab === 'me' && <MeTab snap={snap} onSaved={loadSnapshot} />}
-      <nav style={{ position: 'fixed', left: 0, right: 0, bottom: 12, display: 'flex', justifyContent: 'center', pointerEvents: 'none' }}>
+      <nav style={{ position: 'fixed', left: 0, right: 0, bottom: 'calc(12px + env(safe-area-inset-bottom, 0px))', display: 'flex', justifyContent: 'center', pointerEvents: 'none', zIndex: 20 }}>
         <div className="sv-glass" style={{ display: 'flex', gap: 4, padding: 6, borderRadius: 999, pointerEvents: 'auto' }}>
           {[['shifts', 'clock', 'Shifts'], ['tasks', 'check', 'Tasks'], ['news', 'status', 'News'], ['sheets', 'clipboard', 'Sheets'], ['me', 'team', 'Me']].map(([k, icon, lbl]) => (
             <button key={k} onClick={() => setTab(k)} style={{
@@ -182,9 +208,57 @@ export default function StaffSurface() {
   );
 }
 
-function Shell({ title, right, children }) {
+// Pull-to-refresh: standalone PWAs get no browser reload UI at all, which is
+// why a stale page had no way out. Track a downward drag that starts at the
+// very top of the scroller; past the threshold, release fires onRefresh.
+function usePullToRefresh(onRefresh) {
+  const ref = useRef(null);
+  const [pull, setPull] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !onRefresh) return;
+    let startY = null, pulling = false;
+    const down = (e) => { if (el.scrollTop <= 0) { startY = e.touches[0].clientY; pulling = true; } };
+    const move = (e) => {
+      if (!pulling || startY == null) return;
+      const dy = e.touches[0].clientY - startY;
+      if (dy > 0 && el.scrollTop <= 0) setPull(Math.min(90, dy * 0.45));
+      else { setPull(0); pulling = false; }
+    };
+    const up = () => {
+      if (pulling) setPull(p => { if (p >= 55) onRefresh(); return 0; });
+      pulling = false; startY = null;
+    };
+    el.addEventListener('touchstart', down, { passive: true });
+    el.addEventListener('touchmove', move, { passive: true });
+    el.addEventListener('touchend', up, { passive: true });
+    return () => { el.removeEventListener('touchstart', down); el.removeEventListener('touchmove', move); el.removeEventListener('touchend', up); };
+  }, [onRefresh]);
+  return { ref, pull };
+}
+
+function Shell({ title, right, children, onRefresh, refreshing }) {
+  const { ref, pull } = usePullToRefresh(onRefresh);
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg)', color: 'var(--t1)', padding: '18px 14px 96px', maxWidth: 560, margin: '0 auto' }}>
+    // #root is globally `height:100%; overflow:hidden` (globals.css) because the
+    // POS is a fixed-layout till app. A phone surface must therefore own its own
+    // scroll container or its content is simply CLIPPED — which is why the Save
+    // button under the bank form was unreachable. Same shape as ManagerSurface.
+    //
+    // 100dvh not 100vh: on mobile Safari 100vh is the address-bar-hidden height,
+    // so the last ~60px sits under the browser chrome. Bottom padding clears the
+    // floating tab bar plus the iPhone home indicator.
+    <div ref={ref} style={{
+      height: '100%', minHeight: '100dvh', overflowY: 'auto', WebkitOverflowScrolling: 'touch',
+      overscrollBehaviorY: 'contain',
+      background: 'var(--bg)', color: 'var(--t1)', maxWidth: 560, margin: '0 auto',
+      padding: '18px 14px calc(124px + env(safe-area-inset-bottom, 0px))',
+    }}>
+      {(pull > 0 || refreshing) && (
+        <div style={{ display: 'flex', justifyContent: 'center', height: refreshing ? 30 : pull / 2, alignItems: 'center', color: 'var(--t3)', fontSize: 12, fontWeight: 700, overflow: 'hidden', transition: refreshing ? 'none' : 'height .15s' }}>
+          {refreshing ? 'Refreshing\u2026' : pull >= 55 ? 'Release to refresh' : '\u2193'}
+        </div>
+      )}
       <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
         <div>
           <div className="mono" style={{ fontSize: 10, letterSpacing: '.18em', textTransform: 'uppercase', color: 'var(--acc)' }}>ServOS Staff</div>
@@ -540,6 +614,8 @@ function MeTab({ snap, onSaved }) {
   const [err, setErr] = useState('');
   const [saved, setSaved] = useState('');
   const [form, setForm] = useState({});
+  const detailsRef = useScrollIntoViewWhen(editing === 'details');
+  const bankRef = useScrollIntoViewWhen(editing === 'bank');
 
   const save = async (patch) => {
     setBusy(true); setErr(''); setSaved('');
@@ -580,7 +656,7 @@ function MeTab({ snap, onSaved }) {
 
       {saved && <div style={{ color: 'var(--grn)', fontSize: 12.5, fontWeight: 700 }}>{saved}</div>}
 
-      <div className="sv-glass" style={glass}>
+      <div className="sv-glass" style={glass} ref={detailsRef}>
         <RowHead title="My details" onEdit={() => { setForm({ address: me.address || '', ecName: me.emergencyContact?.name || '', ecPhone: me.emergencyContact?.phone || '', ecRelation: me.emergencyContact?.relationship || '' }); setEditing(editing === 'details' ? null : 'details'); }} open={editing === 'details'} />
         {editing !== 'details' ? (
           <div style={{ fontSize: 12.5, color: 'var(--t2)', lineHeight: 1.6 }}>
@@ -599,7 +675,7 @@ function MeTab({ snap, onSaved }) {
         )}
       </div>
 
-      <div className="sv-glass" style={glass}>
+      <div className="sv-glass" style={glass} ref={bankRef}>
         <RowHead title="Bank details" onEdit={() => { setForm({ sortCode: '', account: '', accountName: me.bankAccountName || '' }); setEditing(editing === 'bank' ? null : 'bank'); }} open={editing === 'bank'} />
         {editing !== 'bank' ? (
           <div style={{ fontSize: 12.5, color: 'var(--t2)' }}>
@@ -618,6 +694,20 @@ function MeTab({ snap, onSaved }) {
       </div>
     </div>
   );
+}
+
+// Opening a form below the fold left the Save button off-screen behind the tab
+// bar. Bring the whole panel into view once it renders.
+function useScrollIntoViewWhen(active) {
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!active || !ref.current) return;
+    const id = setTimeout(() => {
+      try { ref.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); } catch { /* older browsers */ }
+    }, 60);
+    return () => clearTimeout(id);
+  }, [active]);
+  return ref;
 }
 
 function RowHead({ title, onEdit, open }) {

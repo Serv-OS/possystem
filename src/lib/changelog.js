@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.2', date: '7 Aug 2026', label: 'Staff app scrolls properly; \u201cSet as POS user\u201d stops lying',
+    changes: [
+      'STAFF APP: you could not scroll far enough to reach the Save button under the bank form. The app was living inside the till\u2019s fixed no-scroll layout, so anything below one screen was simply cut off. It now scrolls like a phone app should, clears the iPhone home indicator, and opening a form brings its Save button into view.',
+      'Pull down from the top to refresh, or tap the new refresh button. Installed home-screen apps have no browser reload, so a stale screen had no way out.',
+      'Light and dark mode \u2014 the sun/moon button in the header, remembered per device.',
+      'SET AS POS USER claimed success while saving NOTHING. Two database writes both failed silently \u2014 one error was never even read, the other was logged to a console nobody sees \u2014 and the green \u201cadded as a POS user\u201d toast fired regardless. Caught because the staff app correctly kept showing Till access as pending: the app was honest, the Back Office was not. Both writes are now checked, the failure is shown with the real reason (including a hint when the PIN is already taken), and nothing pretends.',
+      'Try William again: Staff \u2192 Set as POS user. This time it will either work or tell you exactly why not.',
+    ],
+  },
+  {
     version: '5.6.1', date: '7 Aug 2026', label: 'Onboarding now reads the evidence instead of waiting to be told',
     changes: [
       'BUG: adding bank details from the staff app left the Back Office onboarding step showing "pending", even though the bank details were saved on the staff record. Reported from a real run-through.',

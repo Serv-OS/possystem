@@ -52,7 +52,7 @@ const SUBS = {
 };
 
 export default function Workforce({ section, orgCtx }) {
-  const { addStaffMember, showToast } = useStore();
+  const { addStaffMember, removeStaffMember, showToast } = useStore();
   const [staff, setStaff] = useState([]);
   const [loading, setLoading] = useState(true);
   const [addOpen, setAddOpen] = useState(false);
@@ -137,15 +137,27 @@ export default function Workforce({ section, orgCtx }) {
   };
 
   const setAsPosUser = async (s, { pin, role }) => {
+    // v5.6.2 — this used to be a DOUBLE silent failure: the staff_members
+    // upsert's error was never read (supabase-js returns errors, it does not
+    // throw), markPosUser console.warn'd its own, and then the success toast
+    // fired regardless. Peter watched it claim success while the database
+    // stayed untouched. Both writes are now checked, the optimistic state is
+    // reverted on failure, and the toast tells the truth.
     const id = `s-${Date.now()}`;
     const member = { id, name: s.name, role, pin, color: '#3b82f6', initials: initials(s.name), permissions: [], active: true };
     addStaffMember(member); // immediate — shows on the Team page
     try {
       if (supabase && orgCtx?.locationId) {
-        await supabase.from('staff_members').upsert({ id, location_id: orgCtx.locationId, org_id: orgCtx.orgId || null, name: s.name, role, pin, color: '#3b82f6', initials: initials(s.name), permissions: [], active: true });
+        const { error } = await supabase.from('staff_members').upsert({ id, location_id: orgCtx.locationId, org_id: orgCtx.orgId || null, name: s.name, role, pin, color: '#3b82f6', initials: initials(s.name), permissions: [], active: true });
+        if (error) throw new Error(error.message);
       }
-      await markPosUser(s.id, id); // link the HR record (wf_staff) → POS user (staff_members)
-    } catch (e) { console.warn('[workforce] POS user persist failed:', e?.message || e); }
+      await markPosUser(s.id, id); // link the HR record (wf_staff) → POS user (staff_members); throws on failure
+    } catch (e) {
+      removeStaffMember?.(id);
+      setPosFor(null);
+      showToast?.(`Could not set ${s.name} up on the POS: ${e?.message || 'save failed'}${/pin|duplicate|unique/i.test(String(e?.message)) ? ' — that PIN may already be in use' : ''}`, 'error');
+      return;
+    }
     setStaff(st => st.map(x => x.id === s.id ? { ...x, posUserId: id, posRole: role } : x));
     setPosFor(null);
     showToast?.(`${s.name} added as a POS user — see Team`);
