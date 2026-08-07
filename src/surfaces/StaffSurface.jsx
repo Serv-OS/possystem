@@ -159,11 +159,11 @@ export default function StaffSurface() {
         <div style={{ display: 'flex', gap: 6 }}>
           <button onClick={() => setDark(d => !d)} title={dark ? 'Light mode' : 'Dark mode'} className="sv-glass"
             style={{ padding: '7px 10px', borderRadius: 999, border: '1px solid var(--bdr)', color: 'var(--t3)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, lineHeight: 1 }}>
-            {dark ? '\u2600\ufe0e' : '\u263e'}
+            {dark ? '☀︎' : '☾'}
           </button>
           <button onClick={refresh} disabled={refreshing} title="Refresh" className="sv-glass"
             style={{ padding: '7px 10px', borderRadius: 999, border: '1px solid var(--bdr)', color: 'var(--t3)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, lineHeight: 1 }}>
-            <span style={{ display: 'inline-block', animation: refreshing ? 'spin 0.9s linear infinite' : 'none' }}>\u21bb</span>
+            <span style={{ display: 'inline-block', animation: refreshing ? 'spin 0.9s linear infinite' : 'none' }}>↻</span>
           </button>
           <button onClick={async () => { await supabase.auth.signOut(); setSnap(null); setStage('login'); }} className="sv-glass" style={{ padding: '7px 12px', borderRadius: 999, border: '1px solid var(--bdr)', color: 'var(--t3)', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>Sign out</button>
         </div>
@@ -259,7 +259,7 @@ function Shell({ title, right, children, onRefresh, refreshing }) {
     }}>
       {(pull > 0 || refreshing) && (
         <div style={{ display: 'flex', justifyContent: 'center', height: refreshing ? 30 : pull / 2, alignItems: 'center', color: 'var(--t3)', fontSize: 12, fontWeight: 700, overflow: 'hidden', transition: refreshing ? 'none' : 'height .15s' }}>
-          {refreshing ? 'Refreshing\u2026' : pull >= 55 ? 'Release to refresh' : '\u2193'}
+          {refreshing ? 'Refreshing…' : pull >= 55 ? 'Release to refresh' : '↓'}
         </div>
       )}
       <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>

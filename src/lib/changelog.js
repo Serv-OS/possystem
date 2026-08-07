@@ -7,6 +7,12 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.4', date: '7 Aug 2026', label: 'Refresh button shows its icon',
+    changes: [
+      'The staff app refresh button showed the text "\\u21bb" instead of the \u21bb symbol \u2014 an escape code that works inside quotes but not in plain markup, so the sun/moon button worked and this one did not. Real symbols everywhere now.',
+    ],
+  },
+  {
     version: '5.6.3', date: '7 Aug 2026', label: 'Staff app crash on open — fixed and this time actually rendered',
     changes: [
       'The staff app crashed on open ("cannot access B before initialization"). One of the two refresh functions added in v5.6.2 referred to the other before it existed. Order swapped, fixed.',
