@@ -58,11 +58,6 @@ export default function StaffSurface() {
     };
   }, [dark]);
 
-  const refresh = useCallback(async () => {
-    setRefreshing(true);
-    try { await loadSnapshot(); } finally { setRefreshing(false); }
-  }, [loadSnapshot]);
-
   const loadSnapshot = useCallback(async () => {
     const { data: sess } = await supabase.auth.getSession();
     const jwt = sess?.session?.access_token;
@@ -78,6 +73,14 @@ export default function StaffSurface() {
       else setErr(e.message);
     }
   }, []);
+
+  // Declared AFTER loadSnapshot — a useCallback dep list evaluates at render,
+  // so referencing the const above its declaration is a TDZ crash ("cannot
+  // access before initialization") that took the whole surface down (v5.6.3).
+  const refresh = useCallback(async () => {
+    setRefreshing(true);
+    try { await loadSnapshot(); } finally { setRefreshing(false); }
+  }, [loadSnapshot]);
 
   useEffect(() => {
     if (isMock || !supabase) return;

@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.3', date: '7 Aug 2026', label: 'Staff app crash on open — fixed and this time actually rendered',
+    changes: [
+      'The staff app crashed on open ("cannot access B before initialization"). One of the two refresh functions added in v5.6.2 referred to the other before it existed. Order swapped, fixed.',
+      'This one is on the build process, not just the code: a compile cannot catch it, only actually rendering the page can, and v5.6.2 shipped without that. This version was loaded and rendered before shipping.',
+      'A scan for the same mistake elsewhere found 370 look-alikes, but they are the harmless variety (used later, not immediately) and have months of production time behind them. Queued as a separate audit rather than churning 20 working files tonight.',
+    ],
+  },
+  {
     version: '5.6.2', date: '7 Aug 2026', label: 'Staff app scrolls properly; \u201cSet as POS user\u201d stops lying',
     changes: [
       'STAFF APP: you could not scroll far enough to reach the Save button under the bank form. The app was living inside the till\u2019s fixed no-scroll layout, so anything below one screen was simply cut off. It now scrolls like a phone app should, clears the iPhone home indicator, and opening a form brings its Save button into view.',
