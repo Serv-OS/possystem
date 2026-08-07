@@ -7,6 +7,12 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.6', date: '7 Aug 2026', label: 'Adyen programme: partner answers folded into the plan',
+    changes: [
+      'Documentation only. The payment partner\u2019s answers are digested into ADYEN_INTEGRATION_PLAN.md \u00a70.5: revised account structure, our cost table, the open rates questions and the full chase list.',
+    ],
+  },
+  {
     version: '5.6.5', date: '7 Aug 2026', label: '\u201cSet as POS user\u201d from Workforce works for the first time ever',
     changes: [
       'The error the fixed screen finally showed (\u201cinvalid input syntax for type uuid\u201d) revealed the truth: this feature has NEVER worked. Not once, for anyone. It sent a made-up screen id like \u201cs-1786120662470\u201d into a database column that only accepts real UUIDs, so the save failed every single time \u2014 and until yesterday the failure was swallowed and a green success message shown anyway.',

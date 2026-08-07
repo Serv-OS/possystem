@@ -27,6 +27,76 @@ Disputes **v30** · Hosted onboarding **v4** · Web Drop-in/Components **v6**.
 
 ---
 
+## 0.5 What FranPOS's answers change (received 7 Aug 2026)
+
+### Structure — REVISED from §0
+We are NOT our own Adyen company account. The tree is:
+
+```
+FranPOS company account
+└─ ServOS_UK merchant account   ← our own & distinct API keys + Adyen BO access
+   └─ our venues as SUB-MERCHANTS (we see + drive their onboarding)
+```
+
+- UK and US confirmed covered, as SEPARATE balance platforms (matches §1's one-per-region).
+- The UK setup needs an Adyen amendment on FranPOS's contract — "straightforward",
+  precedent: they already did Canada + Australia.
+- Compliance: payfac + scheme registration obligations sit above us. Nothing required from ServOS.
+
+### Confirmed as we planned
+- **Hosted onboarding** ("Onboarding on Invite"), link from our platform, prepopulated via API.
+  They offered a demo — TAKE IT.
+- **Margin via split configurations** (docs.adyen.com/platforms/automatic-split-configuration) —
+  exactly the §0 pricing model. WE configure per-venue rates; nobody sets them for us.
+- **Webhooks**: our own endpoint + our own HMAC key. Signed events straight to us.
+- **Unreferenced refunds + multiple partial captures**: fine in test now; Support enablement
+  needed at live — GO-LIVE CHECKLIST ITEM, do not discover this in week one of live.
+- **Test hardware**: we order AMS1 + S1F2 + test cards under OUR merchant account (they show how).
+
+### Our BUY price (what ServOS pays — all quoted in USD, pre-UK-amendment)
+| Component | Cost |
+|---|---|
+| Per transaction (flat) | $0.05 |
+| Acquiring markup | Interchange++ + **10 bps** |
+| KYC per sub-merchant | $5 one-off |
+| Chargeback | $7.50 each |
+
+### The rates gap (Peter, 7 Aug: "we still don't have rates we can charge customers")
+Half right, and the half matters:
+- **SELL price is OURS.** Split configuration means we charge venues whatever we set in the
+  admin portal. There is no rate card coming from FranPOS because rate-setting is ours — that
+  is the model we wanted.
+- **What is genuinely missing** is everything needed to PRICE confidently in the UK:
+  1. The table above in **GBP for the UK platform** ($0.05 vs 4p is a real margin difference).
+  2. Whether the $0.05 flat is per **authorisation or per settled** transaction, and what
+     failed auths / refunds / gateway calls cost.
+  3. **Scheme fee** treatment inside the IC++ (pass-through at cost? which schemes?).
+  4. **Where our margin lands and how it pays out** — under FranPOS's company account, is the
+     Commission split booked to a balance account WE control, with payouts to the ServOS bank
+     on what schedule?
+  5. Any **floor/cap constraints** on split configs (can we price a venue at 1.39% + 5p?).
+  6. **Venue settlement timing** (T+1? weekday?) — sales-critical, Lightspeed leads with it.
+  7. **Hardware pricing**: AMS1 / S1F2 unit cost + any monthly per-terminal fee.
+
+### Rough UK margin sanity check (until GBP figures land)
+Typical UK consumer debit, £20 ticket, venue priced at a Lightspeed-ish 1.4% + 5p:
+sell ≈ 33p; cost ≈ IC 0.2% (4p) + scheme ~1p + 10 bps (2p) + ~4p flat ≈ 11p → **~22p margin
+(≈1.1% of turnover)**. Credit ~0.3% IC narrows it; commercial/Amex needs its own line. Model
+properly when GBP numbers arrive — this is envelope maths only.
+
+### Chase list (all owner: FranPOS, all currently undelivered)
+- [ ] Test API keys (US first is fine) + merchant account name + company account name
+- [ ] Client key + device-api region for terminals
+- [ ] Webhook endpoint registration + HMAC key
+- [ ] Adyen Back Office logins
+- [ ] The GBP pricing table + answers to the 7 rates-gap questions above
+- [ ] Hosted-onboarding demo (their offer)
+- [ ] Test AMS1 + S1F2 + test cards ordered under our merchant account
+- [ ] UK amendment executed (Adyen enables UK)
+- [ ] The structure diagram referenced as "as per diagram above" — we never received it
+
+---
+
 ## 1. Per-venue Adyen anatomy (what "a venue" becomes)
 
 ```
