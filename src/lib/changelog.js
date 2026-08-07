@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.0', date: '7 Aug 2026', label: 'Real training (content + sign-off), notifications, and a critical security fix',
+    changes: [
+      '\u26a0 SECURITY \u2014 fixed within the hour, nothing was exploited: an adversarial review of yesterday\u2019s staff app found that the invite flow could be turned into a password reset for ANY account, including an owner\u2019s Back Office login. The staff-app identity fields are now locked at the database so no one can point a staff record at someone else\u2019s account, the invite now verifies the email actually matches before setting any password, and it refuses outright to touch a Back Office login. Only owners, admins and managers can send invites.',
+      'Also from that review: \u201cforgotten password\u201d could be sent a wildcard that matched staff in OTHER venues and cancelled their invite \u2014 now an exact match. Accrued holiday always showed zero (wrong column). The staff-app audit trail was reading a column that does not exist, so every entry recorded a broken chain \u2014 all three fixed.',
+      'TRAINING IS NOW REAL TRAINING. A module is written CONTENT plus uploaded MATERIALS (documents, slide decks, videos), not a checklist. Staff read it, open every material \u2014 the app tracks that they actually opened each one \u2014 and then formally agree: \u201cI confirm I have completed and understood this training.\u201d Their name and the date and time are recorded against it. Until every material is opened, the confirm button stays disabled.',
+      'NOTIFICATIONS: assigning training emails the person straight away. Their app shows a badge with how many things they owe, and a banner at the top when anything is overdue.',
+      'CLOCK-IN FLAG: outstanding training and unfinished onboarding now appear on the Time Clock when they enter their PIN \u2014 the one screen everyone touches every shift. Read-only there; they do the actual training on their phone so the tablet is never tied up.',
+      'FIXED: staff emails linked to the Vercel address instead of dev.serv-os.app.',
+      'FIXED: \u201cAdd to Home Screen\u201d from the staff app saved the POS instead. It now installs as \u201cMy Work\u201d and opens the staff app.',
+    ],
+  },
+  {
     version: '5.5.999', date: '7 Aug 2026', label: 'Training system + staff app onboarding, time off, pay \u2014 and the rota onboarding gate',
     changes: [
       'TRAINING: new Back Office screen (Workforce \u2192 Training). Build a module \u2014 a named list of tasks with a deadline in days \u2014 then assign it by POSITION or by person. A completion table under each module shows who has it, their progress, and who is overdue.',

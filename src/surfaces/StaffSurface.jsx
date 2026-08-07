@@ -130,11 +130,29 @@ export default function StaffSurface() {
 
   // ── the app ─────────────────────────────────────────────────────────────────
   const me = snap?.me || {};
+  // Outstanding work drives the Tasks badge: unfinished onboarding steps +
+  // training modules not yet confirmed.
+  const outstanding = (snap?.onboarding?.open ? snap.onboarding.steps.filter(x => !x.done).length : 0)
+    + (snap?.training || []).filter(t => t.status !== 'complete').length;
+  const overdueCount = (snap?.training || []).filter(t => t.overdue).length;
   return (
     <Shell
       title={`Hi, ${String(me.name || '').split(' ')[0]}`}
       right={<button onClick={async () => { await supabase.auth.signOut(); setSnap(null); setStage('login'); }} className="sv-glass" style={{ padding: '7px 12px', borderRadius: 999, border: '1px solid var(--bdr)', color: 'var(--t3)', fontSize: 12, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>Sign out</button>}
     >
+      {outstanding > 0 && tab !== 'tasks' && (
+        <button onClick={() => setTab('tasks')} className="sv-glass" style={{
+          display: 'flex', alignItems: 'center', gap: 10, width: '100%', textAlign: 'left', marginBottom: 10,
+          padding: '11px 14px', borderRadius: 14, cursor: 'pointer', font: 'inherit', color: 'var(--t1)',
+          border: `1px solid ${overdueCount ? 'var(--red-b)' : 'var(--bdr)'}`,
+        }}>
+          <span style={{ color: overdueCount ? 'var(--red)' : 'var(--acc)' }}><Icon name="warn" size={16} /></span>
+          <span style={{ flex: 1, fontSize: 13, fontWeight: 700 }}>
+            {overdueCount > 0 ? `${overdueCount} thing${overdueCount === 1 ? '' : 's'} overdue` : `${outstanding} thing${outstanding === 1 ? '' : 's'} to do`}
+          </span>
+          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--acc)' }}>View</span>
+        </button>
+      )}
       {tab === 'shifts' && <ShiftsTab snap={snap} onChanged={loadSnapshot} />}
       {tab === 'tasks' && <TasksTab snap={snap} onChanged={loadSnapshot} goToMe={() => setTab('me')} />}
       {tab === 'news' && <NewsTab snap={snap} />}
@@ -146,9 +164,16 @@ export default function StaffSurface() {
             <button key={k} onClick={() => setTab(k)} style={{
               display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2, minWidth: 58,
               padding: '8px 10px', borderRadius: 999, border: 'none', cursor: 'pointer', fontFamily: 'inherit',
-              background: tab === k ? 'var(--acc)' : 'transparent', color: tab === k ? '#fff' : 'var(--t2)', fontSize: 10.5, fontWeight: 700,
+              background: tab === k ? 'var(--acc)' : 'transparent', color: tab === k ? '#fff' : 'var(--t2)', fontSize: 10.5, fontWeight: 700, position: 'relative',
             }}>
               <Icon name={icon} size={16} />{lbl}
+              {k === 'tasks' && outstanding > 0 && (
+                <span style={{
+                  position: 'absolute', top: 4, right: 8, minWidth: 16, height: 16, padding: '0 4px',
+                  borderRadius: 999, background: overdueCount ? 'var(--red)' : 'var(--acc)', color: '#fff',
+                  fontSize: 9.5, fontWeight: 800, display: 'grid', placeItems: 'center',
+                }}>{outstanding}</span>
+              )}
             </button>
           ))}
         </div>
@@ -363,40 +388,109 @@ function TasksTab({ snap, onChanged, goToMe }) {
         </div>
       )}
 
-      {training.map(t => {
-        const done = t.tasks.filter(x => x.done).length;
-        return (
-          <div key={t.id} className="sv-glass" style={glass}>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 13.5, fontWeight: 800, flex: 1 }}>{t.name}</span>
-              {t.status === 'complete'
-                ? <b style={{ color: 'var(--grn)', fontSize: 11.5 }}>Complete ✓</b>
-                : t.overdue
-                  ? <b style={{ color: 'var(--red)', fontSize: 11.5 }}>Overdue — was due {fmtDay(t.due)}</b>
-                  : t.due && <span style={{ fontSize: 11, color: 'var(--t4)' }}>Due {fmtDay(t.due)}</span>}
-            </div>
-            {t.description && <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 4, lineHeight: 1.5 }}>{t.description}</div>}
-            {/* progress */}
-            <div style={{ height: 4, borderRadius: 2, background: 'var(--bg2)', margin: '10px 0' }}>
-              <div style={{ height: 4, borderRadius: 2, width: `${t.tasks.length ? Math.round(done / t.tasks.length * 100) : 0}%`, background: t.status === 'complete' ? 'var(--grn)' : 'var(--acc)', transition: 'width .25s' }} />
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {t.tasks.map(task => {
-                const busy = busyTask === `${t.id}:${task.id}`;
-                return (
-                  <label key={task.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer', opacity: busy ? 0.5 : 1 }}>
-                    <input type="checkbox" checked={task.done} disabled={busy} onChange={() => tick(t.id, task.id, !task.done)} style={{ marginTop: 2 }} />
-                    <span>
-                      <span style={{ fontSize: 13, fontWeight: 600, color: task.done ? 'var(--t3)' : 'var(--t1)', textDecoration: task.done ? 'line-through' : 'none' }}>{task.title}</span>
-                      {task.detail && <span style={{ display: 'block', fontSize: 11.5, color: 'var(--t4)', marginTop: 2, lineHeight: 1.45 }}>{task.detail}</span>}
-                    </span>
-                  </label>
-                );
-              })}
-            </div>
+      {training.map(t => <TrainingCard key={t.id} t={t} onChanged={onChanged} tick={tick} busyTask={busyTask} setErr={setErr} />)}
+    </div>
+  );
+}
+
+// One training module: what to read, what to open, then the agreement.
+function TrainingCard({ t, onChanged, tick, busyTask, setErr }) {
+  const [agree, setAgree] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [opening, setOpening] = useState('');
+  const allOpened = t.files.every(f => f.opened);
+  const allTicked = t.tasks.every(x => x.done);
+  const canAttest = allOpened && allTicked && agree && !busy;
+
+  const openFile = async (f) => {
+    setOpening(f.id); setErr('');
+    try {
+      const { url } = await withJwt({ action: 'training_file_url', assignment_id: t.id, file_id: f.id });
+      window.open(url, '_blank', 'noopener');
+      await onChanged();                     // records that they opened it
+    } catch (e) { setErr(e.message); }
+    finally { setOpening(''); }
+  };
+
+  const attest = async () => {
+    setBusy(true); setErr('');
+    try { await withJwt({ action: 'training_attest', assignment_id: t.id, agree: true }); await onChanged(); }
+    catch (e) { setErr(e.message); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="sv-glass" style={glass}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 14.5, fontWeight: 800, flex: 1 }}>{t.name}</span>
+        {t.status === 'complete'
+          ? <b style={{ color: 'var(--grn)', fontSize: 11.5 }}>Completed ✓</b>
+          : t.overdue
+            ? <b style={{ color: 'var(--red)', fontSize: 11.5 }}>Overdue — was due {fmtDay(t.due)}</b>
+            : t.due && <span style={{ fontSize: 11, color: 'var(--t4)' }}>Due {fmtDay(t.due)}</span>}
+      </div>
+      {t.description && <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 4, lineHeight: 1.5 }}>{t.description}</div>}
+
+      {t.content && (
+        <div style={{ fontSize: 13.5, lineHeight: 1.65, whiteSpace: 'pre-wrap', marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--bdr)' }}>{t.content}</div>
+      )}
+
+      {t.files.length > 0 && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase', color: 'var(--t4)', marginBottom: 6 }}>Materials — open each one</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {t.files.map(f => (
+              <button key={f.id} onClick={() => openFile(f)} disabled={!!opening}
+                style={{ display: 'flex', alignItems: 'center', gap: 9, width: '100%', textAlign: 'left', padding: '10px 12px', borderRadius: 10, cursor: 'pointer', font: 'inherit', fontSize: 13, color: 'var(--t1)', background: 'var(--bg2)', border: `1px solid ${f.opened ? 'var(--grn-b)' : 'var(--bdr)'}` }}>
+                <span style={{ width: 18, height: 18, borderRadius: '50%', flexShrink: 0, display: 'grid', placeItems: 'center', background: f.opened ? 'var(--grn)' : 'transparent', border: f.opened ? 'none' : '1px solid var(--bdr)', color: '#fff', fontSize: 10 }}>{f.opened ? '✓' : ''}</span>
+                <span style={{ flex: 1, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
+                <span style={{ fontSize: 11, color: 'var(--acc)', fontWeight: 700, flexShrink: 0 }}>{opening === f.id ? 'Opening…' : f.opened ? 'Read again' : 'Open'}</span>
+              </button>
+            ))}
           </div>
-        );
-      })}
+        </div>
+      )}
+
+      {t.tasks.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
+          {t.tasks.map(task => {
+            const b = busyTask === `${t.id}:${task.id}`;
+            return (
+              <label key={task.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: t.status === 'complete' ? 'default' : 'pointer', opacity: b ? 0.5 : 1 }}>
+                <input type="checkbox" checked={task.done} disabled={b || t.status === 'complete'} onChange={() => tick(t.id, task.id, !task.done)} style={{ marginTop: 2 }} />
+                <span>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: task.done ? 'var(--t3)' : 'var(--t1)', textDecoration: task.done ? 'line-through' : 'none' }}>{task.title}</span>
+                  {task.detail && <span style={{ display: 'block', fontSize: 11.5, color: 'var(--t4)', marginTop: 2, lineHeight: 1.45 }}>{task.detail}</span>}
+                </span>
+              </label>
+            );
+          })}
+        </div>
+      )}
+
+      {/* The agreement — this is what completes the module. */}
+      {t.status === 'complete' ? (
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--bdr)', fontSize: 11.5, color: 'var(--t3)' }}>
+          You confirmed this on {fmtStamp(t.attestedAt || t.completedAt)}.
+        </div>
+      ) : (
+        <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--bdr)' }}>
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer' }}>
+            <input type="checkbox" checked={agree} onChange={e => setAgree(e.target.checked)} style={{ marginTop: 3 }} />
+            <span style={{ fontSize: 13, lineHeight: 1.5 }}>
+              I confirm I have <b>completed and understood</b> this training.
+            </span>
+          </label>
+          {!allOpened && <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 8 }}>Open every material above first.</div>}
+          {allOpened && !allTicked && <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 8 }}>Tick every point above first.</div>}
+          <div style={{ marginTop: 10 }}>
+            <Primary disabled={!canAttest} onClick={attest}>{busy ? 'Recording…' : 'Confirm completed'}</Primary>
+          </div>
+          <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 8, lineHeight: 1.5 }}>
+            Your name and the date and time are recorded against this training.
+          </div>
+        </div>
+      )}
     </div>
   );
 }

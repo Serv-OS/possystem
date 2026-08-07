@@ -35,7 +35,10 @@ const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: 
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
-const APP_BASE = (Deno.env.get('PUBLIC_APP_BASE') ?? 'https://possystem-liard.vercel.app').replace(/\/+$/, '');
+// Staff-facing links (invite email, contract sign, 'open my app') must point at
+// the real staff domain, NOT the Vercel deploy URL. Set as the PUBLIC_APP_BASE
+// secret; the fallback matches it so a missing secret can't email a dead link.
+const APP_BASE = (Deno.env.get('PUBLIC_APP_BASE') ?? 'https://dev.serv-os.app').replace(/\/+$/, '');
 const admin = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } });
 
 async function sha256(s: string): Promise<string> {
@@ -67,8 +70,11 @@ async function callerManagesLocation(req: Request, locationId: string): Promise<
   const { data, error } = await admin.auth.getUser(jwt);
   if (error || !data?.user) return { ok: false };
   const uid = data.user.id;
-  const { data: ul } = await admin.from('user_locations').select('location_id').eq('user_id', uid).eq('location_id', locationId).limit(1);
+  const { data: ul } = await admin.from('user_locations').select('location_id, role').eq('user_id', uid).eq('location_id', locationId).limit(1);
   if (!ul?.length) return { ok: false };
+  // Inviting mints a credential — membership alone is not enough.
+  const role = String(ul[0].role || '').toLowerCase();
+  if (!['owner', 'admin', 'manager'].includes(role)) return { ok: false };
   const { data: prof } = await admin.from('user_profiles').select('display_name, email').eq('id', uid).maybeSingle();
   return { ok: true, id: uid, name: prof?.display_name || prof?.email || 'Manager' };
 }
@@ -106,15 +112,21 @@ async function audit(staff: any, action: string, before: unknown, after: unknown
   // Best-effort append to the tamper-evident log; chain hash comes from the
   // previous row like the other writers.
   try {
-    const { data: prev } = await admin.from('wf_audit').select('row_hash').eq('org_id', staff.org_id)
-      .order('created_at', { ascending: false }).limit(1);
+    // Chain by LOCATION ordered by `at` — matching workforce-compute, the other
+    // writer. (This read used to order by a non-existent `created_at`, so it
+    // 400'd, prev_hash was always null and the chain was decorative.) The
+    // hashed timestamp is the one we persist, so row_hash is recomputable.
+    const { data: prev, error: prevErr } = await admin.from('wf_audit').select('row_hash')
+      .eq('location_id', staff.location_id).order('at', { ascending: false }).limit(1);
+    if (prevErr) throw new Error(`audit chain read failed: ${prevErr.message}`);
     const prevHash = prev?.[0]?.row_hash ?? null;
-    const rowHash = await sha256(JSON.stringify({ prevHash, action, staff: staff.id, after, at: Date.now() }));
+    const at = new Date().toISOString();
+    const rowHash = await sha256(JSON.stringify({ prevHash, action, staff: staff.id, after, at }));
     await admin.from('wf_audit').insert({
       location_id: staff.location_id, org_id: staff.org_id,
       actor_id: null, actor_name: `${staff.name} (staff app)`,
       action, entity: 'wf_staff', entity_id: String(staff.id),
-      before, after, prev_hash: prevHash, row_hash: rowHash,
+      before, after, prev_hash: prevHash, row_hash: rowHash, at,
     });
   } catch (e) { console.error('[staff-portal] audit failed:', (e as Error).message); }
 }
@@ -135,6 +147,50 @@ Deno.serve(async (req) => {
       return json({ ok: true, sentTo: staff.email });
     }
 
+    // ── notify_training: tell someone they have training to do. BO-authorised,
+    //    called straight after an assignment. Email + it shows in their app. ──
+    if (action === 'notify_training') {
+      const { data: staffRow } = await admin.from('wf_staff').select('*').eq('id', body.staff_id).maybeSingle();
+      if (!staffRow) return json({ error: 'staff member not found' }, 404);
+      const caller = await callerManagesLocation(req, staffRow.location_id);
+      if (!caller.ok) return json({ error: 'not allowed' }, 403);
+      if (!staffRow.email) return json({ ok: true, skipped: 'no-email' });
+      const first = String(staffRow.name || 'there').split(' ')[0];
+      const due = body.due ? new Date(String(body.due) + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'long' }) : null;
+      const url = `${APP_BASE}/?mode=staff`;
+      const html = `<div style="font-family:system-ui,sans-serif;max-width:560px">
+        <p>Hi ${first},</p>
+        <p>You have new training to complete: <strong>${String(body.module_name || 'a training module')}</strong>${due ? `, due by <strong>${due}</strong>` : ''}.</p>
+        <p>Open the staff app, read through it, and confirm when you're done.</p>
+        <p style="margin:22px 0"><a href="${url}" style="background:#15C26A;color:#fff;padding:12px 22px;border-radius:10px;text-decoration:none;font-weight:700">Open my staff app</a></p>
+      </div>`;
+      const res = await fetch(`${SUPABASE_URL}/functions/v1/send-receipt`, {
+        method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${SERVICE_ROLE}` },
+        body: JSON.stringify({ location_id: staffRow.location_id, to: staffRow.email, subject: `Training to complete: ${body.module_name || 'new module'}`, html, text: `Hi ${first}, you have training to complete: ${body.module_name}${due ? ` (due ${due})` : ''}. Open your staff app: ${url}` }),
+      });
+      if (!res.ok) return json({ error: `Email failed (${res.status})` }, 502);
+      return json({ ok: true, sentTo: staffRow.email });
+    }
+
+    // ── outstanding: what this person still owes, by PIN. Used by the Time
+    //    Clock so clocking in/out flags it on the shared tablet — no login,
+    //    no personal data beyond counts and titles. ────────────────────────────
+    if (action === 'outstanding') {
+      const { location_id, staff_id } = body;
+      if (!location_id || !staff_id) return json({ error: 'missing location_id / staff_id' }, 400);
+      const today = new Date().toISOString().slice(0, 10);
+      const [{ data: tr }, { data: onbRows }] = await Promise.all([
+        admin.from('wf_training_assignments')
+          .select('due_date, status, wf_training_modules(name)')
+          .eq('staff_id', staff_id).eq('location_id', location_id).neq('status', 'complete'),
+        admin.from('wf_onboarding').select('steps, meta').eq('staff_id', staff_id)
+          .order('created_at', { ascending: false }).limit(1),
+      ]);
+      const training = (tr ?? []).map((a: any) => ({ name: a.wf_training_modules?.name || 'Training', due: a.due_date, overdue: !!(a.due_date && a.due_date < today) }));
+      const onbOpen = (onbRows?.[0]?.steps || []).filter((st: any) => st.status !== 'complete').length;
+      return json({ ok: true, training, onboardingOpen: onbOpen, total: training.length + onbOpen });
+    }
+
     // ── accept_invite: the emailed link lands here with their chosen password ──
     if (action === 'accept_invite') {
       const token = String(body.token || ''); const password = String(body.password || '');
@@ -147,9 +203,37 @@ Deno.serve(async (req) => {
       if (!staff.portal_invite_expires || new Date(staff.portal_invite_expires) < new Date()) {
         return json({ error: 'This link has expired — ask your manager to send a new one' }, 400);
       }
+      if (staff.status === 'leaver') return json({ error: 'This account is closed' }, 403);
+      // SECURITY (adversarial review, 7 Aug): before setting ANY password we
+      // re-verify the target auth account. Two independent checks, because
+      // wf_staff.email and portal_user_id are ordinary columns:
+      //   1. the auth user's email must equal the staff record's email, so a
+      //      swapped email can never redirect a password set;
+      //   2. the account must not be a Back Office principal — BO users have
+      //      their own recovery and must never be re-passworded from here.
+      // Column-level writes are additionally blocked at the DB by
+      // wf_staff_block_portal_cols_trg (20260806j).
+      const guardTarget = async (uid: string) => {
+        const { data: u } = await admin.auth.admin.getUserById(uid);
+        const authEmail = String(u?.user?.email || '').toLowerCase();
+        if (!authEmail || authEmail !== String(staff.email || '').toLowerCase()) {
+          return 'This invite does not match the account on file — ask your manager to re-send it';
+        }
+        const [{ data: prof }, { data: locs }] = await Promise.all([
+          admin.from('user_profiles').select('id').eq('id', uid).maybeSingle(),
+          admin.from('user_locations').select('user_id').eq('user_id', uid).limit(1),
+        ]);
+        if (prof || locs?.length) {
+          return 'That email is a Back Office login. Sign in with your Back Office password, or reset it there.';
+        }
+        return null;
+      };
+
       let userId = staff.portal_user_id as string | null;
       let existing = false;
       if (userId) {
+        const bad = await guardTarget(userId);
+        if (bad) return json({ error: bad }, 403);
         const { error } = await admin.auth.admin.updateUserById(userId, { password });
         if (error) return json({ error: error.message }, 400);
       } else {
@@ -168,6 +252,8 @@ Deno.serve(async (req) => {
           const { data: lk, error: lkErr } = await admin.auth.admin.generateLink({ type: 'magiclink', email: staff.email });
           if (lkErr || !lk?.user?.id) return json({ error: `Could not link the existing login: ${lkErr?.message || 'user lookup failed'}` }, 400);
           userId = lk.user.id;
+          const bad = await guardTarget(userId);
+          if (bad) return json({ error: bad }, 403);
           const { error: pwErr } = await admin.auth.admin.updateUserById(userId, { password });
           if (pwErr) return json({ error: pwErr.message }, 400);
           existing = true;
@@ -187,8 +273,10 @@ Deno.serve(async (req) => {
     if (action === 'reset_start') {
       const email = String(body.email || '').trim().toLowerCase();
       if (email) {
+        // .ilike() treated the input as a LIKE PATTERN: '%' matched every staff
+        // row in every tenant and rotated a stranger's invite token. Exact match.
         const { data: rows } = await admin.from('wf_staff').select('*')
-          .ilike('email', email).neq('status', 'leaver').limit(1);
+          .eq('email', email).neq('status', 'leaver').limit(1);
         if (rows?.[0]) { try { await issueInvite(rows[0], true); } catch (e) { console.error('[staff-portal] reset:', (e as Error).message); } }
       }
       return json({ ok: true }); // always
@@ -215,7 +303,7 @@ Deno.serve(async (req) => {
         admin.from('wf_onboarding').select('*').eq('staff_id', staff.id)
           .order('created_at', { ascending: false }).limit(1),
         admin.from('wf_training_assignments')
-          .select('id, module_id, assigned_at, due_date, tasks_done, completed_at, status, wf_training_modules(name, description, tasks)')
+          .select('id, module_id, assigned_at, due_date, tasks_done, opened_files, attested_at, completed_at, status, wf_training_modules(name, description, content, tasks, attachments)')
           .eq('staff_id', staff.id).order('due_date', { ascending: true }).limit(50),
       ]);
       // Their leave, accrued holiday and pay rate — small follow-ups, not worth
@@ -223,12 +311,12 @@ Deno.serve(async (req) => {
       const [{ data: leave }, { data: accrual }, { data: roleRow }] = await Promise.all([
         admin.from('wf_time_off').select('id, type, start_date, end_date, days, note, status, created_at')
           .eq('staff_id', staff.id).order('created_at', { ascending: false }).limit(20),
-        admin.from('wf_holiday_accrual').select('hours').eq('staff_id', staff.id).limit(5000),
+        admin.from('wf_holiday_accrual').select('accrued_hours').eq('staff_id', staff.id).limit(5000),
         staff.role_key
           ? admin.from('wf_roles').select('base_rate, salary_annual').eq('location_id', staff.location_id).eq('key', staff.role_key).maybeSingle()
           : Promise.resolve({ data: null }),
       ]);
-      const accruedHours = (accrual ?? []).reduce((a: number, r: any) => a + (Number(r.hours) || 0), 0);
+      const accruedHours = (accrual ?? []).reduce((a: number, r: any) => a + (Number(r.accrued_hours) || 0), 0);
       const payRate = staff.rate_override != null
         ? { kind: 'hourly', rate: Number(staff.rate_override), source: 'personal' }
         : roleRow?.base_rate != null
@@ -263,11 +351,18 @@ Deno.serve(async (req) => {
       const training = (trainRows ?? []).map((a: any) => {
         const mod = a.wf_training_modules || {};
         const doneIds = new Set((Array.isArray(a.tasks_done) ? a.tasks_done : []).map((t: any) => t.taskId));
+        const openedIds = new Set((Array.isArray(a.opened_files) ? a.opened_files : []).map((f: any) => f.fileId));
         return {
           id: a.id,
           name: mod.name, description: mod.description,
+          content: mod.content || null,
+          // File PATHS never reach the client — only ids and names. The app asks
+          // training_file_url for a short-lived signed URL per file, which is
+          // also how "they actually opened it" gets recorded.
+          files: (Array.isArray(mod.attachments) ? mod.attachments : []).map((f: any) => ({ id: f.id, name: f.name, opened: openedIds.has(f.id) })),
           tasks: (Array.isArray(mod.tasks) ? mod.tasks : []).map((t: any) => ({ id: t.id, title: t.title, detail: t.detail || null, done: doneIds.has(t.id) })),
           due: a.due_date, completedAt: a.completed_at, status: a.status,
+          attestedAt: a.attested_at || null,
           overdue: a.status !== 'complete' && a.due_date && a.due_date < today,
         };
       });
@@ -313,23 +408,65 @@ Deno.serve(async (req) => {
       let done = (Array.isArray(a.tasks_done) ? a.tasks_done : []).filter((t: any) => taskIds.includes(t.taskId));
       done = done.filter((t: any) => t.taskId !== body.task_id);
       if (body.done !== false) done.push({ taskId: body.task_id, at: new Date().toISOString() });
-      const complete = taskIds.length > 0 && taskIds.every(id => done.some((t: any) => t.taskId === id));
-      const patch: Record<string, unknown> = { tasks_done: done, status: complete ? 'complete' : 'assigned', completed_at: complete ? (a.completed_at || new Date().toISOString()) : null };
-      const { error } = await admin.from('wf_training_assignments').update(patch).eq('id', a.id);
+      // Ticks track PROGRESS only. Completion is the ATTESTATION (training_attest)
+      // — the person's formal agreement, never an implicit side effect. But a
+      // tick after attestation must not silently un-complete anything either.
+      if (a.attested_at) return json({ error: 'This training is already completed and agreed' }, 400);
+      const { error } = await admin.from('wf_training_assignments').update({ tasks_done: done }).eq('id', a.id);
       if (error) return json({ error: error.message }, 500);
-      if (complete && !a.completed_at) {
-        await audit(staff, 'training.completed', null, { module: a.wf_training_modules?.name, assignment: a.id });
-        // Managers hear about completions in the activity feed (informational,
-        // no chime — unlike bank changes this is good news, not a risk).
-        try {
-          await admin.from('activity_events').insert({
-            location_id: staff.location_id, kind: 'staff', severity: 'info',
-            title: `${staff.name} completed training: ${a.wf_training_modules?.name || 'a module'}`,
-            ref_type: 'wf_training_assignments', ref_id: String(a.id), actor_name: `${staff.name} (staff app)`,
-          });
-        } catch { /* best effort */ }
-      }
-      return json({ ok: true, complete });
+      return json({ ok: true });
+    }
+
+    // ── training_file_url: open one training material. Serves a short-lived
+    //    signed URL AND records the open — the evidence the attestation needs. ──
+    if (action === 'training_file_url') {
+      const { data: a } = await admin.from('wf_training_assignments')
+        .select('id, opened_files, wf_training_modules(attachments)')
+        .eq('id', body.assignment_id).eq('staff_id', staff.id).maybeSingle();
+      if (!a) return json({ error: 'assignment not found' }, 404);
+      const file = (Array.isArray(a.wf_training_modules?.attachments) ? a.wf_training_modules.attachments : []).find((f: any) => f.id === body.file_id);
+      if (!file?.path) return json({ error: 'file not found' }, 404);
+      const { data: signed, error } = await admin.storage.from('wf-documents').createSignedUrl(file.path, 300);
+      if (error) return json({ error: error.message }, 500);
+      const opened = (Array.isArray(a.opened_files) ? a.opened_files : []).filter((f: any) => f.fileId !== file.id);
+      opened.push({ fileId: file.id, at: new Date().toISOString() });
+      await admin.from('wf_training_assignments').update({ opened_files: opened }).eq('id', a.id);
+      return json({ ok: true, url: signed.signedUrl });
+    }
+
+    // ── training_attest: the formal agreement — "I have completed and
+    //    understood this training." Refused until every material was opened
+    //    and every checklist item ticked. Stamped with name + time, audited. ──
+    if (action === 'training_attest') {
+      if (body.agree !== true) return json({ error: 'Tick the agreement first' }, 400);
+      const { data: a } = await admin.from('wf_training_assignments')
+        .select('*, wf_training_modules(name, tasks, attachments)')
+        .eq('id', body.assignment_id).eq('staff_id', staff.id).maybeSingle();
+      if (!a) return json({ error: 'assignment not found' }, 404);
+      if (a.attested_at) return json({ ok: true, alreadyDone: true });
+      const files = Array.isArray(a.wf_training_modules?.attachments) ? a.wf_training_modules.attachments : [];
+      const openedIds = new Set((Array.isArray(a.opened_files) ? a.opened_files : []).map((f: any) => f.fileId));
+      const unopened = files.filter((f: any) => !openedIds.has(f.id));
+      if (unopened.length) return json({ error: `Open every material first — not yet opened: ${unopened.map((f: any) => f.name).join(', ')}` }, 400);
+      const taskIds = (Array.isArray(a.wf_training_modules?.tasks) ? a.wf_training_modules.tasks : []).map((t: any) => t.id);
+      const doneIds = new Set((Array.isArray(a.tasks_done) ? a.tasks_done : []).map((t: any) => t.taskId));
+      if (taskIds.some((id: string) => !doneIds.has(id))) return json({ error: 'Tick every checklist item first' }, 400);
+      const now = new Date().toISOString();
+      const attestation = { name: staff.name, at: now };
+      const { error } = await admin.from('wf_training_assignments')
+        .update({ attested_at: now, attestation, status: 'complete', completed_at: a.completed_at || now })
+        .eq('id', a.id);
+      if (error) return json({ error: error.message }, 500);
+      await audit(staff, 'training.attested', null, { module: a.wf_training_modules?.name, assignment: a.id, attestation });
+      try {
+        await admin.from('activity_events').insert({
+          location_id: staff.location_id, kind: 'staff', severity: 'info',
+          title: `${staff.name} completed training: ${a.wf_training_modules?.name || 'a module'}`,
+          body: 'Agreed as completed and understood, from the staff app.',
+          ref_type: 'wf_training_assignments', ref_id: String(a.id), actor_name: `${staff.name} (staff app)`,
+        });
+      } catch { /* best effort */ }
+      return json({ ok: true });
     }
 
     // ── timeoff_request: lands as 'pending' in BO Leave AND Manager approvals ──

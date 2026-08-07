@@ -66,7 +66,12 @@ export default function WfTraining({ ctx, staff, roles, showToast }) {
       await wf.assignTraining(module, staffIds, ctx.locationId, ctx.orgId, ctx?.actor?.name);
       setAssigning(null);
       await reload();
-      showToast(`Assigned to ${staffIds.length} ${staffIds.length === 1 ? 'person' : 'people'} — it appears in their staff app now`, 'success');
+      // Tell them: email + it is already in their app.
+      const due = new Date(); due.setDate(due.getDate() + (module.dueDays || 14));
+      const res = await Promise.allSettled(staffIds.map(id =>
+        wf.notifyTrainingAssigned(id, module.name, due.toISOString().slice(0, 10))));
+      const emailed = res.filter(r => r.status === 'fulfilled' && r.value?.sentTo).length;
+      showToast(`Assigned to ${staffIds.length} ${staffIds.length === 1 ? 'person' : 'people'}${emailed ? ` · ${emailed} emailed` : ''} — it is in their staff app now`, 'success');
     } catch (e) { showToast(e.message || 'Could not assign', 'error'); }
   }
 
@@ -101,7 +106,7 @@ export default function WfTraining({ ctx, staff, roles, showToast }) {
                     </div>
                     {mod.description && <div style={{ fontSize: 12.5, color: 'var(--t3)', marginTop: 4, lineHeight: 1.5 }}>{mod.description}</div>}
                     <div style={{ fontSize: 11.5, color: 'var(--t4)', marginTop: 6 }}>
-                      {mod.tasks.length} task{mod.tasks.length === 1 ? '' : 's'} · due {mod.dueDays} days after assignment
+                      {(mod.attachments?.length || 0) > 0 && <>{mod.attachments.length} material{mod.attachments.length === 1 ? '' : 's'} · </>}{mod.content ? 'written content · ' : ''}{mod.tasks.length > 0 && <>{mod.tasks.length} checklist point{mod.tasks.length === 1 ? '' : 's'} · </>}due {mod.dueDays} days after assignment
                       {list.length > 0 && <> · <b style={{ color: 'var(--t2)' }}>{complete}/{list.length} complete</b>{overdue > 0 && <b style={{ color: 'var(--red)' }}> · {overdue} overdue</b>}</>}
                     </div>
                   </div>
@@ -142,7 +147,7 @@ export default function WfTraining({ ctx, staff, roles, showToast }) {
       {editing && (
         <ModuleModal
           module={editing === 'new' ? null : editing}
-          roleList={roleList} roles={roles}
+          roleList={roleList} roles={roles} ctx={ctx}
           onSave={saveModule} onClose={() => setEditing(null)}
         />
       )}
@@ -158,16 +163,36 @@ export default function WfTraining({ ctx, staff, roles, showToast }) {
 }
 
 // ── module builder ───────────────────────────────────────────────────────────
-function ModuleModal({ module: mod, roleList, roles, onSave, onClose }) {
+function ModuleModal({ module: mod, roleList, roles, ctx, onSave, onClose }) {
   const [name, setName] = useState(mod?.name || '');
   const [description, setDescription] = useState(mod?.description || '');
   const [dueDays, setDueDays] = useState(String(mod?.dueDays ?? 14));
   const [autoAssign, setAutoAssign] = useState(!!mod?.autoAssign);
   const [autoRoles, setAutoRoles] = useState(mod?.autoAssignRoles || []);
-  const [tasks, setTasks] = useState(mod?.tasks?.length ? mod.tasks : [{ id: newTaskId(), title: '', detail: '' }]);
+  const [tasks, setTasks] = useState(mod?.tasks?.length ? mod.tasks : []);
+  const [content, setContent] = useState(mod?.content || '');
+  const [files, setFiles] = useState(mod?.attachments || []);
+  const [uploading, setUploading] = useState(false);
+  const [upErr, setUpErr] = useState('');
 
   const setTask = (i, k, v) => setTasks(ts => ts.map((t, j) => j === i ? { ...t, [k]: v } : t));
-  const valid = name.trim().length > 1 && tasks.some(t => t.title.trim());
+  // Real training needs SOMETHING to learn from — written content or a
+  // material. A bare checklist isn't training.
+  const valid = name.trim().length > 1 && (content.trim() || files.length > 0);
+
+  const addFiles = async (list) => {
+    const picked = Array.from(list || []);
+    if (!picked.length) return;
+    setUploading(true); setUpErr('');
+    try {
+      for (const f of picked) {
+        if (f.size > 25 * 1024 * 1024) { setUpErr(`${f.name} is over 25MB`); continue; }
+        const { path, name: nm } = await wf.uploadTrainingFile(f, ctx.locationId);
+        setFiles(cur => [...cur, { id: newTaskId(), name: nm, path }]);
+      }
+    } catch (e) { setUpErr(e.message || 'Upload failed'); }
+    finally { setUploading(false); }
+  };
 
   return (
     <div className="modal-back" onClick={e => e.target === e.currentTarget && onClose()}>
@@ -181,7 +206,34 @@ function ModuleModal({ module: mod, roleList, roles, onSave, onClose }) {
         <label style={{ ...labelStyle, marginTop: 12 }}>Description (optional)</label>
         <textarea style={{ ...inputStyle, height: 'auto', minHeight: 56, padding: '9px 12px', resize: 'vertical' }} value={description} onChange={e => setDescription(e.target.value)} placeholder="What this training covers and why it matters." />
 
-        <label style={{ ...labelStyle, marginTop: 12 }}>Tasks (in order)</label>
+        <label style={{ ...labelStyle, marginTop: 12 }}>Training content</label>
+        <textarea
+          style={{ ...inputStyle, height: 'auto', minHeight: 150, padding: '10px 12px', resize: 'vertical', lineHeight: 1.6 }}
+          value={content} onChange={e => setContent(e.target.value)}
+          placeholder={'What they need to know. Write it out in full \u2014 this is what they read and then agree they have understood.\n\ne.g. The 14 allergens, how we handle a customer allergy request, who to ask if you are unsure, and what we never do.'}
+        />
+
+        <label style={{ ...labelStyle, marginTop: 12 }}>Materials</label>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {files.map(f => (
+            <div key={f.id} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', borderRadius: 9, background: 'var(--inset)', border: '1px solid var(--inset-border)' }}>
+              <Icon name="tag" size={13} />
+              <span style={{ flex: 1, fontSize: 12.5, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.name}</span>
+              <button className="btn btn-ghost btn-xs" style={{ color: 'var(--t4)' }} onClick={() => setFiles(cur => cur.filter(x => x.id !== f.id))}><Icon name="close" size={12} /></button>
+            </div>
+          ))}
+        </div>
+        <label className="btn btn-ghost btn-sm" style={{ marginTop: 8, display: 'inline-flex', cursor: uploading ? 'default' : 'pointer' }}>
+          <Icon name="plus" size={13} /> {uploading ? 'Uploading…' : 'Add a document, slide deck or video'}
+          <input type="file" multiple style={{ display: 'none' }} disabled={uploading} onChange={e => { addFiles(e.target.files); e.target.value = ''; }} />
+        </label>
+        {upErr && <div style={{ color: 'var(--red)', fontSize: 12, fontWeight: 600, marginTop: 6 }}>{upErr}</div>}
+        <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 6, lineHeight: 1.5 }}>
+          Staff must OPEN every material before they can confirm the training \u2014 the app tracks it.
+        </div>
+
+        <label style={{ ...labelStyle, marginTop: 14 }}>Checklist (optional)</label>
+        <div style={{ fontSize: 10.5, color: 'var(--t4)', marginBottom: 6, lineHeight: 1.5 }}>Extra points they tick off as they go. The confirmation at the end is what completes the module.</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {tasks.map((t, i) => (
             <div key={t.id} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
@@ -190,11 +242,11 @@ function ModuleModal({ module: mod, roleList, roles, onSave, onClose }) {
                 <input style={inputStyle} value={t.title} onChange={e => setTask(i, 'title', e.target.value)} placeholder={`Task ${i + 1} — e.g. Read the allergen guide`} />
                 <input style={{ ...inputStyle, marginTop: 5, fontSize: 12 }} value={t.detail || ''} onChange={e => setTask(i, 'detail', e.target.value)} placeholder="Detail (optional) — where to find it, what good looks like" />
               </div>
-              <button className="btn btn-ghost btn-xs" style={{ marginTop: 8, color: 'var(--t4)' }} disabled={tasks.length === 1} onClick={() => setTasks(ts => ts.filter((_, j) => j !== i))}><Icon name="close" size={12} /></button>
+              <button className="btn btn-ghost btn-xs" style={{ marginTop: 8, color: 'var(--t4)' }} onClick={() => setTasks(ts => ts.filter((_, j) => j !== i))}><Icon name="close" size={12} /></button>
             </div>
           ))}
         </div>
-        <button className="btn btn-ghost btn-sm" style={{ marginTop: 8 }} onClick={() => setTasks(ts => [...ts, { id: newTaskId(), title: '', detail: '' }])}><Icon name="plus" size={13} /> Add task</button>
+        <button className="btn btn-ghost btn-sm" style={{ marginTop: 8 }} onClick={() => setTasks(ts => [...ts, { id: newTaskId(), title: '', detail: '' }])}><Icon name="plus" size={13} /> Add checklist point</button>
 
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginTop: 14 }}>
           <div>
@@ -229,6 +281,7 @@ function ModuleModal({ module: mod, roleList, roles, onSave, onClose }) {
           <button className="btn btn-acc btn-sm" disabled={!valid}
             onClick={() => onSave({
               ...(mod || {}), name: name.trim(), description: description.trim(),
+              content: content.trim(), attachments: files,
               dueDays, autoAssign, autoAssignRoles: autoAssign ? autoRoles : [],
               tasks: tasks.filter(t => t.title.trim()).map(t => ({ id: t.id, title: t.title.trim(), detail: (t.detail || '').trim() || null })),
               status: 'active',

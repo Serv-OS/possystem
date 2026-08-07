@@ -124,7 +124,29 @@ Deno.serve(async (req) => {
         if (k === 'role') return String(a.audience?.value || '').toLowerCase() === roleLc;
         return false; // section-targeted stay in the BO feed for now
       }).slice(0, 3).map((a: any) => ({ body: a.body, author: a.author_name, at: a.created_at }));
-      return json({ ok: true, staff: who, ...stateOf(open), announcements });
+      // v5.6.0 — outstanding work flagged AT THE CLOCK. The clock is the one
+      // surface everyone touches every shift, so it is where "you have training
+      // to do" actually gets seen. Read-only: they DO the training in the staff
+      // app on their own phone, never here (that would tie up the tablet).
+      let outstanding = { training: [], onboardingOpen: 0, total: 0 };
+      try {
+        const todayIso = now.toISOString().slice(0, 10);
+        const [{ data: tr }, { data: onbRows }] = await Promise.all([
+          admin.from('wf_training_assignments')
+            .select('due_date, status, wf_training_modules(name)')
+            .eq('staff_id', staff.id).eq('location_id', location_id).neq('status', 'complete'),
+          admin.from('wf_onboarding').select('steps').eq('staff_id', staff.id)
+            .order('created_at', { ascending: false }).limit(1),
+        ]);
+        const training = (tr ?? []).map((a: any) => ({
+          name: a.wf_training_modules?.name || 'Training',
+          due: a.due_date,
+          overdue: !!(a.due_date && a.due_date < todayIso),
+        }));
+        const onboardingOpen = ((onbRows?.[0]?.steps) || []).filter((st: any) => st.status !== 'complete').length;
+        outstanding = { training, onboardingOpen, total: training.length + onboardingOpen };
+      } catch (e) { console.error('[workforce-clock] outstanding:', (e as Error).message); }
+      return json({ ok: true, staff: who, ...stateOf(open), announcements, outstanding });
     }
 
     if (action === 'in') {

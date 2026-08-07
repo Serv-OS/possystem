@@ -176,6 +176,31 @@ export default function TimeClockSurface() {
           </div>
           {error && <div style={{ marginTop: 16, color: 'var(--red)', fontSize: 13, fontWeight: 600 }}>{error}</div>}
 
+          {/* Outstanding work (v5.6.0) — flagged at the clock because it is the
+              one surface everyone touches every shift. Read-only: they DO the
+              training in the staff app on their phone, never on this tablet. */}
+          {s.outstanding?.total > 0 && (() => {
+            const overdue = (s.outstanding.training || []).filter(t => t.overdue).length;
+            return (
+              <div style={{ marginTop: 26, textAlign: 'left', padding: '12px 14px', borderRadius: 12, border: `1px solid ${overdue ? 'var(--red-b)' : 'var(--amber)'}`, background: overdue ? 'rgba(224,49,49,.10)' : 'rgba(245,166,35,.10)' }}>
+                <div style={{ fontSize: 13.5, fontWeight: 800, color: overdue ? 'var(--red)' : 'var(--t1)' }}>
+                  {overdue > 0 ? `${overdue} training module${overdue === 1 ? '' : 's'} overdue` : `You have ${s.outstanding.total} thing${s.outstanding.total === 1 ? '' : 's'} to do`}
+                </div>
+                <div style={{ display: 'grid', gap: 3, marginTop: 6 }}>
+                  {(s.outstanding.training || []).slice(0, 4).map((t, i) => (
+                    <div key={i} style={{ fontSize: 12, color: 'var(--t2)' }}>
+                      • {t.name}{t.due ? <span style={{ color: t.overdue ? 'var(--red)' : 'var(--t4)' }}> — due {new Date(t.due + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}</span> : null}
+                    </div>
+                  ))}
+                  {s.outstanding.onboardingOpen > 0 && (
+                    <div style={{ fontSize: 12, color: 'var(--t2)' }}>• {s.outstanding.onboardingOpen} onboarding step{s.outstanding.onboardingOpen === 1 ? '' : 's'} to finish</div>
+                  )}
+                </div>
+                <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 8 }}>Open the ServOS Staff app on your phone to do these.</div>
+              </div>
+            );
+          })()}
+
           {/* Team announcements — the "in-app" channel from Workforce → Announcements */}
           {Array.isArray(s.announcements) && s.announcements.length > 0 && (
             <div style={{ marginTop: 26, textAlign: 'left' }}>

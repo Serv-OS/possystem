@@ -135,6 +135,12 @@ export async function sendPortalInvite(staffId) {
   return invokeFn('staff-portal', { action: 'invite', staff_id: staffId });
 }
 
+/** Email a staff member that training has been assigned to them. */
+export async function notifyTrainingAssigned(staffId, moduleName, due) {
+  if (isMock || !supabase) return { ok: true, mock: true };
+  return invokeFn('staff-portal', { action: 'notify_training', staff_id: staffId, module_name: moduleName, due });
+}
+
 /** Send a transactional email via the send-receipt edge function (generic html). */
 export async function sendEmail(to, subject, html, locationId) {
   if (isMock || !supabase) return { ok: true, mock: true };
@@ -870,11 +876,25 @@ export async function sendAnnouncementSms(ann, staff, locationId, venueName) {
 // ============================================================================
 const mapModule = r => ({
   id: r.id, name: r.name, description: r.description || '',
+  content: r.content || '',
+  attachments: Array.isArray(r.attachments) ? r.attachments : [],
   tasks: Array.isArray(r.tasks) ? r.tasks : [], dueDays: r.due_days ?? 14,
   status: r.status, source: r.source,
   autoAssign: !!r.auto_assign, autoAssignRoles: r.auto_assign_roles || [],
   createdAt: r.created_at,
 });
+/** Upload one training material to the private wf-documents bucket. Staff open
+ *  it via short-lived signed URLs served by the staff-portal fn — the raw path
+ *  never reaches the staff client. */
+export async function uploadTrainingFile(file, locationId) {
+  if (isMock || !supabase || !locationId) return { path: null, name: file?.name || null };
+  const ext = (String(file.name).split('.').pop() || 'pdf').toLowerCase().replace(/[^a-z0-9]/g, '');
+  const safe = String(file.name).replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9 _-]/g, '').slice(0, 60) || 'material';
+  const path = `${locationId}/training/${Date.now()}-${safe}.${ext}`;
+  const { error } = await supabase.storage.from(DOCS_BUCKET).upload(path, file, { upsert: false, contentType: file.type });
+  if (error) throw new Error(error.message);
+  return { path, name: file.name };
+}
 export async function loadTrainingModules(locationId) {
   if (isMock || !supabase) return lsGet('train_mods');
   if (!locationId) return [];
@@ -889,6 +909,8 @@ export async function saveTrainingModule(mod, locationId, orgId) {
   const row = {
     location_id: locationId, org_id: org, name: mod.name,
     description: mod.description || null,
+    content: mod.content || null,
+    attachments: (mod.attachments || []).filter(a => a && a.path),
     tasks: (mod.tasks || []).filter(t => t && t.title),
     due_days: Math.min(365, Math.max(1, parseInt(mod.dueDays, 10) || 14)),
     status: mod.status || 'active', source: mod.source || 'manual',
