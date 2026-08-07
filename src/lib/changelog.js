@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.7', date: '7 Aug 2026', label: 'Venue owners and managers can grant Back Office access',
+    changes: [
+      'Granting Back Office access from the Team page demanded a platform-level super admin, so a venue owner adding their own manager got "Requires super_admin". An owner or manager of a venue can now grant access to THAT venue.',
+      'The relaxation is deliberately narrow, because loosening this carelessly would be dangerous: the venue must be one the caller actually runs, the organisation comes from our records rather than the request, the granted role can never exceed the caller\u2019s own and never super admin, and if the email already has an account that account\u2019s profile is left untouched \u2014 it only gains access to this one venue, and a platform administrator\u2019s account cannot be touched at all.',
+      'Second bug in the same flow: even when it did work, the screen read the wrong field from the reply, so the user was created but never linked to the staff member. Fixed \u2014 the link now lands, which is also what makes the onboarding "Till access" tie-up work for Back Office users.',
+    ],
+  },
+  {
     version: '5.6.6', date: '7 Aug 2026', label: 'Adyen programme: partner answers folded into the plan',
     changes: [
       'Documentation only. The payment partner\u2019s answers are digested into ADYEN_INTEGRATION_PLAN.md \u00a70.5: revised account structure, our cost table, the open rates questions and the full chase list.',

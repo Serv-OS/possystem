@@ -24,10 +24,37 @@ Deno.serve(async (req) => {
     if (!caller) return new Response(JSON.stringify({ error: 'Invalid token' }), { status: 401, headers: corsHeaders });
 
     const { data: profile } = await supabaseAdmin.from('user_profiles').select('role').eq('id', caller.id).single();
-    if (profile?.role !== 'super_admin') return new Response(JSON.stringify({ error: 'Requires super_admin' }), { status: 403, headers: corsHeaders });
+    const isSuper = profile?.role === 'super_admin';
 
-    // Create the new user
-    const { email, password, fullName, orgId, locationId, role } = await req.json();
+    let { email, password, fullName, orgId, locationId, role } = await req.json();
+
+    // v5.6.7 — a venue OWNER or MANAGER may grant Back Office access to THEIR
+    // OWN venue (Peter, 7 Aug: "as an admin of that location I should be able
+    // to add someone else"). This was super_admin-only. The relaxation is
+    // deliberately narrow, because this function can also MODIFY existing
+    // users, which is where the privilege escalation lives:
+    //   - the venue is the caller's own (user_locations row), never from the body
+    //   - orgId is resolved server-side from that venue, never trusted
+    //   - the granted role is capped at the caller's own rank, never super_admin
+    //   - an existing user's PROFILE is never rewritten by a non-super caller —
+    //     they only gain a user_locations row for this one venue (rewriting
+    //     org_id/role on an arbitrary email would let a venue manager hijack
+    //     or downgrade any account on the platform, including a super_admin's)
+    const RANK: Record<string, number> = { manager: 1, owner: 2 };
+    let callerRank = 0;
+    if (!isSuper) {
+      if (!locationId) return new Response(JSON.stringify({ error: 'Pick a location — venue admins grant access per venue' }), { status: 400, headers: corsHeaders });
+      const { data: ul } = await supabaseAdmin.from('user_locations')
+        .select('role').eq('user_id', caller.id).eq('location_id', locationId).maybeSingle();
+      callerRank = RANK[String(ul?.role || '').toLowerCase()] || 0;
+      if (!callerRank) return new Response(JSON.stringify({ error: 'Only an owner or manager of this venue can grant Back Office access' }), { status: 403, headers: corsHeaders });
+      const { data: locRow } = await supabaseAdmin.from('locations').select('org_id').eq('id', locationId).maybeSingle();
+      if (!locRow) return new Response(JSON.stringify({ error: 'Unknown location' }), { status: 400, headers: corsHeaders });
+      orgId = locRow.org_id;                                  // server truth, not the body
+      const wanted = String(role || 'manager').toLowerCase();
+      role = (RANK[wanted] && RANK[wanted] <= callerRank) ? wanted : 'manager';
+    }
+
     if (!email || !password || !orgId) return new Response(JSON.stringify({ error: 'email, password and orgId required' }), { status: 400, headers: corsHeaders });
 
     const { data: newUser, error: createErr } = await supabaseAdmin.auth.admin.createUser({
@@ -65,6 +92,22 @@ Deno.serve(async (req) => {
       }
     }
 
+    if (alreadyExisted && !isSuper) {
+      // The email already has an account. A venue admin may grant that account
+      // access to THIS venue, but never rewrite its profile — and never touch
+      // a platform admin's account at all.
+      const { data: target } = await supabaseAdmin.from('user_profiles').select('role').eq('id', userId).maybeSingle();
+      if (target?.role === 'super_admin') {
+        return new Response(JSON.stringify({ error: 'That email belongs to a platform administrator' }), { status: 403, headers: corsHeaders });
+      }
+      await supabaseAdmin.from('user_locations')
+        .upsert({ user_id: userId, location_id: locationId, role: role || 'manager' },
+                { onConflict: 'user_id,location_id' });
+      return new Response(JSON.stringify({ success: true, userId, id: userId, email, alreadyExisted: true, note: 'Existing login — granted access to this venue; their password is unchanged' }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
     // Update their profile with org/location. v5.5.305: also write email —
     // the handle_new_user trigger now copies it, but set it explicitly here
     // too so the profile is fully populated regardless of trigger state.
@@ -84,7 +127,7 @@ Deno.serve(async (req) => {
                 { onConflict: 'user_id,location_id' });
     }
 
-    return new Response(JSON.stringify({ success: true, userId, email, alreadyExisted }), {
+    return new Response(JSON.stringify({ success: true, userId, id: userId, email, alreadyExisted }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
   } catch (err) {

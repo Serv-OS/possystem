@@ -365,7 +365,7 @@ export default function StaffManager() {
       });
       const result = await resp.json();
       if (result.error) { setGrantError(result.error); setGrantBusy(false); return; }
-      const newUserId = result.id;
+      const newUserId = result.userId || result.id;   // fn returns userId; result.id kept for compat
       if (!newUserId) { setGrantError('Edge function did not return a user id'); setGrantBusy(false); return; }
 
       // Link the new auth user to this staff_member.
