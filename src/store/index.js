@@ -377,7 +377,7 @@ export const useStore = create((set, get) => ({
   // ── Auth ──────────────────────────────────
   staff: null,
   staffMembers: isMock ? STAFF_SEED : [],
-  addStaffMember:    s    => set(st => ({ staffMembers: [...st.staffMembers, { ...s, id:`s-${Date.now()}` }] })),
+  addStaffMember:    s    => set(st => ({ staffMembers: [...st.staffMembers, { ...s, id: s.id || `s-${Date.now()}` }] })),
   updateStaffMember: (id,patch) => set(st => ({ staffMembers: st.staffMembers.map(s => s.id===id ? {...s,...patch} : s) })),
   removeStaffMember: id  => set(st => ({ staffMembers: st.staffMembers.filter(s => s.id!==id) })),
   // v5.5.734: per-operator counter checkout on a shared till. When the operator changes, the

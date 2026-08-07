@@ -143,9 +143,23 @@ export default function Workforce({ section, orgCtx }) {
     // fired regardless. Peter watched it claim success while the database
     // stayed untouched. Both writes are now checked, the optimistic state is
     // reverted on failure, and the toast tells the truth.
-    const id = `s-${Date.now()}`;
+    // v5.6.5 — staff_members.id and wf_staff.pos_user_id are BOTH uuid columns.
+    // This used to send the screen-local `s-<timestamp>` id straight into them,
+    // so the insert failed with 'invalid input syntax for type uuid' EVERY time
+    // since the feature shipped — invisible until v5.6.2 stopped swallowing the
+    // error. The Team page works because it lets the DB generate the uuid; here
+    // we need the id up front (it links the HR record), so mint a real one.
+    const id = crypto.randomUUID();
+    // Same duplicate-PIN guard the Team page has — two people on one PIN makes
+    // till login ambiguous, and the DB would accept it.
+    const clash = (useStore.getState().staffMembers || []).find(m => m.active !== false && m.pin && m.pin === pin);
+    if (clash) {
+      setPosFor(null);
+      showToast?.(`That PIN is already used by ${clash.name} — pick another`, 'error');
+      return;
+    }
     const member = { id, name: s.name, role, pin, color: '#3b82f6', initials: initials(s.name), permissions: [], active: true };
-    addStaffMember(member); // immediate — shows on the Team page
+    addStaffMember(member); // immediate — shows on the Team page (store keeps OUR id now)
     try {
       if (supabase && orgCtx?.locationId) {
         const { error } = await supabase.from('staff_members').upsert({ id, location_id: orgCtx.locationId, org_id: orgCtx.orgId || null, name: s.name, role, pin, color: '#3b82f6', initials: initials(s.name), permissions: [], active: true });

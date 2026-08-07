@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.5', date: '7 Aug 2026', label: '\u201cSet as POS user\u201d from Workforce works for the first time ever',
+    changes: [
+      'The error the fixed screen finally showed (\u201cinvalid input syntax for type uuid\u201d) revealed the truth: this feature has NEVER worked. Not once, for anyone. It sent a made-up screen id like \u201cs-1786120662470\u201d into a database column that only accepts real UUIDs, so the save failed every single time \u2014 and until yesterday the failure was swallowed and a green success message shown anyway.',
+      'The Team page never hit this because it lets the database pick the id. Workforce needs the id up front to link the HR record, so it now generates a proper UUID.',
+      'Also added the same duplicate-PIN check the Team page has \u2014 two people sharing a PIN would make till login a coin toss, and nothing at the database stops it.',
+      'The local Team list also kept a different id than the database for newly added people until the next reload; it now keeps the real one.',
+      'Refresh the Back Office, then Workforce \u2192 Staff \u2192 Set as POS user for William \u2014 third time genuinely lucky: the first two attempts failed on this exact bug, one silently, one honestly.',
+    ],
+  },
+  {
     version: '5.6.4', date: '7 Aug 2026', label: 'Refresh button shows its icon',
     changes: [
       'The staff app refresh button showed the text "\\u21bb" instead of the \u21bb symbol \u2014 an escape code that works inside quotes but not in plain markup, so the sun/moon button worked and this one did not. Real symbols everywhere now.',
