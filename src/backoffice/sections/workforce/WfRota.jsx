@@ -347,7 +347,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       // Heal legacy label-keyed steps from meta evidence FIRST — the Onboarding
       // screen does this on load, and the gate must agree with what that screen
       // shows or a person displayed as "Completed" gets blocked here.
-      setOnbCases((ob || []).map(normalizeCase));
+      setOnbCases((ob || []).map(c => normalizeCase(c, (staff || []).find(m => m.id === c.staffId))));
     } catch (e) {
       showToast('Could not load the rota: ' + e.message, 'error');
     } finally {

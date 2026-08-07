@@ -41,25 +41,39 @@ export const missingSteps = (c, member) => (c?.steps || [])
 // the current STEPS, inferring completion from the meta evidence each action
 // leaves behind. The healed shape persists on the next save.
 const LEGACY_KEY_MAP = { 'Offer accepted': 'offer', 'Right to work': 'rtw', 'Contract signed': 'contract', 'Bank & tax details': 'bank', 'POS user created': 'posUser' };
-export function normalizeCase(c) {
+//
+// v5.6.1 — DERIVE ALWAYS, for every case, not just legacy ones. This used to
+// early-return whenever a case already carried the five modern keys, so the
+// evidence inference only ever healed LEGACY rows. For a modern case the step
+// status was purely whatever some write path had imperatively ticked — and any
+// writer that forgot left it "pending" forever with the evidence sitting right
+// there. That is exactly what happened when bank details were added from the
+// staff app: wf_staff.bank_account_masked was set, the step stayed pending.
+//
+// The staff RECORD is evidence too, not just onboarding meta. Bank details and
+// POS access live on wf_staff, so wherever they are entered — staff app, Back
+// Office, Manager app — the step closes with no write site needing to know.
+// Explicitly-complete steps are never downgraded.
+export function normalizeCase(c, staff = null) {
   const meta = c.meta || {};
-  const have = new Set((c.steps || []).map(s => s.key));
-  if (STEPS.every(s => have.has(s.key))) return c;
   const legacy = {};
   (c.steps || []).forEach(s => { const k = LEGACY_KEY_MAP[s.key] || s.key; legacy[k] = s; });
   const inferred = {
-    offer: meta.offerSentAt ? { status: 'complete', completedAt: meta.offerSentAt } : null,
+    offer: meta.offerAccepted ? { status: 'complete', completedAt: meta.offerAccepted.acceptedAt || null }
+      : meta.offerSentAt ? { status: 'complete', completedAt: meta.offerSentAt } : null,
     rtw: meta.rtwPath ? { status: 'complete', completedAt: null } : null,
     contract: meta.signature ? { status: 'complete', completedAt: meta.signature.signedAt || null }
       : (meta.contractHtml || meta.contractPath) ? { status: 'sent', completedAt: null } : null,
-    bank: meta.bankMasked ? { status: 'complete', completedAt: meta.bankCapturedAt || null } : null,
-    posUser: null,
+    // Either source counts — the staff record is the one that actually pays them.
+    bank: (meta.bankMasked || staff?.bankMasked) ? { status: 'complete', completedAt: meta.bankCapturedAt || null } : null,
+    posUser: staff?.posUserId ? { status: 'complete', completedAt: null } : null,
   };
   const steps = STEPS.map(({ key }) => {
     const old = legacy[key];
     if (old?.status === 'complete') return { key, status: 'complete', completedAt: old.completedAt || null };
     const inf = inferred[key];
-    return inf ? { key, ...inf } : { key, status: 'pending', completedAt: null };
+    if (inf) return { key, ...inf };
+    return { key, status: old?.status || 'pending', completedAt: old?.completedAt || null };
   });
   const status = steps.every(s => s.status === 'complete') ? 'complete' : 'inProgress';
   return { ...c, steps, status };
@@ -118,7 +132,10 @@ export default function WfOnboarding({ ctx, staff = [], roles, sections, setting
 
   async function reload() {
     setLoading(true);
-    try { setCases((await wf.loadOnboarding(ctx.locationId) || []).map(normalizeCase)); }
+    try {
+      const byId = Object.fromEntries((staff || []).map(x => [x.id, x]));
+      setCases((await wf.loadOnboarding(ctx.locationId) || []).map(c => normalizeCase(c, byId[c.staffId])));
+    }
     catch (e) { showToast(e.message || 'Could not load onboarding', 'error'); }
     finally { setLoading(false); }
   }
@@ -134,7 +151,7 @@ export default function WfOnboarding({ ctx, staff = [], roles, sections, setting
     setCases(prev => prev.map(x => x.id === c.id ? next : x));
     // Rethrow on failure — callers show their own toast. Swallowing here let
     // actions report success while the step save had actually failed.
-    try { const saved = await wf.saveOnboarding(next, ctx.locationId, ctx.orgId); setCases(prev => prev.map(x => x.id === c.id ? normalizeCase(saved) : x)); return saved; }
+    try { const saved = await wf.saveOnboarding(next, ctx.locationId, ctx.orgId); setCases(prev => prev.map(x => x.id === c.id ? normalizeCase(saved, (staff || []).find(m => m.id === saved.staffId)) : x)); return saved; }
     catch (e) { reload(); throw e; }
   };
 

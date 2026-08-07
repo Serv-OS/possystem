@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.1', date: '7 Aug 2026', label: 'Onboarding now reads the evidence instead of waiting to be told',
+    changes: [
+      'BUG: adding bank details from the staff app left the Back Office onboarding step showing "pending", even though the bank details were saved on the staff record. Reported from a real run-through.',
+      'The cause was bigger than the symptom. Onboarding steps were only ticked when some piece of code remembered to tick them. There was a healing routine that works out each step from the evidence, but it SKIPPED any onboarding case created in the current format \u2014 it only ever repaired old ones. So for every current staff member, a step stayed pending forever if any single write path forgot, with the evidence sitting right there in the database.',
+      'Now every case works its steps out from the evidence, every time. Bank details and till access live on the staff record, so that record is treated as evidence too \u2014 enter bank details in the staff app, the Back Office or the Manager app and the step closes on its own. No screen has to remember to tell it.',
+      'This also feeds the rota gate, so nobody gets blocked from a shift over a step the system already had proof of.',
+      'A manually ticked step is never un-ticked by this, and old-format cases still repair as before.',
+      'Your existing records fix themselves \u2014 the status is worked out fresh each time the screen loads, so no data needed correcting.',
+    ],
+  },
+  {
     version: '5.6.0', date: '7 Aug 2026', label: 'Real training (content + sign-off), notifications, and a critical security fix',
     changes: [
       '\u26a0 SECURITY \u2014 fixed within the hour, nothing was exploited: an adversarial review of yesterday\u2019s staff app found that the invite flow could be turned into a password reset for ANY account, including an owner\u2019s Back Office login. The staff-app identity fields are now locked at the database so no one can point a staff record at someone else\u2019s account, the invite now verifies the email actually matches before setting any password, and it refuses outright to touch a Back Office login. Only owners, admins and managers can send invites.',
