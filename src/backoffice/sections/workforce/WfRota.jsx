@@ -11,7 +11,7 @@ import { Card, EmptyState, Badge, RoleChip, money, th, td, inputStyle, labelStyl
 import * as wf from '../../../staff/wfData';
 import { buildWeek, addWeeks, weekRangeLabel, ymd } from '../../../staff/wfWeek';
 import { bucketShiftsBySection, UNASSIGNED } from '../../../staff/rotaSections.js';
-import { caseDone, missingSteps } from './WfOnboarding';
+import { caseDone, missingSteps, normalizeCase } from './WfOnboarding';
 import { hoursOf, resolveRate, resolveRateOn, labourPct, venueBreakPolicy } from '../../../staff/labour';
 // Clash logic (shift overlap = hard block; approved leave / unavailable day =
 // soft warning, place anyway) is pure + unit-tested in wfClash.js.
@@ -344,7 +344,10 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       setTimeOff(lv || []);
       setAvail(av || []);
       setRateChanges(rc || []);
-      setOnbCases(ob || []);
+      // Heal legacy label-keyed steps from meta evidence FIRST — the Onboarding
+      // screen does this on load, and the gate must agree with what that screen
+      // shows or a person displayed as "Completed" gets blocked here.
+      setOnbCases((ob || []).map(normalizeCase));
     } catch (e) {
       showToast('Could not load the rota: ' + e.message, 'error');
     } finally {

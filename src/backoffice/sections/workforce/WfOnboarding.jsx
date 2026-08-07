@@ -41,7 +41,7 @@ export const missingSteps = (c, member) => (c?.steps || [])
 // the current STEPS, inferring completion from the meta evidence each action
 // leaves behind. The healed shape persists on the next save.
 const LEGACY_KEY_MAP = { 'Offer accepted': 'offer', 'Right to work': 'rtw', 'Contract signed': 'contract', 'Bank & tax details': 'bank', 'POS user created': 'posUser' };
-function normalizeCase(c) {
+export function normalizeCase(c) {
   const meta = c.meta || {};
   const have = new Set((c.steps || []).map(s => s.key));
   if (STEPS.every(s => have.has(s.key))) return c;
