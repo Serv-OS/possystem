@@ -7,6 +7,12 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.13', date: '10 Aug 2026', label: 'HubRise charges classified by ref, per the review',
+    changes: [
+      'Charges on inbound platform orders (delivery fee, service charge, bag fee, tips) were decoded by NAME and amount \u2014 the reference code rode along unused. The reviewer\u2019s rule is now applied exactly: ref SER = service charge, ref DEL or any other code = delivery charge, and a charge with no code keeps the platform\u2019s own type. The display name and amount stay exactly as the platform sent them \u2014 the classification is for reports and reconciliation, not a relabel.',
+    ],
+  },
+  {
     version: '5.6.12', date: '10 Aug 2026', label: 'Little wins: holiday-day setting, bank-alert rules, honest wording, payment refs ready',
     changes: [
       'NEW SETTING: \u201cNew starter holiday day (hours)\u201d in Workforce settings \u2014 what a day of leave is worth before someone has timesheet history (was a hidden 8). Once they have real worked weeks, their own 52-week average takes over automatically.',

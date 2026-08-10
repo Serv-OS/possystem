@@ -433,10 +433,24 @@ export function orderToQueueRow(order: any, opts: { locationId: string }): { row
   // Charges (delivery fee, bag fee, service charge, tip) and order-level discounts. order.total
   // already nets these, but HubRise wants them decoded — keep them so the kitchen/floor + reports
   // can reconcile the headline total. Money strings -> numeric amounts.
+  // Classify each charge by REF — the HubRise reviewer's exact rule (10 Aug):
+  //   ref 'SER'        -> service charge
+  //   ref 'DEL'        -> delivery charge
+  //   any OTHER ref    -> delivery charge
+  // A charge with NO ref keeps HubRise's own type when present ('delivery',
+  // 'service', 'tip', 'bag'…), else delivery. Name + amount stay verbatim for
+  // display — kind is for reports/reconciliation, never a relabel.
+  const chargeKind = (ref: unknown, type: unknown): string => {
+    const r = String(ref || '').toUpperCase();
+    if (r === 'SER') return 'service';
+    if (r) return 'delivery';
+    return String(type || 'delivery').toLowerCase();
+  };
   const charges = (order.charges || []).map((ch: any) => ({
     name: ch.name || ch.type || 'Charge',
     ref: ch.ref || null,
     type: ch.type || null,
+    kind: chargeKind(ch.ref, ch.type),
     amount: parseMoney(ch.price).amount,
   }));
   const discounts = (order.discounts || []).map((d: any) => ({
