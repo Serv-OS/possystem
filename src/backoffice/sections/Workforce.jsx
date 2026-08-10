@@ -14,7 +14,7 @@ import { supabase } from '../../lib/supabase';
 import { Icon } from '../../components/ServOSIcons';
 import { DAYS, TODAY, SECTIONS, ROLES, SECTION_REQ, FORECAST, PAYROWS } from '../../staff/seed';
 import { hoursOf, effectiveRate, wageByDay, labourPct, LABOUR_TARGET, troncRun, tsVariance, isHourly, FIXED_HOLIDAY_DAYS } from '../../staff/labour';
-import { loadStaff, saveStaff, softDeleteStaff, markPosUser, loadRoles, loadSections, loadSettings, loadDocuments, loadTimesheets, loadOnboarding, loadAccrual, accrualBalances, signedDocUrl, saveStaffBank, saveOnboarding, sendEmail, sendPortalInvite } from '../../staff/wfData';
+import { loadStaff, saveStaff, offboardStaff, markPosUser, loadRoles, loadSections, loadSettings, loadDocuments, loadTimesheets, loadOnboarding, loadAccrual, accrualBalances, signedDocUrl, saveStaffBank, saveOnboarding, sendEmail, sendPortalInvite } from '../../staff/wfData';
 import { buildWeek } from '../../staff/wfWeek';
 import WfRota from './workforce/WfRota';
 import { PickTemplateModal, freshSteps, genToken, toHtml, signEmailHtml, normalizeCase } from './workforce/WfOnboarding';
@@ -145,15 +145,30 @@ export default function Workforce({ section, orgCtx }) {
       const bal = (rows || []).filter(r => r.staffId === id)
         .reduce((a, r) => a + Number(r.accruedHours ?? r.accrued_hours ?? 0), 0);
       const person = staff.find(x => x.id === id);
+      // v5.6.10 — the dialog states EVERYTHING that is about to happen, and the
+      // access revocation is part of the same server action as the archive:
+      // before this, a leaver's till PIN and Back Office login kept working
+      // until someone remembered two separate manual toggles.
+      const accessNote = '\n\nArchiving also signs them out for good: their till PIN stops working, their Back Office access to this venue is removed, and their staff app locks.';
       if (Math.abs(bal) >= 0.05) {
         const msg = bal > 0
-          ? `${person?.name || 'This person'} leaves with ${bal.toFixed(1)} hours of accrued holiday UNTAKEN.\n\nThat is owed to them — add it to their final payroll before archiving.\n\nArchive now?`
-          : `${person?.name || 'This person'} leaves ${Math.abs(bal).toFixed(1)} hours OVERDRAWN on holiday.\n\nThat was paid but never accrued — recover it from their final pay if their contract allows.\n\nArchive now?`;
+          ? `${person?.name || 'This person'} leaves with ${bal.toFixed(1)} hours of accrued holiday UNTAKEN.\n\nThat is owed to them — approve a final paid-holiday request (or add it to their final payroll) BEFORE archiving.${accessNote}\n\nArchive now?`
+          : `${person?.name || 'This person'} leaves ${Math.abs(bal).toFixed(1)} hours OVERDRAWN on holiday.\n\nThat was paid but never accrued — recover it from their final pay if their contract allows.${accessNote}\n\nArchive now?`;
         if (!confirm(msg)) return;
-      }
+      } else if (!confirm(`Archive ${person?.name || 'this person'} as a leaver?${accessNote}`)) return;
     } catch (e) { console.warn('[wf] leaver balance check:', e?.message || e); }
-    setStaff(st => st.filter(x => x.id !== id)); // soft-delete (leaver) — history preserved
-    try { await softDeleteStaff(id); } catch (e) { console.warn('[wf] remove:', e?.message || e); }
+    const prev = staff;
+    setStaff(st => st.filter(x => x.id !== id)); // optimistic; server does the real work
+    try {
+      const r = await offboardStaff(id);
+      const bits = [];
+      if (r?.posDeactivated) bits.push('till PIN deactivated');
+      if (r?.boVenueRevoked) bits.push(r?.boLoginDisabled ? 'Back Office login disabled' : 'Back Office access to this venue removed');
+      showToast?.(`Archived as a leaver${bits.length ? ` · ${bits.join(' · ')}` : ''}`, 'success');
+    } catch (e) {
+      setStaff(prev);
+      showToast?.(`NOT archived — ${e.message || 'the change was rejected'}`, 'error');
+    }
   };
 
   const setAsPosUser = async (s, { pin, role }) => {

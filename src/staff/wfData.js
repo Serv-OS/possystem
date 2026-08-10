@@ -135,6 +135,15 @@ export async function sendPortalInvite(staffId) {
   return invokeFn('staff-portal', { action: 'invite', staff_id: staffId });
 }
 
+/** Offboard a leaver SERVER-side: marks the HR record, deactivates their POS
+ *  PIN, revokes this venue's Back Office access (disabling the login entirely
+ *  only when no venue remains), and kills any live app invite. Returns what
+ *  was actually revoked so the screen can say so truthfully. */
+export async function offboardStaff(staffId) {
+  if (isMock || !supabase) { lsDelete('staff', staffId); return { ok: true, mock: true }; }
+  return invokeFn('staff-portal', { action: 'offboard', staff_id: staffId });
+}
+
 /** Email a staff member that training has been assigned to them. */
 export async function notifyTrainingAssigned(staffId, moduleName, due) {
   if (isMock || !supabase) return { ok: true, mock: true };

@@ -212,6 +212,64 @@ Deno.serve(async (req) => {
       return json({ ok: true, training, onboardingOpen: onbOpen, total: training.length + onbOpen });
     }
 
+    // ── offboard: mark a leaver AND revoke every kind of access, atomically.
+    //    Before v5.6.10 archiving only flipped wf_staff.status — the person's
+    //    till PIN and Back Office login kept working until someone remembered
+    //    two separate manual toggles. BO access is revoked PER VENUE (people
+    //    work at more than one); the login itself is only disabled when no
+    //    venue remains. Super-admin accounts are never touched. ──────────────
+    if (action === 'offboard') {
+      const { data: staffRow } = await admin.from('wf_staff').select('*').eq('id', body.staff_id).maybeSingle();
+      if (!staffRow) return json({ error: 'staff member not found' }, 404);
+      const caller = await callerManagesLocation(req, staffRow.location_id);
+      if (!caller.ok) return json({ error: 'Only an owner or manager of this venue can offboard staff' }, 403);
+
+      const done: Record<string, unknown> = { posDeactivated: false, boVenueRevoked: false, boLoginDisabled: false };
+
+      // 1. The HR record: leaver + date (idempotent).
+      const today = new Date().toISOString().slice(0, 10);
+      const { error: hrErr } = await admin.from('wf_staff')
+        .update({ status: 'leaver', leaver_date: staffRow.leaver_date || today }).eq('id', staffRow.id);
+      if (hrErr) return json({ error: hrErr.message }, 500);
+
+      // 2. The till: deactivate their POS user so the PIN stops working.
+      let authUserId: string | null = null;
+      if (staffRow.pos_user_id) {
+        const { data: member } = await admin.from('staff_members')
+          .select('id, auth_user_id, active').eq('id', staffRow.pos_user_id).maybeSingle();
+        if (member) {
+          authUserId = member.auth_user_id || null;
+          const { error } = await admin.from('staff_members').update({ active: false }).eq('id', member.id);
+          done.posDeactivated = !error;
+        }
+      }
+
+      // 3. Back Office: drop THIS venue's access row; disable the login only
+      //    when that was their last venue. Never a super_admin's account.
+      if (authUserId) {
+        const { data: prof } = await admin.from('user_profiles').select('role').eq('id', authUserId).maybeSingle();
+        if (prof?.role !== 'super_admin') {
+          const { error: delErr } = await admin.from('user_locations')
+            .delete().eq('user_id', authUserId).eq('location_id', staffRow.location_id);
+          done.boVenueRevoked = !delErr;
+          const { data: remaining } = await admin.from('user_locations')
+            .select('location_id').eq('user_id', authUserId).limit(1);
+          if (!remaining?.length) {
+            const { error: boErr } = await admin.from('user_profiles').update({ bo_access: false }).eq('id', authUserId);
+            done.boLoginDisabled = !boErr;
+          }
+        }
+      }
+
+      // 4. The staff app locks leavers out by itself (staffFromJwt refuses
+      //    status='leaver'), and any pending invite dies with the status too —
+      //    but clear the invite token so a live emailed link is dead tonight.
+      await admin.from('wf_staff').update({ portal_invite_hash: null, portal_invite_expires: null }).eq('id', staffRow.id);
+
+      await audit(staffRow, 'staff.offboarded', { status: staffRow.status }, { by: caller.name, ...done });
+      return json({ ok: true, ...done });
+    }
+
     // ── accept_invite: the emailed link lands here with their chosen password ──
     if (action === 'accept_invite') {
       const token = String(body.token || ''); const password = String(body.password || '');

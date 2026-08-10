@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.10', date: '10 Aug 2026', label: 'Archiving a leaver now signs them out of everything',
+    changes: [
+      'Until now, marking someone as a leaver only changed their HR record. Their TILL PIN kept working and their Back Office login kept working, until someone remembered two separate manual switches nobody was told about.',
+      'Archiving now does it all in one server-side action: the HR record is marked, their till PIN is deactivated, their Back Office access to this venue is removed, any un-used staff app invite link is killed, and the staff app locks them out.',
+      'Back Office access is removed PER VENUE, because people work at more than one \u2014 leaving one venue does not log them out of another. Only when their last venue is gone is the login itself disabled. A platform administrator\u2019s account is never touched.',
+      'The confirmation dialog now says all of this before you press it, on top of the existing holiday settle-up (owed to them, or owed back). The toast afterwards reports exactly what was revoked.',
+      'Only an owner or manager of the venue can offboard, and the action is recorded in the audit trail with who did it.',
+    ],
+  },
+  {
     version: '5.6.9', date: '10 Aug 2026', label: 'Mark which days of a request are annual leave \u2014 and which are just days off',
     changes: [
       'A 7-day request from a Mon\u2013Fri full-timer is 5 days of holiday and 2 ordinary days off \u2014 only the 5 should deduct. The approval card now shows one chip per requested day, marked green (annual leave, deducts) or grey (normal day off).',
