@@ -97,15 +97,15 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
     const troncCol = !isUK ? 'Pooled tips' : troncFree ? 'Tronc tips (PAYE, no NIC - independent troncmaster)' : 'Pooled tips (PAYE + NIC - employer allocated)';
     const directCol = !isUK ? 'Direct tips' : troncFree ? 'Direct tips via tronc (PAYE, no NIC)' : 'Direct tips (PAYE + NIC - employer allocated)';
     const rows = [
-      ['First name', 'Surname', 'NI number', 'Period start', 'Period end', 'Hours', 'Basic pay', troncCol, directCol, 'Gross total', 'Account name', 'Sort code', 'Account number'],
+      ['First name', 'Surname', 'NI number', 'Period start', 'Period end', 'Hours', 'Basic pay', 'Holiday hours', 'Holiday pay', troncCol, directCol, 'Gross total', 'Account name', 'Sort code', 'Account number'],
       ...run.staff.map(r => {
         const s = staffById[r.staff_id] || {};
         const parts = String(s.name || nameOf(r.staff_id)).trim().split(/\s+/);
         const first = parts.slice(0, -1).join(' ') || parts[0] || '';
         const last = parts.length > 1 ? parts[parts.length - 1] : '';
-        return [first, last, s.niNumber || '', period.startIso, period.endIso, r.hours.toFixed(2), r.pay.toFixed(2), r.tips_tronc.toFixed(2), r.tips_direct.toFixed(2), r.total.toFixed(2), s.bankAccountName || '', s.bankSortCode || '', s.bankAccount || s.bankMasked || ''];
+        return [first, last, s.niNumber || '', period.startIso, period.endIso, r.hours.toFixed(2), r.pay.toFixed(2), Number(r.holiday_hours || 0).toFixed(2), Number(r.holiday_pay || 0).toFixed(2), r.tips_tronc.toFixed(2), r.tips_direct.toFixed(2), r.total.toFixed(2), s.bankAccountName || '', s.bankSortCode || '', s.bankAccount || s.bankMasked || ''];
       }),
-      ['TOTAL', '', '', '', '', '', run.totals.pay.toFixed(2), run.totals.tips_tronc.toFixed(2), run.totals.tips_direct.toFixed(2), run.totals.total.toFixed(2), '', '', ''],
+      ['TOTAL', '', '', '', '', '', run.totals.pay.toFixed(2), '', Number(run.totals.holiday_pay || 0).toFixed(2), run.totals.tips_tronc.toFixed(2), run.totals.tips_direct.toFixed(2), run.totals.total.toFixed(2), '', '', ''],
       [],
       ['Notes for payroll:'],
       [isUK ? 'Tips are separate pay elements and must not count toward National Minimum Wage.' : 'Tips are reported separately from wages; managers/supervisors must not receive pooled tips (FLSA). State tip-credit rules vary.'],
@@ -220,6 +220,7 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
                     <th style={th}>Bank</th>
                     <th style={{ ...th, textAlign: 'right' }}>Hours</th>
                     <th style={{ ...th, textAlign: 'right' }}>Base pay</th>
+                    <th style={{ ...th, textAlign: 'right' }}>Holiday</th>
                     <th style={{ ...th, textAlign: 'right' }}>Tips (direct)</th>
                     <th style={{ ...th, textAlign: 'right' }}>Tips (pooled)</th>
                     <th style={{ ...th, textAlign: 'right' }}>Total</th>
@@ -239,6 +240,9 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
                       </td>
                       <td style={{ ...td, textAlign: 'right' }} className="mono">{Number(r.hours || 0).toFixed(2)}</td>
                       <td style={{ ...td, textAlign: 'right' }} className="mono">{money(r.pay)}</td>
+                      <td style={{ ...td, textAlign: 'right' }} className="mono" title={r.holiday_hours ? `${Number(r.holiday_hours).toFixed(1)}h paid holiday` : undefined}>
+                        {r.holiday_pay ? money(r.holiday_pay) : <span style={{ color: 'var(--t4)' }}>—</span>}
+                      </td>
                       <td style={{ ...td, textAlign: 'right' }} className="mono">{r.tips_direct ? money(r.tips_direct) : <span style={{ color: 'var(--t4)' }}>—</span>}</td>
                       <td style={{ ...td, textAlign: 'right' }} className="mono">{r.tips_tronc ? money(r.tips_tronc) : <span style={{ color: 'var(--t4)' }}>—</span>}</td>
                       <td style={{ ...td, textAlign: 'right', fontWeight: 700 }} className="mono">{money(r.total)}</td>
@@ -251,6 +255,7 @@ export default function WfPayroll({ ctx, staff = [], roles, sections, settings, 
                     <td style={{ ...td, borderBottom: 'none' }} />
                     <td style={{ ...td, borderBottom: 'none' }} />
                     <td style={{ ...td, textAlign: 'right', fontWeight: 700, borderBottom: 'none' }} className="mono">{money(run.totals.pay)}</td>
+                    <td style={{ ...td, textAlign: 'right', fontWeight: 700, borderBottom: 'none' }} className="mono">{money(run.totals.holiday_pay || 0)}</td>
                     <td style={{ ...td, textAlign: 'right', fontWeight: 700, borderBottom: 'none' }} className="mono">{money(run.totals.tips_direct)}</td>
                     <td style={{ ...td, textAlign: 'right', fontWeight: 700, borderBottom: 'none' }} className="mono">{money(run.totals.tips_tronc)}</td>
                     <td style={{ ...td, textAlign: 'right', fontWeight: 700, borderBottom: 'none' }} className="mono">{money(run.totals.total)}</td>

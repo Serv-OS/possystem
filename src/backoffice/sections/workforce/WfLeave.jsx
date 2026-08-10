@@ -79,14 +79,28 @@ export default function WfLeave({ ctx, staff = [], roles, sections, settings, we
     }
   }
 
-  async function decide(id, status) {
+  async function decide(id, status, paid) {
     const before = leave;
     setLeave(prev => prev.map(l => l.id === id ? { ...l, status } : l));
     try {
-      // decideTimeOff throws now (it used to console.warn), so a rejected write
-      // no longer reports "Leave approved" and leaves the row stuck on pending.
-      await wf.decideTimeOff(id, status, ctx?.actor?.id);
-      showToast?.(status === 'approved' ? 'Leave approved' : 'Leave denied', 'success');
+      // The decision runs SERVER-side (workforce-compute timeoff.decide): it
+      // snapshots hours and rate, spends the accrual for paid holiday, and is
+      // idempotent — approving twice can never deduct twice. The client no
+      // longer just flips a status, because a status flip is not a decision
+      // about money.
+      const res = await wf.invokeCompute('timeoff.decide', {
+        location_id: ctx?.locationId, time_off_id: id, status, paid,
+      });
+      if (res?.error) throw new Error(res.error);
+      if (status === 'approved') {
+        const balTxt = typeof res?.balance === 'number' ? ` — balance now ${res.balance}h` : '';
+        showToast?.(`Leave approved (${paid ? 'paid' : 'unpaid'})${balTxt}`, res?.balance < 0 ? 'info' : 'success');
+      } else {
+        showToast?.('Leave denied', 'success');
+      }
+      // The ledger changed; reload both sides rather than guessing.
+      const [lv, ac] = await Promise.all([wf.loadTimeOff(ctx?.locationId), wf.loadAccrual(ctx?.locationId)]);
+      setLeave(lv || []); setAccrual(ac || []);
     } catch (e) {
       showToast?.(`Leave NOT ${status === 'approved' ? 'approved' : 'denied'} — ${e.message || 'the change was rejected'}`, 'error');
       setLeave(before);
@@ -133,7 +147,7 @@ export default function WfLeave({ ctx, staff = [], roles, sections, settings, we
       </div>
 
       {tab === 'leave' && (
-        <LeaveSection leave={leave} staffById={staffById} roles={roles} onRequest={() => setReqOpen(true)} onDecide={decide} />
+        <LeaveSection leave={leave} staffById={staffById} roles={roles} balances={balances} onRequest={() => setReqOpen(true)} onDecide={decide} />
       )}
       {tab === 'balances' && (
         <BalancesSection staff={staff} roles={roles} balances={balances} accrual={accrual} leave={leave} timesheets={timesheets} running={running} onRun={runAccrual} />
@@ -150,7 +164,11 @@ export default function WfLeave({ ctx, staff = [], roles, sections, settings, we
 }
 
 // ── Section: Leave requests ──────────────────────────────────────────────────
-function LeaveSection({ leave, staffById, roles, onRequest, onDecide }) {
+function LeaveSection({ leave, staffById, roles, balances, onRequest, onDecide }) {
+  // Hours a day of leave represents mirrors the server default. If a venue
+  // overrides holidayDayHours in settings the server figure is authoritative —
+  // this is only the preview an approver sees before deciding.
+  const DAY_HOURS = 8;
   if (!leave.length) {
     return (
       <EmptyState icon="note" title="No leave requests yet"
@@ -189,12 +207,35 @@ function LeaveSection({ leave, staffById, roles, onRequest, onDecide }) {
                   <td style={{ ...td, color: 'var(--t3)', maxWidth: 220 }}>{l.note || '—'}</td>
                   <td style={td}><Badge tone={STATUS_TONE[l.status] || 'grey'}>{l.status}</Badge></td>
                   <td style={{ ...td, textAlign: 'right' }}>
-                    {l.status === 'pending' ? (
-                      <div style={{ display: 'inline-flex', gap: 6 }}>
-                        <button className="btn btn-ghost btn-xs" onClick={() => onDecide(l.id, 'approved')}><Icon name="check" size={12} /> Approve</button>
-                        <button className="btn btn-ghost btn-xs" onClick={() => onDecide(l.id, 'denied')}><Icon name="close" size={12} /> Deny</button>
-                      </div>
-                    ) : <span style={{ color: 'var(--t4)' }}>—</span>}
+                    {l.status === 'pending' ? (() => {
+                      const bal = Number(balances?.[l.staffId] || 0);
+                      const reqDays = Number(l.days || daysBetween(l.startDate, l.endDate) || 0);
+                      const reqHours = reqDays * DAY_HOURS;
+                      const isHoliday = l.type === 'holiday';
+                      const after = bal - reqHours;
+                      return (
+                        <div style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
+                          {/* The thing the approver needs BEFORE deciding: do they
+                              have the hours, and where does approval leave them. */}
+                          {isHoliday && (
+                            <div className="mono" style={{ fontSize: 11, color: after < 0 ? 'var(--amber)' : 'var(--t3)' }}>
+                              {bal.toFixed(1)}h accrued · needs ~{reqHours.toFixed(0)}h
+                              {' → '}
+                              <span style={{ fontWeight: 700 }}>{after < 0 ? `${after.toFixed(1)}h OVERDRAWN` : `${after.toFixed(1)}h left`}</span>
+                            </div>
+                          )}
+                          <div style={{ display: 'inline-flex', gap: 6 }}>
+                            <button className="btn btn-ghost btn-xs" title={isHoliday ? 'Approve and deduct from the holiday balance' : 'Approve as paid leave (no holiday deduction)'}
+                              onClick={() => onDecide(l.id, 'approved', true)}><Icon name="check" size={12} /> Paid</button>
+                            <button className="btn btn-ghost btn-xs" title="Approve without pay — nothing is deducted"
+                              onClick={() => onDecide(l.id, 'approved', false)}><Icon name="check" size={12} /> Unpaid</button>
+                            <button className="btn btn-ghost btn-xs" onClick={() => onDecide(l.id, 'denied')}><Icon name="close" size={12} /> Deny</button>
+                          </div>
+                        </div>
+                      );
+                    })() : (
+                      <span style={{ color: 'var(--t4)' }}>{l.status === 'approved' && l.paid != null ? (l.paid ? 'paid' : 'unpaid') : '—'}</span>
+                    )}
                   </td>
                 </tr>
               );

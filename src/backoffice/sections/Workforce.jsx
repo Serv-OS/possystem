@@ -132,6 +132,23 @@ export default function Workforce({ section, orgCtx }) {
   };
 
   const removeStaff = async (id) => {
+    // Settle up BEFORE the leaver disappears from every list. The accrual
+    // ledger keeps the answer: positive balance = untaken holiday the final
+    // payslip owes THEM; negative = holiday taken beyond what they accrued,
+    // owed BACK. Silently archiving someone hid both.
+    try {
+      const { loadAccrual } = await import('../../staff/wfData.js');
+      const rows = await loadAccrual(locationId);
+      const bal = (rows || []).filter(r => r.staffId === id)
+        .reduce((a, r) => a + Number(r.accruedHours ?? r.accrued_hours ?? 0), 0);
+      const person = staff.find(x => x.id === id);
+      if (Math.abs(bal) >= 0.05) {
+        const msg = bal > 0
+          ? `${person?.name || 'This person'} leaves with ${bal.toFixed(1)} hours of accrued holiday UNTAKEN.\n\nThat is owed to them — add it to their final payroll before archiving.\n\nArchive now?`
+          : `${person?.name || 'This person'} leaves ${Math.abs(bal).toFixed(1)} hours OVERDRAWN on holiday.\n\nThat was paid but never accrued — recover it from their final pay if their contract allows.\n\nArchive now?`;
+        if (!confirm(msg)) return;
+      }
+    } catch (e) { console.warn('[wf] leaver balance check:', e?.message || e); }
     setStaff(st => st.filter(x => x.id !== id)); // soft-delete (leaver) — history preserved
     try { await softDeleteStaff(id); } catch (e) { console.warn('[wf] remove:', e?.message || e); }
   };

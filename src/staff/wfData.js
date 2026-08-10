@@ -529,7 +529,7 @@ export async function loadPayrollRuns(locationId) {
 // ============================================================================
 // TIME OFF (wf_time_off) + AVAILABILITY (wf_availability)
 // ============================================================================
-const mapLeave = r => ({ id: r.id, staffId: r.staff_id, type: r.type, startDate: r.start_date, endDate: r.end_date, days: Number(r.days ?? 0), note: r.note, status: r.status, decidedBy: r.decided_by, decidedAt: r.decided_at });
+const mapLeave = r => ({ id: r.id, staffId: r.staff_id, type: r.type, startDate: r.start_date, endDate: r.end_date, days: Number(r.days ?? 0), note: r.note, status: r.status, decidedBy: r.decided_by, decidedAt: r.decided_at, paid: r.paid ?? null, deductedHours: r.deducted_hours != null ? Number(r.deducted_hours) : null });
 export async function loadTimeOff(locationId) {
   if (isMock || !supabase) return lsGet('timeoff');
   if (!locationId) return [];

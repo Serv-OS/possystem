@@ -225,6 +225,85 @@ Deno.serve(async (req) => {
       return json({ ok: true, accrued: 0, hours: 0, rate });
     }
 
+    // ── TIME OFF DECISION — approve (paid/unpaid) or deny, with the ledger ───
+    // Lives here and not in the client because the deduction is money: the
+    // decision snapshots hours and rate, spends the accrual, and must be
+    // idempotent. wf.decideTimeOff (client) remains only for mock mode.
+    if (action === 'timeoff.decide') {
+      const { time_off_id, status, paid } = body;
+      if (!time_off_id || !['approved', 'denied'].includes(status)) {
+        return json({ error: 'time_off_id and status approved|denied required' }, 400);
+      }
+      if (status === 'approved' && typeof paid !== 'boolean') {
+        return json({ error: 'approving needs paid: true|false — the approver decides' }, 400);
+      }
+
+      const { data: req } = await admin.from('wf_time_off')
+        .select('*').eq('id', time_off_id).eq('location_id', location_id).maybeSingle();
+      if (!req) return json({ error: 'request not found' }, 404);
+
+      // Hours one day of leave represents, from venue settings (default 8).
+      const { data: vsRow } = await admin.from('wf_venue_settings')
+        .select('settings').eq('location_id', location_id).maybeSingle();
+      const dayHours = Math.max(1, Number((vsRow?.settings as any)?.holidayDayHours) || 8);
+
+      // Rate snapshot: personal override, else the role's hourly rate. Salaried
+      // staff get 0 — their pay does not change when they take leave, and they
+      // do not accrue (accrual.run skips them for the same reason).
+      const [{ data: st }, { data: roles }] = await Promise.all([
+        admin.from('wf_staff').select('id, contract_type, role_key, rate_override').eq('id', req.staff_id).maybeSingle(),
+        admin.from('wf_roles').select('key, base_rate, salary_annual').eq('location_id', location_id),
+      ]);
+      const role = (roles ?? []).find((r: any) => r.key === st?.role_key);
+      const salaried = st?.contract_type === 'salaried' || (role?.salary_annual != null && role?.base_rate == null && st?.rate_override == null);
+      const rate = salaried ? 0 : Number(st?.rate_override ?? role?.base_rate ?? 0);
+
+      const days = Number(req.days || 0);
+      const hours = round2(days * dayHours);
+      // Only HOLIDAY spends the holiday allowance. Sick/parental/unpaid leave is
+      // recorded (and paid or not) but never deducts from it.
+      const deducts = status === 'approved' && paid === true && req.type === 'holiday' && hours > 0;
+
+      const patch: Record<string, unknown> = {
+        status,
+        decided_by: user.id, decided_at: new Date().toISOString(),
+        paid: status === 'approved' ? paid : null,
+        deducted_hours: deducts ? hours : null,
+        pay_rate: status === 'approved' && paid ? rate : null,
+      };
+      const { error: upErr } = await admin.from('wf_time_off').update(patch).eq('id', time_off_id);
+      if (upErr) return json({ error: upErr.message }, 500);
+
+      // A denial (or an approval flipped to denial) must give back anything a
+      // previous approval spent.
+      if (!deducts) {
+        await admin.from('wf_holiday_accrual').delete().eq('source_time_off_id', time_off_id);
+      } else {
+        // Idempotent: the partial unique index makes a second approval a no-op.
+        const { error: ledErr } = await admin.from('wf_holiday_accrual').insert({
+          location_id, org_id: org, staff_id: req.staff_id, kind: 'taken',
+          accrued_hours: -hours, accrued_pay: rate > 0 ? round2(-hours * rate) : null,
+          currency: 'GBP', source_time_off_id: time_off_id,
+          note: `${days} day${days === 1 ? '' : 's'} ${req.start_date} → ${req.end_date} @ ${dayHours}h/day`,
+        });
+        if (ledErr && !String(ledErr.message).includes('duplicate key')) {
+          return json({ error: `decision saved but the deduction failed: ${ledErr.message}` }, 500);
+        }
+      }
+
+      const { data: led } = await admin.from('wf_holiday_accrual')
+        .select('accrued_hours').eq('staff_id', req.staff_id);
+      const balance = round2((led ?? []).reduce((a: number, r: any) => a + Number(r.accrued_hours || 0), 0));
+
+      await writeAudit(location_id, org, 'timeoff.decide', {
+        actorId: user.id,
+        reason: `${status}${status === 'approved' ? (paid ? ' (paid)' : ' (unpaid)') : ''} — ${days}d ${req.type} for ${req.staff_id}`,
+        after: { time_off_id, status, paid: patch.paid, deducted_hours: patch.deducted_hours, rate, balance },
+      });
+
+      return json({ ok: true, status, paid: patch.paid, hours: deducts ? hours : 0, rate, day_hours: dayHours, balance, salaried });
+    }
+
     // ── PAY PERIOD (read-only summary) ────────────────────────────────────────
     if (action === 'pay.period') {
       const { from, to } = body; // pay-period dates (optional; defaults to all approved)
@@ -368,15 +447,48 @@ Deno.serve(async (req) => {
         }
       }
 
-      const ids = new Set([...Object.keys(base), ...Object.keys(troncTips), ...Object.keys(directTips)]);
+      // Paid holiday in the period. Approved-paid requests carry snapshotted
+      // deducted_hours and pay_rate from the moment of approval; a request that
+      // straddles the period boundary contributes only its in-period share.
+      // Without this the export listed only WORKED hours — a venue paying from
+      // it had no idea paid leave happened that week or what it costs.
+      const holiday: Record<string, { hours: number; pay: number }> = {};
+      {
+        const { data: leaveRows } = await admin.from('wf_time_off')
+          .select('staff_id, start_date, end_date, days, deducted_hours, pay_rate')
+          .eq('location_id', location_id).eq('status', 'approved').eq('paid', true)
+          .not('deducted_hours', 'is', null)
+          .lte('start_date', to).gte('end_date', from);
+        const day = 86400000;
+        (leaveRows ?? []).forEach((r: any) => {
+          const s0 = Math.max(new Date(r.start_date + 'T00:00:00Z').getTime(), new Date(from + 'T00:00:00Z').getTime());
+          const e0 = Math.min(new Date(r.end_date + 'T00:00:00Z').getTime(), new Date(to + 'T00:00:00Z').getTime());
+          const spanDays = Math.max(0, Math.round((e0 - s0) / day) + 1);
+          const totalDays = Math.max(1, Number(r.days || 0));
+          const share = Math.min(1, spanDays / totalDays);
+          const hrs = round2(Number(r.deducted_hours || 0) * share);
+          const pay = round2(hrs * Number(r.pay_rate || 0));
+          const h = holiday[r.staff_id] ?? (holiday[r.staff_id] = { hours: 0, pay: 0 });
+          h.hours += hrs; h.pay += pay;
+        });
+      }
+
+      const ids = new Set([...Object.keys(base), ...Object.keys(troncTips), ...Object.keys(directTips), ...Object.keys(holiday)]);
       const staff = [...ids].map((id) => {
         const b = base[id] ?? { hours: 0, pay: 0 };
         const tronc = round2(troncTips[id] ?? 0);
         const direct = round2(directTips[id] ?? 0);
-        return { staff_id: id, hours: round2(b.hours), pay: round2(b.pay), tips_tronc: tronc, tips_direct: direct, tips: round2(tronc + direct), total: round2(b.pay + tronc + direct) };
+        const hol = holiday[id] ?? { hours: 0, pay: 0 };
+        return {
+          staff_id: id, hours: round2(b.hours), pay: round2(b.pay),
+          holiday_hours: round2(hol.hours), holiday_pay: round2(hol.pay),
+          tips_tronc: tronc, tips_direct: direct, tips: round2(tronc + direct),
+          total: round2(b.pay + hol.pay + tronc + direct),
+        };
       }).sort((a, b) => b.total - a.total);
       const totals = {
         pay: round2(staff.reduce((a, s) => a + s.pay, 0)),
+        holiday_pay: round2(staff.reduce((a, s) => a + (s.holiday_pay || 0), 0)),
         tips_tronc: round2(staff.reduce((a, s) => a + s.tips_tronc, 0)),
         tips_direct: round2(staff.reduce((a, s) => a + s.tips_direct, 0)),
         tips: round2(staff.reduce((a, s) => a + s.tips, 0)),
