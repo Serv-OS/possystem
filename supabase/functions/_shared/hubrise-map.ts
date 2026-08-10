@@ -387,11 +387,21 @@ export function orderToQueueRow(order: any, opts: { locationId: string }): { row
   // label our tills/reports show. Fill-in format, one line per code:
   //   'REF_CODE': 'Friendly label',
   // Unknown refs keep the platform's own name — nothing is ever dropped.
+  // OUR canonical vocabulary (10 Aug — Peter: 'make up the strings, I'll hand
+  // them over'). This list is GIVEN TO HubRise so each platform connector is
+  // configured to send exactly these refs. Pattern: PLATFORM_METHOD, upper
+  // snake case. Changing a code here without telling HubRise breaks the match
+  // (harmlessly — unknown refs fall back to the platform's own name).
   const PLATFORM_PAYMENT_REFS: Record<string, string> = {
-    // Deliveroo:   e.g. 'DELIVEROO': 'Paid online (Deliveroo)',
-    // Uber Eats:   e.g. 'UBER_EATS': 'Paid online (Uber Eats)',
-    // Just Eat:    e.g. 'JUST_EAT_ONLINE': 'Paid online (Just Eat)',
-    // (awaiting Peter's list from the HubRise meeting)
+    DELIVEROO_ONLINE: 'Paid online (Deliveroo)',
+    DELIVEROO_CASH:   'Cash (Deliveroo)',
+    UBEREATS_ONLINE:  'Paid online (Uber Eats)',
+    UBEREATS_CASH:    'Cash (Uber Eats)',
+    JUSTEAT_ONLINE:   'Paid online (Just Eat)',
+    JUSTEAT_CASH:     'Cash (Just Eat)',
+    ONLINE:           'Paid online',
+    CASH:             'Cash on delivery/collection',
+    CARD:             'Card on delivery/collection',
   };
   const payments = (Array.isArray(order.payments) ? order.payments : [])
     .filter((p: any) => p && p.deleted !== true)

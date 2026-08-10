@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.14', date: '10 Aug 2026', label: 'Payment reference codes defined for every platform',
+    changes: [
+      'We now define the payment reference vocabulary and HubRise configures each platform to send it (rather than us waiting on their codes). Nine codes, pattern PLATFORM_METHOD: DELIVEROO_ONLINE, DELIVEROO_CASH, UBEREATS_ONLINE, UBEREATS_CASH, JUSTEAT_ONLINE, JUSTEAT_CASH, plus generic ONLINE, CASH and CARD.',
+      'Each maps to a clear tender label on tills and reports (\u201cPaid online (Deliveroo)\u201d, \u201cCash (Just Eat)\u201d\u2026). A code we don\u2019t recognise keeps the platform\u2019s own wording, so a misconfigured connector degrades gracefully rather than losing information.',
+    ],
+  },
+  {
     version: '5.6.13', date: '10 Aug 2026', label: 'HubRise charges classified by ref, per the review',
     changes: [
       'Charges on inbound platform orders (delivery fee, service charge, bag fee, tips) were decoded by NAME and amount \u2014 the reference code rode along unused. The reviewer\u2019s rule is now applied exactly: ref SER = service charge, ref DEL or any other code = delivery charge, and a charge with no code keeps the platform\u2019s own type. The display name and amount stay exactly as the platform sent them \u2014 the classification is for reports and reconciliation, not a relabel.',
