@@ -147,7 +147,7 @@ export default function WfLeave({ ctx, staff = [], roles, sections, settings, we
       </div>
 
       {tab === 'leave' && (
-        <LeaveSection leave={leave} staffById={staffById} roles={roles} balances={balances} onRequest={() => setReqOpen(true)} onDecide={decide} />
+        <LeaveSection leave={leave} staffById={staffById} roles={roles} balances={balances} timesheets={timesheets} onRequest={() => setReqOpen(true)} onDecide={decide} />
       )}
       {tab === 'balances' && (
         <BalancesSection staff={staff} roles={roles} balances={balances} accrual={accrual} leave={leave} timesheets={timesheets} running={running} onRun={runAccrual} />
@@ -164,11 +164,11 @@ export default function WfLeave({ ctx, staff = [], roles, sections, settings, we
 }
 
 // ── Section: Leave requests ──────────────────────────────────────────────────
-function LeaveSection({ leave, staffById, roles, balances, onRequest, onDecide }) {
-  // Hours a day of leave represents mirrors the server default. If a venue
-  // overrides holidayDayHours in settings the server figure is authoritative —
-  // this is only the preview an approver sees before deciding.
-  const DAY_HOURS = 8;
+function LeaveSection({ leave, staffById, roles, balances, timesheets, onRequest, onDecide }) {
+  // Preview of what approval will deduct, using the SAME statutory method the
+  // server applies (avgHoursPerDay: 52 worked weeks, 104-week cap) over the
+  // timesheets this screen already loads. 8h is only the new-starter fallback.
+  const avgFor = (staffId) => avgHoursPerDay((timesheets || []).filter(t => t.staffId === staffId)) || 8;
   if (!leave.length) {
     return (
       <EmptyState icon="note" title="No leave requests yet"
@@ -210,7 +210,7 @@ function LeaveSection({ leave, staffById, roles, balances, onRequest, onDecide }
                     {l.status === 'pending' ? (() => {
                       const bal = Number(balances?.[l.staffId] || 0);
                       const reqDays = Number(l.days || daysBetween(l.startDate, l.endDate) || 0);
-                      const reqHours = reqDays * DAY_HOURS;
+                      const reqHours = reqDays * avgFor(l.staffId);
                       const isHoliday = l.type === 'holiday';
                       const after = bal - reqHours;
                       return (

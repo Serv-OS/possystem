@@ -242,21 +242,65 @@ Deno.serve(async (req) => {
         .select('*').eq('id', time_off_id).eq('location_id', location_id).maybeSingle();
       if (!req) return json({ error: 'request not found' }, 404);
 
-      // Hours one day of leave represents, from venue settings (default 8).
       const { data: vsRow } = await admin.from('wf_venue_settings')
         .select('settings').eq('location_id', location_id).maybeSingle();
-      const dayHours = Math.max(1, Number((vsRow?.settings as any)?.holidayDayHours) || 8);
+      const fallbackDayHours = Math.max(1, Number((vsRow?.settings as any)?.holidayDayHours) || 8);
 
-      // Rate snapshot: personal override, else the role's hourly rate. Salaried
-      // staff get 0 — their pay does not change when they take leave, and they
-      // do not accrue (accrual.run skips them for the same reason).
       const [{ data: st }, { data: roles }] = await Promise.all([
         admin.from('wf_staff').select('id, contract_type, role_key, rate_override').eq('id', req.staff_id).maybeSingle(),
         admin.from('wf_roles').select('key, base_rate, salary_annual').eq('location_id', location_id),
       ]);
       const role = (roles ?? []).find((r: any) => r.key === st?.role_key);
       const salaried = st?.contract_type === 'salaried' || (role?.salary_annual != null && role?.base_rate == null && st?.rate_override == null);
-      const rate = salaried ? 0 : Number(st?.rate_override ?? role?.base_rate ?? 0);
+
+      // UK statutory reference period (ERA 1996 s.224, post-Apr 2020 method,
+      // mirroring avgHoursPerDay in src/staff/labour.js): the last 52 weeks the
+      // person ACTUALLY worked — empty weeks are skipped, never diluting the
+      // average — looking back at most 104 weeks; fewer weeks if they are newer.
+      //   a day's leave  = total hours ÷ total days worked in those weeks
+      //   the pay rate   = total pay   ÷ total hours in the same weeks
+      // so a "day" is worth different hours for each person, and the rate
+      // reflects what they actually earned (rate changes, premium shifts),
+      // not whatever their base rate happens to be today. A flat 8h at base
+      // rate is only the fallback for someone with no history yet.
+      let dayHours = fallbackDayHours;
+      let rate = salaried ? 0 : Number(st?.rate_override ?? role?.base_rate ?? 0);
+      let avgUsed = false;
+      if (!salaried) {
+        const horizon = new Date(); horizon.setDate(horizon.getDate() - 104 * 7);
+        const { data: hist } = await admin.from('wf_timesheets')
+          .select('clock_in, actual_hours, effective_rate, pay_amount, paid_break_mins')
+          .eq('staff_id', req.staff_id).in('status', ['approved', 'paid'])
+          .gte('clock_in', horizon.toISOString()).limit(5000);
+        const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        const weekStartOf = (d: Date) => { const x = new Date(d); x.setHours(0, 0, 0, 0); const dow = x.getDay(); x.setDate(x.getDate() + (dow === 0 ? -6 : 1 - dow)); return x; };
+        const byDay: Record<string, { hours: number; pay: number }> = {};
+        (hist ?? []).forEach((t: any) => {
+          const hrs = Number(t.actual_hours || 0);
+          if (!t.clock_in || hrs <= 0) return;
+          const pay = t.pay_amount != null
+            ? Number(t.pay_amount)
+            : round2((hrs + Number(t.paid_break_mins || 0) / 60) * Number(t.effective_rate || 0));
+          const k = ymd(new Date(t.clock_in));
+          const b = byDay[k] ?? (byDay[k] = { hours: 0, pay: 0 });
+          b.hours += hrs; b.pay += pay;
+        });
+        const weeks: Record<string, { hours: number; pay: number; days: number }> = {};
+        Object.entries(byDay).forEach(([iso, v]) => {
+          const wk = ymd(weekStartOf(new Date(iso + 'T00:00:00')));
+          const b = weeks[wk] ?? (weeks[wk] = { hours: 0, pay: 0, days: 0 });
+          b.hours += v.hours; b.pay += v.pay; b.days += 1;
+        });
+        const used = Object.keys(weeks).sort().reverse().slice(0, 52);
+        const tot = used.reduce((a, wk) => ({
+          hours: a.hours + weeks[wk].hours, pay: a.pay + weeks[wk].pay, days: a.days + weeks[wk].days,
+        }), { hours: 0, pay: 0, days: 0 });
+        if (tot.days > 0 && tot.hours > 0) {
+          dayHours = Math.round((tot.hours / tot.days) * 100) / 100;
+          rate = Math.round((tot.pay / tot.hours) * 100) / 100;
+          avgUsed = true;
+        }
+      }
 
       const days = Number(req.days || 0);
       const hours = round2(days * dayHours);
@@ -284,7 +328,7 @@ Deno.serve(async (req) => {
           location_id, org_id: org, staff_id: req.staff_id, kind: 'taken',
           accrued_hours: -hours, accrued_pay: rate > 0 ? round2(-hours * rate) : null,
           currency: 'GBP', source_time_off_id: time_off_id,
-          note: `${days} day${days === 1 ? '' : 's'} ${req.start_date} → ${req.end_date} @ ${dayHours}h/day`,
+          note: `${days} day${days === 1 ? '' : 's'} ${req.start_date} → ${req.end_date} @ ${dayHours}h/day${avgUsed ? ' (52-wk avg)' : ''}`,
         });
         if (ledErr && !String(ledErr.message).includes('duplicate key')) {
           return json({ error: `decision saved but the deduction failed: ${ledErr.message}` }, 500);
@@ -301,7 +345,7 @@ Deno.serve(async (req) => {
         after: { time_off_id, status, paid: patch.paid, deducted_hours: patch.deducted_hours, rate, balance },
       });
 
-      return json({ ok: true, status, paid: patch.paid, hours: deducts ? hours : 0, rate, day_hours: dayHours, balance, salaried });
+      return json({ ok: true, status, paid: patch.paid, hours: deducts ? hours : 0, rate, day_hours: dayHours, statutory_average: avgUsed, balance, salaried });
     }
 
     // ── PAY PERIOD (read-only summary) ────────────────────────────────────────
