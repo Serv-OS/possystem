@@ -3,7 +3,7 @@ import { useStore } from '../store';
 import { ServOSIcon } from '../components/ServOSBrand';
 import { Icon } from '../components/ServOSIcons';
 import { broadcastConfigPush } from '../sync/SyncBridge';
-import { supabase, isMock, getLocationId, setResolvedLocationId, clearResolvedLocationId } from '../lib/supabase';
+import { supabase, isMock, platformSupabase, getLocationId, setResolvedLocationId, clearResolvedLocationId } from '../lib/supabase';
 import BOLogin from './BOLogin';
 import LocationSwitcher from './LocationSwitcher';
 import { VERSION } from '../lib/version';
@@ -213,6 +213,53 @@ function SaveHealthBanner() {
   );
 }
 
+/**
+ * Resolve a location id we are certain the signed-in user can actually write to.
+ *
+ * The back office kept a location id in localStorage and handed it straight to
+ * the Ops database. When that value was wrong — stale, from another environment,
+ * or a Platform id rather than an Ops one — every insert was rejected by row
+ * level security and the user got "your changes are not saving" with no way to
+ * tell why, and no way to clear it without a console.
+ *
+ * There are two id spaces: the Ops database (shifts, orders, checks) and the
+ * Platform database (billing, payments, devices). Most venues share an id, but
+ * not all — Platform carries `ops_location_id` as the mapping. Anything talking
+ * to Ops must use the Ops id.
+ *
+ * So: verify, then translate, then give up cleanly. Never hand back an id the
+ * user cannot use.
+ *
+ * @returns {Promise<{id: string|null, changed: boolean, reason: string}>}
+ */
+async function resolveWritableLocation(candidate, accessibleIds) {
+  if (!candidate) return { id: null, changed: false, reason: 'none stored' };
+
+  // Already an Ops id this user can reach — the normal path, no work done.
+  if (accessibleIds.has(candidate)) return { id: candidate, changed: false, reason: 'ok' };
+
+  // Not reachable. Before discarding it, see if it is the Platform id for a
+  // venue the user *can* reach, and swap it for the Ops one.
+  if (platformSupabase) {
+    try {
+      const { data } = await platformSupabase
+        .from('locations').select('ops_location_id').eq('id', candidate).maybeSingle();
+      const mapped = data?.ops_location_id || null;
+      if (mapped && accessibleIds.has(mapped)) {
+        console.warn('[BackOfficeApp] stored location', candidate, 'was a Platform id — translated to Ops id', mapped);
+        return { id: mapped, changed: true, reason: 'translated from platform id' };
+      }
+    } catch (e) {
+      console.warn('[BackOfficeApp] platform id translation failed:', e?.message);
+    }
+  }
+
+  // Genuinely unusable. Say so loudly and let the caller re-resolve, rather
+  // than writing rows that RLS is certain to reject.
+  console.warn('[BackOfficeApp] stored location', candidate, 'is not accessible and has no Ops mapping — discarding');
+  return { id: null, changed: true, reason: 'not accessible' };
+}
+
 export default function BackOfficeApp() {
   const { setAppMode, staff, closedChecks, tables, devices, theme, setTheme } = useStore();
   // v5.5.328: apply the saved light/dark theme on back-office boot. The store's
@@ -317,21 +364,40 @@ export default function BackOfficeApp() {
       let overrideLocId = null;
       try { overrideLocId = JSON.parse(localStorage.getItem('rpos-bo-location') || 'null'); } catch (e) { console.warn('[BackOfficeApp] bad rpos-bo-location:', e?.message); }
 
-      // v5.5.236: validate override belongs to this user
-      if (overrideLocId && overrideLocId !== profile.location_id && profile.role !== 'super_admin') {
-        try {
-          const { fetchAccessibleLocations } = await import('../lib/db.js');
-          const { data: accessible } = await fetchAccessibleLocations();
-          const accessibleIds = new Set((accessible || []).map(l => l.id));
-          if (!accessibleIds.has(overrideLocId)) {
-            console.warn('[BackOfficeApp] rpos-bo-location', overrideLocId, 'not in user accessible locations — clearing');
-            localStorage.removeItem('rpos-bo-location');
-            overrideLocId = null;
-          }
-        } catch (e) { console.warn('[BackOfficeApp] accessible locations check failed:', e?.message); }
+      // Validate the stored location for EVERY user, every load.
+      //
+      // This check used to be skipped when the stored id happened to equal the
+      // user's own profile location, and skipped entirely for super_admins —
+      // so the people most likely to be carrying a stale id were the ones least
+      // likely to have it caught. It also only ever cleared a bad id; it never
+      // recognised a Platform id, which is a legitimate value in the wrong id
+      // space and is translatable rather than junk.
+      let accessibleIds = null;
+      try {
+        const { fetchAccessibleLocations } = await import('../lib/db.js');
+        const { data: accessible } = await fetchAccessibleLocations();
+        accessibleIds = new Set((accessible || []).map(l => l.id));
+      } catch (e) { console.warn('[BackOfficeApp] accessible locations check failed:', e?.message); }
+
+      if (overrideLocId && accessibleIds) {
+        const res = await resolveWritableLocation(overrideLocId, accessibleIds);
+        if (res.changed) {
+          // Self-heal the stored value so the next load is clean and nobody has
+          // to be talked through clearing localStorage.
+          if (res.id) { try { localStorage.setItem('rpos-bo-location', JSON.stringify(res.id)); } catch { /* quota */ } }
+          else { localStorage.removeItem('rpos-bo-location'); }
+        }
+        overrideLocId = res.id;
       }
 
       let effectiveLocId = overrideLocId || profile.location_id;
+
+      // The profile's own location gets the same treatment — it is no more
+      // trustworthy than the stored one if the two databases have drifted.
+      if (effectiveLocId && accessibleIds && !accessibleIds.has(effectiveLocId)) {
+        const res = await resolveWritableLocation(effectiveLocId, accessibleIds);
+        effectiveLocId = res.id;
+      }
 
       // Auto-select first accessible location if none resolved
       if (!effectiveLocId) {
