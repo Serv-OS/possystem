@@ -275,8 +275,11 @@ export function buildCatalog(opts: {
         ...(optionListRefs.length ? { option_list_refs: optionListRefs } : {}),
       }];
     }
+    // No products[].ref — HubRise's reviewer (Peter's meeting, 10 Aug): the ref
+    // that matters is products[].skus[].ref, which is where order matching and
+    // the 86 push key from (an inbound order's sku_ref IS our menu_item id).
+    // Nothing on either side ever read the product-level one.
     const product: any = {
-      ref: String(it.id),
       name: displayName(it),
       skus,
     };

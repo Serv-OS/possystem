@@ -7,6 +7,12 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.11', date: '10 Aug 2026', label: 'HubRise review: product-level ref dropped from the catalog',
+    changes: [
+      'From the HubRise review meeting: the reference that matters is the one on each SKU, not the one on the product. Verified nothing on either side ever used the product-level one \u2014 inbound orders and the sold-out sync both key on the SKU \u2014 and removed it from the catalog we publish. Re-push the catalog from Back Office \u2192 3rd Party orders for it to take effect on HubRise\u2019s side.',
+    ],
+  },
+  {
     version: '5.6.10', date: '10 Aug 2026', label: 'Archiving a leaver now signs them out of everything',
     changes: [
       'Until now, marking someone as a leaver only changed their HR record. Their TILL PIN kept working and their Back Office login kept working, until someone remembered two separate manual switches nobody was told about.',
