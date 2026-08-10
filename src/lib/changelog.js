@@ -7,6 +7,20 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.8', date: '10 Aug 2026', label: 'Leave is worth something: balance-aware approval, paid/unpaid, leaver settlement',
+    changes: [
+      'Catch-up entry: the three changes below shipped over the weekend without a What\u2019s New note, which is why nobody could tell what was pushed. Recorded now.',
+      'APPROVING TIME OFF now shows whether they actually have the leave: "20.0h accrued \u00b7 needs ~16h \u2192 4.0h left", amber and OVERDRAWN when it would go negative. The approver chooses Paid / Unpaid / Deny. Only holiday spends the allowance \u2014 sick, parental and unpaid leave record but never deduct.',
+      'Approving PAID holiday now actually deducts it: the accrual ledger gets a negative entry, balances can go negative, approving twice cannot double-deduct, and denying afterwards gives the hours back. The decision runs on the server and snapshots the hours and pay rate at the moment of approval.',
+      'A DAY of holiday is valued by the UK statutory method (the 52-week average of your real worked weeks, empty weeks skipped), not a flat 8 hours \u2014 so part-timers and variable-hours staff deduct what a day is genuinely worth to them. Peter caught this one. The number the approver sees is the number the server deducts.',
+      'PAYROLL EXPORT now carries Holiday hours and Holiday pay columns, so paid leave reaches the payslip instead of vanishing.',
+      'OFFBOARDING: marking someone as a leaver now settles up first \u2014 untaken holiday is flagged as owed TO them on the final payslip; an overdrawn balance is flagged as owed BACK. It asks before archiving either way.',
+      'The Back Office no longer wedges with "new row violates row-level security" when it is carrying a stale location id \u2014 it heals the id itself instead of needing site data cleared.',
+      'HubRise: the connection stops overwriting the customer\u2019s chosen connection name, and stock levels are no longer re-uploaded every two minutes when nothing changed.',
+      'Plus one repair to the leaver check itself: it used the import pattern this codebase bans because it can silently fail in production \u2014 which would have meant the owes-back warning never appearing. Now uses the normal import.',
+    ],
+  },
+  {
     version: '5.6.7', date: '7 Aug 2026', label: 'Venue owners and managers can grant Back Office access',
     changes: [
       'Granting Back Office access from the Team page demanded a platform-level super admin, so a venue owner adding their own manager got "Requires super_admin". An owner or manager of a venue can now grant access to THAT venue.',

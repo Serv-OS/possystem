@@ -137,7 +137,10 @@ export default function Workforce({ section, orgCtx }) {
     // payslip owes THEM; negative = holiday taken beyond what they accrued,
     // owed BACK. Silently archiving someone hid both.
     try {
-      const { loadAccrual } = await import('../../staff/wfData.js');
+      // loadAccrual is already in this file's static imports (line ~17). A
+      // click-time dynamic import is the exact pattern CLAUDE.md bans — it can
+      // silently fail in the production bundle, which here would mean the
+      // leaver owes-back warning simply never appears.
       const rows = await loadAccrual(locationId);
       const bal = (rows || []).filter(r => r.staffId === id)
         .reduce((a, r) => a + Number(r.accruedHours ?? r.accrued_hours ?? 0), 0);
