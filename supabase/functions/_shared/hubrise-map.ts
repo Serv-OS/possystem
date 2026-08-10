@@ -381,10 +381,22 @@ export function orderToQueueRow(order: any, opts: { locationId: string }): { row
   // PARTIAL payment — paid means the sum of (non-deleted) payments covers the order total.
   // Each payment is {name, ref, amount, info?, deleted?}; deleted:true = removed entry.
   const total = parseMoney(order.total).amount;
+  // Per-platform payment REF decode table (HubRise review, 10 Aug: 'Peter will
+  // provide a list of hardcoded ref codes for every platform'). Keys are the
+  // EXACT payments[].ref strings each platform sends, values are the tender
+  // label our tills/reports show. Fill-in format, one line per code:
+  //   'REF_CODE': 'Friendly label',
+  // Unknown refs keep the platform's own name — nothing is ever dropped.
+  const PLATFORM_PAYMENT_REFS: Record<string, string> = {
+    // Deliveroo:   e.g. 'DELIVEROO': 'Paid online (Deliveroo)',
+    // Uber Eats:   e.g. 'UBER_EATS': 'Paid online (Uber Eats)',
+    // Just Eat:    e.g. 'JUST_EAT_ONLINE': 'Paid online (Just Eat)',
+    // (awaiting Peter's list from the HubRise meeting)
+  };
   const payments = (Array.isArray(order.payments) ? order.payments : [])
     .filter((p: any) => p && p.deleted !== true)
     .map((p: any) => ({
-      name: p.name || p.type || 'Payment',
+      name: (p.ref && PLATFORM_PAYMENT_REFS[String(p.ref)]) || p.name || p.type || 'Payment',
       ref: p.ref || null,
       amount: parseMoney(p.amount).amount,
     }));

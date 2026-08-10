@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.12', date: '10 Aug 2026', label: 'Little wins: holiday-day setting, bank-alert rules, honest wording, payment refs ready',
+    changes: [
+      'NEW SETTING: \u201cNew starter holiday day (hours)\u201d in Workforce settings \u2014 what a day of leave is worth before someone has timesheet history (was a hidden 8). Once they have real worked weeks, their own 52-week average takes over automatically.',
+      'Bank-detail changes and overdue training can now have notification rules like any other alert \u2014 Operations \u2192 Alert rules can send them by SMS or email with escalation, not just show them in the app.',
+      'The auto-deduct break setting no longer overpromises: the screen now says the statutory floor applies when a deduction fires, and that the under-18 rule needs a date of birth on file.',
+      'HubRise payments: the decode table for per-platform payment ref codes is in place and deployed \u2014 when the list from the meeting arrives, each code becomes a one-line entry and tills/reports show the friendly tender name. Unknown codes keep the platform\u2019s own wording, nothing is dropped.',
+      'Deliveries integration assessed and parked with a plan (the write side belongs with pushing our own orders into HubRise; the read side is half a day when wanted).',
+    ],
+  },
+  {
     version: '5.6.11', date: '10 Aug 2026', label: 'HubRise review: product-level ref dropped from the catalog',
     changes: [
       'From the HubRise review meeting: the reference that matters is the one on each SKU, not the one on the product. Verified nothing on either side ever used the product-level one \u2014 inbound orders and the sold-out sync both key on the SKU \u2014 and removed it from the catalog we publish. Re-push the catalog from Back Office \u2192 3rd Party orders for it to take effect on HubRise\u2019s side.',

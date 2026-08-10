@@ -17,6 +17,10 @@ const EVENT_TYPES = [
   ['overdue_task', 'Overdue task', 'A checklist task passed its due time'],
   ['maintenance', 'Maintenance raised', 'A maintenance request was created'],
   ['corrective', 'Corrective action', 'A corrective action was recorded against a breach'],
+  // v5.6.12 — the two workforce alert types (20260806h). staff_change is the
+  // payroll-fraud tripwire: a bank-detail change from the staff app.
+  ['staff_change', 'Staff bank details changed', 'Someone changed their bank details from the staff app — check it was really them before the next pay run'],
+  ['training_overdue', 'Training overdue', 'An assigned training module passed its deadline'],
 ];
 const SEVERITIES = [['minor', 'Minor'], ['major', 'Major'], ['critical', 'Critical']];
 const ROLE_PRESETS = ['MOD', 'manager', 'admin', 'Kitchen', 'Front of house', 'Cleaner'];

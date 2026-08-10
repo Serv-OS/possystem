@@ -71,6 +71,11 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
   // implements the "paid on the last working day" ask.
   const [payDayMonthOffset, setPayDayMonthOffset] = useState('0');
   const [payDayShift, setPayDayShift] = useState('none');
+  // What a DAY of holiday is worth, in hours, for someone with no timesheet
+  // history yet (Peter, 10 Aug: 'is it defaulting to 8?' — yes, and now you can
+  // change it). Once real worked weeks exist, the statutory 52-week average
+  // takes over per person automatically and this number stops mattering.
+  const [holidayDayHours, setHolidayDayHours] = useState('8');
   const [paidBreaks, setPaidBreaks] = useState(false);  // venue policy: breaks paid by default
   // v5.5.969 break policy: venue default break length + auto-deduct when no
   // break was punched (customer ask: "30 min unpaid as standard, automatic").
@@ -99,6 +104,7 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
     setPayDayOffset(fixed && settings?.payDay != null ? String(settings.payDay) : '');
     setPayDayMonthOffset(String(settings?.settings?.payDayMonthOffset ?? 0));
     setPayDayShift(settings?.settings?.payDayShift === 'prevWorkingDay' ? 'prevWorkingDay' : 'none');
+    setHolidayDayHours(String(settings?.settings?.holidayDayHours ?? 8));
     setPaidBreaks(!!settings?.settings?.paidBreaks);
     setDefaultBreakMins(String(settings?.settings?.defaultBreakMins ?? 30));
     setAutoBreak(!!settings?.settings?.autoBreak);
@@ -158,6 +164,7 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
         // as the other venue policy knobs (COGS%, overhead, break policy).
         payDayMonthOffset: Math.min(1, Math.max(0, parseInt(payDayMonthOffset, 10) || 0)),
         payDayShift: payDayShift === 'prevWorkingDay' ? 'prevWorkingDay' : 'none',
+        holidayDayHours: Math.min(24, Math.max(1, Number(holidayDayHours) || 8)),
         paidBreaks,
         // Break policy — the default is clamped 0–120; the auto-deduct floor to
         // the STATUTORY minimum happens at clock-out (workforce-clock), so a
@@ -305,6 +312,12 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
               </div>
             )}
             <div>
+              <label style={labelStyle}>New starter holiday day (hours)</label>
+              <input style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} type="number" min="1" max="24" step="0.5" inputMode="decimal"
+                value={holidayDayHours} onChange={e => setHolidayDayHours(e.target.value)} disabled={savingVenue} />
+              <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 5 }}>What a day of leave is worth before someone has timesheet history. Once they have real worked weeks, their own 52-week average takes over automatically.</div>
+            </div>
+            <div>
               <label style={labelStyle}>If the pay day is not a working day</label>
               <select style={inputStyle} value={payDayShift} onChange={e => setPayDayShift(e.target.value)} disabled={savingVenue}>
                 <option value="none">Leave it (pay on the date)</option>
@@ -412,7 +425,7 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
               <input type="number" min="1" max="13" step="0.5" value={autoBreakHours}
                 onChange={e => setAutoBreakHours(e.target.value)} disabled={savingVenue || !autoBreak}
                 style={{ width: 52, padding: '3px 6px', borderRadius: 6, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t1)', fontFamily: 'inherit', fontSize: 12 }} />
-              hours. Never deducts less than the UK statutory minimum for the worker's age; managers can still edit any timesheet.
+              hours. When it deducts, the amount is at least the UK statutory minimum for the worker's age (the under-18 rule needs a date of birth on their record); managers can still edit any timesheet.
             </span>
           </span>
         </label>
