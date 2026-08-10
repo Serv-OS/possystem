@@ -53,6 +53,9 @@ Deno.serve(async (req) => {
   try {
     if (body?.full) {
       const out = await resyncInventory(sb, loc);
+      await sb.from('hubrise_connections')
+        .update({ inventory_dirty: false, inventory_pushed_at: new Date().toISOString() })
+        .eq('location_id', loc);
       return json({ ok: true, ...out });
     }
     const changes = Array.isArray(body?.changes) ? body.changes : [];
@@ -72,9 +75,18 @@ Deno.serve(async (req) => {
 
     try { await patchInventory(conn.access_token, conn.hubrise_catalog_id, allEntries); }
     catch { await patchInventory(conn.access_token, conn.hubrise_catalog_id, skuEntries); }
-    await sb.from('hubrise_connections').update({ inventory_synced_at: new Date().toISOString() }).eq('location_id', loc);
+    await sb.from('hubrise_connections').update({
+      inventory_synced_at: new Date().toISOString(),
+      inventory_pushed_at: new Date().toISOString(),
+      inventory_dirty: false,
+    }).eq('location_id', loc);
     return json({ ok: true, pushed: skuEntries.length });
   } catch (e) {
+    // The 86 change did not reach HubRise. Flag it so the reconcile run picks it
+    // up — that flag is now the ONLY thing that makes the cron push inventory.
+    try {
+      await sb.from('hubrise_connections').update({ inventory_dirty: true }).eq('location_id', loc);
+    } catch { /* the error below is what matters */ }
     return json({ error: e instanceof Error ? e.message : String(e) }, 500);
   }
 });

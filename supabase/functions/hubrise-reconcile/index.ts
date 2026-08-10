@@ -67,9 +67,20 @@ async function reconcileLocation(conn: any): Promise<{ drained: number; retried:
     }
   } catch { errors++; }
 
-  // 3) Inventory safety net — re-PUT the full out-of-stock set so 86 state stays
-  // consistent even if an instant client push was missed (no-ops without a catalog).
-  try { await resyncInventory(sb, loc); } catch { errors++; }
+  // 3) Inventory catch-up — ONLY when an instant push is known to have failed.
+  //
+  // This used to re-PUT the whole out-of-stock set every run, so a venue that had
+  // changed nothing still pushed its full 86 list 720 times a day. 86 state is
+  // pushed from the POS the moment it changes; the cron exists solely to recover
+  // a push that did not land, which is what inventory_dirty records.
+  if (conn.inventory_dirty) {
+    try {
+      await resyncInventory(sb, loc);
+      await sb.from('hubrise_connections')
+        .update({ inventory_dirty: false, inventory_pushed_at: new Date().toISOString() })
+        .eq('location_id', loc);
+    } catch { errors++; }
+  }
 
   try { await sb.from('hubrise_connections').update({ last_reconcile_at: new Date().toISOString() }).eq('location_id', loc); } catch { /* non-fatal */ }
   return { drained, retried, errors };

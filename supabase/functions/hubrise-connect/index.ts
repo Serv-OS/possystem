@@ -188,11 +188,11 @@ Deno.serve(async (req) => {
         if (!CLIENT_ID) return json({ error: 'HubRise app not configured (HUBRISE_CLIENT_ID)' }, 500);
         const state = randState();
         await sb.from('hubrise_oauth_pending').insert({ state, location_id: opsLocationId });
-        // v5.5.850: the HubRise connection/location created during authorize is always
-        // named "ServOS" — no venue-name passthrough (sign-off requirement).
-        const u = authorizeUrl(CLIENT_ID, REDIRECT_URI, HUBRISE_SCOPE, state, {
-          name: 'ServOS', location_name: 'ServOS',
-        });
+        // No name passthrough at all. v5.5.850 pinned the connection/location name
+        // to "ServOS"; HubRise's review then asked for it removed, because naming
+        // the account is the customer's choice to make in their own HubRise
+        // account, not ours to impose from the authorize URL.
+        const u = authorizeUrl(CLIENT_ID, REDIRECT_URI, HUBRISE_SCOPE, state);
         return json({ ok: true, url: u });
       }
       // v5.5.850: connect_token removed — OAuth is the only connect path (per the HubRise
