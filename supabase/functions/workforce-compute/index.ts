@@ -230,7 +230,7 @@ Deno.serve(async (req) => {
     // decision snapshots hours and rate, spends the accrual, and must be
     // idempotent. wf.decideTimeOff (client) remains only for mock mode.
     if (action === 'timeoff.decide') {
-      const { time_off_id, status, paid } = body;
+      const { time_off_id, status, paid, leave_days } = body;
       if (!time_off_id || !['approved', 'denied'].includes(status)) {
         return json({ error: 'time_off_id and status approved|denied required' }, 400);
       }
@@ -302,7 +302,20 @@ Deno.serve(async (req) => {
         }
       }
 
-      const days = Number(req.days || 0);
+      // v5.6.9 — the approver can mark WHICH days are annual leave (a 7-day
+      // request from a Mon-Fri person is 5 days of holiday + 2 ordinary days
+      // off). Only marked days are valued and deducted. Server-validated: every
+      // date must sit inside the requested range; absent = the whole request
+      // (the pre-split behaviour, and what old clients send).
+      let leaveDays: string[] | null = null;
+      if (Array.isArray(leave_days)) {
+        const ok = (d: unknown) => typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d) && d >= req.start_date && d <= req.end_date;
+        leaveDays = [...new Set(leave_days.filter(ok))].sort() as string[];
+        if (leave_days.length > 0 && leaveDays.length !== leave_days.length) {
+          return json({ error: 'leave_days must all fall inside the requested dates' }, 400);
+        }
+      }
+      const days = leaveDays ? leaveDays.length : Number(req.days || 0);
       const hours = round2(days * dayHours);
       // Only HOLIDAY spends the holiday allowance. Sick/parental/unpaid leave is
       // recorded (and paid or not) but never deducts from it.
@@ -314,6 +327,7 @@ Deno.serve(async (req) => {
         paid: status === 'approved' ? paid : null,
         deducted_hours: deducts ? hours : null,
         pay_rate: status === 'approved' && paid ? rate : null,
+        leave_days: status === 'approved' && req.type === 'holiday' ? leaveDays : null,
       };
       const { error: upErr } = await admin.from('wf_time_off').update(patch).eq('id', time_off_id);
       if (upErr) return json({ error: upErr.message }, 500);
@@ -328,7 +342,7 @@ Deno.serve(async (req) => {
           location_id, org_id: org, staff_id: req.staff_id, kind: 'taken',
           accrued_hours: -hours, accrued_pay: rate > 0 ? round2(-hours * rate) : null,
           currency: 'GBP', source_time_off_id: time_off_id,
-          note: `${days} day${days === 1 ? '' : 's'} ${req.start_date} → ${req.end_date} @ ${dayHours}h/day${avgUsed ? ' (52-wk avg)' : ''}`,
+          note: `${days} day${days === 1 ? '' : 's'}${leaveDays && days !== Number(req.days || 0) ? ` of ${req.days} requested` : ''} ${req.start_date} → ${req.end_date} @ ${dayHours}h/day${avgUsed ? ' (52-wk avg)' : ''}`,
         });
         if (ledErr && !String(ledErr.message).includes('duplicate key')) {
           return json({ error: `decision saved but the deduction failed: ${ledErr.message}` }, 500);

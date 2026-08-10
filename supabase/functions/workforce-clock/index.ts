@@ -76,6 +76,26 @@ function stateOf(open: any): { state: string; since: string | null; onBreak: boo
   return { state: 'in', since: open.clock_in, onBreak: false, breakSince: null };
 }
 
+
+// How many onboarding steps are genuinely open, derived from EVIDENCE — the
+// stored steps array goes stale (it predates POS access / bank details landing
+// via other paths). An explicitly-complete stored step still counts as done.
+function openOnboardingSteps(row: any, staff: any): number {
+  if (!row) return 0;
+  const meta = row.meta || {};
+  const done: Record<string, boolean> = {
+    offer: !!(meta.offerAccepted || meta.offerSentAt),
+    contract: !!meta.signature,
+    rtw: !!meta.rtwPath,
+    bank: !!(meta.bankMasked || staff?.bank_account_masked),
+    posUser: !!staff?.pos_user_id,
+  };
+  (Array.isArray(row.steps) ? row.steps : []).forEach((st: any) => {
+    if (st?.status === 'complete' && st.key in done) done[st.key] = true;
+  });
+  return Object.values(done).filter(v => !v).length;
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
@@ -135,7 +155,7 @@ Deno.serve(async (req) => {
           admin.from('wf_training_assignments')
             .select('due_date, status, wf_training_modules(name)')
             .eq('staff_id', staff.id).eq('location_id', location_id).neq('status', 'complete'),
-          admin.from('wf_onboarding').select('steps').eq('staff_id', staff.id)
+          admin.from('wf_onboarding').select('steps, meta').eq('staff_id', staff.id)
             .order('created_at', { ascending: false }).limit(1),
         ]);
         const training = (tr ?? []).map((a: any) => ({
@@ -143,7 +163,7 @@ Deno.serve(async (req) => {
           due: a.due_date,
           overdue: !!(a.due_date && a.due_date < todayIso),
         }));
-        const onboardingOpen = ((onbRows?.[0]?.steps) || []).filter((st: any) => st.status !== 'complete').length;
+        const onboardingOpen = openOnboardingSteps(onbRows?.[0], staff);
         outstanding = { training, onboardingOpen, total: training.length + onboardingOpen };
       } catch (e) { console.error('[workforce-clock] outstanding:', (e as Error).message); }
       return json({ ok: true, staff: who, ...stateOf(open), announcements, outstanding });

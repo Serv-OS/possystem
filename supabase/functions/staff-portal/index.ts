@@ -131,6 +131,26 @@ async function audit(staff: any, action: string, before: unknown, after: unknown
   } catch (e) { console.error('[staff-portal] audit failed:', (e as Error).message); }
 }
 
+
+// How many onboarding steps are genuinely open, derived from EVIDENCE — the
+// stored steps array goes stale (it predates POS access / bank details landing
+// via other paths). An explicitly-complete stored step still counts as done.
+function openOnboardingSteps(row: any, staff: any): number {
+  if (!row) return 0;
+  const meta = row.meta || {};
+  const done: Record<string, boolean> = {
+    offer: !!(meta.offerAccepted || meta.offerSentAt),
+    contract: !!meta.signature,
+    rtw: !!meta.rtwPath,
+    bank: !!(meta.bankMasked || staff?.bank_account_masked),
+    posUser: !!staff?.pos_user_id,
+  };
+  (Array.isArray(row.steps) ? row.steps : []).forEach((st: any) => {
+    if (st?.status === 'complete' && st.key in done) done[st.key] = true;
+  });
+  return Object.values(done).filter(v => !v).length;
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   try {
@@ -187,7 +207,8 @@ Deno.serve(async (req) => {
           .order('created_at', { ascending: false }).limit(1),
       ]);
       const training = (tr ?? []).map((a: any) => ({ name: a.wf_training_modules?.name || 'Training', due: a.due_date, overdue: !!(a.due_date && a.due_date < today) }));
-      const onbOpen = (onbRows?.[0]?.steps || []).filter((st: any) => st.status !== 'complete').length;
+      const { data: stRow } = await admin.from('wf_staff').select('pos_user_id, bank_account_masked').eq('id', staff_id).maybeSingle();
+      const onbOpen = openOnboardingSteps(onbRows?.[0], stRow);
       return json({ ok: true, training, onboardingOpen: onbOpen, total: training.length + onbOpen });
     }
 

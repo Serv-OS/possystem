@@ -17,7 +17,7 @@ import { hoursOf, effectiveRate, wageByDay, labourPct, LABOUR_TARGET, troncRun, 
 import { loadStaff, saveStaff, softDeleteStaff, markPosUser, loadRoles, loadSections, loadSettings, loadDocuments, loadTimesheets, loadOnboarding, loadAccrual, accrualBalances, signedDocUrl, saveStaffBank, saveOnboarding, sendEmail, sendPortalInvite } from '../../staff/wfData';
 import { buildWeek } from '../../staff/wfWeek';
 import WfRota from './workforce/WfRota';
-import { PickTemplateModal, freshSteps, genToken, toHtml, signEmailHtml } from './workforce/WfOnboarding';
+import { PickTemplateModal, freshSteps, genToken, toHtml, signEmailHtml, normalizeCase } from './workforce/WfOnboarding';
 import WfTimesheets from './workforce/WfTimesheets';
 import WfPayroll from './workforce/WfPayroll';
 import WfTronc from './workforce/WfTronc';
@@ -438,7 +438,12 @@ function StaffDetailModal({ staff: s, roles = ROLES, ctx, showToast, onClose, on
       setData({
         docs: (docs || []).filter(d => d.staffId === s.id),
         timesheets: (ts || []).filter(t => t.staffId === s.id).slice(0, 6),
-        onb: (onbs || []).find(o => o.staffId === s.id) || null,
+        // v5.6.9 — heal before judging. The RAW row's status/steps were stamped
+        // before the evidence existed (POS access granted, bank added from the
+        // staff app…), so this badge said "In progress" on a finished case —
+        // the same bug the Onboarding screen and rota gate had (v5.6.1), on a
+        // third surface. normalizeCase derives from meta + the staff record.
+        onb: (() => { const raw = (onbs || []).find(o => o.staffId === s.id); return raw ? normalizeCase(raw, s) : null; })(),
         holidayHrs: bal[s.id] || 0,
         loading: false,
       });

@@ -11,6 +11,7 @@ import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, Badge, RoleChip, th, td, inputStyle, labelStyle, groupColor, cellTint, initials, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
 import { isHourly, avgHoursPerDay, FIXED_HOLIDAY_DAYS } from '../../../staff/labour';
+import { proposeLeaveDays } from '../../../staff/leaveDays';
 
 const TABS = [
   { key: 'leave', lbl: 'Leave requests', icon: 'note' },
@@ -42,6 +43,11 @@ export default function WfLeave({ ctx, staff = [], roles, sections, settings, we
   const [avail, setAvail] = useState([]);
   const [timesheets, setTimesheets] = useState([]);
   const [reqOpen, setReqOpen] = useState(false);
+  // Per-request day overrides: { [requestId]: { [date]: leave? } }. The proposal
+  // (rota > availability > history > contract) fills the gaps; a click flips a
+  // day; only days marked LEAVE are valued and deducted.
+  const [dayPicks, setDayPicks] = useState({});
+  const [rangeShifts, setRangeShifts] = useState([]);
   const [running, setRunning] = useState(false);
 
   const staffById = useMemo(() => Object.fromEntries(staff.map(s => [s.id, s])), [staff]);
@@ -59,10 +65,29 @@ export default function WfLeave({ ctx, staff = [], roles, sections, settings, we
     ]).then(([lv, ac, av, ts]) => {
       if (!live) return;
       setLeave(lv || []); setAccrual(ac || []); setAvail(av || []); setTimesheets(ts || []);
+      // The rota is the strongest day-split signal — fetch shifts spanning
+      // every PENDING request so the proposal can see scheduled days.
+      const pend = (lv || []).filter(x => x.status === 'pending');
+      if (pend.length) {
+        const from = pend.reduce((a, x) => (x.startDate < a ? x.startDate : a), pend[0].startDate);
+        const to = pend.reduce((a, x) => (x.endDate > a ? x.endDate : a), pend[0].endDate);
+        wf.loadShifts(ctx?.locationId, from, to).then(sh => { if (live) setRangeShifts(sh || []); }).catch(() => {});
+      }
     }).catch(() => { if (live) showToast?.('Could not load time off', 'error'); })
       .finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
   }, [ctx?.locationId]);
+
+  // The split for one request: proposal overlaid with the approver's clicks.
+  const splitFor = (l, member) => {
+    const proposal = proposeLeaveDays({
+      from: l.startDate, to: l.endDate, staffId: l.staffId,
+      shifts: rangeShifts, availability: avail, timesheets,
+      contractType: member?.contractType || null,
+    });
+    const picks = dayPicks[l.id] || {};
+    return proposal.map(d => ({ ...d, leave: picks[d.date] ?? d.leave }));
+  };
 
   async function submitRequest(form) {
     const days = daysBetween(form.startDate, form.endDate);
@@ -79,7 +104,7 @@ export default function WfLeave({ ctx, staff = [], roles, sections, settings, we
     }
   }
 
-  async function decide(id, status, paid) {
+  async function decide(id, status, paid, leaveDays) {
     const before = leave;
     setLeave(prev => prev.map(l => l.id === id ? { ...l, status } : l));
     try {
@@ -90,6 +115,7 @@ export default function WfLeave({ ctx, staff = [], roles, sections, settings, we
       // about money.
       const res = await wf.invokeCompute('timeoff.decide', {
         location_id: ctx?.locationId, time_off_id: id, status, paid,
+        ...(Array.isArray(leaveDays) ? { leave_days: leaveDays } : {}),
       });
       if (res?.error) throw new Error(res.error);
       if (status === 'approved') {
@@ -147,7 +173,7 @@ export default function WfLeave({ ctx, staff = [], roles, sections, settings, we
       </div>
 
       {tab === 'leave' && (
-        <LeaveSection leave={leave} staffById={staffById} roles={roles} balances={balances} timesheets={timesheets} onRequest={() => setReqOpen(true)} onDecide={decide} />
+        <LeaveSection leave={leave} staffById={staffById} roles={roles} balances={balances} timesheets={timesheets} onRequest={() => setReqOpen(true)} onDecide={decide} splitFor={splitFor} setDayPicks={setDayPicks} />
       )}
       {tab === 'balances' && (
         <BalancesSection staff={staff} roles={roles} balances={balances} accrual={accrual} leave={leave} timesheets={timesheets} running={running} onRun={runAccrual} />
@@ -164,7 +190,7 @@ export default function WfLeave({ ctx, staff = [], roles, sections, settings, we
 }
 
 // ── Section: Leave requests ──────────────────────────────────────────────────
-function LeaveSection({ leave, staffById, roles, balances, timesheets, onRequest, onDecide }) {
+function LeaveSection({ leave, staffById, roles, balances, timesheets, onRequest, onDecide, splitFor, setDayPicks }) {
   // Preview of what approval will deduct, using the SAME statutory method the
   // server applies (avgHoursPerDay: 52 worked weeks, 104-week cap) over the
   // timesheets this screen already loads. 8h is only the new-starter fallback.
@@ -209,26 +235,54 @@ function LeaveSection({ leave, staffById, roles, balances, timesheets, onRequest
                   <td style={{ ...td, textAlign: 'right' }}>
                     {l.status === 'pending' ? (() => {
                       const bal = Number(balances?.[l.staffId] || 0);
-                      const reqDays = Number(l.days || daysBetween(l.startDate, l.endDate) || 0);
-                      const reqHours = reqDays * avgFor(l.staffId);
                       const isHoliday = l.type === 'holiday';
+                      // v5.6.9 — day-level split: which requested days are ANNUAL
+                      // LEAVE (deduct) vs ordinary days off. Proposed from the
+                      // rota / availability / their worked pattern; every chip
+                      // is clickable to override. Only marked days are valued.
+                      const split = isHoliday ? splitFor(l, s) : [];
+                      const leaveDates = split.filter(d => d.leave).map(d => d.date);
+                      const reqHours = (isHoliday ? leaveDates.length : Number(l.days || daysBetween(l.startDate, l.endDate) || 0)) * avgFor(l.staffId);
                       const after = bal - reqHours;
+                      const DOW = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
                       return (
-                        <div style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
-                          {/* The thing the approver needs BEFORE deciding: do they
-                              have the hours, and where does approval leave them. */}
+                        <div style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-end', gap: 5 }}>
+                          {isHoliday && split.length > 1 && (
+                            <div style={{ display: 'inline-flex', gap: 3, flexWrap: 'wrap', justifyContent: 'flex-end', maxWidth: 260 }}>
+                              {split.map(d => {
+                                const day = new Date(d.date + 'T00:00:00');
+                                return (
+                                  <button
+                                    key={d.date}
+                                    onClick={() => setDayPicks(p => ({ ...p, [l.id]: { ...(p[l.id] || {}), [d.date]: !d.leave } }))}
+                                    title={`${day.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'short' })} — ${d.leave ? 'annual leave (deducts)' : 'normal day off (no deduction)'} · suggested from ${({ rota: 'the rota', availability: 'their availability', history: 'their usual days', contract: 'their contract', default: 'a weekday guess' })[d.reason]} · click to switch`}
+                                    style={{
+                                      display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 26,
+                                      padding: '3px 4px', borderRadius: 7, cursor: 'pointer', font: 'inherit', lineHeight: 1.2,
+                                      border: `1px solid ${d.leave ? 'var(--grn-b)' : 'var(--inset-border)'}`,
+                                      background: d.leave ? 'var(--grn-d)' : 'var(--inset)',
+                                      color: d.leave ? 'var(--grn)' : 'var(--t4)',
+                                    }}>
+                                    <span style={{ fontSize: 8.5, fontWeight: 700 }}>{DOW[day.getDay()]}</span>
+                                    <span className="mono" style={{ fontSize: 10.5, fontWeight: 700 }}>{day.getDate()}</span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
                           {isHoliday && (
                             <div className="mono" style={{ fontSize: 11, color: after < 0 ? 'var(--amber)' : 'var(--t3)' }}>
+                              {split.length > 1 && <span style={{ fontWeight: 700 }}>{leaveDates.length} of {split.length} days are leave · </span>}
                               {bal.toFixed(1)}h accrued · needs ~{reqHours.toFixed(0)}h
                               {' → '}
                               <span style={{ fontWeight: 700 }}>{after < 0 ? `${after.toFixed(1)}h OVERDRAWN` : `${after.toFixed(1)}h left`}</span>
                             </div>
                           )}
                           <div style={{ display: 'inline-flex', gap: 6 }}>
-                            <button className="btn btn-ghost btn-xs" title={isHoliday ? 'Approve and deduct from the holiday balance' : 'Approve as paid leave (no holiday deduction)'}
-                              onClick={() => onDecide(l.id, 'approved', true)}><Icon name="check" size={12} /> Paid</button>
+                            <button className="btn btn-ghost btn-xs" title={isHoliday ? 'Approve — only the days marked green deduct from the holiday balance' : 'Approve as paid leave (no holiday deduction)'}
+                              onClick={() => onDecide(l.id, 'approved', true, isHoliday ? leaveDates : undefined)}><Icon name="check" size={12} /> Paid</button>
                             <button className="btn btn-ghost btn-xs" title="Approve without pay — nothing is deducted"
-                              onClick={() => onDecide(l.id, 'approved', false)}><Icon name="check" size={12} /> Unpaid</button>
+                              onClick={() => onDecide(l.id, 'approved', false, isHoliday ? leaveDates : undefined)}><Icon name="check" size={12} /> Unpaid</button>
                             <button className="btn btn-ghost btn-xs" onClick={() => onDecide(l.id, 'denied')}><Icon name="close" size={12} /> Deny</button>
                           </div>
                         </div>

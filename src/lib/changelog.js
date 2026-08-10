@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.9', date: '10 Aug 2026', label: 'Mark which days of a request are annual leave \u2014 and which are just days off',
+    changes: [
+      'A 7-day request from a Mon\u2013Fri full-timer is 5 days of holiday and 2 ordinary days off \u2014 only the 5 should deduct. The approval card now shows one chip per requested day, marked green (annual leave, deducts) or grey (normal day off).',
+      'The system proposes the split itself, using the strongest signal it has for each day: a rostered shift wins, then their availability pattern, then which weekdays they usually work (from real timesheets), then their contract. Every chip is clickable \u2014 the approver\u2019s choice always wins.',
+      'The count line updates live: \u201c5 of 7 days are leave \u00b7 20.0h accrued \u00b7 needs ~30h\u201d. The server checks every chosen date sits inside the requested range, values only the marked days, and stores exactly which dates were deducted so a payslip query months later has the answer.',
+      'ONBOARDING STATUS, everywhere: the staff profile card said \u201cIn progress\u201d for a person whose onboarding was visibly finished. Third surface with the same bug \u2014 status is now derived from the evidence (POS access granted, bank on file, contract signed) on the profile card, at the Time Clock, and in the staff app\u2019s outstanding count. Nothing trusts the stale stored steps any more.',
+      'And the answer to \u201cwhy is a day 8 hours?\u201d: for someone with no timesheets yet (like a brand-new starter) a day of holiday defaults to 8 hours \u2014 configurable per venue. As soon as they have real worked weeks, their own statutory 52-week average takes over automatically.',
+    ],
+  },
+  {
     version: '5.6.8', date: '10 Aug 2026', label: 'Leave is worth something: balance-aware approval, paid/unpaid, leaver settlement',
     changes: [
       'Catch-up entry: the three changes below shipped over the weekend without a What\u2019s New note, which is why nobody could tell what was pushed. Recorded now.',
