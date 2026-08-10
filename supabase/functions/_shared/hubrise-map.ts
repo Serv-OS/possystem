@@ -392,16 +392,16 @@ export function orderToQueueRow(order: any, opts: { locationId: string }): { row
   // configured to send exactly these refs. Pattern: PLATFORM_METHOD, upper
   // snake case. Changing a code here without telling HubRise breaks the match
   // (harmlessly — unknown refs fall back to the platform's own name).
+  // Peter, 10 Aug: platform orders are 100% PAID ONLINE — the couriers are
+  // independents, cash never comes back; cash-on-delivery only exists in
+  // self-delivery arrangements we don't run. So the vocabulary is exactly
+  // four codes, all online. Anything else a connector ever sends falls back
+  // to the platform's own name — nothing is lost, nothing is assumed paid.
   const PLATFORM_PAYMENT_REFS: Record<string, string> = {
     DELIVEROO_ONLINE: 'Paid online (Deliveroo)',
-    DELIVEROO_CASH:   'Cash (Deliveroo)',
     UBEREATS_ONLINE:  'Paid online (Uber Eats)',
-    UBEREATS_CASH:    'Cash (Uber Eats)',
     JUSTEAT_ONLINE:   'Paid online (Just Eat)',
-    JUSTEAT_CASH:     'Cash (Just Eat)',
     ONLINE:           'Paid online',
-    CASH:             'Cash on delivery/collection',
-    CARD:             'Card on delivery/collection',
   };
   const payments = (Array.isArray(order.payments) ? order.payments : [])
     .filter((p: any) => p && p.deleted !== true)

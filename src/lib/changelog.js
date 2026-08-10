@@ -7,6 +7,12 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.15', date: '10 Aug 2026', label: 'Payment codes simplified: platform orders are always paid online',
+    changes: [
+      'Peter corrected the payment vocabulary: platform couriers are independent, so cash on delivery only exists where a restaurant runs its own drivers \u2014 not our model. The list handed to HubRise is now exactly four codes, all online: DELIVEROO_ONLINE, UBEREATS_ONLINE, JUSTEAT_ONLINE and generic ONLINE. Anything unexpected still keeps the platform\u2019s own wording.',
+    ],
+  },
+  {
     version: '5.6.14', date: '10 Aug 2026', label: 'Payment reference codes defined for every platform',
     changes: [
       'We now define the payment reference vocabulary and HubRise configures each platform to send it (rather than us waiting on their codes). Nine codes, pattern PLATFORM_METHOD: DELIVEROO_ONLINE, DELIVEROO_CASH, UBEREATS_ONLINE, UBEREATS_CASH, JUSTEAT_ONLINE, JUSTEAT_CASH, plus generic ONLINE, CASH and CARD.',
