@@ -84,11 +84,18 @@ sell ≈ 33p; cost ≈ IC 0.2% (4p) + scheme ~1p + 10 bps (2p) + ~4p flat ≈ 11
 (≈1.1% of turnover)**. Credit ~0.3% IC narrows it; commercial/Amex needs its own line. Model
 properly when GBP numbers arrive — this is envelope maths only.
 
+### Slice 0 SHIPPED (11 Aug): the webhook receiver exists
+`adyen-webhook` is deployed and smoke-tested: every notification lands RAW in
+`adyen_events` (durability first — the Ryft lesson), HMAC verification records
+validity per item (rejection armed before live, never during setup), optional
+basic auth via secrets, `[accepted]` ack. Register it as:
+`https://tbetcegmszzotrwdtqhi.supabase.co/functions/v1/adyen-webhook`
+
 ### Chase list (all owner: FranPOS, all currently undelivered)
 - [ ] Test API keys (US first is fine) + merchant account name + company account name
 - [ ] Client key + device-api region for terminals
 - [ ] Webhook endpoint registration + HMAC key
-- [ ] Adyen Back Office logins
+- [x] Adyen Back Office logins (Peter has access, 11 Aug)
 - [ ] The GBP pricing table + answers to the 7 rates-gap questions above
 - [ ] Hosted-onboarding demo (their offer)
 - [ ] Test AMS1 + S1F2 + test cards ordered under our merchant account

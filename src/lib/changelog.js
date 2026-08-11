@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.16', date: '11 Aug 2026', label: 'First Adyen code is live: the webhook receiver',
+    changes: [
+      'With Adyen Back Office access in hand, the integration\u2019s first slice shipped: a webhook receiver that stores every Adyen notification raw before anything interprets it, so nothing can ever be lost to a parsing bug \u2014 the lesson the Ryft integration taught. Signature checking records validity from day one and starts rejecting before anything goes live.',
+      'Smoke-tested end to end: a test notification was posted, stored, and acknowledged exactly as Adyen expects.',
+    ],
+  },
+  {
     version: '5.6.15', date: '10 Aug 2026', label: 'Payment codes simplified: platform orders are always paid online',
     changes: [
       'Peter corrected the payment vocabulary: platform couriers are independent, so cash on delivery only exists where a restaurant runs its own drivers \u2014 not our model. The list handed to HubRise is now exactly four codes, all online: DELIVEROO_ONLINE, UBEREATS_ONLINE, JUSTEAT_ONLINE and generic ONLINE. Anything unexpected still keeps the platform\u2019s own wording.',
