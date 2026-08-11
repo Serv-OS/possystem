@@ -428,13 +428,57 @@ function LocationCard({ location, companyName, msa, rya, bs, defaults, onError,
       {processor === 'stripe'
         ? <StripeBlock msa={msa} bs={bs} currency={currency} defaults={defaults} onLink={onLink} onUnlink={onUnlink} onSavePricing={onSavePricing} />
         : processor === 'adyen'
-        ? <div style={{ padding: '14px 16px', borderRadius: 12, background: 'var(--bg2)', border: '1px dashed var(--bdr2)', fontSize: 12.5, color: 'var(--t3)' }}>
-            {/* v5.5.966 Phase 0: routing + schema are live; the onboarding/admin fns land in Phase 1 (ADYEN_INTEGRATION_PLAN.md). */}
-            <b style={{ color: 'var(--t1)' }}>Adyen — plumbing ready, onboarding coming.</b><br/>
-            This venue now routes as an Adyen venue. Account onboarding, rates and payouts wire up when the Adyen test keys land (Phase 1).
-            Until then no card path is enabled for this venue — switch back to its previous processor for live trading.
-          </div>
+        ? <AdyenBlock />
         : <RyftBlock rya={rya} currency={currency} defaults={defaults} onError={onError} onConnect={onRyftConnect} onSync={onRyftSync} onUnlink={onRyftUnlink} onOnboardingLink={onRyftOnboardingLink} onSavePricing={onRyftSavePricing} onFees={onRyftFees} />}
+    </div>
+  );
+}
+
+// ─── Adyen block — LIVE status, asked of the server, never hardcoded ────────
+// The previous panel was a static "keys coming in Phase 1" sign that stayed up
+// after the keys landed and online payments shipped. Status now comes from the
+// adyen-checkout fn, so this panel is true by construction.
+function AdyenBlock() {
+  const [st, setSt] = useState(null);   // null=loading, {error} or status payload
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      try {
+        const { data: session } = await supabase.auth.getSession();
+        const res = await fetch(`${FUNCTIONS_URL}/adyen-checkout`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${session?.session?.access_token || ''}` },
+          body: JSON.stringify({ action: 'status' }),
+        });
+        const j = await res.json();
+        if (live) setSt(j.error ? { error: j.error } : j);
+      } catch (e) { if (live) setSt({ error: e.message }); }
+    })();
+    return () => { live = false; };
+  }, []);
+
+  const Row = ({ ok, children }) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5 }}>
+      <span style={{ color: ok ? 'var(--grn, #15C26A)' : 'var(--t4)', fontWeight: 700 }}>{ok ? '✓' : '·'}</span>
+      <span style={{ color: ok ? 'var(--t1)' : 'var(--t3)' }}>{children}</span>
+    </div>
+  );
+
+  if (!st) return <div style={{ padding: '14px 16px', borderRadius: 12, background: 'var(--bg2)', border: '1px solid var(--bdr2)', fontSize: 12.5, color: 'var(--t3)' }}>Checking the Adyen connection…</div>;
+  if (st.error || !st.configured) {
+    return <div style={{ padding: '14px 16px', borderRadius: 12, background: 'var(--bg2)', border: '1px solid var(--bdr2)', fontSize: 12.5, color: 'var(--t3)' }}>
+      <b style={{ color: 'var(--t1)' }}>Adyen — not reachable.</b><br/>
+      {st.error || 'Keys are not configured on this environment.'} Card payments will refuse safely at this venue until it is.
+    </div>;
+  }
+  return (
+    <div style={{ padding: '14px 16px', borderRadius: 12, background: 'var(--bg2)', border: '1px solid var(--bdr2)', display: 'flex', flexDirection: 'column', gap: 7 }}>
+      <div style={{ fontSize: 13, fontWeight: 700 }}>
+        Adyen — connected <span style={{ fontWeight: 400, color: 'var(--t3)' }}>· {st.merchantAccount} · {String(st.environment).toUpperCase()}</span>
+      </div>
+      <Row ok={st.online}>Online payments live — this venue's online shop charges through Adyen{st.environment === 'test' ? ' (test cards only)' : ''}</Row>
+      <Row ok={st.inPerson}>In-person on the tills — waiting for the test terminals, then the terminal flow ships</Row>
+      <Row ok={false}>Per-venue onboarding, rates and payouts — land with FranPOS's balance-platform access (sub-merchant phase)</Row>
     </div>
   );
 }

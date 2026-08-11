@@ -7,6 +7,12 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.20', date: '11 Aug 2026', label: 'The admin portal\u2019s Adyen panel tells the truth now',
+    changes: [
+      'The Adyen panel on a venue\u2019s billing card still said \u201ckeys coming, no card path enabled\u201d \u2014 a sign written before the keys landed and online payments shipped, left saying the opposite of reality. It now ASKS the server instead of asserting: connected-or-not, which merchant account, which environment, and a line each for what works today (online \u2713), what waits for hardware (in-person), and what waits on the partner (per-venue onboarding and payouts).',
+    ],
+  },
+  {
     version: '5.6.19', date: '11 Aug 2026', label: 'Adyen ONLINE payments are live on the dev site',
     changes: [
       'A venue set to Adyen now takes real online card payments through Adyen\u2019s hosted card form, end to end: our server opens the payment session, the customer pays in the checkout, the order lands in the kitchen exactly as Stripe and Ryft orders do, and the signed confirmation event is stored and verified for reconciliation.',

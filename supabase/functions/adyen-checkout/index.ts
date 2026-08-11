@@ -30,6 +30,20 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({}));
     const action = body.action || 'create_session';
 
+    // Live connection status for the admin portal — replaces a hardcoded
+    // "coming soon" sign that outlived its truth within a week (v5.6.20).
+    // No secrets in the response; merchant account NAME is admin-visible info.
+    if (action === 'status') {
+      return json({
+        ok: true,
+        configured: true,
+        environment: ENV,
+        merchantAccount: MERCHANT,
+        online: true,                     // slice 1a shipped — sessions + Drop-in
+        inPerson: false,                  // awaits test terminals (slice 1b)
+      });
+    }
+
     if (action === 'create_session') {
       const amount = Math.round(Number(body.amount_minor));
       if (!Number.isFinite(amount) || amount < 1) return json({ error: 'amount_minor must be a positive integer (pence)' }, 400);
