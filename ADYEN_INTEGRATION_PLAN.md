@@ -117,6 +117,27 @@ domains + the Vercel URL. Verified by replaying the browser's preflight:
 register the SAME WILDCARDS on the live credential — a per-venue exact origin
 would break every new venue's checkout until someone remembered.**
 
+### ✅ ONLINE PAYMENTS PROVEN E2E (11 Aug, v5.6.23) — via the ADVANCED flow
+The sessions flow died at the last step: checkoutshopper `/sessions/{id}/payments`
+returned a bare **403** with everything verified good (origins registered, setup +
+binLookup 200, "API Clientside Encryption Payments role" added — a probe with
+garbage sessionData got 422 *validation*, so the 403 sat deeper in Adyen's hosted
+stack and no error body explained it; a credential also CANNOT self-grant roles:
+"Cannot update the given apiCredential as it's the currently logged in apiCredential").
+**Resolution: switched to the ADVANCED flow** — Drop-in still encrypts the card
+in the browser, but the payment runs through OUR `adyen-checkout` fn
+(`make_payment` → `POST /v72/payments` with the API key; `payment_details` for
+3DS/redirect completion). Server-side, the same payment authorised first try.
+Full circle proven on the Provo shop (real browser, 4111 test card, £14):
+order **OL-04261** confirmed → AUTHORISATION webhook `JHV2P4SDLQLLGB75`
+success=true hmac_valid=true merchant_reference=OL-04261 → `order_queue` row in
+prep → `closed_checks` status=paid, processor='adyen', pspReference stored in
+`stripe_payment_intent_id` (the shared pay-id column — refunds route by
+`processor`). Client: `AdyenPaymentForm.jsx` (advanced, static card-only
+paymentMethodsResponse). The clientside-encryption role IS still required (the
+form's setup/binLookup/encryption use the client key) — keep it on the live
+credential checklist alongside the origin wildcards.
+
 ### Chase list (all owner: FranPOS, all currently undelivered)
 - [~] Test API keys — Peter creating self-serve 11 Aug; account names captured (FranPOS / FranPOS_ServOS_TEST)
 - [ ] Client key + device-api region for terminals
