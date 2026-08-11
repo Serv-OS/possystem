@@ -787,7 +787,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
             <div style={{ fontSize: 10, color: muted, textAlign: 'center', marginTop: 8 }}>
               {isOpenTab
                 ? `🔒 We'll hold ${currencySymbol()}${tabPreAuthAmount} on your card. Final bill is taken when staff close the tab.`
-                : '🔒 Card next, processed securely by Stripe.'}
+                : `🔒 Card next, processed securely by ${processor === 'adyen' ? 'Adyen' : processor === 'ryft' ? 'Ryft' : 'Stripe'}.`}
             </div>
           </div>
         )}

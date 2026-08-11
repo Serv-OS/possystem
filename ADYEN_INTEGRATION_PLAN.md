@@ -104,6 +104,14 @@ basic auth via secrets, `[accepted]` ack. Register it as:
 - Secrets stored: ADYEN_API_KEY / ADYEN_CLIENT_KEY / ADYEN_HMAC_KEY / ADYEN_MERCHANT_ACCOUNT / ADYEN_ENV.
 - adyen-webhook redeployed with the HMAC key — awaiting the Customer Area test ping to confirm hmac_valid=true.
 
+### Gotcha logged (11 Aug): client-key ALLOWED ORIGINS start EMPTY
+Drop-in failed with `TypeError: Failed to fetch` on checkoutshopper /setup —
+the credential's allowed-origins list ships empty, so NO browser origin can
+use the client key until registered. Fixed via `POST /v3/me/allowedOrigins`
+(dev.serv-os.app + possystem-liard.vercel.app; verified live). **GO-LIVE
+CHECKLIST: the LIVE credential needs its own origins registered — identical
+failure on day one otherwise.**
+
 ### Chase list (all owner: FranPOS, all currently undelivered)
 - [~] Test API keys — Peter creating self-serve 11 Aug; account names captured (FranPOS / FranPOS_ServOS_TEST)
 - [ ] Client key + device-api region for terminals

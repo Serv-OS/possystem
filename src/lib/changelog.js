@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.21', date: '11 Aug 2026', label: 'Adyen card form unblocked, and the checkout stops crediting Stripe for it',
+    changes: [
+      'The first live test of the Adyen card form failed with \u201cFailed to fetch\u201d. Cause: an Adyen client key only works from web addresses registered against it, and that list starts EMPTY. Our domains are registered now (through Adyen\u2019s own API, effective immediately) and the same step is on the go-live checklist so it cannot resurface with the live key.',
+      'Peter\u2019s catch: the checkout footer said \u201cprocessed securely by Stripe\u201d regardless of who actually processes the card. It now names the venue\u2019s real processor \u2014 Adyen, Ryft or Stripe \u2014 on the online checkout and QR checkout both.',
+    ],
+  },
+  {
     version: '5.6.20', date: '11 Aug 2026', label: 'The admin portal\u2019s Adyen panel tells the truth now',
     changes: [
       'The Adyen panel on a venue\u2019s billing card still said \u201ckeys coming, no card path enabled\u201d \u2014 a sign written before the keys landed and online payments shipped, left saying the opposite of reality. It now ASKS the server instead of asserting: connected-or-not, which merchant account, which environment, and a line each for what works today (online \u2713), what waits for hardware (in-person), and what waits on the partner (per-venue onboarding and payouts).',

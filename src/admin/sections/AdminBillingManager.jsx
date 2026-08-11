@@ -438,6 +438,13 @@ function LocationCard({ location, companyName, msa, rya, bs, defaults, onError,
 // The previous panel was a static "keys coming in Phase 1" sign that stayed up
 // after the keys landed and online payments shipped. Status now comes from the
 // adyen-checkout fn, so this panel is true by construction.
+const AdyenRow = ({ ok, children }) => (
+  <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5 }}>
+    <span style={{ color: ok ? 'var(--grn, #15C26A)' : 'var(--t4)', fontWeight: 700 }}>{ok ? '✓' : '·'}</span>
+    <span style={{ color: ok ? 'var(--t1)' : 'var(--t3)' }}>{children}</span>
+  </div>
+);
+
 function AdyenBlock() {
   const [st, setSt] = useState(null);   // null=loading, {error} or status payload
   useEffect(() => {
@@ -457,13 +464,6 @@ function AdyenBlock() {
     return () => { live = false; };
   }, []);
 
-  const Row = ({ ok, children }) => (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5 }}>
-      <span style={{ color: ok ? 'var(--grn, #15C26A)' : 'var(--t4)', fontWeight: 700 }}>{ok ? '✓' : '·'}</span>
-      <span style={{ color: ok ? 'var(--t1)' : 'var(--t3)' }}>{children}</span>
-    </div>
-  );
-
   if (!st) return <div style={{ padding: '14px 16px', borderRadius: 12, background: 'var(--bg2)', border: '1px solid var(--bdr2)', fontSize: 12.5, color: 'var(--t3)' }}>Checking the Adyen connection…</div>;
   if (st.error || !st.configured) {
     return <div style={{ padding: '14px 16px', borderRadius: 12, background: 'var(--bg2)', border: '1px solid var(--bdr2)', fontSize: 12.5, color: 'var(--t3)' }}>
@@ -476,9 +476,9 @@ function AdyenBlock() {
       <div style={{ fontSize: 13, fontWeight: 700 }}>
         Adyen — connected <span style={{ fontWeight: 400, color: 'var(--t3)' }}>· {st.merchantAccount} · {String(st.environment).toUpperCase()}</span>
       </div>
-      <Row ok={st.online}>Online payments live — this venue's online shop charges through Adyen{st.environment === 'test' ? ' (test cards only)' : ''}</Row>
-      <Row ok={st.inPerson}>In-person on the tills — waiting for the test terminals, then the terminal flow ships</Row>
-      <Row ok={false}>Per-venue onboarding, rates and payouts — land with FranPOS's balance-platform access (sub-merchant phase)</Row>
+      <AdyenRow ok={st.online}>Online payments live — this venue's online shop charges through Adyen{st.environment === 'test' ? ' (test cards only)' : ''}</AdyenRow>
+      <AdyenRow ok={st.inPerson}>In-person on the tills — waiting for the test terminals, then the terminal flow ships</AdyenRow>
+      <AdyenRow ok={false}>Per-venue onboarding, rates and payouts — land with FranPOS's balance-platform access (sub-merchant phase)</AdyenRow>
     </div>
   );
 }
