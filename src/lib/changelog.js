@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.19', date: '11 Aug 2026', label: 'Adyen ONLINE payments are live on the dev site',
+    changes: [
+      'A venue set to Adyen now takes real online card payments through Adyen\u2019s hosted card form, end to end: our server opens the payment session, the customer pays in the checkout, the order lands in the kitchen exactly as Stripe and Ryft orders do, and the signed confirmation event is stored and verified for reconciliation.',
+      'Provo is the first venue on it \u2014 its online shop now charges through the Adyen test account. Test cards work; real cards are refused, because the whole venue points at Adyen\u2019s TEST environment.',
+      'Server side proven before shipping: a real \u00a312.50 session was created against the merchant account through the deployed function.',
+    ],
+  },
+  {
     version: '5.6.18', date: '11 Aug 2026', label: 'The Adyen switch is safe to exist',
     changes: [
       'The admin portal has offered Adyen as a venue processor since the groundwork went in \u2014 but flipping it would have quietly sent card payments down the Stripe path with no reader, breaking checkout at that venue. The till now refuses plainly instead, naming the problem and the way back, until the Adyen charge flow ships.',

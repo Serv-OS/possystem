@@ -26,6 +26,7 @@ import { buildScheduleCtx } from '../../lib/locationTime';
 import { depleteForSaleServer } from '../../lib/stock/deplete';
 import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient';
 import { getLocationProcessor } from '../../lib/payments/processor';
+import AdyenPaymentForm from '../../components/AdyenPaymentForm';
 import RyftPaymentForm from '../../components/RyftPaymentForm';
 import AddressAutocomplete from '../../components/AddressAutocomplete';
 import { attributeOnlineOrder } from '../../lib/customerLookup';
@@ -642,6 +643,8 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     const gate = deliveryGateError();
     if (gate) { setError(gate); setStep('details'); return; }
     if (processor === 'ryft') { setError(''); setStep('pay'); return; }
+    // Adyen (slice 1a): the Drop-in creates its own session — advance to pay.
+    if (processor === 'adyen') { setError(''); setStep('pay'); return; }
     return startStripePayment();
   };
 
@@ -998,7 +1001,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       const { ref, checkId, collectionAt, sentAt, customer, items } = orderShape;
       // The success payload is a Stripe PaymentIntent OR a Ryft payment-session.
       // Store the right id + processor so the order is refundable later.
-      const payId = processor === 'ryft' ? (paymentIntent?.sessionId || paymentIntent?.id || null) : (paymentIntent?.id || null);
+      const payId = processor === 'adyen' ? (paymentIntent?.id || null)
+        : processor === 'ryft' ? (paymentIntent?.sessionId || paymentIntent?.id || null)
+        : (paymentIntent?.id || null);
       const collectionTimeLabel = collectionAt.toLocaleTimeString('en-GB', {
         timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false,
       });
@@ -1196,8 +1201,21 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           <div style={{ flex: 1, height: 4, borderRadius: 2, background: step === 'pay' ? theme.accent : cardBdr }}/>
         </div>
 
-        {/* ── STEP: PAY (Ryft card, card-not-present) ─────────────────── */}
-        {step === 'pay' && processor === 'ryft' ? (
+        {/* ── STEP: PAY (Adyen card via Drop-in sessions) ─────────────── */}
+        {step === 'pay' && processor === 'adyen' ? (
+          <div style={{ padding: '0 24px 16px' }}>
+            <AdyenPaymentForm
+              amountMinor={remainingMinor}
+              currency={stripeCurrency()}
+              reference={orderShape?.ref}
+              customerEmail={orderShape?.customer?.email}
+              onSuccess={onPaymentSuccess}
+              onError={(e) => setError(e?.message || 'Payment failed')}
+            />
+            {error && <div style={{ color: theme.danger || '#e5484d', fontSize: 13, marginTop: 10 }}>{error}</div>}
+          </div>
+        ) : /* ── STEP: PAY (Ryft card, card-not-present) ─────────────────── */
+        step === 'pay' && processor === 'ryft' ? (
           <div style={{ padding: '0 24px 16px' }}>
             <RyftPaymentForm
               amountMinor={remainingMinor}
