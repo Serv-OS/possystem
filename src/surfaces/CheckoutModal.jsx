@@ -226,6 +226,16 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
     // Ryft locations take the terminal payment via Ryft's in-person API.
     if (processor === 'ryft') return runRyftTerminalFlow();
 
+    // v5.6.18 — the admin portal can already mark a venue 'adyen', but the
+    // Adyen charge paths are still being built. Without this guard the flow
+    // fell through to the STRIPE path with no Stripe reader configured —
+    // i.e. flipping the admin switch would quietly break card payments at
+    // that venue. Refuse loudly instead until the Adyen flow lands.
+    if (processor === 'adyen') {
+      setError('This venue is set to Adyen, and the Adyen card flow is still being built. Cash and gift cards work; for card payments switch the venue back to its previous processor in the admin portal.');
+      return;
+    }
+
     try {
       // Build line items for set_reader_display
       // v5.5.172: NO tip line item — Stripe Terminal Configuration prompts

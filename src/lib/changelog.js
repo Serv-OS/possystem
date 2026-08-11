@@ -7,6 +7,12 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.18', date: '11 Aug 2026', label: 'The Adyen switch is safe to exist',
+    changes: [
+      'The admin portal has offered Adyen as a venue processor since the groundwork went in \u2014 but flipping it would have quietly sent card payments down the Stripe path with no reader, breaking checkout at that venue. The till now refuses plainly instead, naming the problem and the way back, until the Adyen charge flow ships.',
+    ],
+  },
+  {
     version: '5.6.17', date: '11 Aug 2026', label: 'Adyen connectivity proven end to end',
     changes: [
       'The first authenticated calls to Adyen\u2019s test platform succeeded: our credential is valid, correctly scoped to our own merchant account only, and card payments are enabled. All keys are stored server-side, never in the app.',
