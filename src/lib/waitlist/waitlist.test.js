@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 
 import {
   estimate, bandFor, roundUpTo, clamp, canTransition, isActive,
+  isStaleActive, freshActives, STALE_ACTIVE_MS,
   currentAverageWait, perBandStrip, rowToWaitlist, waitlistToRow, actualWaitMin,
   DEFAULT_BANDS, DEFAULT_QUOTE_RULES, STATUS,
 } from './waitlist.js';
@@ -107,15 +108,39 @@ test('lifecycle transitions are gated correctly', () => {
   assert.ok(!isActive('seated') && !isActive('no_show'));
 });
 
-test('currentAverageWait averages only active quoted parties', () => {
+test('THE 11 AUG BUG: currentAverageWait is ELAPSED time, not the quotes', () => {
+  // Every party quoted 5m but they have actually waited 10/20/30 minutes.
+  // The old quote-averaging read "5" forever — the number must track the clock.
+  const now = 1_000_000_000_000;
   const w = [
-    { status: 'waiting', quoted: 20 },
-    { status: 'notified', quoted: 40 },
-    { status: 'seated', quoted: 99 },   // excluded
-    { status: 'waiting', quoted: 30 },
+    { status: 'waiting',  quoted: 5, addedAt: now - 10 * 60000 },
+    { status: 'notified', quoted: 5, addedAt: now - 20 * 60000 },
+    { status: 'seated',   quoted: 5, addedAt: now - 99 * 60000 }, // excluded: not active
+    { status: 'waiting',  quoted: 5, addedAt: now - 30 * 60000 },
   ];
-  assert.equal(currentAverageWait(w), 30); // (20+40+30)/3
-  assert.equal(currentAverageWait([]), 0);
+  assert.equal(currentAverageWait(w, now), 20); // (10+20+30)/3 — NOT 5
+  assert.equal(currentAverageWait([], now), 0);
+});
+
+test('currentAverageWait falls back to the quote only when addedAt is missing', () => {
+  const now = 1_000_000_000_000;
+  assert.equal(currentAverageWait([{ status: 'waiting', quoted: 25 }], now), 25);
+});
+
+test('stale actives (>6h) are invisible: stat, freshActives, and estimate "ahead"', () => {
+  const now = 1_000_000_000_000;
+  const stale = { status: 'waiting', size: 2, quoted: 5, addedAt: now - STALE_ACTIVE_MS - 60000 };
+  const fresh = { status: 'waiting', size: 2, quoted: 5, addedAt: now - 10 * 60000 };
+  assert.ok(isStaleActive(stale, now));
+  assert.ok(!isStaleActive(fresh, now));
+  assert.ok(!isStaleActive({ ...stale, status: 'seated' }, now), 'terminal rows are never "stale active"');
+  assert.deepEqual(freshActives([stale, fresh], now), [fresh]);
+  // The header stat ignores the abandoned party entirely.
+  assert.equal(currentAverageWait([stale, fresh], now), 10);
+  // And the estimator does not count it as a party ahead: one open 2-top,
+  // only the stale party "ahead" -> ahead(0) < open(1) -> buffer-only quote.
+  const q = estimate({ size: 2, tables: [{ cap: 2, status: 'open' }], waiting: [stale], now });
+  assert.equal(q, 5);
 });
 
 test('perBandStrip returns a quote + open-table count per band', () => {

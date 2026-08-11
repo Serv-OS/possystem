@@ -94,6 +94,9 @@ function configToRow(cfg, locationId, orgId = null) {
 
 // Load active waitlist entries for a location. Filters OUT terminal statuses
 // (seated/completed/cancelled/no_show/walked_away/removed), caps at 500, oldest first.
+// The 24h added_at gate (v5.6.24) keeps un-swept ancient rows from ever reaching a
+// board — without it, `oldest first, limit 500` lets an accumulating backlog of
+// forgotten actives crowd TODAY'S queue out of the window entirely.
 export async function loadWaitlist(locationId) {
   if (isMock || !supabase) return { data: [] };
   if (!locationId || locationId === 'loc-demo') return { data: [] };
@@ -103,6 +106,7 @@ export async function loadWaitlist(locationId) {
       .select('*')
       .eq('location_id', locationId)
       .not('status', 'in', `(${INACTIVE_STATUSES.join(',')})`)
+      .gte('added_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString())
       .order('added_at', { ascending: true })
       .limit(500);
     if (error) {

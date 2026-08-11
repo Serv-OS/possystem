@@ -42,6 +42,22 @@ export const STATUS = {
 export const ACTIVE_STATUSES = [STATUS.WAITING, STATUS.NOTIFIED, STATUS.READY];
 export const isActive = (s) => ACTIVE_STATUSES.includes(s);
 
+// ── staleness (v5.6.24) ───────────────────────────────────────────────────────
+// An "active" party nobody touched for 6 hours is an abandoned queue, not a
+// live one — a real wait never lasts that long. Before this, forgotten entries
+// lived forever: 15-day-old test parties sat on the board, counted as "ahead"
+// in every quote, and dragged the header stat into fiction. Stale actives are
+// excluded from every stat/estimate here and swept to 'removed' in the DB by
+// the store (sweepStaleWaitlist).
+export const STALE_ACTIVE_MS = 6 * 60 * 60 * 1000;
+export const isStaleActive = (e, now = Date.now()) =>
+  isActive(e?.status) && Number.isFinite(e?.addedAt) && (now - e.addedAt) > STALE_ACTIVE_MS;
+
+// The parties that genuinely stand in the queue right now — the single filter
+// every consumer (board list, header stats, estimator "ahead" count) must use.
+export const freshActives = (waiting = [], now = Date.now()) =>
+  (waiting || []).filter((w) => isActive(w?.status) && !isStaleActive(w, now));
+
 // Allowed transitions (the lifecycle the spec defines). A re-add path lets a
 // no-show/walked-away/cancelled party rejoin the queue.
 export const TRANSITIONS = {
@@ -71,7 +87,7 @@ export function bandFor(size, bands = DEFAULT_BANDS) {
 //          (the store adapter maps a ServOS 'available' table -> status 'open').
 // waiting: [{ size, status }]           parties already in the queue.
 // Returns minutes — never negative, never NaN, never above maxQuote.
-export function estimate({ size, sectionPref = null, tables = [], waiting = [], bands = DEFAULT_BANDS, rules = DEFAULT_QUOTE_RULES }) {
+export function estimate({ size, sectionPref = null, tables = [], waiting = [], bands = DEFAULT_BANDS, rules = DEFAULT_QUOTE_RULES, now = Date.now() }) {
   const n = Math.max(1, Math.round(Number(size) || 1));
   const band = bandFor(n, bands);
   const turn = Number(band.turn) || Number(rules.defaultTurn) || 60;
@@ -89,7 +105,7 @@ export function estimate({ size, sectionPref = null, tables = [], waiting = [], 
 
   const total = suit.length;                                   // suitable tables (any status)
   const open = suit.filter((t) => t.status === 'open').length; // suitable tables free now
-  const ahead = waiting.filter((w) => isActive(w.status) && bandFor(w.size, bands).label === band.label).length;
+  const ahead = freshActives(waiting, now).filter((w) => bandFor(w.size, bands).label === band.label).length;
 
   // No table in the building fits this party at all → honest "very long, see host".
   if (total <= 0) return clamp(maxQuote, roundTo, maxQuote);
@@ -104,11 +120,19 @@ export function estimate({ size, sectionPref = null, tables = [], waiting = [], 
   return clamp(roundUpTo(mins, roundTo), roundTo, maxQuote);
 }
 
-// Average current quote across active parties (for the header "avg wait now").
-export function currentAverageWait(waiting = []) {
-  const active = waiting.filter((w) => isActive(w.status) && Number.isFinite(w.quoted));
+// Average ACTUAL elapsed wait (minutes) across active parties — the header
+// "avg wait now". Until v5.6.24 this averaged the QUOTES, so a queue that had
+// waited hours past its 5-minute quotes still read "5 min" — the number the
+// host trusts must be the same clock the guests are living. Falls back to the
+// quote only when a party has no addedAt (never true for DB rows).
+export function currentAverageWait(waiting = [], now = Date.now()) {
+  const active = freshActives(waiting, now);
   if (!active.length) return 0;
-  return Math.round(active.reduce((s, w) => s + w.quoted, 0) / active.length);
+  const mins = active.map((w) =>
+    Number.isFinite(w.addedAt) ? Math.max(0, (now - w.addedAt) / 60000)
+      : Number.isFinite(w.quoted) ? w.quoted : 0
+  );
+  return Math.round(mins.reduce((s, v) => s + v, 0) / active.length);
 }
 
 // Per-band strip for the board: representative quote + how many suitable tables are open.

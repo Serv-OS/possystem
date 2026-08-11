@@ -11,7 +11,7 @@
 
 import { useMemo } from 'react';
 import { useStore } from '../../store';
-import { perBandStrip, isActive, DEFAULT_BANDS, DEFAULT_QUOTE_RULES, tablesView } from '../../lib/waitlist/waitlist';
+import { perBandStrip, freshActives, DEFAULT_BANDS, DEFAULT_QUOTE_RULES, tablesView } from '../../lib/waitlist/waitlist';
 import QueueCard from './QueueCard';
 
 const mono = { fontFamily: 'var(--font-mono)' };
@@ -21,8 +21,10 @@ export default function QueueBoard({ loc, operator, onSeat }) {
   const tables = useStore(s => s.tables) || [];
   const cfg = useStore(s => s.waitlistConfig);
 
+  // freshActives (not isActive): a stale party the sweep hasn't persisted yet
+  // must neither show on the board nor count as "ahead" in the quote strip.
   const active = useMemo(
-    () => waitlist.filter(e => isActive(e.status)).sort((a, b) => (a.addedAt || 0) - (b.addedAt || 0)),
+    () => freshActives(waitlist).sort((a, b) => (a.addedAt || 0) - (b.addedAt || 0)),
     [waitlist],
   );
 
@@ -32,7 +34,7 @@ export default function QueueBoard({ loc, operator, onSeat }) {
     : DEFAULT_QUOTE_RULES;
 
   const tv = useMemo(() => tablesView(tables), [tables]);
-  const waitingForEst = useMemo(() => active.map(e => ({ size: e.size, status: e.status, quoted: e.quoted })), [active]);
+  const waitingForEst = useMemo(() => active.map(e => ({ size: e.size, status: e.status, quoted: e.quoted, addedAt: e.addedAt })), [active]);
   const strip = useMemo(
     () => perBandStrip({ tables: tv, waiting: waitingForEst, bands, rules }),
     [tv, waitingForEst, bands, rules],

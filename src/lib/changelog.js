@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.24',
+    date: '2026-08-11',
+    changes: [
+      'Tables Ready: "Avg wait now" is now the ACTUAL average time the queue has been waiting, not the average of the quotes — parties 15 days old were reading "5 min". The stat ticks with the clock.',
+      'Tables Ready: abandoned parties auto-expire — anything active for over 6 hours is swept to "removed" (at boot and on the minute tick), so a forgotten queue can never pollute the board, the per-band quotes, or the No-show KPI. The board load also gates out rows older than 24h so a backlog can never crowd out today\'s queue.',
+      'Tables Ready: stale parties no longer count as "ahead of you" in wait estimates (that is why 5-6 showed 50m with an empty restaurant).',
+    ],
+  },
+
+  {
     version: '5.6.23',
     date: '2026-08-11',
     changes: [

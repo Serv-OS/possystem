@@ -19,6 +19,7 @@ import {
   bandFor,
   STATUS,
   isActive,
+  isStaleActive,
   canTransition,
   currentAverageWait,
   rowToWaitlist,
@@ -270,7 +271,7 @@ export function waitlistSlice(set, get) {
 
       // First quote — estimate over the LIVE floor + the parties already waiting.
       const tablesView = get().waitlistTablesView();
-      const otherActive = (get().waitlist || []).filter((e) => isActive(e.status)).map((e) => ({ size: e.size, status: e.status }));
+      const otherActive = (get().waitlist || []).filter((e) => isActive(e.status)).map((e) => ({ size: e.size, status: e.status, addedAt: e.addedAt }));
       const quote = estimate({ size: size || 1, sectionPref: sectionPref || null, tables: tablesView, waiting: otherActive, bands, rules });
 
       const entry = {
@@ -420,7 +421,7 @@ export function waitlistSlice(set, get) {
       const tablesView = get().waitlistTablesView();
       const otherActive = (get().waitlist || [])
         .filter((e) => e.id !== id && isActive(e.status))
-        .map((e) => ({ size: e.size, status: e.status }));
+        .map((e) => ({ size: e.size, status: e.status, addedAt: e.addedAt }));
       const quote = estimate({ size: entry.size, sectionPref: entry.sectionPref, tables: tablesView, waiting: otherActive, bands, rules });
 
       const updated = {
@@ -441,6 +442,27 @@ export function waitlistSlice(set, get) {
       return updated;
     },
 
+    // ── stale sweep (v5.6.24) ─────────────────────────────────────────────────
+    // An active party older than STALE_ACTIVE_MS (6h) is an abandoned queue —
+    // sweep it to 'removed' through the normal status funnel so the DB, the
+    // audit ledger, and every other device agree. 'removed' (NOT 'no_show')
+    // because Insights' No-show KPI exact-matches the no_show status and a
+    // housekeeping sweep must not move a venue's service metrics. Idempotent;
+    // no-ops when nothing is stale.
+    sweepStaleWaitlist: async () => {
+      const stale = (get().waitlist || []).filter((e) => isStaleActive(e));
+      if (!stale.length) return 0;
+      console.warn(`[waitlist] sweeping ${stale.length} stale part${stale.length === 1 ? 'y' : 'ies'} (active > 6h) → removed`);
+      for (const e of stale) {
+        try {
+          await get().setWaitlistStatus(e.id, STATUS.REMOVED, { actor: 'system (stale sweep)' });
+        } catch (err) {
+          console.warn('[waitlist] stale sweep failed for', e.id, err?.message || err);
+        }
+      }
+      return stale.length;
+    },
+
     // ── live re-quoting ───────────────────────────────────────────────────────
     // Recompute `quoted` for every ACTIVE party against the live floor view and
     // the OTHER active parties. Shallow-set; debounced persistence of the rows
@@ -448,6 +470,9 @@ export function waitlistSlice(set, get) {
     recomputeWaitlistQuotes: () => {
       const list = get().waitlist || [];
       if (!list.length) return;
+      // Piggyback the stale sweep on the 60s requote tick (fire-and-forget;
+      // no-ops unless something is genuinely stale).
+      try { get().sweepStaleWaitlist?.(); } catch { /* no-op */ }
       const { bands, rules } = cfgView(get);
       const tablesView = get().waitlistTablesView();
 
@@ -456,7 +481,7 @@ export function waitlistSlice(set, get) {
         if (!isActive(e.status)) return e;
         const others = list
           .filter((o) => o.id !== e.id && isActive(o.status))
-          .map((o) => ({ size: o.size, status: o.status }));
+          .map((o) => ({ size: o.size, status: o.status, addedAt: o.addedAt }));
         const q = estimate({ size: e.size, sectionPref: e.sectionPref, tables: tablesView, waiting: others, bands, rules });
         if (q === e.quoted) return e;
         const updated = { ...e, quoted: q, quotedAt: Date.now() };
@@ -616,6 +641,9 @@ export function waitlistSlice(set, get) {
           const remoteIds = new Set(data.map((e) => e.id));
           const localExtras = (get().waitlist || []).filter((e) => !remoteIds.has(e.id) && isActive(e.status));
           set({ waitlist: [...data, ...localExtras] });
+          // A reload can resurface yesterday's forgotten queue — sweep stale
+          // actives to 'removed' BEFORE they pollute stats and quotes.
+          try { await get().sweepStaleWaitlist?.(); } catch { /* no-op */ }
           // Loaded rows may include self-joins persisted with no quote (created
           // server-side). Re-quote the live board so every party — including a guest
           // watching their status page — has a fresh quoted_wait_min after a load.

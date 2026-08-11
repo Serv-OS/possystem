@@ -25,7 +25,7 @@ import { startRealtime, stopRealtime } from '../../lib/realtime';
 import {
   registerWaitlistDevice, waitlistHeartbeat, waitlistPinLogin,
 } from '../../lib/waitlist/waitlistData';
-import { currentAverageWait, isActive } from '../../lib/waitlist/waitlist';
+import { currentAverageWait, freshActives } from '../../lib/waitlist/waitlist';
 import { Icon } from '../../components/ServOSIcons';
 import AddPartyDrawer from './AddPartyDrawer';
 import SeatModal from './SeatModal';
@@ -176,8 +176,13 @@ function AppShell({ venueName, operator, view, onView, dark, onToggleTheme, onLo
   const waitlist = useStore(s => s.waitlist) || [];
   const tables = useStore(s => s.tables) || [];
 
-  const active = waitlist.filter(e => isActive(e.status));
-  const avgWait = currentAverageWait(active);
+  // "Avg wait now" is the ACTUAL elapsed wait (v5.6.24), so it must tick with
+  // the clock, not just with store changes — 30s granularity for a minutes stat.
+  const [, tick] = useState(0);
+  useEffect(() => { const t = setInterval(() => tick(n => n + 1), 30000); return () => clearInterval(t); }, []);
+
+  const active = freshActives(waitlist);
+  const avgWait = currentAverageWait(waitlist);
   const tablesOpen = tables.filter(t => !t.parentId && t.status === 'available').length;
 
   return (
