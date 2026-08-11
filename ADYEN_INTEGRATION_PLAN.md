@@ -91,8 +91,21 @@ validity per item (rejection armed before live, never during setup), optional
 basic auth via secrets, `[accepted]` ack. Register it as:
 `https://tbetcegmszzotrwdtqhi.supabase.co/functions/v1/adyen-webhook`
 
+### Credentials as they land (Peter's Customer Area session, 11 Aug)
+- Company account: **FranPOS**
+- Merchant account (test): **FranPOS_ServOS_TEST**
+- ws user: `ws_733473@Company.FranPOS`, scoped to ONLY FranPOS_ServOS_TEST (least privilege — confirmed at creation)
+- API key / client key / HMAC key: stored as Supabase secrets when received (never in this repo)
+
+### CONNECTIVITY PROVEN (11 Aug)
+- `/v3/me`: 200 — credential CRED42CMW22322BZ5PSG6TDFXK2CSM, scoped to FranPOS_ServOS_TEST only.
+- Roles include Management API stores/webhooks/payment-methods READ+WRITE → venue setup can be automated.
+- `/v72/paymentMethods` on FranPOS_ServOS_TEST: 200, `scheme` (cards) enabled.
+- Secrets stored: ADYEN_API_KEY / ADYEN_CLIENT_KEY / ADYEN_HMAC_KEY / ADYEN_MERCHANT_ACCOUNT / ADYEN_ENV.
+- adyen-webhook redeployed with the HMAC key — awaiting the Customer Area test ping to confirm hmac_valid=true.
+
 ### Chase list (all owner: FranPOS, all currently undelivered)
-- [ ] Test API keys (US first is fine) + merchant account name + company account name
+- [~] Test API keys — Peter creating self-serve 11 Aug; account names captured (FranPOS / FranPOS_ServOS_TEST)
 - [ ] Client key + device-api region for terminals
 - [ ] Webhook endpoint registration + HMAC key
 - [x] Adyen Back Office logins (Peter has access, 11 Aug)

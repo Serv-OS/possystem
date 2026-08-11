@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.17', date: '11 Aug 2026', label: 'Adyen connectivity proven end to end',
+    changes: [
+      'The first authenticated calls to Adyen\u2019s test platform succeeded: our credential is valid, correctly scoped to our own merchant account only, and card payments are enabled. All keys are stored server-side, never in the app.',
+      'The credential can also manage stores, webhooks and payment methods through Adyen\u2019s Management API \u2014 which means much of a venue\u2019s payment setup can eventually be automated instead of configured by hand.',
+      'The webhook receiver now carries the signing key and verifies every event\u2019s signature from the first ping.',
+    ],
+  },
+  {
     version: '5.6.16', date: '11 Aug 2026', label: 'First Adyen code is live: the webhook receiver',
     changes: [
       'With Adyen Back Office access in hand, the integration\u2019s first slice shipped: a webhook receiver that stores every Adyen notification raw before anything interprets it, so nothing can ever be lost to a parsing bug \u2014 the lesson the Ryft integration taught. Signature checking records validity from day one and starts rejecting before anything goes live.',
