@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.23',
+    date: '2026-08-11',
+    changes: [
+      'Adyen online checkout: switched to the advanced flow — the payment now runs through our adyen-checkout function (make_payment + payment_details for 3DS) instead of Adyen\'s hosted session endpoint, which was refusing payments with an unexplained 403. Card details still encrypt in the browser; refusal reasons now surface to the customer.',
+    ],
+  },
+
+  {
     version: '5.6.22', date: '11 Aug 2026', label: 'Adyen card form: the real origin fix (subdomains)',
     changes: [
       'Second round on \u201cFailed to fetch\u201d: venue shops live on their own subdomains (location1.dev.serv-os.app), and Adyen matches registered origins exactly \u2014 so registering the bare domain fixed nothing. Wildcard origins are now registered covering every venue subdomain, present and future, and the fix was proven by replaying the exact browser request: allowed for our shops, refused for strangers.',

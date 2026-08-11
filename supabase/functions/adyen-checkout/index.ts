@@ -39,7 +39,8 @@ Deno.serve(async (req) => {
         configured: true,
         environment: ENV,
         merchantAccount: MERCHANT,
-        online: true,                     // slice 1a shipped — sessions + Drop-in
+        clientKey: CLIENT_KEY,            // publishable — the card form needs it to render
+        online: true,                     // slice 1a shipped — advanced flow + Drop-in
         inPerson: false,                  // awaits test terminals (slice 1b)
       });
     }
@@ -80,6 +81,70 @@ Deno.serve(async (req) => {
         reference,
         amount: j.amount,
       });
+    }
+
+    // ── make_payment: the ADVANCED flow. Drop-in encrypts the card in the
+    //    browser and hands us the blob; WE make the payment server-side with
+    //    the API key. Adopted 11 Aug after the sessions flow's checkoutshopper
+    //    /payments returned an unexplainable 403 (origin+key+role all verified
+    //    good — a probe with invalid sessionData got 422, the real payment
+    //    403, so the refusal sits deeper in Adyen's hosted stack). Server-side
+    //    we see EVERY error in full, and this is the same path the terminal
+    //    work needs anyway. ──────────────────────────────────────────────────
+    if (action === 'make_payment') {
+      const amount = Math.round(Number(body.amount_minor));
+      if (!Number.isFinite(amount) || amount < 1) return json({ error: 'amount_minor must be a positive integer (pence)' }, 400);
+      const reference = String(body.reference || '').slice(0, 80);
+      if (!reference) return json({ error: 'reference required' }, 400);
+      if (!body.payment_method || typeof body.payment_method !== 'object') {
+        return json({ error: 'payment_method (the encrypted card from the form) required' }, 400);
+      }
+      const payment: Record<string, unknown> = {
+        merchantAccount: MERCHANT,
+        amount: { value: amount, currency: String(body.currency || 'GBP').toUpperCase() },
+        reference,
+        paymentMethod: body.payment_method,
+        channel: 'Web',
+        origin: String(body.origin || ''),
+        returnUrl: String(body.return_url || 'https://dev.serv-os.app/'),
+        shopperInteraction: 'Ecommerce',
+      };
+      if (body.browser_info) payment.browserInfo = body.browser_info;
+      if (body.shopper_email) payment.shopperEmail = String(body.shopper_email);
+
+      const res = await fetch(`${CHECKOUT_BASE}/v72/payments`, {
+        method: 'POST',
+        headers: { 'X-API-Key': API_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payment),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        console.error('[adyen-checkout] payments failed:', res.status, JSON.stringify(j).slice(0, 500));
+        return json({ error: j.message || `Adyen refused the payment (${res.status})`, errorCode: j.errorCode || null }, 502);
+      }
+      // resultCode: Authorised | Refused | RedirectShopper | IdentifyShopper | …
+      // `action` present = 3DS or redirect step the client must run.
+      return json({
+        ok: true,
+        resultCode: j.resultCode || null,
+        pspReference: j.pspReference || null,
+        refusalReason: j.refusalReason || null,
+        action: j.action || null,
+        merchantReference: reference,
+      });
+    }
+
+    // ── payment_details: completes a 3DS/redirect flow started above ─────────
+    if (action === 'payment_details') {
+      if (!body.details) return json({ error: 'details required' }, 400);
+      const res = await fetch(`${CHECKOUT_BASE}/v72/payments/details`, {
+        method: 'POST',
+        headers: { 'X-API-Key': API_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ details: body.details }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) return json({ error: j.message || `Adyen refused (${res.status})` }, 502);
+      return json({ ok: true, resultCode: j.resultCode || null, pspReference: j.pspReference || null, refusalReason: j.refusalReason || null, action: j.action || null });
     }
 
     return json({ error: `unknown action: ${action}` }, 400);
