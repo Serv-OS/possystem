@@ -7,6 +7,12 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.22', date: '11 Aug 2026', label: 'Adyen card form: the real origin fix (subdomains)',
+    changes: [
+      'Second round on \u201cFailed to fetch\u201d: venue shops live on their own subdomains (location1.dev.serv-os.app), and Adyen matches registered origins exactly \u2014 so registering the bare domain fixed nothing. Wildcard origins are now registered covering every venue subdomain, present and future, and the fix was proven by replaying the exact browser request: allowed for our shops, refused for strangers.',
+    ],
+  },
+  {
     version: '5.6.21', date: '11 Aug 2026', label: 'Adyen card form unblocked, and the checkout stops crediting Stripe for it',
     changes: [
       'The first live test of the Adyen card form failed with \u201cFailed to fetch\u201d. Cause: an Adyen client key only works from web addresses registered against it, and that list starts EMPTY. Our domains are registered now (through Adyen\u2019s own API, effective immediately) and the same step is on the go-live checklist so it cannot resurface with the live key.',

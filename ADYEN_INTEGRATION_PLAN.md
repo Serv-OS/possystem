@@ -107,10 +107,15 @@ basic auth via secrets, `[accepted]` ack. Register it as:
 ### Gotcha logged (11 Aug): client-key ALLOWED ORIGINS start EMPTY
 Drop-in failed with `TypeError: Failed to fetch` on checkoutshopper /setup —
 the credential's allowed-origins list ships empty, so NO browser origin can
-use the client key until registered. Fixed via `POST /v3/me/allowedOrigins`
-(dev.serv-os.app + possystem-liard.vercel.app; verified live). **GO-LIVE
-CHECKLIST: the LIVE credential needs its own origins registered — identical
-failure on day one otherwise.**
+use the client key until registered. AND the first fix missed:
+customer shops live on per-venue SUBDOMAINS (`https://<slug>.dev.serv-os.app`)
+and origins match exactly, so registering the bare domain changed nothing.
+Registered via `POST /v3/me/allowedOrigins`: **wildcards** `https://*.dev.serv-os.app`
++ `https://*.serv-os.app` (cover every venue, present and future) + the bare
+domains + the Vercel URL. Verified by replaying the browser's preflight:
+200 for the shop's origin, 403 for an unregistered one. **GO-LIVE CHECKLIST:
+register the SAME WILDCARDS on the live credential — a per-venue exact origin
+would break every new venue's checkout until someone remembered.**
 
 ### Chase list (all owner: FranPOS, all currently undelivered)
 - [~] Test API keys — Peter creating self-serve 11 Aug; account names captured (FranPOS / FranPOS_ServOS_TEST)
