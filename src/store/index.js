@@ -22,6 +22,7 @@ import { STALE_ORDER_FLOOR_MS } from '../sync/staleness';
 import { giftRecordFrom, giftLegs, reverseGiftCard } from '../lib/giftCommit';
 import { commitRedemption } from '../lib/commitRedemptions';
 import { waitlistSlice } from './waitlistSlice';
+import { bookingsSlice } from './bookingsSlice';
 import { reportSave } from '../lib/saveHealth';
 import { bumpChallenge21 } from '../lib/challenge21Counter';
 
@@ -368,6 +369,9 @@ export const useStore = create((set, get) => ({
   // Tables Ready — walk-in waitlist / live table-queue (slice in ./waitlistSlice.js).
   ...waitlistSlice(set, get),
 
+  // Table Bookings — diary/optimiser/rules (slice in ./bookingsSlice.js).
+  ...bookingsSlice(set, get),
+
   // ── Location integrity (v5.5.238) ─────────
   // Stamps which location the in-memory data belongs to. SyncBridge sets this
   // after loading data. If a subsequent boot detects a mismatch, it purges
@@ -567,6 +571,11 @@ export const useStore = create((set, get) => ({
       ...(snap.quickScreenIds?.length ? { quickScreenIds: snap.quickScreenIds } : {}),
       ...(['manual','auto','hybrid'].includes(snap.quickScreenMode) ? { quickScreenMode: snap.quickScreenMode } : {}),
       ...(hasEntries(snap.quickScreenAuto?.lists) ? { quickScreenAuto: snap.quickScreenAuto } : {}),
+
+      // v5.6.25 Table Bookings — packages + rules ride the push (same non-empty
+      // guards: a push can never CLEAR a till's packages, only replace them).
+      ...(snap.packages?.length ? { packages: snap.packages } : {}),
+      ...(hasEntries(snap.bookingRules) ? { bookingRules: snap.bookingRules } : {}),
 
       configVersion: snap.version,
       configUpdateAvailable: false,

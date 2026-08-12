@@ -485,6 +485,11 @@ export default function SyncBridge({ onSyncPulse }) {
           // v5.5.740: load this location's table reservations now that the floor plan is in the store.
           try { await loadReservations(); } catch { /* best-effort */ }
 
+          // v5.6.25: load today's bookings + rules + packages (Table Bookings module).
+          // After the floor plan for the same reason as reservations; idempotent —
+          // SyncBridge remounts on every PIN login. Table-absent-safe data layer.
+          try { await useStore.getState().loadBookingsFromDB?.(); } catch { /* best-effort */ }
+
         } catch(e) { console.warn('[SyncBridge] boot load error:', e.message); }
       })();
     }

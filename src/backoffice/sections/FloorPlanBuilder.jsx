@@ -11,7 +11,7 @@ export default function FloorPlanBuilder() {
   const {
     tables, updateTableLayout, addTableToLayout, removeTableFromLayout,
     locationSections, addSection, updateSection, removeSection, moveSection,
-    showToast,
+    showToast, bookingRules, updateBookingRules,
   } = useStore();
 
   // v5.5.2: resolve the active location once on mount and use it as a render-time filter so
@@ -199,6 +199,46 @@ export default function FloorPlanBuilder() {
   const sectionColor = (id) => locationSections.find(s => s.id === id)?.color || '#888780';
   const sectionLabel = (id) => locationSections.find(s => s.id === id)?.label || id;
 
+  // ── Booking join groups (Table Bookings, v5.6.25) ────────────────────────────
+  // An ORDERED run of adjacent tables the optimiser may combine. Order IS
+  // adjacency: only consecutive members join, so ordering two tables apart is
+  // how a manager says "these can never be pushed together". Lives on
+  // booking_rules.join_groups (per location), NOT on floor_tables — no new
+  // column, no upsert-whitelist/SyncBridge-mapping landmine.
+  const joinGroups = bookingRules?.joinGroups || [];
+  const groupOf = (tableId) => joinGroups.find(g => (g.tableIds || []).includes(tableId));
+  const setJoinGroups = (groups) => {
+    updateBookingRules?.({ joinGroups: groups.filter(g => (g.tableIds || []).length) });
+    markChanged();
+  };
+  const assignToGroup = (tableId, groupId) => {
+    let groups = joinGroups.map(g => ({ ...g, tableIds: (g.tableIds || []).filter(id => id !== tableId) }));
+    if (groupId === '__new__') {
+      const sec = selectedTable?.section || 'run';
+      groups.push({
+        id: `jg-${Date.now().toString(36)}`,
+        label: `${sectionLabel(sec)} run`,
+        tableIds: [tableId],
+        kind: sec === 'bar' ? 'bar' : 'tables',
+      });
+    } else if (groupId) {
+      groups = groups.map(g => (g.id === groupId ? { ...g, tableIds: [...g.tableIds, tableId] } : g));
+    }
+    setJoinGroups(groups);
+  };
+  const nudgeInGroup = (tableId, dir) => {
+    setJoinGroups(joinGroups.map(g => {
+      const i = (g.tableIds || []).indexOf(tableId);
+      if (i < 0) return g;
+      const j = i + dir;
+      if (j < 0 || j >= g.tableIds.length) return g;
+      const ids = [...g.tableIds];
+      [ids[i], ids[j]] = [ids[j], ids[i]];
+      return { ...g, tableIds: ids };
+    }));
+  };
+  const tableLabel = (id) => tablesForThisLocation.find(t => t.id === id)?.label || id;
+
   return (
     <div style={{ display:'flex', height:'100%', overflow:'hidden' }}>
 
@@ -324,6 +364,50 @@ export default function FloorPlanBuilder() {
                   {locationSections.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
                 </select>
               </div>
+
+              {(() => {
+                const grp = groupOf(selectedTable.id);
+                return (
+                  <div style={{ marginBottom:9, padding:'8px 9px', background:'var(--bg2)', border:'1px solid var(--bdr)', borderRadius:8 }}>
+                    <label style={{ display:'block', fontSize:10, color:'var(--t4)', marginBottom:4 }}>Booking join group</label>
+                    <select value={grp?.id || ''} onChange={e => assignToGroup(selectedTable.id, e.target.value)} style={{
+                      width:'100%', background:'var(--bg3)', border:'1px solid var(--bdr2)',
+                      borderRadius:8, padding:'6px 9px', color:'var(--t1)', fontSize:12,
+                      fontFamily:'inherit', outline:'none', cursor:'pointer', boxSizing:'border-box',
+                    }}>
+                      <option value="">None — never combined</option>
+                      {joinGroups.map(g => <option key={g.id} value={g.id}>{g.label} ({g.tableIds.length})</option>)}
+                      <option value="__new__">+ New run…</option>
+                    </select>
+                    {grp && (
+                      <>
+                        <div style={{ display:'flex', flexWrap:'wrap', gap:4, marginTop:7 }}>
+                          {grp.tableIds.map(id => (
+                            <span key={id} style={{
+                              display:'inline-flex', alignItems:'center', gap:3, padding:'2px 6px', borderRadius:6,
+                              fontSize:10, fontWeight:700,
+                              background: id === selectedTable.id ? 'var(--acc-d)' : 'var(--bg3)',
+                              border:`1px solid ${id === selectedTable.id ? 'var(--acc-b)' : 'var(--bdr)'}`,
+                              color: id === selectedTable.id ? 'var(--acc)' : 'var(--t2)',
+                            }}>{tableLabel(id)}</span>
+                          ))}
+                        </div>
+                        <div style={{ display:'flex', alignItems:'center', gap:6, marginTop:7 }}>
+                          <button onClick={() => nudgeInGroup(selectedTable.id, -1)} title="Move earlier in the run" style={{ width:26, height:24, borderRadius:6, border:'1px solid var(--bdr2)', background:'var(--bg3)', color:'var(--t1)', cursor:'pointer', fontFamily:'inherit', fontSize:11 }}>◀</button>
+                          <button onClick={() => nudgeInGroup(selectedTable.id, 1)} title="Move later in the run" style={{ width:26, height:24, borderRadius:6, border:'1px solid var(--bdr2)', background:'var(--bg3)', color:'var(--t1)', cursor:'pointer', fontFamily:'inherit', fontSize:11 }}>▶</button>
+                          <label style={{ display:'flex', alignItems:'center', gap:5, fontSize:10, color:'var(--t3)', marginLeft:'auto', cursor:'pointer' }}>
+                            <input type="checkbox" checked={grp.kind === 'bar'} onChange={e => setJoinGroups(joinGroups.map(g => g.id === grp.id ? { ...g, kind: e.target.checked ? 'bar' : 'tables' } : g))} />
+                            Bar stools
+                          </label>
+                        </div>
+                        <div style={{ fontSize:9.5, color:'var(--t4)', marginTop:6, lineHeight:1.4 }}>
+                          Only tables NEXT TO each other in the run can be pushed together. Order = physical adjacency.
+                        </div>
+                      </>
+                    )}
+                  </div>
+                );
+              })()}
 
               <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:6, marginBottom:12 }}>
                 {[['Width','w'],['Height','h']].map(([label, key]) => (

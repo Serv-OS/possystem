@@ -943,6 +943,10 @@ function PushToPOSButton() {
       profiles: deviceProfiles,
       modifierGroupDefs: useStore.getState().modifierGroupDefs || [],
       instructionGroupDefs: useStore.getState().instructionGroupDefs || [],
+      // v5.6.25 Table Bookings — packages + rules ride the push so they survive
+      // a POS reload (INTEGRATION.md invariant 7). Absent/empty = no-op till-side.
+      packages: useStore.getState().packages || [],
+      ...(useStore.getState().bookingRules ? { bookingRules: useStore.getState().bookingRules } : {}),
     };
 
     // Persist snapshot so POS tabs that open later can still receive it

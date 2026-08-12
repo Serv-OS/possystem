@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.25',
+    date: '2026-08-11',
+    changes: [
+      'Table Bookings — Phases 1+2 of the new reservations module. Data foundation live: bookings, table membership, packages, per-venue rules, payments ledger and widget intake tables, with an atomic create that makes double-booking impossible (the free check runs inside the database write).',
+      'Table Bookings: the table-combination optimiser (suggest joined tables for a party, ranked with plain-English reasons; pacing cap per 15 minutes) — fully unit-tested against the design spec.',
+      'Floor plan builder: author booking JOIN GROUPS — ordered runs of adjacent tables that may be pushed together, with a bar-stools flag. Order = physical adjacency.',
+      'CRM: booking guests are the SAME customer records the POS and loyalty already use (shared across your venues, matched by phone) — customers gain tags, a no-show count and a card-on-file reference.',
+      'Packages + booking rules ride the config push so tills keep them across reloads.',
+    ],
+  },
+
+  {
     version: '5.6.24',
     date: '2026-08-11',
     changes: [

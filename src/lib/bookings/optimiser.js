@@ -1,0 +1,165 @@
+// src/lib/bookings/optimiser.js
+//
+// Table Bookings — the table-combination optimiser. Pure functions only: no
+// store, no Supabase, no React (mirrors src/lib/waitlist/waitlist.js), so the
+// whole module runs under node:test.
+//
+// Implements OPTIMISER.md from the design handoff exactly, with one deliberate
+// divergence: the handoff prototype's suggest() IGNORED the protect-large-tables
+// toggle (always applied the +10). The spec's own test table requires the toggle
+// to matter ("Protection off → 8-top ranks on waste alone"), so the spec wins.
+//
+// A combination is only legal within a join group — an ORDERED run of
+// physically adjacent tables, authored per venue in FloorPlanBuilder and stored
+// on booking_rules.join_groups. Only consecutive members may combine.
+
+// ── scoring weights — THE tuning surface. An operator complaint of "it keeps
+//    suggesting the wrong table" is almost always a conversation about these. ──
+export const WEIGHTS = {
+  WASTE: 4,        // per wasted seat — an empty seat is lost revenue
+  JOIN: 6,         // per table beyond the first — joins cost staff effort + flexibility
+  PROTECT: 10,     // burning a 6+ top on a party ≤ 4 (only when protectLargeTables)
+  BAR: 6,          // bar seating for a party > 1 — last resort, not a real table
+};
+
+export const DEFAULT_TURN_BANDS = { '1-2': 90, '3-4': 105, '5-6': 120, '7+': 150 };
+export const DEFAULT_RULES = {
+  maxJoin: 3,
+  tolerance: 2,            // wasted-seat tolerance
+  protectLargeTables: true,
+  pacingCap: 12,           // covers per 15-minute window
+};
+
+// ── time helpers ──────────────────────────────────────────────────────────────
+export const toMin = (hhmm) => {
+  const [h, m] = String(hhmm).split(':').map(Number);
+  return (h || 0) * 60 + (m || 0);
+};
+export const toHM = (min) => `${String(Math.floor(min / 60)).padStart(2, '0')}:${String(min % 60).padStart(2, '0')}`;
+
+// ── turn bands ────────────────────────────────────────────────────────────────
+export const bandLabel = (party) => (party <= 2 ? '1-2' : party <= 4 ? '3-4' : party <= 6 ? '5-6' : '7+');
+export function turnFor(party, turnBands = DEFAULT_TURN_BANDS) {
+  return Number(turnBands[bandLabel(party)]) || DEFAULT_TURN_BANDS[bandLabel(party)];
+}
+
+// ── free check — half-open interval overlap ───────────────────────────────────
+// bookings: [{ id, tables: ['t1','t3'], startMin, turnMinutes, status }]
+// A booking ending exactly at another's start does NOT conflict — turn times
+// include the reset. 'departed' and dead statuses never block.
+const BLOCKING_EXCLUDED = new Set(['departed', 'cancelled', 'no_show']);
+export function isTableFree(tableId, startMin, endMin, bookings = [], { skipId = null } = {}) {
+  return !(bookings || []).some((b) => {
+    if (b.id === skipId || BLOCKING_EXCLUDED.has(b.status)) return false;
+    if (!Array.isArray(b.tables) || !b.tables.includes(tableId)) return false;
+    const s = b.startMin, e = b.startMin + b.turnMinutes;
+    return s < endMin && e > startMin;
+  });
+}
+
+// ── pacing — separate from combination; the kitchen is the constraint ─────────
+// Covers arriving within ±7 minutes (inclusive) of t, regardless of tables.
+export function paceAt(t, bookings = []) {
+  return (bookings || [])
+    .filter((b) => !BLOCKING_EXCLUDED.has(b.status))
+    .filter((b) => b.startMin >= t - 7 && b.startMin <= t + 7)
+    .reduce((s, b) => s + (b.covers || 0), 0);
+}
+
+// ── the optimiser ─────────────────────────────────────────────────────────────
+// tables:     [{ id, label, covers, section }]
+// joinGroups: [{ id, label, tableIds: [...], kind }] — ordered = adjacent;
+//             kind 'bar' marks stool runs (no table service penalty).
+// Returns the top `limit` candidates, score ascending (lower is better):
+//   { set, label, cap, waste, score, n, section, reasons: [...] }
+export function suggestTables({
+  party,
+  time,                      // 'HH:MM' — or pass startMin directly
+  startMin = null,
+  tables = [],
+  bookings = [],
+  joinGroups = [],
+  turnBands = DEFAULT_TURN_BANDS,
+  rules = DEFAULT_RULES,
+  turnMinutes = null,        // a package turn overrides the band entirely
+  skipBookingId = null,      // ignore this booking's own footprint (editing/moving)
+  limit = 3,
+}) {
+  const n0 = Math.max(1, Math.round(Number(party) || 1));
+  const start = Number.isFinite(startMin) ? startMin : toMin(time);
+  const turn = Number.isFinite(turnMinutes) && turnMinutes > 0 ? turnMinutes : turnFor(n0, turnBands);
+  const end = start + turn;
+  const maxJoin = Math.max(1, Number(rules.maxJoin) || DEFAULT_RULES.maxJoin);
+  const tol = Math.max(0, Number.isFinite(Number(rules.tolerance)) ? Number(rules.tolerance) : DEFAULT_RULES.tolerance);
+  const protect = rules.protectLargeTables !== false;
+
+  const byId = new Map(tables.map((t) => [t.id, t]));
+  const free = (id) => isTableFree(id, start, end, bookings, { skipId: skipBookingId });
+
+  const candidates = [];
+  for (const group of joinGroups || []) {
+    const ids = (group.tableIds || []).filter((id) => byId.has(id));
+    for (let i = 0; i < ids.length; i++) {
+      for (let n = 1; n <= Math.min(maxJoin, ids.length - i); n++) {
+        const set = ids.slice(i, i + n);
+        if (!set.every(free)) continue;
+        const cap = set.reduce((s, id) => s + (byId.get(id).covers || 0), 0);
+        if (cap < n0) continue;
+        const waste = cap - n0;
+        if (waste > tol) continue;
+
+        let score = waste * WEIGHTS.WASTE + (n - 1) * WEIGHTS.JOIN;
+        const reasons = [];
+        reasons.push(waste === 0
+          ? 'Exact fit — no seat left empty'
+          : `${waste} seat${waste > 1 ? 's' : ''} spare, inside the ${tol}-seat tolerance`);
+        if (n > 1) {
+          reasons.push(`Joins ${set.map((id) => byId.get(id).label || id).join(' + ')} — same run, one server section`);
+        }
+        if (protect && n === 1 && (byId.get(set[0]).covers || 0) >= 6 && n0 <= 4) {
+          score += WEIGHTS.PROTECT;
+          reasons.push(`Burns a ${cap}-top on a party of ${n0} — held back unless nothing else fits`);
+        }
+        if (group.kind === 'bar' && n0 > 1) {
+          score += WEIGHTS.BAR;
+          reasons.push('Bar stools — no table service');
+        }
+        // Downstream cost — what this choice leaves for walk-ins. This is what
+        // makes the ranking legible to the operator; never reduce it away.
+        const rest = tables.filter((t) => !set.includes(t.id) && free(t.id));
+        const twos = rest.filter((t) => (t.covers || 0) <= 2).length;
+        reasons.push(`Leaves ${rest.length} table${rest.length === 1 ? '' : 's'} free at ${toHM(start)}, ${twos} of them two-tops for walk-ins`);
+
+        candidates.push({
+          id: set.join('+'),
+          set,
+          label: set.map((id) => byId.get(id).label || id).join(' + '),
+          cap,
+          waste,
+          score,
+          n,
+          section: byId.get(set[0]).section || null,
+          reasons,
+        });
+      }
+    }
+  }
+  candidates.sort((a, b) => a.score - b.score);
+  return candidates.slice(0, Math.max(1, limit));
+}
+
+// ── booking-row normaliser (store camelCase → optimiser shape) ────────────────
+// Store bookings carry startTime 'HH:MM'/'HH:MM:SS' + turnMinutes; the pure
+// functions want minutes. Kept here so every consumer normalises identically.
+export function toOptimiserBooking(b) {
+  if (!b) return null;
+  const startMin = Number.isFinite(b.startMin) ? b.startMin : toMin(String(b.startTime || b.start || '00:00').slice(0, 5));
+  return {
+    id: b.id,
+    tables: Array.isArray(b.tables) ? b.tables : (b.primaryTableId ? [b.primaryTableId] : []),
+    startMin,
+    turnMinutes: Number(b.turnMinutes || b.turn) || 90,
+    covers: Number(b.covers) || 1,
+    status: b.status || 'confirmed',
+  };
+}

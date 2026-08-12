@@ -569,7 +569,20 @@ export function startRealtime(store, locationId = LOCATION_ID) {
     })
     .subscribe();
 
-  channels = [kdsChannel, e86Channel, stockChannel, configChannel, taxChannel, sessionsChannel, checksChannel, queueChannel, tabsChannel, waitlistChannel];
+  // ── Table Bookings — live diary across devices (v5.6.25) ────────────────────
+  const bookingsChannel = supabase
+    .channel(`bookings:${locationId}`)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'bookings', filter: `location_id=eq.${locationId}` }, (payload) => {
+      if (payload.eventType === 'DELETE' && payload.old?.location_id && payload.old.location_id !== locationId) return;
+      store.getState().applyBookingsRealtime?.(payload);
+    })
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'booking_tables', filter: `location_id=eq.${locationId}` }, (payload) => {
+      if (payload.eventType === 'DELETE' && payload.old?.location_id && payload.old.location_id !== locationId) return;
+      store.getState().applyBookingTablesRealtime?.(payload);
+    })
+    .subscribe();
+
+  channels = [kdsChannel, e86Channel, stockChannel, configChannel, taxChannel, sessionsChannel, checksChannel, queueChannel, tabsChannel, waitlistChannel, bookingsChannel];
 
   // Backfill: master scans for unrouted customer-surface orders (kiosk / online / qr / hubrise)
   // that arrived while it was offline OR that were scheduled and are now due. routeKioskOrderPrints
