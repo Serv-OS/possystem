@@ -210,6 +210,39 @@ export async function updateBookingRow(id, patch, locationId) {
   } catch (e) { return { ok: false, error: e?.message }; }
 }
 
+// Manually re-table a booking. Atomic server-side (move_booking RPC): the
+// availability check excludes the booking's own footprint and runs under the
+// per-location lock, so a move can never land on someone else's tables.
+export async function moveBookingTables(id, tableIds, primaryTableId, locationId) {
+  if (isMock || !supabase) return { ok: true, simulated: true };
+  if (!isRealLoc(locationId)) return { ok: false, error: 'no location' };
+  try {
+    const { data, error } = await supabase.rpc('move_booking', {
+      p_id: id,
+      p_location_id: locationId,
+      p_table_ids: tableIds,
+      p_primary_table_id: primaryTableId,
+    });
+    if (error) { if (!warnAbsentOr(error, 'moveBooking')) console.warn('[bookingsData] moveBooking:', error.message); return { ok: false, error: error.message }; }
+    return { ok: !!data?.ok, error: data?.error || null, tableId: data?.table_id || null };
+  } catch (e) { return { ok: false, error: e?.message || 'move failed' }; }
+}
+
+// A date range of bookings for Reports (id-level rows, no membership join —
+// primary_table_id is enough for utilisation maths).
+export async function loadBookingsRange(locationId, fromISO, toISO) {
+  if (isMock || !supabase || !isRealLoc(locationId)) return { data: [] };
+  try {
+    const { data, error } = await supabase
+      .from('bookings').select('*')
+      .eq('location_id', locationId)
+      .gte('booking_date', fromISO).lte('booking_date', toISO)
+      .order('booking_date').order('start_time');
+    if (error) { warnAbsentOr(error, 'loadBookingsRange'); return { data: [] }; }
+    return { data: (data || []).map((r) => rowToBooking(r)).filter(Boolean) };
+  } catch (e) { warnAbsentOr(e, 'loadBookingsRange'); return { data: [] }; }
+}
+
 // ── rules ─────────────────────────────────────────────────────────────────────
 export async function loadBookingRules(locationId) {
   if (isMock || !supabase || !isRealLoc(locationId)) return { data: null };

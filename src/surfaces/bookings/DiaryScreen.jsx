@@ -6,17 +6,30 @@
 // inspector on the right. Clicking a block selects it (3px accent ring) and
 // populates the inspector. All reads come from the store; writes go through
 // updateBooking / cancelBooking (seatBooking when the store grows one).
+//
+// The timeline is FLUID: a ResizeObserver (same pattern as FloorScreen)
+// measures the scroll container and the slot width is derived so the grid
+// fills 100% of the available width — floored at MIN_SLOT_W with overflow-x
+// as the narrow-screen fallback. Every x-coordinate (header cells, background
+// gradients, block left/width, now-line) derives from that one slotW.
+//
+// A [Timeline | List] toggle (persisted in localStorage — a UI preference,
+// not data) adds a time-sorted list view; rows drive the same `sel` state so
+// the inspector works identically from either view.
 
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../store';
 import { toMin, toHM, isTableFree, toOptimiserBooking } from '../../lib/bookings/optimiser.js';
 import {
-  mono, tintBg, tintBd, rulesOf, displayStatus, statusMeta, isDead, isLive,
-  useNowMin, money, initialsOf, bookingName, todayISO, EmptyNote,
+  mono, tintBg, tintBd, rulesOf, displayStatus, statusMeta, StatusBadge, isDead, isLive,
+  useNowMin, money, initialsOf, bookingName, todayISO, EmptyNote, Chip,
 } from './bits.jsx';
 
-const SLOT_W = 34;
+const MIN_SLOT_W = 24;   // narrowest a 15-min column may go before overflow-x kicks in
+const GUTTER = 104;      // row-label column (border-box, divider included)
+const WRAP_CHROME = 30;  // scroll-container padding (14×2) + timeline card border (1×2)
 const ROW_H = 44;
+const VIEW_KEY = 'rpos-bookings-diary-view';
 
 const sortTables = (tables) =>
   (tables || [])
@@ -44,10 +57,36 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
   const startMin = toMin(rules.serviceStart);
   const endMin = toMin(rules.serviceEnd);
   const slots = Math.max(1, Math.round((endMin - startMin) / 15));
-  const gridW = slots * SLOT_W;
+
+  // ── fluid slot width (FloorScreen's ResizeObserver pattern) ─────────────────
+  // The screen stays mounted behind display:none panes, where clientWidth reads
+  // 0 — ignore those so switching screens never collapses the grid.
+  const wrapRef = useRef(null);
+  const [wrapW, setWrapW] = useState(920);
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(() => { if (el.clientWidth > 0) setWrapW(el.clientWidth); });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const slotW = Math.max(MIN_SLOT_W, Math.floor((wrapW - WRAP_CHROME - GUTTER) / slots));
+  const gridW = slots * slotW;
   const gridH = rows.length * ROW_H;
 
+  // ── timeline | list (persisted UI preference) ───────────────────────────────
+  const [view, setViewState] = useState(() => {
+    try { return localStorage.getItem(VIEW_KEY) === 'list' ? 'list' : 'timeline'; } catch { return 'timeline'; }
+  });
+  const setView = (v) => {
+    setViewState(v);
+    try { localStorage.setItem(VIEW_KEY, v); } catch { /* private mode — session-only */ }
+  };
+
   const visible = useMemo(() => bookings.filter((b) => b.status !== 'cancelled'), [bookings]);
+  const listRows = useMemo(
+    () => visible.slice().sort((a, b) => toMin(a.startTime) - toMin(b.startTime) || bookingName(a).localeCompare(bookingName(b))),
+    [visible]);
   const optBookings = useMemo(() => visible.map(toOptimiserBooking).filter(Boolean), [visible]);
 
   // ── KPI strip (all computed, never static) ──────────────────────────────────
@@ -93,30 +132,80 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
           <Kpi label="Prepaid" value={money(kpi.prepaid)} sub="packages" col="var(--grn)" last />
         </div>
 
-        {/* day switcher */}
+        {/* day switcher + view toggle */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px 0', flexShrink: 0 }}>
           <button className="btn btn-ghost btn-xs" onClick={() => shiftDay(-1)} style={{ ...mono }}>‹</button>
           <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--t2)', ...mono }}>{bookingsDate || todayISO()}{isToday ? ' · today' : ''}</span>
           <button className="btn btn-ghost btn-xs" onClick={() => shiftDay(1)} style={{ ...mono }}>›</button>
+          <div style={{ display: 'flex', gap: 6, marginLeft: 8 }}>
+            <Chip active={view === 'timeline'} onClick={() => setView('timeline')} style={viewChip}>Timeline</Chip>
+            <Chip active={view === 'list'} onClick={() => setView('list')} style={viewChip}>List</Chip>
+          </div>
         </div>
 
-        {/* timeline */}
-        <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: 14 }}>
+        {/* timeline / list — one measured scroll container for both views */}
+        <div ref={wrapRef} style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: 14 }}>
           {visible.length === 0 && (
             <div style={{ marginBottom: 14 }}>
               <EmptyNote title="No bookings yet today" sub="Take the first one from the Book tab." />
             </div>
           )}
+          {view === 'list' ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {listRows.map((b) => {
+                const st = displayStatus(b, nowMin, packages);
+                const dead = st === 'no_show';
+                const isSel = b.id === sel;
+                const pkg = b.packageId ? packages.find((p) => p.id === b.packageId) : null;
+                const labels = (b.tables || []).map((id) => rows.find((t) => t.id === id)?.label || id).join(' + ');
+                return (
+                  <button
+                    key={b.id}
+                    onClick={() => onSelect(isSel ? null : b.id)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 12, width: '100%', padding: '9px 14px',
+                      borderRadius: 11, textAlign: 'left', cursor: 'pointer',
+                      background: 'var(--bg1)', opacity: dead ? 0.65 : 1,
+                      border: `1.5px solid ${isSel ? 'var(--acc)' : 'var(--bdr)'}`,
+                      boxShadow: isSel ? `0 0 0 3px ${tintBg('var(--acc)')}` : 'none',
+                      transition: 'box-shadow 140ms cubic-bezier(.2,.8,.3,1)',
+                    }}
+                  >
+                    <span style={{ width: 46, flexShrink: 0, fontSize: 13, fontWeight: 800, color: dead ? 'var(--t4)' : 'var(--t1)', ...mono }}>
+                      {String(b.startTime || '').slice(0, 5)}
+                    </span>
+                    <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 700, color: dead ? 'var(--t4)' : 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {bookingName(b)}
+                    </span>
+                    <span style={{ width: 52, flexShrink: 0, fontSize: 11, color: 'var(--t3)', ...mono }}>{b.covers} cvr</span>
+                    <span style={{ width: 110, flexShrink: 0, fontSize: 11, fontWeight: 700, color: dead ? 'var(--t4)' : 'var(--t2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', ...mono }}>
+                      {labels || '—'}
+                    </span>
+                    <StatusBadge st={st} style={{ flexShrink: 0 }} />
+                    <span style={{ width: 64, flexShrink: 0, fontSize: 10, color: 'var(--t4)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {b.source || 'host'}
+                    </span>
+                    <span style={{ width: 16, flexShrink: 0, textAlign: 'center' }} title={pkg ? pkg.name : undefined}>
+                      {b.packageId && <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 999, background: 'var(--grn)' }} />}
+                    </span>
+                    <span style={{ width: 16, flexShrink: 0, textAlign: 'center', fontSize: 12, color: 'var(--orn)' }} title={b.note || undefined}>
+                      {b.note ? '✎' : ''}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
           <div style={{ border: '1px solid var(--bdr)', borderRadius: 14, background: 'var(--bg1)', width: 'fit-content', overflow: 'hidden' }}>
             {/* header row */}
             <div style={{ display: 'flex' }}>
-              <div style={{ width: 104, flexShrink: 0, borderRight: '1px solid var(--bdr)', background: 'var(--bg2)' }} />
+              <div style={{ width: GUTTER, flexShrink: 0, borderRight: '1px solid var(--bdr)', background: 'var(--bg2)' }} />
               <div style={{ display: 'flex', height: 26, background: 'var(--bg2)' }}>
                 {Array.from({ length: slots }, (_, i) => {
                   const m = startMin + i * 15;
                   return (
                     <div key={i} style={{
-                      width: SLOT_W, flexShrink: 0, display: 'grid', placeItems: 'center',
+                      width: slotW, flexShrink: 0, display: 'grid', placeItems: 'center',
                       borderLeft: m % 60 === 0 ? '1px solid var(--bdr2)' : `1px solid ${tintBg('var(--t1)', 3)}`,
                       fontSize: 10, fontWeight: 700, color: 'var(--t4)', ...mono,
                     }}>{m % 30 === 0 ? toHM(m) : ''}</div>
@@ -127,7 +216,7 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
             {/* body */}
             <div style={{ display: 'flex' }}>
               {/* row labels */}
-              <div style={{ width: 104, flexShrink: 0, borderRight: '1px solid var(--bdr)' }}>
+              <div style={{ width: GUTTER, flexShrink: 0, borderRight: '1px solid var(--bdr)' }}>
                 {rows.map((t, i) => (
                   <div key={t.id} style={{
                     height: ROW_H, padding: '6px 10px', boxSizing: 'border-box',
@@ -142,8 +231,8 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
               <div style={{
                 position: 'relative', width: gridW, height: gridH, flexShrink: 0,
                 background: [
-                  `repeating-linear-gradient(to right, var(--bdr2) 0 1px, transparent 1px ${SLOT_W * 4}px)`,
-                  `repeating-linear-gradient(to right, ${tintBg('var(--t1)', 3)} 0 1px, transparent 1px ${SLOT_W}px)`,
+                  `repeating-linear-gradient(to right, var(--bdr2) 0 1px, transparent 1px ${slotW * 4}px)`,
+                  `repeating-linear-gradient(to right, ${tintBg('var(--t1)', 3)} 0 1px, transparent 1px ${slotW}px)`,
                   `repeating-linear-gradient(to bottom, transparent 0 ${ROW_H}px, ${tintBg('var(--t1)', 2)} ${ROW_H}px ${ROW_H * 2}px)`,
                 ].join(', '),
               }}>
@@ -154,8 +243,8 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
                   if (!idxs.length) return null;
                   const first = Math.min(...idxs), last = Math.max(...idxs);
                   const bs = toMin(b.startTime);
-                  const left = ((bs - startMin) / 15) * SLOT_W;
-                  const width = ((b.turnMinutes || 90) / 15) * SLOT_W - 3;
+                  const left = ((bs - startMin) / 15) * slotW;
+                  const width = ((b.turnMinutes || 90) / 15) * slotW - 3;
                   if (left + width < 0 || left > gridW) return null;
                   const isSel = b.id === sel;
                   const pkg = b.packageId ? packages.find((p) => p.id === b.packageId) : null;
@@ -185,13 +274,14 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
                 {Number.isFinite(nowMin) && nowMin >= startMin && nowMin <= endMin && (
                   <div style={{
                     position: 'absolute', top: 0, bottom: 0, width: 2, pointerEvents: 'none',
-                    left: ((nowMin - startMin) / 15) * SLOT_W,
+                    left: ((nowMin - startMin) / 15) * slotW,
                     background: 'var(--acc)', boxShadow: '0 0 10px var(--acc-b)',
                   }} />
                 )}
               </div>
             </div>
           </div>
+          )}
         </div>
       </div>
 
@@ -211,6 +301,8 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
   );
 }
 
+const viewChip = { height: 30, minWidth: 0, padding: '0 12px', fontSize: 11, borderRadius: 9 };
+
 function Kpi({ label, value, sub, col, last }) {
   return (
     <div style={{ padding: '10px 14px', borderRight: last ? 'none' : `1px solid ${tintBg('var(--t1)', 7)}` }}>
@@ -224,8 +316,12 @@ function Kpi({ label, value, sub, col, last }) {
 function Inspector({ b, nowMin, packages, rules, tables, onClose }) {
   const updateBooking = useStore((s) => s.updateBooking);
   const cancelBooking = useStore((s) => s.cancelBooking);
+  const [moving, setMoving] = useState(false);
+  // Render-adjustment (not an effect — the repo lint forbids sync setState in
+  // effects): selecting a different booking closes the move panel.
+  const [movingFor, setMovingFor] = useState(b.id);
+  if (movingFor !== b.id) { setMovingFor(b.id); setMoving(false); }
   const st = displayStatus(b, nowMin, packages);
-  const meta = statusMeta(st);
   const start = toMin(b.startTime);
   const pkg = b.packageId ? packages.find((p) => p.id === b.packageId) : null;
   const labels = (b.tables || []).map((id) => tables.find((t) => t.id === id)?.label || id);
@@ -258,7 +354,7 @@ function Inspector({ b, nowMin, packages, rules, tables, onClose }) {
               {b.covers} cvr · {String(b.startTime || '').slice(0, 5)}–{toHM(start + (b.turnMinutes || 90))}
             </div>
           </div>
-          <span className="badge" style={{ background: tintBg(meta.col), border: `1px solid ${tintBd(meta.col)}`, color: meta.col, borderRadius: 20, padding: '3px 10px', fontSize: 10, fontWeight: 700 }}>{meta.label}</span>
+          <StatusBadge st={st} />
           <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--t4)', cursor: 'pointer', fontSize: 15, padding: 0 }}>✕</button>
         </div>
         <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
@@ -317,6 +413,8 @@ function Inspector({ b, nowMin, packages, rules, tables, onClose }) {
         ))}
       </div>
 
+      {moving && <MovePanel b={b} onDone={() => setMoving(false)} />}
+
       <div style={{ padding: '14px 18px', display: 'flex', flexDirection: 'column', gap: 8 }}>
         {isLive(b) && b.status !== 'dining' && (
           <button className="btn btn-acc" onClick={seatNow} style={{ height: 44, fontWeight: 800 }}>Seat now — open POS tab</button>
@@ -326,10 +424,90 @@ function Inspector({ b, nowMin, packages, rules, tables, onClose }) {
         )}
         {isLive(b) && b.status !== 'dining' && (
           <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn btn-ghost" onClick={() => setMoving((m) => !m)} style={{ flex: 1, height: 40 }}>{moving ? 'Close move' : 'Move table'}</button>
             <button className="btn btn-red" onClick={() => updateBooking?.(b.id, { status: 'no_show' })} style={{ flex: 1, height: 40 }}>No-show</button>
             <button className="btn btn-ghost" onClick={() => cancelBooking?.(b.id)} style={{ flex: 1, height: 40 }}>Cancel</button>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ── Move table (Peter, 12 Aug: "a way to move peoples table manually") ────────
+// Suggested combinations come from the optimiser with the booking's OWN
+// footprint excluded; the manual grid offers every table, greying ones busy
+// for the window. The write is moveBooking → the atomic move_booking RPC, so
+// a stale suggestion loses cleanly with a "just taken" toast, never a
+// double-book.
+function MovePanel({ b, onDone }) {
+  const suggest = useStore((s) => s.suggestBookingTables);
+  const moveBooking = useStore((s) => s.moveBooking);
+  const showToast = useStore((s) => s.showToast);
+  const storeTables = useStore((s) => s.tables) || [];
+  const dayBookings = useStore((s) => s.bookings) || [];
+  const [busyId, setBusyId] = useState(null);
+
+  const time = String(b.startTime || '').slice(0, 5);
+  const candidates = useMemo(
+    () => (suggest ? suggest({ party: b.covers, time, packageId: b.packageId, skipBookingId: b.id, limit: 3 }) : [])
+      .filter((c) => c.set.join('+') !== (b.tables || []).join('+')),
+    [suggest, b, time],
+  );
+  const start = toMin(time), end = start + (b.turnMinutes || 90);
+  const opt = useMemo(() => dayBookings.map(toOptimiserBooking), [dayBookings]);
+  const grid = useMemo(
+    () => storeTables.filter((t) => !t.parentId).map((t) => ({
+      id: t.id, label: t.label || t.id, covers: t.maxCovers || 2,
+      free: isTableFree(t.id, start, end, opt, { skipId: b.id }),
+      current: (b.tables || []).includes(t.id),
+    })),
+    [storeTables, opt, start, end, b],
+  );
+
+  const doMove = async (tableIds) => {
+    setBusyId(tableIds.join('+'));
+    const res = await moveBooking?.(b.id, tableIds);
+    setBusyId(null);
+    if (res?.ok) {
+      showToast?.(`Moved to ${tableIds.map((id) => grid.find((g) => g.id === id)?.label || id).join(' + ')}`, 'success');
+      onDone?.();
+    } else {
+      showToast?.(res?.error === 'table_taken' ? 'That table was just taken — pick another' : `Move failed — ${res?.error || 'try again'}`, 'error');
+    }
+  };
+
+  return (
+    <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--bdr)' }}>
+      <SecLabel>Move to</SecLabel>
+      {candidates.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 10 }}>
+          {candidates.map((c) => (
+            <button key={c.id} onClick={() => doMove(c.set)} disabled={busyId === c.id}
+              style={{ textAlign: 'left', padding: '8px 10px', borderRadius: 10, cursor: 'pointer', fontFamily: 'inherit', background: tintBg('var(--acc)', 8), border: `1px solid ${tintBd('var(--acc)')}`, color: 'var(--t1)', opacity: busyId === c.id ? 0.6 : 1 }}>
+              <span style={{ fontWeight: 800, fontSize: 13 }}>{c.label}</span>
+              <span style={{ color: 'var(--t3)', fontSize: 11, marginLeft: 8, ...mono }}>seats {c.cap}</span>
+              <div style={{ fontSize: 10.5, color: 'var(--t3)', marginTop: 2 }}>{c.reasons?.[0]}</div>
+            </button>
+          ))}
+        </div>
+      )}
+      <div style={{ fontSize: 10, color: 'var(--t4)', marginBottom: 6 }}>All tables — greyed are busy for this window</div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+        {grid.map((t) => (
+          <button key={t.id} onClick={() => t.free && !t.current && doMove([t.id])} disabled={!t.free || t.current || busyId === t.id}
+            title={t.current ? 'Current table' : t.free ? `Seats ${t.covers}` : 'Busy for this window'}
+            style={{
+              minWidth: 46, padding: '7px 8px', borderRadius: 9, fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 700,
+              cursor: t.free && !t.current ? 'pointer' : 'not-allowed',
+              background: t.current ? tintBg('var(--acc)') : t.free ? 'var(--bg3)' : 'transparent',
+              border: `1px solid ${t.current ? tintBd('var(--acc)') : 'var(--bdr2)'}`,
+              color: t.current ? 'var(--acc)' : t.free ? 'var(--t1)' : 'var(--t4)',
+              opacity: busyId === t.id ? 0.5 : 1,
+            }}>
+            {t.label}
+          </button>
+        ))}
       </div>
     </div>
   );

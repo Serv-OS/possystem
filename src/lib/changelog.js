@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.30',
+    date: '2026-08-12',
+    changes: [
+      'Bookings Diary: the timeline now stretches to fill the screen at any size, and a new List view (toggle next to the date) shows the day as a time-sorted list — tap a row for the same inspector.',
+      'Bookings: Move table — on any upcoming booking, tap Move table for suggested alternatives (with reasons) or pick any free table from the grid. Availability is re-checked at the moment of the move, so two stands can never cross-move onto the same table.',
+      'Bookings: the three remaining tabs are live. Events: the venue\'s packages, read-only for hosts. Reports: covers, no-show rate, committed deposits, seat utilisation, covers-by-day and booking sources for the last 7 days. Widget: the online-booking switch, embed code and a live preview of the venue\'s booking page.',
+    ],
+  },
+
+  {
     version: '5.6.29',
     date: '2026-08-12',
     changes: [

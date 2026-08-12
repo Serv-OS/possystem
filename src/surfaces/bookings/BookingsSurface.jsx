@@ -17,8 +17,8 @@
 // current location from the claimed device location.
 //
 // The app stage is the original shell: left nav rail (Diary / Floor / Book /
-// Rules live; Events / Reports / Widget marked "soon"), a top bar (venue, live
-// clock, New booking), four screens switched by in-component state. Screens
+// Rules / Events / Reports / Widget — all live), a top bar (venue, live
+// clock, New booking), seven screens switched by in-component state. Screens
 // stay MOUNTED and hide with display:none so their local state survives nav
 // switches (handoff "Interactions": state persists across switches).
 //
@@ -38,15 +38,18 @@ import DiaryScreen from './DiaryScreen.jsx';
 import FloorScreen from './FloorScreen.jsx';
 import BookScreen from './BookScreen.jsx';
 import RulesScreen from './RulesScreen.jsx';
+import EventsScreen from './EventsScreen.jsx';
+import ReportsScreen from './ReportsScreen.jsx';
+import WidgetScreen from './WidgetScreen.jsx';
 
 const NAV = [
   { k: 'diary',   label: 'Diary',   icon: 'home' },
   { k: 'floor',   label: 'Floor',   icon: 'floor' },
   { k: 'book',    label: 'Book',    icon: 'plus' },
   { k: 'rules',   label: 'Rules',   icon: 'settings' },
-  { k: 'events',  label: 'Events',  icon: 'inventory', soon: true },
-  { k: 'reports', label: 'Reports', icon: 'reports',   soon: true },
-  { k: 'widget',  label: 'Widget',  icon: 'channels',  soon: true },
+  { k: 'events',  label: 'Events',  icon: 'inventory' },
+  { k: 'reports', label: 'Reports', icon: 'reports' },
+  { k: 'widget',  label: 'Widget',  icon: 'channels' },
 ];
 
 export default function BookingsSurface() {
@@ -206,6 +209,9 @@ export default function BookingsSurface() {
           <Pane show={screen === 'floor'}><FloorScreen /></Pane>
           <Pane show={screen === 'book'}><BookScreen onBooked={onBooked} /></Pane>
           <Pane show={screen === 'rules'}><RulesScreen /></Pane>
+          <Pane show={screen === 'events'}><EventsScreen /></Pane>
+          <Pane show={screen === 'reports'}><ReportsScreen /></Pane>
+          <Pane show={screen === 'widget'}><WidgetScreen /></Pane>
         </div>
       </div>
     </div>

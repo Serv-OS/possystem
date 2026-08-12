@@ -23,7 +23,7 @@ import {
 import {
   loadBookings, createBookingAtomic, updateBookingRow,
   loadBookingRules, saveBookingRules, loadPackages,
-  upsertPackageRow, deletePackageRow,
+  upsertPackageRow, deletePackageRow, moveBookingTables,
 } from '../lib/bookings/bookingsData.js';
 import { supabase, isMock, getActiveLocationSync, getLocationId } from '../lib/supabase.js';
 import { isTrainingMode } from '../lib/trainingMode.js';
@@ -176,6 +176,26 @@ export function bookingsSlice(set, get) {
 
     cancelBooking: async (id, { reason = '' } = {}) => {
       return get().updateBooking(id, { status: 'cancelled', cancelledAt: Date.now(), cancelReason: reason });
+    },
+
+    // ── manual re-table (Peter, 12 Aug) ──────────────────────────────────────
+    // NEVER optimistic: move_booking re-checks availability atomically
+    // excluding this booking's own footprint. Only after ok does the store
+    // move; a 'table_taken' comes back with the blocking table for the UI.
+    moveBooking: async (id, tableIds, primaryTableId = null) => {
+      const entry = (get().bookings || []).find((x) => x.id === id);
+      if (!entry) return { ok: false, error: 'unknown booking' };
+      const primary = primaryTableId || tableIds[0];
+      if (isTrainingMode()) {
+        set((s) => ({ bookings: (s.bookings || []).map((x) => (x.id === id ? { ...x, tables: tableIds, primaryTableId: primary } : x)) }));
+        return { ok: true, training: true };
+      }
+      const locId = await resolveLocationId();
+      if (!locId) return { ok: false, error: 'no location' };
+      const res = await moveBookingTables(id, tableIds, primary, locId);
+      if (!res.ok) return res;
+      set((s) => ({ bookings: (s.bookings || []).map((x) => (x.id === id ? { ...x, tables: tableIds, primaryTableId: primary } : x)) }));
+      return { ok: true };
     },
 
     // ── the POS Tables bridge (v5.6.27 — bookings replace thin reservations) ──

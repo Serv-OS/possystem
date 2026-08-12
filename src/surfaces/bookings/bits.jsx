@@ -78,6 +78,18 @@ export const STATUS_META = {
 };
 export const statusMeta = (key) => STATUS_META[key] || STATUS_META.confirmed;
 
+// The one status pill — diary inspector + diary list rows render the same badge
+// from the same status→colour map above.
+export function StatusBadge({ st, style = {} }) {
+  const meta = statusMeta(st);
+  return (
+    <span className="badge" style={{
+      background: tintBg(meta.col), border: `1px solid ${tintBd(meta.col)}`, color: meta.col,
+      borderRadius: 20, padding: '3px 10px', fontSize: 10, fontWeight: 700, ...style,
+    }}>{meta.label}</span>
+  );
+}
+
 export const isDead = (b) => !b || b.status === 'cancelled' || b.status === 'no_show';
 export const isLive = (b) => !isDead(b) && b.status !== 'departed';
 
