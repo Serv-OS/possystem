@@ -28,6 +28,7 @@ import ReviewSurface from './ReviewSurface';
 import WifiSurface from './WifiSurface';
 import CateringSurface from './catering/CateringSurface';
 import WaitlistJoinSurface from './waitlist/WaitlistJoinSurface';
+import BookingWidget from './online/BookingWidget';
 
 export default function CustomerBoot({ slug, mode, tableId }) {
   const [state, setState] = useState({ loading: true, location: null, error: null });
@@ -96,6 +97,12 @@ export default function CustomerBoot({ slug, mode, tableId }) {
   // "waitlist" = QR join form; "waitlist_status" = live status page (token-driven).
   if (mode === 'waitlist')         return <WaitlistJoinSurface location={loc} view="join"/>;
   if (mode === 'waitlist_status')  return <WaitlistJoinSurface location={loc} view="status"/>;
+
+  // Phase 5: table-booking widget — always available (guests book FUTURE dates
+  // at any hour, so the live opening-hours gate doesn't apply). The booking-widget
+  // edge fn self-checks widget_enabled + the service window, and the surface shows
+  // its own polite "call the venue" screen when the widget is off/unconfigured.
+  if (mode === 'book')             return <BookingWidget location={loc}/>;
 
   // Surface enabled check
   if (mode === 'online' && !loc.online_enabled) {

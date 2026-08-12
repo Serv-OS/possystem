@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.28',
+    date: '2026-08-11',
+    changes: [
+      'Table Bookings: the host stand now requires pairing + a staff PIN — pair the tablet once in Back Office (same Devices panel as Tables Ready), then PIN in per shift. The bare link no longer opens the diary.',
+      'Table Bookings: guests can book from the venue website. Every venue subdomain now serves /book — a mobile-first booking page in the venue\'s own branding — and it embeds on any website with one iframe snippet. Slots at the kitchen\'s pacing cap are never sold online, availability is checked atomically (no double-booking), and every guest lands in the CRM with a proper consent record.',
+      'Back Office → Channels → Table bookings: all booking rules (turn times, combinations, pacing, holds), the widget on/off switch, and the copyable website embed code.',
+    ],
+  },
+
+  {
     version: '5.6.27',
     date: '2026-08-11',
     changes: [

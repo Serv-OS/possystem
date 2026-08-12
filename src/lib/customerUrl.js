@@ -6,6 +6,7 @@
 //   • Gift balance       https://<slug>.<customer-root>/gift/balance → mode: 'gift_balance'
 //   • Gift success       https://<slug>.<customer-root>/gift/success → mode: 'gift_success'
 //   • Loyalty portal     https://<slug>.<customer-root>/account   → mode: 'account'
+//   • Booking widget     https://<slug>.<customer-root>/book      → mode: 'book'
 //
 // Customer root is tier-dependent (see src/lib/env.js):
 //   dev   → <slug>.dev.serv-os.app
@@ -111,6 +112,9 @@ export function parseCustomerUrl(loc = (typeof window !== 'undefined' ? window.l
     mode = 'gift';
   } else if (pathname === '/account' || pathname.startsWith('/account/')) {
     mode = 'account';
+  } else if (pathname === '/book' || pathname.startsWith('/book/')) {
+    // Phase 5 bookings: public guest booking widget (BookingWidget via CustomerBoot).
+    mode = 'book';
   } else if (pathname === '/review' || pathname.startsWith('/review/')) {
     mode = 'review';
   } else if (pathname === '/wifi' || pathname.startsWith('/wifi/')) {
@@ -140,6 +144,7 @@ export function parseCustomerUrl(loc = (typeof window !== 'undefined' ? window.l
     else if (surface === 'catering')  mode = 'catering';
     else if (surface === 'waitlist_status') mode = 'waitlist_status';
     else if (surface === 'waitlist')  mode = 'waitlist';
+    else if (surface === 'book')      mode = 'book';
     else if (surface === 'online')    mode = 'online';
     else if (slug) mode = 'online'; // having a slug implies online by default
   }

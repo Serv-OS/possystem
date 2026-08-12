@@ -183,7 +183,7 @@ export default function App() {
   // customers never see the device pairing / mode selector screens.
   // Operator URLs (?mode=pos / mpos / office / admin / kiosk) take
   // precedence so an operator on the same hostname still gets their tools.
-  const CUSTOMER_MODES = ['online', 'qr', 'gift', 'gift_balance', 'gift_success', 'account', 'review', 'wifi', 'catering', 'waitlist', 'waitlist_status'];
+  const CUSTOMER_MODES = ['online', 'qr', 'gift', 'gift_balance', 'gift_success', 'account', 'review', 'wifi', 'catering', 'waitlist', 'waitlist_status', 'book'];
   const urlMode = new URLSearchParams(window.location.search).get('mode');
   // Public Workforce contract-signing page: /sign/<token>
   const signMatch = window.location.pathname.match(/^\/sign\/([A-Za-z0-9_-]{8,})/);
