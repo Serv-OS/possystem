@@ -34,8 +34,8 @@ function toISO(d) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 const todayISO = () => toISO(new Date());
-function addDaysISO(days) {
-  const d = new Date();
+function addDaysISO(days, fromISO = null) {
+  const d = fromISO ? new Date(`${fromISO}T12:00:00`) : new Date();
   d.setDate(d.getDate() + days);
   return toISO(d);
 }
@@ -133,6 +133,11 @@ export default function BookingWidget({ location }) {
       if (!c?.ok) { setBoot(c?.error === 'offline' ? 'off' : 'error'); return; }
       if (c.widgetEnabled === false) { setBoot('off'); return; }
       setCfg(c);
+      // Anchor the calendar on the VENUE's today (config.today), never the
+      // browser's — a guest in another timezone would otherwise default to a
+      // date the venue has already finished (caught live, 11 Aug: a Pacific
+      // browser offered "today" to a London venue at 7am the next morning).
+      if (c.today) setDate((d) => (d < c.today ? c.today : d));
       setBoot('ready');
     })();
     return () => { off = true; };
@@ -285,7 +290,7 @@ export default function BookingWidget({ location }) {
       <div style={S.fieldLbl}>Date</div>
       <input
         type="date" aria-label="Booking date"
-        value={date} min={todayISO()} max={addDaysISO(maxDaysAhead)}
+        value={date} min={cfg?.today || todayISO()} max={addDaysISO(maxDaysAhead, cfg?.today)}
         onChange={(e) => { if (e.target.value) setDate(e.target.value); }}
         style={{ ...S.input, marginBottom: 18 }}
       />

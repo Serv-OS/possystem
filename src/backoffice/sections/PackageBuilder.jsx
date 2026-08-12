@@ -173,22 +173,22 @@ export default function PackageBuilder() {
             <div style={S.empty}>Select a package to edit it.</div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              {/* name + description */}
-              <div style={S.section}>
-                <input style={{ ...S.inp, fontSize: 19, fontWeight: 800, background: 'transparent', border: 'none', padding: 0, borderRadius: 0 }}
+              {/* name + description — one header row: name left, description grows right */}
+              <div style={{ ...S.section, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                <input style={{ ...S.inp, flex: '0 1 240px', minWidth: 160, fontSize: 19, fontWeight: 800, background: 'transparent', border: 'none', padding: 0, borderRadius: 0 }}
                   value={draft.name} onChange={e => upd({ name: e.target.value })} placeholder="Package name" />
-                <input style={{ ...S.inp, marginTop: 8 }} value={draft.description || ''}
+                <input style={{ ...S.inp, flex: '1 1 300px', minWidth: 0, textOverflow: 'ellipsis' }} value={draft.description || ''}
                   onChange={e => upd({ description: e.target.value })}
                   placeholder="Description — shown on the booking widget" />
               </div>
 
               {/* the four metric cards */}
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'stretch' }}>
-                <Metric label="Price" flex="1 1 170px">
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <input type="number" min="0" step="0.5" style={{ ...S.inp, width: 90, fontFamily: MONO, fontWeight: 700 }}
+                <Metric label="Price" flex="1 1 210px">
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <input type="number" min="0" step="0.5" style={{ ...S.inp, flex: '1 1 96px', minWidth: 0, fontFamily: MONO, fontWeight: 700 }}
                       value={draft.price ?? 0} onChange={e => upd({ price: e.target.value === '' ? 0 : Number(e.target.value) })} />
-                    <select style={{ ...S.inp, flex: 1, minWidth: 110 }} value={draft.priceUnit}
+                    <select style={{ ...S.inp, flex: '1.2 1 120px', minWidth: 0, paddingRight: 26 }} value={draft.priceUnit}
                       onChange={e => upd({ priceUnit: e.target.value })}>
                       <option value="per_cover">Per cover</option>
                       <option value="per_booking">Per booking</option>
@@ -197,52 +197,57 @@ export default function PackageBuilder() {
                   </div>
                 </Metric>
 
-                <Metric label="Payment rule" flex="1 1 190px">
-                  <select style={S.inp} value={draft.paymentModel} onChange={e => upd({ paymentModel: e.target.value })}>
-                    <option value="hold">Card hold — charged only on no-show</option>
-                    <option value="deposit">Deposit — part paid up front</option>
-                    <option value="prepay">Prepay — paid in full at booking</option>
-                  </select>
-                  {draft.paymentModel === 'deposit' && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 6 }}>
-                      <input type="number" min="0" step="0.5" style={{ ...S.inp, width: 80, fontFamily: MONO }}
-                        value={draft.depositPerCover ?? 0}
-                        onChange={e => upd({ depositPerCover: e.target.value === '' ? 0 : Number(e.target.value) })} />
-                      <span style={{ fontSize: 11, color: 'var(--t3)' }}>deposit per cover</span>
-                    </div>
-                  )}
+                <Metric label="Payment rule" flex="1 1 220px">
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <select style={{ ...S.inp, width: '100%', minWidth: 0, paddingRight: 26 }}
+                      value={draft.paymentModel} onChange={e => upd({ paymentModel: e.target.value })}>
+                      <option value="hold">Card hold — charged only on no-show</option>
+                      <option value="deposit">Deposit — part paid up front</option>
+                      <option value="prepay">Prepay — paid in full at booking</option>
+                    </select>
+                    {draft.paymentModel === 'deposit' && (
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <input type="number" min="0" step="0.5" style={{ ...S.inp, width: 90, fontFamily: MONO }}
+                          value={draft.depositPerCover ?? 0}
+                          onChange={e => upd({ depositPerCover: e.target.value === '' ? 0 : Number(e.target.value) })} />
+                        <span style={{ fontSize: 11, color: 'var(--t3)' }}>deposit per cover</span>
+                      </div>
+                    )}
+                  </div>
                 </Metric>
 
-                <Metric label="Availability" flex="2 1 300px">
-                  <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-                    <input type="date" style={{ ...S.inp, width: 132 }} value={draft.availableFrom || ''}
-                      onChange={e => upd({ availableFrom: e.target.value || null })} title="Available from" />
-                    <span style={{ fontSize: 11, color: 'var(--t4)' }}>→</span>
-                    <input type="date" style={{ ...S.inp, width: 132 }} value={draft.availableTo || ''}
-                      onChange={e => upd({ availableTo: e.target.value || null })} title="Available until (blank = no end)" />
-                  </div>
-                  <div style={{ display: 'flex', gap: 4, marginTop: 6 }}>
-                    {DAYS.map((d, i) => {
-                      const on = (draft.availableDays || []).includes(i);
-                      return (
-                        <button key={d} onClick={() => upd({
-                          availableDays: on ? draft.availableDays.filter(x => x !== i) : [...(draft.availableDays || []), i].sort(),
-                        })} style={on ? S.dayOn : S.day} title={on ? `Offered on ${d}` : `Not offered on ${d}`}>{d}</button>
-                      );
-                    })}
-                  </div>
-                  <div style={{ display: 'flex', gap: 6, alignItems: 'center', marginTop: 6, flexWrap: 'wrap' }}>
-                    <input type="time" style={{ ...S.inp, width: 96 }} value={draft.availableStart || ''}
-                      onChange={e => upd({ availableStart: e.target.value || null })} title="From this time (blank = all service)" />
-                    <span style={{ fontSize: 11, color: 'var(--t4)' }}>–</span>
-                    <input type="time" style={{ ...S.inp, width: 96 }} value={draft.availableEnd || ''}
-                      onChange={e => upd({ availableEnd: e.target.value || null })} title="Until this time" />
-                    <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <input type="number" min="0" style={{ ...S.inp, width: 58, fontFamily: MONO }}
+                <Metric label="Availability" flex="2 1 320px">
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 8, alignItems: 'center' }}>
+                      <input type="date" style={{ ...S.inp, width: '100%', minWidth: 0 }} value={draft.availableFrom || ''}
+                        onChange={e => upd({ availableFrom: e.target.value || null })} title="Available from" />
+                      <span style={{ fontSize: 11, color: 'var(--t4)' }}>→</span>
+                      <input type="date" style={{ ...S.inp, width: '100%', minWidth: 0 }} value={draft.availableTo || ''}
+                        onChange={e => upd({ availableTo: e.target.value || null })} title="Available until (blank = no end)" />
+                    </div>
+                    <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                      {DAYS.map((d, i) => {
+                        const on = (draft.availableDays || []).includes(i);
+                        return (
+                          <button key={d} onClick={() => upd({
+                            availableDays: on ? draft.availableDays.filter(x => x !== i) : [...(draft.availableDays || []), i].sort(),
+                          })} style={on ? S.dayOn : S.day} title={on ? `Offered on ${d}` : `Not offered on ${d}`}>{d}</button>
+                        );
+                      })}
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr', gap: 8, alignItems: 'center' }}>
+                      <input type="time" style={{ ...S.inp, width: '100%', minWidth: 0 }} value={draft.availableStart || ''}
+                        onChange={e => upd({ availableStart: e.target.value || null })} title="From this time (blank = all service)" />
+                      <span style={{ fontSize: 11, color: 'var(--t4)' }}>–</span>
+                      <input type="time" style={{ ...S.inp, width: '100%', minWidth: 0 }} value={draft.availableEnd || ''}
+                        onChange={e => upd({ availableEnd: e.target.value || null })} title="Until this time" />
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <input type="number" min="0" style={{ ...S.inp, width: 72, minWidth: 64, fontFamily: MONO }}
                         value={draft.maxPerService ?? ''} placeholder="∞"
                         onChange={e => upd({ maxPerService: e.target.value === '' ? null : Number(e.target.value) })} />
                       <span style={{ fontSize: 11, color: 'var(--t3)' }}>cap / service</span>
-                    </span>
+                    </div>
                   </div>
                 </Metric>
 
@@ -265,10 +270,10 @@ export default function PackageBuilder() {
               <div style={{ ...S.section, display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
                 <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <span style={S.lbl}>Covers</span>
-                  <input type="number" min="1" style={{ ...S.inp, width: 58, fontFamily: MONO }} value={draft.minCovers ?? 1}
+                  <input type="number" min="1" style={{ ...S.inp, width: 64, fontFamily: MONO }} value={draft.minCovers ?? 1}
                     onChange={e => upd({ minCovers: e.target.value === '' ? 1 : Number(e.target.value) })} title="Minimum covers" />
                   <span style={{ fontSize: 11, color: 'var(--t4)' }}>to</span>
-                  <input type="number" min="1" style={{ ...S.inp, width: 58, fontFamily: MONO }} value={draft.maxCovers ?? ''}
+                  <input type="number" min="1" style={{ ...S.inp, width: 64, fontFamily: MONO }} value={draft.maxCovers ?? ''}
                     placeholder="∞" onChange={e => upd({ maxCovers: e.target.value === '' ? null : Number(e.target.value) })} title="Maximum covers (blank = no cap)" />
                 </span>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12.5, color: 'var(--t2)', cursor: 'pointer' }}>
@@ -316,7 +321,7 @@ export default function PackageBuilder() {
                               onClick={() => updLine(i, { course: v })}>{lab}</button>
                           ))}
                         </span>
-                        <input type="number" min="0" step="0.5" style={{ ...S.inp, width: 84, fontFamily: MONO }}
+                        <input type="number" min="0" step="0.5" style={{ ...S.inp, width: 92, fontFamily: MONO }}
                           value={l.priceOverride == null ? '' : l.priceOverride}
                           placeholder={linked ? money(linked.price) : 'inherit'}
                           onChange={e => updLine(i, { priceOverride: e.target.value === '' ? null : Number(e.target.value) })}
@@ -387,7 +392,7 @@ function ItemPicker({ linked, hasId, items, onPick }) {
       {open && (
         <div style={S.dropdown}>
           <input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder="Search the menu…"
-            style={{ ...S.inp, borderRadius: 6, marginBottom: 4 }} />
+            style={{ ...S.inp, width: '100%', borderRadius: 6, marginBottom: 4 }} />
           <button type="button" style={S.dropOpt}
             onMouseDown={(e) => { e.preventDefault(); onPick(null); setOpen(false); setQ(''); }}>
             <span style={{ color: 'var(--t4)' }}>— No linked item —</span>
@@ -430,7 +435,7 @@ const S = {
   addCard: { width: '100%', minHeight: 44, background: 'transparent', border: '1px dashed var(--bdr2)', borderRadius: 12, color: 'var(--acc)', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' },
   offTag: { fontSize: 10, fontWeight: 700, color: 'var(--t4)', border: '1px solid var(--bdr2)', borderRadius: 6, padding: '1px 6px' },
   lbl: { fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.04em' },
-  inp: { boxSizing: 'border-box', border: '1px solid var(--bdr2)', borderRadius: 8, padding: '7px 9px', fontSize: 13, fontFamily: 'inherit', color: 'var(--t1)', background: 'var(--bg2)', outline: 'none' },
+  inp: { boxSizing: 'border-box', height: 38, border: '1px solid var(--bdr2)', borderRadius: 8, padding: '7px 9px', fontSize: 13, fontFamily: 'inherit', color: 'var(--t1)', background: 'var(--bg2)', outline: 'none' },
   day: { width: 30, height: 28, borderRadius: 7, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t4)', fontSize: 11, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', padding: 0 },
   dayOn: { width: 30, height: 28, borderRadius: 7, border: '1px solid var(--acc)', background: 'var(--acc-d)', color: 'var(--acc)', fontSize: 11, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', padding: 0 },
   step: { width: 30, height: 30, borderRadius: 8, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t1)', fontSize: 16, cursor: 'pointer', fontFamily: 'inherit', lineHeight: 1, padding: 0 },
@@ -440,12 +445,12 @@ const S = {
   pillOn: { fontSize: 12.5, padding: '6px 11px', borderRadius: 8, border: '1px solid var(--grn-b)', background: 'var(--grn-d)', color: 'var(--grn)', cursor: 'pointer', fontFamily: 'inherit', fontWeight: 700 },
   mini: { width: 26, height: 26, borderRadius: 6, border: '1px solid var(--bdr)', background: 'var(--bg2)', color: 'var(--t2)', cursor: 'pointer', fontFamily: 'inherit', padding: 0 },
   miniX: { width: 26, height: 26, borderRadius: 6, border: '1px solid var(--bdr)', background: 'var(--bg2)', color: 'var(--red)', cursor: 'pointer', fontFamily: 'inherit', padding: 0 },
-  btn: { padding: '8px 14px', borderRadius: 8, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t1)', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' },
-  btnGhost: { padding: '8px 14px', borderRadius: 8, border: 'none', background: 'transparent', color: 'var(--t3)', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' },
-  btnPrimary: { padding: '8px 16px', borderRadius: 8, border: 'none', background: 'var(--acc)', color: '#0b0c10', fontSize: 13, fontWeight: 800, cursor: 'pointer', fontFamily: 'inherit' },
+  btn: { boxSizing: 'border-box', minHeight: 38, padding: '8px 14px', borderRadius: 8, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t1)', fontSize: 13, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' },
+  btnGhost: { boxSizing: 'border-box', minHeight: 38, padding: '8px 14px', borderRadius: 8, border: 'none', background: 'transparent', color: 'var(--t3)', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' },
+  btnPrimary: { boxSizing: 'border-box', minHeight: 44, padding: '8px 18px', borderRadius: 8, border: 'none', background: 'var(--acc)', color: '#0b0c10', fontSize: 13, fontWeight: 800, cursor: 'pointer', fontFamily: 'inherit' },
   note: { flex: '1 1 260px', padding: '12px 14px', borderRadius: 12, border: '1px solid' },
   noteTitle: { fontSize: 11, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.06em' },
   noteBody: { fontSize: 11.5, color: 'var(--t2)', lineHeight: 1.55, marginTop: 5 },
   dropdown: { position: 'absolute', top: 'calc(100% + 4px)', left: 0, width: 280, maxHeight: 260, overflowY: 'auto', background: 'var(--bg2)', border: '1px solid var(--bdr2)', borderRadius: 10, padding: 6, zIndex: 50, boxShadow: '0 8px 26px rgba(0,0,0,.35)' },
-  dropOpt: { display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left', padding: '7px 9px', borderRadius: 7, border: 'none', background: 'transparent', color: 'var(--t1)', fontSize: 12.5, cursor: 'pointer', fontFamily: 'inherit' },
+  dropOpt: { boxSizing: 'border-box', display: 'flex', alignItems: 'center', gap: 8, width: '100%', textAlign: 'left', padding: '7px 9px', borderRadius: 7, border: 'none', background: 'transparent', color: 'var(--t1)', fontSize: 12.5, cursor: 'pointer', fontFamily: 'inherit' },
 };

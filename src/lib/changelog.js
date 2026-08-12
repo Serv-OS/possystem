@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.29',
+    date: '2026-08-12',
+    changes: [
+      'Booking widget: the calendar now anchors on the VENUE\'s today, not the guest\'s device — a guest in another timezone was being offered a date the venue had already finished.',
+      'Packages & events: UI polish — full-width description, payment rule no longer crops, consistent input heights, availability rows aligned, item dropdown contained.',
+    ],
+  },
+
+  {
     version: '5.6.28',
     date: '2026-08-11',
     changes: [

@@ -36,7 +36,16 @@ const normPhone = (raw: string) => {
   return d.length >= 7 ? d : null;
 };
 
-const todayISO = () => new Date().toISOString().slice(0, 10);
+// "Today" is the VENUE's today, never the server's. The fn runs in UTC; a UK
+// guest booking at 11pm BST was getting date_out_of_range because UTC had
+// already rolled to tomorrow (caught in live verification, 11 Aug).
+const venueToday = (tz: string) =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+const venueNowMin = (tz: string) => {
+  const parts = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
+  const [h, m] = parts.split(':').map(Number);
+  return (h || 0) * 60 + (m || 0);
+};
 
 function rulesFrom(r: Record<string, unknown> | null) {
   if (!r) return null;
@@ -58,7 +67,7 @@ function rulesFrom(r: Record<string, unknown> | null) {
 // Load everything a quote needs, once per request.
 async function loadVenue(locationId: string) {
   const [{ data: loc }, { data: rulesRow }, { data: floor }] = await Promise.all([
-    db.from('locations').select('id, org_id, name').eq('id', locationId).maybeSingle(),
+    db.from('locations').select('id, org_id, name, timezone').eq('id', locationId).maybeSingle(),
     db.from('booking_rules').select('*').eq('location_id', locationId).maybeSingle(),
     db.from('floor_tables').select('id, label, max_covers, section').eq('location_id', locationId),
   ]);
@@ -108,9 +117,15 @@ Deno.serve(async (req) => {
     if (!rules) return json({ ok: true, widgetEnabled: false, reason: 'not configured' });
 
     if (action === 'config') {
+      const cfgTz = (venue.loc as { timezone?: string }).timezone || 'Europe/London';
       return json({
         ok: true,
         name: venue.loc.name,
+        // The VENUE's today — the page must anchor its date picker here, never
+        // on the browser's local date (a guest in another timezone would offer
+        // a date the venue has already finished).
+        today: venueToday(cfgTz),
+        timezone: cfgTz,
         widgetEnabled: rules.widgetEnabled,
         serviceStart: rules.serviceStart,
         serviceEnd: rules.serviceEnd,
@@ -122,9 +137,11 @@ Deno.serve(async (req) => {
 
     if (!rules.widgetEnabled) return json({ ok: false, error: 'widget_disabled' }, 403);
 
-    const date = String(body.date || todayISO());
+    const tz = (venue.loc as { timezone?: string }).timezone || 'Europe/London';
+    const today = venueToday(tz);
+    const date = String(body.date || today);
     const party = Math.max(1, Math.min(12, Math.round(Number(body.party) || 2)));
-    const daysAhead = Math.round((Date.parse(date) - Date.parse(todayISO())) / 86400000);
+    const daysAhead = Math.round((Date.parse(date) - Date.parse(today)) / 86400000);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || daysAhead < 0 || daysAhead > rules.maxDaysAhead) {
       return json({ ok: false, error: 'date_out_of_range' }, 400);
     }
@@ -139,7 +156,7 @@ Deno.serve(async (req) => {
 
     if (action === 'slots') {
       const start = toMin(rules.serviceStart), end = toMin(rules.serviceEnd);
-      const nowGuard = date === todayISO() ? (new Date().getHours() * 60 + new Date().getMinutes()) : -1;
+      const nowGuard = date === today ? venueNowMin(tz) : -1;
       const slots: { time: string; full: boolean }[] = [];
       for (let t = start; t < end; t += rules.slotMinutes) {
         const hh = String(Math.floor(t / 60)).padStart(2, '0'), mm = String(t % 60).padStart(2, '0');
