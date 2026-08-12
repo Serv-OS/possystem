@@ -1459,8 +1459,10 @@ export const useStore = create((set, get) => ({
     }
   },
 
-  // Seat a table AND pre-populate its session with walk-in items
-  seatTableWithItems: (tableId, items, { covers, server }) => {
+  // Seat a table AND pre-populate its session with walk-in items.
+  // v5.6.27: optional customer (bookings hand the guest across so dine-in
+  // checkout gets loyalty + allergens, exactly like seatTable).
+  seatTableWithItems: (tableId, items, { covers, server, customer = null }) => {
     const now = Date.now();
     const session = {
       id: `ORD-${++_orderNum}`,
@@ -1469,8 +1471,13 @@ export const useStore = create((set, get) => ({
       seatedAt: now, note: '', orderNote: '',
       subtotal: items.reduce((s,i)=>s+i.price*i.qty, 0),
       total: items.reduce((s,i)=>s+i.price*i.qty, 0) * 1.125,
+      ...(customer ? { customer } : {}),
     };
     get()._updateTable(tableId, { status:'open', session, reservation:null });
+    if (customer?.allergens?.length) {
+      set({ allergens: [...customer.allergens] });
+      get().showToast?.(`Allergen filter applied — ${customer.name} is allergic to ${customer.allergens.join(', ')}`, 'info');
+    }
     set({ activeTableId:tableId, surface:'pos', orderType:'dine-in', walkInOrder:null, customer:null });
     get().showToast(`Items moved to ${get().tables.find(t=>t.id===tableId)?.label}`, 'success');
   },
@@ -1676,12 +1683,38 @@ export const useStore = create((set, get) => ({
     set(s => ({ activeTableId: s.activeTableId === tableId ? null : s.activeTableId }));
   },
 
-  // Add/remove reservation
+  // Add/remove reservation — since v5.6.27 a reservation IS a booking (Peter,
+  // 11 Aug: bookings replace the thin per-table reservation entirely). The
+  // signature survives for existing call sites; the body writes through the
+  // bookings slice. The Tables screen derives its "reserved" display from
+  // upcomingBookingForTable — table.reservation is no longer persisted state.
   setReservation: (tableId, res) => {
-    // v5.5.740: stamp reservedAt on every set/edit so cross-device sync (ReservationSync) has a fresh,
-    // monotonic timestamp — it re-publishes on edits and resolves "newest wins" between devices.
-    const stamped = res ? { ...res, reservedAt: Date.now() } : null;
-    get()._updateTable(tableId, { status: stamped ? 'reserved' : 'available', reservation: stamped });
+    if (!res) {
+      const b = get().upcomingBookingForTable?.(tableId);
+      if (b) get().cancelBooking?.(b.id, { reason: 'cancelled at the table' });
+      get()._updateTable(tableId, { status: 'available', reservation: null });
+      return;
+    }
+    const customer = res.customer
+      ? { ...res.customer, name: res.customer.name || res.name, phone: res.customer.phone || res.phone }
+      : { name: res.name || 'Guest', phone: res.phone || null };
+    get().createBooking?.({
+      covers: res.partySize || 2,
+      time: res.time,
+      date: res.date || undefined,           // createBooking defaults to today
+      tables: [tableId],
+      primaryTableId: tableId,
+      customerId: res.customer?.customerId || res.customer?.id || null,
+      customer,
+      note: res.notes || '',
+      source: 'pos',
+    }).then((r) => {
+      if (!r?.ok) {
+        get().showToast?.(r?.error === 'table_taken'
+          ? 'That table is already booked for this time'
+          : `Reservation NOT saved — ${r?.error || 'write refused'}`, 'error');
+      }
+    }).catch(() => {});
   },
 
   // Update covers count mid-service

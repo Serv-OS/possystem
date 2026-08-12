@@ -237,6 +237,68 @@ export async function saveBookingRules(locationId, patch) {
   } catch (e) { return { ok: false, error: e?.message }; }
 }
 
+// ── package writers ───────────────────────────────────────────────────────────
+// Lines are replaced wholesale per save (delete-then-insert). Safe here because
+// nothing holds a FK onto package_lines — unlike po_lines, where this pattern
+// is a trap. If anything ever references line ids, revisit.
+export async function upsertPackageRow(pkg, locationId) {
+  if (isMock || !supabase || !isRealLoc(locationId)) return { ok: true };
+  const row = {
+    id: pkg.id,
+    location_id: locationId,
+    name: pkg.name || 'New package',
+    description: pkg.description || '',
+    price: pkg.price ?? 0,
+    price_unit: pkg.priceUnit || 'per_cover',
+    payment_model: pkg.paymentModel || 'deposit',
+    deposit_per_cover: pkg.depositPerCover ?? 0,
+    turn_minutes: pkg.turnMinutes || null,
+    available_from: pkg.availableFrom || null,
+    available_to: pkg.availableTo || null,
+    available_days: pkg.availableDays || [],
+    available_start: pkg.availableStart || null,
+    available_end: pkg.availableEnd || null,
+    min_covers: pkg.minCovers ?? 1,
+    max_covers: pkg.maxCovers || null,
+    max_per_service: pkg.maxPerService || null,
+    sections: pkg.sections || [],
+    requires_preorder: !!pkg.requiresPreorder,
+    is_active: pkg.isActive !== false,
+    sort_order: pkg.sortOrder ?? 0,
+  };
+  try {
+    const { error } = await supabase.from('packages').upsert(row, { onConflict: 'id' });
+    if (error) { if (!warnAbsentOr(error, 'upsertPackage')) console.warn('[bookingsData] upsertPackage:', error.message); return { ok: false, error: error.message }; }
+    const { error: delErr } = await supabase.from('package_lines').delete().eq('package_id', pkg.id).eq('location_id', locationId);
+    if (delErr) return { ok: false, error: delErr.message };
+    const lines = (pkg.lines || []).map((l, i) => ({
+      location_id: locationId,
+      package_id: pkg.id,
+      item_id: l.itemId || null,
+      display_name: l.displayName || 'Item',
+      qty_per_cover: l.qtyPerCover ?? 1,
+      course: l.course ?? 0,
+      price_override: l.priceOverride == null ? null : l.priceOverride,
+      is_preorder_choice: !!l.isPreorderChoice,
+      sort_order: l.sortOrder ?? i,
+    }));
+    if (lines.length) {
+      const { error: insErr } = await supabase.from('package_lines').insert(lines);
+      if (insErr) return { ok: false, error: insErr.message };
+    }
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e?.message }; }
+}
+
+export async function deletePackageRow(id, locationId) {
+  if (isMock || !supabase || !isRealLoc(locationId)) return { ok: true };
+  try {
+    const { error } = await supabase.from('packages').delete().eq('id', id).eq('location_id', locationId);
+    if (error) return { ok: false, error: error.message };
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e?.message }; }
+}
+
 // ── packages ──────────────────────────────────────────────────────────────────
 export async function loadPackages(locationId) {
   if (isMock || !supabase || !isRealLoc(locationId)) return { data: [] };

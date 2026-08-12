@@ -1,7 +1,9 @@
 import { useEffect, useRef } from 'react';
 import { useStore } from '../store';
 import { subscribeToSessions, scheduleFlush, flushSessions, teardown as teardownSessions } from './SessionSync';
-import { loadReservations, scheduleReservationFlush, subscribeToReservations, teardownReservations } from './ReservationSync';
+// v5.6.27: ReservationSync RETIRED — bookings replaced the thin per-table reservation
+// (table_reservations). The Tables screen now derives 'reserved' from the bookings
+// slice; nothing loads, flushes or subscribes to table_reservations any more.
 import { loadQueues, scheduleQueueFlush, teardownQueueSync } from './QueueSync';
 import { loadWaitlistSync, scheduleWaitlistFlush, teardownWaitlistSync } from './WaitlistSync';
 import { initOfflineQueue } from './OfflineQueue';
@@ -482,8 +484,6 @@ export default function SyncBridge({ onSyncPulse }) {
             await reconcilePendingChecks();
           } catch {}
 
-          // v5.5.740: load this location's table reservations now that the floor plan is in the store.
-          try { await loadReservations(); } catch { /* best-effort */ }
 
           // v5.6.25: load today's bookings + rules + packages (Table Bookings module).
           // After the floor plan for the same reason as reservations; idempotent —
@@ -505,9 +505,6 @@ export default function SyncBridge({ onSyncPulse }) {
     if (!isMock) startSessionReconciler();
     if (!isMock) startTerminalJobReconciler();   // v5.5.846 — close tables paid on the PAX
 
-    // v5.5.740: table reservations sync via their own dedicated table + realtime channel, isolated
-    // from the active_sessions / order-sync path (a reservation never touches a table with a live order).
-    if (!isMock) subscribeToReservations();
 
     // Load location-level settings from Supabase on boot
     if (!isMock) {
@@ -567,7 +564,6 @@ export default function SyncBridge({ onSyncPulse }) {
         try {
           // v4.6.27: static import above (ADR-008)
           await onReconnect();
-          await loadReservations();   // v5.5.740: realtime can miss reservation events while offline — reconcile on reconnect
           await flushRedemptions();
         } catch {}
       });
@@ -830,15 +826,7 @@ export default function SyncBridge({ onSyncPulse }) {
     }) : () => {};
     if (!isMock) loadWaitlistSync();
 
-    // v5.5.740: reservation set / edited / cleared / seated → push to the dedicated table_reservations
-    // sync. The signature tracks reservedAt (reserve+edit) and whether a live order now exists (seat),
-    // so both an upsert and a delete are triggered at the right moments.
-    const unsubReservations = !isMock ? useStore.subscribe((state, prev) => {
-      if (state.tables === prev.tables) return;
-      if (isApplyingRef.current) return;   // don't re-publish a change we just applied from a broadcast/realtime
-      const sig = (ts) => ts.map(t => `${t.id}:${t.reservation?.reservedAt || ''}:${t.session ? 1 : 0}`).join('|');
-      if (sig(state.tables) !== sig(prev.tables)) scheduleReservationFlush();
-    }) : () => {};
+    const unsubReservations = () => {};   // v5.6.27: reservation flush retired (bookings own the diary)
 
     const unsub = useStore.subscribe((state, prev) => {
       if (isApplyingRef.current) return;
@@ -879,7 +867,7 @@ export default function SyncBridge({ onSyncPulse }) {
       }, 80);
     });
 
-    return () => { clearTimeout(timer); channelInstance?.close(); channelInstance = null; unsub(); unsubSessions(); unsubQueues(); unsubWaitlist(); unsubReservations(); stopSessionReconciler(); stopTerminalJobReconciler(); if (!isMock) { teardownSessions(); teardownQueueSync(); teardownWaitlistSync(); teardownReservations(); } };
+    return () => { clearTimeout(timer); channelInstance?.close(); channelInstance = null; unsub(); unsubSessions(); unsubQueues(); unsubWaitlist(); unsubReservations(); stopSessionReconciler(); stopTerminalJobReconciler(); if (!isMock) { teardownSessions(); teardownQueueSync(); teardownWaitlistSync(); } };
   }, []);
 
   return null;

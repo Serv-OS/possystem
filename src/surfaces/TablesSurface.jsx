@@ -2,6 +2,7 @@ import { useCompact } from '../lib/useCompact';
 import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { useStore } from '../store';
+import { toMin } from '../lib/bookings/optimiser.js';
 import { resolveServiceCharge } from '../lib/serviceCharge';
 import CheckSelectorModal from '../components/CheckSelectorModal';
 import CustomerModal from '../components/CustomerModal';
@@ -259,6 +260,8 @@ function ReservationModal({ table, existing, onConfirm, onCancel }) {
             <div style={{ flex:1 }}>
               <label style={L}>Time</label>
               <select value={time} onChange={e=>setTime(e.target.value)} style={{ width:'100%', background:'var(--bg3)', border:'1.5px solid var(--bdr2)', borderRadius:11, padding:'0 12px', height:42, fontSize:13, color:'var(--t1)', fontFamily:'inherit', outline:'none', cursor:'pointer' }}>
+                {/* v5.6.27: a booking edited here may sit off the 15-min grid — keep its time selectable */}
+                {time && !TIME_SLOTS.includes(time) && <option value={time}>{time}</option>}
                 {TIME_SLOTS.map(t=><option key={t} value={t}>{t}</option>)}
               </select>
             </div>
@@ -302,11 +305,17 @@ function ReservationModal({ table, existing, onConfirm, onCancel }) {
 
 // ─── Table Node ───────────────────────────────────────────────────────────────
 function TableNode({ table, onClick }) {
-  const { tables } = useStore();
+  const { tables, upcomingBookingForTable } = useStore();
   const session = table.session;
+  // v5.6.27: "reserved" is DISPLAY-DERIVED from the Table Bookings module —
+  // the next live booking claiming this table today (upcomingBookingForTable).
+  // table.reservation / persisted status 'reserved' are dead.
+  const bk = !session ? upcomingBookingForTable?.(table.id) : null;
   // Derive display status: seated = session exists but no items yet
   const displayStatus = (table.status === 'occupied' && session && session.items?.filter(i=>!i.voided).length === 0)
     ? 'seated'
+    : bk ? 'reserved'
+    : (table.status === 'reserved' && !session) ? 'available'  // stale persisted status, no live booking
     : table.status;
   const sm = STATUS[displayStatus] || STATUS.available;
   const timeSeated = session?.seatedAt ? fmt(session.seatedAt) : null;
@@ -332,7 +341,7 @@ function TableNode({ table, onClick }) {
       </div>
 
       {/* Status / session info */}
-      {table.status === 'available' && (
+      {displayStatus === 'available' && (
         <div style={{ fontSize:9, color:sm.color, marginTop:2, fontWeight:600 }}>
           {table.maxCovers} covers
         </div>
@@ -360,13 +369,13 @@ function TableNode({ table, onClick }) {
         </>
       )}
 
-      {table.status === 'reserved' && table.reservation && (
+      {bk && !session && (
         <>
           <div style={{ fontSize:9, color:sm.color, marginTop:2, lineHeight:1.3, fontWeight:600 }}>
-            {table.reservation.time}
+            {bk.startTime}
           </div>
           <div style={{ fontSize:9, color:'var(--t3)', marginTop:1 }}>
-            {table.reservation.name.split(' ')[0]}
+            {(bk.customer?.name || 'Guest').split(' ')[0]}
           </div>
         </>
       )}
@@ -386,10 +395,15 @@ function TableNode({ table, onClick }) {
 // ─── Main Tables Surface ─────────────────────────────────────────────────────
 export default function TablesSurface() {
   const compact = useCompact();
-  const { tables, seatTable, openTableInPOS, clearTable, setReservation, setSurface, showToast, staff, locationSections, deviceConfig, setSessionCustomer } = useStore();
+  const { tables, seatTable, openTableInPOS, clearTable, setReservation, setSurface, showToast, staff, locationSections, deviceConfig, setSessionCustomer,
+    // v5.6.27: Table Bookings seams — "reserved" is derived from live bookings
+    bookings, upcomingBookingForTable, seatBooking, updateBooking, cancelBooking, packages } = useStore();
   const [selected, setSelected]   = useState(null);
   const [showSeat, setShowSeat]   = useState(false);
   const [showReservation, setShowReservation] = useState(false);
+  // v5.6.27: booking being edited via ReservationModal (distinct from the
+  // new-reservation path — edit patches the booking, never setReservation)
+  const [editBooking, setEditBooking] = useState(null);
   const [showCheckSelector, setShowCheckSelector] = useState(false);
   // v4.4.9: guest attach UI for seated tables. Opens CustomerModal which lets staff
   // search by phone (exact) or name (loose match) via searchCustomersLive in store.
@@ -414,13 +428,19 @@ export default function TablesSurface() {
     return () => ro.disconnect();
   }, []);
 
-  // Re-render every 30s so urgency colours stay live
+  // Re-render every 30s so urgency colours stay live AND the time-derived
+  // booking "reserved" display flips as bookings enter/leave their 3h
+  // lookahead window (v5.6.27 — finer than the 60s minimum needed).
   useEffect(() => {
     const id = setInterval(() => setTick(t => t+1), 30000);
     return () => clearInterval(id);
   }, []);
 
   const selectedTable = tables.find(t => t.id === selected);
+  // v5.6.27: the next live booking claiming the selected table (display-derived;
+  // only meaningful while the table has no session)
+  const selectedBk = selectedTable && !selectedTable.session
+    ? upcomingBookingForTable?.(selectedTable.id) : null;
 
   // v4.6.56: filter hidden sections from the tab list. Hidden flag set in Back Office.
   const visibleSections = (locationSections || []).filter(s => !s.hidden);
@@ -430,11 +450,18 @@ export default function TablesSurface() {
     ...visibleSections,
   ];
 
+  // v5.6.27: reserved = tables claimed by an upcoming live booking (no session),
+  // never the dead persisted status. Booked tables leave the available count so
+  // the legend buckets stay mutually exclusive.
+  const reservedIds = new Set(
+    tables.filter(t => !t.parentId && !t.session && upcomingBookingForTable?.(t.id)).map(t => t.id)
+  );
   const counts = {
-    available: tables.filter(t=>t.status==='available').length,
+    // stale persisted 'reserved' (no session, no live booking) reads as available
+    available: tables.filter(t=>(t.status==='available' || (t.status==='reserved' && !t.session)) && !reservedIds.has(t.id)).length,
     open:      tables.filter(t=>t.status==='open').length,
     occupied:  tables.filter(t=>t.status==='occupied').length,
-    reserved:  tables.filter(t=>t.status==='reserved').length,
+    reserved:  reservedIds.size,
   };
 
   // Helper — open a table, showing check selector if it has splits
@@ -469,11 +496,15 @@ export default function TablesSurface() {
       case 'reserve':
         setShowReservation(true);
         break;
-      case 'cancel_reserve':
-        setReservation(selectedTable.id, null);
+      case 'cancel_reserve': {
+        // v5.6.27: cancel the claiming booking directly (bookings replaced the
+        // thin per-table reservation; setReservation(id, null) does the same).
+        const bk = upcomingBookingForTable?.(selectedTable.id);
+        if (bk) cancelBooking(bk.id, { reason: 'cancelled at the table' });
         showToast(`Reservation cancelled`, 'info');
         setSelected(null);
         break;
+      }
     }
   };
 
@@ -738,6 +769,37 @@ export default function TablesSurface() {
               });
             })()}
 
+            {/* v5.6.27: dashed amber join outline around member tables of any
+                active multi-table booking — same visual approach as
+                bookings/FloorScreen. Active = live booking inside its
+                [start−15, start+turn) window, which covers dining/seated too. */}
+            {(() => {
+              const now = new Date();
+              const nowMin = now.getHours() * 60 + now.getMinutes();
+              const today = now.toLocaleDateString('en-CA');
+              return (bookings || []).filter(b => {
+                if ((b.tables || []).length < 2) return false;
+                if (b.date && b.date !== today) return false;
+                if (['cancelled', 'no_show', 'departed'].includes(b.status)) return false;
+                const s = toMin(b.startTime);
+                return nowMin >= s - 15 && nowMin < s + (b.turnMinutes || 90);
+              }).map(b => {
+                const members = (b.tables || []).map(id => filteredTables.find(t => t.id === id)).filter(Boolean);
+                if (members.length < 2) return null;
+                const x1 = Math.min(...members.map(t => (t.x || 0) - _offX));
+                const y1 = Math.min(...members.map(t => (t.y || 0) - _offY));
+                const x2 = Math.max(...members.map(t => (t.x || 0) - _offX + (t.w || 80)));
+                const y2 = Math.max(...members.map(t => (t.y || 0) - _offY + (t.h || 64)));
+                return (
+                  <div key={`join-${b.id}`} style={{
+                    position:'absolute', pointerEvents:'none', borderRadius:16,
+                    left:x1 - 7, top:y1 - 7, width:x2 - x1 + 14, height:y2 - y1 + 14,
+                    border:'1.5px dashed rgba(232,160,32,.55)',
+                  }}/>
+                );
+              });
+            })()}
+
             {filteredTables.map(table=>(
               <div key={table.id}>
                 <TableNode table={{ ...table, x: (table.x || 0) - _offX, y: (table.y || 0) - _offY }} onClick={()=>handleTableClick(table)}/>
@@ -771,8 +833,14 @@ export default function TablesSurface() {
             {/* Table header */}
             <div style={{ padding:'18px 18px 14px', borderBottom:'1px solid var(--bdr)' }}>
               {(() => {
-                const sm = STATUS[selectedTable.status] || STATUS.available;
                 const session = selectedTable.session;
+                // v5.6.27: a live booking claiming a session-less table shows
+                // as Reserved regardless of the persisted status
+                const sm = (selectedBk && !session)
+                  ? STATUS.reserved
+                  : (selectedTable.status === 'reserved' && !session)
+                  ? STATUS.available   // stale persisted status, no live booking
+                  : (STATUS[selectedTable.status] || STATUS.available);
                 return (
                   <>
                     <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:8 }}>
@@ -831,25 +899,30 @@ export default function TablesSurface() {
                       </div>
                     )}
 
-                    {selectedTable.status==='reserved' && selectedTable.reservation && (
+                    {selectedBk && !session && (
                       <div style={{ background:'var(--bg3)', borderRadius:10, padding:'10px 12px' }}>
                         <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, marginBottom:3 }}>
-                          <span style={{ color:'var(--t3)' }}>Name</span><span style={{ color:'var(--t1)', fontWeight:600 }}>{selectedTable.reservation.name}</span>
+                          <span style={{ color:'var(--t3)' }}>Name</span><span style={{ color:'var(--t1)', fontWeight:600 }}>{selectedBk.customer?.name || 'Guest'}</span>
                         </div>
                         <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, marginBottom:3 }}>
-                          <span style={{ color:'var(--t3)' }}>Time</span><span style={{ color:'var(--t1)', fontWeight:600 }}>{selectedTable.reservation.time}{selectedTable.reservation.date ? ` · ${new Date(selectedTable.reservation.date+'T12:00').toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short'})}` : ''}</span>
+                          <span style={{ color:'var(--t3)' }}>Time</span><span style={{ color:'var(--t1)', fontWeight:600 }}>{selectedBk.startTime}</span>
                         </div>
-                        <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, marginBottom:selectedTable.reservation.notes?3:0 }}>
-                          <span style={{ color:'var(--t3)' }}>Party</span><span style={{ color:'var(--t1)', fontWeight:600 }}>{selectedTable.reservation.partySize} guests</span>
+                        <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, marginBottom:3 }}>
+                          <span style={{ color:'var(--t3)' }}>Party</span><span style={{ color:'var(--t1)', fontWeight:600 }}>{selectedBk.covers} guests</span>
                         </div>
-                        {selectedTable.reservation.phone && (
-                          <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, marginBottom:selectedTable.reservation.notes?3:0 }}>
-                            <span style={{ color:'var(--t3)' }}>Phone</span><span style={{ color:'var(--t1)', fontWeight:600 }}>{selectedTable.reservation.phone}</span>
+                        {selectedBk.customer?.phone && (
+                          <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, marginBottom:3 }}>
+                            <span style={{ color:'var(--t3)' }}>Phone</span><span style={{ color:'var(--t1)', fontWeight:600 }}>{selectedBk.customer.phone}</span>
                           </div>
                         )}
-                        {selectedTable.reservation.notes && (
+                        {selectedBk.packageId && (
+                          <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, marginBottom:3 }}>
+                            <span style={{ color:'var(--t3)' }}>Package</span><span style={{ color:'var(--t1)', fontWeight:600 }}>📦 {(packages || []).find(p => p.id === selectedBk.packageId)?.name || 'Package'}</span>
+                          </div>
+                        )}
+                        {selectedBk.note && (
                           <div style={{ marginTop:4, fontSize:11, color:'var(--orn)', fontStyle:'italic', padding:'5px 8px', background:'rgba(249,115,22,.08)', borderRadius:6 }}>
-                            📝 {selectedTable.reservation.notes}
+                            📝 {selectedBk.note}
                           </div>
                         )}
                       </div>
@@ -909,16 +982,24 @@ export default function TablesSurface() {
 
             {/* Actions */}
             <div style={{ padding:16, display:'flex', flexDirection:'column', gap:8 }}>
-              {selectedTable.status==='available' && (
+              {!selectedTable.session && !selectedBk && (selectedTable.status==='available' || selectedTable.status==='reserved') && (
                 <>
                   <button className="btn btn-acc btn-full" onClick={()=>handleAction('seat')} style={{ height:44, fontSize:14 }}>Seat guests →</button>
                   <button className="btn btn-ghost btn-full" onClick={()=>setShowReservation(true)}>Reserve table</button>
                 </>
               )}
-              {selectedTable.status==='reserved' && (
+              {!selectedTable.session && selectedBk && (
                 <>
-                  <button className="btn btn-acc btn-full" onClick={()=>handleAction('seat')} style={{ height:44, fontSize:14 }}>Seat guests →</button>
-                  <button className="btn btn-ghost btn-full" onClick={()=>setShowReservation(true)}>✏ Edit reservation</button>
+                  {/* v5.6.27: seat THROUGH the booking — opens the session on the
+                      primary table, carries guest + allergens, pre-loads package lines */}
+                  <button className="btn btn-acc btn-full" onClick={async ()=>{
+                    const primary = tables.find(t => t.id === selectedBk.primaryTableId);
+                    const r = await seatBooking(selectedBk.id);
+                    if (r?.ok) showToast(`${primary?.label || selectedTable.label} seated — ${selectedBk.covers} covers`, 'success');
+                    else showToast(r?.error || 'Could not seat the booking', 'error');
+                    setSelected(null);
+                  }} style={{ height:44, fontSize:14 }}>Seat guests →</button>
+                  <button className="btn btn-ghost btn-full" onClick={()=>setEditBooking(selectedBk)}>✏ Edit reservation</button>
                   <button className="btn btn-red btn-sm btn-full" style={{ height:32 }} onClick={()=>handleAction('cancel_reserve')}>Cancel reservation</button>
                 </>
               )}
@@ -996,7 +1077,7 @@ export default function TablesSurface() {
       {showReservation && selectedTable && (
         <ReservationModal
           table={selectedTable}
-          existing={selectedTable.reservation}
+          existing={null}
           onConfirm={async (res)=>{
             // v5.5.10: if the operator picked a returning guest from search, the
             // modal already passed the full customer record (with id + allergens
@@ -1035,6 +1116,32 @@ export default function TablesSurface() {
             showToast(`${selectedTable.label} reserved for ${res.name} at ${res.time}`, 'success');
           }}
           onCancel={()=>setShowReservation(false)}
+        />
+      )}
+      {/* v5.6.27: EDIT mode — prefilled from the claiming booking; confirms via
+          updateBooking (partySize→covers, time→startTime, notes→note; the
+          booking's tables + date stay as booked). Distinct path so
+          setReservation stays create-only. */}
+      {editBooking && selectedTable && (
+        <ReservationModal
+          table={selectedTable}
+          existing={{
+            name:      editBooking.customer?.name  || '',
+            phone:     editBooking.customer?.phone || '',
+            partySize: editBooking.covers,
+            time:      editBooking.startTime,
+            notes:     editBooking.note || '',
+            customer:  editBooking.customer || null,
+          }}
+          onConfirm={(res)=>{
+            const customer = res.customer
+              ? { ...res.customer, name: res.customer.name || res.name, phone: res.customer.phone || res.phone }
+              : { ...(editBooking.customer || {}), name: res.name, phone: res.phone || null };
+            updateBooking(editBooking.id, { covers: res.partySize, startTime: res.time, note: res.notes, customer });
+            setEditBooking(null);
+            showToast(`Booking updated — ${res.name} at ${res.time}`, 'success');
+          }}
+          onCancel={()=>setEditBooking(null)}
         />
       )}
     </div>

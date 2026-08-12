@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.27',
+    date: '2026-08-11',
+    changes: [
+      'Table Bookings: the POS Tables screen now runs on bookings. A booked table shows the time and guest name, joined tables get a dashed outline around the whole party, and "Seat guests" opens the tab with the guest, their allergens and any pre-ordered package lines already on it. The old thin reservation system is retired — "Reserve table" writes a real booking.',
+      'Table Bookings: new Back Office section Channels → Packages & events — build packages (tasting menu, brunch, Christmas set) with per-line courses, availability windows and capacity caps. Attached to a booking, the lines pre-load onto the tab on seating, firing in course order on the KDS.',
+    ],
+  },
+
+  {
     version: '5.6.26',
     date: '2026-08-11',
     changes: [

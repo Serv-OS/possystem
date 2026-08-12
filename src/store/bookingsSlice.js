@@ -23,6 +23,7 @@ import {
 import {
   loadBookings, createBookingAtomic, updateBookingRow,
   loadBookingRules, saveBookingRules, loadPackages,
+  upsertPackageRow, deletePackageRow,
 } from '../lib/bookings/bookingsData.js';
 import { supabase, isMock, getActiveLocationSync, getLocationId } from '../lib/supabase.js';
 import { isTrainingMode } from '../lib/trainingMode.js';
@@ -177,6 +178,49 @@ export function bookingsSlice(set, get) {
       return get().updateBooking(id, { status: 'cancelled', cancelledAt: Date.now(), cancelReason: reason });
     },
 
+    // ── the POS Tables bridge (v5.6.27 — bookings replace thin reservations) ──
+    // The next live booking claiming this table today, shown as the "reserved"
+    // state on the Tables screen. DISPLAY-DERIVED, never a persisted status —
+    // six writers re-derive table status from session presence, so a stored
+    // 'reserved'/'joined' flag would be wiped on the next boot or echo.
+    upcomingBookingForTable: (tableId, { lookaheadMin = 180 } = {}) => {
+      const today = todayISO();
+      const now = new Date();
+      const nowMin = now.getHours() * 60 + now.getMinutes();
+      const live = (get().bookings || []).filter((b) =>
+        b.date === today &&
+        ['confirmed', 'prepaid', 'due', 'late'].includes(b.status) &&
+        (b.tables || []).includes(tableId) &&
+        toMin(b.startTime) + (b.turnMinutes || 90) > nowMin &&
+        toMin(b.startTime) <= nowMin + lookaheadMin
+      ).sort((a, b) => toMin(a.startTime) - toMin(b.startTime));
+      return live[0] || null;
+    },
+
+    // Materialise a package into ordinary order lines for `covers` guests.
+    // course ints ride each line so the KDS fires in order — this is exactly
+    // the catering flow; nothing downstream changes.
+    packageLinesToItems: (packageId, covers) => {
+      const pkg = (get().packages || []).find((p) => p.id === packageId);
+      if (!pkg?.lines?.length) return [];
+      const menuItems = get().menuItems || [];
+      return pkg.lines.map((l) => {
+        const mi = l.itemId ? menuItems.find((m) => m.id === l.itemId) : null;
+        const price = l.priceOverride != null ? l.priceOverride : (mi?.price ?? 0);
+        return {
+          uid: `pl-${l.id}-${Date.now()}`,
+          itemId: l.itemId || `pkg-line-${l.id}`,
+          name: l.displayName || mi?.name || 'Package item',
+          price,
+          qty: Math.max(1, Math.round((l.qtyPerCover || 1) * covers)),
+          mods: [], notes: '', allergens: mi?.allergens || [],
+          course: l.course ?? 0,
+          fired: (l.course ?? 0) === 0,
+          seat: null,
+        };
+      });
+    },
+
     // ── seat: the POS handover (Phase 3) ──────────────────────────────────────
     // Opens the session on the PRIMARY table only (INTEGRATION.md resolution —
     // active_sessions stays one row per table). Member tables never get a
@@ -193,7 +237,14 @@ export function bookingsSlice(set, get) {
         allergens: b.customer.allergens || [],
       } : null;
       try {
-        get().seatTable?.(b.primaryTableId, { covers: b.covers, server: get().staff?.name, customer: seatCustomer });
+        // A package pre-loads the tab: its lines become ordinary order items
+        // with course ints (the catering flow) via seatTableWithItems.
+        const pkgItems = b.packageId ? get().packageLinesToItems?.(b.packageId, b.covers) : [];
+        if (pkgItems?.length) {
+          get().seatTableWithItems?.(b.primaryTableId, pkgItems, { covers: b.covers, server: get().staff?.name, customer: seatCustomer });
+        } else {
+          get().seatTable?.(b.primaryTableId, { covers: b.covers, server: get().staff?.name, customer: seatCustomer });
+        }
         // Persist just this table's session immediately (the waitlist lesson:
         // a host stand's floor poll can flip the table back before the flush).
         try { flushSingleSession(b.primaryTableId); } catch { /* best-effort */ }
@@ -218,6 +269,32 @@ export function bookingsSlice(set, get) {
           console.warn('[bookings] no_shows bump failed:', e?.message || e);
         }
       }
+      return res;
+    },
+
+    // ── packages (Phase 4 — BO PackageBuilder writes through here) ────────────
+    upsertPackage: async (pkg) => {
+      const id = pkg.id || `pk-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+      const full = { ...pkg, id };
+      set((s) => ({ packages: [...(s.packages || []).filter((p) => p.id !== id), full].sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0)) }));
+      if (isTrainingMode()) return { ok: true, package: full };
+      const locId = await resolveLocationId();
+      if (!locId) return { ok: false, error: 'no location' };
+      const res = await upsertPackageRow(full, locId);
+      if (!res.ok) {
+        console.warn('[bookings] upsertPackage failed:', res.error);
+        get().showToast?.(`Package NOT saved — ${res.error || 'write refused'}`, 'error');
+      }
+      return { ...res, package: full };
+    },
+
+    deletePackage: async (id) => {
+      set((s) => ({ packages: (s.packages || []).filter((p) => p.id !== id) }));
+      if (isTrainingMode()) return { ok: true };
+      const locId = await resolveLocationId();
+      if (!locId) return { ok: false, error: 'no location' };
+      const res = await deletePackageRow(id, locId);
+      if (!res.ok) get().showToast?.(`Package NOT deleted — ${res.error || 'write refused'}`, 'error');
       return res;
     },
 
