@@ -24,7 +24,7 @@ function Card({ icon, title, desc, note, accent, onClick }) {
   );
 }
 
-export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelectAdmin, onSelectMPOS, onSelectClock, onSelectMenuBoard, onSelectWaitlist, onSelectManager }) {
+export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelectAdmin, onSelectMPOS, onSelectClock, onSelectMenuBoard, onSelectWaitlist, onSelectManager, onSelectBookings }) {
   return (
     <div style={{
       minHeight: '100vh',
@@ -90,6 +90,14 @@ export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelect
           accent="#7C5CFF"
           onClick={onSelectWaitlist}
         />
+        {onSelectBookings && <Card
+          icon="📅"
+          title="Bookings"
+          desc="The reservations diary + host stand — take bookings with smart table combinations, see the whole service on a timeline, and seat parties straight into a POS tab."
+          note="Runs on the venue's floor plan — set up join groups in Back Office"
+          accent="#E8A020"
+          onClick={onSelectBookings}
+        />}
         {onSelectManager && <Card
           icon="📲"
           title="Manager"

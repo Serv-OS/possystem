@@ -1,3 +1,34 @@
+# Session — 11 Aug 2026 (v5.6.25+) — Table Bookings module, Phases 1-3
+
+## Context
+Design handoff in ~/Downloads/design_handoff_table_bookings (README/INTEGRATION/OPTIMISER/SCHEMA/BUILD_ORDER + HTML prototype).
+Peter's locked decisions: ONE unified CRM (extend customers, org-scoped = shared across venues), bookings REPLACE the old
+table_reservations feature, manager-PIN pacing override, widget on the online-ordering subdomain pattern.
+Memory: project_table_bookings.md carries the full decision + handoff-corrections list.
+
+## Done (v5.6.25, live on develop)
+- Migration 20260811b APPLIED to dev Ops DB: bookings/booking_tables/packages/package_lines/booking_preorders/
+  booking_payments/booking_rules/booking_requests + customers gains tags/no_shows/shopper_reference/stored_payment_method_id.
+  create_booking RPC = atomic free-check (advisory lock; double-book race PROVEN closed). Rules seeded all 6 venues.
+- src/lib/bookings/optimiser.js — the combination engine, 16 unit tests incl. all 9 spec cases (335 total green).
+- src/lib/bookings/bookingsData.js + src/store/bookingsSlice.js (loadBookingsFromDB, createBooking via RPC,
+  seatBooking → seatTable(primary) + flushSingleSession, markBookingNoShow → customers.no_shows bump, rules, realtime appliers).
+- Wiring: SyncBridge boot load (after reservations), realtime channel bookings:<loc> (+booking_tables), config-push
+  snapshot keys packages/bookingRules with v5.5.833 guards, FloorPlanBuilder join-group authoring (booking_rules.join_groups).
+- App dispatch ?mode=bookings (SyncBridge-backed) + ModeSelector card.
+
+## In progress
+- Phase 3 UI: background agent building src/surfaces/bookings/{BookingsSurface,DiaryScreen,BookScreen,FloorScreen,RulesScreen}.jsx
+  per the handoff specs (servos skin, sv-glass, var(--acc)); it runs npm run build itself. Then: version bump + verify + push.
+- Phase 3 remainder: TablesSurface reads bookings (replace ReservationSync path; keep setReservation as shim), joined-table
+  outline on POS floor, sunset table_reservations.
+
+## Next
+- Phase 4 packages builder + queuePackageLines; Phase 5 Adyen (advanced-flow pattern proven 11 Aug on online checkout;
+  ledger booking_payments is service-role-only) + widget via serverless → booking_requests. Cancellation wording needed from Peter.
+
+---
+
 # Session — 27 Jul 2026 (v5.5.903) — the PAX cancel window: a dead terminal job gives the gift card back
 
 ## Context

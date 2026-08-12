@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.26',
+    date: '2026-08-11',
+    changes: [
+      'Table Bookings — the host stand is live (?mode=bookings, also on the device chooser). Diary: the whole service on a timeline with row-spanning blocks for joined tables, live now-line, KPI strip and a booking inspector with one-tap Seat/No-show/Cancel. Book: three-column flow with auto-suggested table combinations, plain-English reasons, pacing-cap warnings with manager approval, and CRM guest search. Floor: live canvas with join outlines and one-tap walk-in seating. Rules: turn times, tolerance, pacing and holds, applying immediately.',
+      'Table Bookings: seating a booking opens the POS tab on the primary table and carries the guest (and their allergens) onto the check; a no-show updates the guest\'s lifetime no-show count.',
+      'Table Bookings: venues start with sensible join groups (one run per floor section, in layout order) — refine them in Back Office → Floor plan.',
+    ],
+  },
+
+  {
     version: '5.6.25',
     date: '2026-08-11',
     changes: [

@@ -24,8 +24,9 @@ import {
   loadBookings, createBookingAtomic, updateBookingRow,
   loadBookingRules, saveBookingRules, loadPackages,
 } from '../lib/bookings/bookingsData.js';
-import { getActiveLocationSync, getLocationId } from '../lib/supabase.js';
+import { supabase, isMock, getActiveLocationSync, getLocationId } from '../lib/supabase.js';
 import { isTrainingMode } from '../lib/trainingMode.js';
+import { flushSingleSession } from '../sync/SessionSync.js';
 
 const isRealLoc = (id) => !!id && id !== 'loc-demo';
 async function resolveLocationId() {
@@ -174,6 +175,50 @@ export function bookingsSlice(set, get) {
 
     cancelBooking: async (id, { reason = '' } = {}) => {
       return get().updateBooking(id, { status: 'cancelled', cancelledAt: Date.now(), cancelReason: reason });
+    },
+
+    // ── seat: the POS handover (Phase 3) ──────────────────────────────────────
+    // Opens the session on the PRIMARY table only (INTEGRATION.md resolution —
+    // active_sessions stays one row per table). Member tables never get a
+    // status: the floor derives "joined" from booking_tables live. Carries the
+    // guest across so dine-in checkout gets loyalty/allergens (seatTable
+    // already auto-applies customer allergens with a toast).
+    seatBooking: async (id) => {
+      const b = (get().bookings || []).find((x) => x.id === id);
+      if (!b) return { ok: false, error: 'unknown booking' };
+      const seatCustomer = b.customer ? {
+        customerId: b.customerId || null,
+        name: b.customer.name || 'Guest',
+        phone: b.customer.phone || null,
+        allergens: b.customer.allergens || [],
+      } : null;
+      try {
+        get().seatTable?.(b.primaryTableId, { covers: b.covers, server: get().staff?.name, customer: seatCustomer });
+        // Persist just this table's session immediately (the waitlist lesson:
+        // a host stand's floor poll can flip the table back before the flush).
+        try { flushSingleSession(b.primaryTableId); } catch { /* best-effort */ }
+      } catch (e) {
+        console.warn('[bookings] seatTable failed:', e?.message || e);
+      }
+      const ref = get().tables?.find((t) => t.id === b.primaryTableId)?.session?.id || null;
+      return get().updateBooking(id, { status: 'dining', seatedAt: Date.now(), seatedSessionRef: ref });
+    },
+
+    markBookingNoShow: async (id) => {
+      const b = (get().bookings || []).find((x) => x.id === id);
+      if (!b) return { ok: false, error: 'unknown booking' };
+      const res = await get().updateBooking(id, { status: 'no_show' });
+      // Lifetime no-show count on the unified CRM record — drives the
+      // card-hold prompt at the next booking. Best-effort, never blocks.
+      if (res.ok && b.customerId && !isMock && supabase && !isTrainingMode()) {
+        try {
+          const { data } = await supabase.from('customers').select('no_shows').eq('id', b.customerId).maybeSingle();
+          await supabase.from('customers').update({ no_shows: (data?.no_shows || 0) + 1 }).eq('id', b.customerId);
+        } catch (e) {
+          console.warn('[bookings] no_shows bump failed:', e?.message || e);
+        }
+      }
+      return res;
     },
 
     // ── rules ─────────────────────────────────────────────────────────────────

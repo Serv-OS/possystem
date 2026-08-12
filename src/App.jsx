@@ -29,6 +29,7 @@ import TimeClockSurface from './surfaces/TimeClockSurface';
 import OwnerSurface from './surfaces/OwnerSurface';
 import MenuBoardSurface from './surfaces/MenuBoardSurface';
 import WaitlistSurface from './surfaces/waitlist/WaitlistSurface';
+import BookingsSurface from './surfaces/bookings/BookingsSurface';
 import ManagerSurface from './surfaces/ManagerSurface';
 import StaffSurface from './surfaces/StaffSurface';
 import KioskAutoUpdate from './components/KioskAutoUpdate';
@@ -228,6 +229,7 @@ export default function App() {
       onSelectClock={() => { localStorage.setItem('rpos-device-mode', 'clock'); window.location.href = '?mode=clock'; }}
       onSelectMenuBoard={() => { localStorage.setItem('rpos-device-mode', 'menuboard'); window.location.href = '?mode=menuboard'; }}
       onSelectWaitlist={() => { localStorage.setItem('rpos-device-mode', 'waitlist'); window.location.href = '?mode=waitlist'; }}
+      onSelectBookings={() => { localStorage.setItem('rpos-device-mode', 'bookings'); window.location.href = '?mode=bookings'; }}
       onSelectManager={() => { localStorage.setItem('rpos-device-mode', 'manager'); window.location.href = '?mode=manager'; }}
       onSelectBackOffice={() => { localStorage.setItem('rpos-device-mode', 'backoffice'); window.location.href = '?mode=office'; }}
       onSelectAdmin={() => { localStorage.setItem('rpos-device-mode', 'admin'); window.location.href = '?mode=admin'; }}
@@ -266,6 +268,11 @@ export default function App() {
     return null;
   }
   if (deviceMode === 'waitlist') return <><KioskAutoUpdate /><WaitlistSurface /></>;
+
+  // Table Bookings — host-stand diary/floor/book. SyncBridge-backed: the diary,
+  // the floor canvas and the optimiser all read the SAME tables + sessions the
+  // POS reads (INTEGRATION.md — bookings never keeps its own floor plan copy).
+  if (deviceMode === 'bookings') return <><KioskAutoUpdate /><SyncBridge onSyncPulse={handleSyncPulse}/><BookingsSurface /></>;
 
   // ServOS Staff — the staff SELF-SERVICE app on their own phone (v5.5.996):
   // shifts, announcements, timesheets, own details; training joins later.
