@@ -20,7 +20,7 @@
 // deriveVars + MenuHeader) so the venue's Menu-appearance branding applies —
 // token-based, neutral, no servos skin.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { supabase, ensureAuthToken } from '../../lib/supabase';
 import { normalisePhone } from '../../lib/customerLookup';
 import { readTheme, deriveVars, readableOn, DISPLAY_FONT, BODY_FONT } from '../menu/menuTheme';
@@ -44,6 +44,24 @@ function fmtDateLong(iso) {
   if (Number.isNaN(d.getTime())) return iso;
   return new Intl.DateTimeFormat('en-GB', { weekday: 'long', day: 'numeric', month: 'long' }).format(d);
 }
+
+// ── package money (POUNDS — the fn pre-computes `total`; per_cover = price × party)
+function fmtGBP(n) {
+  const v = Math.round((Number(n) || 0) * 100) / 100;
+  return Number.isInteger(v) ? `£${v}` : `£${v.toFixed(2)}`;
+}
+// "£240 · £60 per person" for per-cover offers; plain total otherwise.
+function pkgTotalLabel(p) {
+  return p.priceUnit === 'per_cover' ? `${fmtGBP(p.total)} · ${fmtGBP(p.price)} per person` : fmtGBP(p.total);
+}
+// One-line payment rule in guest words. Online card capture is NOT live, so
+// never promise an online charge here — every model settles at the venue for
+// now. Unknown/missing models render nothing rather than a wrong promise.
+const PKG_RULE = {
+  prepay: 'Paid on the night for now — pre-orders reach the kitchen',
+  deposit: 'Deposit taken at the venue',
+  hold: 'No charge today',
+};
 
 // Every request goes through the edge fn — one door, one shape. Non-2xx
 // responses surface as a FunctionsHttpError with no body, so they collapse to a
@@ -111,6 +129,26 @@ export default function BookingWidget({ location }) {
   const slots = (!slotsLoading && slotsRes?.slots) || [];
   const slotsErr = !slotsLoading && !!slotsRes?.err;
 
+  // ── package upsell ──────────────────────────────────────────────────────────
+  // ?package=<id> deep link, read once at mount (absent = normal flow).
+  const [linkPkgId] = useState(() => {
+    try { return new URLSearchParams(window.location.search).get('package') || null; } catch { return null; }
+  });
+  // The guest's explicit choice: null = untouched (the deep link may pre-select),
+  // { id: null } = "No thanks", { id } = tapped a card. The EFFECTIVE selection is
+  // DERIVED against the offers in the CURRENT slots response, so a party/date
+  // change that drops the offer clears it with no effect-time setState — same
+  // request-keyed idiom as slotsRes above.
+  const [pkgPick, setPkgPick] = useState(null);
+  const packages = (!slotsLoading && slotsRes?.packages) || [];
+  const wantedPkgId = pkgPick ? pkgPick.id : linkPkgId;
+  const selectedPkg = wantedPkgId
+    ? packages.find((p) => String(p.id) === String(wantedPkgId)) || null
+    : null;
+  // Deep-link miss → the small amber note (only until the guest interacts).
+  const linkPkgMissing = !pkgPick && !!linkPkgId && !slotsLoading && !slotsErr
+    && !packages.some((p) => String(p.id) === String(linkPkgId));
+
   // Guest details
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
@@ -151,14 +189,33 @@ export default function BookingWidget({ location }) {
     (async () => {
       const r = await callWidget({ action: 'slots', location_id: opsId, date, party });
       if (off) return;
-      if (!r?.ok) { setSlotsRes({ key, slots: [], err: true }); setTime(null); return; }
+      if (!r?.ok) { setSlotsRes({ key, slots: [], packages: [], err: true }); setTime(null); return; }
       const next = Array.isArray(r.slots) ? r.slots : [];
-      setSlotsRes({ key, slots: next, err: false });
+      // Offers ride the same response — valid for exactly this date+party.
+      setSlotsRes({ key, slots: next, packages: Array.isArray(r.packages) ? r.packages : [], err: false });
       // Keep the selection only if that time is still open.
       setTime((t) => (t && next.some((s) => s.time === t && !s.full)) ? t : null);
     })();
     return () => { off = true; };
   }, [boot, opsId, date, party, slotsNonce]);
+
+  // Deep link: the first time the ?package offer renders selected, bring the
+  // section into view. DOM-only side effect (no setState), ref-guarded so it
+  // fires once; no dep array because it watches derived render output.
+  const pkgSectionRef = useRef(null);
+  const linkScrolledRef = useRef(false);
+  useEffect(() => {
+    if (linkScrolledRef.current || !linkPkgId || pkgPick) return;
+    if (String(selectedPkg?.id) !== String(linkPkgId)) return;
+    if (pkgSectionRef.current) {
+      linkScrolledRef.current = true;
+      // Instant (not smooth) and deferred one frame: the slots response lands
+      // as two setStates, and the re-render cancels an in-flight smooth scroll
+      // (observed in the rig — it died 1px in).
+      const el = pkgSectionRef.current;
+      requestAnimationFrame(() => el.scrollIntoView({ block: 'center' }));
+    }
+  });
 
   const maxCovers = Math.max(1, cfg?.maxCovers || 12);
   const maxDaysAhead = cfg?.maxDaysAhead ?? 90;
@@ -181,9 +238,18 @@ export default function BookingWidget({ location }) {
       email: email.trim() || undefined,
       note: note.trim() || undefined,
       consent: consent || undefined,
+      package_id: selectedPkg ? selectedPkg.id : undefined,
     });
     setSubmitting(false);
     if (r?.ok && (r.status === 'confirmed' || r.status === 'pending')) { setResult(r); return; }
+    if (r?.error === 'package_unavailable') {
+      // The offer vanished between render and book (cap filled / window moved) —
+      // drop it, re-quote the day, keep the table flow alive.
+      setSubmitErr('That menu just sold out for this date — you can still book the table.');
+      setPkgPick({ id: null });
+      setSlotsNonce((n) => n + 1);
+      return;
+    }
     if (r?.error === 'slot_full') {
       // Someone took the slot between quote and write — refresh availability.
       setSubmitErr('That time was just booked out — please pick another.');
@@ -226,6 +292,12 @@ export default function BookingWidget({ location }) {
 
   // ── confirmed / pending screens ─────────────────────────────────────────────
   if (result?.status === 'confirmed') {
+    // The fn's confirm carries { id, name, paymentModel } only — the money
+    // figures come from the offer card in the last slots response (still keyed
+    // to the date+party that was booked; nothing re-fetched since).
+    const confPkg = result.package
+      ? (slotsRes?.packages || []).find((p) => String(p.id) === String(result.package.id)) || null
+      : null;
     return <Shell {...shell}>
       <div style={{ ...S.card, textAlign: 'center', padding: '34px 22px' }}>
         <div aria-hidden style={{
@@ -240,6 +312,19 @@ export default function BookingWidget({ location }) {
         }}>
           {fmtDateLong(result.date || date)} · {result.time || time} · {result.party || party} {(result.party || party) === 1 ? 'guest' : 'guests'}
         </div>
+        {result.package && (
+          <div style={{
+            margin: '0 auto 14px', maxWidth: 340, padding: '10px 14px', borderRadius: 12,
+            border: '1px solid rgba(22,163,74,.4)', background: 'rgba(22,163,74,.08)',
+          }}>
+            <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--ink)' }}>{result.package.name}</div>
+            {confPkg && (
+              <div style={{ fontFamily: MONO, fontSize: 13, fontWeight: 700, color: 'var(--ink)', marginTop: 2 }}>
+                {pkgTotalLabel(confPkg)}
+              </div>
+            )}
+          </div>
+        )}
         <div style={S.sub}>
           We’ve saved your details — just give your name when you arrive.
         </div>
@@ -331,6 +416,83 @@ export default function BookingWidget({ location }) {
       <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8, marginBottom: 20 }}>
         Greyed times are at the kitchen’s capacity, not closed.
       </div>
+
+      {/* Package upsell — the offers the fn returned for THIS date+party.
+          Selection is derived (pkgPick vs current offers) so a stale card can
+          never be booked from here; the fn re-validates server-side anyway. */}
+      {(packages.length > 0 || linkPkgMissing) && (
+        <div ref={pkgSectionRef} style={{ marginBottom: 20 }}>
+          {packages.length > 0 && <div style={S.fieldLbl}>Add an experience</div>}
+          {linkPkgMissing && (
+            <div style={{
+              padding: '8px 12px', borderRadius: 10, marginBottom: 8,
+              background: 'rgba(217,119,6,.09)', border: '1px solid rgba(217,119,6,.35)',
+              color: '#b45309', fontSize: 12.5, fontWeight: 600,
+            }}>
+              That menu isn’t available for this date or party size
+            </div>
+          )}
+          {packages.length > 0 && (
+            <div style={{ display: 'grid', gap: 8 }}>
+              {packages.map((p) => {
+                const on = selectedPkg && String(selectedPkg.id) === String(p.id);
+                return (
+                  <button key={p.id} type="button" aria-pressed={!!on}
+                    onClick={() => { setPkgPick({ id: on ? null : p.id }); setSubmitErr(''); }}
+                    style={{
+                      display: 'block', width: '100%', textAlign: 'left',
+                      padding: '12px 14px', borderRadius: 12,
+                      cursor: 'pointer', fontFamily: 'inherit', color: 'var(--ink)',
+                      border: on ? '1.5px solid #16a34a' : '1px solid rgba(22,163,74,.35)',
+                      background: on ? 'rgba(22,163,74,.14)' : 'rgba(22,163,74,.06)',
+                    }}>
+                    {/* Name + right-aligned mono total share the top row; the
+                        total's two halves wrap only at the gap so 320px never
+                        splits "per person" mid-phrase. */}
+                    <div style={{ display: 'flex', gap: 10, alignItems: 'baseline' }}>
+                      <div style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: 800 }}>
+                        {on ? '✓ ' : ''}{p.name}
+                      </div>
+                      <div style={{
+                        fontFamily: MONO, fontSize: 13, fontWeight: 800, textAlign: 'right',
+                        flex: 'none', maxWidth: '55%',
+                      }}>
+                        <span style={{ whiteSpace: 'nowrap' }}>{fmtGBP(p.total)}</span>
+                        {p.priceUnit === 'per_cover' && <>
+                          {' '}
+                          <span style={{ whiteSpace: 'nowrap' }}>· {fmtGBP(p.price)} per person</span>
+                        </>}
+                      </div>
+                    </div>
+                    {p.description && (
+                      <div style={{
+                        fontSize: 12.5, color: 'var(--muted)', lineHeight: 1.45, marginTop: 3,
+                        display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+                        overflow: 'hidden',
+                      }}>{p.description}</div>
+                    )}
+                    {PKG_RULE[p.paymentModel] && (
+                      <div style={{ fontSize: 11.5, fontWeight: 600, color: '#15803d', marginTop: 5 }}>
+                        {PKG_RULE[p.paymentModel]}
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+              <button type="button" aria-pressed={!selectedPkg}
+                onClick={() => { setPkgPick({ id: null }); setSubmitErr(''); }}
+                style={{
+                  width: '100%', padding: '10px 14px', borderRadius: 12, textAlign: 'left',
+                  border: '1px dashed var(--line)', background: 'transparent',
+                  cursor: 'pointer', fontFamily: 'inherit', fontSize: 13, fontWeight: 700,
+                  color: selectedPkg ? 'var(--muted)' : 'var(--ink)',
+                }}>
+                No thanks, just the table
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Guest details */}
       <div style={{ display: 'grid', gap: 9 }}>

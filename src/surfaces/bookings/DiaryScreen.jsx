@@ -413,6 +413,10 @@ function Inspector({ b, nowMin, packages, rules, tables, onClose }) {
         ))}
       </div>
 
+      {pkg && (pkg.lines || []).some((l) => l.isPreorderChoice) && isLive(b) && b.status !== 'dining' && (
+        <PreordersPanel b={b} pkg={pkg} />
+      )}
+
       {moving && <MovePanel b={b} onDone={() => setMoving(false)} />}
 
       <div style={{ padding: '14px 18px', display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -430,6 +434,87 @@ function Inspector({ b, nowMin, packages, rules, tables, onClose }) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ── Per-seat pre-orders (Phase 4) ─────────────────────────────────────────────
+// Shown when the booking's package has choice lines (is_preorder_choice).
+// Each row = one guest's pick: seat, name, dish, note. Saved wholesale; on
+// seating they become the tab's lines with "Seat N · Name" riding the notes so
+// the KDS ticket and kitchen print show whose plate each course is.
+function PreordersPanel({ b, pkg }) {
+  const loadPreorders = useStore((s) => s.loadPreorders);
+  const savePreorders = useStore((s) => s.savePreorders);
+  const showToast = useStore((s) => s.showToast);
+  const [rowsRes, setRowsRes] = useState(null);   // { forId, rows } — request-keyed load
+  const [rows, setRows] = useState([]);
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const choices = (pkg.lines || []).filter((l) => l.isPreorderChoice);
+
+  useEffect(() => {
+    let off = false;
+    loadPreorders?.(b.id).then((data) => {
+      if (!off) setRowsRes({ forId: b.id, rows: data || [] });
+    });
+    return () => { off = true; };
+  }, [b.id, loadPreorders]);
+
+  // A different booking's load resets the editor (render-adjust, not an effect).
+  const [editFor, setEditFor] = useState(null);
+  if (rowsRes?.forId === b.id && editFor !== b.id) {
+    setEditFor(b.id);
+    setRows(rowsRes.rows);
+    setOpen(rowsRes.rows.length > 0);
+  }
+
+  const patchRow = (i, patch) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  const addRow = () => setRows((rs) => [...rs, { seat: Math.min((rs.at(-1)?.seat || 0) + 1, b.covers), guestName: '', itemId: choices[0]?.itemId || null, displayName: choices[0]?.displayName || '', course: choices[0]?.course ?? 0, notes: '' }]);
+
+  const save = async () => {
+    setSaving(true);
+    const res = await savePreorders?.(b.id, rows);
+    setSaving(false);
+    if (res?.ok) showToast?.(`Pre-orders saved — ${rows.length} choice${rows.length === 1 ? '' : 's'}`, 'success');
+  };
+
+  const inp = { background: 'var(--bg3)', border: '1px solid var(--bdr2)', borderRadius: 8, color: 'var(--t1)', padding: '6px 8px', fontSize: 12, fontFamily: 'inherit', height: 32, boxSizing: 'border-box' };
+
+  return (
+    <div style={{ padding: '14px 18px', borderBottom: '1px solid var(--bdr)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <SecLabel>Pre-orders — {rows.length ? `${rows.length} taken` : 'none yet'}</SecLabel>
+        <button className="btn btn-ghost" onClick={() => setOpen((o) => !o)} style={{ height: 28, fontSize: 11, padding: '0 10px' }}>{open ? 'Hide' : rows.length ? 'Edit' : 'Take pre-orders'}</button>
+      </div>
+      {open && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {rows.map((r, i) => (
+            <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+              <select value={r.seat || 1} onChange={(e) => patchRow(i, { seat: Number(e.target.value) })} style={{ ...inp, width: 62 }}>
+                {Array.from({ length: b.covers }, (_, s) => <option key={s + 1} value={s + 1}>S{s + 1}</option>)}
+              </select>
+              <input value={r.guestName} placeholder="Name" onChange={(e) => patchRow(i, { guestName: e.target.value })} style={{ ...inp, flex: '1 1 70px', minWidth: 0 }} />
+              <select
+                value={`${r.itemId || ''}|${r.displayName}`}
+                onChange={(e) => {
+                  const c = choices.find((x) => `${x.itemId || ''}|${x.displayName}` === e.target.value);
+                  if (c) patchRow(i, { itemId: c.itemId || null, displayName: c.displayName, course: c.course ?? 0 });
+                }}
+                style={{ ...inp, flex: '2 1 120px', minWidth: 0 }}>
+                {choices.map((c) => <option key={`${c.itemId || ''}|${c.displayName}`} value={`${c.itemId || ''}|${c.displayName}`}>{c.displayName}</option>)}
+              </select>
+              <button onClick={() => setRows((rs) => rs.filter((_, j) => j !== i))} style={{ background: 'none', border: 'none', color: 'var(--t4)', cursor: 'pointer', fontSize: 14, padding: 2 }}>×</button>
+            </div>
+          ))}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="btn btn-ghost" onClick={addRow} style={{ flex: 1, height: 34, fontSize: 12 }}>+ Add choice</button>
+            <button className="btn btn-acc" onClick={save} disabled={saving} style={{ flex: 1, height: 34, fontSize: 12, fontWeight: 800 }}>{saving ? 'Saving…' : 'Save pre-orders'}</button>
+          </div>
+          <div style={{ fontSize: 10, color: 'var(--t4)', lineHeight: 1.4 }}>On seating, each choice lands on the tab with the guest's name — the kitchen ticket shows whose plate each course is.</div>
+        </div>
+      )}
     </div>
   );
 }

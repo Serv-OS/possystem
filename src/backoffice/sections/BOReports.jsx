@@ -40,6 +40,7 @@ import CashDrawer    from './reports/CashDrawer';
 import RyftPayouts   from './reports/RyftPayouts';
 import RyftDisputes  from './reports/RyftDisputes';
 import LoyaltyReport from './reports/LoyaltyReport';
+import BookingsReport from './reports/BookingsReport';
 import Transactions  from './Transactions';
 import { money } from '../../lib/currency';
 
@@ -285,6 +286,7 @@ export default function BOReports({ setSection } = {}) {
           {view === 'order_types' && <OrderTypes   checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN}/>}
           {view === 'order_sources' && <OrderSources checks={filtered} prevChecks={filteredPrev} fmt={fmt} fmtN={fmtN}/>}
           {view === 'tables'      && <Tables       checks={filtered} fmt={fmt} fmtN={fmtN}/>}
+          {view === 'bookings'    && <BookingsReport rangeFrom={range.from} rangeTo={range.to} fmtN={fmtN}/>}
           {view === 'kds_perf'    && <KDSPerformance kdsTickets={kdsTickets || []} fmt={fmt} fmtN={fmtN}/>}
           {view === 'zreport'     && <ZReport      checks={filtered} periodLabelText={periodLabel(period, customRange, range)} rangeFrom={range.from} rangeTo={range.to} fmt={fmt} fmtN={fmtN}/>}
           {view === 'tax'        && <Tax          checks={filtered} fmt={fmt} fmtN={fmtN}/>}

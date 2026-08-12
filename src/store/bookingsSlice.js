@@ -24,6 +24,7 @@ import {
   loadBookings, createBookingAtomic, updateBookingRow,
   loadBookingRules, saveBookingRules, loadPackages,
   upsertPackageRow, deletePackageRow, moveBookingTables,
+  loadBookingPreorders, saveBookingPreorders,
 } from '../lib/bookings/bookingsData.js';
 import { supabase, isMock, getActiveLocationSync, getLocationId } from '../lib/supabase.js';
 import { isTrainingMode } from '../lib/trainingMode.js';
@@ -219,26 +220,67 @@ export function bookingsSlice(set, get) {
 
     // Materialise a package into ordinary order lines for `covers` guests.
     // course ints ride each line so the KDS fires in order — this is exactly
-    // the catering flow; nothing downstream changes.
-    packageLinesToItems: (packageId, covers) => {
+    // the catering flow; nothing downstream changes. When per-seat PRE-ORDERS
+    // exist they REPLACE the package's choice lines (is_preorder_choice) — the
+    // fixed lines (welcome drink, sides) still load for everyone.
+    packageLinesToItems: (packageId, covers, preorders = []) => {
       const pkg = (get().packages || []).find((p) => p.id === packageId);
-      if (!pkg?.lines?.length) return [];
       const menuItems = get().menuItems || [];
-      return pkg.lines.map((l) => {
-        const mi = l.itemId ? menuItems.find((m) => m.id === l.itemId) : null;
-        const price = l.priceOverride != null ? l.priceOverride : (mi?.price ?? 0);
+      const hasPre = preorders.length > 0;
+      const fixed = (pkg?.lines || [])
+        .filter((l) => !(hasPre && l.isPreorderChoice))
+        .map((l) => {
+          const mi = l.itemId ? menuItems.find((m) => m.id === l.itemId) : null;
+          const price = l.priceOverride != null ? l.priceOverride : (mi?.price ?? 0);
+          return {
+            uid: `pl-${l.id}-${Date.now()}`,
+            itemId: l.itemId || `pkg-line-${l.id}`,
+            name: l.displayName || mi?.name || 'Package item',
+            price,
+            qty: Math.max(1, Math.round((l.qtyPerCover || 1) * covers)),
+            mods: [], notes: '', allergens: mi?.allergens || [],
+            course: l.course ?? 0,
+            fired: (l.course ?? 0) === 0,
+            seat: null,
+          };
+        });
+      // Pre-order rows: one line per seat choice, guest's name riding the notes
+      // so the KDS ticket and kitchen print show WHO each plate is for.
+      const chosen = preorders.map((r, i) => {
+        const mi = r.itemId ? menuItems.find((m) => m.id === r.itemId) : null;
+        const base = (pkg?.lines || []).find((l) => l.itemId && l.itemId === r.itemId && l.isPreorderChoice);
+        const price = base ? (base.priceOverride != null ? base.priceOverride : 0) : (mi?.price ?? 0);
+        const who = [r.seat ? `Seat ${r.seat}` : null, r.guestName || null].filter(Boolean).join(' · ');
         return {
-          uid: `pl-${l.id}-${Date.now()}`,
-          itemId: l.itemId || `pkg-line-${l.id}`,
-          name: l.displayName || mi?.name || 'Package item',
+          uid: `po-${r.id || i}-${Date.now()}`,
+          itemId: r.itemId || `preorder-${i}`,
+          name: r.displayName || mi?.name || 'Pre-order',
           price,
-          qty: Math.max(1, Math.round((l.qtyPerCover || 1) * covers)),
-          mods: [], notes: '', allergens: mi?.allergens || [],
-          course: l.course ?? 0,
-          fired: (l.course ?? 0) === 0,
-          seat: null,
+          qty: 1,
+          mods: [],
+          notes: [who, r.notes || null].filter(Boolean).join(' — '),
+          allergens: mi?.allergens || [],
+          course: r.course ?? 0,
+          fired: (r.course ?? 0) === 0,
+          seat: r.seat ?? null,
         };
       });
+      return [...fixed, ...chosen];
+    },
+
+    // ── per-seat pre-orders (Phase 4) ────────────────────────────────────────
+    loadPreorders: async (bookingId) => {
+      const { data } = await loadBookingPreorders(bookingId);
+      return data || [];
+    },
+
+    savePreorders: async (bookingId, rows) => {
+      if (isTrainingMode()) return { ok: true };
+      const locId = await resolveLocationId();
+      if (!locId) return { ok: false, error: 'no location' };
+      const res = await saveBookingPreorders(bookingId, locId, rows);
+      if (!res.ok) get().showToast?.(`Pre-orders NOT saved — ${res.error || 'write refused'}`, 'error');
+      return res;
     },
 
     // ── seat: the POS handover (Phase 3) ──────────────────────────────────────
@@ -258,8 +300,11 @@ export function bookingsSlice(set, get) {
       } : null;
       try {
         // A package pre-loads the tab: its lines become ordinary order items
-        // with course ints (the catering flow) via seatTableWithItems.
-        const pkgItems = b.packageId ? get().packageLinesToItems?.(b.packageId, b.covers) : [];
+        // with course ints (the catering flow) via seatTableWithItems. Per-seat
+        // pre-orders (if taken at booking) replace the package's choice lines,
+        // each carrying "Seat N · Name" so the kitchen knows whose plate it is.
+        const preorders = b.packageId ? await get().loadPreorders?.(b.id) : [];
+        const pkgItems = b.packageId ? get().packageLinesToItems?.(b.packageId, b.covers, preorders || []) : [];
         if (pkgItems?.length) {
           get().seatTableWithItems?.(b.primaryTableId, pkgItems, { covers: b.covers, server: get().staff?.name, customer: seatCustomer });
         } else {

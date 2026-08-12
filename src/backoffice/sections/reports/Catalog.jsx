@@ -110,6 +110,7 @@ export const CATEGORIES = [
       { id:'transactions', label:'Transactions & refunds', desc:'All closed checks with search, item details, and full or item-level refunds' },
       { id:'open',   label:'Open orders', desc:'Tables still on the floor, not yet paid', signalKey:'open', signalWord:'live' },
       { id:'tables', label:'Tables',      desc:'Revenue, turns, covers and avg check by table' },
+      { id:'bookings', label:'Bookings',  desc:'Booking volume, covers, no-shows, sources and peak times for the period' },
     ],
   },
   {

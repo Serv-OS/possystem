@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.31',
+    date: '2026-08-12',
+    changes: [
+      'Booking widget: packages are now sold online. Guests see an "Add an experience" card for any package valid for their date and party size (availability windows, covers bounds and per-service caps all enforced server-side), and every package has its own shareable link (/book?package=...) for Instagram or the website.',
+      'Bookings: per-seat pre-orders. On a booking with a package, take each guest\'s choice (seat, name, dish) at the host stand — on seating, every choice lands on the tab as its own line with "Seat 2 · Sarah" on it, so the kitchen ticket shows whose plate each course is.',
+      'Back Office → Reports → Bookings: covers, no-show and cancellation rates, widget share, package attach rate, covers by day, peak times, sources and the full bookings list with CSV export.',
+    ],
+  },
+
+  {
     version: '5.6.30',
     date: '2026-08-12',
     changes: [

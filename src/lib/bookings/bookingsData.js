@@ -243,6 +243,48 @@ export async function loadBookingsRange(locationId, fromISO, toISO) {
   } catch (e) { warnAbsentOr(e, 'loadBookingsRange'); return { data: [] }; }
 }
 
+// ── per-seat pre-orders ───────────────────────────────────────────────────────
+export const rowToPreorder = (r) => (r ? {
+  id: r.id, bookingId: r.booking_id, seat: r.seat ?? null, guestName: r.guest_name || '',
+  itemId: r.item_id || null, displayName: r.display_name || '', course: r.course ?? 0, notes: r.notes || '',
+} : null);
+
+export async function loadBookingPreorders(bookingId) {
+  if (isMock || !supabase || !bookingId) return { data: [] };
+  try {
+    const { data, error } = await supabase
+      .from('booking_preorders').select('*').eq('booking_id', bookingId)
+      .order('seat').order('created_at');
+    if (error) { warnAbsentOr(error, 'loadBookingPreorders'); return { data: [] }; }
+    return { data: (data || []).map(rowToPreorder).filter(Boolean) };
+  } catch (e) { warnAbsentOr(e, 'loadBookingPreorders'); return { data: [] }; }
+}
+
+// Replace a booking's pre-orders wholesale (delete+insert — nothing FKs onto
+// these rows). rows: [{seat, guestName, itemId, displayName, course, notes}]
+export async function saveBookingPreorders(bookingId, locationId, rows) {
+  if (isMock || !supabase || !isRealLoc(locationId) || !bookingId) return { ok: true };
+  try {
+    const { error: delErr } = await supabase.from('booking_preorders').delete().eq('booking_id', bookingId);
+    if (delErr) return { ok: false, error: delErr.message };
+    const ins = (rows || []).filter((r) => r.displayName || r.itemId).map((r) => ({
+      location_id: locationId,
+      booking_id: bookingId,
+      seat: r.seat ?? null,
+      guest_name: r.guestName || null,
+      item_id: r.itemId || null,
+      display_name: r.displayName || 'Item',
+      course: r.course ?? 0,
+      notes: r.notes || '',
+    }));
+    if (ins.length) {
+      const { error: insErr } = await supabase.from('booking_preorders').insert(ins);
+      if (insErr) return { ok: false, error: insErr.message };
+    }
+    return { ok: true };
+  } catch (e) { return { ok: false, error: e?.message }; }
+}
+
 // ── rules ─────────────────────────────────────────────────────────────────────
 export async function loadBookingRules(locationId) {
   if (isMock || !supabase || !isRealLoc(locationId)) return { data: null };

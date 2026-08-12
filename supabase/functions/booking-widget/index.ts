@@ -66,16 +66,42 @@ function rulesFrom(r: Record<string, unknown> | null) {
 
 // Load everything a quote needs, once per request.
 async function loadVenue(locationId: string) {
-  const [{ data: loc }, { data: rulesRow }, { data: floor }] = await Promise.all([
+  const [{ data: loc }, { data: rulesRow }, { data: floor }, { data: pkgs }] = await Promise.all([
     db.from('locations').select('id, org_id, name, timezone').eq('id', locationId).maybeSingle(),
     db.from('booking_rules').select('*').eq('location_id', locationId).maybeSingle(),
     db.from('floor_tables').select('id, label, max_covers, section').eq('location_id', locationId),
+    db.from('packages').select('*').eq('location_id', locationId).eq('is_active', true).order('sort_order'),
   ]);
   if (!loc) return null;
   return {
     loc,
     rules: rulesFrom(rulesRow),
     tables: (floor || []).map((t) => ({ id: t.id, label: t.label || t.id, covers: t.max_covers || 2, section: t.section || null })),
+    packages: pkgs || [],
+  };
+}
+
+// A package a GUEST may attach: active, inside its date/day window, party within
+// its covers bounds, and under its per-service cap for the chosen date.
+function packageOffer(p: Record<string, unknown>, date: string, party: number, bookedCount: number) {
+  const day = new Date(`${date}T12:00:00`).getDay();
+  if (p.available_from && date < String(p.available_from)) return null;
+  if (p.available_to && date > String(p.available_to)) return null;
+  const days = Array.isArray(p.available_days) ? p.available_days : [];
+  if (days.length && !days.includes(day)) return null;
+  if (party < ((p.min_covers as number) || 1)) return null;
+  if (p.max_covers && party > (p.max_covers as number)) return null;
+  if (p.max_per_service && bookedCount >= (p.max_per_service as number)) return null;
+  const perCover = String(p.price_unit || '').includes('cover');
+  return {
+    id: p.id,
+    name: p.name,
+    description: p.description || '',
+    price: Number(p.price) || 0,
+    priceUnit: p.price_unit,
+    paymentModel: p.payment_model,
+    total: perCover ? (Number(p.price) || 0) * party : (Number(p.price) || 0),
+    turnMinutes: p.turn_minutes || null,
   };
 }
 
@@ -163,7 +189,18 @@ Deno.serve(async (req) => {
         const time = `${hh}:${mm}`;
         slots.push({ time, full: t <= nowGuard || slotFull(time) });
       }
-      return json({ ok: true, slots });
+      // Packages a guest could add for this date+party (the widget's upsell
+      // card + the /book?package= deep link). Caps count that date's bookings.
+      const { data: pkgCounts } = await db.from('bookings')
+        .select('package_id')
+        .eq('location_id', locationId).eq('booking_date', date)
+        .not('package_id', 'is', null).not('status', 'in', '(cancelled,no_show)');
+      const counts = new Map<string, number>();
+      for (const r of pkgCounts || []) counts.set(r.package_id, (counts.get(r.package_id) || 0) + 1);
+      const offers = venue.packages
+        .map((p) => packageOffer(p, date, party, counts.get(String(p.id)) || 0))
+        .filter(Boolean);
+      return json({ ok: true, slots, packages: offers });
     }
 
     if (action === 'book') {
@@ -210,6 +247,25 @@ Deno.serve(async (req) => {
 
       const note = String(body.note || '').slice(0, 300);
       const customerSnap = { name, phone, allergens };
+
+      // Optional package: re-validate the offer server-side (window, covers,
+      // per-service cap) — never trust the card the page showed earlier.
+      let pkg: Record<string, unknown> | null = null;
+      if (body.package_id) {
+        const row = venue.packages.find((x) => String(x.id) === String(body.package_id));
+        let booked = 0;
+        if (row?.max_per_service) {
+          const { count } = await db.from('bookings')
+            .select('id', { count: 'exact', head: true })
+            .eq('location_id', locationId).eq('booking_date', date)
+            .eq('package_id', String(row.id)).not('status', 'in', '(cancelled,no_show)');
+          booked = count || 0;
+        }
+        const offer = row ? packageOffer(row, date, party, booked) : null;
+        if (!offer) return json({ ok: false, error: 'package_unavailable' });
+        pkg = row;
+      }
+      const turnOverride = pkg?.turn_minutes ? Number(pkg.turn_minutes) : null;
       const candidates = quote(time);
       let bookedId: string | null = null;
       let tableLabel: string | null = null;
@@ -220,14 +276,15 @@ Deno.serve(async (req) => {
           p_location_id: locationId,
           p_booking_date: date,
           p_start_time: time,
-          p_turn_minutes: turnFor(party, rules.turnBands),
+          p_turn_minutes: turnOverride || turnFor(party, rules.turnBands),
           p_covers: party,
           p_table_ids: c.set,
           p_primary_table_id: c.set[0],
           p_customer_id: customerId,
           p_customer: customerSnap,
-          p_status: 'confirmed',
+          p_status: pkg && pkg.payment_model === 'prepay' ? 'prepaid' : 'confirmed',
           p_source: 'widget',
+          p_package_id: pkg ? String(pkg.id) : null,
           p_note: note,
           p_created_by: 'widget',
         });
@@ -238,7 +295,7 @@ Deno.serve(async (req) => {
       // Every widget attempt lands in booking_requests — the audit/intake ledger.
       await db.from('booking_requests').insert({
         location_id: locationId,
-        payload: { date, time, party, name, phone, email, note, consent: body.consent === true },
+        payload: { date, time, party, name, phone, email, note, package_id: pkg ? String(pkg.id) : null, consent: body.consent === true },
         status: bookedId ? 'accepted' : 'pending',
         booking_id: bookedId,
       });
@@ -247,7 +304,8 @@ Deno.serve(async (req) => {
         // Availability vanished mid-flight: the venue follows up by phone.
         return json({ ok: true, status: 'pending', message: 'That time was just taken — the venue will confirm your booking shortly.' });
       }
-      return json({ ok: true, status: 'confirmed', bookingId: bookedId, table: tableLabel, time, date, party });
+      return json({ ok: true, status: 'confirmed', bookingId: bookedId, table: tableLabel, time, date, party,
+        package: pkg ? { id: pkg.id, name: pkg.name, paymentModel: pkg.payment_model } : null });
     }
 
     return json({ error: `unknown action: ${action}` }, 400);
