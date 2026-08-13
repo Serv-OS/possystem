@@ -163,3 +163,32 @@ export function toOptimiserBooking(b) {
     status: b.status || 'confirmed',
   };
 }
+
+// A live POS tab blocks its table exactly like a dining booking (Peter,
+// 13 Aug: an open table means no one else can be seated on it). A session has
+// no end time, so the expected window is seatedAt -> seatedAt + the covers
+// turn band, and while the tab stays open it never releases sooner than
+// nowMin + 30. Tables whose session came from seating a BOOKING are skipped --
+// that booking's own dining footprint already blocks them (no double-count).
+// Only meaningful for TODAY -- callers gate on the viewed date.
+export function sessionsToBlocks(tables, bookings, turnBands = DEFAULT_TURN_BANDS, nowMin = 0) {
+  const seatedTables = new Set();
+  for (const b of bookings || []) {
+    if (b && b.status === 'dining') for (const id of b.tables || []) seatedTables.add(id);
+  }
+  const blocks = [];
+  for (const t of tables || []) {
+    if (!t || t.parentId || !t.session || seatedTables.has(t.id)) continue;
+    let startMin = nowMin;
+    const seated = Number(t.session.seatedAt);
+    if (Number.isFinite(seated) && seated > 0) {
+      const d = new Date(seated);
+      startMin = d.getHours() * 60 + d.getMinutes();
+    }
+    if (startMin > nowMin) startMin = 0; // seated before midnight -- open since day start
+    const covers = Number(t.session.covers) || 2;
+    const turn = Math.max(turnFor(covers, turnBands), nowMin - startMin + 30);
+    blocks.push({ id: `sess-${t.id}`, tables: [t.id], startMin, turnMinutes: turn, covers, status: 'dining' });
+  }
+  return blocks;
+}

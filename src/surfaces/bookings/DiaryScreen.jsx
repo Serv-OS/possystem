@@ -19,7 +19,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../store';
-import { toMin, toHM, isTableFree, toOptimiserBooking } from '../../lib/bookings/optimiser.js';
+import { toMin, toHM, isTableFree, toOptimiserBooking, sessionsToBlocks } from '../../lib/bookings/optimiser.js';
 import { loadBookingPayments } from '../../lib/bookings/bookingsData.js';
 import {
   mono, tintBg, tintBd, rulesOf, displayStatus, statusMeta, StatusBadge, isDead, isLive,
@@ -88,7 +88,12 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
   const listRows = useMemo(
     () => visible.slice().sort((a, b) => toMin(a.startTime) - toMin(b.startTime) || bookingName(a).localeCompare(bookingName(b))),
     [visible]);
-  const optBookings = useMemo(() => visible.map(toOptimiserBooking).filter(Boolean), [visible]);
+  const optBookings = useMemo(() => {
+    const base = visible.map(toOptimiserBooking).filter(Boolean);
+    // Open POS tabs block their tables like dining bookings — today only.
+    if (!isToday) return base;
+    return [...base, ...sessionsToBlocks(tables, visible, rules.turnBands, Number.isFinite(nowMin) ? nowMin : 0)];
+  }, [visible, tables, isToday, nowMin, rules.turnBands]);
 
   // ── KPI strip (all computed, never static) ──────────────────────────────────
   const kpi = useMemo(() => {
@@ -615,7 +620,16 @@ function MovePanel({ b, onDone }) {
     [suggest, b, time],
   );
   const start = toMin(time), end = start + (b.turnMinutes || 90);
-  const opt = useMemo(() => dayBookings.map(toOptimiserBooking), [dayBookings]);
+  // The manual grid must also treat open POS tabs as busy (today only) — the
+  // store's suggest() already does, so the two can never disagree.
+  const bookingRules = useStore((s) => s.bookingRules);
+  const bookingsDate = useStore((s) => s.bookingsDate);
+  const opt = useMemo(() => {
+    const base = dayBookings.map(toOptimiserBooking).filter(Boolean);
+    if (bookingsDate && bookingsDate !== todayISO()) return base;
+    const now = new Date();
+    return [...base, ...sessionsToBlocks(storeTables, dayBookings, rulesOf(bookingRules).turnBands, now.getHours() * 60 + now.getMinutes())];
+  }, [dayBookings, storeTables, bookingRules, bookingsDate]);
   const grid = useMemo(
     () => storeTables.filter((t) => !t.parentId).map((t) => ({
       id: t.id, label: t.label || t.id, covers: t.maxCovers || 2,

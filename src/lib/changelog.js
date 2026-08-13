@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.41',
+    date: '2026-08-13',
+    changes: [
+      'An OPEN POS TAB now blocks its table everywhere the bookings system offers tables (it was invisible to availability): walk-in suggestions, new-booking suggestions, the move-table grid, the Free tables KPI, and the public widget\'s slots for today all treat an open tab as a dining party (expected to hold the table for its covers\' turn band, never releasing sooner than 30 minutes out while the tab stays open).',
+      'Seating a booking onto a table that still has an open tab is now refused with a clear message ("T1 still has an open tab — cash it off or move this booking first") instead of silently overwriting the live check.',
+      'A lunch tab never blocks a dinner booking — open tabs only affect availability for TODAY, with the expected-departure window doing the work.',
+    ],
+  },
+  {
     version: '5.6.40',
     date: '2026-08-13',
     changes: [

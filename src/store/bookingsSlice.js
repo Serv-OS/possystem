@@ -19,7 +19,7 @@
 import {
   suggestTables, paceAt, turnFor, toMin, toOptimiserBooking,
   DEFAULT_TURN_BANDS, DEFAULT_RULES,
-} from '../lib/bookings/optimiser.js';
+sessionsToBlocks } from '../lib/bookings/optimiser.js';
 import {
   loadBookings, createBookingAtomic, updateBookingRow,
   loadBookingRules, saveBookingRules, loadPackages,
@@ -94,11 +94,19 @@ export function bookingsSlice(set, get) {
     suggestBookingTables: ({ party, time, packageId = null, skipBookingId = null, limit = 3 }) => {
       const rules = get().bookingRules;
       const pkg = packageId ? (get().packages || []).find((p) => p.id === packageId) : null;
+      // A live POS tab blocks its table like a dining booking — but only when
+      // suggesting for TODAY (a lunch tab must not block a dinner booking).
+      const isToday = !get().bookingsDate || get().bookingsDate === todayISO();
+      const now = new Date();
+      const nowMin = now.getHours() * 60 + now.getMinutes();
+      const blocks = isToday
+        ? sessionsToBlocks(get().tables, get().bookings, rules?.turnBands || DEFAULT_TURN_BANDS, nowMin)
+        : [];
       return suggestTables({
         party,
         time,
         tables: optimiserTables(get().tables),
-        bookings: (get().bookings || []).map(toOptimiserBooking),
+        bookings: [...(get().bookings || []).map(toOptimiserBooking), ...blocks],
         joinGroups: rules?.joinGroups || [],
         turnBands: rules?.turnBands || DEFAULT_TURN_BANDS,
         rules: rules || DEFAULT_RULES,
@@ -293,6 +301,17 @@ export function bookingsSlice(set, get) {
     seatBooking: async (id) => {
       const b = (get().bookings || []).find((x) => x.id === id);
       if (!b) return { ok: false, error: 'unknown booking' };
+      // An open POS tab on any of the booking's tables means no one can be
+      // seated there yet — refuse loudly instead of silently overwriting the
+      // live session (which is real money on a real check).
+      const openOn = (b.tables?.length ? b.tables : [b.primaryTableId])
+        .map((tid) => (get().tables || []).find((t) => t.id === tid))
+        .filter((t) => t?.session);
+      if (openOn.length) {
+        const labels = openOn.map((t) => t.label || t.id).join(', ');
+        get().showToast?.(`${labels} still has an open tab — cash it off or move this booking first`, 'error');
+        return { ok: false, error: 'table_open' };
+      }
       const seatCustomer = b.customer ? {
         customerId: b.customerId || null,
         name: b.customer.name || 'Guest',

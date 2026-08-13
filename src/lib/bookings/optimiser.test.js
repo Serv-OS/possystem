@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import {
   suggestTables, isTableFree, paceAt, turnFor, bandLabel,
   toMin, toHM, toOptimiserBooking, WEIGHTS, DEFAULT_TURN_BANDS,
-} from './optimiser.js';
+sessionsToBlocks } from './optimiser.js';
 
 // A small venue: a window run of 2-tops, one 4-top, one 8-top, a bar run.
 const T = (id, covers, section = 'main') => ({ id, label: id.toUpperCase(), covers, section });
@@ -160,4 +160,45 @@ test('time helpers round-trip', () => {
   assert.equal(toMin('19:15'), 1155);
   assert.equal(toHM(1155), '19:15');
   assert.equal(toHM(toMin('09:05')), '09:05');
+});
+
+// ── live POS tabs block their tables (Peter, 13 Aug) ─────────────────────────
+test('sessionsToBlocks: an open tab blocks its table like a dining booking', () => {
+  const nowMin = toMin('19:00');
+  const seated = new Date(); seated.setHours(18, 30, 0, 0);
+  const tables = [
+    { id: 't1', session: { seatedAt: seated.getTime(), covers: 2 } },   // open tab
+    { id: 't2', session: null },                                        // free
+  ];
+  const blocks = sessionsToBlocks(tables, [], undefined, nowMin);
+  assert.equal(blocks.length, 1);
+  assert.deepEqual(blocks[0].tables, ['t1']);
+  assert.equal(blocks[0].status, 'dining');
+  assert.equal(blocks[0].startMin, toMin('18:30'));
+  // 2 covers = 90-min band; open since 18:30 → held until at least 20:00.
+  assert.ok(blocks[0].startMin + blocks[0].turnMinutes >= toMin('20:00'));
+});
+
+test('sessionsToBlocks: never releases sooner than now+30 while the tab stays open', () => {
+  const nowMin = toMin('21:00');
+  const seated = new Date(); seated.setHours(17, 0, 0, 0);   // 4h overstay vs the 90-min band
+  const blocks = sessionsToBlocks([{ id: 't1', session: { seatedAt: seated.getTime(), covers: 2 } }], [], undefined, nowMin);
+  assert.ok(blocks[0].startMin + blocks[0].turnMinutes >= nowMin + 30, 'still blocked 30 min out');
+});
+
+test('sessionsToBlocks: tables seated from a BOOKING are not double-counted', () => {
+  const nowMin = toMin('19:00');
+  const tables = [{ id: 't1', session: { seatedAt: Date.now(), covers: 4 } }];
+  const dining = [{ id: 'bk1', tables: ['t1'], startMin: toMin('18:45'), turnMinutes: 105, covers: 4, status: 'dining' }];
+  assert.equal(sessionsToBlocks(tables, dining, undefined, nowMin).length, 0);
+});
+
+test('sessionsToBlocks feeds suggestTables: the blocked table is never offered', () => {
+  const nowMin = toMin('19:00');
+  const seated = new Date(); seated.setHours(18, 45, 0, 0);
+  const tables = [{ id: 't1', label: 'T1', covers: 2, section: 'main' }, { id: 't2', label: 'T2', covers: 2, section: 'main' }];
+  const blocks = sessionsToBlocks([{ id: 't1', session: { seatedAt: seated.getTime(), covers: 2 } }], [], undefined, nowMin);
+  const out = suggestTables({ party: 2, time: '19:00', tables, bookings: blocks, joinGroups: [{ id: 'g', tableIds: ['t1', 't2'] }], limit: 3 });
+  assert.ok(out.length >= 1, 'the free table is offered');
+  assert.ok(out.every((c) => !c.set.includes('t1')), 'the open-tab table never is');
 });

@@ -19,7 +19,7 @@
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import {
-  suggestTables, paceAt, turnFor, toMin,
+  suggestTables, paceAt, turnFor, toMin, sessionsToBlocks,
   DEFAULT_TURN_BANDS, DEFAULT_RULES,
 } from '../_shared/bookingOptimiser.js';
 
@@ -300,6 +300,24 @@ Deno.serve(async (req) => {
     }
 
     const bookings = await loadDayBookings(locationId, date);
+    // TODAY only: a live POS tab (walk-in opened straight on the till) blocks
+    // its table exactly like a dining booking — the widget must never sell a
+    // slot the venue physically cannot seat. Same sessionsToBlocks the host
+    // stand uses (parity copy), fed from active_sessions.
+    if (date === today) {
+      try {
+        const { data: sess } = await db.from('active_sessions')
+          .select('table_id, session').eq('location_id', locationId);
+        const sessTables = (sess || []).filter((r) => r.table_id).map((r) => ({
+          id: r.table_id,
+          session: {
+            seatedAt: (r.session as Record<string, unknown>)?.seatedAt,
+            covers: (r.session as Record<string, unknown>)?.covers,
+          },
+        }));
+        bookings.push(...sessionsToBlocks(sessTables, bookings, rules.turnBands, venueNowMin(tz)));
+      } catch { /* availability falls back to bookings-only — never blocks the door */ }
+    }
     const quote = (time: string) => suggestTables({
       party, time, tables: venue.tables, bookings,
       joinGroups: rules.joinGroups, turnBands: rules.turnBands, rules, limit: 3,
