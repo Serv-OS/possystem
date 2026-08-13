@@ -22,7 +22,7 @@ import { useStore } from '../../store';
 import { toMin, toHM, isTableFree, toOptimiserBooking } from '../../lib/bookings/optimiser.js';
 import {
   mono, tintBg, tintBd, rulesOf, displayStatus, statusMeta, StatusBadge, isDead, isLive,
-  useNowMin, money, initialsOf, bookingName, todayISO, EmptyNote, Chip,
+  useNowMin, money, initialsOf, bookingName, todayISO, EmptyNote, Chip, preorderStateFor,
 } from './bits.jsx';
 
 const MIN_SLOT_W = 24;   // narrowest a 15-min column may go before overflow-x kicks in
@@ -185,8 +185,21 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
                     <span style={{ width: 64, flexShrink: 0, fontSize: 10, color: 'var(--t4)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                       {b.source || 'host'}
                     </span>
-                    <span style={{ width: 16, flexShrink: 0, textAlign: 'center' }} title={pkg ? pkg.name : undefined}>
-                      {b.packageId && <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 999, background: 'var(--grn)' }} />}
+                    <span style={{ flexShrink: 0, display: 'flex', gap: 6, alignItems: 'center', maxWidth: 240, overflow: 'hidden' }} title={pkg ? pkg.name : undefined}>
+                      {pkg && (
+                        <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 999, background: tintBg('var(--grn)'), border: `1px solid ${tintBd('var(--grn)')}`, color: 'var(--grn)', whiteSpace: 'nowrap' }}>
+                          {pkg.name}
+                        </span>
+                      )}
+                      {(() => {
+                        const po = preorderStateFor(b, packages);
+                        if (!po || po.state === 'complete') return null;
+                        return (
+                          <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 999, background: tintBg('var(--orn)'), border: `1px solid ${tintBd('var(--orn)')}`, color: 'var(--orn)', whiteSpace: 'nowrap' }}>
+                            pre-orders {po.have}/{po.needed}
+                          </span>
+                        );
+                      })()}
                     </span>
                     <span style={{ width: 16, flexShrink: 0, textAlign: 'center', fontSize: 12, color: 'var(--orn)' }} title={b.note || undefined}>
                       {b.note ? '✎' : ''}
@@ -386,6 +399,23 @@ function Inspector({ b, nowMin, packages, rules, tables, onClose }) {
               <div style={{ fontSize: 11, color: 'var(--t3)', ...mono }}>{b.customer.phone || 'no phone on file'}</div>
             </div>
           </div>
+        </div>
+      )}
+
+      {pkg && (
+        <div style={sec}>
+          <SecLabel>Package</SecLabel>
+          <div style={{ fontSize: 13.5, fontWeight: 800 }}>{pkg.name}</div>
+          {(() => {
+            const po = preorderStateFor(b, packages);
+            if (!po) return <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 3 }}>No menu choices needed — preset lines load on seating.</div>;
+            if (po.state === 'complete') return <div style={{ fontSize: 11.5, color: 'var(--grn)', marginTop: 4, fontWeight: 700 }}>✓ Pre-orders in — {po.have} choices for {b.covers} guests</div>;
+            return (
+              <div style={{ marginTop: 6, padding: '7px 10px', borderRadius: 8, background: tintBg('var(--orn)', 10), border: `1px solid ${tintBd('var(--orn)')}`, color: 'var(--orn)', fontSize: 11.5, lineHeight: 1.45, fontWeight: 700 }}>
+                Pre-orders outstanding — {po.have} of {po.needed} choices in. Take them below or the guest can use their link.
+              </div>
+            );
+          })()}
         </div>
       )}
 

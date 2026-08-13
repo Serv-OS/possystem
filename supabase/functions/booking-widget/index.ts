@@ -208,7 +208,7 @@ Deno.serve(async (req) => {
       const [{ data: loc2 }, { data: pkg2 }, { data: lines2 }, { data: existing }] = await Promise.all([
         db.from('locations').select('name, timezone').eq('id', bk.location_id).maybeSingle(),
         db.from('packages').select('*').eq('id', bk.package_id).maybeSingle(),
-        db.from('package_lines').select('id, package_id, item_id, display_name, course, sort_order')
+        db.from('package_lines').select('id, package_id, item_id, display_name, course, sort_order, is_preorder_choice')
           .eq('package_id', bk.package_id).eq('is_preorder_choice', true).order('sort_order'),
         db.from('booking_preorders').select('seat, guest_name, item_id, display_name, course').eq('booking_id', bk.id).order('seat'),
       ]);

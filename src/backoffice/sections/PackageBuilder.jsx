@@ -14,6 +14,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../store';
 import { money } from '../../lib/currency';
+import { CUSTOMER_ROOT } from '../../lib/env';
+import { platformSupabase, getLocationId } from '../../lib/supabase';
 import { countUpcomingBookingsForPackage } from '../../lib/bookings/bookingsData';
 
 const MONO = 'var(--font-mono, ui-monospace, monospace)';
@@ -139,6 +141,33 @@ export default function PackageBuilder() {
 
   const hasAny = (packages || []).length > 0 || !!draft;
 
+  // venue slug -> direct marketing link (identical lookup to TableBookings)
+  const [slug, setSlug] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const opsLocId = await getLocationId().catch(() => null);
+        if (opsLocId && platformSupabase) {
+          const select = 'id, online_slug';
+          let r = (await platformSupabase.from('locations').select(select).eq('ops_location_id', opsLocId).maybeSingle()).data;
+          if (!r) r = (await platformSupabase.from('locations').select(select).eq('id', opsLocId).maybeSingle()).data;
+          if (alive) setSlug(r?.online_slug || null);
+        }
+      } catch { /* no platform row — the link row simply hides */ }
+    })();
+    return () => { alive = false; };
+  }, []);
+  const pkgUrl = draft?.id && slug ? `https://${slug}.${CUSTOMER_ROOT}/book?package=${draft.id}` : null;
+  const [copiedLink, setCopiedLink] = useState(false);
+  const copyLink = async () => {
+    if (!pkgUrl) return;
+    try {
+      await navigator.clipboard.writeText(pkgUrl);
+      setCopiedLink(true); setTimeout(() => setCopiedLink(false), 1800);
+    } catch { /* clipboard blocked — the text is shown for manual copy */ }
+  };
+
   return (
     <div style={{ maxWidth: 1400 }}>
       <Head title="Packages & events"
@@ -191,6 +220,21 @@ export default function PackageBuilder() {
                   onChange={e => upd({ description: e.target.value })}
                   placeholder="Description — shown on the booking widget" />
               </div>
+
+              {/* direct marketing link */}
+              {pkgUrl && (
+                <div style={{ ...S.section, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                  <div style={{ flexShrink: 0 }}>
+                    <div style={S.lbl}>Direct link</div>
+                    <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>Market this package straight to guests — the booking page opens with it pre-selected.</div>
+                  </div>
+                  <input readOnly value={pkgUrl} onFocus={e => e.target.select()}
+                    style={{ ...S.inp, flex: '1 1 320px', minWidth: 0, fontFamily: MONO, fontSize: 12, textOverflow: 'ellipsis' }} />
+                  <button onClick={copyLink} style={{ ...S.btnGhost, height: 38, padding: '0 16px', borderRadius: 10, fontWeight: 700, flexShrink: 0, color: copiedLink ? 'var(--grn)' : undefined }}>
+                    {copiedLink ? '✓ Copied' : 'Copy link'}
+                  </button>
+                </div>
+              )}
 
               {/* the four metric cards */}
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'stretch' }}>

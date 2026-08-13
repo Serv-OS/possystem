@@ -280,6 +280,7 @@ export function bookingsSlice(set, get) {
       if (!locId) return { ok: false, error: 'no location' };
       const res = await saveBookingPreorders(bookingId, locId, rows);
       if (!res.ok) get().showToast?.(`Pre-orders NOT saved — ${res.error || 'write refused'}`, 'error');
+      else set((s2) => ({ bookings: (s2.bookings || []).map((b) => (b.id === bookingId ? { ...b, preorderCount: (rows || []).length } : b)) }));
       return res;
     },
 

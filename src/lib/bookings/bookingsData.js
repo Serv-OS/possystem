@@ -48,6 +48,7 @@ export function rowToBooking(r) {
     departedAt: r.departed_at ? new Date(r.departed_at).getTime() : null,
     cancelledAt: r.cancelled_at ? new Date(r.cancelled_at).getTime() : null,
     cancelReason: r.cancel_reason || null,
+    preorderCount: r._preorderCount ?? 0,
     createdBy: r.created_by || null,
     updatedAt: r.updated_at ? new Date(r.updated_at).getTime() : null,
   };
@@ -140,9 +141,12 @@ export async function loadBookings(locationId, dateISO) {
     if (error) { if (!warnAbsentOr(error, 'loadBookings')) console.warn('[bookingsData] loadBookings:', error.message); return { data: [] }; }
     const ids = (data || []).map((b) => b.id);
     let membership = new Map();
+    const preCounts = new Map();
     if (ids.length) {
-      const { data: bt, error: btErr } = await supabase
-        .from('booking_tables').select('booking_id, table_id, is_primary').in('booking_id', ids);
+      const [{ data: bt, error: btErr }, { data: po }] = await Promise.all([
+        supabase.from('booking_tables').select('booking_id, table_id, is_primary').in('booking_id', ids),
+        supabase.from('booking_preorders').select('booking_id').in('booking_id', ids),
+      ]);
       if (!btErr) {
         membership = (bt || []).reduce((m, row) => {
           const arr = m.get(row.booking_id) || [];
@@ -151,8 +155,9 @@ export async function loadBookings(locationId, dateISO) {
           return m;
         }, new Map());
       }
+      for (const r of po || []) preCounts.set(r.booking_id, (preCounts.get(r.booking_id) || 0) + 1);
     }
-    return { data: (data || []).map((r) => rowToBooking({ ...r, _tables: membership.get(r.id) || [r.primary_table_id] })).filter(Boolean) };
+    return { data: (data || []).map((r) => rowToBooking({ ...r, _tables: membership.get(r.id) || [r.primary_table_id], _preorderCount: preCounts.get(r.id) || 0 })).filter(Boolean) };
   } catch (e) {
     if (!warnAbsentOr(e, 'loadBookings')) console.warn('[bookingsData] loadBookings threw:', e?.message || e);
     return { data: [] };

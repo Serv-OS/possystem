@@ -104,19 +104,23 @@ function pkgRuleLine(model, cfg, party) {
 // COURSE_LABEL — the course ints are the same ones the KDS fires by. A course
 // with a single "choice" option is effectively fixed, so it reads as the name.
 const COURSE_LABEL = { 0: 'On arrival', 1: 'Starter', 2: 'Main', 3: 'Dessert' };
+// The owner's spec (13 Aug): the details must SAY the structure — "each guest
+// picks one" per choice course, with the actual options named, and preset
+// lines listed plainly as included for everyone.
 function includesLines(includes) {
   const list = Array.isArray(includes) ? includes : [];
-  const counts = new Map(); // course → nº of choice options
-  for (const l of list) if (l.choice) counts.set(l.course, (counts.get(l.course) || 0) + 1);
-  const seen = new Set();
+  const byCourse = new Map(); // course → choice option names
+  for (const l of list) if (l.choice) byCourse.set(l.course, [...(byCourse.get(l.course) || []), l.name]);
+  const fixed = list.filter((l) => !l.choice).map((l) => l.name);
   const out = [];
-  for (const l of list) {
-    if (!l.choice) { out.push(l.name); continue; }
-    if (seen.has(l.course)) continue;
-    seen.add(l.course);
-    const n = counts.get(l.course) || 0;
-    if (n <= 1) { out.push(l.name); continue; }
-    out.push(`${COURSE_LABEL[l.course] || `Course ${l.course}`} — your choice of ${n}`);
+  // Choice courses first, in course order — the structure IS the story.
+  for (const [course, names] of [...byCourse.entries()].sort((a, b) => a[0] - b[0])) {
+    const label = COURSE_LABEL[course] || `Course ${course}`;
+    if (names.length <= 1) { fixed.push(names[0]); continue; }   // one option = effectively preset
+    out.push({ head: `${label} — each guest picks one`, body: joinAnd(names.map((n) => n)) });
+  }
+  if (fixed.length) {
+    out.push({ head: out.length ? 'Included for everyone' : null, body: null, items: fixed });
   }
   return out;
 }
@@ -124,19 +128,31 @@ function includesLines(includes) {
 // Shared by the package hero (landing) and the confirmation summary (compact).
 // Pure render of includesLines() — no state.
 function IncludesList({ includes, compact = false }) {
-  const lines = includesLines(includes);
-  if (!lines.length) return null;
+  const groups = includesLines(includes);
+  if (!groups.length) return null;
+  const fz = compact ? 12.5 : 13.5;
   return (
     <div style={{ marginTop: compact ? 8 : 12, textAlign: 'left' }}>
       <div style={{ ...S.fieldLbl, marginBottom: compact ? 4 : 6 }}>What’s included</div>
-      <div style={{ display: 'grid', gap: compact ? 2 : 4 }}>
-        {lines.map((ln, i) => (
-          <div key={i} style={{
-            display: 'flex', gap: 8, fontSize: compact ? 12.5 : 13.5,
-            lineHeight: 1.5, color: 'var(--ink)',
-          }}>
-            <span aria-hidden style={{ color: 'var(--muted)', flex: 'none' }}>•</span>
-            <span>{ln}</span>
+      <div style={{ display: 'grid', gap: compact ? 6 : 9 }}>
+        {groups.map((g, i) => (
+          <div key={i}>
+            {g.head && (
+              <div style={{ fontSize: compact ? 11 : 11.5, fontWeight: 700, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 2 }}>
+                {g.head}
+              </div>
+            )}
+            {g.body && <div style={{ fontSize: fz, lineHeight: 1.5, color: 'var(--ink)' }}>{g.body}</div>}
+            {g.items && (
+              <div style={{ display: 'grid', gap: 2 }}>
+                {g.items.map((it, j) => (
+                  <div key={j} style={{ display: 'flex', gap: 8, fontSize: fz, lineHeight: 1.5, color: 'var(--ink)' }}>
+                    <span aria-hidden style={{ color: 'var(--muted)', flex: 'none' }}>•</span>
+                    <span>{it}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         ))}
       </div>

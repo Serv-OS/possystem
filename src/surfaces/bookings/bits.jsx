@@ -194,3 +194,20 @@ export function EmptyNote({ title, sub }) {
     </div>
   );
 }
+
+
+// ── pre-order state for a booking (Peter, 13 Aug: "needs to be clear what
+// package someone has booked and if they haven't done their pre order").
+// complete = one choice per guest per choice-course. null = no choices needed.
+export function preorderStateFor(b, packages = []) {
+  if (!b?.packageId) return null;
+  const pkg = packages.find((p) => p.id === b.packageId);
+  if (!pkg?.requiresPreorder) return null;
+  const groups = new Set((pkg.lines || []).filter((l) => l.isPreorderChoice).map((l) => l.course ?? 0));
+  if (!groups.size) return null;
+  const needed = groups.size * (b.covers || 1);
+  const have = b.preorderCount || 0;
+  if (have >= needed) return { state: 'complete', have, needed };
+  if (have > 0) return { state: 'partial', have, needed };
+  return { state: 'missing', have: 0, needed };
+}

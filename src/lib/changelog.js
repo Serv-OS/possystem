@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.36',
+    date: '2026-08-13',
+    changes: [
+      'Bookings diary: it is now obvious which package a booking carries and whether its pre-orders are in — a named package pill plus an amber "pre-orders X/Y" pill on List rows, and a dedicated Package section in the inspector (green "Pre-orders in" or an amber outstanding banner with the count).',
+      'Package builder: every saved package now shows its direct marketing link (/book?package=…) with a Copy button — send guests straight to the booking page with the package pre-selected.',
+      'Booking widget: package details now read as a menu — "Starter — each guest picks one: Burrata & heritage tomato or Wood-oven king prawns", with fixed items listed under "Included for everyone"; preset packages simply list what is included.',
+      'Fixed: the choose-your-menu guest page offered no choices (the pre-order lookup dropped the choice flag) — the tokened completion page now lists every course correctly.',
+    ],
+  },
+  {
     version: '5.6.35',
     date: '2026-08-13',
     changes: [
