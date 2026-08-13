@@ -23,7 +23,7 @@ import { toMin, toHM, isTableFree, toOptimiserBooking } from '../../lib/bookings
 import { loadBookingPayments } from '../../lib/bookings/bookingsData.js';
 import {
   mono, tintBg, tintBd, rulesOf, displayStatus, statusMeta, StatusBadge, isDead, isLive,
-  useNowMin, money, initialsOf, bookingName, todayISO, EmptyNote, Chip, preorderStateFor,
+  useNowMin, money, initialsOf, bookingName, todayISO, EmptyNote, Chip, preorderStateFor, courseColor,
 } from './bits.jsx';
 
 const MIN_SLOT_W = 24;   // narrowest a 15-min column may go before overflow-x kicks in
@@ -511,6 +511,9 @@ function Inspector({ b, nowMin, packages, rules, tables, onClose }) {
 // Each row = one guest's pick: seat, name, dish, note. Saved wholesale; on
 // seating they become the tab's lines with "Seat N · Name" riding the notes so
 // the KDS ticket and kitchen print show whose plate each course is.
+const PO_COURSE_LABEL = { 0: 'On arrival', 1: 'Course 1', 2: 'Course 2', 3: 'Course 3' };
+const PO_COURSE_SHORT = { 0: 'Arr', 1: 'C1', 2: 'C2', 3: 'C3' };
+
 function PreordersPanel({ b, pkg }) {
   const loadPreorders = useStore((s) => s.loadPreorders);
   const savePreorders = useStore((s) => s.savePreorders);
@@ -571,8 +574,12 @@ function PreordersPanel({ b, pkg }) {
                   if (c) patchRow(i, { itemId: c.itemId || null, displayName: c.displayName, course: c.course ?? 0 });
                 }}
                 style={{ ...inp, flex: '2 1 120px', minWidth: 0 }}>
-                {choices.map((c) => <option key={`${c.itemId || ''}|${c.displayName}`} value={`${c.itemId || ''}|${c.displayName}`}>{c.displayName}</option>)}
+                {choices.map((c) => <option key={`${c.itemId || ''}|${c.displayName}`} value={`${c.itemId || ''}|${c.displayName}`}>{c.displayName} · {PO_COURSE_LABEL[c.course ?? 0] || `Course ${c.course}`}</option>)}
               </select>
+              <span title={PO_COURSE_LABEL[r.course ?? 0] || `Course ${r.course}`} style={{
+                flexShrink: 0, fontSize: 10, fontWeight: 800, padding: '3px 7px', borderRadius: 999, ...mono,
+                color: courseColor(r.course), background: tintBg(courseColor(r.course), 12), border: `1px solid ${tintBd(courseColor(r.course), 30)}`,
+              }}>{PO_COURSE_SHORT[r.course ?? 0] || `C${r.course}`}</span>
               <button onClick={() => setRows((rs) => rs.filter((_, j) => j !== i))} style={{ background: 'none', border: 'none', color: 'var(--t4)', cursor: 'pointer', fontSize: 14, padding: 2 }}>×</button>
             </div>
           ))}

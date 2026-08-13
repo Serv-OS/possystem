@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.39',
+    date: '2026-08-13',
+    changes: [
+      'Diary pre-orders panel: every row now shows its course as a colour-coded chip (C1 green, C2 blue, C3 amber, matching the POS course colours) and the choice dropdown names the course against each dish.',
+    ],
+  },
+  {
     version: '5.6.38',
     date: '2026-08-13',
     changes: [
