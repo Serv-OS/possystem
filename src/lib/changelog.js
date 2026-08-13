@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.34',
+    date: '2026-08-13',
+    changes: [
+      'Bookings payments are LIVE on dev (Adyen test). With card capture on (Back Office → Table bookings): prepay packages are charged in full at booking, deposits are charged at booking, and plain bookings hold a card — nothing charged, the card stored securely against the guest for the no-show policy. The booking is always confirmed first; payment can never lose the table.',
+      'Every payment lands in the bookings payment ledger with its Adyen reference, double-charging is blocked server-side, and Adyen\'s asynchronous confirmations settle the ledger via the webhook.',
+      'The card form appears on the booking confirmation in the venue\'s branding; declined cards show the reason and allow a retry.',
+    ],
+  },
+
+  {
     version: '5.6.33',
     date: '2026-08-13',
     changes: [

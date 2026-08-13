@@ -19,9 +19,15 @@
 // Theming: same MenuTheme engine as the storefront (brand CSS vars via
 // deriveVars + MenuHeader) so the venue's Menu-appearance branding applies —
 // token-based, neutral, no servos skin.
+//
+// Card capture (paymentDue on the book response): the confirmation screen
+// mounts an Adyen Card (advanced flow, see BookingPaymentCard) that pays via
+// the same fn (booking_pay). Only the card ENCRYPTION talks to Adyen directly.
 
 import { useEffect, useRef, useState } from 'react';
-import { supabase, ensureAuthToken } from '../../lib/supabase';
+import { AdyenCheckout, Dropin, Card } from '@adyen/adyen-web';
+import '@adyen/adyen-web/styles/adyen.css';
+import { supabase, ensureAuthToken, isMock } from '../../lib/supabase';
 import { normalisePhone } from '../../lib/customerLookup';
 import { readTheme, deriveVars, readableOn, DISPLAY_FONT, BODY_FONT } from '../menu/menuTheme';
 import MenuHeader from '../menu/MenuHeader';
@@ -62,13 +68,29 @@ function fmtGBP(n) {
 function pkgTotalLabel(p) {
   return p.priceUnit === 'per_cover' ? `${fmtGBP(p.total)} · ${fmtGBP(p.price)} per person` : fmtGBP(p.total);
 }
-// One-line payment rule in guest words. Online card capture is NOT live, so
-// never promise an online charge here — every model settles at the venue for
-// now. Unknown/missing models render nothing rather than a wrong promise.
+// One-line payment rule in guest words. Card capture happens AFTER the booking
+// confirms (the "Secure your booking" card on the confirmation screen), so the
+// offer cards still never promise an up-front online charge. Unknown/missing
+// models render nothing rather than a wrong promise.
 const PKG_RULE = {
   prepay: 'Paid on the night for now — pre-orders reach the kitchen',
   deposit: 'Deposit taken at the venue',
   hold: 'No charge today',
+};
+
+// ── confirmation-screen card capture ("Secure your booking") ──────────────────
+// Copy per paymentDue.kind. The booking is ALREADY CONFIRMED when this card
+// renders — no line here may ever imply the table is at risk.
+const CARD_ONLY = { paymentMethods: [{ type: 'scheme', name: 'Credit or debit card', brands: ['visa', 'mc', 'amex'] }] };
+const PAY_TITLE = {
+  prepay: (amt) => `Pay ${amt} now — it comes off your bill`,
+  deposit: (amt) => `Pay your ${amt} deposit`,
+  hold: (amt) => `Hold your table with a card — ${amt} held, nothing charged today`,
+};
+const PAID_LINE = {
+  prepay: (amt) => `Paid ${amt}`,
+  deposit: (amt) => `Deposit paid ${amt}`,
+  hold: () => 'Card held',
 };
 
 // Every request goes through the edge fn — one door, one shape. Non-2xx
@@ -163,6 +185,158 @@ function GuestChoiceCards({ party, groups, getSel, onPick, getName, onName, bran
           })}
         </div>
       ))}
+    </div>
+  );
+}
+
+// The confirmation screen's payment box — renders ONLY when the book response
+// carried paymentDue (venue has card capture on; null = nothing to collect).
+// ADVANCED-flow Adyen Card, same pattern as components/AdyenPaymentForm.jsx:
+// the card encrypts in the browser, the money request runs through the
+// booking-widget fn (booking_pay), which knows the amount server-side. The
+// booking is already confirmed before this mounts, so every failure path here
+// stays soft — the guest can always sort payment with the venue instead.
+function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId }) {
+  const holder = useRef(null);
+  const dropinRef = useRef(null);
+  const submittedRef = useRef(false); // pre-submit onError = setup failure → fallback copy
+  const [attempt, setAttempt] = useState(0); // bump to remount the form after a refusal
+  // phase: init | ready | failed | refused | paid
+  const [phase, setPhase] = useState('init');
+  const [refusal, setRefusal] = useState('');
+  const [payErr, setPayErr] = useState('');
+  const [paidInfo, setPaidInfo] = useState(null); // { pspReference }
+
+  const kind = paymentDue?.kind;
+  const amt = fmtGBP((Number(paymentDue?.amountMinor) || 0) / 100);
+
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      try {
+        const checkout = await AdyenCheckout({
+          clientKey: adyen?.clientKey || undefined,
+          environment: adyen?.environment === 'live' ? 'live' : 'test',
+          countryCode: 'GB',
+          amount: { value: Number(paymentDue?.amountMinor) || 0, currency: 'GBP' },
+          paymentMethodsResponse: CARD_ONLY,
+          onSubmit: async (state, _component, actions) => {
+            submittedRef.current = true;
+            setPayErr('');
+            const r = await callWidget({
+              action: 'booking_pay',
+              location_id: opsId,
+              booking_id: bookingId,
+              payment_method: state.data.paymentMethod,
+              browser_info: state.data.browserInfo,
+              origin: window.location.origin,
+              return_url: window.location.href,
+            });
+            if (r?.ok && (r.already || r.resultCode === 'Authorised')) {
+              // `already` = a previous attempt landed server-side — same success.
+              setPaidInfo({ pspReference: r.pspReference || null });
+              setPhase('paid');
+              actions.resolve({ resultCode: r.resultCode || 'Authorised' });
+              return;
+            }
+            if (r?.error === 'card_refused') {
+              setRefusal(r.refusalReason || '');
+              setPhase('refused');
+              actions.reject();
+              return;
+            }
+            setPayErr('We couldn’t take the payment — please try again.');
+            actions.reject();
+          },
+          onPaymentCompleted: () => {}, // success already handled on the server reply
+          onPaymentFailed: () => {},    // refusal already handled on the server reply
+          onError: () => {
+            if (!live) return;
+            // Before any submit this is a setup failure (bad origin, network) —
+            // swap the form for the soft fallback. After a submit the server
+            // reply has already driven the state; keep the form usable.
+            if (!submittedRef.current) setPhase('failed');
+            else setPayErr('Something went wrong — please try again.');
+          },
+        });
+        if (!live) return;
+        dropinRef.current = new Dropin(checkout, { paymentMethodComponents: [Card] }).mount(holder.current);
+        setPhase('ready');
+      } catch {
+        if (!live) return;
+        setPhase('failed');
+      }
+    })();
+    return () => {
+      live = false;
+      try { dropinRef.current?.unmount(); } catch { /* already gone */ }
+    };
+    // A retry (attempt bump) or another booking is a NEW payment — remount cleanly.
+  }, [bookingId, attempt]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const retry = () => {
+    submittedRef.current = false;
+    setRefusal('');
+    setPayErr('');
+    setPhase('init');
+    setAttempt((n) => n + 1);
+  };
+
+  const showForm = phase === 'init' || phase === 'ready';
+  return (
+    <div style={{
+      margin: '0 auto 14px', maxWidth: 380, padding: '14px 16px', borderRadius: 12,
+      border: '1px solid var(--line)', background: 'var(--bg)', textAlign: 'left',
+    }}>
+      <div style={S.fieldLbl}>Secure your booking</div>
+      <div style={{ fontFamily: DISPLAY_FONT, fontSize: 16, fontWeight: 800, color: 'var(--ink)', lineHeight: 1.35 }}>
+        {PAY_TITLE[kind] ? PAY_TITLE[kind](amt) : `Pay ${amt}`}
+      </div>
+
+      {phase === 'paid' ? (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontSize: 14.5, fontWeight: 800, color: '#15803d' }}>
+            ✓ {PAID_LINE[kind] ? PAID_LINE[kind](amt) : `Paid ${amt}`}
+          </div>
+          {paidInfo?.pspReference && (
+            <div style={{ fontFamily: MONO, fontSize: 11, color: 'var(--muted)', marginTop: 4 }}>
+              {paidInfo.pspReference}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={{ marginTop: 10 }}>
+          {phase === 'init' && (
+            <div style={{ padding: '12px 0', fontSize: 13, color: 'var(--muted)' }}>Loading secure payment…</div>
+          )}
+          {phase === 'failed' && (
+            <div style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.5 }}>
+              The card form couldn’t load here.
+            </div>
+          )}
+          {phase === 'refused' && (
+            <>
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#b91c1c', lineHeight: 1.5 }}>
+                Card refused{refusal ? ` — ${refusal}` : ''}. No charge was made.
+              </div>
+              <button type="button" onClick={retry} style={{
+                marginTop: 8, width: '100%', height: 40, borderRadius: 10,
+                border: '1px solid var(--line)', background: 'var(--card)', color: 'var(--ink)',
+                fontSize: 13.5, fontWeight: 800, fontFamily: 'inherit', cursor: 'pointer',
+              }}>
+                Try another card
+              </button>
+            </>
+          )}
+          <div ref={holder} style={{ display: showForm ? 'block' : 'none' }} />
+          {payErr && showForm && (
+            <div style={{ marginTop: 8, fontSize: 12.5, fontWeight: 600, color: '#b91c1c' }}>{payErr}</div>
+          )}
+          <div style={{ marginTop: 10, fontSize: 12, color: 'var(--muted)', lineHeight: 1.5 }}>
+            Your table is booked either way — you can also sort payment with the venue.
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -644,6 +818,17 @@ export default function BookingWidget({ location }) {
               </div>
             )}
           </div>
+        )}
+        {/* Card capture — only when the fn asked for it (paymentDue non-null)
+            and there's a real backend to pay through. Sits ABOVE the
+            choose-your-menu box: money first, menu after. */}
+        {!isMock && supabase && result.paymentDue && result.bookingId && (
+          <BookingPaymentCard
+            paymentDue={result.paymentDue}
+            adyen={result.adyen}
+            bookingId={result.bookingId}
+            opsId={opsId}
+          />
         )}
         {result.preorderToken && (
           // Booked OUTSIDE the pre-order window: the guest chooses later via

@@ -28,6 +28,35 @@ const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: 
 
 const db = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
 
+// ── Adyen (bookings card capture — Phase 5) ──────────────────────────────────
+// Same secrets and ADVANCED flow as the proven adyen-checkout fn: the card
+// encrypts in the guest's browser, WE make the payment server-side.
+const ADYEN_KEY = Deno.env.get('ADYEN_API_KEY') ?? '';
+const ADYEN_MERCHANT = Deno.env.get('ADYEN_MERCHANT_ACCOUNT') ?? '';
+const ADYEN_CLIENT_KEY = Deno.env.get('ADYEN_CLIENT_KEY') ?? '';
+const ADYEN_ENV = (Deno.env.get('ADYEN_ENV') ?? 'test').toLowerCase();
+const ADYEN_BASE = ADYEN_ENV === 'live' ? 'https://checkout-live.adyen.com' : 'https://checkout-test.adyen.com';
+
+// What a booking owes at capture time. hold = zero-value auth that stores the
+// card (no charge today; no-show capture comes later, off-session).
+function paymentDueFor(bk: Record<string, unknown>, pkg: Record<string, unknown> | null, rules: { holdPerCover?: number } | Record<string, unknown>) {
+  const covers = Number(bk.covers) || 1;
+  if (pkg && pkg.payment_model === 'prepay') {
+    const per = String(pkg.price_unit || '').includes('cover');
+    const amt = per ? (Number(pkg.price) || 0) * covers : (Number(pkg.price) || 0);
+    return { kind: 'prepay', amountMinor: Math.round(amt * 100), label: `${pkg.name} — paid now, comes off the bill` };
+  }
+  if (pkg && pkg.payment_model === 'deposit' && Number(pkg.deposit_per_cover) > 0) {
+    const amt = (Number(pkg.deposit_per_cover) || 0) * covers;
+    return { kind: 'deposit', amountMinor: Math.round(amt * 100), label: `Deposit — redeemed against the bill` };
+  }
+  const hold = (Number((rules as Record<string, unknown>).holdPerCover) || 0) * covers;
+  if (hold > 0) {
+    return { kind: 'hold', amountMinor: Math.round(hold * 100), label: `Card held, nothing charged today` };
+  }
+  return null;
+}
+
 const normPhone = (raw: string) => {
   const d = String(raw || '').replace(/[^\d+]/g, '');
   if (d.startsWith('+')) return d;
@@ -443,10 +472,109 @@ Deno.serve(async (req) => {
         // Availability vanished mid-flight: the venue follows up by phone.
         return json({ ok: true, status: 'pending', message: 'That time was just taken — the venue will confirm your booking shortly.' });
       }
+      // Card capture (when the venue has it on): tell the page what this
+      // booking owes so the confirmation screen can take the card.
+      let paymentDue = null;
+      if (bookedId && (venue.rules as Record<string, unknown>)?.cardCaptureEnabled !== false) {
+        const { data: rulesRow2 } = await db.from('booking_rules').select('card_capture_enabled, hold_per_cover').eq('location_id', locationId).maybeSingle();
+        if (rulesRow2?.card_capture_enabled) {
+          paymentDue = paymentDueFor({ covers: party }, pkg, { holdPerCover: Number(rulesRow2.hold_per_cover) || 0 });
+        }
+      }
       return json({ ok: true, status: 'confirmed', bookingId: bookedId, table: tableLabel, time, date, party,
         package: pkg ? { id: pkg.id, name: pkg.name, paymentModel: pkg.payment_model } : null,
         preorderToken, preorderDeadline,
-        preordersTaken: validRows.length > 0 });
+        preordersTaken: validRows.length > 0,
+        paymentDue,
+        ...(paymentDue ? { adyen: { clientKey: ADYEN_CLIENT_KEY, environment: ADYEN_ENV } } : {}) });
+    }
+
+    // ── booking_pay: charge/hold the card for a just-made booking ───────────
+    // ADVANCED flow (mirrors adyen-checkout make_payment): payment_method is
+    // the encrypted blob from the browser. prepay/deposit charge now; hold is
+    // a ZERO-VALUE auth that stores the card against the guest for the
+    // no-show capture later. Idempotent-ish: refuses when a successful row of
+    // that kind already exists for the booking.
+    if (action === 'booking_pay') {
+      if (!ADYEN_KEY || !ADYEN_MERCHANT) return json({ ok: false, error: 'card capture not configured' }, 500);
+      const bookingId = String(body.booking_id || '');
+      const { data: bk } = await db.from('bookings')
+        .select('id, location_id, covers, status, customer_id, customer, package_id, booking_date, start_time')
+        .eq('id', bookingId).eq('location_id', locationId).maybeSingle();
+      if (!bk || ['cancelled', 'no_show', 'departed'].includes(bk.status)) {
+        return json({ ok: false, error: 'unknown_or_closed' }, 404);
+      }
+      const { data: rulesRow3 } = await db.from('booking_rules').select('card_capture_enabled, hold_per_cover').eq('location_id', locationId).maybeSingle();
+      if (!rulesRow3?.card_capture_enabled) return json({ ok: false, error: 'card_capture_disabled' }, 403);
+      const pkg3 = bk.package_id ? venue.packages.find((x) => String(x.id) === String(bk.package_id)) || null : null;
+      const due = paymentDueFor(bk, pkg3 || null, { holdPerCover: Number(rulesRow3.hold_per_cover) || 0 });
+      if (!due) return json({ ok: false, error: 'nothing_due' });
+      if (!body.payment_method || typeof body.payment_method !== 'object') {
+        return json({ ok: false, error: 'payment_method required' }, 400);
+      }
+      const { data: prior } = await db.from('booking_payments')
+        .select('id').eq('booking_id', bookingId).eq('kind', due.kind)
+        .in('status', ['authorised', 'captured']).limit(1);
+      if (prior?.length) return json({ ok: true, already: true, kind: due.kind });
+
+      const isHold = due.kind === 'hold';
+      const reference = `bkpay-${bookingId}-${due.kind}`;
+      const payment: Record<string, unknown> = {
+        merchantAccount: ADYEN_MERCHANT,
+        amount: { value: isHold ? 0 : due.amountMinor, currency: 'GBP' },
+        reference,
+        paymentMethod: body.payment_method,
+        channel: 'Web',
+        origin: String(body.origin || ''),
+        returnUrl: String(body.return_url || 'https://dev.serv-os.app/'),
+        shopperInteraction: 'Ecommerce',
+        ...(bk.customer_id ? { shopperReference: bk.customer_id } : {}),
+        // Store the card for holds (no-show capture is a later merchant-
+        // initiated charge against the stored method).
+        ...(isHold && bk.customer_id ? { storePaymentMethod: true, recurringProcessingModel: 'UnscheduledCardOnFile' } : {}),
+      };
+      if (body.browser_info) payment.browserInfo = body.browser_info;
+
+      const res = await fetch(`${ADYEN_BASE}/v72/payments`, {
+        method: 'POST',
+        headers: { 'X-API-Key': ADYEN_KEY, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payment),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        console.error('[booking-widget] booking_pay failed:', res.status, JSON.stringify(j).slice(0, 300));
+        return json({ ok: false, error: j.message || `payment refused (${res.status})` }, 502);
+      }
+      const authorised = j.resultCode === 'Authorised' || j.resultCode === 'Received';
+      await db.from('booking_payments').insert({
+        location_id: locationId,
+        booking_id: bookingId,
+        kind: due.kind,
+        amount: due.amountMinor / 100,
+        currency: 'gbp',
+        status: authorised ? (isHold ? 'authorised' : 'captured') : (j.resultCode === 'Refused' ? 'failed' : 'pending'),
+        psp_reference: j.pspReference || null,
+        merchant_reference: reference,
+        merchant_account: ADYEN_MERCHANT,
+        stored_payment_method_id: j.additionalData?.['recurring.recurringDetailReference'] || null,
+        card_last4: j.additionalData?.cardSummary || null,
+        refusal_reason: j.refusalReason || null,
+        ...(authorised ? { authorised_at: new Date().toISOString() } : {}),
+        ...(authorised && !isHold ? { captured_at: new Date().toISOString() } : {}),
+      });
+      // Card-on-file onto the unified CRM record (never re-keyed).
+      const storedId = j.additionalData?.['recurring.recurringDetailReference'] || null;
+      if (isHold && authorised && storedId && bk.customer_id) {
+        await db.from('customers').update({
+          stored_payment_method_id: storedId,
+          shopper_reference: bk.customer_id,
+        }).eq('id', bk.customer_id);
+      }
+      if (!authorised && j.resultCode === 'Refused') {
+        return json({ ok: false, error: 'card_refused', refusalReason: j.refusalReason || null });
+      }
+      return json({ ok: true, kind: due.kind, resultCode: j.resultCode, pspReference: j.pspReference || null,
+        amountMinor: due.amountMinor, action: j.action || null });
     }
 
     return json({ error: `unknown action: ${action}` }, 400);

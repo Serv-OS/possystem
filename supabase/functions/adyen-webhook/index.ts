@@ -98,6 +98,50 @@ Deno.serve(async (req) => {
       console.error('[adyen-webhook] store failed:', error.message);
       return new Response('store failed', { status: 500 });
     }
+
+    // ── bookings settlement (Phase 5): bkpay-<bookingId>-<kind> references ──
+    // The ledger row was written at payment time; the webhook is the durable
+    // confirmation that settles/corrects it. Idempotent: keyed updates only,
+    // and the raw event is already stored above whatever happens here.
+    const ref = String(item.merchantReference || '');
+    if (ref.startsWith('bkpay-') && item.pspReference) {
+      try {
+        const okEvent = String(item.success) === 'true';
+        const code = String(item.eventCode || '');
+        let patch: Record<string, unknown> | null = null;
+        if (code === 'AUTHORISATION') {
+          patch = okEvent
+            ? { authorised_at: new Date().toISOString(), psp_reference: item.pspReference }
+            : { status: 'failed', refusal_reason: item.reason || 'refused' };
+          // capture-on-auth kinds settle to captured on a successful auth
+          if (okEvent && (ref.endsWith('-prepay') || ref.endsWith('-deposit'))) {
+            patch.status = 'captured'; patch.captured_at = new Date().toISOString();
+          } else if (okEvent) {
+            patch.status = 'authorised';
+          }
+        } else if (code === 'CAPTURE' && okEvent) {
+          patch = { status: 'captured', captured_at: new Date().toISOString() };
+        } else if (code === 'CANCELLATION' && okEvent) {
+          patch = { status: 'cancelled', released_at: new Date().toISOString() };
+        } else if (code === 'REFUND' && okEvent) {
+          patch = { status: 'refunded' };
+        }
+        if (patch) {
+          await admin.from('booking_payments').update(patch).eq('merchant_reference', ref);
+        }
+        // A stored card token can arrive on the webhook rather than the sync
+        // response — enrich the guest record when we get it.
+        const token = item?.additionalData?.['recurring.recurringDetailReference'];
+        const shopper = item?.additionalData?.shopperReference;
+        if (token && shopper && code === 'AUTHORISATION' && okEvent) {
+          await admin.from('customers').update({ stored_payment_method_id: token, shopper_reference: shopper }).eq('id', shopper);
+        }
+      } catch (e) {
+        // Settlement is best-effort on top of the stored raw event — never
+        // block the ack (Adyen would retry forever on a code bug here).
+        console.error('[adyen-webhook] bkpay settle failed:', (e as Error).message);
+      }
+    }
   }
 
   // Adyen's expected acknowledgement for standard webhooks.
