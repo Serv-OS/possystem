@@ -16,7 +16,10 @@ import {
 
 const PAD = 10;
 
-export default function FloorScreen() {
+// onPickBooking: parent (Service view) selects the tile's booking for its
+// inspector. showWalkIn: the Service view hides the walk-in panel while its
+// inspector occupies the right edge. Standalone use keeps both defaults.
+export default function FloorScreen({ onPickBooking = null, showWalkIn = true }) {
   const tables = useStore((s) => s.tables) || [];
   const bookings = useStore((s) => s.bookings) || [];
   const packages = useStore((s) => s.packages) || [];
@@ -61,6 +64,12 @@ export default function FloorScreen() {
     .filter((b) => isLive(b) && b.status === 'confirmed' && (b.tables || []).includes(tableId)
       && (!Number.isFinite(statusNow) || toMin(b.startTime) > statusNow))
     .sort((a, b) => toMin(a.startTime) - toMin(b.startTime))[0] || null;
+
+  // How many bookings still to COME on this table today (Peter, 13 Aug: a
+  // walk-in should go on a table with nothing left tonight — no chip = clear).
+  const upcomingCount = (tableId) => bookings.filter((b) =>
+    isLive(b) && b.status !== 'dining' && (b.tables || []).includes(tableId)
+    && (!Number.isFinite(statusNow) || toMin(b.startTime) > statusNow)).length;
 
   // ── walk-in suggestion at the next quarter hour ─────────────────────────────
   const nextQ = toHM(Math.ceil((nowMin + 1) / 15) * 15);
@@ -140,8 +149,13 @@ export default function FloorScreen() {
               : t.session ? `${t.session.covers || '—'} cvr`
               : next ? bookingName(next)
               : `${t.maxCovers || 0} seats`;
+            const later = upcomingCount(t.id);
+            const pickTarget = active || next || null;
             return (
-              <div key={t.id} style={{
+              <div key={t.id}
+                onClick={onPickBooking && pickTarget ? () => onPickBooking(pickTarget.id) : undefined}
+                title={later > 0 ? `${later} booking${later === 1 ? '' : 's'} still to come on ${t.label || t.id} today` : undefined}
+                style={{
                 position: 'absolute',
                 left: PAD + (t.x || 0) * scale, top: PAD + (t.y || 0) * scale,
                 width: (t.w || 60) * scale, height: (t.h || 60) * scale,
@@ -150,8 +164,16 @@ export default function FloorScreen() {
                 background: hot ? tintBg('var(--acc)', 18) : tintBg(col),
                 boxShadow: hot ? `0 0 0 4px ${tintBg('var(--acc)', 15)}` : 'none',
                 display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                overflow: 'hidden', textAlign: 'center', transition: 'all 140ms cubic-bezier(.2,.8,.3,1)',
+                overflow: 'visible', textAlign: 'center', transition: 'all 140ms cubic-bezier(.2,.8,.3,1)',
+                cursor: onPickBooking && pickTarget ? 'pointer' : 'default',
               }}>
+                {later > 0 && (
+                  <span style={{
+                    position: 'absolute', top: -7, right: -7, minWidth: 17, height: 17, padding: '0 4px',
+                    borderRadius: 999, display: 'grid', placeItems: 'center', fontSize: 9.5, fontWeight: 800, ...mono,
+                    background: 'var(--uv)', color: 'var(--bg)', border: '1.5px solid var(--bg1)', zIndex: 2,
+                  }}>{later}</span>
+                )}
                 <div style={{ fontSize: 12, fontWeight: 800, color: col, lineHeight: 1.1 }}>{t.label || t.id}</div>
                 <div style={{ fontSize: 9, fontWeight: 600, color: 'var(--t2)', maxWidth: '92%', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{line2}</div>
                 <div style={{ fontSize: 9, color: 'var(--t3)', maxWidth: '92%', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', ...mono }}>{line3}</div>
@@ -162,10 +184,11 @@ export default function FloorScreen() {
       </div>
 
       {/* ── right panel ── */}
+      {showWalkIn && (
       <div style={{ width: 330, flexShrink: 0, background: 'var(--bg1)', borderLeft: '1px solid var(--bdr)', overflowY: 'auto', padding: 16 }}>
         <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 9 }}>Seat a walk-in</div>
-        <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
-          {[1, 2, 3, 4, 5, 6].map((n) => (
+        <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
+          {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((n) => (
             <button key={n} onClick={() => setWalk(n)} style={{
               width: 36, height: 34, borderRadius: 9, cursor: 'pointer', fontSize: 13, fontWeight: 700, ...mono,
               background: walk === n ? tintBg('var(--acc)') : 'var(--inset, var(--bg3))',
@@ -206,6 +229,7 @@ export default function FloorScreen() {
           </div>
         ))}
       </div>
+      )}
     </div>
   );
 }

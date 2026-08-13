@@ -33,9 +33,11 @@ import {
   registerWaitlistDevice, waitlistHeartbeat, waitlistPinLogin,
 } from '../../lib/waitlist/waitlistData';
 import { Icon } from '../../components/ServOSIcons';
+import { startSessionReconciler } from '../../sync/SessionReconciler';
+import { startRealtime } from '../../lib/realtime.js';
 import { mono, tintBg, tintBd } from './bits.jsx';
 import DiaryScreen from './DiaryScreen.jsx';
-import FloorScreen from './FloorScreen.jsx';
+import ServiceScreen from './ServiceScreen.jsx';
 import BookScreen from './BookScreen.jsx';
 import RulesScreen from './RulesScreen.jsx';
 import EventsScreen from './EventsScreen.jsx';
@@ -43,8 +45,8 @@ import ReportsScreen from './ReportsScreen.jsx';
 import WidgetScreen from './WidgetScreen.jsx';
 
 const NAV = [
-  { k: 'diary',   label: 'Diary',   icon: 'home' },
-  { k: 'floor',   label: 'Floor',   icon: 'floor' },
+  { k: 'service',  label: 'Service',  icon: 'home' },
+  { k: 'timeline', label: 'Timeline', icon: 'floor' },
   { k: 'book',    label: 'Book',    icon: 'plus' },
   { k: 'rules',   label: 'Rules',   icon: 'settings' },
   { k: 'events',  label: 'Events',  icon: 'inventory' },
@@ -58,7 +60,7 @@ export default function BookingsSurface() {
   const [venueName, setVenueName] = useState('');
   const [claimCode, setClaimCode] = useState('');
   const [operator, setOperator] = useState(null);  // { id, name, role }
-  const [screen, setScreen] = useState('diary');
+  const [screen, setScreen] = useState('service');
   const [sel, setSel] = useState(null); // selected booking id (Diary inspector)
 
   // ── apply the ServOS skin once, for ALL stages (capture + restore the app's original on unmount) ──
@@ -117,6 +119,37 @@ export default function BookingsSurface() {
     setResolvedLocationId(loc);
     useStore.getState().setCurrentLocation?.(loc);
     useStore.getState().loadBookingsFromDB?.(loc);
+    // A FRESH stand boots with no resolvable location: SyncBridge's one-shot boot
+    // and App's realtime retry window both ran and gave up BEFORE pairing finished,
+    // so the floor never hydrated and the session machinery that makes it LIVE
+    // never started (Peter, 13 Aug: opened table invisible on the stand). Hydrate
+    // the floor directly if it's missing, then kick reconciler + realtime — both
+    // are idempotent, so a stand that DID boot with a location is unaffected.
+    (async () => {
+      try {
+        if (!(useStore.getState().tables || []).length && supabase) {
+          const [{ data: floor }, { data: sess }] = await Promise.all([
+            supabase.from('floor_tables').select('*').eq('location_id', loc).order('sort_order'),
+            supabase.from('active_sessions').select('table_id, session').eq('location_id', loc),
+          ]);
+          if (floor?.length) {
+            const sMap = Object.fromEntries((sess || []).map((r) => [r.table_id, r.session]));
+            useStore.setState({
+              tables: floor.map((t) => ({
+                ...t,
+                maxCovers: t.max_covers ?? t.maxCovers ?? 4,
+                sortOrder: t.sort_order ?? t.sortOrder ?? 0,
+                locationId: t.location_id ?? loc,
+                status: sMap[t.id] ? 'occupied' : 'available',
+                session: sMap[t.id] || null,
+              })),
+            });
+          }
+        }
+      } catch { /* the reconciler converges within 10s either way */ }
+      startSessionReconciler();
+      startRealtime(useStore, loc);
+    })();
     waitlistHeartbeat().catch(() => {});
     const hb = setInterval(() => waitlistHeartbeat().catch(() => {}), 60000);
     // Pre-order reminders: no scheduler runs on this project yet, so the host
@@ -135,7 +168,7 @@ export default function BookingsSurface() {
   const venue = locations.find((l) => l.id === currentLocationId) || locations[0];
 
   const goBook = () => setScreen('book');
-  const onBooked = (id) => { setSel(id); setScreen('diary'); };
+  const onBooked = (id) => { setSel(id); setScreen('service'); };
 
   if (stage === 'boot') return <GateScreen><div style={{ color: 'var(--t3)', ...mono }}>Starting…</div></GateScreen>;
   if (stage === 'pair') return <PairScreen code={claimCode} />;
@@ -212,8 +245,8 @@ export default function BookingsSurface() {
 
         {/* screens — kept mounted so their state persists across nav switches */}
         <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
-          <Pane show={screen === 'diary'}><DiaryScreen sel={sel} onSelect={setSel} onBook={goBook} /></Pane>
-          <Pane show={screen === 'floor'}><FloorScreen /></Pane>
+          <Pane show={screen === 'service'}><ServiceScreen sel={sel} onSelect={setSel} onBook={goBook} /></Pane>
+          <Pane show={screen === 'timeline'}><DiaryScreen sel={sel} onSelect={setSel} onBook={goBook} /></Pane>
           <Pane show={screen === 'book'}><BookScreen onBooked={onBooked} /></Pane>
           <Pane show={screen === 'rules'}><RulesScreen /></Pane>
           <Pane show={screen === 'events'}><EventsScreen /></Pane>

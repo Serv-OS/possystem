@@ -362,7 +362,7 @@ function PaymentState({ b, prepaid, hold }) {
   return <div style={{ fontSize: 10.5, marginTop: 5, lineHeight: 1.45, color: line.col }}>{line.txt}</div>;
 }
 
-function Inspector({ b, nowMin, packages, rules, tables, onClose }) {
+export function Inspector({ b, nowMin, packages, rules, tables, onClose }) {
   const updateBooking = useStore((s) => s.updateBooking);
   const cancelBooking = useStore((s) => s.cancelBooking);
   const [moving, setMoving] = useState(false);

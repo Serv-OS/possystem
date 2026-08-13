@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.40',
+    date: '2026-08-13',
+    changes: [
+      'FIXED: a freshly-paired host stand never showed tables opened on the POS — the live-session machinery (realtime + the 10s reconciler) gave up before pairing finished. The stand now hydrates the floor and starts both the moment it pairs, so an opened table appears within seconds.',
+      'NEW Service view — the host stand default screen is now one combined view: today\'s bookings live on the left (Next up / Seated, with status stripe, package dot and outstanding pre-order count), the LIVE floor plan in the centre, and the booking inspector on the right when you tap a booking or a table. The timeline is one click away on its own Timeline tab.',
+      'Floor tiles now carry a count chip showing how many bookings that table still has coming today — no chip means the table is clear tonight, safe for a walk-in. Hover the chip for the detail.',
+      'Walk-ins can now be seated up to 12 covers (was capped at 6) — the optimiser suggests joined tables for the big groups.',
+    ],
+  },
+  {
     version: '5.6.39',
     date: '2026-08-13',
     changes: [
