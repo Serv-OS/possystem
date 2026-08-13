@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.45',
+    date: '2026-08-13',
+    changes: [
+      'Every platform email now follows the ServOS Brand Guidelines v2.0: the real primary lockup on an Ink header, Paper background, Signal-green buttons, deep-green links, and the mono-caps footer. Covers the password reset (was still on the 2024 cream branding), invite, sign-in link, confirm-email and password-changed emails, plus the shared venue email shell used by booking confirmations, pre-order reminders, order notifications and welcome emails (old orange accent retired).',
+    ],
+  },
+  {
     version: '5.6.44',
     date: '2026-08-13',
     changes: [

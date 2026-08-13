@@ -83,29 +83,31 @@ export function wrapInEmailHtml(
   body: string,
   opts?: { venueName?: string; accentColor?: string },
 ): string {
-  const accent = opts?.accentColor || '#E8743C';
+  // ServOS Brand v2.0: Signal green accent, Ink header (venues can still pass
+  // their own accentColor — the default is the platform brand).
+  const accent = opts?.accentColor || '#15C26A';
   const venue = opts?.venueName || '';
   // Convert text to HTML paragraphs
   const htmlBody = body
     .split('\n\n')
-    .map(para => `<p style="margin:0 0 16px;color:#333;font-size:14px;line-height:1.6;">${para.replace(/\n/g, '<br>')}</p>`)
+    .map(para => `<p style="margin:0 0 16px;color:#5E665E;font-size:14.5px;line-height:1.6;">${para.replace(/\n/g, '<br>')}</p>`)
     .join('');
 
   return `<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:0;padding:0;background:#f4f4f6;font-family:system-ui,-apple-system,sans-serif;">
-<table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f6;padding:40px 20px;">
+<body style="margin:0;padding:0;background:#F5F7F4;font-family:'Space Grotesk',system-ui,-apple-system,sans-serif;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#F5F7F4;padding:40px 20px;">
 <tr><td align="center">
-<table width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;background:#fff;border-radius:16px;overflow:hidden;">
-  ${venue ? `<tr><td style="background:#0e0e10;padding:24px;text-align:center;">
-    <div style="color:#fff;font-size:18px;font-weight:800;">${venue}</div>
+<table width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;background:#fff;border-radius:14px;overflow:hidden;border:1px solid rgba(15,18,17,0.08);">
+  ${venue ? `<tr><td style="background:#0F1211;padding:24px;text-align:center;">
+    <div style="color:#E9ECEA;font-size:18px;font-weight:700;letter-spacing:-0.02em;">${venue}</div>
   </td></tr>` : ''}
   <tr><td style="padding:28px 24px;">
     ${htmlBody}
   </td></tr>
-  <tr><td style="padding:16px 24px;border-top:1px solid #eee;text-align:center;">
-    <div style="font-size:11px;color:#aaa;">Powered by serv-os.app</div>
+  <tr><td style="padding:16px 24px;border-top:1px solid rgba(15,18,17,0.08);text-align:center;">
+    <div style="font-family:'JetBrains Mono',ui-monospace,monospace;font-size:10px;text-transform:uppercase;letter-spacing:0.16em;color:#9AA39A;">Powered by ServOS &middot; serv-os.app</div>
   </td></tr>
 </table>
 </td></tr>
