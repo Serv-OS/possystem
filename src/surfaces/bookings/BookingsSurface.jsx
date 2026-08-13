@@ -28,7 +28,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../../store';
-import { ensureAuthToken, setResolvedLocationId, isMock } from '../../lib/supabase';
+import { ensureAuthToken, setResolvedLocationId, isMock, supabase } from '../../lib/supabase';
 import {
   registerWaitlistDevice, waitlistHeartbeat, waitlistPinLogin,
 } from '../../lib/waitlist/waitlistData';
@@ -119,7 +119,14 @@ export default function BookingsSurface() {
     useStore.getState().loadBookingsFromDB?.(loc);
     waitlistHeartbeat().catch(() => {});
     const hb = setInterval(() => waitlistHeartbeat().catch(() => {}), 60000);
-    return () => clearInterval(hb);
+    // Pre-order reminders: no scheduler runs on this project yet, so the host
+    // stand is the clock — send_due is ledger-idempotent, safe to fire on boot
+    // and hourly (a stand is open all service). Swap to a real cron when
+    // scheduling lands.
+    const remind = () => { if (supabase) supabase.functions.invoke('booking-reminders', { body: { action: 'send_due' } }).catch(() => {}); };
+    remind();
+    const rem = setInterval(remind, 60 * 60 * 1000);
+    return () => { clearInterval(hb); clearInterval(rem); };
   }, [stage, loc]);
 
   const locations = useStore((s) => s.locations) || [];

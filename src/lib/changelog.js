@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.32',
+    date: '2026-08-12',
+    changes: [
+      'Booking widget: menu choices are now taken properly. A package that requires pre-orders asks each guest to pick one starter, one main and one dessert (with an optional name per guest) — the booking cannot complete without them when the deadline has arrived.',
+      'Bookings: pre-order deadlines. Each package sets "choices due N days before" (Package builder). Guests booking further out book instantly and get their own choose-your-menu link — then an email and a text remind them when the deadline opens. Reminders send exactly once per channel, and the host stand keeps them flowing.',
+      'Bookings: guests can complete or change their menu choices any time via their link — each guest\'s picks land on the kitchen ticket with their name when the party is seated.',
+    ],
+  },
+
+  {
     version: '5.6.31',
     date: '2026-08-12',
     changes: [

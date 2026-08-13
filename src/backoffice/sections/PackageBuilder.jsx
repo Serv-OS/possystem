@@ -34,7 +34,7 @@ const newDraft = (sortOrder) => ({
   availableDays: [0, 1, 2, 3, 4, 5, 6],
   availableStart: null, availableEnd: null,
   minCovers: 1, maxCovers: null, maxPerService: null,
-  sections: [], requiresPreorder: false, isActive: true,
+  sections: [], requiresPreorder: false, preorderDaysBefore: 0, isActive: true,
   sortOrder, lines: [],
 });
 
@@ -278,8 +278,18 @@ export default function PackageBuilder() {
                 </span>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12.5, color: 'var(--t2)', cursor: 'pointer' }}>
                   <input type="checkbox" checked={!!draft.requiresPreorder} onChange={e => upd({ requiresPreorder: e.target.checked })} />
-                  Requires pre-order — guests choose their menu when booking
+                  Requires pre-order — one choice per course, per guest
                 </label>
+                {draft.requiresPreorder && (
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 7, fontSize: 12.5, color: 'var(--t2)' }}>
+                    due
+                    <input type="number" min="0" max="60" style={{ ...S.inp, width: 58, fontFamily: MONO }}
+                      value={draft.preorderDaysBefore ?? 0}
+                      onChange={e => upd({ preorderDaysBefore: Math.max(0, Math.min(60, Number(e.target.value) || 0)) })}
+                      title="How many days before the visit choices must be in. 0 = at booking. Booked earlier than this, guests get an email + SMS link to choose." />
+                    days before — else guests are emailed + texted a link
+                  </span>
+                )}
                 <button style={{ ...(draft.isActive ? S.pillOn : S.pill), marginLeft: 'auto' }}
                   onClick={() => upd({ isActive: !draft.isActive })}>
                   {draft.isActive ? '✓ Active' : 'Inactive — hidden from sale'}

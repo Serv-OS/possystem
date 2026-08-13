@@ -45,6 +45,14 @@ function fmtDateLong(iso) {
   return new Intl.DateTimeFormat('en-GB', { weekday: 'long', day: 'numeric', month: 'long' }).format(d);
 }
 
+// "starter, main and dessert" — the under-button nudge builds from the REAL
+// course-group labels, so a package with an On-arrival course still reads true.
+function joinAnd(list) {
+  const a = list.filter(Boolean);
+  if (a.length <= 1) return a[0] || 'choice';
+  return `${a.slice(0, -1).join(', ')} and ${a[a.length - 1]}`;
+}
+
 // ── package money (POUNDS — the fn pre-computes `total`; per_cover = price × party)
 function fmtGBP(n) {
   const v = Math.round((Number(n) || 0) * 100) / 100;
@@ -102,6 +110,227 @@ function Shell({ vars, mt, venueName, children }) {
   );
 }
 
+// One bordered sub-card per guest: an optional name plus ONE chip-row per
+// course group (radio semantics — tapping another chip moves the pick, exactly
+// one selectable per group per guest). Shared verbatim by the in-flow booking
+// form and the tokened completion page; the STATE stays with the callers (they
+// key it differently), so this stays a pure render of getSel/getName.
+function GuestChoiceCards({ party, groups, getSel, onPick, getName, onName, brand, onBrand }) {
+  const seats = Array.from({ length: Math.max(1, party) }, (_, i) => i + 1);
+  return (
+    <div style={{ display: 'grid', gap: 10 }}>
+      {seats.map((seat) => (
+        <div key={seat} style={{
+          border: '1px solid var(--line)', borderRadius: 12, padding: '11px 12px 12px',
+          background: 'var(--card)',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 800, color: 'var(--ink)', flex: 'none' }}>
+              Guest {seat}
+            </div>
+            <input
+              value={getName(seat)} onChange={(e) => onName(seat, e.target.value)}
+              placeholder="Name (optional)" autoComplete="off" aria-label={`Guest ${seat} name`}
+              style={{ ...S.input, height: 34, fontSize: 13, padding: '0 10px', flex: 1, minWidth: 0 }}
+            />
+          </div>
+          {groups.map((g) => {
+            const cur = getSel(seat, g.course);
+            return (
+              <div key={g.course} style={{ marginTop: 9 }}>
+                <div style={{
+                  fontSize: 10.5, fontWeight: 700, color: 'var(--muted)',
+                  letterSpacing: '.06em', textTransform: 'uppercase', marginBottom: 5,
+                }}>{g.label}</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  {g.options.map((o) => {
+                    const on = cur === o.name;
+                    return (
+                      <button key={o.lineId || o.name} type="button" aria-pressed={on}
+                        onClick={() => onPick(seat, g.course, o.name)}
+                        style={{
+                          padding: '8px 12px', borderRadius: 999, fontSize: 12.5, fontWeight: 700,
+                          fontFamily: 'inherit', cursor: 'pointer',
+                          border: on ? `1.5px solid ${brand}` : '1px solid var(--line)',
+                          background: on ? brand : 'var(--card)',
+                          color: on ? onBrand : 'var(--ink)',
+                        }}>{on ? '✓ ' : ''}{o.name}</button>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── guest pre-order completion page (?preorder=<token>) ──────────────────────
+// The token IS the credential — no config/slots boot, no location resolution
+// beyond what CustomerBoot already did (the `location` prop only themes the
+// page). Everything renders from preorder_info; submit replaces wholesale via
+// preorder_submit. Request-keyed like slotsRes in the main flow: a stale or
+// absent key IS the loading state, so no synchronous setState in the effect.
+function PreorderPage({ token, shell, brand, onBrand, venueName }) {
+  const [nonce, setNonce] = useState(0); // bump to retry a failed info load
+  const infoKey = `${token}|${nonce}`;
+  const [infoRes, setInfoRes] = useState(null); // { key, info, err }
+  const loading = !infoRes || infoRes.key !== infoKey;
+  const info = (!loading && !infoRes.err && infoRes.info) || null;
+
+  // The guest's EDITS only — an untouched seat/course falls back to the saved
+  // row at render time (prefill by render fallback, never effect-time setState).
+  const [sel, setSel] = useState({});     // `${seat}|${course}` → option name
+  const [names, setNames] = useState({}); // seat → guest name
+  const [sending, setSending] = useState(false);
+  const [sendErr, setSendErr] = useState('');
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    let off = false;
+    const key = `${token}|${nonce}`;
+    (async () => {
+      try { await ensureAuthToken(); } catch { /* anon best-effort — fn is public */ }
+      const r = await callWidget({ action: 'preorder_info', token });
+      if (off) return;
+      // Unknown/closed tokens come back non-2xx, which invoke collapses to a
+      // bodyless error — every failure lands on the same polite screen.
+      setInfoRes(r?.ok ? { key, info: r, err: null } : { key, info: null, err: r?.error || 'failed' });
+    })();
+    return () => { off = true; };
+  }, [token, nonce]);
+
+  const existingSel = {};
+  const existingName = {};
+  for (const r of info?.preorders || []) {
+    const k = `${r.seat}|${r.course}`;
+    if (existingSel[k] === undefined && r.name) existingSel[k] = r.name;
+    if (existingName[r.seat] === undefined && r.guestName) existingName[r.seat] = r.guestName;
+  }
+  const effSel = (seat, course) => {
+    const k = `${seat}|${course}`;
+    return sel[k] !== undefined ? sel[k] : (existingSel[k] || '');
+  };
+  const effName = (seat) => (names[seat] !== undefined ? names[seat] : (existingName[seat] || ''));
+
+  const party = info?.party || 0;
+  const groups = Array.isArray(info?.choiceGroups) ? info.choiceGroups : [];
+  const seats = Array.from({ length: party }, (_, i) => i + 1);
+  // Complete = every guest holds a CURRENT option per group (a saved choice the
+  // venue has since removed from the package no longer counts).
+  const complete = party > 0 && groups.length > 0 && groups.every((g) =>
+    seats.every((s) => g.options.some((o) => o.name === effSel(s, g.course))));
+
+  const summaryLine = info
+    ? `${info.venue} · ${fmtDateLong(info.date)} · ${info.time} · ${info.party} ${info.party === 1 ? 'guest' : 'guests'}`
+    : '';
+
+  const submit = async () => {
+    if (!complete || sending) return;
+    setSending(true);
+    setSendErr('');
+    const preorders = [];
+    for (const s of seats) {
+      for (const g of groups) {
+        preorders.push({ seat: s, guestName: effName(s).trim() || undefined, name: effSel(s, g.course) });
+      }
+    }
+    const r = await callWidget({ action: 'preorder_submit', token, preorders });
+    setSending(false);
+    if (r?.ok) { setSaved(true); return; }
+    setSendErr('Something went wrong — please try again, or call the venue.');
+  };
+
+  if (loading) {
+    return <Shell {...shell}>
+      <div style={S.card}>
+        <div style={{ textAlign: 'center', padding: '34px 0', color: 'var(--muted)', fontSize: 14 }}>
+          <div style={{ fontSize: 30, marginBottom: 10 }}>⏳</div>
+          Loading your booking…
+        </div>
+      </div>
+    </Shell>;
+  }
+
+  if (!info) {
+    return <Shell {...shell}>
+      <div style={{ ...S.card, textAlign: 'center', padding: '34px 22px' }}>
+        <div style={{ fontSize: 38, marginBottom: 10 }}>📞</div>
+        <div style={S.h1}>We couldn’t find that booking</div>
+        <div style={S.sub}>
+          This menu link may have expired, or the booking has changed. Please call {venueName} to
+          give your menu choices — they’ll be happy to help.
+        </div>
+        <div style={{ marginTop: 12 }}>
+          <button type="button" onClick={() => setNonce((n) => n + 1)} style={S.linkBtn}>Try again</button>
+        </div>
+      </div>
+    </Shell>;
+  }
+
+  if (saved) {
+    return <Shell {...shell}>
+      <div style={{ ...S.card, textAlign: 'center', padding: '34px 22px' }}>
+        <div aria-hidden style={{
+          width: 64, height: 64, borderRadius: '50%', margin: '0 auto 16px',
+          background: brand, color: onBrand, display: 'flex', alignItems: 'center',
+          justifyContent: 'center', fontSize: 34, fontWeight: 800,
+        }}>✓</div>
+        <div style={S.h1}>Choices sent to the kitchen ✓</div>
+        <div style={{ fontFamily: MONO, fontSize: 15, fontWeight: 700, margin: '12px 0 14px', color: 'var(--ink)' }}>
+          {summaryLine}
+        </div>
+        <div style={S.sub}>See you then — just give your name when you arrive.</div>
+      </div>
+    </Shell>;
+  }
+
+  return <Shell {...shell}>
+    <div style={S.card}>
+      <h1 style={{ ...S.h1, marginBottom: 4 }}>Your menu — {info.packageName}</h1>
+      <div style={{ fontFamily: MONO, fontSize: 13.5, fontWeight: 700, color: 'var(--ink)', margin: '10px 0 2px' }}>
+        {summaryLine}
+      </div>
+      <div style={{ ...S.sub, marginBottom: 16 }}>
+        Choose one of each for every guest — choices due by {fmtDateLong(info.deadline)}.
+      </div>
+
+      {groups.length === 0 ? (
+        <div style={S.sub}>No menu choices are needed for this booking.</div>
+      ) : <>
+        <GuestChoiceCards
+          party={party} groups={groups} brand={brand} onBrand={onBrand}
+          getSel={effSel}
+          onPick={(seat, course, nm) => { setSel((m) => ({ ...m, [`${seat}|${course}`]: nm })); setSendErr(''); }}
+          getName={effName}
+          onName={(seat, v) => setNames((m) => ({ ...m, [seat]: v }))}
+        />
+
+        {sendErr && (
+          <div style={{ marginTop: 14, fontSize: 13, fontWeight: 600, color: '#b91c1c' }}>{sendErr}</div>
+        )}
+
+        <button type="button" onClick={submit} disabled={!complete || sending}
+          style={{
+            width: '100%', height: 48, borderRadius: 12, border: 'none', marginTop: 16,
+            background: brand, color: onBrand, fontSize: 15, fontWeight: 800,
+            fontFamily: 'inherit', cursor: (complete && !sending) ? 'pointer' : 'default',
+            opacity: (complete && !sending) ? 1 : 0.5,
+          }}>
+          {sending ? 'Sending…' : 'Send menu choices'}
+        </button>
+        {!complete && (
+          <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted)', textAlign: 'center' }}>
+            Choose a {joinAnd(groups.map((g) => String(g.label || '').toLowerCase()))} for each guest
+          </div>
+        )}
+      </>}
+    </div>
+  </Shell>;
+}
+
 export default function BookingWidget({ location }) {
   // The fn contract keys on the OPS location id — the platform row carries it.
   const opsId = location.ops_location_id || location.id;
@@ -110,6 +339,13 @@ export default function BookingWidget({ location }) {
   const vars = deriveVars(mt.brandColor, mt.bodyBg);
   const brand = vars['--brand'];
   const onBrand = readableOn(brand);
+
+  // ?preorder=<token> → the page IS the guest completion flow, checked BEFORE
+  // any booking boot (the token is the credential; config/slots never load).
+  // Read once at mount, same idiom as the ?package deep link below.
+  const [urlPreorderToken] = useState(() => {
+    try { return new URLSearchParams(window.location.search).get('preorder') || null; } catch { return null; }
+  });
 
   // boot: 'loading' | 'off' (widget disabled / not configured) | 'error' | 'ready'
   const [boot, setBoot] = useState('loading');
@@ -149,6 +385,18 @@ export default function BookingWidget({ location }) {
   const linkPkgMissing = !pkgPick && !!linkPkgId && !slotsLoading && !slotsErr
     && !packages.some((p) => String(p.id) === String(linkPkgId));
 
+  // ── menu choices (per-guest pre-orders) ─────────────────────────────────────
+  // Selections key on `${pkgId}|${seat}|${course}`, guest names on seat alone
+  // (names are facts about the party, not the package) — so a package switch or
+  // a party change never needs an effect to reset anything: stale keys are
+  // simply never read. Same derive-don't-sync idiom as pkgPick above.
+  const [preSel, setPreSel] = useState({});
+  const [preNames, setPreNames] = useState({});
+  // Server-driven reveal (book → preorders_required): the fn's OWN groups,
+  // keyed to the package they came back for — covers any drift between the
+  // slots offer and the fn, and goes dormant if the guest switches cards.
+  const [forcedPre, setForcedPre] = useState(null); // { pkgId, groups }
+
   // Guest details
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
@@ -163,6 +411,7 @@ export default function BookingWidget({ location }) {
 
   // ── boot: best-effort anon auth, then config ────────────────────────────────
   useEffect(() => {
+    if (urlPreorderToken) return; // completion flow — PreorderPage boots itself
     let off = false;
     (async () => {
       try { await ensureAuthToken(); } catch { /* anon best-effort — fn is public */ }
@@ -179,7 +428,7 @@ export default function BookingWidget({ location }) {
       setBoot('ready');
     })();
     return () => { off = true; };
-  }, [opsId]);
+  }, [opsId, urlPreorderToken]);
 
   // ── slots: re-fetch whenever party or date changes (and on slot_full) ───────
   useEffect(() => {
@@ -217,16 +466,63 @@ export default function BookingWidget({ location }) {
     }
   });
 
+  // Book → preorders_required reveals the section below; the scroll is a
+  // DOM-only side effect, ref-flagged from the submit handler and fired once
+  // the re-render has actually mounted the section (same no-dep idiom as the
+  // deep-link scroll above).
+  const choicesRef = useRef(null);
+  const wantChoicesScrollRef = useRef(false);
+  useEffect(() => {
+    if (!wantChoicesScrollRef.current || !choicesRef.current) return;
+    wantChoicesScrollRef.current = false;
+    const el = choicesRef.current;
+    requestAnimationFrame(() => el.scrollIntoView({ block: 'center' }));
+  });
+
+  // Everything about menu choices is DERIVED per render against the currently
+  // selected offer — no effects, no resets.
+  const forced = (forcedPre && selectedPkg && String(forcedPre.pkgId) === String(selectedPkg.id))
+    ? forcedPre : null;
+  const pkgGroups = (selectedPkg?.choiceGroups?.length ? selectedPkg.choiceGroups : forced?.groups) || [];
+  const preDays = Number(selectedPkg?.preorderDaysBefore) || 0;
+  // Window test on the VENUE's calendar (cfg.today, never the browser's):
+  // inside the window the kitchen needs choices NOW; outside it the fn mints a
+  // completion token instead. The server recomputes — this only decides what
+  // the page shows first, and `forced` overrides it when the fn disagrees.
+  const daysAhead = Math.round((Date.parse(date) - Date.parse(cfg?.today || todayISO())) / 86400000);
+  const choicesNow = !!selectedPkg && pkgGroups.length > 0
+    && (forced ? true : (!!selectedPkg.requiresPreorder && daysAhead <= preDays));
+  const choicesLater = !!selectedPkg?.requiresPreorder && !choicesNow && daysAhead > preDays;
+  const seatSel = (seat, course) =>
+    (selectedPkg && preSel[`${String(selectedPkg.id)}|${seat}|${course}`]) || '';
+  const choicesComplete = !choicesNow || pkgGroups.every((g) =>
+    Array.from({ length: party }, (_, i) => i + 1)
+      .every((s) => g.options.some((o) => o.name === seatSel(s, g.course))));
+  const choicesHint = `Choose a ${joinAnd(pkgGroups.map((g) => String(g.label || '').toLowerCase()))} for each guest`;
+
   const maxCovers = Math.max(1, cfg?.maxCovers || 12);
   const maxDaysAhead = cfg?.maxDaysAhead ?? 90;
   const phoneOk = (() => { const n = normalisePhone(phone); return !!n && n.length >= 7; })();
-  const canSubmit = !!name.trim() && phoneOk && !!time && !submitting;
+  const canSubmit = !!name.trim() && phoneOk && !!time && !submitting && choicesComplete;
 
   // ── book ────────────────────────────────────────────────────────────────────
   const submit = async () => {
     if (!canSubmit) return;
     setSubmitting(true);
     setSubmitErr('');
+    // In-window package: one row per guest per course group (seat = guest
+    // index; the fn matches on the option's name). Outside the window nothing
+    // is sent — the fn mints the completion token instead.
+    let preorders;
+    if (choicesNow && selectedPkg) {
+      preorders = [];
+      for (let seat = 1; seat <= party; seat++) {
+        for (const g of pkgGroups) {
+          const sel = seatSel(seat, g.course);
+          if (sel) preorders.push({ seat, guestName: (preNames[seat] || '').trim() || undefined, name: sel });
+        }
+      }
+    }
     const r = await callWidget({
       action: 'book',
       location_id: opsId,
@@ -239,9 +535,21 @@ export default function BookingWidget({ location }) {
       note: note.trim() || undefined,
       consent: consent || undefined,
       package_id: selectedPkg ? selectedPkg.id : undefined,
+      preorders,
     });
     setSubmitting(false);
     if (r?.ok && (r.status === 'confirmed' || r.status === 'pending')) { setResult(r); return; }
+    if (r?.error === 'preorders_required') {
+      // Defensive: the fn wants choices the page didn't collect (offer drift).
+      // Reveal the section from ITS choiceGroups and walk the guest there.
+      setForcedPre({
+        pkgId: selectedPkg ? selectedPkg.id : null,
+        groups: Array.isArray(r.choiceGroups) ? r.choiceGroups : [],
+      });
+      setSubmitErr('This menu needs a choice for each guest — pick them below.');
+      wantChoicesScrollRef.current = true;
+      return;
+    }
     if (r?.error === 'package_unavailable') {
       // The offer vanished between render and book (cap filled / window moved) —
       // drop it, re-quote the day, keep the table flow alive.
@@ -262,6 +570,13 @@ export default function BookingWidget({ location }) {
 
   // Shared chrome props for the top-level Shell.
   const shell = { vars, mt, venueName };
+
+  // Tokened completion flow replaces the whole booking page (checked before
+  // the boot states — boot never leaves 'loading' when a token is present).
+  if (urlPreorderToken) {
+    return <PreorderPage token={urlPreorderToken} shell={shell}
+      brand={brand} onBrand={onBrand} venueName={venueName} />;
+  }
 
   if (boot === 'loading') {
     return <Shell {...shell}>
@@ -323,6 +638,40 @@ export default function BookingWidget({ location }) {
                 {pkgTotalLabel(confPkg)}
               </div>
             )}
+            {result.preordersTaken && !result.preorderToken && (
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: '#15803d', marginTop: 5 }}>
+                Menu choices received ✓
+              </div>
+            )}
+          </div>
+        )}
+        {result.preorderToken && (
+          // Booked OUTSIDE the pre-order window: the guest chooses later via
+          // this tokened link (the fn emails + texts the same one).
+          <div style={{
+            margin: '0 auto 14px', maxWidth: 380, padding: '14px 16px', borderRadius: 12,
+            border: `1.5px solid ${brand}`, background: `${brand}14`,
+          }}>
+            <div style={{ fontFamily: DISPLAY_FONT, fontSize: 16, fontWeight: 800, color: 'var(--ink)' }}>
+              Choose your menu
+            </div>
+            <div style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.5, marginTop: 4 }}>
+              {result.package?.name || 'Your menu'} needs a choice for each guest
+              {result.preorderDeadline
+                ? <> — choices due by <b style={{ color: 'var(--ink)' }}>{fmtDateLong(result.preorderDeadline)}</b>.</>
+                : '.'}
+            </div>
+            <a href={`${window.location.origin}/book?preorder=${result.preorderToken}`}
+              style={{
+                display: 'block', marginTop: 10, padding: '12px 14px', borderRadius: 11,
+                background: brand, color: onBrand, fontSize: 14, fontWeight: 800,
+                textAlign: 'center', textDecoration: 'none',
+              }}>
+              Choose your menu
+            </a>
+            <div style={{ fontSize: 11.5, color: 'var(--muted)', marginTop: 8, textAlign: 'center' }}>
+              We’ll also email and text you this link.
+            </div>
           </div>
         )}
         <div style={S.sub}>
@@ -491,6 +840,35 @@ export default function BookingWidget({ location }) {
               </button>
             </div>
           )}
+
+          {/* In the pre-order window: capture one choice per guest per course
+              group right here (the fn refuses the booking without them).
+              Outside it: a soft note — the guest gets a tokened link instead. */}
+          {choicesNow && (
+            <div ref={choicesRef} style={{ marginTop: 14 }}>
+              <div style={S.fieldLbl}>Menu choices</div>
+              <GuestChoiceCards
+                party={party} groups={pkgGroups} brand={brand} onBrand={onBrand}
+                getSel={seatSel}
+                onPick={(seat, course, nm) => {
+                  setPreSel((m) => ({ ...m, [`${String(selectedPkg.id)}|${seat}|${course}`]: nm }));
+                  setSubmitErr('');
+                }}
+                getName={(seat) => preNames[seat] || ''}
+                onName={(seat, v) => setPreNames((m) => ({ ...m, [seat]: v }))}
+              />
+            </div>
+          )}
+          {choicesLater && (
+            <div style={{
+              marginTop: 10, padding: '9px 12px', borderRadius: 10, fontSize: 12.5,
+              lineHeight: 1.5, color: 'var(--muted)', background: 'var(--bg)',
+              border: '1px dashed var(--line)',
+            }}>
+              Menu choices aren’t needed yet — we’ll email and text you a link,
+              choices due by {fmtDateLong(addDaysISO(-preDays, date))}.
+            </div>
+          )}
         </div>
       )}
 
@@ -530,6 +908,11 @@ export default function BookingWidget({ location }) {
         }}>
         {submitting ? 'Booking…' : 'Book table'}
       </button>
+      {choicesNow && !choicesComplete && (
+        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted)', textAlign: 'center' }}>
+          {choicesHint}
+        </div>
+      )}
     </div>
   </Shell>;
 }

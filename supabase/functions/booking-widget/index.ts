@@ -66,11 +66,13 @@ function rulesFrom(r: Record<string, unknown> | null) {
 
 // Load everything a quote needs, once per request.
 async function loadVenue(locationId: string) {
-  const [{ data: loc }, { data: rulesRow }, { data: floor }, { data: pkgs }] = await Promise.all([
+  const [{ data: loc }, { data: rulesRow }, { data: floor }, { data: pkgs }, { data: choiceLines }] = await Promise.all([
     db.from('locations').select('id, org_id, name, timezone').eq('id', locationId).maybeSingle(),
     db.from('booking_rules').select('*').eq('location_id', locationId).maybeSingle(),
     db.from('floor_tables').select('id, label, max_covers, section').eq('location_id', locationId),
     db.from('packages').select('*').eq('location_id', locationId).eq('is_active', true).order('sort_order'),
+    db.from('package_lines').select('id, package_id, item_id, display_name, course, is_preorder_choice, sort_order')
+      .eq('location_id', locationId).eq('is_preorder_choice', true).order('sort_order'),
   ]);
   if (!loc) return null;
   return {
@@ -78,7 +80,26 @@ async function loadVenue(locationId: string) {
     rules: rulesFrom(rulesRow),
     tables: (floor || []).map((t) => ({ id: t.id, label: t.label || t.id, covers: t.max_covers || 2, section: t.section || null })),
     packages: pkgs || [],
+    choiceLines: choiceLines || [],
   };
+}
+
+// Guests pick ONE per course group (Peter, 12 Aug: "choose one of these per
+// person — starters, mains and desserts"). Groups derive from the package's
+// pre-order-choice lines' course ints — the same ints the KDS fires by.
+const COURSE_LABEL: Record<number, string> = { 0: 'On arrival', 1: 'Starter', 2: 'Main', 3: 'Dessert' };
+function choiceGroupsFor(packageId: string, choiceLines: Record<string, unknown>[]) {
+  const mine = choiceLines.filter((l) => String(l.package_id) === String(packageId));
+  const byCourse = new Map<number, Record<string, unknown>[]>();
+  for (const l of mine) {
+    const c = Number(l.course) || 0;
+    byCourse.set(c, [...(byCourse.get(c) || []), l]);
+  }
+  return [...byCourse.entries()].sort((a, b) => a[0] - b[0]).map(([course, lines]) => ({
+    course,
+    label: COURSE_LABEL[course] || `Course ${course}`,
+    options: lines.map((l) => ({ lineId: l.id, itemId: l.item_id || null, name: l.display_name })),
+  }));
 }
 
 // A package a GUEST may attach: active, inside its date/day window, party within
@@ -102,6 +123,8 @@ function packageOffer(p: Record<string, unknown>, date: string, party: number, b
     paymentModel: p.payment_model,
     total: perCover ? (Number(p.price) || 0) * party : (Number(p.price) || 0),
     turnMinutes: p.turn_minutes || null,
+    requiresPreorder: !!p.requires_preorder,
+    preorderDaysBefore: Number(p.preorder_days_before) || 0,
   };
 }
 
@@ -134,6 +157,70 @@ Deno.serve(async (req) => {
   try {
     const body = await req.json().catch(() => ({}));
     const action = body.action || 'config';
+
+    // ── guest pre-order completion (tokened — the token IS the credential) ──
+    if (action === 'preorder_info' || action === 'preorder_submit') {
+      const token = String(body.token || '');
+      if (token.length < 32) return json({ ok: false, error: 'bad token' }, 400);
+      const { data: bk } = await db.from('bookings')
+        .select('id, location_id, booking_date, start_time, covers, status, package_id, customer')
+        .eq('preorder_token', token).maybeSingle();
+      if (!bk || ['cancelled', 'no_show', 'departed'].includes(bk.status)) {
+        return json({ ok: false, error: 'unknown_or_closed' }, 404);
+      }
+      const [{ data: loc2 }, { data: pkg2 }, { data: lines2 }, { data: existing }] = await Promise.all([
+        db.from('locations').select('name, timezone').eq('id', bk.location_id).maybeSingle(),
+        db.from('packages').select('*').eq('id', bk.package_id).maybeSingle(),
+        db.from('package_lines').select('id, package_id, item_id, display_name, course, sort_order')
+          .eq('package_id', bk.package_id).eq('is_preorder_choice', true).order('sort_order'),
+        db.from('booking_preorders').select('seat, guest_name, item_id, display_name, course').eq('booking_id', bk.id).order('seat'),
+      ]);
+      const groups2 = choiceGroupsFor(String(bk.package_id), (lines2 || []) as Record<string, unknown>[]);
+      const dl = new Date(`${bk.booking_date}T12:00:00`);
+      dl.setDate(dl.getDate() - (Number(pkg2?.preorder_days_before) || 0));
+      const summary = {
+        ok: true,
+        venue: loc2?.name || 'the venue',
+        date: bk.booking_date,
+        time: String(bk.start_time).slice(0, 5),
+        party: bk.covers,
+        guestName: (bk.customer as Record<string, unknown>)?.name || null,
+        packageName: pkg2?.name || 'your menu',
+        deadline: dl.toISOString().slice(0, 10),
+        choiceGroups: groups2,
+        preorders: (existing || []).map((r) => ({ seat: r.seat, guestName: r.guest_name, itemId: r.item_id, name: r.display_name, course: r.course })),
+      };
+      if (action === 'preorder_info') return json(summary);
+
+      // preorder_submit — replace wholesale with validated rows.
+      const submitted2 = Array.isArray(body.preorders) ? body.preorders : [];
+      const rows2 = submitted2
+        .filter((r) => groups2.some((g) => g.options.some((o) =>
+          (r.itemId && o.itemId && String(r.itemId) === String(o.itemId)) || String(r.name || '') === String(o.name))))
+        .slice(0, bk.covers * Math.max(1, groups2.length))
+        .map((r) => {
+          const g = groups2.find((gg) => gg.options.some((o) =>
+            (r.itemId && o.itemId && String(r.itemId) === String(o.itemId)) || String(r.name || '') === String(o.name)));
+          const opt = g?.options.find((o) =>
+            (r.itemId && o.itemId && String(r.itemId) === String(o.itemId)) || String(r.name || '') === String(o.name));
+          return {
+            location_id: bk.location_id,
+            booking_id: bk.id,
+            seat: Math.max(1, Math.min(bk.covers, Math.round(Number(r.seat) || 0) || 1)),
+            guest_name: String(r.guestName || '').slice(0, 60) || null,
+            item_id: opt?.itemId || null,
+            display_name: opt?.name || 'Choice',
+            course: g?.course ?? 0,
+            notes: String(r.notes || '').slice(0, 120),
+          };
+        });
+      if (!rows2.length) return json({ ok: false, error: 'no valid choices' }, 400);
+      await db.from('booking_preorders').delete().eq('booking_id', bk.id);
+      const { error: insErr } = await db.from('booking_preorders').insert(rows2);
+      if (insErr) return json({ ok: false, error: insErr.message }, 500);
+      return json({ ok: true, saved: rows2.length });
+    }
+
     const locationId = String(body.location_id || '');
     if (!locationId || locationId === 'loc-demo') return json({ error: 'location required' }, 400);
 
@@ -199,7 +286,8 @@ Deno.serve(async (req) => {
       for (const r of pkgCounts || []) counts.set(r.package_id, (counts.get(r.package_id) || 0) + 1);
       const offers = venue.packages
         .map((p) => packageOffer(p, date, party, counts.get(String(p.id)) || 0))
-        .filter(Boolean);
+        .filter(Boolean)
+        .map((o) => ({ ...o, choiceGroups: o.requiresPreorder ? choiceGroupsFor(String(o.id), venue.choiceLines) : [] }));
       return json({ ok: true, slots, packages: offers });
     }
 
@@ -246,7 +334,7 @@ Deno.serve(async (req) => {
       }
 
       const note = String(body.note || '').slice(0, 300);
-      const customerSnap = { name, phone, allergens };
+      const customerSnap = { name, phone, email, allergens };   // email rides the snapshot — the reminder fn needs it
 
       // Optional package: re-validate the offer server-side (window, covers,
       // per-service cap) — never trust the card the page showed earlier.
@@ -266,6 +354,41 @@ Deno.serve(async (req) => {
         pkg = row;
       }
       const turnOverride = pkg?.turn_minutes ? Number(pkg.turn_minutes) : null;
+
+      // ── pre-order choices (Peter, 12 Aug) ────────────────────────────────
+      // Inside the deadline window (visit − preorder_days_before ≤ today) the
+      // widget MUST collect one choice per guest per course group. Further
+      // out, we book now and hand back a token — the guest chooses later via
+      // the link (reminded by email + SMS as the deadline approaches).
+      const groups = pkg?.requires_preorder ? choiceGroupsFor(String(pkg.id), venue.choiceLines) : [];
+      const choicesDue = !!pkg?.requires_preorder && groups.length > 0
+        && daysAhead <= (Number(pkg.preorder_days_before) || 0);
+      const submitted = Array.isArray(body.preorders) ? body.preorders : [];
+      // Keep only rows matching a real choice option; cap at party × groups.
+      const validRows = submitted
+        .filter((r) => groups.some((g) => g.options.some((o) =>
+          (r.itemId && o.itemId && String(r.itemId) === String(o.itemId)) || String(r.name || r.displayName || '') === String(o.name))))
+        .slice(0, party * Math.max(1, groups.length))
+        .map((r) => {
+          const g = groups.find((gg) => gg.options.some((o) =>
+            (r.itemId && o.itemId && String(r.itemId) === String(o.itemId)) || String(r.name || r.displayName || '') === String(o.name)));
+          const opt = g?.options.find((o) =>
+            (r.itemId && o.itemId && String(r.itemId) === String(o.itemId)) || String(r.name || r.displayName || '') === String(o.name));
+          return {
+            seat: Math.max(1, Math.min(party, Math.round(Number(r.seat) || 0) || 1)),
+            guest_name: String(r.guestName || r.guest_name || '').slice(0, 60) || null,
+            item_id: opt?.itemId || null,
+            display_name: opt?.name || 'Choice',
+            course: g?.course ?? 0,
+            notes: String(r.notes || '').slice(0, 120),
+          };
+        });
+      const completeNow = groups.length > 0 && groups.every((g) =>
+        validRows.filter((r) => r.course === g.course).length >= party);
+      if (choicesDue && !completeNow) {
+        return json({ ok: false, error: 'preorders_required', choiceGroups: groups, party });
+      }
+
       const candidates = quote(time);
       let bookedId: string | null = null;
       let tableLabel: string | null = null;
@@ -292,6 +415,22 @@ Deno.serve(async (req) => {
         // table_taken → try the next candidate (someone booked between quote and write)
       }
 
+      // Persist choices; when the guest books far out, mint the completion token.
+      let preorderToken: string | null = null;
+      let preorderDeadline: string | null = null;
+      if (bookedId && pkg?.requires_preorder) {
+        if (validRows.length) {
+          await db.from('booking_preorders').insert(validRows.map((r) => ({ ...r, location_id: locationId, booking_id: bookedId })));
+        }
+        if (!completeNow) {
+          preorderToken = (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, '');
+          const dl = new Date(`${date}T12:00:00`);
+          dl.setDate(dl.getDate() - (Number(pkg.preorder_days_before) || 0));
+          preorderDeadline = dl.toISOString().slice(0, 10);
+          await db.from('bookings').update({ preorder_token: preorderToken }).eq('id', bookedId);
+        }
+      }
+
       // Every widget attempt lands in booking_requests — the audit/intake ledger.
       await db.from('booking_requests').insert({
         location_id: locationId,
@@ -305,7 +444,9 @@ Deno.serve(async (req) => {
         return json({ ok: true, status: 'pending', message: 'That time was just taken — the venue will confirm your booking shortly.' });
       }
       return json({ ok: true, status: 'confirmed', bookingId: bookedId, table: tableLabel, time, date, party,
-        package: pkg ? { id: pkg.id, name: pkg.name, paymentModel: pkg.payment_model } : null });
+        package: pkg ? { id: pkg.id, name: pkg.name, paymentModel: pkg.payment_model } : null,
+        preorderToken, preorderDeadline,
+        preordersTaken: validRows.length > 0 });
     }
 
     return json({ error: `unknown action: ${action}` }, 400);

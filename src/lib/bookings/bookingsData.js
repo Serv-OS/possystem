@@ -108,6 +108,7 @@ export function rowToPackage(r) {
     maxPerService: r.max_per_service || null,
     sections: r.sections || [],
     requiresPreorder: !!r.requires_preorder,
+    preorderDaysBefore: r.preorder_days_before ?? 0,
     isActive: r.is_active !== false,
     sortOrder: r.sort_order || 0,
     lines: Array.isArray(r._lines) ? r._lines : [],
@@ -338,6 +339,7 @@ export async function upsertPackageRow(pkg, locationId) {
     max_per_service: pkg.maxPerService || null,
     sections: pkg.sections || [],
     requires_preorder: !!pkg.requiresPreorder,
+    preorder_days_before: pkg.preorderDaysBefore ?? 0,
     is_active: pkg.isActive !== false,
     sort_order: pkg.sortOrder ?? 0,
   };
