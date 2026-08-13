@@ -68,15 +68,81 @@ function fmtGBP(n) {
 function pkgTotalLabel(p) {
   return p.priceUnit === 'per_cover' ? `${fmtGBP(p.total)} · ${fmtGBP(p.price)} per person` : fmtGBP(p.total);
 }
-// One-line payment rule in guest words. Card capture happens AFTER the booking
-// confirms (the "Secure your booking" card on the confirmation screen), so the
-// offer cards still never promise an up-front online charge. Unknown/missing
-// models render nothing rather than a wrong promise.
-const PKG_RULE = {
-  prepay: 'Paid on the night for now — pre-orders reach the kitchen',
-  deposit: 'Deposit taken at the venue',
-  hold: 'No charge today',
-};
+// One-line payment rule in guest words — HONEST about when money moves
+// (owner, 13 Aug: "you are pre paying the entire amount upfront but it doesn't
+// say the right thing"). Keys on the venue's card-capture config: with capture
+// ON the confirmation screen really does take the card, so prepay/deposit are
+// paid at booking time; with capture OFF nothing is ever collected online, so
+// the copy must hand the money to the venue. Hold language additionally
+// respects the venue's covers threshold — below cardCaptureMinCovers no card
+// is ever asked for, so no hold line may render. Unknown/missing models render
+// nothing rather than a wrong promise.
+function pkgRuleLine(model, cfg, party) {
+  const captureOn = !!cfg?.cardCaptureEnabled;
+  if (model === 'prepay') {
+    return captureOn
+      ? 'Paid in full when you book — comes off the bill on the night'
+      : 'Payment taken at the venue';
+  }
+  if (model === 'deposit') {
+    return captureOn
+      ? 'Deposit paid when you book — the rest on the night'
+      : 'Deposit arranged with the venue';
+  }
+  if (model === 'hold') {
+    if (!captureOn) return null;
+    const min = Number(cfg?.cardCaptureMinCovers) || 0;
+    if (min > 0 && party < min) return null;
+    return 'Card held to secure the table — nothing charged today';
+  }
+  return null;
+}
+
+// "What's included" lines from an offer's full line list (`includes` on the
+// slots offer): fixed lines read as their name; choice lines collapse to one
+// line per course group ("Starter — your choice of 2"). Labels mirror the fn's
+// COURSE_LABEL — the course ints are the same ones the KDS fires by. A course
+// with a single "choice" option is effectively fixed, so it reads as the name.
+const COURSE_LABEL = { 0: 'On arrival', 1: 'Starter', 2: 'Main', 3: 'Dessert' };
+function includesLines(includes) {
+  const list = Array.isArray(includes) ? includes : [];
+  const counts = new Map(); // course → nº of choice options
+  for (const l of list) if (l.choice) counts.set(l.course, (counts.get(l.course) || 0) + 1);
+  const seen = new Set();
+  const out = [];
+  for (const l of list) {
+    if (!l.choice) { out.push(l.name); continue; }
+    if (seen.has(l.course)) continue;
+    seen.add(l.course);
+    const n = counts.get(l.course) || 0;
+    if (n <= 1) { out.push(l.name); continue; }
+    out.push(`${COURSE_LABEL[l.course] || `Course ${l.course}`} — your choice of ${n}`);
+  }
+  return out;
+}
+
+// Shared by the package hero (landing) and the confirmation summary (compact).
+// Pure render of includesLines() — no state.
+function IncludesList({ includes, compact = false }) {
+  const lines = includesLines(includes);
+  if (!lines.length) return null;
+  return (
+    <div style={{ marginTop: compact ? 8 : 12, textAlign: 'left' }}>
+      <div style={{ ...S.fieldLbl, marginBottom: compact ? 4 : 6 }}>What’s included</div>
+      <div style={{ display: 'grid', gap: compact ? 2 : 4 }}>
+        {lines.map((ln, i) => (
+          <div key={i} style={{
+            display: 'flex', gap: 8, fontSize: compact ? 12.5 : 13.5,
+            lineHeight: 1.5, color: 'var(--ink)',
+          }}>
+            <span aria-hidden style={{ color: 'var(--muted)', flex: 'none' }}>•</span>
+            <span>{ln}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 // ── confirmation-screen card capture ("Secure your booking") ──────────────────
 // Copy per paymentDue.kind. The booking is ALREADY CONFIRMED when this card
@@ -558,6 +624,15 @@ export default function BookingWidget({ location }) {
   // Deep-link miss → the small amber note (only until the guest interacts).
   const linkPkgMissing = !pkgPick && !!linkPkgId && !slotsLoading && !slotsErr
     && !packages.some((p) => String(p.id) === String(linkPkgId));
+  // /book?package=<id> is a MARKETING LANDING PAGE (owner, 13 Aug: "a link
+  // direct to the packages so we can market that direct"): the linked offer
+  // renders as a hero above the party/date flow. Keyed on linkPkgId (not the
+  // guest's pkgPick) so the hero survives selection changes — it's the landing
+  // content, not the selection. Derived from the CURRENT slots response, so
+  // price/total always match the chosen date+party.
+  const heroPkg = linkPkgId
+    ? packages.find((p) => String(p.id) === String(linkPkgId)) || null
+    : null;
 
   // ── menu choices (per-guest pre-orders) ─────────────────────────────────────
   // Selections key on `${pkgId}|${seat}|${course}`, guest names on seat alone
@@ -582,6 +657,12 @@ export default function BookingWidget({ location }) {
   const [submitting, setSubmitting] = useState(false);
   const [submitErr, setSubmitErr] = useState('');
   const [result, setResult] = useState(null); // { status:'confirmed'|'pending', ... }
+
+  // Terms acknowledgement under the Book button — no checkbox (UK norm: the
+  // "By booking you agree…" line is the acknowledgement). Which disclosure is
+  // open is the only state; the TEXT is derived per render, so a package
+  // deselection while its terms are open simply renders nothing.
+  const [termsOpen, setTermsOpen] = useState(null); // null | 'booking' | 'package'
 
   // ── boot: best-effort anon auth, then config ────────────────────────────────
   useEffect(() => {
@@ -676,6 +757,12 @@ export default function BookingWidget({ location }) {
 
   const maxCovers = Math.max(1, cfg?.maxCovers || 12);
   const maxDaysAhead = cfg?.maxDaysAhead ?? 90;
+  // Terms in play right now: the venue's standing booking terms (config) plus
+  // the selected package's own terms (rides the slots offer).
+  const bookingTerms = String(cfg?.bookingTerms || '');
+  const pkgTerms = String(selectedPkg?.terms || '');
+  const termsText = termsOpen === 'booking' ? bookingTerms
+    : termsOpen === 'package' ? pkgTerms : '';
   const phoneOk = (() => { const n = normalisePhone(phone); return !!n && n.length >= 7; })();
   const canSubmit = !!name.trim() && phoneOk && !!time && !submitting && choicesComplete;
 
@@ -802,9 +889,14 @@ export default function BookingWidget({ location }) {
           {fmtDateLong(result.date || date)} · {result.time || time} · {result.party || party} {(result.party || party) === 1 ? 'guest' : 'guests'}
         </div>
         {result.package && (
+          // The full story of what was booked (owner, 13 Aug: "it didn't show
+          // any information about what it was"): name + total, what's included
+          // (compact, from the booked offer in the last slots response), the
+          // pre-order state, and the honest payment line.
           <div style={{
-            margin: '0 auto 14px', maxWidth: 340, padding: '10px 14px', borderRadius: 12,
+            margin: '0 auto 14px', maxWidth: 340, padding: '12px 14px', borderRadius: 12,
             border: '1px solid rgba(22,163,74,.4)', background: 'rgba(22,163,74,.08)',
+            textAlign: 'left',
           }}>
             <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--ink)' }}>{result.package.name}</div>
             {confPkg && (
@@ -812,11 +904,20 @@ export default function BookingWidget({ location }) {
                 {pkgTotalLabel(confPkg)}
               </div>
             )}
+            {confPkg && <IncludesList includes={confPkg.includes} compact />}
             {result.preordersTaken && !result.preorderToken && (
-              <div style={{ fontSize: 12.5, fontWeight: 700, color: '#15803d', marginTop: 5 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: '#15803d', marginTop: 8 }}>
                 Menu choices received ✓
               </div>
             )}
+            {(() => {
+              const rule = pkgRuleLine(result.package.paymentModel, cfg, result.party || party);
+              return rule && (
+                <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--muted)', marginTop: 6, lineHeight: 1.5 }}>
+                  {rule}
+                </div>
+              );
+            })()}
           </div>
         )}
         {/* Card capture — only when the fn asked for it (paymentDue non-null)
@@ -882,6 +983,46 @@ export default function BookingWidget({ location }) {
   const partyOptions = Array.from({ length: maxCovers }, (_, i) => i + 1);
 
   return <Shell {...shell}>
+    {/* Package hero — the ?package= deep link's landing content: name, price,
+        what's included, the honest payment rule, terms. The normal party/date/
+        time flow continues below with the package pre-selected. */}
+    {heroPkg && (
+      <div style={{ ...S.card, marginBottom: 14 }}>
+        <div style={S.fieldLbl}>Experience</div>
+        <div style={{
+          fontFamily: DISPLAY_FONT, fontSize: 26, fontWeight: 800, lineHeight: 1.2,
+          letterSpacing: '-.01em', color: 'var(--ink)',
+        }}>
+          {heroPkg.name}
+        </div>
+        <div style={{ fontFamily: MONO, fontSize: 14.5, fontWeight: 800, color: 'var(--ink)', marginTop: 6 }}>
+          {pkgTotalLabel(heroPkg)}
+        </div>
+        {heroPkg.description && (
+          <div style={{ fontSize: 13.5, color: 'var(--muted)', lineHeight: 1.55, marginTop: 8 }}>
+            {heroPkg.description}
+          </div>
+        )}
+        <IncludesList includes={heroPkg.includes} />
+        {(() => {
+          const rule = pkgRuleLine(heroPkg.paymentModel, cfg, party);
+          return rule && (
+            <div style={{ fontSize: 12.5, fontWeight: 700, color: '#15803d', marginTop: 12 }}>{rule}</div>
+          );
+        })()}
+        {!!heroPkg.terms && (
+          <details style={{ marginTop: 10 }}>
+            <summary style={{ cursor: 'pointer', fontSize: 12.5, fontWeight: 700, color: 'var(--muted)' }}>
+              Package terms
+            </summary>
+            <div style={{
+              marginTop: 6, fontSize: 12, color: 'var(--muted)', lineHeight: 1.6,
+              whiteSpace: 'pre-wrap',
+            }}>{heroPkg.terms}</div>
+          </details>
+        )}
+      </div>
+    )}
     <div style={S.card}>
       <h1 style={{ ...S.h1, marginBottom: 4 }}>Book a table</h1>
       <div style={{ ...S.sub, marginBottom: 20 }}>Pick a time at {venueName} — it takes under a minute.</div>
@@ -970,6 +1111,7 @@ export default function BookingWidget({ location }) {
             <div style={{ display: 'grid', gap: 8 }}>
               {packages.map((p) => {
                 const on = selectedPkg && String(selectedPkg.id) === String(p.id);
+                const rule = pkgRuleLine(p.paymentModel, cfg, party);
                 return (
                   <button key={p.id} type="button" aria-pressed={!!on}
                     onClick={() => { setPkgPick({ id: on ? null : p.id }); setSubmitErr(''); }}
@@ -1005,9 +1147,9 @@ export default function BookingWidget({ location }) {
                         overflow: 'hidden',
                       }}>{p.description}</div>
                     )}
-                    {PKG_RULE[p.paymentModel] && (
+                    {rule && (
                       <div style={{ fontSize: 11.5, fontWeight: 600, color: '#15803d', marginTop: 5 }}>
-                        {PKG_RULE[p.paymentModel]}
+                        {rule}
                       </div>
                     )}
                   </button>
@@ -1096,6 +1238,39 @@ export default function BookingWidget({ location }) {
       {choicesNow && !choicesComplete && (
         <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted)', textAlign: 'center' }}>
           {choicesHint}
+        </div>
+      )}
+
+      {/* Terms acknowledgement — venue booking terms and/or the selected
+          package's terms, each opening a small pre-wrap disclosure. The
+          sentence reads correctly in all three combinations. */}
+      {(bookingTerms || pkgTerms) && (
+        <div style={{ marginTop: 10, fontSize: 12, color: 'var(--muted)', textAlign: 'center', lineHeight: 1.6 }}>
+          By booking you agree to the{' '}
+          {bookingTerms && (
+            <button type="button" aria-expanded={termsOpen === 'booking'}
+              onClick={() => setTermsOpen((o) => (o === 'booking' ? null : 'booking'))}
+              style={{ ...S.linkBtn, fontSize: 12 }}>
+              booking terms
+            </button>
+          )}
+          {bookingTerms && pkgTerms && <> and the </>}
+          {pkgTerms && (
+            <button type="button" aria-expanded={termsOpen === 'package'}
+              onClick={() => setTermsOpen((o) => (o === 'package' ? null : 'package'))}
+              style={{ ...S.linkBtn, fontSize: 12 }}>
+              {selectedPkg.name} terms
+            </button>
+          )}
+        </div>
+      )}
+      {!!termsText && (
+        <div style={{
+          marginTop: 8, padding: '10px 12px', borderRadius: 10,
+          border: '1px dashed var(--line)', background: 'var(--bg)',
+          fontSize: 12, color: 'var(--muted)', lineHeight: 1.6, whiteSpace: 'pre-wrap',
+        }}>
+          {termsText}
         </div>
       )}
     </div>

@@ -50,6 +50,10 @@ function paymentDueFor(bk: Record<string, unknown>, pkg: Record<string, unknown>
     const amt = (Number(pkg.deposit_per_cover) || 0) * covers;
     return { kind: 'deposit', amountMinor: Math.round(amt * 100), label: `Deposit — redeemed against the bill` };
   }
+  // Hold only from the venue's covers threshold up (Peter, 13 Aug: "tables
+  // over 4 require card capture, under that doesn't"). 0 = every booking.
+  const minCovers = Number((rules as Record<string, unknown>).cardCaptureMinCovers) || 0;
+  if (minCovers > 0 && covers < minCovers) return null;
   const hold = (Number((rules as Record<string, unknown>).holdPerCover) || 0) * covers;
   if (hold > 0) {
     return { kind: 'hold', amountMinor: Math.round(hold * 100), label: `Card held, nothing charged today` };
@@ -90,6 +94,10 @@ function rulesFrom(r: Record<string, unknown> | null) {
     joinGroups: Array.isArray(r.join_groups) ? r.join_groups : [],
     widgetEnabled: r.widget_enabled !== false,
     maxDaysAhead: (r.widget_max_days_ahead as number) ?? 90,
+    cardCaptureEnabled: !!r.card_capture_enabled,
+    cardCaptureMinCovers: (r.card_capture_min_covers as number) ?? 0,
+    holdPerCover: Number(r.hold_per_cover) || 0,
+    bookingTerms: String(r.booking_terms || ''),
   };
 }
 
@@ -100,8 +108,8 @@ async function loadVenue(locationId: string) {
     db.from('booking_rules').select('*').eq('location_id', locationId).maybeSingle(),
     db.from('floor_tables').select('id, label, max_covers, section').eq('location_id', locationId),
     db.from('packages').select('*').eq('location_id', locationId).eq('is_active', true).order('sort_order'),
-    db.from('package_lines').select('id, package_id, item_id, display_name, course, is_preorder_choice, sort_order')
-      .eq('location_id', locationId).eq('is_preorder_choice', true).order('sort_order'),
+    db.from('package_lines').select('id, package_id, item_id, display_name, course, qty_per_cover, is_preorder_choice, sort_order')
+      .eq('location_id', locationId).order('sort_order'),
   ]);
   if (!loc) return null;
   return {
@@ -118,7 +126,7 @@ async function loadVenue(locationId: string) {
 // pre-order-choice lines' course ints — the same ints the KDS fires by.
 const COURSE_LABEL: Record<number, string> = { 0: 'On arrival', 1: 'Starter', 2: 'Main', 3: 'Dessert' };
 function choiceGroupsFor(packageId: string, choiceLines: Record<string, unknown>[]) {
-  const mine = choiceLines.filter((l) => String(l.package_id) === String(packageId));
+  const mine = choiceLines.filter((l) => String(l.package_id) === String(packageId) && l.is_preorder_choice);
   const byCourse = new Map<number, Record<string, unknown>[]>();
   for (const l of mine) {
     const c = Number(l.course) || 0;
@@ -274,6 +282,9 @@ Deno.serve(async (req) => {
         slotMinutes: rules.slotMinutes,
         maxDaysAhead: rules.maxDaysAhead,
         maxCovers: 12,
+        cardCaptureEnabled: (rules as Record<string, unknown>).cardCaptureEnabled === true,
+        cardCaptureMinCovers: (rules as Record<string, unknown>).cardCaptureMinCovers ?? 0,
+        bookingTerms: (rules as Record<string, unknown>).bookingTerms || '',
       });
     }
 
@@ -316,7 +327,17 @@ Deno.serve(async (req) => {
       const offers = venue.packages
         .map((p) => packageOffer(p, date, party, counts.get(String(p.id)) || 0))
         .filter(Boolean)
-        .map((o) => ({ ...o, choiceGroups: o.requiresPreorder ? choiceGroupsFor(String(o.id), venue.choiceLines) : [] }));
+        .map((o) => {
+          const pkgRow = venue.packages.find((x) => String(x.id) === String(o.id));
+          const lines = venue.choiceLines.filter((l) => String(l.package_id) === String(o.id));
+          return {
+            ...o,
+            choiceGroups: o.requiresPreorder ? choiceGroupsFor(String(o.id), venue.choiceLines) : [],
+            terms: String(pkgRow?.terms || ''),
+            // What the package includes, for the landing/confirmation display.
+            includes: lines.map((l) => ({ name: l.display_name, course: l.course ?? 0, choice: !!l.is_preorder_choice })),
+          };
+        });
       return json({ ok: true, slots, packages: offers });
     }
 
@@ -458,6 +479,16 @@ Deno.serve(async (req) => {
           preorderDeadline = dl.toISOString().slice(0, 10);
           await db.from('bookings').update({ preorder_token: preorderToken }).eq('id', bookedId);
         }
+      }
+
+      // Booking confirmation SMS + email (Peter, 13 Aug: "didn't get SMS").
+      // Fire-and-forget to booking-reminders — its ledger sends each channel once.
+      if (bookedId) {
+        fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/booking-reminders`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}` },
+          body: JSON.stringify({ action: 'confirm', booking_id: bookedId }),
+        }).catch(() => {});
       }
 
       // Every widget attempt lands in booking_requests — the audit/intake ledger.

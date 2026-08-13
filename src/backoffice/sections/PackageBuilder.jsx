@@ -370,6 +370,19 @@ export default function PackageBuilder() {
                 <button style={{ ...S.btn, marginTop: 10 }} onClick={addLine}>+ Add line</button>
               </div>
 
+              {/* per-event terms */}
+              <div style={S.section}>
+                <div style={{ fontSize: 12, fontWeight: 800, textTransform: 'uppercase', letterSpacing: '.07em', color: 'var(--t2)' }}>Terms for this package</div>
+                <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 4 }}>
+                  Shown to guests on the booking page and confirmation — deposits, minimum spend, cancellation rules for THIS event. The venue's standard booking terms live in Channels → Table bookings.
+                </div>
+                <textarea
+                  value={draft.terms || ''}
+                  onChange={e => upd({ terms: e.target.value })}
+                  placeholder="e.g. Full pre-payment is required and is non-refundable within 48 hours of the booking…"
+                  style={{ ...S.inp, width: '100%', minHeight: 84, marginTop: 8, resize: 'vertical', height: 'auto', lineHeight: 1.5, boxSizing: 'border-box' }} />
+              </div>
+
               {/* footnotes */}
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                 <div style={{ ...S.note, background: 'var(--grn-d)', borderColor: 'var(--grn-b)' }}>

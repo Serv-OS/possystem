@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.35',
+    date: '2026-08-13',
+    changes: [
+      'Bookings: guests now get a confirmation by SMS and email the moment they book — date, time, party, package, and their choose-your-menu link when one applies. Sent exactly once per channel.',
+      'Booking widget: honest payment wording — a prepay package now says "Paid in full when you book"; with card capture off it says payment is taken at the venue. Hold wording respects the new covers threshold.',
+      'Booking widget: /book?package=... is now a full landing page — name, description, price, what\'s included, and the package\'s own terms — ready to market each event directly. The confirmation screen shows the same summary plus menu-choice status.',
+      'Terms & conditions: venue-wide booking terms (Back Office → Channels → Table bookings — put your cancellation policy here) and per-event terms (Package builder). Guests see "By booking you agree to…" with both.',
+      'Card rules: "Hold a card from N+ covers" — small parties book without a card step, larger ones secure with a hold. Prepay and deposit packages always charge.',
+    ],
+  },
+
+  {
     version: '5.6.34',
     date: '2026-08-13',
     changes: [

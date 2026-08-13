@@ -73,6 +73,8 @@ export function rowToRules(r) {
     widgetEnabled: !!r.widget_enabled,
     widgetMaxDaysAhead: r.widget_max_days_ahead,
     cardCaptureEnabled: !!r.card_capture_enabled,
+    cardCaptureMinCovers: r.card_capture_min_covers ?? 0,
+    bookingTerms: r.booking_terms || '',
   };
 }
 
@@ -84,6 +86,8 @@ const RULES_TO_ROW = {
   serviceEnd: 'service_end', slotMinutes: 'slot_minutes', joinGroups: 'join_groups',
   widgetEnabled: 'widget_enabled', widgetMaxDaysAhead: 'widget_max_days_ahead',
   cardCaptureEnabled: 'card_capture_enabled',
+  cardCaptureMinCovers: 'card_capture_min_covers',
+  bookingTerms: 'booking_terms',
 };
 
 export function rowToPackage(r) {
@@ -109,6 +113,7 @@ export function rowToPackage(r) {
     sections: r.sections || [],
     requiresPreorder: !!r.requires_preorder,
     preorderDaysBefore: r.preorder_days_before ?? 0,
+    terms: r.terms || '',
     isActive: r.is_active !== false,
     sortOrder: r.sort_order || 0,
     lines: Array.isArray(r._lines) ? r._lines : [],
@@ -354,6 +359,7 @@ export async function upsertPackageRow(pkg, locationId) {
     sections: pkg.sections || [],
     requires_preorder: !!pkg.requiresPreorder,
     preorder_days_before: pkg.preorderDaysBefore ?? 0,
+    terms: pkg.terms || '',
     is_active: pkg.isActive !== false,
     sort_order: pkg.sortOrder ?? 0,
   };

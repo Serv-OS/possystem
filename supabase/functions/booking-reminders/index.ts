@@ -90,7 +90,57 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   try {
     const body = await req.json().catch(() => ({}));
-    if ((body.action || 'send_due') !== 'send_due') return json({ error: 'unknown action' }, 400);
+    const action = body.action || 'send_due';
+
+    // ── booking confirmation (SMS + email, once per channel via the ledger) ──
+    if (action === 'confirm') {
+      const bookingId = String(body.booking_id || '');
+      const { data: bk } = await db.from('bookings')
+        .select('id, location_id, booking_date, start_time, covers, status, customer, package_id, preorder_token')
+        .eq('id', bookingId).maybeSingle();
+      if (!bk || ['cancelled', 'no_show', 'departed'].includes(bk.status)) return json({ ok: false, error: 'unknown_or_closed' }, 404);
+      const [{ data: loc }, { data: pkg }] = await Promise.all([
+        db.from('locations').select('name').eq('id', bk.location_id).maybeSingle(),
+        bk.package_id ? db.from('packages').select('name, requires_preorder') .eq('id', bk.package_id).maybeSingle() : Promise.resolve({ data: null }),
+      ]);
+      const venueName = loc?.name || 'the venue';
+      const cust = (bk.customer || {}) as Record<string, unknown>;
+      const first = String(cust.name || 'there').split(' ')[0];
+      const when = `${fmtDate(bk.booking_date)} at ${String(bk.start_time).slice(0, 5)}`;
+      const pkgLine = pkg ? ` with ${pkg.name}` : '';
+      const base = await guestBase(bk.location_id);
+      const poLink = bk.preorder_token && base ? `${base}/book?preorder=${bk.preorder_token}` : null;
+      const sent: string[] = [];
+
+      const phone = String(cust.phone || '').trim();
+      if (phone) {
+        const { error: lg } = await db.from('booking_reminders')
+          .insert({ location_id: bk.location_id, booking_id: bk.id, kind: 'confirmation', channel: 'sms', sent_to: phone });
+        if (!lg) {
+          const msg = `${venueName}: table for ${bk.covers} booked${pkgLine} — ${when}.` +
+            (poLink ? ` Choose your menu: ${poLink}` : '') + ` Need to change it? Call the venue.`;
+          const ok = await sendSms(phone, msg, bk.location_id);
+          if (!ok) await db.from('booking_reminders').delete().eq('booking_id', bk.id).eq('kind', 'confirmation').eq('channel', 'sms');
+          else sent.push('sms');
+        }
+      }
+      const email = String(cust.email || '').trim();
+      if (email) {
+        const { error: lg } = await db.from('booking_reminders')
+          .insert({ location_id: bk.location_id, booking_id: bk.id, kind: 'confirmation', channel: 'email', sent_to: email });
+        if (!lg) {
+          const ok = await sendEmail(email, `Booking confirmed — ${venueName}, ${fmtDate(bk.booking_date)}`,
+            `<p>Hi ${first},</p><p>Your table for <b>${bk.covers}</b> at <b>${venueName}</b> is booked${pkgLine ? `<b>${pkgLine}</b>` : ''} — <b>${when}</b>.</p>` +
+            (poLink ? `<p><a href="${poLink}">Choose your menu</a> — the kitchen needs everyone's choices.</p>` : '') +
+            `<p>Need to change it? Just call the venue.</p>`);
+          if (!ok) await db.from('booking_reminders').delete().eq('booking_id', bk.id).eq('kind', 'confirmation').eq('channel', 'email');
+          else sent.push('email');
+        }
+      }
+      return json({ ok: true, sent });
+    }
+
+    if (action !== 'send_due') return json({ error: 'unknown action' }, 400);
 
     // Live bookings with a token (deferred choices), joined to their package.
     const { data: rows } = await db.from('bookings')

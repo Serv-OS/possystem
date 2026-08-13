@@ -168,6 +168,21 @@ export default function TableBookings() {
           sub="On: prepay packages and deposits are charged at booking, and plain bookings hold a card (nothing charged) for the no-show policy. Off: bookings complete with no card step."
           on={!!rules.cardCaptureEnabled}
           onToggle={() => patch({ cardCaptureEnabled: !rules.cardCaptureEnabled })} />
+        {rules.cardCaptureEnabled && (
+          <BoStepper label="Hold a card from"
+            sub="Card holds only apply to parties of at least this size. 1 = every booking. Prepay and deposit packages always charge regardless."
+            value={rules.cardCaptureMinCovers || 1} onChange={v => patch({ cardCaptureMinCovers: v <= 1 ? 0 : v })}
+            step={1} min={1} max={30} fmt={v => v <= 1 ? 'every booking' : `${v}+ covers`} />
+        )}
+        <div style={{ marginTop: 14 }}>
+          <div style={S.lbl}>Booking terms</div>
+          <div style={S.hint}>Shown on the booking page — “By booking you agree to the booking terms.” Cancellation policy wording belongs here.</div>
+          <textarea
+            value={rules.bookingTerms || ''}
+            onChange={e => patch({ bookingTerms: e.target.value })}
+            placeholder="e.g. Tables are held for 15 minutes. Cancellations within 24 hours may be charged £20 per guest…"
+            style={{ ...S.monoBox, width: '100%', minHeight: 96, marginTop: 8, resize: 'vertical', fontFamily: 'inherit', fontSize: 12.5, lineHeight: 1.5, cursor: 'text', textAlign: 'left', boxSizing: 'border-box' }} />
+        </div>
 
         {bookUrl ? (
           <>
