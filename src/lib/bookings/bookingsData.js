@@ -286,6 +286,20 @@ export async function saveBookingPreorders(bookingId, locationId, rows) {
   } catch (e) { return { ok: false, error: e?.message }; }
 }
 
+// How many live future bookings still reference a package (delete warning).
+export async function countUpcomingBookingsForPackage(packageId) {
+  if (isMock || !supabase || !packageId) return 0;
+  try {
+    const today = new Date().toISOString().slice(0, 10);
+    const { count, error } = await supabase
+      .from('bookings').select('id', { count: 'exact', head: true })
+      .eq('package_id', packageId).gte('booking_date', today)
+      .not('status', 'in', '(cancelled,no_show,departed)');
+    if (error) return 0;
+    return count || 0;
+  } catch { return 0; }
+}
+
 // ── rules ─────────────────────────────────────────────────────────────────────
 export async function loadBookingRules(locationId) {
   if (isMock || !supabase || !isRealLoc(locationId)) return { data: null };

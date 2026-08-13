@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.33',
+    date: '2026-08-13',
+    changes: [
+      'Package builder: the missing "Guest chooses" toggle — mark which lines are the options guests pick from (two starters, two mains, two desserts). This was why a package built in Back Office never asked for choices on the widget. A red warning now flags "Requires pre-order" with nothing choosable.',
+      'Package builder: renaming is now an obvious edit field, and Delete package is a proper button that warns how many upcoming bookings still reference the package before deleting.',
+      'Booking widget: a choice-menu link is only issued when the package actually has choices — no more "no menu choices needed" dead ends.',
+    ],
+  },
+
+  {
     version: '5.6.32',
     date: '2026-08-12',
     changes: [

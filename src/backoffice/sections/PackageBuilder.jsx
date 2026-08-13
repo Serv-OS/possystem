@@ -14,6 +14,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../store';
 import { money } from '../../lib/currency';
+import { countUpcomingBookingsForPackage } from '../../lib/bookings/bookingsData';
 
 const MONO = 'var(--font-mono, ui-monospace, monospace)';
 const DAYS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];   // ints 0-6, Sunday first
@@ -126,7 +127,12 @@ export default function PackageBuilder() {
   const del = async () => {
     if (!draft) return;
     if (!draft.id) { setDraft(null); setSelId(null); return; }
-    if (!window.confirm(`Delete “${draft.name}”? The booking widget and host stand will stop offering it.`)) return;
+    let upcoming = 0;
+    try { upcoming = await countUpcomingBookingsForPackage(draft.id); } catch { /* best-effort */ }
+    const extra = upcoming > 0
+      ? ` ${upcoming} upcoming booking${upcoming === 1 ? '' : 's'} reference${upcoming === 1 ? 's' : ''} it — they keep their table but lose the package.`
+      : '';
+    if (!window.confirm(`Delete “${draft.name}”? The booking widget and host stand will stop offering it.${extra}`)) return;
     await deletePackage(draft.id);
     setDraft(null); setSelId(null);
   };
@@ -175,8 +181,12 @@ export default function PackageBuilder() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
               {/* name + description — one header row: name left, description grows right */}
               <div style={{ ...S.section, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-                <input style={{ ...S.inp, flex: '0 1 240px', minWidth: 160, fontSize: 19, fontWeight: 800, background: 'transparent', border: 'none', padding: 0, borderRadius: 0 }}
-                  value={draft.name} onChange={e => upd({ name: e.target.value })} placeholder="Package name" />
+                <span style={{ display: 'flex', alignItems: 'center', gap: 8, flex: '0 1 280px', minWidth: 180 }}>
+                  <input style={{ ...S.inp, flex: 1, minWidth: 0, height: 44, fontSize: 18, fontWeight: 800 }}
+                    value={draft.name} onChange={e => upd({ name: e.target.value })}
+                    placeholder="Package name" title="Tap to rename — saves with Save package" />
+                  <span style={{ fontSize: 13, color: 'var(--t4)', flexShrink: 0 }} title="Editable">✎</span>
+                </span>
                 <input style={{ ...S.inp, flex: '1 1 300px', minWidth: 0, textOverflow: 'ellipsis' }} value={draft.description || ''}
                   onChange={e => upd({ description: e.target.value })}
                   placeholder="Description — shown on the booking widget" />
@@ -307,6 +317,12 @@ export default function PackageBuilder() {
                 <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 4 }}>
                   Price override: leave blank to inherit the item's price; 0 = included in the package price.
                 </div>
+                {draft.requiresPreorder && !(draft.lines || []).some(l => l.isPreorderChoice) && (
+                  <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 9, background: 'var(--red-d)', border: '1px solid var(--red-b)', color: 'var(--red)', fontSize: 11.5, lineHeight: 1.45 }}>
+                    Requires pre-order is ON but no line is marked “Guest chooses” — guests will have nothing to pick.
+                    Mark the options (e.g. two starters, two mains, two desserts) with the Guest chooses toggle.
+                  </div>
+                )}
 
                 <div style={{ marginTop: 10, border: '1px solid var(--bdr)', borderRadius: 10, overflow: 'visible', background: 'var(--bg2)' }}>
                   {(draft.lines || []).length === 0 && (
@@ -336,6 +352,12 @@ export default function PackageBuilder() {
                           placeholder={linked ? money(linked.price) : 'inherit'}
                           onChange={e => updLine(i, { priceOverride: e.target.value === '' ? null : Number(e.target.value) })}
                           title="Price override — blank inherits the item's price, 0 = included in the package price" />
+                        <button
+                          style={l.isPreorderChoice ? S.choiceOn : S.choiceOff}
+                          onClick={() => updLine(i, { isPreorderChoice: !l.isPreorderChoice })}
+                          title="Guest chooses: this line becomes an OPTION guests pick from (one per course group, per guest) instead of landing for everyone. Lines with the same course form one choice group — e.g. two Course 1 choice lines = 'pick your starter'.">
+                          {l.isPreorderChoice ? '✓ Guest chooses' : 'Guest chooses'}
+                        </button>
                         <span style={{ display: 'flex', gap: 3, flexShrink: 0 }}>
                           <button style={S.mini} onClick={() => moveLine(i, -1)} disabled={i === 0} title="Move up">↑</button>
                           <button style={S.mini} onClick={() => moveLine(i, +1)} disabled={i === draft.lines.length - 1} title="Move down">↓</button>
@@ -366,8 +388,9 @@ export default function PackageBuilder() {
                   {busy ? 'Saving…' : saved ? '✓ Saved' : 'Save package'}
                 </button>
                 {dirty && !busy && <span style={{ fontSize: 11.5, color: 'var(--acc)' }}>Unsaved changes</span>}
-                <button style={{ ...S.btnGhost, marginLeft: 'auto', color: 'var(--red)' }} onClick={del}>
-                  {draft.id ? 'Delete' : 'Discard'}
+                <button onClick={del}
+                  style={{ ...S.btnGhost, marginLeft: 'auto', color: 'var(--red)', border: '1px solid var(--red-b)', background: 'var(--red-d)', padding: '0 16px', height: 38, borderRadius: 10, fontWeight: 700 }}>
+                  {draft.id ? 'Delete package' : 'Discard draft'}
                 </button>
               </div>
             </div>
@@ -449,6 +472,8 @@ const S = {
   day: { width: 30, height: 28, borderRadius: 7, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t4)', fontSize: 11, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', padding: 0 },
   dayOn: { width: 30, height: 28, borderRadius: 7, border: '1px solid var(--acc)', background: 'var(--acc-d)', color: 'var(--acc)', fontSize: 11, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', padding: 0 },
   step: { width: 30, height: 30, borderRadius: 8, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t1)', fontSize: 16, cursor: 'pointer', fontFamily: 'inherit', lineHeight: 1, padding: 0 },
+  choiceOff: { fontSize: 11, padding: '4px 10px', borderRadius: 7, border: '1px dashed var(--bdr2)', background: 'transparent', color: 'var(--t3)', cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap', flexShrink: 0 },
+  choiceOn: { fontSize: 11, padding: '4px 10px', borderRadius: 7, border: '1px solid var(--grn-b)', background: 'var(--grn-d)', color: 'var(--grn)', cursor: 'pointer', fontFamily: 'inherit', fontWeight: 700, whiteSpace: 'nowrap', flexShrink: 0 },
   coursePill: { fontSize: 11, padding: '4px 8px', borderRadius: 7, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t3)', cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' },
   coursePillOn: { fontSize: 11, padding: '4px 8px', borderRadius: 7, border: '1px solid var(--blu-b)', background: 'var(--blu-d)', color: 'var(--blu)', cursor: 'pointer', fontFamily: 'inherit', fontWeight: 700, whiteSpace: 'nowrap' },
   pill: { fontSize: 12.5, padding: '6px 11px', borderRadius: 8, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t2)', cursor: 'pointer', fontFamily: 'inherit' },

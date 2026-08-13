@@ -422,7 +422,7 @@ Deno.serve(async (req) => {
         if (validRows.length) {
           await db.from('booking_preorders').insert(validRows.map((r) => ({ ...r, location_id: locationId, booking_id: bookedId })));
         }
-        if (!completeNow) {
+        if (!completeNow && groups.length > 0) {
           preorderToken = (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, '');
           const dl = new Date(`${date}T12:00:00`);
           dl.setDate(dl.getDate() - (Number(pkg.preorder_days_before) || 0));
