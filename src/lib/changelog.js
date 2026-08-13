@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.43',
+    date: '2026-08-13',
+    changes: [
+      'Host-stand floor gains the POS floor plan\'s zoom system: − / + buttons (40%–160%), a live percentage readout, and Fit to snap back to auto-fit; zooming past the viewport scrolls the plan instead of clipping it.',
+      'Diary List view rows are now a proper aligned table — every column (time, name, covers, TABLE, status, source, package) sits at the same position on every row regardless of how many pills a booking carries, and the table number is finally legible (same size and weight as the time).',
+    ],
+  },
+  {
     version: '5.6.42',
     date: '2026-08-13',
     changes: [

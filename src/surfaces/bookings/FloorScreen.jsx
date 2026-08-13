@@ -58,7 +58,14 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
     for (const t of floorTables) { mx = Math.max(mx, (t.x || 0) + (t.w || 60)); my = Math.max(my, (t.y || 0) + (t.h || 60)); }
     return { mx, my };
   }, [floorTables]);
-  const scale = Math.max(0.5, Math.min((wrapSize.w - PAD * 2) / bounds.mx, (wrapSize.h - PAD * 2 - 18) / bounds.my));
+  const fitScale = Math.max(0.5, Math.min((wrapSize.w - PAD * 2) / bounds.mx, (wrapSize.h - PAD * 2 - 18) / bounds.my));
+  // Zoom controls MATCH THE POS floor plan (v4.6.57 system): auto-fit until
+  // the user zooms, − / + step 0.1 within 0.4–1.6, Fit snaps back to auto.
+  const [zoom, setZoom] = useState(1);
+  const [autoFit, setAutoFit] = useState(true);
+  const scale = autoFit ? fitScale : zoom;
+  const zoomOut = () => { setAutoFit(false); setZoom(+Math.max(0.4, (autoFit ? fitScale : zoom) - 0.1).toFixed(2)); };
+  const zoomIn = () => { setAutoFit(false); setZoom(+Math.min(1.6, (autoFit ? fitScale : zoom) + 0.1).toFixed(2)); };
 
   // ── what each table is doing right now ──────────────────────────────────────
   const activeNow = useMemo(() => bookings.filter((b) => {
@@ -116,8 +123,18 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, color: 'var(--t3)' }}>
             <span style={{ width: 14, height: 8, border: `1.5px dashed ${tintBd('var(--acc)', 55)}`, borderRadius: 3 }} /> Joined
           </span>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 4 }}>
+            <button onClick={zoomOut} title="Zoom out"
+              style={{ width: 24, height: 24, borderRadius: 6, border: 'none', background: 'var(--bg3)', color: 'var(--t1)', fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>−</button>
+            <span style={{ fontSize: 11, color: 'var(--t3)', minWidth: 38, textAlign: 'center', ...mono }}>{Math.round(scale * 100)}%</span>
+            <button onClick={zoomIn} title="Zoom in"
+              style={{ width: 24, height: 24, borderRadius: 6, border: 'none', background: 'var(--bg3)', color: 'var(--t1)', fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>+</button>
+            <button onClick={() => { setAutoFit(true); setZoom(1); }} title="Auto-fit to viewport"
+              style={{ height: 24, padding: '0 8px', borderRadius: 6, border: 'none', background: autoFit ? 'var(--acc-d)' : 'var(--bg3)', color: autoFit ? 'var(--acc)' : 'var(--t2)', fontSize: 10, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', textTransform: 'uppercase', letterSpacing: '.07em' }}>Fit</button>
+          </span>
         </div>
-        <div ref={wrapRef} style={{ flex: 1, minHeight: 0, position: 'relative', background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 16, padding: PAD, overflow: 'hidden' }}>
+        <div ref={wrapRef} style={{ flex: 1, minHeight: 0, position: 'relative', background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 16, overflow: 'auto' }}>
+          <div style={{ position: 'relative', width: bounds.mx * scale + PAD * 2, height: bounds.my * scale + PAD * 2, minWidth: '100%', minHeight: '100%' }}>
           {floorTables.length === 0 && (
             <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', color: 'var(--t3)', fontSize: 13 }}>
               No floor plan yet — build one in Back Office → Floor plan.
@@ -193,6 +210,7 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
               </div>
             );
           })}
+          </div>
         </div>
       </div>
 

@@ -169,7 +169,8 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
                     key={b.id}
                     onClick={() => onSelect(isSel ? null : b.id)}
                     style={{
-                      display: 'flex', alignItems: 'center', gap: 12, width: '100%', padding: '9px 14px',
+                      display: 'grid', alignItems: 'center', columnGap: 14, width: '100%', padding: '11px 16px',
+                      gridTemplateColumns: '58px minmax(150px, 1fr) 62px 100px 104px 64px minmax(220px, 340px) 20px',
                       borderRadius: 11, textAlign: 'left', cursor: 'pointer',
                       background: 'var(--bg1)', opacity: dead ? 0.65 : 1,
                       border: `1.5px solid ${isSel ? 'var(--acc)' : 'var(--bdr)'}`,
@@ -177,21 +178,21 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
                       transition: 'box-shadow 140ms cubic-bezier(.2,.8,.3,1)',
                     }}
                   >
-                    <span style={{ width: 46, flexShrink: 0, fontSize: 13, fontWeight: 800, color: dead ? 'var(--t4)' : 'var(--t1)', ...mono }}>
+                    <span style={{ fontSize: 14.5, fontWeight: 800, color: dead ? 'var(--t4)' : 'var(--t1)', ...mono }}>
                       {String(b.startTime || '').slice(0, 5)}
                     </span>
-                    <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: 700, color: dead ? 'var(--t4)' : 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    <span style={{ minWidth: 0, fontSize: 14, fontWeight: 700, color: dead ? 'var(--t4)' : 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                       {bookingName(b)}
                     </span>
-                    <span style={{ width: 52, flexShrink: 0, fontSize: 11, color: 'var(--t3)', ...mono }}>{b.covers} cvr</span>
-                    <span style={{ width: 110, flexShrink: 0, fontSize: 11, fontWeight: 700, color: dead ? 'var(--t4)' : 'var(--t2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', ...mono }}>
+                    <span style={{ fontSize: 12, color: 'var(--t3)', ...mono }}>{b.covers} cvr</span>
+                    <span style={{ fontSize: 14.5, fontWeight: 800, color: dead ? 'var(--t4)' : 'var(--t1)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', ...mono }}>
                       {labels || '—'}
                     </span>
-                    <StatusBadge st={st} style={{ flexShrink: 0 }} />
-                    <span style={{ width: 64, flexShrink: 0, fontSize: 10, color: 'var(--t4)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    <StatusBadge st={st} />
+                    <span style={{ fontSize: 11, color: 'var(--t4)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                       {b.source || 'host'}
                     </span>
-                    <span style={{ flexShrink: 0, display: 'flex', gap: 6, alignItems: 'center', maxWidth: 240, overflow: 'hidden' }} title={pkg ? pkg.name : undefined}>
+                    <span style={{ display: 'flex', gap: 6, alignItems: 'center', minWidth: 0, overflow: 'hidden' }} title={pkg ? pkg.name : undefined}>
                       {pkg && (
                         <span style={{ fontSize: 10, fontWeight: 700, padding: '2px 7px', borderRadius: 999, background: tintBg('var(--grn)'), border: `1px solid ${tintBd('var(--grn)')}`, color: 'var(--grn)', whiteSpace: 'nowrap' }}>
                           {pkg.name}
@@ -207,7 +208,7 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
                         );
                       })()}
                     </span>
-                    <span style={{ width: 16, flexShrink: 0, textAlign: 'center', fontSize: 12, color: 'var(--orn)' }} title={b.note || undefined}>
+                    <span style={{ textAlign: 'center', fontSize: 12, color: 'var(--orn)' }} title={b.note || undefined}>
                       {b.note ? '✎' : ''}
                     </span>
                   </button>
