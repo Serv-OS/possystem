@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.42',
+    date: '2026-08-13',
+    changes: [
+      'Host-stand floor now paints tables in the POS\'s exact colours (same table, same colour, till or stand): green free, light-blue seated with nothing ordered yet, ORANGE occupied once the check has items, purple booked/reserved. Late stays red and due amber on top. Legend updated to match.',
+    ],
+  },
+  {
     version: '5.6.41',
     date: '2026-08-13',
     changes: [

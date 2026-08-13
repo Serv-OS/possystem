@@ -14,6 +14,13 @@ import {
   sessionTotal, bookingName, todayISO, isLive,
 } from './bits.jsx';
 
+// The POS's exact table colours (TablesSurface.jsx STATUS map) — one visual
+// language across till and host stand.
+const POS_FREE = '#22c55e';
+const POS_SEATED = '#60a5fa';
+const POS_OCCUPIED = '#e8a020';
+const POS_RESERVED = '#a855f7';
+
 const PAD = 10;
 
 // onPickBooking: parent (Service view) selects the tile's booking for its
@@ -102,9 +109,10 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 10, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 14, fontWeight: 800, letterSpacing: '-0.01em' }}>Floor — live from POS</span>
           <span style={{ flex: 1 }} />
-          <Legend col="var(--grn)" label="Free" />
-          <Legend col="var(--acc)" label="Dining" />
-          <Legend col="var(--uv)" label="Booked" />
+          <Legend col={POS_FREE} label="Free" />
+          <Legend col={POS_SEATED} label="Seated" />
+          <Legend col={POS_OCCUPIED} label="Occupied" />
+          <Legend col={POS_RESERVED} label="Booked" />
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, color: 'var(--t3)' }}>
             <span style={{ width: 14, height: 8, border: `1.5px dashed ${tintBd('var(--acc)', 55)}`, borderRadius: 3 }} /> Joined
           </span>
@@ -135,11 +143,16 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
             const active = activeNow.find((b) => (b.tables || []).includes(t.id));
             const st = active ? displayStatus(active, statusNow, packages) : null;
             const next = !active && !t.session ? nextFor(t.id) : null;
+            // Session colours MATCH THE POS (TablesSurface STATUS map): a check
+            // with items = Occupied orange, seated-nothing-ordered = light blue.
+            // Same table, same colour, till or host stand (Peter, 13 Aug).
+            const sessCol = t.session
+              ? ((t.session.items || []).filter((i) => !i.voided).length ? POS_OCCUPIED : POS_SEATED)
+              : null;
             const col = active
-              ? (st === 'late' ? 'var(--red)' : st === 'due' ? 'var(--orn)' : 'var(--acc)')
-              : t.session ? 'var(--acc)'
-              : next ? 'var(--uv)'
-              : 'var(--grn)';
+              ? (st === 'late' ? 'var(--red)' : st === 'due' ? 'var(--orn)' : (sessCol || 'var(--acc)'))
+              : sessCol
+              || (next ? POS_RESERVED : POS_FREE);
             const hot = sugSet.has(t.id);
             const line2 = active ? bookingName(active)
               : t.session ? (t.session.server || 'Open tab')
