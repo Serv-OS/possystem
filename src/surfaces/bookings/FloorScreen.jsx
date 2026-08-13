@@ -110,7 +110,7 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
   const openTabs = floorTables.filter((t) => t.session);
 
   return (
-    <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+    <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex' }}>
       {/* ── canvas ── */}
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', padding: 14 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 10, flexWrap: 'wrap' }}>

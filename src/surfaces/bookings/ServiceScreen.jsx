@@ -52,7 +52,7 @@ export default function ServiceScreen({ sel, onSelect, onBook }) {
   const selected = bookings.find((b) => b.id === sel) || null;
 
   return (
-    <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+    <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex' }}>
       {/* ── left rail: today's list ── */}
       <div style={{ width: 264, flexShrink: 0, background: 'var(--bg1)', borderRight: '1px solid var(--bdr)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         <div style={{ padding: '10px 12px 0', flexShrink: 0 }}>

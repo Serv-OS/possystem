@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.44',
+    date: '2026-08-13',
+    changes: [
+      'Fixed: zooming the host-stand floor pushed the walk-in panel off the right edge of the screen — the zoomed plan now scrolls inside its own frame and the layout never grows past the viewport.',
+    ],
+  },
+  {
     version: '5.6.43',
     date: '2026-08-13',
     changes: [
