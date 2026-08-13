@@ -35,7 +35,7 @@ function WarnBox({ warnings }) {
 // `staff` is the person when you opened this from their row. Opening from the
 // SECTION grid instead means the day + section are known but the person is not,
 // so pass `staffOptions` and the modal picks them here (v5.5.990).
-function ShiftModal({ staff, staffOptions, presetSectionId, day, shift, sections, templates, warningsFor, onSave, onDelete, onDuplicate, onClose, saving, defaultBreakMins = 30 }) {
+function ShiftModal({ staff, staffOptions, presetSectionId, day, shift, sections, templates, warningsFor, onSave, onDelete, onDuplicate, onNoShow, onClose, saving, defaultBreakMins = 30 }) {
   const picking = !staff;
   const [pickedId, setPickedId] = useState(staff?.id || staffOptions?.[0]?.id || '');
   const person = staff || (staffOptions || []).find(p => p.id === pickedId) || null;
@@ -110,6 +110,15 @@ function ShiftModal({ staff, staffOptions, presetSectionId, day, shift, sections
             <div style={{ display: 'flex', gap: 6 }}>
               <button className="btn btn-ghost btn-sm" disabled={saving} onClick={() => onDelete(shift)} style={{ color: 'var(--red)' }}><Icon name="close" size={13} /> Delete</button>
               <button className="btn btn-ghost btn-sm" disabled={saving} onClick={() => onDuplicate(shift)} title="Copy this shift to another day or person"><Icon name="clipboard" size={13} /> Copy</button>
+              {/* Only a shift that was actually on the rota (published) and whose
+                  day has arrived can be a no-show — future shifts get cancelled
+                  or deleted, not no-showed. */}
+              {(shift.status === 'published' || shift.status === 'no_show') && day?.iso <= new Date().toISOString().slice(0, 10) && (
+                <button className="btn btn-ghost btn-sm" disabled={saving} onClick={() => onNoShow(shift)}
+                  style={{ color: shift.status === 'no_show' ? 'var(--t2)' : 'var(--amber)' }}>
+                  <Icon name={shift.status === 'no_show' ? 'check' : 'close'} size={13} /> {shift.status === 'no_show' ? 'Showed up after all' : 'No show'}
+                </button>
+              )}
             </div>
           )}
           <div style={{ display: 'flex', gap: 8 }}>
@@ -394,7 +403,9 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
     return m;
   }, [timesheets, wk]);
 
-  const draftIds = useMemo(() => shifts.filter(s => s.status !== 'published').map(s => s.id), [shifts]);
+  // no_show is NOT a draft: without this filter, "Publish all" would quietly
+  // resurrect every no-show back into a published shift.
+  const draftIds = useMemo(() => shifts.filter(s => s.status !== 'published' && s.status !== 'no_show').map(s => s.id), [shifts]);
   const staffById = useMemo(() => Object.fromEntries((staff || []).map(s => [s.id, s])), [staff]);
   const [onbCases, setOnbCases] = useState([]);
 
@@ -504,6 +515,17 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       showToast('Save failed: ' + e.message, 'error');
       reload(wk);
     } finally { setSaving(false); }
+  }
+
+  async function markNoShow(shift) {
+    const on = shift.status !== 'no_show';
+    if (on && !confirm(`Mark this shift as a NO SHOW?\n\nIt drops out of tip allocation and the staff portal, and is reported under no-shows. You can undo it from the same place.`)) return;
+    try {
+      await wf.setShiftStatus(shift.id, on ? 'no_show' : 'published');
+      setShifts(prev => prev.map(x => x.id === shift.id ? { ...x, status: on ? 'no_show' : 'published' } : x));
+      setEditing(null);
+      showToast(on ? 'Marked as no-show' : 'Shift restored to published', 'success');
+    } catch (e) { showToast(e.message || 'Could not update the shift', 'error'); }
   }
 
   async function removeShift(shift) {
@@ -821,7 +843,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
           sections={secs} templates={templates} saving={saving}
           defaultBreakMins={breakPolicy.defaultMins}
           warningsFor={warningsFor}
-          onSave={saveShift} onDelete={removeShift} onClose={() => setEditing(null)}
+          onSave={saveShift} onDelete={removeShift} onNoShow={markNoShow} onClose={() => setEditing(null)}
           onDuplicate={(sh) => { setEditing(null); setCopying(sh); }}
         />
       )}
@@ -1064,10 +1086,10 @@ function RotaGroup({ g, wk, roles, shiftsFor, warnFor, onCell }) {
                       key={sh.id}
                       onClick={() => onCell(s, d, sh)}
                       title={`${sh.start}–${sh.finish} · ${money(sh.computedCost)}${warns.length ? `\n⚠ ${warns.join('\n⚠ ')}` : ''}`}
-                      style={{ width: '100%', cursor: 'pointer', textAlign: 'center', borderRadius: 9, padding: '6px 4px', fontFamily: 'inherit', background: sh.status === 'published' ? cellTint(col, 16) : 'var(--inset)', border: `1px solid ${warns.length ? 'rgba(245,166,35,.45)' : sh.status === 'published' ? cellTint(col, 32) : 'var(--inset-border)'}` }}
+                      style={{ width: '100%', cursor: 'pointer', textAlign: 'center', borderRadius: 9, padding: '6px 4px', fontFamily: 'inherit', opacity: sh.status === 'no_show' ? 0.75 : 1, background: sh.status === 'published' ? cellTint(col, 16) : sh.status === 'no_show' ? 'rgba(255,90,74,.10)' : 'var(--inset)', border: `1px solid ${sh.status === 'no_show' ? 'rgba(255,90,74,.45)' : warns.length ? 'rgba(245,166,35,.45)' : sh.status === 'published' ? cellTint(col, 32) : 'var(--inset-border)'}` }}
                     >
-                      <div className="mono" style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--t1)' }}>{warns.length ? '⚠ ' : ''}{sh.start}–{sh.finish}</div>
-                      <div style={{ fontSize: 10, color: 'var(--t3)', marginTop: 1 }}>{Number(sh.computedHours || 0).toFixed(1)}h{sh.status !== 'published' ? ' · draft' : ''}</div>
+                      <div className="mono" style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--t1)', textDecoration: sh.status === 'no_show' ? 'line-through' : 'none' }}>{warns.length ? '⚠ ' : ''}{sh.start}–{sh.finish}</div>
+                      <div style={{ fontSize: 10, color: sh.status === 'no_show' ? 'var(--red)' : 'var(--t3)', marginTop: 1, fontWeight: sh.status === 'no_show' ? 700 : 400 }}>{sh.status === 'no_show' ? 'NO SHOW' : `${Number(sh.computedHours || 0).toFixed(1)}h${sh.status !== 'published' ? ' · draft' : ''}`}</div>
                     </button>
                   ))}
                   {/* add (another) shift — multiple per day = split shifts */}

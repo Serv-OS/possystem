@@ -63,6 +63,20 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
   useEffect(() => { let alive = true; getLocationConfig(ctx?.locationId).then(c => { if (alive && c?.timezone) setTz(c.timezone); }).catch(() => {}); return () => { alive = false; }; }, [ctx?.locationId]);
 
   // ── range filter: by week or by pay period ────────────────────────────────
+  // No-show attendance — the last 90 days regardless of the week selector,
+  // because the pattern (who, how often, which days) only shows over a longer
+  // horizon than a single week's timesheets.
+  const [noShows, setNoShows] = useState([]);
+  useEffect(() => {
+    if (!ctx?.locationId) return;
+    let alive = true;
+    const from = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+    wf.loadShifts(ctx.locationId, from, new Date().toISOString().slice(0, 10))
+      .then(rows => { if (alive) setNoShows((rows || []).filter(r => r.status === 'no_show')); })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [ctx?.locationId, shifts]);
+
   const payCfg = useMemo(() => payCfgFrom(settings), [settings]);
   const [mode, setMode] = useState('week'); // week | period
   const [statusFilter, setStatusFilter] = useState('all'); // all | pending | approved | paid
@@ -284,7 +298,44 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
 
   if (loading) return <LoadingCard label="Loading timesheets…" />;
 
+  const noShowByStaff = useMemo(() => {
+    const m = {};
+    for (const r of noShows) (m[r.staffId] = m[r.staffId] || []).push(r);
+    return Object.entries(m)
+      .map(([staffId, rows]) => ({ staffId, rows: rows.sort((a, b) => b.date.localeCompare(a.date)) }))
+      .sort((a, b) => b.rows.length - a.rows.length);
+  }, [noShows]);
+
   return (
+    <>
+    {noShowByStaff.length > 0 && (
+      <Card>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 10 }}>
+          <div style={{ fontSize: 15, fontWeight: 700 }}>No-shows</div>
+          <div style={{ fontSize: 12, color: 'var(--t3)' }}>last 90 days · marked on the rota</div>
+          <div className="mono" style={{ marginLeft: 'auto', fontSize: 12, color: 'var(--red)', fontWeight: 700 }}>
+            {noShows.length} shift{noShows.length === 1 ? '' : 's'} missed
+          </div>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {noShowByStaff.map(({ staffId, rows }) => {
+            const person = staff?.find(x => x.id === staffId);
+            const hours = rows.reduce((a, r) => a + Number(r.computedHours || 0), 0);
+            return (
+              <div key={staffId} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', background: 'var(--inset)', border: '1px solid var(--inset-border)', borderRadius: 10 }}>
+                <div style={{ fontWeight: 600, fontSize: 13, minWidth: 140 }}>{person?.name || 'Former staff'}</div>
+                <div className="mono" style={{ fontSize: 12, color: 'var(--red)', fontWeight: 700 }}>{rows.length}×</div>
+                <div style={{ fontSize: 11.5, color: 'var(--t3)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {rows.slice(0, 6).map(r => new Date(r.date + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })).join(' · ')}
+                  {rows.length > 6 ? ` · +${rows.length - 6} more` : ''}
+                </div>
+                <div className="mono" style={{ fontSize: 11.5, color: 'var(--t3)' }}>{hours.toFixed(1)}h rota'd</div>
+              </div>
+            );
+          })}
+        </div>
+      </Card>
+    )}
     <Card>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14, gap: 12, flexWrap: 'wrap' }}>
         <div>
@@ -498,6 +549,7 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
         />
       )}
     </Card>
+    </>
   );
 }
 

@@ -409,6 +409,17 @@ const mapShift = r => ({
   computedHours: r.computed_hours != null ? Number(r.computed_hours) : null,
   computedCost: r.computed_cost != null ? Number(r.computed_cost) : null,
 });
+// Mark a rota'd shift no-show (or put it back). status='no_show' deliberately
+// drops the shift out of everything keyed on 'published': the clock can't check
+// into it, it leaves the staff portal's upcoming list, and — the one that
+// matters commercially — it earns no share of the tronc pool. Someone who
+// didn't come in doesn't share the tips.
+export async function setShiftStatus(id, status) {
+  if (isMock || !supabase) { const a = lsGet('shifts'); const i = a.findIndex(x => x.id === id); if (i >= 0) { a[i].status = status; lsSet('shifts', a); } return; }
+  const { data, error } = await supabase.from('wf_shifts').update({ status }).eq('id', id).select('id');
+  checkWrite('shift status', error || (!data?.length ? new Error('The change matched 0 rows — RLS blocked it, or the shift is gone') : null));
+}
+
 export async function loadShifts(locationId, fromIso, toIso) {
   if (isMock || !supabase) return lsGet('shifts').filter(s => (!fromIso || s.date >= fromIso) && (!toIso || s.date <= toIso));
   if (!locationId) return [];
