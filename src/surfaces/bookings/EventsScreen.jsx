@@ -9,7 +9,7 @@
 
 import { useMemo, useState } from 'react';
 import { useStore } from '../../store';
-import { mono, tintBg, tintBd, money, EmptyNote } from './bits.jsx';
+import { mono, tintBg, tintBd, money, EmptyNote , courseColor } from './bits.jsx';
 
 const UNIT_LABEL = { per_cover: 'per cover', per_booking: 'per booking', minimum_spend: 'min spend' };
 const COURSE_LABEL = { 0: 'Immediate', 1: 'Course 1', 2: 'Course 2', 3: 'Course 3' };
@@ -187,8 +187,8 @@ function PackageDetail({ p }) {
                 <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.05em', flexShrink: 0 }}>pre-order</span>
               )}
               <span style={{
-                flexShrink: 0, fontSize: 11, fontWeight: 700, color: 'var(--blu)', padding: '3px 9px', borderRadius: 20,
-                background: tintBg('var(--blu)', 10), border: `1px solid ${tintBd('var(--blu)', 26)}`,
+                flexShrink: 0, fontSize: 11, fontWeight: 700, color: courseColor(l.course), padding: '3px 9px', borderRadius: 20,
+                background: tintBg(courseColor(l.course), 10), border: `1px solid ${tintBd(courseColor(l.course), 26)}`,
               }}>{COURSE_LABEL[l.course ?? 0] || `Course ${l.course}`}</span>
             </div>
           ))}

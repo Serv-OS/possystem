@@ -17,6 +17,7 @@ import { money } from '../../lib/currency';
 import { CUSTOMER_ROOT } from '../../lib/env';
 import { platformSupabase, getLocationId } from '../../lib/supabase';
 import { countUpcomingBookingsForPackage } from '../../lib/bookings/bookingsData';
+import { courseColor } from '../../surfaces/bookings/bits.jsx';
 
 const MONO = 'var(--font-mono, ui-monospace, monospace)';
 const DAYS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];   // ints 0-6, Sunday first
@@ -387,7 +388,10 @@ export default function PackageBuilder() {
                         </span>
                         <span style={{ display: 'flex', gap: 3, flexShrink: 0 }}>
                           {COURSES.map(([v, lab]) => (
-                            <button key={v} style={(l.course ?? 0) === v ? S.coursePillOn : S.coursePill}
+                            <button key={v}
+                              style={(l.course ?? 0) === v
+                                ? { ...S.coursePillOn, color: courseColor(v), borderColor: `${courseColor(v)}55`, background: `${courseColor(v)}1a` }
+                                : S.coursePill}
                               onClick={() => updLine(i, { course: v })}>{lab}</button>
                           ))}
                         </span>

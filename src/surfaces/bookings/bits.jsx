@@ -199,6 +199,16 @@ export function EmptyNote({ title, sub }) {
 // ── pre-order state for a booking (Peter, 13 Aug: "needs to be clear what
 // package someone has booked and if they haven't done their pre order").
 // complete = one choice per guest per choice-course. null = no choices needed.
+// One colour per course, matching the POS's COURSE_COLORS (POSSurface.jsx) so
+// a course reads the same colour from the package builder to the pass.
+export const COURSE_COLORS = {
+  0: '#22d3ee',   // Immediate / on arrival — cyan
+  1: '#22c55e',   // Course 1 (starters) — green
+  2: '#3b82f6',   // Course 2 (mains) — blue
+  3: '#e8a020',   // Course 3 (desserts) — amber
+};
+export const courseColor = (c) => COURSE_COLORS[c ?? 0] || COURSE_COLORS[1];
+
 export function preorderStateFor(b, packages = []) {
   if (!b?.packageId) return null;
   const pkg = packages.find((p) => p.id === b.packageId);

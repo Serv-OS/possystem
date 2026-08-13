@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.38',
+    date: '2026-08-13',
+    changes: [
+      'Course pills are now colour-coded everywhere bookings show them, matching the colours the POS already fires by: Immediate cyan, Course 1 green, Course 2 blue, Course 3 amber — on the host stand Events tab line list and the Package builder course selector.',
+    ],
+  },
+  {
     version: '5.6.37',
     date: '2026-08-13',
     changes: [
