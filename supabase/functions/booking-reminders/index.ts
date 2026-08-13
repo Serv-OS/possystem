@@ -19,6 +19,7 @@
 // sms_messages audit), email via Resend/Postmark (RECEIPT_EMAIL_* envs).
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
+import { resolveAndRender, wrapInEmailHtml } from '../_shared/template-resolver.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -40,12 +41,12 @@ const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: 
 const venueToday = (tz: string) =>
   new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 
-async function sendSms(to: string, message: string, locationId: string): Promise<boolean> {
+async function sendSms(to: string, message: string, locationId: string, type = 'booking_preorder_reminder'): Promise<boolean> {
   try {
     const res = await fetch(`${SUPABASE_URL}/functions/v1/send-sms`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SERVICE_ROLE}` },
-      body: JSON.stringify({ to, message, location_id: locationId, type: 'booking_preorder_reminder' }),
+      body: JSON.stringify({ to, message, location_id: locationId, type }),
     });
     return res.ok;
   } catch { return false; }
@@ -73,14 +74,29 @@ async function sendEmail(to: string, subject: string, html: string): Promise<boo
   } catch { return false; }
 }
 
-// The guest link lives on the venue's own subdomain (platform slug).
-async function guestBase(opsLocationId: string): Promise<string | null> {
-  if (!platform) return null;
+// The guest link lives on the venue's own subdomain (platform slug); the same
+// platform row carries company_id, which scopes the operator's custom
+// message templates (message_templates is company-keyed).
+async function venueMeta(opsLocationId: string): Promise<{ base: string | null; companyId: string }> {
+  if (!platform) return { base: null, companyId: '' };
   try {
-    let { data } = await platform.from('locations').select('online_slug').eq('ops_location_id', opsLocationId).maybeSingle();
-    if (!data) ({ data } = await platform.from('locations').select('online_slug').eq('id', opsLocationId).maybeSingle());
-    return data?.online_slug ? `https://${data.online_slug}.${CUSTOMER_ROOT}` : null;
-  } catch { return null; }
+    const select = 'online_slug, company_id';
+    let { data } = await platform.from('locations').select(select).eq('ops_location_id', opsLocationId).maybeSingle();
+    if (!data) ({ data } = await platform.from('locations').select(select).eq('id', opsLocationId).maybeSingle());
+    return {
+      base: data?.online_slug ? `https://${data.online_slug}.${CUSTOMER_ROOT}` : null,
+      companyId: (data?.company_id as string) || '',
+    };
+  } catch { return { base: null, companyId: '' }; }
+}
+
+// Resolve an operator-edited template (empty companyId just falls through to
+// the registry default). Returns null only when the type/channel is unknown,
+// so callers keep a hardcoded fallback for safety.
+async function renderTpl(
+  companyId: string, type: string, channel: 'email' | 'sms', data: Record<string, string>,
+): Promise<{ subject?: string; body: string } | null> {
+  try { return await resolveAndRender(companyId, type, channel, data); } catch { return null; }
 }
 
 const fmtDate = (iso: string) =>
@@ -107,9 +123,19 @@ Deno.serve(async (req) => {
       const cust = (bk.customer || {}) as Record<string, unknown>;
       const first = String(cust.name || 'there').split(' ')[0];
       const when = `${fmtDate(bk.booking_date)} at ${String(bk.start_time).slice(0, 5)}`;
-      const pkgLine = pkg ? ` with ${pkg.name}` : '';
-      const base = await guestBase(bk.location_id);
+      const { base, companyId } = await venueMeta(bk.location_id);
       const poLink = bk.preorder_token && base ? `${base}/book?preorder=${bk.preorder_token}` : null;
+      const tplData: Record<string, string> = {
+        customer_name: first,
+        venue_name: venueName,
+        date: fmtDate(bk.booking_date),
+        time: String(bk.start_time).slice(0, 5),
+        party_size: String(bk.covers),
+        package_name: pkg?.name ? String(pkg.name) : '',
+        package_line: pkg?.name ? `with ${pkg.name} ` : '',
+        preorder_link: poLink || '',
+        preorder_link_line: poLink ? `Choose your menu: ${poLink} ` : '',
+      };
       const sent: string[] = [];
 
       const phone = String(cust.phone || '').trim();
@@ -117,9 +143,11 @@ Deno.serve(async (req) => {
         const { error: lg } = await db.from('booking_reminders')
           .insert({ location_id: bk.location_id, booking_id: bk.id, kind: 'confirmation', channel: 'sms', sent_to: phone });
         if (!lg) {
-          const msg = `${venueName}: table for ${bk.covers} booked${pkgLine} — ${when}.` +
-            (poLink ? ` Choose your menu: ${poLink}` : '') + ` Need to change it? Call the venue.`;
-          const ok = await sendSms(phone, msg, bk.location_id);
+          const tpl = await renderTpl(companyId, 'booking_confirmation', 'sms', tplData);
+          const msg = tpl?.body ||
+            (`${venueName}: table for ${bk.covers} booked${pkg ? ` with ${pkg.name}` : ''}, ${when}.` +
+              (poLink ? ` Choose your menu: ${poLink}` : '') + ` Need to change it? Call the venue.`);
+          const ok = await sendSms(phone, msg, bk.location_id, 'booking_confirmation');
           if (!ok) await db.from('booking_reminders').delete().eq('booking_id', bk.id).eq('kind', 'confirmation').eq('channel', 'sms');
           else sent.push('sms');
         }
@@ -129,10 +157,14 @@ Deno.serve(async (req) => {
         const { error: lg } = await db.from('booking_reminders')
           .insert({ location_id: bk.location_id, booking_id: bk.id, kind: 'confirmation', channel: 'email', sent_to: email });
         if (!lg) {
-          const ok = await sendEmail(email, `Booking confirmed — ${venueName}, ${fmtDate(bk.booking_date)}`,
-            `<p>Hi ${first},</p><p>Your table for <b>${bk.covers}</b> at <b>${venueName}</b> is booked${pkgLine ? `<b>${pkgLine}</b>` : ''} — <b>${when}</b>.</p>` +
-            (poLink ? `<p><a href="${poLink}">Choose your menu</a> — the kitchen needs everyone's choices.</p>` : '') +
-            `<p>Need to change it? Just call the venue.</p>`);
+          const tpl = await renderTpl(companyId, 'booking_confirmation', 'email', tplData);
+          const subject = tpl?.subject || `Booking confirmed: ${venueName}, ${fmtDate(bk.booking_date)}`;
+          const html = tpl?.body
+            ? wrapInEmailHtml(tpl.body, { venueName })
+            : (`<p>Hi ${first},</p><p>Your table for <b>${bk.covers}</b> at <b>${venueName}</b> is booked${pkg ? ` with <b>${pkg.name}</b>` : ''}, <b>${when}</b>.</p>` +
+              (poLink ? `<p><a href="${poLink}">Choose your menu</a>, the kitchen needs everyone's choices.</p>` : '') +
+              `<p>Need to change it? Just call the venue.</p>`);
+          const ok = await sendEmail(email, subject, html);
           if (!ok) await db.from('booking_reminders').delete().eq('booking_id', bk.id).eq('kind', 'confirmation').eq('channel', 'email');
           else sent.push('email');
         }
@@ -175,13 +207,22 @@ Deno.serve(async (req) => {
       if (today < deadline) continue;                       // window not open yet
       if ((preCount.get(b.id) || 0) >= b.covers) continue;  // enough choices in — done
 
-      const base = await guestBase(b.location_id);
+      const { base, companyId } = await venueMeta(b.location_id);
       const link = base ? `${base}/book?preorder=${b.preorder_token}` : null;
       if (!link) continue;
       const cust = (b.customer || {}) as Record<string, unknown>;
       const first = String(cust.name || 'there').split(' ')[0];
       const when = `${fmtDate(b.booking_date)} at ${String(b.start_time).slice(0, 5)}`;
       const venueName = loc?.name || 'the venue';
+      const tplData: Record<string, string> = {
+        customer_name: first,
+        venue_name: venueName,
+        date: fmtDate(b.booking_date),
+        time: String(b.start_time).slice(0, 5),
+        party_size: String(b.covers),
+        package_name: String(pkg.name || 'your package'),
+        preorder_link: link,
+      };
 
       // Email leg (once, ledger-gated)
       const email = String(cust.email || '').trim();
@@ -189,9 +230,12 @@ Deno.serve(async (req) => {
         const { error: ledgerErr } = await db.from('booking_reminders')
           .insert({ location_id: b.location_id, booking_id: b.id, kind: 'preorder', channel: 'email', sent_to: email });
         if (!ledgerErr) {
-          const ok = await sendEmail(email,
-            `Choose your menu — ${venueName}, ${fmtDate(b.booking_date)}`,
-            `<p>Hi ${first},</p><p>Your table for ${b.covers} at <b>${venueName}</b> on <b>${when}</b> includes <b>${pkg.name}</b> — the kitchen needs everyone's choices.</p><p><a href="${link}">Choose your menu</a></p><p>It takes a minute per guest.</p>`);
+          const tpl = await renderTpl(companyId, 'booking_preorder_reminder', 'email', tplData);
+          const subject = tpl?.subject || `Choose your menu: ${venueName}, ${fmtDate(b.booking_date)}`;
+          const html = tpl?.body
+            ? wrapInEmailHtml(tpl.body, { venueName })
+            : `<p>Hi ${first},</p><p>Your table for ${b.covers} at <b>${venueName}</b> on <b>${when}</b> includes <b>${pkg.name}</b>, the kitchen needs everyone's choices.</p><p><a href="${link}">Choose your menu</a></p><p>It takes a minute per guest.</p>`;
+          const ok = await sendEmail(email, subject, html);
           if (!ok) await db.from('booking_reminders').delete().eq('booking_id', b.id).eq('kind', 'preorder').eq('channel', 'email');
           else sent.push({ booking: b.id, channel: 'email' });
         }
@@ -202,9 +246,10 @@ Deno.serve(async (req) => {
         const { error: ledgerErr } = await db.from('booking_reminders')
           .insert({ location_id: b.location_id, booking_id: b.id, kind: 'preorder', channel: 'sms', sent_to: phone });
         if (!ledgerErr) {
-          const ok = await sendSms(phone,
-            `${venueName}: your ${pkg.name} on ${fmtDate(b.booking_date)} needs everyone's menu choices — pick here: ${link}`,
-            b.location_id);
+          const tpl = await renderTpl(companyId, 'booking_preorder_reminder', 'sms', tplData);
+          const msg = tpl?.body ||
+            `${venueName}: your ${pkg.name} on ${fmtDate(b.booking_date)} needs everyone's menu choices. Pick here: ${link}`;
+          const ok = await sendSms(phone, msg, b.location_id);
           if (!ok) await db.from('booking_reminders').delete().eq('booking_id', b.id).eq('kind', 'preorder').eq('channel', 'sms');
           else sent.push({ booking: b.id, channel: 'sms' });
         }

@@ -297,6 +297,20 @@ export async function saveBookingPreorders(bookingId, locationId, rows) {
 }
 
 // How many live future bookings still reference a package (delete warning).
+// Money ledger for one booking. RLS grants SELECT only to BO-authenticated
+// users (user_accessible_locations); a paired host-stand device gets [] —
+// callers must treat empty as "not visible", never "unpaid".
+export async function loadBookingPayments(bookingId) {
+  if (isMock || !supabase) return [];
+  try {
+    const { data, error } = await supabase.from('booking_payments')
+      .select('id, kind, status, amount, currency, card_last4, card_brand, captured_at, authorised_at')
+      .eq('booking_id', bookingId).order('created_at', { ascending: true });
+    if (error) { warnAbsentOr(error, 'loadBookingPayments'); return []; }
+    return data || [];
+  } catch (e) { warnAbsentOr(e, 'loadBookingPayments'); return []; }
+}
+
 export async function countUpcomingBookingsForPackage(packageId) {
   if (isMock || !supabase || !packageId) return 0;
   try {

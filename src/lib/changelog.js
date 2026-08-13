@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.37',
+    date: '2026-08-13',
+    changes: [
+      'Booking messages are now EDITABLE: Back Office → Channels → Message templates gains a Bookings category with Booking Confirmation and Pre-order Reminder (email + SMS each), full merge tags ({{package_name}}, {{preorder_link}}, auto clauses that vanish when they do not apply) and live preview. The sending function resolves the venue\'s custom wording at send time, falling back to the polished defaults.',
+      'Diary inspector Payment section now names the event ("Tasting Menu · 7 course · prepaid £120") and shows LIVE money state from the booking_payments ledger for Back Office users (paid ✓ with card details, card held, pending, failed, refund on file); paired host stands see honest neutral copy. The stale "card capture ships in the payments phase" line is gone.',
+      'Confirmation SMS audit rows are now labelled booking_confirmation (were mislabelled as pre-order reminders).',
+    ],
+  },
+  {
     version: '5.6.36',
     date: '2026-08-13',
     changes: [

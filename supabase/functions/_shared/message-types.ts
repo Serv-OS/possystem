@@ -70,6 +70,14 @@ const TAG_COLLECTION_POINT: MergeTag = { tag: 'collection_point', label: 'Collec
 const TAG_PORTAL_URL: MergeTag = { tag: 'portal_url', label: 'Loyalty Portal URL', example: 'https://venue.serv-os.app/account' };
 const TAG_OTP_CODE: MergeTag = { tag: 'otp_code', label: 'Verification Code', example: '482917' };
 
+// Booking tags. The *_line tags are composite sentences the sender builds and
+// leaves EMPTY when they don't apply (no package / no choices needed), so one
+// template reads correctly for every booking.
+const TAG_PACKAGE_NAME: MergeTag = { tag: 'package_name', label: 'Package Name', example: 'Tasting Menu · 7 course' };
+const TAG_PACKAGE_LINE: MergeTag = { tag: 'package_line', label: 'Package Clause (auto, empty if no package)', example: 'with Tasting Menu · 7 course ' };
+const TAG_PREORDER_LINK: MergeTag = { tag: 'preorder_link', label: 'Choose-menu Link', example: 'https://venue.serv-os.app/book?preorder=abc123' };
+const TAG_PREORDER_LINK_LINE: MergeTag = { tag: 'preorder_link_line', label: 'Choose-menu Sentence (auto, empty if no choices needed)', example: 'Choose your menu: https://venue.serv-os.app/book?preorder=abc123 ' };
+
 // ── Message type definitions ────────────────────────────────────────────────
 
 export const MESSAGE_TYPES: MessageTypeDef[] = [
@@ -292,6 +300,54 @@ Earn points on every order · Redeem rewards · Birthday treats · Gift card bal
       },
     },
   },
+
+  // ── Bookings ────────────────────────────────────────────────────────────
+  {
+    type: 'booking_confirmation',
+    label: 'Booking Confirmation',
+    description: 'Sent by SMS and email the moment a table booking is made (widget or host stand)',
+    category: 'Bookings',
+    channels: ['email', 'sms'],
+    mergeTags: [TAG_CUSTOMER_NAME, TAG_VENUE_NAME, TAG_DATE, TAG_TIME, TAG_PARTY_SIZE, TAG_PACKAGE_NAME, TAG_PACKAGE_LINE, TAG_PREORDER_LINK, TAG_PREORDER_LINK_LINE],
+    defaults: {
+      sms: {
+        body: `{{venue_name}}: table for {{party_size}} booked {{package_line}}on {{date}} at {{time}}. {{preorder_link_line}}Need to change it? Call the venue.`,
+      },
+      email: {
+        subject: `Booking confirmed: {{venue_name}}, {{date}}`,
+        body: `Hi {{customer_name}},
+
+Your table for {{party_size}} at {{venue_name}} is booked {{package_line}}for {{date}} at {{time}}.
+
+{{preorder_link_line}}
+
+Need to change anything? Just call the venue.`,
+      },
+    },
+  },
+  {
+    type: 'booking_preorder_reminder',
+    label: 'Pre-order Reminder',
+    description: 'Nudges a guest to complete their menu choices once the package deadline window opens',
+    category: 'Bookings',
+    channels: ['email', 'sms'],
+    mergeTags: [TAG_CUSTOMER_NAME, TAG_VENUE_NAME, TAG_DATE, TAG_TIME, TAG_PARTY_SIZE, TAG_PACKAGE_NAME, TAG_PREORDER_LINK],
+    defaults: {
+      sms: {
+        body: `{{venue_name}}: your {{package_name}} on {{date}} needs everyone's menu choices. Pick here: {{preorder_link}}`,
+      },
+      email: {
+        subject: `Choose your menu: {{venue_name}}, {{date}}`,
+        body: `Hi {{customer_name}},
+
+Your table for {{party_size}} at {{venue_name}} on {{date}} at {{time}} includes {{package_name}}. The kitchen needs everyone's choices.
+
+Choose your menu: {{preorder_link}}
+
+It takes a minute per guest.`,
+      },
+    },
+  },
 ];
 
 // ── Lookup helpers ──────────────────────────────────────────────────────────
@@ -314,4 +370,4 @@ export function buildSampleData(tags: MergeTag[]): Record<string, string> {
 }
 
 /** Categories in display order */
-export const CATEGORIES = ['Orders', 'Gift Cards', 'Tables', 'Receipts', 'Loyalty'];
+export const CATEGORIES = ['Orders', 'Gift Cards', 'Tables', 'Bookings', 'Receipts', 'Loyalty'];

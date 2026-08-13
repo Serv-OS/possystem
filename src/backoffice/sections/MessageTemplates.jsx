@@ -40,6 +40,7 @@ const CATEGORY_ICONS = {
   Orders: '📋',
   'Gift Cards': '🎁',
   Tables: '🍽️',
+  Bookings: '📅',
   Receipts: '🧾',
   Loyalty: '⭐',
 };

@@ -20,6 +20,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../store';
 import { toMin, toHM, isTableFree, toOptimiserBooking } from '../../lib/bookings/optimiser.js';
+import { loadBookingPayments } from '../../lib/bookings/bookingsData.js';
 import {
   mono, tintBg, tintBd, rulesOf, displayStatus, statusMeta, StatusBadge, isDead, isLive,
   useNowMin, money, initialsOf, bookingName, todayISO, EmptyNote, Chip, preorderStateFor,
@@ -326,6 +327,41 @@ function Kpi({ label, value, sub, col, last }) {
   );
 }
 
+// Live money state from the booking_payments ledger. RLS only lets a
+// BO-authenticated session read it; a paired host-stand device gets [] and
+// falls back to neutral copy — an empty read is "not visible here", never
+// "unpaid".
+function PaymentState({ b, prepaid, hold }) {
+  const [state, setState] = useState({ id: null, rows: null });
+  useEffect(() => {
+    let alive = true;
+    loadBookingPayments(b.id).then((rows) => { if (alive) setState({ id: b.id, rows }); });
+    return () => { alive = false; };
+  }, [b.id]);
+  const rows = state.id === b.id ? state.rows : null;
+
+  let line = null;
+  if (rows && rows.length) {
+    const captured = rows.find((r) => r.status === 'captured' && r.kind !== 'refund');
+    const held = rows.find((r) => r.status === 'authorised' && r.kind === 'hold');
+    const refunded = rows.find((r) => r.status === 'refunded' || r.kind === 'refund');
+    const failed = rows.find((r) => r.status === 'failed');
+    const card = (r) => (r?.card_brand || r?.card_last4) ? ` (${[r.card_brand, r.card_last4 ? `···${r.card_last4}` : null].filter(Boolean).join(' ')})` : '';
+    if (refunded) line = { txt: `Refund on file${card(refunded)}`, col: 'var(--orn)' };
+    else if (captured) line = { txt: `✓ ${money(captured.amount)} paid by card${card(captured)}`, col: 'var(--grn)' };
+    else if (held) line = { txt: `✓ Card held${card(held)} — charged only on no-show`, col: 'var(--grn)' };
+    else if (failed) line = { txt: 'Card payment FAILED — take payment at the venue', col: 'var(--red)' };
+    else line = { txt: 'Card payment pending — Adyen confirms by webhook', col: 'var(--t3)' };
+  } else if (prepaid) {
+    line = { txt: 'Prepay is taken by card on the booking page. Settled amounts show in Back Office.', col: 'var(--t4)' };
+  } else if (hold > 0) {
+    line = { txt: 'Held when booked online with card capture on — charged only on no-show.', col: 'var(--t4)' };
+  } else {
+    line = { txt: 'No card taken for this booking.', col: 'var(--t4)' };
+  }
+  return <div style={{ fontSize: 10.5, marginTop: 5, lineHeight: 1.45, color: line.col }}>{line.txt}</div>;
+}
+
 function Inspector({ b, nowMin, packages, rules, tables, onClose }) {
   const updateBooking = useStore((s) => s.updateBooking);
   const cancelBooking = useStore((s) => s.cancelBooking);
@@ -352,7 +388,7 @@ function Inspector({ b, nowMin, packages, rules, tables, onClose }) {
 
   const steps = [
     { t: 'Booking created', d: `Via ${b.source || 'host'} · ${b.covers} covers · turn ${b.turnMinutes || 90} min${b.pacingOverrideBy ? ` · pacing override by ${b.pacingOverrideBy}` : ''}` },
-    { t: 'Payment', d: prepaid ? 'Package prepaid — posts to the check as tender when the tab closes' : hold > 0 ? `${money(hold)} held on card (${money(rules.holdPerCover)} × ${b.covers}) — captured only on no-show` : 'No card on file — card capture arrives with the payments phase' },
+    { t: 'Payment', d: prepaid ? `${pkg?.name || 'Package'} prepaid at booking — posts to the check as tender when the tab closes` : hold > 0 ? `${money(hold)} held on card (${money(rules.holdPerCover)} × ${b.covers}) — captured only on no-show` : 'No card taken for this booking' },
     { t: 'Package', d: pkg ? `${pkg.name} — lines queue to the POS carrying their courses` : 'No package attached — à la carte' },
     { t: 'POS handover', d: b.status === 'dining' ? `Seated — tab open on ${labels.join(' + ')}` : `On seat, a pre-loaded tab opens on ${labels[0] || 'the table'} with the guest attached` },
   ];
@@ -421,13 +457,15 @@ function Inspector({ b, nowMin, packages, rules, tables, onClose }) {
 
       <div style={sec}>
         <SecLabel>Payment</SecLabel>
-        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between' }}>
-          <span style={{ fontSize: 12, color: 'var(--t2)' }}>{prepaid ? 'Prepaid package' : hold > 0 ? 'Card held, no charge' : 'Nothing on file'}</span>
-          <span style={{ fontSize: 16, fontWeight: 800, color: 'var(--grn)', ...mono }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
+          <span style={{ fontSize: 12, color: 'var(--t2)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {prepaid ? `${pkg?.name || 'Package'} · prepaid` : hold > 0 ? 'Card held, no charge' : 'Nothing on file'}
+          </span>
+          <span style={{ fontSize: 16, fontWeight: 800, color: 'var(--grn)', ...mono, flexShrink: 0 }}>
             {prepaid ? money(String(pkg.priceUnit || '').includes('cover') ? pkg.price * b.covers : pkg.price) : money(hold)}
           </span>
         </div>
-        <div style={{ fontSize: 10, color: 'var(--t4)', marginTop: 4 }}>Display only — card capture ships in the payments phase.</div>
+        <PaymentState b={b} prepaid={prepaid} hold={hold} />
       </div>
 
       <div style={sec}>
