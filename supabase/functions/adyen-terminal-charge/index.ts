@@ -104,10 +104,28 @@ async function settleFromResponse(jobId: string, p: ReturnType<typeof parsePayme
   if (success && p.authorizedMinor == null && !TRUSTED_AMOUNT_SOURCES.has(source)) {
     throw new Error('device report has no AuthorizedAmount — refusing to settle approved');
   }
+  let effectiveAuthorized = p.authorizedMinor;
   if (success && p.authorizedMinor != null && p.authorizedMinor !== chargeMinor) {
-    // Tip added ON the terminal (AskGratuity mode, later) legitimately raises the
-    // authorised amount; anything else is a mismatch worth a loud log either way.
-    console.log(`adyen-terminal-charge: authorised ${p.authorizedMinor} != charge ${chargeMinor} on job ${jobId} (tip on terminal?)`);
+    // Tip added ON the terminal (AskGratuity). Credit it ONLY when the
+    // processor's own TipAmount explains the difference EXACTLY — then the
+    // job's money is recomputed (charge = due + tip, the tj_charge_identity
+    // shape) BEFORE settle so the RPC's mismatch guard agrees. Any other
+    // difference still parks for a manager (v5.6.54 — live £1 gratuity parked
+    // as 'amount mismatch: processor 5799 vs server 5699').
+    const tip = p.tipMinor ?? 0;
+    if (tip > 0 && chargeMinor + tip === p.authorizedMinor) {
+      const { data: fixed, error: tipErr } = await opsAdmin.from('terminal_jobs')
+        .update({ tip_minor: tip, charge_minor: p.authorizedMinor })
+        .eq('id', jobId).is('tip_minor', null)
+        .select('id').maybeSingle();
+      if (tipErr || !fixed) {
+        console.log(`adyen-terminal-charge: tip recompute skipped on job ${jobId}: ${tipErr?.message || 'tip already set'}`);
+      } else {
+        console.log(`adyen-terminal-charge: on-reader tip ${tip} credited on job ${jobId} (${chargeMinor} + tip = ${p.authorizedMinor})`);
+      }
+    } else {
+      console.log(`adyen-terminal-charge: authorised ${p.authorizedMinor} != charge ${chargeMinor} on job ${jobId} and TipAmount ${tip} does not explain it — parking via RPC guard`);
+    }
   }
   const { error } = await opsAdmin.rpc('terminal_job_settle_from_processor', {
     p_job_id: jobId,
@@ -118,7 +136,7 @@ async function settleFromResponse(jobId: string, p: ReturnType<typeof parsePayme
     p_card: settleCard(p),
     p_decline_reason: success ? null : (p.errorCondition ?? 'declined'),
     p_source: source,
-    p_session_amount_minor: p.authorizedMinor ?? (success ? chargeMinor : null),
+    p_session_amount_minor: effectiveAuthorized ?? (success ? chargeMinor : null),
   });
   if (error) throw new Error(`settle rpc: ${error.message}`);
 }

@@ -306,6 +306,55 @@ Deno.serve(async (req) => {
       return json({ ok: true, enabled: body.enabled === true });
     }
 
+    // ── settings_probe: raw store terminalSettings groups (shape discovery) ──
+    if (action === 'settings_probe') {
+      const r = await mgmt<Record<string, unknown>>('GET', `/stores/${maa.store_id}/terminalSettings`);
+      if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
+      const d = r.data || {};
+      return json({ ok: true, keys: Object.keys(d), nexo: d.nexo ?? null, payAtTable: d.payAtTable ?? null, standalone: d.standalone ?? null, gratuities: d.gratuities ?? null });
+    }
+
+    // ── set_pay_at_table: enable the reader's own Pay-at-table journey ───────
+    if (action === 'set_pay_at_table') {
+      const r = await mgmt('PATCH', `/stores/${maa.store_id}/terminalSettings`, {
+        payAtTable: { enablePayAtTable: body.enabled !== false, paymentInstrument: 'Card' },
+      });
+      if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
+      if (!r.ok) return json({ ok: false, error: (r.data as Record<string, unknown>)?.detail || `payAtTable update failed (${r.status})` }, 200);
+      return json({ ok: true });
+    }
+
+    // ── set_event_url: point terminal event notifications at our endpoint ────
+    if (action === 'set_event_url') {
+      const url = String(body.url || '');
+      if (!/^https:\/\//.test(url)) return json({ error: 'https url required' }, 400);
+      const r = await mgmt('PATCH', `/stores/${maa.store_id}/terminalSettings`, {
+        nexo: { eventUrls: { eventLocalUrls: [], eventPublicUrls: [{ url }] } },
+      });
+      if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
+      if (!r.ok) return json({ ok: false, error: JSON.stringify(r.data).slice(0, 300) }, 200);
+      return json({ ok: true });
+    }
+
+    // ── set_wakeup_button: the reader's own "Pay at table" menu button ───────
+    // nexo.notification puts a button in the reader's menu; pressing it fires
+    // an EventNotification (category rides in the payload) at our event URL —
+    // the responder answers with an input prompt + the table's bill.
+    if (action === 'set_wakeup_button') {
+      const r = await mgmt('PATCH', `/stores/${maa.store_id}/terminalSettings`, {
+        nexo: { notification: {
+          enabled: body.enabled !== false,
+          showButton: true,
+          title: String(body.title || 'Pay at table').slice(0, 40),
+          category: 'SaleWakeUp',
+          details: String(body.details || 'paytable').slice(0, 60),
+        } },
+      });
+      if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
+      if (!r.ok) return json({ ok: false, error: JSON.stringify(r.data).slice(0, 300) }, 200);
+      return json({ ok: true });
+    }
+
     // ── passcodes: the reader's on-device admin menu PIN (store-level) ───────
     if (action === 'passcodes') {
       const r = await mgmt<Record<string, unknown>>('GET', `/merchants/${merchant}/terminalSettings`);

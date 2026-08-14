@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.54',
+    date: '2026-08-14',
+    changes: [
+      'On-reader tips now BOOK correctly: when the gratuity chosen on the reader exactly explains the authorised total, the settle credits it as the tip (charge = bill + tip) instead of parking the check as an amount mismatch. The live £1.00 case was repaired and unparked.',
+      'Groundwork for Pay at Table ON the reader: the reader menu gains a "Pay at table" button (Adyen wake-up notification), event notifications now point at our endpoint with credentials set. The responder that asks for the table and sends its bill is the next slice.',
+    ],
+  },
+  {
     version: '5.6.53',
     date: '2026-08-14',
     changes: [
