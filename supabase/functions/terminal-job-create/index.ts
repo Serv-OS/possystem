@@ -360,6 +360,13 @@ Deno.serve(async (req) => {
     // the till's adyen-terminal-charge 'start' kick (CAS makes dupes harmless).
     status: term.adyen_terminal_id ? 'charging_unsent' : 'pending',
     processor: term.adyen_terminal_id ? 'adyen' : 'ryft',
+    // Adyen-born jobs need the server-computed charge NOW: on PAX the
+    // on-device tip walk stamps charge_minor, but an AMS1 job goes straight
+    // to 'start', whose money-safety gate refuses a null charge. Base charge
+    // = due; the gratuity the customer picks on the reader arrives on top in
+    // the PaymentResponse and the settle writer records it (tj_charge_identity
+    // holds: tip_minor stays NULL until settle).
+    ...(term.adyen_terminal_id ? { charge_minor: due } : {}),
     claim_expires_at: new Date(Date.now() + 15 * 60_000).toISOString(),
     dispatched_at: new Date().toISOString(),
   };

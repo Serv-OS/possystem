@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.51',
+    date: '2026-08-14',
+    changes: [
+      'FIRST LIVE ADYEN TERMINAL TRANSACTION: the POS charge reached the AMS1 over Adyen\'s cloud, the reader showed the amount, and the outcome flowed back through the settle pipeline (a deliberate cancel, closed cleanly as declined — no stuck state).',
+      'Two fixes made it work: Adyen-born jobs now carry their server-computed charge from birth (the money-safety gate refused the null), and cloud calls use Adyen\'s classic terminal-api endpoint — the newer device-api host is gated per account and returned 403 with every role ticked.',
+    ],
+  },
+  {
     version: '5.6.50',
     date: '2026-08-14',
     changes: [

@@ -56,6 +56,12 @@ export function terminalEndpoint(merchantAccount: string, poiid: string, mode: '
     : !LIVE ? 'https://device-api-test.adyen.com'
     : region === 'eu' ? 'https://device-api-live.adyen.com'
     : `https://device-api-live-${region}.adyen.com`;
+  // CLASSIC cloud Terminal API hosts (terminal-api-*) take the bare /sync
+  // path — the POIID rides in the nexo MessageHeader, not the URL. The newer
+  // device-api hosts are account-gated (14 Aug: 00_403 with every role ticked),
+  // so ADYEN_DEVICE_BASE=https://terminal-api-test.adyen.com is the reliable
+  // default until Adyen enables device-api on the account.
+  if (/terminal-api/.test(base)) return `${base}/${mode}`;
   return `${base}/v1/merchants/${encodeURIComponent(merchantAccount)}/devices/${encodeURIComponent(poiid)}/${mode}`;
 }
 
