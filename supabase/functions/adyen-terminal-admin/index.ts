@@ -265,6 +265,22 @@ Deno.serve(async (req) => {
       return json({ ok: true, terminalDeviceId, poiid: terminalId });
     }
 
+    // ── sync_gratuities: BO tipping percentages → the reader's tip screen ────
+    if (action === 'sync_gratuities') {
+      const pcts = (Array.isArray(body.percentages) ? body.percentages : [5, 10, 12.5])
+        .map((n: unknown) => Number(n)).filter((n: number) => Number.isFinite(n) && n > 0 && n <= 100).slice(0, 4);
+      const gratuities = [{
+        currency: 'GBP',
+        usePredefinedTipEntries: true,
+        predefinedTipEntries: pcts.map((n: number) => `${n}%`),
+        allowCustomAmount: body.allow_custom !== false,
+      }];
+      const r = await mgmt('PATCH', `/stores/${maa.store_id}/terminalSettings`, { gratuities });
+      if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
+      if (!r.ok) return json({ ok: false, error: (r.data as Record<string, unknown>)?.detail || `gratuities update failed (${r.status})` }, 200);
+      return json({ ok: true, presets: pcts });
+    }
+
     // ── passcodes: the reader's on-device admin menu PIN (store-level) ───────
     if (action === 'passcodes') {
       const r = await mgmt<Record<string, unknown>>('GET', `/merchants/${merchant}/terminalSettings`);

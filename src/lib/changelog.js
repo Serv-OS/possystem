@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.52',
+    date: '2026-08-14',
+    changes: [
+      'Tipping on Adyen readers: when the reader\'s tipping is on, the payment asks for a gratuity ON the reader, with the venue\'s suggested percentages as the preset buttons (synced to Adyen when you save the reader settings).',
+      'Per-reader controls in Back Office → Card readers → Adyen panel → Settings: which till sends to it, whether it takes POS-sent payments and/or Table Pay, tipping on/off, suggested percentages, custom amount allowed.',
+      'Split payments on Adyen venues route card legs to the Adyen reader (same job pipeline; no more silent fall-through), with an honest message when no reader is linked.',
+    ],
+  },
+  {
     version: '5.6.51',
     date: '2026-08-14',
     changes: [

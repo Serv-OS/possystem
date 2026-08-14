@@ -60,9 +60,14 @@ export default function AdyenTerminals() {
   const [err, setErr] = useState('');
   const [notice, setNotice] = useState('');
   const [posDevices, setPosDevices] = useState([]);
-  const [bindFor, setBindFor] = useState(null);    // terminal_device id being re-bound
+  const [bindFor, setBindFor] = useState(null);    // terminal_device id with settings open
   const [bindTo, setBindTo] = useState('');
   const [serial, setSerial] = useState('');
+  const [tipOn, setTipOn] = useState(true);
+  const [tipPcts, setTipPcts] = useState('5, 10, 12.5');
+  const [tipCustom, setTipCustom] = useState(true);
+  const [modeTable, setModeTable] = useState(true);
+  const [modePos, setModePos] = useState(true);
 
   const load = useCallback(async () => {
     try {
@@ -100,18 +105,25 @@ export default function AdyenTerminals() {
   const saveBinding = async (link) => {
     setBusy(`bind-${link.id}`); setErr(''); setNotice('');
     try {
+      const percentages = tipPcts.split(/[\s,]+/).map(Number).filter((n) => Number.isFinite(n) && n > 0 && n <= 100).slice(0, 4);
+      const tipConfig = { enabled: tipOn, percentages: percentages.length ? percentages : [5, 10, 12.5], allowCustom: tipCustom };
       // Whole-settings write — same contract as PaxTerminals: always the full
-      // set, pass everything else through unchanged.
+      // set, pass everything not edited here through unchanged.
       const { data, error } = await supabase.rpc('set_terminal_settings', {
         p_terminal_id: link.id,
-        p_tip_config: link.tip_config ?? null,
+        p_tip_config: tipConfig,
         p_bound_pos_device_id: bindTo || null,
-        p_modes: link.modes ?? null,
+        p_modes: { ...(link.modes || {}), table_pay: modeTable, pos_dispatch: modePos },
         p_label: link.label ?? null,
         p_idle_screen: link.idle_screen ?? null,
       });
-      if (error || !data?.ok) throw new Error(error?.message || 'binding save failed');
-      setNotice('Till assignment saved');
+      if (error || !data?.ok) throw new Error(error?.message || 'settings save failed');
+      // Push the tip presets onto the reader's own gratuity screen at Adyen.
+      if (tipOn) {
+        const g = await callAdmin('sync_gratuities', { percentages: tipConfig.percentages, allow_custom: tipCustom });
+        if (g.ok === false) throw new Error(`Saved here, but the reader's tip presets did not sync: ${g.error}`);
+      }
+      setNotice('Reader settings saved' + (tipOn ? ' — tip presets synced to the reader (it picks them up within a minute)' : ''));
       setBindFor(null);
       await load();
     } catch (e) { setErr(e?.message || String(e)); }
@@ -209,8 +221,19 @@ export default function AdyenTerminals() {
                   {t.link ? (
                     <>
                       <button style={S.btn} disabled={!!busy}
-                        onClick={() => { setBindFor(bindFor === t.link.id ? null : t.link.id); setBindTo(t.link.bound_pos_device_id || ''); }}>
-                        Assign till
+                        onClick={() => {
+                          if (bindFor === t.link.id) { setBindFor(null); return; }
+                          setBindFor(t.link.id);
+                          setBindTo(t.link.bound_pos_device_id || '');
+                          const tc = t.link.tip_config || {};
+                          setTipOn(tc.enabled !== false);
+                          setTipPcts((Array.isArray(tc.percentages) && tc.percentages.length ? tc.percentages : [5, 10, 12.5]).join(', '));
+                          setTipCustom(tc.allowCustom !== false);
+                          const m = t.link.modes || {};
+                          setModeTable(m.table_pay !== false);
+                          setModePos(m.pos_dispatch !== false);
+                        }}>
+                        Settings
                       </button>
                       <button style={{ ...S.btn, ...S.btnDan }} disabled={!!busy}
                         onClick={() => { if (window.confirm(`Unlink ${t.link.label || t.id}? The reader stays boarded at Adyen and can be re-registered any time.`)) run(`unlink-${t.id}`, 'unlink', { terminal_device_id: t.link.id }); }}>
@@ -226,16 +249,43 @@ export default function AdyenTerminals() {
                 </div>
               </div>
               {t.link && bindFor === t.link.id && (
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '4px 0 12px', borderTop: '1px dashed var(--bdr)' }}>
-                  <span style={S.label}>Send payments from</span>
-                  <select style={{ ...S.input, minWidth: 200 }} value={bindTo} onChange={(e) => setBindTo(e.target.value)}>
-                    <option value="">Any till (unassigned)</option>
-                    {posDevices.map((d) => <option key={d.id} value={d.id}>{d.name || d.id} ({d.type})</option>)}
-                  </select>
-                  <button style={{ ...S.btn, ...S.btnPrim }} disabled={busy === `bind-${t.link.id}`}
-                    onClick={() => saveBinding(t.link)}>
-                    {busy === `bind-${t.link.id}` ? 'Saving…' : 'Save'}
-                  </button>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '10px 0 14px', borderTop: '1px dashed var(--bdr)' }}>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <span style={S.label}>Send payments from</span>
+                    <select style={{ ...S.input, minWidth: 200 }} value={bindTo} onChange={(e) => setBindTo(e.target.value)}>
+                      <option value="">Any till (unassigned)</option>
+                      {posDevices.map((d) => <option key={d.id} value={d.id}>{d.name || d.id} ({d.type})</option>)}
+                    </select>
+                  </div>
+                  <div style={{ display: 'flex', gap: 18, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <span style={S.label}>This reader takes</span>
+                    <label style={{ fontSize: 12.5, display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
+                      <input type="checkbox" checked={modePos} onChange={(e) => setModePos(e.target.checked)} /> Payments sent from the POS
+                    </label>
+                    <label style={{ fontSize: 12.5, display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
+                      <input type="checkbox" checked={modeTable} onChange={(e) => setModeTable(e.target.checked)} /> Table Pay
+                    </label>
+                  </div>
+                  <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <label style={{ fontSize: 12.5, display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
+                      <input type="checkbox" checked={tipOn} onChange={(e) => setTipOn(e.target.checked)} /> <b>Tipping on the reader</b>
+                    </label>
+                    {tipOn && (
+                      <>
+                        <span style={S.label}>Suggested %</span>
+                        <input style={{ ...S.input, width: 130, ...S.mono }} value={tipPcts} onChange={(e) => setTipPcts(e.target.value)} placeholder="5, 10, 12.5" />
+                        <label style={{ fontSize: 12, display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
+                          <input type="checkbox" checked={tipCustom} onChange={(e) => setTipCustom(e.target.checked)} /> allow custom amount
+                        </label>
+                      </>
+                    )}
+                  </div>
+                  <div>
+                    <button style={{ ...S.btn, ...S.btnPrim }} disabled={busy === `bind-${t.link.id}`}
+                      onClick={() => saveBinding(t.link)}>
+                      {busy === `bind-${t.link.id}` ? 'Saving…' : 'Save reader settings'}
+                    </button>
+                  </div>
                 </div>
               )}
             </div>

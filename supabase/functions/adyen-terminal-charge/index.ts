@@ -238,6 +238,10 @@ Deno.serve(async (req) => {
       amountMinor: chargeMinor,
       currency: String(job.currency || 'GBP').toUpperCase(),
       storeId: maa.store_id ?? undefined,
+      // Tip prompt ON the reader — from the job's FROZEN tip config (the same
+      // config PaxPay renders on-device). The gratuity presets shown come from
+      // the store's terminalSettings, synced from Back Office (sync_gratuities).
+      askGratuity: (job.tip_config as { enabled?: boolean } | null)?.enabled === true,
     });
 
     // LOCAL TRANSPORT: hand the message to the on-terminal app / Tap to Pay SDK.

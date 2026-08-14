@@ -233,19 +233,23 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
         try { procInfo = await getLocationProcessorInfo(opsLocationId); } catch { /* stays non-definitive */ }
         if (cancelled) return;
         processorRef.current = procInfo.processor;
-        if (procInfo.processor === 'ryft') {
+        if (procInfo.processor === 'ryft' || procInfo.processor === 'adyen') {
           if (!startedRef.current) {
             startedRef.current = true;
             // v5.5.904: prefer the terminal-job path (same as a full payment). Only fall
-            // back to the direct REST charge when this till has no PAX bound to it.
+            // back to the direct REST charge when this till has no PAX bound to it —
+            // and ONLY on Ryft: the REST helper speaks Ryft's API, never Adyen's.
             let target = null, why = null;
             try { const r = await findPaxTerminal({ posDeviceId: getPosDeviceId() }); target = r?.terminal || null; why = r?.reason || null; }
             catch { /* fall through to legacy */ }
             if (cancelled) return;
             if (target) runPaxJob(opsLocationId, target);
-            else {
+            else if (procInfo.processor === 'ryft') {
               if (why) console.warn('[split] no PAX terminal —', why);
               runRyftPayment(opsLocationId);
+            } else {
+              setState('error');
+              setErrorMsg(why || 'No card reader is linked to this venue — register one in Back Office → Card readers.');
             }
           }
           return;
