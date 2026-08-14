@@ -95,6 +95,21 @@ export default function TableBookings() {
 
   const joinGroupCount = bookingRules?.joinGroups?.length || 0;
 
+  // ── online booking blocks (Peter, 14 Aug) ──────────────────────────────────
+  const tables = useStore((s) => s.tables) || [];
+  const floorTables = tables.filter((t) => !t.parentId);
+  const blockedDates = Array.isArray(rules.blockedDates) ? rules.blockedDates : [];
+  const noOnlineTables = Array.isArray(rules.noOnlineTables) ? rules.noOnlineTables : [];
+  const [newBlock, setNewBlock] = useState('');
+  const addBlockedDate = () => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(newBlock)) return;
+    if (!blockedDates.includes(newBlock)) patch({ blockedDates: [...blockedDates, newBlock].sort() });
+    setNewBlock('');
+  };
+  const toggleNoOnline = (id) => {
+    patch({ noOnlineTables: noOnlineTables.includes(id) ? noOnlineTables.filter((x) => x !== id) : [...noOnlineTables, id] });
+  };
+
   return (
     <div style={{ maxWidth: 1400 }}>
       <Head title="Table bookings"
@@ -149,6 +164,59 @@ export default function TableBookings() {
               Showing defaults — no rules saved for this venue yet. The first change writes them.
             </div>
           )}
+        </div>
+      </div>
+
+      {/* ── Online booking blocks ── */}
+      <div style={{ ...S.section, marginTop: 14 }}>
+        <div style={S.lbl}>Online booking blocks</div>
+        <div style={S.hint}>
+          Both apply to the ONLINE widget only — the host stand can always book any table on any day.
+        </div>
+        <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', marginTop: 12 }}>
+          <div style={{ flex: '1 1 300px', minWidth: 260 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 700 }}>Blocked days</div>
+            <div style={{ ...S.hint, marginTop: 2 }}>Guests cannot book these dates online — Christmas, private hire, deep-clean days.</div>
+            <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+              <input type="date" value={newBlock} onChange={(e) => setNewBlock(e.target.value)}
+                style={{ ...S.inp, width: 170 }} />
+              <button className="btn btn-ghost btn-xs" style={{ height: 38, padding: '0 14px' }} onClick={addBlockedDate} disabled={!newBlock}>Block day</button>
+            </div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 10 }}>
+              {blockedDates.length === 0 && <span style={{ fontSize: 11.5, color: 'var(--t4)' }}>No days blocked.</span>}
+              {blockedDates.map((d) => (
+                <span key={d} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 700, padding: '4px 10px', borderRadius: 999, background: 'var(--red-d, rgba(255,90,74,.1))', color: 'var(--red)' }}>
+                  {d}
+                  <button onClick={() => patch({ blockedDates: blockedDates.filter((x) => x !== d) })}
+                    style={{ border: 'none', background: 'transparent', color: 'inherit', cursor: 'pointer', fontSize: 13, padding: 0, lineHeight: 1 }}
+                    title="Unblock">×</button>
+                </span>
+              ))}
+            </div>
+          </div>
+          <div style={{ flex: '1 1 300px', minWidth: 260 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 700 }}>Tables never offered online</div>
+            <div style={{ ...S.hint, marginTop: 2 }}>The widget will not seat guests here — chef's table, bar seats, staff hold-backs.</div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+              {floorTables.length === 0 && <span style={{ fontSize: 11.5, color: 'var(--t4)' }}>No floor plan yet.</span>}
+              {floorTables.map((t) => {
+                const off = noOnlineTables.includes(t.id);
+                return (
+                  <button key={t.id} onClick={() => toggleNoOnline(t.id)}
+                    title={off ? 'Blocked online — tap to allow' : 'Bookable online — tap to block'}
+                    style={{
+                      fontSize: 12, fontWeight: 700, padding: '6px 12px', borderRadius: 9, cursor: 'pointer',
+                      background: off ? 'var(--red-d, rgba(255,90,74,.1))' : 'var(--bg2)',
+                      border: `1.5px solid ${off ? 'var(--red)' : 'var(--bdr2)'}`,
+                      color: off ? 'var(--red)' : 'var(--t2)',
+                      textDecoration: off ? 'line-through' : 'none',
+                    }}>
+                    {t.label || t.id}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </div>
       </div>
 

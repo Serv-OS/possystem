@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.56',
+    date: '2026-08-14',
+    changes: [
+      'Online booking blocks, both enforced at the server so nothing can sneak past: BLOCKED DAYS (Back Office → Channels → Table bookings — block Christmas, private hire, deep-clean days; the widget shows "not taking online bookings for this date" and refuses any attempt) and TABLES NEVER OFFERED ONLINE (tap table chips to keep the chef\'s table or bar seats out of the widget\'s reach — joins can only form from online-bookable tables).',
+      'Both apply to the online widget ONLY — the host stand books any table on any day, always.',
+    ],
+  },
+  {
     version: '5.6.55',
     date: '2026-08-14',
     changes: [

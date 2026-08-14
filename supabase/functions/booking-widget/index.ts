@@ -98,6 +98,8 @@ function rulesFrom(r: Record<string, unknown> | null) {
     cardCaptureMinCovers: (r.card_capture_min_covers as number) ?? 0,
     holdPerCover: Number(r.hold_per_cover) || 0,
     bookingTerms: String(r.booking_terms || ''),
+    blockedDates: Array.isArray(r.blocked_dates) ? (r.blocked_dates as string[]) : [],
+    noOnlineTables: Array.isArray(r.no_online_tables) ? (r.no_online_tables as string[]) : [],
   };
 }
 
@@ -285,6 +287,7 @@ Deno.serve(async (req) => {
         cardCaptureEnabled: (rules as Record<string, unknown>).cardCaptureEnabled === true,
         cardCaptureMinCovers: (rules as Record<string, unknown>).cardCaptureMinCovers ?? 0,
         bookingTerms: (rules as Record<string, unknown>).bookingTerms || '',
+        blockedDates: (rules as Record<string, unknown>).blockedDates || [],
       });
     }
 
@@ -297,6 +300,23 @@ Deno.serve(async (req) => {
     const daysAhead = Math.round((Date.parse(date) - Date.parse(today)) / 86400000);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || daysAhead < 0 || daysAhead > rules.maxDaysAhead) {
       return json({ ok: false, error: 'date_out_of_range' }, 400);
+    }
+
+    // Tables the widget must never offer (host stand unaffected). Filtered
+    // BEFORE the optimiser so joins can only form from online-bookable tables.
+    const noOnline = new Set(((rules as Record<string, unknown>).noOnlineTables as string[]) || []);
+    if (noOnline.size) venue.tables = venue.tables.filter((t: { id: string }) => !noOnline.has(String(t.id)));
+
+    // Blackout dates: the online door is CLOSED for these days, full stop.
+    const blockedSet = new Set(((rules as Record<string, unknown>).blockedDates as string[]) || []);
+    const dateBlocked = blockedSet.has(date);
+    if (dateBlocked && action === 'book') {
+      await db.from('booking_requests').insert({
+        location_id: locationId,
+        payload: { date, time: String(body.time || ''), party, reason: 'date_blocked' },
+        status: 'rejected',
+      });
+      return json({ ok: false, error: 'date_blocked' });
     }
 
     const bookings = await loadDayBookings(locationId, date);
@@ -325,6 +345,9 @@ Deno.serve(async (req) => {
     const slotFull = (time: string) =>
       paceAt(toMin(time), bookings) >= rules.pacingCap || quote(time).length === 0;
 
+    if (action === 'slots' && dateBlocked) {
+      return json({ ok: true, date, blocked: true, slots: [], packages: [] });
+    }
     if (action === 'slots') {
       const start = toMin(rules.serviceStart), end = toMin(rules.serviceEnd);
       const nowGuard = date === today ? venueNowMin(tz) : -1;

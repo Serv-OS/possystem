@@ -709,6 +709,7 @@ export default function BookingWidget({ location }) {
     (async () => {
       const r = await callWidget({ action: 'slots', location_id: opsId, date, party });
       if (off) return;
+      if (r?.ok && r.blocked) { setSlotsRes({ key, slots: [], packages: [], err: false, blocked: true }); setTime(null); return; }
       if (!r?.ok) { setSlotsRes({ key, slots: [], packages: [], err: true }); setTime(null); return; }
       const next = Array.isArray(r.slots) ? r.slots : [];
       // Offers ride the same response — valid for exactly this date+party.
@@ -1079,6 +1080,10 @@ export default function BookingWidget({ location }) {
         <div style={{ padding: '14px 0', fontSize: 13, color: 'var(--muted)' }}>
           We couldn’t load times for that date.{' '}
           <button type="button" onClick={() => setSlotsNonce((n) => n + 1)} style={S.linkBtn}>Try again</button>
+        </div>
+      ) : (slotsRes?.blocked || (cfg?.blockedDates || []).includes(date)) ? (
+        <div style={{ padding: '18px 4px', fontSize: 13.5, color: 'var(--t2, #555)', lineHeight: 1.5 }}>
+          The venue isn't taking online bookings for this date. Pick another day, or call the venue directly.
         </div>
       ) : slots.length === 0 ? (
         <div style={{ padding: '14px 0', fontSize: 13, color: 'var(--muted)' }}>

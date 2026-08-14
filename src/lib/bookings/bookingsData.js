@@ -76,6 +76,8 @@ export function rowToRules(r) {
     cardCaptureEnabled: !!r.card_capture_enabled,
     cardCaptureMinCovers: r.card_capture_min_covers ?? 0,
     bookingTerms: r.booking_terms || '',
+    blockedDates: Array.isArray(r.blocked_dates) ? r.blocked_dates : [],
+    noOnlineTables: Array.isArray(r.no_online_tables) ? r.no_online_tables : [],
   };
 }
 
@@ -89,6 +91,7 @@ const RULES_TO_ROW = {
   cardCaptureEnabled: 'card_capture_enabled',
   cardCaptureMinCovers: 'card_capture_min_covers',
   bookingTerms: 'booking_terms',
+  blockedDates: 'blocked_dates', noOnlineTables: 'no_online_tables',
 };
 
 export function rowToPackage(r) {
