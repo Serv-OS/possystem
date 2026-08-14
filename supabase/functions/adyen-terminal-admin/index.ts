@@ -265,6 +265,28 @@ Deno.serve(async (req) => {
       return json({ ok: true, terminalDeviceId, poiid: terminalId });
     }
 
+    // ── passcodes: the reader's on-device admin menu PIN (store-level) ───────
+    if (action === 'passcodes') {
+      const r = await mgmt<Record<string, unknown>>('GET', `/merchants/${merchant}/terminalSettings`);
+      if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
+      const sr = await mgmt<Record<string, unknown>>('GET', `/stores/${maa.store_id}/terminalSettings`);
+      const merchantPass = (r.data?.passcodes || {}) as Record<string, unknown>;
+      const storePass = (sr.data?.passcodes || {}) as Record<string, unknown>;
+      // Set a known admin PIN at store level if none exists anywhere.
+      if (!storePass.adminMenuPin && !merchantPass.adminMenuPin && body.set_default) {
+        const pin = String(body.pin || '1111');
+        const up = await mgmt('PATCH', `/stores/${maa.store_id}/terminalSettings`, { passcodes: { adminMenuPin: pin } });
+        if (up.ok) return json({ ok: true, adminMenuPin: pin, source: 'set_now' });
+        return json({ ok: false, error: (up.data as Record<string, unknown>)?.detail || `passcode set failed (${up.status})` }, 200);
+      }
+      return json({
+        ok: true,
+        adminMenuPin: storePass.adminMenuPin || merchantPass.adminMenuPin || null,
+        refundPin: storePass.refundPin || merchantPass.refundPin || null,
+        source: storePass.adminMenuPin ? 'store' : merchantPass.adminMenuPin ? 'merchant' : 'unset',
+      });
+    }
+
     // ── unlink: retire our link; the terminal stays boarded at Adyen ─────────
     if (action === 'unlink') {
       const tdId = String(body.terminal_device_id || '');

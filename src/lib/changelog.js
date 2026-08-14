@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.50',
+    date: '2026-08-14',
+    changes: [
+      'Adyen card payments take the CORRECT path: the send-to-terminal flow (the same terminal-jobs pipeline as PAX) now accepts Adyen venues — v5.6.49 had routed them into the legacy Ryft REST flow, which could never reach an Adyen reader. The card button now reads "Send to Counter reader · tip on the terminal".',
+      'Reader picker: when a retiring PAX and a new Adyen reader are bound to the same till, the Adyen link wins deterministically (was first-row-wins). The dead A50 pairing at MOZZ was retired.',
+      'adyen-terminal-admin gains a passcodes action — reads (or sets) the reader\'s on-device admin menu PIN from Adyen terminal settings.',
+    ],
+  },
+  {
     version: '5.6.49',
     date: '2026-08-14',
     changes: [

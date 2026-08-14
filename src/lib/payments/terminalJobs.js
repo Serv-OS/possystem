@@ -192,10 +192,11 @@ export async function findPaxTerminal({ posDeviceId } = {}) {
     const candidates = data.filter(d => d?.modes?.pos_dispatch !== false);
     if (!candidates.length) return { terminal: null, reason: null };
 
-    // 1. bound to this till
-    const bound = posDeviceId
-      ? candidates.find(d => d.bound_pos_device_id === posDeviceId)
-      : null;
+    // 1. bound to this till. More than one row can be bound to the same till
+    // during a processor migration (the retiring PAX + the new Adyen reader) —
+    // prefer the Adyen-linked row, never .find() order (v5.6.50).
+    const boundAll = posDeviceId ? candidates.filter(d => d.bound_pos_device_id === posDeviceId) : [];
+    const bound = boundAll.find(d => d.adyen_terminal_id) || boundAll[0] || null;
     if (bound) return { terminal: bound, reason: null };
 
     // v5.5.859 — AN ASSIGNMENT IS A FENCE, NOT A PREFERENCE. A terminal bound to a

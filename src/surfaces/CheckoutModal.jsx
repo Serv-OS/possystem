@@ -223,11 +223,15 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
       return;
     }
 
-    // Ryft AND Adyen venues take the terminal payment via the terminal_jobs
-    // pipeline — it is processor-blind by design: terminal-job-create routes by
-    // the terminal's link (adyen_terminal_id ⇒ Adyen cloud, else Ryft/PAX) and
-    // the v5.6.18 "still being built" refusal retired in v5.6.49.
-    if (processor === 'ryft' || processor === 'adyen') return runRyftTerminalFlow();
+    // Ryft locations take the terminal payment via Ryft's in-person API.
+    // Adyen NEVER comes through here: an Adyen venue with a linked reader took
+    // the terminal_jobs path (startTerminalJob) before this screen; reaching
+    // this line means no reader is linked — say so instead of dead-ending.
+    if (processor === 'ryft') return runRyftTerminalFlow();
+    if (processor === 'adyen') {
+      setError('No card reader is linked to this venue yet — register one in Back Office → Card readers → Adyen card terminals.');
+      return;
+    }
 
     try {
       // Build line items for set_reader_display
@@ -1649,7 +1653,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     //
     // paxLookupDone gates the race: a press before the lookup lands must NOT
     // silently take the old path and produce a different tip on the same bill.
-    if (paxLookupDone && cardProcessor === 'ryft' && paxTarget) { startTerminalJob(); return; }
+    if (paxLookupDone && (cardProcessor === 'ryft' || cardProcessor === 'adyen') && paxTarget) { startTerminalJob(); return; }
 
     // Tipping is only offered on Ryft when the venue has it switched on AND has a
     // customer-facing screen. Without a screen there is nowhere for the customer to
@@ -1983,7 +1987,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                   {/* v5.5.172: tip prompt is ON THE READER (Stripe). v5.5.808: Ryft terminals have no reader tip prompt — tip is picked on screen first.
                       v5.5.837: with a paired PAX the whole thing (amount, tip, card) happens on the terminal in the customer's hand. */}
                   <div style={{ fontSize:compact?10:11, color:'var(--card-sub)', textAlign:'center' }}>{
-                    (paxLookupDone && cardProcessor === 'ryft' && paxTarget)
+                    (paxLookupDone && (cardProcessor === 'ryft' || cardProcessor === 'adyen') && paxTarget)
                       ? `Send to ${paxTarget.label || 'the card machine'} · tip on the terminal`
                       : cardProcessor === 'ryft' ? 'Tap, chip, contactless · tip added on screen'
                       : 'Tap, chip, contactless · tip prompt on reader'
