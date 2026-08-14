@@ -3551,11 +3551,11 @@ export const useStore = create((set, get) => ({
   // ── Bar tabs ──────────────────────────────
   tabs: [],
   activeTabId: null,
-  openTab: ({ name, seatId=null, tableId=null, preAuth=false, preAuthAmount=50, note='', preAuthPaymentIntentId=null, preAuthStripeAccount=null, preAuthHeldMinor=null }) => {
+  openTab: ({ name, seatId=null, tableId=null, preAuth=false, preAuthAmount=50, note='', preAuthPaymentIntentId=null, preAuthStripeAccount=null, preAuthHeldMinor=null, preAuthProcessor=null }) => {
     // v5.5.324: when a real card hold was placed at open, the PaymentIntent +
     // connected-account + held amount ride along on the tab so close can
     // capture it (and void can release it). Null when no reader / hold skipped.
-    const tab = { id:`tab-${Date.now()}`, ref:`TAB-${_tabNum++}`, name:name.trim(), seatId, tableId, openedBy:get().staff?.name||'Staff', openedAt:Date.now(), status:'open', preAuth, preAuthAmount, preAuthPaymentIntentId, preAuthStripeAccount, preAuthHeldMinor, rounds:[], note, total:0 };
+    const tab = { id:`tab-${Date.now()}`, ref:`TAB-${_tabNum++}`, name:name.trim(), seatId, tableId, openedBy:get().staff?.name||'Staff', openedAt:Date.now(), status:'open', preAuth, preAuthAmount, preAuthPaymentIntentId, preAuthStripeAccount, preAuthHeldMinor, preAuthProcessor, rounds:[], note, total:0 };
     set(s=>({ tabs:[tab,...s.tabs], activeTabId:tab.id }));
     // v4.6.26: when a bar tab is linked to a real table, flip that table on
     // the floor plan to 'occupied' so it renders correctly. Only do this if

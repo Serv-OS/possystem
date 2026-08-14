@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { getActiveLocationSync, ensureAuthToken } from '../lib/supabase';
 import { resolvePlatformLocationId, getAssignedNetworkReader } from '../lib/networkReader';
 import { getLocationProcessorInfo } from '../lib/payments/processor';
+import { findPaxTerminal, getPosDeviceId } from '../lib/payments/terminalJobs';
 import { money, stripeCurrency } from '../lib/currency';
 import { isTrainingMode } from '../lib/trainingMode';
 import { useStore } from '../store';
@@ -70,6 +71,22 @@ export default function TabPreAuthTerminal({ amountMinor, guestName, onAuthorize
         if (cancelled) return;
         if (procInfo.definitive && procInfo.processor === 'ryft') { setState('ryft_unsupported'); return; }
 
+        // Adyen venues hold on the Adyen reader (card-present pre-auth via
+        // adyen-terminal-charge hold_start — v5.6.58). No reader resolved →
+        // the same honest 'simulated' offer as the Stripe path.
+        if (procInfo.definitive && procInfo.processor === 'adyen') {
+          const { terminal, reason } = await findPaxTerminal({ posDeviceId: getPosDeviceId() });
+          if (cancelled) return;
+          if (!terminal) {
+            if (reason) { setState('error'); setErrorMsg(reason); }
+            else setState('simulated');
+            return;
+          }
+          setReaderLabel(terminal.label || 'card reader');
+          if (!startedRef.current) { startedRef.current = true; runAdyenHold(terminal); }
+          return;
+        }
+
         const platformId = await resolvePlatformLocationId(opsLocationId);
         if (cancelled) return;
         platformLocRef.current = platformId;
@@ -85,6 +102,30 @@ export default function TabPreAuthTerminal({ amountMinor, guestName, onAuthorize
     })();
     return () => { cancelled = true; pollAbortRef.current = true; };
   }, []);
+
+  const runAdyenHold = async (terminal) => {
+    setState('collecting');
+    setStatusMsg(`Present card on ${terminal.label || 'the reader'} — the hold completes or cancels on the reader`);
+    try {
+      const token = await ensureAuthToken();
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/adyen-terminal-charge`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action: 'hold_start', terminal_device_id: terminal.id, amount_minor: amountMinor }),
+      });
+      const j = await res.json().catch(() => ({}));
+      if (!res.ok || j.ok === false) {
+        setState('error');
+        setErrorMsg(j.declined ? 'Card declined or cancelled on the reader' : (j.error || `HTTP ${res.status}`));
+        return;
+      }
+      setState('success');
+      onAuthorized?.({ paymentIntentId: j.psp_reference, stripeAccount: null, heldMinor: j.held_minor ?? amountMinor, processor: 'adyen' });
+    } catch (e) {
+      setState('error');
+      setErrorMsg(e?.message || 'Hold failed');
+    }
+  };
 
   const runHold = async () => {
     setState('starting');

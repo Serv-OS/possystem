@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.58',
+    date: '2026-08-14',
+    changes: [
+      'BAR TABS WITH CARD HOLDS ON ADYEN, end to end: open a tab with a £20/£50/£100/£200 hold and the Adyen reader takes a card-present pre-authorisation (nothing charged); rounds past the hold prompt as before; "Increase hold" steps the authorisation up without a re-tap (Ryft never could); closing charges the exact bill to the held card; void or pay-another-way releases the hold cleanly.',
+      'The hold rides the tab across tills (reference, processor and amount persist on the tab), and the close/release/increase legs are device-fenced server actions.',
+    ],
+  },
+  {
     version: '5.6.57',
     date: '2026-08-14',
     changes: [

@@ -418,8 +418,30 @@ export default function BarSurface() {
 
   // v5.5.324: release a card hold (cancel the manual-capture PI) — used when a
   // held tab is voided or the customer chooses to pay another way.
+  // Adyen holds ride adyen-terminal-charge's hold_* actions (device-fenced).
+  const adyenHoldCall = async (action, tab, amountMinor = null) => {
+    const token = await ensureAuthToken();
+    const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/adyen-terminal-charge`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        action, psp_reference: tab.preAuthPaymentIntentId,
+        location_id: getActiveLocationSync(),
+        ...(amountMinor != null ? { amount_minor: amountMinor } : {}),
+      }),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok || j.ok === false) throw new Error(j.error || `HTTP ${res.status}`);
+    return j;
+  };
+
   const releaseHold = async (tab) => {
     if (!tab?.preAuthPaymentIntentId) return;
+    if (tab.preAuthProcessor === 'adyen') {
+      try { await adyenHoldCall('hold_release', tab); }
+      catch (e) { console.warn('[bar-tab] adyen release failed:', e?.message); }
+      return;
+    }
     try {
       const token = await ensureAuthToken();
       await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-cancel-reader-action`, {
@@ -445,6 +467,13 @@ export default function BarSurface() {
     setHoldBusy(true);
     try {
       const token = await ensureAuthToken();
+      if (tab.preAuthProcessor === 'adyen') {
+        await adyenHoldCall('hold_increase', tab, Math.round(newAmt * 100));
+        setTabHold(tab.id, Math.round(newAmt * 100));
+        showToast(`Hold raised to ${money(newAmt)}`, 'success');
+        setHoldBusy(false);
+        return;
+      }
       const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/stripe-increment-authorization`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
@@ -474,6 +503,9 @@ export default function BarSurface() {
       if (isTrainingMode()) {
         // TRAINING MODE: never capture a real pre-auth. Simulate a full capture so
         // the tab closes in-memory (the closed_check itself is gated in db.js).
+        capturedMinor = captureMinor;
+      } else if (tab.preAuthProcessor === 'adyen') {
+        await adyenHoldCall('hold_capture', tab, captureMinor);
         capturedMinor = captureMinor;
       } else {
         // /api/stripe-capture is the same Vercel endpoint the QR tab flow uses;
@@ -811,7 +843,7 @@ export default function BarSurface() {
         <TabPreAuthTerminal
           amountMinor={Math.round((pendingTabOpts.preAuthAmount||50)*100)}
           guestName={pendingTabOpts.name}
-          onAuthorized={({ paymentIntentId, stripeAccount, heldMinor })=>doOpenTab({ ...pendingTabOpts, preAuthPaymentIntentId:paymentIntentId, preAuthStripeAccount:stripeAccount, preAuthHeldMinor:heldMinor })}
+          onAuthorized={({ paymentIntentId, stripeAccount, heldMinor, processor })=>doOpenTab({ ...pendingTabOpts, preAuthPaymentIntentId:paymentIntentId, preAuthStripeAccount:stripeAccount, preAuthHeldMinor:heldMinor, preAuthProcessor:processor||'stripe' })}
           onSkip={()=>doOpenTab(pendingTabOpts)}
           onCancel={()=>setPendingTabOpts(null)}
         />
