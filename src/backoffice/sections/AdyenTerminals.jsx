@@ -62,6 +62,7 @@ export default function AdyenTerminals() {
   const [posDevices, setPosDevices] = useState([]);
   const [bindFor, setBindFor] = useState(null);    // terminal_device id being re-bound
   const [bindTo, setBindTo] = useState('');
+  const [serial, setSerial] = useState('');
 
   const load = useCallback(async () => {
     try {
@@ -119,6 +120,26 @@ export default function AdyenTerminals() {
 
   const tillName = (id) => posDevices.find((d) => d.id === id)?.name || (id ? 'unknown till' : 'any till (unassigned)');
 
+  // Type the serial off the box → find it anywhere in Adyen (company inventory
+  // included) → register straight to this venue. The whole onboarding motion.
+  const registerBySerial = async () => {
+    setBusy('serial'); setErr(''); setNotice('');
+    try {
+      const found = await callAdmin('find_by_serial', { serial });
+      if (found.ok === false) throw new Error(found.error === 'scope_missing' ? (status.scopeError || 'API key missing Management role') : (found.error || 'search failed'));
+      const m = found.matches || [];
+      if (m.length === 0) throw new Error('No reader with that serial is visible to your Adyen account yet. Check the number, and make sure the reader has been switched on and connected to WiFi at least once.');
+      if (m.length > 1) throw new Error(`That serial matches ${m.length} readers — type more of the number.`);
+      if (m[0].onStore) { setNotice(`${m[0].id} is already registered to this venue.`); setSerial(''); await load(); setBusy(''); return; }
+      const r = await callAdmin('assign', { terminal_id: m[0].id, label: m[0].id });
+      if (r.ok === false) throw new Error(r.error || 'register failed');
+      setNotice(`${m[0].id} registered — it syncs with Adyen for about a minute, then it is ready to assign to a till.`);
+      setSerial('');
+      await load();
+    } catch (e) { setErr(e?.message || String(e)); }
+    setBusy('');
+  };
+
   return (
     <div style={S.card}>
       <h2 style={S.h2}>💳 Adyen card terminals</h2>
@@ -142,6 +163,26 @@ export default function AdyenTerminals() {
             onClick={() => run('store', 'ensure_store', {})}>
             {busy === 'store' ? 'Creating…' : `Create store for ${status.venue}`}
           </button>
+        </div>
+      )}
+
+      {/* ── register by serial — the onboarding motion ── */}
+      {status.scopeOk && status.storeId && (
+        <div style={{ marginTop: 14, padding: 14, borderRadius: 10, background: 'var(--bg2)', border: '1px solid var(--bdr)' }}>
+          <div style={{ fontSize: 13, fontWeight: 700 }}>Register a new reader</div>
+          <div style={{ ...S.desc, marginTop: 4 }}>
+            Plug the reader in, connect it to WiFi, then type the serial number from the label on
+            the reader (or its box). It registers to this venue in one step.
+          </div>
+          <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+            <input style={{ ...S.input, ...S.mono, flex: '1 1 220px', minWidth: 0 }} value={serial}
+              onChange={(e) => setSerial(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter' && serial.trim()) registerBySerial(); }}
+              placeholder="Serial number, e.g. 000168254080216" />
+            <button style={{ ...S.btn, ...S.btnPrim }} disabled={!!busy || !serial.trim()} onClick={registerBySerial}>
+              {busy === 'serial' ? 'Registering…' : 'Register'}
+            </button>
+          </div>
         </div>
       )}
 

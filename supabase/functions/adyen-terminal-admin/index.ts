@@ -51,6 +51,27 @@ async function mgmt<T = Record<string, unknown>>(method: string, path: string, b
 
 const scopeMissing = (status: number) => status === 401 || status === 403;
 
+// A store with no payment methods bricks its terminals ("no payment method
+// configured" on the reader). Request the card schemes for the store; test
+// auto-approves, live goes to Adyen review. Idempotent — "already exists"
+// style refusals are fine.
+async function ensurePaymentMethods(merchant: string, storeId: string): Promise<{ requested: string[]; errors: string[] }> {
+  const requested: string[] = [];
+  const errors: string[] = [];
+  for (const type of ['visa', 'mc', 'amex', 'maestro']) {
+    const r = await mgmt('POST', `/merchants/${merchant}/paymentMethodSettings`, {
+      type, storeIds: [storeId], currencies: ['GBP'], countries: ['GB'],
+    });
+    if (r.ok) requested.push(type);
+    else {
+      const msg = String((r.data as Record<string, unknown>)?.detail || (r.data as Record<string, unknown>)?.title || r.status);
+      if (/exist|already|duplicate/i.test(msg)) requested.push(type);
+      else errors.push(`${type}: ${msg}`);
+    }
+  }
+  return { requested, errors };
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   try {
@@ -122,11 +143,18 @@ Deno.serve(async (req) => {
         region: 'EU', receive_payments_ok: true,
       }, { onConflict: 'location_id' });
       if (upErr) return json({ ok: false, error: `store created (${storeId}) but mapping write failed: ${upErr.message}` }, 500);
-      return json({ ok: true, storeId, existing: false });
+      const pm = await ensurePaymentMethods(merchant, storeId);
+      return json({ ok: true, storeId, existing: false, paymentMethods: pm });
     }
 
     // Everything below needs the store mapping.
     if (!maa?.store_id) return json({ ok: false, error: 'no_store', hint: 'Run ensure_store first — the venue has no Adyen store yet.' }, 200);
+
+    // ── ensure_payment_methods: repair a store missing its card schemes ──────
+    if (action === 'ensure_payment_methods') {
+      const pm = await ensurePaymentMethods(merchant, maa.store_id as string);
+      return json({ ok: pm.errors.length === 0, ...pm });
+    }
 
     // ── list: merchant fleet split store vs inventory, joined to our links ───
     if (action === 'list') {
@@ -153,6 +181,28 @@ Deno.serve(async (req) => {
         store: rows.filter((x) => x.onStore),
         inventory: rows.filter((x) => !x.onStore),
       });
+    }
+
+    // ── find_by_serial: locate a boxed reader anywhere the credential sees ───
+    // A fresh reader boards to COMPANY inventory, which the merchant-filtered
+    // list can't show. The operator types the serial off the box label; this
+    // searches credential-wide and returns candidates for assign.
+    if (action === 'find_by_serial') {
+      const serial = String(body.serial || '').replace(/[^a-zA-Z0-9]/g, '');
+      if (serial.length < 6) return json({ ok: false, error: 'Type the full serial number from the label on the reader (or its box).' }, 200);
+      const r = await mgmt<{ data?: Record<string, unknown>[] }>('GET', `/terminals?searchQuery=${encodeURIComponent(serial)}&pageSize=20`);
+      if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
+      if (!r.ok) return json({ ok: false, error: `search failed (${r.status})` }, 200);
+      const matches = (r.data.data || []).map((t) => {
+        const asn = (t.assignment || {}) as Record<string, unknown>;
+        return {
+          id: t.id, model: t.model, serialNumber: t.serialNumber,
+          firmwareVersion: t.firmwareVersion || null, lastActivityAt: t.lastActivityAt || null,
+          onStore: asn.storeId === maa.store_id,
+          assignmentStatus: asn.status || null,
+        };
+      });
+      return json({ ok: true, matches });
     }
 
     // ── assign: board onto the venue store + both link rows ──────────────────

@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.48',
+    date: '2026-08-14',
+    changes: [
+      'Onboarding flow complete: Back Office → Card readers gains "Register a new reader" — type the serial number off the box and the reader is found anywhere in your Adyen account (company inventory included) and registered to the venue in one step.',
+      'Creating a venue\'s store now also requests its card payment methods (Visa, Mastercard, Amex, Maestro) — a fresh store without them bricks every reader with "no payment method configured". A repair action covers stores created before this; Provo\'s was repaired live.',
+    ],
+  },
+  {
     version: '5.6.47',
     date: '2026-08-14',
     changes: [
