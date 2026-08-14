@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.53',
+    date: '2026-08-14',
+    changes: [
+      'Manual payments ON the reader: each Adyen reader\'s settings gain a "Manual payments on the reader" toggle — staff type the amount on the reader itself (Adyen standalone mode). These book against the venue and appear in payment reports; they do not attach to a POS check.',
+      'Fixed: saving tip presets failed with "Invalid JSON value" — Adyen only accepts whole percentages, so 12.5 is now rounded and the field says so.',
+    ],
+  },
+  {
     version: '5.6.52',
     date: '2026-08-14',
     changes: [

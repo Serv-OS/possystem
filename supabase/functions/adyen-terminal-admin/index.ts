@@ -267,8 +267,11 @@ Deno.serve(async (req) => {
 
     // ── sync_gratuities: BO tipping percentages → the reader's tip screen ────
     if (action === 'sync_gratuities') {
-      const pcts = (Array.isArray(body.percentages) ? body.percentages : [5, 10, 12.5])
-        .map((n: unknown) => Number(n)).filter((n: number) => Number.isFinite(n) && n > 0 && n <= 100).slice(0, 4);
+      // Adyen's gratuity presets take WHOLE percentages only — "12.5%" is
+      // rejected as an invalid JSON value (hit live 14 Aug). Round + dedupe.
+      const pcts = [...new Set((Array.isArray(body.percentages) ? body.percentages : [5, 10, 15])
+        .map((n: unknown) => Math.round(Number(n)))
+        .filter((n: number) => Number.isFinite(n) && n > 0 && n <= 100))].slice(0, 4);
       const gratuities = [{
         currency: 'GBP',
         usePredefinedTipEntries: true,
@@ -279,6 +282,28 @@ Deno.serve(async (req) => {
       if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
       if (!r.ok) return json({ ok: false, error: (r.data as Record<string, unknown>)?.detail || `gratuities update failed (${r.status})` }, 200);
       return json({ ok: true, presets: pcts });
+    }
+
+    // ── standalone (manual payments ON the reader): per-terminal setting ─────
+    // Staff type the amount on the reader itself — Adyen books it against the
+    // store and it arrives via the webhook; it does NOT attach to a POS check.
+    if (action === 'standalone_get') {
+      const tid = String(body.terminal_id || '');
+      if (!tid) return json({ error: 'terminal_id required' }, 400);
+      const r = await mgmt<Record<string, unknown>>('GET', `/terminals/${encodeURIComponent(tid)}/terminalSettings`);
+      if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
+      const st = (r.data?.standalone || {}) as Record<string, unknown>;
+      return json({ ok: true, enabled: st.enableStandalone === true });
+    }
+    if (action === 'standalone_set') {
+      const tid = String(body.terminal_id || '');
+      if (!tid) return json({ error: 'terminal_id required' }, 400);
+      const r = await mgmt('PATCH', `/terminals/${encodeURIComponent(tid)}/terminalSettings`, {
+        standalone: { enableStandalone: body.enabled === true, currencyCode: 'GBP' },
+      });
+      if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
+      if (!r.ok) return json({ ok: false, error: (r.data as Record<string, unknown>)?.detail || `standalone update failed (${r.status})` }, 200);
+      return json({ ok: true, enabled: body.enabled === true });
     }
 
     // ── passcodes: the reader's on-device admin menu PIN (store-level) ───────

@@ -64,10 +64,12 @@ export default function AdyenTerminals() {
   const [bindTo, setBindTo] = useState('');
   const [serial, setSerial] = useState('');
   const [tipOn, setTipOn] = useState(true);
-  const [tipPcts, setTipPcts] = useState('5, 10, 12.5');
+  const [tipPcts, setTipPcts] = useState('5, 10, 15');
   const [tipCustom, setTipCustom] = useState(true);
   const [modeTable, setModeTable] = useState(true);
   const [modePos, setModePos] = useState(true);
+  const [standalone, setStandalone] = useState(false);
+  const [standaloneWas, setStandaloneWas] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -106,7 +108,7 @@ export default function AdyenTerminals() {
     setBusy(`bind-${link.id}`); setErr(''); setNotice('');
     try {
       const percentages = tipPcts.split(/[\s,]+/).map(Number).filter((n) => Number.isFinite(n) && n > 0 && n <= 100).slice(0, 4);
-      const tipConfig = { enabled: tipOn, percentages: percentages.length ? percentages : [5, 10, 12.5], allowCustom: tipCustom };
+      const tipConfig = { enabled: tipOn, percentages: percentages.length ? percentages : [5, 10, 15], allowCustom: tipCustom };
       // Whole-settings write — same contract as PaxTerminals: always the full
       // set, pass everything not edited here through unchanged.
       const { data, error } = await supabase.rpc('set_terminal_settings', {
@@ -118,6 +120,11 @@ export default function AdyenTerminals() {
         p_idle_screen: link.idle_screen ?? null,
       });
       if (error || !data?.ok) throw new Error(error?.message || 'settings save failed');
+      // Manual (standalone) mode lives at Adyen, per terminal — push on change.
+      if (standalone !== standaloneWas) {
+        const st = await callAdmin('standalone_set', { terminal_id: link.adyen_terminal_id, enabled: standalone });
+        if (st.ok === false) throw new Error(`Saved here, but manual-payments mode did not sync: ${st.error}`);
+      }
       // Push the tip presets onto the reader's own gratuity screen at Adyen.
       if (tipOn) {
         const g = await callAdmin('sync_gratuities', { percentages: tipConfig.percentages, allow_custom: tipCustom });
@@ -227,11 +234,15 @@ export default function AdyenTerminals() {
                           setBindTo(t.link.bound_pos_device_id || '');
                           const tc = t.link.tip_config || {};
                           setTipOn(tc.enabled !== false);
-                          setTipPcts((Array.isArray(tc.percentages) && tc.percentages.length ? tc.percentages : [5, 10, 12.5]).join(', '));
+                          setTipPcts((Array.isArray(tc.percentages) && tc.percentages.length ? tc.percentages : [5, 10, 15]).join(', '));
                           setTipCustom(tc.allowCustom !== false);
                           const m = t.link.modes || {};
                           setModeTable(m.table_pay !== false);
                           setModePos(m.pos_dispatch !== false);
+                          setStandalone(false); setStandaloneWas(false);
+                          callAdmin('standalone_get', { terminal_id: t.id })
+                            .then((r) => { if (r.ok) { setStandalone(!!r.enabled); setStandaloneWas(!!r.enabled); } })
+                            .catch(() => {});
                         }}>
                         Settings
                       </button>
@@ -265,6 +276,10 @@ export default function AdyenTerminals() {
                     <label style={{ fontSize: 12.5, display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
                       <input type="checkbox" checked={modeTable} onChange={(e) => setModeTable(e.target.checked)} /> Table Pay
                     </label>
+                    <label style={{ fontSize: 12.5, display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}
+                      title="Staff type the amount on the reader itself. Payments book against the venue but do not attach to a POS check — they appear in payment reports.">
+                      <input type="checkbox" checked={standalone} onChange={(e) => setStandalone(e.target.checked)} /> Manual payments on the reader
+                    </label>
                   </div>
                   <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
                     <label style={{ fontSize: 12.5, display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
@@ -273,7 +288,7 @@ export default function AdyenTerminals() {
                     {tipOn && (
                       <>
                         <span style={S.label}>Suggested %</span>
-                        <input style={{ ...S.input, width: 130, ...S.mono }} value={tipPcts} onChange={(e) => setTipPcts(e.target.value)} placeholder="5, 10, 12.5" />
+                        <input style={{ ...S.input, width: 130, ...S.mono }} value={tipPcts} onChange={(e) => setTipPcts(e.target.value)} placeholder="whole numbers, e.g. 5, 10, 15" />
                         <label style={{ fontSize: 12, display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
                           <input type="checkbox" checked={tipCustom} onChange={(e) => setTipCustom(e.target.checked)} /> allow custom amount
                         </label>
