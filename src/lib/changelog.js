@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.55',
+    date: '2026-08-14',
+    changes: [
+      'Pay at Table plumbing verified at both ends: the reader\'s wake-up button, event URL and credentials are confirmed stored at Adyen, and our event endpoint is proven live (authenticates, records, acknowledges). The bill-sending responder builds against the first real button press.',
+    ],
+  },
+  {
     version: '5.6.54',
     date: '2026-08-14',
     changes: [
