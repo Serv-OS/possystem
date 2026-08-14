@@ -151,6 +151,46 @@ export async function verifyRawBodyHmac(rawBody: string, headerSig: string, key:
 
 export const minorToMajor = (minor: number): number => Math.round(minor) / 100;
 
+// On-screen MENU on the terminal (nexo Input / GetMenuEntry) — Pay at Table's
+// open-table picker. The response carries the 1-based selected entry in
+// InputResponse.Input.MenuEntryNumber.
+export function buildMenuInputRequest(o: { poiid: string; saleId: string; serviceId: string; title: string; entries: string[]; maxInputTime?: number }): any {
+  return {
+    SaleToPOIRequest: {
+      MessageHeader: {
+        ProtocolVersion: '3.0', MessageClass: 'Device', MessageCategory: 'Input', MessageType: 'Request',
+        ServiceID: o.serviceId, SaleID: o.saleId, POIID: o.poiid,
+      },
+      InputRequest: {
+        DisplayOutput: {
+          Device: 'CustomerDisplay', InfoQualify: 'Display',
+          OutputContent: {
+            OutputFormat: 'MenuEntry',
+            PredefinedContent: { ReferenceID: 'MenuButtons' },
+            OutputText: [{ Text: o.title }],
+          },
+          MenuEntry: o.entries.map((text) => ({
+            OutputFormat: 'Text',
+            OutputText: [{ Text: text }],
+          })),
+        },
+        InputData: {
+          Device: 'CustomerInput', InfoQualify: 'Input', InputCommand: 'GetMenuEntry',
+          MaxInputTime: o.maxInputTime ?? 60,
+        },
+      },
+    },
+  };
+}
+
+export function parseMenuInputResponse(data: any): { selected: number | null; result: string } {
+  const r = data?.SaleToPOIResponse?.InputResponse;
+  const result = r?.Response?.Result ?? 'Failure';
+  const n = r?.Input?.MenuEntryNumber;
+  const sel = Number.isFinite(Number(n)) ? Number(n) : null;
+  return { selected: result === 'Success' && sel != null ? sel : null, result: String(result) };
+}
+
 export function newServiceId(): string {
   // 10 RANDOM base36 chars (~51 bits). Three jobs in one review finding hang off
   // this: (1) uniqueness within Adyen's 48h/POIID window — randomness beats the

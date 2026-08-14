@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.60',
+    date: '2026-08-15',
+    changes: [
+      'Pay at Table now CLOSES THE CHECK: the till\'s closer books reader-initiated payments too (the paid-but-still-open Table 10 case) — the paid table clears from the POS within its 10-second sweep.',
+      'Pay at Table gains the OPEN-TABLES MENU on the reader: skip or mistype the table number and the reader lists every open table with its bill — pick one and that bill loads. Typing a valid number still goes straight through.',
+      'Increase hold fixed twice over: Adyen\'s adjust API wanted industryUsage (not reason — same latent bug fixed in adyen-modify), and increase attempts now use unique idempotency keys so a fixed request can never replay an old error.',
+    ],
+  },
+  {
     version: '5.6.59',
     date: '2026-08-14',
     changes: [

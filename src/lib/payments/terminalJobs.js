@@ -509,7 +509,7 @@ export async function cancelTerminalJob(jobId) {
 // keys. The reconciler is the durable close for BOTH; double-writes are impossible
 // because closed_checks' PK elects a single closer (upsertClosedCheck created flag)
 // and the modal path uses the same pre-minted closed_check_id.
-const RECONCILABLE_SOURCES = ['pax_table_pay', 'pos_send_to_terminal'];
+const RECONCILABLE_SOURCES = ['pax_table_pay', 'pos_send_to_terminal', 'adyen_pay_at_table'];
 
 export async function fetchApprovedTablePayJobs(locationId) {
   if (!locationId) return [];

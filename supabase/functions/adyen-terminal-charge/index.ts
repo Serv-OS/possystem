@@ -242,9 +242,15 @@ Deno.serve(async (req) => {
     } else { // hold_increase — new TOTAL, not a delta (Adyen amountUpdates semantics)
       if (!Number.isFinite(amountMinor)) return json({ error: 'amount_minor (new total) required' }, 400);
       path = `/payments/${encodeURIComponent(psp)}/amountUpdates`;
-      payload = { merchantAccount: maa.merchant_account, amount: { value: amountMinor, currency }, reason: 'delayedCharge', reference: `tabinc:${psp}` };
+      payload = { merchantAccount: maa.merchant_account, amount: { value: amountMinor, currency }, industryUsage: 'delayedCharge', reference: `tabinc:${psp}` };
     }
-    const res = await adyenFetch('POST', `${checkoutBase()}${path}`, payload, { idempotencyKey: `tab:${action}:${psp}:${amountMinor ?? 'full'}` });
+    // capture/release keep replay-safe deterministic keys; INCREASE must be
+    // unique per attempt (Adyen replays the first response for a reused key —
+    // a fixed request after a 400 kept echoing the 400).
+    const idem = action === 'hold_increase'
+      ? `tab:${action}:${psp}:${crypto.randomUUID()}`
+      : `tab:${action}:${psp}:${amountMinor ?? 'full'}`;
+    const res = await adyenFetch('POST', `${checkoutBase()}${path}`, payload, { idempotencyKey: idem });
     if (!res.ok) return json({ ok: false, error: `adyen ${res.status}`, detail: res.data }, res.status >= 500 ? 502 : 200);
     return json({ ok: true, status: (res.data as Record<string, unknown>)?.status ?? 'received', modification_psp: (res.data as Record<string, unknown>)?.pspReference ?? null });
   }

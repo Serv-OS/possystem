@@ -103,7 +103,7 @@ Deno.serve(async (req) => {
   } else { // adjust — bar-tab hold step-up/down to a NEW TOTAL (not a delta)
     if (!Number.isFinite(amountMinor)) return json({ error: 'amount_minor (new total) required for adjust' }, 400);
     path = `/payments/${encodeURIComponent(psp)}/amountUpdates`;
-    payload = { merchantAccount: maa.merchant_account, amount: { value: amountMinor, currency }, reason: 'delayedCharge', reference };
+    payload = { merchantAccount: maa.merchant_account, amount: { value: amountMinor, currency }, industryUsage: 'delayedCharge', reference };
   }
 
   const res = await adyenFetch('POST', `${base}${path}`, payload, { idempotencyKey });

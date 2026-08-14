@@ -16,7 +16,7 @@
 // Deployed with verify_jwt=false (Adyen calls this).
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { parsePaymentResponse } from '../_shared/adyen.ts';
+import { parsePaymentResponse, buildMenuInputRequest, parseMenuInputResponse, newServiceId, adyenFetch, terminalEndpoint } from '../_shared/adyen.ts';
 
 const opsAdmin = createClient(
   Deno.env.get('SUPABASE_URL') ?? '',
@@ -151,12 +151,43 @@ Deno.serve(async (req) => {
           const open = new Set((sess || []).map((r) => String(r.table_id)));
           const norm = (x: string) => String(x || '').toLowerCase();
           const digits = (x: string) => String(x || '').replace(/[^0-9]/g, '');
-          const candidates = (floor || []).filter((f) => open.has(String(f.id)) && (
+          let candidates = (floor || []).filter((f) => open.has(String(f.id)) && (
             norm(f.label) === norm(ref) || (digits(f.label) === digits(ref) && digits(ref) !== '')
           ));
+
+          // No/ambiguous match → show the OPEN TABLES as a menu ON THE READER
+          // (Peter, 15 Aug: "load all the tables so I can see what's open then
+          // choose"). Staff pick from the list; billed table resolved from the
+          // 1-based selection.
           if (candidates.length !== 1) {
-            console.log(`[pay-at-table] ref "${ref}" matched ${candidates.length} open tables at ${term.location_id} — refusing`);
-            return;
+            const { data: bills } = await opsAdmin.from('active_sessions')
+              .select('table_id, total_minor').eq('location_id', term.location_id);
+            const billBy = new Map((bills || []).map((r) => [String(r.table_id), Number(r.total_minor) || 0]));
+            const openTables = (floor || [])
+              .filter((f) => open.has(String(f.id)))
+              .sort((a, b) => String(a.label).localeCompare(String(b.label), undefined, { numeric: true }))
+              .slice(0, 20);
+            if (!openTables.length) { console.log('[pay-at-table] no open tables to list'); return; }
+            const { data: maaRow } = await platformAdmin.from('locations')
+              .select('id').eq('ops_location_id', term.location_id).maybeSingle();
+            const { data: maa } = await platformAdmin.from('merchant_adyen_accounts')
+              .select('merchant_account, region').eq('location_id', maaRow?.id ?? term.location_id).maybeSingle();
+            if (!maa?.merchant_account) { console.log('[pay-at-table] no merchant for menu'); return; }
+            const menu = buildMenuInputRequest({
+              poiid,
+              saleId: `servos-${String(term.location_id).slice(0, 8)}`,
+              serviceId: newServiceId(),
+              title: 'Pay at table — choose the table',
+              entries: openTables.map((f) => {
+                const b = billBy.get(String(f.id));
+                return `${f.label}  ·  £${((b || 0) / 100).toFixed(2)}`;
+              }),
+            });
+            const mres = await adyenFetch('POST', terminalEndpoint(maa.merchant_account, poiid, 'sync', maa.region === 'US' ? 'us' : 'eu'), menu, { timeoutMs: 90_000 });
+            const pick = parseMenuInputResponse(mres.data);
+            console.log(`[pay-at-table] menu result ${pick.result}, selected ${pick.selected}`);
+            if (!pick.selected || pick.selected < 1 || pick.selected > openTables.length) return;
+            candidates = [openTables[pick.selected - 1]];
           }
 
           const { data: job, error: rpcErr } = await opsAdmin.rpc('terminal_start_table_payment_for', {
