@@ -388,6 +388,17 @@ export async function dispatchTerminalJob(p) {
     });
 
     rememberJob({ checkKey: p.checkKey, jobId: useJobId, closedCheckId: useClosedCheckId, locationId, at: Date.now() });
+
+    // Adyen cloud terminals (AMS1) have no on-device app to pick the job up —
+    // the TILL kicks the charge. Fire-and-forget: adyen-terminal-charge 'start'
+    // is one long /sync call that settles server-side; the JobPoller keeps
+    // watching terminal_jobs exactly as it does for Ryft. The fn's CAS guard
+    // (charging_unsent→charging) makes a duplicate kick harmless.
+    if (j.job?.processor === 'adyen' && !j.existing) {
+      callFn('adyen-terminal-charge', { action: 'start', job_id: useJobId })
+        .catch((e) => console.warn('[terminalJobs] adyen start kick failed (recovery will pick it up):', e?.message || e));
+    }
+
     return { job: j.job, existing: !!j.existing };
   }
 }

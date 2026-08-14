@@ -235,7 +235,7 @@ Deno.serve(async (req) => {
   // ── 1. The terminal row IS the location authority ──────────────────────────
   const { data: term, error: termErr } = await opsAdmin
     .from('terminal_devices')
-    .select('id, location_id, status, active, label, tip_config, bound_pos_device_id')
+    .select('id, location_id, status, active, label, tip_config, bound_pos_device_id, adyen_terminal_id')
     .eq('id', target_terminal_id)
     .maybeSingle();
   if (termErr) return json({ error: termErr.message }, 500);
@@ -350,8 +350,16 @@ Deno.serve(async (req) => {
     tip_config: resolvedTipConfig,
     closed_check_id,
     check_draft,
-    status: 'pending',
-    processor: 'ryft',
+    // The terminal row is the PROCESSOR authority too (v5.6.46): a terminal
+    // linked to an Adyen POIID routes its jobs to adyen-terminal-charge; the
+    // PAX/Ryft fleet keeps 'ryft'. No client input trusted.
+    //
+    // Lifecycle by fleet: PAX walks pending→claimed→tipping→charging_unsent ON
+    // the device. An AMS1 has no on-device app — its tip prompt rides inside
+    // the nexo PaymentRequest — so the job is born charging_unsent, ready for
+    // the till's adyen-terminal-charge 'start' kick (CAS makes dupes harmless).
+    status: term.adyen_terminal_id ? 'charging_unsent' : 'pending',
+    processor: term.adyen_terminal_id ? 'adyen' : 'ryft',
     claim_expires_at: new Date(Date.now() + 15 * 60_000).toISOString(),
     dispatched_at: new Date().toISOString(),
   };

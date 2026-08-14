@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.46',
+    date: '2026-08-14',
+    changes: [
+      'Adyen card terminals now register on the location, Lightspeed-style: Back Office → Card readers gains an "Adyen card terminals" panel — one-time "Create store" button per venue, then every reader Adyen knows about is listed and REGISTER is one tap (boards it onto the venue\'s store and links it, no codes, no serial typing). Till assignment and unlink included.',
+      'Terminal payments route by the terminal itself: a reader linked to an Adyen POIID sends its jobs down the Adyen cloud path (born ready-to-charge, the till kicks the charge; tip prompt rides on the reader), the PAX fleet keeps the Ryft path. Nothing client-trusted.',
+      'MOZZ/Provo\'s Adyen store was created live during verification (ST3294J22322BK5PSV86T3G5W).',
+    ],
+  },
+  {
     version: '5.6.45',
     date: '2026-08-13',
     changes: [

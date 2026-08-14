@@ -17,6 +17,7 @@ import { resolvePlatformLocationId } from '../../lib/networkReader';
 import { getLocationProcessor } from '../../lib/payments/processor';
 import { stripeCurrency } from '../../lib/currency';
 import PaxTerminals from './PaxTerminals';
+import AdyenTerminals from './AdyenTerminals';
 import UnresolvedPayments from './UnresolvedPayments';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
@@ -150,7 +151,7 @@ export default function CardReaders() {
   useEffect(() => {
     if (!platformLocationId || autoCheckedRef.current || processor == null) return;
     autoCheckedRef.current = true;
-    if (processor === 'ryft') return;
+    if (processor === 'ryft' || processor === 'adyen') return;
     refreshStatusFromStripe();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [platformLocationId, processor]);
@@ -188,6 +189,7 @@ export default function CardReaders() {
           terminal's "Connect to Ryft" panel; the standalone "Ryft card readers"
           panel was sunset with it (its serial-matched ops link never landed —
           the drift behind the charge 404s). */}
+      <AdyenTerminals />
       <PaxTerminals />
 
       {/* Payments whose outcome was never established — self-gating: renders
