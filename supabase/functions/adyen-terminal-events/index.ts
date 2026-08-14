@@ -136,7 +136,9 @@ Deno.serve(async (req) => {
         || (details.match(/^([A-Za-z0-9]+)$/) || [])[1] || '';
       const respond = async () => {
         try {
-          if (!ref) { console.log('[pay-at-table] wake-up with no reference — ignoring'); return; }
+          // An EMPTY reference is the "show me the tables" gesture — staff
+          // pressed straight through the pin pad. Fall to the menu path (the
+          // empty ref matches no candidates below).
           const { data: term } = await opsAdmin.from('terminal_devices')
             .select('id, location_id, modes').eq('adyen_terminal_id', poiid)
             .eq('status', 'paired').eq('active', true).maybeSingle();

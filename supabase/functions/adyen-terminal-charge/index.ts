@@ -248,7 +248,7 @@ Deno.serve(async (req) => {
     // unique per attempt (Adyen replays the first response for a reused key —
     // a fixed request after a 400 kept echoing the 400).
     const idem = action === 'hold_increase'
-      ? `tab:${action}:${psp}:${crypto.randomUUID()}`
+      ? `ti:${psp}:${crypto.randomUUID().slice(0, 13)}`
       : `tab:${action}:${psp}:${amountMinor ?? 'full'}`;
     const res = await adyenFetch('POST', `${checkoutBase()}${path}`, payload, { idempotencyKey: idem });
     if (!res.ok) return json({ ok: false, error: `adyen ${res.status}`, detail: res.data }, res.status >= 500 ? 502 : 200);

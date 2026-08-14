@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.61',
+    date: '2026-08-15',
+    changes: [
+      'Increase hold works (proven live): Adyen caps idempotency keys at 64 characters and ours was 71 — every increase died as "cannot reach card processor". The live tab\'s hold was raised as the verification.',
+      'Pay at table: pressing straight through the table-number pad (or entering nothing) now brings up the open-tables menu — blank entries were being discarded instead of offering the list.',
+    ],
+  },
+  {
     version: '5.6.60',
     date: '2026-08-15',
     changes: [
