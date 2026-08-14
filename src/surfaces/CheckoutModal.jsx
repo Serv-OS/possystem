@@ -193,7 +193,7 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
       const capturedMinor = Number.isFinite(result.amountMinor) ? result.amountMinor : requestedMinor;
       setRestState('success');
       setRestStatusMsg('Payment approved');
-      setPiResult({ status: 'succeeded', paymentIntentId: result.paymentSessionId, amount: capturedMinor, amountReceived: capturedMinor, processor: 'ryft', card: result.card || null });
+      setPiResult({ status: 'succeeded', paymentIntentId: result.paymentSessionId, amount: capturedMinor, amountReceived: capturedMinor, processor, card: result.card || null });
     } catch (e) {
       if (e.message === 'cancelled') return;             // user cancelled — handled by cancelRestFlow
       setRestState('error');
@@ -223,18 +223,11 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
       return;
     }
 
-    // Ryft locations take the terminal payment via Ryft's in-person API.
-    if (processor === 'ryft') return runRyftTerminalFlow();
-
-    // v5.6.18 — the admin portal can already mark a venue 'adyen', but the
-    // Adyen charge paths are still being built. Without this guard the flow
-    // fell through to the STRIPE path with no Stripe reader configured —
-    // i.e. flipping the admin switch would quietly break card payments at
-    // that venue. Refuse loudly instead until the Adyen flow lands.
-    if (processor === 'adyen') {
-      setError('This venue is set to Adyen, and the Adyen card flow is still being built. Cash and gift cards work; for card payments switch the venue back to its previous processor in the admin portal.');
-      return;
-    }
+    // Ryft AND Adyen venues take the terminal payment via the terminal_jobs
+    // pipeline — it is processor-blind by design: terminal-job-create routes by
+    // the terminal's link (adyen_terminal_id ⇒ Adyen cloud, else Ryft/PAX) and
+    // the v5.6.18 "still being built" refusal retired in v5.6.49.
+    if (processor === 'ryft' || processor === 'adyen') return runRyftTerminalFlow();
 
     try {
       // Build line items for set_reader_display

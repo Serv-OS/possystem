@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.49',
+    date: '2026-08-14',
+    changes: [
+      'Adyen venues can now take card payments at the POS: checkout routes Adyen venues down the same terminal pipeline as PAX (the server picks the right processor per reader), retiring the "Adyen flow is still being built" refusal from v5.6.18.',
+      'Adyen readers no longer show as offline: they run Adyen\'s own software and never send our app heartbeat, so the reader picker treats a linked Adyen reader as reachable — genuine unreachability surfaces at charge time with a real error.',
+    ],
+  },
+  {
     version: '5.6.48',
     date: '2026-08-14',
     changes: [

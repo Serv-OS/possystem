@@ -136,6 +136,10 @@ async function callFn(name, body) {
  *  Exported for the POS status drawer — one threshold, never forked. */
 const TERMINAL_ONLINE_MS = 2 * 60_000;
 export function terminalIsOnline(t) {
+  // Adyen cloud terminals (AMS1) run Adyen's software — no app of ours, no
+  // heartbeat. Treat linked ones as online; genuine unreachability surfaces
+  // at charge time as a real error instead of a silent pre-block here.
+  if (t?.adyen_terminal_id) return true;
   if (!t?.last_seen_at) return false;
   return Date.now() - new Date(t.last_seen_at).getTime() < TERMINAL_ONLINE_MS;
 }
