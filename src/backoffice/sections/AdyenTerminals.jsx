@@ -215,11 +215,17 @@ export default function AdyenTerminals() {
                 <span style={{ fontSize: 13.5, fontWeight: 800, ...S.mono }}>{t.id}</span>
               </div>
               <div style={{ fontSize: 12, color: 'var(--t2)' }}>{t.model || 'AMS1'}</div>
-              <div style={{ fontSize: 12, color: 'var(--t3)' }}>unregistered</div>
-              <button style={{ ...S.btn, ...S.btnPrim }} disabled={!!busy}
-                onClick={() => run(`assign-${t.id}`, 'assign', { terminal_id: t.id, label: t.id })}>
-                {busy === `assign-${t.id}` ? 'Registering…' : 'Register to this venue'}
-              </button>
+              <div style={{ fontSize: 12, color: t.link ? 'var(--orn)' : 'var(--t3)' }}>
+                {t.link ? 'registering — the reader is syncing with Adyen (about a minute)' : 'unregistered'}
+              </div>
+              {t.link ? (
+                <button style={S.btn} disabled={!!busy} onClick={() => load()}>Check again</button>
+              ) : (
+                <button style={{ ...S.btn, ...S.btnPrim }} disabled={!!busy}
+                  onClick={() => run(`assign-${t.id}`, 'assign', { terminal_id: t.id, label: t.id })}>
+                  {busy === `assign-${t.id}` ? 'Registering…' : 'Register to this venue'}
+                </button>
+              )}
             </div>
           ))}
 

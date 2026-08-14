@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.47',
+    date: '2026-08-14',
+    changes: [
+      'Adyen terminals: while a just-registered reader syncs with Adyen (about a minute) the panel says so and offers "Check again", instead of re-showing the Register button. First reader registered to Provo live: AMS1 "Counter reader", deployed on store ST3294J22322BK5PSV86T3G5W.',
+    ],
+  },
+  {
     version: '5.6.46',
     date: '2026-08-14',
     changes: [
