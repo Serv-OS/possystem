@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.57',
+    date: '2026-08-14',
+    changes: [
+      'Adyen terminal events are FLOWING: the event pipe was fixed (Adyen wants event-URL credentials as separate username/password fields, and delivery comes from Adyen\'s backend, not the reader) — reader heartbeats from both units now land in our log. Pay at Table\'s wake-up events ride this pipe.',
+      'Bar-tab hold engine live server-side: pre-auth on the Adyen reader (authorisation only, nothing charged), capture, release and increase — device-fenced, ready for the bar screen to drive.',
+    ],
+  },
+  {
     version: '5.6.56',
     date: '2026-08-14',
     changes: [

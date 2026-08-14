@@ -34,6 +34,14 @@ const PASS = Deno.env.get('ADYEN_EVENTS_PASS') ?? '';
 
 function authorized(req: Request): boolean {
   if (!USER || !PASS) return false; // fail closed pre-keys
+  // Accept EITHER Basic auth OR the shared key as a query param — Adyen
+  // terminals post event notifications THEMSELVES and some firmware drops
+  // userinfo (user:pass@) from URLs silently (14 Aug: zero arrivals at the
+  // gateway with credentials-in-URL config verified stored at Adyen).
+  try {
+    const k = new URL(req.url).searchParams.get('k');
+    if (k && k === PASS) return true;
+  } catch { /* fall through to Basic */ }
   const h = req.headers.get('Authorization') ?? '';
   if (!h.startsWith('Basic ')) return false;
   try {

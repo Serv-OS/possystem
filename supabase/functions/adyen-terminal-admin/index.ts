@@ -324,16 +324,63 @@ Deno.serve(async (req) => {
       return json({ ok: true });
     }
 
-    // ── set_event_url: point terminal event notifications at our endpoint ────
-    if (action === 'set_event_url') {
+    // ── set_event_url_terminal: same, but at TERMINAL level (firmware quirk) ─
+    if (action === 'set_event_url_terminal') {
+      const tid = String(body.terminal_id || '');
       const url = String(body.url || '');
-      if (!/^https:\/\//.test(url)) return json({ error: 'https url required' }, 400);
-      const r = await mgmt('PATCH', `/stores/${maa.store_id}/terminalSettings`, {
+      if (!tid || !/^https:\/\//.test(url)) return json({ error: 'terminal_id + https url required' }, 400);
+      const r = await mgmt('PATCH', `/terminals/${encodeURIComponent(tid)}/terminalSettings`, {
         nexo: { eventUrls: { eventLocalUrls: [], eventPublicUrls: [{ url }] } },
       });
       if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
       if (!r.ok) return json({ ok: false, error: JSON.stringify(r.data).slice(0, 300) }, 200);
       return json({ ok: true });
+    }
+
+    // ── set_event_url: point terminal event notifications at our endpoint ────
+    // Docs: eventPublicUrls objects carry EXPLICIT username/password fields
+    // (basic auth) — never credentials inside the url string.
+    if (action === 'set_event_url') {
+      const url = String(body.url || '');
+      if (!/^https:\/\//.test(url)) return json({ error: 'https url required' }, 400);
+      const entry: Record<string, unknown> = { url };
+      if (body.username) entry.username = String(body.username);
+      if (body.password) entry.password = String(body.password);
+      const r = await mgmt('PATCH', `/stores/${maa.store_id}/terminalSettings`, {
+        nexo: { eventUrls: { eventLocalUrls: [], eventPublicUrls: [entry] } },
+      });
+      if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
+      if (!r.ok) return json({ ok: false, error: JSON.stringify(r.data).slice(0, 300) }, 200);
+      return json({ ok: true });
+    }
+
+    // ── test_async: prove the event-URL delivery pipe WITHOUT a button press ─
+    // An /async TransactionStatusRequest's response is delivered by Adyen's
+    // BACKEND to the configured event URLs — if it arrives, the pipe works and
+    // only the notification button is in question; if not, the pipe itself is
+    // the problem (support territory).
+    if (action === 'test_async') {
+      const tid = String(body.terminal_id || '');
+      if (!tid) return json({ error: 'terminal_id required' }, 400);
+      const msg = {
+        SaleToPOIRequest: {
+          MessageHeader: {
+            ProtocolVersion: '3.0', MessageClass: 'Service', MessageCategory: 'TransactionStatus', MessageType: 'Request',
+            ServiceID: crypto.randomUUID().replace(/-/g, '').slice(0, 10), SaleID: 'servos-pipe-test', POIID: tid,
+          },
+          TransactionStatusRequest: {
+            MessageReference: { MessageCategory: 'Payment', SaleID: 'servos-pipe-test', ServiceID: 'pipetest001' },
+          },
+        },
+      };
+      const base = Deno.env.get('ADYEN_DEVICE_BASE') || 'https://terminal-api-test.adyen.com';
+      const res = await fetch(`${base.replace(/\/+$/, '')}/async`, {
+        method: 'POST',
+        headers: { 'X-API-Key': Deno.env.get('ADYEN_API_KEY') || '', 'Content-Type': 'application/json' },
+        body: JSON.stringify(msg),
+      });
+      const text = await res.text();
+      return json({ ok: res.ok, status: res.status, body: text.slice(0, 300) });
     }
 
     // ── set_wakeup_button: the reader's own "Pay at table" menu button ───────

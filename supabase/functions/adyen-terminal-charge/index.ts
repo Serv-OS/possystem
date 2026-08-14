@@ -37,7 +37,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import {
-  adyenConfigured, terminalEndpoint, adyenFetch,
+  adyenConfigured, terminalEndpoint, adyenFetch, checkoutBase,
   buildPaymentRequest, buildTransactionStatusRequest, buildAbortRequest,
   parsePaymentResponse, newServiceId, ADYEN_MERCHANT_ACCOUNT,
 } from '../_shared/adyen.ts';
@@ -158,6 +158,97 @@ Deno.serve(async (req) => {
   let body: { action?: string; job_id?: string; response?: unknown };
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
   const action = String(body.action ?? '');
+
+  // ── BAR-TAB HOLDS (v5.6.57) — pre-auth on the reader, no job row: the tab
+  // (bar_tabs pre_auth_* columns) carries the hold. Fence: service role, or a
+  // paired POS device at the venue. Capture/release/increase mirror the
+  // adyen-modify endpoints but stay HERE because that fn's fence is BO-user
+  // based and a till must be able to close its own tab.
+  if (['hold_start', 'hold_capture', 'hold_release', 'hold_increase'].includes(action)) {
+    const deviceAt = async (locId: string) => {
+      if (isServiceRole) return true;
+      const { data: dev } = await opsAdmin.from('devices')
+        .select('id').eq('device_uid', callerUid).eq('location_id', locId).maybeSingle();
+      return !!dev;
+    };
+    const maaFor = async (opsLocId: string) => {
+      const { data: ploc } = await platformAdmin.from('locations')
+        .select('id').eq('ops_location_id', opsLocId).maybeSingle();
+      const platformLocId = ploc?.id ?? opsLocId;
+      const { data: maa } = await platformAdmin.from('merchant_adyen_accounts')
+        .select('merchant_account, store_id, region').eq('location_id', platformLocId).maybeSingle();
+      return maa;
+    };
+
+    if (action === 'hold_start') {
+      const terminalDeviceId = String(body.terminal_device_id ?? '');
+      const amountMinor = Math.round(Number(body.amount_minor));
+      const currency = String(body.currency || 'GBP').toUpperCase().slice(0, 3);
+      if (!terminalDeviceId || !Number.isFinite(amountMinor) || amountMinor < 100 || amountMinor > 100_000) {
+        return json({ error: 'terminal_device_id and amount_minor (£1–£1000) required' }, 400);
+      }
+      const { data: term } = await opsAdmin.from('terminal_devices')
+        .select('id, location_id, status, active, adyen_terminal_id')
+        .eq('id', terminalDeviceId).maybeSingle();
+      if (!term?.adyen_terminal_id || term.status !== 'paired' || !term.active) {
+        return json({ ok: false, error: 'terminal not paired to Adyen' }, 409);
+      }
+      if (!(await deviceAt(term.location_id))) return json({ error: 'no access to this venue' }, 403);
+      const maa = await maaFor(term.location_id);
+      if (!maa?.merchant_account) return json({ ok: false, error: 'venue has no Adyen account — onboarding incomplete' }, 409);
+
+      const serviceId = newServiceId();
+      const nexo = buildPaymentRequest({
+        poiid: term.adyen_terminal_id,
+        saleId: `servos-${String(term.location_id).slice(0, 8)}`,
+        serviceId,
+        transactionId: `tabhold-${crypto.randomUUID().slice(0, 12)}`,
+        amountMinor,
+        currency,
+        preAuth: true,
+        storeId: maa.store_id ?? undefined,
+      });
+      const res = await adyenFetch('POST', terminalEndpoint(maa.merchant_account, term.adyen_terminal_id, 'sync', maa.region === 'US' ? 'us' : 'eu'), nexo, { timeoutMs: 165_000 });
+      if (!res.ok) return json({ ok: false, error: `adyen ${res.status}` }, 200);
+      const parsed = parsePaymentResponse(res.data);
+      if (parsed.result !== 'Success') {
+        return json({ ok: false, error: parsed.errorCondition || 'declined', declined: true }, 200);
+      }
+      return json({
+        ok: true,
+        psp_reference: parsed.pspReference,
+        held_minor: parsed.authorizedMinor ?? amountMinor,
+        card: settleCard(parsed),
+      });
+    }
+
+    // capture / release / increase — by pspReference, venue-fenced.
+    const psp = String(body.psp_reference ?? '');
+    const opsLocId = String(body.location_id ?? '');
+    if (!psp || !opsLocId) return json({ error: 'psp_reference and location_id required' }, 400);
+    if (!(await deviceAt(opsLocId))) return json({ error: 'no access to this venue' }, 403);
+    const maa = await maaFor(opsLocId);
+    if (!maa?.merchant_account) return json({ ok: false, error: 'venue has no Adyen account' }, 409);
+    const amountMinor = body.amount_minor != null ? Math.round(Number(body.amount_minor)) : null;
+    const currency = String(body.currency || 'GBP').toUpperCase().slice(0, 3);
+    let path = ''; let payload: Record<string, unknown> = {};
+    if (action === 'hold_capture') {
+      if (!Number.isFinite(amountMinor)) return json({ error: 'amount_minor required' }, 400);
+      path = `/payments/${encodeURIComponent(psp)}/captures`;
+      payload = { merchantAccount: maa.merchant_account, amount: { value: amountMinor, currency }, reference: `tabcap:${psp}` };
+    } else if (action === 'hold_release') {
+      path = `/payments/${encodeURIComponent(psp)}/cancels`;
+      payload = { merchantAccount: maa.merchant_account, reference: `tabrel:${psp}` };
+    } else { // hold_increase — new TOTAL, not a delta (Adyen amountUpdates semantics)
+      if (!Number.isFinite(amountMinor)) return json({ error: 'amount_minor (new total) required' }, 400);
+      path = `/payments/${encodeURIComponent(psp)}/amountUpdates`;
+      payload = { merchantAccount: maa.merchant_account, amount: { value: amountMinor, currency }, reason: 'delayedCharge', reference: `tabinc:${psp}` };
+    }
+    const res = await adyenFetch('POST', `${checkoutBase()}${path}`, payload, { idempotencyKey: `tab:${action}:${psp}:${amountMinor ?? 'full'}` });
+    if (!res.ok) return json({ ok: false, error: `adyen ${res.status}`, detail: res.data }, res.status >= 500 ? 502 : 200);
+    return json({ ok: true, status: (res.data as Record<string, unknown>)?.status ?? 'received', modification_psp: (res.data as Record<string, unknown>)?.pspReference ?? null });
+  }
+
   const jobId = String(body.job_id ?? '');
   if (!jobId || !['start', 'prepare_local', 'report_local', 'result', 'abort'].includes(action)) {
     return json({ error: "action ('start'|'prepare_local'|'report_local'|'result'|'abort') and job_id required" }, 400);
