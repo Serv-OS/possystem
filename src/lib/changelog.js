@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.59',
+    date: '2026-08-14',
+    changes: [
+      'PAY AT TABLE ON THE READER IS LIVE: press "Pay at table" on the Adyen reader, type the table number, and the table\'s live bill appears on the reader for the customer to tap — tip prompt included. The payment settles through the normal pipeline and the check closes server-side, even if no till is awake. Requires an open table with a saved bill; ambiguous or closed table numbers are refused safely.',
+    ],
+  },
+  {
     version: '5.6.58',
     date: '2026-08-14',
     changes: [

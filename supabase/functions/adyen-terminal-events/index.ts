@@ -126,7 +126,62 @@ Deno.serve(async (req) => {
       .insert({ event_key: `tevt:${poiid}:${eventKind}:${Date.now()}`, raw: body })
       .then(() => {}, () => {});
     if (eventKind === 'SaleWakeUp') {
-      console.log(`[adyen-terminal-events] SaleWakeUp from ${poiid} — pay-at-table initiated on terminal (POS wiring: Phase 3)`);
+      // THE RESPONDER (v5.6.59, task #102). Real payload proven 14 Aug:
+      //   EventDetails: "reference_id=2"  ← the table number staff typed.
+      // Answer: match the table at this reader's venue, freeze its bill into a
+      // terminal job (terminal_start_table_payment_for), and kick the charge
+      // back at the SAME reader. Ack fast; the long charge rides waitUntil.
+      const details = String(evt?.EventDetails ?? '');
+      const ref = (details.match(/reference_id=([A-Za-z0-9]+)/) || [])[1]
+        || (details.match(/^([A-Za-z0-9]+)$/) || [])[1] || '';
+      const respond = async () => {
+        try {
+          if (!ref) { console.log('[pay-at-table] wake-up with no reference — ignoring'); return; }
+          const { data: term } = await opsAdmin.from('terminal_devices')
+            .select('id, location_id, modes').eq('adyen_terminal_id', poiid)
+            .eq('status', 'paired').eq('active', true).maybeSingle();
+          if (!term) { console.log(`[pay-at-table] no paired terminal for ${poiid}`); return; }
+
+          // Table match: staff type "2" for a table labelled "T2" (or "2").
+          // Only tables with an OPEN session are candidates; refuse ambiguity.
+          const [{ data: sess }, { data: floor }] = await Promise.all([
+            opsAdmin.from('active_sessions').select('table_id').eq('location_id', term.location_id),
+            opsAdmin.from('floor_tables').select('id, label').eq('location_id', term.location_id),
+          ]);
+          const open = new Set((sess || []).map((r) => String(r.table_id)));
+          const norm = (x: string) => String(x || '').toLowerCase();
+          const digits = (x: string) => String(x || '').replace(/[^0-9]/g, '');
+          const candidates = (floor || []).filter((f) => open.has(String(f.id)) && (
+            norm(f.label) === norm(ref) || (digits(f.label) === digits(ref) && digits(ref) !== '')
+          ));
+          if (candidates.length !== 1) {
+            console.log(`[pay-at-table] ref "${ref}" matched ${candidates.length} open tables at ${term.location_id} — refusing`);
+            return;
+          }
+
+          const { data: job, error: rpcErr } = await opsAdmin.rpc('terminal_start_table_payment_for', {
+            p_terminal_device_id: term.id, p_table_id: candidates[0].id,
+          });
+          if (rpcErr) { console.log(`[pay-at-table] job refusal: ${rpcErr.message}`); return; }
+          const jobId = (job as Record<string, unknown>)?.job_id;
+          if (!jobId) { console.log('[pay-at-table] RPC returned no job id'); return; }
+
+          // Kick the charge at the SAME reader — the bill appears on its screen.
+          const res = await fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/adyen-terminal-charge`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}` },
+            body: JSON.stringify({ action: 'start', job_id: jobId }),
+          });
+          const out = await res.text();
+          console.log(`[pay-at-table] charge kick for table ${candidates[0].label}: ${res.status} ${out.slice(0, 200)}`);
+        } catch (e) {
+          console.error('[pay-at-table] responder failed:', (e as Error)?.message || e);
+        }
+      };
+      // deno-lint-ignore no-explicit-any
+      const rt = (globalThis as any).EdgeRuntime;
+      if (rt?.waitUntil) rt.waitUntil(respond());
+      else respond();
     }
     return new Response('ok', { status: 200 });
   }
