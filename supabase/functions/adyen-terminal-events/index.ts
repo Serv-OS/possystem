@@ -281,9 +281,16 @@ Deno.serve(async (req) => {
           const sess0 = sessBy.get(String(table.id));
           const ckey = `${term.location_id}:${table.id}:${(sess0?.session as Record<string, unknown>)?.id ?? '-'}`;
           const LIVE = ['pending', 'claimed', 'tipping', 'charging_unsent', 'charging', 'unknown'];
-          const { data: stuck } = await opsAdmin.from('terminal_jobs')
-            .select('id, status').eq('check_key', ckey).in('status', LIVE).limit(1).maybeSingle();
-          if (stuck) {
+          // Scope by TERMINAL as well as by check. The RPC has two mutexes —
+          // one per check_key, one per target_terminal_id — and a job stuck on
+          // ANY table blocks the whole reader ("this terminal is already taking
+          // a payment", live 15 Aug: one 'unknown' T4 job locked every table).
+          // Checking only this table's key sailed past it into that refusal.
+          const { data: stuckRows } = await opsAdmin.from('terminal_jobs')
+            .select('id, status, check_key, check_draft')
+            .or(`check_key.eq.${ckey},target_terminal_id.eq.${term.id}`)
+            .in('status', LIVE).order('created_at', { ascending: true }).limit(5);
+          for (const stuck of (stuckRows || [])) {
             if (stuck.status === 'charging' || stuck.status === 'unknown') {
               const rr = await fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/adyen-terminal-charge`, {
                 method: 'POST',
@@ -293,9 +300,13 @@ Deno.serve(async (req) => {
               console.log(`[pay-at-table] recovery on stuck ${stuck.status} job ${stuck.id}: ${rr.slice(0, 200)}`);
               const { data: after } = await opsAdmin.from('terminal_jobs')
                 .select('status').eq('id', stuck.id).maybeSingle();
+              await platformAdmin.from('adyen_webhook_events').insert({
+                event_key: `recover:${poiid}:${Date.now()}`,
+                raw: { jobId: stuck.id, was: stuck.status, now: after?.status ?? null, result: rr.slice(0, 500) },
+              }).then(() => {}, () => {});
               // charging_unsent = terminal never saw it, safe to supersede.
               if (after && LIVE.includes(after.status) && after.status !== 'charging_unsent') {
-                await say('That table has a payment in progress. Finish it on the reader.');
+                await say(`${(stuck.check_draft as Record<string, unknown>)?.tableLabel ?? 'Another table'} has a payment in progress — finish it first.`);
                 return;
               }
               await opsAdmin.from('terminal_jobs')
