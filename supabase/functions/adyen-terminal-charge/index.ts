@@ -32,8 +32,10 @@
 // AUTH FENCE: Adyen jobs are driven by the POS DEVICE (there is no on-terminal
 // pairing session like PaxPay for cloud mode) — caller must be a paired device
 // at the job's location (devices.device_uid = auth.uid()), or the service role.
-// For prepare_local/report_local the caller IS the on-terminal app, which boots
-// as a paired device the same way.
+// For prepare_local/report_local the caller IS the on-terminal app; v5.6.81 also
+// accepts it as THE JOB'S OWN TARGET TERMINAL (terminal_devices.device_uid =
+// auth.uid() AND id = job.target_terminal_id, paired + active) — see the fence
+// block for why that is narrower, not wider, than the device branch.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import {
@@ -290,12 +292,45 @@ Deno.serve(async (req) => {
   if (!job) return json({ error: 'job not found' }, 404);
   if (job.processor !== 'adyen') return json({ error: `job is ${job.processor ?? 'ryft'} — wrong charge path` }, 409);
 
-  // Fence: a paired POS device AT THIS JOB'S LOCATION (till, kiosk, or our app
-  // running on the Adyen terminal itself), or the service role.
+  // ── Fence ──────────────────────────────────────────────────────────────────
+  // Two accepted identities (or the service role). BOTH are server-stamped from
+  // auth.uid() by a SECURITY DEFINER RPC — neither can be self-asserted by a caller.
+  //
+  //   (a) TILL: a paired POS-family device at this job's location
+  //       (devices.device_uid = auth.uid(), stamped by claim_device() and gated on
+  //       the pairing code). This is the cloud transport's caller.
+  //
+  //   (b) THE JOB'S OWN TARGET TERMINAL (v5.6.81): a paired, active terminal_devices
+  //       row whose id IS job.target_terminal_id and whose device_uid = auth.uid()
+  //       (stamped by register_terminal_device(); location set only by
+  //       claim_terminal_device() after a manager validated it in Back Office).
+  //
+  // WHY (b) IS NEEDED: our MPOS wrapper running ON an Adyen Android terminal is both
+  // the till and the reader, and one browser holds ONE Supabase session — so a single
+  // auth.uid() has to satisfy the till fence here AND the terminal_devices fence that
+  // terminal_commit_tip / terminal_jobs RLS use. It usually does (MPOS also pairs as a
+  // POS device, so claim_device stamps the same uid), but claim_device is best-effort
+  // and both of its call sites swallow the failure — a device whose claim silently
+  // failed would hold a manager-claimed reader row and still be told 'no access to
+  // this job'. That is a 403 on a card the customer is standing in front of.
+  //
+  // WHY IT IS STILL TIGHT: (b) is NARROWER than (a), not wider. It is not "any
+  // terminal at the venue" — it is THIS job's addressed terminal and no other, so it
+  // grants exactly the capability the job already gives that terminal (terminal_jobs'
+  // own SELECT policy fences the same way). It cannot reach another venue's jobs,
+  // another terminal's jobs, or an unpaired/retired row.
   if (!isServiceRole) {
-    const { data: dev } = await opsAdmin.from('devices')
-      .select('id').eq('device_uid', callerUid).eq('location_id', job.location_id).maybeSingle();
-    if (!dev) return json({ error: 'no access to this job' }, 403);
+    const [{ data: dev }, { data: ownTerm }] = await Promise.all([
+      opsAdmin.from('devices')
+        .select('id').eq('device_uid', callerUid).eq('location_id', job.location_id).maybeSingle(),
+      opsAdmin.from('terminal_devices')
+        .select('id').eq('id', job.target_terminal_id).eq('device_uid', callerUid)
+        .eq('status', 'paired').eq('active', true).maybeSingle(),
+    ]);
+    if (!dev && !ownTerm) return json({ error: 'no access to this job' }, 403);
+    if (!dev && ownTerm) {
+      console.log(`adyen-terminal-charge: caller authorised as the job's own target terminal ${job.target_terminal_id} (job ${job.id}, action ${action})`);
+    }
   }
 
   if (job.simulated === true) return json({ error: 'simulated job — the real charge path refuses it', code: 'SIMULATED' }, 409);
@@ -387,6 +422,17 @@ Deno.serve(async (req) => {
     // LOCAL TRANSPORT: hand the message to the on-terminal app / Tap to Pay SDK.
     // The row is 'charging' — the device MUST come back via report_local or the
     // recovery paths own it. Never expose keys; the payload is amount-fixed.
+    //
+    // ⚠ TODO(GO-LIVE BLOCKER — nexo local protection): `nexo` below is a PLAINTEXT
+    // SaleToPOIRequest. A TEST terminal accepts that, which is what makes bench
+    // testing on the S1F2L possible today. A LIVE Adyen terminal REFUSES it: the
+    // local endpoint requires a SaleToPOISecuredMessage (AES-CBC body + HMAC-SHA256
+    // MAC, keys derived from the store's local-comms passphrase via the Adyen
+    // Customer Area). THIS FUNCTION IS THE PLACE THAT MUST DO THAT ENCRYPTION —
+    // the wrapper posts the bytes verbatim and the web seam never inspects them, so
+    // wrapping here (and unwrapping the PaymentResponse in report_local, before
+    // parsePaymentResponse) is a change confined to this file plus a new secret.
+    // Do NOT switch a venue to LIVE on the local transport until that ships.
     if (action === 'prepare_local') {
       return json({ ok: true, service_id: serviceId, poiid, nexo_request: nexo, charge_minor: chargeMinor, currency: String(job.currency || 'GBP').toUpperCase() });
     }

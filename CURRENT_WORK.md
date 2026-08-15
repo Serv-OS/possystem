@@ -1,3 +1,26 @@
+# Session — 15 Aug 2026 (v5.6.81) — MPOS on an Adyen S1F2L, card on its OWN reader (task #104)
+
+## Done (NOT committed, NOT deployed)
+- MCardFlow gains TIER 0: `adyenLocalBridgeAvailable()` → mint a terminal job at THIS device's own
+  terminal_devices row → `runAdyenLocalPayment` (prepare_local → 127.0.0.1:8443/nexo → report_local).
+  `adyenLocalTerminal.js` had zero callers before this.
+- `src/lib/payments/localTerminalIdentity.js` (new): serial from the bridge → `register_terminal_device`
+  → own paired row + POIID. Claim code surfaced in MMe and on the card screen when the reader is not ready.
+- `AdyenNexoBridge.java`: `getSerial()` (paxpay Prefs.serial ladder, cached in SharedPreferences) + `appVersion()`.
+- `terminalJobs.dispatchTerminalJob({ localBridge:true })` suppresses the cloud 'start' kick (it would RACE).
+- `adyen-terminal-charge` fence also accepts the job's OWN target terminal (terminal_devices.device_uid = auth.uid()).
+- `adyen-terminal-admin` 'assign' can ADOPT a self-registered app-terminal row instead of minting a rival
+  POIID row (+ `appTerminals` in 'list', + picker in AdyenTerminals.jsx). Without this the flow dead-ends.
+
+## Next / blockers
+- DEPLOY `adyen-terminal-charge` and `adyen-terminal-admin` (edge fns never auto-deploy).
+- Build + upload the :mpos APK; point MPOS_URL at dev; the wrapper still boots to the v1.3-diag probe page.
+- GO-LIVE BLOCKER: nexo local protection (SaleToPOISecuredMessage). TEST terminals only until then.
+  Seam + TODO are in adyen-terminal-charge's prepare_local branch.
+- No migration needed. Java not compiled here (no JRE on this machine).
+
+---
+
 # Session — 11 Aug 2026 (v5.6.25+) — Table Bookings module, Phases 1-3
 
 ## Context

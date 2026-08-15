@@ -249,6 +249,8 @@ export async function findPaxTerminal({ posDeviceId } = {}) {
  * @param {boolean} p.suppressTip    this ONE sale takes no tip (bar tab / takeaway)
  * @param {string} p.closedCheckId   pre-minted, so the check can close without the POS
  * @param {object} p.checkDraft      everything recordClosedCheck needs EXCEPT the tip
+ * @param {boolean} p.localBridge    THIS device will drive the reader itself — do not
+ *                                   fire the cloud 'start' kick (see the block below)
  * @returns {{job: object, existing: boolean}}
  */
 export async function dispatchTerminalJob(p) {
@@ -399,7 +401,19 @@ export async function dispatchTerminalJob(p) {
     // is one long /sync call that settles server-side; the JobPoller keeps
     // watching terminal_jobs exactly as it does for Ryft. The fn's CAS guard
     // (charging_unsent→charging) makes a duplicate kick harmless.
-    if (j.job?.processor === 'adyen' && !j.existing) {
+    //
+    // v5.6.81 — NOT WHEN THIS DEVICE IS THE READER.
+    //
+    // On an Adyen Android terminal running MPOS, the caller drives the reader over
+    // the LOCAL nexo endpoint (prepare_local → 127.0.0.1:8443 → report_local). The
+    // 'start' kick is the CLOUD transport for the same job, and the CAS guard that
+    // makes a duplicate kick harmless between two tills does the opposite here: it
+    // is a RACE, not a duplicate. Whichever of the two wins charging_unsent→charging
+    // owns the tender, so a lost race leaves prepare_local answering 'in_flight'
+    // while Adyen puts the card prompt up over the cloud — two transports, one
+    // reader, and the local half no longer able to report the outcome it can see.
+    // The local flow calls prepare_local itself immediately after this; suppress.
+    if (j.job?.processor === 'adyen' && !j.existing && !p.localBridge) {
       callFn('adyen-terminal-charge', { action: 'start', job_id: useJobId })
         .catch((e) => console.warn('[terminalJobs] adyen start kick failed (recovery will pick it up):', e?.message || e));
     }

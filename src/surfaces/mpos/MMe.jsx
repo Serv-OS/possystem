@@ -2,10 +2,13 @@
 // Phase 1A: minimal static info + actions. Future: shift summary, my sales today,
 // my tip total, productivity stats.
 
+import { useEffect, useState } from 'react';
 import { useStore } from '../../store';
 import { VERSION } from '../../lib/version';
 import { Sx } from './MShellStyles';
 import { currencySymbol } from '../../lib/currency';
+import { adyenLocalBridgeAvailable } from '../../lib/payments/adyenLocalTerminal';
+import { resolveSelfHostedAdyenTerminal } from '../../lib/payments/localTerminalIdentity';
 
 export default function MMe({ onOpenHistory }) {
   const { staff, logout, deviceConfig, closedChecks = [] } = useStore();
@@ -79,9 +82,93 @@ export default function MMe({ onOpenHistory }) {
         />
       </div>
 
+      {/* Built-in card reader (Adyen payment terminals only) */}
+      <LocalReaderCard />
+
       {/* Footer */}
       <div style={{ padding:'24px 16px 32px', textAlign:'center', color:'var(--t4)', fontSize:11, fontFamily:'var(--font-mono)' }}>
         Serv OS · MPOS v{VERSION}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * "This device's own card reader" — only rendered on an Adyen Android payment
+ * terminal (the wrapper injects window.RposAdyenNexo; everywhere else this renders
+ * nothing at all).
+ *
+ * Its real job is the PAIRING CODE. A terminal self-registers an unpaired
+ * terminal_devices row on first look, and the manager types the code shown here
+ * into Back Office → Card readers — exactly the paxpay flow. Re-resolving on mount
+ * also refreshes last_seen_at, which is what keeps the 30-minute claim TTL alive
+ * while somebody walks to the office.
+ */
+function LocalReaderCard() {
+  const [state, setState] = useState(null);   // null = still looking
+  const [busy, setBusy] = useState(false);
+  const available = adyenLocalBridgeAvailable();
+
+  const look = async () => {
+    setBusy(true);
+    const res = await resolveSelfHostedAdyenTerminal();
+    setState(res);
+    setBusy(false);
+  };
+
+  useEffect(() => {
+    if (!available) return undefined;
+    let alive = true;
+    // Not `look()` — that would setState synchronously inside the effect body.
+    resolveSelfHostedAdyenTerminal().then((res) => { if (alive) setState(res); });
+    return () => { alive = false; };
+  }, [available]);
+
+  if (!available) return null;
+
+  const ok = state?.ok === true;
+  return (
+    <div style={{ padding:'8px 14px 0' }}>
+      <div style={{
+        background:'var(--bg2)', border:`1px solid ${ok ? 'var(--bdr)' : 'var(--red-b)'}`,
+        borderRadius:12, padding:'14px 12px',
+      }}>
+        <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom: state ? 10 : 0 }}>
+          <div style={{ fontSize:22 }}>💳</div>
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ fontSize:14, fontWeight:700, color:'var(--t1)' }}>Card reader on this terminal</div>
+            <div style={{ fontSize:11, color:'var(--t3)', marginTop:2 }}>
+              {!state ? 'Checking…' : ok ? `Ready · ${state.terminal.label}` : 'Not ready'}
+            </div>
+          </div>
+          <button
+            onClick={look}
+            disabled={busy}
+            style={{ ...Sx.btnGhost, width:'auto', padding:'8px 12px', fontSize:12, opacity: busy ? .5 : 1 }}
+          >↻</button>
+        </div>
+
+        {state && !ok && (
+          <div style={{ fontSize:12, color:'var(--t3)', lineHeight:1.55 }}>{state.reason}</div>
+        )}
+        {state?.claimCode && (
+          <div style={{ marginTop:12, textAlign:'center' }}>
+            <div style={{ fontSize:10, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', fontWeight:700 }}>
+              Pairing code
+            </div>
+            <div style={{ fontSize:28, fontWeight:800, letterSpacing:3, fontFamily:'var(--font-mono)', color:'var(--t1)', marginTop:4 }}>
+              {state.claimCode}
+            </div>
+            <div style={{ fontSize:11, color:'var(--t3)', marginTop:6, lineHeight:1.5 }}>
+              Back Office → Card readers → pair by code. Expires 30 minutes after this screen was last opened.
+            </div>
+          </div>
+        )}
+        {ok && (
+          <div style={{ fontSize:11, color:'var(--t4)', marginTop:8, fontFamily:'var(--font-mono)', wordBreak:'break-all' }}>
+            POIID {state.terminal.adyenTerminalId}
+          </div>
+        )}
       </div>
     </div>
   );

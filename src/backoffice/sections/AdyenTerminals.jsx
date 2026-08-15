@@ -63,6 +63,9 @@ export default function AdyenTerminals() {
   const [bindFor, setBindFor] = useState(null);    // terminal_device id with settings open
   const [bindTo, setBindTo] = useState('');
   const [serial, setSerial] = useState('');
+  // v5.6.81 — when set, a register/assign puts the POIID on THIS already-paired
+  // app-terminal row (the S1F2L running MPOS) instead of minting a rival record.
+  const [adoptId, setAdoptId] = useState('');
   const [tipOn, setTipOn] = useState(true);
   const [tipPcts, setTipPcts] = useState('5, 10, 15');
   const [tipCustom, setTipCustom] = useState(true);
@@ -96,9 +99,16 @@ export default function AdyenTerminals() {
   const run = async (label, action, payload) => {
     setBusy(label); setErr(''); setNotice('');
     try {
-      const r = await callAdmin(action, payload);
+      // An app terminal picked above adopts the POIID onto its OWN record.
+      const body = action === 'assign' && adoptId ? { ...payload, terminal_device_id: adoptId } : payload;
+      const r = await callAdmin(action, body);
       if (r.ok === false) throw new Error(r.error === 'scope_missing' ? (status.scopeError || 'API key missing Management role') : (r.error || 'failed'));
-      setNotice(action === 'ensure_store' ? `Store created (${r.storeId})` : action === 'assign' ? 'Terminal registered to this venue' : 'Done');
+      setNotice(
+        action === 'ensure_store' ? `Store created (${r.storeId})`
+          : action === 'assign' ? (r.adopted ? 'Reader linked to the ServOS terminal — it can now take cards on its own screen' : 'Terminal registered to this venue')
+            : 'Done',
+      );
+      if (action === 'assign' && r.adopted) setAdoptId('');
       await load();
     } catch (e) { setErr(e?.message || String(e)); }
     setBusy('');
@@ -150,10 +160,16 @@ export default function AdyenTerminals() {
       if (m.length === 0) throw new Error('No reader with that serial is visible to your Adyen account yet. Check the number, and make sure the reader has been switched on and connected to WiFi at least once.');
       if (m.length > 1) throw new Error(`That serial matches ${m.length} readers — type more of the number.`);
       if (m[0].onStore) { setNotice(`${m[0].id} is already registered to this venue.`); setSerial(''); await load(); setBusy(''); return; }
-      const r = await callAdmin('assign', { terminal_id: m[0].id, label: m[0].id });
+      const r = await callAdmin('assign', {
+        terminal_id: m[0].id, label: m[0].id,
+        ...(adoptId ? { terminal_device_id: adoptId } : {}),
+      });
       if (r.ok === false) throw new Error(r.error || 'register failed');
-      setNotice(`${m[0].id} registered — it syncs with Adyen for about a minute, then it is ready to assign to a till.`);
+      setNotice(r.adopted
+        ? `${m[0].id} linked to the ServOS terminal — it can now take cards on its own screen.`
+        : `${m[0].id} registered — it syncs with Adyen for about a minute, then it is ready to assign to a till.`);
       setSerial('');
+      if (r.adopted) setAdoptId('');
       await load();
     } catch (e) { setErr(e?.message || String(e)); }
     setBusy('');
@@ -201,6 +217,42 @@ export default function AdyenTerminals() {
             <button style={{ ...S.btn, ...S.btnPrim }} disabled={!!busy || !serial.trim()} onClick={registerBySerial}>
               {busy === 'serial' ? 'Registering…' : 'Register'}
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── app terminals waiting for a POIID (v5.6.81) ── */}
+      {fleet?.appTerminals?.length > 0 && (
+        <div style={{ marginTop: 14, padding: 14, borderRadius: 10, background: 'var(--bg2)', border: '1px solid var(--bdr)' }}>
+          <div style={{ fontSize: 13, fontWeight: 700 }}>Terminals running the ServOS app</div>
+          <div style={{ ...S.desc, marginTop: 4 }}>
+            These are paired to this venue and take orders, but they have no Adyen reader linked yet,
+            so they cannot take a card. Pick one below when you register the matching reader and the
+            link lands on the terminal itself — not on a second, separate record.
+          </div>
+          <div style={{ marginTop: 10 }}>
+            {fleet.appTerminals.map((a) => (
+              <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0' }}>
+                <input
+                  type="radio" name="adyen-app-terminal"
+                  checked={adoptId === a.id}
+                  onChange={() => setAdoptId(adoptId === a.id ? '' : a.id)}
+                />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700 }}>{a.label || 'Card terminal'}</div>
+                  <div style={{ ...S.desc, margin: 0 }}>
+                    <span style={S.mono}>{a.serial_number}</span>
+                    {a.app_version ? ` · ${a.app_version}` : ''}
+                  </div>
+                </div>
+                {onlineDot(a.last_seen_at)}
+              </div>
+            ))}
+          </div>
+          <div style={{ ...S.desc, marginTop: 6 }}>
+            {adoptId
+              ? 'Selected. Now register that terminal\'s reader below and the POIID goes onto this record.'
+              : 'Nothing selected — registering a reader will create a separate record instead.'}
           </div>
         </div>
       )}

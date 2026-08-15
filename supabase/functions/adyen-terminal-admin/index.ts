@@ -176,10 +176,22 @@ Deno.serve(async (req) => {
           link: linkBy.get(String(t.id)) || null,
         };
       });
+      // v5.6.81 — app terminals waiting for a POIID: a paired terminal_devices row
+      // at this venue that a DEVICE owns (self-registered by our MPOS wrapper on an
+      // Adyen Android terminal, then claimed by code) and that no POIID is on yet.
+      // The panel offers these when registering, so the link lands on the row the
+      // physical device can actually authenticate as. See 'assign' → adopt.
+      const { data: appTerms } = await opsAdmin.from('terminal_devices')
+        .select('id, label, serial_number, last_seen_at, app_version')
+        .eq('location_id', opsLocationId).eq('status', 'paired').eq('active', true)
+        .is('adyen_terminal_id', null).is('ryft_terminal_id', null)
+        .order('last_seen_at', { ascending: false }).limit(20);
+
       return json({
         ok: true,
         store: rows.filter((x) => x.onStore),
         inventory: rows.filter((x) => !x.onStore),
+        appTerminals: appTerms ?? [],
       });
     }
 
@@ -240,6 +252,63 @@ Deno.serve(async (req) => {
       // drawer all read. AMS1 has no on-device app, so no claim code: the row
       // is born 'paired'. device_uid is NOT NULL default auth.uid(), which is
       // NULL under service-role — synthesize one.
+      //
+      // ── v5.6.81: ADOPT AN APP TERMINAL'S OWN ROW RATHER THAN MINTING A RIVAL ──
+      //
+      // An S1F2L (or S1E2L / S1E4 Pro) running our MPOS wrapper is not an AMS1: it
+      // DOES have an on-device app, it self-registers via register_terminal_device,
+      // and a manager claims it by code in Back Office → Card readers. That row
+      // carries the DEVICE'S OWN device_uid, which is the identity every on-device
+      // path depends on — _terminal_for_caller, terminal_jobs' SELECT policy and
+      // adyen-terminal-charge's target-terminal fence all resolve through it.
+      //
+      // The synthesized-device_uid row below can never serve that device: keyed on
+      // the POIID with a random uid, it would leave the physical terminal holding a
+      // paired row with NO POIID (so prepare_local answers 'terminal_not_linked')
+      // beside a POIID row it cannot authenticate as. Two rows, one machine, and no
+      // working payment. So: if this venue already has a claimed app-terminal row
+      // waiting for a POIID, put the POIID on THAT row.
+      //
+      // Matched either explicitly (`terminal_device_id`, chosen by the operator from
+      // the picker in AdyenTerminals) or automatically by hardware serial — which
+      // only lines up when Build.getSerial() returned the real one, hence the picker.
+      const adoptId = String(body.terminal_device_id || '');
+      let adopt: { id: string } | null = null;
+      if (adoptId) {
+        const { data: cand } = await opsAdmin.from('terminal_devices')
+          .select('id, location_id, status, active')
+          .eq('id', adoptId).maybeSingle();
+        // Venue-fenced: an id from the client can only ever name a row at the venue
+        // this caller already proved access to.
+        if (!cand || cand.location_id !== opsLocationId || cand.status !== 'paired' || cand.active !== true) {
+          return json({ ok: false, error: 'That paired terminal is not at this venue (or is no longer active).' }, 200);
+        }
+        adopt = { id: cand.id };
+      } else {
+        const { data: bySerial } = await opsAdmin.from('terminal_devices')
+          .select('id').eq('location_id', opsLocationId).eq('serial_number', serial)
+          .eq('status', 'paired').eq('active', true).is('adyen_terminal_id', null).maybeSingle();
+        if (bySerial) adopt = { id: bySerial.id };
+      }
+
+      if (adopt) {
+        // Free idx_td_adyen (unique POIID among paired rows) before writing it here.
+        // Scoped to this venue: a serial/POIID collision must never let one tenant
+        // retire another's terminal.
+        await opsAdmin.from('terminal_devices')
+          .update({ status: 'retired', active: false })
+          .eq('adyen_terminal_id', terminalId).eq('location_id', opsLocationId).neq('id', adopt.id);
+        const { error: adErr } = await opsAdmin.from('terminal_devices')
+          .update({
+            adyen_terminal_id: terminalId, label, location_id: opsLocationId,
+            status: 'paired', active: true, claimed_at: new Date().toISOString(),
+          })
+          .eq('id', adopt.id);
+        if (adErr) return json({ ok: false, error: `terminal link write failed: ${adErr.message}` }, 500);
+        console.log(`[adyen-terminal-admin] adopted app-terminal row ${adopt.id} for POIID ${terminalId} (${adoptId ? 'operator-chosen' : 'serial match'})`);
+        return json({ ok: true, terminalDeviceId: adopt.id, poiid: terminalId, adopted: true });
+      }
+
       const { data: tdExisting } = await opsAdmin.from('terminal_devices')
         .select('id, status').eq('adyen_terminal_id', terminalId).maybeSingle();
       let terminalDeviceId: string;

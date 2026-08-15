@@ -7,6 +7,19 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.81',
+    date: '2026-08-15',
+    changes: [
+      'MPOS CAN NOW TAKE THE CARD ON THE MACHINE IT IS RUNNING ON. Put our mobile POS on an Adyen Android card terminal and it will now take the payment on that terminal\'s own reader. No second card machine, no reader on the counter, no pairing to anything else. The card is presented to the same screen the order was rung up on.',
+      'The terminal pairs itself. Open Me on the terminal and it shows a pairing code, exactly like our PAX machines do. A manager types that code into Back Office, Card readers, and the terminal is bound to the venue. The same screen then shows whether the reader is ready, and says plainly what is missing when it is not.',
+      'The payment screens no longer tell staff to look at another device. Wording like "customer paying on reader" and "hand the phone to your guest, card prompt follows" was written for a phone plus a separate machine. On a card terminal it now says to present the card here, and the tip screen says to hand the terminal itself over.',
+      'Cancelling mid payment tells the truth. Once the card prompt is up, the Cancel button asks the terminal to stop and then waits for the real answer instead of claiming the payment is off. If the answer cannot be confirmed, the screen says so and tells staff not to charge again, rather than guessing at a decline.',
+      'The amount always comes from the server. The terminal is handed a payment built from the recorded bill, and the sale is only ever reported as paid once the server has confirmed and settled it. Nothing on the device can change what is charged.',
+      'A card terminal running our app can now authorise its own payments with the server. It could already prove which venue it belongs to, but only as a card reader, not as a till. It is now accepted as both, strictly for the payments addressed to it and nothing else.',
+      'THIS IS TEST ONLY FOR NOW. A live Adyen terminal will not accept payments over this route until the message encryption is added. Test terminals accept it, which is what makes bench testing possible today.',
+    ],
+  },
+  {
     version: '5.6.80',
     date: '2026-08-15',
     changes: [

@@ -1,6 +1,12 @@
 // MCardFlow — runs the card payment.
 //
 // Runtime decision tree:
+//   0) If the native MPOS wrapper injected the Adyen local nexo bridge
+//      (window.RposAdyenNexo) → THIS DEVICE IS THE CARD READER. We are running on
+//      an Adyen Android payment terminal (S1F2L / S1E2L / S1E4 Pro), so the card is
+//      presented to THIS screen, not to a machine somewhere else. Highest priority:
+//      when there is a reader in your hand, nothing else should be considered.
+//      See runAdyenLocalTerminalFlow for the money contract.
 //   1) If the native MPOS app injected the Tap to Pay bridge (window.RposTapToPay)
 //      and this device isn't pinned to a hardware reader → NATIVE Tap to Pay:
 //      connect the device's built-in reader, create a card_present PaymentIntent,
@@ -18,17 +24,40 @@ import { useStore } from '../../store';
 import { resolvePlatformLocationId, getAssignedNetworkReader } from '../../lib/networkReader';
 import { getActiveLocationSync, supabase, ensureAuthToken } from '../../lib/supabase';
 import { Sx, money } from './MShellStyles';
-import { stripeCurrency } from '../../lib/currency';
+import { stripeCurrency, getActiveCurrencyCode } from '../../lib/currency';
 import { tapToPayAvailable, tapInit, tapCollect, tapCancel } from '../../lib/tapToPay';
 import { isTrainingMode } from '../../lib/trainingMode';
+import { adyenLocalBridgeAvailable, runAdyenLocalPayment, abortAdyenLocalPayment } from '../../lib/payments/adyenLocalTerminal';
+import { resolveSelfHostedAdyenTerminal } from '../../lib/payments/localTerminalIdentity';
+import { dispatchTerminalJob, buildCheckKey, toMinor, forgetJob, getPosDeviceId, cancelTerminalJob } from '../../lib/payments/terminalJobs';
+
+// Stage → what the person holding the terminal is actually being asked to do.
+// NOTHING here may say "hand it to the customer" or "sent to the card machine":
+// the machine IS this device, and telling staff to look at another screen while a
+// card prompt is up on this one is how a tender gets abandoned mid-flight.
+const LOCAL_STAGE_COPY = {
+  starting:     { title: 'Getting ready',        sub: 'Setting the payment up on this terminal…' },
+  preparing:    { title: 'Getting ready',        sub: 'Asking the server for the amount…' },
+  present_card: { title: 'Present the card',     sub: 'Tap, insert or swipe on THIS terminal' },
+  confirming:   { title: 'Confirming',           sub: 'Checking the result with the bank…' },
+  recovering:   { title: 'Checking the result',  sub: 'Do not take payment again — finding out what happened' },
+  cancelling:   { title: 'Cancelling',           sub: 'Stopping the payment on this terminal…' },
+};
 
 export default function MCardFlow({ payment, onCancel, onApproved }) {
   const { deviceConfig, walkInOrder, activeTableId, tables } = useStore();
-  const [phase, setPhase] = useState('starting'); // starting | rest | sim | approved | error
+  const [phase, setPhase] = useState('starting'); // starting | rest | local | localSetup | sim | approved | error
   const [statusMsg, setStatusMsg] = useState('Preparing payment…');
   const [errorMsg, setErrorMsg] = useState(null);
+  const [localStage, setLocalStage] = useState('starting');
+  const [localSetup, setLocalSetup] = useState(null);   // { reason, claimCode } when the reader is not ready
   const pollAbortRef = useRef(false);
   const startedRef = useRef(false);
+  // The on-device Adyen tender, held across renders so Cancel knows what is live.
+  const localJobRef = useRef(null);        // { jobId, checkKey, closedCheckId }
+  const localStageRef = useRef(null);
+  const localAbortSentRef = useRef(false);
+  const localCancelRequestedRef = useRef(false);
 
   const paymentMode = deviceConfig?.paymentMode || 'tap_to_pay';
   const grand = payment?.grand ?? 0;
@@ -49,6 +78,11 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
         setStatusMsg('TRAINING — no card charged');
         setPhase('approved');
         onApproved?.({ method:'card', paymentIntentId:`training_${Date.now()}`, tip: payment.tip, grand, simulated:true, training:true });
+        return;
+      }
+      // TIER 0 — this device IS the reader (Adyen Android terminal).
+      if (adyenLocalBridgeAvailable()) {
+        await runAdyenLocalTerminalFlow();
         return;
       }
       // Native Tap to Pay takes priority when the MPOS app injected the bridge,
@@ -73,6 +107,169 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
       setErrorMsg(e?.message || String(e));
       setPhase('error');
     }
+  };
+
+  const stage = (s) => { localStageRef.current = s; setLocalStage(s); };
+
+  // ── TIER 0: the Adyen terminal we are running ON ──────────────────────────
+  //
+  // MONEY CONTRACT — the whole point of routing this through terminal_jobs rather
+  // than talking to the reader directly:
+  //
+  //   1. terminal-job-create writes the job row. For an Adyen-LINKED terminal that
+  //      row is born status='charging_unsent' WITH charge_minor = due_minor already
+  //      set server-side (see the insert in terminal-job-create). That insert IS the
+  //      "money frozen before the card is touched" step on this fleet — the PAX walk
+  //      (claim → commit_tip → charging_unsent) does not apply, and calling
+  //      terminal_commit_tip here would throw 'job is not awaiting a tip'.
+  //   2. adyen-terminal-charge 'prepare_local' CAS-flips charging_unsent→charging and
+  //      returns a nexo PaymentRequest built from THE DB'S amount. We never build,
+  //      inspect or amend a payment message.
+  //   3. The native bridge posts it to https://127.0.0.1:8443/nexo on this device.
+  //   4. 'report_local' settles it SERVER-side. Our report is advisory: the server
+  //      re-checks the ServiceID, the POIID, the authorised amount, and prefers
+  //      Adyen's own TransactionStatusRequest answer over ours whenever it can get one.
+  //
+  // We report the sale approved to MPOS ONLY on the server's settled verdict. A lost
+  // response is NEVER a decline — runAdyenLocalPayment routes it to 'result' recovery
+  // and we surface "outcome unknown, do not charge again" rather than guessing.
+  //
+  // TIP: MTender already took the tip on this screen, so the card takes bill + tip in
+  // one go (due_minor = grand) and suppressTip stops the reader raising a SECOND
+  // gratuity prompt on top. The tip is recorded on the closed check by MPOS's normal
+  // close path, which is what the Tips report and tronc read.
+  const runAdyenLocalTerminalFlow = async () => {
+    setPhase('local');
+    stage('starting');
+
+    const self = await resolveSelfHostedAdyenTerminal();
+    if (!self.ok) {
+      setLocalSetup({ reason: self.reason || 'This terminal cannot take card payments yet.', claimCode: self.claimCode || null });
+      setPhase('localSetup');
+      return;
+    }
+
+    const st = useStore.getState();
+    const locationId = getActiveLocationSync();
+    const tableId = activeTableId || null;
+    const session = tableId ? st.tables.find(t => t.id === tableId)?.session : null;
+    const items = (tableId ? (session?.items || []) : (st.walkInOrder?.items || [])).filter(i => !i.voided);
+
+    // ONE conversion each, then arithmetic in minor units — never round twice.
+    const grandMinor = toMinor(grand);
+    const tipMinor = Math.min(toMinor(payment?.tip), grandMinor);
+    const billMinor = grandMinor - tipMinor;
+    if (!(grandMinor > 0)) throw new Error('There is nothing for the card to take.');
+
+    // Minted BEFORE the network call and carried into onApproved, so the job row,
+    // the closed check and MPOS's own post-approval recovery record all agree on
+    // one id — that is what makes a retry rewrite the same row instead of booking
+    // the sale twice.
+    const closedCheckId = localJobRef.current?.closedCheckId || `chk-${Date.now()}`;
+    const checkKey = buildCheckKey({
+      locationId, tableId, sessionId: session?.id,
+      // A table check shares one key per table+session on purpose (two devices
+      // working the same table must collide). A walk-in has no session, so give it
+      // a per-bill leg or every walk-in at the venue would share `loc:walkin:-`.
+      leg: tableId ? undefined : closedCheckId,
+    });
+
+    const { job } = await dispatchTerminalJob({
+      checkKey,
+      targetTerminalId: self.terminal.id,     // THIS device's own paired reader row
+      posDeviceId: getPosDeviceId(),
+      tipBasisMinor: billMinor,               // the BILL — what a tip % would apply to
+      dueMinor: grandMinor,                   // bill + the tip MTender already took
+      currency: getActiveCurrencyCode?.() || 'GBP',
+      suppressTip: true,                      // the tip pass happened on this screen already
+      closedCheckId,
+      checkDraft: {
+        tableId, tableLabel: tableId, sessionId: session?.id || null, locationId,
+        orderType: st.orderType || (tableId ? 'dine-in' : 'takeaway'),
+        covers: session?.covers ?? 1,
+        server: st.staff?.name || session?.server || null,
+        staffId: st.staff?.id || null,
+        items,
+        discounts: session?.discounts || [],
+        subtotalMinor: toMinor(payment?.subtotal),
+        totalMinor: billMinor,
+        tipMinor,
+        seatedAt: session?.seatedAt ?? null,
+        // DELIBERATELY NOT one of terminalJobs.RECONCILABLE_SOURCES. MPOS does not
+        // build the recordClosedCheck-shaped draft the reconciler books from; it
+        // closes its own check (clearTable / recordWalkInClosed) and already has a
+        // durable backstop for a close that fails after approval — the IndexedDB
+        // OfflineQueue 'closed_check' recovery in MPOSSurface.onCloseFailed. Two
+        // closers on one sale is a worse failure than the one we would be fixing.
+        source: 'mpos_adyen_local',
+      },
+      // Do NOT let dispatch fire the cloud 'start' kick — we drive the reader here.
+      localBridge: true,
+    });
+
+    localJobRef.current = { jobId: job.id, checkKey, closedCheckId };
+
+    // Cancel pressed while the job was being created. This component is already
+    // unmounted, but the promise chain is not — and it is the only thing that knows
+    // the id. Stop the job here or it holds the reader (idx_tj_one_live_per_terminal)
+    // until its 15-minute lease expires. Nothing has been charged: prepare_local has
+    // not run, so terminal_job_cancel's charged_at guard lets this through.
+    if (localCancelRequestedRef.current) {
+      await cancelTerminalJob(job.id);
+      forgetJob(checkKey);
+      return;
+    }
+
+    const res = await runAdyenLocalPayment(job.id, { onStage: stage });
+
+    // ── The server's verdict, and nothing else ────────────────────────────────
+    if (res?.ok && res.state === 'approved') {
+      forgetJob(checkKey);
+      setPhase('approved');
+      onApproved?.({
+        method: 'card',
+        processor: 'adyen',
+        closedCheckId,
+        paymentIntentId: res.transaction_id || res.payment_session_id || null,
+        cardReceipt: res.card || null,
+        tip: payment.tip,
+        grand,
+      });
+      return;
+    }
+    if (res?.pending) {
+      // The tender may STILL be live or already taken. Never a decline, never a retry.
+      throw new Error(
+        'The result of this payment is not confirmed yet. DO NOT take payment again. '
+        + 'Check the card terminal and Back Office → Card readers before retrying.',
+      );
+    }
+    if (res?.state === 'cancelled' || res?.decline_reason === 'Cancel') {
+      forgetJob(checkKey);
+      onCancel?.();
+      return;
+    }
+    forgetJob(checkKey);
+    throw new Error(res?.decline_reason || res?.error || 'The card was declined.');
+  };
+
+  // Cancel while the reader is ours to drive. An abort is ADVISORY — the tender may
+  // already have completed — so we send it and STAY on this screen until the server
+  // says what actually happened. Telling staff "cancelled" while money moves is the
+  // exact failure the job lifecycle exists to prevent.
+  const cancelLocalFlow = () => {
+    const live = localJobRef.current;
+    if (!live) {
+      // The job is still being created. Never leave staff behind a dead button on a
+      // slow network: record the intent (the dispatch continuation acts on it) and go.
+      localCancelRequestedRef.current = true;
+      onCancel?.();
+      return;
+    }
+    if (localAbortSentRef.current) return;
+    localAbortSentRef.current = true;
+    stage('cancelling');
+    abortAdyenLocalPayment(live.jobId);
   };
 
   // Native Stripe Tap to Pay: connect the phone's reader, create a card_present
@@ -147,6 +344,8 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
   };
 
   const cancelFlow = () => {
+    // On-device Adyen owns its own cancel semantics (abort, then wait for the truth).
+    if (phase === 'local') { cancelLocalFlow(); return; }
     // Best-effort cancel of an in-progress native tap, then bubble up.
     try { if (tapToPayAvailable()) tapCancel(); } catch (e) { /* noop */ }
     onCancel?.();
@@ -237,8 +436,74 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
 
   // ── Render ────────────────────────────────────────────────────────────────
 
+  if (phase === 'local') {
+    const copy = LOCAL_STAGE_COPY[localStage] || LOCAL_STAGE_COPY.starting;
+    // Once the card is live, "cancel" can only ASK the reader to stop — and the
+    // answer may still be "approved". Say that, rather than offering a button that
+    // implies the payment is off.
+    const live = localStage === 'present_card' || localStage === 'confirming';
+    return (
+      <Waiting
+        grand={grand}
+        icon="💳"
+        title={copy.title}
+        sub={copy.sub}
+        cancelLabel={
+          localStage === 'cancelling' ? 'Cancelling…'
+            : localStage === 'recovering' ? 'Waiting for the result…'
+              : live ? '✕ Stop this payment' : '✕ Cancel payment'
+        }
+        cancelDisabled={localStage === 'cancelling' || localStage === 'recovering'}
+        onCancel={cancelFlow}
+      />
+    );
+  }
+  if (phase === 'localSetup') {
+    return (
+      <div style={Sx.shell}>
+        <div style={Sx.header}>
+          <button onClick={onCancel} style={Sx.iconBtn} aria-label="Back">←</button>
+          <div style={{ flex:1 }}>
+            <div style={Sx.hTitle}>Card reader not ready</div>
+            <div style={Sx.hSub}>{money(grand)}</div>
+          </div>
+        </div>
+        <div style={{ ...Sx.scroller, padding:'24px 16px', textAlign:'center' }}>
+          <div style={{ fontSize:48, marginBottom:10 }}>🔌</div>
+          <div style={{ fontSize:13, color:'var(--t3)', lineHeight:1.6, maxWidth:380, margin:'0 auto 18px' }}>
+            {localSetup?.reason}
+          </div>
+          {localSetup?.claimCode && (
+            <div style={{ background:'var(--bg2)', border:'1px solid var(--bdr)', borderRadius:12, padding:'16px 14px', maxWidth:340, margin:'0 auto' }}>
+              <div style={{ fontSize:11, color:'var(--t4)', textTransform:'uppercase', letterSpacing:.6, marginBottom:8 }}>Pairing code</div>
+              <div style={{ fontSize:30, fontWeight:800, letterSpacing:3, fontFamily:'var(--font-mono)', color:'var(--t1)' }}>
+                {localSetup.claimCode}
+              </div>
+              <div style={{ fontSize:12, color:'var(--t3)', marginTop:10, lineHeight:1.5 }}>
+                Type this into Back Office → Card readers to pair this terminal. The code expires 30 minutes after this screen was last open.
+              </div>
+            </div>
+          )}
+        </div>
+        <div style={Sx.bottom}>
+          <button onClick={() => { setLocalSetup(null); setPhase('starting'); runFlow(); }} style={Sx.btnPrim}>↻ Check again</button>
+          <button onClick={onCancel} style={{ ...Sx.btnGhost, marginTop:8 }}>← Back to tender</button>
+        </div>
+      </div>
+    );
+  }
   if (phase === 'rest' || phase === 'starting') {
-    return <Waiting grand={grand} title="Customer paying on reader" sub={statusMsg} onCancel={cancelFlow} />;
+    // "Customer paying on reader" is wrong when the reader is the thing in your hand.
+    const onThisDevice = adyenLocalBridgeAvailable();
+    return (
+      <Waiting
+        grand={grand}
+        icon={onThisDevice ? '💳' : '📲'}
+        title={onThisDevice ? 'Getting ready' : 'Customer paying on reader'}
+        sub={onThisDevice && phase === 'starting' ? 'Setting the payment up on this terminal…' : statusMsg}
+        onCancel={cancelFlow}
+      />
+    );
   }
   if (phase === 'sim') {
     return (
@@ -290,24 +555,28 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
   return null;
 }
 
-function Waiting({ grand, title, sub, onCancel }) {
+function Waiting({ grand, title, sub, onCancel, icon = '📲', cancelLabel = '✕ Cancel payment', cancelDisabled = false }) {
   return (
     <div style={Sx.shell}>
       <div style={Sx.header}>
-        <button onClick={onCancel} style={Sx.iconBtn} aria-label="Cancel">←</button>
+        <button onClick={onCancel} style={Sx.iconBtn} aria-label="Cancel" disabled={cancelDisabled}>←</button>
         <div style={{ flex:1 }}>
           <div style={Sx.hTitle}>Card payment</div>
           <div style={Sx.hSub}>{money(grand)}</div>
         </div>
       </div>
       <div style={{ ...Sx.scroller, padding:'48px 16px', textAlign:'center' }}>
-        <div style={{ fontSize:54, marginBottom:14 }}>📲</div>
+        <div style={{ fontSize:54, marginBottom:14 }}>{icon}</div>
         <div style={{ fontSize:18, fontWeight:800, color:'var(--t1)', marginBottom:6 }}>{title}</div>
         <div style={{ fontSize:13, color:'var(--t3)', marginBottom:24 }}>{sub}</div>
         <div style={{ fontSize:36, fontWeight:800, fontFamily:'var(--font-mono)', color:'var(--acc)' }}>{money(grand)}</div>
       </div>
       <div style={Sx.bottom}>
-        <button onClick={onCancel} style={{ ...Sx.btnGhost, color:'var(--red)', borderColor:'var(--red-b)' }}>✕ Cancel payment</button>
+        <button
+          onClick={onCancel}
+          disabled={cancelDisabled}
+          style={{ ...Sx.btnGhost, color:'var(--red)', borderColor:'var(--red-b)', opacity: cancelDisabled ? .5 : 1 }}
+        >{cancelLabel}</button>
       </div>
     </div>
   );

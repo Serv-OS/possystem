@@ -10,6 +10,7 @@ import { useMemo, useState } from 'react';
 import { useStore } from '../../store';
 import { calculateOrderTax } from '../../lib/tax';
 import { Sx, money } from './MShellStyles';
+import { adyenLocalBridgeAvailable } from '../../lib/payments/adyenLocalTerminal';
 
 const TIP_PRESETS = [10, 12.5, 15, 20];
 
@@ -52,10 +53,15 @@ export default function MTender({ onBack, onConfirm }) {
   const grand = preTip + tipAmount;
 
   const paymentMode = deviceConfig?.paymentMode || 'tap_to_pay';
+  // v5.6.81 — on an Adyen payment terminal this app IS the card machine, so "hand
+  // the phone to your guest… card prompt follows" would send staff looking for a
+  // second device that does not exist.
   const subtitle =
-    paymentMode === 'assigned_reader'
-      ? 'Hand the phone to your guest — they’ll pay on the reader after confirming.'
-      : 'Hand the phone to your guest. They tap a tip and Confirm — card prompt follows.';
+    adyenLocalBridgeAvailable()
+      ? 'Hand the terminal to your guest. They pick a tip, confirm, then present their card here.'
+      : paymentMode === 'assigned_reader'
+        ? 'Hand the phone to your guest — they’ll pay on the reader after confirming.'
+        : 'Hand the phone to your guest. They tap a tip and Confirm — card prompt follows.';
 
   const onPickPreset = (p) => { setTipPct(p); setCustomTip(null); };
   const onPickNoTip = () => { setTipPct(0); setCustomTip(0); };

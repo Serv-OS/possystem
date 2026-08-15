@@ -1,6 +1,10 @@
 package co.posup.rpos.mpos;
 
+import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.content.SharedPreferences;
+import android.os.Build;
+import android.provider.Settings;
 import android.util.Log;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
@@ -13,6 +17,7 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.cert.X509Certificate;
+import java.util.UUID;
 
 import javax.net.ssl.HostnameVerifier;
 import javax.net.ssl.HttpsURLConnection;
@@ -36,6 +41,12 @@ import javax.net.ssl.X509TrustManager;
  *
  * Native → web callback: window.__rposAdyenNexoCallback(id, ok, payloadJson).
  *
+ * ALSO EXPOSES THE HARDWARE IDENTITY (v5.6.81). register_terminal_device(p_serial,
+ * p_app_version) needs a stable serial before this device can hold a
+ * terminal_devices row of its own, and a WebView has no way to read one. getSerial()
+ * is the same resolution ladder paxpay uses (Prefs.serial) so the two fleets pair
+ * identically; appVersion() feeds the same RPC's second argument.
+ *
  * TLS: the terminal's local endpoint presents Adyen's self-signed terminal cert.
  * Trust here is scoped to HOST 127.0.0.1 ONLY — never a global trust-all.
  * TODO(go-live): pin the Adyen terminal certificate (downloadable from CA) and
@@ -51,6 +62,9 @@ public class AdyenNexoBridge {
     private static final int READ_TIMEOUT_MS = 150_000;
     private static final int CONNECT_TIMEOUT_MS = 5_000;
 
+    private static final String PREFS = "rpos-mpos-terminal";
+    private static final String K_SERIAL = "serial";
+
     private final Activity activity;
     private final WebView webView;
 
@@ -63,6 +77,75 @@ public class AdyenNexoBridge {
     @JavascriptInterface
     public boolean isAvailable() {
         return true; // presence of the bridge == running inside this wrapper
+    }
+
+    /**
+     * The STABLE pairing identity for register_terminal_device(). A LINE-FOR-LINE
+     * port of paxpay's Prefs.serial(Context) — deliberately, so a terminal pairs the
+     * same way whichever of our two Android apps is on it, and so a serial minted by
+     * one ladder rung can never be re-derived by another.
+     *
+     * Resolution order, first hit wins and is then FROZEN into prefs so it can never
+     * change under a paired device:
+     *   1. Build.getSerial() — the real hardware serial. On API 29+ this needs
+     *      READ_PHONE_STATE, which we do NOT request, so it normally throws and we
+     *      fall through. Kept first because some payment-terminal firmware images
+     *      grant it to system-signed installs. The S1F2L is Android 9 (API 28),
+     *      where it is frequently available.
+     *   2. Settings.Secure.ANDROID_ID — survives app reinstall, changes only on
+     *      factory reset.
+     *   3. A random UUID — last resort. Does NOT survive a data wipe; such a device
+     *      registers as new and needs re-pairing in Back Office. Documented, not hidden.
+     *
+     * Never null and never empty: the web seam treats an empty string as "no bridge
+     * identity" and refuses to self-register rather than inventing one.
+     */
+    @SuppressLint("HardwareIds")
+    @JavascriptInterface
+    public String getSerial() {
+        try {
+            SharedPreferences sp = activity.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE);
+            String existing = sp.getString(K_SERIAL, null);
+            if (existing != null && !existing.isEmpty()) return existing;
+
+            String resolved = null;
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    String s = Build.getSerial();
+                    if (s != null && !s.isEmpty() && !"unknown".equalsIgnoreCase(s)) resolved = s;
+                }
+            } catch (Throwable ignored) {
+                // SecurityException on API 29+ without READ_PHONE_STATE — expected.
+            }
+            if (resolved == null) {
+                try {
+                    String aid = Settings.Secure.getString(
+                            activity.getContentResolver(), Settings.Secure.ANDROID_ID);
+                    if (aid != null && !aid.isEmpty()) resolved = "AID-" + aid;
+                } catch (Throwable ignored) {
+                }
+            }
+            if (resolved == null) resolved = "UUID-" + UUID.randomUUID();
+            // register_terminal_device rejects anything over 64 chars.
+            if (resolved.length() > 64) resolved = resolved.substring(0, 64);
+
+            sp.edit().putString(K_SERIAL, resolved).apply();
+            return resolved;
+        } catch (Throwable t) {
+            Log.e(TAG, "getSerial failed", t);
+            return "";
+        }
+    }
+
+    /** versionName of THIS wrapper, for terminal_devices.app_version. "" when unknown. */
+    @JavascriptInterface
+    public String appVersion() {
+        try {
+            return activity.getPackageManager()
+                    .getPackageInfo(activity.getPackageName(), 0).versionName;
+        } catch (Throwable t) {
+            return "";
+        }
     }
 
     /**
