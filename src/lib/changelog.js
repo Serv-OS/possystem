@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.80',
+    date: '2026-08-15',
+    changes: [
+      'Card screen stayed up after a successful payment. The bill closed behind it but the "taking the card" overlay never went away, so staff could not tell the sale had gone through. The background closer had booked the check a moment before the card screen noticed, and the card screen only recognised one of the two possible outcomes. It now accepts both and closes properly.',
+    ],
+  },
+  {
     version: '5.6.79',
     date: '2026-08-15',
     changes: [

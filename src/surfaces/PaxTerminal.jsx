@@ -34,6 +34,9 @@ const STATUS_COPY = {
   charging_unsent: { icon: '💳', title: 'Ready to take the card',     sub: 'Tip settled — asking for the card.' },
   charging:        { icon: '💳', title: 'Taking the card',            sub: 'Do not walk away — this one is live.' },
   approved:        { icon: '✅', title: 'Approved',                   sub: '' },
+  // Same screen as approved: the reconciler simply booked the check before this
+  // modal's poll caught up. Without an entry here the header fell back to blank.
+  reconciled:      { icon: '✅', title: 'Approved',                   sub: '' },
   declined:        { icon: '⛔', title: 'Declined',                   sub: 'Ask for another card, or take cash.' },
   cancelled:       { icon: '✋', title: 'Cancelled',                  sub: 'Nothing was charged.' },
   expired:         { icon: '⏱', title: 'Timed out',                  sub: 'Nothing was charged — start again.' },
@@ -64,7 +67,17 @@ export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete
   // ── settle ─────────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!job || doneRef.current) return;
-    if (job.status === 'approved' && !job.needs_human) {
+    // v5.6.80 — 'reconciled' counts as approved HERE. Since v5.6.62 the
+    // TerminalJobReconciler also closes Adyen jobs, on an ~8s tick, and a
+    // send-to-terminal card sale settles well inside that window. So the
+    // reconciler can book the check and flip approved → reconciled BEFORE this
+    // screen's own poll ever observes 'approved' — and this effect, matching only
+    // 'approved', then never fired: the bill closed behind the modal while the
+    // card screen sat there forever (live 15 Aug, £16.00 R2).
+    // Re-completing is safe: the reconciler closed it under the SAME pre-minted
+    // job.closed_check_id this modal owns, so complete()'s upsert is idempotent
+    // (the closed_checks PK elects one writer) and simply re-books the same row.
+    if ((job.status === 'approved' || job.status === 'reconciled') && !job.needs_human) {
       doneRef.current = true;
       // Hand the parent the job's own INTEGERS. tipMinor is what drives the
       // corrected tip-recording line in CheckoutModal; amountReceived is the leg
