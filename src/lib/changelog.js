@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.78',
+    date: '2026-08-15',
+    changes: [
+      'Refund screens named the wrong payment company. Every refund said "Stripe Terminal" regardless of who actually took the money, so an Adyen or Ryft sale told staff something untrue at the exact moment they were deciding whether to trust the screen. It now names the real processor, and says "the card terminal" for older checks that never recorded one.',
+    ],
+  },
+  {
     version: '5.6.76',
     date: '2026-08-15',
     changes: [

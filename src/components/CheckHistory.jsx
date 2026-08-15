@@ -15,6 +15,17 @@ const managersFrom = (staffMembers) =>
     .filter(s => s.role === 'Manager' && s.active !== false)
     .map(s => ({ pin: s.pin, name: s.name, id: s.id }));
 const METHOD_ICON = {card:'💳',cash:'💵',split:'⚖','bar-tab':'🍸'};
+
+// v5.6.78 — the refund screens said "Stripe Terminal" on EVERY check, whichever
+// processor actually took the money. On an Adyen or Ryft sale that is simply
+// false, and it is false at the exact moment staff are deciding whether to trust
+// the screen with a customer's refund. Name the real one; say "the card
+// terminal" when the check predates processor stamping.
+const PROCESSOR_NAME = { stripe:'Stripe Terminal', ryft:'Ryft', adyen:'Adyen' };
+function processorLabel(check){
+  const p = (check?.processor||'').toLowerCase();
+  return PROCESSOR_NAME[p] ? `Processed via ${PROCESSOR_NAME[p]}` : 'Processed on the card terminal';
+}
 const STATUS_META = {
   paid:           {color:'var(--grn)',bg:'var(--grn-d)',border:'var(--grn-b)',label:'Paid'},
   partial_refund: {color:'var(--acc)',bg:'var(--acc-d)',border:'var(--acc-b)',label:'Part refund'},
@@ -273,7 +284,10 @@ function RefundModal({check, onConfirm, onCancel}){
                   <span style={{fontSize:28}}>💳</span>
                   <div>
                     <div style={{fontSize:14,fontWeight:700,color:'var(--t1)'}}>Return to card</div>
-                    <div style={{fontSize:11,color:'var(--t3)',marginTop:2}}>Processed via Stripe Terminal · 1–3 business days</div>
+                    {/* v5.6.78: was hard-coded "Stripe Terminal" on every check,
+                        including Adyen and Ryft sales. Name the processor that
+                        actually took the money. */}
+                    <div style={{fontSize:11,color:'var(--t3)',marginTop:2}}>{processorLabel(check)} · 1–3 business days</div>
                   </div>
                 </button>
                 <button onClick={()=>handleTender('cash')} style={{padding:'16px 18px',borderRadius:12,cursor:'pointer',fontFamily:'inherit',textAlign:'left',display:'flex',alignItems:'center',gap:14,background:'var(--bg3)',border:'1.5px solid var(--bdr)'}}>
@@ -322,7 +336,7 @@ function RefundModal({check, onConfirm, onCancel}){
               <div style={{textAlign:'center',padding:'20px 0 24px'}}>
                 <div style={{fontSize:48,marginBottom:12}}>💳</div>
                 <div style={{fontSize:28,fontWeight:800,color:'var(--red)',fontFamily:'DM Mono,monospace',marginBottom:6}}>−{money(refundTotal)}</div>
-                <div style={{fontSize:14,color:'var(--t2)',marginBottom:8}}>Refund to original card via Stripe Terminal</div>
+                <div style={{fontSize:14,color:'var(--t2)',marginBottom:8}}>Refund to original card · {processorLabel(check).replace(/^Processed /,'')}</div>
                 <div style={{fontSize:12,color:'var(--t3)',marginBottom:20}}>Customer does not need to re-present their card. Funds appear in 1–3 business days.</div>
                 <div style={{display:'inline-flex',alignItems:'center',gap:8,padding:'10px 20px',background:'var(--acc-d)',border:'1px solid var(--acc-b)',borderRadius:20,fontSize:13,color:'var(--acc)',marginBottom:24}}>
                   <div style={{width:8,height:8,borderRadius:'50%',background:'var(--acc)'}}/>
