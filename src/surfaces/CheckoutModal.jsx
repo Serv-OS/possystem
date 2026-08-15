@@ -1297,6 +1297,31 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   const promoCredit = promoApplied?.amount ? Number(promoApplied.amount) : 0;   // major units, from promo-redeem
   const grand    = Math.max(0, total + tipAmt - giftCredit - loyaltyCredit - promoCredit);
 
+  // ── v5.6.75: money already taken on the card reader for THIS table ─────────
+  // active_sessions.paid_minor is the server's record of settled on-reader split
+  // legs. Until today the till knew nothing about them: it showed the FULL bill,
+  // so a party that part-paid on the reader and then walked to the till would be
+  // charged twice and the reader leg would strand with no check to live on.
+  // Read it here and refuse to take money over the top of it.
+  const [readerPaid, setReaderPaid] = useState(0);   // minor units
+  useEffect(() => {
+    if (!tableId || !supabase || isMock) { setReaderPaid(0); return; }
+    let alive = true;
+    const read = async () => {
+      const loc = getActiveLocationSync();
+      if (!loc) return;
+      const { data } = await supabase.from('active_sessions')
+        .select('paid_minor').eq('location_id', loc).eq('table_id', tableId).maybeSingle();
+      if (alive) setReaderPaid(Number(data?.paid_minor) || 0);
+    };
+    read();
+    // A leg can settle while the checkout screen is open.
+    const t = setInterval(read, 8000);
+    return () => { alive = false; clearInterval(t); };
+  }, [tableId]);
+  const readerPaidMajor = readerPaid / 100;
+  const leftToPay = Math.max(0, total - readerPaidMajor);
+
   // Validate a promo code in real time (no write). On success, hold it; the store redeems it
   // atomically (bound to the order) on payment completion. Called from the unified gift/promo box;
   // returns { ok } or { error } so the box can show the message (it never throws).
@@ -1711,6 +1736,24 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         display:'flex', flexDirection:'column',
         boxShadow:'var(--sh3)', overflow:'hidden',
       }}>
+
+        {/* ── v5.6.75: money already taken on the card reader for this table ──
+            Without this the till showed the FULL bill and would happily take it
+            again, double-charging the party and stranding the reader leg (it has
+            no closed check of its own until the final leg books them together).
+            Taking the remainder HERE is the next slice; until then this makes the
+            money visible and sends staff back to the reader that holds it. */}
+        {readerPaid > 0 && (
+          <div style={{ padding:compact?'10px 14px':'12px 20px', background:'var(--wrn-d,#fff3cd)', borderBottom:'1px solid var(--wrn-b,#ffc107)' }}>
+            <div style={{ fontSize:compact?12:13, fontWeight:800, color:'var(--wrn,#856404)' }}>
+              {money(readerPaidMajor)} already paid on the card reader
+            </div>
+            <div style={{ fontSize:compact?11:12, color:'var(--wrn,#856404)', marginTop:2 }}>
+              {money(leftToPay)} left on this table. Take the rest on the reader — paying the full
+              {' '}{money(total)} here would charge them twice.
+            </div>
+          </div>
+        )}
 
         {/* ── Header ── */}
         <div style={{ padding:compact?'10px 14px 8px':'16px 20px 12px', borderBottom:'1px solid var(--bdr)', display:'flex', alignItems:'center', justifyContent:'space-between', flexShrink:0 }}>

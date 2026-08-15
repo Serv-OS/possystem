@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.75',
+    date: '2026-08-15',
+    changes: [
+      'The till now SEES money already taken on the card reader. Part-pay a table on the reader and the checkout screen shows "\u00a320.00 already paid on the card reader \u2014 \u00a332.50 left", instead of quietly presenting the full bill and charging the party twice.',
+      'Reader dead air fixed: the terminal now shows "Loading tables..." and "<table> \u2014 checking the bill..." while the server works, rather than sitting on its home screen for 5-10 seconds looking like nothing happened.',
+      'Faster too \u2014 three database lookups that ran one after another now run together, and diagnostics no longer block the first screen.',
+    ],
+  },
+  {
     version: '5.6.73',
     date: '2026-08-15',
     changes: [
