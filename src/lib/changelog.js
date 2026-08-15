@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.65',
+    date: '2026-08-15',
+    changes: [
+      'Pay at Table tuning in progress: menu rows now carry the selectable flag and every tap\'s raw reader response is logged (row taps were registering as "selection 0", which the charge-the-right-table guard rightly refuses). One calibrated tap pins the numbering. Speed work queued: keep-warm pings + collapsing the two-function hop that stacks cold starts into the ~25s worst case.',
+    ],
+  },
+  {
     version: '5.6.64',
     date: '2026-08-15',
     changes: [

@@ -174,6 +174,9 @@ export function buildMenuInputRequest(o: { poiid: string; saleId: string; servic
           },
           MenuEntry: o.entries.map((text) => ({
             OutputFormat: 'Text',
+            // Hardware calibration 15 Aug: without this, row taps registered
+            // as selection 0 (only the single-row probe returned 1).
+            MenuEntryTag: 'Selectable',
             OutputText: [{ Text: text }],
           })),
         },

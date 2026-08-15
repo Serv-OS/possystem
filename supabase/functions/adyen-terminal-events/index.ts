@@ -187,7 +187,7 @@ Deno.serve(async (req) => {
             });
             const mres = await adyenFetch('POST', terminalEndpoint(maa.merchant_account, poiid, 'sync', maa.region === 'US' ? 'us' : 'eu'), menu, { timeoutMs: 90_000 });
             const pick = parseMenuInputResponse(mres.data);
-            console.log(`[pay-at-table] menu result ${pick.result}, selected ${pick.selected}`);
+            console.log(`[pay-at-table] menu result ${pick.result}, selected ${pick.selected}, raw ${JSON.stringify(mres.data?.SaleToPOIResponse?.InputResponse ?? {}).slice(0, 400)}`);
             if (!pick.selected || pick.selected < 1 || pick.selected > openTables.length) return;
             candidates = [openTables[pick.selected - 1]];
           }
