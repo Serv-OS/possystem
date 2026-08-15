@@ -525,10 +525,15 @@ export async function fetchApprovedTablePayJobs(locationId) {
   // The money guards STAY strict: only status==='approved' && charge_minor>0 (so a 'charging'/
   // 'unknown' B1 job with charge_minor null is NEVER auto-closed — it still routes to the human
   // queue), and only the two reconcilable sources.
+  // v5.6.68 — a PARTIAL pay-at-table split leg (check_draft.partial) must never
+  // close the table: it stays 'approved' until the FINAL leg (whose draft
+  // carries priorLegs) books ONE check for the whole occupation and marks every
+  // leg reconciled. closeApprovedTerminalJob re-enforces this guard.
   return (j.jobs ?? []).filter(
     x => x?.status === 'approved'
       && Number(x?.charge_minor) > 0
-      && RECONCILABLE_SOURCES.includes(x?.check_draft?.source),
+      && RECONCILABLE_SOURCES.includes(x?.check_draft?.source)
+      && x?.check_draft?.partial !== true,
   );
 }
 

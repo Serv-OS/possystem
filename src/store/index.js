@@ -4934,6 +4934,23 @@ export const useStore = create((set, get) => ({
     // its own name, not trust a remote filter.
     if (job.status !== 'approved') return;
     if (!(Number(job.charge_minor) > 0)) return;
+    // v5.6.68 — a PARTIAL pay-at-table split leg never books a check or clears
+    // the table; the FINAL leg (draft.priorLegs) books the whole occupation.
+    if (d.partial === true) return;
+
+    // Reader split legs taken before this final one. Each is an approved
+    // terminal_jobs row snapshotted into the final leg's draft by the RPC —
+    // settled before this leg could exist, so their money is final here.
+    const priorLegs = Array.isArray(d.priorLegs)
+      ? d.priorLegs.filter(l => l && Number(l.chargeMinor) > 0) : [];
+    const priorChargeMinor = priorLegs.reduce((s, l) => s + Number(l.chargeMinor), 0);
+    const priorTipMinor = priorLegs.reduce((s, l) => s + (Number(l.tipMinor) || 0), 0);
+    // Final leg FIRST: attachCardToIntents stamps the job's own card block on
+    // intents[0], which must be this leg's, not a prior leg's.
+    const legIntents = priorLegs.length ? [
+      { id: job.transaction_id || null, amountMinor: Number(job.charge_minor) },
+      ...priorLegs.map(l => ({ id: l.transactionId || null, amountMinor: Number(l.chargeMinor), card: l.card || null })),
+    ].filter(p => p.id) : null;
 
     const { tables, closedChecks } = get();
     if (closedChecks.some(c => c.id === job.closed_check_id)) return;   // already closed on this device
@@ -4973,8 +4990,11 @@ export const useStore = create((set, get) => ({
     // mismatch pinned that exact figure), it just no longer gates the close.
     const acknowledged = job.acknowledged_total_minor != null
       && Number(job.live_total_minor) === Number(job.acknowledged_total_minor);
+    // v5.6.68 — drift compares the live bill against due + the split legs
+    // already taken (a final split leg's due is only the REMAINDER).
+    const paidBeforeMinor = Number(d.paidBeforeMinor) || 0;
     const driftMinor = (!acknowledged && job.live_total_minor != null)
-      ? (Number(job.live_total_minor) - Number(job.due_minor)) : 0;
+      ? (Number(job.live_total_minor) - (Number(job.due_minor) + paidBeforeMinor)) : 0;
     const hasDrift = Number.isFinite(driftMinor) && driftMinor !== 0;
 
     // ── card block from the job (brand/last4/auth for the receipt) ─────────────
@@ -4989,11 +5009,16 @@ export const useStore = create((set, get) => ({
     } : null;
 
     const termPay = {
-      method: 'card',
+      // v5.6.68 — reader splits: the final leg books the WHOLE occupation as one
+      // 'split' check (full items, every card leg a payment intent), mirroring
+      // the POS SplitModal's single-check model so reports/refunds treat both
+      // the same.
+      method: priorLegs.length ? 'split' : 'card',
       processor: job.processor || 'ryft',
-      grand: (job.charge_minor ?? 0) / 100,     // base + tip = what the card was charged
-      tip:   (job.tip_minor ?? 0) / 100,
+      grand: ((job.charge_minor ?? 0) + priorChargeMinor) / 100,   // every leg's base + tip
+      tip:   ((job.tip_minor ?? 0) + priorTipMinor) / 100,
       stripePaymentIntentId: job.transaction_id || null,
+      paymentIntents: legIntents || undefined,
       cardReceipt,
       // v5.5.902: the gift card the POS debited BEFORE dispatching this job (the job's
       // due was already net of it). Recording it here is what makes a refund of a
@@ -5031,13 +5056,14 @@ export const useStore = create((set, get) => ({
         // (zero when none was). Never a guessed rate (the old `subtotal * 0.125`
         // invented a fee the customer was never charged).
         subtotal, service: Math.max(0, ((d.totalMinor ?? 0) - (d.subtotalMinor ?? 0))) / 100,
-        tip: (job.tip_minor ?? 0) / 100,
-        total: (job.charge_minor ?? 0) / 100,
+        tip: ((job.tip_minor ?? 0) + priorTipMinor) / 100,
+        total: ((job.charge_minor ?? 0) + priorChargeMinor) / 100,   // v5.6.68 — every split leg
         taxAmount: null,
-        method: 'card', giftCard: d.giftCard || null,   // v5.5.902 — see termPay above
+        method: priorLegs.length ? 'split' : 'card',
+        giftCard: d.giftCard || null,   // v5.5.902 — see termPay above
         stripePaymentIntentId: job.transaction_id || null,
         processor: job.processor || 'ryft',
-        paymentIntents: null, cardReceipt,
+        paymentIntents: legIntents, cardReceipt,
         loyaltyRedemption: null,
         closedAt: Date.now(),
         seatedAt: d.seatedAt ? Number(d.seatedAt) : null,
@@ -5128,6 +5154,12 @@ export const useStore = create((set, get) => ({
       }).catch(() => {});
     }
     await markJobReconciled(job.id).catch(() => {});   // housekeeping — insert-first, so a crash here just retries
+    // v5.6.68 — the split legs this close consumed retire with it. CAS'd RPC
+    // (approved → reconciled, needs_human=false only), so repeats are harmless
+    // and a parked leg stays visible in Unresolved payments.
+    for (const l of priorLegs) {
+      if (l.jobId) await markJobReconciled(l.jobId).catch(() => {});
+    }
     // v5.5.862: the sale is durably recorded — release this device's payment-
     // reference handle for the check. A stale handle here is what produced
     // "payment reference has already been used" on the NEXT sale sharing the key.

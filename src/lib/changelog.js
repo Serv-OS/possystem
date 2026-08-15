@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.69',
+    date: '2026-08-15',
+    changes: [
+      'OVERSELL FIXED — an item with 1 left could be added 3 times inside a "Box of 3". Modifier options were only ever checked for the 86\'d flag, never the actual count, on the POS, MPOS and catering ordering. All three now cap options by real stock, and every surface refuses at the Add button with the reason ("Only 1 × Dubai Chocolate Filled Donut left") rather than silently overselling.',
+      'The line quantity now counts too: picking 1 donut then setting quantity to 3 needs 3 donuts, and the + button stops at what is actually left. Kiosk sub-options (a choice inside a choice) had no stock or 86 check at all — now they do.',
+      'Catering ordering never loaded stock levels, so its option cap had been inert since it launched — now wired. Kiosk name-matched options (no explicit item link) also count toward the "N left" badge properly.',
+    ],
+  },
+  {
     version: '5.6.67',
     date: '2026-08-15',
     changes: [

@@ -241,6 +241,7 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
   const [nestedSelections, setNestedSelections] = useState({}); // { 'gid:oid:idx': { subGroupId: [...] } }
   const [qty, setQty] = useState(1);
   const [showError, setShowError] = useState(false);
+  const [stockErr, setStockErr] = useState(null);   // v5.6.69 — "Only N × X left" commit refusal
   const [instructions, setInstructions] = useState('');
 
   // v5.5.285: Calculate max qty for the main item based on stock
@@ -254,13 +255,15 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
     const stock = dailyCounts[optItemId];
     if (!stock) return Infinity;
     const inCart = cartItemUsage[optItemId] || 0;
-    // Also count current selections in THIS modal that use this itemId
+    // Also count current selections in THIS modal that use this itemId.
+    // v5.6.69: resolve via resolveOptItemId (not raw opt.itemId) so picks of
+    // name-matched options lower the badge like explicitly-linked ones do.
     let inModal = 0;
     for (const g of groups) {
       const picked = selections[g.id] || [];
       for (const pid of picked) {
         const opt = (g.options || []).find(o => o.id === pid);
-        if (opt && (opt.itemId || opt.item_id) === optItemId) inModal++;
+        if (opt && resolveOptItemId(opt) === optItemId) inModal++;
       }
     }
     return Math.max(0, stock.remaining - inCart - (inModal * qty));
@@ -336,6 +339,32 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
     const match = key ? subitemByName.get(key) : null;
     return match?.id || null;
   };
+
+  // v5.6.69 — the line qty multiplies every picked option too ("Box of 3" ×3 =
+  // 3 donuts). The stepper cap must honour the TIGHTEST picked option's stock,
+  // not just the main item's (the old hole: pick 1 donut with 1 left, then
+  // qty→3 walked straight past the per-tap cap). Lives BELOW resolveOptItemId /
+  // subitemByName — both are consts this memo closes over at render time.
+  const modMaxQty = useMemo(() => {
+    const picksById = {};
+    for (const g of groups) {
+      for (const pid of (selections[g.id] || [])) {
+        const o = (g.options || []).find(x => x.id === pid);
+        const rid = o ? resolveOptItemId(o) : null;
+        if (rid) picksById[rid] = (picksById[rid] || 0) + 1;
+      }
+    }
+    let cap = Infinity;
+    for (const [rid, picks] of Object.entries(picksById)) {
+      const stock = dailyCounts[rid];
+      if (!stock || !Number.isFinite(Number(stock.remaining))) continue;
+      const avail = Number(stock.remaining) - (cartItemUsage[rid] || 0);
+      cap = Math.min(cap, Math.floor(Math.max(0, avail) / picks));
+    }
+    return cap;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groups, selections, dailyCounts, cartItemUsage, subitemByName]);
+  const lineMaxQty = Math.min(maxQty, modMaxQty);
 
   // Load top-level groups + variants, then pre-fetch any sub-groups referenced by option.subGroupId
   useEffect(() => {
@@ -509,6 +538,7 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
   // ── Selection mutation ──
   const incOption = (group, optId) => {
     setShowError(false);
+    setStockErr(null);
     setSelections(prev => {
       const current = prev[group.id] || [];
       // v5.5.289: Check stock for this option's linked item.
@@ -532,7 +562,9 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
               if (o && resolveOptItemId(o) === optItemId) inModal++;
             }
           }
-          if (inModal >= stock.remaining - inCart) return prev; // at stock limit
+          // v5.6.69: one more pick consumes (inModal+1) × line qty units — the
+          // old raw-pick comparison ignored the qty multiplier entirely.
+          if ((inModal + 1) * qty > stock.remaining - inCart) return prev; // at stock limit
         }
       }
       let next;
@@ -549,6 +581,7 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
 
   const decOption = (group, optId) => {
     setShowError(false);
+    setStockErr(null);
     setSelections(prev => {
       const current = prev[group.id] || [];
       const idx = current.lastIndexOf(optId);
@@ -572,6 +605,24 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
   // ── Nested selection mutation ──
   const setNestedPick = (parentKey, sub, subOptId) => {
     setShowError(false);
+    setStockErr(null);
+    // v5.6.69: nested picks had NO 86/stock gate at all — an 86'd or sold-out
+    // item stayed pickable through a sub-group. Same checks as incOption.
+    const subOpt = (sub.options || []).find(o => o.id === subOptId);
+    const subItemId = resolveOptItemId(subOpt);
+    if (subItemId) {
+      if (eightySixIds.includes(subItemId)) return;
+      const stock = dailyCounts[subItemId];
+      if (stock) {
+        const avail = Number(stock.remaining) - (cartItemUsage[subItemId] || 0);
+        const cur0 = (nestedSelections[parentKey] && nestedSelections[parentKey][sub.id]) || [];
+        const picks = cur0.filter(id => {
+          const o = (sub.options || []).find(x => x.id === id);
+          return o && resolveOptItemId(o) === subItemId;
+        }).length;
+        if ((picks + 1) * qty > avail) return;
+      }
+    }
     setNestedSelections(prev => {
       const cur = (prev[parentKey] && prev[parentKey][sub.id]) || [];
       let next;
@@ -609,6 +660,33 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
         if (match?.id) m.itemId = match.id;
       }
     }
+    // v5.6.69 — FINAL stock gate at commit. The per-tap caps cover the common
+    // paths, but this is the single choke point that catches every corner
+    // (nested picks, qty bumped after picking, races with another kiosk):
+    // aggregate this line's need per linked item (picks × qty, main item × qty)
+    // and refuse with a named message rather than silently overselling.
+    {
+      const need = {};
+      if (item?.id) need[item.id] = (need[item.id] || 0) + qty;
+      for (const m of mods) {
+        if (m.itemId) need[m.itemId] = (need[m.itemId] || 0) + (Number(m.qty) || 1) * qty;
+      }
+      for (const [rid, want] of Object.entries(need)) {
+        const banned = eightySixIds.includes(rid);
+        const stock = dailyCounts[rid];
+        const avail = banned ? 0
+          : (stock && Number.isFinite(Number(stock.remaining)))
+            ? Number(stock.remaining) - (cartItemUsage[rid] || 0)
+            : Infinity;
+        if (want > avail) {
+          const mi = (allItems || []).find(i => i.id === rid);
+          const nm = mi?.menuName || mi?.menu_name || mi?.name || 'that item';
+          setStockErr(avail <= 0 ? `${nm} has sold out` : `Only ${Math.max(0, avail)} × ${nm} left`);
+          return;
+        }
+      }
+    }
+    setStockErr(null);
     const summary = summarizeForDisplay(groups, selections, nestedSelections, subGroupsCache);
     onAdd({
       qty,
@@ -1191,18 +1269,24 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
             fontVariantNumeric: 'tabular-nums',
           }}>{qty}</div>
           <button
-            onClick={() => setQty(q => Math.min(q + 1, maxQty))}
-            disabled={qty >= maxQty}
+            onClick={() => setQty(q => Math.min(q + 1, lineMaxQty))}
+            disabled={qty >= lineMaxQty}
             style={{
               ...qtyBtn(brandColor),
-              ...(qty >= maxQty ? { opacity: 0.3, cursor: 'not-allowed' } : {}),
+              ...(qty >= lineMaxQty ? { opacity: 0.3, cursor: 'not-allowed' } : {}),
             }}
           >+</button>
         </div>
-        {/* v5.5.285: Stock limit indicator */}
-        {maxQty < Infinity && maxQty <= 5 && (
-          <div style={{ fontSize: 'clamp(11px, 1.3vw, 13px)', color: maxQty === 0 ? 'var(--kError-fg, #e53e3e)' : '#e67e22', fontWeight: 700, flexShrink: 0 }}>
-            {maxQty === 0 ? 'Sold out' : `Only ${maxQty} left`}
+        {/* v5.5.285: Stock limit indicator (v5.6.69: honours picked-option stock too) */}
+        {lineMaxQty < Infinity && lineMaxQty <= 5 && (
+          <div style={{ fontSize: 'clamp(11px, 1.3vw, 13px)', color: lineMaxQty === 0 ? 'var(--kError-fg, #e53e3e)' : '#e67e22', fontWeight: 700, flexShrink: 0 }}>
+            {lineMaxQty === 0 ? 'Sold out' : `Only ${lineMaxQty} left`}
+          </div>
+        )}
+        {/* v5.6.69: commit-time stock refusal ("Only 1 × Dubai Chocolate Filled Donut left") */}
+        {stockErr && (
+          <div style={{ fontSize: 'clamp(11px, 1.3vw, 13px)', color: 'var(--kError-fg, #e53e3e)', fontWeight: 700, flexShrink: 0 }}>
+            {stockErr}
           </div>
         )}
 

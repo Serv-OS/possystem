@@ -150,6 +150,43 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
 
   const canAdd = step === 'variant' ? false : missingRequired.length === 0;
 
+  // v5.6.69 — NUMERIC stock gate for modifier options (the "Box of 3" oversell:
+  // an option whose linked item had 1 remaining could be added 3× — the option
+  // checks were 86-boolean only, so nothing blocked until remaining hit 0).
+  // Aggregate this line's need per RESOLVED item id (box picks × line qty) and
+  // refuse the add when it exceeds what's left. dailyCounts.remaining is
+  // already net of lines in the open check (the store decrements at add).
+  const stockShort = useMemo(() => {
+    const need = {};   // resolved itemId → units this line consumes
+    modGroups.forEach(g => {
+      const sel = selections[g.id];
+      if (!sel) return;
+      if (g.selectionType === 'quantity') {
+        Object.entries(sel).forEach(([id, q]) => {
+          if (!(q > 0)) return;
+          const opt = (g.options || []).find(o => (o.id || o.name) === id);
+          const rid = opt?.itemId || resolveOptItemId(opt, menuItems);
+          if (rid) need[rid] = (need[rid] || 0) + q;
+        });
+      } else {
+        (Array.isArray(sel) ? sel : [sel]).filter(Boolean).forEach(m => {
+          const rid = m.itemId || resolveOptItemId(m, menuItems);
+          if (rid) need[rid] = (need[rid] || 0) + 1;
+        });
+      }
+    });
+    for (const [rid, units] of Object.entries(need)) {
+      const stock = dailyCounts?.[rid];
+      const banned = (eightySixIds || []).includes(rid);
+      const want = units * qty;
+      if (banned || (stock && Number.isFinite(Number(stock.remaining)) && want > Number(stock.remaining))) {
+        const mi = (menuItems || []).find(i => i.id === rid);
+        return { name: mi?.menuName || mi?.name || 'that option', have: banned ? 0 : Number(stock.remaining), want };
+      }
+    }
+    return null;
+  }, [modGroups, selections, qty, dailyCounts, eightySixIds, menuItems]);
+
   const extraCost = modGroups.reduce((total, group) => {
     const cur = selections[group.id];
     if (!cur) return total;
@@ -170,6 +207,7 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
 
   const handleAdd = () => {
     if (!canAdd) { setRequireErr(true); setTimeout(() => setRequireErr(false), 3000); return; }
+    if (stockShort) return;   // v5.6.69 — the button already says what's short
     // v5.5.964: the line's mods commit in FLOW order (same order the panel shows),
     // so the check rail / KDS / receipts / kitchen tickets follow the Back Office
     // flow instead of always printing cooking preferences last.
@@ -364,9 +402,11 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
             onClick={handleAdd}
             className="btn btn-acc"
             style={{ width:'100%', height:52, fontSize:16, fontWeight:800, borderRadius:14,
-              background: canAdd ? 'var(--acc)' : 'var(--red)',
+              background: (canAdd && !stockShort) ? 'var(--acc)' : 'var(--red)',
               opacity: 1, cursor: 'pointer' }}>
-            {canAdd ? `Add to order · ${money(total)}` : `Choose required options first`}
+            {!canAdd ? `Choose required options first`
+              : stockShort ? `Only ${stockShort.have} × ${stockShort.name} left`
+              : `Add to order · ${money(total)}`}
           </button>
         </div>
       )}
@@ -525,7 +565,12 @@ function ModifierStep({ modGroups, instGroups, flowOrder = null, allModDefs, men
                   const optItemId = resolveOptItemId(opt, menuItems);
                   const opt86 = optItemId && eightySixIds.includes(optItemId);
                   const optStock = optItemId && dailyCounts[optItemId];
-                  const canAdd = !opt86 && (!atMax || optQty > 0); // can always reduce; can only add if not at max or 86'd
+                  // v5.6.69 — numeric cap: one more pick of this option costs
+                  // (optQty+1) × line qty units of the linked item's stock.
+                  const optFull = !!(optStock && Number.isFinite(Number(optStock.remaining))
+                    && (optQty + 1) * qty > Number(optStock.remaining));
+                  const canAdd = !opt86 && !optFull && (!atMax || optQty > 0); // can always reduce; add only under max, stock and not 86'd
+                  const plusOff = atMax || opt86 || optFull;
                   const optImage = resolveOptImage(opt);
 
                   return (
@@ -564,8 +609,8 @@ function ModifierStep({ modGroups, instGroups, flowOrder = null, allModDefs, men
                         </span>
                         <button
                           onClick={() => { if (canAdd && !atMax) onQtyChange(group.id, id, +1); }}
-                          disabled={atMax || opt86}
-                          style={{ width:32, height:32, borderRadius:8, border:`1.5px solid ${(atMax||opt86)?'var(--bdr)':'var(--acc)'}`, background:(atMax||opt86)?'var(--bg3)':'var(--acc)', color:(atMax||opt86)?'var(--t4)':'#0b0c10', cursor:(atMax||opt86)?'not-allowed':'pointer', fontSize:18, fontWeight:800, display:'flex', alignItems:'center', justifyContent:'center', fontFamily:'inherit', opacity:(atMax||opt86)?0.4:1 }}>
+                          disabled={plusOff}
+                          style={{ width:32, height:32, borderRadius:8, border:`1.5px solid ${plusOff?'var(--bdr)':'var(--acc)'}`, background:plusOff?'var(--bg3)':'var(--acc)', color:plusOff?'var(--t4)':'#0b0c10', cursor:plusOff?'not-allowed':'pointer', fontSize:18, fontWeight:800, display:'flex', alignItems:'center', justifyContent:'center', fontFamily:'inherit', opacity:plusOff?0.4:1 }}>
                           +
                         </button>
                       </div>
@@ -597,13 +642,19 @@ function ModifierStep({ modGroups, instGroups, flowOrder = null, allModDefs, men
                   const optItemId = resolveOptItemId(opt, menuItems);
                   const opt86 = optItemId && eightySixIds.includes(optItemId);
                   const optStock = optItemId && dailyCounts[optItemId];
-                  const optDisabled = opt86 || (atMax && !isSel);
+                  // v5.6.69 — numeric cap. Multi: every tap adds a pick, so the
+                  // next one costs (optQty+1) × line qty units; single: switching
+                  // here costs qty units (only when not already selected).
+                  const optFull = !!(optStock && Number.isFinite(Number(optStock.remaining))
+                    && (isMulti || !isSel)
+                    && ((isMulti ? optQty + 1 : 1) * qty > Number(optStock.remaining)));
+                  const optDisabled = opt86 || optFull || (atMax && !isSel);
 
                   return (
                     <div key={id} style={{ position:'relative' }}>
                       <button
                         onClick={() => {
-                          if (opt86) return; // blocked
+                          if (opt86 || optFull) return; // 86'd or no stock left for another pick
                           if (isMulti) {
                             if (!atMax) onAddMulti(group.id, { ...opt, id, label: opt.name || opt.label || id }, maxPicks);
                           } else {

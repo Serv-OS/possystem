@@ -17,8 +17,9 @@ import { Sx, money } from './MShellStyles';
 import { flowOrderedMods } from '../../lib/optionFlow';
 
 export default function MItemDetail({ item, onClose, onAdded }) {
-  const { addItem, modifierGroupDefs = [], instructionGroupDefs = [], eightySixIds = [], menuItems = [] } = useStore();
+  const { addItem, modifierGroupDefs = [], instructionGroupDefs = [], eightySixIds = [], menuItems = [], dailyCounts = {} } = useStore();
   const [qty, setQty] = useState(1);
+  const [stockErr, setStockErr] = useState(null);   // v5.6.69 — "Only N × X left"
   const [notes, setNotes] = useState('');
   // selectedMods shape: { [groupId]: [{ id, name, price, qty, groupLabel, subPicks: [...] }] }
   // qty allows the same option to be picked multiple times in multi-select groups.
@@ -74,6 +75,26 @@ export default function MItemDetail({ item, onClose, onAdded }) {
     const id = resolveOptItemId(opt);
     return !!id && eightySixIds.includes(id);
   };
+  // v5.6.69 — NUMERIC stock cap on options (MPOS only ever had the 86 boolean,
+  // so an item with 1 left could be picked 3× inside a "Box of 3"). One more
+  // pick of this option costs (picks+1) × line qty units of the linked item.
+  const optPicksOf = (itemId) => {
+    let n = 0;
+    for (const g of groups) {
+      for (const m of (selectedMods[g.id] || [])) {
+        const o = (g.options || []).find(x => x.id === m.id) || m;
+        if (resolveOptItemId(o) === itemId) n += (m.qty || 0);
+      }
+    }
+    return n;
+  };
+  const optIsFull = (opt) => {
+    const id = resolveOptItemId(opt);
+    if (!id) return false;
+    const stock = dailyCounts[id];
+    if (!stock || !Number.isFinite(Number(stock.remaining))) return false;
+    return (optPicksOf(id) + 1) * qty > Number(stock.remaining);
+  };
 
   // Instruction groups (presets like "Cooking preference: Rare/Medium/…")
   const instructionGroups = useMemo(() => {
@@ -101,6 +122,7 @@ export default function MItemDetail({ item, onClose, onAdded }) {
 
   // Add 1 to an option's qty (or insert it). Honours group.max across all picks.
   const addPick = (group, opt) => {
+    setStockErr(null);
     setSelectedMods(prev => {
       const current = prev[group.id] || [];
       const existing = current.find(m => m.id === opt.id);
@@ -183,6 +205,31 @@ export default function MItemDetail({ item, onClose, onAdded }) {
 
   const handleAdd = () => {
     if (!canAdd) return;
+    // v5.6.69 — commit-time stock gate (catches qty bumped AFTER picking, which
+    // no per-tap cap can see). Aggregate need per linked item, refuse by name.
+    {
+      const need = {};
+      if (item?.id) need[item.id] = (need[item.id] || 0) + qty;
+      for (const g of groups) {
+        for (const m of (selectedMods[g.id] || [])) {
+          const o = (g.options || []).find(x => x.id === m.id) || m;
+          const rid = resolveOptItemId(o);
+          if (rid) need[rid] = (need[rid] || 0) + (m.qty || 1) * qty;
+        }
+      }
+      for (const [rid, want] of Object.entries(need)) {
+        const stock = dailyCounts[rid];
+        const avail = eightySixIds.includes(rid) ? 0
+          : (stock && Number.isFinite(Number(stock.remaining))) ? Number(stock.remaining) : Infinity;
+        if (want > avail) {
+          const mi = (menuItems || []).find(i => i.id === rid);
+          const nm = mi?.menuName || mi?.menu_name || mi?.name || 'that item';
+          setStockErr(avail <= 0 ? `${nm} has sold out` : `Only ${avail} × ${nm} left`);
+          return;
+        }
+      }
+      setStockErr(null);
+    }
     // v5.5.964: mods commit in FLOW order (Back Office → item → Flow), so the
     // check line and kitchen ticket follow the configured order instead of
     // always printing cooking preferences last.
@@ -322,7 +369,10 @@ export default function MItemDetail({ item, onClose, onAdded }) {
                     : null;
                   const isMultiSelect = group.max > 1;
                   const is86 = optIs86(opt);
-                  const blocked = is86 || (atMax && !isSelected && isMultiSelect);
+                  // v5.6.69: sold-out by COUNT blocks another pick too (single-
+                  // select can still switch to an already-picked option).
+                  const isFull = !isSelected || isMultiSelect ? optIsFull(opt) : false;
+                  const blocked = is86 || isFull || (atMax && !isSelected && isMultiSelect);
 
                   return (
                     <div key={opt.id} style={{ display:'flex', flexDirection:'column' }}>
@@ -414,6 +464,12 @@ export default function MItemDetail({ item, onClose, onAdded }) {
         {missingRequired.length > 0 && (
           <div style={{ padding:'8px 12px', marginBottom:8, borderRadius:10, background:'var(--red-d)', color:'var(--red)', fontSize:12, fontWeight:700, border:'1px solid var(--red-b)', textAlign:'center' }}>
             Pick {missingRequired.map(g => g.name).join(', ')} to continue
+          </div>
+        )}
+        {/* v5.6.69: commit-time stock refusal */}
+        {stockErr && (
+          <div style={{ padding:'8px 12px', marginBottom:8, borderRadius:10, background:'var(--red-d)', color:'var(--red)', fontSize:12, fontWeight:700, border:'1px solid var(--red-b)', textAlign:'center' }}>
+            {stockErr}
           </div>
         )}
         <button onClick={handleAdd} disabled={!canAdd} style={{

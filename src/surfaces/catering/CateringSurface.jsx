@@ -35,6 +35,7 @@ export default function CateringSurface({ location }) {
   const [cats, setCats] = useState([]);
   const [taxRates, setTaxRates] = useState([]);
   const [eightySix, setEightySix] = useState([]);
+  const [stockLevels, setStockLevels] = useState({});   // v5.6.69: { itemId: { par, remaining } }
   const [instGroupDefs, setInstGroupDefs] = useState([]);
   const [cart, setCart] = useState([]);
   const [openItem, setOpenItem] = useState(null);
@@ -68,7 +69,7 @@ export default function CateringSurface({ location }) {
         setFulfilment(settings.takeout_enabled ? 'collection' : settings.delivery_enabled ? 'delivery' : null);
         // Categories shown = those linked to the chosen menus; items + tax read directly (anon).
         const menuIds = settings.menu_ids || [];
-        const [{ data: linkRows }, { data: itemRows }, { data: catRows }, { data: taxRows }, { data: e86 }, { data: pushRow }, { data: brandRow }] = await Promise.all([
+        const [{ data: linkRows }, { data: itemRows }, { data: catRows }, { data: taxRows }, { data: e86 }, { data: pushRow }, { data: brandRow }, { data: stockRows }] = await Promise.all([
           menuIds.length ? supabase.from('menu_category_links').select('category_id').in('menu_id', menuIds) : Promise.resolve({ data: [] }),
           supabase.from('menu_items').select('*').eq('location_id', opsId).eq('archived', false).order('sort_order'),
           supabase.from('menu_categories').select('*').eq('location_id', opsId).order('sort_order'),
@@ -76,6 +77,9 @@ export default function CateringSurface({ location }) {
           supabase.from('eighty_six').select('item_id').eq('location_id', opsId),
           supabase.from('config_pushes').select('snapshot->instructionGroupDefs').eq('location_id', opsId).order('created_at', { ascending: false }).limit(1).maybeSingle(), // v5.5.891: defs only, not the whole menu snapshot
           supabase.from('locations').select('receipt_branding').eq('id', opsId).maybeSingle(),
+          // v5.6.69: stock levels — OnlineItemSheet's numeric option cap (v5.5.872)
+          // was INERT on catering because stockLevels was never passed.
+          supabase.from('stock_levels').select('item_id, par, remaining').eq('location_id', opsId),
         ]);
         const allow = new Set((linkRows || []).map((l) => l.category_id));
         // Match the POS rule (v4.7.6): a category is in a chosen menu if that menu is its
@@ -86,6 +90,9 @@ export default function CateringSurface({ location }) {
         setItems(itemRows || []);
         setTaxRates(taxRows || []);
         setEightySix((e86 || []).map((r) => r.item_id));
+        const counts = {};
+        (stockRows || []).forEach((r) => { counts[r.item_id] = { par: r.par, remaining: r.remaining }; });
+        setStockLevels(counts);
         setInstGroupDefs(pushRow?.instructionGroupDefs || []); // v5.5.891: row IS { instructionGroupDefs }
         setBranding(location.online_branding || brandRow?.receipt_branding || null);
         setBoot({ loading: false, error: null });
@@ -334,6 +341,7 @@ export default function CateringSurface({ location }) {
 
       {openItem && (
         <OnlineItemSheet item={openItem} theme={theme} allItems={items} instGroupDefs={instGroupDefs} eightySixIds={eightySix}
+          stockLevels={stockLevels} cart={cart}
           onClose={() => setOpenItem(null)} onAdd={(it, mods, qty, notes) => { addToCart(it, mods, qty, notes); setOpenItem(null); }} />
       )}
       {showCart && (
