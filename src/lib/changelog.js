@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.67',
+    date: '2026-08-15',
+    changes: [
+      'Pay at Table unblocked: menu taps were parsing PERFECTLY (the selection came through as T3 both times) but the payment was refused by "already been paid" — ghost approved jobs from before the closer worked were colliding with reused session ids. Ghosts swept, the guard is now time-bounded to 6 hours, and the table-payment call verified accepting T3 live.',
+    ],
+  },
+  {
     version: '5.6.66',
     date: '2026-08-15',
     changes: [

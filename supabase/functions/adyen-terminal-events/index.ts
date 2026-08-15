@@ -191,7 +191,14 @@ Deno.serve(async (req) => {
             });
             const mres = await adyenFetch('POST', terminalEndpoint(maa.merchant_account, poiid, 'sync', maa.region === 'US' ? 'us' : 'eu'), menu, { timeoutMs: 90_000 });
             const pick = parseMenuInputResponse(mres.data);
-            console.log(`[pay-at-table] menu result ${pick.result}, selected ${pick.selected}, raw ${JSON.stringify(mres.data?.SaleToPOIResponse?.InputResponse ?? {}).slice(0, 400)}`);
+            console.log(`[pay-at-table] menu result ${pick.result}, selected ${pick.selected}`);
+            // Durable diagnostics — console logs proved unreadable through the
+            // analytics API, so the reader's exact menu answer is recorded where
+            // we can always query it.
+            await platformAdmin.from('adyen_webhook_events').insert({
+              event_key: `menu:${poiid}:${Date.now()}`,
+              raw: { httpStatus: mres.status, parsed: pick, entries: openTables.map((f) => f.label), response: mres.data ?? null },
+            }).then(() => {}, () => {});
             if (!pick.selected || pick.selected < 1 || pick.selected > openTables.length) return;
             candidates = [openTables[pick.selected - 1]];
           }

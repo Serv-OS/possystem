@@ -39,10 +39,15 @@ begin
 
   v_key := t.location_id::text || ':' || p_table_id || ':' || coalesce(a.session ->> 'id', '-');
 
-  -- 'approved' INCLUDED: paid-but-not-yet-booked refuses a second charge.
+  -- 'approved' refuses a second charge on a paid-but-not-yet-booked table —
+  -- but TIME-BOUNDED (6h): session ids are ORD-<counter> and the counter
+  -- resets, so an ancient approved job can key-collide with a brand-new party
+  -- (live 15 Aug: a 16:39 ghost blocked the evening's T3). In-flight statuses
+  -- stay unbounded.
   if exists (select 1 from terminal_jobs j
               where j.check_key = v_key
-                and j.status in ('pending','claimed','tipping','charging_unsent','charging','unknown','approved')) then
+                and (j.status in ('pending','claimed','tipping','charging_unsent','charging','unknown')
+                     or (j.status = 'approved' and j.created_at > now() - interval '6 hours'))) then
     raise exception 'this table has already been paid or has a payment in progress';
   end if;
   if exists (select 1 from terminal_jobs j
