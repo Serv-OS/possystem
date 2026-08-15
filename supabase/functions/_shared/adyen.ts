@@ -174,9 +174,6 @@ export function buildMenuInputRequest(o: { poiid: string; saleId: string; servic
           },
           MenuEntry: o.entries.map((text) => ({
             OutputFormat: 'Text',
-            // Hardware calibration 15 Aug: without this, row taps registered
-            // as selection 0 (only the single-row probe returned 1).
-            MenuEntryTag: 'Selectable',
             OutputText: [{ Text: text }],
           })),
         },
@@ -190,13 +187,20 @@ export function buildMenuInputRequest(o: { poiid: string; saleId: string; servic
 }
 
 export function parseMenuInputResponse(data: any): { selected: number | null; result: string } {
-  // Hardware-verified 15 Aug: the result lives under InputResult.Response and
-  // MenuEntryNumber arrives as an ARRAY (e.g. [1], 1-based).
+  // Docs + hardware, 15 Aug: MenuEntryNumber is a SELECTION-MASK array — the
+  // chosen option's position holds 1, every other item 0 ("if the third option
+  // is selected, the third item is 1"). Tap row 3 → [0,0,1]. The single-entry
+  // case [1] is the same rule, which is why only that probe ever "worked".
   const r = data?.SaleToPOIResponse?.InputResponse;
   const result = r?.InputResult?.Response?.Result ?? r?.Response?.Result ?? 'Failure';
   const raw = r?.InputResult?.Input?.MenuEntryNumber ?? r?.Input?.MenuEntryNumber;
-  const n = Array.isArray(raw) ? raw[0] : raw;
-  const sel = Number.isFinite(Number(n)) ? Number(n) : null;
+  let sel: number | null = null;
+  if (Array.isArray(raw)) {
+    const i = raw.findIndex((v: unknown) => Number(v) === 1);
+    if (i >= 0) sel = i + 1;                          // 1-based position of the 1
+  } else if (Number(raw) >= 1) {
+    sel = Number(raw);                                // defensive: plain index form
+  }
   return { selected: result === 'Success' && sel != null ? sel : null, result: String(result) };
 }
 

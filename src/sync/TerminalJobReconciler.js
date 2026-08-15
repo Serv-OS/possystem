@@ -19,6 +19,7 @@ import { fetchApprovedTablePayJobs } from '../lib/payments/terminalJobs';
 import { getLocationProcessor } from '../lib/payments/processor';
 
 let _timer = null;
+let _adyenWarm = null;
 let _locationId = null;
 let _running = false;
 
@@ -63,10 +64,29 @@ export async function startTerminalJobReconciler() {
   await tick();                                   // close promptly on boot
   // ±1.5s jitter so a fleet of tills doesn't hit the edge fn in lock-step.
   _timer = setInterval(tick, 8000 + Math.round((Math.random() - 0.5) * 3000));
+
+  // v5.6.66 — keep the Adyen fns WARM on Adyen venues. Pay at Table's
+  // button-to-bill lag was two stacked cold starts; an OPTIONS ping costs
+  // nothing and keeps the isolates resident. Every ~4 min, jittered.
+  if (_adyenWarm) clearInterval(_adyenWarm);
+  try {
+    const proc = await getLocationProcessor(_locationId);
+    if (proc === 'adyen') {
+      const warm = () => {
+        for (const fn of ['adyen-terminal-events', 'adyen-terminal-charge']) {
+          fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/${fn}`, { method: 'OPTIONS' }).catch(() => {});
+        }
+      };
+      warm();
+      _adyenWarm = setInterval(warm, 240000 + Math.round(Math.random() * 30000));
+    }
+  } catch { /* warm-up is best-effort */ }
 }
 
 export function stopTerminalJobReconciler() {
   if (_timer) clearInterval(_timer);
+  if (_adyenWarm) clearInterval(_adyenWarm);
   _timer = null;
+  _adyenWarm = null;
   _running = false;
 }

@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.66',
+    date: '2026-08-15',
+    changes: [
+      'Pay at Table menu taps FIXED from Adyen\'s documentation: the reader answers with a selection MASK (tap row 3 → [0,0,1]), not an index — the parser read the first element and rejected every tap below the top row. Menu re-verified on the reader with all open tables and bills listed.',
+      'Speed: the charge function pre-warms the moment the wake-up arrives (while staff look at the menu), and Adyen-venue tills now keep both functions warm with a 4-minute ping — the ~25s worst case was two stacked cold starts.',
+    ],
+  },
+  {
     version: '5.6.65',
     date: '2026-08-15',
     changes: [

@@ -136,6 +136,10 @@ Deno.serve(async (req) => {
         || (details.match(/^([A-Za-z0-9]+)$/) || [])[1] || '';
       const respond = async () => {
         try {
+          // Pre-warm the charge fn NOW (its cold start was most of the ~25s
+          // button-to-bill lag): an OPTIONS request costs nothing and runs
+          // while staff are still looking at the menu.
+          fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/adyen-terminal-charge`, { method: 'OPTIONS' }).catch(() => {});
           // An EMPTY reference is the "show me the tables" gesture — staff
           // pressed straight through the pin pad. Fall to the menu path (the
           // empty ref matches no candidates below).
