@@ -74,9 +74,18 @@ function attachCardToIntents(intents, cardReceipt) {
 function derivePaymentIntents(paymentInfo = {}) {
   const list = Array.isArray(paymentInfo.paymentIntents) ? paymentInfo.paymentIntents : null;
   if (list && list.length) {
+    // v5.6.70: keep a leg that has a real AMOUNT but no processor id (an approved
+    // settle can carry no pspReference) — dropping it silently made the intents
+    // stop summing to the check total and shifted position 0, which is the slot
+    // attachCardToIntents stamps the card onto. Also carries any per-leg card
+    // block through (reader splits snapshot one per leg).
     const clean = list
-      .filter(p => p && p.id)
-      .map(p => ({ id: p.id, amountMinor: Number.isFinite(p.amountMinor) ? p.amountMinor : null }));
+      .filter(p => p && (p.id || Number.isFinite(p.amountMinor)))
+      .map(p => ({
+        id: p.id || null,
+        amountMinor: Number.isFinite(p.amountMinor) ? p.amountMinor : null,
+        ...(p.card ? { card: p.card } : {}),
+      }));
     return clean.length ? clean : null;
   }
   if (paymentInfo.stripePaymentIntentId) {
@@ -4947,10 +4956,17 @@ export const useStore = create((set, get) => ({
     const priorTipMinor = priorLegs.reduce((s, l) => s + (Number(l.tipMinor) || 0), 0);
     // Final leg FIRST: attachCardToIntents stamps the job's own card block on
     // intents[0], which must be this leg's, not a prior leg's.
+    // The final leg keeps its slot even with a null transaction_id (an approved
+    // settle can carry no pspReference): dropping it would promote a PRIOR leg
+    // to intents[0], where attachCardToIntents stamps THIS leg's card — a later
+    // refund would then reverse the wrong transaction. A null id is honest; a
+    // mislabelled one is not. Priors without an id are still dropped (nothing to
+    // refund by), and their card blocks ride along for per-leg receipts.
     const legIntents = priorLegs.length ? [
       { id: job.transaction_id || null, amountMinor: Number(job.charge_minor) },
-      ...priorLegs.map(l => ({ id: l.transactionId || null, amountMinor: Number(l.chargeMinor), card: l.card || null })),
-    ].filter(p => p.id) : null;
+      ...priorLegs.filter(l => l.transactionId)
+        .map(l => ({ id: l.transactionId, amountMinor: Number(l.chargeMinor), card: l.card || null })),
+    ] : null;
 
     const { tables, closedChecks } = get();
     if (closedChecks.some(c => c.id === job.closed_check_id)) return;   // already closed on this device

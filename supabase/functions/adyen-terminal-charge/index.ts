@@ -127,7 +127,7 @@ async function settleFromResponse(jobId: string, p: ReturnType<typeof parsePayme
       console.log(`adyen-terminal-charge: authorised ${p.authorizedMinor} != charge ${chargeMinor} on job ${jobId} and TipAmount ${tip} does not explain it — parking via RPC guard`);
     }
   }
-  const { error } = await opsAdmin.rpc('terminal_job_settle_from_processor', {
+  const { data: settled, error } = await opsAdmin.rpc('terminal_job_settle_from_processor', {
     p_job_id: jobId,
     p_outcome: success ? 'approved' : 'declined',
     p_payment_session_id: p.pspReference,          // pspReference rides the session column
@@ -139,6 +139,31 @@ async function settleFromResponse(jobId: string, p: ReturnType<typeof parsePayme
     p_session_amount_minor: effectiveAuthorized ?? (success ? chargeMinor : null),
   });
   if (error) throw new Error(`settle rpc: ${error.message}`);
+  // Split-leg toast (kept in lockstep with adyen-terminal-events): a PARTIAL
+  // pay-at-table leg never books a check, so this activity_events row is the
+  // only thing the floor sees. Gated on the RPC's non-idempotent approved
+  // transition — exactly-once across the sync/async settle race. Best-effort.
+  try {
+    if ((settled as any)?.ok === true && (settled as any)?.idempotent !== true
+        && (settled as any)?.status === 'approved') {
+      const { data: j } = await opsAdmin.from('terminal_jobs')
+        .select('location_id, due_minor, check_draft').eq('id', jobId).maybeSingle();
+      const d = (j?.check_draft ?? {}) as Record<string, unknown>;
+      if (j && d.source === 'adyen_pay_at_table' && d.partial === true) {
+        // Publish paid-so-far onto the live session FIRST — that column is what
+        // every till and the reader read to know what is still owed.
+        await opsAdmin.rpc('terminal_sync_table_paid', { p_job_id: jobId })
+          .then(() => {}, (e: Error) => console.error('adyen-terminal-charge: sync paid', e?.message));
+        const left = Number(d.remainingAfterMinor) || 0;
+        await opsAdmin.from('activity_events').insert({
+          location_id: j.location_id, kind: 'system', severity: 'action',
+          title: `Part payment — ${d.tableLabel ?? d.tableId ?? 'table'}`,
+          body: `£${((Number(j.due_minor) || 0) / 100).toFixed(2)} taken on the card reader. £${(left / 100).toFixed(2)} left to pay — take the rest with Pay at table.`,
+          ref_type: 'terminal_job', ref_id: jobId,
+        });
+      }
+    }
+  } catch { /* toast is advisory — never block a settle */ }
 }
 
 Deno.serve(async (req) => {

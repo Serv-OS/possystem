@@ -204,6 +204,50 @@ export function parseMenuInputResponse(data: any): { selected: number | null; re
   return { selected: result === 'Success' && sel != null ? sel : null, result: String(result) };
 }
 
+// On-screen AMOUNT ENTRY on the terminal (nexo Input / DecimalString) — the
+// split-payment "enter amount" step. Docs (point-of-sale/shopper-engagement/
+// shopper-input/amount): PredefinedContent ReferenceID 'GetAmount' renders the
+// currency keypad; entry populates RIGHT-TO-LEFT (typing 3,6,5,9 shows 0.03 →
+// 0.36 → 3.65 → 36.59); the entered amount returns as a decimal STRING in
+// InputResult.Input.DigitInput ("36.59"). Cancel/timeout → Result 'Failure'.
+export function buildAmountInputRequest(o: { poiid: string; saleId: string; serviceId: string; title: string; maxInputTime?: number }): any {
+  return {
+    SaleToPOIRequest: {
+      MessageHeader: {
+        ProtocolVersion: '3.0', MessageClass: 'Device', MessageCategory: 'Input', MessageType: 'Request',
+        ServiceID: o.serviceId, SaleID: o.saleId, POIID: o.poiid,
+      },
+      InputRequest: {
+        DisplayOutput: {
+          Device: 'CustomerDisplay', InfoQualify: 'Display',
+          OutputContent: {
+            OutputFormat: 'Text',
+            PredefinedContent: { ReferenceID: 'GetAmount' },
+            OutputText: [{ Text: o.title }],
+          },
+        },
+        InputData: {
+          Device: 'CustomerInput', InfoQualify: 'Input', InputCommand: 'DecimalString',
+          MaxInputTime: o.maxInputTime ?? 45,
+          DefaultInputString: '0.00',
+        },
+      },
+    },
+  };
+}
+
+export function parseAmountInputResponse(data: any): { amountMinor: number | null; result: string } {
+  const r = data?.SaleToPOIResponse?.InputResponse;
+  const result = r?.InputResult?.Response?.Result ?? r?.Response?.Result ?? 'Failure';
+  const raw = r?.InputResult?.Input?.DigitInput ?? r?.Input?.DigitInput;
+  let minor: number | null = null;
+  if (raw != null && String(raw).trim() !== '') {
+    const n = Number(String(raw).replace(/[^0-9.]/g, ''));
+    if (Number.isFinite(n) && n > 0) minor = Math.round(n * 100);
+  }
+  return { amountMinor: result === 'Success' ? minor : null, result: String(result) };
+}
+
 export function newServiceId(): string {
   // 10 RANDOM base36 chars (~51 bits). Three jobs in one review finding hang off
   // this: (1) uniqueness within Adyen's 48h/POIID window — randomness beats the

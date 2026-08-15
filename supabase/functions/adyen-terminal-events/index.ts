@@ -16,7 +16,7 @@
 // Deployed with verify_jwt=false (Adyen calls this).
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { parsePaymentResponse, buildMenuInputRequest, parseMenuInputResponse, newServiceId, adyenFetch, terminalEndpoint } from '../_shared/adyen.ts';
+import { parsePaymentResponse, buildMenuInputRequest, parseMenuInputResponse, buildAmountInputRequest, parseAmountInputResponse, newServiceId, adyenFetch, terminalEndpoint } from '../_shared/adyen.ts';
 
 const opsAdmin = createClient(
   Deno.env.get('SUPABASE_URL') ?? '',
@@ -72,7 +72,7 @@ Deno.serve(async (req) => {
     const poiid = resp?.MessageHeader?.POIID ?? null;
     if (serviceId) {
       const { data: tj } = await opsAdmin.from('terminal_jobs')
-        .select('id, status, charge_minor, processor, target_terminal_id')
+        .select('id, status, charge_minor, due_minor, processor, target_terminal_id, location_id, check_draft')
         .eq('nexo_service_id', serviceId).eq('processor', 'adyen').maybeSingle();
       // v968 review hardening: ServiceIDs are now random+DB-unique, and the match
       // is additionally scoped to the sending terminal's POIID; swept 'unknown'
@@ -90,7 +90,22 @@ Deno.serve(async (req) => {
         const parsed = parsePaymentResponse(body);
         if (parsed.result !== 'Unknown') {
           const success = parsed.result === 'Success';
-          const { error } = await opsAdmin.rpc('terminal_job_settle_from_processor', {
+          // v5.6.70 — credit an ON-READER gratuity before settling, exactly as
+          // adyen-terminal-charge's settleFromResponse does. This branch is the
+          // recovery path for a /sync call whose connection died, and pay-at-table
+          // jobs ask for a tip: without the recompute the RPC saw "processor 2200
+          // vs server 2000", parked the leg needs_human, and its tip vanished from
+          // the final split check (and the leg could never be reconciled).
+          const chargeMinor = Number(tj.charge_minor);
+          const tip = parsed.tipMinor ?? 0;
+          if (success && parsed.authorizedMinor != null && parsed.authorizedMinor !== chargeMinor
+              && tip > 0 && chargeMinor + tip === parsed.authorizedMinor) {
+            const { error: tipErr } = await opsAdmin.from('terminal_jobs')
+              .update({ tip_minor: tip, charge_minor: parsed.authorizedMinor })
+              .eq('id', tj.id).is('tip_minor', null);
+            if (tipErr) console.error('[adyen-terminal-events] tip recompute', tipErr.message);
+          }
+          const { data: settled, error } = await opsAdmin.rpc('terminal_job_settle_from_processor', {
             p_job_id: tj.id,
             p_outcome: success ? 'approved' : 'declined',
             p_payment_session_id: parsed.pspReference,
@@ -102,6 +117,26 @@ Deno.serve(async (req) => {
             p_session_amount_minor: parsed.authorizedMinor ?? (success ? Number(tj.charge_minor) : null),
           });
           if (error) console.error('[adyen-terminal-events] settle rpc', error.message);
+          // Split-leg toast (kept in lockstep with adyen-terminal-charge): a
+          // PARTIAL pay-at-table leg never books a check, so this activity event
+          // is the only thing the floor sees. Gate on the RPC's non-idempotent
+          // approved transition — exactly-once across sync/async settle races.
+          const d = (tj.check_draft ?? {}) as Record<string, unknown>;
+          if (!error && (settled as any)?.ok === true && (settled as any)?.idempotent !== true
+              && (settled as any)?.status === 'approved'
+              && d.source === 'adyen_pay_at_table' && d.partial === true) {
+            // Publish paid-so-far onto the live session FIRST — that column is
+            // what every till and the reader read to know what is still owed.
+            await opsAdmin.rpc('terminal_sync_table_paid', { p_job_id: tj.id })
+              .then(() => {}, (e: Error) => console.error('[adyen-terminal-events] sync paid', e?.message));
+            const left = Number(d.remainingAfterMinor) || 0;
+            await opsAdmin.from('activity_events').insert({
+              location_id: tj.location_id, kind: 'system', severity: 'action',
+              title: `Part payment — ${d.tableLabel ?? d.tableId ?? 'table'}`,
+              body: `£${((Number(tj.due_minor) || 0) / 100).toFixed(2)} taken on the card reader. £${(left / 100).toFixed(2)} left to pay — take the rest with Pay at table.`,
+              ref_type: 'terminal_job', ref_id: tj.id,
+            }).then(() => {}, () => {});
+          }
         }
       } else if (!tj) {
         console.log(`[adyen-terminal-events] PaymentResponse for unknown ServiceID ${serviceId} (POIID ${poiid})`);
@@ -150,10 +185,23 @@ Deno.serve(async (req) => {
 
           // Table match: staff type "2" for a table labelled "T2" (or "2").
           // Only tables with an OPEN session are candidates; refuse ambiguity.
+          // The third query pulls this venue's settled split legs (6h window —
+          // the SAME scan the RPC's paid-so-far uses) so every figure the
+          // reader shows is what's LEFT to pay, not the gross bill.
+          // active_sessions.paid_minor is server-maintained (terminal_sync_table_paid
+          // runs after every settled leg), so "what is left" is ONE column read —
+          // no windowed job scan to drift out of step with the RPC's own maths.
           const [{ data: sess }, { data: floor }] = await Promise.all([
-            opsAdmin.from('active_sessions').select('table_id').eq('location_id', term.location_id),
+            opsAdmin.from('active_sessions')
+              .select('table_id, total_minor, paid_minor, session').eq('location_id', term.location_id),
             opsAdmin.from('floor_tables').select('id, label').eq('location_id', term.location_id),
           ]);
+          const sessBy = new Map((sess || []).map((r) => [String(r.table_id), r]));
+          const remainingFor = (tableId: string): number => {
+            const row = sessBy.get(String(tableId));
+            if (!row) return 0;
+            return Math.max(0, (Number(row.total_minor) || 0) - (Number(row.paid_minor) || 0));
+          };
           const open = new Set((sess || []).map((r) => String(r.table_id)));
           const norm = (x: string) => String(x || '').toLowerCase();
           const digits = (x: string) => String(x || '').replace(/[^0-9]/g, '');
@@ -161,35 +209,36 @@ Deno.serve(async (req) => {
             norm(f.label) === norm(ref) || (digits(f.label) === digits(ref) && digits(ref) !== '')
           ));
 
+          // Merchant + sync-Input plumbing, needed on EVERY path now (the
+          // pay-all/split menu and amount entry ride the same pipe as the
+          // table list).
+          const { data: maaRow } = await platformAdmin.from('locations')
+            .select('id').eq('ops_location_id', term.location_id).maybeSingle();
+          const { data: maa } = await platformAdmin.from('merchant_adyen_accounts')
+            .select('merchant_account, region').eq('location_id', maaRow?.id ?? term.location_id).maybeSingle();
+          if (!maa?.merchant_account) { console.log('[pay-at-table] no merchant account'); return; }
+          const saleId = `servos-${String(term.location_id).slice(0, 8)}`;
+          const askInput = (msg: unknown) =>
+            adyenFetch('POST', terminalEndpoint(maa.merchant_account, poiid, 'sync', maa.region === 'US' ? 'us' : 'eu'), msg, { timeoutMs: 90_000 });
+
           // No/ambiguous match → show the OPEN TABLES as a menu ON THE READER
           // (Peter, 15 Aug: "load all the tables so I can see what's open then
           // choose"). Staff pick from the list; billed table resolved from the
           // 1-based selection.
           if (candidates.length !== 1) {
-            const { data: bills } = await opsAdmin.from('active_sessions')
-              .select('table_id, total_minor').eq('location_id', term.location_id);
-            const billBy = new Map((bills || []).map((r) => [String(r.table_id), Number(r.total_minor) || 0]));
             const openTables = (floor || [])
               .filter((f) => open.has(String(f.id)))
               .sort((a, b) => String(a.label).localeCompare(String(b.label), undefined, { numeric: true }))
               .slice(0, 20);
             if (!openTables.length) { console.log('[pay-at-table] no open tables to list'); return; }
-            const { data: maaRow } = await platformAdmin.from('locations')
-              .select('id').eq('ops_location_id', term.location_id).maybeSingle();
-            const { data: maa } = await platformAdmin.from('merchant_adyen_accounts')
-              .select('merchant_account, region').eq('location_id', maaRow?.id ?? term.location_id).maybeSingle();
-            if (!maa?.merchant_account) { console.log('[pay-at-table] no merchant for menu'); return; }
             const menu = buildMenuInputRequest({
               poiid,
-              saleId: `servos-${String(term.location_id).slice(0, 8)}`,
+              saleId,
               serviceId: newServiceId(),
               title: 'Pay at table — choose the table',
-              entries: openTables.map((f) => {
-                const b = billBy.get(String(f.id));
-                return `${f.label}  ·  £${((b || 0) / 100).toFixed(2)}`;
-              }),
+              entries: openTables.map((f) => `${f.label}  ·  £${(remainingFor(f.id) / 100).toFixed(2)}`),
             });
-            const mres = await adyenFetch('POST', terminalEndpoint(maa.merchant_account, poiid, 'sync', maa.region === 'US' ? 'us' : 'eu'), menu, { timeoutMs: 90_000 });
+            const mres = await askInput(menu);
             const pick = parseMenuInputResponse(mres.data);
             console.log(`[pay-at-table] menu result ${pick.result}, selected ${pick.selected}`);
             // Durable diagnostics — console logs proved unreadable through the
@@ -203,8 +252,51 @@ Deno.serve(async (req) => {
             candidates = [openTables[pick.selected - 1]];
           }
 
+          // ── Pay all, or split? (task #103) ─────────────────────────────────
+          // Always asked — it doubles as bill confirmation on the typed-number
+          // path (title shows the table + what's owed before anything charges).
+          const table = candidates[0];
+          const remaining = remainingFor(table.id);
+          if (remaining <= 0) { console.log('[pay-at-table] nothing left to pay on', table.label); return; }
+          let amountMinor: number | null = null;               // null = charge everything owed
+          const pres = await askInput(buildMenuInputRequest({
+            poiid, saleId, serviceId: newServiceId(),
+            title: `${table.label}  ·  £${(remaining / 100).toFixed(2)}`,
+            entries: [`Pay all  ·  £${(remaining / 100).toFixed(2)}`, 'Split — enter amount'],
+            maxInputTime: 45,
+          }));
+          const payPick = parseMenuInputResponse(pres.data);
+          await platformAdmin.from('adyen_webhook_events').insert({
+            event_key: `paymenu:${poiid}:${Date.now()}`,
+            raw: { httpStatus: pres.status, parsed: payPick, remaining, response: pres.data ?? null },
+          }).then(() => {}, () => {});
+          if (!payPick.selected) return;                       // cancelled / timed out
+          if (payPick.selected === 2) {
+            const ares = await askInput(buildAmountInputRequest({
+              poiid, saleId, serviceId: newServiceId(),
+              title: 'Split — enter amount to pay',
+            }));
+            const amt = parseAmountInputResponse(ares.data);
+            await platformAdmin.from('adyen_webhook_events').insert({
+              event_key: `amount:${poiid}:${Date.now()}`,
+              raw: { httpStatus: ares.status, parsed: amt, remaining, response: ares.data ?? null },
+            }).then(() => {}, () => {});
+            if (!amt.amountMinor || amt.amountMinor <= 0) return;   // cancelled / zero
+            amountMinor = Math.min(amt.amountMinor, remaining);      // the RPC clamps too
+          }
+
+          // PIN THE OCCUPATION staff just confirmed on the reader. Menus + typing
+          // take minutes; without this the RPC would bind the charge to whoever is
+          // sitting there when it finally runs (a re-seat mid-flow charged the new
+          // party for the old party's bill).
+          const pinned = sessBy.get(String(table.id));
+          const pinnedSession = (pinned?.session ?? {}) as Record<string, unknown>;
           const { data: job, error: rpcErr } = await opsAdmin.rpc('terminal_start_table_payment_for', {
-            p_terminal_device_id: term.id, p_table_id: candidates[0].id,
+            p_terminal_device_id: term.id,
+            p_table_id: table.id,
+            p_amount_minor: amountMinor,
+            p_session_id: pinnedSession.id == null ? null : String(pinnedSession.id),
+            p_seated_at: pinnedSession.seatedAt == null ? null : String(pinnedSession.seatedAt),
           });
           if (rpcErr) { console.log(`[pay-at-table] job refusal: ${rpcErr.message}`); return; }
           const jobId = (job as Record<string, unknown>)?.job_id;
@@ -217,7 +309,7 @@ Deno.serve(async (req) => {
             body: JSON.stringify({ action: 'start', job_id: jobId }),
           });
           const out = await res.text();
-          console.log(`[pay-at-table] charge kick for table ${candidates[0].label}: ${res.status} ${out.slice(0, 200)}`);
+          console.log(`[pay-at-table] charge kick for table ${table.label} (${amountMinor == null ? 'pay all' : `split £${(amountMinor / 100).toFixed(2)}`}): ${res.status} ${out.slice(0, 200)}`);
         } catch (e) {
           console.error('[pay-at-table] responder failed:', (e as Error)?.message || e);
         }

@@ -25,7 +25,7 @@
 // say exactly what to fix instead of a dead button.
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
-import { managementBase, ADYEN_MERCHANT_ACCOUNT, buildMenuInputRequest, newServiceId, adyenFetch, terminalEndpoint } from '../_shared/adyen.ts';
+import { managementBase, ADYEN_MERCHANT_ACCOUNT, buildMenuInputRequest, buildAmountInputRequest, parseAmountInputResponse, newServiceId, adyenFetch, terminalEndpoint } from '../_shared/adyen.ts';
 
 const opsAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
 const platformAdmin = createClient(
@@ -380,6 +380,21 @@ Deno.serve(async (req) => {
       });
       const r = await adyenFetch('POST', terminalEndpoint(merchant, tid, 'sync', (maa?.region === 'US') ? 'us' : 'eu'), menu, { timeoutMs: 75_000 });
       return json({ ok: r.ok, status: r.status, entries, response: r.data }, 200);
+    }
+
+    // ── test_amount: render the split AMOUNT-ENTRY screen on a reader now ────
+    // Hardware shape-test for the DecimalString Input (split payments, task
+    // #103) — returns the raw response so the parsed amount can be verified
+    // without running the whole pay-at-table flow.
+    if (action === 'test_amount') {
+      const tid = String(body.terminal_id || '');
+      if (!tid) return json({ error: 'terminal_id required' }, 400);
+      const msg = buildAmountInputRequest({
+        poiid: tid, saleId: 'servos-amttest', serviceId: newServiceId(),
+        title: 'Split — enter amount to pay',
+      });
+      const r = await adyenFetch('POST', terminalEndpoint(merchant, tid, 'sync', (maa?.region === 'US') ? 'us' : 'eu'), msg, { timeoutMs: 75_000 });
+      return json({ ok: r.ok, status: r.status, parsed: parseAmountInputResponse(r.data), response: r.data }, 200);
     }
 
     // ── test_async: prove the event-URL delivery pipe WITHOUT a button press ─

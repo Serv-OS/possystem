@@ -111,7 +111,19 @@ Deno.serve(async (req) => {
   const { data, error } = await q.order('created_at', { ascending: false }).limit(Math.min(Number(body?.limit) || 100, 200));
   if (error) return json({ error: error.message }, 500);
 
-  const jobs = data ?? [];
+  let jobs = data ?? [];
+
+  // v5.6.70 — a PARTIAL on-reader split leg must NEVER reach a reconciler.
+  // It is captured money with no check of its own: the FINAL leg of the split
+  // books one check for the whole occupation (draft.priorLegs). The client has
+  // the same guard, but the client is exactly what cannot be trusted here — a
+  // till on a stale bundle (the documented Sunmi WebView failure mode) would
+  // otherwise book the part payment as a full close and clear a live table
+  // mid-meal. The queue-inspection paths (needs_human / explicit job_ids) still
+  // return them so a manager can always SEE the money.
+  if (!body?.needs_human && Array.isArray(body?.statuses) && body.statuses.includes('approved')) {
+    jobs = jobs.filter((j: any) => j?.check_draft?.partial !== true);
+  }
 
   // v5.5.846: attach the CURRENT server-side bill so the POS reconciler can refuse to
   // close a Table-Pay job whose live total moved after the terminal froze its amount.
