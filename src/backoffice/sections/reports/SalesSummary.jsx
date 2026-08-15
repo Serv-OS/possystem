@@ -17,10 +17,27 @@ import { toCsv, downloadCsv } from './_csv';
 // Tax prefers the stored tax_amount column (v4.6.19) when present, and falls back
 // to the derived (total - subtotal - service - tip) formula for pre-migration rows
 // or rows closed without taxRates configured.
+// v5.6.79 (#108) — REFUNDS ARE NOW SPLIT THREE WAYS BEFORE THEY HIT THE LADDER.
+//
+// A refund entry used to be items-only, so subtracting its whole `amount` from a
+// subtotal-based gross was arithmetically fine. From v5.6.79 a refund can also
+// return the tip and the service charge, and subtracting THAT from gross would
+// over-state the deduction and stop the ladder reconciling — while "plus Service"
+// and "plus Tips" below it still added back money that had gone back to the
+// customer. The Z report reads this same function, so it would have been wrong on
+// the fiscal document too.
+//
+// Each portion is now netted against the line it actually belongs to:
+//   items portion   → reduces net sales (as before)
+//   service portion → reduces Service
+//   tip portion     → reduces Tips
+//   tax portion     → reduces Tax, when the refund recorded one
+// Legacy entries have no split and read as items-only, which is what they were.
 export function computeSalesStats(checks) {
   let gross=0, discounts=0, refunds=0, voids=0, service=0, tips=0, taxTotal=0, total=0, covers=0, count=0;
   let taxStored=0, taxDerived=0;  // diagnostic split
   let deliveryFees=0;             // v5.5.853: customer-facing delivery charges (POS/online/catering + channel)
+  let refundsItems=0, refundsTip=0, refundsService=0, refundsTax=0;
   (checks||[]).forEach(c => {
     const sub = c.subtotal || 0;
     const tip = c.tip || 0;
@@ -30,20 +47,34 @@ export function computeSalesStats(checks) {
     if (c.taxAmount != null) { tax = c.taxAmount; taxStored += tax; }
     else                     { tax = Math.max(0, tot - sub - svc - tip); taxDerived += tax; }
     const dDiscounts = (c.discounts||[]).reduce((s,d) => s + (d.amount || d.value || 0), 0);
-    const dRefunds   = (c.refunds  ||[]).reduce((s,r) => s + (r.amount || 0), 0);
+    let dRefunds=0, dRefTip=0, dRefSvc=0, dRefTax=0;
+    (c.refunds||[]).forEach(r => {
+      const amt = Number(r.amount) || 0;
+      const rt  = Number(r.tipAmount) || 0;
+      const rs  = Number(r.serviceAmount) || 0;
+      dRefunds += amt; dRefTip += rt; dRefSvc += rs;
+      dRefTax  += Number(r.taxAmount) || 0;
+    });
     gross      += sub;
     discounts  += dDiscounts;
     refunds    += dRefunds;
+    refundsItems   += dRefunds - dRefTip - dRefSvc;
+    refundsTip     += dRefTip;
+    refundsService += dRefSvc;
+    refundsTax     += dRefTax;
     if (c.status === 'voided') voids += tot;
-    service    += svc;
-    tips       += tip;
+    service    += svc - dRefSvc;
+    tips       += tip - dRefTip;
     deliveryFees += Number(c.customer?.delivery_fee ?? c.deliveryFee) || 0;
-    taxTotal   += tax;
+    taxTotal   += tax - dRefTax;
     total      += tot;
     if (c.status !== 'voided') { covers += c.covers || 1; count += 1; }
   });
-  const net = gross - discounts - voids - refunds;
-  return { gross, discounts, voids, refunds, service, tips, deliveryFees, tax: taxTotal, taxStored, taxDerived, total, covers, count, net };
+  const net = gross - discounts - voids - refundsItems;
+  return {
+    gross, discounts, voids, refunds, refundsItems, refundsTip, refundsService, refundsTax,
+    service, tips, deliveryFees, tax: taxTotal, taxStored, taxDerived, total, covers, count, net,
+  };
 }
 
 export default function SalesSummary({ checks, prevChecks, fmt, fmtN, locationConfig }) {
@@ -65,9 +96,13 @@ export default function SalesSummary({ checks, prevChecks, fmt, fmtN, locationCo
     let unclassified = { net: 0, covers: 0, count: 0 };
     (checks || []).filter(c => c.status !== 'voided' && c.closedAt).forEach(c => {
       const s = classifyShift(c.closedAt, shifts, bds);
-      const net = (c.subtotal || 0) - ((c.discounts||[]).reduce((x,d)=>x+(d.amount||d.value||0),0)) - ((c.refunds||[]).reduce((x,r)=>x+(r.amount||0),0));
+      // v5.6.79 — subtract only the ITEMS portion of each refund from a
+      // subtotal-based net, and show tips net of any tip that went back.
+      const refItems = (c.refunds||[]).reduce((x,r)=>x+((Number(r.amount)||0)-(Number(r.tipAmount)||0)-(Number(r.serviceAmount)||0)),0);
+      const refTip   = (c.refunds||[]).reduce((x,r)=>x+(Number(r.tipAmount)||0),0);
+      const net = (c.subtotal || 0) - ((c.discounts||[]).reduce((x,d)=>x+(d.amount||d.value||0),0)) - refItems;
       const cov = c.covers || 1;
-      const tip = c.tip || 0;
+      const tip = Math.max(0, (c.tip || 0) - refTip);
       if (s) {
         const i = idx[s.id || s.name];
         rows[i].net += net; rows[i].covers += cov; rows[i].count += 1; rows[i].tips += tip;
@@ -155,12 +190,15 @@ export default function SalesSummary({ checks, prevChecks, fmt, fmtN, locationCo
           <LadderRow label="Gross sales"         value={fmt(cur.gross)}       prominence="head"/>
           <LadderRow label="less Discounts"      value={fmt(-cur.discounts)}  tone={cur.discounts > 0 ? 'warn' : null}/>
           <LadderRow label="less Voids"          value={fmt(-cur.voids)}      tone={cur.voids     > 0 ? 'bad'  : null}/>
-          <LadderRow label="less Refunds"        value={fmt(-cur.refunds)}    tone={cur.refunds   > 0 ? 'bad'  : null}/>
+          {/* v5.6.79 — the ITEMS portion only. The tip/service portions of a
+              refund are netted off the "plus Service" / "plus Tips" lines below,
+              so the ladder still adds up to what was actually collected. */}
+          <LadderRow label="less Refunds"        value={fmt(-cur.refundsItems)} tone={cur.refundsItems > 0 ? 'bad'  : null}/>
           <LadderRow label="Net sales"           value={fmt(cur.net)}         prominence="sub" border/>
           <LadderRow label="plus Tax"            value={fmt(cur.tax)}/>
-          <LadderRow label="plus Service"        value={fmt(cur.service)}/>
+          <LadderRow label={cur.refundsService > 0 ? 'plus Service (net of refunds)' : 'plus Service'} value={fmt(cur.service)}/>
           {cur.deliveryFees > 0 && <LadderRow label="plus Delivery charges" value={fmt(cur.deliveryFees)}/>}
-          <LadderRow label="plus Tips"           value={fmt(cur.tips)}/>
+          <LadderRow label={cur.refundsTip > 0 ? 'plus Tips (net of refunds)' : 'plus Tips'} value={fmt(cur.tips)}/>
           <LadderRow label="Total collected"     value={fmt(cur.total)}       prominence="head" tone="good" border/>
         </div>
         <ExceptionsSnapshot cur={cur} fmt={fmt}/>

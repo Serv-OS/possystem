@@ -41,7 +41,13 @@ function serverTips(checks) {
   const map = {};
   const house = { tipsCash: 0, tipsCard: 0, tipCount: 0, revenue: 0, checkCount: 0 };
   checks.filter(c => c.status !== 'voided').forEach(c => {
-    const tip = c.tip || 0;
+    // v5.6.79 (#108) — NET OF ANY TIP GIVEN BACK. Tips only became refundable in
+    // v5.6.79; before that `c.tip` was always the whole story. Now a refunded tip
+    // must come off here, or the venue hands it back to the customer AND still
+    // pays it out through this report and the tronc pool it feeds. Legacy refund
+    // entries carry no tipAmount and correctly contribute nothing.
+    const tipRefunded = (c.refunds || []).reduce((s, r) => s + (Number(r.tipAmount) || 0), 0);
+    const tip = Math.max(0, (c.tip || 0) - tipRefunded);
     const isCash = (c.method || '').toLowerCase() === 'cash';
     // Unattended source → house bucket, not a server row.
     if (HOUSE_SOURCES.has((c.source || 'pos').toLowerCase())) {

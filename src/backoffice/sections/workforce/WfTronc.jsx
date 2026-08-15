@@ -124,6 +124,14 @@ export default function WfTronc({ ctx, staff = [], roles, sections, settings, we
                 <span style={{ color: 'var(--t4)' }}>
                   · {tipMode === 'pool' ? `card tips ${money(tipInfo.cardTips, 2)}` : tipMode === 'hybrid' ? `pooled share of card tips ${money(tipInfo.pooledCardTips, 2)} (sellers keep ${policy.directPct || 0}%)` : `card tips go direct to sellers`} + service {money(tipInfo.serviceCharge, 2)}{tipInfo.cashTips > 0 ? ` · cash ${money(tipInfo.cashTips, 2)} not pooled` : ''}
                 </span>
+                {/* v5.6.79 (#108) — tips CAN now be refunded, so the pool is net of
+                    them. Shown explicitly: a refund that lands after this week's
+                    run has already been paid out and needs a manual adjustment. */}
+                {(tipInfo.refundedTips > 0 || tipInfo.refundedService > 0) && (
+                  <span style={{ color: 'var(--t4)' }}>
+                    · already net of {money(tipInfo.refundedTips + tipInfo.refundedService, 2)} refunded to customers
+                  </span>
+                )}
               </>) : tipInfo.cardTips > 0 && tipMode === 'direct' ? (
                 <span style={{ color: 'var(--t3)' }}>Card tips ({money(tipInfo.cardTips, 2)}) go direct to sellers under your tipping policy — they appear in Payroll's direct-tips column. Nothing to pool this week.</span>
               ) : (

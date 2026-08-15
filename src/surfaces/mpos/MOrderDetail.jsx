@@ -155,10 +155,16 @@ export default function MOrderDetail({ check, onBack }) {
     setPendingApproval(refund);
   };
 
-  const commitRefund = (refund, manager) => {
-    refundCheck(live.id, { ...refund, manager });
+  // v5.6.79 — AWAIT the refund and let refundCheck report the outcome. This used
+  // to toast "processed" the instant it fired, before any processor had been
+  // asked — and for an Adyen sale none ever was. refundCheck owns the message now
+  // because it is the only thing that knows how each card leg actually went.
+  const commitRefund = async (refund, manager) => {
+    setBusy(true);
+    const res = await refundCheck(live.id, { ...refund, manager });
+    setBusy(false);
+    if (res?.ok === false) { setError(res.message || 'Refund failed'); return; }
     setRefundQtys({}); setReason(''); setView('main');
-    showToast?.(`Refund of ${money(refund.amount)} processed`, 'success');
   };
 
   // ── Render ──────────────────────────────────────────────────────────────

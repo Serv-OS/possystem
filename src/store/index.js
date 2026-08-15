@@ -20,6 +20,12 @@ import { getDeliveryQuote, recordDeliverySurcharge } from '../lib/delivery/quote
 import { dispatchDelivery, sendDeliveryTrackingSMS } from '../lib/delivery/dispatch';
 import { STALE_ORDER_FLOOR_MS } from '../sync/staleness';
 import { giftRecordFrom, giftLegs, reverseGiftCard } from '../lib/giftCommit';
+// v5.6.79 (#107/#108) — refund money maths + the per-leg processor router.
+import {
+  refundBreakdown, cardLegsOf, legRefundedMinor, allocateToLegs,
+  rollUpLegStatus, retryableLegs, r2, toMinor as toMinorAmt,
+} from '../lib/payments/refundMath';
+import { reverseCardLeg } from '../lib/payments/cardReversal';
 import { commitRedemption } from '../lib/commitRedemptions';
 import { waitlistSlice } from './waitlistSlice';
 import { bookingsSlice } from './bookingsSlice';
@@ -5513,41 +5519,114 @@ export const useStore = create((set, get) => ({
     return record;
   },
 
-  refundCheck: (checkId, { items: refundItems, isFullRefund, manager, reason, tenderMethod, amount }) => {
+  // ══ REFUND ═══════════════════════════════════════════════════════════════
+  //
+  // v5.6.79 (#107 + #108) — this used to be BOOKKEEPING ONLY, and it lied twice.
+  //
+  //   1. The amount came from ITEMS ALONE and full-vs-partial was decided against
+  //      `subtotal`, so a "full" refund never returned the tip or the service
+  //      charge. The customer kept paying a gratuity on a meal they did not have.
+  //   2. Nothing was ever reversed on ADYEN: the router was
+  //      `processor === 'ryft' ? ryft : stripe`, so an Adyen check aimed at Stripe
+  //      and landed nowhere — while the screen said "processed".
+  //
+  // It is now ASYNC and returns a verdict. Callers must await it and report what
+  // it says, not what they hoped: `{ ok, amount, cardStatus, legs, message }`.
+  //
+  // WHAT IS DELIBERATELY UNCHANGED: the local ledger mutation still happens first
+  // and immediately. The refund is an operator decision and it is recorded whether
+  // or not the processor plays ball; what changed is that a failed reversal is now
+  // recorded AS failed, surfaced, and left retryable (`retryRefundReversal`)
+  // instead of being swallowed by a fire-and-forget console warning.
+  refundCheck: async (checkId, opts = {}) => {
+    const {
+      items: refundItems = [], isFullRefund, manager, reason, tenderMethod,
+      tipAmount = null, serviceAmount = null, legRefunds = null,
+    } = opts;
+    const chkBefore = get().closedChecks.find(c => c.id === checkId);
+    if (!chkBefore) {
+      console.warn('[refundCheck] no such check', checkId);
+      return { ok: false, amount: 0, cardStatus: 'none', legs: [], message: 'Check not found' };
+    }
+
+    // THE STORE COMPUTES THE MONEY, NOT THE CALLER. `opts.amount` used to decide
+    // it, and the three refund screens each derived it differently (two from
+    // subtotal, MPOS from total). One breakdown, one set of clamps, three callers.
+    const bd = refundBreakdown(chkBefore, {
+      items: refundItems, isFullRefund,
+      tipOverride: tipAmount, serviceOverride: serviceAmount,
+    });
+    const amount = bd.amount;
+    if (!(amount > 0)) {
+      return { ok: false, amount: 0, cardStatus: 'none', legs: [], message: 'Nothing left to refund on this check' };
+    }
+
+    const refundId = `ref-${Date.now()}`;
+    // The tax that came back with these items, pro-rata on the check's own stored
+    // tax. Recorded so VAT reporting CAN net a refund off (today it cannot — a
+    // refund entry carried no tax portion at all, which is why `tax_amount` stayed
+    // overstated after every refund).
+    const taxRefunded = (chkBefore.taxAmount != null && Number(chkBefore.total) > 0)
+      ? r2(Number(chkBefore.taxAmount) * (amount / Number(chkBefore.total)))
+      : null;
+
     let nextRefunds = null;
     let nextStatus = null;
     set(s => ({
       closedChecks: s.closedChecks.map(chk => {
         if (chk.id !== checkId) return chk;
         const refund = {
-          id: `ref-${Date.now()}`,
+          id: refundId,
           timestamp: Date.now(),
-          manager: manager.name,
-          managerId: manager.id,
+          manager: manager?.name || 'Staff',
+          managerId: manager?.id || null,
           reason,
-          isFullRefund,
+          isFullRefund: !!isFullRefund,
           tenderMethod: tenderMethod || 'card',
           items: refundItems,
-          amount: amount || refundItems.reduce((s, ri) => s + ri.price * ri.refundQty, 0),
+          amount,
+          // v5.6.79 — the three-way split. Legacy entries have no tipAmount /
+          // serviceAmount and are read as items-only, which is exactly what they
+          // were, so old checks still total up honestly.
+          tipAmount: bd.tip,
+          serviceAmount: bd.service,
+          taxAmount: taxRefunded,
+          // Filled in below once the processor has actually answered.
+          cardStatus: 'pending',
+          legs: [],
         };
-        const allRefunds = [...chk.refunds, refund];
-        const totalRefunded = allRefunds.reduce((s, r) => s + r.amount, 0);
-        const status = totalRefunded >= chk.subtotal ? 'refunded' : 'partial_refund';
+        const allRefunds = [...(chk.refunds || []), refund];
+        const totalRefunded = allRefunds.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+        // v5.6.79 — against TOTAL, not subtotal. A tip-inclusive refund could
+        // exceed `subtotal` on a partial and prematurely flip the check to
+        // 'refunded', which hard-blocks every later refund.
+        const status = totalRefunded >= (Number(chk.total) || 0) - 0.005 ? 'refunded' : 'partial_refund';
         nextRefunds = allRefunds;
         nextStatus = status;
         return { ...chk, refunds: allRefunds, status };
       }),
     }));
     // TRAINING MODE: the refund shows in-memory but NOTHING external fires — no
-    // closed_checks update, no card reversal (Stripe/Ryft), no gift/loyalty refund.
-    if (isTrainingMode()) return;
+    // closed_checks update, no card reversal, no gift/loyalty refund.
+    if (isTrainingMode()) {
+      return { ok: true, amount, cardStatus: 'none', legs: [], training: true, message: `Training refund of ${money(amount)} recorded` };
+    }
     // Persist to Supabase so other POS devices at the location see this refund
-    // via the realtime UPDATE listener (lib/realtime.js). Fire-and-forget — the
-    // local mutation already happened so UX stays snappy; if the network call
-    // fails it logs a warning and the next refund / boot reconciles.
+    // via the realtime UPDATE listener (lib/realtime.js). Not awaited — the local
+    // mutation already happened so UX stays snappy — but the outcome IS read.
+    //
+    // This intermediate write is deliberate on a money path: it lands the refund
+    // as `cardStatus:'pending'` BEFORE the processor is called, so a till that
+    // dies mid-reversal leaves a visible unresolved refund rather than nothing at
+    // all. The awaited write further down replaces it with the real outcome.
+    //
+    // ⚠️ This used to be `.catch(err => …)`. updateClosedCheckRefunds catches its
+    // own errors and RESOLVES with { ok, error } — it never rejects — so that
+    // handler was DEAD CODE and a failed persist logged absolutely nothing.
     if (nextRefunds && nextStatus) {
-      updateClosedCheckRefunds(checkId, nextRefunds, nextStatus)
-        .catch(err => console.warn('[refundCheck] persist failed', err?.message || err));
+      updateClosedCheckRefunds(checkId, nextRefunds, nextStatus).then(({ ok: pOk, error: pErr }) => {
+        if (!pOk) console.warn('[refundCheck] persist failed:', pErr?.message || pErr);
+      });
     }
     // v5.5.217: Gift card balance reversal — restore the debited amount back
     // to the card. Fire-and-forget (same pattern as updateClosedCheckRefunds):
@@ -5639,89 +5718,200 @@ export const useStore = create((set, get) => ({
         }
       })();
     }
-    // v5.5.301/323: Stripe card refund — return funds to the original card(s).
-    // A check can carry MULTIPLE card PaymentIntents (one per card portion of a
-    // split). Normalise the legacy single id + the paymentIntents[] array into
-    // one list, then refund across all legs. For a single-card check this is a
-    // 1-element list → byte-for-byte the original single-refund behaviour.
-    const cardPIs = (() => {
-      const arr = (Array.isArray(check?.paymentIntents) && check.paymentIntents.length)
-        ? check.paymentIntents
-        : (check?.stripePaymentIntentId
-            ? [{ id: check.stripePaymentIntentId, amountMinor: Math.round((check.total || 0) * 100) }]
-            : []);
-      return arr.filter(p => p && p.id);
-    })();
-    const refundAmountMinor = Math.round((amount || 0) * 100);
-    // Route the card refund to the processor that ORIGINALLY took the payment —
-    // never the location's current setting (it may have changed since). Ryft's id
-    // is a payment-session (ps_); Stripe's is a PaymentIntent (pi_).
-    const refundProcessor = check?.processor === 'ryft' ? 'ryft' : 'stripe';
-    const refundEndpoint = refundProcessor === 'ryft' ? 'ryft-refund' : 'stripe-refund';
-    if (cardPIs.length && refundAmountMinor > 0) {
-      (async () => {
-        const token = await ensureAuthToken();
-        if (!token) { console.warn('[refundCheck] card refund skipped — no auth token'); return; }
-        // Allocate the refund across the card legs in order: each leg gets up to
-        // its captured amount, earlier legs first, until the refund is exhausted.
-        // A full refund tops every card leg out; a partial fills from the front.
-        // Each leg keeps its own idempotency key so a retry after a partial
-        // failure never double-refunds a leg that already went through.
-        let remainMinor = refundAmountMinor;
-        for (const pi of cardPIs) {
-          if (remainMinor <= 0) break;
-          // Single leg: refund the full requested amount and let Stripe enforce
-          // the real captured cap (identical to the pre-v5.5.323 single-card
-          // path — no regression). Multiple legs: cap each at its own captured
-          // amount so one card isn't over-refunded with another card's share.
-          const legCap = (cardPIs.length > 1 && Number.isFinite(pi.amountMinor) && pi.amountMinor > 0)
-            ? pi.amountMinor
-            : remainMinor;
-          const legRefund = Math.min(remainMinor, legCap);
-          if (legRefund <= 0) continue;
-          try {
-            const res = await fetch(
-              `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/${refundEndpoint}`,
-              {
-                method: 'POST',
-                headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-                body: JSON.stringify({
-                  // Ryft refunds by payment-session id; Stripe by PaymentIntent id.
-                  ...(refundProcessor === 'ryft' ? { payment_session_id: pi.id } : { payment_intent_id: pi.id }),
-                  amount_minor: legRefund,
-                  location_id: getActiveLocationSync(),
-                  reason: 'requested_by_customer',
-                  closed_check_id: check.ref || check.id,
-                  idempotency_key: `refund:${check.id || check.ref}:${pi.id}`,  // v5.5.323: per-leg, retry-safe
-                  staff_id: manager?.id || null,
-                }),
-              }
-            );
-            const j = await res.json().catch(() => ({}));
-            if (res.ok) {
-              console.info(`[refundCheck] ${refundProcessor} refund created:`, j.refund_id || j.refund?.id, 'id:', pi.id, 'amount:', j.amount);
-              remainMinor -= legRefund;
-            } else {
-              console.warn(`[refundCheck] ${refundProcessor} refund HTTP error:`, res.status, j.error || '', 'id:', pi.id);
-            }
-          } catch (e) {
-            console.warn(`[refundCheck] ${refundProcessor} refund failed:`, e?.message || e, 'id:', pi.id);
-          }
-        }
-      })();
+    // ── CARD REVERSAL — actually give the money back (v5.6.79, #107) ──────────
+    //
+    // Every card leg, routed by ITS OWN processor. Three things changed here:
+    //
+    //   1. ROUTING. It was `processor === 'ryft' ? ryft : stripe`, so an ADYEN
+    //      check aimed at Stripe and landed nowhere. A leg now carries its own
+    //      processor (inheriting the check's), and an UNKNOWN processor fails
+    //      loudly instead of defaulting into the wrong one.
+    //   2. AWAITED. This was fire-and-forget behind a success toast, so a refusal
+    //      only ever reached the console. The caller now gets the verdict.
+    //   3. CAPPED PER LEG. A leg is never asked for more than it captured (minus
+    //      what earlier refunds already took off it), so one card can't be
+    //      refunded with another card's money — and a full refund of a part-gift
+    //      -paid check no longer asks the card for the gift's share.
+    const legs = cardLegsOf(check);
+    // ⚠️ A CASH PAYOUT MUST NOT ALSO REVERSE THE CARD.
+    //
+    // The refund screen offers "Cash payout" — money handed back from the drawer.
+    // Reversing the card as well would refund the customer TWICE, once in notes
+    // and once to their account. The old code never made this distinction; it got
+    // away with it on Adyen only because the reversal silently did nothing. Now
+    // that reversals actually work on all three processors, the gate is load-
+    // bearing rather than theoretical.
+    const cashPayout = tenderMethod === 'cash';
+    const alreadyByLeg = legRefundedMinor(chkBefore);   // BEFORE this refund's own entry
+    const cardCapMinor = legs.reduce(
+      (s, l) => s + (l.amountMinor == null ? Infinity : Math.max(0, l.amountMinor - (alreadyByLeg[l.id] || 0))),
+      0,
+    );
+    // Only the card's share goes to the card. The rest of a refund (a gift-card
+    // or loyalty-funded portion) is reversed by the paths above, which own it.
+    const wantMinor = toMinorAmt(amount);
+    const cardTargetMinor = Number.isFinite(cardCapMinor) ? Math.min(wantMinor, cardCapMinor) : wantMinor;
+    const { allocations } = cashPayout
+      ? { allocations: [] }
+      : allocateToLegs(legs, cardTargetMinor, legRefunds, alreadyByLeg);
+
+    let legOutcomes = [];
+    if (allocations.length) {
+      const token = await ensureAuthToken();
+      const functionsUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
+      const locationId = getActiveLocationSync();
+      for (const leg of allocations) {
+        // Sequential on purpose: these are money calls against one check, and a
+        // burst of parallel refunds is how you discover a processor's rate limit
+        // in the worst possible place.
+        const verdict = await reverseCardLeg({
+          processor: leg.processor,
+          legId: leg.id,
+          amountMinor: leg.refundMinor,
+          locationId,
+          checkId: check.ref || check.id,
+          refundId,
+          staffId: manager?.id || null,
+          currency: 'GBP',
+          functionsUrl,
+          token,
+        });
+        legOutcomes.push({
+          id: leg.id,
+          processor: leg.processor,
+          amountMinor: leg.refundMinor,
+          brand: leg.brand || null,
+          last4: leg.last4 || null,
+          status: verdict.status,
+          ref: verdict.ref || null,
+          error: verdict.error || null,
+          at: Date.now(),
+        });
+      }
     }
-    // v5.5.311/323: be honest about card refunds. If the customer paid (partly)
-    // by card but we have NO PaymentIntent to refund against (legacy checks that
-    // predate the column, or a simulated/no-reader payment), don't claim it was
-    // processed — tell staff to refund the card manually so money is actually
-    // returned. With ≥1 captured PI the loop above auto-refunded the card legs.
-    // (Splits store their card legs in paymentIntents[], so cardPIs covers them.)
-    const cardInMethod = check?.method?.includes('card');  // single-card / gift+card
-    if (cardInMethod && cardPIs.length === 0) {
-      get().showToast(`Refund of ${money(amount)} recorded — issue the card refund manually (no linked card payment found)`, 'warning');
+
+    const cardStatus = rollUpLegStatus(legOutcomes);
+
+    // ── Write the outcome back onto the refund entry ──────────────────────────
+    // Which leg, how much, the processor's reference, and whether it actually
+    // worked. A failed reversal is recorded AS failed — never as a completed
+    // refund — and stays retryable.
+    let persistRefunds = null;
+    set(s => ({
+      closedChecks: s.closedChecks.map(chk => {
+        if (chk.id !== checkId) return chk;
+        const updated = (chk.refunds || []).map(r =>
+          r.id === refundId ? { ...r, cardStatus, legs: legOutcomes } : r);
+        persistRefunds = updated;
+        return { ...chk, refunds: updated };
+      }),
+    }));
+    if (persistRefunds) {
+      const { ok: persisted, error: persistErr } = await updateClosedCheckRefunds(checkId, persistRefunds, nextStatus);
+      // supabase-js RESOLVES with { error } — destructure and log it. A `.then(ok, err)`
+      // handler here would be DEAD CODE and a failing write would say nothing at all.
+      if (!persisted) console.warn('[refundCheck] outcome persist failed:', persistErr?.message || persistErr);
+    }
+
+    // ── Tell the truth ────────────────────────────────────────────────────────
+    const cardInMethod = String(check?.method || '').includes('card') || String(check?.method || '') === 'split';
+    let ok = true;
+    let message;
+    if (cashPayout) {
+      // Deliberately no card reversal — see the gate above.
+      message = `Refund of ${money(amount)} handed back in cash`;
+    } else if (!legs.length) {
+      // Paid by card but nothing to refund against: legacy checks predating the
+      // column, or a simulated/no-reader payment. Never claim it was processed.
+      ok = !cardInMethod;
+      message = cardInMethod
+        ? `Refund of ${money(amount)} recorded — issue the card refund manually (no linked card payment found)`
+        : `Refund of ${money(amount)} recorded via ${tenderMethod || 'cash'}`;
+    } else if (cardStatus === 'failed') {
+      ok = false;
+      message = `Refund of ${money(amount)} recorded but the card reversal FAILED — no money has been returned. Retry it from the refund history.`;
+    } else if (cardStatus === 'partial') {
+      ok = false;
+      const bad = legOutcomes.filter(l => l.status === 'failed').length;
+      message = `Refund of ${money(amount)} recorded but ${bad} of ${legOutcomes.length} cards were NOT reversed. Retry those from the refund history.`;
+    } else if (cardStatus === 'accepted') {
+      message = `Refund of ${money(amount)} accepted by the card processor — it settles shortly.`;
     } else {
-      get().showToast(`Refund of ${money(amount)} processed via ${tenderMethod}`, 'success');
+      message = `Refund of ${money(amount)} returned to the card`;
     }
+    get().showToast(message, ok ? 'success' : 'error');
+    return { ok, amount, cardStatus, legs: legOutcomes, refundId, message };
+  },
+
+  /**
+   * Retry the card legs of an ALREADY RECORDED refund whose reversal failed.
+   *
+   * A failed reversal must never look like a completed refund, and it must never
+   * force the operator to record a SECOND refund to get the money out — that
+   * would double the bookkeeping for one decision. So the ledger entry stays as
+   * it is and only the failed legs are re-attempted.
+   *
+   * Safe to press twice: the idempotency key is derived from the refund id and
+   * the leg id, so a leg that actually succeeded the first time (and whose answer
+   * we lost) replays its original outcome instead of moving money again.
+   */
+  retryRefundReversal: async (checkId, refundId) => {
+    const check = get().closedChecks.find(c => c.id === checkId);
+    const refund = (check?.refunds || []).find(r => r.id === refundId);
+    if (!check || !refund) return { ok: false, message: 'Refund not found' };
+    if (isTrainingMode()) return { ok: false, message: 'Training mode — nothing to reverse' };
+
+    const todo = retryableLegs(refund);
+    if (!todo.length) return { ok: false, message: 'Nothing to retry on this refund' };
+
+    const token = await ensureAuthToken();
+    const functionsUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
+    const locationId = getActiveLocationSync();
+    const results = new Map();
+    for (const leg of todo) {
+      const verdict = await reverseCardLeg({
+        processor: leg.processor,
+        legId: leg.id,
+        amountMinor: leg.amountMinor,
+        locationId,
+        checkId: check.ref || check.id,
+        refundId,
+        staffId: refund.managerId || null,
+        currency: 'GBP',
+        functionsUrl,
+        token,
+      });
+      results.set(leg.id, verdict);
+    }
+
+    let mergedLegs = [];
+    let persistRefunds = null;
+    set(s => ({
+      closedChecks: s.closedChecks.map(chk => {
+        if (chk.id !== checkId) return chk;
+        const updated = (chk.refunds || []).map(r => {
+          if (r.id !== refundId) return r;
+          mergedLegs = (r.legs || []).map(l => {
+            const v = results.get(l.id);
+            return v ? { ...l, status: v.status, ref: v.ref || l.ref, error: v.error || null, at: Date.now() } : l;
+          });
+          return { ...r, legs: mergedLegs, cardStatus: rollUpLegStatus(mergedLegs) };
+        });
+        persistRefunds = updated;
+        return { ...chk, refunds: updated };
+      }),
+    }));
+    const cardStatus = rollUpLegStatus(mergedLegs);
+    if (persistRefunds) {
+      const { ok: persisted, error: persistErr } = await updateClosedCheckRefunds(checkId, persistRefunds, check.status);
+      if (!persisted) console.warn('[retryRefundReversal] persist failed:', persistErr?.message || persistErr);
+    }
+    const ok = cardStatus === 'succeeded' || cardStatus === 'accepted';
+    const message = ok
+      ? (cardStatus === 'accepted' ? 'Card reversal accepted by the processor' : 'Card reversal completed')
+      : 'Card reversal failed again — no money has moved. Refund this card in the processor dashboard.';
+    get().showToast(message, ok ? 'success' : 'error');
+    return { ok, cardStatus, legs: mergedLegs, message };
   },
 
   // ── Void log ──────────────────────────────

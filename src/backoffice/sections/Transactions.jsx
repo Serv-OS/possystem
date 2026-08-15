@@ -15,6 +15,7 @@ import { sendEmailReceipt } from '../../lib/sendReceipt';
 import { getLocationId } from '../../lib/supabase';
 import { loadLocationBranding } from '../../lib/receiptBranding';
 import { money } from '../../lib/currency';
+import { refundBreakdown, cardLegsOf, legRefundedMinor, toMinor } from '../../lib/payments/refundMath';
 
 // ── Formatting helpers ──────────────────────────────────────────────
 const fmtDate = ts => {
@@ -60,7 +61,7 @@ const sourceLabel = (c) =>
 // MAIN COMPONENT
 // ═════════════════════════════════════════════════════════════════════
 export default function Transactions({ checks: parentChecks = [], fmt: parentFmt }) {
-  const { refundCheck, staff } = useStore();
+  const { refundCheck, retryRefundReversal, staff } = useStore();
   const fmt = parentFmt || (n => `${money((n || 0))}`);
 
   // ── State ──
@@ -76,6 +77,12 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
   const [refundSelections, setRefundSelections] = useState({});
   const [refundReason, setRefundReason] = useState('');
   const [refundConfirm, setRefundConfirm] = useState(false);
+  // v5.6.79 — null = use the pro-rata default; a number is a deliberate override.
+  const [refundTip, setRefundTip] = useState(null);
+  const [refundService, setRefundService] = useState(null);
+  const [legPicks, setLegPicks] = useState(null);
+  const [refundBusy, setRefundBusy] = useState(false);
+  const [retrying, setRetrying] = useState(null);
 
   // Email receipt state
   const [emailCheckId, setEmailCheckId] = useState(null);   // which check's email form is open
@@ -164,6 +171,9 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
     setRefundSelections({});
     setRefundReason('');
     setRefundConfirm(false);
+    setRefundTip(null);
+    setRefundService(null);
+    setLegPicks(null);
   };
 
   const toggleRefundItem = (uid, maxQty) => {
@@ -178,45 +188,80 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
     });
   };
 
-  const refundAmount = useMemo(() => {
-    if (!refundTarget) return 0;
-    if (refundMode === 'full') {
-      const alreadyRefunded = (refundTarget.refunds || []).reduce((s, r) => s + (r.amount || 0), 0);
-      return Math.max(0, (refundTarget.subtotal || 0) - alreadyRefunded);
-    }
+  // The items the operator picked, in the shape refundCheck expects.
+  const refundItems = useMemo(() => {
+    if (!refundTarget) return [];
     const items = refundTarget.items || [];
-    return Object.entries(refundSelections).reduce((s, [uid, qty]) => {
-      const item = items.find(i => i.uid === uid || i.id === uid);
-      return s + (item ? (item.price || 0) * qty : 0);
-    }, 0);
+    if (refundMode === 'full') return items.map(i => ({ ...i, refundQty: i.qty || 1 }));
+    return Object.entries(refundSelections)
+      .filter(([, qty]) => qty > 0)
+      .map(([uid, qty]) => {
+        const item = items.find(i => i.uid === uid || i.id === uid);
+        return item ? { ...item, refundQty: qty } : null;
+      })
+      .filter(Boolean);
   }, [refundTarget, refundMode, refundSelections]);
 
-  const executeRefund = () => {
-    if (!refundTarget || !refundReason.trim()) return;
-    const items = refundTarget.items || [];
-    let refundItems;
-    if (refundMode === 'full') {
-      refundItems = items.map(i => ({ ...i, refundQty: i.qty || 1 }));
-    } else {
-      refundItems = Object.entries(refundSelections)
-        .filter(([, qty]) => qty > 0)
-        .map(([uid, qty]) => {
-          const item = items.find(i => i.uid === uid || i.id === uid);
-          return item ? { ...item, refundQty: qty } : null;
+  // v5.6.79 (#108) — one shared breakdown, so this screen, the POS and MPOS
+  // cannot disagree about what a refund is worth. The old full-refund figure was
+  // `subtotal − alreadyRefunded`, which (a) never returned the tip or the service
+  // charge and (b) clamped to £0 once a tip-inclusive refund had been recorded,
+  // silently offering a nil "full refund" and blocking the remainder.
+  const bd = useMemo(
+    () => (refundTarget
+      ? refundBreakdown(refundTarget, {
+          items: refundItems, isFullRefund: refundMode === 'full',
+          tipOverride: refundTip, serviceOverride: refundService,
         })
-        .filter(Boolean);
-    }
-    if (refundItems.length === 0) return;
+      : null),
+    [refundTarget, refundItems, refundMode, refundTip, refundService],
+  );
+  const refundAmount = bd?.amount || 0;
 
-    refundCheck(refundTarget.id, {
+  const legs = useMemo(() => (refundTarget ? cardLegsOf(refundTarget) : []), [refundTarget]);
+  const legDone = useMemo(() => (refundTarget ? legRefundedMinor(refundTarget) : {}), [refundTarget]);
+  const legRoom = (l) => (l.amountMinor == null ? null : Math.max(0, l.amountMinor - (legDone[l.id] || 0)));
+  const defaultPicks = useMemo(() => {
+    let remain = toMinor(refundAmount); const out = {};
+    for (const l of legs) {
+      if (remain <= 0) break;
+      const room = legRoom(l);
+      const take = room == null ? remain : Math.min(remain, room);
+      if (take <= 0) continue;
+      out[l.id] = take; remain -= take;
+    }
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [legs, refundAmount, legDone]);
+  const picks = legPicks || defaultPicks;
+  const pickedMinor = legs.reduce((s, l) => s + (Number(picks[l.id]) || 0), 0);
+
+  // v5.6.79 — AWAIT the refund. This used to fire and close the modal instantly,
+  // so a reversal that never reached a processor looked exactly like one that did.
+  const executeRefund = async () => {
+    if (!refundTarget || !refundReason.trim() || refundBusy) return;
+    if (refundItems.length === 0 && refundAmount <= 0) return;
+    setRefundBusy(true);
+    const res = await refundCheck(refundTarget.id, {
       items: refundItems,
       isFullRefund: refundMode === 'full',
       manager: { name: staff?.name || 'Back Office', id: staff?.id || 'bo' },
       reason: refundReason.trim(),
-      amount: refundAmount,
+      tenderMethod: 'card',
+      tipAmount: bd?.tip ?? null,
+      serviceAmount: bd?.service ?? null,
+      legRefunds: legs.length > 1 ? picks : null,
     });
+    setRefundBusy(false);
+    // Keep the modal open on a failed reversal so the error is unmissable.
+    if (res?.ok !== false) setRefundTarget(null);
+  };
 
-    setRefundTarget(null);
+  const retryReversal = async (checkId, refundId) => {
+    if (retrying) return;
+    setRetrying(refundId);
+    await retryRefundReversal(checkId, refundId);
+    setRetrying(null);
   };
 
   // ── Styles ──
@@ -437,6 +482,36 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
                                         Items: {r.items.map(ri => `${ri.name} x${ri.refundQty || 1}`).join(', ')}
                                       </div>
                                     )}
+                                    {((r.serviceAmount || 0) > 0 || (r.tipAmount || 0) > 0) && (
+                                      <div style={{ marginTop: 2, fontSize: 11, color: '#7f1d1d' }}>
+                                        {(r.serviceAmount || 0) > 0 ? `Service ${fmt(r.serviceAmount)}` : ''}
+                                        {(r.serviceAmount || 0) > 0 && (r.tipAmount || 0) > 0 ? ' · ' : ''}
+                                        {(r.tipAmount || 0) > 0 ? `Tip ${fmt(r.tipAmount)}` : ''}
+                                      </div>
+                                    )}
+                                    {/* v5.6.79 (#107) — did the card actually get reversed?
+                                        A failed reversal must never read as a completed refund. */}
+                                    {r.cardStatus && (() => {
+                                      const meta = CARD_STATUS_META[r.cardStatus] || CARD_STATUS_META.pending;
+                                      const canRetry = (r.legs || []).some(l => l?.status === 'failed');
+                                      return (
+                                        <div style={{ marginTop: 6, paddingTop: 6, borderTop: '1px dashed #fecaca' }}>
+                                          <div style={{ fontSize: 11, fontWeight: 700, color: meta.color }}>{meta.icon} {meta.label}</div>
+                                          {(r.legs || []).map((l, li) => (
+                                            <div key={li} style={{ fontSize: 11, color: '#7f1d1d', marginTop: 2 }}>
+                                              {l.brand || 'card'}{l.last4 ? ` ····${l.last4}` : ''} {fmt((l.amountMinor || 0) / 100)} · {l.processor} · {l.status}
+                                              {l.ref ? ` · ${l.ref}` : ''}{l.error ? ` · ${l.error}` : ''}
+                                            </div>
+                                          ))}
+                                          {canRetry && (
+                                            <button onClick={() => retryReversal(c.id, r.id)} disabled={retrying === r.id}
+                                              style={{ marginTop: 6, padding: '5px 10px', borderRadius: 8, border: 'none', background: '#dc2626', color: '#fff', fontSize: 11, fontWeight: 700, cursor: retrying === r.id ? 'wait' : 'pointer', fontFamily: 'inherit' }}>
+                                              {retrying === r.id ? 'Retrying…' : '↻ Retry card reversal'}
+                                            </button>
+                                          )}
+                                        </div>
+                                      );
+                                    })()}
                                   </div>
                                 ))}
                               </div>
@@ -642,6 +717,68 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
               />
             </div>
 
+            {/* ── Tip + service charge (v5.6.79, #108) ────────────────────────
+                Never refundable before this: the amount came off the items alone,
+                so the customer kept paying a gratuity on a meal they did not have
+                and the tip stayed in the tronc pool. Pro-rata by default on a
+                part refund; the operator can override either figure. */}
+            {bd && (bd.tipRemaining > 0 || bd.serviceRemaining > 0) && (
+              <div style={{ marginBottom: 16, padding: '12px 14px', borderRadius: 10, background: 'var(--bg3, #f9fafb)', border: '1px solid var(--bdr, #e5e7eb)' }}>
+                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8, color: 'var(--t2)' }}>Tip &amp; service to return</div>
+                {bd.serviceRemaining > 0 && (
+                  <MoneyField label="Service charge" hint={refundMode === 'full' ? 'all of it' : `pro-rata ${fmt(bd.proRataService)}`}
+                    value={bd.service} max={bd.serviceRemaining} disabled={refundMode === 'full'}
+                    onChange={setRefundService} onReset={() => setRefundService(null)} overridden={refundService != null}
+                    inputStyle={inputStyle} fmt={fmt} />
+                )}
+                {bd.tipRemaining > 0 && (
+                  <MoneyField label="Tip" hint={refundMode === 'full' ? 'all of it' : `pro-rata ${fmt(bd.proRataTip)}`}
+                    value={bd.tip} max={bd.tipRemaining} disabled={refundMode === 'full'}
+                    onChange={setRefundTip} onReset={() => setRefundTip(null)} overridden={refundTip != null}
+                    inputStyle={inputStyle} fmt={fmt} />
+                )}
+              </div>
+            )}
+
+            {/* ── Per-card allocation on a split check (v5.6.79, #107) ────────
+                A split check was paid by several cards and the refund UI had no
+                concept of that. Each row is clamped to what THAT card paid, less
+                anything already refunded to it. */}
+            {legs.length > 1 && (
+              <div style={{ marginBottom: 16, padding: '12px 14px', borderRadius: 10, background: 'var(--bg3, #f9fafb)', border: '1px solid var(--bdr, #e5e7eb)' }}>
+                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 8, color: 'var(--t2)' }}>
+                  Paid on {legs.length} cards — how much goes back to each?
+                </div>
+                {legs.map((l, i) => {
+                  const room = legRoom(l);
+                  const val = (Number(picks[l.id]) || 0) / 100;
+                  return (
+                    <div key={l.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '5px 0' }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600 }}>{l.brand || 'Card'}{l.last4 ? ` ····${l.last4}` : ''}{i === 0 ? ' · till' : ''}</div>
+                        <div style={{ fontSize: 11, color: 'var(--t4)' }}>
+                          {l.amountMinor != null ? `paid ${fmt(l.amountMinor / 100)}` : 'amount unknown'} · {l.processor}
+                        </div>
+                      </div>
+                      <input type="number" step="0.01" min="0" max={room != null ? room / 100 : undefined}
+                        value={val === 0 ? '' : val.toFixed(2)}
+                        onChange={e => {
+                          const minor = Math.max(0, Math.round((Number(e.target.value) || 0) * 100));
+                          setLegPicks({ ...picks, [l.id]: room == null ? minor : Math.min(minor, room) });
+                        }}
+                        style={{ ...inputStyle, width: 100, textAlign: 'right' }} />
+                    </div>
+                  );
+                })}
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, fontWeight: 700, marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--bdr, #e5e7eb)' }}>
+                  <span>Allocated to cards</span>
+                  <span style={{ color: pickedMinor === toMinor(refundAmount) ? '#16a34a' : '#d97706' }}>
+                    {fmt(pickedMinor / 100)} of {fmt(refundAmount)}
+                  </span>
+                </div>
+              </div>
+            )}
+
             {/* Refund amount + confirm */}
             <div style={{
               padding: '16px', borderRadius: 10, marginBottom: 16,
@@ -654,6 +791,16 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
                   {fmt(refundAmount)}
                 </span>
               </div>
+              {bd && (bd.tip > 0 || bd.service > 0) && (
+                <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 6 }}>
+                  Items {fmt(bd.itemsAmount)}{bd.service > 0 ? ` · service ${fmt(bd.service)}` : ''}{bd.tip > 0 ? ` · tip ${fmt(bd.tip)}` : ''}
+                </div>
+              )}
+              {legs.length === 0 && (
+                <div style={{ fontSize: 12, color: '#dc2626', marginTop: 8, lineHeight: 1.5 }}>
+                  No card payment is linked to this check — nothing can be reversed automatically. Return the money in the processor dashboard.
+                </div>
+              )}
             </div>
 
             {/* Confirm checkbox + buttons */}
@@ -671,16 +818,16 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
             </label>
 
             <div style={{ display: 'flex', gap: 10 }}>
-              <button onClick={() => setRefundTarget(null)} style={{ ...btnOutline, flex: 1 }}>Cancel</button>
+              <button onClick={() => setRefundTarget(null)} disabled={refundBusy} style={{ ...btnOutline, flex: 1 }}>Cancel</button>
               <button
                 onClick={executeRefund}
-                disabled={!refundConfirm || refundAmount <= 0 || !refundReason.trim() || (refundMode === 'items' && Object.keys(refundSelections).length === 0)}
+                disabled={refundBusy || !refundConfirm || refundAmount <= 0 || !refundReason.trim() || (refundMode === 'items' && Object.keys(refundSelections).length === 0)}
                 style={{
                   ...btnPrimary, flex: 1, background: '#dc2626',
-                  opacity: (!refundConfirm || refundAmount <= 0 || !refundReason.trim()) ? 0.4 : 1,
-                  cursor: (!refundConfirm || refundAmount <= 0 || !refundReason.trim()) ? 'not-allowed' : 'pointer',
+                  opacity: (refundBusy || !refundConfirm || refundAmount <= 0 || !refundReason.trim()) ? 0.4 : 1,
+                  cursor: refundBusy ? 'wait' : (!refundConfirm || refundAmount <= 0 || !refundReason.trim()) ? 'not-allowed' : 'pointer',
                 }}
-              >Process refund</button>
+              >{refundBusy ? 'Reversing on the card…' : 'Process refund'}</button>
             </div>
           </div>
         </div>
@@ -688,3 +835,35 @@ export default function Transactions({ checks: parentChecks = [], fmt: parentFmt
     </div>
   );
 }
+
+// One editable money line for the refund modal (tip / service).
+function MoneyField({ label, hint, value, max, disabled, onChange, onReset, overridden, inputStyle, fmt }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '5px 0' }}>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>{label}</div>
+        <div style={{ fontSize: 11, color: 'var(--t4)' }}>
+          {hint} · max {fmt(max)}
+          {overridden && !disabled && (
+            <button onClick={onReset} style={{ marginLeft: 6, background: 'none', border: 'none', padding: 0, color: 'var(--acc, #E8743C)', cursor: 'pointer', fontSize: 11, fontFamily: 'inherit', textDecoration: 'underline' }}>reset</button>
+          )}
+        </div>
+      </div>
+      <input type="number" step="0.01" min="0" max={max} disabled={disabled}
+        value={Number(value || 0).toFixed(2)}
+        onChange={e => onChange(Math.min(max, Math.max(0, Number(e.target.value) || 0)))}
+        style={{ ...inputStyle, width: 100, textAlign: 'right', opacity: disabled ? 0.55 : 1 }} />
+    </div>
+  );
+}
+
+// How a recorded refund's card reversal actually went. Only 'succeeded' may look
+// like a finished job.
+const CARD_STATUS_META = {
+  succeeded: { label: 'Returned to card', color: '#16a34a', icon: '✓' },
+  accepted:  { label: 'Accepted by processor, settling', color: '#d97706', icon: '⏳' },
+  partial:   { label: 'SOME CARDS NOT REVERSED', color: '#dc2626', icon: '⚠' },
+  failed:    { label: 'CARD REVERSAL FAILED — no money returned', color: '#dc2626', icon: '⚠' },
+  pending:   { label: 'Reversal not confirmed', color: '#d97706', icon: '⏳' },
+  none:      { label: 'No card reversal — handle manually', color: '#6b7280', icon: '·' },
+};

@@ -2334,8 +2334,12 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                 // for and belongs on this check (complete() re-commits it idempotently and
                 // books it). Drop the reversal handle so nothing can hand it back.
                 paxGiftRef.current = null;
+                // v5.6.79 (#107) — the processor comes from the JOB (PaxTerminal
+                // reads terminal_jobs.processor), not the literal 'ryft' that used
+                // to be hardcoded here AND in PaxTerminal. An Adyen reader sale
+                // booked 'ryft' and could never be refunded.
                 complete('card', Math.max(0, (pi.tipMinor ?? 0) / 100), null,
-                  pi.paymentIntentId || null, pi.card || null, 'ryft',
+                  pi.paymentIntentId || null, pi.card || null, pi.processor || paxJob?.processor || 'ryft',
                   Number.isFinite(pi.amountReceived) ? pi.amountReceived : null);
               }}
               // v5.5.903: declined / cancelled / expired — the server has SETTLED the job

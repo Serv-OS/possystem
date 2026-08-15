@@ -70,7 +70,18 @@ export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete
       // corrected tip-recording line in CheckoutModal; amountReceived is the leg
       // that is genuinely refundable (the charge, never the check face value).
       const t = setTimeout(() => onComplete?.({
-        processor: 'ryft',
+        // v5.6.79 (#107) — WAS HARDCODED 'ryft'. A card sale taken on an ADYEN
+        // reader through the till therefore booked processor:'ryft', while
+        // closeApprovedTerminalJob booked 'adyen' for the very same sale when the
+        // reconciler closed it. Refunds route by the check's processor, so every
+        // Adyen sale finished on this screen was unrefundable — aimed at a
+        // processor that had never heard of the transaction.
+        //
+        // The JOB ROW is the authority: terminal_jobs.processor is set server-side
+        // by terminal-job-create from the terminal's own record, and it is the
+        // same field dispatchTerminalJob already reads to decide whether to kick
+        // adyen-terminal-charge. Resolve it, never assume it.
+        processor: job.processor || 'ryft',
         tipMinor: job.tip_minor ?? 0,
         amountReceived: job.charge_minor ?? null,
         paymentIntentId: job.transaction_id || null,

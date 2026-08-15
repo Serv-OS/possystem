@@ -7,6 +7,23 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.79',
+    date: '2026-08-15',
+    changes: [
+      'TIPS AND SERVICE CHARGE CAN NOW BE REFUNDED. Until today a refund only ever gave back the food and drink, so a customer who was refunded a whole meal still paid the tip and the service charge on it. A full refund now returns everything they actually paid.',
+      'On a part refund you get a tip and service line you can see and change. It suggests a fair share of each, based on how much of the bill is going back, and you can type over either figure or set it to zero.',
+      'The "entire check" button now shows what will really be returned, instead of the food-only subtotal.',
+      'REFUNDS NOW ACTUALLY GO BACK TO THE CARD ON ADYEN. Before this, no refund on an Adyen sale reached the card company at all. The screen said the refund had been processed, and nothing had happened. Refunds are now sent to whichever card company took the payment, and the screen waits for its answer.',
+      'A refund that fails now says so, loudly, and stays fixable. It is recorded as failed with the reason, and a "Retry card reversal" button sits next to it in the refund history. A failed refund can never again look like a completed one.',
+      'SPLIT CHECKS: you can choose which card gets what. A bill paid on three cards now shows each card with its type, last four digits and the amount it paid, and you decide how much goes back to each. Nothing can be refunded to a card beyond what that card actually paid.',
+      'Fixed a mislabelling that made Adyen sales unrefundable: a card sale taken on an Adyen reader but finished on the till was recorded as a Ryft payment, so any refund was aimed at the wrong company. The till now reads the real one off the payment itself.',
+      'The tip pool for tronc is now net of refunded tips. Without this, a tip handed back to a customer would still have been shared out to staff, so the venue paid it twice out of its own pocket. The Tronc screen shows how much has been refunded.',
+      'The Tips report and the Sales Summary and Z report ladders now account for refunded tips and service, so net sales, service and tips still add up to what was collected.',
+      'Fixed a crash in the POS check history: a refund recorded without a line-item list (a reconciliation from the card company, or a tip-only refund) took the whole panel down.',
+      'Nothing changes for an ordinary refund of an ordinary card sale with no tip and no service charge. The amount, the card it goes back to and the receipt are exactly as before.',
+    ],
+  },
+  {
     version: '5.6.78',
     date: '2026-08-15',
     changes: [

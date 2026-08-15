@@ -1036,24 +1036,58 @@ export async function loadActualSales(locationId, fromIso, toIso) {
  * Real tip pool from the POS for a period, mirroring the Tips report:
  * card tips (non-cash) + service charge are the troncable pool; cash tips are
  * shown for context. Excludes voided checks. Returns money rounded to 2dp.
+ *
+ * v5.6.79 (#108) — REFUNDED TIPS AND SERVICE ARE NOW NETTED OFF.
+ *
+ * This is the tronc clawback. `wf_tronc_lines` is not fed from checks directly:
+ * `workforce-compute tronc.run` distributes a POOL NUMBER, and that number comes
+ * from here — this function suggests it and WfTronc pre-fills the box with it. So
+ * the pool was the venue's gross tips for the week, refunds and all.
+ *
+ * Which meant that once a tip became refundable (it never was before v5.6.79), a
+ * refunded tip would be handed back to the customer AND still shared out to staff
+ * — the venue paying it twice out of its own pocket. Netting it off here is the
+ * safe, correct fix, and it needs no server-side run: it lands in the operator's
+ * suggested pool before the run is created, rather than trying to unpick payouts
+ * afterwards.
+ *
+ * WHAT THIS DELIBERATELY DOES NOT DO: it cannot claw back a tronc run that has
+ * ALREADY been run and paid. `wf_tronc_runs` is immutable once past 'draft' and
+ * unpicking a paid distribution is a payroll decision, not a POS one. A refund
+ * landing after that week's run shows up in `refundedTips` so the operator can
+ * see it and adjust the next pool by hand.
  */
 export async function loadTipPool(locationId, fromIso, toIso) {
-  const empty = { cardTips: 0, cashTips: 0, serviceCharge: 0, suggestedPool: 0, totalTips: 0 };
+  const empty = { cardTips: 0, cashTips: 0, serviceCharge: 0, suggestedPool: 0, totalTips: 0, refundedTips: 0, refundedService: 0 };
   if (isMock || !supabase || !locationId) return empty;
   const { data, error } = await supabase.from('closed_checks')
-    .select('tip, service, method, closed_at, status')
+    .select('tip, service, method, closed_at, status, refunds')
     .eq('location_id', String(locationId))
     .gte('closed_at', `${fromIso}T00:00:00`).lte('closed_at', `${toIso}T23:59:59`)
     .neq('status', 'voided');
   if (error) { console.warn('[wf] loadTipPool:', error.message); return empty; }
-  let cardTips = 0, cashTips = 0, serviceCharge = 0;
+  let cardTips = 0, cashTips = 0, serviceCharge = 0, refundedTips = 0, refundedService = 0;
   (data || []).forEach(c => {
-    const tip = Number(c.tip) || 0;
-    if ((c.method || '').toLowerCase() === 'cash') cashTips += tip; else cardTips += tip;
-    serviceCharge += Number(c.service) || 0;
+    const isCash = (c.method || '').toLowerCase() === 'cash';
+    // Refunds written before v5.6.79 carry no tipAmount/serviceAmount because no
+    // tip could be refunded then — reading a missing split as zero is exactly
+    // right for them, so historical weeks are unchanged.
+    let rTip = 0, rSvc = 0;
+    for (const r of (Array.isArray(c.refunds) ? c.refunds : [])) {
+      rTip += Number(r?.tipAmount) || 0;
+      rSvc += Number(r?.serviceAmount) || 0;
+    }
+    const tip = Math.max(0, (Number(c.tip) || 0) - rTip);
+    if (isCash) cashTips += tip; else { cardTips += tip; refundedTips += rTip; }
+    serviceCharge += Math.max(0, (Number(c.service) || 0) - rSvc);
+    refundedService += rSvc;
   });
   const r2 = n => Math.round(n * 100) / 100;
-  return { cardTips: r2(cardTips), cashTips: r2(cashTips), serviceCharge: r2(serviceCharge), suggestedPool: r2(cardTips + serviceCharge), totalTips: r2(cardTips + cashTips) };
+  return {
+    cardTips: r2(cardTips), cashTips: r2(cashTips), serviceCharge: r2(serviceCharge),
+    suggestedPool: r2(cardTips + serviceCharge), totalTips: r2(cardTips + cashTips),
+    refundedTips: r2(refundedTips), refundedService: r2(refundedService),
+  };
 }
 
 // ============================================================================
