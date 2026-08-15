@@ -7,6 +7,20 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.76',
+    date: '2026-08-15',
+    changes: [
+      'THE TILL CAN NOW FINISH A TABLE THAT WAS PART-PAID ON THE CARD READER, by any tender including CASH. Three people pay by card on the reader, the fourth walks to the counter: the checkout now asks for the remainder only. Before this it showed the whole bill and would have charged the table twice.',
+      'Everything on the checkout screen follows the remainder — the cash pad and its change, the card amount sent to the reader, the amount sent to a paired card machine, and how much of a gift card can be used. A gift card can no longer be drawn down for money the reader has already taken.',
+      'The bill still shows the full table, with a green "Paid on the card reader −£20.00" line under it and the real "Remaining due" figure in large type, so staff can see both numbers at once.',
+      'One sale, not two. The table is recorded as a single split payment covering the whole occupation: the full itemised bill, the full total, every tip added together, and one card entry per person who paid — the same record a table finished entirely on the reader produces. Reports, VAT and refunds treat the two the same.',
+      'Cash taken this way opens the drawer and is written to the cash ledger as it always was.',
+      'The reader payments are only tidied away once the sale has provably saved. If the save does not land, they stay listed under Unresolved payments where a manager can see them, instead of disappearing.',
+      'Split check is switched off on a table that has already been part-paid on the reader — splitting it again would divide up money that has already been collected. Take the remainder in one payment, or finish the table on the reader.',
+      'Nothing changes for an ordinary sale. Every one of these behaviours only wakes up when the reader has actually taken money against that table.',
+    ],
+  },
+  {
     version: '5.6.75',
     date: '2026-08-15',
     changes: [

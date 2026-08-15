@@ -20,7 +20,7 @@ import { isTrainingMode } from '../lib/trainingMode';
 import PaxTerminal from './PaxTerminal';
 import {
   findPaxTerminal, dispatchTerminalJob, buildCheckKey, toMinor, forgetJob, getPosDeviceId,
-  fetchJobs,
+  fetchJobs, markJobReconciled,
 } from '../lib/payments/terminalJobs';
 // (readerDisplay imports removed — cancel now lets the natural cart-change effect refresh the reader after onBack)
 
@@ -1112,6 +1112,40 @@ function LoyaltyRewardsEntry({ customer, loyaltyData, items = [], total, onAppli
   );
 }
 
+// ─── v5.6.76: retire the reader's split legs once the till's check has landed ──
+//
+// INSERT FIRST, RECONCILE AFTER — the exact ordering store.closeApprovedTerminalJob
+// uses, and for the same reason. Each prior leg is an approved terminal_jobs row
+// carrying real captured money; it books no check of its own (draft.partial === true
+// makes it invisible to the reconciler), so the ONLY things that retire it are this
+// call and a human in Unresolved payments. Mark it reconciled before the check is
+// provably recorded and a failed/queued insert would take that money out of the one
+// place a human could still see it.
+//
+// So: prove the closed_checks row exists server-side, THEN mark. If it never lands
+// (offline, RLS, queued write), the legs stay 'approved' and stay visible. Visible
+// money beats invisible money. markJobReconciled is a CAS approved→reconciled, so
+// running again later — from here or from the reconciler — is harmless.
+async function retireReaderLegs(closedCheckId, legs) {
+  if (!supabase || isMock || isTrainingMode() || !closedCheckId) return;
+  const jobIds = [...new Set((legs || []).map(l => l?.jobId).filter(Boolean))];
+  if (!jobIds.length) return;
+  let landed = false;
+  for (let attempt = 0; attempt < 6 && !landed; attempt++) {
+    if (attempt) await new Promise(r => setTimeout(r, 2000));
+    try {
+      const { data } = await supabase.from('closed_checks')
+        .select('id').eq('id', closedCheckId).maybeSingle();
+      landed = !!data?.id;
+    } catch { /* transient — the loop retries */ }
+  }
+  if (!landed) {
+    console.warn('[checkout] split check not confirmed server-side — reader legs left approved for review:', jobIds);
+    return;
+  }
+  for (const id of jobIds) await markJobReconciled(id).catch(() => {});
+}
+
 // ─── Main checkout modal ──────────────────────────────────────────────────────
 export default function CheckoutModal({ items, subtotal, service, deliveryFee = 0, total, orderType, covers, tableId, tabName, customer, onClose, onComplete }) {
   const compact = useCompact();
@@ -1291,28 +1325,31 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     })();
     return () => { alive = false; };
   }, []);
-  const giftCredit = giftApplied?.applied ? giftApplied.applied / 100 : 0;
-  // Loyalty discount applied to total
-  const loyaltyCredit = loyaltyApplied?.discount_value ? loyaltyApplied.discount_value / 100 : 0;
-  const promoCredit = promoApplied?.amount ? Number(promoApplied.amount) : 0;   // major units, from promo-redeem
-  const grand    = Math.max(0, total + tipAmt - giftCredit - loyaltyCredit - promoCredit);
-
   // ── v5.6.75: money already taken on the card reader for THIS table ─────────
   // active_sessions.paid_minor is the server's record of settled on-reader split
-  // legs. Until today the till knew nothing about them: it showed the FULL bill,
-  // so a party that part-paid on the reader and then walked to the till would be
-  // charged twice and the reader leg would strand with no check to live on.
-  // Read it here and refuse to take money over the top of it.
-  const [readerPaid, setReaderPaid] = useState(0);   // minor units
+  // legs — the sum of their BILL portions (terminal_jobs.due_minor), never their
+  // tips. paid_legs is one entry per settled leg. Until v5.6.75 the till knew
+  // nothing about them: it showed the FULL bill, so a party that part-paid on the
+  // reader and then walked to the till would be charged twice and the reader legs
+  // would strand with no check to live on.
+  //
+  // v5.6.76 (task #106) — the till now TAKES the remainder, by ANY tender including
+  // cash, and books the WHOLE occupation as one 'split' check: the real 4-way case
+  // is three cards on the reader and the fourth paying cash at the counter.
+  const [readerPaid, setReaderPaid] = useState(0);   // minor units, bill portion only
+  // [{ jobId, transactionId, dueMinor, tipMinor, chargeMinor, card, settledAt }]
+  const [readerLegs, setReaderLegs] = useState([]);
   useEffect(() => {
-    if (!tableId || !supabase || isMock) { setReaderPaid(0); return; }
+    if (!tableId || !supabase || isMock) { setReaderPaid(0); setReaderLegs([]); return; }
     let alive = true;
     const read = async () => {
       const loc = getActiveLocationSync();
       if (!loc) return;
       const { data } = await supabase.from('active_sessions')
-        .select('paid_minor').eq('location_id', loc).eq('table_id', tableId).maybeSingle();
-      if (alive) setReaderPaid(Number(data?.paid_minor) || 0);
+        .select('paid_minor, paid_legs').eq('location_id', loc).eq('table_id', tableId).maybeSingle();
+      if (!alive) return;
+      setReaderPaid(Number(data?.paid_minor) || 0);
+      setReaderLegs(Array.isArray(data?.paid_legs) ? data.paid_legs : []);
     };
     read();
     // A leg can settle while the checkout screen is open.
@@ -1320,7 +1357,28 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     return () => { alive = false; clearInterval(t); };
   }, [tableId]);
   const readerPaidMajor = readerPaid / 100;
-  const leftToPay = Math.max(0, total - readerPaidMajor);
+  // Is this a reader-part-paid table at all? EVERY behaviour change below hangs off
+  // this one flag — false (the overwhelming majority of sales at every venue) leaves
+  // the whole checkout byte-identical to v5.6.75.
+  const splitWithReader = readerPaid > 0;
+  // The BILL this till still has to collect. Deliberately `total` itself — not
+  // `Math.max(0, total - 0)` — when nothing was taken on the reader, so every
+  // consumer below is the same number it always was.
+  const billDue = splitWithReader ? Math.max(0, total - readerPaidMajor) : total;
+  const leftToPay = billDue;
+
+  const giftCredit = giftApplied?.applied ? giftApplied.applied / 100 : 0;
+  // Loyalty discount applied to total
+  const loyaltyCredit = loyaltyApplied?.discount_value ? loyaltyApplied.discount_value / 100 : 0;
+  const promoCredit = promoApplied?.amount ? Number(promoApplied.amount) : 0;   // major units, from promo-redeem
+  // v5.6.76: `billDue`, not `total`. THE choke point — the cash pad, the card
+  // charge, the terminal dispatch amount, the gift-card cap and the reader-tip
+  // derivation are all downstream of this one line, so they all collect the
+  // remainder without any of them needing to know why.
+  const grand    = Math.max(0, billDue + tipAmt - giftCredit - loyaltyCredit - promoCredit);
+  // The review screen's "Remaining due" block: shown whenever the big number at
+  // the top is NOT what staff are about to take.
+  const showRemainingDue = !!(giftApplied || loyaltyApplied || promoApplied) || splitWithReader;
 
   // Validate a promo code in real time (no write). On success, hold it; the store redeems it
   // atomically (bound to the order) on payment completion. Called from the unified gift/promo box;
@@ -1446,7 +1504,9 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     // Was there anything left for cash / the card AFTER the gift card? Computed against
     // the tip we were actually handed (the reader's figure), not the `tipAmt` in state —
     // a gift that cleared the bill but left a reader tip to charge is NOT gift-only.
-    const dueAfterGift = Math.max(0, total + tip - ((staged?.applied || 0) / 100) - loyaltyCredit - promoCredit);
+    // v5.6.76: `billDue`, so both the gift-only test AND the change-due overlay below
+    // work off the REMAINDER on a reader-part-paid table. Identical to `total` otherwise.
+    const dueAfterGift = Math.max(0, billDue + tip - ((staged?.applied || 0) / 100) - loyaltyCredit - promoCredit);
     const giftOnly = !!staged && dueAfterGift <= 0.005;
 
     // ── GIFT CARD DEBITS HERE, at commit — not when staff tapped Apply ──────────
@@ -1477,12 +1537,35 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
       giftRecord = record;
     }
 
+    // ── v5.6.76: this table was PART-PAID on the card reader ───────────────────
+    // The till took the REMAINDER; the reader legs took the rest. One occupation,
+    // one closed check, exactly as a reader-FINISHED split books it (see
+    // store.closeApprovedTerminalJob priorLegs/legIntents) — so reports, refunds
+    // and tax treat a till-finished and a reader-finished split identically.
+    //
+    // Every leg's charge_minor is due + tip, and paid_minor is the sum of the DUES
+    // only, so the booked figures come apart cleanly:
+    //   total = (bill remainder + till tip) + every leg's charge  = whole bill + every tip
+    //   tip   = till tip + every leg's tip
+    const legs = splitWithReader
+      ? (readerLegs || []).filter(l => l && Number(l.chargeMinor) > 0) : [];
+    const legChargeMinor = legs.reduce((s, l) => s + Number(l.chargeMinor), 0);
+    const legTipMinor    = legs.reduce((s, l) => s + (Number(l.tipMinor) || 0), 0);
+    // Booked GROSS, like the un-split path: gift/loyalty/promo credit rides on the
+    // record in its own field, it is never netted off the check total.
+    const bookedGrand = splitWithReader
+      ? +(billDue + tip + legChargeMinor / 100).toFixed(2) : total + tip;
+    const bookedTip   = splitWithReader ? +(tip + legTipMinor / 100).toFixed(2) : tip;
+
     const hasGift = !!staged;
     const hasLoyalty = !!loyaltyApplied;
-    let finalMethod = method;
+    // 'split' is the base method the moment reader legs are on this check — the
+    // cash/card tender this till just took is only one of its legs.
+    let finalMethod = splitWithReader ? 'split' : method;
     // Gift + something else only when the gift genuinely left a balance to take.
-    if (hasGift && !giftOnly) finalMethod = `gift_card+${method}`;
-    else if (hasGift) finalMethod = 'gift_card';
+    // (`finalMethod` here === `method` whenever splitWithReader is false.)
+    if (hasGift && !giftOnly) finalMethod = `gift_card+${finalMethod}`;
+    else if (hasGift) finalMethod = splitWithReader ? 'gift_card+split' : 'gift_card';
     if (hasLoyalty) finalMethod = `loyalty+${finalMethod}`;
     if (promoApplied) finalMethod = `promo+${finalMethod}`;
     // v5.5.943: cash change goes to the global tap-to-dismiss overlay. `tendered` is
@@ -1493,10 +1576,24 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         Math.max(0, Math.round(tendered * 100) - Math.round(dueAfterGift * 100)) / 100
       );
     }
+    // v5.6.76: store.recordClosedCheck fires the drawer on method === 'cash' only, and
+    // this check is booked as 'split'. The cash is real and belongs in the drawer and in
+    // cash_movements, so pop it here — for the till's own leg amount, not the whole
+    // occupation (the reader legs went to a card). Gated on a cash tender.
+    if (splitWithReader && tendered != null) {
+      try {
+        useStore.getState().openCashDrawer?.({
+          type: 'cash_sale',
+          amount: Math.max(0, Math.round(dueAfterGift * 100)) / 100,
+          reason: `Cash sale · split · ${tableId || ''}`.trim(),
+          force: true,
+        })?.catch?.(() => {});
+      } catch { /* a drawer that will not open must never lose the sale */ }
+    }
     onComplete({
       method: finalMethod,
-      tip,
-      grand: total+tip,
+      tip: bookedTip,
+      grand: bookedGrand,
       tendered,
       printReceipt,
       // v5.5.902: the store adopts this as the closed_check id, so it matches the id the
@@ -1509,14 +1606,43 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
       // v5.5.808: when the terminal reported what it actually CAPTURED, stamp it
       // on the refundable card leg — the record must match the money taken (the
       // fallback derives the leg amount from the requested grand instead).
-      ...(stripePaymentIntentId && Number.isFinite(capturedMinor)
-        ? { paymentIntents: [{ id: stripePaymentIntentId, amountMinor: capturedMinor }] }
-        : {}),
+      //
+      // v5.6.76 — reader split: THIS TILL'S LEG GOES FIRST. attachCardToIntents
+      // stamps paymentInfo.cardReceipt onto intents[0], and that receipt is this
+      // till's card, so promoting a reader leg into slot 0 would label it with the
+      // wrong card and send a later refund at the wrong transaction. The till leg
+      // keeps its slot even with a null id (a cash leg has none) — dropping it is
+      // exactly what shifted position 0 in the bug v5.6.70 fixed, and derivePayment
+      // Intents keeps an amount-only leg for that reason. Reader legs with no
+      // transactionId ARE dropped: there is nothing to refund by.
+      ...(splitWithReader
+        ? { paymentIntents: [
+            { id: stripePaymentIntentId || null,
+              amountMinor: Number.isFinite(capturedMinor) ? capturedMinor : Math.round((billDue + tip) * 100) },
+            ...legs.filter(l => l.transactionId).map(l => ({
+              id: l.transactionId, amountMinor: Number(l.chargeMinor), card: l.card || null,
+            })),
+          ] }
+        : (stripePaymentIntentId && Number.isFinite(capturedMinor)
+            ? { paymentIntents: [{ id: stripePaymentIntentId, amountMinor: capturedMinor }] }
+            : {})),
       // NOTE: piResult/processor are CardTerminal state — NOT in scope here. The processor rides
       // in as a parameter from the card call site (the pi the reader flow hands back).
-      processor: paidProcessor || 'stripe',
+      //
+      // v5.6.76 — a CASH (or gift-only) till leg has no processor of its own, and the
+      // default 'stripe' would mislabel a check whose only card money came off the
+      // reader. Reader split legs can ONLY be created by terminal_start_table_payment_for,
+      // which refuses a terminal with no adyen_terminal_id, so 'adyen' here is proven by
+      // the legs' existence, not guessed — and it is what closeApprovedTerminalJob writes
+      // when the reader finishes the same table itself.
+      processor: paidProcessor || (splitWithReader ? 'adyen' : 'stripe'),
       cardReceipt,   // card-scheme receipt block (brand/last4/auth code/AID/CVM) — printed at the receipt bottom
     });
+    // v5.6.76 — the reader's legs are now booked on the check above, so retire them.
+    // Deliberately NOT awaited: the modal unmounts on onComplete and the operator must
+    // not wait on housekeeping. retireReaderLegs proves the row landed before it marks
+    // anything, and leaves the legs visible in Unresolved payments if it never does.
+    if (legs.length) retireReaderLegs(checkId, legs);
   };
 
   // v5.5.172: tipping is collected ON THE READER for card payments — Stripe
@@ -1532,7 +1658,10 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   const askCustomerForTip = () => {
     const nonce = ++tipNonceRef.current;
     setAwaitingTip(true);
-    publishTipRequest({ total, cfg: tipCfg || {}, nonce });
+    // v5.6.76: the tip basis is what THIS customer is paying (`billDue` === `total`
+    // unless the reader already took part of the bill) — offering 10% of the whole
+    // table to the person settling the last quarter of it is not the ask.
+    publishTipRequest({ total: billDue, cfg: tipCfg || {}, nonce });
     // Don't strand the till if the customer wanders off or the screen is asleep.
     setTimeout(() => {
       setAwaitingTip(prev => {
@@ -1545,9 +1674,11 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   // v5.5.837 (PaxPay mode 3): hand the whole payment to the PAX terminal.
   //
   // THE THREE AMOUNTS (spec § "The three amounts"):
-  //   tip basis = `total`  — the BILL. The tip is for the SERVICE, not for the
-  //               leftover balance. Using `grand` here would show "10% = 50p" on a
-  //               £50 meal that was mostly paid by gift card, and rob the staff.
+  //   tip basis = `billDue` — the BILL (v5.6.76: minus anything the reader already
+  //               took, which is `total` itself on a table with no reader legs). The
+  //               tip is for the SERVICE, not for the leftover balance. Using `grand`
+  //               here would show "10% = 50p" on a £50 meal that was mostly paid by
+  //               gift card, and rob the staff.
   //   due       = `grand`  — bill minus gift / loyalty / promo credit. What the
   //               card must actually take. Charging the basis would take money the
   //               gift card already paid — the customer pays twice, then charges back.
@@ -1605,7 +1736,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         checkKey,
         targetTerminalId: paxTarget.id,
         posDeviceId: getPosDeviceId(),
-        tipBasisMinor: toMinor(total),
+        tipBasisMinor: toMinor(billDue),
         dueMinor,
         currency: getActiveCurrencyCode?.() || 'GBP',
         // v5.5.841 — NO tipConfig IS SENT. The bands are the TERMINAL'S, resolved
@@ -1650,6 +1781,21 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
           // on a check it closed without this modal — it booked giftCard:null before.
           giftCard: paxGiftRecord,
           source: 'pos_send_to_terminal',
+          // ── v5.6.76: this job is the FINAL leg of a reader split ────────────
+          // The modal normally books the check itself when the terminal approves.
+          // If it does not get the chance (tab closed, till rebooted, network
+          // died mid-approval) TerminalJobReconciler closes the job instead —
+          // and with no priorLegs in the draft it would book ONLY this remainder
+          // as a plain 'card' sale, leaving the reader's legs approved, unbooked
+          // and invisible in the day's takings. These are the same two draft keys
+          // the reader's own final leg writes (migration 20260815b) and the same
+          // two store.closeApprovedTerminalJob already reads, so that path then
+          // books the whole occupation, 'split', one intent per card, and retires
+          // the legs — identical to what this modal would have written.
+          // `partial` is deliberately absent: the till's leg IS the final one.
+          ...(splitWithReader
+            ? { paidBeforeMinor: readerPaid, priorLegs: readerLegs || [] }
+            : {}),
         },
       });
       setPaxJob(job);
@@ -1737,20 +1883,19 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         boxShadow:'var(--sh3)', overflow:'hidden',
       }}>
 
-        {/* ── v5.6.75: money already taken on the card reader for this table ──
-            Without this the till showed the FULL bill and would happily take it
-            again, double-charging the party and stranding the reader leg (it has
-            no closed check of its own until the final leg books them together).
-            Taking the remainder HERE is the next slice; until then this makes the
-            money visible and sends staff back to the reader that holds it. */}
-        {readerPaid > 0 && (
+        {/* ── v5.6.75/76: money already taken on the card reader for this table ──
+            Before v5.6.75 the till showed the FULL bill and would happily take it
+            again, double-charging the party. v5.6.76 takes the REMAINDER instead,
+            by any tender, and books one check for the whole table — so this banner
+            now tells staff what the till is about to collect, not to walk away. */}
+        {splitWithReader && (
           <div style={{ padding:compact?'10px 14px':'12px 20px', background:'var(--wrn-d,#fff3cd)', borderBottom:'1px solid var(--wrn-b,#ffc107)' }}>
             <div style={{ fontSize:compact?12:13, fontWeight:800, color:'var(--wrn,#856404)' }}>
-              {money(readerPaidMajor)} already paid on the card reader
+              {money(readerPaidMajor)} already paid on the card reader — taking the remaining {money(leftToPay)}
             </div>
             <div style={{ fontSize:compact?11:12, color:'var(--wrn,#856404)', marginTop:2 }}>
-              {money(leftToPay)} left on this table. Take the rest on the reader — paying the full
-              {' '}{money(total)} here would charge them twice.
+              The full {money(total)} bill is shown below. Card, cash and gift card all take the
+              remainder only, and the receipt covers the whole table.
             </div>
           </div>
         )}
@@ -1942,9 +2087,18 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                 )}
                 <div style={{ height:1, background:'var(--bdr)', margin:'8px 0' }}/>
                 <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
-                  <span style={{ fontSize:15, fontWeight:600, color:'var(--t2)' }}>{(giftApplied || loyaltyApplied || promoApplied) ? 'Subtotal' : 'Total due'}</span>
-                  <span style={{ fontSize:(giftApplied || loyaltyApplied || promoApplied)?(compact?16:18):(compact?20:26), fontWeight:800, color:(giftApplied || loyaltyApplied || promoApplied)?'var(--t2)':'var(--acc)', fontFamily:'var(--font-mono)', letterSpacing:'-.02em' }}>{String.fromCodePoint(0x00A3)}{total.toFixed(2)}</span>
+                  <span style={{ fontSize:15, fontWeight:600, color:'var(--t2)' }}>{showRemainingDue ? 'Subtotal' : 'Total due'}</span>
+                  <span style={{ fontSize:showRemainingDue?(compact?16:18):(compact?20:26), fontWeight:800, color:showRemainingDue?'var(--t2)':'var(--acc)', fontFamily:'var(--font-mono)', letterSpacing:'-.02em' }}>{String.fromCodePoint(0x00A3)}{total.toFixed(2)}</span>
                 </div>
+                {/* v5.6.76: the reader's legs, deducted in the same idiom as a gift
+                    card or loyalty reward — so the big "Remaining due" figure below is
+                    provably the number the cash pad and the reader will ask for. */}
+                {splitWithReader && (
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop:4 }}>
+                    <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>{String.fromCodePoint(0x1F4B3)} Paid on the card reader</span>
+                    <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{String.fromCodePoint(0x2212)}{String.fromCodePoint(0x00A3)}{readerPaidMajor.toFixed(2)}</span>
+                  </div>
+                )}
                 {loyaltyApplied && (
                   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop:4 }}>
                     <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>{'⭐'} {loyaltyApplied.reward_name} ({loyaltyApplied.points_deducted} pts)</span>
@@ -1965,7 +2119,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                     <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{promoCredit > 0 ? `${String.fromCodePoint(0x2212)}${String.fromCodePoint(0x00A3)}${promoCredit.toFixed(2)}` : '✓'}</span>
                   </div>
                 )}
-                {(giftApplied || loyaltyApplied || promoApplied) && (
+                {showRemainingDue && (
                   <>
                     <div style={{ height:1, background:'var(--bdr)', margin:'6px 0' }}/>
                     <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
@@ -2076,22 +2230,32 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                     leave it staged and silently ignored. Staff apply the card to a portion
                     instead. Before this the staged card was ALREADY debited, so the same
                     sequence charged the customer their gift balance AND the full bill. */}
-                <button onClick={()=>{
+                {/* v5.6.76: SplitModal divides the GROSS `total` into portions that add
+                    up to the whole bill, and it knows nothing about the reader's legs —
+                    splitting a part-paid table would re-charge money already taken. The
+                    till takes the remainder in one tender instead (any method), or the
+                    party finishes on the reader. Disabled rather than silently wrong. */}
+                <button disabled={splitWithReader} onClick={()=>{
                   if (giftRef.current) {
                     applyGift(null);
                     try { useStore.getState().showToast?.('Gift card removed — apply it to a split portion instead.', 'info'); } catch {}
                   }
                   setShowSplit(true);
-                }} style={{
-                  flex:1, minWidth:0, padding:'12px 8px', borderRadius:13, cursor:'pointer', fontFamily:'inherit',
+                }}
+                title={splitWithReader ? 'This table was part-paid on the card reader — take the remainder here in one payment, or finish it on the reader.' : undefined}
+                style={{
+                  flex:1, minWidth:0, padding:'12px 8px', borderRadius:13, fontFamily:'inherit',
+                  cursor:splitWithReader?'not-allowed':'pointer', opacity:splitWithReader?0.45:1,
                   background:'var(--bg3)', border:'1.5px solid var(--bdr2)',
                   display:'flex', alignItems:'center', justifyContent:'center', gap:8,
                   color:'var(--t3)', fontSize:13, fontWeight:600, transition:'all .14s',
                 }}
-                onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--acc-b)';e.currentTarget.style.color='var(--acc)';}}
-                onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--bdr2)';e.currentTarget.style.color='var(--t3)';}}>
+                onMouseEnter={e=>{ if (splitWithReader) return; e.currentTarget.style.borderColor='var(--acc-b)';e.currentTarget.style.color='var(--acc)';}}
+                onMouseLeave={e=>{ if (splitWithReader) return; e.currentTarget.style.borderColor='var(--bdr2)';e.currentTarget.style.color='var(--t3)';}}>
                   <span>⚖</span>
-                  Split check · {covers} {covers===1?'guest':'guests'}
+                  {splitWithReader
+                    ? 'Split unavailable'
+                    : <>Split check · {covers} {covers===1?'guest':'guests'}</>}
                 </button>
               </div>
               </div>
@@ -2228,13 +2392,15 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                 // let a card be over-drawn by exactly those credits (same over-draw the
                 // online half of v5.5.901 fixed). Any card already staged is EXCLUDED:
                 // entering another replaces it, so the whole bill is available again.
-                totalMinor={Math.round(Math.max(0, total + tipAmt - loyaltyCredit - promoCredit) * 100)}
+                // v5.6.76: `billDue` — on a reader-part-paid table the card must only be
+                // able to cover the REMAINDER, or it debits money the reader already took.
+                totalMinor={Math.round(Math.max(0, billDue + tipAmt - loyaltyCredit - promoCredit) * 100)}
                 giftAlreadyApplied={giftApplied}
                 onRemove={() => { applyGift(null); setGiftError(''); }}
                 onApplied={(staged) => {
                   applyGift(staged);
                   setGiftError('');
-                  const remainingDue = Math.round(Math.max(0, total + tipAmt - loyaltyCredit - promoCredit) * 100) - staged.applied;
+                  const remainingDue = Math.round(Math.max(0, billDue + tipAmt - loyaltyCredit - promoCredit) * 100) - staged.applied;
                   if (remainingDue <= 0) {
                     // Gift card covers the lot — close now. The debit fires inside complete().
                     complete('gift_card', tipAmt);
