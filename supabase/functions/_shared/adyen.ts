@@ -186,6 +186,34 @@ export function buildMenuInputRequest(o: { poiid: string; saleId: string; servic
   };
 }
 
+// NON-BLOCKING text on the reader (nexo Display). Unlike an InputRequest — which
+// renders a widget and holds the /sync call open until someone answers or
+// MaxInputTime expires — this paints and returns, so it can be fired and
+// forgotten while the responder is still gathering the bill. That preamble is
+// several serial network legs, during which the reader showed its HOME screen
+// and staff had no idea anything was happening (Peter, 15 Aug: "the reader looks
+// like nothing is happening which will cause confusion").
+// Envelope mirrors the proven buildMenuInputRequest DisplayOutput exactly, minus
+// the MenuEntry array and InputData. The shape is NOT hardware-verified on this
+// fleet — every call site must ignore failures, so a rejection costs nothing but
+// the dead air we already have.
+export function buildDisplayRequest(o: { poiid: string; saleId: string; serviceId: string; text: string }): any {
+  return {
+    SaleToPOIRequest: {
+      MessageHeader: {
+        ProtocolVersion: '3.0', MessageClass: 'Device', MessageCategory: 'Display', MessageType: 'Request',
+        ServiceID: o.serviceId, SaleID: o.saleId, POIID: o.poiid,
+      },
+      DisplayRequest: {
+        DisplayOutput: {
+          Device: 'CustomerDisplay', InfoQualify: 'Status',
+          OutputContent: { OutputFormat: 'Text', OutputText: [{ Text: o.text }] },
+        },
+      },
+    },
+  };
+}
+
 export function parseMenuInputResponse(data: any): { selected: number | null; result: string } {
   // Docs + hardware, 15 Aug: MenuEntryNumber is a SELECTION-MASK array — the
   // chosen option's position holds 1, every other item 0 ("if the third option

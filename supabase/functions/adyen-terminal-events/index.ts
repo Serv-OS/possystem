@@ -16,7 +16,7 @@
 // Deployed with verify_jwt=false (Adyen calls this).
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { parsePaymentResponse, buildMenuInputRequest, parseMenuInputResponse, buildAmountInputRequest, parseAmountInputResponse, newServiceId, adyenFetch, terminalEndpoint } from '../_shared/adyen.ts';
+import { parsePaymentResponse, buildMenuInputRequest, parseMenuInputResponse, buildAmountInputRequest, parseAmountInputResponse, buildDisplayRequest, newServiceId, adyenFetch, terminalEndpoint } from '../_shared/adyen.ts';
 
 const opsAdmin = createClient(
   Deno.env.get('SUPABASE_URL') ?? '',
@@ -191,10 +191,16 @@ Deno.serve(async (req) => {
           // active_sessions.paid_minor is server-maintained (terminal_sync_table_paid
           // runs after every settled leg), so "what is left" is ONE column read —
           // no windowed job scan to drift out of step with the RPC's own maths.
-          const [{ data: sess }, { data: floor }] = await Promise.all([
+          // v5.6.74 — the merchant lookup depends ONLY on term.location_id, exactly
+          // like the two below, but used to run AFTER them: three serial legs where
+          // one round of parallel would do. Two of these cross projects (ops →
+          // platform), so each was paying its own DNS/TLS/PostgREST warm-up in
+          // series on a cold isolate. Collapsed into one wait.
+          const [{ data: sess }, { data: floor }, { data: maaRow }] = await Promise.all([
             opsAdmin.from('active_sessions')
               .select('table_id, total_minor, paid_minor, session').eq('location_id', term.location_id),
             opsAdmin.from('floor_tables').select('id, label').eq('location_id', term.location_id),
+            platformAdmin.from('locations').select('id').eq('ops_location_id', term.location_id).maybeSingle(),
           ]);
           const sessBy = new Map((sess || []).map((r) => [String(r.table_id), r]));
           const remainingFor = (tableId: string): number => {
@@ -212,8 +218,6 @@ Deno.serve(async (req) => {
           // Merchant + sync-Input plumbing, needed on EVERY path now (the
           // pay-all/split menu and amount entry ride the same pipe as the
           // table list).
-          const { data: maaRow } = await platformAdmin.from('locations')
-            .select('id').eq('ops_location_id', term.location_id).maybeSingle();
           const { data: maa } = await platformAdmin.from('merchant_adyen_accounts')
             .select('merchant_account, region').eq('location_id', maaRow?.id ?? term.location_id).maybeSingle();
           if (!maa?.merchant_account) { console.log('[pay-at-table] no merchant account'); return; }
@@ -225,6 +229,17 @@ Deno.serve(async (req) => {
           // silently, so the screen simply fell back to the home menu and staff
           // had no idea why ("choose the table, fires back to the home screen").
           // A one-entry menu is the shape already proven on this hardware.
+          // Fire-and-forget status text — paints immediately and does NOT wait for
+          // a tap, so it can cover the preamble instead of leaving the home screen
+          // up. Shape is unproven on this fleet, hence never awaited: worst case is
+          // the same dead air we already had.
+          const status = (text: string) => {
+            adyenFetch('POST', terminalEndpoint(maa.merchant_account, poiid, 'sync', maa.region === 'US' ? 'us' : 'eu'),
+              buildDisplayRequest({ poiid, saleId, serviceId: newServiceId(), text }), { timeoutMs: 8_000 })
+              .then((r) => console.log(`[pay-at-table] status "${text}" -> ${r.status}`),
+                    (e) => console.log(`[pay-at-table] status display unsupported: ${(e as Error)?.message}`));
+          };
+
           const say = async (text: string) => {
             try {
               await askInput(buildMenuInputRequest({
@@ -239,6 +254,8 @@ Deno.serve(async (req) => {
           // (Peter, 15 Aug: "load all the tables so I can see what's open then
           // choose"). Staff pick from the list; billed table resolved from the
           // 1-based selection.
+          status('Loading tables…');
+
           if (candidates.length !== 1) {
             const openTables = (floor || [])
               .filter((f) => open.has(String(f.id)))
@@ -258,7 +275,7 @@ Deno.serve(async (req) => {
             // Durable diagnostics — console logs proved unreadable through the
             // analytics API, so the reader's exact menu answer is recorded where
             // we can always query it.
-            await platformAdmin.from('adyen_webhook_events').insert({
+            void platformAdmin.from('adyen_webhook_events').insert({
               event_key: `menu:${poiid}:${Date.now()}`,
               raw: { httpStatus: mres.status, parsed: pick, entries: openTables.map((f) => f.label), response: mres.data ?? null },
             }).then(() => {}, () => {});
@@ -270,6 +287,9 @@ Deno.serve(async (req) => {
           // Always asked — it doubles as bill confirmation on the typed-number
           // path (title shows the table + what's owed before anything charges).
           const table = candidates[0];
+          // The stuck-job check + RPC + charge dispatch below are several more
+          // seconds of server work with nothing on screen.
+          status(`${table.label} — checking the bill…`);
 
           // ── Unwedge a stuck job BEFORE refusing (v5.6.70) ──────────────────
           // A job left 'unknown' (dispatched, no result — live 15 Aug on T4)
@@ -300,7 +320,7 @@ Deno.serve(async (req) => {
               console.log(`[pay-at-table] recovery on stuck ${stuck.status} job ${stuck.id}: ${rr.slice(0, 200)}`);
               const { data: after } = await opsAdmin.from('terminal_jobs')
                 .select('status').eq('id', stuck.id).maybeSingle();
-              await platformAdmin.from('adyen_webhook_events').insert({
+              void platformAdmin.from('adyen_webhook_events').insert({
                 event_key: `recover:${poiid}:${Date.now()}`,
                 raw: { jobId: stuck.id, was: stuck.status, now: after?.status ?? null, result: rr.slice(0, 500) },
               }).then(() => {}, () => {});
@@ -334,7 +354,7 @@ Deno.serve(async (req) => {
             maxInputTime: 45,
           }));
           const payPick = parseMenuInputResponse(pres.data);
-          await platformAdmin.from('adyen_webhook_events').insert({
+          void platformAdmin.from('adyen_webhook_events').insert({
             event_key: `paymenu:${poiid}:${Date.now()}`,
             raw: { httpStatus: pres.status, parsed: payPick, remaining, response: pres.data ?? null },
           }).then(() => {}, () => {});
@@ -345,7 +365,7 @@ Deno.serve(async (req) => {
               title: 'Split — enter amount to pay',
             }));
             const amt = parseAmountInputResponse(ares.data);
-            await platformAdmin.from('adyen_webhook_events').insert({
+            void platformAdmin.from('adyen_webhook_events').insert({
               event_key: `amount:${poiid}:${Date.now()}`,
               raw: { httpStatus: ares.status, parsed: amt, remaining, response: ares.data ?? null },
             }).then(() => {}, () => {});
