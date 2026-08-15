@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.63',
+    date: '2026-08-15',
+    changes: [
+      '"Card taken — sale not recorded" fixed: the closed-checks table\'s source allow-list did not include Pay at Table on Adyen, so the database refused every booking while the closer retried forever (the exact July constraint lesson, repeated). Widened — the till\'s next retry books the outstanding sales and clears the tables, no refresh needed.',
+    ],
+  },
+  {
     version: '5.6.62',
     date: '2026-08-15',
     changes: [
