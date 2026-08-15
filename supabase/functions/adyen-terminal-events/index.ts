@@ -221,6 +221,20 @@ Deno.serve(async (req) => {
           const askInput = (msg: unknown) =>
             adyenFetch('POST', terminalEndpoint(maa.merchant_account, poiid, 'sync', maa.region === 'US' ? 'us' : 'eu'), msg, { timeoutMs: 90_000 });
 
+          // v5.6.70 — SAY IT ON THE READER. Every refusal below used to `return`
+          // silently, so the screen simply fell back to the home menu and staff
+          // had no idea why ("choose the table, fires back to the home screen").
+          // A one-entry menu is the shape already proven on this hardware.
+          const say = async (text: string) => {
+            try {
+              await askInput(buildMenuInputRequest({
+                poiid, saleId, serviceId: newServiceId(),
+                title: text, entries: ['OK'], maxInputTime: 20,
+              }));
+            } catch { /* telling staff is best-effort; never mask the real reason */ }
+            console.log(`[pay-at-table] told reader: ${text}`);
+          };
+
           // No/ambiguous match → show the OPEN TABLES as a menu ON THE READER
           // (Peter, 15 Aug: "load all the tables so I can see what's open then
           // choose"). Staff pick from the list; billed table resolved from the
@@ -230,7 +244,7 @@ Deno.serve(async (req) => {
               .filter((f) => open.has(String(f.id)))
               .sort((a, b) => String(a.label).localeCompare(String(b.label), undefined, { numeric: true }))
               .slice(0, 20);
-            if (!openTables.length) { console.log('[pay-at-table] no open tables to list'); return; }
+            if (!openTables.length) { await say('No open tables to pay right now.'); return; }
             const menu = buildMenuInputRequest({
               poiid,
               saleId,
@@ -256,8 +270,51 @@ Deno.serve(async (req) => {
           // Always asked — it doubles as bill confirmation on the typed-number
           // path (title shows the table + what's owed before anything charges).
           const table = candidates[0];
+
+          // ── Unwedge a stuck job BEFORE refusing (v5.6.70) ──────────────────
+          // A job left 'unknown' (dispatched, no result — live 15 Aug on T4)
+          // sits in a status the mutex treats as in-flight, so EVERY later
+          // wake-up on that table was refused and the reader bounced home with
+          // no explanation. The charge fn's 'result' action asks the terminal
+          // what actually happened: NotFound proves nothing was charged and
+          // reverts the job so it can be retried; a real outcome settles it.
+          const sess0 = sessBy.get(String(table.id));
+          const ckey = `${term.location_id}:${table.id}:${(sess0?.session as Record<string, unknown>)?.id ?? '-'}`;
+          const LIVE = ['pending', 'claimed', 'tipping', 'charging_unsent', 'charging', 'unknown'];
+          const { data: stuck } = await opsAdmin.from('terminal_jobs')
+            .select('id, status').eq('check_key', ckey).in('status', LIVE).limit(1).maybeSingle();
+          if (stuck) {
+            if (stuck.status === 'charging' || stuck.status === 'unknown') {
+              const rr = await fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/adyen-terminal-charge`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}` },
+                body: JSON.stringify({ action: 'result', job_id: stuck.id }),
+              }).then((r) => r.text()).catch((e) => String(e));
+              console.log(`[pay-at-table] recovery on stuck ${stuck.status} job ${stuck.id}: ${rr.slice(0, 200)}`);
+              const { data: after } = await opsAdmin.from('terminal_jobs')
+                .select('status').eq('id', stuck.id).maybeSingle();
+              // charging_unsent = terminal never saw it, safe to supersede.
+              if (after && LIVE.includes(after.status) && after.status !== 'charging_unsent') {
+                await say('That table has a payment in progress. Finish it on the reader.');
+                return;
+              }
+              await opsAdmin.from('terminal_jobs')
+                .update({ status: 'cancelled', last_error: 'superseded — terminal never received it (pay-at-table retry)', updated_at: new Date().toISOString() })
+                .eq('id', stuck.id).eq('status', 'charging_unsent').is('payment_session_id', null);
+            } else {
+              await say('That table has a payment in progress. Finish it on the reader.');
+              return;
+            }
+          }
+
           const remaining = remainingFor(table.id);
-          if (remaining <= 0) { console.log('[pay-at-table] nothing left to pay on', table.label); return; }
+          if (remaining <= 0) {
+            const t = Number(sess0?.total_minor);
+            await say(Number.isFinite(t) && t > 0
+              ? `${table.label} is fully paid — settle any difference on the till.`
+              : `${table.label} has no bill yet — send the order from the till first.`);
+            return;
+          }
           let amountMinor: number | null = null;               // null = charge everything owed
           const pres = await askInput(buildMenuInputRequest({
             poiid, saleId, serviceId: newServiceId(),
@@ -281,7 +338,10 @@ Deno.serve(async (req) => {
               event_key: `amount:${poiid}:${Date.now()}`,
               raw: { httpStatus: ares.status, parsed: amt, remaining, response: ares.data ?? null },
             }).then(() => {}, () => {});
-            if (!amt.amountMinor || amt.amountMinor <= 0) return;   // cancelled / zero
+            if (!amt.amountMinor || amt.amountMinor <= 0) return;   // cancelled / zero — staff chose to back out
+            if (amt.amountMinor > remaining) {
+              await say(`Only £${(remaining / 100).toFixed(2)} left on ${table.label} — taking that.`);
+            }
             amountMinor = Math.min(amt.amountMinor, remaining);      // the RPC clamps too
           }
 
@@ -298,9 +358,16 @@ Deno.serve(async (req) => {
             p_session_id: pinnedSession.id == null ? null : String(pinnedSession.id),
             p_seated_at: pinnedSession.seatedAt == null ? null : String(pinnedSession.seatedAt),
           });
-          if (rpcErr) { console.log(`[pay-at-table] job refusal: ${rpcErr.message}`); return; }
+          if (rpcErr) {
+            // The RPC's messages are already written for staff ("this table has
+            // already been paid", "changed while you were choosing"). Show them
+            // rather than dropping to the home screen.
+            console.log(`[pay-at-table] job refusal: ${rpcErr.message}`);
+            await say(String(rpcErr.message || 'Could not start that payment').slice(0, 120));
+            return;
+          }
           const jobId = (job as Record<string, unknown>)?.job_id;
-          if (!jobId) { console.log('[pay-at-table] RPC returned no job id'); return; }
+          if (!jobId) { await say('Could not start that payment — try again'); return; }
 
           // Kick the charge at the SAME reader — the bill appears on its screen.
           const res = await fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/adyen-terminal-charge`, {
@@ -310,6 +377,17 @@ Deno.serve(async (req) => {
           });
           const out = await res.text();
           console.log(`[pay-at-table] charge kick for table ${table.label} (${amountMinor == null ? 'pay all' : `split £${(amountMinor / 100).toFixed(2)}`}): ${res.status} ${out.slice(0, 200)}`);
+          if (!res.ok) {
+            // The card screen never came up. Release the job we just minted so
+            // the table is not wedged for the next attempt (it cannot have
+            // charged — 'start' failed before or at dispatch), then say so.
+            await opsAdmin.from('terminal_jobs')
+              .update({ status: 'cancelled', last_error: `charge kick failed: ${out.slice(0, 200)}`, updated_at: new Date().toISOString() })
+              .eq('id', jobId).eq('status', 'charging_unsent').is('payment_session_id', null);
+            let why = 'Could not reach the card reader — try again';
+            try { why = JSON.parse(out)?.error || why; } catch { /* keep the default */ }
+            await say(String(why).slice(0, 120));
+          }
         } catch (e) {
           console.error('[pay-at-table] responder failed:', (e as Error)?.message || e);
         }
