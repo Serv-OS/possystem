@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.73',
+    date: '2026-08-15',
+    changes: [
+      'A table paid on the card reader now CLEARS on every till. Two places in the code promised the session reconciler was the backstop for this; it never was \u2014 the only branch that could clear a table has been switched off since v4.5.4, and the realtime "table closed" signal never fired either. A table paid on the reader stayed on the floor of every till that did not personally book the sale (live: T3 paid \u00a399.57, sale in history, table still showing).',
+      'The clear fires only on PROOF \u2014 a closed check for that exact table and seating \u2014 never on a missing row, which is what made the old branch wipe live orders.',
+    ],
+  },
+  {
     version: '5.6.69',
     date: '2026-08-15',
     changes: [

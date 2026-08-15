@@ -114,6 +114,29 @@ export async function startSessionReconciler() {
           return { ...t, session: null, status: 'available' };
         }
 
+        // ── v5.6.73 LEVEL-TRIGGERED CLEAR — the backstop that never existed ──
+        // Two comments in this codebase promise "SessionReconciler stays the
+        // backstop" for a cashed-off table (closeApprovedTerminalJob and
+        // 20260803_terminal_pos_close_session.sql). It never was: the only
+        // clearing branch has been `if (false && ...)` since v4.5.4, and the
+        // active_sessions realtime DELETE handlers bail on the first line
+        // because the delete old-image carries no table_id without REPLICA
+        // IDENTITY FULL. So a table paid on the card reader stayed on the floor
+        // of every till that did not personally book the check — live 15 Aug:
+        // T3 paid £99.57, check in history, session row gone, table still there.
+        //
+        // This is NOT the v4.5.4 wipe. That one cleared on ABSENCE of a DB row,
+        // which fails constantly (lagged writes, offline tills) and is exactly
+        // how it destroyed live orders. This clears only on POSITIVE PROOF:
+        // isSessionClosed means a closed_check exists for THIS table with THIS
+        // occupation's write-once seatedAt. Same key the reconciler already
+        // trusts to refuse resurrection two branches down — if it is safe to
+        // refuse healing on, it is safe to clear on.
+        if (inStore && isSessionClosed(t.id, t.session)) {
+          changed = true;
+          return { ...t, session: null, status: 'available', childIds: [] };
+        }
+
         // v5.5.639 SELF-HEAL: the inverse of the (rightly) dead wipe branch. The table is occupied
         // on THIS device but its active_sessions row is gone (stale OfflineQueue delete replay,
         // cross-device delete sweep, or any out-of-band removal). Instead of wiping local (data
