@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.62',
+    date: '2026-08-15',
+    changes: [
+      'THE ROOT of "paid but still open": the till\'s check-closer was gated to Ryft venues only ("not needed, staying idle" on Adyen) — no bundle refresh could ever have booked those checks. It now runs on Adyen venues; on refresh it books every outstanding paid table (T2, T10) and clears them.',
+      'Double-charge guard: a paid-but-not-yet-booked table now REFUSES another Pay at Table charge ("already been paid"). The duplicate £66.00 on Table 2 was refunded at Adyen (ref F6CGHLXCFM6NXJV5) and its job neutralised so only the real sale books.',
+    ],
+  },
+  {
     version: '5.6.61',
     date: '2026-08-15',
     changes: [

@@ -35,8 +35,11 @@ export async function startTerminalJobReconciler() {
   // till restart anyway, which re-runs this).
   try {
     const proc = await getLocationProcessor(_locationId);
-    if (proc !== 'ryft') {
-      console.log('[TerminalJobReconciler] venue processor is', proc, '— PAX job reconciler not needed, staying idle');
+    // terminal_jobs now carry BOTH fleets: PAX/Ryft and Adyen (v5.6.62 — the
+    // ryft-only gate left every Adyen pay-at-table check unbooked: money taken,
+    // table still open, and a second charge possible).
+    if (proc !== 'ryft' && proc !== 'adyen') {
+      console.log('[TerminalJobReconciler] venue processor is', proc, '— terminal job reconciler not needed, staying idle');
       _running = false;
       return;
     }
