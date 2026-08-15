@@ -164,8 +164,11 @@ export function buildMenuInputRequest(o: { poiid: string; saleId: string; servic
       InputRequest: {
         DisplayOutput: {
           Device: 'CustomerDisplay', InfoQualify: 'Display',
+          // Hardware-verified 15 Aug: OutputContent.OutputFormat must be 'Text'
+          // ("value 'MenuEntry': Value not supported") — the menu itself rides
+          // the sibling MenuEntry array.
           OutputContent: {
-            OutputFormat: 'MenuEntry',
+            OutputFormat: 'Text',
             PredefinedContent: { ReferenceID: 'MenuButtons' },
             OutputText: [{ Text: o.title }],
           },
@@ -184,9 +187,12 @@ export function buildMenuInputRequest(o: { poiid: string; saleId: string; servic
 }
 
 export function parseMenuInputResponse(data: any): { selected: number | null; result: string } {
+  // Hardware-verified 15 Aug: the result lives under InputResult.Response and
+  // MenuEntryNumber arrives as an ARRAY (e.g. [1], 1-based).
   const r = data?.SaleToPOIResponse?.InputResponse;
-  const result = r?.Response?.Result ?? 'Failure';
-  const n = r?.Input?.MenuEntryNumber;
+  const result = r?.InputResult?.Response?.Result ?? r?.Response?.Result ?? 'Failure';
+  const raw = r?.InputResult?.Input?.MenuEntryNumber ?? r?.Input?.MenuEntryNumber;
+  const n = Array.isArray(raw) ? raw[0] : raw;
   const sel = Number.isFinite(Number(n)) ? Number(n) : null;
   return { selected: result === 'Success' && sel != null ? sel : null, result: String(result) };
 }

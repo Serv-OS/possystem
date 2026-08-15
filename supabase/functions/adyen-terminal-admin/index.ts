@@ -25,7 +25,7 @@
 // say exactly what to fix instead of a dead button.
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
-import { managementBase, ADYEN_MERCHANT_ACCOUNT } from '../_shared/adyen.ts';
+import { managementBase, ADYEN_MERCHANT_ACCOUNT, buildMenuInputRequest, newServiceId, adyenFetch, terminalEndpoint } from '../_shared/adyen.ts';
 
 const opsAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
 const platformAdmin = createClient(
@@ -354,6 +354,34 @@ Deno.serve(async (req) => {
       return json({ ok: true });
     }
 
+    // ── test_menu: render the pay-at-table MENU on a reader right now ────────
+    // Drives the exact nexo Input message the responder sends, with the venue's
+    // real open tables — the hardware shape-test without a button press.
+    if (action === 'test_menu') {
+      const tid = String(body.terminal_id || '');
+      if (!tid) return json({ error: 'terminal_id required' }, 400);
+      const { data: term } = await opsAdmin.from('terminal_devices')
+        .select('id, location_id').eq('adyen_terminal_id', tid).eq('status', 'paired').maybeSingle();
+      if (!term) return json({ error: 'terminal not linked' }, 404);
+      const [{ data: sess }, { data: floor }] = await Promise.all([
+        opsAdmin.from('active_sessions').select('table_id, total_minor').eq('location_id', term.location_id),
+        opsAdmin.from('floor_tables').select('id, label').eq('location_id', term.location_id),
+      ]);
+      const billBy = new Map((sess || []).map((r) => [String(r.table_id), Number(r.total_minor) || 0]));
+      const entries = (floor || [])
+        .filter((f) => billBy.has(String(f.id)))
+        .sort((a, b) => String(a.label).localeCompare(String(b.label), undefined, { numeric: true }))
+        .slice(0, 20)
+        .map((f) => `${f.label}  ·  £${((billBy.get(String(f.id)) || 0) / 100).toFixed(2)}`);
+      if (!entries.length) entries.push('No open tables');
+      const menu = buildMenuInputRequest({
+        poiid: tid, saleId: 'servos-menutest', serviceId: newServiceId(),
+        title: 'Pay at table — choose the table', entries,
+      });
+      const r = await adyenFetch('POST', terminalEndpoint(merchant, tid, 'sync', (maa?.region === 'US') ? 'us' : 'eu'), menu, { timeoutMs: 75_000 });
+      return json({ ok: r.ok, status: r.status, entries, response: r.data }, 200);
+    }
+
     // ── test_async: prove the event-URL delivery pipe WITHOUT a button press ─
     // An /async TransactionStatusRequest's response is delivered by Adyen's
     // BACKEND to the configured event URLs — if it arrives, the pipe works and
@@ -394,7 +422,11 @@ Deno.serve(async (req) => {
           showButton: true,
           title: String(body.title || 'Pay at table').slice(0, 40),
           category: 'SaleWakeUp',
-          details: String(body.details || 'paytable').slice(0, 60),
+          // EMPTY details = no reference pin pad — the button fires straight
+          // away and the responder answers with the open-tables MENU (list-first,
+          // the Lightspeed flow Peter wants). Pass details explicitly to bring
+          // the number pad back as a fast path.
+          details: String(body.details ?? '').slice(0, 60),
         } },
       });
       if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);

@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.64',
+    date: '2026-08-15',
+    changes: [
+      'THE TABLE LIST ON THE READER IS PROVEN ON HARDWARE: the open-tables menu rendered on the AMS1 and a live selection came back. Nexo shape corrected from the reader\'s own error messages (OutputFormat Text + PredefinedContent MenuButtons; selection arrives as a 1-based array).',
+      'Full flow: Pay at table → the open tables appear with their bills → pick one → the bill loads → tap. (After the reader\'s next reboot the number pad disappears entirely and the button goes straight to the list.)',
+    ],
+  },
+  {
     version: '5.6.63',
     date: '2026-08-15',
     changes: [
