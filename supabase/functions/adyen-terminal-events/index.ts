@@ -349,7 +349,14 @@ Deno.serve(async (req) => {
               event_key: `amount:${poiid}:${Date.now()}`,
               raw: { httpStatus: ares.status, parsed: amt, remaining, response: ares.data ?? null },
             }).then(() => {}, () => {});
-            if (!amt.amountMinor || amt.amountMinor <= 0) return;   // cancelled / zero — staff chose to back out
+            if (!amt.amountMinor || amt.amountMinor <= 0) {
+              // Only silent when staff backed out. A Success we could not read
+              // is a shape bug and must NOT look like a cancel (live 15 Aug:
+              // the reader answered TextInput "10.00", the parser wanted
+              // DigitInput, and the flow died at the home screen looking fine).
+              if (amt.result === 'Success') await say('Could not read that amount — try again');
+              return;
+            }
             if (amt.amountMinor > remaining) {
               await say(`Only £${(remaining / 100).toFixed(2)} left on ${table.label} — taking that.`);
             }

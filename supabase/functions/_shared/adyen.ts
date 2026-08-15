@@ -239,7 +239,13 @@ export function buildAmountInputRequest(o: { poiid: string; saleId: string; serv
 export function parseAmountInputResponse(data: any): { amountMinor: number | null; result: string } {
   const r = data?.SaleToPOIResponse?.InputResponse;
   const result = r?.InputResult?.Response?.Result ?? r?.Response?.Result ?? 'Failure';
-  const raw = r?.InputResult?.Input?.DigitInput ?? r?.Input?.DigitInput;
+  // HARDWARE-VERIFIED 15 Aug (AMS1): a DecimalString answer comes back as
+  // `TextInput`, NOT the `DigitInput` the docs show — £10.00 typed on the
+  // reader arrived as Input.TextInput "10.00" and the DigitInput-only parser
+  // read null, so the flow bailed silently to the home screen. Accept both,
+  // plus DecimalString, and take whichever the firmware actually sends.
+  const inp = r?.InputResult?.Input ?? r?.Input ?? {};
+  const raw = inp.TextInput ?? inp.DigitInput ?? inp.DecimalString ?? inp.DigitString;
   let minor: number | null = null;
   if (raw != null && String(raw).trim() !== '') {
     const n = Number(String(raw).replace(/[^0-9.]/g, ''));
