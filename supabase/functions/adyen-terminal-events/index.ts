@@ -169,6 +169,14 @@ Deno.serve(async (req) => {
       const details = String(evt?.EventDetails ?? '');
       const ref = (details.match(/reference_id=([A-Za-z0-9]+)/) || [])[1]
         || (details.match(/^([A-Za-z0-9]+)$/) || [])[1] || '';
+      // v5.6.82 — MEASURE, DO NOT GUESS. Peter: "takes ages to load and doesnt
+      // show its loading". Every previous latency fix was reasoning about which
+      // await looked slow. These marks ride into the durable menu diagnostic so
+      // ONE tap says exactly where the seconds go, including whether the
+      // fire-and-forget Display was accepted by the firmware at all.
+      const T0 = Date.now();
+      const marks: Record<string, number> = { wake: 0 };
+      const mark = (k: string) => { marks[k] = Date.now() - T0; };
       const respond = async () => {
         try {
           // Pre-warm the charge fn NOW (its cold start was most of the ~25s
@@ -181,6 +189,7 @@ Deno.serve(async (req) => {
           const { data: term } = await opsAdmin.from('terminal_devices')
             .select('id, location_id, modes').eq('adyen_terminal_id', poiid)
             .eq('status', 'paired').eq('active', true).maybeSingle();
+          mark('term');
           if (!term) { console.log(`[pay-at-table] no paired terminal for ${poiid}`); return; }
 
           // Table match: staff type "2" for a table labelled "T2" (or "2").
@@ -202,6 +211,7 @@ Deno.serve(async (req) => {
             opsAdmin.from('floor_tables').select('id, label').eq('location_id', term.location_id),
             platformAdmin.from('locations').select('id').eq('ops_location_id', term.location_id).maybeSingle(),
           ]);
+          mark('queries');
           const sessBy = new Map((sess || []).map((r) => [String(r.table_id), r]));
           const remainingFor = (tableId: string): number => {
             const row = sessBy.get(String(tableId));
@@ -220,6 +230,7 @@ Deno.serve(async (req) => {
           // table list).
           const { data: maa } = await platformAdmin.from('merchant_adyen_accounts')
             .select('merchant_account, region').eq('location_id', maaRow?.id ?? term.location_id).maybeSingle();
+          mark('merchant');
           if (!maa?.merchant_account) { console.log('[pay-at-table] no merchant account'); return; }
           const saleId = `servos-${String(term.location_id).slice(0, 8)}`;
           const askInput = (msg: unknown) =>
@@ -236,8 +247,8 @@ Deno.serve(async (req) => {
           const status = (text: string) => {
             adyenFetch('POST', terminalEndpoint(maa.merchant_account, poiid, 'sync', maa.region === 'US' ? 'us' : 'eu'),
               buildDisplayRequest({ poiid, saleId, serviceId: newServiceId(), text }), { timeoutMs: 8_000 })
-              .then((r) => console.log(`[pay-at-table] status "${text}" -> ${r.status}`),
-                    (e) => console.log(`[pay-at-table] status display unsupported: ${(e as Error)?.message}`));
+              .then((r) => { marks[`display_${text.slice(0, 12)}`] = r.status; },
+                    (e) => { marks[`display_${text.slice(0, 12)}`] = -1; console.log(`[pay-at-table] display rejected: ${(e as Error)?.message}`); });
           };
 
           const say = async (text: string) => {
@@ -269,7 +280,9 @@ Deno.serve(async (req) => {
               title: 'Pay at table — choose the table',
               entries: openTables.map((f) => `${f.label}  ·  £${(remainingFor(f.id) / 100).toFixed(2)}`),
             });
+            mark('menu_sent');
             const mres = await askInput(menu);
+            mark('menu_answered');
             const pick = parseMenuInputResponse(mres.data);
             console.log(`[pay-at-table] menu result ${pick.result}, selected ${pick.selected}`);
             // Durable diagnostics — console logs proved unreadable through the
@@ -277,7 +290,7 @@ Deno.serve(async (req) => {
             // we can always query it.
             void platformAdmin.from('adyen_webhook_events').insert({
               event_key: `menu:${poiid}:${Date.now()}`,
-              raw: { httpStatus: mres.status, parsed: pick, entries: openTables.map((f) => f.label), response: mres.data ?? null },
+              raw: { httpStatus: mres.status, parsed: pick, entries: openTables.map((f) => f.label), timings: marks, response: mres.data ?? null },
             }).then(() => {}, () => {});
             if (!pick.selected || pick.selected < 1 || pick.selected > openTables.length) return;
             candidates = [openTables[pick.selected - 1]];
@@ -338,6 +351,7 @@ Deno.serve(async (req) => {
             }
           }
 
+          mark('stuck_scan');
           const remaining = remainingFor(table.id);
           if (remaining <= 0) {
             const t = Number(sess0?.total_minor);
@@ -347,16 +361,18 @@ Deno.serve(async (req) => {
             return;
           }
           let amountMinor: number | null = null;               // null = charge everything owed
+          mark('paymenu_sent');
           const pres = await askInput(buildMenuInputRequest({
             poiid, saleId, serviceId: newServiceId(),
             title: `${table.label}  ·  £${(remaining / 100).toFixed(2)}`,
             entries: [`Pay all  ·  £${(remaining / 100).toFixed(2)}`, 'Split — enter amount'],
             maxInputTime: 45,
           }));
+          mark('paymenu_answered');
           const payPick = parseMenuInputResponse(pres.data);
           void platformAdmin.from('adyen_webhook_events').insert({
             event_key: `paymenu:${poiid}:${Date.now()}`,
-            raw: { httpStatus: pres.status, parsed: payPick, remaining, response: pres.data ?? null },
+            raw: { httpStatus: pres.status, parsed: payPick, remaining, timings: marks, response: pres.data ?? null },
           }).then(() => {}, () => {});
           if (!payPick.selected) return;                       // cancelled / timed out
           if (payPick.selected === 2) {
