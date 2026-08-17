@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.83',
+    date: '2026-08-17',
+    changes: [
+      'THE TILL IS FASTER, AND IT NO LONGER GETS SLOWER AS THE DAY GOES ON. Three separate things were making every tap feel heavy on the Sunmi tills. All three are fixed. Nothing looks or works differently, it just responds.',
+      'Every item added to an order was rewriting the whole day of sales to the tablet. The till keeps a copy of its shared state on the device. That copy included the full sales history, up to 500 completed sales going back 30 days, every line and every modifier. Adding one item to one order rewrote the entire thing, on the spot, on the main thread. The more sales the venue took, the bigger that write got, which is exactly why it felt worse by the evening. Sales history and kitchen tickets are no longer written to the device at all. Both are read back from the server on every start up and both are kept live by their own feed, so nothing is lost. Orders taken while the till is offline are still saved on the device, because for those the device is the only copy.',
+      'Anything that could not be saved to the device used to fail in silence. If a tablet ran out of storage, the till simply stopped saving and said nothing. It now says so plainly and writes the reason to the log.',
+      'Two print engines were both polling the same job list, roughly 70 checks a minute on a till that was printing nothing. Worse, they disagreed with each other. One would put a stuck job back in the queue after 30 seconds while the other marked the same job failed after 60. There is now one engine in charge of print jobs on any till that prints for itself, and the second one only starts on setups where the first one cannot run. Printing itself is unchanged and just as quick, because tickets arrive on a live feed rather than by polling. A failed kitchen ticket still retries on the same 2 second, 10 second, 30 second, 2 minute ladder, and still ends up in Action required if it never succeeds.',
+      'The whole app was rebooting after every sale. On tills set to sign the operator out once a sale is paid, signing back in was tearing the application down and building it again from scratch, around 25 database queries before the next order could start. The part that loads all that now stays put across sign in and sign out, and refuses to reload the same venue twice. Switching a device to a different venue still reloads properly.',
+      'Sales history in memory is now capped, like the print job list already was. It could previously grow without limit on a till left running for days. The cap sits above the largest history view the app offers, so nothing an operator asks to see gets cut short.',
+    ],
+  },
+  {
     version: '5.6.81',
     date: '2026-08-15',
     changes: [

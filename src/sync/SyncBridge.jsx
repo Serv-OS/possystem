@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { useStore } from '../store';
+import { useStore, capClosedChecks } from '../store';
 import { subscribeToSessions, scheduleFlush, flushSessions, teardown as teardownSessions } from './SessionSync';
 // v5.6.27: ReservationSync RETIRED — bookings replaced the thin per-table reservation
 // (table_reservations). The Tables screen now derives 'reserved' from the bookings
@@ -34,8 +34,97 @@ const OPERATIONAL_KEYS = [
 // Layout (x,y,w,h,label,section,shape) only changes via CONFIG_PUSH
 const SHARED_KEYS = [...OPERATIONAL_KEYS, 'tables', 'showItemImages', 'takeawayCustomerDetails'];
 
+// ── v5.6.83: what gets WRITTEN TO DISK, as opposed to what gets broadcast ────
+// Every key above is still broadcast to the other tabs on this machine, exactly as
+// before. These two are no longer written to localStorage:
+//
+//   closedChecks — up to 500 whole sales (every line, every modifier) covering 30
+//                  days, seeded at boot by db.fetchClosedChecks. That is the blob.
+//                  Because the writer below did read-modify-write on the WHOLE blob,
+//                  adding one item to one order re-serialised the entire sales
+//                  history, synchronously, on the UI thread. It grew all day, which
+//                  is why the till got slower as service went on.
+//   kdsTickets   — refetched at boot by useSupabaseInit (db.fetchKDSTickets) and kept
+//                  live by the kds_tickets realtime channel.
+//
+// Both are re-read from Supabase on every boot and both have their own realtime
+// channel, so nothing is lost by not writing them here. Sales that have NOT reached
+// Supabase yet (taken offline) are rescued at boot from DataSafe's own durable
+// 'rpos-pending-checks' list, which is the record of exactly those — see the closed
+// checks load below. Tickets created offline are queued to IndexedDB by db.js.
+//
+// orderQueue DELIBERATELY STAYS PERSISTED. A walk-in or collection order taken while
+// the till is offline is durably queued for Supabase (OfflineQueue/IndexedDB) but it
+// is not IN Supabase, so a reload before the network returns would leave the operator
+// with no way to see the order. That is the one key here that is genuinely load-
+// bearing offline, and it is bounded by one day of orders rather than 30 days of them.
+const NO_PERSIST_KEYS = new Set(['closedChecks', 'kdsTickets']);
+
 let channelInstance = null;
 export function getChannel() { return channelInstance; }
+
+// In-memory mirror of the persisted blob. The writer below used to JSON.parse the
+// whole of localStorage before every single write; now it parses once per page and
+// keeps the object. Seeded lazily so an unrelated surface importing this module does
+// not touch storage.
+let _persistMirror = null;
+let _quotaReported = false;
+
+function getPersistMirror() {
+  if (_persistMirror) return _persistMirror;
+  let raw = {};
+  try { raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}') || {}; } catch { raw = {}; }
+  const mirror = {};
+  let dropped = false;
+  // Keep every key the blob already has EXCEPT the two we have stopped persisting.
+  // (Old builds wrote keys that are no longer in SHARED_KEYS — quickScreenIds among
+  // them — and the mount loader still applies them, so they must survive untouched.)
+  for (const k of Object.keys(raw)) {
+    if (NO_PERSIST_KEYS.has(k)) { dropped = true; continue; }
+    mirror[k] = raw[k];
+  }
+  _persistMirror = mirror;
+  // One-off cleanup: a till upgrading from an older build is carrying megabytes of
+  // history in this key. Write the slimmed blob back once so it stops paying for it.
+  if (dropped) {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(mirror)); }
+    catch (e) { console.warn('[SyncBridge] could not slim the shared-state blob:', e?.message || e); }
+  }
+  return mirror;
+}
+
+// Merge a patch into the mirror and flush it. Replaces the old
+// parse → spread → setItem inside a bare try{}catch{}.
+function persistShared(patch) {
+  const mirror = getPersistMirror();
+  let changed = false;
+  for (const k of Object.keys(patch)) {
+    if (NO_PERSIST_KEYS.has(k)) continue;
+    mirror[k] = patch[k];
+    changed = true;
+  }
+  if (!changed) return;
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(mirror));
+  } catch (e) {
+    // This used to be swallowed by a bare catch. The failure that matters is
+    // QuotaExceededError: once the 5MB origin limit is hit NOTHING is persisted any
+    // more, so open orders stop surviving a refresh, silently.
+    const quota = e && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED' || e.code === 22);
+    console.error('[SyncBridge] shared-state write FAILED' + (quota ? ' — localStorage is full, nothing is being saved to this device' : ''), e?.message || e);
+    if (quota && !_quotaReported) {
+      _quotaReported = true;
+      try { useStore.getState().showToast?.('This till has run out of storage. Open orders may not survive a refresh. Please restart the till.', 'warn'); } catch {}
+    }
+  }
+}
+
+// v5.6.83: one-time boot latch. SyncBridge's boot is ~25 queries; it must run once
+// per location, not once per mount. App.jsx now keeps the component mounted across
+// sign-in and sign-out (that was the real bug), and this is the belt to that braces —
+// keyed on locationId so a genuine location switch still gets a full boot, and
+// released again if the boot it guards fails so an offline start-up is retried.
+let _bootedFor = null;
 
 function getSharedState() {
   const s = useStore.getState();
@@ -71,12 +160,22 @@ export default function SyncBridge({ onSyncPulse }) {
           delete parsed.eightySix;
           delete parsed.tabs;          // bar tabs are session-only in real mode
           // NOTE: quickScreenIds is kept — it's config pushed from back office
-          // NOTE: closedChecks are kept from localStorage as fast fallback
+          // NOTE (v5.6.83): closedChecks / kdsTickets are no longer WRITTEN here (see
+          // NO_PERSIST_KEYS above), so on a slimmed blob there is nothing to apply.
+          // Anything an older build left behind is still applied on this one boot and
+          // is then superseded by the Supabase read a moment later.
         }
         useStore.setState(parsed);
         isApplyingRef.current = false;
       }
     } catch {}
+
+    // v5.6.83: has this location already been booted in this page? App.jsx keeps
+    // SyncBridge mounted across sign-in/sign-out now, so in practice this is false
+    // exactly once. It is the guard for any remount we have not thought of — a till
+    // that signs out after every sale must not pay for ~25 queries between orders.
+    const skipBoot = !isMock && !!_bootedFor && _bootedFor === getActiveLocationSync();
+    if (skipBoot) console.log('[SyncBridge] remount — boot already done for this location, skipping the reload');
 
     // Apply config snapshot on mount
     // In mock mode: read from localStorage snapshot
@@ -97,7 +196,7 @@ export default function SyncBridge({ onSyncPulse }) {
           useStore.getState().applyConfigUpdate();
         }
       } catch {}
-    } else {
+    } else if (!skipBoot) {
       // Load latest config push from Supabase for this location
       bootConfigLoad = (async () => {
         try {
@@ -114,6 +213,11 @@ export default function SyncBridge({ onSyncPulse }) {
           // rpos-bo-location first, then rpos-device.locationId.
           const locationId = getActiveLocationSync();
           if (!locationId || locationId === 'loc-demo') return;
+          // v5.6.83: claim the boot latch now, BEFORE the first await, so a second
+          // mount landing mid-boot cannot start a parallel copy of these ~25 queries.
+          // Released again in the catch below, so a boot that fell over (offline at
+          // start of day) is retried by the next mount rather than latched out.
+          _bootedFor = locationId;
 
           // v5.5.238: Location integrity guard — if the store has data from a
           // DIFFERENT location (e.g. browser was used for Location A then switched
@@ -432,16 +536,26 @@ export default function SyncBridge({ onSyncPulse }) {
             // locally. Supabase is the record; the device is a cache of it.
             const historySince = getPosHistorySince();
             const checksRes = await fetchClosedChecks(locationId, 500, historySince);
-            if (checksRes.data?.length) {
-              // Merge with any localStorage checks not yet written to Supabase
-              // v5.5.279: location filter on localStorage checks — prevents cross-location
+            // supabase-js resolves with { data, error } — it does not reject — so the
+            // error only exists if we look for it.
+            if (checksRes.error) console.warn('[SyncBridge] closed checks read rejected:', checksRes.error.message || checksRes.error);
+            {
+              const remoteChecks = Array.isArray(checksRes.data) ? checksRes.data : [];
+              // Merge with any local checks not yet written to Supabase.
+              // v5.5.279: location filter on local checks — prevents cross-location
               // bleed when a browser was previously used for a different location.
-              const supabaseIds = new Set(checksRes.data.map(c => c.id));
+              const supabaseIds = new Set(remoteChecks.map(c => c.id));
               const historyFloor = historySince.getTime();
               const lsChecks = (() => {
                 try {
-                  const s = JSON.parse(localStorage.getItem('rpos-shared-state') || '{}');
-                  return (s.closedChecks || []).filter(c =>
+                  // v5.6.83: this used to read the whole 'rpos-shared-state' blob. It now
+                  // reads DataSafe's own pending list, which is the durable record of
+                  // every check that has NOT been confirmed into Supabase — precisely the
+                  // set this rescue exists for, and emptied per check as each one lands.
+                  // The old source held the entire 30-day history whether synced or not,
+                  // which is what made it megabytes.
+                  const pending = JSON.parse(localStorage.getItem('rpos-pending-checks') || '[]');
+                  return (Array.isArray(pending) ? pending : []).filter(c =>
                     !supabaseIds.has(c.id) &&
                     (!c.locationId || c.locationId === locationId) &&
                     // v5.5.985: and inside the SAME window we just asked the server for.
@@ -460,8 +574,20 @@ export default function SyncBridge({ onSyncPulse }) {
                   );
                 } catch { return []; }
               })();
-              patch.closedChecks = [...checksRes.data, ...lsChecks]
-                .sort((a, b) => (b.closedAt || 0) - (a.closedAt || 0));
+              // Merge over whatever is already in the store (dedup by id) rather than
+              // replacing it. The v5.5.81 rule stands: NEVER hand closedChecks an empty
+              // array. useSupabaseInit and the closed_checks realtime channel are both
+              // writing this slice at the same moment, and since v5.6.83 the store no
+              // longer starts boot pre-filled from localStorage, so a replace here could
+              // drop a sale that landed a fraction of a second earlier.
+              if (remoteChecks.length || lsChecks.length) {
+                const byId = new Map();
+                for (const c of (useStore.getState().closedChecks || [])) byId.set(c.id, c);
+                for (const c of remoteChecks) byId.set(c.id, c);
+                for (const c of lsChecks) if (!byId.has(c.id)) byId.set(c.id, c);
+                patch.closedChecks = capClosedChecks(Array.from(byId.values())
+                  .sort((a, b) => (b.closedAt || 0) - (a.closedAt || 0)));
+              }
             }
           } catch(e) { console.warn('[SyncBridge] closed checks load error:', e.message); }
 
@@ -487,10 +613,14 @@ export default function SyncBridge({ onSyncPulse }) {
 
           // v5.6.25: load today's bookings + rules + packages (Table Bookings module).
           // After the floor plan for the same reason as reservations; idempotent —
-          // SyncBridge remounts on every PIN login. Table-absent-safe data layer.
+          // the data layer is table-absent-safe.
           try { await useStore.getState().loadBookingsFromDB?.(); } catch { /* best-effort */ }
 
-        } catch(e) { console.warn('[SyncBridge] boot load error:', e.message); }
+        } catch(e) {
+          // Boot did not complete — drop the latch so a later mount retries it.
+          _bootedFor = null;
+          console.warn('[SyncBridge] boot load error:', e.message);
+        }
       })();
     }
 
@@ -507,7 +637,7 @@ export default function SyncBridge({ onSyncPulse }) {
 
 
     // Load location-level settings from Supabase on boot
-    if (!isMock) {
+    if (!isMock && !skipBoot) {
       (async () => {
         try {
           // v5.5.962: wait for the boot config-push apply so the fresh locations
@@ -558,16 +688,18 @@ export default function SyncBridge({ onSyncPulse }) {
     };
     if (!isMock) flushRedemptions();
 
-    // On reconnect — replay pending data
-    if (!isMock) {
-      window.addEventListener('online', async () => {
-        try {
-          // v4.6.27: static import above (ADR-008)
-          await onReconnect();
-          await flushRedemptions();
-        } catch {}
-      });
-    }
+    // On reconnect — replay pending data.
+    // v5.6.83: named + removed in the cleanup below. It never was, so every remount
+    // (i.e. every sign-in, see App.jsx) added ANOTHER copy of this handler to window,
+    // and coming back online then fired N concurrent reconcile+replay passes.
+    const onBackOnline = async () => {
+      try {
+        // v4.6.27: static import above (ADR-008)
+        await onReconnect();
+        await flushRedemptions();
+      } catch {}
+    };
+    if (!isMock) window.addEventListener('online', onBackOnline);
 
     // Periodic background sync every 60s — catch any missed writes
     if (!isMock) {
@@ -589,7 +721,11 @@ export default function SyncBridge({ onSyncPulse }) {
           useStore.getState().releaseDueCateringOrders?.();
         } catch {}
       }, 60_000);
-      // Store timer for cleanup
+      // v5.6.83: the cleanup below never cleared this, so a till that signs out after
+      // every sale accumulated one more 60s reconcile timer per sale, all of them
+      // running. It is cleared now (and, with SyncBridge mounted once, only ever one
+      // is created in the first place).
+      clearInterval(window._rposPeriodicTimer);
       window._rposPeriodicTimer = periodicTimer;
     }
 
@@ -818,13 +954,16 @@ export default function SyncBridge({ onSyncPulse }) {
       }
     }) : () => {};
 
-    if (!isMock) loadQueues();
+    // Two more select('*') limit 500 reads (order_queue + bar_tabs) — part of the boot,
+    // so they follow the same one-per-location latch. The rows they load are still in
+    // the store on a remount; only the network read is skipped.
+    if (!isMock && !skipBoot) loadQueues();
 
     // Tables Ready — live waitlist board syncs across devices the same way the order queue does.
     const unsubWaitlist = !isMock ? useStore.subscribe((state, prev) => {
       if (state.waitlist !== prev.waitlist) scheduleWaitlistFlush();
     }) : () => {};
-    if (!isMock) loadWaitlistSync();
+    if (!isMock && !skipBoot) loadWaitlistSync();
 
     const unsubReservations = () => {};   // v5.6.27: reservation flush retired (bookings own the diary)
 
@@ -858,16 +997,25 @@ export default function SyncBridge({ onSyncPulse }) {
       timer = setTimeout(() => {
         const toSend = pending;
         pending = {};
+        // The broadcast is unchanged: every SHARED_KEY that moved still reaches the
+        // other tabs on this machine. Only the disk write is slimmed — see
+        // NO_PERSIST_KEYS / persistShared at the top of this file.
         channelInstance?.postMessage({ from:TAB_ID, locationId: getActiveLocationSync(), type:'STATE_UPDATE', data:toSend });
-        try {
-          const cur = JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}');
-          localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...cur, ...toSend }));
-        } catch {}
+        persistShared(toSend);
         onSyncPulse?.();
       }, 80);
     });
 
-    return () => { clearTimeout(timer); channelInstance?.close(); channelInstance = null; unsub(); unsubSessions(); unsubQueues(); unsubWaitlist(); unsubReservations(); stopSessionReconciler(); stopTerminalJobReconciler(); if (!isMock) { teardownSessions(); teardownQueueSync(); teardownWaitlistSync(); } };
+    return () => {
+      clearTimeout(timer);
+      channelInstance?.close(); channelInstance = null;
+      unsub(); unsubSessions(); unsubQueues(); unsubWaitlist(); unsubReservations();
+      stopSessionReconciler(); stopTerminalJobReconciler();
+      // v5.6.83: these two were leaked on every teardown — see the notes above each.
+      window.removeEventListener('online', onBackOnline);
+      clearInterval(window._rposPeriodicTimer); window._rposPeriodicTimer = null;
+      if (!isMock) { teardownSessions(); teardownQueueSync(); teardownWaitlistSync(); }
+    };
   }, []);
 
   return null;

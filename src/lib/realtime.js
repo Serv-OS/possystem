@@ -15,6 +15,10 @@ import { reassertSession } from '../sync/SessionSync';
 import { isSessionClosed } from '../sync/sessionClosure';
 import { playOrderChime } from './orderChime';
 import { isHubriseAutoReceipt } from './hubrise';
+// v5.6.83: the same prepend-only ceiling the store applies. Cross-device inserts and
+// refund echoes land here, so capping only the local sale paths would still let a busy
+// venue grow this array without limit.
+import { capClosedChecks } from '../store';
 
 let channels = [];
 let _rtLocation = null;   // the location the current channel set is subscribed to (for idempotency)
@@ -357,7 +361,7 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       };
       const current = store.getState().closedChecks || [];
       if (!current.find(c => c.id === normalised.id)) {
-        const update = { closedChecks: [normalised, ...current] };
+        const update = { closedChecks: capClosedChecks([normalised, ...current]) };
         // Also clear the table from the floor — this is belt-and-suspenders
         // in case the active_sessions DELETE event was missed
         if (normalised.tableId) {
@@ -416,7 +420,7 @@ export function startRealtime(store, locationId = LOCATION_ID) {
         }
         // Not in local state — append a normalised row (same shape as INSERT branch)
         return {
-          closedChecks: [{
+          closedChecks: capClosedChecks([{
             id: check.id, ref: check.ref, server: check.server, covers: check.covers,
             orderType: check.order_type, customer: check.customer,
             items: check.items || [], discounts: check.discounts || [],
@@ -425,7 +429,7 @@ export function startRealtime(store, locationId = LOCATION_ID) {
             closedAt: check.closed_at ? new Date(check.closed_at).getTime() : null,
             status: check.status, refunds: check.refunds || [],
             tableId: check.table_id, tableLabel: check.table_label,
-          }, ...s.closedChecks],
+          }, ...s.closedChecks]),
         };
       });
     })

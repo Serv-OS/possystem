@@ -36,6 +36,20 @@ import { bumpChallenge21 } from '../lib/challenge21Counter';
 // activity feed — once per job per boot, so the 8s retry loop doesn't spam the feed.
 const _closeFailFlagged = new Set();
 
+// ── Closed-check ceiling (v5.6.83) ───────────────────────────────────────────
+// closedChecks was prepend-only and never trimmed — printJobs has been capped at 50
+// for ages, this one never was. A till left running for days grew the array without
+// limit, and until v5.6.83 every entry was also being re-serialised into localStorage
+// on every order change.
+//
+// 2000 is deliberately set ABOVE the largest deliberate read in the app (MPOS order
+// history asks for 2000 on its "All" range; every other path asks for 500). So the
+// cap can only ever trim runaway growth and can never silently truncate history an
+// operator has just asked to see.
+export const MAX_CLOSED_CHECKS = 2000;
+export const capClosedChecks = (list) =>
+  list.length > MAX_CLOSED_CHECKS ? list.slice(0, MAX_CLOSED_CHECKS) : list;
+
 // ── Auto-print age gate ──────────────────────────────────────────────────────
 // An order that has been sitting around for hours must never produce a receipt
 // just because a screen opened. (Three tabs opening Back Office re-printed two
@@ -4892,7 +4906,7 @@ export const useStore = create((set, get) => ({
     const session = table?.session;
     if (!session) return;
     const record = get().buildCloseRecord(session, table, paymentInfo);
-    set(s => ({ closedChecks: [record, ...s.closedChecks] }));
+    set(s => ({ closedChecks: capClosedChecks([record, ...s.closedChecks]) }));
     insertClosedCheck(record);
     depleteForSale(record);   // v5.5.565: deplete recipe ingredients from the stock ledger (theoretical COGS); fire-and-forget no-op if no recipe
     if (paymentInfo.promoRedemption) get().redeemPromoCode?.(paymentInfo.promoRedemption, record, session.customer);
@@ -5125,7 +5139,7 @@ export const useStore = create((set, get) => ({
     }
 
     // Idempotent on every caller: prepend the tombstone.
-    set(s => ({ closedChecks: s.closedChecks.some(c => c.id === record.id) ? s.closedChecks : [record, ...s.closedChecks] }));
+    set(s => ({ closedChecks: s.closedChecks.some(c => c.id === record.id) ? s.closedChecks : capClosedChecks([record, ...s.closedChecks]) }));
     // Drop the floor slot ONLY if it is empty or still held by the paying occupation —
     // a table re-seated by a NEW party keeps its live order untouched. (Counter sales
     // have no floor slot at all.)
@@ -5303,7 +5317,7 @@ export const useStore = create((set, get) => ({
       staffId: record.staffId || staff?.id || null,   // v4.6.19
       ...record,
     };
-    set(s => ({ closedChecks: [fullRecord, ...s.closedChecks] }));
+    set(s => ({ closedChecks: capClosedChecks([fullRecord, ...s.closedChecks]) }));
     insertClosedCheck(fullRecord).catch(()=>{});
     depleteForSale(fullRecord);   // v5.5.565: recipe → stock ledger depletion (fire-and-forget)
     // v5.5.163: Challenge 21 — alcohol counter + prompt
@@ -5380,7 +5394,7 @@ export const useStore = create((set, get) => ({
           refunds: [],
           source: 'hubrise',
         };
-        set(s => ({ closedChecks: [record, ...s.closedChecks] }));
+        set(s => ({ closedChecks: capClosedChecks([record, ...s.closedChecks]) }));
         get().removeFromQueue(o.ref);      // local + DB delete
         insertClosedCheck(record);          // training/mock gated at the leaf
         if (record.method === 'cash') {
@@ -5474,7 +5488,7 @@ export const useStore = create((set, get) => ({
     // closedCheck was written — queue entry persisted, so 'cash off' left the
     // order visible in Orders and re-cashing produced duplicate closed checks.
     set(s => ({
-      closedChecks: [record, ...s.closedChecks],
+      closedChecks: capClosedChecks([record, ...s.closedChecks]),
       orderQueue: existingRef ? s.orderQueue.filter(o => o.ref !== existingRef) : s.orderQueue,
     }));
     // v4.6.30: cash drawer auto-fire on cash payment

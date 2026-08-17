@@ -7,14 +7,24 @@
  *
  * Responsibilities:
  *   1. Subscribe to print_jobs INSERTs via realtime for instant pickup
- *   2. Poll print_jobs on an interval (master: 2s, child: 15s — child polls
- *      act as failover if master goes offline)
+ *   2. Poll print_jobs on a SLOW backstop interval (master: 20s, child: 30s) for
+ *      anything realtime missed — child polls act as failover if master goes
+ *      offline. Scheduled retries do not wait for it; recordFailure arms a
+ *      one-shot timer for the exact backoff deadline.
  *   3. Atomically CLAIM jobs via optimistic UPDATE (claimed_by IS NULL)
  *   4. Dispatch via printService and update status on success/failure
  *   5. Reclaim stuck claims (claim_expires_at passed without a status change)
  *   6. On failure, schedule the next retry according to RETRY_SCHEDULE
  *   7. After MAX_ATTEMPTS, mark failed_permanent (goes to StatusDrawer
  *      "Action required" list, needs operator retry/dismiss)
+ *
+ * v5.6.83 — this is now the SINGLE owner of claim state on any device with a native
+ * bridge. PrintRetrier used to run beside it on the master and write CONFLICTING
+ * statuses to the same rows (it reset stuck claims to 'failed' at 60s while this file
+ * reset them to 'pending' at 30s). PrintRetrier now stands down whenever this
+ * orchestrator is running, and its unique behaviour lives here: the null
+ * next_retry_at case in the poll filter, the exhausted-job sweep in reclaimStuck, the
+ * printed-locally exclusion on the reaper, and the rpos-print-permanent-failure event.
  *
  * Failover: any device can claim. Master has priority by polling faster.
  * Children only trickle in if master hasn't picked the job up quickly.
@@ -40,8 +50,17 @@ const RETRY_SCHEDULE_MS = [0, 2_000, 10_000, 30_000, 120_000];
 const MAX_ATTEMPTS      = RETRY_SCHEDULE_MS.length;      // 5
 
 const CLAIM_TTL_MS      = 30_000;        // claim expires after 30s — then reclaimable
-const MASTER_POLL_MS    = 2_000;         // master scans every 2s
-const CHILD_POLL_MS     = 15_000;        // child scans every 15s (failover only)
+// v5.6.83 — POLL RATES. These were 2s (master) / 15s (child), which on an idle till is
+// ~34 round trips a minute against a table that is empty most of the day. The poll is
+// NOT how a print gets picked up: the realtime INSERT subscription below does that in
+// ~50-150ms, and MPOS submissions come in faster still on the broadcast fast path. The
+// poll is the backstop for a realtime event that never arrived. Retry timing is NOT on
+// the poll either — recordFailure now arms a one-shot timer for the exact moment the
+// backoff expires (scheduleRetryTick), so a failed kitchen ticket retries on schedule
+// whatever the poll is set to.
+const MASTER_POLL_MS    = 20_000;        // master backstop scan
+const CHILD_POLL_MS     = 30_000;        // child backstop scan (failover only)
+const RECLAIM_MS        = 60_000;        // stuck-claim sweep + exhausted-job sweep
 const CHILD_DELAY_MS    = 10_000;        // child only claims jobs older than 10s
                                           // (gives master first shot, avoids thrash)
 const BATCH_SIZE        = 10;            // max jobs to claim per scan
@@ -57,6 +76,9 @@ let _locationId     = null;
 let _isMaster       = false;
 let _running        = false;
 let _inflight       = new Set();       // jobIds currently being dispatched on THIS device
+// One-shot timers armed by recordFailure so a scheduled retry fires at its backoff
+// deadline instead of waiting for the next backstop poll. Tracked so stop() clears them.
+const _retryTimers  = new Set();
 // FAST PATH dedup: idempotency_key → timestamp of broadcast print. When the
 // postgres INSERT realtime arrives ~500ms after our broadcast print, we look
 // up the key here and skip dispatch — the upsert path will mark the row done.
@@ -70,8 +92,9 @@ const _BROADCAST_DEDUP_TTL_MS = 5 * 60_000;
 // asks for the job again — forgetting one otherwise is what prints food twice.
 const _printedLocally = new Map();
 
-// PrintRetrier runs in this same page on the master and re-dispatches on its own
-// schedule, so the guard above only holds if it can see it too.
+// PrintRetrier can still be the active engine on a master with NO native bridge (this
+// orchestrator refuses to start there), and it re-dispatches on its own schedule, so
+// the guard above only holds if it can see it too. Also read by reclaimStuck here.
 export function printedLocallyIds() {
   return [..._printedLocally.keys()];
 }
@@ -147,8 +170,8 @@ export async function startPrintOrchestrator({ deviceId, locationId, isMaster })
   const pollInterval = _isMaster ? MASTER_POLL_MS : CHILD_POLL_MS;
   _pollTimer = setInterval(tick, pollInterval);
 
-  // Reclaim stuck jobs — every 15s regardless of role
-  _reclaimTimer = setInterval(reclaimStuck, 15_000);
+  // Reclaim stuck jobs + sweep exhausted ones — regardless of role
+  _reclaimTimer = setInterval(reclaimStuck, RECLAIM_MS);
 
   // Prune the broadcast-handled dedup map every minute so it can't grow
   // unbounded. Entries older than 5 minutes are safe to drop — by then any
@@ -269,7 +292,8 @@ const markRowPrinted = (jobId) => updateJobRow(jobId, {
 
 // Park a job that IS on paper outside the reclaimable statuses. failed_permanent is in
 // neither reclaimStuck's ('claimed','sending') filter, nor the poll's ('pending','failed'),
-// nor PrintRetrier's — so nothing anywhere reprints it.
+// nor PrintRetrier's — so nothing anywhere reprints it. (The exhausted-job sweep only
+// ever writes failed_permanent, so it cannot bring one back either.)
 const parkPrinted = (jobId) => updateJobRow(jobId, {
   status: 'failed_permanent',
   processed_at: new Date().toISOString(),
@@ -342,8 +366,20 @@ export function stopPrintOrchestrator() {
   if (_channel && supabase) supabase.removeChannel(_channel);
   if (_fastChannel && supabase) supabase.removeChannel(_fastChannel);
   _pollTimer = _reclaimTimer = _idempotencyCleanupTimer = _channel = _fastChannel = null;
+  for (const t of _retryTimers) clearTimeout(t);
+  _retryTimers.clear();
   _inflight.clear();
   _broadcastHandled.clear();
+}
+
+// Arm a scan for the exact moment a scheduled retry becomes due. The backoff ladder is
+// 2s / 10s / 30s / 2min, all shorter than the backstop poll, so without this a failed
+// kitchen ticket would sit until the next scan. The small margin lets the row's
+// next_retry_at pass before the query filters on it.
+function scheduleRetryTick(delayMs) {
+  if (!_running) return;
+  const t = setTimeout(() => { _retryTimers.delete(t); tick(); }, Math.max(0, delayMs) + 500);
+  _retryTimers.add(t);
 }
 
 export function getOrchestratorStatus() {
@@ -368,19 +404,27 @@ async function tick() {
 
     const nowIso = new Date().toISOString();
 
-    // Find eligible jobs: pending OR (failed AND next_retry_at passed), not claimed
+    // Find eligible jobs: pending OR (failed AND due), not claimed.
+    //
+    // v5.6.83: "due" now includes next_retry_at IS NULL. This orchestrator only ever
+    // writes a failed row WITH a next_retry_at, but it is not the only writer — the LAN
+    // print agent and PrintRetrier's reaper both park rows as 'failed' with the column
+    // left null, and those tickets used to fall through this filter and never retry
+    // here at all. PrintRetrier was quietly covering that; it no longer runs alongside
+    // us (see startPrintRetrier), so this engine has to cover it.
     const { data, error } = await supabase
       .from('print_jobs')
       .select('id, status, attempts, next_retry_at, created_at')
       .eq('location_id', _locationId)
       .in('status', ['pending', 'failed'])
       .is('claimed_by', null)
-      .or(`status.eq.pending,and(status.eq.failed,next_retry_at.lte.${nowIso})`)
+      .or(`status.eq.pending,and(status.eq.failed,next_retry_at.lte.${nowIso}),and(status.eq.failed,next_retry_at.is.null)`)
       .lte('created_at', cutoffIso)
       .order('created_at', { ascending: true })
       .limit(BATCH_SIZE);
 
-    if (error || !data) return;
+    if (error) { console.warn('[PrintOrchestrator] poll rejected:', error.message || error); return; }
+    if (!data) return;
 
     for (const job of data) {
       if (_inflight.has(job.id)) continue;
@@ -528,6 +572,7 @@ async function recordFailure(job, errMsg) {
       ({ error } = await updateJobRow(job.id, patch));
     }
     if (error) console.error('[PrintOrchestrator] could not mark job failed_permanent — it will keep retrying:', job.id, error.message || error);
+    else announcePermanentFailure(job, patch);
     return { error };
   }
 
@@ -544,10 +589,22 @@ async function recordFailure(job, errMsg) {
     claim_expires_at:  null,
   });
   // A lost retry-schedule write leaves the row 'claimed' — reclaimStuck picks it up
-  // 30s later, so the job isn't stranded, but the attempt count and the operator's
-  // error message are gone. Worth saying out loud rather than swallowing.
+  // on the next sweep, so the job isn't stranded, but the attempt count and the
+  // operator's error message are gone. Worth saying out loud rather than swallowing.
   if (error) console.warn('[PrintOrchestrator] could not record print failure:', job.id, error.message || error);
+  // v5.6.83: come back for this exact job when its backoff expires, rather than
+  // whenever the backstop poll next happens to run.
+  else scheduleRetryTick(delayMs);
   return { error };
+}
+
+// v5.6.83: folded in from PrintRetrier, which used to be the only thing that emitted
+// this. Documented contract for the StatusDrawer failure queue (nothing subscribes to
+// it in the app today, but a dead engine must not take a published event with it).
+function announcePermanentFailure(job, patch) {
+  try {
+    window.dispatchEvent(new CustomEvent('rpos-print-permanent-failure', { detail: { ...job, ...patch } }));
+  } catch { /* non-DOM context */ }
 }
 
 // ─── Reclaim stuck jobs ──────────────────────────────────────────────────────
@@ -560,7 +617,7 @@ async function reclaimStuck() {
     const nowIso = new Date().toISOString();
     // 0 rows is the normal case here (nothing stuck), so there's nothing to detect —
     // but a rejected reclaim means genuinely stuck jobs never come back, so log it.
-    const { error } = await supabase.from('print_jobs')
+    let q = supabase.from('print_jobs')
       .update({
         status: 'pending',
         claimed_by: null,
@@ -569,9 +626,31 @@ async function reclaimStuck() {
       .eq('location_id', _locationId)
       .in('status', ['claimed', 'sending'])
       .lt('claim_expires_at', nowIso);
+    // v5.6.83, carried over from PrintRetrier's reaper: a job this device printed but
+    // could not record is deliberately left 'claimed' (see markPrintedDurable). From
+    // here it is indistinguishable from a crashed worker, and putting it back to
+    // 'pending' hands a ticket that is already on paper to the next scan.
+    const printed = printedLocallyIds();
+    if (printed.length) q = q.not('id', 'in', `(${printed.join(',')})`);
+    const { error } = await q;
     if (error) console.warn('[PrintOrchestrator] reclaim failed:', error.message || error);
   } catch (e) {
     console.warn('[PrintOrchestrator] reclaim threw:', e?.message || e);
+  }
+
+  // v5.6.83, folded in from PrintRetrier.escalateExhausted: catch rows that used up
+  // their attempts but never got flipped (the escalating write was lost, or another
+  // device/the LAN agent bumped attempts without escalating). Without this sweep an
+  // exhausted ticket cycles forever instead of surfacing in Action Required.
+  try {
+    const { error } = await supabase.from('print_jobs')
+      .update({ status: 'failed_permanent' })
+      .eq('location_id', _locationId)
+      .eq('status', 'failed')
+      .gte('attempts', MAX_ATTEMPTS);
+    if (error) console.warn('[PrintOrchestrator] exhausted-job sweep failed:', error.message || error);
+  } catch (e) {
+    console.warn('[PrintOrchestrator] exhausted-job sweep threw:', e?.message || e);
   }
 }
 

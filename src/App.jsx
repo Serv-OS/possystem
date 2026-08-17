@@ -383,11 +383,15 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
 
         // v4.3 — Print reliability
         // PrintOrchestrator: runs on every native-bridge device (master or child) so any
-        //   terminal can dispatch jobs. Master polls fast (2s), children slower (15s)
-        //   with a 10s grace period so master claims first under normal conditions.
-        // PrintRetrier: master-only scheduler for exponential backoff retries. Works
-        //   even without a native bridge (resets failed jobs to pending so the LAN
-        //   print-agent picks them back up).
+        //   terminal can dispatch jobs. Pickup is the print_jobs realtime INSERT
+        //   subscription; the poll behind it is only a backstop (v5.6.83: master 20s,
+        //   children 30s, 10s grace so master claims first under normal conditions).
+        //   It is the SINGLE owner of claim state wherever it runs.
+        // PrintRetrier: the fallback scheduler for a master with NO native bridge, where
+        //   the orchestrator refuses to start and the LAN print-agent does the printing.
+        //   Since v5.6.83 it stands down by itself when the orchestrator is running —
+        //   the two used to run together and write conflicting statuses to the same
+        //   print_jobs rows (pending at 30s vs failed at 60s).
         try {
           if (stopped) return;
           const { startPrintOrchestrator } = await import('./sync/PrintOrchestrator.js');
@@ -686,27 +690,43 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
     </div>
   );
 
-  // KDS devices — if device type is kds, ensure mode is set correctly
+  // ── v5.6.83: SyncBridge mounts ONCE, and never moves ────────────────────────
+  // Every branch below used to return SyncBridge inside its own root element — a
+  // Fragment for the PIN screen, a <div> for the signed-in shell. React treats a
+  // change of root element type as a different tree, so it UNMOUNTED everything and
+  // built it again on every sign-in and every sign-out. SyncBridge's cleanup ran and
+  // its ~25-query boot ran again behind it: config push, a nine-leg fetch, tax rates,
+  // discounts, 500 closed checks over 30 days, bookings, order queue, bar tabs, the
+  // lot. On a till configured to sign out after each sale, staff were waiting for a
+  // full application boot between orders.
+  //
+  // So the branches now choose only the BODY. The bridge sits above them in a fixed
+  // slot and stays mounted while the body swaps underneath it. (SyncBridge also holds
+  // a location-keyed boot latch of its own as a second line of defence.)
   const pairedDeviceType = pairedDevice?.type;
-  if (pairedDeviceType === 'kds') {
+  const isKdsDevice = pairedDeviceType === 'kds'
+    // For non-KDS devices, also check deviceConfig (set during pairing)
+    || (deviceConfig?.defaultSurface === 'kds'
+        && !deviceConfig?.profileName?.toLowerCase().includes('counter')
+        && !deviceConfig?.profileName?.toLowerCase().includes('bar')
+        && !deviceConfig?.profileName?.toLowerCase().includes('server'));
+
+  let body;
+  if (isKdsDevice) {
     // KDS devices always show KDS surface regardless of URL mode
-    return <><KioskAutoUpdate /><SyncBridge onSyncPulse={handleSyncPulse}/><KDSSurface /></>;
-  }
-  // For non-KDS devices, also check deviceConfig (set during pairing)
-  if (deviceConfig?.defaultSurface === 'kds' && !deviceConfig?.profileName?.toLowerCase().includes('counter') && !deviceConfig?.profileName?.toLowerCase().includes('bar') && !deviceConfig?.profileName?.toLowerCase().includes('server')) {
-    return <><KioskAutoUpdate /><SyncBridge onSyncPulse={handleSyncPulse}/><KDSSurface /></>;
-  }
-
-  if (!staff) return <><SyncBridge onSyncPulse={handleSyncPulse}/><PINScreen /></>;
-  // Kiosk — full screen, no staff sidebar, no shift bar
-  if (surface === 'kiosk' || deviceConfig?.defaultSurface === 'kiosk') return <><SyncBridge onSyncPulse={handleSyncPulse}/><KioskSurface /></>;
-  // MPOS — full screen, phone-shaped router. Picked up by defaultSurface in addition
-  // to the URL-based ?mode=mpos path (which is checked earlier in the component).
-  if (deviceConfig?.defaultSurface === 'mpos') return <><SyncBridge onSyncPulse={handleSyncPulse}/><MPOSSurface /></>;
-
-  return (
+    body = <><KioskAutoUpdate /><KDSSurface /></>;
+  } else if (!staff) {
+    body = <PINScreen />;
+  } else if (surface === 'kiosk' || deviceConfig?.defaultSurface === 'kiosk') {
+    // Kiosk — full screen, no staff sidebar, no shift bar
+    body = <KioskSurface />;
+  } else if (deviceConfig?.defaultSurface === 'mpos') {
+    // MPOS — full screen, phone-shaped router. Picked up by defaultSurface in addition
+    // to the URL-based ?mode=mpos path (which is checked earlier in the component).
+    body = <MPOSSurface />;
+  } else {
+    body = (
     <div style={{ display:'flex', flexDirection:'column', height:'100vh', overflow:'hidden' }}>
-      <SyncBridge onSyncPulse={handleSyncPulse}/>
       {masterOffline && (
         <MasterOfflineModal
           masterName={masterInfo?.device_name}
@@ -739,6 +759,17 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
       {orderAlert && surface !== 'kds' && <OrderAlert alert={orderAlert} onDismiss={dismissOrderAlert} setSurface={setSurface} />}
       {showWhatsNew && <Suspense fallback={null}><WhatsNewModal onClose={()=>setShowWhatsNew(false)} /></Suspense>}
     </div>
+    );
+  }
+
+  // The bridge is ALWAYS child 0 of this Fragment. React keeps a child in a fixed slot
+  // mounted across re-renders, so only {body} is torn down and rebuilt when the
+  // operator signs in or out.
+  return (
+    <>
+      <SyncBridge onSyncPulse={handleSyncPulse}/>
+      {body}
+    </>
   );
 }
 

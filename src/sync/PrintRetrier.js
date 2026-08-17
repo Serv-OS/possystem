@@ -1,6 +1,24 @@
 /**
- * PrintRetrier — master POS retry orchestrator for print_jobs
- * ============================================================
+ * PrintRetrier — retry scheduler for print_jobs on a master with NO native bridge
+ * ==============================================================================
+ *
+ * v5.6.83 — SCOPE NARROWED. This used to run on EVERY master, alongside
+ * PrintOrchestrator, and the two of them owned the same rows:
+ *
+ *   - PrintOrchestrator.reclaimStuck resets a stuck claim to 'pending' at a 30s TTL.
+ *   - PrintRetrier.reapStaleClaims reset the SAME rows to 'failed' at 60s.
+ *
+ * Two engines writing conflicting statuses to one table is a correctness bug, not just
+ * a busy network — and between them they were making ~70 round trips a minute against
+ * print_jobs on a till that was printing nothing at all.
+ *
+ * There is now exactly ONE claim owner per device. PrintOrchestrator takes it whenever
+ * it is running, and startPrintRetrier below stands down in that case. PrintRetrier is
+ * NOT deleted, because PrintOrchestrator refuses to start on a device with no native
+ * bridge (it would be claiming jobs it cannot print) — on a browser-only master with a
+ * LAN print agent this file is still the only thing scheduling retries and handing
+ * failed jobs back to the agent. Its unique behaviour was folded into
+ * PrintOrchestrator so nothing is lost where the orchestrator does run.
  *
  * Runs ONLY on the designated master device (deviceConfig.isMaster === true).
  * Exactly one master per location guarantees exactly one scheduler, so there
@@ -41,9 +59,17 @@
 
 import { supabase, getLocationId, isMock } from '../lib/supabase';
 import { printService, isNativeBridgeAvailable } from '../lib/printer';
-import { printedLocallyIds } from './PrintOrchestrator';
+import { printedLocallyIds, getOrchestratorStatus } from './PrintOrchestrator';
 
-const POLL_INTERVAL_MS = 5_000;
+// v5.6.83: was 5s, and each tick fired THREE sequential statements — 36 round trips a
+// minute on a till that prints nothing most of the day. Retries are still bounded by
+// the backoff ladder (2s / 10s / 30s / 2min); a scheduled retry now lands within one
+// scan of its deadline instead of instantly, which no operator can perceive on a
+// printer that has already failed at least once.
+const POLL_INTERVAL_MS = 20_000;
+// The reaper and the exhausted-job sweep are safety nets, not the hot path — run them
+// once a minute rather than on every scan.
+const SWEEP_EVERY_TICKS = 3;
 const FIRST_TICK_DELAY = 3_000;
 const CLAIM_TIMEOUT_MS = 60_000;
 const MAX_ATTEMPTS     = 5;
@@ -53,6 +79,7 @@ const BACKOFF_MS = [0, 2_000, 10_000, 30_000, 120_000];
 let _pollTimer = null;
 let _running   = false;
 let _locationId = null;
+let _tickCount = 0;
 
 function getDeviceId() {
   try {
@@ -63,6 +90,18 @@ function getDeviceId() {
 
 export async function startPrintRetrier() {
   if (isMock || !supabase || _running) return;
+
+  // v5.6.83: ONE claim owner per device. PrintOrchestrator is already running on any
+  // device with a native bridge (the Sunmi tills), and it has taken over everything
+  // unique to this file. Starting here as well is what produced conflicting statuses
+  // on the same print_jobs rows. Checked at start, not per tick, because
+  // startPrintOrchestrator flips its running flag synchronously before App.jsx gets
+  // here — and if it bailed for any reason (no bridge, no device id) this file is the
+  // fallback and must start as before.
+  if (getOrchestratorStatus().running) {
+    console.log('[PrintRetrier] PrintOrchestrator owns claim state on this device — standing down');
+    return;
+  }
 
   _locationId = await getLocationId().catch(() => null);
   if (!_locationId) {
@@ -82,15 +121,21 @@ export function stopPrintRetrier() {
   if (_pollTimer) clearInterval(_pollTimer);
   _pollTimer = null;
   _running = false;
+  _tickCount = 0;
 }
 
 async function tick() {
   if (!_running) return;
 
+  // Every tick does the work that actually gets a ticket printed. The two sweeps are
+  // eventually-consistent safety nets for rows nothing else picked up, so they run on
+  // a slower cadence — that alone takes this loop from 3 statements a tick to ~1.3.
+  const doSweeps = (_tickCount++ % SWEEP_EVERY_TICKS) === 0;
+
   try {
-    await reapStaleClaims();
+    if (doSweeps) await reapStaleClaims();
     await processFailedJobs();
-    await escalateExhausted();
+    if (doSweeps) await escalateExhausted();
   } catch (e) {
     console.warn('[PrintRetrier] Tick error:', e.message);
   }
