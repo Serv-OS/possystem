@@ -546,7 +546,7 @@ function KioskCardTerminalSection({ kioskId, locationId }) {
       {err && <div style={alertStyle('error')}>{err}</div>}
       {terminals.length === 0 ? (
         <div style={{ fontSize: 12.5, color: 'var(--t3)' }}>
-          No PAX card terminals are paired at this venue. Pair one in Back Office → Card readers → PAX card terminals, then assign it here.
+          No card terminals running the ServOS app are paired at this venue. Pair one in Back Office → Card readers → Terminals running the ServOS app, then assign it here.
         </div>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>

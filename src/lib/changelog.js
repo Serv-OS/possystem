@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.84',
+    date: '2026-08-18',
+    changes: [
+      'THE CARD TERMINAL PAIRING PANEL NO LONGER SAYS PAX, AND NO LONGER LISTS READERS IT DOES NOT LOOK AFTER. Back office, Card readers. The panel that used to be called "PAX card terminals" is now "Terminals running the ServOS app". That is what it actually is. It pairs any card terminal that runs our own app on its own screen, which today means a PAX machine and, since the last release, an Adyen Android terminal running our mobile POS. Pairing is unchanged: the terminal shows a code, you type the code in here.',
+      'Readers that run the manufacturer\u2019s own software are no longer duplicated here. An Adyen AMS1 counter reader was being listed in the pairing panel even though it has no code to type and is fully set up in the Adyen card terminals panel just above. It appeared in both places with two sets of settings, which is confusing and pointless. It now appears only in the Adyen panel, where its till, its payment types and its tipping have always lived. Nothing about that reader changed, it just stopped showing up twice.',
+      'A terminal that runs our app still shows here even after you register its Adyen reader. This matters for the Adyen Android terminals: they are both, our app and an Adyen reader, and they stay in this panel where their pairing, till assignment, payment modes and tipping are set.',
+      'A venue with nothing paired now gets told what to do rather than an empty box. It says to switch the terminal on and open the app to get a code, and points anyone setting up a counter reader at the Adyen panel instead.',
+      'The Ryft connect buttons are gone from this panel. Every "Connect to Ryft", "Disconnect" and "Find readers on my Ryft account" control has been removed along with the Ryft status line on each terminal. Terminals already connected to Ryft keep working exactly as before, nothing was unlinked and no payment path changed. If a venue on Ryft needs to connect a brand new terminal, that now needs us to do it rather than the back office.',
+    ],
+  },
+  {
     version: '5.6.83',
     date: '2026-08-17',
     changes: [

@@ -1,9 +1,17 @@
 // src/backoffice/sections/PaxTerminals.jsx
 //
-// Pair a PAX card terminal (our own :paxpay app) to this location by claim code,
-// see whether it is online, and configure what it does. Self-contained and
-// self-gating — it renders nothing until it knows
-// there is something to show.
+// "Terminals running the ServOS app" — pair a card terminal that runs our own
+// app to this location by claim code, see whether it is online, and configure
+// what it does. Self-contained and self-gating — it renders nothing until it
+// knows there is something to show.
+//
+// TWO KINDS OF HARDWARE LAND HERE and they behave identically: a PAX terminal
+// running :paxpay, and (from v5.6.81) an Adyen Android terminal such as the
+// S1F2L running MPOS. Readers that run the MANUFACTURER's own software — AMS1
+// and friends — cannot be paired by code and are deliberately filtered out of
+// this panel; they are registered by serial in the sibling AdyenTerminals
+// panel, which also owns their till binding, modes and tipping. See the
+// last_seen_at note on the query in load() for why that is the honest filter.
 //
 // The terminal shows a code on its own screen; a manager types that code here.
 // That is the whole pairing ceremony: the code is a capability you have to be
@@ -91,25 +99,6 @@ function tipOf(t) {
   };
 }
 
-// The Ryft register/adopt/list/available/unregister actions — ported from the old
-// standalone "Ryft card readers" panel, now folded in here. Every call carries the
-// EXPLICIT paired-terminal id (ops_terminal_device_id) so the ops link is stamped by
-// id, never by the serial that lives in a different namespace and caused the drift.
-async function callRyftFn(action, payload) {
-  const locId = getActiveLocationSync();
-  const { data: session } = await supabase.auth.getSession();
-  const token = session?.session?.access_token;
-  if (!token) throw new Error('Please sign in again.');
-  const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ryft-terminals`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-    body: JSON.stringify({ action, ops_location_id: locId, ...payload }),
-  });
-  const j = await res.json().catch(() => ({}));
-  if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
-  return j;
-}
-
 export default function PaxTerminals() {
   const [locationId, setLocationId] = useState(null);
   const [terminals, setTerminals] = useState([]);
@@ -125,8 +114,6 @@ export default function PaxTerminals() {
   const [label, setLabel] = useState('');
   const [busy, setBusy] = useState(false);
   const [openId, setOpenId] = useState(null);   // which terminal's settings are expanded
-  const [openRyftId, setOpenRyftId] = useState(null);   // which terminal's Ryft-connect panel is open
-  const [ryftInfo, setRyftInfo] = useState(null);       // { processor, linked } — is this a Ryft venue?
 
   const load = async () => {
     setError('');
@@ -135,11 +122,32 @@ export default function PaxTerminals() {
       if (!locId || locId === 'loc-demo') { setLoading(false); return; }
       setLocationId(locId);
       // RLS scopes this to the manager's own locations — no filter can widen it.
+      //
+      // ONLY TERMINALS THAT RUN OUR APP, and last_seen_at is the signal.
+      //
+      // It is the only candidate that is true from the first instant a device
+      // exists: register_terminal_device() stamps last_seen_at = now() on the row
+      // it INSERTS, before any heartbeat and before a manager can even type the
+      // code (claim_terminal_device refuses a row whose last_seen_at/created_at is
+      // over 30 minutes old). So a genuine app terminal is never invisible here,
+      // not even seconds after it first showed its code.
+      //
+      // A cloud-only reader (AMS1) is minted by adyen-terminal-admin's 'assign'
+      // action with a SYNTHESIZED device_uid that no physical device can ever
+      // authenticate as, so nothing can ever write last_seen_at on it and it stays
+      // null for life. It is fully managed in the Adyen panel above.
+      //
+      // Rejected: app_version — register_terminal_device takes it as an optional
+      // argument, so a row can legitimately have none.
+      // Rejected: "adyen_terminal_id is null" — an S1F2L running MPOS carries BOTH
+      // an Adyen POIID and our app, and that is precisely the device this panel
+      // exists to pair. That filter would hide exactly the wrong one.
       const { data, error: e } = await supabase
         .from('terminal_devices')
-        .select('id, label, serial_number, status, active, app_version, last_seen_at, claimed_at, bound_pos_device_id, tip_config, modes, idle_screen, ryft_terminal_id')
+        .select('id, label, serial_number, status, active, app_version, last_seen_at, claimed_at, bound_pos_device_id, tip_config, modes, idle_screen')
         .eq('location_id', locId)
         .neq('status', 'retired')
+        .not('last_seen_at', 'is', null)
         .order('claimed_at', { ascending: false });
       if (e) throw new Error(e.message);
       setTerminals(data || []);
@@ -156,16 +164,10 @@ export default function PaxTerminals() {
         .order('name');
       setPosDevices(devs || []);
 
-      // Is this a Ryft venue? Controls whether the per-terminal "Connect to Ryft"
-      // affordance shows. Best-effort — a non-Ryft venue or an unreachable call
-      // simply hides it, exactly as the old standalone panel self-gated.
-      try { const r = await callRyftFn('list', {}); setRyftInfo({ processor: r.processor, linked: r.linked }); }
-      catch { setRyftInfo(null); }
-
       // v5.5.838: the venue's idle-screen image, shared with the Stripe reader
       // screensaver (Card readers → "Idle screen / screensaver"). It lives on
-      // location_reader_settings in the PLATFORM DB; the PAX app can only reach
-      // the Ops project, so Back Office mirrors the URL onto the terminal row.
+      // location_reader_settings in the PLATFORM DB; the terminal app can only
+      // reach the Ops project, so Back Office mirrors the URL onto the terminal row.
       //
       // v5.5.839: the Platform DB has its OWN location ids — the Ops id is stored
       // there as locations.ops_location_id. Passing the Ops id straight through
@@ -275,11 +277,14 @@ export default function PaxTerminals() {
 
   return (
     <div style={S.card}>
-      <div style={S.h2}>🧾 PAX card terminals</div>
+      <div style={S.h2}>🧾 Terminals running the ServOS app</div>
       <div style={S.desc}>
-        Pair a PAX terminal running the ServOS payment app. The terminal shows a pairing code on its
-        own screen — type it in below. Once paired it can pull an open table, take the whole bill and
-        close it, and the POS can send a payment straight to it.
+        Card terminals that run our own app on their own screen. The terminal shows a pairing code,
+        type it in below. Once paired it can pull up an open table, take the whole bill and close it,
+        and a till can send a payment straight to it.
+        <br />
+        Readers that run the manufacturer&apos;s own software, such as the Adyen AMS1, have no code to
+        type. Add those by serial number under Adyen card terminals above.
       </div>
 
       {terminals.length > 0 && (
@@ -310,11 +315,6 @@ export default function PaxTerminals() {
                       {modeSummary.length ? modeSummary.join(' · ') : 'No payment modes enabled'}
                       {(tipOf(t).enabled ? ' · Tipping on' : ' · Tipping off')}
                     </div>
-                    {ryftInfo?.processor === 'ryft' && (
-                      <div style={{ fontSize:11, marginTop:2, fontWeight:600, color: t.ryft_terminal_id ? 'var(--grn)' : 'var(--red)' }}>
-                        {t.ryft_terminal_id ? 'Connected to Ryft ✓' : '⚠ Not connected to Ryft — cannot take card'}
-                      </div>
-                    )}
                   </div>
                   <div style={{ ...S.mono, color:'var(--t2)', fontSize:12 }}>{t.serial_number || '—'}</div>
                   <div style={{ display:'flex', alignItems:'center', gap:7 }}>
@@ -325,14 +325,6 @@ export default function PaxTerminals() {
                     <span style={{ fontSize:12, color: st.online ? 'var(--grn)' : 'var(--t3)' }}>{st.text}</span>
                   </div>
                   <div style={{ textAlign:'right', display:'flex', gap:6, justifyContent:'flex-end' }}>
-                    {ryftInfo?.processor === 'ryft' && (
-                      <button
-                        onClick={() => setOpenRyftId(openRyftId === t.id ? null : t.id)}
-                        style={{ ...S.btn, ...(t.ryft_terminal_id ? S.btnGhost : S.btnPrim), padding:'5px 10px', fontSize:12 }}
-                      >
-                        {openRyftId === t.id ? 'Close' : (t.ryft_terminal_id ? 'Ryft' : 'Connect to Ryft')}
-                      </button>
-                    )}
                     <button
                       onClick={() => setOpenId(openId === t.id ? null : t.id)}
                       style={{ ...S.btn, ...S.btnGhost, padding:'5px 10px', fontSize:12 }}
@@ -348,14 +340,6 @@ export default function PaxTerminals() {
                     <button onClick={() => retire(t)} style={{ ...S.btn, ...S.btnDan, padding:'5px 10px', fontSize:12 }}>Unpair</button>
                   </div>
                 </div>
-                {openRyftId === t.id && (
-                  <RyftConnect
-                    key={`ryft:${t.id}:${t.ryft_terminal_id || 'none'}`}
-                    terminal={t}
-                    linkedToAccount={!!ryftInfo?.linked}
-                    onDone={async () => { setOpenRyftId(null); await load(); }}
-                  />
-                )}
                 {openId === t.id && (
                   <TerminalSettings
                     key={`${t.id}:${t.claimed_at}`}
@@ -371,6 +355,21 @@ export default function PaxTerminals() {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {terminals.length === 0 && (
+        <div style={{ padding:'16px 14px', border:'1px dashed var(--bdr)', borderRadius:10, background:'var(--bg2)', marginBottom:16 }}>
+          <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)', marginBottom:4 }}>
+            No terminals running the ServOS app here yet
+          </div>
+          <div style={{ fontSize:12, color:'var(--t4)', lineHeight:1.6 }}>
+            Switch the terminal on and open the app. It shows a pairing code on its own screen. Type
+            that code in below and it is bound to this venue.
+            <br />
+            Setting up an Adyen reader that runs Adyen&apos;s own software? There is no code to type.
+            Register it by serial number under Adyen card terminals above.
+          </div>
         </div>
       )}
 
@@ -410,135 +409,6 @@ export default function PaxTerminals() {
   );
 }
 
-// ─── Connect a paired PAX terminal to Ryft ────────────────────────────────────
-// Folded in from the old standalone "Ryft card readers" panel (sunset — this is
-// its replacement). The difference that matters: every register/adopt call sends
-// ops_terminal_device_id — THIS paired terminal's id — so the server stamps the
-// Ryft link onto exactly this row. The old panel matched by serial, and the app's
-// ops serial (AID-…) never equals the hardware serial on the Ryft form, so the
-// link silently never landed and the terminal couldn't charge.
-function RyftConnect({ terminal, linkedToAccount, onDone }) {
-  const [serial, setSerial] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState('');
-  const [available, setAvailable] = useState(null);   // terminals already on the Ryft account
-
-  const register = async () => {
-    setBusy(true); setErr('');
-    try {
-      const r = await callRyftFn('register', {
-        serial_number: serial.trim(),
-        terminal_name: terminal.label || undefined,
-        ops_terminal_device_id: terminal.id,
-      });
-      if (!r.ops_linked) throw new Error('Registered with Ryft, but linking to this terminal failed — try "Find readers on my Ryft account" and link it.');
-      await onDone();
-    } catch (e) { setErr(e.message); }
-    finally { setBusy(false); }
-  };
-
-  const findExisting = async () => {
-    setBusy(true); setErr('');
-    try { const r = await callRyftFn('available', {}); setAvailable(r.terminals || []); }
-    catch (e) { setErr(e.message); }
-    finally { setBusy(false); }
-  };
-
-  const adopt = async (ryftId) => {
-    setBusy(true); setErr('');
-    try {
-      const r = await callRyftFn('adopt', {
-        terminal_id: ryftId,
-        terminal_name: terminal.label || undefined,
-        ops_terminal_device_id: terminal.id,
-      });
-      if (!r.ops_linked) throw new Error('Linked at Ryft, but stamping this terminal failed. Refresh and try again.');
-      await onDone();
-    } catch (e) { setErr(e.message); }
-    finally { setBusy(false); }
-  };
-
-  const disconnect = async () => {
-    if (!confirm('Disconnect this terminal from Ryft? It will stop taking card payments until reconnected. (The registration is removed from your Ryft account.)')) return;
-    setBusy(true); setErr('');
-    try { await callRyftFn('unregister', { terminal_id: terminal.ryft_terminal_id }); await onDone(); }
-    catch (e) { setErr(e.message); }
-    finally { setBusy(false); }
-  };
-
-  return (
-    <div style={{ padding:'14px 16px', borderTop:'1px dashed var(--bdr)', background:'var(--bg2)' }}>
-      <div style={{ fontSize:13, fontWeight:800, color:'var(--t1)', marginBottom:4 }}>💳 Card processor (Ryft)</div>
-
-      {!linkedToAccount ? (
-        <div style={{ fontSize:12, color:'var(--t3)' }}>
-          Set up card payments for this location first (Location Settings → Card payments), then connect this terminal here.
-        </div>
-      ) : terminal.ryft_terminal_id ? (
-        <div style={{ display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' }}>
-          <div style={{ flex:1, minWidth:220 }}>
-            <div style={{ fontSize:12, color:'var(--grn)', fontWeight:700 }}>Connected to Ryft ✓</div>
-            <code style={{ fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono,monospace)' }}>{terminal.ryft_terminal_id}</code>
-          </div>
-          <button onClick={disconnect} disabled={busy} style={{ ...S.btn, ...S.btnDan, padding:'6px 12px', fontSize:12 }}>
-            {busy ? 'Working…' : 'Disconnect'}
-          </button>
-        </div>
-      ) : (
-        <>
-          <div style={{ fontSize:12, color:'var(--t4)', marginBottom:12, lineHeight:1.5 }}>
-            This terminal is paired but not connected to Ryft, so it can't take card payments yet.
-            Enter the serial number <b>printed on the device</b> (not the pairing code) to register it,
-            or link one already on your Ryft account.
-          </div>
-          <div style={{ display:'flex', gap:10, alignItems:'flex-end', flexWrap:'wrap' }}>
-            <div style={{ flex:1, minWidth:200 }}>
-              <label style={S.label}>Serial number on the device</label>
-              <input value={serial} onChange={e => setSerial(e.target.value)} placeholder="e.g. 1853933823"
-                     style={{ ...S.input, fontFamily:'var(--font-mono,monospace)' }} />
-            </div>
-            <button onClick={register} disabled={busy || !serial.trim()} style={{ ...S.btn, ...S.btnPrim }}>
-              {busy ? 'Connecting…' : 'Register & connect'}
-            </button>
-            <button onClick={findExisting} disabled={busy} style={{ ...S.btn, ...S.btnGhost }}>
-              {busy ? 'Checking…' : 'Find readers on my Ryft account'}
-            </button>
-          </div>
-
-          {available && available.length === 0 && (
-            <div style={{ fontSize:12, color:'var(--t4)', marginTop:10 }}>
-              No readers found on your Ryft account. If you expected one, check you're in the same
-              environment (sandbox vs live) as the device.
-            </div>
-          )}
-          {available && available.length > 0 && (
-            <div style={{ display:'flex', flexDirection:'column', gap:8, marginTop:10 }}>
-              {available.map(a => (
-                <div key={a.id} style={{ display:'flex', alignItems:'center', gap:12, padding:'10px 12px', background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:9 }}>
-                  <div style={{ flex:1, minWidth:0 }}>
-                    <div style={{ fontSize:13, fontWeight:600, color:'var(--t1)' }}>{a.name || 'Unnamed reader'}</div>
-                    <div style={{ fontSize:11, color:'var(--t4)', fontFamily:'var(--font-mono,monospace)' }}>
-                      S/N {a.serial_number || '—'} · {a.id}
-                    </div>
-                  </div>
-                  {a.already_linked
-                    ? <span style={{ fontSize:11, fontWeight:700, color:'var(--t4)' }}>linked to another terminal</span>
-                    : null}
-                  <button onClick={() => adopt(a.id)} disabled={busy} style={{ ...S.btn, ...S.btnPrim, padding:'6px 12px', fontSize:12 }}>
-                    Connect this one
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </>
-      )}
-
-      {err && <div style={S.err}>{err}</div>}
-    </div>
-  );
-}
-
 // ─── Per-terminal settings ────────────────────────────────────────────────────
 // v5.5.838. Every save goes through set_terminal_settings, which is a WHOLE
 // SETTINGS WRITE — so this editor always sends the complete set, never a patch.
@@ -568,8 +438,8 @@ function TerminalSettings({ terminal, posDevices, locationId, platformLocId, ven
 
   // Upload straight to the PUBLIC kiosk-assets bucket, the same pattern
   // KioskSettings and DeviceProfiles use. Public-bucket objects are served from
-  // /storage/v1/object/public/… which does NOT consult storage RLS, so the PAX
-  // app can fetch the image over plain HTTPS with no session at all.
+  // /storage/v1/object/public/… which does NOT consult storage RLS, so the
+  // terminal app can fetch the image over plain HTTPS with no session at all.
   const uploadIdleImage = async (file) => {
     setErr(''); setOk(''); setSsUploading(true);
     try {

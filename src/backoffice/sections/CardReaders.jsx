@@ -184,11 +184,14 @@ export default function CardReaders() {
         Network readers (Stripe Reader S700, WisePOS E in WiFi mode) are registered here and serve all POS terminals at this location.
       </div>
 
-      {/* PaxPay terminals — the ONE pairing surface (self-gating: renders once a
-          location is resolved). Ryft register/adopt is folded into each paired
-          terminal's "Connect to Ryft" panel; the standalone "Ryft card readers"
-          panel was sunset with it (its serial-matched ops link never landed —
-          the drift behind the charge 404s). */}
+      {/* Two sibling panels, one per kind of hardware, both self-gating.
+          AdyenTerminals owns readers that run Adyen's own software: registered by
+          serial, no code to type. PaxTerminals owns terminals that run OUR app
+          (PAX :paxpay, and MPOS on an Adyen Android terminal from v5.6.81):
+          paired by the code the terminal shows on its own screen. A device only
+          ever appears in one of them — see the last_seen_at filter in
+          PaxTerminals' load(). v5.6.84 removed the Ryft register/adopt panel that
+          used to hang off each paired terminal here. */}
       <AdyenTerminals />
       <PaxTerminals />
 
@@ -901,12 +904,13 @@ function ReaderSettingsPanel({ locationId }) {
       {/* ── Screensaver / idle screen ──────────────────────────────── */}
       <div style={{ marginTop: 20, paddingTop: 18, borderTop: '1px solid var(--bdr)' }}>
         <div style={{ fontSize: 14, fontWeight: 800, color: 'var(--t1)', marginBottom: 4 }}>Idle screen / screensaver</div>
-        {/* v5.5.838: this is no longer a Stripe-only setting. PAX card terminals
-            honour the same venue image (Card readers → PAX card terminals → Settings),
-            so the copy here is processor-neutral. */}
+        {/* v5.5.838: this is no longer a Stripe-only setting. Terminals running our
+            own app honour the same venue image (Card readers → Terminals running the
+            ServOS app → Settings), so the copy here is processor-neutral. */}
         <div style={{ fontSize: 12, color: 'var(--t3)', marginBottom: 14, lineHeight: 1.5 }}>
           Display a custom image on the card machine screen when no payment is in progress. Great for branding, promotions, or a welcome message. Image must be PNG or JPEG, max 512 KB.
-          {' '}PAX terminals use this same image — switch it on per terminal under PAX card terminals, below.
+          {' '}Terminals running the ServOS app use this same image. Switch it on per terminal under
+          Terminals running the ServOS app, below.
         </div>
 
         <div style={{ padding: 12, background: 'var(--bg2)', border: '1px solid var(--bdr)', borderRadius: 8, marginBottom: 12 }}>
