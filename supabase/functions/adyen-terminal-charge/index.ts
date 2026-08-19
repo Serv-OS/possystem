@@ -338,14 +338,29 @@ Deno.serve(async (req) => {
   // own SELECT policy fences the same way). It cannot reach another venue's jobs,
   // another terminal's jobs, or an unpaired/retired row.
   if (!isServiceRole) {
-    const [{ data: dev }, { data: ownTerm }] = await Promise.all([
+    // v5.6.89 — (c) a signed-in USER with user_locations access to the job's
+    // venue (or super_admin), MIRRORING terminal-job-create's fence. Proven live
+    // 19 Aug: Peter's browser POS shares its session with Back Office, so the
+    // caller was his BO user — terminal-job-create ACCEPTED it and minted the
+    // job, this fence REFUSED it, and the job deadlocked at charging_unsent
+    // forever ("fence: caller is neither a paired device..." in the refusal
+    // log, callerUid = his BO login). Creating a job is strictly MORE powerful
+    // than kicking it (create freezes the money; the kick only transports the
+    // DB's own amount behind a CAS), so any identity trusted to create must be
+    // trusted to kick — otherwise that identity can only ever wedge terminals.
+    const [{ data: dev }, { data: ownTerm }, { data: ul }, { data: prof }] = await Promise.all([
       opsAdmin.from('devices')
         .select('id').eq('device_uid', callerUid).eq('location_id', job.location_id).maybeSingle(),
       opsAdmin.from('terminal_devices')
         .select('id').eq('id', job.target_terminal_id).eq('device_uid', callerUid)
         .eq('status', 'paired').eq('active', true).maybeSingle(),
+      opsAdmin.from('user_locations')
+        .select('location_id').eq('user_id', callerUid).eq('location_id', job.location_id).maybeSingle(),
+      opsAdmin.from('user_profiles')
+        .select('role').eq('id', callerUid).maybeSingle(),
     ]);
-    if (!dev && !ownTerm) {
+    const isVenueUser = !!ul || prof?.role === 'super_admin';
+    if (!dev && !ownTerm && !isVenueUser) {
       await logRefusal('fence: caller is neither a paired device at this location nor the job\'s own terminal', {
         action, jobId: job.id, jobLocation: job.location_id,
         targetTerminalId: job.target_terminal_id, callerUid,
