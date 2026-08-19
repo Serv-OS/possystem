@@ -32,6 +32,12 @@ export default function TabPreAuthTerminal({ amountMinor, guestName, onAuthorize
   const readerIdRef = useRef(null);
   const platformLocRef = useRef(null);
   const startedRef = useRef(false);
+  // v5.6.93: which flow started, so "Try hold again" retries the SAME one. It
+  // used to call runHold (the Stripe path) unconditionally — after an Adyen
+  // hold failure on an Adyen venue the retry fired a Stripe reader request
+  // that could never work there (live 19 Aug: 'Argument "reader" must be a
+  // string, but got: null').
+  const adyenTermRef = useRef(null);
 
   // v5.5.731: hold the auto-sign-out guard while a card hold is being taken on the reader — the
   // customer tapping their card is not POS activity, so an idle timeout must not sign the operator
@@ -83,6 +89,7 @@ export default function TabPreAuthTerminal({ amountMinor, guestName, onAuthorize
             return;
           }
           setReaderLabel(terminal.label || 'card reader');
+          adyenTermRef.current = terminal;
           if (!startedRef.current) { startedRef.current = true; runAdyenHold(terminal); }
           return;
         }
@@ -93,6 +100,13 @@ export default function TabPreAuthTerminal({ amountMinor, guestName, onAuthorize
         const assigned = await getAssignedNetworkReader();
         if (cancelled) return;
         if (!assigned) { setState('simulated'); return; }
+        // v5.6.93 — an assigned network reader with NO Stripe reader id is not
+        // a Stripe reader: Adyen terminal registration also mints
+        // payment_devices rows (connection_kind 'network', stripe_reader_id
+        // NULL), and firing the Stripe hold at one sent reader:null to Stripe
+        // live on 19 Aug. Treat it as "no reader that can hold a card here" —
+        // the same honest open-without-a-hold offer as no reader at all.
+        if (!assigned.stripe_reader_id) { setState('simulated'); return; }
         setReaderLabel(assigned.label || assigned.stripe_reader_id);
         readerIdRef.current = assigned.stripe_reader_id;
         if (!startedRef.current) { startedRef.current = true; runHold(); }
@@ -106,6 +120,20 @@ export default function TabPreAuthTerminal({ amountMinor, guestName, onAuthorize
   const runAdyenHold = async (terminal) => {
     setState('collecting');
     setStatusMsg(`Present card on ${terminal.label || 'the reader'} — the hold completes or cancels on the reader`);
+    // v5.6.93 — demo reader window (cosmetic): a hold has no job row for the
+    // demo reader to poll, so tell any open ?mode=readerdemo window on this
+    // machine to play its card-present animation. Fire-and-forget, same-origin
+    // only — the server's simulated hold succeeds whether or not the window
+    // exists. Only the demo terminal broadcasts: on the Adyen branch a
+    // terminal with no adyen_terminal_id can only be the DEMO- reader (the
+    // server refuses hold_start for anything else without an Adyen link).
+    if (!terminal.adyen_terminal_id) {
+      try {
+        const ch = new BroadcastChannel('rpos-demo-reader');
+        ch.postMessage({ kind: 'hold_start', amountMinor });
+        ch.close();
+      } catch { /* unsupported browser — cosmetic only */ }
+    }
     try {
       const token = await ensureAuthToken();
       const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/adyen-terminal-charge`, {
@@ -254,7 +282,9 @@ export default function TabPreAuthTerminal({ amountMinor, guestName, onAuthorize
           <>
             <div style={{ fontSize: 13, color: 'var(--red)', marginBottom: 16 }}>{errorMsg || 'Authorisation failed'}</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <button className="btn btn-acc btn-full" onClick={runHold}>Try hold again</button>
+              {/* v5.6.93: retry the flow that actually failed — an Adyen hold
+                  retried through runHold (Stripe) and hit a null-reader error. */}
+              <button className="btn btn-acc btn-full" onClick={() => (adyenTermRef.current ? runAdyenHold(adyenTermRef.current) : runHold())}>Try hold again</button>
               <button className="btn btn-ghost btn-full" onClick={() => onSkip?.()}>Open tab without a hold</button>
               <button className="btn btn-ghost btn-full" onClick={() => onCancel?.()}>Cancel</button>
             </div>

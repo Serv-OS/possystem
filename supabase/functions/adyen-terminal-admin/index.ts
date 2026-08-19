@@ -532,6 +532,12 @@ Deno.serve(async (req) => {
       const tid = String(body.terminal_id || '');
       if (!tid) return json({ error: 'terminal_id required' }, 400);
       const msg = buildDisplayIdleRequest({ poiid: tid, saleId: 'servos-brand', serviceId: newServiceId() });
+      // Hardware truth (19 Aug): this fleet renders Display messages only in the
+      // nexo ARRAY form — object-form (the docs sample) is acknowledged with an
+      // empty DisplayResponse and ignored, which left the reader stuck on the
+      // pushed image with 'Back to idle' doing nothing.
+      (msg.SaleToPOIRequest.DisplayRequest as Record<string, unknown>).DisplayOutput =
+        [ (msg.SaleToPOIRequest.DisplayRequest as Record<string, any>).DisplayOutput ];
       const r = await adyenFetch('POST', terminalEndpoint(merchant, tid, 'sync', (maa?.region === 'US') ? 'us' : 'eu'), msg, { timeoutMs: 30_000 });
       void platformAdmin.from('adyen_webhook_events').insert({
         event_key: `brand:${tid}:${Date.now()}`,

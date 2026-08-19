@@ -50,7 +50,7 @@
  * Static imports only. Every failure renders ON the fake reader screen.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { supabase, ensureAuthToken, isMock } from '../lib/supabase';
 import { VERSION } from '../lib/version';
 
@@ -71,6 +71,9 @@ const OWNROW_POLL_MS = 10000; // footer: bound-till state
 const JOBWATCH_MS = 2000;     // watch own live job for a POS-side cancel
 const AUTO_TAP_MS = 4200;     // auto-tap if the operator does nothing
 const RESULT_HOLD_MS = 4500;  // how long approved/declined stays up
+
+const PROP_W = 380;           // bezel width — the whole prop column keys off it
+const HOLD_KINDS = ['hold_start', 'hold_capture', 'hold_release', 'hold_increase'];
 
 /** Stable synthetic serial — mirrors paxpay Prefs.serial(): minted once, cached. */
 function demoSerial() {
@@ -479,6 +482,64 @@ export default function ReaderDemoSurface() {
     return () => clearTimeout(t);
   }, [phase]);
 
+  // ── bar-tab hold animation (v5.6.93) ──────────────────────────────────────
+  // Tab pre-auth holds have NO terminal_jobs row for this window to poll — the
+  // server simulates them directly (adyen-terminal-charge's DEMO-HOLD branch).
+  // The POS broadcasts each hold action on a same-origin channel purely so
+  // this window can mime it: card-present ripple, then a tick. No acks, no
+  // timing dependency — the server branch succeeds whether or not this window
+  // exists, so everything here is cosmetic. Only plays over the idle screen; a
+  // real job in progress always keeps the screen.
+  const [holdAnim, setHoldAnim] = useState(null); // { kind, amountMinor, stage: 'present' | 'tick' }
+  useEffect(() => {
+    let ch;
+    try { ch = new BroadcastChannel('rpos-demo-reader'); } catch { return undefined; }
+    const timers = [];
+    ch.onmessage = (ev) => {
+      const kind = ev?.data?.kind;
+      if (!HOLD_KINDS.includes(kind)) return;
+      if (phaseRef.current !== 'idle') return;
+      timers.splice(0).forEach(clearTimeout);
+      const n = Number(ev.data.amountMinor);
+      const amountMinor = Number.isFinite(n) && n > 0 ? n : null;
+      if (kind === 'hold_release') {
+        // Nothing to present — releasing a hold never touches the card.
+        setHoldAnim({ kind, amountMinor, stage: 'tick' });
+        timers.push(setTimeout(() => setHoldAnim(null), 2600));
+        return;
+      }
+      setHoldAnim({ kind, amountMinor, stage: 'present' });
+      timers.push(setTimeout(() => setHoldAnim(a => (a ? { ...a, stage: 'tick' } : a)), 1900));
+      timers.push(setTimeout(() => setHoldAnim(null), 4500));
+    };
+    return () => { timers.forEach(clearTimeout); ch.close(); };
+  }, []);
+
+  // ── fit-to-viewport scaling (v5.6.93) ─────────────────────────────────────
+  // The whole prop — bezel + operator strip + status lines — must be visible
+  // with NO scrolling: on laptop screens the strip fell below the fold and the
+  // owner reported "there are no buttons". The bezel keeps its fixed design
+  // size (crisp at scale 1 on tall screens); the finished column is measured
+  // and transform-scaled down to fit, and the wrapper takes the SCALED size so
+  // centring stays true (transforms do not change layout size).
+  const propRef = useRef(null);
+  const [fit, setFit] = useState({ scale: 1, w: PROP_W, h: 900 });
+  useLayoutEffect(() => {
+    const el = propRef.current;
+    if (!el) return undefined;
+    const recompute = () => {
+      const natW = el.offsetWidth || PROP_W;
+      const natH = el.offsetHeight || 900;
+      const s = Math.min(1, (window.innerHeight - 24) / natH, (window.innerWidth - 24) / natW);
+      setFit(f => (f.scale === s && f.w === natW && f.h === natH ? f : { scale: s, w: natW, h: natH }));
+    };
+    recompute();
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(recompute) : null;
+    ro?.observe(el);
+    window.addEventListener('resize', recompute);
+    return () => { ro?.disconnect(); window.removeEventListener('resize', recompute); };
+  }, []);
+
   // ── custom tip keypad ──────────────────────────────────────────────────────
   const customKey = (k) => {
     setCustomPence(prev => {
@@ -524,6 +585,42 @@ export default function ReaderDemoSurface() {
             enter this code and name it <b>Demo reader</b>. Then bind it to a till.
           </div>
           <div style={sx.pulseDotRow}><span className="rdemo-dot" /> Waiting to be claimed…</div>
+        </div>
+      );
+    }
+    // Bar-tab hold mime (v5.6.93) — cosmetic overlay while otherwise idle.
+    if (phase === 'idle' && holdAnim) {
+      if (holdAnim.stage === 'present') {
+        const heading = holdAnim.kind === 'hold_increase' ? 'Increase hold'
+          : holdAnim.kind === 'hold_capture' ? 'Charge held card' : 'Card hold';
+        return (
+          <div style={sx.center('#fff')}>
+            <div style={{ fontSize: 13, color: '#667', letterSpacing: 0.4, textTransform: 'uppercase' }}>{heading}</div>
+            {holdAnim.amountMinor != null && <div style={sx.bigAmount}>{fmtMinor(holdAnim.amountMinor, 'GBP')}</div>}
+            <div className="rdemo-contactless" style={{ marginTop: 26 }}>
+              <span /><span /><span />
+              <svg width="46" height="46" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M6.5 8.5a7 7 0 0 1 0 7M9.5 6.5a10 10 0 0 1 0 11M3.6 10.6a4 4 0 0 1 0 2.8" stroke={INK} strokeWidth="1.7" strokeLinecap="round" />
+                <circle cx="17" cy="12" r="1.6" fill={INK} />
+              </svg>
+            </div>
+            <div style={{ ...sx.h2, fontSize: 19 }}>Present card</div>
+            <div style={sx.sub}>Demo hold. No real card is charged.</div>
+          </div>
+        );
+      }
+      const label = { hold_start: 'Hold placed', hold_capture: 'Tab charged', hold_increase: 'Hold increased', hold_release: 'Hold released' }[holdAnim.kind];
+      const bg = holdAnim.kind === 'hold_release' ? '#3a3f3d' : SIGNAL;
+      return (
+        <div style={sx.center(bg)}>
+          <div style={sx.resultIcon}>
+            <svg width="52" height="52" viewBox="0 0 24 24" fill="none"><path d="M4.5 12.5l5 5 10-11" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" /></svg>
+          </div>
+          <div style={{ ...sx.h2, color: '#fff', fontSize: 24 }}>{label}</div>
+          {holdAnim.amountMinor != null && holdAnim.kind !== 'hold_release' && (
+            <div style={{ ...sx.bigAmount, color: '#fff', fontSize: 34 }}>{fmtMinor(holdAnim.amountMinor, 'GBP')}</div>
+          )}
+          <div style={{ ...sx.sub, color: 'rgba(255,255,255,.85)' }}>Demo hold, marked DEMO-HOLD</div>
         </div>
       );
     }

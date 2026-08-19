@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.93',
+    date: '2026-08-19',
+    changes: [
+      'The reader branding test buttons are gone. The experiment answered its question: pushed images do render on the readers but the hardware crops them badly and holds the screen, so custom reader screensavers are best set in the Adyen back office instead. "Back to idle" was also fixed server side first, so a reader stuck on a pushed image can be freed.',
+    ],
+  },
+  {
     version: '5.6.92',
     date: '2026-08-19',
     changes: [

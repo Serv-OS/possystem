@@ -420,6 +420,17 @@ export default function BarSurface() {
   // held tab is voided or the customer chooses to pay another way.
   // Adyen holds ride adyen-terminal-charge's hold_* actions (device-fenced).
   const adyenHoldCall = async (action, tab, amountMinor = null) => {
+    // v5.6.93 — demo reader window (cosmetic): DEMO-HOLD- references are only
+    // ever minted by the server's simulated-hold branch, so this can never
+    // fire for a real hold. Fire-and-forget; the server succeeds whether or
+    // not a ?mode=readerdemo window is open on this machine.
+    if (String(tab.preAuthPaymentIntentId || '').startsWith('DEMO-HOLD-')) {
+      try {
+        const ch = new BroadcastChannel('rpos-demo-reader');
+        ch.postMessage({ kind: action, amountMinor });
+        ch.close();
+      } catch { /* unsupported browser — cosmetic only */ }
+    }
     const token = await ensureAuthToken();
     const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/adyen-terminal-charge`, {
       method: 'POST',
@@ -526,6 +537,12 @@ export default function BarSurface() {
       recordTabClosedCheck(tab, {
         method: 'card',
         grand: tab.total || 0,
+        // v5.6.93: stamp WHICH processor held the card (v5.5.808's rule — the
+        // refund routes by this). An Adyen-held tab recorded processor
+        // 'stripe', so a refund would route to Stripe with an Adyen psp
+        // reference. Demo tabs record 'adyen' with their DEMO-HOLD- reference,
+        // auditable the same way demo sales carry a DEMO- transaction id.
+        processor: tab.preAuthProcessor || 'stripe',
         stripePaymentIntentId: tab.preAuthPaymentIntentId,
         paymentIntents: [{ id: tab.preAuthPaymentIntentId, amountMinor: capturedMinor }],
       });

@@ -183,6 +183,25 @@ async function logRefusal(reason: string, ctx: Record<string, unknown>) {
   }).then(() => {}, () => {});
 }
 
+// v5.6.93 — DEMO BAR-TAB HOLDS. The browser demo reader (?mode=readerdemo) is a
+// terminal_devices row whose serial the surface mints as DEMO-… — a real PAX
+// serial or paxpay's AID-<ANDROID_ID> ladder can never start with that. That is
+// the same server-side authority terminal-job-create trusts to mark demo SALES
+// simulated. Sales ride terminal_jobs; bar-tab pre-auth holds have NO job row,
+// so they are simulated HERE instead: hold_start on a DEMO- terminal returns a
+// DEMO-HOLD-… reference without ever touching Adyen, and any hold action handed
+// a DEMO-HOLD-… reference short-circuits BEFORE anything that could reach
+// adyenFetch. Every demo hold action is durably logged (same trick as
+// logRefusal) so demo tabs stay auditable end-to-end.
+const DEMO_HOLD_PREFIX = 'DEMO-HOLD-';
+async function logDemoHold(action: string, ctx: Record<string, unknown>) {
+  console.log(`adyen-terminal-charge DEMO HOLD ${action}: ${JSON.stringify(ctx)}`);
+  await platformAdmin.from('adyen_webhook_events').insert({
+    event_key: `demo-hold:${action}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+    raw: { demo: true, action, ...ctx },
+  }).then(() => {}, () => {});
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
@@ -202,16 +221,34 @@ Deno.serve(async (req) => {
   const action = String(body.action ?? '');
 
   // ── BAR-TAB HOLDS (v5.6.57) — pre-auth on the reader, no job row: the tab
-  // (bar_tabs pre_auth_* columns) carries the hold. Fence: service role, or a
-  // paired POS device at the venue. Capture/release/increase mirror the
-  // adyen-modify endpoints but stay HERE because that fn's fence is BO-user
-  // based and a till must be able to close its own tab.
+  // (bar_tabs pre_auth_* columns) carries the hold. Fence: service role, a
+  // paired POS device at the venue, or (v5.6.93) a venue user — see deviceAt.
+  // Capture/release/increase mirror the adyen-modify endpoints but stay HERE
+  // because that fn's fence is BO-user based and a till must be able to close
+  // its own tab. DEMO- terminals / DEMO-HOLD- references simulate server-side
+  // and can never reach Adyen (see logDemoHold above).
   if (['hold_start', 'hold_capture', 'hold_release', 'hold_increase'].includes(action)) {
     const deviceAt = async (locId: string) => {
       if (isServiceRole) return true;
-      const { data: dev } = await opsAdmin.from('devices')
-        .select('id').eq('device_uid', callerUid).eq('location_id', locId).maybeSingle();
-      return !!dev;
+      // v5.6.93 — ALSO accept a signed-in USER with user_locations access to
+      // the venue (or super_admin), the same mirror v5.6.89 added to the job
+      // fence below and for the same live reason: a browser till shares its
+      // ONE Supabase session with Back Office, so TabPreAuthTerminal's
+      // hold_start (and BarSurface's capture/release/increase) arrive as the
+      // BO USER, not a paired devices row, and the tab wedges at open. Any
+      // identity trusted to create and kick a whole payment job at this venue
+      // (terminal-job-create + the v5.6.89 fence both accept it) must be
+      // trusted to place and settle a tab hold there — refusing it can only
+      // wedge tabs, never protect money. The device branch is unchanged.
+      const [{ data: dev }, { data: ul }, { data: prof }] = await Promise.all([
+        opsAdmin.from('devices')
+          .select('id').eq('device_uid', callerUid).eq('location_id', locId).maybeSingle(),
+        opsAdmin.from('user_locations')
+          .select('location_id').eq('user_id', callerUid).eq('location_id', locId).maybeSingle(),
+        opsAdmin.from('user_profiles')
+          .select('role').eq('id', callerUid).maybeSingle(),
+      ]);
+      return !!dev || !!ul || prof?.role === 'super_admin';
     };
     const maaFor = async (opsLocId: string) => {
       const { data: ploc } = await platformAdmin.from('locations')
@@ -230,17 +267,51 @@ Deno.serve(async (req) => {
         return json({ error: 'terminal_device_id and amount_minor (£1–£1000) required' }, 400);
       }
       const { data: term } = await opsAdmin.from('terminal_devices')
-        .select('id, location_id, status, active, adyen_terminal_id')
+        .select('id, location_id, status, active, adyen_terminal_id, serial_number')
         .eq('id', terminalDeviceId).maybeSingle();
-      if (!term?.adyen_terminal_id || term.status !== 'paired' || !term.active) {
+      // Demo reader (?mode=readerdemo): paired + active, serial DEMO-…, no
+      // Adyen link. The serial on the SERVER'S OWN row is the authority — a
+      // caller can neither talk a real terminal into a fake hold nor a demo
+      // terminal into a real one.
+      const isDemoTerminal = String(term?.serial_number ?? '').toUpperCase().startsWith('DEMO-');
+      if (!term || term.status !== 'paired' || !term.active || (!term.adyen_terminal_id && !isDemoTerminal)) {
         return json({ ok: false, error: 'terminal not paired to Adyen' }, 409);
       }
       if (!(await deviceAt(term.location_id))) return json({ error: 'no access to this venue' }, 403);
+
+      if (isDemoTerminal) {
+        // SIMULATED hold — this branch returns unconditionally, so no path
+        // from a demo terminal can reach adyenFetch (it does not even need the
+        // venue to have a merchant account). Same success shape as the real
+        // branch below, so the client flow is indistinguishable. ~2s pacing so
+        // the demo window's card-present animation has time to play.
+        const psp = `${DEMO_HOLD_PREFIX}${Date.now()}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`;
+        await new Promise((r) => setTimeout(r, 2000));
+        await logDemoHold('hold_start', {
+          psp_reference: psp, amount_minor: amountMinor, currency,
+          terminal_device_id: terminalDeviceId, location_id: term.location_id, serial: term.serial_number,
+        });
+        return json({
+          ok: true,
+          psp_reference: psp,
+          held_minor: amountMinor,
+          // settleCard()'s snake_case receipt shape, demo-flavoured.
+          card: {
+            brand: 'visa', last4: '4242',
+            auth_code: String(Math.floor(100000 + Math.random() * 900000)),
+            read_method: 'contactless', aid: null, application_name: null, cvm: null, account_type: null,
+          },
+        });
+      }
+
       const maa = await maaFor(term.location_id);
       if (!maa?.merchant_account) {
-      await logRefusal('venue has no Adyen merchant account', { action, jobId: job.id, jobLocation: job.location_id });
-      return json({ ok: false, error: 'venue has no Adyen account — onboarding incomplete' }, 409);
-    }
+        // (v5.6.93: this refusal used to log job.id — but hold actions have no
+        // job row, and `job` is declared further down, so the log line itself
+        // threw a ReferenceError. Log the terminal instead.)
+        await logRefusal('venue has no Adyen merchant account', { action, terminalDeviceId, termLocation: term.location_id });
+        return json({ ok: false, error: 'venue has no Adyen account — onboarding incomplete' }, 409);
+      }
 
       const serviceId = newServiceId();
       const nexo = buildPaymentRequest({
@@ -272,10 +343,29 @@ Deno.serve(async (req) => {
     const opsLocId = String(body.location_id ?? '');
     if (!psp || !opsLocId) return json({ error: 'psp_reference and location_id required' }, 400);
     if (!(await deviceAt(opsLocId))) return json({ error: 'no access to this venue' }, 403);
-    const maa = await maaFor(opsLocId);
-    if (!maa?.merchant_account) return json({ ok: false, error: 'venue has no Adyen account' }, 409);
     const amountMinor = body.amount_minor != null ? Math.round(Number(body.amount_minor)) : null;
     const currency = String(body.currency || 'GBP').toUpperCase().slice(0, 3);
+
+    // DEMO-HOLD short-circuit (v5.6.93) — FIRST, before the merchant-account
+    // lookup and before anything that could build an Adyen request. A
+    // DEMO-HOLD-… reference is only ever minted by the demo hold_start branch
+    // above; this guard makes it impossible to send one to Adyen. Same field
+    // requirements and the same success shape as the real branch below
+    // ({ ok, status, modification_psp } — the real fn returns no amount echo,
+    // so neither does this; the durable log carries the amounts).
+    if (psp.toUpperCase().startsWith(DEMO_HOLD_PREFIX)) {
+      if (action === 'hold_capture' && !Number.isFinite(amountMinor)) return json({ error: 'amount_minor required' }, 400);
+      if (action === 'hold_increase' && !Number.isFinite(amountMinor)) return json({ error: 'amount_minor (new total) required' }, 400);
+      await logDemoHold(action, { psp_reference: psp, amount_minor: amountMinor, currency, location_id: opsLocId });
+      return json({
+        ok: true,
+        status: 'received',
+        modification_psp: `${DEMO_HOLD_PREFIX}MOD-${Date.now()}-${crypto.randomUUID().slice(0, 8).toUpperCase()}`,
+      });
+    }
+
+    const maa = await maaFor(opsLocId);
+    if (!maa?.merchant_account) return json({ ok: false, error: 'venue has no Adyen account' }, 409);
     let path = ''; let payload: Record<string, unknown> = {};
     if (action === 'hold_capture') {
       if (!Number.isFinite(amountMinor)) return json({ error: 'amount_minor required' }, 400);
