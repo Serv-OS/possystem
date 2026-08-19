@@ -105,6 +105,21 @@ Deno.serve(async (req) => {
     // ── status: everything the panel needs to decide what to show ────────────
     if (action === 'status') {
       const probe = await mgmt('GET', `/merchants/${merchant}/stores?pageSize=1`);
+      // v5.6.96 — THE structural probe for per-venue balances (Financial services
+      // build): does this venue's STORE carry a splitConfiguration, and does that
+      // point at a PER-VENUE balance account or the platform's liable account?
+      // Research: balances/payouts per venue exist ONLY if a per-venue balance
+      // account exists; a store alone routes payments and nothing else. Fired
+      // from the panel's normal status load and logged durably so no extra
+      // clicks are needed to answer it.
+      if (maa?.store_id) {
+        mgmt('GET', `/stores/${encodeURIComponent(maa.store_id)}`).then((sr) => {
+          void platformAdmin.from('adyen_webhook_events').insert({
+            event_key: `probe:store:${maa.store_id}:${Date.now()}`,
+            raw: { httpStatus: sr.status, store: sr.data ?? null },
+          }).then(() => {}, () => {});
+        }).catch(() => {});
+      }
       return json({
         ok: true,
         venue: loc.name,
