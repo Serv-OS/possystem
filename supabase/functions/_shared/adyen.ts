@@ -523,3 +523,101 @@ export function cardFromWebhookAdditionalData(ad: Record<string, any> | undefine
     readMethod: ad['posEntryMode'] ?? ad['shopperInteraction'] ?? null,
   };
 }
+
+// ── Tiered rate card (v5.7.3) ───────────────────────────────────────────────
+// The four-tier ServOS Payments pricing model (migration 20260821b):
+//   card_present      in-person credit AND debit — one fee
+//   card_not_present  online orders (ecommerce)
+//   amex              American Express + business/commercial cards
+//   keyed             manually keyed in (MOTO)
+// Stored as jsonb {tier: {percent, fixed_pence}} on merchant_adyen_accounts
+// .rate_card (venue) and platform_settings.default_adyen_rate_card (default).
+
+export const RATE_TIERS = ['card_present', 'card_not_present', 'amex', 'keyed'] as const;
+export type RateTier = typeof RATE_TIERS[number];
+
+export interface TierRate {
+  percent: number | null;
+  fixed_pence: number | null;
+  // Which layer supplied the rate: the venue's card, the platform default
+  // card, the venue's legacy flat markup, the platform's legacy flat default,
+  // or null when nothing is configured for the tier.
+  source: 'venue' | 'platform' | 'legacy_venue' | 'legacy_platform' | null;
+}
+
+const tierField = (card: any, tier: string, field: string): number | null => {
+  const v = card?.[tier]?.[field];
+  return v === null || v === undefined || v === '' || isNaN(Number(v)) ? null : Number(v);
+};
+
+// Resolve the effective rate card for one venue. Per-field fallback chain,
+// per tier: venue rate_card → platform default rate_card → the LEGACY flat
+// markup columns → null. The legacy flat rate (v5.7.0's single all-payments
+// number) counts as the card_present tier ONLY — the other tiers stay null
+// until someone prices them, so configure_splits and the commission stamp
+// never silently reuse the in-person rate for online / Amex / keyed traffic.
+export function resolveAdyenRateCard(
+  account: { rate_card?: any; markup_percent?: unknown; markup_fixed_pence?: unknown } | null | undefined,
+  settings: { default_adyen_rate_card?: any; default_adyen_markup_percent?: unknown; default_adyen_markup_fixed_pence?: unknown } | null | undefined,
+): Record<RateTier, TierRate> {
+  const numOrNull = (v: unknown) => (v === null || v === undefined || v === '' || isNaN(Number(v)) ? null : Number(v));
+  const legacyVenue = { percent: numOrNull(account?.markup_percent), fixed_pence: numOrNull(account?.markup_fixed_pence) };
+  const legacyPlatform = { percent: numOrNull(settings?.default_adyen_markup_percent), fixed_pence: numOrNull(settings?.default_adyen_markup_fixed_pence) };
+  const out = {} as Record<RateTier, TierRate>;
+  for (const tier of RATE_TIERS) {
+    const pick = (field: 'percent' | 'fixed_pence'): { value: number | null; source: TierRate['source'] } => {
+      const venue = tierField(account?.rate_card, tier, field);
+      if (venue !== null) return { value: venue, source: 'venue' };
+      const def = tierField(settings?.default_adyen_rate_card, tier, field);
+      if (def !== null) return { value: def, source: 'platform' };
+      if (tier === 'card_present') {
+        if (legacyVenue[field] !== null) return { value: legacyVenue[field], source: 'legacy_venue' };
+        if (legacyPlatform[field] !== null) return { value: legacyPlatform[field], source: 'legacy_platform' };
+      }
+      return { value: null, source: null };
+    };
+    const pct = pick('percent');
+    const fix = pick('fixed_pence');
+    out[tier] = {
+      percent: pct.value,
+      fixed_pence: fix.value === null ? null : Math.round(fix.value),
+      source: pct.source ?? fix.source,
+    };
+  }
+  return out;
+}
+
+// Validate + normalise a rate card arriving from the admin UI. Unknown tiers
+// are dropped; '' clears a field to null. Returns null when every field ends
+// up null — storing null (not {}) is what keeps the "legacy applies until a
+// rate card exists" rule readable.
+export function sanitizeRateCard(input: unknown): Record<string, { percent: number | null; fixed_pence: number | null }> | null {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+  const out: Record<string, { percent: number | null; fixed_pence: number | null }> = {};
+  let any = false;
+  for (const tier of RATE_TIERS) {
+    const t: any = (input as any)[tier];
+    if (!t || typeof t !== 'object') continue;
+    const num = (v: unknown, max: number) => {
+      if (v === null || v === undefined || v === '') return null;
+      const n = Number(v);
+      return isNaN(n) || n < 0 || n > max ? null : n;
+    };
+    const percent = num(t.percent, 100);
+    const fixedRaw = num(t.fixed_pence, 10000);
+    const fixed_pence = fixedRaw === null ? null : Math.round(fixedRaw);
+    out[tier] = { percent, fixed_pence };
+    if (percent !== null || fixed_pence !== null) any = true;
+  }
+  return any ? out : null;
+}
+
+// Commission for one payment: the tier rate applied to the amount, rounded
+// half up. Null when the tier has no rate at all (honest "not configured").
+export function commissionForAmount(amountMinor: number, tier: TierRate | null | undefined): number | null {
+  if (!tier || (tier.percent === null && tier.fixed_pence === null)) return null;
+  if (!Number.isFinite(amountMinor) || amountMinor < 0) return null;
+  const pct = Number(tier.percent ?? 0);
+  const fixed = Math.round(Number(tier.fixed_pence ?? 0));
+  return Math.floor((amountMinor * pct) / 100 + 0.5) + fixed;
+}

@@ -21,9 +21,16 @@
 // kicked to download + parse the Settlement details CSV (fees, payouts,
 // payout lines). See queueReport below.
 //
+// v5.7.3 — TIERED PRICING: every AUTHORISATION is classified into one of the
+// four pricing tiers (card_present / card_not_present / amex / keyed — see
+// classifyRateCategory) and stamped with rate_category + commission_minor
+// (the venue's resolved tier rate applied to the amount). Both recompute on
+// every apply, so the backfill re-stamps them idempotently.
+//
 // BACKFILL: POST .../adyen-webhook?backfill=1 with a SERVICE-ROLE bearer reruns
 // every stored adyen_events row (received_at order) through the same parsing
-// path. Idempotent by construction (see modKey below). Add &dry=1 to only count
+// path. Idempotent by construction (see modKey below); also re-classifies and
+// re-stamps commission on every payment. Add &dry=1 to only count
 // what it would process.
 //
 // SECURITY, staged deliberately:
@@ -38,7 +45,7 @@
 //     drop every payment notification.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { verifyNotificationItem, cardFromWebhookAdditionalData } from '../_shared/adyen.ts';
+import { verifyNotificationItem, cardFromWebhookAdditionalData, resolveAdyenRateCard, commissionForAmount } from '../_shared/adyen.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -163,8 +170,93 @@ async function matchTerminalJob(merchantReference: string, paymentPsp: string):
 
 function inferChannel(merchantReference: string, hasJob: boolean): string | null {
   if (merchantReference.startsWith('bkpay-')) return 'booking';
+  if (merchantReference.startsWith('OL-')) return 'online';   // online-shop orders (v5.7.3)
   if (hasJob || merchantReference.startsWith('tj-') || merchantReference.startsWith('tabhold-')) return 'pos';
   return null;
+}
+
+// Postgres 42703 (column does not exist) — the rate-card columns until
+// migration 20260821b_adyen_rate_card.sql is hand-applied. The ledger write
+// retries without them; the rate reads retry without rate_card.
+const isMissingColumn = (msg: unknown) => /does not exist|42703/i.test(String(msg ?? ''));
+
+// ── v5.7.3 payment-type classification → adyen_payments.rate_category ───────
+//
+// Keyed on the fields REAL stored events carry (inspected in ops adyen_events,
+// 19 Aug 2026 — 44 stored AUTHORISATIONs):
+//   · every item: top-level paymentMethod ('visa') + additionalData
+//     { paymentMethod, cardSummary, authCode, expiryDate, networkTxReference }
+//   · TERMINAL payments (tj-/tabhold- refs) additionally carry
+//     additionalData.paymentMethodVariant ('visa' on the test cards; business
+//     cards arrive as variants like visacommercialcredit / visacorporate /
+//     visabusiness / mccorporate)
+//   · ECOMMERCE payments (OL-/bkpay- refs) additionally carry
+//     additionalData['checkout.cardAddedBrand'], isCardCommercial ('unknown'
+//     on the test cards), issuerCountry and threeds2.cardEnrolled — none of
+//     which appear on terminal payments
+//   · NO stored event carries shopperInteraction, posEntryMode, fundingSource
+//     or store in additionalData — so the channel signal is the ledger channel
+//     (merchantReference prefix) plus the ecommerce-only additionalData keys.
+//     shopperInteraction/posEntryMode stay in as belt-and-braces for events
+//     that may carry them later (e.g. a future MOTO flow).
+//
+// Priority: amex/business outranks channel (Amex is its own fee wherever the
+// card is used), keyed outranks card_not_present (MOTO is ecommerce-shaped at
+// Adyen), card_present is the default for POS/terminal payments.
+function classifyRateCategory(item: any, channel: string | null): string {
+  const ad = item?.additionalData ?? {};
+  const brand = String(ad.paymentMethod ?? item?.paymentMethod ?? '').toLowerCase();
+  const variant = String(ad.paymentMethodVariant ?? '').toLowerCase();
+  const added = String(ad['checkout.cardAddedBrand'] ?? '').toLowerCase();
+  if (brand.includes('amex') || variant.includes('amex') || added.includes('amex')) return 'amex';
+  const commercial = String(ad.isCardCommercial ?? '').toLowerCase();
+  if (commercial === 'true' || commercial === 'yes') return 'amex';
+  if (/(business|corporate|commercial|purchasing|fleet)/.test(variant)) return 'amex';
+  const si = String(ad.shopperInteraction ?? item?.shopperInteraction ?? '').toLowerCase();
+  if (si === 'moto') return 'keyed';
+  const entry = String(ad.posEntryMode ?? '').toLowerCase();
+  if (entry.includes('key') || entry.includes('manual')) return 'keyed';
+  const ch = String(channel ?? '').toLowerCase();
+  if (['online', 'booking', 'qr', 'gift', 'web', 'ecommerce'].includes(ch)) return 'card_not_present';
+  if (si === 'ecommerce') return 'card_not_present';
+  if ('checkout.cardAddedBrand' in ad || 'threeds2.cardEnrolled' in ad || 'isCardCommercial' in ad || 'scaExemptionRequested' in ad) return 'card_not_present';
+  return 'card_present';
+}
+
+// Venue tier rates, cached briefly so the backfill loop does not re-read
+// platform_settings and the account row for every one of a venue's events.
+const tierCache = new Map<string, { at: number; tiers: any }>();
+let settingsCache: { at: number; row: any } | null = null;
+const TIER_TTL_MS = 60_000;
+async function resolveVenueTiers(locationId: string): Promise<any | null> {
+  try {
+    const hit = tierCache.get(locationId);
+    if (hit && Date.now() - hit.at < TIER_TTL_MS) return hit.tiers;
+    if (!settingsCache || Date.now() - settingsCache.at >= TIER_TTL_MS) {
+      let { data: ps, error } = await platformAdmin.from('platform_settings')
+        .select('default_adyen_rate_card, default_adyen_markup_percent, default_adyen_markup_fixed_pence')
+        .eq('id', true).maybeSingle();
+      if (error && isMissingColumn(error.message)) {
+        ({ data: ps, error } = await platformAdmin.from('platform_settings')
+          .select('default_adyen_markup_percent, default_adyen_markup_fixed_pence').eq('id', true).maybeSingle());
+      }
+      if (error) { console.error('[adyen-webhook] settings read failed:', error.message); return null; }
+      settingsCache = { at: Date.now(), row: ps ?? {} };
+    }
+    let { data: acct, error: aErr } = await platformAdmin.from('merchant_adyen_accounts')
+      .select('rate_card, markup_percent, markup_fixed_pence').eq('location_id', locationId).maybeSingle();
+    if (aErr && isMissingColumn(aErr.message)) {
+      ({ data: acct, error: aErr } = await platformAdmin.from('merchant_adyen_accounts')
+        .select('markup_percent, markup_fixed_pence').eq('location_id', locationId).maybeSingle());
+    }
+    if (aErr) { console.error('[adyen-webhook] account rate read failed:', aErr.message); return null; }
+    const tiers = resolveAdyenRateCard(acct ?? {}, settingsCache.row);
+    tierCache.set(locationId, { at: Date.now(), tiers });
+    return tiers;
+  } catch (e) {
+    console.error('[adyen-webhook] resolveVenueTiers:', (e as Error).message);
+    return null;
+  }
 }
 
 // Apply ONE money event to the ledger (and, for the chargeback family, the
@@ -213,6 +305,7 @@ async function applyMoneyEvent(item: any): Promise<'applied' | 'duplicate' | 'sk
 
     const amountMinor = Number(item?.amount?.value);
     const currency = item?.amount?.currency ? String(item.amount.currency) : null;
+    const channel = existing?.channel ?? inferChannel(merchantReference, !!job);
 
     const row: Record<string, unknown> = {
       psp_reference: rowKey,
@@ -220,7 +313,7 @@ async function applyMoneyEvent(item: any): Promise<'applied' | 'duplicate' | 'sk
       merchant_account: item?.merchantAccountCode ?? existing?.merchant_account ?? null,
       store: item?.additionalData?.store ?? existing?.store ?? null,
       location_id,
-      channel: existing?.channel ?? inferChannel(merchantReference, !!job),
+      channel,
       matched_terminal_job: existing?.matched_terminal_job ?? job?.id ?? null,
       matched_closed_check: existing?.matched_closed_check ?? job?.closed_check_id ?? null,
       amount_refunded_minor: Number(existing?.amount_refunded_minor ?? 0),
@@ -236,6 +329,17 @@ async function applyMoneyEvent(item: any): Promise<'applied' | 'duplicate' | 'sk
       row.last_event_code = 'AUTHORISATION';
       const card = cardFromWebhookAdditionalData(item?.additionalData);
       row.card = card ?? existing?.card ?? null;
+      // v5.7.3 — classify the payment into its pricing tier and stamp what we
+      // earn on it. Both are RECOMPUTED (never incremented) on every
+      // AUTHORISATION apply, which is what makes the ?backfill=1 replay a safe
+      // re-stamp after a rate change or a classifier fix.
+      const rateCategory = classifyRateCategory(item, channel as string | null);
+      row.rate_category = rateCategory;
+      row.commission_minor = null;
+      if (okEvent && location_id && Number.isFinite(amountMinor)) {
+        const tiers = await resolveVenueTiers(location_id);
+        row.commission_minor = tiers ? commissionForAmount(amountMinor, tiers[rateCategory]) : null;
+      }
     } else {
       // Modifications never rewrite the payment amount or its success flag —
       // a failed refund is not a failed payment. They move last_event_code
@@ -257,8 +361,14 @@ async function applyMoneyEvent(item: any): Promise<'applied' | 'duplicate' | 'sk
         : code;
     }
 
-    const { error: upErr } = await platformAdmin.from('adyen_payments')
+    let { error: upErr } = await platformAdmin.from('adyen_payments')
       .upsert(row, { onConflict: 'psp_reference' });
+    if (upErr && isMissingColumn(upErr.message) && ('rate_category' in row || 'commission_minor' in row)) {
+      // Migration 20260821b not applied yet — the ledger write must never break.
+      delete row.rate_category;
+      delete row.commission_minor;
+      ({ error: upErr } = await platformAdmin.from('adyen_payments').upsert(row, { onConflict: 'psp_reference' }));
+    }
     if (upErr) { console.error('[adyen-webhook] ledger upsert failed:', upErr.message, rowKey); return 'failed'; }
 
     // ── Chargeback family → dispute queue (model: ryft-webhook Dispute.*) ────

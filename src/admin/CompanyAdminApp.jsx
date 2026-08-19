@@ -3,7 +3,7 @@ import { VERSION } from '../lib/version';
 import { supabase } from '../lib/supabase';
 import BOLogin from '../backoffice/BOLogin';
 import AdminBillingManager from './sections/AdminBillingManager';
-import AdminStripeTest from './sections/AdminStripeTest';
+import AdminRevenue from './sections/AdminRevenue';
 import { money, CURRENCIES } from '../lib/currency';
 import { ServOSIcon, ServOSWordmark } from '../components/ServOSBrand';
 
@@ -403,8 +403,8 @@ function AdminPanel({ authUser }) {
         {[
           { id:'orgs', label:'All organisations', icon:'🏢' },
           { id:'new-org', label:'+ New organisation' },
-          { id:'billing', label:'Billing & Stripe', icon:'💳' },
-          { id:'stripe-test', label:'Stripe test', icon:'🧪' },
+          { id:'billing', label:'Processing', icon:'💳' },
+          { id:'revenue', label:'Revenue', icon:'📈' },
         ].map(n => (
           <button key={n.id} onClick={() => { setSection(n.id); setMsg({ type:'', text:'' }); }}
             style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 16px', margin:'1px 8px', borderRadius:8, cursor:'pointer', fontSize:13,
@@ -436,11 +436,11 @@ function AdminPanel({ authUser }) {
           <div style={{ background:ms.bg, border:`1px solid ${ms.border}`, color:ms.color, borderRadius:10, padding:'12px 16px', marginBottom:20, fontSize:13 }}>{msg.text}</div>
         )}
 
-        {/* ── Billing & Stripe accounts ── */}
+        {/* ── Processing: payment accounts & pricing ── */}
         {section === 'billing' && <AdminBillingManager authUser={authUser} />}
 
-        {/* ── Stripe test harness ── */}
-        {section === 'stripe-test' && <AdminStripeTest />}
+        {/* ── Revenue: what the platform makes (payments + SaaS) ── */}
+        {section === 'revenue' && <AdminRevenue />}
 
         {/* ── Orgs list ── */}
         {section === 'orgs' && (

@@ -159,20 +159,42 @@ function Chip({ on, label }) {
   );
 }
 
-// ─── Settings tab (Phase 3, v5.7.0) ─────────────────────────────────────────
-// Venue-facing and READ-ONLY. The rate comes from the adyen-financial
-// `settings` action: this venue's agreed rate if one is recorded, else the
-// ServOS standard rate. Rates are set by ServOS (the platform admin) as part
-// of the venue's agreement — there is deliberately no editing here.
-// ⚠ Display + future-billing configuration only in this phase: nothing is
-// charged from these rates yet. Splits/commission collection is Phase 4.
+// ─── Settings tab ───────────────────────────────────────────────────────────
+// Venue-facing and READ-ONLY. v5.7.3: the adyen-financial `settings` action
+// now returns the venue's resolved TIERED rate card and this tab renders it
+// the way Lightspeed does — one row per payment type:
+//   Card-present (credit & debit) / Card-not-present (online) /
+//   American Express & business cards / Manually keyed.
+// Rates are set by ServOS (the platform admin) as part of the venue's
+// agreement — there is deliberately no editing here. A tier with no agreed
+// rate shows an honest dash; no rates at all keeps the honest empty state.
+// Older server deploys return only the flat rate — that single-rate view is
+// kept as the fallback so the tab never breaks on deploy order.
+const RATE_ROWS = [
+  { id: 'card_present', label: 'Card-present (credit & debit)' },
+  { id: 'card_not_present', label: 'Card-not-present (online)' },
+  { id: 'amex', label: 'American Express & business cards' },
+  { id: 'keyed', label: 'Manually keyed' },
+];
+
 function SettingsTab({ status }) {
   const [data, setData] = useState(null);   // null = loading, {error} or settings payload
 
   useEffect(() => {
     let alive = true;
     (async () => {
-      if (isMock) { if (alive) setData({ ok: true, rates: { percent: 1.4, fixed_pence: 5, source: 'platform' }, account: {} }); return; }
+      if (isMock) {
+        if (alive) setData({ ok: true,
+          rates: { percent: 1.4, fixed_pence: 5, source: 'platform' },
+          rate_card: {
+            card_present: { percent: 1.4, fixed_pence: 5, source: 'platform' },
+            card_not_present: { percent: 1.9, fixed_pence: 10, source: 'platform' },
+            amex: { percent: 2.5, fixed_pence: 10, source: 'platform' },
+            keyed: { percent: 2.9, fixed_pence: 15, source: 'platform' },
+          },
+          account: {} });
+        return;
+      }
       try {
         const locId = await getLocationId().catch(() => null);
         const { data: { session } } = await supabase.auth.getSession();
@@ -191,9 +213,13 @@ function SettingsTab({ status }) {
 
   const active = status?.ok && status?.merchant;
   const rates = data?.rates;
-  const hasRate = rates && (rates.percent != null || rates.fixed_pence != null);
+  const rateCard = data?.rate_card;
+  const hasTiered = rateCard && RATE_ROWS.some(r => rateCard[r.id]);
+  const hasFlat = rates && (rates.percent != null || rates.fixed_pence != null);
+  const hasRate = hasTiered || hasFlat;
   // "1.4% + 5p", trimming trailing zeros on the percent.
   const pctFmt = (v) => String(+Number(v ?? 0).toFixed(2));
+  const rateFmt = (t) => `${pctFmt(t.percent)}% + ${Math.round(Number(t.fixed_pence ?? 0))}p`;
 
   return (
     <>
@@ -207,8 +233,34 @@ function SettingsTab({ status }) {
         {data?.error && (
           <p style={S.cardBody}>We could not load your rates right now. {data.error}</p>
         )}
-        {data?.ok && hasRate && (
+        {data?.ok && hasRate && hasTiered && (
           <>
+            <div style={{ border: '1px solid var(--bdr)', borderRadius: 10, background: 'var(--bg2)', maxWidth: 460, overflow: 'hidden' }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.04em', padding: '12px 16px 8px' }}>
+                What you pay per card payment
+              </div>
+              {RATE_ROWS.map((row, i) => {
+                const t = rateCard[row.id];
+                return (
+                  <div key={row.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, padding: '10px 16px', borderTop: i === 0 ? 'none' : '1px solid var(--bdr)' }}>
+                    <span style={{ fontSize: 13, color: 'var(--t2)' }}>{row.label}</span>
+                    <span style={{ fontSize: 15, fontWeight: 800, color: t ? 'var(--t1)' : 'var(--t4)', whiteSpace: 'nowrap' }}
+                      title={t ? undefined : 'No rate agreed for this payment type yet.'}>
+                      {t ? rateFmt(t) : '—'}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+            <p style={{ ...S.cardBody, marginTop: 10 }}>
+              All-in rates, per card payment. Your rates are set in your ServOS Payments
+              agreement. To review them, talk to your ServOS account manager.
+            </p>
+          </>
+        )}
+        {data?.ok && hasRate && !hasTiered && (
+          <>
+            {/* Fallback for an older server deploy that only returns the flat rate. */}
             <div style={{ border: '1px solid var(--bdr)', borderRadius: 10, padding: '14px 16px', background: 'var(--bg2)', maxWidth: 420 }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 6 }}>
                 What you pay per card transaction

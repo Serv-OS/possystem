@@ -4,8 +4,9 @@
 // (ADYEN_INTEGRATION_PLAN.md). Builds the Adyen-for-Platforms anatomy for one
 // venue: legal entity (LEM v4) → account holder + balance account (bcl v2) →
 // hosted onboarding link (venue completes KYC + adds their bank there) →
-// split configuration on the venue's store (Management v3, commission = the
-// venue's ServOS Payments rate) → daily push sweep to the venue's bank.
+// split configuration on the venue's store (Management v3, one commission
+// rule per pricing tier from the venue's resolved rate card — v5.7.3) →
+// daily push sweep to the venue's bank.
 //
 // EVERY Adyen call degrades gracefully: the balance platform is likely NOT
 // YET ENABLED on this account, so 401/403 from LEM/bcl is classified
@@ -46,7 +47,7 @@
 //   npx supabase functions deploy adyen-onboard --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { lemBase, balancePlatformBase, managementBase, ADYEN_MERCHANT_ACCOUNT } from '../_shared/adyen.ts';
+import { lemBase, balancePlatformBase, managementBase, ADYEN_MERCHANT_ACCOUNT, RATE_TIERS, resolveAdyenRateCard } from '../_shared/adyen.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -134,19 +135,43 @@ function parseAddress(text: string | null | undefined): { street?: string; city?
   return out;
 }
 
-// The venue's EFFECTIVE ServOS Payments rate — the Phase 3 resolution, reused
-// verbatim: per-field venue override on merchant_adyen_accounts, else the
-// platform default on platform_settings.
-async function effectiveRate(maa: any): Promise<{ percent: number | null; fixed_pence: number | null; source: 'venue' | 'platform' | null }> {
-  const { data: ps } = await platformAdmin.from('platform_settings')
-    .select('default_adyen_markup_percent, default_adyen_markup_fixed_pence').eq('id', true).maybeSingle();
-  const percent = maa?.markup_percent ?? ps?.default_adyen_markup_percent ?? null;
-  const fixed = maa?.markup_fixed_pence ?? ps?.default_adyen_markup_fixed_pence ?? null;
-  const source = (maa?.markup_percent != null || maa?.markup_fixed_pence != null)
-    ? 'venue' as const
-    : (percent != null || fixed != null) ? 'platform' as const : null;
-  return { percent: percent == null ? null : Number(percent), fixed_pence: fixed == null ? null : Math.round(Number(fixed)), source };
+// Postgres 42703 (column does not exist) — the rate-card columns until
+// migration 20260821b_adyen_rate_card.sql is hand-applied.
+const isMissingColumn = (msg: unknown) => /does not exist|42703/i.test(String(msg ?? ''));
+
+// The venue's resolved TIERED rate card (v5.7.3) — per tier: venue rate_card →
+// platform default rate_card → the legacy flat markup (card_present tier only)
+// → null. Also returns the flat card_present shape older panel builds read as
+// `rate`, so status stays back-compatible.
+async function effectiveRates(maa: any): Promise<{ cards: Record<string, any>; flat: { percent: number | null; fixed_pence: number | null; source: 'venue' | 'platform' | null } }> {
+  let { data: ps, error } = await platformAdmin.from('platform_settings')
+    .select('default_adyen_rate_card, default_adyen_markup_percent, default_adyen_markup_fixed_pence').eq('id', true).maybeSingle();
+  if (error && isMissingColumn(error.message)) {
+    ({ data: ps } = await platformAdmin.from('platform_settings')
+      .select('default_adyen_markup_percent, default_adyen_markup_fixed_pence').eq('id', true).maybeSingle());
+  }
+  const cards = resolveAdyenRateCard(maa ?? {}, ps ?? {});
+  const cp = cards.card_present;
+  const source = cp.source == null ? null
+    : (cp.source === 'venue' || cp.source === 'legacy_venue') ? 'venue' as const : 'platform' as const;
+  return { cards, flat: { percent: cp.percent, fixed_pence: cp.fixed_pence, source } };
 }
+
+const TIER_LABELS: Record<string, string> = {
+  card_present: 'card-present (credit & debit)',
+  card_not_present: 'card-not-present (online)',
+  amex: 'American Express & business cards',
+  keyed: 'manually keyed',
+};
+const tierLabel = (t: string) => TIER_LABELS[t] ?? t;
+
+// A tier "has a rate" when it resolves to a non-zero percent or pence — a
+// zero/zero tier would mean a 0% commission rule, which is refused on purpose.
+const tiersLackingRates = (cards: Record<string, any>): string[] =>
+  (RATE_TIERS as readonly string[]).filter((t) => {
+    const c = cards[t];
+    return !c || ((c.percent == null || Number(c.percent) <= 0) && (c.fixed_pence == null || Number(c.fixed_pence) <= 0));
+  });
 
 // Capability snapshot → the columns webhooks also maintain. Under AfP the
 // capabilities that matter here: receiveFromPlatformPayments (split funds may
@@ -249,12 +274,13 @@ Deno.serve(async (req) => {
 
       // Re-read after any stamp above so the response reflects what status wrote.
       const { data: fresh } = await platformAdmin.from('merchant_adyen_accounts').select('*').eq('location_id', loc.id).maybeSingle();
-      const rate = await effectiveRate(fresh ?? maa);
+      const { cards, flat: rate } = await effectiveRates(fresh ?? maa);
       const m = fresh ?? maa;
       const missingSplits: string[] = [];
       if (!m?.store_id) missingSplits.push('store (register a terminal / ensure the store first)');
       if (!m?.balance_account_id) missingSplits.push('balance account (run Start onboarding)');
-      if (rate.percent == null && rate.fixed_pence == null) missingSplits.push('processing rate (set the venue rate or a platform default)');
+      const lackingTiers = tiersLackingRates(cards);
+      if (lackingTiers.length) missingSplits.push(`rates for ${lackingTiers.map(tierLabel).join(', ')} (set them in the Processing rate editor — one commission rule is written per tier)`);
       const missingSweep: string[] = [];
       if (!m?.balance_account_id) missingSweep.push('balance account (run Start onboarding)');
       if (!m?.transfer_instrument_id) missingSweep.push('bank account (the venue adds it in hosted onboarding; Set up sweep re-checks automatically)');
@@ -282,6 +308,7 @@ Deno.serve(async (req) => {
         balances,
         sweeps,
         rate,
+        rate_card: cards,
         onboarding_link: m?.onboarding_link_url
           ? { url: m.onboarding_link_url, expires_at: m.onboarding_link_expires_at ?? null }
           : null,
@@ -401,51 +428,84 @@ Deno.serve(async (req) => {
       return json({ ok: true, onboarding_link: { url: r.data.url, expires_at }, note: 'Single-use link, expires in 4 minutes — open or send it now.' });
     }
 
-    // ── configure_splits: commission profile + point the store at the venue ──
-    // Commission = the venue's effective ServOS Payments rate (Phase 3
-    // resolution). Fee split instruction included (paymentFee → liable
-    // account: the platform absorbs Adyen's costs, the venue pays the one
-    // agreed all-in rate) so per-payment fee webhooks flow. Remainder → the
-    // venue's balance account.
+    // ── configure_splits: one commission rule PER PRICING TIER + store point ─
+    // v5.7.3 — the flat single-rule profile is replaced by the tiered model.
+    // Adyen split configuration profiles support MULTIPLE rules keyed by
+    // currency / fundingSource / paymentMethod / shopperInteraction
+    // (Management v3, spec-verified in the v5.7.1 build). Mapping:
+    //   amex tier             paymentMethod 'amex' (written per interaction, see below)
+    //   card_not_present tier shopperInteraction 'Ecommerce'
+    //   keyed tier            shopperInteraction 'Moto'
+    //   card_present tier     the catch-all rule (POS / ContAuth / anything else)
+    // KNOWN LIMITS against the spec, documented on purpose:
+    //   · fundingSource distinguishes credit/debit/prepaid but has NO
+    //     commercial/business value, so a BUSINESS card on Visa/Mastercard
+    //     cannot be routed to the amex tier at Adyen — it rides the rule for
+    //     its channel. Our ledger (adyen_payments.rate_category) still
+    //     classifies it amex from additionalData, so internal reporting shows
+    //     the divergence until Adyen can key on commercial cards.
+    //   · Adyen applies the MOST SPECIFIC matching rule. An Amex ecommerce
+    //     payment would tie between 'amex + ANY interaction' and 'ANY method +
+    //     Ecommerce' (one specific condition each), so the amex tier is
+    //     written per-interaction (two specific conditions) to always outrank
+    //     the channel rules — Amex is its own fee wherever the card is used.
+    //   · ContAuth (stored-card) payments ride the card_present catch-all,
+    //     while the ledger classes stored-card booking payments as
+    //     card_not_present (channel 'booking') — a second documented
+    //     divergence; revisit when ContAuth volume matters.
+    // Refuses missing_prerequisite listing exactly which tiers lack rates.
     if (action === 'configure_splits') {
       const missing: string[] = [];
       if (!maa?.store_id) missing.push('store — register the venue store first (Card terminals → ensure store)');
       if (!maa?.balance_account_id) missing.push('balance account — run Start onboarding first');
       if (!merchant) missing.push('merchant account (ADYEN_MERCHANT_ACCOUNT)');
-      const rate = await effectiveRate(maa);
-      if (rate.percent == null && rate.fixed_pence == null) {
-        missing.push('processing rate — set the venue rate (or a platform default) in the Billing rate editor first; the commission split is built from it');
+      const { cards } = await effectiveRates(maa);
+      const lacking = tiersLackingRates(cards);
+      if (lacking.length) {
+        missing.push(`processing rates for: ${lacking.map(tierLabel).join('; ')} — set every tier in the Processing rate editor first (one commission rule is written per tier)`);
       }
-      if (missing.length) return json({ ok: false, kind: 'missing_prerequisite', message: `Not ready to configure splits. Missing: ${missing.join('; ')}.`, missing }, 400);
-
-      const commission: Record<string, number> = {};
-      if (rate.fixed_pence != null && rate.fixed_pence > 0) commission.fixedAmount = rate.fixed_pence;           // minor units
-      if (rate.percent != null && rate.percent > 0) commission.variablePercentage = Math.round(rate.percent * 100); // basis points
-      if (!Object.keys(commission).length) {
-        return json({ ok: false, kind: 'missing_prerequisite', message: 'The effective rate is zero — refusing to write a 0% split profile. Set a real rate first.' }, 400);
-      }
+      if (missing.length) return json({ ok: false, kind: 'missing_prerequisite', message: `Not ready to configure splits. Missing: ${missing.join('; ')}.`, missing, lacking_tiers: lacking }, 400);
 
       const currency = String(loc.currency || 'GBP').toUpperCase();
+      const commissionFor = (tier: string): Record<string, number> => {
+        const commission: Record<string, number> = {};
+        const fixed = Math.round(Number(cards[tier].fixed_pence ?? 0));
+        const pct = Number(cards[tier].percent ?? 0);
+        if (fixed > 0) commission.fixedAmount = fixed;                       // minor units
+        if (pct > 0) commission.variablePercentage = Math.round(pct * 100);  // basis points
+        return commission;
+      };
+      const logicFor = (tier: string) => ({
+        commission: commissionFor(tier),                // our revenue → liable account
+        paymentFee: 'deductFromLiableAccount',          // platform absorbs Adyen's costs (venue pays the all-in tier rate)
+        remainder: 'addToOneBalanceAccount',            // sale minus commission → the venue
+        tip: 'addToOneBalanceAccount',
+        surcharge: 'addToOneBalanceAccount',
+        chargeback: 'deductFromOneBalanceAccount',      // the venue carries its own chargebacks
+        chargebackCostAllocation: 'deductFromLiableAccount',
+        refund: 'deductAccordingToSplitRatio',          // refund unwinds commission + venue share alike
+        refundCostAllocation: 'deductFromLiableAccount',
+      });
+      const rule = (tier: string, paymentMethod: string, shopperInteraction: string) => ({
+        currency,                       // must be a real ISO code (the one condition with no ANY)
+        fundingSource: 'ANY',           // credit AND debit — one fee, per the pricing model
+        paymentMethod,
+        shopperInteraction,
+        splitLogic: logicFor(tier),
+      });
       const profile = {
-        description: `ServOS ${loc.name} ${rate.percent ?? 0}% + ${rate.fixed_pence ?? 0}p`.slice(0, 300),
-        rules: [{
-          // currency must be a real ISO code (the one condition with no ANY).
-          currency,
-          fundingSource: 'ANY',
-          paymentMethod: 'ANY',
-          shopperInteraction: 'ANY',
-          splitLogic: {
-            commission,                                     // our revenue → liable account
-            paymentFee: 'deductFromLiableAccount',          // platform absorbs Adyen's costs (venue pays the all-in rate above)
-            remainder: 'addToOneBalanceAccount',            // sale minus commission → the venue
-            tip: 'addToOneBalanceAccount',
-            surcharge: 'addToOneBalanceAccount',
-            chargeback: 'deductFromOneBalanceAccount',      // the venue carries its own chargebacks
-            chargebackCostAllocation: 'deductFromLiableAccount',
-            refund: 'deductAccordingToSplitRatio',          // refund unwinds commission + venue share alike
-            refundCostAllocation: 'deductFromLiableAccount',
-          },
-        }],
+        description: `ServOS ${loc.name} tiered rates`.slice(0, 300),
+        rules: [
+          // amex tier per interaction — always more specific than the channel rules
+          rule('amex', 'amex', 'Ecommerce'),
+          rule('amex', 'amex', 'Moto'),
+          rule('amex', 'amex', 'ANY'),
+          // channel tiers
+          rule('card_not_present', 'ANY', 'Ecommerce'),
+          rule('keyed', 'ANY', 'Moto'),
+          // default — POS / ContAuth / anything new
+          rule('card_present', 'ANY', 'ANY'),
+        ],
       };
 
       const created = await mgmt('POST', `/merchants/${encodeURIComponent(merchant)}/splitConfigurations`, profile);
@@ -467,7 +527,19 @@ Deno.serve(async (req) => {
         logStep('split_profile_delete_old', loc.id, { httpStatus: del.status, oldProfile });
       }
 
-      return json({ ok: true, split_profile_id: splitConfigurationId, rate, applied: { commission, currency, store_id: maa.store_id, balance_account_id: maa.balance_account_id } });
+      const tierSummary = (RATE_TIERS as readonly string[]).map((t) =>
+        `${tierLabel(t)}: ${Number(cards[t].percent ?? 0)}% + ${Math.round(Number(cards[t].fixed_pence ?? 0))}p`);
+      return json({
+        ok: true,
+        split_profile_id: splitConfigurationId,
+        rate_card: cards,
+        tier_summary: tierSummary,
+        applied: { rules: profile.rules.length, currency, store_id: maa.store_id, balance_account_id: maa.balance_account_id },
+        notes: [
+          'Business cards on Visa/Mastercard cannot be keyed at Adyen (no commercial fundingSource) — they ride their channel rule; the internal ledger still reports them under the Amex & business tier.',
+          'Stored-card (ContAuth) payments ride the card-present catch-all rule.',
+        ],
+      });
     }
 
     // ── setup_sweep: daily push of the full available balance to the bank ────

@@ -25,6 +25,14 @@
 //   settings       → the venue's effective processing rate (venue override else
 //                    platform default) + account status flags, for the read-only
 //                    Settings tab. Display only — nothing charges from it yet.
+//                    v5.7.3 (settings v2): returns the full resolved TIERED rate
+//                    card (card_present / card_not_present / amex / keyed, each
+//                    venue → platform default → legacy flat → null) alongside
+//                    the old flat `rates` shape, which now carries the resolved
+//                    card_present tier so a stale client still shows a true
+//                    number. `payments` v2 adds rate_category per row plus an
+//                    optional rate_category filter for the payment-type chip
+//                    and filter in the venue Payments tab.
 //
 // PHASE 4 (v5.7.1) adds the venue-facing side of payout onboarding:
 //   balances          → live Total/Pending/Available from the venue's Adyen
@@ -44,7 +52,7 @@
 //   npx supabase functions deploy adyen-financial --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { lemBase, balancePlatformBase } from '../_shared/adyen.ts';
+import { lemBase, balancePlatformBase, RATE_TIERS, resolveAdyenRateCard } from '../_shared/adyen.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -123,18 +131,31 @@ Deno.serve(async (req) => {
     const fromIso = isoOrNull(body.from);
     const toIso = isoOrNull(body.to);
 
+    // Optional payment-type filter (v5.7.3): one of the four pricing tiers.
+    // Applied to the tiles AND the list so both tell the same story. Ignored
+    // (with typed=false in the response) until migration 20260821b lands the
+    // rate_category column.
+    const typeFilter = (RATE_TIERS as readonly string[]).includes(String(body.rate_category ?? ''))
+      ? String(body.rate_category) : null;
+
     const SUM_COLS = 'amount_minor, amount_refunded_minor, success, last_event_code, currency';
-    const buildSum = (cols: string) => {
+    const buildSum = (cols: string, withType: boolean) => {
       let q = platformAdmin.from('adyen_payments').select(cols).eq('location_id', loc.id).limit(SUMMARY_CAP);
       if (fromIso) q = q.gte('created_at', fromIso);
       if (toIso) q = q.lte('created_at', toIso);
+      if (withType && typeFilter) q = q.eq('rate_category', typeFilter);
       return q;
     };
     let feeColsLive = true;
-    let { data: sumRows, error: sumErr } = await buildSum(`${SUM_COLS}, fee_minor`);
+    let typeColLive = true;
+    let { data: sumRows, error: sumErr } = await buildSum(`${SUM_COLS}, fee_minor, rate_category`, true);
+    if (sumErr && isMissingColumn(sumErr.message)) {
+      typeColLive = false;
+      ({ data: sumRows, error: sumErr } = await buildSum(`${SUM_COLS}, fee_minor`, false));
+    }
     if (sumErr && isMissingColumn(sumErr.message)) {
       feeColsLive = false;
-      ({ data: sumRows, error: sumErr } = await buildSum(SUM_COLS));
+      ({ data: sumRows, error: sumErr } = await buildSum(SUM_COLS, false));
     }
     if (sumErr) return json({ error: `summary read failed: ${sumErr.message}` }, 500);
 
@@ -157,7 +178,7 @@ Deno.serve(async (req) => {
     };
 
     const LIST_COLS = 'psp_reference, merchant_reference, channel, last_event_code, success, amount_minor, currency, amount_refunded_minor, card, matched_closed_check, created_at';
-    const buildList = (cols: string) => {
+    const buildList = (cols: string, withType: boolean) => {
       let q = platformAdmin.from('adyen_payments')
         .select(cols, { count: 'exact' })
         .eq('location_id', loc.id)
@@ -165,15 +186,25 @@ Deno.serve(async (req) => {
         .range(page * pageSize, page * pageSize + pageSize - 1);
       if (fromIso) q = q.gte('created_at', fromIso);
       if (toIso) q = q.lte('created_at', toIso);
+      if (withType && typeFilter) q = q.eq('rate_category', typeFilter);
       return q;
     };
-    let { data: payments, error: listErr, count } = await buildList(`${LIST_COLS}, fee_minor, settled_at`);
+    let { data: payments, error: listErr, count } = await buildList(`${LIST_COLS}, fee_minor, settled_at, rate_category`, true);
     if (listErr && isMissingColumn(listErr.message)) {
-      ({ data: payments, error: listErr, count } = await buildList(LIST_COLS));
+      ({ data: payments, error: listErr, count } = await buildList(`${LIST_COLS}, fee_minor, settled_at`, false));
+    }
+    if (listErr && isMissingColumn(listErr.message)) {
+      ({ data: payments, error: listErr, count } = await buildList(LIST_COLS, false));
     }
     if (listErr) return json({ error: `payments read failed: ${listErr.message}` }, 500);
 
-    return json({ ok: true, summary, payments: payments ?? [], page, page_size: pageSize, total: count ?? 0 });
+    return json({
+      ok: true, summary, payments: payments ?? [], page, page_size: pageSize, total: count ?? 0,
+      // typed=false tells the client the type column (migration 20260821b) is
+      // not live yet, so it hides the filter instead of filtering nothing.
+      typed: typeColLive,
+      rate_category: typeFilter,
+    });
   }
 
   // ── disputes: list (Phase 1 — read-only) ─────────────────────────────────
@@ -340,40 +371,63 @@ Deno.serve(async (req) => {
     });
   }
 
-  // ── settings: the venue's effective processing rate + account flags ──────
-  // Phase 3 (v5.7.0): feeds the read-only Settings tab in Back Office → Card
-  // payments. Effective rate = per-field venue override on
-  // merchant_adyen_accounts (markup_percent / markup_fixed_pence), else the
-  // platform default on platform_settings — the same fallback rule the Ryft
-  // rate card uses. Venue-facing, so this returns ONLY the effective numbers
-  // (never cost/margin internals) plus the account status flags.
-  // ⚠ These rates are DISPLAY + future-billing configuration only in this
-  // phase — nothing reads them at charge time. Splits / commission collection
-  // is Phase 4.
+  // ── settings v2: the venue's resolved TIERED rate card + account flags ───
+  // Feeds the read-only Settings tab in Back Office → Card payments. Four
+  // tiers (v5.7.3): card_present (credit & debit in person), card_not_present
+  // (online orders), amex (American Express & business cards), keyed
+  // (manually keyed). Resolution per tier — venue rate_card → platform
+  // default rate_card → the legacy flat markup as the card_present tier only
+  // → null (resolveAdyenRateCard, shared). Venue-facing, so this returns ONLY
+  // the effective numbers (never cost/margin internals) plus account status
+  // flags. The old flat `rates` shape stays and now carries the resolved
+  // card_present tier, so a client deployed before this version still shows a
+  // true number. All tiers null = the client's existing honest empty state.
   if (action === 'settings') {
-    const [{ data: acct, error: aErr }, { data: ps, error: pErr }] = await Promise.all([
+    const ACCT_COLS = 'markup_percent, markup_fixed_pence, receive_payments_ok, payouts_ok, balance_account_id';
+    const PS_COLS = 'default_adyen_markup_percent, default_adyen_markup_fixed_pence';
+    let [{ data: acct, error: aErr }, { data: ps, error: pErr }] = await Promise.all([
       platformAdmin.from('merchant_adyen_accounts')
-        .select('markup_percent, markup_fixed_pence, receive_payments_ok, payouts_ok, balance_account_id')
-        .eq('location_id', loc.id).maybeSingle(),
+        .select(`${ACCT_COLS}, rate_card`).eq('location_id', loc.id).maybeSingle(),
       platformAdmin.from('platform_settings')
-        .select('default_adyen_markup_percent, default_adyen_markup_fixed_pence')
-        .eq('id', true).maybeSingle(),
+        .select(`${PS_COLS}, default_adyen_rate_card`).eq('id', true).maybeSingle(),
     ]);
+    // Migration 20260821b not applied yet → fall back to the flat columns.
+    if (aErr && isMissingColumn(aErr.message)) {
+      ({ data: acct, error: aErr } = await platformAdmin.from('merchant_adyen_accounts')
+        .select(ACCT_COLS).eq('location_id', loc.id).maybeSingle());
+    }
+    if (pErr && isMissingColumn(pErr.message)) {
+      ({ data: ps, error: pErr } = await platformAdmin.from('platform_settings')
+        .select(PS_COLS).eq('id', true).maybeSingle());
+    }
     if (aErr) return json({ error: `account read failed: ${aErr.message}` }, 500);
     if (pErr) return json({ error: `settings read failed: ${pErr.message}` }, 500);
-    const percent = acct?.markup_percent ?? ps?.default_adyen_markup_percent ?? null;
-    const fixed = acct?.markup_fixed_pence ?? ps?.default_adyen_markup_fixed_pence ?? null;
+
+    const resolved = resolveAdyenRateCard(
+      { rate_card: (acct as Record<string, unknown> | null)?.rate_card ?? null, markup_percent: acct?.markup_percent, markup_fixed_pence: acct?.markup_fixed_pence },
+      { default_adyen_rate_card: (ps as Record<string, unknown> | null)?.default_adyen_rate_card ?? null, default_adyen_markup_percent: ps?.default_adyen_markup_percent, default_adyen_markup_fixed_pence: ps?.default_adyen_markup_fixed_pence },
+    );
+    // Venue-facing source collapses to venue/platform — the legacy flat rate
+    // IS the venue's (or platform's) agreed rate, just recorded pre-tiers.
+    const srcOut = (src: string | null) =>
+      src === 'venue' || src === 'legacy_venue' ? 'venue'
+      : src === 'platform' || src === 'legacy_platform' ? 'platform' : null;
+    const rate_card: Record<string, unknown> = {};
+    for (const tier of RATE_TIERS) {
+      const t = resolved[tier];
+      rate_card[tier] = (t.percent == null && t.fixed_pence == null)
+        ? null
+        : { percent: t.percent, fixed_pence: t.fixed_pence, source: srcOut(t.source) };
+    }
+    const cp = resolved.card_present;
     return json({
       ok: true,
       venue: loc.name,
+      rate_card,
       rates: {
-        percent: percent == null ? null : Number(percent),
-        fixed_pence: fixed == null ? null : Number(fixed),
-        // 'venue' when this venue has its own agreed rate, 'platform' when it
-        // rides the standard rate, null when no rate has been recorded yet.
-        source: (acct?.markup_percent != null || acct?.markup_fixed_pence != null)
-          ? 'venue'
-          : (percent != null || fixed != null) ? 'platform' : null,
+        percent: cp.percent,
+        fixed_pence: cp.fixed_pence,
+        source: srcOut(cp.source),
       },
       account: {
         exists: !!acct,

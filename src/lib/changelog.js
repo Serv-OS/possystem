@@ -7,6 +7,20 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.3',
+    date: '2026-08-19',
+    changes: [
+      'CARD PRICING NOW WORKS LIKE EVERYONE ELSE IN THE INDUSTRY. Four payment types, each with its own fee: card present (credit and debit in person, one fee), card not present (online orders), American Express and business cards, and manually keyed payments. Each fee is a percent plus pence per transaction. There is a standard platform rate card, and any venue can be given its own card that overrides it. The old single flat rate still counts as the card present fee until a rate card is saved, so nothing already agreed stops working.',
+      'The internal admin portal grew up. Billing and Stripe is now called Processing. The Stripe test screen is gone. Every Ryft control is gone too: the onboarding summary, the connect and sync buttons, the cost and markup editors and the live fees panel, because no venue takes payments through Ryft any more. The Processing section now has the four row rate editor for the platform default and for each ServOS Payments venue, with a live preview of the effective rate and where it comes from.',
+      'Venues see their real rate card. Back Office, Card payments, Settings now lists the four payment types with the fee for each, exactly as agreed. A type with no agreed rate shows a dash instead of a made up number.',
+      'Every card payment now knows what type it was. As each payment arrives it is classified from what the card networks actually send: Amex and business cards are spotted from the card details, online orders from the order channel, keyed payments from the entry method, and everything else at a terminal counts as card present. The payment also records what ServOS earns on it at the venue rate. The existing payment backfill re-runs this over old payments safely, it recomputes rather than adds.',
+      'The venue Payments tab shows a type chip on every payment, has a type filter, and the CSV export includes the type.',
+      'NEW REVENUE SECTION in the admin portal. Pick a month and see, per venue: card volume and count by payment type, the commission ServOS earned, SaaS fees from the subscriptions table, and total platform revenue. It is honest about gaps: SaaS plans are all recorded at zero pounds today so it says pricing needs configuring instead of inventing numbers, margin only shows where settlement reports have recorded what Adyen charges us, and payments from before this update are flagged as unclassified until the backfill runs.',
+      'Commission splits match the tiers. Configure splits now writes one commission rule per payment type onto the venue store: Amex payments get the Amex fee, online orders the card not present fee, keyed payments the keyed fee, everything else the card present fee. If any tier has no rate the button refuses and lists exactly which ones are missing. One known limit: the card networks do not let split rules single out business cards on Visa or Mastercard, so those pay their channel rate at Adyen while our own reporting still counts them in the Amex and business tier.',
+      'To go live this needs one hand applied database migration (20260821b, the rate card and classification columns), four server function deploys (payments-admin, adyen-financial, adyen-webhook, adyen-onboard), and one run of the payment backfill to classify existing payments. Until then every screen involved loads and says what is missing instead of erroring.',
+    ],
+  },
+  {
     version: '5.7.2',
     date: '2026-08-19',
     changes: [

@@ -5,6 +5,10 @@
 // self-fetching report. Fees (v5.6.99): once settlement ingestion has run,
 // summary.fees_minor and per-row fee_minor arrive from adyen-report-ingest and
 // light up the tile + a per-row Fee column; until then both show an honest "—".
+// Payment types (v5.7.3): each payment carries its pricing tier
+// (rate_category, stamped by adyen-webhook) rendered as a Type chip, with a
+// type filter that refetches server-side so the tiles match the list. The
+// filter hides itself until the server says the type column is live.
 
 import { useEffect, useState } from 'react';
 import { supabase, isMock, getLocationId } from '../../../lib/supabase';
@@ -39,6 +43,22 @@ const fmtWhen = (iso) => {
   try { return new Date(iso).toLocaleString('en-GB', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }); }
   catch { return '—'; }
 };
+// Venue-facing names for the four pricing tiers — never internal ids.
+const TYPE_LABELS = {
+  card_present: 'In person',
+  card_not_present: 'Online',
+  amex: 'Amex & business',
+  keyed: 'Keyed',
+};
+const TYPE_FILTERS = [
+  { id: '', label: 'All types' },
+  { id: 'card_present', label: 'In person' },
+  { id: 'card_not_present', label: 'Online' },
+  { id: 'amex', label: 'Amex & business' },
+  { id: 'keyed', label: 'Manually keyed' },
+];
+const typeLabel = (r) => TYPE_LABELS[r?.rate_category] ?? '—';
+
 const cardLabel = (card) => {
   if (!card) return '—';
   const brand = card.brand ? String(card.brand).toUpperCase() : '';
@@ -49,10 +69,11 @@ const cardLabel = (card) => {
 export default function AdyenPayments() {
   const [data, setData] = useState(null);
   const [page, setPage] = useState(0);
+  const [typeFilter, setTypeFilter] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  const load = async (p = page) => {
+  const load = async (p = page, tf = typeFilter) => {
     setLoading(true); setError('');
     try {
       if (isMock) { setData({ mock: true }); return; }
@@ -63,7 +84,7 @@ export default function AdyenPayments() {
       const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/adyen-financial`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({ action: 'payments', ops_location_id: locId, page: p, page_size: PAGE_SIZE }),
+        body: JSON.stringify({ action: 'payments', ops_location_id: locId, page: p, page_size: PAGE_SIZE, rate_category: tf || undefined }),
       });
       const j = await res.json();
       if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
@@ -81,6 +102,7 @@ export default function AdyenPayments() {
     const headers = [
       { label: 'Date', key: (r) => fmtWhen(r.created_at) },
       { label: 'Card', key: (r) => cardLabel(r.card) },
+      { label: 'Type', key: (r) => typeLabel(r) },
       { label: 'Amount', key: (r) => ((Number(r.amount_minor) || 0) / 100).toFixed(2) },
       { label: 'Refunded', key: (r) => ((Number(r.amount_refunded_minor) || 0) / 100).toFixed(2) },
       { label: 'Fee', key: (r) => (r.fee_minor != null ? (Number(r.fee_minor) / 100).toFixed(2) : '') },
@@ -120,24 +142,42 @@ export default function AdyenPayments() {
 
       {error && <div style={{ padding: 10, background: 'var(--red-d)', color: 'var(--red)', borderRadius: 8, fontSize: 12, border: '1px solid var(--red-b)', marginBottom: 14 }}>{error}</div>}
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, gap: 10, flexWrap: 'wrap' }}>
         <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--t1)' }}>Card payments</div>
-        {payments.length > 0 && <ExportBtn onClick={exportCsv} />}
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          {data?.typed !== false && (
+            <select
+              value={typeFilter}
+              onChange={(e) => { setTypeFilter(e.target.value); load(0, e.target.value); }}
+              style={{ padding: '6px 10px', borderRadius: 8, background: 'var(--bg3)', border: '1px solid var(--bdr)', color: 'var(--t2)', fontSize: 12, fontWeight: 700, fontFamily: 'inherit', cursor: 'pointer' }}
+            >
+              {TYPE_FILTERS.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+            </select>
+          )}
+          {payments.length > 0 && <ExportBtn onClick={exportCsv} />}
+        </div>
       </div>
 
       {payments.length === 0 ? (
-        <EmptyState icon="💳" message="No card payments recorded yet. They appear here the moment one is taken." />
+        <EmptyState icon="💳" message={typeFilter ? 'No card payments of this type in this period.' : 'No card payments recorded yet. They appear here the moment one is taken.'} />
       ) : (
         <div style={{ border: '1px solid var(--bdr)', borderRadius: 10, overflow: 'hidden' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr 0.9fr 0.8fr 0.7fr 1.1fr 1.3fr', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.04em', padding: '9px 14px', background: 'var(--bg2)' }}>
-            <div>Date</div><div>Card</div><div>Amount</div><div>Refunded</div><div>Fee</div><div>Status</div><div>PSP ref</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 0.9fr 0.9fr 0.9fr 0.8fr 0.7fr 1.1fr 1.2fr', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.04em', padding: '9px 14px', background: 'var(--bg2)' }}>
+            <div>Date</div><div>Card</div><div>Type</div><div>Amount</div><div>Refunded</div><div>Fee</div><div>Status</div><div>PSP ref</div>
           </div>
           {payments.map((p) => {
             const st = statusOf(p);
             return (
-              <div key={p.psp_reference} style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr 0.9fr 0.8fr 0.7fr 1.1fr 1.3fr', fontSize: 13, padding: '9px 14px', borderTop: '1px solid var(--bdr)', alignItems: 'center' }}>
+              <div key={p.psp_reference} style={{ display: 'grid', gridTemplateColumns: '1.2fr 0.9fr 0.9fr 0.9fr 0.8fr 0.7fr 1.1fr 1.2fr', fontSize: 13, padding: '9px 14px', borderTop: '1px solid var(--bdr)', alignItems: 'center' }}>
                 <div style={{ color: 'var(--t2)' }}>{fmtWhen(p.created_at)}</div>
                 <div style={{ color: 'var(--t2)' }}>{cardLabel(p.card)}</div>
+                <div>
+                  {p.rate_category ? (
+                    <span style={{ fontSize: 10.5, fontWeight: 700, padding: '2px 8px', borderRadius: 999, background: 'var(--bg3)', border: '1px solid var(--bdr)', color: 'var(--t2)', whiteSpace: 'nowrap' }}>
+                      {typeLabel(p)}
+                    </span>
+                  ) : <span style={{ color: 'var(--t4)' }}>—</span>}
+                </div>
                 <div style={{ fontWeight: 700, color: 'var(--t1)' }}>{money((Number(p.amount_minor) || 0) / 100, p.currency || cur)}</div>
                 <div style={{ color: (Number(p.amount_refunded_minor) || 0) > 0 ? 'var(--amb,#e8a020)' : 'var(--t4)' }}>
                   {(Number(p.amount_refunded_minor) || 0) > 0 ? money(Number(p.amount_refunded_minor) / 100, p.currency || cur) : '—'}

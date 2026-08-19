@@ -1,16 +1,21 @@
 // src/admin/sections/AdminBillingManager.jsx
-// Admin-only payments manager: per-location PROCESSOR (Stripe | Ryft | Adyen),
-// the merchant account link/onboarding for whichever is active, negotiated
-// markup % (the platform fee), and — for Ryft — a recorded buy rate for margin
-// visibility. Adyen (ServOS Payments) rates are Phase 3: set here, shown
-// read-only to the venue in Back Office → Card payments → Settings; billing
-// from them is Phase 4.
+// Admin-only "Processing" section: per-location PROCESSOR (Stripe | Adyen),
+// the merchant account link/onboarding for whichever is active, and the
+// negotiated pricing. v5.7.3 removes every Ryft control (no venue takes
+// payments through Ryft any more) and replaces the flat ServOS Payments
+// (Adyen) markup with the TIERED RATE CARD every competitor uses:
+//   card-present (credit & debit) / card-not-present (online) /
+//   American Express & business cards / manually keyed — each % + pence,
+//   set as a platform default and overridable per venue.
+// The v5.7.0 flat rate stays on file as the legacy card-present fallback
+// until a rate card is saved, so nothing already negotiated stops working.
 //
-// Both processors' writes go through the service-role `payments-admin` edge
-// function (super_admin only): Stripe markup pricing + unlink, plus Ryft account
-// lifecycle + pricing + the processor toggle. The account/pricing tables are RLS
-// select-only for the anon platform client, so client-side writes silently
-// no-op — reads stay direct, writes go through the edge fn.
+// Writes go through the service-role `payments-admin` edge function
+// (super_admin only): Stripe markup pricing + unlink, the processor toggle,
+// and the Adyen rate card (adyen_pricing v2). The account/pricing tables are
+// RLS select-only (or service-role-only) for the anon platform client, so
+// client-side writes silently no-op — reads stay direct where allowed, writes
+// go through the edge fn.
 //
 // Themed with the same CSS variables as the customer back office.
 
@@ -52,6 +57,47 @@ async function callAdyenOnboard(action, payload) {
   return j;
 }
 
+// The four pricing tiers (migration 20260821b) — order matches the venue's
+// Settings tab so both screens read the same way.
+const TIERS = [
+  { id: 'card_present', label: 'Card-present (credit & debit)' },
+  { id: 'card_not_present', label: 'Card-not-present (online)' },
+  { id: 'amex', label: 'American Express & business cards' },
+  { id: 'keyed', label: 'Manually keyed' },
+];
+
+const emptyCard = () => Object.fromEntries(TIERS.map(t => [t.id, { percent: '', fixed_pence: '' }]));
+
+// jsonb rate card → editor state ('' for null so inputs stay controlled).
+const cardToState = (card) => {
+  const st = emptyCard();
+  for (const t of TIERS) {
+    const row = card?.[t.id];
+    if (!row) continue;
+    st[t.id] = {
+      percent: row.percent === null || row.percent === undefined ? '' : String(row.percent),
+      fixed_pence: row.fixed_pence === null || row.fixed_pence === undefined ? '' : String(row.fixed_pence),
+    };
+  }
+  return st;
+};
+
+// editor state → jsonb rate card ('' → null; the server sanitizes again).
+const stateToCard = (st) => Object.fromEntries(TIERS.map(t => {
+  const row = st[t.id] ?? {};
+  return [t.id, {
+    percent: row.percent === '' || row.percent === undefined ? null : Number(row.percent),
+    fixed_pence: row.fixed_pence === '' || row.fixed_pence === undefined ? null : Math.round(Number(row.fixed_pence)),
+  }];
+}));
+
+const cardsEqual = (a, b) => JSON.stringify(stateToCard(a)) === JSON.stringify(stateToCard(b));
+
+const fmtRate = (pct, pence) => {
+  if (pct == null && pence == null) return 'Not set';
+  return `${Number(pct ?? 0).toFixed(2)}% + ${Math.round(Number(pence ?? 0))}p`;
+};
+
 // ─── Reusable styles (BO theme tokens) ─────────────────────────────────────
 const S = {
   page:    { padding: 0 },
@@ -77,13 +123,11 @@ export default function AdminBillingManager({ authUser }) {
   const [companies, setCompanies] = useState([]);
   const [locations, setLocations] = useState([]);
   const [msaByLoc, setMsaByLoc] = useState({});
-  const [ryaByLoc, setRyaByLoc] = useState({});
   const [bsByLoc, setBsByLoc] = useState({});
   const [platformDefaults, setPlatformDefaults] = useState({ default_cardpresent_markup_percent: 1.0, default_online_markup_percent: 0.5 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [linkModalLoc, setLinkModalLoc] = useState(null);
-  const [ryftModalLoc, setRyftModalLoc] = useState(null);
   const [filterCompanyId, setFilterCompanyId] = useState('');
 
   const refresh = useCallback(async () => {
@@ -108,6 +152,8 @@ export default function AdminBillingManager({ authUser }) {
       if (adyenDef?.defaults) {
         merged.default_adyen_markup_percent = adyenDef.defaults.default_markup_percent;
         merged.default_adyen_markup_fixed_pence = adyenDef.defaults.default_markup_fixed_pence;
+        merged.default_adyen_rate_card = adyenDef.defaults.rate_card ?? null;
+        merged.adyen_rate_card_ready = adyenDef.rate_card_ready !== false;
       }
       if (Object.keys(merged).length) setPlatformDefaults(prev => ({ ...prev, ...merged }));
 
@@ -119,22 +165,16 @@ export default function AdminBillingManager({ authUser }) {
 
       const ids = (locs ?? []).map(l => l.id);
       if (ids.length) {
-        // merchant_ryft_accounts is RLS service-role-read (the platform client is
-        // anonymous here), so fetch it through the super_admin edge fn — reading
-        // it directly returns nothing and shows linked accounts as "Not connected".
-        const [{ data: msas }, ryftStatus, { data: bses }] = await Promise.all([
+        const [{ data: msas }, { data: bses }] = await Promise.all([
           platformSupabase.from('merchant_stripe_accounts').select('*').in('location_id', ids),
-          callPaymentsAdmin('ryft_status', { location_ids: ids }).catch(e => { console.warn('[billing] ryft_status failed', e?.message); return { accounts: [] }; }),
           platformSupabase.from('billing_state').select('*').in('location_id', ids),
         ]);
         const m = {}; (msas ?? []).forEach(r => { m[r.location_id] = r; });
-        const ry = {}; (ryftStatus?.accounts ?? []).forEach(r => { ry[r.location_id] = r; });
         const b = {}; (bses ?? []).forEach(r => { b[r.location_id] = r; });
         setMsaByLoc(m);
-        setRyaByLoc(ry);
         setBsByLoc(b);
       } else {
-        setMsaByLoc({}); setRyaByLoc({}); setBsByLoc({});
+        setMsaByLoc({}); setBsByLoc({});
       }
     } catch (e) {
       setError(String(e?.message ?? e));
@@ -149,35 +189,14 @@ export default function AdminBillingManager({ authUser }) {
   const upsertMsaPatch = (locationId, patch) => {
     setMsaByLoc(prev => ({ ...prev, [locationId]: { ...(prev[locationId] ?? {}), ...patch } }));
   };
-  const upsertRyaPatch = (locationId, patch) => {
-    setRyaByLoc(prev => ({ ...prev, [locationId]: { ...(prev[locationId] ?? {}), ...patch } }));
-  };
   const setLocProcessor = (locationId, processor) => {
     setLocations(prev => prev.map(l => l.id === locationId ? { ...l, payment_processor: processor } : l));
   };
 
-  // Ryft onboarding at-a-glance: who can transact vs still onboarding.
-  const ryftSummary = (() => {
-    const ryft = locations.filter(l => (l.payment_processor || 'stripe') === 'ryft');
-    let live = 0, onboarding = 0, notConnected = 0;
-    ryft.forEach(l => { const r = ryaByLoc[l.id]; if (!r?.ryft_account_id) notConnected++; else if (r.charges_enabled) live++; else onboarding++; });
-    return { total: ryft.length, live, onboarding, notConnected };
-  })();
-
   return (
     <div style={S.page}>
-      <h1 style={S.h1}>Payments — processors, accounts &amp; pricing</h1>
-      <div style={S.sub}>Per-location payment processor (Stripe or Ryft), merchant account onboarding, and negotiated markup. For Ryft, the buy rate is recorded for margin visibility.</div>
-
-      {ryftSummary.total > 0 && (
-        <div style={{ ...S.card, display: 'flex', gap: 22, flexWrap: 'wrap', alignItems: 'center' }}>
-          <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--acc)', textTransform: 'uppercase', letterSpacing: '.06em' }}>Ryft onboarding</span>
-          <Stat label="Live · can transact" value={`${ryftSummary.live}`} accent />
-          <Stat label="Onboarding" value={`${ryftSummary.onboarding}`} />
-          <Stat label="Not connected" value={`${ryftSummary.notConnected}`} />
-          <div style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--t4)' }}>Auto-updates when a merchant finishes onboarding (Ryft webhook).</div>
-        </div>
-      )}
+      <h1 style={S.h1}>Processing — accounts &amp; pricing</h1>
+      <div style={S.sub}>Per-location payment processor (Stripe or ServOS Payments via Adyen), merchant account onboarding, and the tiered processing rates each venue pays.</div>
 
       {/* Platform-wide defaults */}
       <PlatformDefaultsPanel
@@ -216,7 +235,6 @@ export default function AdminBillingManager({ authUser }) {
           location={loc}
           companyName={companyName(loc.company_id)}
           msa={msaByLoc[loc.id]}
-          rya={ryaByLoc[loc.id]}
           bs={bsByLoc[loc.id]}
           defaults={platformDefaults}
           onError={setError}
@@ -249,34 +267,6 @@ export default function AdminBillingManager({ authUser }) {
             upsertMsaPatch(loc.id, patch);
             return true;
           }}
-          onRyftConnect={() => setRyftModalLoc(loc)}
-          onRyftSync={async () => {
-            try { const r = await callPaymentsAdmin('ryft_sync', { location_id: loc.id }); upsertRyaPatch(loc.id, { charges_enabled: r.charges_enabled, requirements: { status: r.verification_status } }); return true; }
-            catch (e) { setError(`Sync failed: ${e.message}`); return false; }
-          }}
-          onRyftUnlink={async () => {
-            if (!confirm(`Unlink Ryft account from ${loc.name}? This detaches it here; it is not deleted at Ryft.`)) return;
-            try { await callPaymentsAdmin('ryft_unlink', { location_id: loc.id }); setRyaByLoc(prev => { const n = { ...prev }; delete n[loc.id]; return n; }); }
-            catch (e) { setError(`Unlink failed: ${e.message}`); }
-          }}
-          onRyftOnboardingLink={async () => {
-            try {
-              const r = await callPaymentsAdmin('ryft_onboarding_link', { location_id: loc.id, redirect_url: window.location.origin + '/?ryft_onboarded=1' });
-              return r.onboarding_url || null;
-            } catch (e) { setError(`Couldn't create onboarding link: ${e.message}`); return null; }
-          }}
-          onRyftSavePricing={async (vals) => {
-            try { await callPaymentsAdmin('ryft_pricing', { location_id: loc.id, ...vals }); upsertRyaPatch(loc.id, {
-              markup_percent: vals.markup_percent === '' || vals.markup_percent == null ? null : Number(vals.markup_percent),
-              markup_fixed_pence: vals.markup_fixed_pence === '' || vals.markup_fixed_pence == null ? null : Math.round(Number(vals.markup_fixed_pence)),
-              pricing_notes: vals.pricing_notes || null,
-            }); return true; }
-            catch (e) { setError(`Save failed: ${e.message}`); return false; }
-          }}
-          onRyftFees={async () => {
-            try { return await callPaymentsAdmin('ryft_fees', { location_id: loc.id }); }
-            catch (e) { setError(`Couldn't load fees: ${e.message}`); return null; }
-          }}
         />
       ))}
 
@@ -287,49 +277,84 @@ export default function AdminBillingManager({ authUser }) {
           onLinked={() => { setLinkModalLoc(null); refresh(); }}
         />
       )}
-      {ryftModalLoc && (
-        <RyftOnboardModal
-          location={ryftModalLoc}
-          onClose={() => setRyftModalLoc(null)}
-          onDone={() => { setRyftModalLoc(null); refresh(); }}
-        />
-      )}
+    </div>
+  );
+}
+
+// ─── Rate card editor rows (shared by defaults + per-venue) ─────────────────
+// One row per tier: % + pence inputs and the live effective value with where
+// it comes from (override / default / legacy flat). `fallbackFor(tierId,
+// field)` returns { value, label } for what applies when the input is blank.
+function RateCardRows({ value, onChange, fallbackFor }) {
+  const setField = (tierId, field, v) => onChange({ ...value, [tierId]: { ...(value[tierId] ?? { percent: '', fixed_pence: '' }), [field]: v } });
+  return (
+    <div style={{ display: 'grid', gap: 10 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(190px, 1.4fr) 1fr 1fr minmax(150px, 1.2fr)', gap: 10, alignItems: 'center' }}>
+        <span style={{ ...S.label, marginBottom: 0 }}>Payment type</span>
+        <span style={{ ...S.label, marginBottom: 0 }}>Rate %</span>
+        <span style={{ ...S.label, marginBottom: 0 }}>Per-txn (pence)</span>
+        <span style={{ ...S.label, marginBottom: 0 }}>Effective</span>
+      </div>
+      {TIERS.map(t => {
+        const row = value[t.id] ?? { percent: '', fixed_pence: '' };
+        const fbPct = fallbackFor(t.id, 'percent');
+        const fbFix = fallbackFor(t.id, 'fixed_pence');
+        const effPct = row.percent === '' ? fbPct.value : Number(row.percent);
+        const effFix = row.fixed_pence === '' ? fbFix.value : Math.round(Number(row.fixed_pence));
+        const isOverride = row.percent !== '' || row.fixed_pence !== '';
+        const srcLabel = isOverride ? 'set here' : (fbPct.label ?? fbFix.label);
+        return (
+          <div key={t.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(190px, 1.4fr) 1fr 1fr minmax(150px, 1.2fr)', gap: 10, alignItems: 'center' }}>
+            <span style={{ fontSize: 13, color: 'var(--t1)', fontWeight: 600 }}>{t.label}</span>
+            <input type="number" step="0.01" min="0" max="100" value={row.percent}
+              placeholder={fbPct.value == null ? '—' : Number(fbPct.value).toFixed(2)}
+              onChange={e => setField(t.id, 'percent', e.target.value)}
+              style={{ ...S.input, ...S.inputMono }} />
+            <input type="number" step="1" min="0" max="10000" value={row.fixed_pence}
+              placeholder={fbFix.value == null ? '—' : String(Math.round(Number(fbFix.value)))}
+              onChange={e => setField(t.id, 'fixed_pence', e.target.value)}
+              style={{ ...S.input, ...S.inputMono }} />
+            <div style={{ fontSize: 12, color: (effPct == null && effFix == null) ? 'var(--t4)' : 'var(--t2)' }}>
+              <strong style={{ color: (effPct == null && effFix == null) ? 'var(--t4)' : 'var(--acc)' }}>{fmtRate(effPct, effFix)}</strong>
+              {srcLabel && (effPct != null || effFix != null) && <span style={{ color: 'var(--t4)' }}> · {srcLabel}</span>}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
 
 // ─── Platform-wide defaults panel ─────────────────────────────────────────
-// Stripe: markup defaults (unchanged). Ryft: the IC+ BUY-RATE CARD (our cost,
-// all-in per card type + fixed pence, by GMV tier) plus the DEFAULT MARKUP
-// (single % + fixed pence) used where a merchant has no override.
+// Stripe: markup defaults (unchanged). ServOS Payments (Adyen): the DEFAULT
+// TIERED RATE CARD — four payment types, each % + pence — used wherever a
+// venue has no override. The old flat default stays on file as the legacy
+// card-present fallback until this card is saved.
 function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
   const [editing, setEditing] = useState(false);
   const [cp, setCp] = useState(defaults.default_cardpresent_markup_percent);
   const [on, setOn] = useState(defaults.default_online_markup_percent);
-  // Ryft: our blended cost (what Ryft charges us) + the markup we add on top.
-  const [cPct, setCPct] = useState(defaults.ryft_cost_percent ?? '');
-  const [cFix, setCFix] = useState(defaults.ryft_cost_fixed_pence ?? '');
-  const [mkPct, setMkPct] = useState(defaults.default_ryft_markup_percent ?? '');
-  const [mkFix, setMkFix] = useState(defaults.default_ryft_markup_fixed_pence ?? '');
-  // Adyen (ServOS Payments): the default rate the venue pays. No recorded cost
-  // columns in v1 — the margin view arrives with the sub-merchant phase.
-  const [adPct, setAdPct] = useState(defaults.default_adyen_markup_percent ?? '');
-  const [adFix, setAdFix] = useState(defaults.default_adyen_markup_fixed_pence ?? '');
+  const [drc, setDrc] = useState(cardToState(defaults.default_adyen_rate_card));
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     setCp(defaults.default_cardpresent_markup_percent);
     setOn(defaults.default_online_markup_percent);
-    setCPct(defaults.ryft_cost_percent ?? '');
-    setCFix(defaults.ryft_cost_fixed_pence ?? '');
-    setMkPct(defaults.default_ryft_markup_percent ?? '');
-    setMkFix(defaults.default_ryft_markup_fixed_pence ?? '');
-    setAdPct(defaults.default_adyen_markup_percent ?? '');
-    setAdFix(defaults.default_adyen_markup_fixed_pence ?? '');
+    setDrc(cardToState(defaults.default_adyen_rate_card));
   }, [defaults]);
 
-  const numOrNull = (v) => (v === '' || v === null || v === undefined ? null : Number(v));
-  const intOrNull = (v) => (v === '' || v === null || v === undefined ? null : Math.round(Number(v)));
+  const legacyPct = defaults.default_adyen_markup_percent;
+  const legacyFix = defaults.default_adyen_markup_fixed_pence;
+  const hasLegacy = legacyPct != null || legacyFix != null;
+
+  // Blank default field → the legacy flat rate, card-present tier only.
+  const fallbackFor = (tierId, field) => {
+    if (tierId === 'card_present' && hasLegacy) {
+      const v = field === 'percent' ? legacyPct : legacyFix;
+      return { value: v == null ? null : Number(v), label: 'legacy flat rate' };
+    }
+    return { value: null, label: null };
+  };
 
   const save = async () => {
     setBusy(true);
@@ -337,27 +362,15 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
       const patch = {
         default_cardpresent_markup_percent: Number(cp),
         default_online_markup_percent: Number(on),
-        ryft_cost_percent: numOrNull(cPct),
-        ryft_cost_fixed_pence: intOrNull(cFix),
-        default_ryft_markup_percent: numOrNull(mkPct),
-        default_ryft_markup_fixed_pence: intOrNull(mkFix),
         updated_at: new Date().toISOString(),
         updated_by_user_id: authUserId,
       };
       const { error } = await platformSupabase.from('platform_settings').update(patch).eq('id', true);
       if (error) throw error;
-      // Adyen defaults go through the service-role fn — platform_settings is
-      // not reliably writable from the anon platform client.
-      await callPaymentsAdmin('adyen_pricing', {
-        set: true,
-        default_markup_percent: numOrNull(adPct),
-        default_markup_fixed_pence: intOrNull(adFix),
-      });
-      onSave({
-        ...defaults, ...patch,
-        default_adyen_markup_percent: numOrNull(adPct),
-        default_adyen_markup_fixed_pence: intOrNull(adFix),
-      });
+      // The Adyen rate card goes through the service-role fn — platform_settings
+      // is not reliably writable from the anon platform client.
+      await callPaymentsAdmin('adyen_pricing', { set: true, rate_card: stateToCard(drc) });
+      onSave({ ...defaults, ...patch, default_adyen_rate_card: stateToCard(drc) });
       setEditing(false);
     } catch (e) {
       onError(`Failed to save platform defaults: ${e.message}`);
@@ -367,7 +380,12 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
   };
 
   const pct = (v) => `${Number(v ?? 0).toFixed(2)}%`;
-  const pence = (v) => `${Number(v ?? 0)}p`;
+  const resolvedDefault = (tierId) => {
+    const row = defaults.default_adyen_rate_card?.[tierId];
+    if (row && (row.percent != null || row.fixed_pence != null)) return { pct: row.percent, fix: row.fixed_pence, src: null };
+    if (tierId === 'card_present' && hasLegacy) return { pct: legacyPct, fix: legacyFix, src: 'legacy flat rate' };
+    return { pct: null, fix: null, src: null };
+  };
 
   return (
     <div style={{ ...S.card, borderColor: 'var(--acc-b)', background: 'var(--acc-d)' }}>
@@ -377,32 +395,34 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
             Platform defaults
           </div>
           <div style={{ fontSize: 14, color: 'var(--t1)', marginBottom: 8, lineHeight: 1.4 }}>
-            Stripe markup, and the Ryft model in two numbers — our cost (what Ryft charges us) and the markup we add. The customer pays the sum.
+            Stripe markup, and the ServOS Payments standard rate card — four payment types, each a percent plus pence per transaction. Venues without their own agreed card pay these.
           </div>
-          {!editing && (() => {
-            const c = Number(defaults.ryft_cost_percent ?? 0), cf = Number(defaults.ryft_cost_fixed_pence ?? 0);
-            const m = Number(defaults.default_ryft_markup_percent ?? 0), mf = Number(defaults.default_ryft_markup_fixed_pence ?? 0);
-            const aP = defaults.default_adyen_markup_percent, aF = defaults.default_adyen_markup_fixed_pence;
-            return (
-              <div style={{ display: 'grid', gap: 10 }}>
-                <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
-                  <Stat label="Stripe in-person markup" value={pct(defaults.default_cardpresent_markup_percent)} />
-                  <Stat label="Stripe online markup"    value={pct(defaults.default_online_markup_percent)} />
-                </div>
-                <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', paddingTop: 8, borderTop: '1px solid var(--bdr)' }}>
-                  <Stat label="Ryft cost (what Ryft charges us)" value={`${pct(c)} + ${pence(cf)}`} />
-                  <Stat label="Ryft markup (what we add)" value={`${pct(m)} + ${pence(mf)}`} accent />
-                  <Stat label="Customer pays (default)" value={`${pct(c + m)} + ${pence(cf + mf)}`} />
-                </div>
-                <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', paddingTop: 8, borderTop: '1px solid var(--bdr)' }}>
-                  <Stat label="Adyen (ServOS Payments) default rate — venue pays"
-                    value={aP == null && aF == null ? 'Not set' : `${pct(aP)} + ${pence(aF)}`} accent />
-                </div>
+          {!editing && (
+            <div style={{ display: 'grid', gap: 10 }}>
+              <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
+                <Stat label="Stripe in-person markup" value={pct(defaults.default_cardpresent_markup_percent)} />
+                <Stat label="Stripe online markup"    value={pct(defaults.default_online_markup_percent)} />
               </div>
-            );
-          })()}
+              <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', paddingTop: 8, borderTop: '1px solid var(--bdr)' }}>
+                {TIERS.map(t => {
+                  const r = resolvedDefault(t.id);
+                  return <Stat key={t.id} label={t.label} value={fmtRate(r.pct, r.fix)} accent={r.pct != null || r.fix != null} />;
+                })}
+              </div>
+              {hasLegacy && (
+                <div style={{ fontSize: 11, color: 'var(--t3)' }}>
+                  Legacy flat rate on file: {fmtRate(legacyPct, legacyFix)} — it counts as the card-present default until a rate card value replaces it.
+                </div>
+              )}
+              {defaults.adyen_rate_card_ready === false && (
+                <div style={{ fontSize: 11, color: 'var(--orn, #e8a020)' }}>
+                  Rate-card storage is not live yet — hand-apply migration 20260821b_adyen_rate_card.sql, then save the card.
+                </div>
+              )}
+            </div>
+          )}
           {editing && (
-            <div style={{ display: 'grid', gap: 14, maxWidth: 520 }}>
+            <div style={{ display: 'grid', gap: 14, maxWidth: 640 }}>
               <div>
                 <div style={{ ...S.label, color: 'var(--t2)' }}>Stripe markup (platform fee)</div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
@@ -411,25 +431,8 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
                 </div>
               </div>
               <div>
-                <div style={{ ...S.label, color: 'var(--t2)' }}>Ryft cost — what Ryft charges us (blended)</div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                  <NumField label="Cost %" value={cPct} onChange={setCPct} />
-                  <NumField label="Per-txn fee (pence)" value={cFix} onChange={setCFix} />
-                </div>
-              </div>
-              <div>
-                <div style={{ ...S.label, color: 'var(--t2)' }}>Ryft markup — what we add on top</div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                  <NumField label="Markup %" value={mkPct} onChange={setMkPct} />
-                  <NumField label="Per-txn fee (pence)" value={mkFix} onChange={setMkFix} />
-                </div>
-              </div>
-              <div>
-                <div style={{ ...S.label, color: 'var(--t2)' }}>Adyen (ServOS Payments) default rate — what the venue pays</div>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                  <NumField label="Rate %" value={adPct} onChange={setAdPct} />
-                  <NumField label="Per-txn fee (pence)" value={adFix} onChange={setAdFix} />
-                </div>
+                <div style={{ ...S.label, color: 'var(--t2)' }}>ServOS Payments standard rate card — what a venue pays per payment type</div>
+                <RateCardRows value={drc} onChange={setDrc} fallbackFor={fallbackFor} />
               </div>
             </div>
           )}
@@ -456,11 +459,10 @@ function NumField({ label, value, onChange }) {
 }
 
 // ─── Per-location card ────────────────────────────────────────────────────
-function LocationCard({ location, companyName, msa, rya, bs, defaults, onError,
-  onSetProcessor, onLink, onUnlink, onSavePricing,
-  onRyftConnect, onRyftSync, onRyftUnlink, onRyftOnboardingLink, onRyftSavePricing, onRyftFees }) {
+function LocationCard({ location, companyName, msa, bs, defaults, onError,
+  onSetProcessor, onLink, onUnlink, onSavePricing }) {
   const processor = location.payment_processor || 'stripe';
-  const currency = (msa?.default_currency || rya?.default_currency || bs?.current_period_currency || 'gbp').toUpperCase();
+  const currency = (msa?.default_currency || bs?.current_period_currency || 'gbp').toUpperCase();
 
   return (
     <div style={S.card}>
@@ -477,7 +479,6 @@ function LocationCard({ location, companyName, msa, rya, bs, defaults, onError,
           <span style={{ ...S.label, marginBottom: 0 }}>Processor</span>
           <div style={S.seg}>
             <button style={S.segBtn(processor === 'stripe')} onClick={() => processor !== 'stripe' && onSetProcessor('stripe')}>Stripe</button>
-            <button style={S.segBtn(processor === 'ryft')} onClick={() => processor !== 'ryft' && onSetProcessor('ryft')}>Ryft</button>
             <button style={S.segBtn(processor === 'adyen')} onClick={() => processor !== 'adyen' && onSetProcessor('adyen')}>Adyen</button>
           </div>
         </div>
@@ -487,15 +488,18 @@ function LocationCard({ location, companyName, msa, rya, bs, defaults, onError,
         ? <StripeBlock msa={msa} bs={bs} currency={currency} defaults={defaults} onLink={onLink} onUnlink={onUnlink} onSavePricing={onSavePricing} />
         : processor === 'adyen'
         ? <AdyenBlock location={location} defaults={defaults} onError={onError} />
-        : <RyftBlock rya={rya} currency={currency} defaults={defaults} onError={onError} onConnect={onRyftConnect} onSync={onRyftSync} onUnlink={onRyftUnlink} onOnboardingLink={onRyftOnboardingLink} onSavePricing={onRyftSavePricing} onFees={onRyftFees} />}
+        : (
+          // A retired processor value (e.g. the removed Ryft) — say so plainly
+          // and let the toggle above move the venue onto a live one.
+          <div style={{ padding: '14px 16px', borderRadius: 12, background: 'var(--bg2)', border: '1px solid var(--bdr2)', fontSize: 12.5, color: 'var(--t3)' }}>
+            This venue is set to a retired processor ({processor}). Switch it to Stripe or Adyen above.
+          </div>
+        )}
     </div>
   );
 }
 
 // ─── Adyen block — LIVE status, asked of the server, never hardcoded ────────
-// The previous panel was a static "keys coming in Phase 1" sign that stayed up
-// after the keys landed and online payments shipped. Status now comes from the
-// adyen-checkout fn, so this panel is true by construction.
 const AdyenRow = ({ ok, children }) => (
   <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5 }}>
     <span style={{ color: ok ? 'var(--grn, #15C26A)' : 'var(--t4)', fontWeight: 700 }}>{ok ? '✓' : '·'}</span>
@@ -522,12 +526,13 @@ function AdyenBlock({ location, defaults, onError }) {
     return () => { live = false; };
   }, []);
 
-  // Per-venue rate (Phase 3). merchant_adyen_accounts is service-role-only, so
-  // reads AND writes go through payments-admin adyen_pricing. Independent of
-  // the checkout-keys probe above — rates are editable even while the probe runs.
+  // Per-venue TIERED rate card (v5.7.3). merchant_adyen_accounts is
+  // service-role-only, so reads AND writes go through payments-admin
+  // adyen_pricing. Independent of the checkout-keys probe above — rates are
+  // editable even while the probe runs.
   const [acct, setAcct] = useState(null);      // adyen_pricing get result (null = loading)
-  const [mkPct, setMkPct] = useState('');
-  const [mkFix, setMkFix] = useState('');
+  const [rc, setRc] = useState(emptyCard());
+  const [savedCard, setSavedCard] = useState(emptyCard());
   const [busy, setBusy] = useState(false);
   const [savedAt, setSavedAt] = useState(null);
 
@@ -538,36 +543,42 @@ function AdyenBlock({ location, defaults, onError }) {
         const r = await callPaymentsAdmin('adyen_pricing', { location_id: location.id });
         if (!live) return;
         setAcct(r);
-        setMkPct(r?.account?.markup_percent ?? '');
-        setMkFix(r?.account?.markup_fixed_pence ?? '');
+        const st0 = cardToState(r?.account?.rate_card);
+        setRc(st0);
+        setSavedCard(st0);
       } catch (e) { if (live) { setAcct({ error: e.message }); } }
     })();
     return () => { live = false; };
   }, [location.id]);
 
-  const defPct = acct?.defaults?.default_markup_percent ?? defaults?.default_adyen_markup_percent ?? null;
-  const defFix = acct?.defaults?.default_markup_fixed_pence ?? defaults?.default_adyen_markup_fixed_pence ?? null;
-  const num = (v, d) => (v === '' || v == null ? (d == null ? null : Number(d)) : Number(v));
-  const effPct = num(mkPct, defPct);
-  const effFix = num(mkFix, defFix);
-  const dirty = acct && !acct.error && (
-    String(mkPct) !== String(acct?.account?.markup_percent ?? '') ||
-    String(mkFix) !== String(acct?.account?.markup_fixed_pence ?? '')
-  );
+  // Blank venue field → the platform default card, then (card-present only)
+  // the legacy flat markup — the same chain the server resolves with.
+  const fallbackFor = (tierId, field) => {
+    const defRow = acct?.defaults?.rate_card?.[tierId] ?? defaults?.default_adyen_rate_card?.[tierId];
+    const defVal = defRow?.[field];
+    if (defVal != null) return { value: Number(defVal), label: 'platform default' };
+    if (tierId === 'card_present') {
+      const legacyVenue = field === 'percent' ? acct?.account?.markup_percent : acct?.account?.markup_fixed_pence;
+      if (legacyVenue != null) return { value: Number(legacyVenue), label: 'legacy venue flat rate' };
+      const legacyDef = field === 'percent'
+        ? (acct?.defaults?.default_markup_percent ?? defaults?.default_adyen_markup_percent)
+        : (acct?.defaults?.default_markup_fixed_pence ?? defaults?.default_adyen_markup_fixed_pence);
+      if (legacyDef != null) return { value: Number(legacyDef), label: 'legacy flat default' };
+    }
+    return { value: null, label: null };
+  };
+
+  const dirty = acct && !acct.error && !cardsEqual(rc, savedCard);
+  const legacyVenuePct = acct?.account?.markup_percent;
+  const legacyVenueFix = acct?.account?.markup_fixed_pence;
+  const hasVenueLegacy = legacyVenuePct != null || legacyVenueFix != null;
 
   const savePricing = async () => {
     setBusy(true);
     try {
-      await callPaymentsAdmin('adyen_pricing', { set: true, location_id: location.id, markup_percent: mkPct, markup_fixed_pence: mkFix });
-      setAcct(prev => ({
-        ...prev,
-        account: {
-          ...(prev?.account ?? {}),
-          exists: true,
-          markup_percent: mkPct === '' || mkPct == null ? null : Number(mkPct),
-          markup_fixed_pence: mkFix === '' || mkFix == null ? null : Math.round(Number(mkFix)),
-        },
-      }));
+      await callPaymentsAdmin('adyen_pricing', { set: true, location_id: location.id, rate_card: stateToCard(rc) });
+      setSavedCard(rc);
+      setAcct(prev => ({ ...prev, account: { ...(prev?.account ?? {}), exists: true, rate_card: stateToCard(rc) } }));
       setSavedAt(Date.now()); setTimeout(() => setSavedAt(null), 2500);
     } catch (e) { onError?.(`Save failed: ${e.message}`); }
     finally { setBusy(false); }
@@ -592,31 +603,34 @@ function AdyenBlock({ location, defaults, onError }) {
   return (
     <>
       {statusBox}
-      {/* Pricing — Phase 3: DISPLAY + future-billing config only. The venue sees
-          the effective rate read-only in Back Office → Card payments → Settings.
-          Nothing reads these at charge time; splits/commission collection is
-          Phase 4. */}
+      {/* Pricing — the venue's tiered rate card. Shown read-only to the venue
+          in Back Office → Card payments → Settings; the same resolved card
+          drives commission stamping (adyen-webhook) and the split rules
+          (adyen-onboard configure_splits). Blank = platform default. */}
       <div style={{ marginTop: 14 }}>
-        <div style={{ ...S.label, color: 'var(--t2)', marginBottom: 8 }}>Venue rate — what the venue pays per card transaction (blank = platform default)</div>
-        {acct == null && <div style={{ fontSize: 12, color: 'var(--t3)' }}>Loading rate…</div>}
-        {acct?.error && <div style={{ fontSize: 12, color: 'var(--red)' }}>Couldn't load the rate: {acct.error}</div>}
+        <div style={{ ...S.label, color: 'var(--t2)', marginBottom: 8 }}>Venue rate card — what the venue pays, per payment type (blank = platform default)</div>
+        {acct == null && <div style={{ fontSize: 12, color: 'var(--t3)' }}>Loading rates…</div>}
+        {acct?.error && <div style={{ fontSize: 12, color: 'var(--red)' }}>Couldn't load the rates: {acct.error}</div>}
         {acct && !acct.error && (
           <>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 8 }}>
-              <MarkupField label="Rate %" value={mkPct} onChange={setMkPct} effective={effPct ?? 0} isOverride={mkPct !== ''} def={defPct ?? 0} />
-              <MarkupField label="Per-transaction fee" value={mkFix} onChange={setMkFix} effective={effFix ?? 0} isOverride={mkFix !== ''} def={defFix ?? 0} unit="p" />
-            </div>
-            <div style={{ display: 'flex', gap: 22, flexWrap: 'wrap', padding: '10px 12px', background: 'var(--bg2)', borderRadius: 8, marginBottom: 12, border: '1px solid var(--bdr)' }}>
-              <Stat label="Venue pays" value={effPct == null && effFix == null ? 'Not set' : `${Number(effPct ?? 0).toFixed(2)}% + ${Math.round(Number(effFix ?? 0))}p`} accent />
-              <Stat label="Shown to the venue as" value="ServOS Payments processing rate" />
-            </div>
-            <div style={{ fontSize: 11, color: 'var(--t3)', marginBottom: 12, lineHeight: 1.5 }}>
-              The venue sees this read-only in Back Office → Card payments → Settings, branded ServOS Payments.
-              Billing from these rates is Phase 4 — nothing is charged from them yet.
+            <RateCardRows value={rc} onChange={setRc} fallbackFor={fallbackFor} />
+            {hasVenueLegacy && (
+              <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 8 }}>
+                Legacy flat rate on file for this venue: {fmtRate(legacyVenuePct, legacyVenueFix)} — it counts as the card-present tier until a rate card value replaces it.
+              </div>
+            )}
+            {acct.rate_card_ready === false && (
+              <div style={{ fontSize: 11, color: 'var(--orn, #e8a020)', marginTop: 8 }}>
+                Rate-card storage is not live yet — hand-apply migration 20260821b_adyen_rate_card.sql, then save.
+              </div>
+            )}
+            <div style={{ fontSize: 11, color: 'var(--t3)', margin: '10px 0 12px', lineHeight: 1.5 }}>
+              The venue sees the effective card read-only in Back Office → Card payments → Settings, branded ServOS Payments.
+              Commission on each payment is stamped from these rates; the split rules are written from them by Configure splits below.
             </div>
             <SaveRow busy={busy} dirty={dirty} savedAt={savedAt}
               onSave={savePricing}
-              onReset={() => { setMkPct(acct?.account?.markup_percent ?? ''); setMkFix(acct?.account?.markup_fixed_pence ?? ''); }}
+              onReset={() => setRc(savedCard)}
             />
           </>
         )}
@@ -667,7 +681,7 @@ function AdyenPayoutPanel({ location, onError }) {
       const r = await callAdyenOnboard(action, { location_id: location.id, ...payload });
       if (r.ok) {
         if (r.onboarding_link?.url) { setLink(r.onboarding_link); setCopied(false); }
-        if (action === 'configure_splits') setMsg({ kind: 'ok', text: `Split profile live (${r.split_profile_id}) — commission ${r.rate?.percent ?? 0}% + ${r.rate?.fixed_pence ?? 0}p, remainder to the venue.` });
+        if (action === 'configure_splits') setMsg({ kind: 'ok', text: `Split profile live (${r.split_profile_id}) — one commission rule per payment type: ${(r.tier_summary || []).join(' · ')}. Remainder to the venue.` });
         if (action === 'setup_sweep') setMsg({ kind: 'ok', text: `${r.existed ? 'Sweep already in place' : r.updated ? 'Sweep updated' : 'Sweep created'} (${r.sweep?.id}) — ${r.sweep?.schedule} push of the full balance to the venue bank.` });
         if (action === 'start' && !r.onboarding_link) setMsg({ kind: 'ok', text: r.next || 'Accounts created.' });
         await load();
@@ -728,7 +742,7 @@ function AdyenPayoutPanel({ location, onError }) {
         <OnbStep done={!!ids.account_holder_id} label="Account holder" detail={ids.account_holder_id} />
         <OnbStep done={!!ids.balance_account_id} label="Balance account (funds land here)" detail={ids.balance_account_id} />
         <OnbStep done={!!ids.transfer_instrument_id} label="Bank account (venue adds it via the onboarding link)" detail={ids.transfer_instrument_id} />
-        <OnbStep done={!!ids.split_profile_id} label="Commission splits on the store" detail={ids.split_profile_id} />
+        <OnbStep done={!!ids.split_profile_id} label="Commission splits on the store (one rule per payment type)" detail={ids.split_profile_id} />
         <OnbStep done={hasSweep} label="Payout sweep (pushes the balance to the venue bank)" detail={hasSweep ? `${st.sweeps[0].schedule || ''} · ${st.sweeps[0].status || ''}` : null} />
       </div>
 
@@ -773,7 +787,7 @@ function AdyenPayoutPanel({ location, onError }) {
         </button>
         <button style={{ ...S.btn, ...S.btnGhost, opacity: !splitsReady || busy ? 0.5 : 1 }}
           disabled={!splitsReady || !!busy}
-          title={splitsReady ? `Write the commission split (${st.rate?.percent ?? 0}% + ${st.rate?.fixed_pence ?? 0}p) onto the venue store` : `Not ready: ${splitsWhy}`}
+          title={splitsReady ? 'Write one commission rule per payment type from the venue\'s resolved rate card onto the venue store' : `Not ready: ${splitsWhy}`}
           onClick={() => run('configure_splits')}>
           {busy === 'configure_splits' ? 'Working…' : 'Configure splits'}
         </button>
@@ -866,144 +880,6 @@ function StripeBlock({ msa, bs, currency, defaults, onLink, onUnlink, onSavePric
   );
 }
 
-// ─── Ryft block ────────────────────────────────────────────────────────────
-function RyftBlock({ rya, currency, defaults, onConnect, onSync, onUnlink, onOnboardingLink, onSavePricing, onFees }) {
-  const linked = !!rya;
-  const vStatus = rya?.requirements?.status ?? null;       // verification.status, when known
-  const status = !linked
-    ? { label: 'Not connected', color: 'var(--t3)', ready: false }
-    : rya.charges_enabled
-      ? { label: 'Ready to take payments', color: 'var(--grn)', ready: true }
-      : { label: vStatus ? `Onboarding — ${vStatus}` : 'Onboarding — not ready yet', color: 'var(--orn)', ready: false };
-
-  const [mkPct, setMkPct] = useState(rya?.markup_percent ?? '');
-  const [mkFix, setMkFix] = useState(rya?.markup_fixed_pence ?? '');
-  const [notes, setNotes] = useState(rya?.pricing_notes ?? '');
-  const [busy, setBusy] = useState(false);
-  const [savedAt, setSavedAt] = useState(null);
-  const [syncing, setSyncing] = useState(false);
-  const [link, setLink] = useState(null);      // freshly-minted onboarding URL
-  const [linkBusy, setLinkBusy] = useState(false);
-  const [linkErr, setLinkErr] = useState('');
-  const [fees, setFees] = useState(null);      // live fees pulled from Ryft
-  const [feesBusy, setFeesBusy] = useState(false);
-
-  useEffect(() => {
-    setMkPct(rya?.markup_percent ?? '');
-    setMkFix(rya?.markup_fixed_pence ?? '');
-    setNotes(rya?.pricing_notes ?? '');
-  }, [rya?.markup_percent, rya?.markup_fixed_pence, rya?.pricing_notes]);
-
-  const dirty = linked && (
-    String(mkPct) !== String(rya?.markup_percent ?? '') ||
-    String(mkFix) !== String(rya?.markup_fixed_pence ?? '') ||
-    (notes ?? '') !== (rya?.pricing_notes ?? '')
-  );
-  const num = (v, d) => (v === '' || v == null ? Number(d ?? 0) : Number(v));
-  const mkPctEff = num(mkPct, defaults.default_ryft_markup_percent);
-  const mkFixEff = num(mkFix, defaults.default_ryft_markup_fixed_pence);
-  const costPct = Number(defaults.ryft_cost_percent ?? 0);
-  const costFix = Number(defaults.ryft_cost_fixed_pence ?? 0);
-  const fmtMoney = (minor) => fmt((Number(minor) || 0) / 100, fees?.currency || currency);
-
-  return (
-    <>
-      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginBottom: linked ? 16 : 0 }}>
-        {status.ready ? (
-          <span style={{ display: 'inline-flex', gap: 7, alignItems: 'center', fontSize: 13, fontWeight: 800, color: 'var(--grn)', background: 'var(--grn-d, rgba(48,164,108,.14))', border: '1px solid var(--grn-b, rgba(48,164,108,.4))', borderRadius: 99, padding: '4px 12px' }}>
-            ✅ {status.label}
-          </span>
-        ) : (
-          <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', fontSize: 13, color: status.color, fontWeight: 700 }}>
-            <span style={{ width: 8, height: 8, borderRadius: 99, background: status.color }} />
-            {status.label}
-          </span>
-        )}
-        {linked && (
-          <>
-            <span style={S.pill}>{rya.country ?? '—'}</span>
-            <span style={S.pill}>{currency}</span>
-            <span style={S.pill}>Hosted</span>
-            <code style={{ fontSize: 11, color: 'var(--t2)', fontFamily: 'var(--font-mono, monospace)' }}>{rya.ryft_account_id}</code>
-          </>
-        )}
-        <div style={{ marginLeft: 'auto', display: 'flex', gap: 8 }}>
-          {!linked && <button onClick={onConnect} style={{ ...S.btn, ...S.btnPrim }}>Connect Ryft merchant</button>}
-          {linked && <>
-            <button
-              onClick={async () => {
-                setLinkBusy(true); setLinkErr('');
-                const url = await onOnboardingLink();
-                setLinkBusy(false);
-                if (url) { setLink(url); try { window.open(url, '_blank', 'noopener'); } catch { /* popup blocked → link box still shows */ } }
-                else setLinkErr('Couldn’t open the Ryft portal. Try “Sync status”, or open the account directly in your Ryft dashboard.');
-              }}
-              disabled={linkBusy}
-              style={{ ...S.btn, ...S.btnGhost }}
-            >{linkBusy ? 'Opening…' : (status.ready ? 'Manage on Ryft' : 'Continue onboarding')}</button>
-            <button onClick={async () => { setSyncing(true); await onSync(); setSyncing(false); }} disabled={syncing} style={{ ...S.btn, ...S.btnGhost }}>{syncing ? 'Syncing…' : 'Sync status'}</button>
-            <button onClick={onUnlink} style={{ ...S.btn, ...S.btnDan }}>Unlink</button>
-          </>}
-        </div>
-      </div>
-
-      {linkErr && <div style={{ ...S.errorBox, marginTop: 4 }}>{linkErr}</div>}
-      {link && <OnboardingLinkBox url={link} onClose={() => setLink(null)} />}
-
-      {!linked && (
-        <div style={{ fontSize: 12, color: 'var(--t3)', lineHeight: 1.5 }}>
-          Create a Ryft sub-account (merchant) for this location, then send them through Ryft's hosted onboarding to complete KYC/KYB. Pricing appears here once connected.
-        </div>
-      )}
-
-      {linked && (
-        <>
-          <div style={{ ...S.label, color: 'var(--t2)', marginBottom: 8 }}>Our markup — what we add on top of Ryft's cost (blank = platform default)</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 8 }}>
-            <MarkupField label="Markup %" value={mkPct} onChange={setMkPct} effective={mkPctEff} isOverride={mkPct !== ''} def={defaults.default_ryft_markup_percent} />
-            <MarkupField label="Per-transaction fee" value={mkFix} onChange={setMkFix} effective={mkFixEff} isOverride={mkFix !== ''} def={defaults.default_ryft_markup_fixed_pence} unit="p" />
-          </div>
-          {/* Our cost + what we add = what the customer pays */}
-          <div style={{ display: 'flex', gap: 22, flexWrap: 'wrap', padding: '10px 12px', background: 'var(--bg2)', borderRadius: 8, marginBottom: 12, border: '1px solid var(--bdr)' }}>
-            <Stat label="Our cost" value={`${costPct.toFixed(2)}% + ${costFix}p`} />
-            <Stat label="We add (markup)" value={`${mkPctEff.toFixed(2)}% + ${mkFixEff}p`} accent />
-            <Stat label="Customer pays" value={`${(costPct + mkPctEff).toFixed(2)}% + ${costFix + mkFixEff}p`} />
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--t3)', marginBottom: 12, lineHeight: 1.5 }}>
-            Our cost is set in Platform defaults; markup is the platformFee we take. The customer sees only "customer pays". Actual fees come back live from Ryft below.
-          </div>
-
-          <NotesRow notes={notes} setNotes={setNotes} />
-          <SaveRow busy={busy} dirty={dirty} savedAt={savedAt}
-            onSave={async () => { setBusy(true); const ok = await onSavePricing({ markup_percent: mkPct, markup_fixed_pence: mkFix, pricing_notes: notes }); setBusy(false); if (ok) { setSavedAt(Date.now()); setTimeout(() => setSavedAt(null), 2500); } }}
-            onReset={() => { setMkPct(rya?.markup_percent ?? ''); setMkFix(rya?.markup_fixed_pence ?? ''); setNotes(rya?.pricing_notes ?? ''); }}
-          />
-
-          {/* Live fees & margin from Ryft */}
-          <div style={{ marginTop: 16, paddingTop: 14, borderTop: '1px solid var(--bdr)' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: fees ? 10 : 0 }}>
-              <div style={{ ...S.label, marginBottom: 0 }}>Fees &amp; margin — live from Ryft</div>
-              <button onClick={async () => { setFeesBusy(true); const r = await onFees(); if (r) setFees(r); setFeesBusy(false); }} disabled={feesBusy} style={{ ...S.btn, ...S.btnGhost, padding: '5px 10px', fontSize: 12 }}>
-                {feesBusy ? 'Loading…' : (fees ? '↻ Refresh' : 'Load fees')}
-              </button>
-            </div>
-            {fees && (fees.txn_count > 0 || fees.fee_count > 0 ? (
-              <div style={{ display: 'flex', gap: 22, flexWrap: 'wrap' }}>
-                <Stat label="Processed (GMV)" value={fmtMoney(fees.gmv_minor)} />
-                <Stat label="Ryft fees (cost)" value={fmtMoney(fees.ryft_fees_minor)} />
-                <Stat label="Our markup collected" value={fmtMoney(fees.markup_collected_minor)} accent />
-                <Stat label="Transactions" value={String(fees.txn_count)} />
-              </div>
-            ) : (
-              <div style={{ fontSize: 12, color: 'var(--t4)' }}>No transactions yet — this populates from Ryft as the merchant takes payments.</div>
-            ))}
-          </div>
-        </>
-      )}
-    </>
-  );
-}
-
 // ─── Small shared pieces ───────────────────────────────────────────────────
 function MarkupField({ label, value, onChange, effective, isOverride, def, muted, unit = '%' }) {
   const isPence = unit === 'p';
@@ -1043,21 +919,6 @@ function SaveRow({ busy, dirty, savedAt, onSave, onReset }) {
       </button>
       <button onClick={onReset} disabled={busy || !dirty} style={{ ...S.btn, ...S.btnGhost }}>Reset</button>
       {savedAt && <span style={{ fontSize: 12, color: 'var(--grn)', fontWeight: 700 }}>✓ Saved</span>}
-    </div>
-  );
-}
-
-function OnboardingLinkBox({ url, onClose }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <div style={{ ...S.okBox, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 14 }}>
-      <div style={{ flex: 1, minWidth: 220 }}>
-        <div style={{ fontWeight: 700, marginBottom: 4 }}>Hosted onboarding link (send to the merchant):</div>
-        <code style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: 11, wordBreak: 'break-all', color: 'var(--t2)' }}>{url}</code>
-      </div>
-      <button onClick={() => { navigator.clipboard?.writeText(url); setCopied(true); setTimeout(() => setCopied(false), 1500); }} style={{ ...S.btn, ...S.btnGhost }}>{copied ? '✓ Copied' : 'Copy'}</button>
-      <a href={url} target="_blank" rel="noreferrer" style={{ ...S.btn, ...S.btnPrim, textDecoration: 'none' }}>Open</a>
-      <button onClick={onClose} style={{ ...S.btn, ...S.btnGhost }}>Dismiss</button>
     </div>
   );
 }
@@ -1114,160 +975,6 @@ function StripeLinkModal({ location, onClose, onLinked }) {
           {submitting ? 'Linking…' : 'Link account'}
         </button>
       </div>
-    </ModalShell>
-  );
-}
-
-// ─── Ryft onboard modal ────────────────────────────────────────────────────
-function RyftOnboardModal({ location, onClose, onDone }) {
-  const [mode, setMode] = useState('create');   // 'create' | 'link'
-  const [email, setEmail] = useState('');
-  const [tradingName, setTradingName] = useState('');
-  const [acctId, setAcctId] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState(null);
-  const [result, setResult] = useState(null);   // { account_id, onboarding_url }
-  const [preview, setPreview] = useState(null);  // ryft_inspect result (what you're about to connect)
-  const [inspecting, setInspecting] = useState(false);
-
-  // Look the account up at Ryft and SHOW what it is before connecting — email,
-  // status, and which location its metadata points to — so you never connect
-  // the wrong merchant.
-  const doInspect = async () => {
-    setError(null); setPreview(null);
-    const id = acctId.trim();
-    if (!id) return;
-    setInspecting(true);
-    try {
-      const r = await callPaymentsAdmin('ryft_inspect', { location_id: location.id, ryft_account_id: id });
-      setPreview(r);
-    } catch (e) {
-      setError(String(e?.message ?? e));
-    } finally {
-      setInspecting(false);
-    }
-  };
-
-  const submitCreate = async () => {
-    setError(null);
-    if (!email) { setError('A contact email is required to create the merchant.'); return; }
-    setSubmitting(true);
-    try {
-      const r = await callPaymentsAdmin('ryft_create', {
-        location_id: location.id,
-        email,
-        trading_name: tradingName || undefined,
-        redirect_url: window.location.origin + '/?ryft_onboarded=1',
-      });
-      setResult(r);
-    } catch (e) {
-      setError(String(e?.message ?? e));
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  const submitLink = async () => {
-    setError(null);
-    if (!acctId.startsWith('ac_')) { setError("Account ID must start with 'ac_'"); return; }
-    setSubmitting(true);
-    try {
-      await callPaymentsAdmin('ryft_link', { location_id: location.id, ryft_account_id: acctId.trim() });
-      onDone();
-    } catch (e) {
-      setError(String(e?.message ?? e));
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  if (result) {
-    return (
-      <ModalShell onClose={onDone} title="Ryft merchant created" subtitle={location.name}>
-        <div style={{ fontSize: 13, color: 'var(--t2)', marginBottom: 12 }}>
-          Account <code style={{ fontFamily: 'var(--font-mono, monospace)' }}>{result.account_id}</code> created
-          {result.verification_status ? <> · verification: <strong>{result.verification_status}</strong></> : null}.
-        </div>
-        {result.onboarding_url
-          ? <OnboardingLinkBox url={result.onboarding_url} onClose={() => {}} />
-          : <div style={S.errorBox}>{result.link_error || 'No onboarding link was returned — use “Continue onboarding” on the card to mint one.'}</div>}
-        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-          <button onClick={onDone} style={{ ...S.btn, ...S.btnPrim }}>Done</button>
-        </div>
-      </ModalShell>
-    );
-  }
-
-  return (
-    <ModalShell onClose={onClose} title="Connect Ryft merchant" subtitle={location.name}>
-      <div style={{ ...S.seg, marginBottom: 14 }}>
-        <button style={S.segBtn(mode === 'create')} onClick={() => setMode('create')}>Create new (sandbox)</button>
-        <button style={S.segBtn(mode === 'link')} onClick={() => setMode('link')}>Link existing</button>
-      </div>
-
-      {mode === 'create' && (
-        <>
-          <label style={S.label}>Contact email</label>
-          <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="owner@venue.com" style={S.input} autoFocus />
-          <div style={{ marginTop: 12 }}>
-            <label style={S.label}>Trading name (optional)</label>
-            <input type="text" value={tradingName} onChange={e => setTradingName(e.target.value)} placeholder="Acme Coffee — Soho" style={S.input} />
-            <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 4 }}>Stored as a label on the Ryft account; the merchant confirms legal details during onboarding.</div>
-          </div>
-          <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 12, marginBottom: 16, lineHeight: 1.5 }}>
-            Creates a Hosted sub-account on Ryft and returns a link the merchant uses to choose Business/Individual, finish KYC/KYB, and add bank &amp; payout details. They aren't payment-ready until verification clears.
-          </div>
-          {error && <div style={S.errorBox}>{error}</div>}
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-            <button onClick={onClose} disabled={submitting} style={{ ...S.btn, ...S.btnGhost }}>Cancel</button>
-            <button onClick={submitCreate} disabled={submitting || !email} style={{ ...S.btn, ...S.btnPrim }}>{submitting ? 'Creating…' : 'Create merchant'}</button>
-          </div>
-        </>
-      )}
-
-      {mode === 'link' && (
-        <>
-          <div style={{ fontSize: 12, color: 'var(--t3)', marginBottom: 12, lineHeight: 1.5 }}>
-            Connecting one you already made in the Ryft dashboard? Most merchants don't need this — an account created with <strong>Create new</strong> connects itself, and onboarding flips it to “ready to trade” automatically. Use this only to attach an account created outside this portal.
-          </div>
-          <label style={S.label}>Ryft account ID</label>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <input type="text" value={acctId} onChange={e => { setAcctId(e.target.value); setPreview(null); }} onBlur={doInspect} placeholder="ac_xxxxxxxx-..." style={{ ...S.input, ...S.inputMono, flex: 1 }} autoFocus />
-            <button onClick={doInspect} disabled={inspecting || !acctId.trim()} style={{ ...S.btn, ...S.btnGhost, whiteSpace: 'nowrap' }}>{inspecting ? 'Checking…' : 'Check'}</button>
-          </div>
-          <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 6 }}>
-            The account id starts with <code style={{ fontFamily: 'var(--font-mono, monospace)' }}>ac_</code> and is on the account's page in the Ryft dashboard (it is NOT the location id).
-          </div>
-
-          {/* Live preview — what you're about to connect */}
-          {preview && (
-            <div style={{ marginTop: 14, padding: 12, borderRadius: 10, border: `1px solid ${preview.matches_this_location === false ? 'var(--red-b, #e5484d55)' : 'var(--bdr)'}`, background: 'var(--bg2)' }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)', marginBottom: 4 }}>
-                {preview.metadata_location_name || preview.email || 'Ryft account'}
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--t3)', lineHeight: 1.6 }}>
-                <div>{preview.email || 'no email'} · verification: <strong>{preview.verification_status || '—'}</strong></div>
-                <div>{preview.charges_enabled ? '✅ Ready to trade (charges enabled)' : '⏳ Onboarding — not payment-ready yet'}</div>
-                {preview.already_linked_location_id && preview.already_linked_location_id !== location.id && (
-                  <div style={{ color: 'var(--red, #e5484d)' }}>⚠ Already linked to a different location.</div>
-                )}
-                {preview.matches_this_location === false && (
-                  <div style={{ color: 'var(--red, #e5484d)' }}>⚠ This account was set up for a different location — double-check before connecting.</div>
-                )}
-                {preview.matches_this_location === true && (
-                  <div style={{ color: 'var(--grn, #30a46c)' }}>✓ This account is set up for {location.name}.</div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {error && <div style={{ ...S.errorBox, marginTop: 12 }}>{error}</div>}
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 16 }}>
-            <button onClick={onClose} disabled={submitting} style={{ ...S.btn, ...S.btnGhost }}>Cancel</button>
-            <button onClick={submitLink} disabled={submitting || !preview} style={{ ...S.btn, ...S.btnPrim }}>{submitting ? 'Connecting…' : 'Connect this account'}</button>
-          </div>
-        </>
-      )}
     </ModalShell>
   );
 }
