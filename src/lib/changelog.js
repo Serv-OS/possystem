@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.88',
+    date: '2026-08-19',
+    changes: [
+      'Retrying a card payment now actually retries it. If the first attempt never reached the card machine, every retry silently re-attached to the same stuck payment and never re-sent it, so the machine stayed idle no matter how many times you pressed the button. A retry now re-sends any payment that has not yet reached the machine.',
+    ],
+  },
+  {
     version: '5.6.86',
     date: '2026-08-19',
     changes: [

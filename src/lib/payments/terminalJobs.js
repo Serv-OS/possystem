@@ -421,7 +421,16 @@ export async function dispatchTerminalJob(p) {
     // fire-and-forget (the charge is a long /sync call the poller watches), but
     // hand the reason back so the caller can say it out loud.
     let kickError = null;
-    if (j.job?.processor === 'adyen' && !j.existing && !p.localBridge) {
+    // v5.6.88 — ALSO kick on re-attach to a still-unsent job. The kick used to
+    // fire only on a fresh insert (!existing), so a job whose first kick failed
+    // was PERMANENTLY unsent: every retry hit idx_tj_one_live_per_check,
+    // re-attached to the same charging_unsent row, and skipped the kick — the
+    // exact loop Peter sat in on 19 Aug ("payments are still not going to the
+    // device", three stuck jobs, zero dispatch attempts after the first). The
+    // fn's CAS (charging_unsent→charging) makes a duplicate kick harmless, so
+    // re-kicking an unsent job is free; a job already 'charging' is untouched.
+    const needsKick = !j.existing || j.job?.status === 'charging_unsent';
+    if (j.job?.processor === 'adyen' && needsKick && !p.localBridge) {
       kickError = await callFn('adyen-terminal-charge', { action: 'start', job_id: useJobId })
         .then(() => null)
         .catch((e) => {
