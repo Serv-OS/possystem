@@ -59,6 +59,11 @@ export default function CardReaders() {
   const refresh = useCallback(async () => {
     if (!platformSupabase) {
       setError('Platform Supabase not configured');
+      // v5.6.90: the Stripe blocks below wait for a processor answer before they
+      // render. These early exits happen BEFORE the processor lookup is kicked
+      // off, so resolve it to the historical default here or the page would sit
+      // on "Loading…" forever instead of showing the error.
+      setProcessor('stripe');
       setLoading(false);
       return;
     }
@@ -67,6 +72,7 @@ export default function CardReaders() {
       const opsLocId = getActiveLocationSync();
       if (!opsLocId) {
         setError('No active location selected. Pick a location in the bottom-left corner of the back office.');
+        setProcessor('stripe');
         setLoading(false);
         return;
       }
@@ -181,7 +187,9 @@ export default function CardReaders() {
     <div style={S.page}>
       <h1 style={S.h1}>Card readers</h1>
       <div style={S.sub}>
-        Network readers (Stripe Reader S700, WisePOS E in WiFi mode) are registered here and serve all POS terminals at this location.
+        {processor != null && processor !== 'stripe'
+          ? 'Card terminals for this venue are managed in the panels below: Adyen card terminals for readers running Adyen’s own software, and Terminals running the ServOS app for hardware paired by code.'
+          : 'Network readers (Stripe Reader S700, WisePOS E in WiFi mode) are registered here and serve all POS terminals at this location.'}
       </div>
 
       {/* Two sibling panels, one per kind of hardware, both self-gating.
@@ -203,9 +211,25 @@ export default function CardReaders() {
 
       {error && <div style={S.errorBox}>{error}</div>}
 
-      {loading ? (
+      {/* ── STRIPE-ONLY from here down (v5.6.90) ──────────────────────────
+          The location header, "Network readers" list, register box and Reader
+          settings panel all manage STRIPE hardware: every control in them
+          writes payment_devices / location_reader_settings via stripe-*
+          functions, and NOTHING on the Adyen or Ryft charge paths reads any of
+          it (terminal jobs bind via terminal_devices.bound_pos_device_id and
+          take tip config from terminal_devices.tip_config). Worse, Adyen
+          terminals ALSO get payment_devices rows (adyen-terminal-admin's
+          assign action creates them), so on an Adyen venue this section showed
+          a SECOND list of the same terminals with Assign / Force cancel /
+          Unregister buttons that did nothing real — two places to manage one
+          reader. So: any venue whose processor is not Stripe renders none of
+          it; the self-gating AdyenTerminals / PaxTerminals panels above are
+          the real management surface there. We wait for the processor answer
+          (kicked off first thing in refresh(), cached per session) rather than
+          defaulting, so an Adyen venue never flashes the Stripe blocks. */}
+      {(loading || processor == null) ? (
         <div style={{ ...S.empty, marginBottom: 20 }}>Loading…</div>
-      ) : (
+      ) : processor !== 'stripe' ? null : (
         <>
           {/* Location header */}
           <div style={S.card}>

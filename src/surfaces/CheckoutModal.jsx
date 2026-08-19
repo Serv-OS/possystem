@@ -8,7 +8,7 @@ import {
   resolvePlatformLocationId,
   getAssignedNetworkReader,
 } from '../lib/networkReader';
-import { getActiveLocationSync, supabase, platformSupabase, ensureAuthToken, isMock } from '../lib/supabase';
+import { getActiveLocationSync, supabase, ensureAuthToken, isMock } from '../lib/supabase';
 import { getLocationProcessor, getLocationProcessorInfo } from '../lib/payments/processor';
 import { chargeRyftTerminal } from '../lib/payments/ryftTerminal';
 import { fetchCustomerByPhone } from '../lib/customerLookup';
@@ -1249,9 +1249,16 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   const [cardProcessor, setCardProcessor] = useState('stripe');
   // v5.5.829: Ryft has no on-reader tip prompt, so on Ryft venues WITH a customer
   // display we ask the customer to choose a gratuity on their own screen, then
-  // charge bill+tip as one amount. tipCfg is the venue's own rules — the same row
-  // Stripe's Terminal Configuration is built from.
-  const [tipCfg, setTipCfg] = useState(null);
+  // charge bill+tip as one amount.
+  //
+  // v5.6.90: the till NO LONGER reads location_reader_settings for tipping. That
+  // row is written by the Stripe "Reader settings" panel keyed by the PLATFORM
+  // location id, but this modal read it with the OPS id — on venues where the two
+  // ids differ (half of them) the read silently hit nothing, and where they DO
+  // match a stale tipping_enabled=false row could kill tips with no visible
+  // control (the panel is hidden on non-Stripe venues from v5.6.90). The real,
+  // per-terminal kill switch is terminal_devices.tip_config, resolved server-side
+  // by terminal-job-create — the value Back Office actually shows the operator.
   const [awaitingTip, setAwaitingTip] = useState(false);
   const tipNonceRef = useRef(0);
 
@@ -1313,16 +1320,8 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     getLocationProcessor(getActiveLocationSync())
       .then(p => { if (alive) setCardProcessor(p); })
       .catch(() => { /* stays stripe */ });
-    (async () => {
-      try {
-        const locId = getActiveLocationSync();
-        if (!locId || !platformSupabase) { if (alive) setTipCfg({}); return; }
-        const { data } = await platformSupabase.from('location_reader_settings')
-          .select('tipping_enabled, tip_percentages, allow_custom_tip, smart_tip_threshold_minor')
-          .eq('location_id', locId).maybeSingle();
-        if (alive) setTipCfg(data || {});
-      } catch { if (alive) setTipCfg({}); }
-    })();
+    // v5.6.90: the location_reader_settings fetch that used to live here is gone
+    // — see the tipping comment above the awaitingTip state for why.
     return () => { alive = false; };
   }, []);
   // ── v5.6.75: money already taken on the card reader for THIS table ─────────
@@ -1661,7 +1660,11 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     // v5.6.76: the tip basis is what THIS customer is paying (`billDue` === `total`
     // unless the reader already took part of the bill) — offering 10% of the whole
     // table to the person settling the last quarter of it is not the ask.
-    publishTipRequest({ total: billDue, cfg: tipCfg || {}, nonce });
+    // v5.6.90: cfg is {} — the display falls back to its own defaults
+    // ([15,18,20], custom allowed). The venue-level row this used to carry was
+    // read with the wrong id on half the venues (ops vs platform, see the
+    // tipping comment near awaitingTip) and its editor is Stripe-only.
+    publishTipRequest({ total: billDue, cfg: {}, nonce });
     // Don't strand the till if the customer wanders off or the screen is asleep.
     setTimeout(() => {
       setAwaitingTip(prev => {
@@ -1754,7 +1757,17 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         // skipTip is still ours to decide — a bar tab, takeaway or collection
         // takes no tip whatever the terminal is configured for — but it travels
         // as a suppression flag, which can only ever make the job LESS tippable.
-        suppressTip: skipTip || tipCfg?.tipping_enabled === false,
+        //
+        // v5.6.90 — location_reader_settings.tipping_enabled no longer feeds this
+        // flag. That row is written by the Stripe Reader settings panel keyed by
+        // the PLATFORM location id and was read here with the OPS id, so on the
+        // venues where those ids differ it silently did nothing — and where they
+        // matched, a stale tipping_enabled=false row (its editor is hidden on
+        // non-Stripe venues from v5.6.90) could strand tips off with no UI to
+        // turn them back on. Venue-level tipping on/off already lives in
+        // terminal_devices.tip_config, set per terminal in the Adyen / ServOS
+        // panels and resolved server-side by terminal-job-create.
+        suppressTip: skipTip,
         closedCheckId: checkId,
         checkDraft: {
           tableId: tableId || null,
@@ -1831,11 +1844,14 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     // silently take the old path and produce a different tip on the same bill.
     if (paxLookupDone && (cardProcessor === 'ryft' || cardProcessor === 'adyen') && paxTarget) { startTerminalJob(); return; }
 
-    // Tipping is only offered on Ryft when the venue has it switched on AND has a
-    // customer-facing screen. Without a screen there is nowhere for the customer to
-    // choose (Ryft's reader can't ask), so we go straight to the card.
+    // Tipping is only offered on Ryft when there is a customer-facing screen.
+    // Without a screen there is nowhere for the customer to choose (Ryft's
+    // reader can't ask), so we go straight to the card. v5.6.90: the
+    // location_reader_settings.tipping_enabled clause is gone — see the tipping
+    // comment near awaitingTip. The customer can always decline on screen, and
+    // staff can always skip.
     const canAskCustomer = cardProcessor === 'ryft' && !skipTip
-      && tipCfg?.tipping_enabled !== false && displayUsesScreen();
+      && displayUsesScreen();
     if (canAskCustomer) { askCustomerForTip(); return; }
     setScreen('card_terminal');
   };

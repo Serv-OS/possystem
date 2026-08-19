@@ -12,7 +12,6 @@ import { chargeRyftTerminal } from '../lib/payments/ryftTerminal';
 import { findPaxTerminal, dispatchTerminalJob, buildCheckKey, toMinor, getPosDeviceId,
          pollTerminalJob, cancelTerminalJob } from '../lib/payments/terminalJobs';
 import { publishTipRequest, onCustomerTip, displayUsesScreen } from '../lib/customerDisplay';
-import { platformSupabase } from '../lib/supabase';
 import { money, currencySymbol, stripeCurrency } from '../lib/currency';
 import { isTrainingMode } from '../lib/trainingMode';
 import { stageGiftCard } from '../lib/giftCommit';
@@ -54,19 +53,22 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
 
   // Ask this payer for a gratuity on the customer display, then continue.
   // Resolves to the tip (0 if declined, skipped, or nothing is listening).
-  const askPortionTip = (opsLocationId) => new Promise((resolve) => {
+  const askPortionTip = () => new Promise((resolve) => {
     if (!displayUsesScreen()) return resolve(0);
     (async () => {
-      let cfg = {};
-      try {
-        if (platformSupabase && opsLocationId) {
-          const { data } = await platformSupabase.from('location_reader_settings')
-            .select('tipping_enabled, tip_percentages, allow_custom_tip, smart_tip_threshold_minor')
-            .eq('location_id', opsLocationId).maybeSingle();
-          cfg = data || {};
-        }
-      } catch { /* fall through with defaults */ }
-      if (cfg.tipping_enabled === false) return resolve(0);
+      // v5.6.90: this used to fetch location_reader_settings (tipping_enabled +
+      // percentages) and bail out with no tip when tipping_enabled === false.
+      // Two problems: the row is written by the Stripe Reader settings panel
+      // keyed by the PLATFORM location id but was read here with the OPS id, so
+      // on venues where the ids differ it silently read nothing — and where they
+      // matched, a stale tipping_enabled=false row could kill split-leg tips
+      // with no UI to turn them back on (that panel is hidden on non-Stripe
+      // venues from v5.6.90). The real tipping switch is per terminal:
+      // terminal_devices.tip_config, resolved server-side by terminal-job-create
+      // — and this legacy display prompt only runs when no such terminal exists.
+      // cfg {} makes the display fall back to its own defaults; the customer can
+      // always decline, and staff can always skip.
+      const cfg = {};
 
       const nonce = ++tipNonceRef.current;
       let settled = false;
@@ -174,7 +176,7 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
   const runRyftPayment = async (opsLocationId) => {
     // v5.5.830: settle the gratuity FIRST — Ryft takes one amount and cannot
     // add a tip after the fact, so portion+tip must be known before charging.
-    const tip = await askPortionTip(opsLocationId);
+    const tip = await askPortionTip();
     portionTipRef.current = tip;
     setState('starting');
     setStatusMsg('Starting terminal payment…');

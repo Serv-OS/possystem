@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.90',
+    date: '2026-08-19',
+    changes: [
+      'ONE PLACE TO MANAGE YOUR CARD READERS. Back office, Card readers. On venues that do not take payments through Stripe, the duplicate "Network readers" list, the register box and the Reader settings panel are gone. Those blocks were Stripe controls, and on an Adyen venue they showed the same two terminals a second time with Assign, Force cancel and Unregister buttons that changed nothing the payment actually reads. Readers are managed in the Adyen card terminals panel and the Terminals running the ServOS app panel, which have always been the real controls for till binding, payment modes and tipping. Stripe venues see exactly what they saw before.',
+      'A leftover Stripe tipping setting can no longer switch tips off silently. The till used to check the old Reader settings "Enable tipping" switch before sending a payment to an Adyen or Ryft terminal, and it read that setting with the wrong venue id on half the venues, so it either did nothing or, worse, a stale off value could kill tips with no visible switch to turn them back on. Tipping on these terminals is governed by each terminal’s own tipping setting in the panels above, which is the switch you can actually see and change.',
+    ],
+  },
+  {
     version: '5.6.88',
     date: '2026-08-19',
     changes: [
