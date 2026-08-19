@@ -205,10 +205,14 @@ export function buildDisplayRequest(o: { poiid: string; saleId: string; serviceI
         ServiceID: o.serviceId, SaleID: o.saleId, POIID: o.poiid,
       },
       DisplayRequest: {
-        DisplayOutput: {
+        // HARDWARE-VERIFIED 19 Aug: this fleet renders Display messages ONLY in
+        // the nexo ARRAY form — the object form (Adyen's docs sample) returns an
+        // empty DisplayResponse and paints nothing, which is why the
+        // 'Loading tables…' status pushes never appeared during pay-at-table.
+        DisplayOutput: [{
           Device: 'CustomerDisplay', InfoQualify: 'Status',
           OutputContent: { OutputFormat: 'Text', OutputText: [{ Text: o.text }] },
-        },
+        }],
       },
     },
   };
