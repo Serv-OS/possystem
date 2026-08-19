@@ -18,6 +18,7 @@ import StaffManager from './sections/StaffManager';
 import PrintRouting from './sections/PrintRouting';
 import PrinterRegistry from './sections/PrinterRegistry';
 import CardReaders from './sections/CardReaders';
+import CardPayments from './sections/CardPayments';
 import CashDrawers from './sections/CashDrawers';
 import BOReports from './sections/BOReports';
 import EODClose from './sections/EODClose';
@@ -119,6 +120,7 @@ const NAV = [
   { id:'staff',      label:'Staff & access',  icon:'👥',  group:'Configuration' },
   { id:'printing',   label:'Production printing',   icon:'🖨',  group:'Configuration' },
   { id:'reports',    label:'Reports',           icon:'📊',  group:'Analytics' },
+  { id:'card-payments', label:'Card payments',  icon:'💳',  group:'Analytics' },
   { id:'shift',      label:'Shift',             icon:'⏱', group:'Analytics' },
   { id:'eod',        label:'Close day',        icon:'🔒',  group:'Analytics' },
   { id:'pettycash',  label:'Petty cash',        icon:'\u{1F4B0}', group:'Analytics' },
@@ -162,6 +164,7 @@ const NAV_IA = [
   { label:'Channels',   icon:'channels',  children:[['online','Online ordering'],['catering','Catering ordering'],['catering-orders','Catering orders'],['hubrise','3rd Party orders'],['uber-direct','Delivery'],['deliveries-live','Deliveries (live)'],['waitlist','Tables Ready'],['table-bookings','Table bookings'],['packages','Packages & events'],['menu-appearance','Appearance'],['kiosks','Kiosks'],['menuboards','Menu boards'],['print-menu','Print menu']] },
   { label:'Hardware',   icon:'hardware',  children:[['devices','Terminals'],['profiles','Device profiles'],['printers','Printers'],['printing','Production printing'],['cardreaders','Card readers'],['cashdrawers','Cash drawers'],['network','Network & sync']] },
   { label:'Reports',    icon:'reports',   children:[['reports','All reports'],['shift','Shifts'],['eod','Close day'],['pettycash','Petty cash'],['waitlist-insights','Tables Ready']] },
+  { label:'Card payments', icon:'card',   single:'card-payments' },
   { label:'Settings',   icon:'settings',  children:[['location','Location settings'],['receipt','Receipt'],['sending-domain','Email domain'],['xero','Xero (accounting)'],['ai','AI assistant']] },
 ];
 
@@ -839,6 +842,7 @@ export default function BackOfficeApp() {
           {section === 'staff'      && <StaffManager />}
           {section === 'printing'   && <PrintRouting />}
           {section === 'reports'    && <BOReports setSection={setSection} />}
+          {section === 'card-payments' && <CardPayments />}
           {section === 'shift'      && <Shift />}
           {section === 'eod'        && <EODClose />}
           {section === 'pettycash'  && <PettyCash />}

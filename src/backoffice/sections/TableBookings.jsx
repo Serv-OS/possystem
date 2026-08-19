@@ -232,7 +232,7 @@ export default function TableBookings() {
           sub="How far ahead the widget offers dates."
           value={rules.widgetMaxDaysAhead} onChange={v => patch({ widgetMaxDaysAhead: v })}
           step={7} min={7} max={365} fmt={v => `${v} days`} />
-        <BoToggle label="Card capture (Adyen)"
+        <BoToggle label="Card capture"
           sub="On: prepay packages and deposits are charged at booking, and plain bookings hold a card (nothing charged) for the no-show policy. Off: bookings complete with no card step."
           on={!!rules.cardCaptureEnabled}
           onToggle={() => patch({ cardCaptureEnabled: !rules.cardCaptureEnabled })} />

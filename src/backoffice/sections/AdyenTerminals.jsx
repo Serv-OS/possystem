@@ -185,7 +185,7 @@ export default function AdyenTerminals() {
       const found = await callAdmin('find_by_serial', { serial });
       if (found.ok === false) throw new Error(found.error === 'scope_missing' ? (status.scopeError || 'API key missing Management role') : (found.error || 'search failed'));
       const m = found.matches || [];
-      if (m.length === 0) throw new Error('No reader with that serial is visible to your Adyen account yet. Check the number, and make sure the reader has been switched on and connected to WiFi at least once.');
+      if (m.length === 0) throw new Error('No reader with that serial is visible to your payments account yet. Check the number, and make sure the reader has been switched on and connected to WiFi at least once.');
       if (m.length > 1) throw new Error(`That serial matches ${m.length} readers — type more of the number.`);
       if (m[0].onStore) { setNotice(`${m[0].id} is already registered to this venue.`); setSerial(''); await load(); setBusy(''); return; }
       const r = await callAdmin('assign', {
@@ -195,7 +195,7 @@ export default function AdyenTerminals() {
       if (r.ok === false) throw new Error(r.error || 'register failed');
       setNotice(r.adopted
         ? `${m[0].id} linked to the ServOS terminal — it can now take cards on its own screen.`
-        : `${m[0].id} registered — it syncs with Adyen for about a minute, then it is ready to assign to a till.`);
+        : `${m[0].id} registered — it syncs for about a minute, then it is ready to assign to a till.`);
       setSerial('');
       if (r.adopted) setAdoptId('');
       await load();
@@ -205,11 +205,11 @@ export default function AdyenTerminals() {
 
   return (
     <div style={S.card}>
-      <h2 style={S.h2}>💳 Adyen card terminals</h2>
+      <h2 style={S.h2}>💳 Card terminals</h2>
       <p style={S.desc}>
-        Register a reader to this venue and it is paired: it appears here the moment Adyen sees it,
-        one tap boards it onto <b>{status.venue}</b>'s store, and the till drives it from then on.
-        Readers run Adyen's own software — there is no code to type.
+        Register a reader to this venue and it is paired: it appears here the moment your payments
+        account sees it, one tap registers it to <b>{status.venue}</b>, and the till drives it from
+        then on. These readers run their own payment software, so there is no code to type.
       </p>
 
       {!status.scopeOk && <div style={S.err}>{status.scopeError}</div>}
@@ -217,10 +217,10 @@ export default function AdyenTerminals() {
       {/* ── no store yet: the one-time venue setup ── */}
       {status.scopeOk && !status.storeId && (
         <div style={{ marginTop: 14, padding: 14, borderRadius: 10, background: 'var(--bg2)', border: '1px solid var(--bdr)' }}>
-          <div style={{ fontSize: 13, fontWeight: 700 }}>One-time setup — create this venue's store at Adyen</div>
+          <div style={{ fontSize: 13, fontWeight: 700 }}>One-time setup — create this venue's payments store</div>
           <div style={{ ...S.desc, marginTop: 4 }}>
-            Adyen routes terminals and payments through a store per physical venue. This creates
-            "{status.venue}" as a store under your merchant account ({status.merchant}) and maps it here.
+            Terminals and payments route through a store per physical venue. This creates
+            "{status.venue}" as a store on your payments account ({status.merchant}) and maps it here.
           </div>
           <button style={{ ...S.btn, ...S.btnPrim, marginTop: 10 }} disabled={!!busy}
             onClick={() => run('store', 'ensure_store', {})}>
@@ -254,7 +254,7 @@ export default function AdyenTerminals() {
         <div style={{ marginTop: 14, padding: 14, borderRadius: 10, background: 'var(--bg2)', border: '1px solid var(--bdr)' }}>
           <div style={{ fontSize: 13, fontWeight: 700 }}>Terminals running the ServOS app</div>
           <div style={{ ...S.desc, marginTop: 4 }}>
-            These are paired to this venue and take orders, but they have no Adyen reader linked yet,
+            These are paired to this venue and take orders, but they have no card reader linked yet,
             so they cannot take a card. Pick one below when you register the matching reader and the
             link lands on the terminal itself — not on a second, separate record.
           </div>
@@ -332,7 +332,7 @@ export default function AdyenTerminals() {
                         {busy === `release-${t.id}` ? 'Releasing…' : 'Release stuck payment'}
                       </button>
                       <button style={{ ...S.btn, ...S.btnDan }} disabled={!!busy}
-                        onClick={() => { if (window.confirm(`Unlink ${t.link.label || t.id}? The reader stays boarded at Adyen and can be re-registered any time.`)) run(`unlink-${t.id}`, 'unlink', { terminal_device_id: t.link.id }); }}>
+                        onClick={() => { if (window.confirm(`Unlink ${t.link.label || t.id}? The reader stays on your payments account and can be re-registered any time.`)) run(`unlink-${t.id}`, 'unlink', { terminal_device_id: t.link.id }); }}>
                         Unlink
                       </button>
                     </>
@@ -391,12 +391,12 @@ export default function AdyenTerminals() {
             </div>
           ))}
 
-          <div style={{ ...S.label, marginTop: 18 }}>In your Adyen inventory</div>
+          <div style={{ ...S.label, marginTop: 18 }}>In your reader inventory</div>
           {fleet.inventory.length === 0 && (
             <div style={{ ...S.desc, marginTop: 6 }}>
-              Nothing waiting. New readers appear here once Adyen assigns them to your merchant account
-              — if a reader you have is not listed, it is still at company inventory level in the
-              Customer Area, or boarded to a different merchant.
+              Nothing waiting. New readers appear here once they are assigned to your payments
+              account. If a reader you have is not listed, contact ServOS support and we will
+              move it onto your account.
             </div>
           )}
           {fleet.inventory.map((t) => (
@@ -407,7 +407,7 @@ export default function AdyenTerminals() {
               </div>
               <div style={{ fontSize: 12, color: 'var(--t2)' }}>{t.model || 'AMS1'}</div>
               <div style={{ fontSize: 12, color: t.link ? 'var(--orn)' : 'var(--t3)' }}>
-                {t.link ? 'registering — the reader is syncing with Adyen (about a minute)' : 'unregistered'}
+                {t.link ? 'registering — the reader is syncing (about a minute)' : 'unregistered'}
               </div>
               {t.link ? (
                 <button style={S.btn} disabled={!!busy} onClick={() => load()}>Check again</button>

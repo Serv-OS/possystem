@@ -283,8 +283,8 @@ export default function PaxTerminals() {
         type it in below. Once paired it can pull up an open table, take the whole bill and close it,
         and a till can send a payment straight to it.
         <br />
-        Readers that run the manufacturer&apos;s own software, such as the Adyen AMS1, have no code to
-        type. Add those by serial number under Adyen card terminals above.
+        Readers that run their own payment software, such as the AMS1, have no code to
+        type. Add those by serial number under Card terminals above.
       </div>
 
       {terminals.length > 0 && (
@@ -367,8 +367,8 @@ export default function PaxTerminals() {
             Switch the terminal on and open the app. It shows a pairing code on its own screen. Type
             that code in below and it is bound to this venue.
             <br />
-            Setting up an Adyen reader that runs Adyen&apos;s own software? There is no code to type.
-            Register it by serial number under Adyen card terminals above.
+            Setting up a reader that runs its own payment software? There is no code to type.
+            Register it by serial number under Card terminals above.
           </div>
         </div>
       )}

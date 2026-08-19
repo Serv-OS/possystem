@@ -100,7 +100,7 @@ Deno.serve(async (req) => {
       .select('merchant_account, store_id, region, receive_payments_ok')
       .eq('location_id', loc.id).maybeSingle();
     const merchant = maa?.merchant_account || ADYEN_MERCHANT_ACCOUNT;
-    if (!merchant) return json({ error: 'no Adyen merchant account configured (ADYEN_MERCHANT_ACCOUNT)' }, 500);
+    if (!merchant) return json({ error: 'no merchant account configured for card payments (ADYEN_MERCHANT_ACCOUNT)' }, 500);
 
     // ── status: everything the panel needs to decide what to show ────────────
     if (action === 'status') {
@@ -129,7 +129,7 @@ Deno.serve(async (req) => {
         receivePaymentsOk: maa?.receive_payments_ok ?? null,
         scopeOk: !scopeMissing(probe.status),
         scopeError: scopeMissing(probe.status)
-          ? 'The Adyen API key has no Management (Terminals) role — add one in Customer Area → Developers → API credentials, or set ADYEN_MANAGEMENT_KEY.'
+          ? 'The payments API key has no Management (Terminals) role. Contact ServOS support (technical: add the role to the API credential, or set ADYEN_MANAGEMENT_KEY).'
           : null,
       });
     }
@@ -163,7 +163,7 @@ Deno.serve(async (req) => {
     }
 
     // Everything below needs the store mapping.
-    if (!maa?.store_id) return json({ ok: false, error: 'no_store', hint: 'Run ensure_store first — the venue has no Adyen store yet.' }, 200);
+    if (!maa?.store_id) return json({ ok: false, error: 'no_store', hint: 'Run ensure_store first — the venue has no payments store yet.' }, 200);
 
     // ── ensure_payment_methods: repair a store missing its card schemes ──────
     if (action === 'ensure_payment_methods') {

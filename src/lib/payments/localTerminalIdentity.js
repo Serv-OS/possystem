@@ -176,7 +176,7 @@ export async function resolveSelfHostedAdyenTerminal() {
     if (!row.adyen_terminal_id) {
       return {
         ok: false,
-        reason: 'This terminal is paired but not linked to an Adyen terminal ID yet. '
+        reason: 'This terminal is paired but not linked to a card reader ID yet. '
               + 'Add its POIID in Back Office → Card readers.',
       };
     }

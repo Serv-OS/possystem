@@ -76,7 +76,7 @@ export default function AdyenDisputes() {
       {error && <div style={{ padding: 10, background: 'var(--red-d)', color: 'var(--red)', borderRadius: 8, fontSize: 12, border: '1px solid var(--red-b)', marginBottom: 14 }}>{error}</div>}
 
       {list.length === 0 ? (
-        <EmptyState icon="🛡" message="No chargebacks. If a customer disputes an Adyen card payment it will appear here with its deadline." />
+        <EmptyState icon="🛡" message="No chargebacks. If a customer disputes a card payment it will appear here with its deadline." />
       ) : list.map((d) => {
         const cd = countdown(d.respond_by);
         return (
@@ -97,7 +97,7 @@ export default function AdyenDisputes() {
             </div>
             {OPEN(d.status) && (
               <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 8 }}>
-                Responding from here is coming in a later update. For now, act on it in the Adyen Customer Area before the deadline, or contact your account manager.
+                Responding from here is coming in a later update. For now, contact ServOS support before the deadline and we will respond with you.
               </div>
             )}
           </div>
@@ -106,7 +106,7 @@ export default function AdyenDisputes() {
 
       {list.length > 0 && (
         <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 6 }}>
-          <button onClick={load} style={{ background: 'none', border: 'none', color: 'var(--acc)', cursor: 'pointer', fontSize: 11, fontWeight: 700, padding: 0 }}>↻ Refresh</button> · Disputes are captured automatically from Adyen webhooks.
+          <button onClick={load} style={{ background: 'none', border: 'none', color: 'var(--acc)', cursor: 'pointer', fontSize: 11, fontWeight: 700, padding: 0 }}>↻ Refresh</button> · Disputes are captured automatically as they arrive from the card networks.
         </div>
       )}
     </div>

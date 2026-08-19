@@ -229,7 +229,7 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
     // this line means no reader is linked — say so instead of dead-ending.
     if (processor === 'ryft') return runRyftTerminalFlow();
     if (processor === 'adyen') {
-      setError('No card reader is linked to this venue yet — register one in Back Office → Card readers → Adyen card terminals.');
+      setError('No card reader is linked to this venue yet — register one in Back Office → Card readers → Card terminals.');
       return;
     }
 

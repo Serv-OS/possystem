@@ -1740,7 +1740,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             )}
             {!giftApplied && !rewardsAvailable && (
               <div style={{ fontSize: 10, color: muted, textAlign: 'center', marginTop: 8 }}>
-                {`🔒 Card details next, processed securely by ${processor === 'adyen' ? 'Adyen' : processor === 'ryft' ? 'Ryft' : 'Stripe'}.`}
+                {`🔒 Card details next, processed securely by ${processor === 'adyen' ? 'ServOS Payments' : processor === 'ryft' ? 'Ryft' : 'Stripe'}.`}
               </div>
             )}
           </div>
@@ -1766,7 +1766,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             </button>
             {!rewardApplied && !fullyPaid && (
               <div style={{ fontSize: 10, color: muted, textAlign: 'center', marginTop: 8 }}>
-                {`🔒 Card details next, processed securely by ${processor === 'adyen' ? 'Adyen' : processor === 'ryft' ? 'Ryft' : 'Stripe'}.`}
+                {`🔒 Card details next, processed securely by ${processor === 'adyen' ? 'ServOS Payments' : processor === 'ryft' ? 'Ryft' : 'Stripe'}.`}
               </div>
             )}
           </div>

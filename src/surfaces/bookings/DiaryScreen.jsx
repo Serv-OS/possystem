@@ -357,7 +357,7 @@ function PaymentState({ b, prepaid, hold }) {
     else if (captured) line = { txt: `✓ ${money(captured.amount)} paid by card${card(captured)}`, col: 'var(--grn)' };
     else if (held) line = { txt: `✓ Card held${card(held)} — charged only on no-show`, col: 'var(--grn)' };
     else if (failed) line = { txt: 'Card payment FAILED — take payment at the venue', col: 'var(--red)' };
-    else line = { txt: 'Card payment pending — Adyen confirms by webhook', col: 'var(--t3)' };
+    else line = { txt: 'Card payment pending — confirmation arrives automatically', col: 'var(--t3)' };
   } else if (prepaid) {
     line = { txt: 'Prepay is taken by card on the booking page. Settled amounts show in Back Office.', col: 'var(--t4)' };
   } else if (hold > 0) {

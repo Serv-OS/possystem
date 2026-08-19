@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.98',
+    date: '2026-08-19',
+    changes: [
+      'NEW CARD PAYMENTS SECTION IN THE BACK OFFICE SIDEBAR. It opens ServOS Payments with six tabs: Overview, Payments, Disputes, Payouts, Documents and Settings. Payments and Disputes are the same live reports that sat in Reports, now in their proper home. Overview shows the venue and its processing status. Payouts, Documents and Settings say plainly what will appear there: balances and instant payouts need per-venue payment accounts, which are in progress with our payment partner.',
+      'The two card payment tiles have left the Reports screen. Card money now lives in the Card payments section. Venues on Ryft keep their existing Reports tiles and see a short note in the new section instead of empty tabs.',
+      'The word Adyen no longer appears anywhere an operator or customer reads. These are ServOS Payments. The Back Office panel is now Card terminals, refund screens say Processed via ServOS Payments, the bookings widget toggle is plain Card capture, the diary says card confirmation arrives automatically, and the online and QR checkouts say processed securely by ServOS Payments. Serial numbers, reader ids and settings all work exactly as before, only the labels changed.',
+    ],
+  },
+  {
     version: '5.6.97',
     date: '2026-08-19',
     changes: [

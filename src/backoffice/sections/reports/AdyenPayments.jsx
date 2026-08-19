@@ -87,7 +87,7 @@ export default function AdyenPayments() {
       { label: 'Reference', key: (r) => r.merchant_reference || '' },
       { label: 'PSP reference', key: (r) => r.psp_reference || '' },
     ];
-    downloadCsv('adyen-payments.csv', toCsv(rows, headers));
+    downloadCsv('servos-payments.csv', toCsv(rows, headers));
   };
 
   if (loading && !data) return <div style={{ padding: 24, color: 'var(--t3)' }}>Loading card payments…</div>;
@@ -105,7 +105,7 @@ export default function AdyenPayments() {
         <StatTile label="Payments" value={String(s.count ?? 0)} />
         <StatTile label="Taken" value={m(s.sum_minor)} color="var(--grn)" />
         <StatTile label="Refunds" value={m(s.refunds_minor)} />
-        <div title="Fees arrive with settlement ingestion in a later update — Adyen reports them when it settles funds, not per payment.">
+        <div title="Fees arrive with settlement ingestion in a later update. They are reported when funds settle, not per payment.">
           <StatTile label="Estimated fees" value="—" color="var(--t3)" />
         </div>
       </div>
@@ -118,7 +118,7 @@ export default function AdyenPayments() {
       </div>
 
       {payments.length === 0 ? (
-        <EmptyState icon="💳" message="No Adyen card payments recorded yet. They appear here the moment one is taken." />
+        <EmptyState icon="💳" message="No card payments recorded yet. They appear here the moment one is taken." />
       ) : (
         <div style={{ border: '1px solid var(--bdr)', borderRadius: 10, overflow: 'hidden' }}>
           <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr 0.9fr 0.9fr 1.1fr 1.4fr', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.04em', padding: '9px 14px', background: 'var(--bg2)' }}>

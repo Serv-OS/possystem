@@ -22,7 +22,7 @@ const METHOD_ICON = {card:'💳',cash:'💵',split:'⚖','bar-tab':'🍸'};
 // false, and it is false at the exact moment staff are deciding whether to trust
 // the screen with a customer's refund. Name the real one; say "the card
 // terminal" when the check predates processor stamping.
-const PROCESSOR_NAME = { stripe:'Stripe Terminal', ryft:'Ryft', adyen:'Adyen' };
+const PROCESSOR_NAME = { stripe:'Stripe Terminal', ryft:'Ryft', adyen:'ServOS Payments' };
 function processorLabel(check){
   const p = (check?.processor||'').toLowerCase();
   return PROCESSOR_NAME[p] ? `Processed via ${PROCESSOR_NAME[p]}` : 'Processed on the card terminal';
