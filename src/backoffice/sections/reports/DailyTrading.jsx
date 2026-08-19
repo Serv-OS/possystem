@@ -4,7 +4,7 @@
 // "same weekday last year" suggestion), actual sales, theoretical vs actual
 // labour + labour %, COGS (a configurable %), fixed overhead → gross profit and
 // operating profit, forecast vs actual, with period totals. All computed
-// server-side by the trading-report edge fn. Self-fetching (like RyftPayouts).
+// server-side by the trading-report edge fn. Self-fetching.
 
 import { useEffect, useMemo, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';

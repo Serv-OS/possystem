@@ -394,8 +394,8 @@ export default function KioskSettings({ kioskId, onBack }) {
             />
           </Section>
 
-          {/* ── Card terminal (Ryft PAX) ── */}
-          <Section title="Card terminal" desc="On a Ryft venue, assign the PAX card terminal this kiosk sends card payments to. (Stripe-reader venues take card automatically — this is only for a paired Ryft terminal.)">
+          {/* ── Card terminal ── */}
+          <Section title="Card terminal" desc="Assign the paired card terminal this kiosk sends card payments to. Only needed at venues that pair a terminal running the ServOS app — Stripe-reader venues take card automatically.">
             <KioskCardTerminalSection kioskId={kioskId} locationId={device.location_id} />
           </Section>
 
@@ -501,7 +501,7 @@ function ToggleRow({ checked, onChange, title, desc }) {
   );
 }
 
-// v5.5.871 — assign a paired Ryft PAX terminal to this kiosk (bind_pos_device_id →
+// v5.5.871 — assign a paired card terminal to this kiosk (bind_pos_device_id →
 // the kiosk's devices.id) via the dedicated set_terminal_bound_device RPC. Binding
 // is immediate (not part of the profile Save). On a Stripe venue there are no
 // terminal_devices rows, so the list is empty and the section is a no-op.
@@ -560,7 +560,7 @@ function KioskCardTerminalSection({ kioskId, locationId }) {
                   <div style={{ fontSize: 13, fontWeight: 600 }}>{t.label || 'Card terminal'}</div>
                   <div style={{ fontSize: 11, color: 'var(--t3)' }}>
                     {mine ? 'Assigned to this kiosk' : other ? 'Assigned to another till' : 'Unassigned'}
-                    {!linked && ' · ⚠ not connected to Ryft (cannot take card yet)'}
+                    {!linked && ' · ⚠ not connected to the card processor (cannot take card yet)'}
                   </div>
                 </div>
                 {mine ? (

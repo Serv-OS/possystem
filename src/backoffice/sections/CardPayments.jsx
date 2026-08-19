@@ -22,8 +22,7 @@
 //
 // Gated on the venue's processor being 'adyen' (locations.payment_processor
 // via the cached getLocationProcessor lookup, same source CardReaders uses).
-// Stripe/Ryft venues get a short note instead of broken tabs — their card
-// money lives in Reports (Ryft tiles) as before.
+// Venues on another processor get a short note instead of broken tabs.
 
 import { useEffect, useState } from 'react';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
@@ -355,8 +354,8 @@ export default function CardPayments() {
         <div style={S.card}>
           <div style={S.cardTitle}>ServOS Payments is not enabled for this venue</div>
           <p style={S.cardBody}>
-            This venue takes cards through a different payment setup, so its card payment
-            reports stay under Reports. Talk to ServOS if you would like to move this
+            This venue takes cards through a different payment setup, so ServOS Payments
+            reporting is not available here. Talk to ServOS if you would like to move this
             venue onto ServOS Payments.
           </p>
         </div>

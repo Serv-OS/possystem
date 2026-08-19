@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.2',
+    date: '2026-08-19',
+    changes: [
+      'RYFT SCREENS REMOVED FROM BACK OFFICE. No venue processes cards through Ryft any more, so the Ryft screens are gone. In Reports the two Ryft tiles, Card payments and payouts, and Disputes and chargebacks, have been removed. Card payments reporting now lives in Back Office, Card payments, which is where ServOS Payments venues already see their payments, disputes, payouts and statements.',
+      'Location Settings no longer shows the old Ryft rate card or its Set up card payments button. That button only worked for Ryft venues, so on every current venue it could only fail.',
+      'Leftover wording tidied. The kiosk Card terminal section and the unresolved payments note no longer mention Ryft by name, they now talk about the card processor in plain terms.',
+      'Nothing about taking payments changed. Historical checks that were paid through Ryft still say Ryft on the refund screen so the record stays accurate.',
+    ],
+  },
+  {
     version: '5.7.1',
     date: '2026-08-19',
     changes: [

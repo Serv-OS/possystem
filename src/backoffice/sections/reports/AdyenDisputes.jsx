@@ -1,8 +1,9 @@
 // src/backoffice/sections/reports/AdyenDisputes.jsx
 // Adyen chargebacks for this venue — read from merchant_adyen_disputes via the
 // location-fenced adyen-financial edge fn (action: 'disputes'). Cloned from
-// RyftDisputes but LIST-ONLY in Phase 1: rows, status and the respond-by
-// countdown render; accept/challenge wiring comes in a later phase.
+// the old RyftDisputes report (removed v5.7.2) but LIST-ONLY in Phase 1: rows,
+// status and the respond-by countdown render; accept/challenge wiring comes in
+// a later phase.
 
 import { useEffect, useState } from 'react';
 import { supabase, isMock, getLocationId } from '../../../lib/supabase';

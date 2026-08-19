@@ -409,7 +409,7 @@ function JobRow({ job, terminalLabel, open, onToggle, onResolved }) {
                   <input
                     value={note}
                     onChange={e => setNote(e.target.value)}
-                    placeholder="e.g. found on the Ryft dashboard, 21 Jul 19:42"
+                    placeholder="e.g. found on the card processor dashboard, 21 Jul 19:42"
                     maxLength={200}
                     style={S.input}
                   />

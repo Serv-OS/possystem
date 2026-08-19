@@ -110,36 +110,6 @@ export default function LocationSettings() {
   const [onlineEnabled, setOnlineEnabled] = useState(false);
   const [qrEnabled,     setQrEnabled]     = useState(false);
   const [slugError,   setSlugError]   = useState('');
-  // Card processing rates (read-only here — set by us in the admin portal).
-  const [payInfo, setPayInfo] = useState(null);   // { processor, std, ovr }
-  const [onbBusy, setOnbBusy] = useState(false);
-  const [onbErr, setOnbErr]   = useState('');
-  const [onbLink, setOnbLink] = useState(null);
-
-  // Self-serve Ryft onboarding: ensure a sub-account + mint a hosted link.
-  const startRyftOnboarding = async () => {
-    setOnbBusy(true); setOnbErr(''); setOnbLink(null);
-    try {
-      const locId = await getLocationId().catch(() => null);
-      if (!locId) throw new Error('No location id.');
-      const { data: session } = await supabase.auth.getSession();
-      const token = session?.session?.access_token;
-      if (!token) throw new Error('Please sign in again.');
-      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/payments-onboard`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-        body: JSON.stringify({ action: 'ryft_start', ops_location_id: locId, redirect_url: window.location.origin + '/?ryft_onboarded=1' }),
-      });
-      const j = await res.json();
-      if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
-      setOnbLink(j.onboarding_url || null);
-      if (j.onboarding_url) window.open(j.onboarding_url, '_blank', 'noopener');
-    } catch (e) {
-      setOnbErr(e.message || 'Could not start onboarding');
-    } finally {
-      setOnbBusy(false);
-    }
-  };
 
   useEffect(() => {
     if (!platformSupabase) { setLoading(false); return; }
@@ -153,7 +123,7 @@ export default function LocationSettings() {
     (async () => {
       try {
         const locId = await getLocationId().catch(() => null);
-        const select = 'id, name, timezone, currency, business_day_start, shifts, collection_lead_minutes, opening_hours, online_slug, online_enabled, qr_enabled, ops_location_id, payment_processor';
+        const select = 'id, name, timezone, currency, business_day_start, shifts, collection_lead_minutes, opening_hours, online_slug, online_enabled, qr_enabled, ops_location_id';
         let row = null;
         let lastErr = null;
         if (locId) {
@@ -189,32 +159,6 @@ export default function LocationSettings() {
           setOnlineSlug(row.online_slug || '');
           setOnlineEnabled(!!row.online_enabled);
           setQrEnabled(!!row.qr_enabled);
-          // Card processing rates for display (the standard Ryft rate card +
-          // this location's negotiated override, if any). Non-fatal on error.
-          try {
-            const { data: ps } = await platformSupabase.from('platform_settings')
-              .select('ryft_cost_percent, ryft_cost_fixed_pence, default_ryft_markup_percent, default_ryft_markup_fixed_pence').eq('id', true).maybeSingle();
-            // merchant_ryft_accounts is RLS service-role-read, so a direct client
-            // read returns nothing and wrongly shows "Not connected". Read the
-            // venue's Ryft state through the location-scoped edge fn instead.
-            let ovr = null;
-            if ((row.payment_processor || 'stripe') === 'ryft') {
-              try {
-                const { data: session } = await supabase.auth.getSession();
-                const token = session?.session?.access_token;
-                if (token) {
-                  const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/payments-onboard`, {
-                    method: 'POST',
-                    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-                    body: JSON.stringify({ action: 'ryft_status', ops_location_id: locId }),
-                  });
-                  const j = await res.json().catch(() => ({}));
-                  if (j?.linked) ovr = { charges_enabled: j.charges_enabled, ryft_account_id: j.ryft_account_id, markup_percent: j.markup_percent, markup_fixed_pence: j.markup_fixed_pence };
-                }
-              } catch { /* status best-effort */ }
-            }
-            setPayInfo({ processor: row.payment_processor || 'stripe', std: ps || null, ovr });
-          } catch { /* rates display is best-effort */ }
         } else {
           setError('Could not load any location row from the platform DB. Check VITE_PLATFORM_SUPABASE_URL/KEY and the locations table SELECT policy.');
         }
@@ -374,58 +318,6 @@ export default function LocationSettings() {
     <div style={S.page}>
       <div style={S.h1}>Location Settings</div>
       <div style={S.sub}>Configure timezone and service periods for {location?.name || 'your location'}</div>
-
-      {/* Card processing rates (Ryft venues) — read-only; rates set by us in admin */}
-      {payInfo?.processor === 'ryft' && payInfo.std && (() => {
-        const std = payInfo.std, ovr = payInfo.ovr || {};
-        const eff = (o, s) => (o != null ? Number(o) : Number(s ?? 0));
-        const mkPct = eff(ovr.markup_percent, std.default_ryft_markup_percent);
-        const mkFix = eff(ovr.markup_fixed_pence, std.default_ryft_markup_fixed_pence);
-        const costPct = Number(std.ryft_cost_percent ?? 0), costFix = Number(std.ryft_cost_fixed_pence ?? 0);
-        const payPct = costPct + mkPct, payFix = costFix + mkFix;   // what the customer pays
-        const linked = !!payInfo.ovr?.ryft_account_id;
-        const live = !!payInfo.ovr?.charges_enabled;
-        return (
-          <div style={S.card}>
-            <div style={S.h2}>💳 Card payments</div>
-            <div style={S.desc}>
-              {linked ? (live ? 'Your payments account is live.' : 'Your account is set up — finish onboarding to start taking payments.') : 'Connect your payments account below to start taking cards.'}
-            </div>
-            <div style={{ border:'1px solid var(--bdr)', borderRadius:10, padding:'14px 16px', background:'var(--bg2)' }}>
-              <div style={{ fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.04em', marginBottom:6 }}>What you pay per card transaction</div>
-              <div style={{ fontSize:24, fontWeight:800, color:'var(--t1)' }}>{payPct.toFixed(2)}% + {payFix}p</div>
-              <div style={{ fontSize:12, color:'var(--t4)', marginTop:6, lineHeight:1.5 }}>
-                One simple all-in rate per card payment.
-              </div>
-            </div>
-            <div style={{ fontSize:11, color:'var(--t4)', marginTop:8 }}>
-              Your rate is set by your account manager.
-            </div>
-
-            {/* Self-serve onboarding */}
-            {!live && (
-              <div style={{ marginTop:16, paddingTop:16, borderTop:'1px solid var(--bdr)' }}>
-                <button
-                  onClick={startRyftOnboarding}
-                  disabled={onbBusy}
-                  style={{ ...S.btn, background:'var(--acc)', color:'#0b0c10' }}
-                >
-                  {onbBusy ? 'Opening…' : (linked ? 'Continue payment setup' : 'Set up card payments')}
-                </button>
-                <span style={{ fontSize:12, color:'var(--t4)', marginLeft:12 }}>
-                  Opens secure onboarding to verify your business and add bank &amp; payout details.
-                </span>
-                {onbErr && <div style={{ fontSize:12, color:'var(--red)', marginTop:8 }}>{onbErr}</div>}
-                {onbLink && (
-                  <div style={{ fontSize:12, color:'var(--t3)', marginTop:8 }}>
-                    If a tab didn't open, use this link: <a href={onbLink} target="_blank" rel="noreferrer" style={{ color:'var(--acc)', wordBreak:'break-all' }}>{onbLink}</a>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        );
-      })()}
 
       {/* Timezone */}
       <div style={S.card}>

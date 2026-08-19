@@ -1,8 +1,8 @@
 // src/backoffice/sections/reports/AdyenPayments.jsx
 // Card Payments (Adyen) — every Adyen card payment for this venue from the
 // server-truth ledger (adyen_payments, fed by adyen-webhook). Self-fetching via
-// the location-fenced adyen-financial edge fn (action: 'payments'), same
-// pattern as RyftPayouts. Fees (v5.6.99): once settlement ingestion has run,
+// the location-fenced adyen-financial edge fn (action: 'payments'), a
+// self-fetching report. Fees (v5.6.99): once settlement ingestion has run,
 // summary.fees_minor and per-row fee_minor arrive from adyen-report-ingest and
 // light up the tile + a per-row Fee column; until then both show an honest "—".
 

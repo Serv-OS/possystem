@@ -37,8 +37,6 @@ import ZReport      from './reports/ZReport';
 import Tax          from './reports/Tax';
 import LocationCompare from './reports/LocationCompare';
 import CashDrawer    from './reports/CashDrawer';
-import RyftPayouts   from './reports/RyftPayouts';
-import RyftDisputes  from './reports/RyftDisputes';
 import LoyaltyReport from './reports/LoyaltyReport';
 import BookingsReport from './reports/BookingsReport';
 import Transactions  from './Transactions';
@@ -292,8 +290,6 @@ export default function BOReports({ setSection } = {}) {
           {view === 'tax'        && <Tax          checks={filtered} fmt={fmt} fmtN={fmtN}/>}
           {view === 'location_compare' && <LocationCompare rangeFrom={range.from} rangeTo={range.to} periodLabelText={periodLabel(period, customRange, range)} fmt={fmt} fmtN={fmtN}/>}
           {view === 'cash_drawer' && <CashDrawer   fromMs={range.from} toMs={range.to}/>}
-          {view === 'ryft_payouts' && <RyftPayouts />}
-          {view === 'ryft_disputes' && <RyftDisputes />}
           {view === 'transactions' && <Transactions checks={filtered} fmt={fmt}/>}
           {view === 'open'       && <LegacyOpen   openOrders={openOrders} fmt={fmt}/>}
           {view.startsWith('loyalty_') && <LoyaltyReport rangeFrom={range.from} rangeTo={range.to} initialTab={view.replace('loyalty_', '')}/>}
