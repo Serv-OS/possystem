@@ -104,6 +104,31 @@ export default function AdyenTerminals() {
   // was editing the database by hand (live 19 Aug: a £2.85 charging_unsent job
   // sat past its lease with no nexo_service_id, so it had provably never
   // reached the reader, and there was no button left to clear it).
+  // v5.6.91 — the screensaver-by-push experiment (Peter: "is it possible to
+  // force a screensaver etc from our software to the device?"). test_image
+  // pushes the ServOS logo as a MessageRef/Image display with no timeout — docs
+  // say it HOLDS until the next request, which would make idle branding on
+  // Adyen-software readers a solved problem. test_idle hands the screen back.
+  // Unverified on this fleet until these buttons are pressed; the fn returns the
+  // raw reader response either way.
+  const brandTest = async (t, mode) => {
+    setBusy(`${mode}-${t.id}`);
+    setErr(''); setNotice('');
+    try {
+      const r = await callAdmin(mode, { terminal_id: t.id });
+      if (r?.ok) {
+        setNotice(mode === 'test_image'
+          ? `Image pushed to ${t.link?.label || t.id} (${Math.round((r.imageBytes || 0) / 1024)}KB). Look at the reader — if the logo is up and stays up, branding works. "Back to idle" hands the screen back.`
+          : `${t.link?.label || t.id} sent back to its standby screen.`);
+      } else {
+        setErr(`${mode} failed (${r?.status ?? '?'}): ${JSON.stringify(r?.response ?? r?.error ?? r).slice(0, 300)}`);
+      }
+    } catch (e) {
+      setErr(`${mode} failed: ${e.message}`);
+    }
+    setBusy('');
+  };
+
   const release = async (t) => {
     const opsId = t?.link?.id;
     if (!opsId) return;
@@ -324,6 +349,16 @@ export default function AdyenTerminals() {
                             .catch(() => {});
                         }}>
                         Settings
+                      </button>
+                      <button style={{ ...S.btn }} disabled={!!busy}
+                        title="Push the ServOS logo full-screen to test idle branding"
+                        onClick={() => brandTest(t, 'test_image')}>
+                        {busy === `test_image-${t.id}` ? 'Pushing…' : 'Test branding'}
+                      </button>
+                      <button style={{ ...S.btn }} disabled={!!busy}
+                        title="Return the reader to its own standby screen"
+                        onClick={() => brandTest(t, 'test_idle')}>
+                        {busy === `test_idle-${t.id}` ? 'Restoring…' : 'Back to idle'}
                       </button>
                       <button style={{ ...S.btn }} disabled={!!busy}
                         title="Use if the terminal says a payment is already in progress but nothing is happening"

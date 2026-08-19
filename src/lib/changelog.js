@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.91',
+    date: '2026-08-19',
+    changes: [
+      'New on each Adyen card terminal: "Test branding" pushes the ServOS logo full screen onto the reader, and "Back to idle" returns it to its normal standby screen. If the logo holds on screen, custom idle branding on the readers is possible and a proper screensaver upload comes next.',
+    ],
+  },
+  {
     version: '5.6.90',
     date: '2026-08-19',
     changes: [

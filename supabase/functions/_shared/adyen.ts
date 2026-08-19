@@ -214,6 +214,55 @@ export function buildDisplayRequest(o: { poiid: string; saleId: string; serviceI
   };
 }
 
+// FULL-SCREEN IMAGE on the terminal (nexo Display / MessageRef+Image) — the
+// branding/"screensaver" push. Docs (display-image): OutputFormat 'MessageRef',
+// PredefinedContent.ReferenceID 'Image', base64 image in OutputText. With no
+// MinimumDisplayTime the image HOLDS until the next request — a payment, another
+// image, or the Idle push below. NOT yet hardware-verified on this fleet (which
+// has contradicted the docs three times); that is what admin test_image is for.
+// NOTE the contrast with buildDisplayRequest above (OutputFormat 'Text', no
+// PredefinedContent, unverified): if Image works and Text does not, that is the
+// answer to why "Loading tables…" never showed.
+export function buildDisplayImageRequest(o: { poiid: string; saleId: string; serviceId: string; imageB64: string }): any {
+  return {
+    SaleToPOIRequest: {
+      MessageHeader: {
+        ProtocolVersion: '3.0', MessageClass: 'Device', MessageCategory: 'Display', MessageType: 'Request',
+        ServiceID: o.serviceId, SaleID: o.saleId, POIID: o.poiid,
+      },
+      DisplayRequest: {
+        DisplayOutput: {
+          Device: 'CustomerDisplay', InfoQualify: 'Display',
+          OutputContent: {
+            OutputFormat: 'MessageRef',
+            PredefinedContent: { ReferenceID: 'Image' },
+            OutputText: [{ Text: o.imageB64 }],
+          },
+        },
+      },
+    },
+  };
+}
+
+// Force the terminal BACK to its standby screen (ReferenceID 'Idle') — docs say
+// this works "regardless of the terminal model".
+export function buildDisplayIdleRequest(o: { poiid: string; saleId: string; serviceId: string }): any {
+  return {
+    SaleToPOIRequest: {
+      MessageHeader: {
+        ProtocolVersion: '3.0', MessageClass: 'Device', MessageCategory: 'Display', MessageType: 'Request',
+        ServiceID: o.serviceId, SaleID: o.saleId, POIID: o.poiid,
+      },
+      DisplayRequest: {
+        DisplayOutput: {
+          Device: 'CustomerDisplay', InfoQualify: 'Display',
+          OutputContent: { OutputFormat: 'MessageRef', PredefinedContent: { ReferenceID: 'Idle' } },
+        },
+      },
+    },
+  };
+}
+
 export function parseMenuInputResponse(data: any): { selected: number | null; result: string } {
   // Docs + hardware, 15 Aug: MenuEntryNumber is a SELECTION-MASK array — the
   // chosen option's position holds 1, every other item 0 ("if the third option

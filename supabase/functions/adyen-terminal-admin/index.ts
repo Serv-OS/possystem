@@ -25,7 +25,7 @@
 // say exactly what to fix instead of a dead button.
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
-import { managementBase, ADYEN_MERCHANT_ACCOUNT, buildMenuInputRequest, buildAmountInputRequest, parseAmountInputResponse, newServiceId, adyenFetch, terminalEndpoint } from '../_shared/adyen.ts';
+import { managementBase, ADYEN_MERCHANT_ACCOUNT, buildMenuInputRequest, buildAmountInputRequest, parseAmountInputResponse, buildDisplayImageRequest, buildDisplayIdleRequest, newServiceId, adyenFetch, terminalEndpoint } from '../_shared/adyen.ts';
 
 const opsAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
 const platformAdmin = createClient(
@@ -464,6 +464,53 @@ Deno.serve(async (req) => {
       });
       const r = await adyenFetch('POST', terminalEndpoint(merchant, tid, 'sync', (maa?.region === 'US') ? 'us' : 'eu'), msg, { timeoutMs: 75_000 });
       return json({ ok: r.ok, status: r.status, parsed: parseAmountInputResponse(r.data), response: r.data }, 200);
+    }
+
+    // ── logos_get: does Adyen even acknowledge a standby logo for this model? ─
+    // The /terminalLogos model enum in the docs lists S1F2 but neither AMS1 nor
+    // S1F2L. Ground truth per terminal, not per docs.
+    if (action === 'logos_get') {
+      const tid = String(body.terminal_id || '');
+      if (!tid) return json({ error: 'terminal_id required' }, 400);
+      const r = await mgmt<Record<string, unknown>>('GET', `/terminals/${encodeURIComponent(tid)}/terminalLogos`);
+      const d = r.data as Record<string, unknown>;
+      return json({
+        ok: r.ok, status: r.status,
+        // never echo half a megabyte of base64 back to the browser
+        hasLogo: !!d?.data, logoChars: d?.data ? String(d.data).length : 0,
+        raw: d?.data ? { ...d, data: undefined } : d,
+      });
+    }
+
+    // ── test_image: push the ServOS logo as a FULL-SCREEN held display ───────
+    // Docs: MessageRef + ReferenceID 'Image', base64 in OutputText, no
+    // MinimumDisplayTime => the image holds until the next request. The
+    // screensaver-by-push experiment: if this lands and holds, idle branding on
+    // Adyen-software readers is a solved problem.
+    if (action === 'test_image') {
+      const tid = String(body.terminal_id || '');
+      if (!tid) return json({ error: 'terminal_id required' }, 400);
+      const imgUrl = String(body.image_url || 'https://tbetcegmszzotrwdtqhi.supabase.co/storage/v1/object/public/receipt-assets/branding/servos-logo-primary-dark.png');
+      const imgRes = await fetch(imgUrl);
+      if (!imgRes.ok) return json({ error: `image fetch failed: ${imgRes.status}` }, 502);
+      const buf = new Uint8Array(await imgRes.arrayBuffer());
+      if (buf.length > 400_000) return json({ error: `image too large (${buf.length} bytes; docs cap ~512KB, stay under 400KB)` }, 400);
+      let bin = '';
+      const CHUNK = 0x8000;
+      for (let i = 0; i < buf.length; i += CHUNK) bin += String.fromCharCode(...buf.subarray(i, i + CHUNK));
+      const b64img = btoa(bin);
+      const msg = buildDisplayImageRequest({ poiid: tid, saleId: 'servos-brand', serviceId: newServiceId(), imageB64: b64img });
+      const r = await adyenFetch('POST', terminalEndpoint(merchant, tid, 'sync', (maa?.region === 'US') ? 'us' : 'eu'), msg, { timeoutMs: 30_000 });
+      return json({ ok: r.ok, status: r.status, imageBytes: buf.length, response: r.data });
+    }
+
+    // ── test_idle: force the terminal back to its own standby screen ─────────
+    if (action === 'test_idle') {
+      const tid = String(body.terminal_id || '');
+      if (!tid) return json({ error: 'terminal_id required' }, 400);
+      const msg = buildDisplayIdleRequest({ poiid: tid, saleId: 'servos-brand', serviceId: newServiceId() });
+      const r = await adyenFetch('POST', terminalEndpoint(merchant, tid, 'sync', (maa?.region === 'US') ? 'us' : 'eu'), msg, { timeoutMs: 30_000 });
+      return json({ ok: r.ok, status: r.status, response: r.data });
     }
 
     // ── test_async: prove the event-URL delivery pipe WITHOUT a button press ─
