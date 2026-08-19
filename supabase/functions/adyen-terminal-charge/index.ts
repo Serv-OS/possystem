@@ -168,6 +168,21 @@ async function settleFromResponse(jobId: string, p: ReturnType<typeof parsePayme
   } catch { /* toast is advisory — never block a settle */ }
 }
 
+// v5.6.87 — DURABLE REFUSAL LOG. Peter has now hit "payments are still not going
+// to the device" three times with jobs stuck at charging_unsent and
+// nexo_service_id NULL, meaning this function refused BEFORE its write-ahead CAS
+// and told nobody why: the till swallowed the reason (fixed v5.6.86) and Supabase
+// console logs have proved unreadable through the analytics API all week. Record
+// every pre-CAS refusal where we can always query it — the same trick that
+// finally cracked pay-at-table.
+async function logRefusal(reason: string, ctx: Record<string, unknown>) {
+  console.log(`adyen-terminal-charge REFUSED: ${reason} ${JSON.stringify(ctx)}`);
+  await platformAdmin.from('adyen_webhook_events').insert({
+    event_key: `charge-refused:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`,
+    raw: { reason, ...ctx },
+  }).then(() => {}, () => {});
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
@@ -222,7 +237,10 @@ Deno.serve(async (req) => {
       }
       if (!(await deviceAt(term.location_id))) return json({ error: 'no access to this venue' }, 403);
       const maa = await maaFor(term.location_id);
-      if (!maa?.merchant_account) return json({ ok: false, error: 'venue has no Adyen account — onboarding incomplete' }, 409);
+      if (!maa?.merchant_account) {
+      await logRefusal('venue has no Adyen merchant account', { action, jobId: job.id, jobLocation: job.location_id });
+      return json({ ok: false, error: 'venue has no Adyen account — onboarding incomplete' }, 409);
+    }
 
       const serviceId = newServiceId();
       const nexo = buildPaymentRequest({
@@ -327,7 +345,13 @@ Deno.serve(async (req) => {
         .select('id').eq('id', job.target_terminal_id).eq('device_uid', callerUid)
         .eq('status', 'paired').eq('active', true).maybeSingle(),
     ]);
-    if (!dev && !ownTerm) return json({ error: 'no access to this job' }, 403);
+    if (!dev && !ownTerm) {
+      await logRefusal('fence: caller is neither a paired device at this location nor the job\'s own terminal', {
+        action, jobId: job.id, jobLocation: job.location_id,
+        targetTerminalId: job.target_terminal_id, callerUid,
+      });
+      return json({ error: 'no access to this job' }, 403);
+    }
     if (!dev && ownTerm) {
       console.log(`adyen-terminal-charge: caller authorised as the job's own target terminal ${job.target_terminal_id} (job ${job.id}, action ${action})`);
     }
@@ -365,11 +389,20 @@ Deno.serve(async (req) => {
   // ── start (cloud sync — the till drives an AMS1-class terminal) ────────────
   if (action === 'start' || action === 'prepare_local') {
     if (SETTLED.includes(job.status)) return json({ ok: false, error: `job already ${job.status}`, ...settledBody(job) }, 409);
-    if (job.charge_minor == null) return json({ ok: false, error: 'job has no server-computed charge — the tip was never committed' }, 409);
+    if (job.charge_minor == null) {
+      await logRefusal('job has no server-computed charge', { action, jobId: job.id, status: job.status });
+      return json({ ok: false, error: 'job has no server-computed charge — the tip was never committed' }, 409);
+    }
 
     const { term, maa, poiid } = await resolveTarget();
-    if (!term || term.status !== 'paired' || !term.active) return json({ ok: false, error: 'terminal not paired' }, 409);
-    if (!poiid) return json({ ok: false, error: 'terminal_not_linked' }, 409);
+    if (!term || term.status !== 'paired' || !term.active) {
+      await logRefusal('terminal not paired', { action, jobId: job.id, targetTerminalId: job.target_terminal_id, termStatus: term?.status ?? null, termActive: term?.active ?? null });
+      return json({ ok: false, error: 'terminal not paired' }, 409);
+    }
+    if (!poiid) {
+      await logRefusal('terminal_not_linked (no POIID on the terminal row)', { action, jobId: job.id, targetTerminalId: job.target_terminal_id });
+      return json({ ok: false, error: 'terminal_not_linked' }, 409);
+    }
     if (!maa?.merchant_account) return json({ ok: false, error: 'venue has no Adyen account — onboarding incomplete' }, 409);
 
     // Idempotent replay: already in flight.
