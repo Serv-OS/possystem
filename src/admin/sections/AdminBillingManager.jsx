@@ -34,6 +34,24 @@ async function callPaymentsAdmin(action, payload) {
   return j;
 }
 
+// Call the payout-onboarding edge fn (adyen-onboard, super_admin fenced).
+// Unlike callPaymentsAdmin this RETURNS non-ok payloads instead of throwing:
+// the fn classifies every failure (awaiting_enablement / missing_prerequisite
+// / error) and the panel renders each kind differently.
+async function callAdyenOnboard(action, payload) {
+  const { data: session } = await supabase.auth.getSession();
+  const token = session?.session?.access_token;
+  if (!token) throw new Error('not authenticated');
+  const res = await fetch(`${FUNCTIONS_URL}/adyen-onboard`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ action, ...payload }),
+  });
+  const j = await res.json().catch(() => ({}));
+  if (j.error && j.ok === undefined) throw new Error(j.error);
+  return j;
+}
+
 // ─── Reusable styles (BO theme tokens) ─────────────────────────────────────
 const S = {
   page:    { padding: 0 },
@@ -568,7 +586,7 @@ function AdyenBlock({ location, defaults, onError }) {
         </div>
         <AdyenRow ok={st.online}>Online payments live — this venue's online shop charges through Adyen{st.environment === 'test' ? ' (test cards only)' : ''}</AdyenRow>
         <AdyenRow ok={st.inPerson}>In-person on the tills — waiting for the test terminals, then the terminal flow ships</AdyenRow>
-        <AdyenRow ok={false}>Per-venue onboarding and payouts — land with FranPOS's balance-platform access (sub-merchant phase)</AdyenRow>
+        <AdyenRow ok={false}>Per-venue onboarding and payouts — run from the Payout onboarding panel below (switches on per venue as Adyen enables the balance platform)</AdyenRow>
       </div>;
 
   return (
@@ -603,7 +621,173 @@ function AdyenBlock({ location, defaults, onError }) {
           </>
         )}
       </div>
+      <AdyenPayoutPanel location={location} onError={onError} />
     </>
+  );
+}
+
+// ─── Payout onboarding panel (Phase 4, v5.7.1) ─────────────────────────────
+// Drives the adyen-onboard fn: per-venue legal entity → account holder →
+// balance account → hosted KYC link → split configuration → daily sweep.
+// Every failure arrives pre-classified: awaiting_enablement (amber — the
+// balance platform is not switched on yet, expected today), missing_prerequisite
+// (neutral — says exactly what to do first), error (red).
+const fmtMinor = (m, cur = 'GBP') =>
+  new Intl.NumberFormat('en-GB', { style: 'currency', currency: cur }).format((Number(m) || 0) / 100);
+
+function OnbStep({ done, label, detail }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, fontSize: 12.5 }}>
+      <span style={{ color: done ? 'var(--grn, #15C26A)' : 'var(--t4)', fontWeight: 700, width: 12 }}>{done ? '✓' : '·'}</span>
+      <span style={{ color: done ? 'var(--t1)' : 'var(--t3)' }}>{label}</span>
+      {detail && <code style={{ fontSize: 10.5, color: 'var(--t4)', fontFamily: 'var(--font-mono, monospace)' }}>{detail}</code>}
+    </div>
+  );
+}
+
+function AdyenPayoutPanel({ location, onError }) {
+  const [st, setSt] = useState(null);        // null = loading, {error} or adyen-onboard status payload
+  const [busy, setBusy] = useState(null);    // action name while one runs
+  const [msg, setMsg] = useState(null);      // { kind, text } from the last action
+  const [link, setLink] = useState(null);    // { url, expires_at } freshly minted
+  const [copied, setCopied] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const r = await callAdyenOnboard('status', { location_id: location.id });
+      setSt(r.ok ? r : { error: r.message || r.error || 'status failed' });
+    } catch (e) { setSt({ error: e.message }); }
+  }, [location.id]);
+
+  useEffect(() => { setSt(null); load(); }, [load]);
+
+  const run = async (action, payload = {}) => {
+    setBusy(action); setMsg(null);
+    try {
+      const r = await callAdyenOnboard(action, { location_id: location.id, ...payload });
+      if (r.ok) {
+        if (r.onboarding_link?.url) { setLink(r.onboarding_link); setCopied(false); }
+        if (action === 'configure_splits') setMsg({ kind: 'ok', text: `Split profile live (${r.split_profile_id}) — commission ${r.rate?.percent ?? 0}% + ${r.rate?.fixed_pence ?? 0}p, remainder to the venue.` });
+        if (action === 'setup_sweep') setMsg({ kind: 'ok', text: `${r.existed ? 'Sweep already in place' : r.updated ? 'Sweep updated' : 'Sweep created'} (${r.sweep?.id}) — ${r.sweep?.schedule} push of the full balance to the venue bank.` });
+        if (action === 'start' && !r.onboarding_link) setMsg({ kind: 'ok', text: r.next || 'Accounts created.' });
+        await load();
+      } else {
+        setMsg({ kind: r.kind || 'error', text: r.message || r.error || 'failed' });
+      }
+    } catch (e) { setMsg({ kind: 'error', text: e.message }); }
+    finally { setBusy(null); }
+  };
+
+  const box = { marginTop: 14, padding: '14px 16px', borderRadius: 12, background: 'var(--bg2)', border: '1px solid var(--bdr2)' };
+
+  if (st == null) return <div style={box}><div style={{ fontSize: 12, color: 'var(--t3)' }}>Checking payout onboarding…</div></div>;
+  if (st.error) {
+    return (
+      <div style={box}>
+        <div style={{ ...S.label, color: 'var(--t2)', marginBottom: 6 }}>Payout onboarding</div>
+        <div style={{ fontSize: 12, color: 'var(--red)' }}>Couldn't load payout onboarding: {st.error}</div>
+        <button style={{ ...S.btn, ...S.btnGhost, marginTop: 8 }} onClick={() => { setSt(null); load(); }}>Retry</button>
+      </div>
+    );
+  }
+
+  const ids = st.ids || {};
+  const started = !!(ids.legal_entity_id || ids.account_holder_id || ids.balance_account_id);
+  const awaiting = st.enablement === 'awaiting_enablement';
+  const hasSweep = Array.isArray(st.sweeps) && st.sweeps.length > 0;
+  const splitsReady = !!st.prerequisites?.configure_splits?.ok;
+  const splitsWhy = (st.prerequisites?.configure_splits?.missing || []).join('; ');
+  const bal = Array.isArray(st.balances) && st.balances.length ? st.balances[0] : null;
+
+  const kindStyle = (kind) => kind === 'ok'
+    ? { background: 'var(--grn-d)', color: 'var(--grn)', border: '1px solid var(--grn-b)' }
+    : kind === 'awaiting_enablement'
+    ? { background: 'var(--orn-d, rgba(230,160,60,.12))', color: 'var(--orn)', border: '1px solid var(--orn-b, var(--bdr2))' }
+    : kind === 'missing_prerequisite'
+    ? { background: 'var(--bg3)', color: 'var(--t2)', border: '1px solid var(--bdr2)' }
+    : { background: 'var(--red-d)', color: 'var(--red)', border: '1px solid var(--red-b)' };
+
+  return (
+    <div style={box}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+        <div style={{ ...S.label, color: 'var(--t2)', marginBottom: 0 }}>Payout onboarding</div>
+        <span style={S.pill}>{awaiting ? 'Awaiting enablement' : st.enablement === 'enabled' ? 'Balance platform live' : 'Not started'}</span>
+        {st.payouts_ok && <span style={{ ...S.pill, color: 'var(--grn)', borderColor: 'var(--grn-b)' }}>Payouts allowed</span>}
+      </div>
+
+      {awaiting && (
+        <div style={{ padding: 10, borderRadius: 8, fontSize: 12, lineHeight: 1.5, marginBottom: 10, ...kindStyle('awaiting_enablement') }}>
+          Awaiting enablement from the payment partner. The pipeline below is built and idempotent —
+          re-run any step once Adyen confirms the balance platform is on; nothing needs redeploying.
+          {st.enablement_message ? ` (${st.enablement_message})` : ''}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginBottom: 12 }}>
+        <OnbStep done={!!ids.legal_entity_id} label="Legal entity" detail={ids.legal_entity_id} />
+        <OnbStep done={!!ids.account_holder_id} label="Account holder" detail={ids.account_holder_id} />
+        <OnbStep done={!!ids.balance_account_id} label="Balance account (funds land here)" detail={ids.balance_account_id} />
+        <OnbStep done={!!ids.transfer_instrument_id} label="Bank account (venue adds it via the onboarding link)" detail={ids.transfer_instrument_id} />
+        <OnbStep done={!!ids.split_profile_id} label="Commission splits on the store" detail={ids.split_profile_id} />
+        <OnbStep done={hasSweep} label="Payout sweep (pushes the balance to the venue bank)" detail={hasSweep ? `${st.sweeps[0].schedule || ''} · ${st.sweeps[0].status || ''}` : null} />
+      </div>
+
+      {bal && (
+        <div style={{ display: 'flex', gap: 22, flexWrap: 'wrap', padding: '10px 12px', background: 'var(--bg1)', borderRadius: 8, marginBottom: 12, border: '1px solid var(--bdr)' }}>
+          <Stat label="Total balance" value={fmtMinor(bal.total_minor, bal.currency)} accent />
+          <Stat label="Pending" value={fmtMinor(bal.pending_minor, bal.currency)} />
+          <Stat label="Available" value={fmtMinor(bal.available_minor, bal.currency)} />
+        </div>
+      )}
+
+      {link?.url && (
+        <div style={{ padding: 10, borderRadius: 8, background: 'var(--bg1)', border: '1px solid var(--bdr)', marginBottom: 12 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t2)', marginBottom: 6 }}>
+            Hosted onboarding link — single use, expires in 4 minutes. Send or open it NOW; mint a new one any time.
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input readOnly value={link.url} style={{ ...S.input, ...S.inputMono, fontSize: 11 }} onFocus={(e) => e.target.select()} />
+            <button style={{ ...S.btn, ...S.btnGhost }} onClick={async () => {
+              try { await navigator.clipboard.writeText(link.url); setCopied(true); setTimeout(() => setCopied(false), 2000); }
+              catch { onError?.('Copy failed — select the link and copy it manually.'); }
+            }}>{copied ? 'Copied' : 'Copy'}</button>
+            <button style={{ ...S.btn, ...S.btnPrim }} onClick={() => window.open(link.url, '_blank', 'noopener')}>Open</button>
+          </div>
+        </div>
+      )}
+
+      {msg && (
+        <div style={{ padding: 10, borderRadius: 8, fontSize: 12, lineHeight: 1.5, marginBottom: 12, ...kindStyle(msg.kind) }}>{msg.text}</div>
+      )}
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button style={{ ...S.btn, ...S.btnPrim, opacity: busy ? 0.6 : 1 }} disabled={!!busy}
+          onClick={() => run('start')}>
+          {busy === 'start' ? 'Working…' : started ? 'Continue onboarding' : 'Start onboarding'}
+        </button>
+        <button style={{ ...S.btn, ...S.btnGhost, opacity: !ids.legal_entity_id || busy ? 0.5 : 1 }}
+          disabled={!ids.legal_entity_id || !!busy}
+          title={ids.legal_entity_id ? 'Mint a fresh hosted onboarding link (single use, 4 minutes)' : 'Needs the legal entity — run Start onboarding first'}
+          onClick={() => run('refresh_link')}>
+          {busy === 'refresh_link' ? 'Working…' : 'New onboarding link'}
+        </button>
+        <button style={{ ...S.btn, ...S.btnGhost, opacity: !splitsReady || busy ? 0.5 : 1 }}
+          disabled={!splitsReady || !!busy}
+          title={splitsReady ? `Write the commission split (${st.rate?.percent ?? 0}% + ${st.rate?.fixed_pence ?? 0}p) onto the venue store` : `Not ready: ${splitsWhy}`}
+          onClick={() => run('configure_splits')}>
+          {busy === 'configure_splits' ? 'Working…' : 'Configure splits'}
+        </button>
+        <button style={{ ...S.btn, ...S.btnGhost, opacity: !ids.balance_account_id || busy ? 0.5 : 1 }}
+          disabled={!ids.balance_account_id || !!busy}
+          title={ids.balance_account_id
+            ? 'Create the daily push sweep — full available balance to the venue bank (re-checks for the bank account automatically)'
+            : 'Needs the balance account — run Start onboarding first'}
+          onClick={() => run('setup_sweep')}>
+          {busy === 'setup_sweep' ? 'Working…' : 'Set up daily payout'}
+        </button>
+        <button style={{ ...S.btn, ...S.btnGhost }} disabled={!!busy} onClick={() => { setSt(null); setMsg(null); load(); }}>Refresh</button>
+      </div>
+    </div>
   );
 }
 

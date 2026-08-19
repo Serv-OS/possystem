@@ -26,10 +26,25 @@
 //                    platform default) + account status flags, for the read-only
 //                    Settings tab. Display only — nothing charges from it yet.
 //
+// PHASE 4 (v5.7.1) adds the venue-facing side of payout onboarding:
+//   balances          → live Total/Pending/Available from the venue's Adyen
+//                       balance account (bcl v2), with the onboarding state
+//                       machine the Overview tab renders: not_started |
+//                       in_progress | awaiting_enablement | ready. A 401/403
+//                       from Adyen is the EXPECTED pre-enablement state and is
+//                       surfaced as awaiting_enablement, never a raw error.
+//   payout_setup_link → mints a fresh hosted onboarding link for THIS venue's
+//                       legal entity (links are single-use and expire in 4
+//                       minutes, so storing one is pointless — the venue's
+//                       "Complete your payout setup" button mints on click).
+//                       Safe for the venue fence: it can only create a KYC page
+//                       for the venue's own legal entity.
+//
 // ⚠ DEPLOY ME (edge functions deploy manually and drift silently):
 //   npx supabase functions deploy adyen-financial --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { lemBase, balancePlatformBase } from '../_shared/adyen.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -48,6 +63,24 @@ const SUMMARY_CAP = 5000;
 // Postgres 42703 (column does not exist) — the fee columns until migration
 // 20260820_adyen_fees.sql is hand-applied. Selects retry without them.
 const isMissingColumn = (msg: unknown) => /does not exist|42703/i.test(String(msg ?? ''));
+
+// ── Phase 4: minimal Adyen REST for the two venue-facing calls ──────────────
+// Key fallbacks match adyen-onboard: dedicated LEM/BP keys when the live setup
+// splits roles across ws users, else the main key (test setup).
+const LEM_KEY = Deno.env.get('ADYEN_LEM_KEY') || Deno.env.get('ADYEN_BP_KEY') || Deno.env.get('ADYEN_API_KEY') || '';
+const BP_KEY = Deno.env.get('ADYEN_BP_KEY') || Deno.env.get('ADYEN_API_KEY') || '';
+async function adyenCall(key: string, method: string, url: string, body?: unknown): Promise<{ ok: boolean; status: number; data: any }> {
+  const res = await fetch(url, {
+    method,
+    headers: { 'X-API-Key': key, 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  let data: any = null;
+  try { const t = await res.text(); data = t ? JSON.parse(t) : null; } catch { data = null; }
+  return { ok: res.ok, status: res.status, data };
+}
+// 401/403 pre-enablement is the EXPECTED state — a waiting room, not a bug.
+const isAwaitingEnablement = (status: number) => status === 401 || status === 403;
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -349,6 +382,86 @@ Deno.serve(async (req) => {
         has_balance_account: !!acct?.balance_account_id,
       },
     });
+  }
+
+  // ── balances: live balance tiles + the payout-onboarding state machine ───
+  // Phase 4 (v5.7.1): feeds the Overview tab in Back Office → Card payments.
+  // States:
+  //   not_started         → no per-venue payout account exists yet (honest
+  //                          "coming" card stays up)
+  //   in_progress         → accounts exist but the balance account does not
+  //                          yet / the venue still has KYC or bank to finish
+  //   awaiting_enablement → the balance platform is not switched on for this
+  //                          account yet (Adyen 401/403 — expected today)
+  //   ready               → balance account answers; balances are returned
+  if (action === 'balances') {
+    const { data: acct, error: aErr } = await platformAdmin.from('merchant_adyen_accounts')
+      .select('legal_entity_id, account_holder_id, balance_account_id, transfer_instrument_id, receive_payments_ok, payouts_ok, verification_status')
+      .eq('location_id', loc.id).maybeSingle();
+    if (aErr) return json({ error: `account read failed: ${aErr.message}` }, 500);
+
+    const base = {
+      ok: true,
+      venue: loc.name,
+      payouts_ok: !!acct?.payouts_ok,
+      has_bank: !!acct?.transfer_instrument_id,
+      // The venue can complete KYC/bank whenever a legal entity exists and
+      // payouts are not fully allowed yet.
+      can_complete_setup: !!acct?.legal_entity_id && !acct?.payouts_ok,
+    };
+
+    if (!acct || (!acct.legal_entity_id && !acct.balance_account_id)) {
+      return json({ ...base, state: 'not_started', balances: null });
+    }
+    if (!acct.balance_account_id) {
+      return json({ ...base, state: 'in_progress', balances: null });
+    }
+    const r = await adyenCall(BP_KEY, 'GET', `${balancePlatformBase()}/balanceAccounts/${encodeURIComponent(acct.balance_account_id)}`);
+    if (r.ok) {
+      const balances = (Array.isArray(r.data?.balances) ? r.data.balances : []).map((b: any) => ({
+        currency: b?.currency ?? 'GBP',
+        available_minor: Number(b?.available ?? 0),
+        total_minor: Number(b?.balance ?? 0),
+        pending_minor: Number(b?.pending ?? 0),
+        reserved_minor: Number(b?.reserved ?? 0),
+      }));
+      return json({ ...base, state: 'ready', balances });
+    }
+    if (isAwaitingEnablement(r.status)) {
+      return json({ ...base, state: 'awaiting_enablement', balances: null });
+    }
+    // A real error reads as in_progress to the venue (never a raw Adyen error
+    // on an operator screen); the detail is in the response for diagnostics.
+    console.error('[adyen-financial] balances read failed:', r.status, JSON.stringify(r.data ?? {}).slice(0, 300));
+    return json({ ...base, state: 'in_progress', balances: null, detail: `balance read failed (${r.status})` });
+  }
+
+  // ── payout_setup_link: fresh hosted onboarding link for THIS venue ───────
+  // Links are single-use and expire in 4 minutes, so they are minted on click,
+  // never served from storage. The venue fence above already proved the caller
+  // belongs to this location; the link can only open the venue's own KYC page.
+  if (action === 'payout_setup_link') {
+    const { data: acct, error: aErr } = await platformAdmin.from('merchant_adyen_accounts')
+      .select('legal_entity_id').eq('location_id', loc.id).maybeSingle();
+    if (aErr) return json({ error: `account read failed: ${aErr.message}` }, 500);
+    if (!acct?.legal_entity_id) {
+      return json({ error: 'Payout setup has not been started for this venue yet. ServOS starts it from the admin side.' }, 400);
+    }
+    const payload: Record<string, unknown> = { redirectUrl: String(body.return_url || 'https://dev.serv-os.app/') };
+    const r = await adyenCall(LEM_KEY, 'POST', `${lemBase()}/legalEntities/${encodeURIComponent(acct.legal_entity_id)}/onboardingLinks`, payload);
+    if (!r.ok || !r.data?.url) {
+      if (isAwaitingEnablement(r.status)) {
+        return json({ error: 'Payout setup is awaiting enablement from the payment partner. Nothing is needed from you yet.' }, 503);
+      }
+      console.error('[adyen-financial] payout_setup_link failed:', r.status, JSON.stringify(r.data ?? {}).slice(0, 300));
+      return json({ error: 'We could not open the setup page right now. Try again in a moment.' }, 502);
+    }
+    // Best-effort audit stamp (the link itself dies in 4 minutes anyway).
+    const expires_at = new Date(Date.now() + 4 * 60_000).toISOString();
+    void platformAdmin.from('merchant_adyen_accounts')
+      .update({ onboarding_link_url: r.data.url, onboarding_link_expires_at: expires_at, updated_at: new Date().toISOString() })
+      .eq('location_id', loc.id).then(() => {}, () => {});
+    return json({ ok: true, url: r.data.url, expires_at });
   }
 
   return json({ error: `unknown action: ${action}` }, 400);

@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.1',
+    date: '2026-08-19',
+    changes: [
+      'PER VENUE PAYOUT ONBOARDING IS BUILT. The internal admin portal has a new Payout onboarding panel for every ServOS Payments venue. One button creates the venue\'s own payment account step by step, then produces a secure onboarding link where the venue confirms its business details and adds the bank account its payouts go to. The link is single use and expires in four minutes, so the panel mints a fresh one whenever you need it. The panel shows exactly which steps are done, and every step can be run again safely: it always continues from where it stopped.',
+      'Commission splits are real. A Configure splits button writes the venue\'s agreed processing rate onto its card payment setup, so every card payment automatically splits into our fee and the venue\'s money, with the rest of the sale landing in the venue\'s own balance. The rate used is exactly the one the venue sees on its Settings tab. If no rate has been set the button refuses with a clear message instead of writing a zero rate.',
+      'Daily payouts. A Set up daily payout button creates an automatic daily sweep that sends the venue\'s full available balance to its own bank account. Weekly and monthly schedules are available too.',
+      'The venue sees it too. In Back Office, Card payments, Overview: once a venue\'s payment account is live, the coming soon card is replaced with real Total and Pending balance tiles and a plain sentence about what is still settling. While setup is underway the page says payout setup is in progress, and if the venue still needs to finish its checks there is a Complete your payout setup button that opens the secure page. Balances and payouts switch on per venue, each one as its own onboarding completes.',
+      'Built to wait safely. Our payment partner has not yet switched this capability on for our account. Until they do, every screen involved says awaiting enablement from the payment partner instead of showing an error, and the day it is switched on the whole pipeline works without any new code.',
+      'To go live this needs one database migration (20260821, the table that records verification and payout events), three server function deploys (adyen-onboard, adyen-bp-webhook and adyen-financial), and one webhook plus its signing key configured in the payment partner dashboard. Until then the new panel and the Overview card load fine and say what is missing instead of erroring.',
+    ],
+  },
+  {
     version: '5.7.0',
     date: '2026-08-19',
     changes: [

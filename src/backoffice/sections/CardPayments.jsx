@@ -65,6 +65,87 @@ function TabBtn({ active, label, onClick }) {
   );
 }
 
+const fmtMinor = (m, cur = 'GBP') =>
+  new Intl.NumberFormat('en-GB', { style: 'currency', currency: cur }).format((Number(m) || 0) / 100);
+
+// ─── Overview: balances / payout-setup card (Phase 4, v5.7.1) ───────────────
+// Driven by the adyen-financial `balances` action, which returns one of four
+// states. Only `ready` (the venue's own payment account answered with real
+// numbers) replaces the honest "coming" card with balance tiles — every other
+// state keeps plain words about where setup actually is. Failures never show
+// raw errors here; the fallback is always the honest card.
+function BalancesCard({ payout, onCompleteSetup, setupBusy, setupErr }) {
+  const bal = payout?.state === 'ready' && Array.isArray(payout.balances) && payout.balances.length
+    ? payout.balances[0] : null;
+
+  const completeBtn = payout?.can_complete_setup && (
+    <div style={{ marginTop: 10 }}>
+      <button onClick={onCompleteSetup} disabled={setupBusy} style={{
+        padding: '9px 16px', borderRadius: 8, border: 'none', cursor: 'pointer',
+        background: 'var(--acc)', color: '#0b0c10', fontSize: 13, fontWeight: 700, fontFamily: 'inherit',
+        opacity: setupBusy ? 0.6 : 1,
+      }}>
+        {setupBusy ? 'Opening…' : 'Complete your payout setup'}
+      </button>
+      <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 6, lineHeight: 1.5 }}>
+        Opens a secure page from our payment partner where you confirm your business details
+        and add the bank account your payouts go to. It takes a few minutes.
+      </div>
+      {setupErr && <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 6 }}>{setupErr}</div>}
+    </div>
+  );
+
+  if (bal) {
+    return (
+      <div style={S.card}>
+        <div style={S.cardTitle}>Balances</div>
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 4 }}>
+          {[['Total balance', bal.total_minor], ['Pending', bal.pending_minor]].map(([label, minor]) => (
+            <div key={label} style={{ flex: '1 1 180px', maxWidth: 260, border: '1px solid var(--bdr)', borderRadius: 10, padding: '14px 16px', background: 'var(--bg2)' }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 6 }}>{label}</div>
+              <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--t1)' }}>{fmtMinor(minor, bal.currency)}</div>
+            </div>
+          ))}
+        </div>
+        <p style={{ ...S.cardBody, marginTop: 10 }}>
+          {fmtMinor(bal.available_minor, bal.currency)} of this is available now.
+          Pending amounts are card payments still settling; they move into your balance automatically.
+          {payout.payouts_ok
+            ? ' Your balance is paid out to your bank automatically.'
+            : ' Payouts to your bank switch on once your payout setup is complete.'}
+        </p>
+        {!payout.payouts_ok && completeBtn}
+      </div>
+    );
+  }
+
+  if (payout?.state === 'in_progress') {
+    return (
+      <div style={S.card}>
+        <div style={S.cardTitle}>Payout setup in progress</div>
+        <p style={S.cardBody}>
+          Your venue's own payment account is being set up. Once it is finished your live
+          balance appears here and payouts go straight to your bank.
+          {payout.has_bank ? '' : ' If we are waiting on anything from you, the button below is the quickest way to finish.'}
+        </p>
+        {completeBtn}
+      </div>
+    );
+  }
+
+  // not_started / awaiting_enablement / unknown → the honest card, unchanged.
+  return (
+    <div style={S.card}>
+      <div style={S.cardTitle}>Balances and payouts</div>
+      <p style={S.cardBody}>
+        Balances and instant payouts are coming. They need per-venue payment accounts,
+        in progress with our payment partner. Until then, payouts continue on your
+        existing settlement schedule.
+      </p>
+    </div>
+  );
+}
+
 function Chip({ on, label }) {
   return (
     <span style={{
@@ -170,6 +251,9 @@ export default function CardPayments() {
   const [processor, setProcessor] = useState(null);   // null = still resolving
   const [tab, setTab] = useState('overview');
   const [status, setStatus] = useState(null);         // adyen-terminal-admin 'status' (best effort)
+  const [payout, setPayout] = useState(null);         // adyen-financial 'balances' (best effort)
+  const [setupBusy, setSetupBusy] = useState(false);
+  const [setupErr, setSetupErr] = useState(null);
 
   useEffect(() => {
     let alive = true;
@@ -203,6 +287,61 @@ export default function CardPayments() {
     })();
     return () => { alive = false; };
   }, [processor]);
+
+  // Balances / payout-setup state for the Overview card. Best effort: any
+  // failure leaves the honest "coming" card, never an error screen.
+  useEffect(() => {
+    if (processor !== 'adyen') return;
+    if (isMock) {
+      setPayout({ ok: true, state: 'ready', payouts_ok: true, balances: [{ currency: 'GBP', total_minor: 123456, pending_minor: 21050, available_minor: 102406 }] });
+      return;
+    }
+    let alive = true;
+    (async () => {
+      try {
+        const locId = await getLocationId().catch(() => null);
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session || !locId) return;
+        const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/adyen-financial`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+          body: JSON.stringify({ action: 'balances', ops_location_id: locId }),
+        });
+        const j = await res.json();
+        if (alive && res.ok && j?.ok) setPayout(j);
+      } catch { /* honest card is the fallback */ }
+    })();
+    return () => { alive = false; };
+  }, [processor]);
+
+  // "Complete your payout setup" — mints a fresh single-use hosted onboarding
+  // link (they expire in 4 minutes, so never reuse a stored one) and opens it.
+  // The tab MUST open synchronously, before any await, or popup blockers eat it.
+  const completeSetup = async () => {
+    if (setupBusy) return;
+    setSetupBusy(true); setSetupErr(null);
+    const w = window.open('', '_blank');
+    try {
+      const locId = await getLocationId().catch(() => null);
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session || !locId) throw new Error('no session');
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/adyen-financial`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({ action: 'payout_setup_link', ops_location_id: locId, return_url: window.location.origin }),
+      });
+      const j = await res.json();
+      if (res.ok && j?.ok && j.url) {
+        if (w) w.location = j.url; else window.open(j.url, '_blank', 'noopener');
+      } else {
+        if (w) w.close();
+        setSetupErr(j?.error || 'We could not open the setup page right now. Try again in a moment.');
+      }
+    } catch {
+      if (w) w.close();
+      setSetupErr('We could not open the setup page right now. Try again in a moment.');
+    } finally { setSetupBusy(false); }
+  };
 
   if (processor == null) {
     return <div style={S.page}><div style={{ padding: 24, color: 'var(--t3)', fontSize: 13 }}>Loading…</div></div>;
@@ -257,14 +396,7 @@ export default function CardPayments() {
               {' '}Every payment, refund and dispute appears in the tabs above as it happens.
             </p>
           </div>
-          <div style={S.card}>
-            <div style={S.cardTitle}>Balances and payouts</div>
-            <p style={S.cardBody}>
-              Balances and instant payouts are coming. They need per-venue payment accounts,
-              in progress with our payment partner. Until then, payouts continue on your
-              existing settlement schedule.
-            </p>
-          </div>
+          <BalancesCard payout={payout} onCompleteSetup={completeSetup} setupBusy={setupBusy} setupErr={setupErr} />
         </>
       )}
 
