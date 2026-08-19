@@ -36,6 +36,7 @@ import KioskAutoUpdate from './components/KioskAutoUpdate';
 import ChangeDueOverlay from './components/ChangeDueOverlay';
 import OnboardingSignSurface from './surfaces/OnboardingSignSurface';
 import RyftTestSurface from './surfaces/RyftTestSurface';
+import ReaderDemoSurface from './surfaces/ReaderDemoSurface';
 // v5.5.889: customer web routes are LAZY — they were riding in the one 5.1MB bundle every
 // till and kiosk downloaded. Customer sessions are short + fresh-loaded, so a split chunk is
 // safe there; operational surfaces (POS/kiosk/KDS/…) stay static so a mid-shift till never
@@ -216,8 +217,11 @@ export default function App() {
   const storedMode = localStorage.getItem('rpos-device-mode');
   const deviceMode = isMock ? (urlMode || 'pos') : (urlMode || storedMode || null);
 
-  // If URL param set, save to localStorage so it persists
-  if (urlMode && urlMode !== storedMode) {
+  // If URL param set, save to localStorage so it persists.
+  // ?mode=readerdemo is deliberately NOT persisted: it is a sales prop opened ad
+  // hoc on a laptop, and making it the browser's sticky default mode would turn
+  // the owner's next plain visit into a fake card reader.
+  if (urlMode && urlMode !== storedMode && urlMode !== 'readerdemo') {
     localStorage.setItem('rpos-device-mode', urlMode);
   }
 
@@ -256,6 +260,12 @@ export default function App() {
   // renders one menu_boards "screen" with the auto-fit/auto-balance engine, live
   // over Realtime. No SyncBridge (like customer-display).
   if (deviceMode === 'menuboard') return <><KioskAutoUpdate /><MenuBoardSurface /></>;
+
+  // Demo card reader — a browser-window replica of an Adyen reader for sales
+  // demos (?mode=readerdemo). A real software terminal: registers, pairs and
+  // takes terminal_jobs like the paxpay app; its sales settle as simulated card
+  // payments marked DEMO. Self-contained (no SyncBridge, like customer-display).
+  if (deviceMode === 'readerdemo') return <ReaderDemoSurface />;
 
   // Operations — RETIRED as a standalone surface (v5.5.754). Folded into the Manager app
   // (?mode=manager), which renders the exact same Ops screens (the Ops tab is available to

@@ -1,3 +1,32 @@
+# Session — 19 Aug 2026 (v5.6.92) — Demo card reader in a browser (?mode=readerdemo)
+
+## Done (NOT committed, NOT deployed)
+- `src/surfaces/ReaderDemoSurface.jsx` (new): browser replica of an Adyen reader for sales demos.
+  A REAL software terminal on the paxpay contract: register_terminal_device with a persisted
+  `DEMO-…` serial → claim code on screen → pair in BO → Terminals running the ServOS app →
+  heartbeat 60s → polls pending terminal_jobs (RLS tj_select_terminal) → claim → tip screen
+  (bands from the job's tip_config) → terminal_commit_tip (displays the SERVER charge_minor) →
+  terminal_job_sent(`DEMO-…` txn) → Present card → Tap/Decline operator buttons + auto-tap ~4s →
+  terminal_report_result (visa/4242/contactless). Cancel only BEFORE dispatch (a post-dispatch
+  cancel is coerced to 'unknown' server-side, which must never happen in a demo).
+- `terminal-job-create` (edge fn, EDITED — MUST BE DEPLOYED): jobs targeting a terminal whose
+  serial starts `DEMO-` are inserted `simulated: true`. That is what lets terminal_report_result
+  settle them (real jobs' device reports are advisory only and would strand in 'charging' →
+  sweeper → needs_human). Simulated also means terminal-job-charge / adyen-terminal-charge 409.
+- `App.jsx`: static import + route; `?mode=readerdemo` deliberately NOT persisted to
+  rpos-device-mode (a sales prop must not become the browser's sticky default mode).
+- Version 5.6.92 + changelog. Build clean, 378/378 tests, new file lints clean.
+
+## Next / blockers
+- DEPLOY `terminal-job-create` (edge fns never auto-deploy). Without it demo jobs are
+  simulated=false and every approval strands in 'charging' then parks needs_human.
+- No migration needed. Demo sales book REAL closed checks (accepted for the test venue),
+  auditable by the `DEMO-…` transaction id on the check; use a training till for zero-record demos.
+- One browser = one Supabase session: pair the demo AFTER signing into BO in that browser, or
+  use a separate browser profile. The surface detects a session change and re-shows a pair code.
+
+---
+
 # Session — 15 Aug 2026 (v5.6.81) — MPOS on an Adyen S1F2L, card on its OWN reader (task #104)
 
 ## Done (NOT committed, NOT deployed)

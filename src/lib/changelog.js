@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.92',
+    date: '2026-08-19',
+    changes: [
+      'NEW: a demo card reader that runs in a browser window, for showing the full payment flow on a laptop with no hardware. Open the app with ?mode=readerdemo and a life-size reader appears on screen. It shows a pairing code the first time: enter it in Back Office, Card readers, Terminals running the ServOS app, name it Demo reader, and bind it to a till. From then on it behaves exactly like a real reader: send a card payment from that till and the demo reader wakes up, offers the tip choices, shows Present card, and approves itself after a few seconds (or use the Tap, Decline and Cancel buttons under the reader to drive it by hand).',
+      'Demo sales are real, closed checks, so the till finishes the sale properly in front of a prospect, but they are marked as simulated and every one carries a DEMO transaction reference, so they are easy to spot and can never reach a card processor. Real readers are unaffected: the demo reader is just another terminal in the list, and payments only go to it from the till it is bound to.',
+    ],
+  },
+  {
     version: '5.6.91',
     date: '2026-08-19',
     changes: [
