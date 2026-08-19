@@ -1732,7 +1732,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         paxGiftRef.current = paxGiftRecord;
       }
 
-      const { job } = await dispatchTerminalJob({
+      const { job, kickError } = await dispatchTerminalJob({
         checkKey,
         targetTerminalId: paxTarget.id,
         posDeviceId: getPosDeviceId(),
@@ -1799,6 +1799,11 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         },
       });
       setPaxJob(job);
+      // v5.6.86 — if the charge never reached the reader, SAY SO. This used to be
+      // a swallowed console.warn, so the till happily showed "present the card"
+      // over a terminal that had been told nothing (live 19 Aug: two jobs stuck
+      // in charging_unsent, no clue why, and the reader looked simply broken).
+      if (kickError) setPaxError(`Could not reach the card machine: ${kickError}`);
       setScreen('pax_terminal');
     } catch (e) {
       setPaxError(e?.message || 'Could not send the payment to the card machine.');

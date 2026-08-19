@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.86',
+    date: '2026-08-19',
+    changes: [
+      'When a card payment cannot reach the card machine, the till now says so on screen. Until today that failure was written to a hidden developer log, so the till showed "present the card" while the terminal had never been told anything and looked simply broken.',
+    ],
+  },
+  {
     version: '5.6.85',
     date: '2026-08-19',
     changes: [

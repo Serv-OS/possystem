@@ -413,12 +413,25 @@ export async function dispatchTerminalJob(p) {
     // while Adyen puts the card prompt up over the cloud — two transports, one
     // reader, and the local half no longer able to report the outcome it can see.
     // The local flow calls prepare_local itself immediately after this; suppress.
+    // v5.6.86 — the kick's failure USED to be swallowed into console.warn, so a
+    // job that never reached the reader looked identical to one that did: the
+    // till showed the card screen, the terminal sat idle, and the only trace was
+    // a devtools line nobody on a Sunmi can see. Live 19 Aug: two jobs stuck in
+    // charging_unsent with nexo_service_id null and NOT ONE clue why. Keep it
+    // fire-and-forget (the charge is a long /sync call the poller watches), but
+    // hand the reason back so the caller can say it out loud.
+    let kickError = null;
     if (j.job?.processor === 'adyen' && !j.existing && !p.localBridge) {
-      callFn('adyen-terminal-charge', { action: 'start', job_id: useJobId })
-        .catch((e) => console.warn('[terminalJobs] adyen start kick failed (recovery will pick it up):', e?.message || e));
+      kickError = await callFn('adyen-terminal-charge', { action: 'start', job_id: useJobId })
+        .then(() => null)
+        .catch((e) => {
+          const msg = e?.message || String(e);
+          console.warn('[terminalJobs] adyen start kick failed:', msg);
+          return msg;
+        });
     }
 
-    return { job: j.job, existing: !!j.existing };
+    return { job: j.job, existing: !!j.existing, kickError };
   }
 }
 
