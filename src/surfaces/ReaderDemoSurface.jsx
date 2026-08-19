@@ -1,7 +1,28 @@
 /**
- * ReaderDemoSurface.jsx — ?mode=readerdemo (v5.6.92)
+ * ReaderDemoSurface.jsx — ?mode=readerdemo (v5.6.95)
  *
  * A browser-window replica of an Adyen card reader, for sales demos on a laptop.
+ *
+ * READER-INITIATED FLOWS (v5.6.95) — the two things a real Adyen reader can
+ * start from its own screen, now on the idle screen here too:
+ *
+ *   MANUAL PAYMENT — pure theatre, entirely window-local. Amount keypad
+ *   (right-to-left pence entry, exactly like the reader's own keypad) →
+ *   Present card → tap → Approved. Books NOTHING and calls NO server — which
+ *   faithfully mirrors real Adyen standalone mode, whose payments never create
+ *   a POS check either. The approval screen says so.
+ *
+ *   PAY AT TABLE — the real machinery. The window lists the venue's open
+ *   tables with their REMAINING balances (active_sessions.total_minor −
+ *   paid_minor, both allow-all-RLS reads), offers Pay all / Split, then calls
+ *   adyen-terminal-charge action 'wakeup_table' — a fenced doorway to the SAME
+ *   service-role RPC the real reader flow uses
+ *   (terminal_start_table_payment_for, migration 20260819c): identical
+ *   paid-so-far maths, split legs, priorLegs snapshot, advisory lock and
+ *   occupation pinning. For a DEMO- terminal the RPC mints the job in the
+ *   pending/simulated shape, so the normal poller below claims it and the
+ *   existing tip → present → approve lifecycle carries it; the reconciler then
+ *   books the check exactly as it would for a real reader split.
  *
  * THIS IS A REAL SOFTWARE TERMINAL, NOT A MOCK-UP. It follows the exact contract
  * the native paxpay app follows (android/paxpay — JobPoller / PaymentFlow /
@@ -63,6 +84,7 @@ const DECLINE_RED = '#D64545';
 
 const SERIAL_KEY = 'rpos-readerdemo-serial';
 const AUTOTAP_KEY = 'rpos-readerdemo-autotap';
+const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
 const PAIR_POLL_MS = 6000;    // re-register while unpaired (keeps the claim TTL alive)
 const JOB_POLL_MS = 2500;     // pending-job poll (paxpay: 2s fast / 6s idle)
@@ -130,19 +152,75 @@ function mintAuthCode() {
   return String(Math.floor(100000 + Math.random() * 900000));
 }
 
+/** Right-to-left pence entry, like the reader's own keypad: 3,6,5,9 → 0.03 →
+ *  0.36 → 3.65 → 36.59. Shared by the custom tip, manual payment and split pads. */
+function padKey(prev, k) {
+  if (k === 'back') return prev.slice(0, -1);
+  if (prev.length >= 6) return prev;         // £9,999.99 is plenty for a demo
+  if (prev === '' && k === '0') return prev; // 0 first = still £0.00
+  return prev + k;
+}
+
+/** The contactless ripple + wave glyph shared by every Present-card screen. */
+function ContactlessGlyph() {
+  return (
+    <div className="rdemo-contactless" style={{ marginTop: 26 }}>
+      <span /><span /><span />
+      <svg width="46" height="46" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M6.5 8.5a7 7 0 0 1 0 7M9.5 6.5a10 10 0 0 1 0 11M3.6 10.6a4 4 0 0 1 0 2.8" stroke={INK} strokeWidth="1.7" strokeLinecap="round" />
+        <circle cx="17" cy="12" r="1.6" fill={INK} />
+      </svg>
+    </div>
+  );
+}
+
+/** Amount keypad screen — manual payment and the split amount use this one component. */
+function AmountPad({ title, hint, pence, currency, onKey, onOk, onBack }) {
+  const minor = Number(pence || 0);
+  return (
+    <div style={{ ...sx.fill('#fff'), padding: '24px 20px', display: 'flex', flexDirection: 'column' }}>
+      <div style={{ textAlign: 'center' }}>
+        <div style={{ fontSize: 13, color: '#667', letterSpacing: 0.4, textTransform: 'uppercase' }}>{title}</div>
+        <div style={sx.bigAmount}>{fmtMinor(minor, currency)}</div>
+        {hint && <div style={{ ...sx.sub, marginTop: 2 }}>{hint}</div>}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, marginTop: 14, flex: 1 }}>
+        {['1', '2', '3', '4', '5', '6', '7', '8', '9', 'back', '0', 'ok'].map(k => (
+          <button
+            key={k}
+            style={{ ...sx.keypadBtn, ...(k === 'ok' ? { background: SIGNAL, color: '#fff', border: 'none', opacity: minor > 0 ? 1 : 0.45 } : {}) }}
+            disabled={k === 'ok' && minor <= 0}
+            onClick={() => { if (k === 'ok') onOk(minor); else onKey(k); }}
+          >
+            {k === 'back' ? '⌫' : k === 'ok' ? 'OK' : k}
+          </button>
+        ))}
+      </div>
+      <button style={{ ...sx.tipBtn, marginTop: 10 }} onClick={onBack}>Back</button>
+    </div>
+  );
+}
+
 // ── the surface ──────────────────────────────────────────────────────────────
 
 export default function ReaderDemoSurface() {
   // phase: boot | pairing | idle | tip | custom | busy | present | result | fatal
+  //        | manual_amount | manual_present            (window-local theatre)
+  //        | tables | paychoice | split                (reader-initiated Pay at table)
   const [phase, setPhase] = useState('boot');
   const [pairing, setPairing] = useState(null);   // { deviceId, claimCode, status, locationId, label }
-  const [job, setJob] = useState(null);           // { id, dueMinor, tipBasisMinor, currency, tipConfig, chargeMinor, txnId }
-  const [result, setResult] = useState(null);     // { kind: 'approved'|'declined'|'cancelled', amountMinor, currency, reason }
+  const [job, setJob] = useState(null);           // { id, dueMinor, tipBasisMinor, currency, tipConfig, chargeMinor, txnId, draft }
+  const [result, setResult] = useState(null);     // { kind: 'approved'|'declined'|'cancelled', amountMinor, currency, reason, note }
   const [err, setErr] = useState('');             // transient, rendered on the reader screen
   const [busyMsg, setBusyMsg] = useState('');
   const [ownRow, setOwnRow] = useState(null);     // { label, bound_pos_device_id }
   const [online, setOnline] = useState(false);
   const [customPence, setCustomPence] = useState('');
+  const [manualPence, setManualPence] = useState('');       // manual payment keypad entry
+  const [manualAmountMinor, setManualAmountMinor] = useState(0); // frozen at OK for the present/approve screens
+  const [payTables, setPayTables] = useState(null);         // null = load failed, [] = none, [rows]
+  const [paySel, setPaySel] = useState(null);               // { tableId, label, billMinor, paidMinor, remainingMinor, sessionId, seatedAt }
+  const [splitPence, setSplitPence] = useState('');
   const [autoTap, setAutoTap] = useState(() => {
     try { return localStorage.getItem(AUTOTAP_KEY) !== 'off'; } catch { return true; }
   });
@@ -313,6 +391,7 @@ export default function ReaderDemoSurface() {
           return;
         }
         setErr('');
+        const d = row.check_draft || {};
         const j = {
           id: row.id,
           dueMinor: Number(row.due_minor) || 0,
@@ -321,6 +400,14 @@ export default function ReaderDemoSurface() {
           tipConfig: row.tip_config || null,
           chargeMinor: null,
           txnId: null,
+          // v5.6.95 — enough of the draft to narrate a split on the approval
+          // screen. Display only; the server owns every figure that matters.
+          draft: {
+            source: d.source || null,
+            partial: d.partial === true,
+            remainingAfterMinor: Number(d.remainingAfterMinor),
+            tableLabel: d.tableLabel || d.tableId || null,
+          },
         };
         setJob(j);
         jobRef.current = j;
@@ -434,7 +521,17 @@ export default function ReaderDemoSurface() {
       const { data, error } = await supabase.rpc('terminal_report_result', params);
       if (error) { handleRpcError(error, 'Could not report the result'); return; }
       if (!data?.ok) { setErr('The result was not accepted by the server.'); return; }
-      setResult({ kind, amountMinor: j.chargeMinor, currency: j.currency, reason: null });
+      // v5.6.95 — narrate a Pay-at-table split: a partial leg leaves the table
+      // open with the remainder still owed; the final leg closes the whole
+      // occupation via the POS reconciler.
+      let note = null;
+      const dr = j.draft;
+      if (kind === 'approved' && dr?.source === 'adyen_pay_at_table') {
+        note = (dr.partial && Number.isFinite(dr.remainingAfterMinor) && dr.remainingAfterMinor > 0)
+          ? `${fmtMinor(dr.remainingAfterMinor, j.currency)} left on ${dr.tableLabel || 'the table'} — table stays open`
+          : `${dr.tableLabel || 'Table'} paid in full — the till books the sale and clears the table`;
+      }
+      setResult({ kind, amountMinor: j.chargeMinor, currency: j.currency, reason: null, note });
       setJob(null);
       setPhase('result');
     } catch (e) {
@@ -468,12 +565,132 @@ export default function ReaderDemoSurface() {
     }
   }, [handleRpcError]);
 
+  // ── manual payment (v5.6.95) — pure theatre, entirely window-local ─────────
+  // No job row, no RPC, no booking: a real Adyen reader's standalone mode also
+  // never creates a POS check. The approval screen says exactly that.
+  const settleManual = useCallback((kind) => {
+    setResult({
+      kind,
+      amountMinor: manualAmountMinor,
+      currency: 'GBP',
+      reason: kind === 'declined' ? 'card_declined (demo)' : null,
+      note: kind === 'approved'
+        ? 'Standalone demo — not recorded in the POS (same as a real reader\'s manual payment)'
+        : null,
+    });
+    setPhase('result');
+  }, [manualAmountMinor]);
+
+  // ── Pay at table (v5.6.95): table list with remaining balances ─────────────
+  // Direct reads with the shared client: active_sessions has an allow-all
+  // policy and floor_tables an anon read policy (000_baseline_ops.sql — the
+  // 20260429 tenant-RLS migration was never applied). Failures render ON the
+  // reader screen with a retry — never a silent bounce to idle.
+  const loadTables = useCallback(async () => {
+    const locId = pairing?.locationId;
+    if (!locId) {
+      setErr('This reader has no venue yet — pair it in Back Office first.');
+      return;
+    }
+    setBusyMsg('Loading tables…');
+    setPhase('busy');
+    try {
+      await ensureAuthToken();
+      const [sessRes, tabRes] = await Promise.all([
+        supabase.from('active_sessions')
+          .select('table_id, total_minor, paid_minor, session')
+          .eq('location_id', locId),
+        // floor_tables.location_id is TEXT (active_sessions' is uuid) — compare as text.
+        supabase.from('floor_tables')
+          .select('id, label')
+          .eq('location_id', String(locId)),
+      ]);
+      if (sessRes.error) {
+        setErr(`Could not load the open tables: ${sessRes.error.message}`);
+        setPayTables(null);              // tables screen shows a Try again button
+        setPhase('tables');
+        return;
+      }
+      // Labels are cosmetic — a failed floor_tables read falls back to table ids.
+      if (tabRes.error) console.warn('[readerdemo] floor_tables read failed:', tabRes.error.message);
+      const labels = new Map((tabRes.data || []).map(r => [r.id, r.label]));
+      const rows = (sessRes.data || [])
+        .filter(r => Number(r.total_minor) > 0)
+        .map(r => {
+          const bill = Number(r.total_minor) || 0;
+          const paid = Number(r.paid_minor) || 0;
+          return {
+            tableId: r.table_id,
+            label: labels.get(r.table_id) || r.table_id,
+            billMinor: bill,
+            paidMinor: paid,
+            remainingMinor: bill - paid,
+            // Occupation pin for the RPC: charge THIS party, refuse a re-seat.
+            sessionId: r.session?.id != null ? String(r.session.id) : null,
+            seatedAt: r.session?.seatedAt != null ? String(r.session.seatedAt) : null,
+          };
+        })
+        .filter(r => r.remainingMinor > 0)
+        .sort((a, b) => String(a.label).localeCompare(String(b.label), undefined, { numeric: true, sensitivity: 'base' }));
+      setPayTables(rows);
+      setBusyMsg('');
+      setPhase('tables');
+    } catch (e) {
+      setErr(`Could not load the open tables: ${e?.message || e}`);
+      setPayTables(null);
+      setPhase('tables');
+    }
+  }, [pairing?.locationId]);
+
+  // ── Pay at table: wake this reader up on a table (Pay all → amountMinor null,
+  //    Split → the entered amount, clamped to remaining here AND server-side).
+  //    The edge fn's fence: this window's own auth.uid() must own the DEMO-
+  //    terminal row. On success the RPC mints a pending job addressed to this
+  //    reader and the normal idle poller claims it (≤2.5s) → tip → present. ───
+  async function wakeupTable(sel, amountMinor) {
+    setBusyMsg('Starting the payment…');
+    setPhase('busy');
+    try {
+      const token = await ensureAuthToken();
+      if (!token) throw new Error('not authenticated');
+      const res = await fetch(`${FUNCTIONS_URL}/adyen-terminal-charge`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          action: 'wakeup_table',
+          terminal_device_id: pairing?.deviceId,
+          table_id: sel.tableId,
+          amount_minor: amountMinor ?? null,
+          session_id: sel.sessionId,
+          seated_at: sel.seatedAt,
+        }),
+      });
+      let j = {};
+      try { j = await res.json(); } catch { /* empty body */ }
+      if (!res.ok || j?.ok !== true) {
+        // The RPC's messages are operator-quality ("this table has already been
+        // paid…") — show them verbatim on the bezel and stay on the choice screen.
+        setErr(`Could not start the payment: ${j?.error || `server said ${res.status}`}`);
+        setPhase('paychoice');
+        return;
+      }
+      setBusyMsg('');
+      setPhase('idle');   // the job poller claims the freshly minted pending job
+    } catch (e) {
+      setErr(`Could not start the payment: ${e?.message || e}`);
+      setPhase('paychoice');
+    }
+  }
+
   // ── auto-tap ───────────────────────────────────────────────────────────────
   useEffect(() => {
-    if (phase !== 'present' || !autoTap) return undefined;
-    const t = setTimeout(() => { settle('approved'); }, AUTO_TAP_MS);
+    if ((phase !== 'present' && phase !== 'manual_present') || !autoTap) return undefined;
+    const t = setTimeout(() => {
+      if (phaseRef.current === 'manual_present') settleManual('approved');
+      else settle('approved');
+    }, AUTO_TAP_MS);
     return () => clearTimeout(t);
-  }, [phase, autoTap, settle]);
+  }, [phase, autoTap, settle, settleManual]);
 
   // ── result screen → back to idle ───────────────────────────────────────────
   useEffect(() => {
@@ -540,15 +757,8 @@ export default function ReaderDemoSurface() {
     return () => { ro?.disconnect(); window.removeEventListener('resize', recompute); };
   }, []);
 
-  // ── custom tip keypad ──────────────────────────────────────────────────────
-  const customKey = (k) => {
-    setCustomPence(prev => {
-      if (k === 'back') return prev.slice(0, -1);
-      if (prev.length >= 6) return prev;         // £9,999.99 is plenty for a demo
-      if (prev === '' && k === '0') return prev; // no leading zeros
-      return prev + k;
-    });
-  };
+  // ── custom tip keypad (entry rule shared with AmountPad via padKey) ────────
+  const customKey = (k) => setCustomPence(prev => padKey(prev, k));
   const customMinor = Number(customPence || 0);
 
   // ── render helpers ─────────────────────────────────────────────────────────
@@ -597,13 +807,7 @@ export default function ReaderDemoSurface() {
           <div style={sx.center('#fff')}>
             <div style={{ fontSize: 13, color: '#667', letterSpacing: 0.4, textTransform: 'uppercase' }}>{heading}</div>
             {holdAnim.amountMinor != null && <div style={sx.bigAmount}>{fmtMinor(holdAnim.amountMinor, 'GBP')}</div>}
-            <div className="rdemo-contactless" style={{ marginTop: 26 }}>
-              <span /><span /><span />
-              <svg width="46" height="46" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                <path d="M6.5 8.5a7 7 0 0 1 0 7M9.5 6.5a10 10 0 0 1 0 11M3.6 10.6a4 4 0 0 1 0 2.8" stroke={INK} strokeWidth="1.7" strokeLinecap="round" />
-                <circle cx="17" cy="12" r="1.6" fill={INK} />
-              </svg>
-            </div>
+            <ContactlessGlyph />
             <div style={{ ...sx.h2, fontSize: 19 }}>Present card</div>
             <div style={sx.sub}>Demo hold. No real card is charged.</div>
           </div>
@@ -628,6 +832,16 @@ export default function ReaderDemoSurface() {
       return (
         <div style={sx.center(SIGNAL)}>
           <img src={LOGO_URL} alt="ServOS" style={sx.logo} />
+          {/* v5.6.95 — the reader-initiated flows a real Adyen reader offers
+              from its own screen. Only useful once paired. */}
+          {isPaired && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 24, width: '78%' }}>
+              <button style={sx.idleBtn} onClick={loadTables}>Pay at table</button>
+              <button style={sx.idleBtn} onClick={() => { setManualPence(''); setErr(''); setPhase('manual_amount'); }}>
+                Manual payment
+              </button>
+            </div>
+          )}
           <div style={{ position: 'absolute', bottom: 26, left: 0, right: 0, textAlign: 'center', color: 'rgba(255,255,255,.8)', fontSize: 13 }}>
             <span className="rdemo-dot" style={{ background: '#fff' }} /> Ready
           </div>
@@ -699,18 +913,103 @@ export default function ReaderDemoSurface() {
         </div>
       );
     }
+    // ── manual payment (v5.6.95, window-local) ────────────────────────────────
+    if (phase === 'manual_amount') {
+      return (
+        <AmountPad
+          title="Manual payment"
+          hint="Enter the amount"
+          pence={manualPence}
+          currency="GBP"
+          onKey={k => setManualPence(p => padKey(p, k))}
+          onOk={minor => { setManualAmountMinor(minor); setPhase('manual_present'); }}
+          onBack={() => setPhase('idle')}
+        />
+      );
+    }
+    if (phase === 'manual_present') {
+      return (
+        <div style={sx.center('#fff')}>
+          <div style={{ fontSize: 13, color: '#667', letterSpacing: 0.4, textTransform: 'uppercase' }}>Amount</div>
+          <div style={sx.bigAmount}>{fmtMinor(manualAmountMinor, 'GBP')}</div>
+          <ContactlessGlyph />
+          <div style={{ ...sx.h2, fontSize: 19 }}>Present card</div>
+          <div style={sx.sub}>{autoTap ? 'Tap, or wait. The demo card taps itself.' : 'Use the operator buttons below.'}</div>
+        </div>
+      );
+    }
+
+    // ── Pay at table (v5.6.95) ────────────────────────────────────────────────
+    if (phase === 'tables') {
+      return (
+        <div style={{ ...sx.fill('#fff'), padding: '22px 16px', display: 'flex', flexDirection: 'column' }}>
+          <div style={{ ...sx.h2, marginTop: 0, fontSize: 19, textAlign: 'center' }}>Pay at table</div>
+          <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
+            {payTables === null ? (
+              <>
+                <div style={{ ...sx.sub, textAlign: 'center' }}>The table list could not be loaded.</div>
+                <button style={sx.tipBtn} onClick={loadTables}>Try again</button>
+              </>
+            ) : payTables.length === 0 ? (
+              <>
+                <div style={{ ...sx.sub, textAlign: 'center' }}>No open tables with a balance.</div>
+                <button style={sx.tipBtn} onClick={loadTables}>Refresh</button>
+              </>
+            ) : payTables.map(t => (
+              <button key={t.tableId} style={sx.tipBtn} onClick={() => { setPaySel(t); setPhase('paychoice'); }}>
+                <span style={{ fontWeight: 700 }}>{t.label}</span>
+                <span style={{ color: '#667' }}>{fmtMinor(t.remainingMinor, 'GBP')}</span>
+              </button>
+            ))}
+          </div>
+          <button style={{ ...sx.tipBtn, marginTop: 10 }} onClick={() => setPhase('idle')}>Back</button>
+        </div>
+      );
+    }
+    if (phase === 'paychoice' && paySel) {
+      return (
+        <div style={{ ...sx.fill('#fff'), padding: '26px 20px', display: 'flex', flexDirection: 'column' }}>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: 13, color: '#667', letterSpacing: 0.4, textTransform: 'uppercase' }}>{paySel.label}</div>
+            <div style={sx.bigAmount}>{fmtMinor(paySel.remainingMinor, 'GBP')}</div>
+            {paySel.paidMinor > 0 && (
+              <div style={sx.sub}>{fmtMinor(paySel.paidMinor, 'GBP')} already paid of {fmtMinor(paySel.billMinor, 'GBP')}</div>
+            )}
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 18 }}>
+            <button style={sx.tipBtn} onClick={() => wakeupTable(paySel, null)}>
+              <span style={{ fontWeight: 700 }}>Pay all</span>
+              <span style={{ color: '#667' }}>{fmtMinor(paySel.remainingMinor, 'GBP')}</span>
+            </button>
+            <button style={sx.tipBtn} onClick={() => { setSplitPence(''); setPhase('split'); }}>
+              Split
+            </button>
+          </div>
+          <div style={{ flex: 1 }} />
+          <button style={{ ...sx.tipBtn, marginTop: 10 }} onClick={() => setPhase('tables')}>Back</button>
+        </div>
+      );
+    }
+    if (phase === 'split' && paySel) {
+      return (
+        <AmountPad
+          title={`Split — ${paySel.label}`}
+          hint={`Up to ${fmtMinor(paySel.remainingMinor, 'GBP')}`}
+          pence={splitPence}
+          currency="GBP"
+          onKey={k => setSplitPence(p => padKey(p, k))}
+          onOk={minor => wakeupTable(paySel, Math.min(minor, paySel.remainingMinor))}
+          onBack={() => setPhase('paychoice')}
+        />
+      );
+    }
+
     if (phase === 'present' && job) {
       return (
         <div style={sx.center('#fff')}>
           <div style={{ fontSize: 13, color: '#667', letterSpacing: 0.4, textTransform: 'uppercase' }}>Amount</div>
           <div style={sx.bigAmount}>{fmtMinor(job.chargeMinor, job.currency)}</div>
-          <div className="rdemo-contactless" style={{ marginTop: 26 }}>
-            <span /><span /><span />
-            <svg width="46" height="46" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path d="M6.5 8.5a7 7 0 0 1 0 7M9.5 6.5a10 10 0 0 1 0 11M3.6 10.6a4 4 0 0 1 0 2.8" stroke={INK} strokeWidth="1.7" strokeLinecap="round" />
-              <circle cx="17" cy="12" r="1.6" fill={INK} />
-            </svg>
-          </div>
+          <ContactlessGlyph />
           <div style={{ ...sx.h2, fontSize: 19 }}>Present card</div>
           <div style={sx.sub}>{autoTap ? 'Tap, or wait. The demo card taps itself.' : 'Use the operator buttons below.'}</div>
         </div>
@@ -738,14 +1037,19 @@ export default function ReaderDemoSurface() {
             <div style={{ ...sx.bigAmount, color: '#fff', fontSize: 34 }}>{fmtMinor(result.amountMinor, result.currency)}</div>
           )}
           {result.reason && <div style={{ ...sx.sub, color: 'rgba(255,255,255,.85)' }}>{result.reason}</div>}
+          {result.note && <div style={{ ...sx.sub, color: 'rgba(255,255,255,.85)', maxWidth: 280 }}>{result.note}</div>}
         </div>
       );
     }
     return <div style={sx.center('#fff')} />;
   })();
 
-  const canTap = phase === 'present';
-  const canCancel = phase === 'tip' || phase === 'custom';
+  const isManualTap = phase === 'manual_present';
+  const canTap = phase === 'present' || isManualTap;
+  // Local screens (no job dispatched, nothing server-side to unwind) cancel by
+  // simply returning to idle; tip/custom cancel the claimed job via the RPC.
+  const localCancel = ['manual_amount', 'manual_present', 'tables', 'paychoice', 'split'].includes(phase);
+  const canCancel = phase === 'tip' || phase === 'custom' || localCancel;
 
   return (
     <div style={sx.page}>
@@ -773,17 +1077,17 @@ export default function ReaderDemoSurface() {
 
       {/* ── operator strip (not part of the "reader") ── */}
       <div style={sx.opsStrip}>
-        <button style={{ ...sx.opsBtn, opacity: canTap ? 1 : 0.35 }} disabled={!canTap} onClick={() => settle('approved')}>
+        <button style={{ ...sx.opsBtn, opacity: canTap ? 1 : 0.35 }} disabled={!canTap} onClick={() => (isManualTap ? settleManual('approved') : settle('approved'))}>
           💳 Tap card
         </button>
-        <button style={{ ...sx.opsBtn, opacity: canTap ? 1 : 0.35 }} disabled={!canTap} onClick={() => settle('declined')}>
+        <button style={{ ...sx.opsBtn, opacity: canTap ? 1 : 0.35 }} disabled={!canTap} onClick={() => (isManualTap ? settleManual('declined') : settle('declined'))}>
           ⛔ Decline
         </button>
         <button
           style={{ ...sx.opsBtn, opacity: canCancel ? 1 : 0.35 }}
           disabled={!canCancel}
           title={canCancel ? 'Customer walks away (before the card)' : 'Only before the card screen. Once dispatched, use Decline'}
-          onClick={cancelPreDispatch}
+          onClick={() => { if (localCancel) { setErr(''); setPhase('idle'); } else cancelPreDispatch(); }}
         >
           ✕ Cancel
         </button>
@@ -883,6 +1187,12 @@ const sx = {
     gap: 8, padding: '15px 18px',
     borderRadius: 14, border: '1.5px solid #d8ddda', background: '#fff',
     fontSize: 17, fontWeight: 600, color: INK, cursor: 'pointer',
+  },
+  idleBtn: {
+    // The two reader-initiated flows, on the green idle screen (v5.6.95).
+    padding: '13px 16px', borderRadius: 14,
+    border: '1.5px solid rgba(255,255,255,.55)', background: 'rgba(255,255,255,.14)',
+    color: '#fff', fontSize: 16, fontWeight: 700, cursor: 'pointer',
   },
   keypadBtn: {
     borderRadius: 14, border: '1.5px solid #d8ddda', background: '#fff',

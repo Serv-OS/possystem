@@ -390,6 +390,88 @@ Deno.serve(async (req) => {
     return json({ ok: true, status: (res.data as Record<string, unknown>)?.status ?? 'received', modification_psp: (res.data as Record<string, unknown>)?.pspReference ?? null });
   }
 
+  // ── wakeup_table (v5.6.95) — DEMO READER ONLY: reader-initiated Pay at table ─
+  // The browser demo reader (?mode=readerdemo) starts Pay at table from its own
+  // screen, like a real Adyen reader does via adyen-terminal-events. The real
+  // responder is display-driven and Adyen-authenticated, so the demo window
+  // cannot ride it; instead it calls this action, which is nothing but a fenced
+  // doorway to the SAME service-role RPC the real responder uses
+  // (terminal_start_table_payment_for — paid-so-far maths, split legs,
+  // priorLegs, advisory lock and occupation pinning all shared, and for a
+  // DEMO- terminal the RPC mints the job in the pending/simulated shape the
+  // demo window's existing claim → tip → report lifecycle consumes).
+  //
+  // FENCE — demo-only BY CONSTRUCTION, no venue-user branch needed: the caller
+  // must OWN the named terminal row (terminal_devices.device_uid = auth.uid(),
+  // stamped by register_terminal_device and never client-assertable), the row's
+  // OWN serial must be DEMO-… (a real PAX serial or paxpay's AID-<ANDROID_ID>
+  // ladder can never start with that), and the row must be paired + active at a
+  // location. So only the demo window itself — the one browser session that
+  // registered the demo serial — can wake a table, and only for its own venue's
+  // demo terminal. A real reader's row can never pass; a demo row can never
+  // reach a card (the RPC births it simulated=true, which every charge path
+  // refuses).
+  if (action === 'wakeup_table') {
+    const terminalDeviceId = String(body.terminal_device_id ?? '');
+    const tableId = String(body.table_id ?? '');
+    if (!terminalDeviceId || !tableId) {
+      return json({ error: 'terminal_device_id and table_id required' }, 400);
+    }
+    let amountMinor: number | null = null;
+    if (body.amount_minor != null) {
+      amountMinor = Math.round(Number(body.amount_minor));
+      if (!Number.isFinite(amountMinor) || amountMinor <= 0) {
+        return json({ error: 'amount_minor must be a positive whole number of minor units' }, 400);
+      }
+    }
+    const sessionId = body.session_id != null ? String(body.session_id) : null;
+    const seatedAt = body.seated_at != null ? String(body.seated_at) : null;
+
+    const { data: term } = await opsAdmin.from('terminal_devices')
+      .select('id, device_uid, location_id, status, active, serial_number')
+      .eq('id', terminalDeviceId).maybeSingle();
+    const isDemoTerminal = String(term?.serial_number ?? '').toUpperCase().startsWith('DEMO-');
+    if (!term || !isDemoTerminal) {
+      await logRefusal('wakeup_table: terminal is not a demo reader', {
+        action, terminalDeviceId, serial: term?.serial_number ?? null, callerUid,
+      });
+      return json({ error: 'only the demo reader can wake a table this way' }, 403);
+    }
+    if (term.status !== 'paired' || !term.active || !term.location_id) {
+      await logRefusal('wakeup_table: demo terminal not paired/active at a location', {
+        action, terminalDeviceId, termStatus: term.status, termActive: term.active,
+        termLocation: term.location_id ?? null, callerUid,
+      });
+      return json({ error: 'demo reader is not paired at a venue' }, 409);
+    }
+    if (!isServiceRole && term.device_uid !== callerUid) {
+      await logRefusal('wakeup_table: caller does not own the demo terminal row', {
+        action, terminalDeviceId, callerUid,
+      });
+      return json({ error: 'no access to this terminal' }, 403);
+    }
+
+    const { data: started, error: startErr } = await opsAdmin.rpc('terminal_start_table_payment_for', {
+      p_terminal_device_id: terminalDeviceId,
+      p_table_id: tableId,
+      p_amount_minor: amountMinor,
+      p_session_id: sessionId,
+      p_seated_at: seatedAt,
+    });
+    if (startErr) {
+      // The RPC's raise messages are operator-quality ("this table has already
+      // been paid", "this table changed while you were choosing — start again").
+      // Return them verbatim, and log durably — silent refusals on this exact
+      // path cost a full day once already (see logRefusal's header).
+      await logRefusal(`wakeup_table: rpc refused: ${startErr.message}`, {
+        action, terminalDeviceId, tableId, amountMinor, sessionId, seatedAt, callerUid,
+      });
+      return json({ ok: false, error: startErr.message }, 409);
+    }
+    console.log(`adyen-terminal-charge: wakeup_table minted demo job ${JSON.stringify(started)} (terminal ${terminalDeviceId}, table ${tableId})`);
+    return json({ ok: true, ...(started as Record<string, unknown>) });
+  }
+
   const jobId = String(body.job_id ?? '');
   if (!jobId || !['start', 'prepare_local', 'report_local', 'result', 'abort'].includes(action)) {
     return json({ error: "action ('start'|'prepare_local'|'report_local'|'result'|'abort') and job_id required" }, 400);

@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.95',
+    date: '2026-08-19',
+    changes: [
+      'THE DEMO READER CAN NOW START PAYMENTS FROM ITS OWN SCREEN, like a real Adyen reader. Two new buttons sit on its idle screen: Pay at table and Manual payment.',
+      'Pay at table on the demo reader shows the venue\'s open tables with what is still owed on each, then offers Pay all or Split. Split asks for an amount on the reader keypad. It uses exactly the same server machinery as a real reader: part payments are remembered against the table, every till can see what has been paid so far, the remaining balance shrinks with each leg, and when the last leg is taken the till books one complete check for the whole table and clears it. A part payment shows how much is left and keeps the table open. Needs one database change applied by hand (migration 20260819c) before it works.',
+      'Manual payment on the demo reader is pure show, like a real reader\'s standalone mode: type an amount on the keypad (digits fill from the right, typing 3, 6, 5, 9 shows 0.03, then 0.36, then 3.65, then 36.59), present card, tap, approved. Nothing is booked and no server is called, and the approval screen says so, because a real reader\'s manual payments never reach the POS either.',
+      'Any problem starting a table payment is shown in plain words on the reader screen, for example when the table already has a payment in progress, with a way to try again. The screen never silently drops back to idle.',
+    ],
+  },
+  {
     version: '5.6.94',
     date: '2026-08-19',
     changes: [

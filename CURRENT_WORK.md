@@ -1,3 +1,44 @@
+# Session — 19 Aug 2026 (v5.6.95) — Demo reader: reader-initiated Pay at table + Manual payment
+
+## Done (NOT committed, NOT deployed, migration NOT applied)
+- `src/surfaces/ReaderDemoSurface.jsx`: two buttons on the idle screen.
+  - MANUAL PAYMENT — window-local theatre: AmountPad (right-to-left pence entry, shared padKey
+    with the custom tip) → Present card → tap/auto-tap → Approved with the caption
+    "Standalone demo — not recorded in the POS". No server calls, books nothing (mirrors real
+    Adyen standalone mode).
+  - PAY AT TABLE — real machinery: table list from direct `active_sessions` (allow-all RLS) +
+    `floor_tables` (anon read) reads, remaining = total_minor − paid_minor, natural sort;
+    Pay all / Split (same AmountPad, clamped to remaining) → adyen-terminal-charge
+    `wakeup_table` → RPC mints a pending/simulated job addressed to this reader → the normal
+    poller claims it → tip → present → approve. Approval narrates a split
+    ("£X left on T4 — table stays open" from draft.remainingAfterMinor). Every failure renders
+    on the bezel with a retry; no silent bounce-to-idle.
+- `supabase/migrations/20260819c_demo_table_pay.sql` (⚠ HAND-APPLY): terminal_start_table_payment_for
+  now births a DEMO-% terminal's job as status='pending', processor='ryft', simulated=true,
+  charge_minor NULL (the terminal-job-create pending shape) and skips the adyen-link refusal.
+  All money logic (advisory lock, paid-so-far, cross-source guard, partial/priorLegs, occupation
+  pin) shared and unchanged; non-demo insert byte-identical. Fully public.-qualified +
+  %rowtype-qualified (the SQL-editor search_path lesson).
+- `supabase/functions/adyen-terminal-charge/index.ts` (MUST BE DEPLOYED): new action
+  `wakeup_table` — fence: caller must OWN the terminal row (device_uid = auth.uid()) AND the
+  row's own serial is DEMO-% AND paired+active at a location; then calls the RPC with the
+  service client and returns its operator-quality errors verbatim. Refusals durably logged
+  (logRefusal → platform adyen_webhook_events).
+- Closing path VERIFIED in code (no changes needed): TerminalJobReconciler gates on VENUE
+  processor (adyen passes), fetchApprovedTablePayJobs/terminal-job-status/closeApprovedTerminalJob
+  filter on draft source + partial only (never job.processor), _terminal_paid_legs_for and the
+  20260815c paid_minor trigger scan draft source only — a demo (processor 'ryft') split behaves
+  identically, including live paid_minor updates between legs.
+- Version 5.6.95 + changelog. Build clean, 378/378 tests, eslint clean on the surface.
+
+## Next / blockers
+- Peter: apply migration 20260819c (needs 20260815b already live — it is), then deploy
+  adyen-terminal-charge.
+- Known cosmetic gap: demo partial legs do not emit the "Part payment" activity_events toast
+  (that lives in the real settle paths, not terminal_report_result). Money/paid_minor unaffected.
+
+---
+
 # Session — 19 Aug 2026 (v5.6.92) — Demo card reader in a browser (?mode=readerdemo)
 
 ## Done (NOT committed, NOT deployed)
