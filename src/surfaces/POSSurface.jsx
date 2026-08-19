@@ -301,26 +301,17 @@ export default function POSSurface() {
   // Order types this terminal is allowed to show (from device profile)
   const allowedOrderTypes = deviceConfig?.enabledOrderTypes || ['dine-in', 'takeaway', 'collection'];
 
-  // v4.7.6: load menu_category_links on mount + provide a Set of cat ids linked to deviceMenuId
-  const [_categoryLinks, _setCategoryLinks] = useState([]);
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const { data } = await fetchMenuCategoryLinks();
-        if (alive) _setCategoryLinks(data || []);
-      } catch (e) {
-        console.warn('[POSSurface] fetchMenuCategoryLinks failed:', e?.message || e);
-      }
-    })();
-    return () => { alive = false; };
-  }, []);
   // Set of category ids linked to the active deviceMenuId via menu_category_links.
   // Used to extend the cat-strip filter so cats appear in linked menus too.
-  const _linkedCatIdsForDeviceMenu = useMemo(() => {
-    if (!deviceMenuId) return new Set();
-    return new Set((_categoryLinks||[]).filter(l => l.menu_id === deviceMenuId).map(l => l.category_id));
-  }, [_categoryLinks, deviceMenuId]);
+  // (_categoryLinks itself is fetched above, before the menu resolver.)
+  const _linkedCatIdsForDeviceMenu = useMemo(
+    () => linkedCategoryIdSet(_categoryLinks, deviceMenuId),
+    [_categoryLinks, deviceMenuId]);
+  // v5.6.97: every grid path (category items, quick screen, search) filters items
+  // through this set — same mechanism BarSurface uses. null = no restriction.
+  const allowedCatIds = useMemo(
+    () => allowedCategoryIds(menuCategories, deviceMenuId, _categoryLinks),
+    [menuCategories, deviceMenuId, _categoryLinks]);
   const ALL_ORDER_TYPES = [['dine-in','🍽','Dine in'],['takeaway','🥡','Takeaway'],['collection','📦','Collect']];
   const visibleOrderTypes = ALL_ORDER_TYPES.filter(([t]) => allowedOrderTypes.includes(t));
 
@@ -550,9 +541,11 @@ export default function POSSurface() {
     autoLists: quickScreenAuto?.lists,
     daypart,
     findItem: id => MENU_ITEMS.find(i => i.id === id),
-    isBlocked: i => eightySixIds.includes(i.id) || i.archived || i.visibility?.pos === false,
+    // v5.6.97: a pinned/ranked id whose item sits outside the device's assigned
+    // menu is hidden (not crashed on) — same menu filter as the rest of the grid.
+    isBlocked: i => eightySixIds.includes(i.id) || i.archived || i.visibility?.pos === false || !itemInAllowedCats(i, allowedCatIds),
     slots: 16,
-  }), [quickScreenMode, quickScreenIds, quickScreenAuto, daypart, MENU_ITEMS, eightySixIds]);
+  }), [quickScreenMode, quickScreenIds, quickScreenAuto, daypart, MENU_ITEMS, eightySixIds, allowedCatIds]);
   const quickItems = quickResolved.items;
 
   // When the main category changes, reset the subcategory selection
@@ -565,7 +558,9 @@ export default function POSSurface() {
 
   const catItems = useMemo(() => {
     if (cat === 'quick') return quickItems;
-    const base = MENU_ITEMS.filter(i => !i.archived && (i.type !== 'subitem' || i.soldAlone) && !i.parentId)
+    // v5.6.97: itemInAllowedCats keeps the grid honest if the selected cat goes
+    // out-of-menu mid-session (e.g. a profile change pins a different menu).
+    const base = MENU_ITEMS.filter(i => !i.archived && (i.type !== 'subitem' || i.soldAlone) && !i.parentId && itemInAllowedCats(i, allowedCatIds))
       .slice().sort((a,b) => (a.sortOrder??999) - (b.sortOrder??999));
     const inCat = (i, id) => i.cat === id || (i.cats||[]).includes(id);
     let items;
@@ -586,16 +581,19 @@ export default function POSSurface() {
       ...spacers.map(s => ({ _spacer: true, id: s.id, sortOrder: s.sortOrder })),
     ].sort((a, b) => (a.sortOrder ?? 999) - (b.sortOrder ?? 999));
     return all;
-  }, [cat, subCat, subCategories, MENU_ITEMS, quickItems, menuCategories]);
+  }, [cat, subCat, subCategories, MENU_ITEMS, quickItems, menuCategories, allowedCatIds]);
 
   const displayItems = useMemo(() => {
     if (!search.trim()) return catItems;
     const q = search.toLowerCase();
+    // v5.6.97: search respects the device's assigned menu — items outside it
+    // must not surface here when the rail already hides their categories.
     return MENU_ITEMS.filter(i =>
       !i.archived && (i.type !== 'subitem' || i.soldAlone) && !i.parentId &&
+      itemInAllowedCats(i, allowedCatIds) &&
       ((i.menuName||i.name||'').toLowerCase().includes(q) || i.description?.toLowerCase().includes(q))
     );
-  }, [cat, search, catItems, MENU_ITEMS]);
+  }, [cat, search, catItems, MENU_ITEMS, allowedCatIds]);
 
   const byCourse = useMemo(()=>{
     const g = {};
@@ -1478,7 +1476,7 @@ export default function POSSurface() {
           {/* Quick screen always first */}
           {[{ id:'quick', label:'Quick', icon:'⚡', color:'var(--acc)' }].concat(
             // v4.7.6: cat is in this menu if its primary menu_id matches OR it's joined via menu_category_links
-          menuCategories.filter(c => !c.parentId && !c.isSpecial && (!deviceMenuId||c.menuId===deviceMenuId||_linkedCatIdsForDeviceMenu.has(c.id))).sort((a,b) => (a.sortOrder||0)-(b.sortOrder||0))
+          menuCategories.filter(c => !c.parentId && !c.isSpecial && categoryVisibleInMenu(c, deviceMenuId, _linkedCatIdsForDeviceMenu)).sort((a,b) => (a.sortOrder||0)-(b.sortOrder||0))
           ).map(c => {
             const isActive = cat === c.id && !search;
             const color = c.color || 'var(--acc)';

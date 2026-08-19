@@ -1,3 +1,23 @@
+# Session — 19 Aug 2026 (v5.6.97) — Device profile menu restriction now applies on the POS screen
+
+## Done (NOT committed, NOT deployed)
+- **Bug**: profile pinned to one menu limited bar tabs but the POS screen showed the full menu.
+- **Root cause**: POSSurface's active-menu resolver treated a menu as EMPTY unless a category's
+  PRIMARY menuId pointed at it. Menus built by ASSIGNING existing categories (menu_category_links,
+  the normal Menu Manager flow) looked empty, failed `preferredOk`, and the resolver fell back to
+  the default menu. Bar tabs read `deviceConfig.menuId` directly so it honoured the pin.
+- **Fix**: new shared `src/lib/menuMembership.js` (primary OR linked membership, one mechanism for
+  POS + bar). Resolver guard now counts linked cats (`menusWithCategories`). POS grid, quick screen
+  and search all filter through `allowedCategoryIds`/`itemInAllowedCats`. Menu-less profiles
+  unchanged (null = no restriction). BarSurface refactored onto the same helpers.
+- Tests: `src/lib/menuMembership.test.js` (13 cases). 390/390 pass, build clean.
+- ⚠ **HEAD warning**: commit 56cbd78 (v5.6.96, pushed) swept a PARTIAL snapshot of these edits from
+  the shared worktree mid-session: it contains menuMembership.js plus HALF the POSSurface change and
+  declares `_categoryLinks` twice → POSSurface does not parse, so that pushed commit cannot build on
+  Vercel. Committing the current worktree (v5.6.97) fixes it. Commit soon.
+- MPOS respects the pin already (resolveActiveMenu has no empty-menu guard + MMenu filters linked
+  cats). Kiosk uses its own menu selection, untouched.
+
 # Session — 19 Aug 2026 (v5.6.95) — Demo reader: reader-initiated Pay at table + Manual payment
 
 ## Done (NOT committed, NOT deployed, migration NOT applied)

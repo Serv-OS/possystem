@@ -6,6 +6,7 @@ import InlineItemFlow from '../components/InlineItemFlow';
 import CheckoutModal from './CheckoutModal';
 import TabPreAuthTerminal from '../components/TabPreAuthTerminal';
 import { getNextOrderRefLocal, fetchMenuCategoryLinks } from '../lib/db';
+import { linkedCategoryIdSet, categoryVisibleInMenu, allowedCategoryIds, itemInAllowedCats } from '../lib/menuMembership';
 import { getActiveLocationSync, ensureAuthToken } from '../lib/supabase';
 import { getLocationProcessorInfo } from '../lib/payments/processor';
 import { isTrainingMode } from '../lib/trainingMode';
@@ -233,17 +234,16 @@ export default function BarSurface() {
     })();
     return () => { alive = false; };
   }, []);
-  const linkedCatIds = useMemo(() => deviceMenuId
-    ? new Set((_categoryLinks||[]).filter(l => l.menu_id === deviceMenuId).map(l => l.category_id))
-    : new Set(), [_categoryLinks, deviceMenuId]);
-  const activeMenuCatIds = deviceMenuId
-    ? (menuCategories||[]).filter(c => c.menuId===deviceMenuId || linkedCatIds.has(c.id)).map(c=>c.id)
-    : null; // null means show all
+  // v5.6.97: membership logic extracted to lib/menuMembership.js so the POS
+  // grid and bar tabs share ONE mechanism (this inline filter was the original).
+  const linkedCatIds = useMemo(() => linkedCategoryIdSet(_categoryLinks, deviceMenuId), [_categoryLinks, deviceMenuId]);
+  const activeMenuCatIds = useMemo(
+    () => allowedCategoryIds(menuCategories, deviceMenuId, _categoryLinks),
+    [menuCategories, deviceMenuId, _categoryLinks]); // null means show all
 
   const ITEMS = (storeMenuItems || MENU_ITEMS).filter(i => {
     if (i.archived || i.parentId || i.parent_id || (i.type==='subitem'&&!i.soldAlone)) return false;
-    if (activeMenuCatIds) return activeMenuCatIds.includes(i.cat) || (i.cats||[]).some(c=>activeMenuCatIds.includes(c));
-    return true;
+    return itemInAllowedCats(i, activeMenuCatIds);
   });
   const catMeta = (menuCategories||[]).find(c=>c.id===cat) || {color:'var(--acc)',icon:'🍸',label:'All'};
   const rawItems = useMemo(()=>{
@@ -798,7 +798,7 @@ export default function BarSurface() {
             {!activeTab&&<button onClick={()=>setShowOpenModal(true)} className="btn btn-acc btn-sm">+ New tab</button>}
           </div>
           <div style={{ display:'flex',gap:4,overflowX:'auto',paddingBottom:2 }}>
-            {[{id:'all',label:'All',icon:'🍽',color:'var(--acc)'},...(menuCategories||[]).filter(c=>!c.parentId&&!c.parent_id&&!c.isSpecial&&(!deviceMenuId||c.menuId===deviceMenuId||linkedCatIds.has(c.id))).sort((a,b)=>(a.sortOrder||0)-(b.sortOrder||0))].map(c=>{
+            {[{id:'all',label:'All',icon:'🍽',color:'var(--acc)'},...(menuCategories||[]).filter(c=>!c.parentId&&!c.parent_id&&!c.isSpecial&&categoryVisibleInMenu(c,deviceMenuId,linkedCatIds)).sort((a,b)=>(a.sortOrder||0)-(b.sortOrder||0))].map(c=>{
               const color = c.color||'var(--acc)';
               const isActive=cat===c.id&&!search;
               return(

@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.97',
+    date: '2026-08-19',
+    changes: [
+      'DEVICE PROFILES THAT LIMIT MENUS NOW LIMIT THE POS SCREEN TOO, NOT JUST BAR TABS. If a terminal\'s profile is set to one menu (for example Bar), the main ordering screen now shows only that menu\'s categories and items, exactly like the bar tabs screen already did. Profiles with no menu set are untouched and keep showing everything.',
+      'Why it happened: the POS picks its menu through a resolver that refused any menu it thought was empty. A menu built by assigning EXISTING categories to it (the normal Menu Manager flow) looked empty to that check, so the POS quietly fell back to the full default menu while bar tabs, which read the profile\'s menu directly, honoured the restriction.',
+      'Search on the restricted till no longer finds items from other menus, and a Quick screen tile pointing at an item outside the assigned menu is simply hidden rather than shown or crashing the grid.',
+      'The menu-membership rules (a category belongs to a menu by its home menu OR by being assigned to it) now live in one shared piece of code used by both the POS screen and bar tabs, so the two screens cannot drift apart again.',
+    ],
+  },
+  {
     version: '5.6.96',
     date: '2026-08-19',
     changes: [
