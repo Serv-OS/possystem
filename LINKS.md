@@ -2,7 +2,7 @@
 
 > **The one list of how to reach everything.** Update this file whenever a new
 > surface, route, or app ships — it is generated from the code's actual routing
-> (`src/App.jsx` + `src/lib/customerUrl.js`), last verified **19 Aug 2026 (v5.6.94)**.
+> (`src/App.jsx` + `src/lib/customerUrl.js`), last verified **19 Aug 2026 (v5.6.94)**. Master copy mirrored to the 'ServOS App Links' Google Doc.
 
 **Base URLs** — both serve the SAME develop build:
 - `https://possystem-liard.vercel.app` (Vercel, auto-deploys on push to develop)
@@ -59,9 +59,9 @@ Venue pages work on the venue's own host (`<slug>.serv-os.app/...`) or as
 
 | App | Where |
 |---|---|
-| POS (Sunmi) | APK channel `app-releases/latest.json` → points at prod build |
+| POS (Sunmi) | `tinyurl.com/244jtfzz` (APK) — updates via `latest.json`, points at prod build |
 | MPOS phone wrapper | `tinyurl.com/25zwvnr3` (APK) — updates via `latest-mpos.json` |
-| Menu board (Fire TV) | `latest-menuboard.json` |
+| Menu board (Fire TV) | `tinyurl.com/2ahdf54b` (APK) — updates via `latest-menuboard.json` |
 | PaxPay (PAX A920) | `latest-paxpay.json` |
 
 ## Admin / infrastructure
