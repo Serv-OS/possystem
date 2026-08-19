@@ -46,8 +46,12 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const REPORT_USER = Deno.env.get('ADYEN_REPORT_USER') ?? '';
 const REPORT_PASS = Deno.env.get('ADYEN_REPORT_PASS') ?? '';
+// Preferred: the Report user's API key (docs: the download URL accepts an API
+// key as well as basic auth). One company-level key covers every merchant
+// account — set 19 Aug.
+const REPORT_API_KEY = Deno.env.get('ADYEN_REPORT_API_KEY') ?? '';
 const CREDS_MISSING_MSG =
-  'report credentials not configured yet — create a Report user in the Customer Area and set ADYEN_REPORT_USER / ADYEN_REPORT_PASS';
+  'report credentials not configured yet — create a Report user in the Customer Area and set ADYEN_REPORT_API_KEY (or ADYEN_REPORT_USER / ADYEN_REPORT_PASS)';
 
 const json = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), { status: s, headers: { 'Content-Type': 'application/json' } });
@@ -188,7 +192,7 @@ async function ingestReport(name: string, urlOverride: string | null): Promise<R
     await stampReport(name, { report_type: reportType, status: 'failed', error: 'no download URL recorded for this report' });
     return { ok: false, report_name: name, error: 'no download URL recorded for this report' };
   }
-  if (!REPORT_USER || !REPORT_PASS) {
+  if (!REPORT_API_KEY && (!REPORT_USER || !REPORT_PASS)) {
     // Stays PENDING — this is a setup gap, not a report failure. The error text
     // is recorded so `list` shows exactly what is blocking ingestion.
     await stampReport(name, { url, report_type: reportType, status: queueRow?.status === 'ingested' ? 'ingested' : 'pending', error: CREDS_MISSING_MSG });
@@ -203,7 +207,11 @@ async function ingestReport(name: string, urlOverride: string | null): Promise<R
   // ── 1. Download (HTTP basic auth with the Report user) ────────────────────
   let text = '';
   try {
-    const res = await fetch(url, { headers: { Authorization: 'Basic ' + btoa(`${REPORT_USER}:${REPORT_PASS}`) } });
+    const res = await fetch(url, {
+      headers: REPORT_API_KEY
+        ? { 'X-API-Key': REPORT_API_KEY }
+        : { Authorization: 'Basic ' + btoa(`${REPORT_USER}:${REPORT_PASS}`) },
+    });
     if (!res.ok) return await fail(`report download failed: HTTP ${res.status} ${(await res.text()).slice(0, 200)}`);
     text = await res.text();
   } catch (e) {
@@ -469,7 +477,7 @@ Deno.serve(async (req) => {
 
   // ── process_pending: sweep the queue (backfill once credentials exist) ────
   if (action === 'process_pending') {
-    if (!REPORT_USER || !REPORT_PASS) return json({ ok: false, error: CREDS_MISSING_MSG }, 503);
+    if (!REPORT_API_KEY && (!REPORT_USER || !REPORT_PASS)) return json({ ok: false, error: CREDS_MISSING_MSG }, 503);
     const statuses = body?.retry_failed === true ? ['pending', 'failed'] : ['pending'];
     const { data: pending, error } = await platformAdmin.from('adyen_reports')
       .select('report_name').eq('report_type', 'settlement_details').in('status', statuses)
