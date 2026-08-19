@@ -2,8 +2,9 @@
 // Card Payments (Adyen) — every Adyen card payment for this venue from the
 // server-truth ledger (adyen_payments, fed by adyen-webhook). Self-fetching via
 // the location-fenced adyen-financial edge fn (action: 'payments'), same
-// pattern as RyftPayouts. Fees show "—" honestly: they arrive with settlement
-// ingestion in a later phase.
+// pattern as RyftPayouts. Fees (v5.6.99): once settlement ingestion has run,
+// summary.fees_minor and per-row fee_minor arrive from adyen-report-ingest and
+// light up the tile + a per-row Fee column; until then both show an honest "—".
 
 import { useEffect, useState } from 'react';
 import { supabase, isMock, getLocationId } from '../../../lib/supabase';
@@ -82,6 +83,7 @@ export default function AdyenPayments() {
       { label: 'Card', key: (r) => cardLabel(r.card) },
       { label: 'Amount', key: (r) => ((Number(r.amount_minor) || 0) / 100).toFixed(2) },
       { label: 'Refunded', key: (r) => ((Number(r.amount_refunded_minor) || 0) / 100).toFixed(2) },
+      { label: 'Fee', key: (r) => (r.fee_minor != null ? (Number(r.fee_minor) / 100).toFixed(2) : '') },
       { label: 'Currency', key: (r) => r.currency || cur },
       { label: 'Status', key: (r) => statusOf(r).label },
       { label: 'Reference', key: (r) => r.merchant_reference || '' },
@@ -105,9 +107,15 @@ export default function AdyenPayments() {
         <StatTile label="Payments" value={String(s.count ?? 0)} />
         <StatTile label="Taken" value={m(s.sum_minor)} color="var(--grn)" />
         <StatTile label="Refunds" value={m(s.refunds_minor)} />
-        <div title="Fees arrive with settlement ingestion in a later update. They are reported when funds settle, not per payment.">
-          <StatTile label="Estimated fees" value="—" color="var(--t3)" />
-        </div>
+        {s.fees_minor != null ? (
+          <div title={`Fees reported at settlement, recorded for ${s.fee_known} payment${s.fee_known === 1 ? '' : 's'} in this period so far.`}>
+            <StatTile label="Fees" value={m(s.fees_minor)} color="var(--amb,#e8a020)" />
+          </div>
+        ) : (
+          <div title="Fees arrive with settlement ingestion in a later update. They are reported when funds settle, not per payment.">
+            <StatTile label="Estimated fees" value="—" color="var(--t3)" />
+          </div>
+        )}
       </div>
 
       {error && <div style={{ padding: 10, background: 'var(--red-d)', color: 'var(--red)', borderRadius: 8, fontSize: 12, border: '1px solid var(--red-b)', marginBottom: 14 }}>{error}</div>}
@@ -121,18 +129,24 @@ export default function AdyenPayments() {
         <EmptyState icon="💳" message="No card payments recorded yet. They appear here the moment one is taken." />
       ) : (
         <div style={{ border: '1px solid var(--bdr)', borderRadius: 10, overflow: 'hidden' }}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr 0.9fr 0.9fr 1.1fr 1.4fr', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.04em', padding: '9px 14px', background: 'var(--bg2)' }}>
-            <div>Date</div><div>Card</div><div>Amount</div><div>Refunded</div><div>Status</div><div>PSP ref</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr 0.9fr 0.8fr 0.7fr 1.1fr 1.3fr', fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.04em', padding: '9px 14px', background: 'var(--bg2)' }}>
+            <div>Date</div><div>Card</div><div>Amount</div><div>Refunded</div><div>Fee</div><div>Status</div><div>PSP ref</div>
           </div>
           {payments.map((p) => {
             const st = statusOf(p);
             return (
-              <div key={p.psp_reference} style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr 0.9fr 0.9fr 1.1fr 1.4fr', fontSize: 13, padding: '9px 14px', borderTop: '1px solid var(--bdr)', alignItems: 'center' }}>
+              <div key={p.psp_reference} style={{ display: 'grid', gridTemplateColumns: '1.3fr 1fr 0.9fr 0.8fr 0.7fr 1.1fr 1.3fr', fontSize: 13, padding: '9px 14px', borderTop: '1px solid var(--bdr)', alignItems: 'center' }}>
                 <div style={{ color: 'var(--t2)' }}>{fmtWhen(p.created_at)}</div>
                 <div style={{ color: 'var(--t2)' }}>{cardLabel(p.card)}</div>
                 <div style={{ fontWeight: 700, color: 'var(--t1)' }}>{money((Number(p.amount_minor) || 0) / 100, p.currency || cur)}</div>
                 <div style={{ color: (Number(p.amount_refunded_minor) || 0) > 0 ? 'var(--amb,#e8a020)' : 'var(--t4)' }}>
                   {(Number(p.amount_refunded_minor) || 0) > 0 ? money(Number(p.amount_refunded_minor) / 100, p.currency || cur) : '—'}
+                </div>
+                <div
+                  style={{ color: p.fee_minor != null ? 'var(--amb,#e8a020)' : 'var(--t4)' }}
+                  title={p.fee_minor != null && p.settled_at ? `Settled ${fmtWhen(p.settled_at)}` : undefined}
+                >
+                  {p.fee_minor != null ? money(Number(p.fee_minor) / 100, p.currency || cur) : '—'}
                 </div>
                 <div style={{ fontSize: 12, fontWeight: 700, color: st.color }}>{st.label}</div>
                 <div style={{ color: 'var(--t4)', fontSize: 11, fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.psp_reference}>{p.psp_reference}</div>

@@ -10,9 +10,12 @@
 //   Overview | Payments | Disputes | Payouts | Documents | Settings
 // Payments and Disputes mount the existing self-fetching report components
 // (reports/AdyenPayments, reports/AdyenDisputes) unchanged — they carry no
-// Reports-shell assumptions. Payouts / Documents / Settings are honest
-// "coming soon" placeholders until per-venue balance accounts exist
-// (adyen-terminal-admin's v5.6.96 store probe is the groundwork).
+// Reports-shell assumptions. v5.6.99 fills Payouts (reports/AdyenPayouts:
+// settlement batches with per-transaction drill-down, fed by
+// adyen-report-ingest) and Documents (reports/AdyenStatements: monthly
+// printable statement). Settings stays an honest placeholder until per-venue
+// balance accounts exist (adyen-terminal-admin's v5.6.96 store probe is the
+// groundwork).
 //
 // Gated on the venue's processor being 'adyen' (locations.payment_processor
 // via the cached getLocationProcessor lookup, same source CardReaders uses).
@@ -24,6 +27,8 @@ import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import { getLocationProcessor } from '../../lib/payments/processor';
 import AdyenPayments from './reports/AdyenPayments';
 import AdyenDisputes from './reports/AdyenDisputes';
+import AdyenPayouts from './reports/AdyenPayouts';
+import AdyenStatements from './reports/AdyenStatements';
 
 const TABS = [
   { id: 'overview',  label: 'Overview' },
@@ -172,12 +177,8 @@ export default function CardPayments() {
       {tab === 'payments' && <AdyenPayments />}
       {tab === 'disputes' && <AdyenDisputes />}
 
-      {tab === 'payouts' && (
-        <ComingSoon title="Payouts" body="Your payout history and the balance on its way to your bank will appear here once per-venue payment accounts go live." />
-      )}
-      {tab === 'documents' && (
-        <ComingSoon title="Documents" body="Monthly statements, fee summaries and other payment documents will be downloadable here." />
-      )}
+      {tab === 'payouts' && <AdyenPayouts />}
+      {tab === 'documents' && <AdyenStatements />}
       {tab === 'settings' && (
         <ComingSoon title="Settings" body="Payout schedule, bank details and statement descriptor settings will live here. For card terminal settings, see Hardware, then Card readers." />
       )}

@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.99',
+    date: '2026-08-19',
+    changes: [
+      'CARD PAYMENT FEES, PAYOUTS AND MONTHLY STATEMENTS ARE BUILT. The Payouts tab in Card payments now lists every settlement: date, gross card takings, fees and the amount paid to your bank, and clicking a payout opens every transaction inside it with its individual fee. The Documents tab has a month picker that builds a clean printable statement: payments taken, gross, refunds, fees and net, ready to save as a PDF from the print screen.',
+      'The Payments tab shows fees per payment. Once a payment settles, its exact processing fee appears in a new Fee column and the fees tile at the top shows the real total instead of a dash. Payments that have not settled yet simply show a dash until they do.',
+      'How the fees arrive: the payment provider produces a settlement report each time it pays out. ServOS now catches the announcement of each report, downloads it, and files every fee against the right payment and the right venue automatically. Reading the same report twice can never double anything.',
+      'One-time setup needed before payouts appear: the Payouts tab explains it honestly with five numbered steps (create a report login in the payments provider dashboard, switch on the settlement report with the Store and tip columns, send the login to ServOS support). Until that is done the tabs say so plainly instead of sitting empty.',
+      'Not live until the server side ships: this build needs one database migration and three server function deploys, plus the report login above. Until then the new tabs load fine and explain what is missing instead of erroring.',
+    ],
+  },
+  {
     version: '5.6.98',
     date: '2026-08-19',
     changes: [

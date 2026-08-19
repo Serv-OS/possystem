@@ -16,6 +16,11 @@
 // best-effort ON TOP of the stored raw event — a parse bug can never lose an
 // event, only delay its ledger row until a replay.
 //
+// v5.6.99 — FINANCIAL SERVICES PHASE 2: REPORT_AVAILABLE notifications are
+// queued durably into platform `adyen_reports` and adyen-report-ingest is
+// kicked to download + parse the Settlement details CSV (fees, payouts,
+// payout lines). See queueReport below.
+//
 // BACKFILL: POST .../adyen-webhook?backfill=1 with a SERVICE-ROLE bearer reruns
 // every stored adyen_events row (received_at order) through the same parsing
 // path. Idempotent by construction (see modKey below). Add &dry=1 to only count
@@ -295,9 +300,60 @@ async function applyMoneyEvent(item: any): Promise<'applied' | 'duplicate' | 'sk
   }
 }
 
+// ── REPORT_AVAILABLE → settlement report queue + ingest kick (Phase 2) ──────
+//
+// Adyen announces every generated report with a standard REPORT_AVAILABLE
+// webhook: pspReference carries the report FILE NAME and reason carries the
+// download URL (both parsed defensively — additionalData.downloadUrl is the
+// fallback). The row lands durably in platform adyen_reports first (settlement
+// reports 'pending', everything else 'skipped' but still visible), THEN the
+// ingest fn is kicked fire-and-forget. A lost kick costs nothing: the queue
+// row stays pending and adyen-report-ingest's process_pending sweeps it up.
+async function queueReport(item: any, kick = true): Promise<void> {
+  try {
+    const reason = String(item?.reason ?? '');
+    const adUrl = item?.additionalData?.downloadUrl;
+    const url = /^https?:\/\//i.test(reason) ? reason
+      : (typeof adUrl === 'string' && /^https?:\/\//i.test(adUrl) ? adUrl : null);
+    let name = item?.pspReference ? String(item.pspReference) : '';
+    if (!name && url) name = url.split('?')[0].split('/').pop() ?? '';
+    if (!name) { console.error('[adyen-webhook] REPORT_AVAILABLE with no report name — ignored'); return; }
+    const isSettlement = /settlement_detail/i.test(name);
+    // Insert-if-new: a webhook redelivery must never reset an ingested/failed row.
+    const { error } = await platformAdmin.from('adyen_reports').upsert({
+      report_name: name,
+      url,
+      report_type: isSettlement ? 'settlement_details' : 'other',
+      status: isSettlement ? 'pending' : 'skipped',
+      raw: item,
+    }, { onConflict: 'report_name', ignoreDuplicates: true });
+    if (error) {
+      // Durable path failed (e.g. 20260820_adyen_fees.sql not applied yet).
+      // The raw event is already stored in adyen_events — a backfill replays it.
+      console.error('[adyen-webhook] report queue insert failed:', error.message, name);
+      return;
+    }
+    if (!isSettlement || !kick) return;
+    // Same service-role kick pattern adyen-terminal-events uses for
+    // adyen-terminal-charge; waitUntil keeps it alive past the ack.
+    const kickP = fetch(`${SUPABASE_URL}/functions/v1/adyen-report-ingest`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SERVICE_ROLE}` },
+      body: JSON.stringify({ action: 'ingest', report_name: name }),
+    }).then(async (r) => {
+      if (!r.ok) console.error('[adyen-webhook] report ingest kick returned', r.status, (await r.text()).slice(0, 300));
+    }).catch((e) => console.error('[adyen-webhook] report ingest kick failed:', (e as Error).message));
+    // deno-lint-ignore no-explicit-any
+    const rt = (globalThis as any).EdgeRuntime;
+    if (rt?.waitUntil) rt.waitUntil(kickP); else await kickP;
+  } catch (e) {
+    console.error('[adyen-webhook] queueReport failed:', (e as Error).message);
+  }
+}
+
 // ── Backfill: replay stored adyen_events through the money parser ────────────
 async function runBackfill(dry: boolean): Promise<Response> {
-  const counts = { scanned: 0, money_events: 0, applied: 0, duplicates: 0, failed: 0 };
+  const counts = { scanned: 0, money_events: 0, applied: 0, duplicates: 0, failed: 0, reports_queued: 0 };
   const BATCH = 500;
   let from = 0;
   for (;;) {
@@ -314,6 +370,13 @@ async function runBackfill(dry: boolean): Promise<Response> {
     for (const row of rows) {
       counts.scanned++;
       const code = String(row.event_code || row.raw?.eventCode || '');
+      if (code === 'REPORT_AVAILABLE') {
+        // Re-queue without kicking the ingest fn per row — after a backfill the
+        // operator runs adyen-report-ingest process_pending once instead.
+        counts.reports_queued++;
+        if (!dry) await queueReport(row.raw, false);
+        continue;
+      }
       if (!LEDGER_EVENTS.has(code)) continue;
       counts.money_events++;
       if (dry) continue;
@@ -395,6 +458,16 @@ Deno.serve(async (req) => {
         const { error: pErr } = await admin.from('adyen_events')
           .update({ processed_at: new Date().toISOString() }).eq('id', stored.id);
         if (pErr) console.error('[adyen-webhook] processed_at stamp failed:', pErr.message);
+      }
+    }
+
+    // ── REPORT_AVAILABLE → queue + kick adyen-report-ingest (Phase 2 fees) ──
+    if (String(item.eventCode || '') === 'REPORT_AVAILABLE') {
+      await queueReport(item);
+      if (stored?.id) {
+        const { error: pErr } = await admin.from('adyen_events')
+          .update({ processed_at: new Date().toISOString() }).eq('id', stored.id);
+        if (pErr) console.error('[adyen-webhook] report processed_at stamp failed:', pErr.message);
       }
     }
 
