@@ -9,59 +9,342 @@
 // then acknowledged. Consumers mark rows processed later; anything missed or
 // misparsed can be replayed from the table forever.
 //
+// v5.6.96 — FINANCIAL SERVICES PHASE 1: the receiver now also PARSES money
+// events into the platform ledger (`adyen_payments`, one row per payment keyed
+// on the ORIGINAL pspReference) and chargebacks into `merchant_adyen_disputes`,
+// so per-venue payment + dispute reports have server truth to read. Parsing is
+// best-effort ON TOP of the stored raw event — a parse bug can never lose an
+// event, only delay its ledger row until a replay.
+//
+// BACKFILL: POST .../adyen-webhook?backfill=1 with a SERVICE-ROLE bearer reruns
+// every stored adyen_events row (received_at order) through the same parsing
+// path. Idempotent by construction (see modKey below). Add &dry=1 to only count
+// what it would process.
+//
 // SECURITY, staged deliberately:
 //   - Basic auth: if ADYEN_WEBHOOK_USER/_PASS secrets are set, requests must
 //     match (Adyen sends the credentials you configure on the webhook).
-//   - HMAC (ADYEN_HMAC_KEY): the standard-webhook signature is computed over
-//     the SIGNING STRING pspReference:originalReference:merchantAccountCode:
-//     merchantReference:value:currency:eventCode:success (key = hex → binary,
-//     HMAC-SHA256, Base64). We VERIFY AND RECORD hmac_valid on every item but
-//     do NOT reject yet — verification is confirmed against real test events
-//     first, then rejection is armed before live (flip REJECT_INVALID_HMAC).
+//   - HMAC (ADYEN_HMAC_KEY): verified per-item via _shared/adyen.ts
+//     verifyNotificationItem (same signing recipe this file used to inline).
+//     We VERIFY AND RECORD hmac_valid on every item but do NOT reject yet —
+//     ⚠ GO-LIVE TASK: flip REJECT_INVALID_HMAC to true once real test events
+//     verify green. Until then an invalid signature is logged LOUDLY below.
 //     Never guess-reject during setup: a wrong signing recipe would silently
 //     drop every payment notification.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { verifyNotificationItem, cardFromWebhookAdditionalData } from '../_shared/adyen.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const HMAC_KEY = Deno.env.get('ADYEN_HMAC_KEY') ?? '';
 const BASIC_USER = Deno.env.get('ADYEN_WEBHOOK_USER') ?? '';
 const BASIC_PASS = Deno.env.get('ADYEN_WEBHOOK_PASS') ?? '';
-const REJECT_INVALID_HMAC = false;   // arm before LIVE, after test events verify green
+const REJECT_INVALID_HMAC = false;   // ⚠ arm before LIVE, after test events verify green
 
 const admin = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } });
 
-function hexToBytes(hex: string): Uint8Array {
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  return out;
-}
+// The payments ledger + dispute queue live in the PLATFORM DB (20260801_PLATFORM_adyen_foundation.sql).
+const platformAdmin = createClient(
+  Deno.env.get('PLATFORM_SUPABASE_URL') ?? '',
+  Deno.env.get('PLATFORM_SUPABASE_SERVICE_ROLE_KEY') ?? '',
+  { auth: { autoRefreshToken: false, persistSession: false } },
+);
 
+// null = unverifiable (no key configured / item carries no signature) — kept
+// distinct from false so adyen_events.hmac_valid preserves the old semantics.
 async function hmacOk(item: any): Promise<boolean | null> {
   if (!HMAC_KEY) return null;
-  const sig = item?.additionalData?.hmacSignature;
-  if (!sig) return null;
+  if (!item?.additionalData?.hmacSignature) return null;
+  try { return await verifyNotificationItem(item, HMAC_KEY); }
+  catch (e) { console.error('[adyen-webhook] hmac check failed:', (e as Error).message); return false; }
+}
+
+// ── Money-event parsing → adyen_payments / merchant_adyen_disputes ──────────
+//
+// ONE ledger row per PAYMENT, keyed on the original payment's pspReference.
+// Modification events (capture/refund/cancel/chargeback…) carry the parent in
+// originalReference — they PATCH the parent's row, never mint a sibling.
+//
+// IDEMPOTENCY: every modification event is identified by
+//   modKey = `${eventCode}:${item.pspReference}:${item.success}`
+// (each Adyen modification has its OWN pspReference, so two partial refunds
+// never share a key while a redelivery of the same refund always does). Keys
+// already present in raw.applied_modifications are skipped, which is what makes
+// the REFUND `amount_refunded_minor` increment replay-safe and lets the
+// backfill rerun the entire event history without double counting.
+// AUTHORISATION needs no key: re-applying it rewrites the same values.
+//
+// KNOWN NARROW RACE: two CONCURRENT deliveries of the SAME refund could both
+// read the row before either writes. Adyen retries minutes apart and per-venue
+// event rates are low, so this is accepted for Phase 1 (same stance as
+// ryft-webhook's delta narrowing).
+
+const PAYMENT_EVENTS = new Set(['AUTHORISATION']);
+const MODIFICATION_EVENTS = new Set([
+  'CAPTURE', 'CAPTURE_FAILED', 'CANCELLATION', 'REFUND', 'REFUND_FAILED',
+  'CHARGEBACK', 'CHARGEBACK_REVERSED', 'NOTIFICATION_OF_CHARGEBACK',
+  'SECOND_CHARGEBACK', 'REQUEST_FOR_INFORMATION',
+]);
+const CHARGEBACK_EVENTS = new Set([
+  'CHARGEBACK', 'CHARGEBACK_REVERSED', 'NOTIFICATION_OF_CHARGEBACK',
+  'SECOND_CHARGEBACK', 'REQUEST_FOR_INFORMATION',
+]);
+export const LEDGER_EVENTS = new Set([...PAYMENT_EVENTS, ...MODIFICATION_EVENTS]);
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Resolve the venue (PLATFORM location id) for a notification item.
+//   1. additionalData.store → merchant_adyen_accounts.store_id (terminal
+//      payments send `store=<store_id>` in SaleToAcquirerData, and Adyen echoes
+//      it back on the webhook — the strongest signal).
+//   2. merchantAccountCode → merchant_adyen_accounts.merchant_account, but ONLY
+//      when exactly one venue uses that account (under AfP every venue shares
+//      the regional merchant account, so a multi-venue match is ambiguous).
+//   3. a matched terminal_jobs row's OPS location → platform locations.ops_location_id.
+// Unresolvable → location_id stays null: the payment still exists in the ledger
+// and a later backfill replay re-resolves it (the upsert recomputes every time).
+async function resolveLocation(item: any, jobOpsLocationId: string | null): Promise<string | null> {
   try {
-    const amount = item.amount ?? {};
-    const signing = [
-      item.pspReference ?? '', item.originalReference ?? '',
-      item.merchantAccountCode ?? '', item.merchantReference ?? '',
-      String(amount.value ?? ''), amount.currency ?? '',
-      item.eventCode ?? '', item.success ?? '',
-    ].join(':');
-    const key = await crypto.subtle.importKey('raw', hexToBytes(HMAC_KEY), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-    const mac = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(signing));
-    const b64 = btoa(String.fromCharCode(...new Uint8Array(mac)));
-    return b64 === sig;
+    const store = item?.additionalData?.store ? String(item.additionalData.store) : '';
+    if (store) {
+      const { data, error } = await platformAdmin.from('merchant_adyen_accounts')
+        .select('location_id').eq('store_id', store).maybeSingle();
+      if (error) console.error('[adyen-webhook] store lookup failed:', error.message);
+      if (data?.location_id) return data.location_id;
+    }
+    const merchant = item?.merchantAccountCode ? String(item.merchantAccountCode) : '';
+    if (merchant) {
+      const { data, error } = await platformAdmin.from('merchant_adyen_accounts')
+        .select('location_id').eq('merchant_account', merchant).limit(2);
+      if (error) console.error('[adyen-webhook] merchant lookup failed:', error.message);
+      if (Array.isArray(data) && data.length === 1 && data[0]?.location_id) return data[0].location_id;
+    }
+    if (jobOpsLocationId) {
+      const { data, error } = await platformAdmin.from('locations')
+        .select('id').eq('ops_location_id', jobOpsLocationId).maybeSingle();
+      if (error) console.error('[adyen-webhook] ops→platform lookup failed:', error.message);
+      if (data?.id) return data.id;
+    }
+  } catch (e) { console.error('[adyen-webhook] resolveLocation:', (e as Error).message); }
+  return null;
+}
+
+// Best-effort OPS lookup: the terminal job this payment settled (POS card leg).
+// merchantReference `tj-<job id>` is stamped by adyen-terminal-charge at
+// dispatch; payment_session_id carries the pspReference after settle.
+async function matchTerminalJob(merchantReference: string, paymentPsp: string):
+  Promise<{ id: string; closed_check_id: string | null; location_id: string | null } | null> {
+  try {
+    if (merchantReference.startsWith('tj-')) {
+      const jobId = merchantReference.slice(3);
+      if (UUID_RE.test(jobId)) {
+        const { data } = await admin.from('terminal_jobs')
+          .select('id, closed_check_id, location_id').eq('id', jobId).maybeSingle();
+        if (data?.id) return data;
+      }
+    }
+    if (paymentPsp) {
+      const { data } = await admin.from('terminal_jobs')
+        .select('id, closed_check_id, location_id').eq('payment_session_id', paymentPsp).maybeSingle();
+      if (data?.id) return data;
+    }
+  } catch (e) { console.error('[adyen-webhook] terminal_jobs match:', (e as Error).message); }
+  return null;
+}
+
+function inferChannel(merchantReference: string, hasJob: boolean): string | null {
+  if (merchantReference.startsWith('bkpay-')) return 'booking';
+  if (hasJob || merchantReference.startsWith('tj-') || merchantReference.startsWith('tabhold-')) return 'pos';
+  return null;
+}
+
+// Apply ONE money event to the ledger (and, for the chargeback family, the
+// dispute queue). NEVER throws — the raw event is already durable; a bug here
+// costs a log line and a later replay, not an event.
+async function applyMoneyEvent(item: any): Promise<'applied' | 'duplicate' | 'skipped' | 'failed'> {
+  try {
+    const code = String(item?.eventCode || '');
+    if (!LEDGER_EVENTS.has(code)) return 'skipped';
+    const isModification = MODIFICATION_EVENTS.has(code);
+    const okEvent = String(item?.success) === 'true';
+    const itemPsp = item?.pspReference ? String(item.pspReference) : '';
+    // Row key = the ORIGINAL payment's pspReference. Modifications point at the
+    // parent via originalReference (falling back to their own psp when Adyen
+    // omits it — some CHARGEBACK notifications reuse the payment psp directly).
+    const rowKey = isModification ? String(item?.originalReference || itemPsp) : itemPsp;
+    if (!rowKey) { console.error('[adyen-webhook] money event with no psp — skipped', code); return 'skipped'; }
+
+    const { data: existing, error: readErr } = await platformAdmin.from('adyen_payments')
+      .select('psp_reference, location_id, amount_minor, currency, amount_refunded_minor, success, channel, card, merchant_reference, merchant_account, store, matched_terminal_job, matched_closed_check, raw')
+      .eq('psp_reference', rowKey).maybeSingle();
+    if (readErr) { console.error('[adyen-webhook] ledger read failed:', readErr.message); return 'failed'; }
+
+    const raw: Record<string, any> = (existing?.raw && typeof existing.raw === 'object') ? { ...existing.raw } : {};
+    const applied: string[] = Array.isArray(raw.applied_modifications) ? [...raw.applied_modifications] : [];
+
+    const modKey = `${code}:${itemPsp}:${okEvent}`;
+    if (isModification) {
+      if (applied.includes(modKey)) return 'duplicate';
+      applied.push(modKey);
+      raw.applied_modifications = applied;
+      raw.last_modification = item;
+    } else {
+      raw.authorisation = item;
+    }
+
+    // The PAYMENT'S merchant reference. On modification events Adyen's
+    // merchantReference is the MODIFICATION'S own reference (e.g. adyen-modify's
+    // `refund:<psp>:<amount>`), which must never clobber the parent's — the
+    // `tj-<job>` linkage and merchant_reference index live on the parent's.
+    const merchantReference = isModification
+      ? String(existing?.merchant_reference ?? '')
+      : String(item?.merchantReference ?? '');
+    const job = await matchTerminalJob(merchantReference, rowKey);
+    const location_id = existing?.location_id ?? await resolveLocation(item, job?.location_id ?? null);
+
+    const amountMinor = Number(item?.amount?.value);
+    const currency = item?.amount?.currency ? String(item.amount.currency) : null;
+
+    const row: Record<string, unknown> = {
+      psp_reference: rowKey,
+      merchant_reference: merchantReference || null,
+      merchant_account: item?.merchantAccountCode ?? existing?.merchant_account ?? null,
+      store: item?.additionalData?.store ?? existing?.store ?? null,
+      location_id,
+      channel: existing?.channel ?? inferChannel(merchantReference, !!job),
+      matched_terminal_job: existing?.matched_terminal_job ?? job?.id ?? null,
+      matched_closed_check: existing?.matched_closed_check ?? job?.closed_check_id ?? null,
+      amount_refunded_minor: Number(existing?.amount_refunded_minor ?? 0),
+      raw,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (!isModification) {
+      // AUTHORISATION — the payment itself. Sets the money + card facts.
+      row.amount_minor = Number.isFinite(amountMinor) ? amountMinor : existing?.amount_minor ?? null;
+      row.currency = currency ?? existing?.currency ?? null;
+      row.success = okEvent;
+      row.last_event_code = 'AUTHORISATION';
+      const card = cardFromWebhookAdditionalData(item?.additionalData);
+      row.card = card ?? existing?.card ?? null;
+    } else {
+      // Modifications never rewrite the payment amount or its success flag —
+      // a failed refund is not a failed payment. They move last_event_code
+      // (failed attempts land as their *_FAILED code) and, for refunds, the
+      // cumulative amount_refunded_minor.
+      row.amount_minor = existing?.amount_minor ?? null;
+      row.currency = existing?.currency ?? currency;
+      row.success = existing?.success ?? null;
+      if (code === 'REFUND' && okEvent && Number.isFinite(amountMinor)) {
+        row.amount_refunded_minor = Number(existing?.amount_refunded_minor ?? 0) + amountMinor;
+      } else if (code === 'REFUND_FAILED' && okEvent && Number.isFinite(amountMinor)
+        && applied.includes(`REFUND:${itemPsp}:true`)) {
+        // A refund we previously counted has failed downstream — take it back.
+        row.amount_refunded_minor = Math.max(0, Number(existing?.amount_refunded_minor ?? 0) - amountMinor);
+      }
+      row.last_event_code =
+        (code === 'REFUND' && !okEvent) ? 'REFUND_FAILED'
+        : (code === 'CAPTURE' && !okEvent) ? 'CAPTURE_FAILED'
+        : code;
+    }
+
+    const { error: upErr } = await platformAdmin.from('adyen_payments')
+      .upsert(row, { onConflict: 'psp_reference' });
+    if (upErr) { console.error('[adyen-webhook] ledger upsert failed:', upErr.message, rowKey); return 'failed'; }
+
+    // ── Chargeback family → dispute queue (model: ryft-webhook Dispute.*) ────
+    if (CHARGEBACK_EVENTS.has(code)) {
+      const ad = item?.additionalData ?? {};
+      // Adyen carries the defense deadline in additionalData when there is one.
+      const defenseRaw = ad['defensePeriodEndsAt'] ?? ad['defensePeriodEndsDate'] ?? null;
+      let respond_by: string | null = null;
+      if (defenseRaw) { const d = new Date(String(defenseRaw)); if (!isNaN(d.getTime())) respond_by = d.toISOString(); }
+      const status =
+        code === 'CHARGEBACK_REVERSED' ? 'won'
+        : code === 'SECOND_CHARGEBACK' ? 'lost'
+        : code === 'REQUEST_FOR_INFORMATION' ? 'info_requested'
+        : 'open'; // CHARGEBACK / NOTIFICATION_OF_CHARGEBACK
+      const { error: dErr } = await platformAdmin.from('merchant_adyen_disputes').upsert({
+        dispute_psp_reference: itemPsp || rowKey,
+        payment_psp_reference: rowKey,
+        location_id,
+        status,
+        reason_code: ad['chargebackReasonCode'] ?? null,
+        reason: item?.reason ?? ad['chargebackReason'] ?? null,
+        amount_minor: Number.isFinite(amountMinor) ? amountMinor : null,
+        currency,
+        respond_by,
+        raw: item,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'dispute_psp_reference' });
+      if (dErr) console.error('[adyen-webhook] dispute upsert failed:', dErr.message, itemPsp);
+    }
+
+    // Heartbeat: the venue's account row shows when Adyen last spoke about it.
+    if (location_id) {
+      const { error: hbErr } = await platformAdmin.from('merchant_adyen_accounts')
+        .update({ last_webhook_at: new Date().toISOString() }).eq('location_id', location_id);
+      if (hbErr) console.error('[adyen-webhook] last_webhook_at stamp failed:', hbErr.message);
+    }
+
+    return 'applied';
   } catch (e) {
-    console.error('[adyen-webhook] hmac check failed:', (e as Error).message);
-    return false;
+    console.error('[adyen-webhook] applyMoneyEvent failed:', (e as Error).message);
+    return 'failed';
   }
+}
+
+// ── Backfill: replay stored adyen_events through the money parser ────────────
+async function runBackfill(dry: boolean): Promise<Response> {
+  const counts = { scanned: 0, money_events: 0, applied: 0, duplicates: 0, failed: 0 };
+  const BATCH = 500;
+  let from = 0;
+  for (;;) {
+    const { data: rows, error } = await admin.from('adyen_events')
+      .select('id, event_code, raw')
+      .order('received_at', { ascending: true }).order('id', { ascending: true })
+      .range(from, from + BATCH - 1);
+    if (error) {
+      return new Response(JSON.stringify({ ok: false, error: error.message, ...counts }), {
+        status: 500, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    if (!rows?.length) break;
+    for (const row of rows) {
+      counts.scanned++;
+      const code = String(row.event_code || row.raw?.eventCode || '');
+      if (!LEDGER_EVENTS.has(code)) continue;
+      counts.money_events++;
+      if (dry) continue;
+      const res = await applyMoneyEvent(row.raw);
+      if (res === 'applied') {
+        counts.applied++;
+        const { error: pErr } = await admin.from('adyen_events')
+          .update({ processed_at: new Date().toISOString() }).eq('id', row.id);
+        if (pErr) console.error('[adyen-webhook] backfill processed_at stamp failed:', pErr.message);
+      } else if (res === 'duplicate') counts.duplicates++;
+      else if (res === 'failed') counts.failed++;
+    }
+    if (rows.length < BATCH) break;
+    from += BATCH;
+  }
+  return new Response(JSON.stringify({ ok: true, dry, ...counts }), {
+    status: 200, headers: { 'Content-Type': 'application/json' },
+  });
 }
 
 Deno.serve(async (req) => {
   if (req.method !== 'POST') return new Response('ok', { status: 200 });
+
+  // Backfill arm — service-role bearer ONLY, checked before webhook basic auth
+  // (the operator invoking a backfill is not Adyen and has no basic credentials).
+  const url = new URL(req.url);
+  if (url.searchParams.get('backfill') === '1') {
+    const token = (req.headers.get('authorization') ?? '').replace('Bearer ', '').trim();
+    if (!SERVICE_ROLE || token !== SERVICE_ROLE) return new Response('unauthorized', { status: 401 });
+    return await runBackfill(url.searchParams.get('dry') === '1');
+  }
 
   // Basic auth, when configured on the webhook in the Customer Area.
   if (BASIC_USER) {
@@ -78,11 +361,16 @@ Deno.serve(async (req) => {
     const item = wrap?.NotificationRequestItem ?? wrap;
     if (!item) continue;
     const valid = await hmacOk(item);
+    if (valid === false) {
+      // LOUD either way — this line is what proves the recipe against real
+      // events so REJECT_INVALID_HMAC can be armed for go-live.
+      console.error('[adyen-webhook] ⚠ INVALID HMAC on', item.eventCode, item.pspReference,
+        REJECT_INVALID_HMAC ? '(rejecting)' : '(accepted — rejection not armed yet)');
+    }
     if (REJECT_INVALID_HMAC && valid === false) {
-      console.error('[adyen-webhook] REJECTED invalid HMAC', item.pspReference);
       return new Response('invalid hmac', { status: 401 });
     }
-    const { error } = await admin.from('adyen_events').insert({
+    const { data: stored, error } = await admin.from('adyen_events').insert({
       live: String(body.live) === 'true',
       event_code: item.eventCode ?? null,
       psp_reference: item.pspReference ?? null,
@@ -92,11 +380,22 @@ Deno.serve(async (req) => {
       hmac_present: !!item?.additionalData?.hmacSignature,
       hmac_valid: valid,
       raw: item,
-    });
+    }).select('id').maybeSingle();
     // Storage failure = do NOT ack; Adyen retries, which is exactly what we want.
     if (error) {
       console.error('[adyen-webhook] store failed:', error.message);
       return new Response('store failed', { status: 500 });
+    }
+
+    // ── money events → platform ledger (+ disputes). Best-effort on top of the
+    // stored raw row: parse failures log and NEVER block the ack.
+    if (LEDGER_EVENTS.has(String(item.eventCode || ''))) {
+      const res = await applyMoneyEvent(item);
+      if ((res === 'applied' || res === 'duplicate') && stored?.id) {
+        const { error: pErr } = await admin.from('adyen_events')
+          .update({ processed_at: new Date().toISOString() }).eq('id', stored.id);
+        if (pErr) console.error('[adyen-webhook] processed_at stamp failed:', pErr.message);
+      }
     }
 
     // ── bookings settlement (Phase 5): bkpay-<bookingId>-<kind> references ──

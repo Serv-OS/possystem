@@ -101,11 +101,13 @@ Deno.serve(async (req) => {
   //
   // v5.6.79 — TWO REAL PROBLEMS THE LEDGER-ONLY VERSION HID:
   //
-  //   1. `adyen_payments` IS NEVER WRITTEN. The table exists in the platform
-  //      migrations and this SELECT is its ONLY reader in the entire repo —
-  //      nothing, including adyen-webhook, ever inserts a row. So this fence
-  //      returned 404 for EVERY non-service-role caller, Back Office included.
-  //      The refund path was unreachable, not merely un-plumbed.
+  //   1. `adyen_payments` was never written when this fence was built, so a
+  //      ledger-only check 404'd every non-service-role caller. AS OF v5.6.96
+  //      adyen-webhook DOES populate the ledger (one row per payment, keyed on
+  //      the original pspReference, location_id resolved per venue) and history
+  //      was backfilled — so the ledger arm below is now the NORMAL hit and
+  //      terminal_jobs is the fallback it was always meant to be. Fence logic
+  //      unchanged; only this note is updated.
   //   2. THE ID SPACES DIFFER. A POS check records its card leg as
   //      `terminal_jobs.transaction_id`, which adyen-terminal-charge sets to the
   //      POI transaction id (`p.poiTransactionId ?? p.pspReference`). Adyen's

@@ -101,6 +101,8 @@ export const CATEGORIES = [
       { id:'cash_drawer', label:'Cash drawer sessions', desc:'Every cash-in / cash-out with opening float, expected, declared, variance', signalKey:'cash_drawer', signalWord:'open' },
       { id:'ryft_payouts', label:'Card payments & payouts', desc:'Live Ryft balance, payout history and settlement to your bank' },
       { id:'ryft_disputes', label:'Disputes & chargebacks', desc:'Card disputes with a respond-by deadline — accept or challenge', signalKey:'disputes', signalWord:'due', tone:'warn' },
+      { id:'adyen_payments', label:'Card Payments (Adyen)', desc:'Every Adyen card payment for this venue — amounts, refunds and status' },
+      { id:'adyen_disputes', label:'Disputes (Adyen)', desc:'Adyen chargebacks with their respond-by deadlines' },
     ],
   },
   {

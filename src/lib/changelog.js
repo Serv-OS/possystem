@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.96',
+    date: '2026-08-19',
+    changes: [
+      'ADYEN CARD PAYMENTS AND DISPUTES ARE NOW VISIBLE PER VENUE IN REPORTS. Two new reports sit in the Fiscal section: Card Payments (Adyen) shows every card payment for the venue with the card used, the amount, any refund and a plain status like Paid, Declined, Refunded or Disputed, with totals at the top and a CSV export. Disputes (Adyen) lists any chargebacks with the amount at stake and a countdown to the respond-by deadline.',
+      'Every Adyen payment webhook is now parsed into a per-venue payments ledger, not just stored. Captures, refunds, cancellations and chargebacks all update the same payment record, refunds add up correctly even if Adyen sends the same message twice, and each payment is matched back to its till transaction where one exists.',
+      'Payment history was not lost while this was being built. A one-off backfill replays every webhook already received since Adyen went live through the new parsing, so past payments appear in the report the moment it is deployed.',
+      'Estimated fees show as a dash for now. Adyen reports its fees when it settles funds, not per payment, so fees, payouts and balances arrive in the next phase with settlement report ingestion.',
+      'For the operator: nothing to do. The reports fill on their own. Responding to an Adyen dispute from the report is a later phase, until then use the Adyen Customer Area or your account manager.',
+    ],
+  },
+  {
     version: '5.6.95',
     date: '2026-08-19',
     changes: [

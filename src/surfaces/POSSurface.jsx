@@ -6,6 +6,7 @@ import POSLockOverlay from '../components/POSLockOverlay';
 import PosWasteModal from '../components/PosWasteModal';
 import { useStore } from '../store';
 import { fetchMenuCategoryLinks } from '../lib/db';
+import { linkedCategoryIdSet, categoryVisibleInMenu, menusWithCategories, allowedCategoryIds, itemInAllowedCats } from '../lib/menuMembership';
 import { supabase } from '../lib/supabase';
 import { pushReaderDisplay, clearReaderDisplay, cacheReaderDisplaySetting } from '../lib/readerDisplay';
 import { publishDisplay, getCustomerDisplayMode, displayUsesReader, displayUsesScreen, cacheCustomerDisplayMode, onCustomerPhone, publishLoyalty, onRedeemReward, isLoyaltyEnabled } from '../lib/customerDisplay';
@@ -168,6 +169,24 @@ export default function POSSurface() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTableId, tables]);
 
+  // v4.7.6: load menu_category_links on mount — a menu owns a category via the
+  // category's PRIMARY menuId OR a menu_category_links row ("assign categories
+  // to a menu" in Menu Manager writes links, not menuId). v5.6.97: moved ABOVE
+  // the resolver because the resolver must see linked categories too.
+  const [_categoryLinks, _setCategoryLinks] = useState([]);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const { data } = await fetchMenuCategoryLinks();
+        if (alive) _setCategoryLinks(data || []);
+      } catch (e) {
+        console.warn('[POSSurface] fetchMenuCategoryLinks failed:', e?.message || e);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
   // v4.6.5: Active menu resolver — picks the right menu based on schedule, priority, device profile.
   // Recomputes every minute via clockTick so menus auto-switch at schedule boundaries.
   const [_clockTick, _setClockTick] = useState(0);
@@ -199,7 +218,13 @@ export default function POSSurface() {
     // half-built "New Test" menu that's still active) would otherwise win the schedule/
     // priority race and blank the POS grid entirely. Prefer menus that actually have at
     // least one top-level category; only fall back to all live menus if none do.
-    const menusWithCats = new Set((menuCategories || []).filter(c => !c.parentId && !c.isSpecial && c.menuId).map(c => c.menuId));
+    // v5.6.97 ROOT-CAUSE FIX: "has categories" must count menu_category_links too.
+    // A device pinned to a menu whose categories were all ASSIGNED via links (the
+    // normal Menu Manager flow for existing categories) was treated as empty here,
+    // failed preferredOk, and the resolver silently fell back to the default menu —
+    // so the profile's menu restriction worked on bar tabs (which reads the pin
+    // directly) but the POS grid showed the full menu.
+    const menusWithCats = menusWithCategories(menuCategories, _categoryLinks);
     const withCats = liveMenus.filter(m => menusWithCats.has(m.id));
     const allMenus = withCats.length ? withCats : liveMenus;
     const activeNow = allMenus.filter(isActive);
@@ -220,7 +245,7 @@ export default function POSSurface() {
     if (allMenus.length) return allMenus.slice().sort((a, b) => (b.priority || 0) - (a.priority || 0))[0].id;
     // 6. Nothing matches: show all categories (legacy behaviour).
     return null;
-  }, [menus, deviceConfig?.menuId, menuCategories, _clockTick]);
+  }, [menus, deviceConfig?.menuId, menuCategories, _categoryLinks, _clockTick]);
 
   // v4.7.7: mirror the resolved deviceMenuId into the store's activeMenuId so internal
   // getItemPrice calls (addItem fallback, setOrderType reprice) pick up per-menu pricing
