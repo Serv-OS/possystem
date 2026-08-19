@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.85',
+    date: '2026-08-19',
+    changes: [
+      '"Release stuck payment" now sits on the Adyen card terminals panel too. A reader that runs Adyen\u2019s own software never appeared on the ServOS app panel, so if a payment wedged there was no button anywhere to clear it and the only way out was editing the database. Same confirmation and the same audit trail as before.',
+    ],
+  },
+  {
     version: '5.6.84',
     date: '2026-08-18',
     changes: [

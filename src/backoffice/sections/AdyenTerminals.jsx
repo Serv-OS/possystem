@@ -96,6 +96,33 @@ export default function AdyenTerminals() {
 
   if (!status?.ok || !status.merchant) return null;   // self-gating sibling
 
+  // v5.6.85 — "Release stuck payment", the twin of the one in the ServOS-app
+  // panel. It has to exist HERE too: a cloud reader (AMS1) never appears in that
+  // panel at all, and v5.6.84's last_seen_at filter also hides an S1F2L that has
+  // not yet run our app — which is exactly when a dispatch can wedge. Without
+  // this the only route out of "that card machine is already taking a payment"
+  // was editing the database by hand (live 19 Aug: a £2.85 charging_unsent job
+  // sat past its lease with no nexo_service_id, so it had provably never
+  // reached the reader, and there was no button left to clear it).
+  const release = async (t) => {
+    const opsId = t?.link?.id;
+    if (!opsId) return;
+    if (!window.confirm(
+      `Release "${t.link.label || t.id}"?\n\n`
+      + 'Use this if the terminal says a payment is already in progress but nothing is happening.\n\n'
+      + 'If a payment could not be confirmed, releasing it means you are satisfied the customer was NOT charged. '
+      + 'Check your card statement first if you are unsure. This is recorded against your name.',
+    )) return;
+    setBusy(`release-${t.id}`);
+    const { data, error } = await supabase.rpc('release_terminal_jobs', { p_terminal_id: opsId, p_note: null });
+    setBusy('');
+    if (error) { setErr(`Could not release: ${error.message}`); return; }
+    const n = (data?.expired || 0) + (data?.released || 0);
+    setNotice(n ? `Released ${n} stuck payment${n === 1 ? '' : 's'}. The terminal can take payments again.`
+                : 'Nothing was stuck on this terminal.');
+    await load();
+  };
+
   const run = async (label, action, payload) => {
     setBusy(label); setErr(''); setNotice('');
     try {
@@ -297,6 +324,11 @@ export default function AdyenTerminals() {
                             .catch(() => {});
                         }}>
                         Settings
+                      </button>
+                      <button style={{ ...S.btn }} disabled={!!busy}
+                        title="Use if the terminal says a payment is already in progress but nothing is happening"
+                        onClick={() => release(t)}>
+                        {busy === `release-${t.id}` ? 'Releasing…' : 'Release stuck payment'}
                       </button>
                       <button style={{ ...S.btn, ...S.btnDan }} disabled={!!busy}
                         onClick={() => { if (window.confirm(`Unlink ${t.link.label || t.id}? The reader stays boarded at Adyen and can be re-registered any time.`)) run(`unlink-${t.id}`, 'unlink', { terminal_device_id: t.link.id }); }}>
