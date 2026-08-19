@@ -21,6 +21,11 @@
 // 20260820_adyen_fees.sql; every select that touches them retries without them
 // so deploying this fn ahead of the migration can never break the Payments tab.
 //
+// PHASE 3 (v5.7.0) adds:
+//   settings       → the venue's effective processing rate (venue override else
+//                    platform default) + account status flags, for the read-only
+//                    Settings tab. Display only — nothing charges from it yet.
+//
 // ⚠ DEPLOY ME (edge functions deploy manually and drift silently):
 //   npx supabase functions deploy adyen-financial --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
 
@@ -299,6 +304,50 @@ Deno.serve(async (req) => {
       has_fee_data: feeKnown.length > 0,
       fee_coverage: { with_fees: feeKnown.length, payments: paid.length },
       capped: (rows ?? []).length >= STMT_CAP,
+    });
+  }
+
+  // ── settings: the venue's effective processing rate + account flags ──────
+  // Phase 3 (v5.7.0): feeds the read-only Settings tab in Back Office → Card
+  // payments. Effective rate = per-field venue override on
+  // merchant_adyen_accounts (markup_percent / markup_fixed_pence), else the
+  // platform default on platform_settings — the same fallback rule the Ryft
+  // rate card uses. Venue-facing, so this returns ONLY the effective numbers
+  // (never cost/margin internals) plus the account status flags.
+  // ⚠ These rates are DISPLAY + future-billing configuration only in this
+  // phase — nothing reads them at charge time. Splits / commission collection
+  // is Phase 4.
+  if (action === 'settings') {
+    const [{ data: acct, error: aErr }, { data: ps, error: pErr }] = await Promise.all([
+      platformAdmin.from('merchant_adyen_accounts')
+        .select('markup_percent, markup_fixed_pence, receive_payments_ok, payouts_ok, balance_account_id')
+        .eq('location_id', loc.id).maybeSingle(),
+      platformAdmin.from('platform_settings')
+        .select('default_adyen_markup_percent, default_adyen_markup_fixed_pence')
+        .eq('id', true).maybeSingle(),
+    ]);
+    if (aErr) return json({ error: `account read failed: ${aErr.message}` }, 500);
+    if (pErr) return json({ error: `settings read failed: ${pErr.message}` }, 500);
+    const percent = acct?.markup_percent ?? ps?.default_adyen_markup_percent ?? null;
+    const fixed = acct?.markup_fixed_pence ?? ps?.default_adyen_markup_fixed_pence ?? null;
+    return json({
+      ok: true,
+      venue: loc.name,
+      rates: {
+        percent: percent == null ? null : Number(percent),
+        fixed_pence: fixed == null ? null : Number(fixed),
+        // 'venue' when this venue has its own agreed rate, 'platform' when it
+        // rides the standard rate, null when no rate has been recorded yet.
+        source: (acct?.markup_percent != null || acct?.markup_fixed_pence != null)
+          ? 'venue'
+          : (percent != null || fixed != null) ? 'platform' : null,
+      },
+      account: {
+        exists: !!acct,
+        receive_payments_ok: !!acct?.receive_payments_ok,
+        payouts_ok: !!acct?.payouts_ok,
+        has_balance_account: !!acct?.balance_account_id,
+      },
     });
   }
 

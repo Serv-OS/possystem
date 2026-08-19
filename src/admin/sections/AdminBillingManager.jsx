@@ -1,7 +1,10 @@
 // src/admin/sections/AdminBillingManager.jsx
-// Admin-only payments manager: per-location PROCESSOR (Stripe | Ryft), the
-// merchant account link/onboarding for whichever is active, negotiated markup %
-// (the platform fee), and — for Ryft — a recorded buy rate for margin visibility.
+// Admin-only payments manager: per-location PROCESSOR (Stripe | Ryft | Adyen),
+// the merchant account link/onboarding for whichever is active, negotiated
+// markup % (the platform fee), and — for Ryft — a recorded buy rate for margin
+// visibility. Adyen (ServOS Payments) rates are Phase 3: set here, shown
+// read-only to the venue in Back Office → Card payments → Settings; billing
+// from them is Phase 4.
 //
 // Both processors' writes go through the service-role `payments-admin` edge
 // function (super_admin only): Stripe markup pricing + unlink, plus Ryft account
@@ -74,13 +77,21 @@ export default function AdminBillingManager({ authUser }) {
     setLoading(true);
     setError(null);
     try {
-      const [{ data: cos, error: coErr }, { data: ps }] = await Promise.all([
+      const [{ data: cos, error: coErr }, { data: ps }, adyenDef] = await Promise.all([
         platformSupabase.from('companies').select('id, name').order('name'),
         platformSupabase.from('platform_settings').select('*').eq('id', true).maybeSingle(),
+        // platform_settings can be unreadable to the anon platform client, so
+        // the Adyen defaults come through the service-role payments-admin fn.
+        callPaymentsAdmin('adyen_pricing', {}).catch(e => { console.warn('[billing] adyen defaults failed', e?.message); return null; }),
       ]);
       if (coErr) throw coErr;
       setCompanies(cos ?? []);
-      if (ps) setPlatformDefaults(ps);
+      const merged = { ...(ps ?? {}) };
+      if (adyenDef?.defaults) {
+        merged.default_adyen_markup_percent = adyenDef.defaults.default_markup_percent;
+        merged.default_adyen_markup_fixed_pence = adyenDef.defaults.default_markup_fixed_pence;
+      }
+      if (Object.keys(merged).length) setPlatformDefaults(prev => ({ ...prev, ...merged }));
 
       let q = platformSupabase.from('locations').select('id, name, company_id, timezone, payment_processor').order('name');
       if (filterCompanyId) q = q.eq('company_id', filterCompanyId);
@@ -282,6 +293,10 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
   const [cFix, setCFix] = useState(defaults.ryft_cost_fixed_pence ?? '');
   const [mkPct, setMkPct] = useState(defaults.default_ryft_markup_percent ?? '');
   const [mkFix, setMkFix] = useState(defaults.default_ryft_markup_fixed_pence ?? '');
+  // Adyen (ServOS Payments): the default rate the venue pays. No recorded cost
+  // columns in v1 — the margin view arrives with the sub-merchant phase.
+  const [adPct, setAdPct] = useState(defaults.default_adyen_markup_percent ?? '');
+  const [adFix, setAdFix] = useState(defaults.default_adyen_markup_fixed_pence ?? '');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -291,6 +306,8 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
     setCFix(defaults.ryft_cost_fixed_pence ?? '');
     setMkPct(defaults.default_ryft_markup_percent ?? '');
     setMkFix(defaults.default_ryft_markup_fixed_pence ?? '');
+    setAdPct(defaults.default_adyen_markup_percent ?? '');
+    setAdFix(defaults.default_adyen_markup_fixed_pence ?? '');
   }, [defaults]);
 
   const numOrNull = (v) => (v === '' || v === null || v === undefined ? null : Number(v));
@@ -311,7 +328,18 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
       };
       const { error } = await platformSupabase.from('platform_settings').update(patch).eq('id', true);
       if (error) throw error;
-      onSave({ ...defaults, ...patch });
+      // Adyen defaults go through the service-role fn — platform_settings is
+      // not reliably writable from the anon platform client.
+      await callPaymentsAdmin('adyen_pricing', {
+        set: true,
+        default_markup_percent: numOrNull(adPct),
+        default_markup_fixed_pence: intOrNull(adFix),
+      });
+      onSave({
+        ...defaults, ...patch,
+        default_adyen_markup_percent: numOrNull(adPct),
+        default_adyen_markup_fixed_pence: intOrNull(adFix),
+      });
       setEditing(false);
     } catch (e) {
       onError(`Failed to save platform defaults: ${e.message}`);
@@ -336,6 +364,7 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
           {!editing && (() => {
             const c = Number(defaults.ryft_cost_percent ?? 0), cf = Number(defaults.ryft_cost_fixed_pence ?? 0);
             const m = Number(defaults.default_ryft_markup_percent ?? 0), mf = Number(defaults.default_ryft_markup_fixed_pence ?? 0);
+            const aP = defaults.default_adyen_markup_percent, aF = defaults.default_adyen_markup_fixed_pence;
             return (
               <div style={{ display: 'grid', gap: 10 }}>
                 <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
@@ -346,6 +375,10 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
                   <Stat label="Ryft cost (what Ryft charges us)" value={`${pct(c)} + ${pence(cf)}`} />
                   <Stat label="Ryft markup (what we add)" value={`${pct(m)} + ${pence(mf)}`} accent />
                   <Stat label="Customer pays (default)" value={`${pct(c + m)} + ${pence(cf + mf)}`} />
+                </div>
+                <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', paddingTop: 8, borderTop: '1px solid var(--bdr)' }}>
+                  <Stat label="Adyen (ServOS Payments) default rate — venue pays"
+                    value={aP == null && aF == null ? 'Not set' : `${pct(aP)} + ${pence(aF)}`} accent />
                 </div>
               </div>
             );
@@ -371,6 +404,13 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                   <NumField label="Markup %" value={mkPct} onChange={setMkPct} />
                   <NumField label="Per-txn fee (pence)" value={mkFix} onChange={setMkFix} />
+                </div>
+              </div>
+              <div>
+                <div style={{ ...S.label, color: 'var(--t2)' }}>Adyen (ServOS Payments) default rate — what the venue pays</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  <NumField label="Rate %" value={adPct} onChange={setAdPct} />
+                  <NumField label="Per-txn fee (pence)" value={adFix} onChange={setAdFix} />
                 </div>
               </div>
             </div>
@@ -428,7 +468,7 @@ function LocationCard({ location, companyName, msa, rya, bs, defaults, onError,
       {processor === 'stripe'
         ? <StripeBlock msa={msa} bs={bs} currency={currency} defaults={defaults} onLink={onLink} onUnlink={onUnlink} onSavePricing={onSavePricing} />
         : processor === 'adyen'
-        ? <AdyenBlock />
+        ? <AdyenBlock location={location} defaults={defaults} onError={onError} />
         : <RyftBlock rya={rya} currency={currency} defaults={defaults} onError={onError} onConnect={onRyftConnect} onSync={onRyftSync} onUnlink={onRyftUnlink} onOnboardingLink={onRyftOnboardingLink} onSavePricing={onRyftSavePricing} onFees={onRyftFees} />}
     </div>
   );
@@ -445,7 +485,7 @@ const AdyenRow = ({ ok, children }) => (
   </div>
 );
 
-function AdyenBlock() {
+function AdyenBlock({ location, defaults, onError }) {
   const [st, setSt] = useState(null);   // null=loading, {error} or status payload
   useEffect(() => {
     let live = true;
@@ -464,22 +504,106 @@ function AdyenBlock() {
     return () => { live = false; };
   }, []);
 
-  if (!st) return <div style={{ padding: '14px 16px', borderRadius: 12, background: 'var(--bg2)', border: '1px solid var(--bdr2)', fontSize: 12.5, color: 'var(--t3)' }}>Checking the Adyen connection…</div>;
-  if (st.error || !st.configured) {
-    return <div style={{ padding: '14px 16px', borderRadius: 12, background: 'var(--bg2)', border: '1px solid var(--bdr2)', fontSize: 12.5, color: 'var(--t3)' }}>
-      <b style={{ color: 'var(--t1)' }}>Adyen — not reachable.</b><br/>
-      {st.error || 'Keys are not configured on this environment.'} Card payments will refuse safely at this venue until it is.
-    </div>;
-  }
-  return (
-    <div style={{ padding: '14px 16px', borderRadius: 12, background: 'var(--bg2)', border: '1px solid var(--bdr2)', display: 'flex', flexDirection: 'column', gap: 7 }}>
-      <div style={{ fontSize: 13, fontWeight: 700 }}>
-        Adyen — connected <span style={{ fontWeight: 400, color: 'var(--t3)' }}>· {st.merchantAccount} · {String(st.environment).toUpperCase()}</span>
+  // Per-venue rate (Phase 3). merchant_adyen_accounts is service-role-only, so
+  // reads AND writes go through payments-admin adyen_pricing. Independent of
+  // the checkout-keys probe above — rates are editable even while the probe runs.
+  const [acct, setAcct] = useState(null);      // adyen_pricing get result (null = loading)
+  const [mkPct, setMkPct] = useState('');
+  const [mkFix, setMkFix] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [savedAt, setSavedAt] = useState(null);
+
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      try {
+        const r = await callPaymentsAdmin('adyen_pricing', { location_id: location.id });
+        if (!live) return;
+        setAcct(r);
+        setMkPct(r?.account?.markup_percent ?? '');
+        setMkFix(r?.account?.markup_fixed_pence ?? '');
+      } catch (e) { if (live) { setAcct({ error: e.message }); } }
+    })();
+    return () => { live = false; };
+  }, [location.id]);
+
+  const defPct = acct?.defaults?.default_markup_percent ?? defaults?.default_adyen_markup_percent ?? null;
+  const defFix = acct?.defaults?.default_markup_fixed_pence ?? defaults?.default_adyen_markup_fixed_pence ?? null;
+  const num = (v, d) => (v === '' || v == null ? (d == null ? null : Number(d)) : Number(v));
+  const effPct = num(mkPct, defPct);
+  const effFix = num(mkFix, defFix);
+  const dirty = acct && !acct.error && (
+    String(mkPct) !== String(acct?.account?.markup_percent ?? '') ||
+    String(mkFix) !== String(acct?.account?.markup_fixed_pence ?? '')
+  );
+
+  const savePricing = async () => {
+    setBusy(true);
+    try {
+      await callPaymentsAdmin('adyen_pricing', { set: true, location_id: location.id, markup_percent: mkPct, markup_fixed_pence: mkFix });
+      setAcct(prev => ({
+        ...prev,
+        account: {
+          ...(prev?.account ?? {}),
+          exists: true,
+          markup_percent: mkPct === '' || mkPct == null ? null : Number(mkPct),
+          markup_fixed_pence: mkFix === '' || mkFix == null ? null : Math.round(Number(mkFix)),
+        },
+      }));
+      setSavedAt(Date.now()); setTimeout(() => setSavedAt(null), 2500);
+    } catch (e) { onError?.(`Save failed: ${e.message}`); }
+    finally { setBusy(false); }
+  };
+
+  const statusBox = !st
+    ? <div style={{ padding: '14px 16px', borderRadius: 12, background: 'var(--bg2)', border: '1px solid var(--bdr2)', fontSize: 12.5, color: 'var(--t3)' }}>Checking the Adyen connection…</div>
+    : (st.error || !st.configured)
+    ? <div style={{ padding: '14px 16px', borderRadius: 12, background: 'var(--bg2)', border: '1px solid var(--bdr2)', fontSize: 12.5, color: 'var(--t3)' }}>
+        <b style={{ color: 'var(--t1)' }}>Adyen — not reachable.</b><br/>
+        {st.error || 'Keys are not configured on this environment.'} Card payments will refuse safely at this venue until it is.
       </div>
-      <AdyenRow ok={st.online}>Online payments live — this venue's online shop charges through Adyen{st.environment === 'test' ? ' (test cards only)' : ''}</AdyenRow>
-      <AdyenRow ok={st.inPerson}>In-person on the tills — waiting for the test terminals, then the terminal flow ships</AdyenRow>
-      <AdyenRow ok={false}>Per-venue onboarding, rates and payouts — land with FranPOS's balance-platform access (sub-merchant phase)</AdyenRow>
-    </div>
+    : <div style={{ padding: '14px 16px', borderRadius: 12, background: 'var(--bg2)', border: '1px solid var(--bdr2)', display: 'flex', flexDirection: 'column', gap: 7 }}>
+        <div style={{ fontSize: 13, fontWeight: 700 }}>
+          Adyen — connected <span style={{ fontWeight: 400, color: 'var(--t3)' }}>· {st.merchantAccount} · {String(st.environment).toUpperCase()}</span>
+        </div>
+        <AdyenRow ok={st.online}>Online payments live — this venue's online shop charges through Adyen{st.environment === 'test' ? ' (test cards only)' : ''}</AdyenRow>
+        <AdyenRow ok={st.inPerson}>In-person on the tills — waiting for the test terminals, then the terminal flow ships</AdyenRow>
+        <AdyenRow ok={false}>Per-venue onboarding and payouts — land with FranPOS's balance-platform access (sub-merchant phase)</AdyenRow>
+      </div>;
+
+  return (
+    <>
+      {statusBox}
+      {/* Pricing — Phase 3: DISPLAY + future-billing config only. The venue sees
+          the effective rate read-only in Back Office → Card payments → Settings.
+          Nothing reads these at charge time; splits/commission collection is
+          Phase 4. */}
+      <div style={{ marginTop: 14 }}>
+        <div style={{ ...S.label, color: 'var(--t2)', marginBottom: 8 }}>Venue rate — what the venue pays per card transaction (blank = platform default)</div>
+        {acct == null && <div style={{ fontSize: 12, color: 'var(--t3)' }}>Loading rate…</div>}
+        {acct?.error && <div style={{ fontSize: 12, color: 'var(--red)' }}>Couldn't load the rate: {acct.error}</div>}
+        {acct && !acct.error && (
+          <>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 8 }}>
+              <MarkupField label="Rate %" value={mkPct} onChange={setMkPct} effective={effPct ?? 0} isOverride={mkPct !== ''} def={defPct ?? 0} />
+              <MarkupField label="Per-transaction fee" value={mkFix} onChange={setMkFix} effective={effFix ?? 0} isOverride={mkFix !== ''} def={defFix ?? 0} unit="p" />
+            </div>
+            <div style={{ display: 'flex', gap: 22, flexWrap: 'wrap', padding: '10px 12px', background: 'var(--bg2)', borderRadius: 8, marginBottom: 12, border: '1px solid var(--bdr)' }}>
+              <Stat label="Venue pays" value={effPct == null && effFix == null ? 'Not set' : `${Number(effPct ?? 0).toFixed(2)}% + ${Math.round(Number(effFix ?? 0))}p`} accent />
+              <Stat label="Shown to the venue as" value="ServOS Payments processing rate" />
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--t3)', marginBottom: 12, lineHeight: 1.5 }}>
+              The venue sees this read-only in Back Office → Card payments → Settings, branded ServOS Payments.
+              Billing from these rates is Phase 4 — nothing is charged from them yet.
+            </div>
+            <SaveRow busy={busy} dirty={dirty} savedAt={savedAt}
+              onSave={savePricing}
+              onReset={() => { setMkPct(acct?.account?.markup_percent ?? ''); setMkFix(acct?.account?.markup_fixed_pence ?? ''); }}
+            />
+          </>
+        )}
+      </div>
+    </>
   );
 }
 

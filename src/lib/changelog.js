@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.0',
+    date: '2026-08-19',
+    changes: [
+      'PROCESSING RATES NOW SHOW IN THE BACK OFFICE. The Settings tab in Card payments is real: it shows your card processing rate, for example 1.4% + 5p per transaction, with a note that your rates are set in your ServOS Payments agreement. It also shows two status chips, one for card processing and one for payouts. Everything on the page is read only. If your rates have not been added yet the page says so plainly and tells you to contact ServOS support.',
+      'Rates are set by ServOS, per venue. The internal admin portal now has a rates editor for ServOS Payments venues: a standard platform rate that applies everywhere, and an optional per venue rate that overrides it. Whatever a venue should pay, that is exactly what its Settings tab shows.',
+      'Nothing is charged from these rates yet. This release records and displays them only. Collecting the processing fee automatically is the next phase.',
+      'Round number on purpose: 5.7.0 marks phases 1 to 3 of ServOS Payments complete. Online payments, in person terminals, payment and dispute reports, payouts, monthly statements, and now per venue rates.',
+      'To go live this needs two server function deploys (payments-admin and adyen-financial). No database changes are needed, the columns already existed. Until the deploys, the Settings tab says it could not load your rates instead of erroring.',
+    ],
+  },
+  {
     version: '5.6.99',
     date: '2026-08-19',
     changes: [

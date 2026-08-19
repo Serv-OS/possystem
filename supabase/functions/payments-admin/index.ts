@@ -16,6 +16,8 @@
 //   ryft_onboarding_link { location_id, redirect_url, email? }
 //   ryft_pricing         { location_id, markup_percent, markup_fixed_pence, pricing_notes }
 //   ryft_fees            { location_id }  → actual GMV / Ryft fees paid / markup collected
+//   adyen_pricing        get/set per-venue markup on merchant_adyen_accounts + the
+//                        platform defaults on platform_settings (see handler comment)
 //
 // Auth: Ops DB user_profiles.role = 'super_admin' (matches stripe-link-merchant).
 // Ryft account API is the marketplace platform model — create a Sub-Account with
@@ -125,6 +127,86 @@ Deno.serve(async (req) => {
     const { data, error } = await platformAdmin.from('merchant_ryft_accounts').select('*').in('location_id', ids);
     if (error) return json({ error: error.message }, 500);
     return json({ accounts: data ?? [] });
+  }
+
+  // ── adyen_pricing: get/set OUR rate for ServOS Payments (Adyen) venues ───
+  //    Mirrors ryft_pricing/stripe_pricing, in one action with two scopes:
+  //      { }                                  → get the two platform defaults
+  //      { location_id }                      → get venue row + defaults + effective
+  //      { set:true, default_markup_percent, default_markup_fixed_pence }
+  //                                           → set the platform defaults
+  //      { set:true, location_id, markup_percent, markup_fixed_pence }
+  //                                           → set the venue override ('' / null clears)
+  //    Effective rate = per-field venue override, else the platform default
+  //    (same fallback the Ryft rate card uses). merchant_adyen_accounts is RLS
+  //    service-role-only, so both reads and writes MUST go through here.
+  //    A venue may have no row yet (per-venue balance accounts are a later
+  //    phase) — the venue write UPSERTS a rate-only row (location_id is the
+  //    only required column) instead of silently updating 0 rows.
+  //    ⚠ Phase 3: these rates are DISPLAY + future-billing configuration only.
+  //    Nothing reads them at charge time — split/commission collection is
+  //    Phase 4. Do not wire them into adyen-checkout/adyen-terminal-charge yet.
+  //    Handled BEFORE the location_id guard because the defaults scope has none.
+  if (action === 'adyen_pricing') {
+    const numOrNull = (v: unknown) => (v === '' || v === null || v === undefined ? null : Number(v));
+    const intOrNull = (v: unknown) => (v === '' || v === null || v === undefined ? null : Math.round(Number(v)));
+
+    if (body.set === true && !location_id) {
+      const { error } = await platformAdmin.from('platform_settings').update({
+        default_adyen_markup_percent: numOrNull(body.default_markup_percent),
+        default_adyen_markup_fixed_pence: intOrNull(body.default_markup_fixed_pence),
+        updated_at: new Date().toISOString(),
+        updated_by_user_id: caller.id,
+      }).eq('id', true);
+      if (error) return json({ error: `defaults update failed: ${error.message}` }, 500);
+      return json({ success: true });
+    }
+
+    if (body.set === true) {
+      const aLoc = await resolveLocation(location_id);
+      if (!aLoc) return json({ error: 'location not found in platform DB' }, 404);
+      const { error } = await platformAdmin.from('merchant_adyen_accounts').upsert({
+        location_id: aLoc.id,
+        markup_percent: numOrNull(body.markup_percent),
+        markup_fixed_pence: intOrNull(body.markup_fixed_pence),
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'location_id' });
+      if (error) return json({ error: `pricing update failed: ${error.message}` }, 500);
+      return json({ success: true });
+    }
+
+    // get
+    const { data: ps, error: psErr } = await platformAdmin.from('platform_settings')
+      .select('default_adyen_markup_percent, default_adyen_markup_fixed_pence').eq('id', true).maybeSingle();
+    if (psErr) return json({ error: `defaults read failed: ${psErr.message}` }, 500);
+    const defaults = {
+      default_markup_percent: ps?.default_adyen_markup_percent ?? null,
+      default_markup_fixed_pence: ps?.default_adyen_markup_fixed_pence ?? null,
+    };
+    if (!location_id) return json({ ok: true, defaults });
+
+    const aLoc = await resolveLocation(location_id);
+    if (!aLoc) return json({ error: 'location not found in platform DB' }, 404);
+    const { data: acct, error: aErr } = await platformAdmin.from('merchant_adyen_accounts')
+      .select('markup_percent, markup_fixed_pence, receive_payments_ok, payouts_ok, balance_account_id, store_id')
+      .eq('location_id', aLoc.id).maybeSingle();
+    if (aErr) return json({ error: `account read failed: ${aErr.message}` }, 500);
+    return json({
+      ok: true,
+      defaults,
+      account: {
+        exists: !!acct,
+        markup_percent: acct?.markup_percent ?? null,
+        markup_fixed_pence: acct?.markup_fixed_pence ?? null,
+        receive_payments_ok: !!acct?.receive_payments_ok,
+        payouts_ok: !!acct?.payouts_ok,
+        has_balance_account: !!acct?.balance_account_id,
+      },
+      effective: {
+        percent: acct?.markup_percent ?? defaults.default_markup_percent,
+        fixed_pence: acct?.markup_fixed_pence ?? defaults.default_markup_fixed_pence,
+      },
+    });
   }
 
   if (!location_id) return json({ error: 'location_id required' }, 400);

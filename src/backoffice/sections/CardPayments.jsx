@@ -13,9 +13,12 @@
 // Reports-shell assumptions. v5.6.99 fills Payouts (reports/AdyenPayouts:
 // settlement batches with per-transaction drill-down, fed by
 // adyen-report-ingest) and Documents (reports/AdyenStatements: monthly
-// printable statement). Settings stays an honest placeholder until per-venue
-// balance accounts exist (adyen-terminal-admin's v5.6.96 store probe is the
-// groundwork).
+// printable statement). v5.7.0 (Phase 3) fills Settings: a read-only
+// "Processing rates" card served by the adyen-financial `settings` action —
+// the venue's agreed rate (per-venue override, else the platform standard,
+// set by the platform admin in AdminBillingManager) plus processing/payout
+// status chips. Rates are DISPLAY only here: nothing charges from them yet —
+// splits/commission collection is Phase 4.
 //
 // Gated on the venue's processor being 'adyen' (locations.payment_processor
 // via the cached getLocationProcessor lookup, same source CardReaders uses).
@@ -62,13 +65,104 @@ function TabBtn({ active, label, onClick }) {
   );
 }
 
-// One-line placeholder card for the phases still to come.
-function ComingSoon({ title, body }) {
+function Chip({ on, label }) {
   return (
-    <div style={S.card}>
-      <div style={S.cardTitle}>{title}</div>
-      <p style={S.cardBody}>{body}</p>
-    </div>
+    <span style={{
+      fontSize: 10.5, fontWeight: 700, padding: '3px 9px', borderRadius: 999,
+      background: on ? 'var(--grn-d, rgba(21,194,106,.1))' : 'var(--bg2)',
+      color: on ? 'var(--grn)' : 'var(--t3)',
+      border: on ? 'none' : '1px solid var(--bdr)',
+      textTransform: 'uppercase', letterSpacing: '.05em',
+    }}>
+      {label}
+    </span>
+  );
+}
+
+// ─── Settings tab (Phase 3, v5.7.0) ─────────────────────────────────────────
+// Venue-facing and READ-ONLY. The rate comes from the adyen-financial
+// `settings` action: this venue's agreed rate if one is recorded, else the
+// ServOS standard rate. Rates are set by ServOS (the platform admin) as part
+// of the venue's agreement — there is deliberately no editing here.
+// ⚠ Display + future-billing configuration only in this phase: nothing is
+// charged from these rates yet. Splits/commission collection is Phase 4.
+function SettingsTab({ status }) {
+  const [data, setData] = useState(null);   // null = loading, {error} or settings payload
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      if (isMock) { if (alive) setData({ ok: true, rates: { percent: 1.4, fixed_pence: 5, source: 'platform' }, account: {} }); return; }
+      try {
+        const locId = await getLocationId().catch(() => null);
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session || !locId) { if (alive) setData({ error: 'Sign in to view your payment settings.' }); return; }
+        const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/adyen-financial`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+          body: JSON.stringify({ action: 'settings', ops_location_id: locId }),
+        });
+        const j = await res.json();
+        if (alive) setData(res.ok && j?.ok ? j : { error: j?.error || `HTTP ${res.status}` });
+      } catch (e) { if (alive) setData({ error: e.message }); }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  const active = status?.ok && status?.merchant;
+  const rates = data?.rates;
+  const hasRate = rates && (rates.percent != null || rates.fixed_pence != null);
+  // "1.4% + 5p", trimming trailing zeros on the percent.
+  const pctFmt = (v) => String(+Number(v ?? 0).toFixed(2));
+
+  return (
+    <>
+      <div style={S.card}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+          <div style={S.cardTitle}>Processing rates</div>
+          <Chip on={!!active} label={active ? 'Processing active' : 'Processing enabled'} />
+          <Chip on={!!data?.account?.payouts_ok} label={data?.account?.payouts_ok ? 'Payouts enabled' : 'Standard payout schedule'} />
+        </div>
+        {data == null && <p style={S.cardBody}>Loading your rates…</p>}
+        {data?.error && (
+          <p style={S.cardBody}>We could not load your rates right now. {data.error}</p>
+        )}
+        {data?.ok && hasRate && (
+          <>
+            <div style={{ border: '1px solid var(--bdr)', borderRadius: 10, padding: '14px 16px', background: 'var(--bg2)', maxWidth: 420 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 6 }}>
+                What you pay per card transaction
+              </div>
+              <div style={{ fontSize: 24, fontWeight: 800, color: 'var(--t1)' }}>
+                {pctFmt(rates.percent)}% + {Math.round(Number(rates.fixed_pence ?? 0))}p
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 6, lineHeight: 1.5 }}>
+                One simple all-in rate, per card payment.
+              </div>
+            </div>
+            <p style={{ ...S.cardBody, marginTop: 10 }}>
+              Your rates are set in your ServOS Payments agreement. To review them, talk to
+              your ServOS account manager.
+            </p>
+          </>
+        )}
+        {data?.ok && !hasRate && (
+          <p style={S.cardBody}>
+            Your processing rates are in your ServOS Payments agreement and have not been
+            added to this page yet. Contact ServOS support and we will show them here.
+          </p>
+        )}
+      </div>
+      <div style={S.card}>
+        <div style={S.cardTitle}>Payouts and bank details</div>
+        <p style={S.cardBody}>
+          Payout schedule, bank details and statement descriptor settings arrive with
+          per-venue payment accounts, in progress with our payment partner. Until then,
+          payouts continue on your existing settlement schedule. For card terminal
+          settings, see Hardware, then Card readers.
+        </p>
+      </div>
+    </>
   );
 }
 
@@ -179,9 +273,7 @@ export default function CardPayments() {
 
       {tab === 'payouts' && <AdyenPayouts />}
       {tab === 'documents' && <AdyenStatements />}
-      {tab === 'settings' && (
-        <ComingSoon title="Settings" body="Payout schedule, bank details and statement descriptor settings will live here. For card terminal settings, see Hardware, then Card readers." />
-      )}
+      {tab === 'settings' && <SettingsTab status={status} />}
     </div>
   );
 }
