@@ -501,6 +501,12 @@ Deno.serve(async (req) => {
       const b64img = btoa(bin);
       const msg = buildDisplayImageRequest({ poiid: tid, saleId: 'servos-brand', serviceId: newServiceId(), imageB64: b64img });
       const r = await adyenFetch('POST', terminalEndpoint(merchant, tid, 'sync', (maa?.region === 'US') ? 'us' : 'eu'), msg, { timeoutMs: 30_000 });
+      // Durable — the fleet's answers to new message shapes are the record that
+      // cracked every previous shape bug. Never rely on the panel toast alone.
+      void platformAdmin.from('adyen_webhook_events').insert({
+        event_key: `brand:${tid}:${Date.now()}`,
+        raw: { action: 'test_image', httpStatus: r.status, imageBytes: buf.length, response: r.data ?? null },
+      }).then(() => {}, () => {});
       return json({ ok: r.ok, status: r.status, imageBytes: buf.length, response: r.data });
     }
 
@@ -510,6 +516,10 @@ Deno.serve(async (req) => {
       if (!tid) return json({ error: 'terminal_id required' }, 400);
       const msg = buildDisplayIdleRequest({ poiid: tid, saleId: 'servos-brand', serviceId: newServiceId() });
       const r = await adyenFetch('POST', terminalEndpoint(merchant, tid, 'sync', (maa?.region === 'US') ? 'us' : 'eu'), msg, { timeoutMs: 30_000 });
+      void platformAdmin.from('adyen_webhook_events').insert({
+        event_key: `brand:${tid}:${Date.now()}`,
+        raw: { action: 'test_idle', httpStatus: r.status, response: r.data ?? null },
+      }).then(() => {}, () => {});
       return json({ ok: r.ok, status: r.status, response: r.data });
     }
 

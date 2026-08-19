@@ -235,7 +235,7 @@ Deno.serve(async (req) => {
   // ── 1. The terminal row IS the location authority ──────────────────────────
   const { data: term, error: termErr } = await opsAdmin
     .from('terminal_devices')
-    .select('id, location_id, status, active, label, tip_config, bound_pos_device_id, adyen_terminal_id')
+    .select('id, location_id, status, active, label, tip_config, bound_pos_device_id, adyen_terminal_id, serial_number')
     .eq('id', target_terminal_id)
     .maybeSingle();
   if (termErr) return json({ error: termErr.message }, 500);
@@ -336,6 +336,25 @@ Deno.serve(async (req) => {
     result: resolvedTipConfig,
   }));
 
+  // ── 3c. Demo reader (v5.6.92) — the TERMINAL ROW is the authority, again ───
+  // The browser demo reader (?mode=readerdemo) self-registers with a serial the
+  // surface mints as DEMO-… (register_terminal_device stores it verbatim; a real
+  // PAX serial or paxpay's AID-<ANDROID_ID> ladder can never start with DEMO-).
+  // Jobs addressed to such a terminal are marked simulated=true, because
+  // terminal_report_result only settles a device-reported outcome on SIMULATED
+  // jobs — on a real job the report is an advisory claim and the job would
+  // strand in 'charging' until the sweeper parked it needs_human. Simulated
+  // also means the real charge paths refuse it outright (terminal-job-charge /
+  // adyen-terminal-charge both 409 on simulated), so a demo job can never touch
+  // a processor. The booked check stays auditable: the demo reader reports a
+  // DEMO-… transaction id, which lands on the closed check.
+  const isDemoTerminal = String((term as any).serial_number ?? '').toUpperCase().startsWith('DEMO-');
+  if (isDemoTerminal) {
+    console.log('[terminal-job-create] demo terminal — job will be simulated', JSON.stringify({
+      job_id, terminal: target_terminal_id, serial: (term as any).serial_number,
+    }));
+  }
+
   // ── 4. Insert. On 23505 return the EXISTING live job for this check ────────
   const row = {
     id: job_id,
@@ -350,6 +369,7 @@ Deno.serve(async (req) => {
     tip_config: resolvedTipConfig,
     closed_check_id,
     check_draft,
+    simulated: isDemoTerminal,
     // The terminal row is the PROCESSOR authority too (v5.6.46): a terminal
     // linked to an Adyen POIID routes its jobs to adyen-terminal-charge; the
     // PAX/Ryft fleet keeps 'ryft'. No client input trusted.
