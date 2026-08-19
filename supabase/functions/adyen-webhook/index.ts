@@ -45,7 +45,10 @@ const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const HMAC_KEY = Deno.env.get('ADYEN_HMAC_KEY') ?? '';
 const BASIC_USER = Deno.env.get('ADYEN_WEBHOOK_USER') ?? '';
 const BASIC_PASS = Deno.env.get('ADYEN_WEBHOOK_PASS') ?? '';
-const REJECT_INVALID_HMAC = false;   // ⚠ arm before LIVE, after test events verify green
+// ARMED 19 Aug (was the go-live task): 51/51 signed events in adyen_events
+// verified hmac_valid=true with the shared recipe, so a bad signature is now an
+// attack or a key rotation, not a setup doubt — and either must bounce.
+const REJECT_INVALID_HMAC = true;   // ⚠ arm before LIVE, after test events verify green
 
 const admin = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } });
 
