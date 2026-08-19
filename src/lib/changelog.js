@@ -7,6 +7,19 @@
 
 export const CHANGELOG = [
   {
+    version: '5.6.94',
+    date: '2026-08-19',
+    changes: [
+      'BAR TABS NOW WORK WITH THE DEMO READER. On a venue set up for Adyen, opening a tab with a card hold on the demo reader places a simulated hold, and raising the hold, releasing it and charging it at close all work the same way. Every simulated hold is clearly marked: its reference starts with DEMO-HOLD and every action on it is written to the audit log, so demo tabs are as easy to spot as demo sales. The simulation only runs for a demo reader, a DEMO-HOLD reference can never be sent to the card processor, and real readers and real holds are completely unaffected.',
+      'The demo reader window shows tab holds happening: the present card animation and a green tick when a hold is placed, increased or charged, and a grey tick when one is released.',
+      'The demo reader now always fits on the screen. The whole reader, its Tap, Decline and Cancel buttons and its status line scale to the window, so the buttons are never pushed out of sight below the bottom edge. The operator buttons also sit directly under the reader now, as one piece.',
+      'Fixed: after a failed card hold on an Adyen venue, the Try hold again button retried through Stripe, which could never work there and showed a confusing reader error. It now retries on the same reader that failed.',
+      'Fixed: on a venue that does not take card payments through Stripe, opening a tab with a hold could fire a broken request at Stripe (the "reader must be a string" error seen on the till today). The till now checks that the assigned reader really is a Stripe reader before asking Stripe to hold a card.',
+      'A till running in a browser that is signed into Back Office can now place, raise, release and charge tab card holds. That sign in was already trusted to send whole card payments to the reader, but the hold path refused it, so a tab with a hold could not be opened from such a till.',
+      'Bar tabs closed on a held card now record which card processor held the card, so a refund on that check goes back through the right processor. They previously always recorded Stripe, even when the hold was taken on an Adyen reader.',
+    ],
+  },
+  {
     version: '5.6.93',
     date: '2026-08-19',
     changes: [

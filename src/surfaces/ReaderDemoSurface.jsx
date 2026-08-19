@@ -482,7 +482,7 @@ export default function ReaderDemoSurface() {
     return () => clearTimeout(t);
   }, [phase]);
 
-  // ── bar-tab hold animation (v5.6.93) ──────────────────────────────────────
+  // ── bar-tab hold animation (v5.6.94) ──────────────────────────────────────
   // Tab pre-auth holds have NO terminal_jobs row for this window to poll — the
   // server simulates them directly (adyen-terminal-charge's DEMO-HOLD branch).
   // The POS broadcasts each hold action on a same-origin channel purely so
@@ -515,7 +515,7 @@ export default function ReaderDemoSurface() {
     return () => { timers.forEach(clearTimeout); ch.close(); };
   }, []);
 
-  // ── fit-to-viewport scaling (v5.6.93) ─────────────────────────────────────
+  // ── fit-to-viewport scaling (v5.6.94) ─────────────────────────────────────
   // The whole prop — bezel + operator strip + status lines — must be visible
   // with NO scrolling: on laptop screens the strip fell below the fold and the
   // owner reported "there are no buttons". The bezel keeps its fixed design
@@ -588,7 +588,7 @@ export default function ReaderDemoSurface() {
         </div>
       );
     }
-    // Bar-tab hold mime (v5.6.93) — cosmetic overlay while otherwise idle.
+    // Bar-tab hold mime (v5.6.94) — cosmetic overlay while otherwise idle.
     if (phase === 'idle' && holdAnim) {
       if (holdAnim.stage === 'present') {
         const heading = holdAnim.kind === 'hold_increase' ? 'Increase hold'
@@ -751,6 +751,12 @@ export default function ReaderDemoSurface() {
     <div style={sx.page}>
       <style>{RDEMO_CSS}</style>
 
+      {/* Sized to the SCALED footprint so the page's flex centring stays true
+          (a transform never changes layout size). The inner column is the
+          natural-size prop, measured by propRef and scaled to fit. */}
+      <div style={{ width: Math.round(fit.w * fit.scale), height: Math.round(fit.h * fit.scale) }}>
+      <div ref={propRef} style={{ width: PROP_W, transform: `scale(${fit.scale})`, transformOrigin: 'top left', display: 'flex', flexDirection: 'column', alignItems: 'stretch' }}>
+
       {/* ── the reader ── */}
       <div style={sx.bezel}>
         <div style={sx.speaker} />
@@ -800,6 +806,9 @@ export default function ReaderDemoSurface() {
       <div style={{ ...sx.statusLine, fontSize: 11, opacity: 0.55, marginTop: 4 }}>
         Demo reader. Payments settle as simulated card sales marked DEMO. Real readers are unaffected.
       </div>
+
+      </div>
+      </div>
     </div>
   );
 }
@@ -808,20 +817,24 @@ export default function ReaderDemoSurface() {
 
 const sx = {
   page: {
-    minHeight: '100vh',
+    // v5.6.94: fixed-height, no scrolling — the prop column is transform-scaled
+    // to fit (see the fit-to-viewport effect), so nothing can fall below the fold.
+    height: '100vh',
+    overflow: 'hidden',
     background: 'linear-gradient(180deg, #eef1f0 0%, #dde3e0 100%)',
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 24,
+    padding: 12,
+    boxSizing: 'border-box',
     fontFamily: "-apple-system, 'Segoe UI', Roboto, sans-serif",
     color: INK,
   },
   bezel: {
-    width: 380,
+    width: '100%',
     height: 700,
-    maxHeight: 'calc(100vh - 150px)',
+    boxSizing: 'border-box',
     background: INK,
     borderRadius: 44,
     padding: '26px 14px 22px',
@@ -889,13 +902,19 @@ const sx = {
     boxShadow: '0 4px 14px rgba(0,0,0,.3)',
   },
   opsStrip: {
+    // v5.6.94: attached directly under the bezel at the same width so it reads
+    // as part of the prop (and so the column's natural size is deterministic
+    // for the fit-to-viewport measurement).
     display: 'flex', gap: 8, alignItems: 'center',
-    marginTop: 18, flexWrap: 'wrap', justifyContent: 'center',
+    marginTop: 10, flexWrap: 'wrap', justifyContent: 'center',
+    width: '100%', boxSizing: 'border-box', padding: '10px 12px',
+    background: '#fff', border: '1px solid #d8ddda', borderRadius: 16,
+    boxShadow: '0 10px 26px rgba(15,18,17,.14)',
   },
   opsBtn: {
-    padding: '8px 14px', borderRadius: 10,
+    padding: '8px 10px', borderRadius: 10,
     border: '1px solid #c6ccc9', background: '#fff',
-    fontSize: 13.5, fontWeight: 600, color: INK, cursor: 'pointer',
+    fontSize: 13, fontWeight: 600, color: INK, cursor: 'pointer',
   },
   opsToggle: {
     display: 'flex', alignItems: 'center', gap: 6,

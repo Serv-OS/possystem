@@ -183,7 +183,7 @@ async function logRefusal(reason: string, ctx: Record<string, unknown>) {
   }).then(() => {}, () => {});
 }
 
-// v5.6.93 — DEMO BAR-TAB HOLDS. The browser demo reader (?mode=readerdemo) is a
+// v5.6.94 — DEMO BAR-TAB HOLDS. The browser demo reader (?mode=readerdemo) is a
 // terminal_devices row whose serial the surface mints as DEMO-… — a real PAX
 // serial or paxpay's AID-<ANDROID_ID> ladder can never start with that. That is
 // the same server-side authority terminal-job-create trusts to mark demo SALES
@@ -222,7 +222,7 @@ Deno.serve(async (req) => {
 
   // ── BAR-TAB HOLDS (v5.6.57) — pre-auth on the reader, no job row: the tab
   // (bar_tabs pre_auth_* columns) carries the hold. Fence: service role, a
-  // paired POS device at the venue, or (v5.6.93) a venue user — see deviceAt.
+  // paired POS device at the venue, or (v5.6.94) a venue user — see deviceAt.
   // Capture/release/increase mirror the adyen-modify endpoints but stay HERE
   // because that fn's fence is BO-user based and a till must be able to close
   // its own tab. DEMO- terminals / DEMO-HOLD- references simulate server-side
@@ -230,7 +230,7 @@ Deno.serve(async (req) => {
   if (['hold_start', 'hold_capture', 'hold_release', 'hold_increase'].includes(action)) {
     const deviceAt = async (locId: string) => {
       if (isServiceRole) return true;
-      // v5.6.93 — ALSO accept a signed-in USER with user_locations access to
+      // v5.6.94 — ALSO accept a signed-in USER with user_locations access to
       // the venue (or super_admin), the same mirror v5.6.89 added to the job
       // fence below and for the same live reason: a browser till shares its
       // ONE Supabase session with Back Office, so TabPreAuthTerminal's
@@ -306,7 +306,7 @@ Deno.serve(async (req) => {
 
       const maa = await maaFor(term.location_id);
       if (!maa?.merchant_account) {
-        // (v5.6.93: this refusal used to log job.id — but hold actions have no
+        // (v5.6.94: this refusal used to log job.id — but hold actions have no
         // job row, and `job` is declared further down, so the log line itself
         // threw a ReferenceError. Log the terminal instead.)
         await logRefusal('venue has no Adyen merchant account', { action, terminalDeviceId, termLocation: term.location_id });
@@ -346,7 +346,7 @@ Deno.serve(async (req) => {
     const amountMinor = body.amount_minor != null ? Math.round(Number(body.amount_minor)) : null;
     const currency = String(body.currency || 'GBP').toUpperCase().slice(0, 3);
 
-    // DEMO-HOLD short-circuit (v5.6.93) — FIRST, before the merchant-account
+    // DEMO-HOLD short-circuit (v5.6.94) — FIRST, before the merchant-account
     // lookup and before anything that could build an Adyen request. A
     // DEMO-HOLD-… reference is only ever minted by the demo hold_start branch
     // above; this guard makes it impossible to send one to Adyen. Same field
