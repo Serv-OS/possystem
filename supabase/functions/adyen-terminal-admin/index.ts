@@ -499,15 +499,32 @@ Deno.serve(async (req) => {
       const CHUNK = 0x8000;
       for (let i = 0; i < buf.length; i += CHUNK) bin += String.fromCharCode(...buf.subarray(i, i + CHUNK));
       const b64img = btoa(bin);
-      const msg = buildDisplayImageRequest({ poiid: tid, saleId: 'servos-brand', serviceId: newServiceId(), imageB64: b64img });
-      const r = await adyenFetch('POST', terminalEndpoint(merchant, tid, 'sync', (maa?.region === 'US') ? 'us' : 'eu'), msg, { timeoutMs: 30_000 });
-      // Durable — the fleet's answers to new message shapes are the record that
-      // cracked every previous shape bug. Never rely on the panel toast alone.
+      // First press (19 Aug, S1F2L fw 1.133.3): object-form DisplayOutput came
+      // back HTTP 200 with an EMPTY DisplayResponse — acknowledged, rendered
+      // nothing. The nexo spec makes DisplayRequest.DisplayOutput an ARRAY;
+      // Adyen's docs sample shows an object. Try both in one press and record
+      // both answers, so one tap settles the shape question per model.
+      const rendered = (d: unknown) =>
+        !!(d as Record<string, any>)?.SaleToPOIResponse?.DisplayResponse?.OutputResult;
+      const ep = terminalEndpoint(merchant, tid, 'sync', (maa?.region === 'US') ? 'us' : 'eu');
+      const objMsg = buildDisplayImageRequest({ poiid: tid, saleId: 'servos-brand', serviceId: newServiceId(), imageB64: b64img });
+      const arrMsg = buildDisplayImageRequest({ poiid: tid, saleId: 'servos-brand', serviceId: newServiceId(), imageB64: b64img });
+      (arrMsg.SaleToPOIRequest.DisplayRequest as Record<string, unknown>).DisplayOutput =
+        [ (arrMsg.SaleToPOIRequest.DisplayRequest as Record<string, any>).DisplayOutput ];
+      const rArr = await adyenFetch('POST', ep, arrMsg, { timeoutMs: 30_000 });
+      let rObj: { ok: boolean; status: number; data: unknown } | null = null;
+      if (!rendered(rArr.data)) {
+        rObj = await adyenFetch('POST', ep, objMsg, { timeoutMs: 30_000 });
+      }
+      const winner = rendered(rArr.data) ? 'array' : rendered(rObj?.data) ? 'object' : 'neither';
       void platformAdmin.from('adyen_webhook_events').insert({
         event_key: `brand:${tid}:${Date.now()}`,
-        raw: { action: 'test_image', httpStatus: r.status, imageBytes: buf.length, response: r.data ?? null },
+        raw: { action: 'test_image', winner, imageBytes: buf.length,
+               arrayForm: { httpStatus: rArr.status, response: rArr.data ?? null },
+               objectForm: rObj ? { httpStatus: rObj.status, response: rObj.data ?? null } : 'skipped (array rendered)' },
       }).then(() => {}, () => {});
-      return json({ ok: r.ok, status: r.status, imageBytes: buf.length, response: r.data });
+      return json({ ok: winner !== 'neither', status: rArr.status, imageBytes: buf.length, winner,
+                    response: winner === 'neither' ? { arrayForm: rArr.data, objectForm: rObj?.data } : undefined });
     }
 
     // ── test_idle: force the terminal back to its own standby screen ─────────
