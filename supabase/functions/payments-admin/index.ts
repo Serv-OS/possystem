@@ -21,10 +21,16 @@
 //                        card on platform_settings.default_adyen_rate_card, with
 //                        the v5.7.0 flat markup fields kept as the legacy
 //                        card_present fallback (see handler comment)
+//   saas_pricing         get/set each venue's SaaS plan (v5.7.4): plan +
+//                        extra devices + HubRise add-on on OPS subscriptions,
+//                        priced from the SAAS_CATALOG const below (the single
+//                        source of truth), with paired-device counts, month
+//                        card volume and advisory plan recommendations
 //   revenue              { month } → per-location platform revenue for the admin
 //                        Revenue section: processed volume + count by pricing
-//                        tier, commission earned, SaaS fees from ops
-//                        subscriptions, Adyen fees where settlement reports have
+//                        tier, commission earned, itemized SaaS fees from ops
+//                        subscriptions (plan + devices + HubRise, with advisory
+//                        flags), Adyen fees where settlement reports have
 //                        landed them
 //
 // Auth: Ops DB user_profiles.role = 'super_admin' (matches stripe-link-merchant).
@@ -52,6 +58,45 @@ const platformAdmin = createClient(
   Deno.env.get('PLATFORM_SUPABASE_SERVICE_ROLE_KEY') ?? '',
   { auth: { autoRefreshToken: false, persistSession: false } },
 );
+
+// ── SaaS plan catalog (v5.7.4) — the single source of truth for plan pricing.
+//    UNITS, kept deliberately explicit because they differ:
+//      · monthly / extra_device_monthly / hubrise_monthly are POUNDS
+//        (ops subscriptions.monthly_fee is numeric pounds, e.g. '149.00')
+//      · volume_min / volume_max are MINOR UNITS (pence), because card volume
+//        is summed from platform adyen_payments.amount_minor
+//    Bands: Free covers up to £8,000 monthly card volume, Growth £8,000.01 to
+//    £15,000, Scale above £15,000. The bands are ADVISORY — the operator picks
+//    the plan manually and the system only recommends when they disagree.
+const SAAS_CATALOG = {
+  plans: {
+    free:   { label: 'Free',   monthly: 0,   devices: 2,  volume_min: 0,       volume_max: 800000 },
+    growth: { label: 'Growth', monthly: 149, devices: 5,  volume_min: 800001,  volume_max: 1500000 },
+    scale:  { label: 'Scale',  monthly: 299, devices: 10, volume_min: 1500001, volume_max: null },
+  } as Record<string, { label: string; monthly: number; devices: number; volume_min: number; volume_max: number | null }>,
+  extra_device_monthly: 39, // pounds per month, per device beyond the plan allowance
+  hubrise_monthly: 45,      // pounds per month, per-venue add-on flag
+};
+
+// Which plan the volume band says a venue SHOULD be on. volumeMinor is PENCE.
+function saasPlanForVolume(volumeMinor: number): string {
+  for (const [key, p] of Object.entries(SAAS_CATALOG.plans)) {
+    if (volumeMinor >= p.volume_min && (p.volume_max === null || volumeMinor <= p.volume_max)) return key;
+  }
+  return 'scale';
+}
+
+// Monthly fee in POUNDS for plan + extras — the number written to
+// subscriptions.monthly_fee (2dp).
+function saasMonthlyFee(plan: string, extraDevices: number, hubrise: boolean): number {
+  const base = SAAS_CATALOG.plans[plan]?.monthly ?? 0;
+  return Math.round((base + extraDevices * SAAS_CATALOG.extra_device_monthly + (hubrise ? SAAS_CATALOG.hubrise_monthly : 0)) * 100) / 100;
+}
+
+const SAAS_MIGRATION_NOTE = 'The extra devices and HubRise columns are not on the subscriptions table yet. Apply supabase/migrations/20260822_saas_plans.sql on the Ops database, then save again.';
+
+// What the device count actually is — shown to the operator, so say it plainly.
+const DEVICE_COUNT_NOTE = 'Paired devices on record for the venue in the devices registry (POS, kiosk, KDS and handheld rows not marked unpaired), whether or not currently online.';
 
 // Ryft doesn't expose a single charges_enabled flag like Stripe — derive a
 // usable status from the verification block + card capabilities, and keep the
@@ -166,7 +211,7 @@ Deno.serve(async (req) => {
   if (action === 'adyen_pricing') {
     const numOrNull = (v: unknown) => (v === '' || v === null || v === undefined ? null : Number(v));
     const intOrNull = (v: unknown) => (v === '' || v === null || v === undefined ? null : Math.round(Number(v)));
-    const isMissingColumn = (msg: unknown) => /does not exist|42703/i.test(String(msg ?? ''));
+    const isMissingColumn = (msg: unknown) => /does not exist|42703|PGRST204|Could not find the/i.test(String(msg ?? ''));
     const migrationHint = 'rate-card columns missing — hand-apply migration 20260821b_adyen_rate_card.sql first';
 
     if (body.set === true && !location_id) {
@@ -262,20 +307,195 @@ Deno.serve(async (req) => {
     });
   }
 
+  // ── saas_pricing: get/set each venue's SaaS plan (v5.7.4) ────────────────
+  //    Peter invoices SaaS manually through the CRM — the platform only STORES
+  //    the plan per venue and REPORTS the money. Pricing comes from
+  //    SAAS_CATALOG above (single source of truth); the computed monthly fee is
+  //    written to ops subscriptions.monthly_fee in POUNDS.
+  //      { }                                      → { catalog, venues, typed }
+  //      { set:true, location_id, plan, extra_devices, hubrise } → update/insert
+  //    subscriptions is an OPS DB table — every read and write here uses
+  //    opsAdmin, never platformAdmin. Never touches stripe_* or gmv_* columns.
+  //    Tolerates migration 20260822 not being applied yet: reads retry without
+  //    the two new columns and return typed:false; writes that need them return
+  //    a plain-English pointer to the migration.
+  //    Handled BEFORE the location_id guard because the get scope has none.
+  if (action === 'saas_pricing') {
+    const isMissingColumn = (msg: unknown) => /does not exist|42703|PGRST204|Could not find the/i.test(String(msg ?? ''));
+
+    if (body.set === true) {
+      if (!location_id) return json({ error: 'location_id required' }, 400);
+      const plan = String(body.plan ?? '');
+      if (!SAAS_CATALOG.plans[plan]) return json({ error: `plan must be one of: ${Object.keys(SAAS_CATALOG.plans).join(', ')}` }, 400);
+      const extra = Number(body.extra_devices);
+      if (!Number.isInteger(extra) || extra < 0) return json({ error: 'extra_devices must be a whole number, zero or more' }, 400);
+      if (typeof body.hubrise !== 'boolean') return json({ error: 'hubrise must be true or false' }, 400);
+      const hubrise = body.hubrise as boolean;
+      const monthly_fee = saasMonthlyFee(plan, extra, hubrise).toFixed(2); // POUNDS, 2dp
+      const patch = { plan, extra_devices: extra, hubrise, monthly_fee, updated_at: new Date().toISOString() };
+
+      const { data: updated, error: upErr } = await opsAdmin.from('subscriptions')
+        .update(patch).eq('location_id', location_id).select('id');
+      if (upErr) {
+        if (isMissingColumn(upErr.message)) return json({ error: SAAS_MIGRATION_NOTE }, 500);
+        return json({ error: `subscription update failed: ${upErr.message}` }, 500);
+      }
+      if (!updated || updated.length === 0) {
+        // No subscription row for this venue yet — insert one, resolving
+        // org_id the way the existing rows carry it: the ops locations.org_id
+        // for the venue (verified identical on all six live rows).
+        const { data: opsLoc, error: locErr } = await opsAdmin.from('locations')
+          .select('id, org_id').eq('id', location_id).maybeSingle();
+        if (locErr || !opsLoc) return json({ error: 'location not found in the ops database' }, 404);
+        const { error: insErr } = await opsAdmin.from('subscriptions').insert({
+          org_id: opsLoc.org_id,
+          location_id,
+          billing_period_start: new Date().toISOString().slice(0, 10),
+          ...patch,
+        });
+        if (insErr) {
+          if (isMissingColumn(insErr.message)) return json({ error: SAAS_MIGRATION_NOTE }, 500);
+          // Two concurrent first-saves race the read-then-insert; the unique
+          // index on location_id (20260822) turns the loser into 23505 —
+          // finish it as the update it should have been.
+          if (String((insErr as any).code ?? '') === '23505' || /duplicate key/i.test(insErr.message)) {
+            const { error: reErr } = await opsAdmin.from('subscriptions')
+              .update(patch).eq('location_id', location_id);
+            if (reErr) return json({ error: `subscription update failed: ${reErr.message}` }, 500);
+          } else {
+            return json({ error: `subscription insert failed: ${insErr.message}` }, 500);
+          }
+        }
+      }
+      return json({ ok: true, success: true, plan, extra_devices: extra, hubrise, monthly_fee: Number(monthly_fee) });
+    }
+
+    // get — the catalog plus one entry per ops venue.
+    let typed = true;
+    let { data: subs, error: subErr } = await opsAdmin.from('subscriptions')
+      .select('location_id, org_id, plan, monthly_fee, extra_devices, hubrise');
+    if (subErr && isMissingColumn(subErr.message)) {
+      typed = false;
+      ({ data: subs, error: subErr } = await opsAdmin.from('subscriptions')
+        .select('location_id, org_id, plan, monthly_fee'));
+    }
+    if (subErr) return json({ error: `subscriptions read failed: ${subErr.message}` }, 500);
+    const subByLoc = new Map<string, any>();
+    for (const s of subs ?? []) if (s.location_id) subByLoc.set(s.location_id, s);
+
+    const { data: opsLocs, error: olErr } = await opsAdmin.from('locations').select('id, name, org_id');
+    if (olErr) return json({ error: `locations read failed: ${olErr.message}` }, 500);
+
+    // Paired device count per venue from the ops devices registry — a device
+    // is POS, kiosk, KDS or handheld MPOS; "paired" = any row for the location
+    // whose status is not 'unpaired' (live statuses today: active, online).
+    // Counted as rows on record, NOT as currently-online. Breakdown by type.
+    const { data: devs, error: devErr } = await opsAdmin.from('devices').select('location_id, type, status');
+    if (devErr) return json({ error: `devices read failed: ${devErr.message}` }, 500);
+    const devByLoc = new Map<string, { count: number; by_type: Record<string, number> }>();
+    for (const d of devs ?? []) {
+      if (!d.location_id || d.status === 'unpaired') continue;
+      if (!devByLoc.has(d.location_id)) devByLoc.set(d.location_id, { count: 0, by_type: {} });
+      const agg = devByLoc.get(d.location_id)!;
+      agg.count++;
+      const t = String(d.type ?? 'unknown');
+      agg.by_type[t] = (agg.by_type[t] ?? 0) + 1;
+    }
+
+    // HubRise: a hubrise_connections row with status 'connected' is a live
+    // connection (hubrise-connect writes status:'connected' on OAuth success
+    // and the Back Office reads connected as exactly that check), so this is a
+    // reliable signal. location_id there is the ops location id as text.
+    const { data: hub, error: hubErr } = await opsAdmin.from('hubrise_connections').select('location_id, status');
+    if (hubErr) return json({ error: `hubrise read failed: ${hubErr.message}` }, 500);
+    const hubConnected = new Set((hub ?? []).filter((h: any) => h.status === 'connected').map((h: any) => String(h.location_id)));
+
+    // Current-calendar-month card volume in MINOR UNITS per venue, from
+    // platform adyen_payments — same success filter and same
+    // locations.ops_location_id mapping as the revenue action.
+    // The scan covers the PREVIOUS complete month plus the current month to
+    // date. The plan recommendation is judged on whichever is higher: judging
+    // on month-to-date alone would tell every paid venue "suggests Free" for
+    // the first days of each month, while a genuine upgrade (MTD already past
+    // the band) should nudge immediately.
+    const now = new Date();
+    const mFrom = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 1));
+    const curStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
+    const mTo = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+    const { data: pLocs, error: plErr } = await platformAdmin.from('locations').select('id, ops_location_id');
+    if (plErr) return json({ error: `platform locations read failed: ${plErr.message}` }, 500);
+    const opsIdByPlatform = new Map<string, string>();
+    for (const l of pLocs ?? []) if (l.ops_location_id) opsIdByPlatform.set(l.id, l.ops_location_id);
+    const volByOps = new Map<string, number>();       // current month to date
+    const prevVolByOps = new Map<string, number>();   // previous complete month
+    let volumeCapped = true; // stays true only if the loop never sees a short page
+    const VCAP = 20000, VPAGE = 1000;
+    for (let idx = 0; idx < VCAP; idx += VPAGE) {
+      const res = await platformAdmin.from('adyen_payments')
+        .select('location_id, amount_minor, success, last_event_code, created_at')
+        .gte('created_at', mFrom.toISOString()).lt('created_at', mTo.toISOString())
+        .order('created_at', { ascending: true }).range(idx, idx + VPAGE - 1);
+      if (res.error) return json({ error: `payments read failed: ${res.error.message}` }, 500);
+      for (const r of (res.data ?? []) as any[]) {
+        if (r.success !== true || r.last_event_code === 'CANCELLATION') continue;
+        const opsId = r.location_id ? opsIdByPlatform.get(r.location_id) : null;
+        if (!opsId) continue;
+        const bucket = String(r.created_at) < curStart ? prevVolByOps : volByOps;
+        bucket.set(opsId, (bucket.get(opsId) ?? 0) + (Number(r.amount_minor) || 0));
+      }
+      if ((res.data ?? []).length < VPAGE) { volumeCapped = false; break; }
+    }
+
+    const venues = (opsLocs ?? []).map((l: any) => {
+      const sub = subByLoc.get(l.id) ?? null;
+      const plan = String(sub?.plan ?? 'free');
+      const planDef = SAAS_CATALOG.plans[plan] ?? null;
+      const extra = typed ? Number(sub?.extra_devices) || 0 : 0;
+      const hubOn = typed ? !!sub?.hubrise : false;
+      const devices = devByLoc.get(l.id) ?? { count: 0, by_type: {} };
+      const volume_minor = volByOps.get(l.id) ?? 0;
+      const prev_volume_minor = prevVolByOps.get(l.id) ?? 0;
+      const recommended = saasPlanForVolume(Math.max(volume_minor, prev_volume_minor));
+      const allowance = planDef ? planDef.devices + extra : null;
+      return {
+        location_id: l.id,
+        org_id: l.org_id,
+        name: l.name ?? '(unnamed venue)',
+        has_subscription: !!sub,
+        plan,
+        monthly_fee: Number(sub?.monthly_fee) || 0, // POUNDS as stored
+        extra_devices: extra,
+        hubrise: hubOn,
+        devices,
+        plan_device_allowance: planDef?.devices ?? null,
+        volume_minor, // PENCE, current calendar month to date
+        prev_volume_minor, // PENCE, previous complete month
+        hubrise_detected: hubConnected.has(String(l.id)),
+        // Advisory only. Free at low volume is a correct, configured state.
+        recommended_plan: recommended !== plan ? recommended : null,
+        devices_over: allowance != null && devices.count > allowance ? { count: devices.count, allowance } : null,
+      };
+    });
+    venues.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+
+    return json({ ok: true, typed, catalog: SAAS_CATALOG, device_count_note: DEVICE_COUNT_NOTE, migration_note: typed ? null : SAAS_MIGRATION_NOTE, volume_capped: volumeCapped, venues });
+  }
+
   // ── revenue: the internal platform-revenue report (admin Revenue section) ──
   //    { month: 'YYYY-MM' } → per location: processed volume + count by pricing
   //    tier (adyen_payments.rate_category), commission earned
   //    (sum commission_minor), Adyen fees where settlement reports have filled
-  //    fee_minor, and the SaaS fee from the ops subscriptions table
-  //    (plan + monthly_fee — the only pricing that exists; if every plan is £0
-  //    the response flags that SaaS pricing needs configuring rather than
-  //    inventing numbers). Honest about costs: what Adyen charges US arrives
+  //    fee_minor, and the SaaS fee from the ops subscriptions table, itemized
+  //    per venue (plan fee + extra devices + HubRise from SAAS_CATALOG) with
+  //    advisory flags where volume or device count disagrees with the chosen
+  //    plan. A venue on Free at £0 is a legitimately configured state.
+  //    Honest about costs: what Adyen charges US arrives
   //    per payment only via settlement-report ingestion (fee_minor), so margin
   //    is computed only where fee data exists.
   if (action === 'revenue') {
     const month = String(body.month ?? '');
     if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return json({ error: 'month must be YYYY-MM' }, 400);
-    const isMissingColumn = (msg: unknown) => /does not exist|42703/i.test(String(msg ?? ''));
+    const isMissingColumn = (msg: unknown) => /does not exist|42703|PGRST204|Could not find the/i.test(String(msg ?? ''));
     const from = new Date(`${month}-01T00:00:00Z`);
     const to = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth() + 1, 1));
 
@@ -317,14 +537,31 @@ Deno.serve(async (req) => {
     const locByOps = new Map<string, any>();
     for (const l of locs ?? []) { locById.set(l.id, l); if (l.ops_location_id) locByOps.set(l.ops_location_id, l); }
 
-    // SaaS: the ops subscriptions table is the only SaaS pricing that exists —
-    // plan + monthly_fee per location.
-    const { data: subs, error: subErr } = await opsAdmin.from('subscriptions')
-      .select('location_id, org_id, plan, monthly_fee');
+    // SaaS (v5.7.4): ops subscriptions stores plan + extra_devices + hubrise +
+    // the computed monthly_fee (POUNDS). Itemized per venue below from
+    // SAAS_CATALOG. Reads retry without the two 20260822 columns and report
+    // saas_typed:false until the migration is applied.
+    let saasTyped = true;
+    let { data: subs, error: subErr } = await opsAdmin.from('subscriptions')
+      .select('location_id, org_id, plan, monthly_fee, extra_devices, hubrise');
+    if (subErr && isMissingColumn(subErr.message)) {
+      saasTyped = false;
+      ({ data: subs, error: subErr } = await opsAdmin.from('subscriptions')
+        .select('location_id, org_id, plan, monthly_fee'));
+    }
     if (subErr) return json({ error: `subscriptions read failed: ${subErr.message}` }, 500);
     const { data: opsLocs } = await opsAdmin.from('locations').select('id, name');
     const opsNameById = new Map<string, string>();
     for (const l of opsLocs ?? []) opsNameById.set(l.id, l.name);
+
+    // Paired device count per ops venue (devices registry rows not marked
+    // unpaired — POS, kiosk, KDS, handheld) for the devices-over advisory.
+    const { data: devRows } = await opsAdmin.from('devices').select('location_id, status');
+    const devCountByOps = new Map<string, number>();
+    for (const d of devRows ?? []) {
+      if (!d.location_id || d.status === 'unpaired') continue;
+      devCountByOps.set(d.location_id, (devCountByOps.get(d.location_id) ?? 0) + 1);
+    }
 
     // Aggregate payments per platform location × tier.
     const isPayment = (r: any) => r.success === true && r.last_event_code !== 'CANCELLATION';
@@ -352,19 +589,40 @@ Deno.serve(async (req) => {
     }
 
     // SaaS per ops location → merged onto the platform row where the mapping
-    // exists, listed standalone where it does not.
-    const saasByPlatformLoc = new Map<string, { plan: string; monthly_fee: number }>();
+    // exists, listed standalone where it does not. Itemization from
+    // SAAS_CATALOG (all POUNDS): plan fee + extra devices at 39 + HubRise at
+    // 45; saas_total is the STORED monthly_fee — the number actually invoiced.
+    const itemizeSaas = (sub: any) => {
+      const plan = String(sub.plan ?? 'free');
+      const planDef = SAAS_CATALOG.plans[plan] ?? null;
+      const extra = saasTyped ? Number(sub.extra_devices) || 0 : 0;
+      const hubrise = saasTyped ? !!sub.hubrise : false;
+      return {
+        plan,
+        plan_fee: planDef ? planDef.monthly : null,
+        extra_devices: extra,
+        device_fee: extra * SAAS_CATALOG.extra_device_monthly,
+        hubrise,
+        hubrise_fee: hubrise ? SAAS_CATALOG.hubrise_monthly : 0,
+        saas_total: Number(sub.monthly_fee) || 0,
+        device_allowance: planDef ? planDef.devices + extra : null,
+        // stale = the stored fee (what is invoiced) no longer matches the
+        // catalog itemization — a pre-v5.7.4 row, or catalog prices changed.
+        // Re-saving the venue in Processing refreshes it.
+        stale: saasTyped && planDef
+          ? Math.abs((planDef.monthly + extra * SAAS_CATALOG.extra_device_monthly + (hubrise ? SAAS_CATALOG.hubrise_monthly : 0)) - (Number(sub.monthly_fee) || 0)) > 0.005
+          : false,
+      };
+    };
+    const saasByPlatformLoc = new Map<string, { opsId: string; item: ReturnType<typeof itemizeSaas> }>();
     const saasUnmapped: any[] = [];
     const planCounts: Record<string, number> = {};
-    let saasConfigured = false;
     for (const sub of subs ?? []) {
-      const plan = String(sub.plan ?? 'free');
-      planCounts[plan] = (planCounts[plan] ?? 0) + 1;
-      const fee = Number(sub.monthly_fee) || 0;
-      if (fee > 0) saasConfigured = true;
+      const item = itemizeSaas(sub);
+      planCounts[item.plan] = (planCounts[item.plan] ?? 0) + 1;
       const platformLoc = sub.location_id ? locByOps.get(sub.location_id) : null;
-      if (platformLoc) saasByPlatformLoc.set(platformLoc.id, { plan, monthly_fee: fee });
-      else saasUnmapped.push({ ops_location_id: sub.location_id, name: opsNameById.get(sub.location_id) ?? '(unknown venue)', plan, monthly_fee: fee });
+      if (platformLoc) saasByPlatformLoc.set(platformLoc.id, { opsId: sub.location_id, item });
+      else saasUnmapped.push({ ops_location_id: sub.location_id, name: opsNameById.get(sub.location_id) ?? '(unknown venue)', plan: item.plan, monthly_fee: item.saas_total, saas: item });
     }
 
     const toPence = (pounds: number) => Math.round(pounds * 100);
@@ -378,7 +636,28 @@ Deno.serve(async (req) => {
       const volume_total = Object.values(tiers).reduce((s, t) => s + t.volume_minor, 0);
       const count_total = Object.values(tiers).reduce((s, t) => s + t.count, 0);
       const fee_known = agg?.fee_known ?? 0;
-      const saas_fee_minor = saas ? toPence(saas.monthly_fee) : null;
+      const saas_fee_minor = saas ? toPence(saas.item.saas_total) : null;
+      // Advisory flags, computed against THIS month's card volume and today's
+      // paired device count. A venue on Free with volume inside the Free band
+      // is a correctly configured state — recommended_plan stays null there.
+      let saasDetail: any = null;
+      if (saas) {
+        // A selected month still in progress has partial volume — a low number
+        // must never whisper "downgrade" at a correctly configured paid venue.
+        // Upgrade nudges stand (volume only grows within the month).
+        const monthComplete = to.getTime() <= Date.now();
+        const rank: Record<string, number> = { free: 0, growth: 1, scale: 2 };
+        let recommended = saasPlanForVolume(volume_total);
+        if (!monthComplete && (rank[recommended] ?? 0) <= (rank[saas.item.plan] ?? 0)) recommended = saas.item.plan;
+        const devCount = devCountByOps.get(saas.opsId) ?? 0;
+        saasDetail = {
+          ...saas.item,
+          recommended_plan: recommended !== saas.item.plan ? recommended : null,
+          devices_over: saas.item.device_allowance != null && devCount > saas.item.device_allowance
+            ? { count: devCount, allowance: saas.item.device_allowance } : null,
+          device_count: devCount,
+        };
+      }
       out.push({
         location_id: locId === 'unmatched' ? null : locId,
         name: locId === 'unmatched' ? '(payments not matched to a venue)' : (locById.get(locId)?.name ?? '(unknown venue)'),
@@ -391,8 +670,9 @@ Deno.serve(async (req) => {
         fees_minor: fee_known > 0 ? agg!.fees_minor : null,
         fee_known,
         margin_minor: fee_known > 0 ? commission_total - agg!.fees_minor : null,
-        saas_plan: saas?.plan ?? null,
+        saas_plan: saasDetail?.plan ?? null,
         saas_fee_minor,
+        saas: saasDetail,
         revenue_minor: commission_total + (saas_fee_minor ?? 0),
       });
     }
@@ -414,7 +694,7 @@ Deno.serve(async (req) => {
       currency: currency ?? 'GBP',
       rows: out,
       totals: { ...totals, revenue_minor: totals.commission_minor + totals.saas_fee_minor },
-      saas: { plans: planCounts, amounts_configured: saasConfigured, unmapped: saasUnmapped },
+      saas: { plans: planCounts, typed: saasTyped, unmapped: saasUnmapped },
       classified,
       fees_live: feesLive,
       capped: rows.length >= CAP,

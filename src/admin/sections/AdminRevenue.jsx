@@ -7,9 +7,10 @@
 // have landed per-payment fees — the margin after what Adyen charges us.
 //
 // HONESTY RULES, deliberately visible in the UI:
-//   · SaaS: the subscriptions table stores plan + monthly_fee. If every fee is
-//     zero the section says SaaS pricing is not configured and shows plan
-//     names + counts instead of inventing numbers.
+//   · SaaS (v5.7.4): itemized per venue — plan fee + extra devices + HubRise —
+//     from the server catalog, with quiet advisory notes where the volume band
+//     or device count disagrees with the chosen plan. A venue on Free at £0 is
+//     a legitimately configured state, not a warning.
 //   · Costs: what Adyen charges US arrives per payment only via settlement
 //     report ingestion (fee_minor). Margin is shown only where that data
 //     exists; otherwise commission is shown with a note.
@@ -66,6 +67,22 @@ function money(minor, cur = 'GBP') {
   return new Intl.NumberFormat('en-GB', { style: 'currency', currency: cur || 'GBP' }).format((Number(minor) || 0) / 100);
 }
 
+// SaaS itemization (v5.7.4). Fees inside r.saas are POUNDS (they mirror
+// subscriptions.monthly_fee); saas_fee_minor stays pence like every other
+// money field in this table.
+const pounds = (v) => new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP' }).format(Number(v) || 0);
+const PLAN_LABELS = { free: 'Free', growth: 'Growth', scale: 'Scale' };
+const planLabel = (p) => PLAN_LABELS[p] ?? p;
+
+function saasBreakdown(s) {
+  if (!s) return null;
+  const parts = [`${planLabel(s.plan)} plan${s.plan_fee != null ? ` ${pounds(s.plan_fee)}` : ''}`];
+  if (s.extra_devices > 0) parts.push(`${s.extra_devices} extra device${s.extra_devices === 1 ? '' : 's'} ${pounds(s.device_fee)}`);
+  if (s.hubrise) parts.push(`HubRise ${pounds(s.hubrise_fee)}`);
+  if (s.stale) parts.push('stored fee differs from plan pricing, re-save the venue in Processing');
+  return parts.join(' · ');
+}
+
 function Tile({ label, value, hint, accent }) {
   return (
     <div style={{ flex: '1 1 150px', minWidth: 150, border: '1px solid var(--bdr)', borderRadius: 10, padding: '12px 14px', background: 'var(--bg2)' }} title={hint || undefined}>
@@ -110,7 +127,7 @@ export default function AdminRevenue() {
       ...TIERS.flatMap(t => [`${t.label} count`, `${t.label} volume`, `${t.label} commission`]),
       'Unclassified count', 'Unclassified volume',
       'Commission total', 'Processor fees (where known)', 'Margin (where known)',
-      'SaaS plan', 'SaaS fee', 'Platform revenue',
+      'SaaS plan', 'SaaS plan fee', 'SaaS extra devices', 'SaaS device fee', 'SaaS HubRise', 'SaaS HubRise fee', 'SaaS total', 'Platform revenue',
     ];
     const lines = [header.map(esc).join(',')];
     for (const r of rows) {
@@ -125,12 +142,30 @@ export default function AdminRevenue() {
         p2(r.commission_minor),
         r.fees_minor == null ? '' : p2(r.fees_minor),
         r.margin_minor == null ? '' : p2(r.margin_minor),
-        r.saas_plan ?? '', r.saas_fee_minor == null ? '' : p2(r.saas_fee_minor),
+        // SaaS breakdown values are POUNDS already (never divide by 100)
+        r.saas_plan ?? '',
+        r.saas?.plan_fee == null ? '' : Number(r.saas.plan_fee).toFixed(2),
+        r.saas?.extra_devices ?? '',
+        r.saas == null ? '' : Number(r.saas.device_fee || 0).toFixed(2),
+        r.saas == null ? '' : (r.saas.hubrise ? 'yes' : 'no'),
+        r.saas == null ? '' : Number(r.saas.hubrise_fee || 0).toFixed(2),
+        r.saas_fee_minor == null ? '' : p2(r.saas_fee_minor),
         p2(r.revenue_minor),
       ].map(esc).join(','));
     }
     for (const u of saas.unmapped || []) {
-      lines.push([`${u.name} (SaaS only)`, cur, 0, '', '', ...TIERS.flatMap(() => ['', '', '']), '', '', '', '', '', u.plan ?? '', (Number(u.monthly_fee) || 0).toFixed(2), (Number(u.monthly_fee) || 0).toFixed(2)].map(esc).join(','));
+      const s = u.saas || null;
+      lines.push([
+        `${u.name} (SaaS only)`, cur, 0, '', '', ...TIERS.flatMap(() => ['', '', '']), '', '', '', '', '',
+        u.plan ?? '',
+        s?.plan_fee == null ? '' : Number(s.plan_fee).toFixed(2),
+        s?.extra_devices ?? '',
+        s == null ? '' : Number(s.device_fee || 0).toFixed(2),
+        s == null ? '' : (s.hubrise ? 'yes' : 'no'),
+        s == null ? '' : Number(s.hubrise_fee || 0).toFixed(2),
+        (Number(u.monthly_fee) || 0).toFixed(2),
+        (Number(u.monthly_fee) || 0).toFixed(2),
+      ].map(esc).join(','));
     }
     const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
     const a = document.createElement('a');
@@ -161,7 +196,7 @@ export default function AdminRevenue() {
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 14 }}>
             <Tile label="Processed volume" value={money(totals.volume_minor, cur)} hint={`${totals.payments_count ?? 0} successful payments`} />
             <Tile label="Commission earned" value={money(totals.commission_minor, cur)} accent />
-            <Tile label="SaaS fees" value={money(totals.saas_fee_minor, cur)} />
+            <Tile label="SaaS fees" value={money(totals.saas_fee_minor, cur)} hint="Sum of each venue's stored monthly fee, the number actually invoiced. The breakdown shows current plan pricing." />
             <Tile label="Platform revenue" value={money(totals.revenue_minor, cur)} accent hint="Commission + SaaS (where amounts exist)" />
             <Tile
               label={totals.fees_minor != null ? 'Processor fees (known)' : 'Processor fees'}
@@ -180,10 +215,10 @@ export default function AdminRevenue() {
               {totals.unclassified_count} payment{totals.unclassified_count === 1 ? ' is' : 's are'} not classified into a payment type yet (recorded before the tiered model). Run the adyen-webhook backfill to classify and commission-stamp them.
             </div>
           )}
-          {saas.amounts_configured === false && (
+          {saas.typed === false && (
             <div style={S.note}>
-              SaaS pricing amounts are not configured — every subscription has a £0 monthly fee, so SaaS revenue reads zero.
-              Plans on file: {Object.entries(saas.plans || {}).map(([p, n]) => `${p} × ${n}`).join(', ') || 'none'}. Set monthly_fee on subscriptions to include SaaS money here.
+              SaaS plan details (extra devices and the HubRise add-on) are not stored yet: apply migration 20260822_saas_plans.sql on the Ops database.
+              Until then the SaaS column shows each venue's stored monthly fee without the breakdown.
             </div>
           )}
           {totals.fees_minor == null && (
@@ -225,6 +260,17 @@ export default function AdminRevenue() {
                             +{bc.unclassified.count} unclassified
                           </span>
                         )}
+                        {/* Advisory SaaS notes — quiet, informational, never alarms */}
+                        {r.saas?.recommended_plan && (
+                          <div style={{ fontSize: 10.5, color: 'var(--t4)', fontWeight: 400 }}>
+                            Volume suggests the {planLabel(r.saas.recommended_plan)} plan (currently {planLabel(r.saas.plan)})
+                          </div>
+                        )}
+                        {r.saas?.devices_over && (
+                          <div style={{ fontSize: 10.5, color: 'var(--t4)', fontWeight: 400 }}>
+                            {r.saas.devices_over.count} devices paired, plan covers {r.saas.devices_over.allowance}
+                          </div>
+                        )}
                       </td>
                       <td style={S.td}>{r.payments_count}</td>
                       <td style={S.td}>{money(r.volume_minor, rcur)}</td>
@@ -243,8 +289,11 @@ export default function AdminRevenue() {
                         {r.margin_minor == null ? '—' : money(r.margin_minor, rcur)}
                       </td>
                       <td style={{ ...S.td, color: r.saas_fee_minor ? 'var(--t2)' : 'var(--t4)' }}
-                        title={r.saas_plan ? `Plan: ${r.saas_plan}` : 'No subscription mapped to this venue'}>
+                        title={r.saas ? saasBreakdown(r.saas) : (r.saas_plan ? `Plan: ${r.saas_plan}` : 'No subscription mapped to this venue')}>
                         {r.saas_fee_minor == null ? '—' : money(r.saas_fee_minor, rcur)}
+                        {r.saas && (r.saas.extra_devices > 0 || r.saas.hubrise) && (
+                          <div style={{ fontSize: 10, color: 'var(--t4)', whiteSpace: 'nowrap' }}>{saasBreakdown(r.saas)}</div>
+                        )}
                       </td>
                       <td style={{ ...S.td, fontWeight: 700, color: 'var(--t1)' }}>{money(r.revenue_minor, rcur)}</td>
                     </tr>

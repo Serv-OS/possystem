@@ -206,6 +206,9 @@ export default function AdminBillingManager({ authUser }) {
         onError={setError}
       />
 
+      {/* SaaS plans (v5.7.4) — its own card, separate from the card-rate editors */}
+      <SaasPlansPanel onError={setError} />
+
       <div style={{ display: 'flex', gap: 10, marginBottom: 14, alignItems: 'center', flexWrap: 'wrap' }}>
         <select
           value={filterCompanyId}
@@ -444,6 +447,184 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
             <button onClick={save} disabled={busy} style={{ ...S.btn, ...S.btnPrim }}>{busy ? 'Saving…' : 'Save defaults'}</button>
           </>}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── SaaS plans panel (v5.7.4) ─────────────────────────────────────────────
+// One row per venue: plan dropdown, additional devices, HubRise add-on, and a
+// live monthly total. All pricing comes from the SERVER catalog returned by
+// the saas_pricing get action — no client-side pricing constants — so the
+// preview here always matches what the edge fn writes to monthly_fee.
+// Peter invoices SaaS manually through the CRM; this only records the plan and
+// reports the money. Volume bands and device allowances are advisory: the
+// server sends a recommended plan and a devices-over flag, shown quietly under
+// each row, never enforced.
+const gbp = (pounds) => new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP' }).format(Number(pounds) || 0);
+
+function SaasPlansPanel({ onError }) {
+  const [data, setData] = useState(null);   // null = loading, {error} or saas_pricing get payload
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try { setData(await callPaymentsAdmin('saas_pricing', {})); }
+    catch (e) { setData({ error: e.message }); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const catalog = data?.catalog;
+
+  return (
+    <div style={S.card}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap', marginBottom: 6 }}>
+        <div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--acc)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 4 }}>SaaS plans</div>
+          <div style={{ fontSize: 13, color: 'var(--t2)', lineHeight: 1.5, maxWidth: 720 }}>
+            The monthly software plan each venue is on. Invoiced manually through the CRM, so this only records the plan and feeds the Revenue section.
+            {catalog && ` Plans: ${Object.values(catalog.plans).map(p => p.monthly > 0 ? `${p.label} ${p.monthly} GBP with ${p.devices} devices` : `${p.label} with ${p.devices} devices`).join(', ')}. Extra devices ${catalog.extra_device_monthly} GBP each, HubRise ${catalog.hubrise_monthly} GBP per month.`}
+          </div>
+        </div>
+        <button onClick={load} disabled={loading} style={{ ...S.btn, ...S.btnGhost }}>{loading ? 'Loading…' : '↻ Refresh'}</button>
+      </div>
+
+      {data == null && <div style={{ fontSize: 12, color: 'var(--t3)', padding: '10px 0' }}>Loading SaaS plans…</div>}
+      {data?.error && <div style={{ fontSize: 12, color: 'var(--red)', padding: '10px 0' }}>Could not load SaaS plans: {data.error}</div>}
+
+      {data && !data.error && data.typed === false && (
+        <div style={{ padding: 12, borderRadius: 8, background: 'var(--orn-d, rgba(230,160,60,.12))', color: 'var(--orn, #e8a020)', fontSize: 12.5, lineHeight: 1.5, border: '1px solid var(--orn-b, var(--bdr2))', marginTop: 8 }}>
+          {data.migration_note || 'The extra devices and HubRise columns are not on the subscriptions table yet. Apply supabase/migrations/20260822_saas_plans.sql on the Ops database, then refresh this panel.'}
+        </div>
+      )}
+
+      {data && !data.error && data.typed !== false && (data.venues ?? []).map(v => (
+        <SaasVenueRow key={v.location_id} venue={v} catalog={catalog} deviceNote={data.device_count_note} onSaved={load} onError={onError} />
+      ))}
+      {data && !data.error && data.typed !== false && (data.venues ?? []).length === 0 && (
+        <div style={{ fontSize: 12, color: 'var(--t3)', padding: '10px 0' }}>No venues found.</div>
+      )}
+    </div>
+  );
+}
+
+function SaasVenueRow({ venue, catalog, deviceNote, onSaved, onError }) {
+  // A stored plan outside the catalog (legacy or hand-set) is kept as-is, not
+  // silently coerced to Free — the row would be born dirty and one Save click
+  // would rewrite the venue's fee with no warning. Saving requires picking a
+  // real plan; the dropdown shows the stored value until then.
+  const planKnown = venue.plan in (catalog?.plans ?? {});
+  const [plan, setPlan] = useState(venue.plan);
+  const [extra, setExtra] = useState(String(venue.extra_devices ?? 0));
+  const [hubrise, setHubrise] = useState(!!venue.hubrise);
+  const [state, setState] = useState('idle');   // idle | saving | saved | error
+  const [errMsg, setErrMsg] = useState(null);
+
+  // Keep the inputs in step with the server when the panel refreshes.
+  // Deriving state from a changed prop DURING render is the React-sanctioned
+  // pattern (not an effect). After a save this is a visual no-op because the
+  // reloaded values equal what was just typed.
+  const [seen, setSeen] = useState({ plan: venue.plan, extra: venue.extra_devices ?? 0, hubrise: !!venue.hubrise });
+  if (seen.plan !== venue.plan || seen.extra !== (venue.extra_devices ?? 0) || seen.hubrise !== !!venue.hubrise) {
+    setSeen({ plan: venue.plan, extra: venue.extra_devices ?? 0, hubrise: !!venue.hubrise });
+    setPlan(venue.plan);
+    setExtra(String(venue.extra_devices ?? 0));
+    setHubrise(!!venue.hubrise);
+  }
+
+  const planDef = catalog?.plans?.[plan];
+  const extraNum = extra === '' ? 0 : Math.max(0, Math.round(Number(extra) || 0));
+  // Live preview from the SERVER catalog — the same sum the edge fn writes.
+  const total = (planDef?.monthly ?? 0) + extraNum * (catalog?.extra_device_monthly ?? 0) + (hubrise ? (catalog?.hubrise_monthly ?? 0) : 0);
+  const dirty = plan !== venue.plan || extraNum !== (venue.extra_devices ?? 0) || hubrise !== !!venue.hubrise;
+  const planSelectable = plan in (catalog?.plans ?? {});
+
+  const allowance = (planDef?.devices ?? 0) + extraNum;
+  const devCount = venue.devices?.count ?? 0;
+  const byType = venue.devices?.by_type ?? {};
+  const typeSummary = Object.entries(byType).map(([t, n]) => `${n} ${t}`).join(', ');
+
+  const save = async () => {
+    setState('saving'); setErrMsg(null);
+    try {
+      await callPaymentsAdmin('saas_pricing', { set: true, location_id: venue.location_id, plan, extra_devices: extraNum, hubrise });
+      setState('saved');
+      setTimeout(() => setState(s => (s === 'saved' ? 'idle' : s)), 2500);
+      onSaved?.();
+    } catch (e) {
+      setState('error'); setErrMsg(e.message);
+      onError?.(`SaaS plan save failed for ${venue.name}: ${e.message}`);
+    }
+  };
+
+  return (
+    <div style={{ padding: '12px 0', borderTop: '1px solid var(--bdr)', marginTop: 10 }}>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+        <div style={{ flex: '1 1 160px', minWidth: 160 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--t1)' }}>{venue.name}</div>
+          <div style={{ fontSize: 10.5, color: 'var(--t4)', fontFamily: 'var(--font-mono, monospace)' }}>{venue.location_id}</div>
+        </div>
+        <div>
+          <label style={S.label}>Plan</label>
+          <select value={plan} onChange={e => setPlan(e.target.value)} style={{ ...S.input, width: 170 }}>
+            {!planKnown && <option value={venue.plan}>{venue.plan} (not in catalog)</option>}
+            {Object.entries(catalog?.plans ?? {}).map(([key, p]) => (
+              <option key={key} value={key}>{p.monthly > 0 ? `${p.label} ${p.monthly} GBP` : p.label}</option>
+            ))}
+          </select>
+          {!planSelectable && (
+            <div style={{ fontSize: 10.5, color: 'var(--orn, #e8a020)', marginTop: 3 }}>
+              Stored plan is not in the catalog. Pick a plan to update this venue.
+            </div>
+          )}
+        </div>
+        <div>
+          <label style={S.label}>Additional devices</label>
+          <input type="number" step="1" min="0" max="500" value={extra}
+            onChange={e => setExtra(e.target.value)} style={{ ...S.input, ...S.inputMono, width: 110 }} />
+          <div style={{ fontSize: 10.5, color: 'var(--t4)', marginTop: 3 }}>{catalog?.extra_device_monthly ?? 39} GBP each</div>
+        </div>
+        <div>
+          <label style={S.label}>HubRise add-on</label>
+          <label style={{ display: 'flex', gap: 7, alignItems: 'center', fontSize: 13, color: 'var(--t1)', cursor: 'pointer', padding: '8px 0' }}>
+            <input type="checkbox" checked={hubrise} onChange={e => setHubrise(e.target.checked)} />
+            HubRise
+          </label>
+          <div style={{ fontSize: 10.5, color: 'var(--t4)' }}>{catalog?.hubrise_monthly ?? 45} GBP per month</div>
+        </div>
+        <div style={{ minWidth: 110 }}>
+          <label style={S.label}>Monthly total</label>
+          <div style={{ fontSize: 17, fontWeight: 800, color: 'var(--acc)', padding: '6px 0' }}>{gbp(planSelectable ? total : (venue.monthly_fee ?? 0))}</div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', paddingBottom: 4 }}>
+          <button onClick={save} disabled={state === 'saving' || !dirty || !planSelectable} style={{ ...S.btn, ...(dirty && planSelectable ? S.btnPrim : S.btnGhost) }}>
+            {state === 'saving' ? 'Saving…' : 'Save'}
+          </button>
+          {state === 'saved' && <span style={{ fontSize: 12, color: 'var(--grn)', fontWeight: 700 }}>✓ Saved</span>}
+          {state === 'error' && <span style={{ fontSize: 12, color: 'var(--red)' }} title={errMsg || undefined}>Save failed</span>}
+        </div>
+      </div>
+
+      {/* Context: devices, this month's volume, advisories. Quiet, not alarms. */}
+      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center', marginTop: 7, fontSize: 11.5, color: 'var(--t3)' }}>
+        <span title={deviceNote || undefined}>
+          {devCount} paired device{devCount === 1 ? '' : 's'}{typeSummary ? ` (${typeSummary})` : ''} · plan covers {allowance}
+        </span>
+        <span>Card volume this month: {gbp((venue.volume_minor ?? 0) / 100)}</span>
+        {venue.recommended_plan && (
+          <span style={{ padding: '2px 8px', borderRadius: 99, background: 'var(--orn-d, rgba(230,160,60,.12))', color: 'var(--orn, #e8a020)', border: '1px solid var(--orn-b, var(--bdr2))', fontWeight: 700 }}>
+            Volume suggests {catalog?.plans?.[venue.recommended_plan]?.label ?? venue.recommended_plan}
+          </span>
+        )}
+        {venue.devices_over && (
+          <span style={{ padding: '2px 8px', borderRadius: 99, background: 'var(--orn-d, rgba(230,160,60,.12))', color: 'var(--orn, #e8a020)', border: '1px solid var(--orn-b, var(--bdr2))', fontWeight: 700 }}>
+            {venue.devices_over.count} devices paired, plan covers {venue.devices_over.allowance}
+          </span>
+        )}
+        {venue.hubrise_detected === true && !hubrise && (
+          <span title="A live HubRise connection exists for this venue but the add-on is not ticked.">HubRise connection detected</span>
+        )}
       </div>
     </div>
   );

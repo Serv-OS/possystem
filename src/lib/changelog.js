@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.4',
+    date: '2026-08-19',
+    changes: [
+      'SAAS PLANS, SET PER VENUE IN THE ADMIN PORTAL. The Processing section grew a SaaS plans panel: one row per venue with a plan dropdown (Free with 2 devices, Growth at 149 GBP with 5 devices, Scale at 299 GBP with 10 devices), a number box for additional devices at 39 GBP each, a HubRise add-on tick at 45 GBP per month, and a monthly total that updates as you change things. Saving writes the plan and the computed fee onto the venue subscription. Invoicing stays manual through the CRM, the platform just records the plan and reports the money.',
+      'The plan bands are advice, not rules. Under each venue row the panel shows how many devices are actually paired against what the plan covers, this month card volume, and a quiet badge when the volume band suggests a different plan (up to 8,000 GBP is Free, up to 15,000 GBP is Growth, above that Scale). The operator always chooses, the system only recommends. It also mentions when a live HubRise connection exists but the add-on is not ticked.',
+      'The Revenue section now itemizes SaaS money instead of shrugging at it. The SaaS column shows each venue total with the breakdown underneath and in the hover text (plan fee, extra devices, HubRise), the tiles sum the real totals, and the CSV export gains the breakdown columns. The old blanket warning that SaaS pricing needs configuring is gone: a venue on the Free plan at zero pounds is now a correctly configured state. Quiet per venue notes appear where the volume band or the paired device count disagrees with the chosen plan.',
+      'Device counts are honest: they count paired devices on record for the venue (POS, kiosk, KDS and handheld rows in the pairing registry that are not marked unpaired), whether or not they are online right now.',
+      'To go live this needs one hand applied database migration on the Ops database (20260822_saas_plans, two additive columns on subscriptions for extra devices and HubRise) and a deploy of the payments-admin server function. Until the migration lands the SaaS panel and the Revenue breakdown both say exactly what to apply instead of erroring, and saving a plan tells you the same in plain English.',
+    ],
+  },
+  {
     version: '5.7.3',
     date: '2026-08-19',
     changes: [
