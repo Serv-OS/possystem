@@ -399,8 +399,13 @@ Deno.serve(async (req) => {
           return {
             ...o,
             choiceGroups: o.requiresPreorder ? choiceGroupsFor(String(o.id), venue.choiceLines) : [],
-            preorderChoiceAtBooking: o.requiresPreorder && daysAhead <= (o.preorderDaysBefore || 0),
-            preorderDeadline: o.requiresPreorder ? dl.toISOString().slice(0, 10) : null,
+            // v5.7.26 - the fork and the deadline only exist when the package
+            // actually has something to choose.
+            preorderChoiceAtBooking: o.requiresPreorder
+              && choiceGroupsFor(String(o.id), venue.choiceLines).length > 0
+              && daysAhead <= (o.preorderDaysBefore || 0),
+            preorderDeadline: o.requiresPreorder && choiceGroupsFor(String(o.id), venue.choiceLines).length > 0
+              ? dl.toISOString().slice(0, 10) : null,
             terms: String(pkgRow?.terms || ''),
             // What the package includes, for the landing/confirmation display.
             includes: lines.map((l) => ({ name: l.display_name, course: l.course ?? 0, choice: !!l.is_preorder_choice })),
@@ -554,12 +559,14 @@ Deno.serve(async (req) => {
         // table_taken → try the next candidate (someone booked between quote and write)
       }
 
-      // Persist choices; mint the completion token for EVERY requires_preorder
-      // booking (v5.7.21, link-first) — even when choices came in at booking,
-      // the link lets guests amend them later.
+      // Persist choices; mint the completion token for requires_preorder
+      // bookings THAT HAVE CHOICE LINES (v5.7.26 — a package with pre-order on
+      // but nothing marked "guest chooses" used to mint a token and nag the
+      // guest toward a page with nothing to pick). Even when choices came in
+      // at booking, the link lets guests amend them later.
       let preorderToken: string | null = null;
       let preorderDeadline: string | null = null;
-      if (bookedId && pkg?.requires_preorder) {
+      if (bookedId && pkg?.requires_preorder && groups.length > 0) {
         if (validRows.length) {
           await db.from('booking_preorders').insert(validRows.map((r) => ({ ...r, location_id: locationId, booking_id: bookedId })));
         }
@@ -668,9 +675,13 @@ Deno.serve(async (req) => {
         const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}` };
         fetch(url, { method: 'POST', headers, body: JSON.stringify({ action: 'confirm', booking_id: bookingId }) }).catch(() => {});
         if (pkg3?.requires_preorder) {
+          // v5.7.26 - no choice lines = nothing to nag about.
+          const { count: choiceLines } = await db.from('package_lines')
+            .select('id', { count: 'exact', head: true })
+            .eq('package_id', bk.package_id).eq('is_preorder_choice', true);
           const { count: picked } = await db.from('booking_preorders')
             .select('id', { count: 'exact', head: true }).eq('booking_id', bookingId);
-          if ((picked || 0) < (Number(bk.covers) || 1)) {
+          if ((choiceLines || 0) > 0 && (picked || 0) < (Number(bk.covers) || 1)) {
             fetch(url, { method: 'POST', headers, body: JSON.stringify({ action: 'send_link', booking_id: bookingId }) }).catch(() => {});
           }
         }

@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.26',
+    date: '2026-08-20',
+    items: [
+      'Booking packages with pre order switched on but nothing marked guest chooses no longer send guests a choose your menu link with nothing on it. The link, the nudges and the choose at booking step only appear when the package actually has choices.',
+    ],
+  },
+  {
     version: '5.7.25',
     date: '2026-08-20',
     items: [

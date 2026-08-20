@@ -232,6 +232,15 @@ Deno.serve(async (req) => {
       const { data: pkg } = await db.from('packages')
         .select('id, name, requires_preorder, preorder_days_before').eq('id', bk.package_id).maybeSingle();
       if (!pkg?.requires_preorder) return json({ ok: false, error: 'package_has_no_preorder' }, 400);
+      // v5.7.26 - pre-order on but no line marked "guest chooses": there is
+      // nothing to pick, so there is no link to send. Legacy tokens from
+      // before this rule land here too.
+      {
+        const { count: choiceLines } = await db.from('package_lines')
+          .select('id', { count: 'exact', head: true })
+          .eq('package_id', bk.package_id).eq('is_preorder_choice', true);
+        if ((choiceLines || 0) === 0) return json({ ok: false, error: 'package_has_no_choices' }, 400);
+      }
 
       // Mint the token when missing (host-created or legacy bookings).
       let token = bk.preorder_token as string | null;
