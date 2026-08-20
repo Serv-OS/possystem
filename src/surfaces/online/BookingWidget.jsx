@@ -58,6 +58,14 @@ function joinAnd(list) {
   if (a.length <= 1) return a[0] || 'choice';
   return `${a.slice(0, -1).join(', ')} and ${a[a.length - 1]}`;
 }
+// v5.7.24 - OPTIONS within one choice group are alternatives: "Olives or
+// Cheese Bread", never "and" (the guest picks one). joinAnd stays for the
+// across-courses nudge, where "a starter, main and dessert" is correct.
+function joinOr(list) {
+  const a = list.filter(Boolean);
+  if (a.length <= 1) return a[0] || 'choice';
+  return `${a.slice(0, -1).join(', ')} or ${a[a.length - 1]}`;
+}
 
 // ── package money (POUNDS — the fn pre-computes `total`; per_cover = price × party)
 function fmtGBP(n) {
@@ -117,7 +125,7 @@ function includesLines(includes) {
   for (const [course, names] of [...byCourse.entries()].sort((a, b) => a[0] - b[0])) {
     const label = COURSE_LABEL[course] || `Course ${course}`;
     if (names.length <= 1) { fixed.push(names[0]); continue; }   // one option = effectively preset
-    out.push({ head: `${label} — each guest picks one`, body: joinAnd(names.map((n) => n)) });
+    out.push({ head: `${label}: each guest picks one`, body: joinOr(names.map((n) => n)) });
   }
   if (fixed.length) {
     out.push({ head: out.length ? 'Included for everyone' : null, body: null, items: fixed });
