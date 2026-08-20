@@ -1,3 +1,28 @@
+# Session — 20 Aug 2026 (v5.7.7) — Self-healing deviceConfig (Sunmi stale-profile fix)
+
+## Done (NOT committed, NOT deployed)
+- **Bug**: a Sunmi POS kept filtering by a menu pin (Doboy) that no longer exists in the DB while
+  its profile pinned the healthy Main menu. Delivery was the fault, not the resolver: the profile
+  realtime channel was wired ONCE at mount from localStorage, Sunmi WebViews drop websockets on
+  sleep, and the boot fallback resurrected stale cached pins.
+- **Fix (App.jsx, all in ValidatedPOSApp's device effect)**:
+  - ONE mapping: `profileRowToProfile` + `configFromProfile` (module scope) now feed boot, the
+    device_profiles realtime handler and the new silent refresh. The realtime copy had drifted
+    (lost isMaster + signout policy); that fork is gone.
+  - `applyDeviceConfig`: single change-gated apply path (localStorage + setDeviceConfig only on
+    material change; compare covers profileId/menuId/trainingMode/serviceCharge/hiddenFeatures
+    and the rest). Silent refreshes only toast when training flips; realtime keeps its toast.
+  - `refreshDeviceProfile()`: re-reads devices row (source of truth for profile_id) then the
+    profile from the DB; in-flight latch; NO localStorage fallback; silent no-op offline.
+  - Triggers: visibilitychange (visible), online, 5-min interval, `rpos-config-push` window event
+    (dispatched from realtime.js config_pushes handler, so Push to POS delivers the profile too),
+    and the devices-row realtime handler (via refreshDevice).
+  - `wireProfileChannel` is rewirable: profile reassignment in BO moves the listener live.
+- realtime.js: config_pushes INSERT handler dispatches `rpos-config-push`.
+- Verified: build clean, 390/390 tests pass, eslint on touched files shows no new errors
+  (byte-compared against HEAD baselines).
+- NOT committed, NOT pushed, no DB or edge fn changes.
+
 # Session — 19 Aug 2026 (v5.6.97) — Device profile menu restriction now applies on the POS screen
 
 ## Done (NOT committed, NOT deployed)

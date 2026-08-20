@@ -339,6 +339,82 @@ function TrainingModeBanner() {
   );
 }
 
+// ── v5.7.7: ONE device-profile field mapping ─────────────────────────────────
+// The boot fetch, the device_profiles realtime handler and the silent self-heal
+// refresh all build this till's deviceConfig through these two helpers. They
+// used to be hand-maintained copies and drifted (the realtime copy had lost
+// isMaster and the sign-out policy), so a till could run one config shape at
+// boot and a different one after a live profile edit.
+function profileRowToProfile(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    defaultSurface: row.default_surface || 'tables',
+    enabledOrderTypes: row.enabled_order_types || ['dine-in'],
+    assignedSection: row.assigned_section || null,
+    hiddenFeatures: row.hidden_features || [],
+    tableServiceEnabled: row.table_service_enabled !== false,
+    quickScreenEnabled: row.quick_screen_enabled !== false,
+    serviceCharge: row.service_charge || null,
+    isMaster: row.is_master === true,
+    autoPrintReceiptOnClose: row.auto_print_receipt_on_close !== false,
+    orderNotifications: row.order_notifications !== false,
+    menuId: row.menu_id || null,
+    trainingMode: row.training_mode === true,   // v5.5.645: per-device training
+    signoutIdleSeconds: row.signout_idle_seconds || 0,   // v5.5.731 auto sign-out
+    signoutOnPay: row.signout_on_pay === true,
+    signoutOnSend: row.signout_on_send === true,
+  };
+}
+
+function configFromProfile(profile) {
+  return {
+    profileId: profile.id, profileName: profile.name,
+    defaultSurface: profile.defaultSurface || 'tables',
+    enabledOrderTypes: profile.enabledOrderTypes || ['dine-in'],
+    assignedSection: profile.assignedSection || null,
+    hiddenFeatures: profile.hiddenFeatures || [],
+    tableServiceEnabled: profile.tableServiceEnabled !== false,
+    quickScreenEnabled: profile.quickScreenEnabled !== false,
+    serviceCharge: profile.serviceCharge || null,
+    isMaster: profile.isMaster === true,
+    autoPrintReceiptOnClose: profile.autoPrintReceiptOnClose !== false,
+    orderNotifications: profile.orderNotifications !== false,
+    menuId: profile.menuId || null,
+    trainingMode: profile.trainingMode === true,   // v5.5.645: per-device training
+    // v5.5.731: auto sign-out policy, how this device signs the operator out
+    signout: {
+      idleSeconds: Number(profile.signoutIdleSeconds) || 0,
+      onPay: profile.signoutOnPay === true,
+      onSend: profile.signoutOnSend === true,
+    },
+    // Keep the terminal name a previous config may have stamped on this till.
+    terminalName: useStore.getState().deviceConfig?.terminalName,
+  };
+}
+
+// v5.7.7: material-change gate. setDeviceConfig snaps the surface back to
+// defaultSurface, so blind re-apply on every silent refresh would yank the
+// operator off whatever screen they were on. Objects and arrays compare by
+// value so a byte-identical refresh is a true no-op.
+const CONFIG_COMPARE_KEYS = [
+  'profileId', 'profileName', 'defaultSurface', 'assignedSection',
+  'tableServiceEnabled', 'quickScreenEnabled', 'isMaster',
+  'autoPrintReceiptOnClose', 'orderNotifications', 'menuId', 'trainingMode',
+  'enabledOrderTypes', 'hiddenFeatures', 'serviceCharge', 'signout',
+];
+function deviceConfigChanged(prev, next) {
+  if (!prev) return true;
+  return CONFIG_COMPARE_KEYS.some(k => {
+    const a = prev[k], b = next[k];
+    if ((a && typeof a === 'object') || (b && typeof b === 'object')) {
+      try { return JSON.stringify(a ?? null) !== JSON.stringify(b ?? null); } catch { return true; }
+    }
+    return (a ?? null) !== (b ?? null);
+  });
+}
+
 function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shift, theme, setTheme, syncPulse, handleSyncPulse, showWhatsNew, setShowWhatsNew, deviceConfig }) {
   const [deviceValid, setDeviceValid] = useState(null); // null=checking, true=ok, false=revoked
   const [masterOffline, setMasterOffline] = useState(false);
@@ -453,6 +529,52 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
   const isReclaim = !!sessionStorage.getItem(`rpos-reclaim-${pairedDevice.id}`);
   if (isReclaim) sessionStorage.removeItem(`rpos-reclaim-${pairedDevice.id}`);
 
+  // ── v5.7.7: SINGLE apply path for deviceConfig ─────────────────────────────
+  // Boot, the device_profiles realtime handler and the silent refresh all land
+  // here. Applies only on material change (see deviceConfigChanged) so silent
+  // refreshes never disturb a till whose config is already current. Toasts:
+  // announce=true keeps the realtime handler's existing toast; silent refreshes
+  // only toast when Training Mode actually flips (staff must always know).
+  const applyDeviceConfig = (config, { announce = false } = {}) => {
+    const prev = useStore.getState().deviceConfig;
+    if (!deviceConfigChanged(prev, config)) return;
+    const trainingFlipped = (prev?.trainingMode === true) !== (config.trainingMode === true);
+    localStorage.setItem('rpos-device-config', JSON.stringify(config));
+    useStore.getState().setDeviceConfig(config);
+    if (announce || trainingFlipped) {
+      useStore.getState().showToast(config.trainingMode === true ? 'Training mode ON — nothing will be saved' : 'Device profile updated', 'info');
+    }
+  };
+
+  // ── v5.7.7: profile channel is REWIRABLE ───────────────────────────────────
+  // It used to be wired ONCE at mount with whatever profileId localStorage held,
+  // so a till reassigned to a different profile in Back Office kept listening to
+  // the old profile (or to nothing) until a true cold start, which is the root of the
+  // "Sunmi till stuck on a deleted menu pin" incident. wireProfileChannel is now
+  // called again whenever the devices row reports a different profile_id.
+  let profileChannel = null;
+  let wiredProfileId = null;
+  const wireProfileChannel = (profileId) => {
+    if (!profileId || profileId === wiredProfileId) return;
+    if (profileChannel) supabase.removeChannel(profileChannel);
+    wiredProfileId = profileId;
+    profileChannel = supabase
+      .channel(`profile-${profileId}`)
+      .on('postgres_changes', {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'device_profiles',
+        filter: `id=eq.${profileId}`,
+      }, (payload) => {
+        // Profile settings changed: re-apply immediately through the SAME
+        // mapping + apply path as boot and the silent refresh (v5.7.7: the
+        // handler used to keep its own field-mapping copy, which had drifted).
+        if (!payload.new) return;
+        applyDeviceConfig(configFromProfile(profileRowToProfile(payload.new)), { announce: true });
+      })
+      .subscribe();
+  };
+
   const refreshDevice = async () => {
       // If reclaiming: write our token to Supabase FIRST — this kicks the other session immediately
       if (isReclaim) {
@@ -478,6 +600,8 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
       if (data.name !== current.name || data.profile_id !== current.profileId) {
         localStorage.setItem('rpos-device', JSON.stringify({ ...current, name: data.name, profileId: data.profile_id }));
       }
+      // v5.7.7: a profile REASSIGNMENT must move the realtime listener too
+      wireProfileChannel(data.profile_id);
       // Apply profile settings — fetch directly from Supabase for accuracy
       if (data.profile_id) {
         try {
@@ -489,27 +613,7 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
               .select('*')
               .eq('id', data.profile_id)
               .single();
-            if (dbProfile) {
-              profile = {
-                id: dbProfile.id,
-                name: dbProfile.name,
-                defaultSurface: dbProfile.default_surface || 'tables',
-                enabledOrderTypes: dbProfile.enabled_order_types || ['dine-in'],
-                assignedSection: dbProfile.assigned_section || null,
-                hiddenFeatures: dbProfile.hidden_features || [],
-                tableServiceEnabled: dbProfile.table_service_enabled !== false,
-                quickScreenEnabled: dbProfile.quick_screen_enabled !== false,
-                serviceCharge: dbProfile.service_charge || null,
-                isMaster: dbProfile.is_master === true,
-                autoPrintReceiptOnClose: dbProfile.auto_print_receipt_on_close !== false,
-                orderNotifications: dbProfile.order_notifications !== false,
-                menuId: dbProfile.menu_id || null,
-                trainingMode: dbProfile.training_mode === true,   // v5.5.645: per-device training
-                signoutIdleSeconds: dbProfile.signout_idle_seconds || 0,   // v5.5.731 auto sign-out
-                signoutOnPay: dbProfile.signout_on_pay === true,
-                signoutOnSend: dbProfile.signout_on_send === true,
-              };
-            }
+            if (dbProfile) profile = profileRowToProfile(dbProfile);   // v5.7.7: unified mapping
           } catch {}
           // Fallback: localStorage > config snapshot only (NO hardcoded defaults — deleted means deleted)
           if (!profile) {
@@ -519,29 +623,7 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
             profile = allProfiles.find(p => p.id === data.profile_id) || null;
           }
           if (profile) {
-            const config = {
-              profileId: profile.id, profileName: profile.name,
-              defaultSurface: profile.defaultSurface || 'tables',
-              enabledOrderTypes: profile.enabledOrderTypes || ['dine-in'],
-              assignedSection: profile.assignedSection || null,
-              hiddenFeatures: profile.hiddenFeatures || [],
-              tableServiceEnabled: profile.tableServiceEnabled !== false,
-              quickScreenEnabled: profile.quickScreenEnabled !== false,
-              serviceCharge: profile.serviceCharge || null,
-              isMaster: profile.isMaster === true,
-              autoPrintReceiptOnClose: profile && profile.autoPrintReceiptOnClose !== false,
-              orderNotifications: !profile || profile.orderNotifications !== false,
-              menuId: profile?.menuId || null,
-              trainingMode: profile?.trainingMode === true,   // v5.5.645: per-device training
-              // v5.5.731: auto sign-out policy — how this device signs the operator out
-              signout: {
-                idleSeconds: Number(profile?.signoutIdleSeconds) || 0,
-                onPay: profile?.signoutOnPay === true,
-                onSend: profile?.signoutOnSend === true,
-              },
-            };
-            localStorage.setItem('rpos-device-config', JSON.stringify(config));
-            useStore.getState().setDeviceConfig(config);
+            applyDeviceConfig(configFromProfile(profile));   // v5.7.7: unified mapping + apply path
           } else {
             // Profile ID not found in hardcoded list — try to find it in config push payload
             const existingConfig = JSON.parse(localStorage.getItem('rpos-device-config') || 'null');
@@ -580,8 +662,7 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
               menuId: existingConfig?.menuId || null,
               trainingMode: existingConfig?.trainingMode === true,   // v5.5.645: preserve training flag on fallback
             };
-            localStorage.setItem('rpos-device-config', JSON.stringify(minConfig));
-            useStore.getState().setDeviceConfig(minConfig);
+            applyDeviceConfig(minConfig);   // v5.7.7: same apply path (change-gated)
           }
         } catch(e) {}
       }
@@ -601,6 +682,47 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
 
     // Initial check
     refreshDevice().catch(() => setDeviceValid(true));
+
+    // ── v5.7.7: SELF-HEALING deviceConfig ──────────────────────────────────────
+    // Sunmi WebViews kill websockets on sleep and keep page state on refresh, so
+    // a missed realtime event used to be missed forever and a till could keep
+    // filtering by a menu pin that no longer exists anywhere in the DB. This
+    // refresh re-reads the devices row (the source of truth for profile_id) and
+    // the profile itself from the DB, then re-applies through the same path as
+    // boot and realtime. It NO-OPS silently on any fetch failure so an offline
+    // till keeps its cache (never blank a working till because the wifi
+    // blipped) and it deliberately skips the localStorage profile fallback,
+    // which is exactly the path that used to resurrect stale pins.
+    let refreshInFlight = false;
+    const refreshDeviceProfile = async () => {
+      if (refreshInFlight || !pairedDevice?.id) return;
+      refreshInFlight = true;
+      try {
+        const { data } = await supabase.from('devices').select('id, status, profile_id, name').eq('id', pairedDevice.id).single();
+        if (!data || data.status === 'removed') return;   // removal/kick handling stays refreshDevice's job
+        const current = JSON.parse(localStorage.getItem('rpos-device') || '{}');
+        if (data.name !== current.name || data.profile_id !== current.profileId) {
+          localStorage.setItem('rpos-device', JSON.stringify({ ...current, name: data.name, profileId: data.profile_id }));
+        }
+        wireProfileChannel(data.profile_id);
+        if (!data.profile_id) return;
+        const { data: dbProfile } = await supabase.from('device_profiles').select('*').eq('id', data.profile_id).single();
+        if (!dbProfile) return;   // fetch failed or profile gone: keep the working cache
+        applyDeviceConfig(configFromProfile(profileRowToProfile(dbProfile)));
+      } catch { /* offline: keep the cache */ }
+      finally { refreshInFlight = false; }
+    };
+
+    // Refresh triggers: wake from sleep, network back, 5-minute heartbeat, and
+    // every Push to POS (realtime.js dispatches rpos-config-push on arrival so
+    // Push to POS always delivers the CURRENT profile too).
+    const onVisible = () => { if (document.visibilityState === 'visible') refreshDeviceProfile(); };
+    const onOnline = () => refreshDeviceProfile();
+    const onConfigPush = () => refreshDeviceProfile();
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('rpos-config-push', onConfigPush);
+    const refreshInterval = setInterval(refreshDeviceProfile, 5 * 60 * 1000);
 
     // Subscribe to realtime changes on this device row
     const channel = supabase
@@ -622,54 +744,20 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
       })
       .subscribe();
 
-    // Also subscribe to changes on the device_profiles table for this device's profile.
-    // This means: if someone edits the profile settings (order types, features, etc.),
-    // the front end picks them up immediately without a reload.
-    let profileChannel = null;
-    const wireProfileChannel = (profileId) => {
-      if (!profileId) return;
-      if (profileChannel) supabase.removeChannel(profileChannel);
-      profileChannel = supabase
-        .channel(`profile-${profileId}`)
-        .on('postgres_changes', {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'device_profiles',
-          filter: `id=eq.${profileId}`,
-        }, (payload) => {
-          // Profile settings changed — re-apply immediately
-          const p = payload.new;
-          if (!p) return;
-          const config = {
-            profileId: p.id,
-            profileName: p.name,
-            defaultSurface: p.default_surface || 'tables',
-            enabledOrderTypes: p.enabled_order_types || ['dine-in'],
-            assignedSection: p.assigned_section || null,
-            hiddenFeatures: p.hidden_features || [],
-            tableServiceEnabled: p.table_service_enabled !== false,
-            quickScreenEnabled: p.quick_screen_enabled !== false,
-            serviceCharge: p.service_charge || null,
-            autoPrintReceiptOnClose: p.auto_print_receipt_on_close !== false,
-            orderNotifications: p.order_notifications !== false,
-            menuId: p.menu_id || null,
-            trainingMode: p.training_mode === true,   // v5.5.645: per-device training, live via realtime
-            terminalName: useStore.getState().deviceConfig?.terminalName,
-          };
-          localStorage.setItem('rpos-device-config', JSON.stringify(config));
-          useStore.getState().setDeviceConfig(config);
-          useStore.getState().showToast(p.training_mode === true ? 'Training mode ON — nothing will be saved' : 'Device profile updated', 'info');
-        })
-        .subscribe();
-    };
-
-    // Wire up now with current profile_id
+    // Wire the profile channel now with the cached profile_id so live edits land
+    // immediately; refreshDevice / refreshDeviceProfile rewire it if the DB says
+    // this device now points at a different profile (v5.7.7: it was wired once
+    // and never moved, so reassigned tills listened to the wrong profile).
     const currentProfileId = JSON.parse(localStorage.getItem('rpos-device') || '{}')?.profileId;
     wireProfileChannel(currentProfileId);
 
     return () => {
       supabase.removeChannel(channel);
       if (profileChannel) supabase.removeChannel(profileChannel);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('rpos-config-push', onConfigPush);
+      clearInterval(refreshInterval);
     };
   }, []);
 

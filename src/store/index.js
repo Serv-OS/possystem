@@ -776,8 +776,13 @@ export const useStore = create((set, get) => ({
     // (drives the banner). setDeviceConfig is the single funnel for boot + realtime.
     const training = !!finalConfig?.trainingMode;
     applyTrainingFlag(training);
+    // v5.7.7: snap to the profile's default surface only when the DEFAULT
+    // actually changed (or on first apply). A silent profile refresh that
+    // re-applies an identical profile must never yank the operator off the
+    // screen they are working on mid-shift.
+    const prevDefaultSurface = get().deviceConfig?.defaultSurface;
     set({ deviceConfig: finalConfig, trainingMode: training });
-    if (finalConfig?.defaultSurface) set({ surface: finalConfig.defaultSurface });
+    if (finalConfig?.defaultSurface && finalConfig.defaultSurface !== prevDefaultSurface) set({ surface: finalConfig.defaultSurface });
   },
   // v5.5.645: explicit setter (used at boot + by any manual override). Keeps the
   // module singleton and the React state in lock-step.

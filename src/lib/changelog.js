@@ -7,6 +7,19 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.7',
+    date: '2026-08-20',
+    changes: [
+      'DEVICE PROFILE CHANGES NOW REACH EVERY TILL BY THEMSELVES, including Sunmi devices that slept through the update. Before this, a till learned about profile changes only through a live realtime message. Sunmi screens drop that connection when they sleep, and a missed message was missed forever, so a till could keep running an old menu pin that no longer existed anywhere. That is how a POS showed only Donuts while its profile clearly said the Main menu.',
+      'The till now re-checks its own profile against the database whenever the screen wakes up, whenever the network comes back, every 5 minutes as a heartbeat, and every time Back Office presses Push to POS. If anything material changed (menu pin, profile, training mode, service charge, hidden features and the rest) it applies the fresh settings on the spot. If nothing changed, the check is invisible: no toast, no screen jump.',
+      'Moving a device to a different profile in Back Office now takes hold live. The till used to keep listening to its old profile until a full cold start. Now the reassignment also moves the live listener to the new profile, so later edits to that profile land instantly too.',
+      'Offline tills are safe. If the database cannot be reached the check quietly does nothing and the till keeps working from its saved settings. A wifi blip can never blank a working till.',
+      'One shared translation of profile settings. The boot path and the live update path each kept their own copy of the field list and they had drifted: a live profile edit silently dropped the master flag and the auto sign-out policy until the next reboot. All paths now share one translation, so they can never disagree again.',
+      'Training mode messages behave as before: staff see the toast when training mode switches on or off, and silent background checks never nag.',
+      'No database changes, no server function changes. Front end only.',
+    ],
+  },
+  {
     version: '5.7.6',
     date: '2026-08-20',
     changes: [

@@ -176,6 +176,11 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       table: 'config_pushes',
       filter: `location_id=eq.${locationId}`,
     }, ({ new: push }) => {
+      // v5.7.7: Push to POS must ALSO deliver the current device profile. App's
+      // paired-device layer listens for this and re-fetches its profile from the
+      // DB (self-healing deviceConfig), same window-event pattern as
+      // rpos-master-offline. Dispatched on every push, snapshot or not.
+      try { window.dispatchEvent(new Event('rpos-config-push')); } catch { /* non-browser */ }
       if (push.snapshot) {
         store.getState().setConfigUpdate(push.snapshot);
         // v5.5.311: Auto-apply on UNATTENDED surfaces (KDS / kiosk / orders /
