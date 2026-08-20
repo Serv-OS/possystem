@@ -30,6 +30,7 @@ import { supabase, isMock, getLocationId, getActiveLocationSync } from '../../li
 import { upsertMenuItem, uploadProductImage, deleteProductImage, saveQuickScreenIds, setMenuItemScope, linkCategoryToMenu, unlinkCategoryFromMenu, fetchMenuCategoryLinks } from '../../lib/db';
 import { reportSave } from '../../lib/saveHealth';
 import { rankQuickPicks, DAYPARTS } from '../../lib/quickRank';
+import { getLocationConfig } from '../../lib/locationTime';
 // v4.7.8: per-menu pricing tier UI (item-level)
 import PerMenuPricingTiers from './PerMenuPricingTiers';
 import MenuImportModal from '../components/MenuImportModal';
@@ -3588,7 +3589,11 @@ function QuickScreenManager() {
         const it = byId.get(id);
         return (it?.parentId && it.type !== 'subitem') ? it.parentId : null;
       };
-      const lists = rankQuickPicks(checks, { top: 24, parentOf });
+      // v5.7.22 — dayparts bucket on the VENUE's wall clock. Ranking from a
+      // Back Office session in another timezone was shifting every sale into
+      // the wrong daypart, and the wrong lists then shipped to every till.
+      const venueTz = (await getLocationConfig(locId))?.timezone;
+      const lists = rankQuickPicks(checks, { top: 24, parentOf, timezone: venueTz });
       const auto = { computed_at: new Date().toISOString(), days: RANK_DAYS, checks: checks.length, lists };
       // Success toast ONLY once the persist really landed — saveSmart already
       // toasted the failure (and showToast is single-slot: a success here would

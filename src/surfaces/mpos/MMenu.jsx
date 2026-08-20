@@ -18,16 +18,17 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
   const {
     activeTableId, tables, walkInOrder,
     menuCategories = [], menuItems = [], eightySixIds = [],
-    allergens = [], menus = [], deviceConfig,
+    allergens = [], menus = [], deviceConfig, locationConfig,
   } = useStore();
   // Active menu resolution — same logic the desktop POS uses (resolveActiveMenu
   // ports POSSurface's deviceMenuId chain). Honours device-profile pinning,
   // schedule-based scheduling, default-flagged menus, in priority order. This
   // is what fixes "I set Main in BO but the phone still shows Test menu" —
-  // we now use the EXACT same resolver.
+  // we now use the EXACT same resolver. Schedules evaluate on the VENUE's
+  // configured timezone (v5.7.22), never the phone's own clock.
   const effectiveMenuId = useMemo(
-    () => resolveActiveMenu({ menus, deviceConfig }),
-    [menus, deviceConfig]
+    () => resolveActiveMenu({ menus, deviceConfig, timezone: locationConfig?.timezone }),
+    [menus, deviceConfig, locationConfig?.timezone]
   );
 
   const [query, setQuery] = useState('');

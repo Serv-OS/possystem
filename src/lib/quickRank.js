@@ -33,17 +33,30 @@ const lineQty = (l) => {
  *   parentOf: optional id => masterId|null — checkout lines carry the VARIANT
  *             child's id ("Half", "Large"); mapping to the master here merges a
  *             product's variant sales into one rank ("Cappuccino" = Regular+Large)
+ *   timezone: the VENUE's IANA timezone — dayparts are venue wall-clock, not the
+ *             clock of whatever machine runs the ranking (v5.7.22: a Back Office
+ *             session in another timezone was bucketing every sale into the wrong
+ *             daypart and storing wrong lists for every till). Omitted = device
+ *             hour, as before (legacy/tests).
  * @returns {{ breakfast: string[], lunch: string[], dinner: string[], late: string[] }}
  *          ids ranked best-seller first (ties broken by id for stable output)
  */
-export function rankQuickPicks(checks, { top = 24, parentOf } = {}) {
+export function rankQuickPicks(checks, { top = 24, parentOf, timezone } = {}) {
   const counts = { breakfast: {}, lunch: {}, dinner: {}, late: {} };
+
+  let hourOf = (d) => d.getHours();
+  if (timezone) {
+    try {
+      const fmt = new Intl.DateTimeFormat('en-GB', { timeZone: timezone, hour: '2-digit', hour12: false });
+      hourOf = (d) => { const h = parseInt(fmt.format(d), 10); return h === 24 ? 0 : h; }; // some runtimes emit "24" at midnight
+    } catch { /* unknown tz id — fall back to device hour */ }
+  }
 
   for (const chk of checks || []) {
     const ts = chk?.closed_at || chk?.closedAt || chk?.created_at || chk?.createdAt;
     const d = ts ? new Date(ts) : null;
     if (!d || isNaN(d.getTime())) continue;
-    const dp = daypartOfHour(d.getHours());
+    const dp = daypartOfHour(hourOf(d));
     const lines = Array.isArray(chk?.items) ? chk.items : [];
     for (const l of lines) {
       if (l?.voided) continue;

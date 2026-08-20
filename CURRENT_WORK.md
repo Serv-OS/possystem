@@ -1,3 +1,33 @@
+# Session — 20 Aug 2026 (v5.7.22) — venue-clock sweep (COMMITTED + PUSHED)
+
+## Done (committed to develop as v5.7.22 — a SELECTIVE commit: the uncommitted
+## v5.7.21 bookings work below was deliberately left out and stays in the tree)
+- Swept src/ for schedule decisions on the raw device clock (the v5.7.20 invariant:
+  business time = buildScheduleCtx(locations.timezone), never new Date().getHours()/getDay()).
+- **Fixed (real violations)**: KioskApp timed-menu resolver (tz rides the companyId lookup,
+  now resolved BEFORE useKioskMenu); MPOS lib/mpos/resolveActiveMenu + MMenu caller
+  (store locationConfig.timezone); POSSurface quick-screen daypart (was seed getDaypart on
+  device hours); OnlineCheckout buildCollectionSlots (device-local setHours built venue
+  windows — slots shifted by the whole tz difference on a foreign phone; now
+  resolveLocalDateTime, newly exported from lib/openingHours); quickRank dayparts +
+  MenuManager recompute (venue-tz bucketing, else a remote BO session stores wrong lists);
+  ops/checklists fetchTodayChecklists + openRun (venue ymd/dow/nowMin — run_date write and
+  read now agree); stock/production ensureTodaysPlannedBatches (was device dow + UTC ymd).
+- **Verified clean, not violations**: openingHours lib (tz-aware, all callers pass venue tz);
+  itemAvailability (no time logic); discountEngine (all callers already pass buildScheduleCtx);
+  checkTotals both store callers; QR; OnlineSurface; KioskSurface hours gate; CustomerBoot;
+  GroupOrderSurface.
+- **Flagged, NOT fixed (follow-up tranche)**: ops window-status UIs recomputing device nowMin
+  (OperationsSurface useTodayStatus + ChecklistRun, OpsOverview, OpsCompliance); BO purchasing
+  device dow (OrderPad coverDaysFromSchedule + weekday walk, Batches today-plan);
+  TablesSurface ReservationModal default slot/date (operator-mediated, old reservations);
+  bookings module device-time uses (bits.jsx nowMin ticker, DiaryScreen sessionsToBlocks,
+  bookingsSlice 102/219, optimiser startMin) — left alone: active parallel session owns them.
+- Reports/greetings/history bucketing (device tz) deliberately untouched = display only.
+- ⚠ For the bookings session: your v5.7.21 work is still uncommitted; version.js is now
+  5.7.22 and your changelog entry sits below the new 5.7.22 one — re-stamp to 5.7.23+
+  when you ship.
+
 # Session — 20 Aug 2026 (v5.7.17) — ONE shared normaliseMenuRow, no more hand copies
 
 ## Done (committed + pushed to develop)

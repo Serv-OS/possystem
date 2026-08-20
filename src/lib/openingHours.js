@@ -162,7 +162,9 @@ export function formatHoursPreview(hours) {
 // Trick: we form a local-time string in the target tz, parse it, then
 // adjust by tz offset. JS doesn't have direct support for this so we
 // iterate-once via the parts trick.
-function resolveLocalDateTime(isoDate, minutes, timeZone) {
+// Exported since v5.7.22 — the online collection-slot builder needs venue-local
+// wall-clock times as real instants (it used device-local setHours before).
+export function resolveLocalDateTime(isoDate, minutes, timeZone) {
   const [y, m, d] = isoDate.split('-').map(Number);
   const hh = Math.floor(minutes / 60);
   const mm = minutes % 60;

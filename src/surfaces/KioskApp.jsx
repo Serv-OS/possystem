@@ -95,7 +95,7 @@ function useKioskProfile(kioskId) {
 
 // Loads menu data scoped to this location. Returns items, categories, links, menus.
 // Uses the active-menu resolver (matching POS) so timed menus work.
-function useKioskMenu(profile, locationId) {
+function useKioskMenu(profile, locationId, tz = 'Europe/London') {
   const [data, setData] = useState({ items: [], categories: [], menus: [], links: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -155,11 +155,13 @@ function useKioskMenu(profile, locationId) {
     return () => { alive = false; };
   }, [locationId]);
 
-  // Resolve active menu — same logic as POSSurface v4.6.5
+  // Resolve active menu — same logic as POSSurface v4.6.5.
+  // v5.7.22 — timed menus flip on the VENUE's clock, never the kiosk's own OS
+  // timezone (same fix as the desktop resolver in v5.7.20).
   const activeMenuId = useMemo(() => {
-    const now = new Date();
-    const day = now.getDay() || 7;
-    const time = now.getHours() * 60 + now.getMinutes();
+    const ctx = buildScheduleCtx(tz);
+    const day = ctx.isoDay || (new Date().getDay() || 7);
+    const time = ctx.nowMinutes;
     const isActive = (m) => {
       if (!m.schedule) return true;
       const s = m.schedule;
@@ -183,7 +185,7 @@ function useKioskMenu(profile, locationId) {
     if (def) return def.id;
     if (preferred) return preferred;
     return null;
-  }, [data.menus, profile?.menu_id, tick]);
+  }, [data.menus, profile?.menu_id, tick, tz]);
 
   return { ...data, activeMenuId, loading, error };
 }
@@ -228,9 +230,10 @@ export default function KioskApp({ kioskId, onUnpair }) {
       getLocationId().then(id => { if (id) setLocationId(id); }).catch(() => {});
     }
   }, [device?.location_id]);
-  const { items, categories, menus, links, activeMenuId, loading: menuLoading, error: menuError } = useKioskMenu(profile, locationId);
 
-  // v5.5.265: Resolve companyId for OTP + gift card flows
+  // v5.5.265: Resolve companyId for OTP + gift card flows. The venue timezone
+  // rides the same lookup — resolved BEFORE useKioskMenu so timed menus can
+  // evaluate their windows on the venue's clock (v5.7.22).
   const [companyId, setCompanyId] = useState(null);
   const [kioskTz, setKioskTz] = useState('Europe/London');
   useEffect(() => {
@@ -244,6 +247,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
       .then(({ data }) => { if (data?.company_id) setCompanyId(data.company_id); if (data?.timezone) setKioskTz(data.timezone); })
       .catch(() => {});
   }, [locationId]);
+  const { items, categories, menus, links, activeMenuId, loading: menuLoading, error: menuError } = useKioskMenu(profile, locationId, kioskTz);
 
   // Auto-discount rules — fetched live (kiosk runs anonymously, no store.discountRules). Raw DB rows
   // feed the engine directly (it reads snake_case). Channel 'kiosk'; schedule/expiry in location tz.

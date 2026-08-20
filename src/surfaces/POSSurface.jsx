@@ -13,7 +13,8 @@ import { pushReaderDisplay, clearReaderDisplay, cacheReaderDisplaySetting } from
 import { publishDisplay, getCustomerDisplayMode, displayUsesReader, displayUsesScreen, cacheCustomerDisplayMode, onCustomerPhone, publishLoyalty, onRedeemReward, isLoyaltyEnabled } from '../lib/customerDisplay';
 import { captureLoyaltyByPhone } from '../lib/customerLookup';
 import { getAssignedNetworkReader } from '../lib/networkReader';
-import { CATEGORIES, MENU_ITEMS as SEED_MENU_ITEMS, ALLERGENS, QUICK_IDS, getDaypart, CAT_META } from '../data/seed';
+import { CATEGORIES, MENU_ITEMS as SEED_MENU_ITEMS, ALLERGENS, QUICK_IDS, CAT_META } from '../data/seed';
+import { daypartOfHour } from '../lib/quickRank';
 import { calculateOrderTax } from '../lib/tax';
 import { resolveQuickItems } from '../lib/quickRank';
 import ProductModal, { AllergenModal } from '../components/ProductModal';
@@ -561,7 +562,10 @@ export default function POSSurface() {
   const hideCourses = (deviceConfig?.hiddenFeatures || []).includes('courses');
   const covers = session?.covers || 2;
   const hasSent = !!session?.sentAt;
-  const daypart = getDaypart();
+  // v5.7.22 — the quick screen's daypart runs on the VENUE clock, same rule
+  // as the menu resolver above (v5.7.20): a till on the wrong OS timezone was
+  // showing another daypart's best sellers all shift.
+  const daypart = daypartOfHour(Math.floor(buildScheduleCtx(_venueTz).nowMinutes / 60));
   const catMeta = CAT_META[cat] || CAT_META.quick;
   const activeQueueCount = orderQueue.filter(o=>o.status!=='collected').length;
 

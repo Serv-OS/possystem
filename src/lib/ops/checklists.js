@@ -6,8 +6,9 @@
  */
 
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
-import { runsOnDay, hhmmToMin, windowStatus } from './temp.js';
+import { hhmmToMin, windowStatus } from './temp.js';
 import { isTrainingMode } from '../trainingMode';
+import { getLocationConfig, buildScheduleCtx } from '../locationTime';
 
 const nowIso = () => new Date().toISOString();
 const ymd = (d) => { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
@@ -95,7 +96,14 @@ export const fetchTodayChecklists = async (locationId = null) => {
   if (isMock || !supabase) return { data: [], error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: [], error: null };
-  const today = ymd(new Date()); const now = new Date(); const nowMin = now.getHours() * 60 + now.getMinutes();
+  // v5.7.22 — "today" is the VENUE's calendar day, "now" the venue's wall
+  // clock (project invariant: business-time decisions never read the device
+  // clock). A tablet on the wrong OS timezone was showing the wrong day's
+  // checklists and mis-timing due/missed windows.
+  const ctx = buildScheduleCtx((await getLocationConfig(locationId))?.timezone);
+  const today = ctx.ymd; const nowMin = ctx.nowMinutes;
+  const jsDow = ctx.isoDay % 7; // ISO 1=Mon..7=Sun → JS 0=Sun..6=Sat (schedule rows store JS dow)
+  const runsToday = (days) => !Array.isArray(days) || days.length === 0 || days.includes(jsDow);
   const { data: lists } = await fetchChecklists(locationId);
   // v5.5.971 — the frequency field finally MEANS something:
   //   daily   → weekday chips as before (empty = every day)
@@ -103,9 +111,9 @@ export const fetchTodayChecklists = async (locationId = null) => {
   //             refuses to save that, and the old silent-daily behaviour was a lie)
   //   monthly → the configured day of month (1-28)
   const dueOn = (l) => {
-    if (l.frequency === 'monthly') return now.getDate() === (l.dayOfMonth || 1);
-    if (l.frequency === 'weekly') return (l.daysOfWeek?.length > 0) && runsOnDay(l.daysOfWeek, now);
-    return runsOnDay(l.daysOfWeek, now);
+    if (l.frequency === 'monthly') return Number(today.slice(8, 10)) === (l.dayOfMonth || 1);
+    if (l.frequency === 'weekly') return (l.daysOfWeek?.length > 0) && runsToday(l.daysOfWeek);
+    return runsToday(l.daysOfWeek);
   };
   const due = (lists || []).filter(dueOn);
   const ids = due.map(l => l.id);
@@ -142,7 +150,10 @@ export const openRun = async (checklistId, locationId = null) => {
   if (isTrainingMode()) return { data: { id: 'training-run', checklistId, runDate: ymd(new Date()), status: 'open', completedByName: null, completedAt: null }, error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: null, error: new Error('No locationId') };
-  const today = ymd(new Date());
+  // v5.7.22 — run_date must be the VENUE's calendar day, matching what
+  // fetchTodayChecklists queries; a device-clock date here would open the run
+  // under a different key than the day view reads.
+  const today = buildScheduleCtx((await getLocationConfig(locationId))?.timezone).ymd;
   const { data, error } = await supabase.from('ops_checklist_runs')
     .upsert({ location_id: locationId, checklist_id: checklistId, run_date: today, status: 'open' }, { onConflict: 'location_id,checklist_id,run_date' })
     .select().maybeSingle();

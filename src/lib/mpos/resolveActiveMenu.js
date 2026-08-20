@@ -11,11 +11,16 @@
 //
 // Returns the menu id or null.
 
-export function resolveActiveMenu({ menus, deviceConfig }) {
+import { buildScheduleCtx } from '../locationTime';
+
+export function resolveActiveMenu({ menus, deviceConfig, timezone }) {
   if (!Array.isArray(menus) || menus.length === 0) return deviceConfig?.menuId || null;
-  const now = new Date();
-  const day = now.getDay() || 7; // ISO Mon=1..Sun=7
-  const time = now.getHours() * 60 + now.getMinutes();
+  // v5.7.22 — schedules run on the VENUE's clock, never the phone's (same fix
+  // as the desktop resolver in v5.7.20: a device on the wrong OS timezone was
+  // evaluating the venue's menu windows hours out).
+  const ctx = buildScheduleCtx(timezone || 'Europe/London');
+  const day = ctx.isoDay || (new Date().getDay() || 7); // ISO Mon=1..Sun=7
+  const time = ctx.nowMinutes;
 
   const isActive = (m) => {
     if (!m.schedule) return true;

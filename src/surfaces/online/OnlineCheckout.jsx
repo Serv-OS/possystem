@@ -35,7 +35,7 @@ import { commitRedemption } from '../../lib/commitRedemptions';
 import { getDeliveryQuote, recordDeliverySurcharge } from '../../lib/delivery/quoteService';
 import { dispatchDelivery } from '../../lib/delivery/dispatch';
 import { sendEmailReceipt } from '../../lib/sendReceipt';
-import { getDayWindows } from '../../lib/openingHours';
+import { getDayWindows, resolveLocalDateTime } from '../../lib/openingHours';
 import { calculateOrderTax } from '../../lib/tax';
 import { money, stripeCurrency } from '../../lib/currency';
 
@@ -2164,14 +2164,17 @@ function buildCollectionSlots(location, tz, leadMin) {
     const windows = getDayWindows(hours, tz, probe);
     if (!windows.length) continue;
     const dayLabel = probe.toLocaleDateString('en-GB', { timeZone: tz, weekday: 'short', day: 'numeric', month: 'short' });
+    // v5.7.22 — window times ("09:00") are VENUE wall-clock, so the slot
+    // instants must be built in the venue's timezone. setHours() built them on
+    // the customer's DEVICE clock, so a phone in another timezone was offered
+    // slots shifted by the whole tz difference.
+    const isoDate = probe.toLocaleDateString('en-CA', { timeZone: tz });
     for (const w of windows) {
       const [oh, om] = w.open.split(':').map(Number);
       const [ch, cm] = w.close.split(':').map(Number);
       // Earliest valid slot in this window
-      const cur = new Date(probe);
-      cur.setHours(oh, om, 0, 0);
-      const end = new Date(probe);
-      end.setHours(ch, cm, 0, 0);
+      let cur = resolveLocalDateTime(isoDate, oh * 60 + om, tz);
+      const end = resolveLocalDateTime(isoDate, ch * 60 + cm, tz);
       while (cur.getTime() < end.getTime()) {
         if (cur.getTime() >= earliest.getTime()) {
           out.push({
@@ -2180,7 +2183,7 @@ function buildCollectionSlots(location, tz, leadMin) {
             label: cur.toLocaleTimeString('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }),
           });
         }
-        cur.setMinutes(cur.getMinutes() + 15);
+        cur = new Date(cur.getTime() + 15 * 60_000);
       }
     }
     if (out.length >= 60) break; // reasonable upper bound

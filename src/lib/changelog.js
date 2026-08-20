@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.22',
+    date: '2026-08-20',
+    items: [
+      'Venue clock sweep. Every remaining schedule decision now runs on the venue\'s configured timezone, never the device clock. Kiosk timed menus, phone POS timed menus and the POS quick screen daypart all flip at the same venue wall clock moment, matching the till fix in v5.7.20.',
+      'Online collection slots are now built on the venue clock. A customer whose phone sat in another timezone was being offered pickup times shifted by the whole timezone difference.',
+      'Smart quick screen ranking buckets sales into dayparts on the venue clock, so ranking from a Back Office session abroad can no longer store the wrong best seller lists for every till.',
+      'Operations checklists and planned production batches now key on the venue\'s calendar day and weekday. A tablet on the wrong OS timezone was showing the wrong day\'s checklists and could open a run under the wrong date.',
+    ],
+  },
+  {
     version: '5.7.20',
     date: '2026-08-20',
     items: [

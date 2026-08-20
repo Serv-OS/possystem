@@ -9,6 +9,7 @@
  */
 
 import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
+import { getLocationConfig, buildScheduleCtx } from '../locationTime';
 import { convert } from './conversion.js';
 import { componentUnitCost } from './costing.js';
 import { buildCostingCtx } from './recipes.js';
@@ -105,8 +106,11 @@ export const ensureTodaysPlannedBatches = async (locationId = null) => {
   if (isMock || !supabase) return { data: 0, error: null };
   locationId = await ensureLoc(locationId);
   if (!locationId) return { data: 0, error: null };
-  const today = new Date(); const dow = today.getDay();
-  const ymd = today.toISOString().slice(0, 10);
+  // v5.7.22 — plan against the VENUE's calendar day and weekday, never the
+  // device clock (the old toISOString() date was UTC — a third clock again).
+  const ctx = buildScheduleCtx((await getLocationConfig(locationId))?.timezone);
+  const dow = ctx.isoDay % 7; // ISO 1=Mon..7=Sun → JS 0=Sun..6=Sat (prep_schedule stores JS dow)
+  const ymd = ctx.ymd;
   const { data: scheds } = await supabase.from('prep_schedule')
     .select('id, name, qty, unit, due_time, days_of_week, recipe_id, output_item_id')
     .eq('location_id', locationId).eq('active', true).not('recipe_id', 'is', null);
