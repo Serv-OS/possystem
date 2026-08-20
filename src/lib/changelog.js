@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.14',
+    date: '2026-08-20',
+    items: [
+      'Menus: the default menu star now survives a refresh in the Back Office too. The Back Office has its own loader, separate from the two fixed in 5.7.11, and it was the one still dropping the flag.',
+    ],
+  },
+  {
     version: '5.7.12',
     date: '2026-08-20',
     items: [

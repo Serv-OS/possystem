@@ -467,7 +467,15 @@ export default function BackOfficeApp() {
     ]);
     const { useStore } = await import('../store/index.js');
     const patch = {};
-    if (menusRes.data?.length)   patch.menus          = menusRes.data;
+    // v5.7.14 - normalise to camelCase like SyncBridge and applyConfigUpdate
+    // (v5.7.11 fixed those two doors; THIS loader is the one a Back Office
+    // refresh actually runs, so the default-menu star still vanished here).
+    if (menusRes.data?.length)   patch.menus          = menusRes.data.map(r => ({
+      ...r,
+      isDefault: r.isDefault ?? r.is_default ?? false,
+      isActive: r.isActive ?? r.is_active ?? true,
+      sortOrder: r.sortOrder ?? r.sort_order ?? 0,
+    }));
     if (catsRes.data?.length)    patch.menuCategories  = catsRes.data.map(c => ({
       ...c,
       menuId: c.menu_id ?? c.menuId,
