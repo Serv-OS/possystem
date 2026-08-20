@@ -204,3 +204,75 @@ test('stamped lines still start with no mods chosen (options are picked at the t
   assert.deepEqual(pick.mods, []);
   assert.equal(pick.fromPreorder, true);
 });
+
+// ── v5.7.28: the package itself is a priced line (THE ACCOUNTING GAP fix) ────
+// Prepay items seat at 0.00 and the money applies as a tender capped at the
+// bill, so a no-extras prepaid dinner closed as a 0.00 sale and the revenue hit
+// no sales report on any day. Now prepay packages prepend ONE priced package
+// line so the check face value carries the revenue on the day of the meal.
+const pricedPkg = (paymentModel, priceUnit, price, lines) =>
+  ({ id: 'pk-1', name: 'Pre Order Dinner', paymentModel, priceUnit, price, lines });
+
+test('prepay per_cover: one package line at price × covers, items still 0.00', () => {
+  const p = pricedPkg('prepay', 'per_cover', 120, [L({ itemId: 'm-steak', displayName: 'Ribeye' })]);
+  const items = packageItemsFor({ pkg: p, covers: 2, menuItems: MENU });
+  assert.equal(items.length, 2);
+  const [pkgLine, steak] = items;
+  assert.equal(pkgLine.name, 'Pre Order Dinner');
+  assert.equal(pkgLine.itemId, 'pkg-pk-1');
+  assert.equal(pkgLine.price, 120);
+  assert.equal(pkgLine.qty, 2);          // per cover × 2 covers
+  assert.equal(pkgLine.course, 0);       // lands with the check, not a course
+  assert.equal(pkgLine.seat, null);
+  assert.deepEqual(pkgLine.mods, []);
+  assert.equal(steak.price, 0);          // food stays at 0.00 (Provo rule intact)
+  // The traced face value: £120 × 2 package + £0 food = £240.
+  assert.equal(items.reduce((s, i) => s + i.price * i.qty, 0), 240);
+});
+
+test('prepay per_booking: one package line at qty 1', () => {
+  const p = pricedPkg('prepay', 'per_booking', 500, [L({ itemId: 'm-fizz', displayName: 'Prosecco' })]);
+  const items = packageItemsFor({ pkg: p, covers: 6, menuItems: MENU });
+  const pkgLine = items[0];
+  assert.equal(pkgLine.name, 'Pre Order Dinner');
+  assert.equal(pkgLine.price, 500);
+  assert.equal(pkgLine.qty, 1);          // whole-booking price, covers ignored
+});
+
+test('minimum_spend: NO package line (a spend floor is not revenue)', () => {
+  const p = pricedPkg('prepay', 'minimum_spend', 300, [L({ itemId: 'm-fizz', displayName: 'Prosecco' })]);
+  const items = packageItemsFor({ pkg: p, covers: 4, menuItems: MENU });
+  assert.equal(items.length, 1);
+  assert.equal(items[0].itemId, 'm-fizz');
+  assert.ok(!items.some((i) => i.itemId === 'pkg-pk-1'));
+});
+
+test('deposit: NO package line, items carry real prices (a line would double-count)', () => {
+  const p = pricedPkg('deposit', 'per_cover', 120, [L({ itemId: 'm-fizz', displayName: 'Prosecco' })]);
+  const items = packageItemsFor({ pkg: p, covers: 2, menuItems: MENU });
+  assert.equal(items.length, 1);
+  assert.equal(items[0].itemId, 'm-fizz');
+  assert.equal(items[0].price, 9);       // live menu price already on the check
+  assert.ok(!items.some((i) => i.itemId === 'pkg-pk-1'));
+});
+
+test('the package line carries the kitchen-suppression stamp (never KDS, never a docket)', () => {
+  const p = pricedPkg('prepay', 'per_cover', 120, [L({ itemId: 'm-steak', displayName: 'Ribeye' })]);
+  const [pkgLine, steak] = packageItemsFor({ pkg: p, covers: 2, menuItems: MENU });
+  assert.equal(pkgLine.noKitchen, true);
+  assert.equal(pkgLine.fromPreorder, true);
+  assert.ok(!steak.noKitchen);           // real food still reaches the kitchen
+});
+
+test('an UNPAID prepay booking gets no package line (the v5.7.23 gate prices it like deposit)', () => {
+  const p = pricedPkg('prepay', 'per_cover', 120, [L({ itemId: 'm-fizz', displayName: 'Prosecco' })]);
+  const items = packageItemsFor({ pkg: p, covers: 2, menuItems: MENU, prepayCaptured: false });
+  assert.ok(!items.some((i) => i.itemId === 'pkg-pk-1'));
+  assert.equal(items[0].price, 9);       // real prices, no phantom revenue line
+});
+
+test('a zero-priced package posts no line (nothing to report)', () => {
+  const p = pricedPkg('prepay', 'per_cover', 0, [L({ itemId: 'm-steak', displayName: 'Ribeye' })]);
+  const items = packageItemsFor({ pkg: p, covers: 2, menuItems: MENU });
+  assert.ok(!items.some((i) => i.itemId === 'pkg-pk-1'));
+});

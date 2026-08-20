@@ -52,6 +52,48 @@ export function packageItemsFor({ pkg, covers, preorders = [], menuItems = [], n
   const lines = pkg.lines || [];
   const findMenu = (id) => (id ? menuItems.find((m) => m.id === id) : null);
 
+  // v5.7.28 — THE ACCOUNTING GAP fix. Prepay items seat at 0.00 and the
+  // captured money applies as a tender capped at the bill, so a no-extras
+  // prepaid dinner used to close as a 0.00 sale: the revenue appeared in NO
+  // sales report on any day (it existed only in booking_payments on the
+  // booking day). Owner decision: revenue posts on the DAY OF THE SALE (the
+  // event day); money-in stays on the booking day in payments reporting; the
+  // two reconcile via the booking_prepaid tender leg.
+  //
+  // So the package ITSELF becomes ONE priced line on the seated check:
+  //   per_cover     → qty = covers at the per-cover price
+  //   per_booking   → qty 1 at the package price
+  //   minimum_spend → NO line (a spend floor is not revenue)
+  // Prepay ONLY, and only when the credit is captured (the v5.7.23 gate flips
+  // an unpaid prepay to deposit pricing, where items already carry real
+  // prices). Deposit packages NEVER get this line — their items are already
+  // priced, a package line would double-count. A zero-priced package has
+  // nothing to post, so no line.
+  //
+  // noKitchen: the line is revenue, not food. createKdsTickets skips it (KDS
+  // tickets and the print jobs built from them) and buildKitchenTicket skips
+  // it again at the docket builder. Receipts still show it — it is the line
+  // the guest paid for. Voiding: treated like any line, no special cases (no
+  // daily counts to restore).
+  const packageLine = [];
+  if (model === 'prepay' && pkg.priceUnit !== 'minimum_spend' && (pkg.price || 0) > 0) {
+    packageLine.push({
+      uid: `pkg-${pkg.id}-${now}`,
+      itemId: `pkg-${pkg.id}`,
+      name: pkg.name || 'Package',
+      price: pkg.price,
+      qty: pkg.priceUnit === 'per_booking' ? 1 : Math.max(1, Math.round(covers || 1)),
+      mods: [], notes: '', allergens: [],
+      cat: null,
+      course: 0,
+      fired: true,
+      seat: null,
+      fromPreorder: true,
+      preorderGuest: null,
+      noKitchen: true,
+    });
+  }
+
   // Fixed lines: everyone gets them. Choice lines NEVER auto-materialise —
   // before v5.7.21 they were only removed when preorders existed, so a booking
   // with no picks loaded every option for every guest.
@@ -111,5 +153,5 @@ export function packageItemsFor({ pkg, covers, preorders = [], menuItems = [], n
     };
   });
 
-  return [...fixed, ...chosen];
+  return [...packageLine, ...fixed, ...chosen];
 }

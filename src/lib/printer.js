@@ -423,7 +423,10 @@ export function buildKitchenTicket({ table, server, covers, course, centreName, 
   // marker docket (see buildFireCourseTicket). item.fired is set in createKdsTickets
   // from FIRED_ON_SEND so every item in the same course has a consistent flag.
   const byCourse = {};
-  (items||[]).forEach(i => {
+  // v5.7.28: noKitchen lines (the prepaid booking package revenue line) never
+  // print on a kitchen docket — second guard behind createKdsTickets' filter,
+  // covering any job builder that passes raw session items through.
+  (items||[]).filter(i => !i?.noKitchen).forEach(i => {
     const c = i.course ?? 1;
     if (!byCourse[c]) byCourse[c] = [];
     byCourse[c].push(i);

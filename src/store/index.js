@@ -2336,7 +2336,11 @@ export const useStore = create((set, get) => ({
       const FIRED_ON_SEND = _firedOnSend;
       // Send ALL non-voided pending items — not just courses 0+1
       // (v5.5.792: in fireAll mode isUnsentLine also picks up sent-but-held lines)
-      items.filter(isUnsentLine).forEach(item => {
+      // v5.7.28: noKitchen lines (the prepaid booking package revenue line) never
+      // reach KDS or the kitchen printers — the print jobs below are built FROM
+      // these tickets, so this one filter covers both. buildKitchenTicket
+      // (printer.js) guards again at the docket builder.
+      items.filter(isUnsentLine).filter(i => !i.noKitchen).forEach(item => {
         const centres = getCentresForItem(item, routingConfig);
         centres.forEach(cid => {
           if (!byCenter[cid]) byCenter[cid] = [];

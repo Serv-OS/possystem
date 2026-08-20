@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.28',
+    date: '2026-08-20',
+    items: [
+      'Prepaid event bookings now show the package itself as a paid line on the check. A 120 per cover dinner for 2 seats the check at 240 plus any extras, the 240 the guest already paid comes off at close as the booking payment, and only extras are due at the table. This means the day\'s sales reports carry the real revenue on the day the meal happens, while the money taken stays on the booking day in payments reporting, and the two reconcile through the booking prepaid payment line on the check.',
+      'The package line prices per cover or per booking to match how the package is set up. Minimum spend packages get no line, a spend floor is not revenue. Deposit packages are unchanged, their items already carry real prices.',
+      'The package line never prints to the kitchen and never appears on kitchen screens, it is money not food. It does show on the guest receipt.',
+    ],
+  },
+  {
     version: '5.7.27',
     date: '2026-08-20',
     items: [
