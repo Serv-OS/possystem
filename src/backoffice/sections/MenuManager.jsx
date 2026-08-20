@@ -615,7 +615,7 @@ function MenuTab() {
                   <button onClick={()=>{ setSelMenuId(m.id); setSelCatId(null); }}
                     style={{ flex:1, minWidth:0, display:'flex', flexDirection:'column', padding:'9px 10px', cursor:'pointer', fontFamily:'inherit', textAlign:'left', border:'none', background:'transparent' }}>
                     <div title={m.name} style={{ fontSize:12.5, fontWeight:700, color:selMenuId===m.id?'var(--acc)':'var(--t1)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', paddingRight:44 }}>
-                      {m.isDefault?'★ ':''}{m.name}
+                      {(m.isDefault ?? m.is_default)?'★ ':''}{m.name}
                       {sched && <span style={{ marginLeft:4, fontSize:9, color:'var(--t4)' }}>⏰</span>}
                     </div>
                     <div style={{ fontSize:10, color:'var(--t4)', marginTop:2 }}>
@@ -626,7 +626,7 @@ function MenuTab() {
                     <button onClick={()=>{ setEditingMenuId(isEditing ? null : m.id); }}
                       title="Edit menu settings"
                       style={{ width:20,height:20,borderRadius:5,border:'1px solid var(--bdr)',background:isEditing?'var(--acc-d)':'var(--bg1)',color:isEditing?'var(--acc)':'var(--t3)',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>✎</button>
-                    {!m.isDefault && (
+                    {!(m.isDefault ?? m.is_default) && (
                       <button className="mm-del" onClick={()=>{
                           if (!confirm(`Delete "${m.name}"? This won't delete its categories or items.`)) return;
                           if (selMenuId===m.id && menus.length>1) setSelMenuId(menus.find(x=>x.id!==m.id).id);
@@ -683,12 +683,12 @@ function MenuTab() {
                     <div style={{ fontSize:10, color:'var(--t4)', lineHeight:1.4 }}>
                       Higher priority wins when multiple scheduled menus overlap.
                     </div>
-                    {!m.isDefault && (
+                    {!(m.isDefault ?? m.is_default) && (
                       <button onClick={()=>{
                           (menus||[]).forEach(other => {
-                            if (other.id !== m.id && other.isDefault) updateMenu(other.id, { isDefault: false });
+                            if (other.id !== m.id && (other.isDefault ?? other.is_default)) updateMenu(other.id, { isDefault: false, is_default: false });
                           });
-                          updateMenu(m.id, { isDefault: true });
+                          updateMenu(m.id, { isDefault: true, is_default: true });
                           markBOChange(); showToast(`"${m.name}" is now the default`,'success');
                         }}
                         style={{ width:'100%', padding:'4px 8px', marginTop:6, fontSize:10, fontWeight:600, borderRadius:5, border:'1px solid var(--acc)', background:'var(--acc-d)', color:'var(--acc)', cursor:'pointer' }}>

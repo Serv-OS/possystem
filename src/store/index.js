@@ -605,7 +605,14 @@ export const useStore = create((set, get) => ({
       // Menu items — full replace with pushed version
       ...(snap.menuItems?.length ? { menuItems: snap.menuItems } : {}),
       // Menus list
-      ...(snap.menus?.length ? { menus: snap.menus } : {}),
+      // v5.7.11: same camelCase normalisation as SyncBridge's DB read — push
+      // snapshots carry raw snake rows and MenuManager reads isDefault/isActive.
+      ...(snap.menus?.length ? { menus: snap.menus.map(r => ({
+        ...r,
+        isDefault: r.isDefault ?? r.is_default ?? false,
+        isActive: r.isActive ?? r.is_active ?? true,
+        sortOrder: r.sortOrder ?? r.sort_order ?? 0,
+      })) } : {}),
       // Menu categories — full replace
       ...(snap.menuCategories?.length ? { menuCategories: snap.menuCategories } : {}),
       // Tax rates — full replace

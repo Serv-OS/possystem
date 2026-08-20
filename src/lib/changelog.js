@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.11',
+    date: '2026-08-20',
+    items: [
+      'Menus: the default menu star no longer vanishes after a refresh. The flag always saved correctly, the screen was reading a different spelling of the field than the loader provided. Both load paths now normalise the rows.',
+    ],
+  },
+  {
     version: '5.7.10',
     date: '2026-08-20',
     items: [
