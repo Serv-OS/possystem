@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.25',
+    date: '2026-08-20',
+    items: [
+      'Booking pre order page: choices within a course now read as alternatives, for example Mixed Olives or Cheese Bread, since each guest picks one.',
+    ],
+  },
+  {
     version: '5.7.24',
     date: '2026-08-20',
     items: [
