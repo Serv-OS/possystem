@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.9',
+    date: '2026-08-20',
+    changes: [
+      'SAVING A DEVICE PROFILE FROM AN OLD BROWSER TAB CAN NO LONGER WIPE THE PROFILE\'S MENU CHOICE. A Back Office tab opened before a menu was pinned still held the old picture of the profile in its memory, and saving ANY change from that tab, even just renaming the profile, wrote that whole old picture back and silently cleared the pinned menu. This is exactly how one venue\'s Main profile lost its pin three times in two days. Now the save first reads the profile fresh from the database, and the menu choice, the service charge and training mode only change when you actually pressed those controls in the editor you are saving from. Anything you did not open keeps its saved value.',
+      'If that fresh read fails, for example on flaky wifi, the save leaves the menu choice, service charge and training mode out of the write altogether unless you changed them, so a bad connection can never blank a pin either.',
+      'The per kiosk settings page got the same protection. It now only writes the kiosk\'s menu pin when you used the menu picker on that page in that session, so saving a branding tweak from a tab left open all day can no longer revert the kiosk to an old menu.',
+      'Creating a brand new profile is unchanged, and every other profile field saves exactly as it did before. No database changes, no server changes. Front end only.',
+    ],
+  },
+  {
     version: '5.7.8',
     date: '2026-08-20',
     changes: [

@@ -1,3 +1,32 @@
+# Session — 20 Aug 2026 (v5.7.9) — Device profile saves can no longer wipe the menu pin
+
+## Done (NOT committed, NOT deployed)
+- **Bug (proven with live data)**: DeviceProfiles.jsx `save()` wrote the ENTIRE profile row from
+  the tab's in-memory object. A BO tab loaded before an operator pinned a menu held menuId
+  undefined, so ANY save from that tab (even a rename) silently nulled device_profiles.menu_id.
+  Wiped the Provo "Main" pin three times in two days. Same class as vanishing categories.
+- **Fix (DeviceProfiles.jsx)**: fresh-read merge guard on update.
+  - ProfileEditor tracks a per-session `touchedRef` Set; `upd(key,val)` records every key
+    (updSC/toggleOrderType/toggleFeature all funnel through it; the one direct setForm for
+    slideshow images marks its key too). Save passes the set to `save(updated, touched)`.
+  - The existing pre-write existence check now selects `id, menu_id, service_charge,
+    training_mode` via maybeSingle (no extra round trip). Guarded fields (menuId,
+    serviceCharge, trainingMode) keep the DB value unless touched this session.
+  - Fresh read failed (offline/transient): update still runs but untouched guarded columns are
+    DELETED from the row, so PostgREST leaves them untouched. 0-row/RLS error handling and
+    saveHealth reporting unchanged. Insert path (new profiles) writes the form as-is.
+- **KioskSettings.jsx**: same class of risk (partial update writes `menu_id: draft.menu_id`
+  from a draft seeded at load). `setField` now records touched; save omits menu_id unless the
+  menu picker was used this session; touched clears whenever the draft reseeds from the DB.
+- DeviceRegistry.jsx and KioskRegistry.jsx only SELECT from device_profiles (writes go to
+  `devices`) — they cannot write menu_id. POSSurface/App/KioskApp/CustomerDisplaySurface/db.js
+  reads only.
+- Version 5.7.9 + changelog entry (operator English, no em or en dashes).
+- Verified: build clean, 390/390 tests pass, eslint on touched files identical to HEAD baseline
+  (checked in a temp worktree). No DB or edge fn changes.
+- Known pre-existing (NOT touched, worth a task): loadFromDB does not map sort_order into the
+  profile objects, so every DeviceProfiles save writes sort_order 0. Same stale-overwrite class.
+
 # Session — 20 Aug 2026 (v5.7.7) — Self-healing deviceConfig (Sunmi stale-profile fix)
 
 ## Done (NOT committed, NOT deployed)

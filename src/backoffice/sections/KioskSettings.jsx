@@ -13,7 +13,7 @@
 * File uploads go to the kiosk-assets Supabase Storage bucket (public).
 */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase, getLocationId } from '../../lib/supabase';
 
 const TABLE_MODES = [
@@ -35,7 +35,12 @@ export default function KioskSettings({ kioskId, onBack }) {
 
   // Local-state copy of profile fields (edits buffered)
   const [draft, setDraft] = useState({});
-  const setField = (k, v) => setDraft(prev => Object.assign({}, prev, { [k]: v }));
+  // v5.7.9: record which fields THIS session actually changed (every edit funnels
+  // through setField). save() only writes menu_id when the operator used the menu
+  // picker here, so a kiosk settings tab left open all day can never revert a menu
+  // pin that was changed elsewhere with its stale loaded value.
+  const touchedRef = useRef(new Set());
+  const setField = (k, v) => { touchedRef.current.add(k); setDraft(prev => Object.assign({}, prev, { [k]: v })); };
 
   const load = useCallback(async () => {
     setError(null);
@@ -53,6 +58,7 @@ export default function KioskSettings({ kioskId, onBack }) {
           .from('device_profiles').select('*').eq('id', dev.profile_id).maybeSingle();
         if (e2) throw e2;
         setProfile(prof);
+        touchedRef.current.clear(); // draft reseeded from DB truth
         setDraft({
           kiosk_brand_name:        prof?.kiosk_brand_name        ?? '',
           kiosk_brand_color:       prof?.kiosk_brand_color       ?? '#f97316',
@@ -94,7 +100,7 @@ export default function KioskSettings({ kioskId, onBack }) {
     setError(null);
     setSuccess(null);
     try {
-      const { error } = await supabase.from('device_profiles').update({
+      const patch = {
         kiosk_brand_name:        draft.kiosk_brand_name        || null,
         kiosk_brand_color:       draft.kiosk_brand_color       || null,
         kiosk_brand_accent_color:draft.kiosk_brand_accent_color|| null,
@@ -113,7 +119,11 @@ export default function KioskSettings({ kioskId, onBack }) {
         kiosk_allergen_required: !!draft.kiosk_allergen_required,
         kiosk_avg_wait_minutes:  draft.kiosk_avg_wait_minutes  ?? 8,
         kiosk_banners:           draft.kiosk_banners           || [],
-      }).eq('id', profile.id);
+      };
+      // v5.7.9: an omitted column keeps its DB value, so a stale tab saving a
+      // branding tweak can never clobber the kiosk's menu pin.
+      if (!touchedRef.current.has('menu_id')) delete patch.menu_id;
+      const { error } = await supabase.from('device_profiles').update(patch).eq('id', profile.id);
       if (error) throw error;
       setSuccess('Saved. Refresh the kiosk to see changes.');
       setTimeout(() => setSuccess(null), 3000);

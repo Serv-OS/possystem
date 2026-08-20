@@ -56,7 +56,7 @@ export function readTipOnReceipt(posSettings: unknown): TipOnReceiptSetting {
 export function isOvercaptureRefusal(status: number, data: any): boolean {
   if (status < 400 || status >= 500) return false;
   const text = JSON.stringify(data ?? {}).toLowerCase();
-  return /overcapture|over-capture|exceed|higher than|greater than|above the|amount.*not.*(allow|valid|support)|not (allowed|enabled|permitted).*amount|capture amount/.test(text);
+  return /overcapture|over-capture|exceed|higher than|greater than|above the|insufficient balance|amount.*not.*(allow|valid|support)|not (allowed|enabled|permitted).*amount|capture amount/.test(text);
 }
 
 /**

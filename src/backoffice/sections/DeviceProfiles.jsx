@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../store';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import { reportSave } from '../../lib/saveHealth';
@@ -168,7 +168,20 @@ export default function DeviceProfiles() {
     return id;
   };
 
-  const save = async (updated) => {
+  // v5.7.9: fields where a stale tab writing its in-memory value silently undoes an
+  // operator's change made elsewhere. The proven victim is menu_id: a BO tab opened
+  // BEFORE a menu was pinned held menuId undefined, so ANY save from that tab (even a
+  // rename) nulled the pin. Same class as the vanishing-categories saga. On update,
+  // these keep the DB value unless THIS editor session actually touched them.
+  const GUARDED_FIELDS = [
+    ['menuId', 'menu_id'],
+    ['serviceCharge', 'service_charge'],
+    ['trainingMode', 'training_mode'],
+  ];
+
+  // `touched` is the Set of form keys the editor session explicitly changed (null =
+  // unknown caller: keep today's full-overwrite behaviour).
+  const save = async (updated, touched = null) => {
     // Close panel immediately so it feels instant
     setEditing(null);
     setShowNew(false);
@@ -192,11 +205,23 @@ export default function DeviceProfiles() {
         if (!locId) throw new Error('Could not resolve location ID');
 
         const row = toDbRow(updated, locId);
-        // Use update for existing profiles, insert for new ones
+        // Use update for existing profiles, insert for new ones. The existence check
+        // doubles as the fresh read for the clobber guard (no extra round trip).
         let error;
-        const existing = await supabase.from('device_profiles').select('id').eq('id', row.id).single();
-        if (existing.data) {
-          // Update all fields explicitly
+        const existing = await supabase.from('device_profiles')
+          .select('id, menu_id, service_charge, training_mode')
+          .eq('id', row.id).maybeSingle();
+        if (existing.data || existing.error) {
+          // Row exists, or the fresh read failed and we cannot tell. Treat both as
+          // an update: a genuinely new row then fails loudly on the 0-row check
+          // below instead of a duplicate-key insert error, never silently.
+          if (touched) {
+            for (const [formKey, col] of GUARDED_FIELDS) {
+              if (touched.has(formKey)) continue;                // session edited it: write the form value
+              if (existing.data) row[col] = existing.data[col];  // untouched: keep the DB value
+              else delete row[col];                              // fresh read failed: omit the column so PostgREST leaves it alone
+            }
+          }
           const { error: e, data: dataUp } = await supabase.from('device_profiles').update(row).eq('id', row.id).select('id');
           if (e) throw e;
           if (!dataUp || dataUp.length === 0) throw new Error(`Profile update matched 0 rows for id=${row.id}. Column may be missing (run migration) or RLS blocked it.`);
@@ -402,7 +427,14 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
     signoutIdleSeconds:0, signoutOnPay:false, signoutOnSend:false,
   });
 
-  const upd = (key, val) => setForm(f => ({ ...f, [key]: val }));
+  // v5.7.9: record which fields THIS editor session actually changed. Every control
+  // in this modal funnels through upd() (updSC, toggleOrderType and toggleFeature all
+  // call it), so adding the key here catches them all. save() uses the set to keep
+  // the DB value for clobber-prone fields (menu pin, service charge, training mode)
+  // the operator never pressed, so a tab loaded before a change made elsewhere can
+  // no longer silently undo it.
+  const touchedRef = useRef(new Set());
+  const upd = (key, val) => { touchedRef.current.add(key); setForm(f => ({ ...f, [key]: val })); };
 
   // Customer-display slideshow image upload (kiosk-assets public bucket).
   const [uploadingImg, setUploadingImg] = useState(false);
@@ -415,7 +447,10 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
       const { error } = await supabase.storage.from('kiosk-assets').upload(path, file, { cacheControl: '3600', upsert: true, contentType: file.type });
       if (error) throw error;
       const { data } = supabase.storage.from('kiosk-assets').getPublicUrl(path);
-      if (data?.publicUrl) setForm(f => ({ ...f, customerDisplayImages: [ ...(f.customerDisplayImages || []), data.publicUrl ] }));
+      if (data?.publicUrl) {
+        touchedRef.current.add('customerDisplayImages'); // only setForm call that bypasses upd()
+        setForm(f => ({ ...f, customerDisplayImages: [ ...(f.customerDisplayImages || []), data.publicUrl ] }));
+      }
     } catch (e) {
       alert('Image upload failed: ' + (e.message || e) + '\n(Check the kiosk-assets storage bucket exists and is public.)');
     } finally {
@@ -810,7 +845,7 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
         <div style={{ padding:'12px 20px', borderTop:'1px solid var(--bdr)', display:'flex', gap:8, flexShrink:0 }}>
           {!isNew && onDelete && <button onClick={onDelete} style={{ padding:'8px 14px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--red-d)', border:'1px solid var(--red-b)', color:'var(--red)', fontSize:12, fontWeight:700 }}>Delete</button>}
           <button className="btn btn-ghost" style={{ flex:1 }} onClick={onClose}>Cancel</button>
-          <button className="btn btn-acc" style={{ flex:2, height:42 }} disabled={!form.name.trim() || (form.enabledOrderTypes || []).length === 0} onClick={() => onSave(form)}>
+          <button className="btn btn-acc" style={{ flex:2, height:42 }} disabled={!form.name.trim() || (form.enabledOrderTypes || []).length === 0} onClick={() => onSave(form, touchedRef.current)}>
             {isNew ? 'Create profile' : 'Save changes'}
           </button>
         </div>
