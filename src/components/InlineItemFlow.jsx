@@ -25,7 +25,14 @@ function resolveOptItemId(opt, menuItems) {
   return match?.id || null;
 }
 
-export default function InlineItemFlow({ item, menuItems, activeAllergens = [], onConfirm, onCancel }) {
+// v5.7.27 — edit mode: the SAME flow reconfigures an EXISTING order line
+// (booking pre-order lines seated bare, e.g. a steak with no cooking temp).
+// mode='edit' + basePriceOverride (the line's own unit price — 0.00 on prepay
+// package lines, so only modifier prices show as +extras) + lockedQty (the
+// line's qty; the stepper hides — edit never changes quantity). onConfirm gets
+// the same (targetItem, mods, cfg, opts) shape; the caller replaces the line
+// in place instead of adding.
+export default function InlineItemFlow({ item, menuItems, activeAllergens = [], onConfirm, onCancel, mode = 'add', basePriceOverride = null, lockedQty = null }) {
   const { modifierGroupDefs, instructionGroupDefs, eightySixIds, dailyCounts } = useStore();
 
   // ── Resolve variant children from menuItems ──────────────────────────────
@@ -72,7 +79,7 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
   const [selections, setSelections]   = useState({});    // modifierId → option/[options]
   const [instSelections, setInstSel]  = useState({});    // instructionGroupId → string
   const [requireErr, setRequireErr] = useState(false);
-  const [qty, setQty]                 = useState(1);
+  const [qty, setQty]                 = useState(lockedQty || 1);
   const [notes, setNotes]             = useState('');
   const [animDir, setAnimDir]         = useState('in');  // 'in' | 'out'
   const prevStep = useRef(null);
@@ -200,9 +207,14 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
     const arr = Array.isArray(cur) ? cur : (cur ? [cur] : []);
     return total + arr.reduce((s, m) => s + (m?.price || 0), 0);
   }, 0);
-  const basePrice = selectedVariant
-    ? (selectedVariant.pricing?.base ?? selectedVariant.price ?? 0)
-    : (item.pricing?.base ?? item.price ?? 0);
+  // v5.7.27 edit mode: the LINE's unit price is the base (prepay pre-order
+  // lines are 0.00 — food already paid), never the menu item's price, and a
+  // variant pick doesn't reprice the base either.
+  const basePrice = basePriceOverride != null
+    ? basePriceOverride
+    : selectedVariant
+      ? (selectedVariant.pricing?.base ?? selectedVariant.price ?? 0)
+      : (item.pricing?.base ?? item.price ?? 0);
   const total = (basePrice + extraCost) * qty;
 
   const handleAdd = () => {
@@ -390,14 +402,17 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
               </div>
             </div>
           )}
-          <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:10 }}>
-            <span style={{ fontSize:12, color:'var(--t3)' }}>Qty</span>
-            <div style={{ display:'flex', gap:8, alignItems:'center', marginLeft:'auto' }}>
-              <button onClick={() => setQty(q => Math.max(1, q-1))} style={{ width:32, height:32, borderRadius:'50%', border:'1px solid var(--bdr2)', background:'transparent', color:'var(--t2)', fontSize:18, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center' }}>−</button>
-              <span style={{ fontSize:16, fontWeight:700, minWidth:24, textAlign:'center' }}>{qty}</span>
-              <button onClick={() => setQty(q => q+1)} style={{ width:32, height:32, borderRadius:'50%', border:'1px solid var(--bdr2)', background:'transparent', color:'var(--t2)', fontSize:18, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center' }}>+</button>
+          {/* v5.7.27: edit mode never changes quantity — the stepper hides */}
+          {lockedQty == null && (
+            <div style={{ display:'flex', gap:8, alignItems:'center', marginBottom:10 }}>
+              <span style={{ fontSize:12, color:'var(--t3)' }}>Qty</span>
+              <div style={{ display:'flex', gap:8, alignItems:'center', marginLeft:'auto' }}>
+                <button onClick={() => setQty(q => Math.max(1, q-1))} style={{ width:32, height:32, borderRadius:'50%', border:'1px solid var(--bdr2)', background:'transparent', color:'var(--t2)', fontSize:18, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center' }}>−</button>
+                <span style={{ fontSize:16, fontWeight:700, minWidth:24, textAlign:'center' }}>{qty}</span>
+                <button onClick={() => setQty(q => q+1)} style={{ width:32, height:32, borderRadius:'50%', border:'1px solid var(--bdr2)', background:'transparent', color:'var(--t2)', fontSize:18, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center' }}>+</button>
+              </div>
             </div>
-          </div>
+          )}
           <button
             onClick={handleAdd}
             className="btn btn-acc"
@@ -406,7 +421,9 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
               opacity: 1, cursor: 'pointer' }}>
             {!canAdd ? `Choose required options first`
               : stockShort ? `Only ${stockShort.have} × ${stockShort.name} left`
-              : `Add to order · ${money(total)}`}
+              : mode === 'edit'
+                ? (extraCost > 0 ? `Set options · +${money(extraCost * qty)}` : 'Set options')
+                : `Add to order · ${money(total)}`}
           </button>
         </div>
       )}

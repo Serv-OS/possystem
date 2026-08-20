@@ -161,3 +161,46 @@ test('prepay upcharge (override > 0) survives onto the pick', () => {
   });
   assert.equal(pick.price, 8);
 });
+
+// ── v5.7.27: POS tap-to-set-options stamps ───────────────────────────────────
+test('every materialised line is stamped fromPreorder so the POS offers the options flow', () => {
+  const p = pkg('prepay', [
+    L({ itemId: 'm-fizz', displayName: 'Prosecco', course: 0 }),
+    L({ itemId: 'm-steak', displayName: 'Ribeye', isPreorderChoice: true }),
+  ]);
+  const items = packageItemsFor({
+    pkg: p, covers: 2, menuItems: MENU,
+    preorders: [{ id: 'r1', seat: 1, guestName: 'Ana', itemId: 'm-steak', displayName: 'Ribeye', course: 1 }],
+  });
+  assert.equal(items.length, 2);
+  items.forEach((i) => assert.equal(i.fromPreorder, true));
+});
+
+test('picks carry preorderGuest (whose steak it is); fixed lines carry null', () => {
+  const p = pkg('deposit', [
+    L({ itemId: 'm-fizz', displayName: 'Prosecco', course: 0 }),
+    L({ itemId: 'm-steak', displayName: 'Ribeye', isPreorderChoice: true }),
+  ]);
+  const items = packageItemsFor({
+    pkg: p, covers: 2, menuItems: MENU,
+    preorders: [
+      { id: 'r1', seat: 1, guestName: 'Ana', itemId: 'm-steak', displayName: 'Ribeye', course: 1 },
+      { id: 'r2', seat: 2, itemId: 'm-steak', displayName: 'Ribeye', course: 1 },
+    ],
+  });
+  const fizz = items.find((i) => i.itemId === 'm-fizz');
+  const [pick1, pick2] = items.filter((i) => i.itemId === 'm-steak');
+  assert.equal(fizz.preorderGuest, null);
+  assert.equal(pick1.preorderGuest, 'Ana');
+  assert.equal(pick2.preorderGuest, null); // no guest name recorded on the pick
+});
+
+test('stamped lines still start with no mods chosen (options are picked at the till)', () => {
+  const p = pkg('prepay', [L({ itemId: 'm-steak', displayName: 'Ribeye', isPreorderChoice: true })]);
+  const [pick] = packageItemsFor({
+    pkg: p, covers: 1, menuItems: MENU,
+    preorders: [{ id: 'r1', seat: 1, guestName: 'Ana', itemId: 'm-steak', displayName: 'Ribeye', course: 1 }],
+  });
+  assert.deepEqual(pick.mods, []);
+  assert.equal(pick.fromPreorder, true);
+});

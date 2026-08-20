@@ -48,7 +48,7 @@ export default function POSSurface() {
   const compact = useCompact();
   const {
     staff, allergens, toggleAllergen, clearAllergens,
-    addItem, addCustomItem, removeItem, updateItemQty, updateItemNote,
+    addItem, addCustomItem, removeItem, updateItemQty, updateItemNote, configureLineOptions,
     updateItemSeat, updateItemCourse, setOrderNote,
     sendToKitchen, fireCourse, saveTableSession, toggleServiceCharge,
     openCashDrawer,
@@ -356,6 +356,13 @@ export default function POSSurface() {
   const [expandedCats, setExpandedCats] = useState(new Set());
   const [namesOnly, setNamesOnly] = useState(false);
   const [modalItem, setModalItem] = useState(null);
+  // v5.7.27: an existing pre-order line being reconfigured via InlineItemFlow
+  // (edit mode) — { uid, menuItem, basePrice, qty }. Mutually exclusive with
+  // modalItem (the add flow); both render in the same right-panel slot.
+  const [editLine, setEditLine] = useState(null);
+  // The edit targets one line uid on one table — never let it survive a table
+  // switch (confirming would silently no-op against the wrong session).
+  useEffect(() => { setEditLine(null); }, [activeTableId]);
   const [showCheckout, setShowCheckout] = useState(false);
   const [search, setSearch]       = useState('');
   const [showAllergens, setShowAllergens] = useState(false);
@@ -728,6 +735,32 @@ export default function POSSurface() {
       return;
     }
     setModalItem(item);
+  };
+
+  // v5.7.27 — booking pre-order lines seat bare ("16oz Ribeye", nobody asked
+  // how the guest wants it cooked). A line qualifies for tap-to-set-options
+  // when it came from a pre-order, hasn't been sent/voided, has NO options
+  // chosen yet, and its menu item actually has options to choose (modifier /
+  // instruction groups or variants — same shape as the tile's hasOptions
+  // check). Pizza config can't run in InlineItemFlow, so pizza is excluded.
+  // Non-preorder lines never get this — no new tap behaviour on them.
+  const lineNeedsOptions = (line) => {
+    if (!line?.fromPreorder || line.voided || line.status === 'sent') return false;
+    if ((line.mods?.length || 0) > 0 || line.variantName) return false;
+    const mi = MENU_ITEMS.find(m => m.id === line.itemId);
+    if (!mi || mi.type === 'pizza') return false;
+    const hasVariants = mi.type === 'variants' || (childrenByParent.get(mi.id)?.length > 0);
+    return hasVariants
+      || (mi.assignedModifierGroups?.length > 0)
+      || (mi.assignedInstructionGroups?.length > 0)
+      || (mi.modifierGroups?.length > 0);
+  };
+  const openLineOptions = (line) => {
+    const mi = MENU_ITEMS.find(m => m.id === line.itemId);
+    if (!mi) return;
+    setModalItem(null);
+    setRightTab('menu');
+    setEditLine({ uid: line.uid, menuItem: mi, basePrice: line.price, qty: line.qty || 1 });
   };
 
   const handleSave = () => {
@@ -1395,6 +1428,7 @@ export default function POSSurface() {
                     onCourse={c=>updateItemCourse(item.uid,c)}
                     onVoid={()=>setVoidTarget({type:'item',item})}
                     onRemoveDiscount={()=>removeItemDiscount(activeTableId,item.uid)}
+                    onConfigure={lineNeedsOptions(item) ? ()=>openLineOptions(item) : null}
                   />
                 ))}
               </div>
@@ -1677,8 +1711,32 @@ export default function POSSurface() {
         </div>
 
         {/* ── Menu tab ── */}
+        {/* v5.7.27: SAME InlineItemFlow in EDIT mode — reconfigure an existing
+            pre-order line (choose cooking temp etc.). Confirm replaces the
+            line's mods/variant/notes in place; the line's base price (0.00 on
+            prepay packages) is untouched and modifier prices add on top. */}
+        {editLine && rightTab==='menu' && (
+          <div style={{flex:1, overflow:'hidden'}}>
+            <InlineItemFlow
+              key={`edit-${editLine.uid}`}
+              item={editLine.menuItem}
+              menuItems={MENU_ITEMS}
+              activeAllergens={allergens}
+              mode="edit"
+              basePriceOverride={editLine.basePrice}
+              lockedQty={editLine.qty}
+              onConfirm={(item,mods,cfg,opts)=>{
+                const variantName = item.id !== editLine.menuItem.id ? (item.menuName || item.name || null) : null;
+                configureLineOptions(editLine.uid, { mods, notes: opts.notes, variantName });
+                setEditLine(null);
+                showToast('Options set', 'success');
+              }}
+              onCancel={()=>setEditLine(null)}
+            />
+          </div>
+        )}
         {/* InlineItemFlow: variants/modifiers shown inline. Pizza uses modal overlay instead. */}
-        {modalItem && modalItem.type !== 'pizza' && rightTab==='menu' && (
+        {!editLine && modalItem && modalItem.type !== 'pizza' && rightTab==='menu' && (
           <div style={{flex:1, overflow:'hidden'}}>
             <InlineItemFlow
               key={modalItem.id}
@@ -1690,7 +1748,7 @@ export default function POSSurface() {
             />
           </div>
         )}
-        {(!modalItem || modalItem.type === 'pizza') && rightTab==='menu'&&(
+        {!editLine && (!modalItem || modalItem.type === 'pizza') && rightTab==='menu'&&(
           <>
             {showAllergens&&(
               <div style={{padding:'8px 14px',borderBottom:'1px solid var(--bdr)',background:'var(--bg1)',flexShrink:0}}>
@@ -2147,7 +2205,7 @@ export default function POSSurface() {
 }
 
 function OrderItem({
-  item, covers, orderType, seatList, onQty, onRemove, onNote, onSeat, onCourse, onVoid, onRemoveDiscount, namesOnly=false, flash=false, hideCourses=false }) {
+  item, covers, orderType, seatList, onQty, onRemove, onNote, onSeat, onCourse, onVoid, onRemoveDiscount, onConfigure=null, namesOnly=false, flash=false, hideCourses=false }) {
   const compact = useCompact();
   const [showMenu, setShowMenu] = useState(false);
   const [editNote, setEditNote] = useState(false);
@@ -2210,6 +2268,12 @@ function OrderItem({
             }}>
               {item.name}
               {isVoided && <span style={{fontSize:9,fontWeight:800,padding:'1px 5px',borderRadius:4,background:'var(--red-d)',color:'var(--red)',letterSpacing:.04}}>VOIDED</span>}
+              {/* v5.7.27: pre-order line seated without its options chosen (how
+                  is the steak cooked?) — amber badge opens the same options
+                  flow the add path uses. Gone once options are set. */}
+              {onConfigure && !isVoided && (
+                <button onClick={onConfigure} style={{fontSize:10,fontWeight:800,padding:'2px 8px',borderRadius:5,background:'rgba(245,166,35,.14)',border:'1px solid rgba(245,166,35,.45)',color:'var(--amber, #F5A623)',cursor:'pointer',fontFamily:'inherit',letterSpacing:.02,flexShrink:0}}>Options</button>
+              )}
             </div>
             {/* v5.5.965: ONE pass in line order — the old split (mods first, then all
                 instructions) forced cooking preferences to the bottom of every line,

@@ -69,6 +69,10 @@ export function packageItemsFor({ pkg, covers, preorders = [], menuItems = [], n
         course: l.course ?? 0,
         fired: (l.course ?? 0) === 0,
         seat: null,
+        // v5.7.27: stamp so the POS can offer the tap-to-set-options flow on
+        // materialised booking lines (cooking temps etc. chosen at the till).
+        fromPreorder: true,
+        preorderGuest: null,
       };
     });
 
@@ -100,6 +104,10 @@ export function packageItemsFor({ pkg, covers, preorders = [], menuItems = [], n
       course: r.course ?? 0,
       fired: (r.course ?? 0) === 0,
       seat: r.seat ?? null,
+      // v5.7.27: POS tap-to-set-options stamps — the guest's name rides the
+      // line so staff know whose steak they are configuring.
+      fromPreorder: true,
+      preorderGuest: r.guestName || null,
     };
   });
 

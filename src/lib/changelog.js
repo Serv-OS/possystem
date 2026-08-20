@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.27',
+    date: '2026-08-20',
+    items: [
+      'Pre-ordered items can now have their options chosen on the till, for example how a steak is cooked. When a booking is seated, any pre-ordered item that still needs choices shows a small amber Options badge on the check. Tap it and the normal options screen opens, pick the choices and they land on the line, print to the kitchen and show on the check like any other item. Prepaid items stay at 0.00 and only priced extras add on top. Once the options are set the badge goes away.',
+    ],
+  },
+  {
     version: '5.7.26',
     date: '2026-08-20',
     items: [

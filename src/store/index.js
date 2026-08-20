@@ -2172,6 +2172,63 @@ export const useStore = create((set, get) => ({
     }
   },
 
+  // v5.7.27 — set options on an EXISTING line in place (same uid). Built for
+  // materialised booking pre-order lines ("16oz Ribeye" seated bare — nobody
+  // asked how the guest wants it cooked): the POS opens the SAME InlineItemFlow
+  // the add flow uses and this replaces the line's mods/variant/notes. Pricing
+  // rule: the line's base price is untouched (prepay lines stay 0.00 — the food
+  // is already paid) and modifier PRICES, if any, add on top per unit, exactly
+  // like a normal item. Notes MERGE (the line's existing note carries
+  // "Seat N · Guest" — replacing it would lose whose plate it is). Modifier
+  // sub-item daily counts decrement here, mirroring addItem, so removeItem /
+  // updateItemQty restore maths stay balanced.
+  configureLineOptions: (itemUid, { mods = [], notes = '', variantName = null } = {}) => {
+    const { activeTableId } = get();
+    const sourceItems = activeTableId
+      ? (get().tables.find(t => t.id === activeTableId)?.session?.items || [])
+      : (get().walkInOrder?.items || []);
+    const line = sourceItems.find(i => i.uid === itemUid);
+    if (!line || line.voided || line.status === 'sent') return;
+
+    // Base = current unit price minus whatever the current mods already add
+    // (fresh pre-order lines have mods: [], so base is simply the line price).
+    const modSum = arr => (arr || []).reduce((s, m) => s + (Number(m?.price) || 0), 0);
+    const base = (Number(line.price) || 0) - modSum(line.mods);
+    const price = base + modSum(mods);
+
+    // Daily counts: restore the old mods' linked items, decrement the new ones
+    // (per parent unit × line qty — the same maths addItem uses).
+    (line.mods || []).forEach(mod => {
+      if (mod.itemId) get().decrementDailyCount(mod.itemId, -((mod.qty || 1) * (line.qty || 1)));
+    });
+    (mods || []).forEach(mod => {
+      if (mod.itemId) get().decrementDailyCount(mod.itemId, (mod.qty || 1) * (line.qty || 1));
+    });
+
+    const nextNotes = [line.notes, (notes || '').trim()].filter(Boolean).join(' · ');
+    const apply = items => items.map(i => i.uid !== itemUid ? i : {
+      ...i,
+      mods: mods || [],
+      notes: nextNotes,
+      price,
+      ...(variantName ? { variantName, name: `${i.name} · ${variantName}` } : {}),
+    });
+    if (activeTableId) {
+      set(s => ({ tables: s.tables.map(t => {
+        if (t.id !== activeTableId || !t.session) return t;
+        const items = apply(t.session.items);
+        const subtotal = items.reduce((sum, i) => sum + i.price * i.qty, 0);
+        return { ...t, session: { ...t.session, items, subtotal, total: subtotal * 1.125, lastUpdated: Date.now() } };
+      }) }));
+    } else {
+      set(s => {
+        const items = apply(s.walkInOrder?.items || []);
+        const subtotal = items.reduce((sum, i) => sum + i.price * i.qty, 0);
+        return { walkInOrder: { ...s.walkInOrder, items, subtotal, total: subtotal } };
+      });
+    }
+  },
+
   setOrderNote: (note) => {
     const { activeTableId } = get();
     if (activeTableId) {
