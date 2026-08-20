@@ -7,6 +7,7 @@ import { buildScheduleCtx } from '../lib/locationTime';
 import { computeCheckTotals } from '../lib/payments/checkTotals';
 import { operatorSwitchPatch, logoutPatch } from '../lib/cartHold';
 import { kitchenOverride, receiptOverride } from '../lib/itemDisplay';
+import { normaliseMenuRow } from '../lib/rowMapping';
 import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, upsertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC, upsertModifierGroup, deleteModifierGroup } from '../lib/db';
 import { isSessionClosed } from '../sync/sessionClosure';
 import { markJobReconciled, closeTerminalSession, recallJob, forgetJob, cancelTerminalJob, buildCheckKey, fetchJob, fetchJobCapture } from '../lib/payments/terminalJobs';
@@ -173,24 +174,27 @@ const _sbUpsertMenuNow = async (menu) => {
   if (isMock) return;
   const locationId = getActiveLocationSync() || await getLocationId();
   if (!locationId) return console.warn('[Supabase] no location ID — menu not saved');
+  // v5.7.15 - read BOTH spellings. A tab holding raw snake rows (pre-5.7.14
+  // loaders) saved isDefault undefined here and silently un-starred the
+  // default menu on ANY save (live 20 Aug: saving a menu SCHEDULE wiped the
+  // flag). Same clobber class as the v5.7.9 device-profile guard.
+  // v5.7.17: the both-spellings read now goes through the shared normaliser
+  // in lib/rowMapping.js, same as every menus loader.
+  const m = normaliseMenuRow(menu);
   const { error } = await supabase.from('menus').upsert({
-    id: menu.id,
+    id: m.id,
     location_id: locationId,
-    name: menu.name,
-    description: menu.description || '',
-    // v5.7.15 - read BOTH spellings. A tab holding raw snake rows (pre-5.7.14
-    // loaders) saved isDefault undefined here and silently un-starred the
-    // default menu on ANY save (live 20 Aug: saving a menu SCHEDULE wiped the
-    // flag). Same clobber class as the v5.7.9 device-profile guard.
-    is_default: (menu.isDefault ?? menu.is_default) || false,
-    is_active: (menu.isActive ?? menu.is_active) !== false,
-    sort_order: (menu.sortOrder ?? menu.sort_order) || 0,
+    name: m.name,
+    description: m.description || '',
+    is_default: m.isDefault || false,
+    is_active: m.isActive !== false,
+    sort_order: m.sortOrder || 0,
     // v4.6.4: schedule (timed menus) + priority (tiebreaker when multiple menus active)
-    schedule:   menu.schedule ?? null,
-    priority:   menu.priority ?? 0,
+    schedule:   m.schedule ?? null,
+    priority:   m.priority ?? 0,
     // v4.6.0 sharing fields
-    scope:      menu.scope    || 'local',
-    org_id:     menu.orgId    ?? menu.org_id    ?? null,
+    scope:      m.scope    || 'local',
+    org_id:     m.orgId    ?? m.org_id    ?? null,
     updated_at: new Date().toISOString(),
   });
   reportSave('menu', error);   // v5.5.954 — was console-only
@@ -611,12 +615,8 @@ export const useStore = create((set, get) => ({
       // Menus list
       // v5.7.11: same camelCase normalisation as SyncBridge's DB read — push
       // snapshots carry raw snake rows and MenuManager reads isDefault/isActive.
-      ...(snap.menus?.length ? { menus: snap.menus.map(r => ({
-        ...r,
-        isDefault: r.isDefault ?? r.is_default ?? false,
-        isActive: r.isActive ?? r.is_active ?? true,
-        sortOrder: r.sortOrder ?? r.sort_order ?? 0,
-      })) } : {}),
+      // v5.7.17: the shared normaliser in lib/rowMapping.js is the one copy.
+      ...(snap.menus?.length ? { menus: snap.menus.map(normaliseMenuRow) } : {}),
       // Menu categories — full replace
       ...(snap.menuCategories?.length ? { menuCategories: snap.menuCategories } : {}),
       // Tax rates — full replace

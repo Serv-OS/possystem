@@ -1,3 +1,26 @@
+# Session — 20 Aug 2026 (v5.7.17) — ONE shared normaliseMenuRow, no more hand copies
+
+## Done (committed + pushed to develop)
+- **Refactor, no behaviour change**: the snake/camel menus-row normalisation shipped across
+  v5.7.11 / v5.7.14 / v5.7.15 was hand copied at four sites. Extracted to
+  `src/lib/rowMapping.js` (`normaliseMenuRow`) and wired at every door a menus row enters:
+  SyncBridge boot load, store `applyConfigUpdate`, `BackOfficeApp.loadLocationData`, and
+  `_sbUpsertMenuNow` (the writer keeps its own `|| false` / `!== false` / `|| 0` payload
+  coercions on top of the normalised row, so the written values are bit-identical).
+- New `src/lib/rowMapping.test.js` (7 tests): snake-only / camel-only / mixed rows normalise
+  identically, defaults, camel wins over a stale snake field, falsy camel values survive,
+  snake originals kept via spread, passthrough, null-safe. 397/397 pass, build clean.
+- **normaliseProfileRow considered, NOT done**: the two device-profile mappers
+  (SyncBridge ~340 and DeviceProfiles loadFromDB) project DIFFERENT field subsets with
+  different defaults and both write the same `rpos-device-profiles` localStorage key with
+  different shapes; unifying them changes what the POS caches, so it is a behaviour change,
+  not a dedup. The v5.7.9 fix there was a writer-side touched-fields guard, not a
+  normalisation. Worth its own task if wanted.
+- Rule going forward (stated in rowMapping.js header): a new menus loader or writer calls
+  `normaliseMenuRow`, never re-types the `?? ` chain.
+- Test: refresh Back Office and a till; the default menu star survives everywhere exactly as
+  in v5.7.14/15; saving a menu schedule still does not un-star the default.
+
 # Session — 20 Aug 2026 (v5.7.16) — DeviceProfiles sort_order round-trips on save
 
 ## Done (committed + pushed to develop, ed80878)

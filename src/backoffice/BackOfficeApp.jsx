@@ -8,6 +8,7 @@ import BOLogin from './BOLogin';
 import LocationSwitcher from './LocationSwitcher';
 import { VERSION } from '../lib/version';
 import { CUSTOMER_ROOT, customerUrl } from '../lib/env';
+import { normaliseMenuRow } from '../lib/rowMapping';
 import MenuManager from './sections/MenuManager';
 import FloorPlanBuilder from './sections/FloorPlanBuilder';
 import DeviceProfiles from './sections/DeviceProfiles';
@@ -470,12 +471,8 @@ export default function BackOfficeApp() {
     // v5.7.14 - normalise to camelCase like SyncBridge and applyConfigUpdate
     // (v5.7.11 fixed those two doors; THIS loader is the one a Back Office
     // refresh actually runs, so the default-menu star still vanished here).
-    if (menusRes.data?.length)   patch.menus          = menusRes.data.map(r => ({
-      ...r,
-      isDefault: r.isDefault ?? r.is_default ?? false,
-      isActive: r.isActive ?? r.is_active ?? true,
-      sortOrder: r.sortOrder ?? r.sort_order ?? 0,
-    }));
+    // v5.7.17: the shared normaliser in lib/rowMapping.js is the one copy.
+    if (menusRes.data?.length)   patch.menus          = menusRes.data.map(normaliseMenuRow);
     if (catsRes.data?.length)    patch.menuCategories  = catsRes.data.map(c => ({
       ...c,
       menuId: c.menu_id ?? c.menuId,

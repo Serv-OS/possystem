@@ -15,6 +15,7 @@ import { startTerminalJobReconciler, stopTerminalJobReconciler } from './Termina
 // fail in production bundles and have caused multiple data-loss bugs.
 import { reconcilePendingChecks, onReconnect, periodicSync } from './DataSafe.js';
 import { getShowItemImages } from '../lib/locationTime';
+import { normaliseMenuRow } from '../lib/rowMapping';
 
 const OPS_URL = import.meta.env.VITE_SUPABASE_URL;
 
@@ -511,12 +512,8 @@ export default function SyncBridge({ onSyncPulse }) {
           // v5.7.11: normalise to camelCase WITH the snake originals kept — raw DB rows
           // carried is_default/is_active only, and MenuManager reads isDefault, so the
           // default star vanished on every reload (save worked, display lost it).
-          if (menusRes.data?.length && !snapHas('menus')) patch.menus = menusRes.data.map(r => ({
-            ...r,
-            isDefault: r.isDefault ?? r.is_default ?? false,
-            isActive: r.isActive ?? r.is_active ?? true,
-            sortOrder: r.sortOrder ?? r.sort_order ?? 0,
-          }));
+          // v5.7.17: the shared normaliser in lib/rowMapping.js is the one copy.
+          if (menusRes.data?.length && !snapHas('menus')) patch.menus = menusRes.data.map(normaliseMenuRow);
           // v5.5.834: a SUCCESSFUL read wins for this slice — INCLUDING an empty array.
           // Modifier groups are written straight to modifier_groups and are never authored
           // by the config push, so "snapshot wins" (the v5.5.734 guard) was always wrong

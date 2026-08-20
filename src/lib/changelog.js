@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.17',
+    date: '2026-08-20',
+    items: [
+      'Under the hood: the menu row normalisation that fixed the vanishing default star (5.7.11, 5.7.14, 5.7.15) was hand copied in four places. It is now one shared helper used everywhere a menu row enters the app, with a unit test locking in that snake case, camel case and mixed rows all normalise identically. No behaviour change.',
+    ],
+  },
+  {
     version: '5.7.16',
     date: '2026-08-20',
     items: [
