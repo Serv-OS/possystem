@@ -96,6 +96,8 @@ import CustomerDisplaySurface from './surfaces/CustomerDisplaySurface';
 import DeviceSetup from './surfaces/DeviceSetup';
 import StatusDrawer from './components/StatusDrawer';
 import SyncBridge from './sync/SyncBridge';
+import { fetchMenuCategoryLinks } from './lib/db';
+import { normaliseMenuRow } from './lib/rowMapping';
 import MasterOfflineModal from './components/MasterOfflineModal';
 import ActivityFeed from './components/ActivityFeed';
 import ConfigSyncBanner from './components/ConfigSyncBanner';
@@ -718,6 +720,30 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
         applyDeviceConfig(configFromProfile(profileRowToProfile(dbProfile)));
       } catch { /* offline: keep the cache */ }
       finally { refreshInFlight = false; }
+      // v5.7.18 - MENUS + CATEGORY LINKS self-heal on the same cycle. Timed
+      // menus live on the menus rows (schedule/priority/is_default) and on
+      // menu_category_links (a links-only menu with no links loaded counts as
+      // empty and can never win the resolver). Both used to reach a till only
+      // on Push to POS or a lucky boot. Re-read both (tiny tables), normalise,
+      // apply only on change. Items/categories stay push-delivered.
+      try {
+        const st = useStore.getState();
+        const locId = st.location?.id;
+        if (!locId || locId === 'loc-demo') return;
+        const [menusQ, linksQ] = await Promise.all([
+          supabase.from('menus').select('*').eq('location_id', locId).order('sort_order'),
+          fetchMenuCategoryLinks(locId),
+        ]);
+        if (Array.isArray(menusQ.data) && menusQ.data.length) {
+          const mapped = menusQ.data.map(normaliseMenuRow);
+          const key = rows => JSON.stringify(rows.map(m => [m.id, m.isDefault, m.isActive, m.priority ?? 0, m.schedule ?? null]).sort());
+          if (key(mapped) !== key(st.menus || [])) useStore.setState({ menus: mapped });
+        }
+        if (Array.isArray(linksQ.data)) {
+          const lkey = rows => JSON.stringify(rows.map(l => [l.menu_id, l.category_id]).sort());
+          if (lkey(linksQ.data) !== lkey(st.categoryLinks || [])) st.setCategoryLinks(linksQ.data);
+        }
+      } catch { /* best-effort */ }
     };
 
     // Refresh triggers: wake from sleep, network back, 5-minute heartbeat, and

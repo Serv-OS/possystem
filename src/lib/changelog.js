@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.18',
+    date: '2026-08-20',
+    items: [
+      'Timed menus now switch reliably on every till. A menu whose categories are attached by links could silently count as empty when a till booted at the wrong moment, so its scheduled window could never win and the till kept showing the default menu. The link data now loads with everything else, heals itself on the same cycle as device profiles, and the tills retry instead of giving up.',
+    ],
+  },
+  {
     version: '5.7.17',
     date: '2026-08-20',
     items: [

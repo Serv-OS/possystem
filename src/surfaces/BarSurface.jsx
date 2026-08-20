@@ -225,15 +225,20 @@ export default function BarSurface() {
   // v5.5.741: mirror the POS — a menu owns a category via menuCategories.menuId OR the
   // menu_category_links join table ("assign categories to a menu"). The bar previously only matched
   // menuId, so linked categories showed on the POS but never on the bar for the same device menu.
-  const [_categoryLinks, _setCategoryLinks] = useState([]);
+  // v5.7.18 - store links win; local fetch is a backstop that re-runs when
+  // the location resolves (see POSSurface, same fix).
+  const _storeLinks = useStore(s => s.categoryLinks);
+  const _locIdForLinks = useStore(s => s.location?.id);
+  const [_localLinks, _setLocalLinks] = useState([]);
   useEffect(() => {
     let alive = true;
     (async () => {
-      try { const { data } = await fetchMenuCategoryLinks(); if (alive) _setCategoryLinks(data || []); }
+      try { const { data } = await fetchMenuCategoryLinks(); if (alive) _setLocalLinks(data || []); }
       catch (e) { console.warn('[BarSurface] fetchMenuCategoryLinks failed:', e?.message || e); }
     })();
     return () => { alive = false; };
-  }, []);
+  }, [_locIdForLinks]);
+  const _categoryLinks = (_storeLinks && _storeLinks.length) ? _storeLinks : _localLinks;
   // v5.6.97: membership logic extracted to lib/menuMembership.js so the POS
   // grid and bar tabs share ONE mechanism (this inline filter was the original).
   const linkedCatIds = useMemo(() => linkedCategoryIdSet(_categoryLinks, deviceMenuId), [_categoryLinks, deviceMenuId]);

@@ -826,6 +826,15 @@ export const useStore = create((set, get) => ({
   ] : []),
   activeMenuId: 'menu-1',
   setActiveMenuId: id => set({ activeMenuId: id }),
+  // v5.7.18 - menu_category_links, store-held. The links used to live in
+  // one-shot component fetches inside POSSurface/BarSurface; when the fetch
+  // raced boot (location id not resolved yet) it silently stored [] forever,
+  // every links-only menu counted as EMPTY, and the active-menu resolver could
+  // never pick a timed menu whose categories are attached via links (live
+  // 20 Aug: the Doboy 5-6pm window lost to the default every day). Loaded at
+  // boot by SyncBridge and refreshed by the App self-heal cycle.
+  categoryLinks: [],
+  setCategoryLinks: rows => set({ categoryLinks: Array.isArray(rows) ? rows : [] }),
   addMenu: menu => {
     const newMenu = { id:`menu-${Date.now()}`, ...menu };
     set(s => ({ menus: [...s.menus, newMenu] }));

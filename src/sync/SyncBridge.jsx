@@ -9,6 +9,7 @@ import { loadWaitlistSync, scheduleWaitlistFlush, teardownWaitlistSync } from '.
 import { initOfflineQueue } from './OfflineQueue';
 import { isMock, supabase, getActiveLocationSync, ensureAuthToken } from '../lib/supabase';
 import { retryPendingRedemptions } from '../lib/commitRedemptions';
+import { fetchMenuCategoryLinks } from '../lib/db';
 import { startSessionReconciler, stopSessionReconciler } from './SessionReconciler';
 import { startTerminalJobReconciler, stopTerminalJobReconciler } from './TerminalJobReconciler';
 // v4.6.27: static import per ADR-008. Dynamic imports inside callbacks silently
@@ -287,7 +288,7 @@ export default function SyncBridge({ onSyncPulse }) {
           // unwrap() puts every leg back into the familiar { data, error } shape, so a
           // rejected leg reads as `data: null` and is skipped by the same guards below
           // that already skip an empty read. Nothing downstream changes shape.
-          const [floorSt, itemsSt, catsSt, menusSt, sessionsSt, profilesSt, modGroupsSt, e86St, stockSt] = await Promise.allSettled([
+          const [floorSt, itemsSt, catsSt, menusSt, sessionsSt, profilesSt, modGroupsSt, e86St, stockSt, linksSt] = await Promise.allSettled([
             fetchFloorPlan(locationId),
             fetchMenuItems(locationId),
             fetchMenuCategories(locationId),
@@ -298,13 +299,15 @@ export default function SyncBridge({ onSyncPulse }) {
             // which the authoritative-empty-read guard below must NOT mistake for "no groups".
             sb ? sb.from('modifier_groups').select('*').eq('location_id', locationId).order('sort_order') : Promise.resolve({ data: null }),
             fetch86List(locationId),                                  // v5.5.142: hydrate eightySixIds on boot
-            fetchStockLevels(locationId),                             // v5.5.239: hydrate stock counts on boot
+            fetchStockLevels(locationId),                             // v5.5.239: hydrate stock counts on boot,
+            fetchMenuCategoryLinks(locationId)
           ]);
           const unwrap = (r) => (r.status === 'fulfilled' && r.value) ? r.value : { data: null, error: r.reason || new Error('boot fetch failed') };
           const floorRes    = unwrap(floorSt);
           const itemsRes    = unwrap(itemsSt);
           const catsRes     = unwrap(catsSt);
           const menusRes    = unwrap(menusSt);
+          const linksRes    = unwrap(linksSt);
           const sessionsRes = unwrap(sessionsSt);
           const profilesRes = unwrap(profilesSt);
           const modGroupsRes = unwrap(modGroupsSt);
@@ -514,6 +517,11 @@ export default function SyncBridge({ onSyncPulse }) {
           // default star vanished on every reload (save worked, display lost it).
           // v5.7.17: the shared normaliser in lib/rowMapping.js is the one copy.
           if (menusRes.data?.length && !snapHas('menus')) patch.menus = menusRes.data.map(normaliseMenuRow);
+          // v5.7.18 - links: a SUCCESSFUL read wins INCLUDING empty (a venue with
+          // no linked categories is a legitimate state); a failed read keeps the
+          // store's previous value. The App self-heal cycle refreshes them later.
+          if (linksRes.data) patch.categoryLinks = linksRes.data;
+
           // v5.5.834: a SUCCESSFUL read wins for this slice — INCLUDING an empty array.
           // Modifier groups are written straight to modifier_groups and are never authored
           // by the config push, so "snapshot wins" (the v5.5.734 guard) was always wrong

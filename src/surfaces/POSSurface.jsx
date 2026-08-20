@@ -173,19 +173,26 @@ export default function POSSurface() {
   // category's PRIMARY menuId OR a menu_category_links row ("assign categories
   // to a menu" in Menu Manager writes links, not menuId). v5.6.97: moved ABOVE
   // the resolver because the resolver must see linked categories too.
-  const [_categoryLinks, _setCategoryLinks] = useState([]);
+  // v5.7.18 - the store's links (SyncBridge boot + App self-heal) are the
+  // truth; the local fetch is only a backstop seed and now RE-RUNS when the
+  // location id resolves (the old one-shot with [] deps raced boot, stored []
+  // forever, and every links-only timed menu silently lost the resolver).
+  const _storeLinks = useStore(s => s.categoryLinks);
+  const _locIdForLinks = useStore(s => s.location?.id);
+  const [_localLinks, _setLocalLinks] = useState([]);
   useEffect(() => {
     let alive = true;
     (async () => {
       try {
         const { data } = await fetchMenuCategoryLinks();
-        if (alive) _setCategoryLinks(data || []);
+        if (alive) _setLocalLinks(data || []);
       } catch (e) {
         console.warn('[POSSurface] fetchMenuCategoryLinks failed:', e?.message || e);
       }
     })();
     return () => { alive = false; };
-  }, []);
+  }, [_locIdForLinks]);
+  const _categoryLinks = (_storeLinks && _storeLinks.length) ? _storeLinks : _localLinks;
 
   // v4.6.5: Active menu resolver — picks the right menu based on schedule, priority, device profile.
   // Recomputes every minute via clockTick so menus auto-switch at schedule boundaries.
