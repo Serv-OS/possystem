@@ -7,12 +7,14 @@ import { supabase, getActiveLocationSync, getLocationId } from '../../../lib/sup
 import { fetchTempUnits, fetchSchedules, fetchReadings, fetchCorrectiveActions, fetchMaintenance, fetchAlerts, ackAlert } from '../../../lib/ops/data';
 import { fetchAccessibleLocations } from '../../../lib/db.js';
 import { useStore } from '../../../store';
-import { hhmmToMin, runsOnDay, windowStatus, summarize, displayTemp } from '../../../lib/ops/temp';
+import { hhmmToMin, windowStatus, summarize, displayTemp } from '../../../lib/ops/temp';
+import { getLocationConfig, buildScheduleCtx, minutesInTz, venueDayBoundsIso } from '../../../lib/locationTime';
 import { Icon } from '../../../components/ServOSIcons';
 
 const mono = { fontFamily: 'var(--font-mono)' };
 const card = { background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 12, padding: '14px 16px' };
-const todayBounds = () => { const s = new Date(); s.setHours(0, 0, 0, 0); const e = new Date(s); e.setDate(e.getDate() + 1); return { fromIso: s.toISOString(), toIso: e.toISOString() }; };
+// v5.7.24 — schedule rows store JS dow (0=Sun); ctx.isoDay % 7 converts.
+const runsOnJsDow = (days, jsDow) => !Array.isArray(days) || days.length === 0 || days.includes(jsDow);
 const STATE_COL = { done: 'var(--grn)', due: 'var(--orn)', over: 'var(--red)', idle: 'var(--t4)' };
 
 // Synthesise a gentle 7-point trend that lands on `end` (used when no real series is cheaply available).
@@ -42,17 +44,21 @@ function Sparkline({ data, color, height = 24 }) {
 
 // Per-site KPI roll-up (reused for the active site + every site in the league).
 async function siteSnapshot(loc) {
-  const { fromIso } = todayBounds();
+  // v5.7.24 — each site's "today" is that SITE's calendar day and wall clock
+  // (project invariant), not the clock of the machine running the Back Office.
+  const tz = (await getLocationConfig(loc))?.timezone;
+  const ctx = buildScheduleCtx(tz);
+  const { fromIso } = venueDayBoundsIso(ctx.ymd, tz);
   const [{ data: units }, { data: scheds }, { data: readings }, { data: corr }, { data: maint }] = await Promise.all([
     fetchTempUnits(loc), fetchSchedules(loc), fetchReadings(fromIso, null, loc, 3000), fetchCorrectiveActions(fromIso, null, loc), fetchMaintenance(loc),
   ]);
-  const now = new Date(); const nowMin = now.getHours() * 60 + now.getMinutes();
+  const nowMin = ctx.nowMinutes; const jsDow = ctx.isoDay % 7;
   const schedByUnit = {}; (scheds || []).forEach(s => { (schedByUnit[s.tempUnitId] ??= []).push(s); });
   const readByUnit = {}; (readings || []).forEach(r => { (readByUnit[r.tempUnitId] ??= []).push(r); });
   const all = [];
-  (units || []).forEach(u => (schedByUnit[u.id] || []).filter(s => runsOnDay(s.daysOfWeek, now)).forEach(s => {
+  (units || []).forEach(u => (schedByUnit[u.id] || []).filter(s => runsOnJsDow(s.daysOfWeek, jsDow)).forEach(s => {
     const wMin = hhmmToMin(s.timeOfDay) ?? 0;
-    const satisfied = (readByUnit[u.id] || []).some(r => { const rd = new Date(r.recordedAt); return rd.getHours() * 60 + rd.getMinutes() >= wMin - 5; });
+    const satisfied = (readByUnit[u.id] || []).some(r => (minutesInTz(r.recordedAt, tz) ?? -1) >= wMin - 5);
     all.push(windowStatus({ windowMin: wMin, graceMin: s.graceMinutes, nowMin, satisfied }));
   }));
   const sum = summarize(all);
@@ -83,18 +89,21 @@ export default function OpsOverview({ setSection }) {
   const reload = useCallback(async () => {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
     if (loc && loc !== locId) setLocId(loc);
-    const { fromIso, toIso } = todayBounds();
+    // v5.7.24 — same venue-clock treatment as siteSnapshot (project invariant).
+    const tz = (await getLocationConfig(loc))?.timezone;
+    const ctx = buildScheduleCtx(tz);
+    const { fromIso, toIso } = venueDayBoundsIso(ctx.ymd, tz);
     const [{ data: units }, { data: scheds }, { data: readings }, { data: corr }, { data: maint }, { data: alerts }] = await Promise.all([
       fetchTempUnits(loc), fetchSchedules(loc), fetchReadings(fromIso, toIso, loc), fetchCorrectiveActions(fromIso, null, loc), fetchMaintenance(loc), fetchAlerts(loc, false),
     ]);
-    const now = new Date(); const nowMin = now.getHours() * 60 + now.getMinutes();
+    const nowMin = ctx.nowMinutes; const jsDow = ctx.isoDay % 7;
     const schedByUnit = {}; (scheds || []).forEach(s => { (schedByUnit[s.tempUnitId] ??= []).push(s); });
     const readByUnit = {}; (readings || []).forEach(r => { (readByUnit[r.tempUnitId] ??= []).push(r); });
     const byUnit = {}; const all = [];
     (units || []).forEach(u => {
-      const windows = (schedByUnit[u.id] || []).filter(s => runsOnDay(s.daysOfWeek, now)).map(s => {
+      const windows = (schedByUnit[u.id] || []).filter(s => runsOnJsDow(s.daysOfWeek, jsDow)).map(s => {
         const wMin = hhmmToMin(s.timeOfDay) ?? 0;
-        const satisfied = (readByUnit[u.id] || []).some(r => { const rd = new Date(r.recordedAt); return rd.getHours() * 60 + rd.getMinutes() >= wMin - 5; });
+        const satisfied = (readByUnit[u.id] || []).some(r => (minutesInTz(r.recordedAt, tz) ?? -1) >= wMin - 5);
         return windowStatus({ windowMin: wMin, graceMin: s.graceMinutes, nowMin, satisfied });
       });
       const last = (readByUnit[u.id] || []).sort((a, b) => new Date(b.recordedAt) - new Date(a.recordedAt))[0] || null;

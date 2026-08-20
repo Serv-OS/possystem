@@ -8,6 +8,7 @@ import { getActiveLocationSync, getLocationId, getAvailableLocations } from '../
 import { fetchTempUnits, fetchSchedules, fetchReadings, fetchCorrectiveActions, fetchMaintenance } from '../../../lib/ops/data';
 import { fetchRunsRange, fetchChecklists, fetchRunCompletions } from '../../../lib/ops/checklists';
 import { hhmmToMin, runsOnDay, windowStatus, summarize, displayTemp } from '../../../lib/ops/temp';
+import { getLocationConfig, buildScheduleCtx, minutesInTz, ymdInTz } from '../../../lib/locationTime';
 const mono = { fontFamily: 'var(--font-mono)' };
 const ymd = (d) => { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
 const DAY_COL = { green: 'var(--grn)', amber: 'var(--orn)', coral: 'var(--red)', idle: 'transparent' };
@@ -17,7 +18,7 @@ export default function OpsCompliance() {
   const [locId, setLocId] = useState(getActiveLocationSync());
   const [siteName, setSiteName] = useState('');
   const [month, setMonth] = useState(() => { const d = new Date(); return { y: d.getFullYear(), m: d.getMonth() }; });
-  const [data, setData] = useState({ units: [], scheds: [], readings: [], corr: [], runs: [], maint: [], checklists: [], loading: true });
+  const [data, setData] = useState({ units: [], scheds: [], readings: [], corr: [], runs: [], maint: [], checklists: [], tz: null, loading: true });
   const [selDay, setSelDay] = useState(null);
 
   const monthStart = useMemo(() => new Date(month.y, month.m, 1), [month]);
@@ -27,6 +28,9 @@ export default function OpsCompliance() {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
     if (loc && loc !== locId) setLocId(loc);
     const mFrom = ymd(monthStart), mTo = ymd(new Date(month.y, month.m + 1, 0));
+    // v5.7.24 — the venue tz rides along so readings bucket to the VENUE's
+    // calendar day and wall clock (project invariant), not this machine's.
+    const tz = (await getLocationConfig(loc))?.timezone || null;
     const [{ data: units }, { data: scheds }, { data: readings }, { data: corr }, { data: runs }, { data: maint }, { data: checklists }] = await Promise.all([
       fetchTempUnits(loc, true), fetchSchedules(loc),
       fetchReadings(monthStart.toISOString(), monthEnd.toISOString(), loc, 5000),
@@ -35,7 +39,7 @@ export default function OpsCompliance() {
       fetchMaintenance(loc),
       fetchChecklists(loc),
     ]);
-    setData({ units: units || [], scheds: scheds || [], readings: readings || [], corr: corr || [], runs: runs || [], maint: maint || [], checklists: checklists || [], loading: false });
+    setData({ units: units || [], scheds: scheds || [], readings: readings || [], corr: corr || [], runs: runs || [], maint: maint || [], checklists: checklists || [], tz, loading: false });
   }, [locId, monthStart, monthEnd, month]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { reload(); }, [month]);
@@ -58,9 +62,12 @@ export default function OpsCompliance() {
   // per-day status
   const dayStatus = useMemo(() => {
     const byDay = {};
-    const readByDay = {}; data.readings.forEach(r => { (readByDay[ymd(r.recordedAt)] ??= []).push(r); });
+    // v5.7.24 — a reading belongs to the VENUE's calendar day, and the satisfied
+    // check compares venue-local minutes; a BO machine on another timezone was
+    // colouring the wrong day and mis-crediting windows near midnight.
+    const readByDay = {}; data.readings.forEach(r => { (readByDay[ymdInTz(r.recordedAt, data.tz)] ??= []).push(r); });
     const schedByUnit = {}; data.scheds.forEach(s => { (schedByUnit[s.tempUnitId] ??= []).push(s); });
-    const today = ymd(new Date());
+    const today = buildScheduleCtx(data.tz).ymd;
     const days = new Date(month.y, month.m + 1, 0).getDate();
     for (let d = 1; d <= days; d++) {
       const date = new Date(month.y, month.m, d);
@@ -78,7 +85,7 @@ export default function OpsCompliance() {
       data.units.filter(u => !u.archivedAt).forEach(u => {
         (schedByUnit[u.id] || []).filter(s => runsOnDay(s.daysOfWeek, date)).forEach(s => {
           const wMin = hhmmToMin(s.timeOfDay) ?? 0;
-          const satisfied = reads.some(r => r.tempUnitId === u.id && (() => { const rd = new Date(r.recordedAt); return rd.getHours() * 60 + rd.getMinutes() >= wMin - 5; })());
+          const satisfied = reads.some(r => r.tempUnitId === u.id && (minutesInTz(r.recordedAt, data.tz) ?? -1) >= wMin - 5);
           statuses.push(windowStatus({ windowMin: wMin, graceMin: s.graceMinutes, nowMin: 24 * 60, satisfied }));
         });
       });
@@ -175,10 +182,10 @@ export default function OpsCompliance() {
           <DayDetail
             day={selDay}
             units={data.units}
-            readings={data.readings.filter(r => ymd(r.recordedAt) === selDay)}
-            corr={data.corr.filter(c => ymd(c.createdAt) === selDay)}
+            readings={data.readings.filter(r => ymdInTz(r.recordedAt, data.tz) === selDay)}
+            corr={data.corr.filter(c => ymdInTz(c.createdAt, data.tz) === selDay)}
             runs={data.runs.filter(r => r.runDate === selDay)}
-            maint={data.maint.filter(m => ymd(m.createdAt) === selDay)}
+            maint={data.maint.filter(m => ymdInTz(m.createdAt, data.tz) === selDay)}
             checklists={data.checklists}
           />
         )}

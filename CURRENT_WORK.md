@@ -1,3 +1,31 @@
+# Session, 20 Aug 2026 (v5.7.24), venue-clock sweep FINAL tranche (COMMITTED + PUSHED)
+
+## Done (committed to develop as v5.7.24)
+- Finished the follow-up tranche flagged in v5.7.22. Every remaining known device-clock
+  consumer now reads buildScheduleCtx(locations.timezone):
+  - OperationsSurface useTodayStatus: venue day bounds the readings fetch, venue nowMin,
+    venue weekday for runs-today, readings bucketed to venue-local minutes. ChecklistRun
+    "was due" nowMin now venue clock (tz resolved into state via getLocationConfig).
+  - OpsOverview: siteSnapshot (per-site tz in the multi-site league) + reload, same fix.
+  - OpsCompliance: readings/corrective/maintenance bucket to the VENUE calendar day
+    (ymdInTz) in both the month grid and the day-detail filters; satisfied check uses
+    venue-local minutes; "today" is the venue ymd. AM/PM round labels + hhmm times in
+    the timeline left device-local: display formatting.
+  - OrderPad: coverDaysFromSchedule takes the venue JS dow; weekday-profile walk uses it.
+  - Batches: today-plan preview dow from the venue clock (matches
+    ensureTodaysPlannedBatches fixed in v5.7.22).
+  - TablesSurface ReservationModal: default slot + date from store locationConfig tz.
+- New shared helpers in src/lib/locationTime.js: minutesInTz / ymdInTz (cached Intl
+  formatters per tz, quickRank pattern) + venueDayBoundsIso (venue midnight to next
+  venue midnight as instants, DST-correct via openingHours resolveLocalDateTime, now
+  imported by locationTime; openingHours has no imports so no cycle).
+- Verified: npm run build clean, 411/411 tests pass, helper math spot-checked incl.
+  the 25h DST fall-back day (2026-10-25 Europe/London).
+- Deliberately untouched: greetings + "AM/PM round" header label in OperationsSurface
+  (display), OpsCompliance CSV/PDF export timestamps (display), TablesSurface line ~778
+  booking join-outline nowMin (bookings module semantics, owned by the bookings work),
+  bookings module files.
+
 # Session — 20 Aug 2026 (v5.7.22) — venue-clock sweep (COMMITTED + PUSHED)
 
 ## Done (committed to develop as v5.7.22 — a SELECTIVE commit: the uncommitted

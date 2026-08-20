@@ -17,8 +17,9 @@ import {
 } from '../lib/ops/data';
 import { fetchTodayChecklists, openRun, completeTask, signOffRun, uploadChecklistPhoto } from '../lib/ops/checklists';
 import {
-  displayTemp, toStoredC, breach, typeDefault, hhmmToMin, runsOnDay, windowStatus, summarize,
+  displayTemp, toStoredC, breach, typeDefault, hhmmToMin, windowStatus, summarize,
 } from '../lib/ops/temp';
+import { getLocationConfig, buildScheduleCtx, minutesInTz, venueDayBoundsIso } from '../lib/locationTime';
 import { Icon } from '../components/ServOSIcons';
 import { ensureAuthToken } from '../lib/supabase';
 import { reportSave } from '../lib/saveHealth';
@@ -36,11 +37,6 @@ const CORRECTIVE_OPTIONS = [
   { key: 'discarded', label: 'Discarded affected stock' },
   { key: 'called_engineer', label: 'Called engineer' },
 ];
-const todayBounds = () => {
-  const s = new Date(); s.setHours(0, 0, 0, 0);
-  const e = new Date(s); e.setDate(e.getDate() + 1);
-  return { fromIso: s.toISOString(), toIso: e.toISOString() };
-};
 const mono = { fontFamily: 'var(--font-mono)' };
 
 export default function OperationsSurface() {
@@ -215,18 +211,26 @@ const PinKey = ({ children, onClick }) => (
 function useTodayStatus(loc) {
   const [state, setState] = useState({ units: [], byUnit: {}, summary: { compliancePct: 100, due: 0, missed: 0, done: 0 }, loading: true });
   const reload = useCallback(async () => {
-    const { fromIso, toIso } = todayBounds();
+    // v5.7.24 — due/missed runs on the VENUE clock (project invariant): venue
+    // calendar day bounds the readings fetch, venue wall clock is nowMin, venue
+    // weekday decides runs-today, and readings bucket to venue-local minutes.
+    // A tablet on the wrong OS timezone was mis-timing every window.
+    const tz = (await getLocationConfig(loc))?.timezone;
+    const ctx = buildScheduleCtx(tz);
+    const { fromIso, toIso } = venueDayBoundsIso(ctx.ymd, tz);
     const [{ data: units }, { data: scheds }, { data: readings }] = await Promise.all([
       fetchTempUnits(loc), fetchSchedules(loc), fetchReadings(fromIso, toIso, loc),
     ]);
-    const now = new Date(); const nowMin = now.getHours() * 60 + now.getMinutes();
+    const nowMin = ctx.nowMinutes;
+    const jsDow = ctx.isoDay % 7; // ISO 1=Mon..7=Sun → JS 0=Sun..6=Sat (schedule rows store JS dow)
+    const runsToday = (days) => !Array.isArray(days) || days.length === 0 || days.includes(jsDow);
     const schedByUnit = {}; (scheds || []).forEach(s => { (schedByUnit[s.tempUnitId] ??= []).push(s); });
     const readByUnit = {}; (readings || []).forEach(r => { (readByUnit[r.tempUnitId] ??= []).push(r); });
     const byUnit = {}; const allStatuses = [];
     (units || []).forEach(u => {
-      const windows = (schedByUnit[u.id] || []).filter(s => runsOnDay(s.daysOfWeek, now)).map(s => {
+      const windows = (schedByUnit[u.id] || []).filter(s => runsToday(s.daysOfWeek)).map(s => {
         const wMin = hhmmToMin(s.timeOfDay) ?? 0;
-        const satisfied = (readByUnit[u.id] || []).some(r => { const rd = new Date(r.recordedAt); return rd.getHours() * 60 + rd.getMinutes() >= wMin - 5; });
+        const satisfied = (readByUnit[u.id] || []).some(r => (minutesInTz(r.recordedAt, tz) ?? -1) >= wMin - 5);
         return windowStatus({ windowMin: wMin, graceMin: s.graceMinutes, nowMin, satisfied });
       });
       const lastReading = (readByUnit[u.id] || []).sort((a, b) => new Date(b.recordedAt) - new Date(a.recordedAt))[0] || null;
@@ -592,6 +596,14 @@ function ChecklistRun({ loc, operator, checklist, onDone }) {
   const unitsRef = useRef(null);
   const fileRef = useRef(null);
   const pendingTaskRef = useRef(null);
+  // v5.7.24 — "was due" highlighting runs on the VENUE clock. Null until the
+  // config resolves, and buildScheduleCtx(null) is the Europe/London default.
+  const [venueTz, setVenueTz] = useState(null);
+  useEffect(() => {
+    let live = true;
+    getLocationConfig(loc).then(c => { if (live) setVenueTz(c?.timezone || null); });
+    return () => { live = false; };
+  }, [loc]);
   // A failed openRun leaves run=null, and every tap below silently early-returns on
   // that — the checklist looks alive and records nothing. Say so instead.
   useEffect(() => {
@@ -711,7 +723,7 @@ function ChecklistRun({ loc, operator, checklist, onDone }) {
     onDone();
   };
   const cadence = (checklist.frequency || checklist.cadence || 'Daily').toUpperCase();
-  const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
+  const nowMin = buildScheduleCtx(venueTz).nowMinutes;
 
   // v5.5.971 — temp-linked task in flight: show the REAL probe keypad. Saving
   // records the reading through the normal breach chain AND completes the task;

@@ -3,6 +3,7 @@ import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { useStore } from '../store';
 import { toMin } from '../lib/bookings/optimiser.js';
+import { buildScheduleCtx } from '../lib/locationTime';
 import { resolveServiceCharge } from '../lib/serviceCharge';
 import CheckSelectorModal from '../components/CheckSelectorModal';
 import CustomerModal from '../components/CustomerModal';
@@ -91,10 +92,14 @@ function ReservationModal({ table, existing, onConfirm, onCancel }) {
   // (e.g. "⚠ ALLERGENS: dairy, nuts") so the kitchen sees it on the reservation
   // ticket. Same pattern as CustomerModal's search dropdown.
   const { searchCustomers, searchCustomersLive } = useStore();
-  const now = new Date();
+  const venueTz = useStore(s => s.locationConfig?.timezone);
+  // v5.7.24 — the default slot and date come off the VENUE clock (project
+  // invariant): a till on the wrong OS timezone was suggesting the wrong
+  // time and, around midnight, the wrong day.
+  const ctx = buildScheduleCtx(venueTz);
   const nearestSlot = TIME_SLOTS.find(t => {
     const [h,m] = t.split(':').map(Number);
-    return h * 60 + m >= now.getHours() * 60 + now.getMinutes() + 15;
+    return h * 60 + m >= ctx.nowMinutes + 15;
   }) || TIME_SLOTS[TIME_SLOTS.length - 1];
 
   const [name,      setName]     = useState(existing?.name      || '');
@@ -102,7 +107,7 @@ function ReservationModal({ table, existing, onConfirm, onCancel }) {
   const [partySize, setParty]    = useState(existing?.partySize || Math.min(2, table.maxCovers));
   const [time,      setTime]     = useState(existing?.time      || nearestSlot);
   const [notes,     setNotes]    = useState(existing?.notes     || '');
-  const [date,      setDate]     = useState(existing?.date      || new Date().toLocaleDateString('en-CA')); // YYYY-MM-DD
+  const [date,      setDate]     = useState(existing?.date      || ctx.ymd); // YYYY-MM-DD, venue day
   // v5.5.10: track if a customer was matched from search — passes through to
   // onConfirm so the callsite can skip the upsert+refetch dance (we already
   // have the full record including allergens + opt-in flag).

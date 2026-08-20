@@ -10,6 +10,7 @@
 
 import { platformSupabase, getLocationId } from './supabase';
 import { setActiveCurrency } from './currency';
+import { resolveLocalDateTime } from './openingHours';
 
 // v5.5.11: per-location cache. The previous module-level cache returned the
 // SAME config for every caller regardless of which location they were at.
@@ -184,6 +185,70 @@ export function buildScheduleCtx(timezone = 'Europe/London') {
       ymd: now.toISOString().slice(0, 10),
     };
   }
+}
+
+// ── venue-local bucketing of historical timestamps (v5.7.24) ─────────────────
+// Formatters are cached per timezone — constructing Intl.DateTimeFormat inside
+// a readings loop is expensive (same pattern as rankQuickPicks in quickRank.js).
+
+const _minuteFmtCache = new Map();
+/**
+ * Minutes since midnight of a timestamp on the VENUE's wall clock. For comparing
+ * historical readings against schedule windows (due/missed) — device-local
+ * getHours() puts a reading in the wrong window on a wrong-tz machine.
+ * Unknown tz id falls back to device-local minutes.
+ */
+export function minutesInTz(ts, timezone) {
+  const d = ts instanceof Date ? ts : new Date(ts);
+  if (isNaN(d.getTime())) return null;
+  const tz = timezone || 'Europe/London';
+  try {
+    let fmt = _minuteFmtCache.get(tz);
+    if (!fmt) {
+      fmt = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
+      _minuteFmtCache.set(tz, fmt);
+    }
+    const [h, m] = fmt.format(d).split(':').map(Number);
+    return ((h === 24 ? 0 : h) * 60) + m; // some runtimes emit "24" at midnight
+  } catch {
+    return d.getHours() * 60 + d.getMinutes();
+  }
+}
+
+const _ymdFmtCache = new Map();
+/**
+ * The VENUE-local calendar day (YYYY-MM-DD) a timestamp falls on — which
+ * business day a reading belongs to, never the device's date.
+ */
+export function ymdInTz(ts, timezone) {
+  const d = ts instanceof Date ? ts : new Date(ts);
+  if (isNaN(d.getTime())) return null;
+  const tz = timezone || 'Europe/London';
+  try {
+    let fmt = _ymdFmtCache.get(tz);
+    if (!fmt) {
+      fmt = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
+      _ymdFmtCache.set(tz, fmt);
+    }
+    return fmt.format(d);
+  } catch {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+}
+
+/**
+ * The venue calendar day `ymd` as real instants: [fromIso, toIso) = venue
+ * midnight to next venue midnight, DST-correct via resolveLocalDateTime.
+ * Replaces the device-midnight todayBounds() in the ops due/missed views.
+ */
+export function venueDayBoundsIso(ymd, timezone) {
+  const tz = timezone || 'Europe/London';
+  const [y, m, d] = ymd.split('-').map(Number);
+  const nextYmd = new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
+  return {
+    fromIso: resolveLocalDateTime(ymd, 0, tz).toISOString(),
+    toIso: resolveLocalDateTime(nextYmd, 0, tz).toISOString(),
+  };
 }
 
 /**

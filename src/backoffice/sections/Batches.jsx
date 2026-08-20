@@ -10,6 +10,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useStore } from '../../store';
 import { getActiveLocationSync, getLocationId , isMock, supabase } from '../../lib/supabase';
+import { getLocationConfig, buildScheduleCtx } from '../../lib/locationTime';
 import { money, currencySymbol } from '../../lib/currency';
 import { buildCostingCtx } from '../../lib/stock/recipes';
 import { fetchRecipes } from '../../lib/stock/recipes';
@@ -52,7 +53,9 @@ export default function Batches() {
     (async () => {
       const loc = getActiveLocationSync() || await getLocationId().catch(() => null);
       if (!loc || isMock || !supabase) return;
-      const dow = new Date().getDay();
+      // v5.7.24 — the plan preview's "today" is the VENUE's weekday (project
+      // invariant), matching ensureTodaysPlannedBatches since v5.7.22.
+      const dow = buildScheduleCtx((await getLocationConfig(loc))?.timezone).isoDay % 7;
       const [{ data: its }, { data: scheds }, prof] = await Promise.all([
         fetchInventoryItems(loc),
         supabase.from('prep_schedule').select('output_item_id, qty, unit, days_of_week, active').eq('location_id', loc).eq('active', true),

@@ -21,6 +21,7 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useStore } from '../../store';
 import { getActiveLocationSync, getLocationId , supabase } from '../../lib/supabase';
+import { getLocationConfig, buildScheduleCtx } from '../../lib/locationTime';
 import { money } from '../../lib/currency';
 import { displayInUnits } from '../../lib/stock/uom';
 import { fetchInventoryItems, fetchSuppliers, fetchUsageRates, fetchUsageByWeekday } from '../../lib/stock/data';
@@ -45,10 +46,11 @@ const DOW = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 const DAY_LBL = { sun: 'Sun', mon: 'Mon', tue: 'Tue', wed: 'Wed', thu: 'Thu', fri: 'Fri', sat: 'Sat' };
 // Days to cover from a supplier's weekly delivery schedule: reach the *second*
 // upcoming delivery, so the next delivery's stock lasts until the one after it.
-const coverDaysFromSchedule = (deliveryDays) => {
+// todayIdx is the VENUE's JS day-of-week (v5.7.24) — a BO machine on another
+// timezone was walking the schedule from the wrong "today".
+const coverDaysFromSchedule = (deliveryDays, todayIdx) => {
   if (!Array.isArray(deliveryDays) || deliveryDays.length === 0) return null;
   const set = new Set(deliveryDays.map(d => String(d).toLowerCase()));
-  const todayIdx = new Date().getDay();
   const hits = [];
   for (let off = 1; off <= 14 && hits.length < 2; off++) {
     if (set.has(DOW[(todayIdx + off) % 7])) hits.push(off);
@@ -74,10 +76,14 @@ export default function OrderPad() {
   const [needOnly, setNeedOnly] = useState(false);
   const [search, setSearch] = useState('');
   const [busy, setBusy] = useState(false);
+  // v5.7.24 — suggestions key off the VENUE's "today" (project invariant);
+  // null until resolved, and buildScheduleCtx(null) is the Europe/London default.
+  const [venueTz, setVenueTz] = useState(null);
 
   const reload = useCallback(async () => {
     const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
     if (loc && loc !== locId) setLocId(loc);
+    getLocationConfig(loc).then(c => setVenueTz(c?.timezone || null)).catch(() => {});
     const [{ data: its }, { data: sup }, { data: par }, { data: rate }, { data: pos }, { data: wk }] = await Promise.all([
       fetchInventoryItems(loc), fetchSuppliers(loc), fetchParLevels(loc), fetchUsageRates(USAGE_DAYS, loc), fetchPurchaseOrders(loc), fetchUsageByWeekday(8, loc),
     ]);
@@ -96,7 +102,9 @@ export default function OrderPad() {
   // v5.5.925 — you don't ORDER a made-here item, you MAKE it. A burger patty in a
   // supplier ordering list was the production model leaking into purchasing; its
   // ingredients (the minced beef) are what belongs here, and they already are.
-  const rows = useMemo(() => (items || []).filter(i => !i.archivedAt && i.kind !== 'MADE').map(it => {
+  const rows = useMemo(() => {
+    const todayDow = buildScheduleCtx(venueTz).isoDay % 7; // venue JS dow (0=Sun)
+    return (items || []).filter(i => !i.archivedAt && i.kind !== 'MADE').map(it => {
     const allSps = it.supplierProducts || [];
     const overrideId = supplierOverride[it.id];
     const sp = (overrideId && allSps.find(s => s.id === overrideId)) || allSps.find(s => s.isPreferred) || allSps[0] || null;
@@ -105,7 +113,7 @@ export default function OrderPad() {
     const avgDaily = usage[it.id] || 0;
     const par = pars[it.id]?.parLevel ?? null;
     const oo = onOrder[it.id] || 0;
-    const sched = sp ? coverDaysFromSchedule(supById[sp.supplierId]?.deliveryDays) : null;
+    const sched = sp ? coverDaysFromSchedule(supById[sp.supplierId]?.deliveryDays, todayDow) : null;
     const coverDays = sched != null ? sched : days;
     const effCover = coverDays + (Number(safetyDays) || 0);
     // v5.5.926 — WALK THE ACTUAL DAYS, don't multiply a flat average. A venue selling
@@ -117,7 +125,6 @@ export default function OrderPad() {
     const hasShape = Array.isArray(prof) && prof.some(v => v > 0);
     let expectedBase = 0;
     if (hasShape) {
-      const todayDow = new Date().getDay();
       for (let d = 1; d <= effCover; d++) expectedBase += prof[(todayDow + d) % 7] || 0;
     } else {
       expectedBase = avgDaily * effCover;
@@ -126,7 +133,7 @@ export default function OrderPad() {
     if (!(needBase > 0)) needBase = 0;
     const suggestedPacks = (sp && perPack > 0) ? Math.ceil(needBase / perPack) : 0;
     return { it, allSps, sp, perPack, onHand, avgDaily, prof: hasShape ? prof : null, par, oo, sched, coverDays, effCover, needBase, suggestedPacks };
-  }), [items, usage, weekday, pars, onOrder, days, safetyDays, supplierOverride, supById]);
+  }); }, [items, usage, weekday, pars, onOrder, days, safetyDays, supplierOverride, supById, venueTz]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();

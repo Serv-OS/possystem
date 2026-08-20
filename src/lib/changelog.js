@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.24',
+    date: '2026-08-20',
+    items: [
+      'Venue clock sweep, final tranche. The Operations due and missed windows now run entirely on the venue clock: the floor app home ring and temperature list, the Back Office compliance dashboard and every site in the multi-site league table use the venue calendar day, weekday and wall clock, and past readings are bucketed to venue-local minutes when deciding whether a check was satisfied.',
+      'The compliance history calendar assigns each reading, corrective action and maintenance event to the venue calendar day it belongs to, so a Back Office machine in another timezone can no longer colour the wrong day or credit a check to the wrong window near midnight.',
+      'Order pad purchasing suggestions walk supplier delivery days and the weekday usage profile from the venue weekday, and the production batches plan preview keys on the venue weekday, matching the planner fix in v5.7.22. A machine on the wrong OS timezone was suggesting order quantities for the wrong day.',
+      'New reservations on the Tables screen default to the venue time and date rather than the till device clock.',
+    ],
+  },
+  {
     version: '5.7.23',
     date: '2026-08-20',
     items: [
