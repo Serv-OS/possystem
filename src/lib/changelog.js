@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.19',
+    date: '2026-08-20',
+    items: [
+      'The support diagnostics view now shows the menu decision itself: which menu the till should be showing right now and why, computed live from the same data the till uses.',
+    ],
+  },
+  {
     version: '5.7.18',
     date: '2026-08-20',
     items: [

@@ -10,6 +10,7 @@ import { useState, useEffect } from 'react';
 import { useStore } from '../store';
 import { VERSION } from '../lib/version';
 import { fetchMenuCategoryLinks } from '../lib/db';
+import { menusWithCategories } from '../lib/menuMembership';
 
 const readJSON = (store, key) => {
   try { return JSON.parse(store.getItem(key) || 'null'); } catch { return null; }
@@ -21,6 +22,10 @@ export default function MenuDiag() {
   const activeMenuId = useStore(s => s.activeMenuId);
   const menus = useStore(s => s.menus);
   const menuCategories = useStore(s => s.menuCategories);
+  // v5.7.19 - the STORE's links (what the resolver actually consumes since
+  // v5.7.18) plus a live replica of the resolver's decision, so the panel can
+  // never again show healthy inputs while the real pick is a mystery.
+  const storeLinks = useStore(s => s.categoryLinks);
   const [hidden, setHidden] = useState(false);
   const hasSw = 'serviceWorker' in navigator;
   // Controller is readable synchronously; waiting needs the async registration.
@@ -131,6 +136,47 @@ export default function MenuDiag() {
       <div style={S.head}>CATEGORIES ({(menuCategories || []).length} total, by menuId)</div>
       {Object.entries(catCounts).map(([m, n]) => <div key={m} style={S.row}>{m}: {n}</div>)}
       {!(menuCategories || []).length && <div style={S.warn}>no categories in store</div>}
+
+      <div style={S.head}>RESOLVER REPLICA (live, store inputs, device clock)</div>
+      {(() => {
+        const now = new Date();
+        const day = now.getDay() || 7;
+        const time = now.getHours() * 60 + now.getMinutes();
+        const schedActive = (m) => {
+          if (!m.schedule) return true;
+          const sc = m.schedule;
+          if (sc.days && Array.isArray(sc.days) && sc.days.length && !sc.days.map(Number).includes(day)) return false;
+          if (sc.from && sc.to) {
+            const [fh, fm] = String(sc.from).split(':').map(Number);
+            const [th, tm] = String(sc.to).split(':').map(Number);
+            const a = fh * 60 + fm, b = th * 60 + tm;
+            if (!Number.isFinite(a) || !Number.isFinite(b)) return true;
+            return a <= b ? (time >= a && time <= b) : (time >= a || time <= b);
+          }
+          return true;
+        };
+        const live = (menus || []).filter(m => m.isActive !== false && m.is_active !== false);
+        const withCatsSet = menusWithCategories(menuCategories, storeLinks || []);
+        const withCats = live.filter(m => withCatsSet.has(m.id));
+        const all = withCats.length ? withCats : live;
+        const activeNow = all.filter(schedActive);
+        const preferred = deviceConfig?.menuId || null;
+        const preferredOk = preferred && all.some(m => m.id === preferred);
+        let pick = null, path = '';
+        if (preferredOk && activeNow.some(m => m.id === preferred)) { pick = preferred; path = 'pinned + in schedule'; }
+        else if (preferredOk) { const d = all.find(m => m.isDefault || m.is_default); pick = d ? d.id : preferred; path = d ? 'pinned off-schedule, default wins' : 'pinned off-schedule, pin kept'; }
+        else if (activeNow.length) {
+          const sorted = activeNow.slice().sort((a, b) => ((b.priority || 0) - (a.priority || 0)) || (((b.isDefault || b.is_default) ? 1 : 0) - (((a.isDefault || a.is_default)) ? 1 : 0)));
+          pick = sorted[0].id; path = 'schedule winner';
+        } else { const d = all.find(m => m.isDefault || m.is_default); pick = d ? d.id : (all[0]?.id ?? null); path = d ? 'nothing scheduled, default' : 'nothing scheduled, first non-empty'; }
+        const name = (id) => (menus || []).find(m => m.id === id)?.name || id || '(none)';
+        return <>
+          <div style={S.row}>device clock: {now.toTimeString().slice(0, 5)} day {day}</div>
+          <div style={S.row}>store categoryLinks: {(storeLinks || []).length}</div>
+          {(menus || []).map(m => <div key={m.id} style={S.row}>{m.name}: schedActive {String(schedActive(m))} | hasCats {String(withCatsSet.has(m.id))}</div>)}
+          <div style={{ ...S.row, fontWeight: 700 }}>SHOULD SHOW: {name(pick)} ({path})</div>
+        </>;
+      })()}
 
       <div style={S.head}>CATEGORY LINKS (menu_category_links, by menu_id)</div>
       {links === null && <div style={S.dim}>loading…</div>}
