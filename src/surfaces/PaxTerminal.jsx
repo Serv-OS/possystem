@@ -57,9 +57,10 @@ export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete
   // reconciler booked the check behind it, and no merchant slip printed
   // (live 20 Aug, every card sale of the day). Callbacks live in refs, the
   // timer fires unless the whole screen unmounted first.
-  const onCompleteRef = useRef(onComplete); onCompleteRef.current = onComplete;
-  const onFailedRef = useRef(onFailed); onFailedRef.current = onFailed;
+  const onCompleteRef = useRef(onComplete);
+  const onFailedRef = useRef(onFailed);
   const unmountedRef = useRef(false);
+  useEffect(() => { onCompleteRef.current = onComplete; onFailedRef.current = onFailed; });
   useEffect(() => () => { unmountedRef.current = true; }, []);
 
   // ── watch the job row ──────────────────────────────────────────────────────

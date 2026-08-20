@@ -107,7 +107,8 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
   // render; the old cleanup let any re-render in the 250ms window cancel the
   // close while nothing ever retried it).
   const completeFiredRef = useRef(false);
-  const onCompleteRef2 = useRef(onComplete); onCompleteRef2.current = onComplete;
+  const onCompleteRef2 = useRef(onComplete);
+  useEffect(() => { onCompleteRef2.current = onComplete; });
   useEffect(() => {
     if ((state === 'approved' || restState === 'success') && !completeFiredRef.current) {
       completeFiredRef.current = true;
