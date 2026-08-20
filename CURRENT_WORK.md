@@ -1,3 +1,14 @@
+# Session — 20 Aug 2026 (v5.7.16) — DeviceProfiles sort_order round-trips on save
+
+## Done (committed + pushed to develop, ed80878)
+- **Fix**: the pre-existing issue flagged in the v5.7.9 session below. loadFromDB now maps
+  `sortOrder: p.sort_order || 0` into the in-memory profile objects (mirrors the other
+  snake_case mappings), so toDbRow's `sort_order: p.sortOrder || 0` writes the real value
+  back instead of resetting every saved profile to 0.
+- Version 5.7.16 + changelog entry. Build clean, 390/390 tests pass.
+- Test: in Back Office → Device profiles, save a profile that is not first in the list
+  (for example a rename), refresh — it keeps its position instead of jumping to the top.
+
 # Session — 20 Aug 2026 (v5.7.9) — Device profile saves can no longer wipe the menu pin
 
 ## Done (NOT committed, NOT deployed)
