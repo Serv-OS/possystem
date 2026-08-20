@@ -247,9 +247,17 @@ export default function POSSurface() {
       const defForPinned = allMenus.find(m => m.isDefault || m.is_default);
       return defForPinned ? defForPinned.id : preferred;
     }
-    // 2. Otherwise pick highest-priority menu currently active.
+    // 2. Otherwise pick the highest-priority menu currently active. v5.7.12:
+    // the DEFAULT menu breaks ties - with several always-active menus at equal
+    // priority the old stable sort picked whichever row happened to load first
+    // (live 20 Aug: an unpinned till showed the one-category Bar menu). Auto
+    // mode now reads: the default menu, unless a scheduled or higher-priority
+    // menu is live right now.
     if (activeNow.length > 0) {
-      return activeNow.slice().sort((a, b) => (b.priority || 0) - (a.priority || 0))[0].id;
+      return activeNow.slice().sort((a, b) =>
+        ((b.priority || 0) - (a.priority || 0))
+        || (((b.isDefault || b.is_default) ? 1 : 0) - (((a.isDefault || a.is_default)) ? 1 : 0))
+      )[0].id;
     }
     // 3. No menus active right now: fall back to default flagged menu.
     const def = allMenus.find(m => m.isDefault || m.is_default);

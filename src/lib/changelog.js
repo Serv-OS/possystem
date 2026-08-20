@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.12',
+    date: '2026-08-20',
+    items: [
+      'Card payments: the payment popup closes properly again after approval. A screen refresh in the wrong third of a second could cancel the handoff that closes the check, so the popup sat on Approved while the background safety net booked the sale and the merchant tip slip never printed. The handoff now always fires. Same fix applied to the Stripe card screen.',
+      'Menus: with several always on menus, a till set to All menus now shows the DEFAULT menu instead of whichever menu happened to load first. Timed menus still take over during their window, and higher priority still wins.',
+    ],
+  },
+  {
     version: '5.7.11',
     date: '2026-08-20',
     items: [

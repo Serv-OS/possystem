@@ -102,15 +102,21 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
   // Smooth transition to "approved" → call onComplete after brief moment.
   // v5.5.172: pass the captured PI through so the parent can derive the
   // ACTUAL reader-collected tip (amountReceived - base bill).
+  // v5.7.12 - same fix as PaxTerminal: the handoff timer must survive parent
+  // re-renders (onComplete is an inline closure with a fresh identity every
+  // render; the old cleanup let any re-render in the 250ms window cancel the
+  // close while nothing ever retried it).
+  const completeFiredRef = useRef(false);
+  const onCompleteRef2 = useRef(onComplete); onCompleteRef2.current = onComplete;
   useEffect(() => {
-    if (state === 'approved' || restState === 'success') {
-      // v5.5.560: 900ms → 250ms. This delay sat in front of the whole close → print →
-      // cash-drawer chain; 250ms still shows the "approved" tick but cuts ~650ms of dead
-      // time before the kitchen ticket/receipt print and the drawer pulse.
-      const t = setTimeout(() => onComplete(piResult), 250);
-      return () => clearTimeout(t);
+    if ((state === 'approved' || restState === 'success') && !completeFiredRef.current) {
+      completeFiredRef.current = true;
+      const pi = piResult;
+      // v5.5.560: 900ms → 250ms delay kept: shows the "approved" tick without
+      // stalling the close → print → cash-drawer chain.
+      setTimeout(() => onCompleteRef2.current?.(pi), 250);
     }
-  }, [state, restState, onComplete, piResult]);
+  }, [state, restState, piResult]);
 
   // Cleanup: cancel any in-flight reader/terminal action when this screen unmounts.
   // v5.5.808: read state through a ref — the old [] -deps closure captured the

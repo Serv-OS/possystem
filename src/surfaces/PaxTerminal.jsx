@@ -49,6 +49,18 @@ export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete
   const [cancelMsg, setCancelMsg] = useState('');
   const abortRef = useRef(null);
   const doneRef = useRef(false);
+  // v5.7.12 - the settle handoff must survive parent re-renders. The old
+  // pattern (setTimeout in the effect + clearTimeout in its cleanup, with
+  // onComplete - an inline closure with a fresh identity every parent render -
+  // in the deps) let ANY re-render inside the 350ms window cancel the timer,
+  // while doneRef blocked every retry: the screen said Approved forever, the
+  // reconciler booked the check behind it, and no merchant slip printed
+  // (live 20 Aug, every card sale of the day). Callbacks live in refs, the
+  // timer fires unless the whole screen unmounted first.
+  const onCompleteRef = useRef(onComplete); onCompleteRef.current = onComplete;
+  const onFailedRef = useRef(onFailed); onFailedRef.current = onFailed;
+  const unmountedRef = useRef(false);
+  useEffect(() => () => { unmountedRef.current = true; }, []);
 
   // ── watch the job row ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -79,10 +91,11 @@ export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete
     // (the closed_checks PK elects one writer) and simply re-books the same row.
     if ((job.status === 'approved' || job.status === 'reconciled') && !job.needs_human) {
       doneRef.current = true;
+      const fire = onCompleteRef;
       // Hand the parent the job's own INTEGERS. tipMinor is what drives the
       // corrected tip-recording line in CheckoutModal; amountReceived is the leg
       // that is genuinely refundable (the charge, never the check face value).
-      const t = setTimeout(() => onComplete?.({
+      setTimeout(() => { if (!unmountedRef.current) fire.current?.({
         // v5.6.79 (#107) — WAS HARDCODED 'ryft'. A card sale taken on an ADYEN
         // reader through the till therefore booked processor:'ryft', while
         // closeApprovedTerminalJob booked 'adyen' for the very same sale when the
@@ -102,15 +115,15 @@ export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete
         authCode: job.auth_code || null,
         jobId: job.id,
         closedCheckId: job.closed_check_id,
-      }), 350);
-      return () => clearTimeout(t);
+      }); }, 350);
+      return undefined;
     }
     if (['declined', 'cancelled', 'expired'].includes(job.status)) {
       doneRef.current = true;
-      onFailed?.(job);
+      onFailedRef.current?.(job);
     }
     return undefined;
-  }, [job, onComplete, onFailed]);
+  }, [job]);
 
   const status = job?.status ?? 'pending';
   const copy = STATUS_COPY[status] ?? STATUS_COPY.pending;
