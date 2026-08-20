@@ -809,6 +809,35 @@ export default function POSSurface() {
       };
     })() : null;
 
+    // ── v5.7.5 TIP ON PRINTED RECEIPT: the merchant slip ──────────────────────
+    // Gated on paymentInfo.capture - the server attaches it ONLY when this sale
+    // authorised as a manual-capture (tip-on-receipt) job, which itself required
+    // the venue setting ON, an Adyen/demo card payment, and this main-POS
+    // surface. So capture-presence IS "setting on AND card AND main POS", proven
+    // server-side rather than re-derived here (method-string sniffing was the
+    // trap: 'gift_card'.includes('card') is true). Belt anyway: the store's
+    // venue flag must agree. Independent of the customer-receipt auto-print
+    // toggle - without this slip there is nowhere for the guest to write the
+    // tip. Training never reaches here with a capture (training jobs never
+    // dispatch), and the print call below sits inside the training gate too.
+    const tipSlipSnapshot = (paymentInfo.capture && useStore.getState().tipOnReceipt?.enabled) ? {
+      location,
+      check: {
+        ref: 'PENDING',
+        server: session?.server || staff?.name || null,
+        tableLabel: activeTable?.label || null,
+        orderType,
+        method: paymentInfo.method,
+        cardReceipt: paymentInfo.cardReceipt || null,
+        paymentIntents: null,
+      },
+      totals: {
+        grand: Number.isFinite(Number(paymentInfo.capture.auth_minor))
+          ? Number(paymentInfo.capture.auth_minor) / 100
+          : total + (paymentInfo.tip || 0),
+      },
+    } : null;
+
     // v4.4.7: Wrap state mutations in try/catch so a throw inside clearTable/
     // recordWalkInClosed does NOT prevent the auto-print dispatch. Print is
     // fire-and-forget via the durable print_jobs queue.
@@ -868,6 +897,24 @@ export default function POSSurface() {
       }
     } else {
       console.info('[PayComplete] no receiptSnapshot — auto-print skipped');
+    }
+
+    // v5.7.5 - merchant tip slip, after the customer receipt so the printer
+    // hands them over in the order staff pass them across the counter.
+    // Training-gated like the receipt; its own guard key stops cross-tab
+    // duplicates without eating the customer receipt (see printMerchantTipSlip).
+    if (tipSlipSnapshot && !isTrainingMode()) {
+      const freshSlipRef = useStore.getState().closedChecks[0]?.ref
+        || ('#' + Date.now().toString().slice(-4));
+      tipSlipSnapshot.check.ref = freshSlipRef;
+      printService.printMerchantTipSlip(tipSlipSnapshot).then(result => {
+        if (!result?.ok) {
+          useStore.getState().showToast?.(`Tip slip not printed: ${result?.error || 'no printer set for this device'}`, 'error');
+        }
+      }).catch(err => {
+        console.warn('[Print] Merchant tip slip failed:', err?.message || err);
+        useStore.getState().showToast?.(`Tip slip print failed: ${err?.message || err}`, 'error');
+      });
     }
   };
 

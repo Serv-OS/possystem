@@ -19,7 +19,7 @@ import { publishDisplay, displayUsesScreen, publishTipRequest, onCustomerTip } f
 import { isTrainingMode } from '../lib/trainingMode';
 import PaxTerminal from './PaxTerminal';
 import {
-  findPaxTerminal, dispatchTerminalJob, buildCheckKey, toMinor, forgetJob, getPosDeviceId,
+  findPaxTerminal, dispatchTerminalJob, buildCheckKey, toMinor, forgetJob, getPosDeviceId, fetchJobCapture,
   fetchJobs, markJobReconciled,
 } from '../lib/payments/terminalJobs';
 // (readerDisplay imports removed — cancel now lets the natural cart-change effect refresh the reader after onBack)
@@ -1493,7 +1493,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   // but the check must not be recorded twice either).
   const completingRef = useRef(false);
 
-  const complete = async (method, tip=tipAmt, tendered=null, stripePaymentIntentId=null, cardReceipt=null, paidProcessor=null, capturedMinor=null) => {
+  const complete = async (method, tip=tipAmt, tendered=null, stripePaymentIntentId=null, cardReceipt=null, paidProcessor=null, capturedMinor=null, capture=null) => {
     if (completingRef.current) return;
     completingRef.current = true;
 
@@ -1636,6 +1636,12 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
       // when the reader finishes the same table itself.
       processor: paidProcessor || (splitWithReader ? 'adyen' : 'stripe'),
       cardReceipt,   // card-scheme receipt block (brand/last4/auth code/AID/CVM) — printed at the receipt bottom
+      // v5.7.5 - TIP ON PRINTED RECEIPT. The capture-window row this sale opened
+      // (manual-capture Adyen auth, tip written on the merchant slip). The store
+      // stamps { capture:'pending', captureId } onto the card leg from it, and
+      // POSSurface prints the merchant tip slip when it is present. Absent on
+      // every auto-capture sale, so nothing else changes shape.
+      ...(capture ? { capture } : {}),
     });
     // v5.6.76 — the reader's legs are now booked on the check above, so retire them.
     // Deliberately NOT awaited: the modal unmounts on onComplete and the operator must
@@ -1768,6 +1774,13 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         // terminal_devices.tip_config, set per terminal in the Adyen / ServOS
         // panels and resolved server-side by terminal-job-create.
         suppressTip: skipTip,
+        // v5.7.5 - the MAIN POS checkout is the one surface allowed to open a
+        // tip-on-receipt window. NOT for a bar tab: this same modal is also
+        // mounted by BarSurface, and the bar flow stays exactly as it was (a
+        // signature slip makes no sense on a tab someone is walking away from).
+        // The server still gates on the venue setting + processor; this flag
+        // alone does nothing on a venue with it off.
+        surface: isBarTab ? undefined : 'pos',
         closedCheckId: checkId,
         checkDraft: {
           tableId: tableId || null,
@@ -2346,7 +2359,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
             <PaxTerminal
               job={paxJob}
               terminalLabel={paxTarget?.label || null}
-              onComplete={(pi)=>{
+              onComplete={async (pi)=>{
                 // Derive BOTH legs from the job's integers — tip_minor and
                 // charge_minor — so the recorded tip and the refundable leg are
                 // exactly what the card was asked for. Never round twice.
@@ -2355,13 +2368,26 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                 // for and belongs on this check (complete() re-commits it idempotently and
                 // books it). Drop the reversal handle so nothing can hand it back.
                 paxGiftRef.current = null;
+                // v5.7.5 - TIP ON PRINTED RECEIPT. paxJob is the CREATE response row,
+                // the one place the till can see capture_mode (terminal-job-status
+                // rows do not return the column). For a manual-capture sale, fetch
+                // the capture-window row so the closed check's leg is stamped
+                // { capture:'pending', captureId } and the merchant slip prints.
+                // Best-effort with a synthesised pending fallback: an approved
+                // manual auth must never book a leg with no open window on it -
+                // the sweep will capture it, and History must say so.
+                let capture = null;
+                if (paxJob?.capture_mode === 'manual') {
+                  capture = await fetchJobCapture(paxJob);
+                  if (!capture) capture = { id: null, psp_reference: null, status: 'pending', deadline_at: null, auth_minor: Number.isFinite(pi.amountReceived) ? pi.amountReceived : null };
+                }
                 // v5.6.79 (#107) — the processor comes from the JOB (PaxTerminal
                 // reads terminal_jobs.processor), not the literal 'ryft' that used
                 // to be hardcoded here AND in PaxTerminal. An Adyen reader sale
                 // booked 'ryft' and could never be refunded.
                 complete('card', Math.max(0, (pi.tipMinor ?? 0) / 100), null,
                   pi.paymentIntentId || null, pi.card || null, pi.processor || paxJob?.processor || 'ryft',
-                  Number.isFinite(pi.amountReceived) ? pi.amountReceived : null);
+                  Number.isFinite(pi.amountReceived) ? pi.amountReceived : null, capture);
               }}
               // v5.5.903: declined / cancelled / expired — the server has SETTLED the job
               // and no card was charged. That is the proof the reversal needs: the gift

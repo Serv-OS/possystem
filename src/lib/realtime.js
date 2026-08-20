@@ -415,6 +415,21 @@ export function startRealtime(store, locationId = LOCATION_ID) {
               ...c,
               refunds: check.refunds || [],
               status: check.status || c.status,
+              // v5.7.5 tip on receipt: the SERVER moves money on these checks
+              // after close (tip_capture / webhook write tip, total and the
+              // payment leg's capture flag). Merge them so History repaints
+              // live as the window moves pending → capturing → captured.
+              // SCOPED to rows whose legs actually carry a `capture` key - a
+              // refund UPDATE (or any other writer) keeps the old merge
+              // behaviour exactly: refunds + status only, the local richer
+              // camelCase legs/tip/total untouched.
+              ...(Array.isArray(check.payment_intents)
+                && check.payment_intents.some(l => l && typeof l === 'object' && 'capture' in l)
+                ? {
+                  paymentIntents: check.payment_intents,
+                  ...(check.tip != null ? { tip: check.tip } : {}),
+                  ...(check.total != null ? { total: check.total } : {}),
+                } : {}),
             } : c),
           };
         }

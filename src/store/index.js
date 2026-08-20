@@ -9,7 +9,7 @@ import { operatorSwitchPatch, logoutPatch } from '../lib/cartHold';
 import { kitchenOverride, receiptOverride } from '../lib/itemDisplay';
 import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, upsertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC, upsertModifierGroup, deleteModifierGroup } from '../lib/db';
 import { isSessionClosed } from '../sync/sessionClosure';
-import { markJobReconciled, closeTerminalSession, recallJob, forgetJob, cancelTerminalJob, buildCheckKey, fetchJob } from '../lib/payments/terminalJobs';
+import { markJobReconciled, closeTerminalSession, recallJob, forgetJob, cancelTerminalJob, buildCheckKey, fetchJob, fetchJobCapture } from '../lib/payments/terminalJobs';
 import { printService } from '../lib/printer';
 import { hubrisePushStock, isHubriseConnected, hubrisePushStatus, isHubriseAutoReceipt } from '../lib/hubrise';
 import { buildChannelCloseFields } from '../lib/channelMoney';
@@ -89,6 +89,32 @@ function attachCardToIntents(intents, cardReceipt) {
   if (!cardReceipt) return intents;
   if (!intents || !intents.length) return intents;
   return [{ ...intents[0], card: cardReceipt }, ...intents.slice(1)];
+}
+
+// v5.7.5 - TIP ON PRINTED RECEIPT. Stamp the open capture window onto the card
+// leg it belongs to (slot 0 - ALWAYS the till's own leg: single-card sales have
+// one leg, and on a reader split the till's final leg deliberately keeps slot 0,
+// which is also the only leg that can be a manual-capture auth). The server's
+// applyTipToClosedCheck matches this leg back by captureId, then psp, then the
+// single-leg fallback, and moves the flag pending → adjusting/capturing →
+// captured | failed as the money actually moves. Legs without a window are
+// untouched - every other sale keeps its exact prior shape.
+const CAPTURE_LEG_STATES = ['pending', 'adjusting', 'capturing', 'captured', 'failed', 'expired', 'cancelled'];
+function attachCaptureToIntents(intents, capture) {
+  if (!capture) return intents;
+  const legPatch = {
+    capture: CAPTURE_LEG_STATES.includes(capture.status) ? capture.status : 'pending',
+    ...(capture.id ? { captureId: capture.id } : {}),
+    ...(capture.psp_reference ? { capturePsp: capture.psp_reference } : {}),
+    ...(capture.deadline_at ? { captureDeadline: capture.deadline_at } : {}),
+    ...(Number.isFinite(Number(capture.auth_minor)) ? { captureAuthMinor: Number(capture.auth_minor) } : {}),
+  };
+  if (!intents || !intents.length) {
+    // An approved settle can carry no pspReference at all (leg id null) - an
+    // open window must still be visible in History, so mint an amount-only leg.
+    return [{ id: null, amountMinor: legPatch.captureAuthMinor ?? null, ...legPatch }];
+  }
+  return [{ ...intents[0], ...legPatch }, ...intents.slice(1)];
 }
 
 function derivePaymentIntents(paymentInfo = {}) {
@@ -3396,6 +3422,19 @@ export const useStore = create((set, get) => ({
   // and refreshed via the config-push snapshot. POS-only — online/QR/kiosk flows are untouched.
   takeawayCustomerDetails: 'full',
   setTakeawayCustomerDetails: (val) => set({ takeawayCustomerDetails: ['full','name','none'].includes(val) ? val : 'full' }),
+  // v5.7.5 - TIP ON PRINTED RECEIPT (United States signature flow). Venue-wide,
+  // read from ops locations.pos_settings.tip_on_receipt at boot (SyncBridge).
+  // The POS uses it for the merchant-slip print decision and the History
+  // countdown fallback; the SERVER re-reads the setting itself on every job
+  // create, so a stale client value can never open or widen a capture window.
+  tipOnReceipt: { enabled: false, captureHours: 24 },
+  setTipOnReceipt: (val) => {
+    const hours = Number(val?.capture_hours ?? val?.captureHours);
+    set({ tipOnReceipt: {
+      enabled: val?.enabled === true,
+      captureHours: Number.isFinite(hours) ? Math.max(1, Math.min(72, hours)) : 24,
+    } });
+  },
   toggle86: id => {
     const is86 = get().eightySixIds.includes(id);
     set(s => ({ eightySixIds: is86 ? s.eightySixIds.filter(x=>x!==id) : [...s.eightySixIds, id] }));
@@ -4889,7 +4928,7 @@ export const useStore = create((set, get) => ({
       giftCard:   giftRecordFrom(paymentInfo),                   // v5.5.217 refund reversal; v5.5.902 also carries split legs
       stripePaymentIntentId: paymentInfo.stripePaymentIntentId || paymentInfo.paymentIntentId || null,  // v5.5.301: for card refunds
       processor:  paymentInfo.processor || 'stripe',             // which processor took the payment (refund routes by this)
-      paymentIntents: attachCardToIntents(derivePaymentIntents(paymentInfo), paymentInfo.cardReceipt),  // v5.5.323 legs + v5.5.719 card block persisted on the leg
+      paymentIntents: attachCaptureToIntents(attachCardToIntents(derivePaymentIntents(paymentInfo), paymentInfo.cardReceipt), paymentInfo.capture),  // v5.5.323 legs + v5.5.719 card block + v5.7.5 tip-on-receipt capture window
       cardReceipt: paymentInfo.cardReceipt || null,              // v5.5.719: card-scheme receipt block (brand/last4/auth/AID/CVM) for the printed receipt
       loyaltyRedemption: paymentInfo.loyaltyRedemption || null,  // v5.5.315: link redeem→check for refund restore
       closedAt:   Date.now(),
@@ -5110,6 +5149,27 @@ export const useStore = create((set, get) => ({
     // Tag with the job's REAL source so reports distinguish Table Pay from a POS
     // send-to-terminal (both card-on-PAX, different flows).
     record.source = d.source || 'pax_table_pay';
+
+    // ── v5.7.5 TIP ON PRINTED RECEIPT: the reconciler's leg stamp ──────────────
+    // A manual-capture sale whose modal died before booking closes HERE - and the
+    // check must still show its open tip window, or the auth silently rides to
+    // the deadline sweep with staff none the wiser. The job's REAL capture_mode
+    // gates the fetch (fetchJobCapture refuses anything but 'manual'): a job row
+    // without capture_mode simply gets no chip - never a hardcoded 'manual'
+    // that would mint phantom DEMO-CAP chips on ordinary simulated sales.
+    // Best-effort by design: a missed stamp is healed by the server's own leg
+    // updates (webhook/tip_capture write the flag by psp match).
+    try {
+      if (get().tipOnReceipt?.enabled && d.source === 'pos_send_to_terminal' && !priorLegs.length) {
+        const cap = await fetchJobCapture({
+          id: job.id,
+          capture_mode: job.capture_mode,
+          simulated: job.simulated === true,
+          charge_minor: job.charge_minor,
+        });
+        if (cap) record.paymentIntents = attachCaptureToIntents(record.paymentIntents, cap);
+      }
+    } catch (e) { console.warn('[closeApprovedTerminalJob] capture stamp skipped:', e?.message || e); }
 
     // ── ELECT THE SINGLE CLOSER — the closed_checks PK does the arbitration ────
     const { ok, created } = await upsertClosedCheck(record);
@@ -5466,7 +5526,7 @@ export const useStore = create((set, get) => ({
       giftCard: giftRecordFrom(paymentInfo),                                         // v5.5.217 / v5.5.902
       stripePaymentIntentId: paymentInfo.stripePaymentIntentId || paymentInfo.paymentIntentId || null,              // v5.5.301
       processor: paymentInfo.processor || 'stripe',                                  // refund routes by this
-      paymentIntents: attachCardToIntents(derivePaymentIntents(paymentInfo), paymentInfo.cardReceipt),  // v5.5.323 legs + v5.5.719 card block
+      paymentIntents: attachCaptureToIntents(attachCardToIntents(derivePaymentIntents(paymentInfo), paymentInfo.cardReceipt), paymentInfo.capture),  // v5.5.323 legs + v5.5.719 card block + v5.7.5 tip-on-receipt (counter sales open windows too)
       cardReceipt: paymentInfo.cardReceipt || null,                                  // v5.5.719: card-scheme receipt block
       loyaltyRedemption: paymentInfo.loyaltyRedemption || null,                      // v5.5.315
       drawerId: get().myDrawer?.()?.id || null,                                   // v4.6.37
@@ -5552,6 +5612,80 @@ export const useStore = create((set, get) => ({
   // or not the processor plays ball; what changed is that a failed reversal is now
   // recorded AS failed, surfaced, and left retryable (`retryRefundReversal`)
   // instead of being swallowed by a fire-and-forget console warning.
+  // ── v5.7.5 TIP ON PRINTED RECEIPT - apply the written tip (or close with none) ──
+  // Calls adyen-modify action 'tip_capture' (same fetch discipline as
+  // cardReversal.js: plain fetch, read the body, and NEVER trust HTTP 200 alone -
+  // adyen-modify hands definitive Adyen refusals back as 200 { ok:false }).
+  //
+  // THE SERVER OWNS THE MONEY. It updates closed_checks (tip, total, leg) inside
+  // the action; this store action only MIRRORS the confirmed outcome onto the
+  // in-memory copy so History repaints without a reload. It must never bump
+  // figures the server did not confirm.
+  //
+  // tipMinor 0 = "close with no tip" (plain capture at the auth amount).
+  tipCapture: async (checkId, { reference, tipMinor }) => {
+    if (isTrainingMode()) return { ok: false, error: 'Training mode. No live payment to adjust.' };
+    if (!reference) return { ok: false, error: 'This payment has no capture reference on record.' };
+    const tm = Math.round(Number(tipMinor));
+    if (!Number.isFinite(tm) || tm < 0) return { ok: false, error: 'Enter a tip of zero or more.' };
+    const locationId = getActiveLocationSync();
+    if (!locationId || locationId === 'loc-demo') return { ok: false, error: 'No location resolved.' };
+    const token = await ensureAuthToken().catch(() => null);
+    if (!token) return { ok: false, error: 'Not authenticated.' };
+    let res, j = {};
+    try {
+      res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/adyen-modify`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action: 'tip_capture', location_id: locationId, reference, tip_minor: tm }),
+      });
+      j = await res.json().catch(() => ({}));
+    } catch (e) {
+      // A network failure is NOT proof nothing happened - say that, don't guess.
+      return { ok: false, error: `Could not reach the payment service: ${e?.message || e}. Check History again before retrying.` };
+    }
+    if (!res.ok || j.ok === false) {
+      return {
+        ok: false,
+        status: j.status || null,
+        error: j.error || `tip capture failed (HTTP ${res.status})`,
+        detail: j.detail || null,
+      };
+    }
+    // Confirmed - mirror the server's own closed-check update in memory. The
+    // server already wrote tip/total/leg to closed_checks; re-applying the same
+    // delta to the LOCAL copy is a mirror, not a second write.
+    const legStatus = j.status || 'capturing';
+    set(s => ({
+      closedChecks: s.closedChecks.map(c => {
+        if (c.id !== checkId) return c;
+        const legs = Array.isArray(c.paymentIntents) ? c.paymentIntents : [];
+        let matched = false;
+        const nextLegs = legs.map(leg => {
+          if (matched || !leg) return leg;
+          const hit = (leg.captureId && (leg.captureId === j.capture_id || leg.captureId === reference))
+            || (leg.capturePsp && (leg.capturePsp === j.psp_reference || leg.capturePsp === reference))
+            || (legs.length === 1 && leg.capture);
+          if (!hit) return leg;
+          matched = true;
+          const out = { ...leg, capture: legStatus, captureId: leg.captureId || j.capture_id || undefined };
+          if (tm > 0 && Number.isFinite(Number(leg.amountMinor))) out.amountMinor = Number(leg.amountMinor) + tm;
+          delete out.tipError;
+          return out;
+        });
+        return {
+          ...c,
+          ...(tm > 0 ? {
+            tip: +(((Number(c.tip) || 0) + tm / 100)).toFixed(2),
+            total: +(((Number(c.total) || 0) + tm / 100)).toFixed(2),
+          } : {}),
+          ...(matched ? { paymentIntents: nextLegs } : {}),
+        };
+      }),
+    }));
+    return { ok: true, status: legStatus, mode: j.mode || null, capture_id: j.capture_id || null, final_minor: j.final_minor ?? null, note: j.note || null };
+  },
+
   refundCheck: async (checkId, opts = {}) => {
     const {
       items: refundItems = [], isFullRefund, manager, reason, tenderMethod,

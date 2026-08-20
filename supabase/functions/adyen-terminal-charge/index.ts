@@ -43,6 +43,7 @@ import {
   buildPaymentRequest, buildTransactionStatusRequest, buildAbortRequest,
   parsePaymentResponse, newServiceId, ADYEN_MERCHANT_ACCOUNT,
 } from '../_shared/adyen.ts';
+import { insertCaptureRow } from '../_shared/tip_capture.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -75,6 +76,20 @@ function settledBody(job: any) {
   };
 }
 
+// v5.7.5 TIP ON RECEIPT: attach the job's capture-window row to a settled
+// response so the till can stamp captureId + capture:'pending' onto the
+// closed check's payment leg without another round trip. Advisory only.
+async function withCapture(bodyObj: Record<string, unknown>, job: { id: string; capture_mode?: string | null }) {
+  if (job?.capture_mode !== 'manual') return bodyObj;
+  try {
+    const { data } = await opsAdmin.from('terminal_captures')
+      .select('id, psp_reference, status, deadline_at, auth_minor, tip_minor, final_minor, simulated')
+      .eq('job_id', job.id).maybeSingle();
+    if (data) return { ...bodyObj, capture: data };
+  } catch { /* advisory */ }
+  return bodyObj;
+}
+
 // nexo card block → the snake_case receipt shape terminal_job_settle_from_processor
 // stores and the POS/receipts already render (same keys the Ryft path writes).
 function settleCard(p: ReturnType<typeof parsePaymentResponse>) {
@@ -98,7 +113,7 @@ function settleCard(p: ReturnType<typeof parsePaymentResponse>) {
 // fallback would let a forged Success blob with no amounts vacuously pass the
 // RPC's mismatch check.
 const TRUSTED_AMOUNT_SOURCES = new Set(['charge_sync', 'status_recovery', 'event_notification']);
-async function settleFromResponse(jobId: string, p: ReturnType<typeof parsePaymentResponse>, source: string, chargeMinor: number) {
+async function settleFromResponse(jobId: string, p: ReturnType<typeof parsePaymentResponse>, source: string, chargeMinor: number, merchantAccount?: string | null) {
   const success = p.result === 'Success';
   if (p.result === 'Partial') {
     console.log(`adyen-terminal-charge: PARTIAL approval on job ${jobId} (${p.authorizedMinor}/${chargeMinor}) — settling declined until partial UX exists`);
@@ -141,6 +156,31 @@ async function settleFromResponse(jobId: string, p: ReturnType<typeof parsePayme
     p_session_amount_minor: effectiveAuthorized ?? (success ? chargeMinor : null),
   });
   if (error) throw new Error(`settle rpc: ${error.message}`);
+  // v5.7.5 TIP ON RECEIPT: an approved manual-capture auth opens its capture
+  // window here. insertCaptureRow is idempotent on psp_reference, so replays
+  // and the webhook AUTHORISATION backstop can never mint a second row. The
+  // insert is best-effort (never blocks the settle); a lost row is re-ensured
+  // by adyen-webhook when the AUTHORISATION notification lands.
+  try {
+    if (success && p.pspReference) {
+      const { data: jrow } = await opsAdmin.from('terminal_jobs')
+        .select('capture_mode, closed_check_id, location_id, currency, simulated, charge_minor')
+        .eq('id', jobId).maybeSingle();
+      if (jrow?.capture_mode === 'manual') {
+        await insertCaptureRow(opsAdmin, {
+          jobId,
+          closedCheckId: jrow.closed_check_id ?? null,
+          locationId: jrow.location_id,
+          psp: p.pspReference,
+          merchantAccount: merchantAccount ?? null,
+          currency: jrow.currency ?? null,
+          authMinor: effectiveAuthorized
+            ?? (jrow.charge_minor != null ? Number(jrow.charge_minor) : chargeMinor),
+          simulated: jrow.simulated === true,
+        });
+      }
+    }
+  } catch (e) { console.error('adyen-terminal-charge: capture row insert', (e as Error).message); }
   // Split-leg toast (kept in lockstep with adyen-terminal-events): a PARTIAL
   // pay-at-table leg never books a check, so this activity_events row is the
   // only thing the floor sees. Gated on the RPC's non-idempotent approved
@@ -633,10 +673,18 @@ Deno.serve(async (req) => {
       amountMinor: chargeMinor,
       currency: String(job.currency || 'GBP').toUpperCase(),
       storeId: maa.store_id ?? undefined,
+      // v5.7.5 TIP ON RECEIPT: a manual-capture job authorises without
+      // capturing (PreAuth + manualCapture) and FORCES the on-reader tip
+      // prompt off - the tip arrives in writing on the merchant slip and is
+      // captured later (tip_capture / webhook kick / capture sweep).
+      preAuth: job.capture_mode === 'manual' ? true : undefined,
+      manualCapture: job.capture_mode === 'manual',
       // Tip prompt ON the reader — from the job's FROZEN tip config (the same
       // config PaxPay renders on-device). The gratuity presets shown come from
       // the store's terminalSettings, synced from Back Office (sync_gratuities).
-      askGratuity: (job.tip_config as { enabled?: boolean } | null)?.enabled === true,
+      askGratuity: job.capture_mode === 'manual'
+        ? false
+        : (job.tip_config as { enabled?: boolean } | null)?.enabled === true,
     });
 
     // LOCAL TRANSPORT: hand the message to the on-terminal app / Tap to Pay SDK.
@@ -687,10 +735,10 @@ Deno.serve(async (req) => {
     if (parsed.result === 'Unknown') {
       return json({ ok: false, error: 'terminal_unreachable — result pending recovery', code: 'UNKNOWN_OUTCOME' }, 502);
     }
-    try { await settleFromResponse(job.id, parsed, 'charge_sync', chargeMinor); }
+    try { await settleFromResponse(job.id, parsed, 'charge_sync', chargeMinor, maa.merchant_account); }
     catch (e) { return json({ ok: false, error: (e as Error).message }, 500); }
     const { data: settled } = await opsAdmin.from('terminal_jobs').select('*').eq('id', job.id).maybeSingle();
-    return json(settledBody(settled ?? job));
+    return json(await withCapture(settledBody(settled ?? job), settled ?? job));
   }
 
   // ── report_local (device returns the terminal's PaymentResponse) ───────────
@@ -703,7 +751,7 @@ Deno.serve(async (req) => {
   // 'device_report'). We ALSO try a cloud TransactionStatusRequest first: when
   // Adyen itself can answer, its answer wins over the device's claim.
   if (action === 'report_local') {
-    if (SETTLED.includes(job.status)) return json(settledBody(job));
+    if (SETTLED.includes(job.status)) return json(await withCapture(settledBody(job), job));
     if (job.status !== 'charging' && job.status !== 'unknown') {
       return json({ ok: false, error: `job is ${job.status} — nothing in flight` }, 409);
     }
@@ -731,22 +779,22 @@ Deno.serve(async (req) => {
         if (ts?.Response?.Result === 'Success') {
           const inner = parsePaymentResponse(ts?.RepeatedMessageResponse?.RepeatedResponseMessageBody ?? {});
           if (inner.result !== 'Unknown') {
-            await settleFromResponse(job.id, inner, 'status_recovery', Number(job.charge_minor));
+            await settleFromResponse(job.id, inner, 'status_recovery', Number(job.charge_minor), rMaa?.merchant_account);
             const { data: settled } = await opsAdmin.from('terminal_jobs').select('*').eq('id', job.id).maybeSingle();
-            return json(settledBody(settled ?? job));
+            return json(await withCapture(settledBody(settled ?? job), settled ?? job));
           }
         }
       } catch { /* cloud unreachable — fall through to the gated device report */ }
     }
-    try { await settleFromResponse(job.id, parsed, 'device_report', Number(job.charge_minor)); }
+    try { await settleFromResponse(job.id, parsed, 'device_report', Number(job.charge_minor), rMaa?.merchant_account); }
     catch (e) { return json({ ok: false, error: (e as Error).message }, 409); }
     const { data: settled } = await opsAdmin.from('terminal_jobs').select('*').eq('id', job.id).maybeSingle();
-    return json(settledBody(settled ?? job));
+    return json(await withCapture(settledBody(settled ?? job), settled ?? job));
   }
 
   // ── result (recovery via TransactionStatusRequest) ─────────────────────────
   if (action === 'result') {
-    if (SETTLED.includes(job.status)) return json(settledBody(job));
+    if (SETTLED.includes(job.status)) return json(await withCapture(settledBody(job), job));
     // v968: also recover jobs the sweeper flipped charging→'unknown' — that was
     // a dead end (review finding: no automated recovery path existed for them).
     if ((job.status !== 'charging' && job.status !== 'unknown') || !job.nexo_service_id) {
@@ -776,10 +824,10 @@ Deno.serve(async (req) => {
     const inner = ts?.RepeatedMessageResponse?.RepeatedResponseMessageBody ?? {};
     const parsed = parsePaymentResponse(inner);
     if (parsed.result === 'Unknown') return json({ ok: true, state: 'processing', status: job.status });
-    try { await settleFromResponse(job.id, parsed, 'status_recovery', Number(job.charge_minor)); }
+    try { await settleFromResponse(job.id, parsed, 'status_recovery', Number(job.charge_minor), maa?.merchant_account); }
     catch (e) { return json({ ok: false, error: (e as Error).message }, 500); }
     const { data: settled } = await opsAdmin.from('terminal_jobs').select('*').eq('id', job.id).maybeSingle();
-    return json(settledBody(settled ?? job));
+    return json(await withCapture(settledBody(settled ?? job), settled ?? job));
   }
 
   // ── abort (best-effort cancel of an in-flight tender) ──────────────────────

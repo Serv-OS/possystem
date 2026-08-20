@@ -42,6 +42,7 @@
 // Spec: docs/PAXPAY_TRANSPORT_SPEC.md
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { readTipOnReceipt } from '../_shared/tip_capture.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -79,6 +80,7 @@ interface Body {
   closed_check_id?: string;
   check_draft?: Record<string, unknown>;
   training?: boolean;
+  surface?: string;             // v5.7.5: 'pos' = main POS checkout; gates tip-on-receipt manual capture
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -355,6 +357,34 @@ Deno.serve(async (req) => {
     }));
   }
 
+  // ── 3d. Tip on printed receipt (v5.7.5, US signature flow) ────────────────
+  // capture_mode='manual' makes adyen-terminal-charge authorise WITHOUT
+  // capturing (PreAuth + manualCapture, on-reader tip prompt forced off); the
+  // written tip is captured later via adyen-modify tip_capture, and the
+  // adyen-capture-sweep cron captures the original amount when the venue's
+  // window closes. Stamped ONLY when ALL of:
+  //   - the CLIENT says this is a main-POS checkout (surface:'pos' - MPOS,
+  //     kiosk, QR and pay-at-table never send it),
+  //   - the VENUE turned the setting on (locations.pos_settings.tip_on_receipt,
+  //     read server-side - the client cannot assert it),
+  //   - the job routes to Adyen (term.adyen_terminal_id) OR the demo reader
+  //     (simulated jobs mirror the whole flow; their capture rows are inserted
+  //     by terminal_report_result and short-circuit before any processor).
+  // Bar-tab pre-auth holds never pass here (holds have no terminal_jobs row),
+  // so the "sale only" rule holds by construction.
+  let captureMode: string | null = null;
+  if (body.surface === 'pos' && (term.adyen_terminal_id || isDemoTerminal)) {
+    const { data: loc } = await opsAdmin.from('locations')
+      .select('pos_settings').eq('id', locationId).maybeSingle();
+    const tor = readTipOnReceipt(loc?.pos_settings);
+    if (tor.enabled) {
+      captureMode = 'manual';
+      console.log('[terminal-job-create] tip-on-receipt venue - capture_mode=manual', JSON.stringify({
+        job_id, terminal: target_terminal_id, capture_hours: tor.capture_hours, simulated: isDemoTerminal,
+      }));
+    }
+  }
+
   // ── 4. Insert. On 23505 return the EXISTING live job for this check ────────
   const row = {
     id: job_id,
@@ -370,6 +400,10 @@ Deno.serve(async (req) => {
     closed_check_id,
     check_draft,
     simulated: isDemoTerminal,
+    // v5.7.5: 'manual' = tip-on-receipt hold, absent = capture at auth. Only
+    // included when set, so the insert keeps working before migration
+    // 20260823_tip_on_receipt.sql is hand-applied (edge fns deploy separately).
+    ...(captureMode ? { capture_mode: captureMode } : {}),
     // The terminal row is the PROCESSOR authority too (v5.6.46): a terminal
     // linked to an Adyen POIID routes its jobs to adyen-terminal-charge; the
     // PAX/Ryft fleet keeps 'ryft'. No client input trusted.
@@ -391,8 +425,17 @@ Deno.serve(async (req) => {
     dispatched_at: new Date().toISOString(),
   };
 
-  const { data: inserted, error: insErr } = await opsAdmin
+  let { data: inserted, error: insErr } = await opsAdmin
     .from('terminal_jobs').insert(row).select().maybeSingle();
+
+  // Migration 20260823_tip_on_receipt.sql not applied yet: never lose the sale
+  // over the new column - retry without it (the job just captures at auth).
+  if (insErr && captureMode && (insErr.code === '42703' || /capture_mode.*does not exist|does not exist.*capture_mode/i.test(insErr.message ?? ''))) {
+    console.error('[terminal-job-create] capture_mode column missing - retrying without tip-on-receipt hold');
+    const { capture_mode: _cm, ...rowNoCapture } = row as Record<string, unknown>;
+    ({ data: inserted, error: insErr } = await opsAdmin
+      .from('terminal_jobs').insert(rowNoCapture).select().maybeSingle());
+  }
 
   if (!insErr && inserted) return json({ ok: true, job: inserted, existing: false });
 

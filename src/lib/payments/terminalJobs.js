@@ -392,6 +392,14 @@ export async function dispatchTerminalJob(p) {
       suppress_tip: !!p.suppressTip,
       closed_check_id: useClosedCheckId,
       check_draft: p.checkDraft ?? {},
+      // v5.7.5 - TIP ON PRINTED RECEIPT. surface:'pos' means "this create came
+      // from the MAIN POS checkout". terminal-job-create only stamps
+      // capture_mode='manual' (authorise now, capture after the written tip)
+      // when this flag AND the venue setting AND an Adyen/demo terminal all
+      // line up. MPOS, kiosk, QR, bar holds and split legs never send it, so
+      // they can never open a tip window by accident. Only ever the literal
+      // 'pos' - no other value travels.
+      ...(p.surface === 'pos' ? { surface: 'pos' } : {}),
     });
 
     rememberJob({ checkKey: p.checkKey, jobId: useJobId, closedCheckId: useClosedCheckId, locationId, at: Date.now() });
@@ -441,6 +449,42 @@ export async function dispatchTerminalJob(p) {
     }
 
     return { job: j.job, existing: !!j.existing, kickError };
+  }
+}
+
+/**
+ * v5.7.5 - the capture-window row for a manual-capture (tip-on-receipt) job.
+ *
+ * Takes the job object from terminal-job-create's response (that row carries
+ * capture_mode + simulated; terminal-job-status rows do NOT). Returns the
+ * server's capture object ({ id, psp_reference, status, deadline_at,
+ * auth_minor, ... }) or null. NEVER THROWS - the sale is already settled by
+ * the time this is called, and a missed stamp only costs the History chip
+ * until the server's own leg updates catch up.
+ *
+ * Simulated (demo reader) jobs are refused by adyen-terminal-charge outright
+ * (code SIMULATED), so their capture reference is DERIVED instead: the server
+ * mints the demo row's psp as 'DEMO-CAP-<job id>' inside terminal_report_result,
+ * deterministically, which is what makes this synthesis safe.
+ */
+export async function fetchJobCapture(job) {
+  if (!job?.id || job.capture_mode !== 'manual') return null;
+  if (job.simulated === true) {
+    return {
+      id: null,
+      psp_reference: `DEMO-CAP-${job.id}`,
+      status: 'pending',
+      deadline_at: null,
+      auth_minor: job.charge_minor != null ? Number(job.charge_minor) : null,
+      simulated: true,
+    };
+  }
+  try {
+    const j = await callFn('adyen-terminal-charge', { action: 'result', job_id: job.id });
+    return j?.capture ?? null;
+  } catch (e) {
+    console.warn('[terminalJobs] capture-window fetch failed:', e?.message || e);
+    return null;
   }
 }
 

@@ -32,7 +32,7 @@ const OPERATIONAL_KEYS = [
 // Table status/session sync (operational part only — layout comes via CONFIG_PUSH)
 // We sync the whole tables array but the POS only applies non-layout fields from broadcasts
 // Layout (x,y,w,h,label,section,shape) only changes via CONFIG_PUSH
-const SHARED_KEYS = [...OPERATIONAL_KEYS, 'tables', 'showItemImages', 'takeawayCustomerDetails'];
+const SHARED_KEYS = [...OPERATIONAL_KEYS, 'tables', 'showItemImages', 'takeawayCustomerDetails', 'tipOnReceipt'];
 
 // ── v5.6.83: what gets WRITTEN TO DISK, as opposed to what gets broadcast ────
 // Every key above is still broadcast to the other tabs on this machine, exactly as
@@ -669,6 +669,12 @@ export default function SyncBridge({ onSyncPulse }) {
             }
             // v5.5.799: takeaway customer-details level (setter sanitises to 'full')
             useStore.getState().setTakeawayCustomerDetails(locData?.pos_settings?.takeaway_customer_details);
+            // v5.7.5: tip on printed receipt (US signature flow) - venue-wide,
+            // drives the merchant-slip print + History countdown. The setter
+            // sanitises (fail closed to disabled, hours clamped 1..72). The
+            // server re-reads the setting on every job create, so this cached
+            // value can never open a capture window on its own.
+            useStore.getState().setTipOnReceipt(locData?.pos_settings?.tip_on_receipt);
           }
         } catch (e) { console.warn('[SyncBridge] settings load failed:', e.message); }
       })();

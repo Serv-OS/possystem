@@ -277,6 +277,70 @@ export async function buildCustomerReceipt({ location, check, items, totals }) {
   return b.toBytes();
 }
 
+// ── v5.7.5 Merchant tip slip (US signature flow) ─────────────────────────────
+// Printed alongside the customer receipt on a tip-on-receipt venue: the card
+// authorised WITHOUT capturing, the guest writes a tip and signs, staff type it
+// into History → Add tip. Same branding as the customer receipt (logo, business
+// name, address), then the card-scheme block, then the write-in lines.
+// No items - this is the signature voucher, not the bill.
+export async function buildMerchantTipSlip({ location, check, totals }) {
+  const b = new EscPosBuilder(42);
+  const now = new Date();
+  const timeStr = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  const dateStr = now.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+  const branding = location?.receipt_branding || null;
+  const header = branding?.header || null;
+
+  b.init();
+
+  // Header logo - identical pattern to the customer receipt; never blocks.
+  if (header?.logo_url) {
+    try {
+      const { imageUrlToEscPosRaster } = await import('./receiptRaster.js');
+      const rasterBytes = await imageUrlToEscPosRaster(header.logo_url, header.logo_width_dots || 384);
+      b.center().raw(rasterBytes).lf();
+    } catch (e) {
+      console.warn('[Print] Tip slip logo rasterise failed, skipping:', e.message);
+    }
+  }
+
+  const businessName = header?.business_name || location?.name || 'Restaurant';
+  b.center().bold(true).doubleBoth().text(businessName).lf().normal().center();
+  const addressLines = header?.address_lines?.length
+    ? header.address_lines.filter(Boolean)
+    : (location?.address ? String(location.address).split('\n') : []);
+  addressLines.forEach(line => b.line(line));
+  if (header?.phone) b.line(header.phone);
+
+  b.lf().divider().left();
+  b.bold(true).doubleHeight().center().line(`ORDER # ${shortOrderRef(check?.ref) || ''}`).normal().left();
+  b.twoCol('Date', `${dateStr} ${timeStr}`);
+  if (check?.server) b.twoCol(`Server: ${check.server}`, '');
+  if (check?.tableLabel || check?.orderType) b.twoCol(`${check?.tableLabel || check?.orderType}`, '');
+
+  // Card-scheme block - masked PAN, scheme, auth code, entry/CVM, AID.
+  const cardLines = cardReceiptLines(check);
+  if (cardLines.length) {
+    b.divider();
+    for (const [label, value] of cardLines) b.twoCol(label, String(value));
+  }
+
+  // The money: the authorised amount, then the guest's write-in lines.
+  const grand = Number(totals?.grand ?? check?.total ?? 0) || 0;
+  b.divider();
+  b.bold(true).doubleHeight().twoCol('AMOUNT', money(grand)).normal();
+  b.lf();
+  b.bold(true).line('TIP:   ____________________').lf();
+  b.line('TOTAL: ____________________').bold(false).lf();
+  b.lf();
+  b.line('X ________________________________');
+  b.fontB().line('  SIGNATURE').fontA();
+  b.lf().center().bold(true).line('* MERCHANT COPY *').bold(false);
+  b.fontB().center().line('Guest keeps the printed receipt').fontA();
+  b.lf(4).cut();
+  return b.toBytes();
+}
+
 export function buildKitchenTicket({ table, server, covers, course, centreName, items, sentAt, delivery, itemLabel }) {
   const b = new EscPosBuilder(42);
   const time = new Date(sentAt||Date.now()).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
@@ -1167,6 +1231,48 @@ class PrintService {
         : 'No receipt printer configured for this device';
     console.warn(`[Print] Receipt not printed — ${error}.`);
     return { ok: false, error, reason: 'no-printer' };
+  }
+
+  // v5.7.5 - merchant tip slip (US signature flow). Same routing + branding as
+  // the customer receipt, but its OWN duplicate-guard keyspace: printReceipt's
+  // guard keys on location|ref|pennies|printer, and this slip prints seconds
+  // after that receipt for the same ref and total - sharing the key would eat
+  // exactly one of the two every time. Prefixing the ref keeps one guard store,
+  // two keyspaces, and still stops a cross-tab double slip.
+  async printMerchantTipSlip({ location, check, totals }, printerId = null, opts = {}) {
+    let locationWithBranding = location;
+    let effectiveLocationId = location?.id || null;
+    if (!effectiveLocationId) {
+      try { effectiveLocationId = await getLocationId(); } catch { /* branding optional */ }
+    }
+    if (effectiveLocationId || location?.receipt_branding) {
+      try {
+        const branding = location?.receipt_branding || await loadLocationBranding(effectiveLocationId);
+        if (branding) locationWithBranding = mergeBrandingIntoLocation(location || { id: effectiveLocationId }, branding);
+      } catch (e) {
+        console.warn('[Print] Tip slip branding fetch failed, using plain slip:', e?.message || e);
+      }
+    }
+    const { printer, src } = this._receiptTarget(printerId, opts);
+    if (!printer?.address) {
+      return { ok: false, error: 'No receipt printer configured for this device', reason: 'no-printer' };
+    }
+    const guardKey = check?.ref
+      ? receiptGuardKey(effectiveLocationId, `tipslip:${check.ref}`, totals?.grand, printer.id)
+      : null;
+    if (guardKey) {
+      if (receiptPrintedRecently(guardKey)) {
+        console.info(`[Print] Tip slip for ${check.ref} was printed on this machine seconds ago - skipping the duplicate.`);
+        return { ok: true, transport: 'duplicate-suppressed', printer: printer.name };
+      }
+      markReceiptPrinted(guardKey);
+    }
+    const bytes = await buildMerchantTipSlip({ location: locationWithBranding, check, totals });
+    return this._submitJob(printer, 'receipt', bytes, {
+      idempotencyKey: opts.idempotencyKey || (check?.ref ? `tipslip-${check.ref}-${Date.now()}` : undefined),
+      metadata: { ref: check?.ref, total: totals?.grand, tableLabel: check?.tableLabel, type: 'merchant-tip-slip', routedBy: src },
+      label: `Tip slip ${check?.ref || ''} - ${money(totals?.grand || 0)}`.trim(),
+    });
   }
 
   async printKitchenTicket(ticketData, printerId = null, opts = {}) {

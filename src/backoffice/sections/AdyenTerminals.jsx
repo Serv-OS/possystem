@@ -69,6 +69,12 @@ export default function AdyenTerminals() {
   const [tipOn, setTipOn] = useState(true);
   const [tipPcts, setTipPcts] = useState('5, 10, 15');
   const [tipCustom, setTipCustom] = useState(true);
+  // v5.7.5 - venue-level tip-on-printed-receipt (US signature flow)
+  const [torLoaded, setTorLoaded] = useState(false);
+  const [torEnabled, setTorEnabled] = useState(false);
+  const [torHours, setTorHours] = useState(24);
+  const [torBusy, setTorBusy] = useState(false);
+  const [torMsg, setTorMsg] = useState('');
   const [modeTable, setModeTable] = useState(true);
   const [modePos, setModePos] = useState(true);
   const [standalone, setStandalone] = useState(false);
@@ -87,6 +93,14 @@ export default function AdyenTerminals() {
       const { data: devs } = await supabase.from('devices')
         .select('id, name, type').eq('location_id', locId).in('type', ['pos', 'kiosk']);
       setPosDevices(devs || []);
+      // v5.7.5 - venue tip-on-receipt setting off ops locations.pos_settings
+      const { data: locRow } = await supabase.from('locations')
+        .select('pos_settings').eq('id', locId).maybeSingle();
+      const tor = locRow?.pos_settings?.tip_on_receipt;
+      setTorEnabled(tor?.enabled === true);
+      const h = Number(tor?.capture_hours);
+      setTorHours(Number.isFinite(h) ? Math.max(1, Math.min(72, h)) : 24);
+      setTorLoaded(true);
     } catch (e) {
       // Panel self-hides on hard failures (venue not provisioned etc.)
       console.warn('[AdyenTerminals]', e?.message || e);
@@ -176,6 +190,31 @@ export default function AdyenTerminals() {
   };
 
   const tillName = (id) => posDevices.find((d) => d.id === id)?.name || (id ? 'unknown till' : 'any till (unassigned)');
+
+  // v5.7.5 - save the venue tip-on-receipt setting. READ-MODIFY-MERGE onto
+  // locations.pos_settings (the LocationSettings.jsx pattern): a failed read
+  // ABORTS the save, because merging over {} would wipe every other key
+  // (takeaway_customer_details, default_receipt_printer_id, ...).
+  const saveTipOnReceipt = async () => {
+    setTorBusy(true); setTorMsg(''); setErr('');
+    try {
+      const locId = getActiveLocationSync();
+      if (!locId) throw new Error('No location');
+      const hours = Math.max(1, Math.min(72, Math.round(Number(torHours) || 24)));
+      const { data, error: readErr } = await supabase.from('locations')
+        .select('pos_settings').eq('id', locId).maybeSingle();
+      if (readErr) throw new Error(`could not read the current settings: ${readErr.message}`);
+      const { error: writeErr } = await supabase.from('locations').update({
+        pos_settings: { ...(data?.pos_settings || {}), tip_on_receipt: { enabled: torEnabled, capture_hours: hours } },
+      }).eq('id', locId);
+      if (writeErr) throw new Error(writeErr.message);
+      setTorHours(hours);
+      setTorMsg(torEnabled
+        ? `Saved. Tills pick it up next boot or Push to POS. Unadjusted cards capture automatically at the original amount after ${hours} hour${hours === 1 ? '' : 's'}.`
+        : 'Saved. Tip on printed receipt is off. Cards capture at payment time as normal.');
+    } catch (e) { setErr(e?.message || String(e)); }
+    setTorBusy(false);
+  };
 
   // Type the serial off the box → find it anywhere in Adyen (company inventory
   // included) → register straight to this venue. The whole onboarding motion.
@@ -422,6 +461,48 @@ export default function AdyenTerminals() {
 
           <button style={{ ...S.btn, marginTop: 14 }} disabled={!!busy} onClick={() => { setErr(''); setNotice(''); load(); }}>Refresh</button>
         </>
+      )}
+
+      {/* ── v5.7.5 venue-level: tip on printed receipt (United States) ── */}
+      {torLoaded && (
+        <div style={{ marginTop: 18, padding: 14, borderRadius: 10, background: 'var(--bg2)', border: '1px solid var(--bdr)' }}>
+          <div style={{ fontSize: 13, fontWeight: 700 }}>Tip on printed receipt (United States)</div>
+          <div style={{ ...S.desc, marginTop: 4 }}>
+            The American signature flow. The card machine approves the payment but holds the
+            charge, the till prints a merchant copy with a tip line, the guest writes a tip and
+            signs, and staff type the tip in from History. While this is on, the tip prompt on
+            the reader itself is switched off for payments sent from the POS, so guests are never
+            asked twice. Applies to the whole venue, main POS payments only.
+          </div>
+          <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap', marginTop: 12 }}>
+            <label style={{ fontSize: 12.5, display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
+              <input type="checkbox" checked={torEnabled} onChange={(e) => setTorEnabled(e.target.checked)} />
+              <b>Print a tip line on the merchant copy</b>
+            </label>
+            {torEnabled && (
+              <label style={{ fontSize: 12.5, display: 'flex', gap: 6, alignItems: 'center' }}>
+                <span style={S.label}>Capture window</span>
+                <input type="number" min={1} max={72} value={torHours}
+                  onChange={(e) => setTorHours(e.target.value)}
+                  style={{ ...S.input, width: 70, ...S.mono }} />
+                <span style={{ color: 'var(--t3)' }}>hours (1 to 72)</span>
+              </label>
+            )}
+          </div>
+          {torEnabled && (
+            <div style={{ ...S.desc, marginTop: 8 }}>
+              A card nobody adjusts captures automatically at the original amount when the window
+              closes, so a forgotten slip can only ever lose the tip, never the sale. Card schemes
+              give roughly 5 to 7 days before a held authorisation dies, so keep the window short. 24 hours covers a normal close-out.
+            </div>
+          )}
+          <div style={{ marginTop: 10 }}>
+            <button style={{ ...S.btn, ...S.btnPrim }} disabled={torBusy} onClick={saveTipOnReceipt}>
+              {torBusy ? 'Saving…' : 'Save tip on receipt'}
+            </button>
+          </div>
+          {torMsg && <div style={S.ok}>{torMsg}</div>}
+        </div>
       )}
 
       {err && <div style={S.err}>{err}</div>}

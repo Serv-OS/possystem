@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useStore } from '../store';
 import { printService } from '../lib/printer';
 import { money } from '../lib/currency';
@@ -566,6 +566,185 @@ const CARD_STATUS_META={
   none:     {label:'No card reversal — handle manually',color:'var(--t3)',icon:'·'},
 };
 
+// ── v5.7.5 Tip on printed receipt (US signature flow) ────────────────────────
+// A manual-capture card sale carries an OPEN TIP WINDOW on its payment leg
+// (leg.capture): the card authorised but nothing captured yet. Staff read the
+// signed merchant slip and either Add tip or Close with no tip; unhandled cards
+// capture automatically at the ORIGINAL amount when the window closes, so the
+// sale is never lost - only the tip is.
+const CAPTURE_META = {
+  pending:   { label: 'Tip pending',   color: 'var(--acc)', bg: 'var(--acc-d)', border: 'var(--acc-b)' },
+  adjusting: { label: 'Adjusting',     color: 'var(--acc)', bg: 'var(--acc-d)', border: 'var(--acc-b)' },
+  capturing: { label: 'Capturing',     color: 'var(--acc)', bg: 'var(--acc-d)', border: 'var(--acc-b)' },
+  captured:  { label: 'Tip captured',  color: 'var(--grn)', bg: 'var(--grn-d)', border: 'var(--grn-b)' },
+  failed:    { label: 'Tip failed',    color: 'var(--red)', bg: 'var(--red-d)', border: 'var(--red-b)' },
+  expired:   { label: 'Window closed', color: 'var(--t3)',  bg: 'var(--bg3)',   border: 'var(--bdr)' },
+  cancelled: { label: 'Cancelled',     color: 'var(--t3)',  bg: 'var(--bg3)',   border: 'var(--bdr)' },
+};
+const TIP_WINDOW_OPEN_MSG = 'Tip window open for this card. Add the tip or close it with no tip first.';
+
+function captureLegOf(check){
+  const legs = Array.isArray(check?.paymentIntents) ? check.paymentIntents : (check?.payment_intents || null);
+  if (!Array.isArray(legs)) return null;
+  return legs.find(l => l && l.capture && CAPTURE_META[l.capture]) || null;
+}
+// 'pending' and 'failed' both accept a new attempt server-side; adjusting and
+// capturing are in flight (the webhook owns them) and refuse a second tap.
+const captureIsOpen  = (leg) => !!leg && ['pending', 'adjusting', 'capturing'].includes(leg.capture);
+const captureCanAct  = (leg) => !!leg && ['pending', 'failed'].includes(leg.capture);
+const captureRef     = (leg) => leg?.captureId || leg?.capturePsp || leg?.id || null;
+
+function fmtRemaining(ms){
+  if (!Number.isFinite(ms)) return null;
+  if (ms <= 0) return 'any moment now';
+  const h = Math.floor(ms / 3600000), m = Math.floor((ms % 3600000) / 60000);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+
+// The amount pad: whole tip in minor units, digits shift in from the right
+// (type 4 5 0 for 4.50). Live new-total preview + the over-20-percent notice.
+function TipEntryModal({ check, leg, onDone, onCancel }){
+  const { tipCapture, showToast } = useStore();
+  const [minor, setMinor] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const authMinor = Number.isFinite(Number(leg?.captureAuthMinor)) ? Number(leg.captureAuthMinor)
+    : (Number.isFinite(Number(leg?.amountMinor)) ? Number(leg.amountMinor) : Math.round((Number(check.total) || 0) * 100));
+  const overTwenty = minor > 0 && minor * 5 > authMinor;   // the server's exact boundary rule
+  const press = (k) => {
+    setErr('');
+    if (k === 'back') { setMinor(m => Math.floor(m / 10)); return; }
+    if (k === '00') { setMinor(m => Math.min(m * 100, 99999999)); return; }
+    setMinor(m => Math.min(m * 10 + k, 99999999));
+  };
+  const submit = async () => {
+    if (busy) return;
+    setBusy(true); setErr('');
+    const r = await tipCapture(check.id, { reference: captureRef(leg), tipMinor: minor });
+    setBusy(false);
+    if (r?.ok) {
+      showToast?.(
+        r.status === 'captured' ? `Tip of ${money(minor / 100)} recorded. Payment captured.`
+          : r.status === 'adjusting' ? `Tip of ${money(minor / 100)} sent. The bank re-authorises the new total first.`
+            : `Tip of ${money(minor / 100)} added. Capturing ${money((r.final_minor ?? (authMinor + minor)) / 100)}.`,
+        'success');
+      onDone();
+    } else {
+      setErr(r?.error || 'The tip could not be applied.');
+    }
+  };
+  const keyStyle = { height: 52, borderRadius: 10, border: '1px solid var(--bdr2)', background: 'var(--bg3)', color: 'var(--t1)', fontSize: 18, fontWeight: 700, cursor: 'pointer', fontFamily: 'DM Mono,monospace' };
+  return (
+    <div className="modal-back" style={{ zIndex: 10001 }}>
+      <div style={{ background: 'var(--bg1)', border: '1px solid var(--bdr2)', borderRadius: 18, width: '100%', maxWidth: 380, padding: '18px 20px', boxShadow: 'var(--sh3)' }}>
+        <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--t1)', marginBottom: 2 }}>Add the written tip</div>
+        <div style={{ fontSize: 11.5, color: 'var(--t3)', marginBottom: 12 }}>Type the tip exactly as the guest wrote it on the signed slip.</div>
+        <div style={{ textAlign: 'center', padding: '10px 0 6px' }}>
+          <div style={{ fontSize: 30, fontWeight: 800, color: 'var(--t1)', fontFamily: 'DM Mono,monospace' }}>{money(minor / 100)}</div>
+          <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 4 }}>
+            Card total becomes <b style={{ color: 'var(--acc)', fontFamily: 'DM Mono,monospace' }}>{money((authMinor + minor) / 100)}</b>
+            {' '}(was {money(authMinor / 100)})
+          </div>
+        </div>
+        {overTwenty && (
+          <div style={{ margin: '8px 0', padding: '8px 10px', borderRadius: 10, background: 'var(--acc-d)', border: '1px solid var(--acc-b)', color: 'var(--acc)', fontSize: 11.5, lineHeight: 1.5 }}>
+            This tip is more than 20 percent of the card amount, so the bank re-authorises
+            the card for the new total first. The charge completes once the bank confirms,
+            usually within a minute.
+          </div>
+        )}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, margin: '10px 0' }}>
+          {[1,2,3,4,5,6,7,8,9].map(n => <button key={n} style={keyStyle} onClick={() => press(n)}>{n}</button>)}
+          <button style={keyStyle} onClick={() => press('00')}>00</button>
+          <button style={keyStyle} onClick={() => press(0)}>0</button>
+          <button style={keyStyle} onClick={() => press('back')}>⌫</button>
+        </div>
+        {err && <div style={{ padding: '8px 10px', borderRadius: 10, background: 'var(--red-d)', border: '1px solid var(--red-b)', color: 'var(--red)', fontSize: 11.5, marginBottom: 8, lineHeight: 1.5 }}>{err}</div>}
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button onClick={onCancel} disabled={busy} style={{ flex: 1, height: 44, borderRadius: 10, cursor: 'pointer', fontFamily: 'inherit', background: 'var(--bg3)', border: '1px solid var(--bdr2)', color: 'var(--t2)', fontSize: 13, fontWeight: 700 }}>Cancel</button>
+          <button onClick={submit} disabled={busy || !(minor > 0)} style={{ flex: 2, height: 44, borderRadius: 10, cursor: busy ? 'wait' : 'pointer', fontFamily: 'inherit', background: 'var(--acc)', border: 'none', color: '#fff', fontSize: 13, fontWeight: 800, opacity: (busy || !(minor > 0)) ? .6 : 1 }}>
+            {busy ? 'Applying…' : `Add ${money(minor / 100)} tip`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// The tip-window panel on a selected check: honest status, deadline countdown,
+// and the two actions. Renders nothing for checks with no capture leg.
+function TipWindowCard({ check }){
+  const { tipCapture, tipOnReceipt, showToast } = useStore();
+  const [showPad, setShowPad] = useState(false);
+  const [closing, setClosing] = useState(false);
+  // Clock held in state (never Date.now() during render - react-compiler rule);
+  // ticks every 30s so the countdown moves while the panel sits open.
+  const [now, setNow] = useState(() => Date.now());
+  const leg = captureLegOf(check);
+  useEffect(() => {
+    if (!leg || !captureIsOpen(leg)) return undefined;
+    const t = setInterval(() => setNow(Date.now()), 30000);
+    return () => clearInterval(t);
+  }, [leg?.capture]);   // eslint-disable-line react-hooks/exhaustive-deps
+  if (!leg) return null;
+  const meta = CAPTURE_META[leg.capture] || CAPTURE_META.pending;
+  const hours = Number(tipOnReceipt?.captureHours) || 24;
+  const deadlineMs = leg.captureDeadline
+    ? new Date(leg.captureDeadline).getTime()
+    : (check.closedAt ? Number(check.closedAt) + hours * 3600000 : null);
+  const remaining = deadlineMs != null ? fmtRemaining(deadlineMs - now) : null;
+
+  const closeNoTip = async () => {
+    if (closing) return;
+    if (!window.confirm('Close this card with no tip? It charges the original amount and the tip window closes for good.')) return;
+    setClosing(true);
+    const r = await tipCapture(check.id, { reference: captureRef(leg), tipMinor: 0 });
+    setClosing(false);
+    if (r?.ok) showToast?.('Closed with no tip. Capturing the original amount.', 'success');
+    else showToast?.(r?.error || 'Could not close the tip window.', 'error');
+  };
+
+  return (
+    <div style={{ background: 'var(--bg2)', border: `1px solid ${meta.border}`, borderRadius: 12, padding: '12px 14px', marginBottom: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 11, fontWeight: 700, padding: '2px 8px', borderRadius: 20, background: meta.bg, color: meta.color, border: `1px solid ${meta.border}` }}>
+            ✍ {meta.label}
+          </span>
+          {leg.capture === 'pending' && remaining && (
+            <span style={{ fontSize: 11, color: 'var(--t3)' }}>window closes in {remaining}</span>
+          )}
+        </div>
+      </div>
+      <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 8, lineHeight: 1.55 }}>
+        {leg.capture === 'pending' && 'The card is authorised but not charged yet. Read the tip off the signed merchant slip and add it below, or close with no tip. If nobody acts, the card charges automatically at the original amount when the window closes.'}
+        {leg.capture === 'adjusting' && 'The bank is re-authorising the card for the new total (tips over 20 percent need this). The charge completes automatically once the bank confirms.'}
+        {leg.capture === 'capturing' && 'The charge has been sent to the bank and is settling. Nothing more to do.'}
+        {leg.capture === 'captured' && 'The final amount is captured. All done.'}
+        {leg.capture === 'failed' && (
+          <span style={{ color: 'var(--red)' }}>
+            The tip could not be applied{leg.tipError ? `: ${leg.tipError}` : '.'} The sale itself is safe. Try the tip again, or close with no tip and the card charges the original amount.
+          </span>
+        )}
+        {(leg.capture === 'expired' || leg.capture === 'cancelled') && 'This tip window is closed.'}
+      </div>
+      {captureCanAct(leg) && (
+        <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+          <button onClick={() => setShowPad(true)} disabled={closing}
+            style={{ flex: 1, height: 40, borderRadius: 10, cursor: 'pointer', fontFamily: 'inherit', background: 'var(--acc)', border: 'none', color: '#fff', fontSize: 12.5, fontWeight: 800 }}>
+            ✍ Add tip
+          </button>
+          <button onClick={closeNoTip} disabled={closing}
+            style={{ flex: 1, height: 40, borderRadius: 10, cursor: closing ? 'wait' : 'pointer', fontFamily: 'inherit', background: 'var(--bg3)', border: '1px solid var(--bdr2)', color: 'var(--t2)', fontSize: 12.5, fontWeight: 700 }}>
+            {closing ? 'Closing…' : 'Close with no tip'}
+          </button>
+        </div>
+      )}
+      {showPad && <TipEntryModal check={check} leg={leg} onDone={() => setShowPad(false)} onCancel={() => setShowPad(false)} />}
+    </div>
+  );
+}
+
 // ── Check History Panel ───────────────────────────────────────────────────────
 export default function CheckHistory(){
   const {closedChecks,refundCheck,retryRefundReversal,showToast,location,taxRates}=useStore();
@@ -731,6 +910,12 @@ export default function CheckHistory(){
                   <div style={{display:'flex',alignItems:'center',gap:6}}>
                     <span style={{fontSize:12,fontWeight:800,color:'var(--t1)',fontFamily:'DM Mono,monospace'}}>{shortOrderRef(chk.ref)}</span>
                     <span style={{fontSize:10,fontWeight:700,padding:'1px 6px',borderRadius:20,background:sm.bg,color:sm.color,border:`1px solid ${sm.border}`}}>{sm.label}</span>
+                    {(()=>{ // v5.7.5: open tip window flag in the list, so it can't hide behind a scroll
+                      const cl=captureLegOf(chk);
+                      if(!cl||!captureIsOpen(cl))return null;
+                      const cm=CAPTURE_META[cl.capture];
+                      return <span style={{fontSize:10,fontWeight:700,padding:'1px 6px',borderRadius:20,background:cm.bg,color:cm.color,border:`1px solid ${cm.border}`}}>✍ {cm.label}</span>;
+                    })()}
                   </div>
                   <span style={{fontSize:13,fontWeight:700,color:'var(--acc)',fontFamily:'DM Mono,monospace'}}>{money(chk.total)}</span>
                 </div>
@@ -770,6 +955,12 @@ export default function CheckHistory(){
                       <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:4}}>
                         <span style={{fontSize:16,fontWeight:800,color:'var(--t1)',fontFamily:'DM Mono,monospace'}}>{selectedCheck.ref}</span>
                         <span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:20,background:sm.bg,color:sm.color,border:`1px solid ${sm.border}`}}>{sm.label}</span>
+                        {(()=>{ // v5.7.5: tip-window chip beside the status
+                          const cl=captureLegOf(selectedCheck);
+                          if(!cl)return null;
+                          const cm=CAPTURE_META[cl.capture]||CAPTURE_META.pending;
+                          return <span style={{fontSize:11,fontWeight:700,padding:'2px 8px',borderRadius:20,background:cm.bg,color:cm.color,border:`1px solid ${cm.border}`}}>✍ {cm.label}</span>;
+                        })()}
                       </div>
                       <div style={{fontSize:12,color:'var(--t3)',lineHeight:1.8}}>
                         {selectedCheck.tableLabel||selectedCheck.orderType}{selectedCheck.server?` · ${selectedCheck.server}`:''}{selectedCheck.covers>1?` · ${selectedCheck.covers} covers`:''}{selectedCheck.customer?.name?` · ${selectedCheck.customer.name}`:''}
@@ -822,6 +1013,9 @@ export default function CheckHistory(){
                   <span>Total paid</span><span style={{color:'var(--acc)',fontFamily:'DM Mono,monospace'}}>{money(selectedCheck.total)}</span>
                 </div>
               </div>
+
+              {/* v5.7.5 - tip on printed receipt: the open/settling window */}
+              <TipWindowCard check={selectedCheck}/>
 
               {/* Refund audit trail */}
               {selectedCheck.refunds.length>0&&(
@@ -900,11 +1094,22 @@ export default function CheckHistory(){
               <button onClick={handleReprint} disabled={reprinting} style={{flex:selectedCheck.status!=='refunded'?1:undefined,width:selectedCheck.status==='refunded'?'100%':undefined,height:42,borderRadius:10,cursor:reprinting?'wait':'pointer',fontFamily:'inherit',background:'var(--bg3)',border:'1px solid var(--bdr2)',color:'var(--t2)',fontSize:13,fontWeight:700,opacity:reprinting?0.6:1}}>
                 {reprinting ? '…' : '🖨 Print receipt'}
               </button>
-              {selectedCheck.status!=='refunded'&&(
-                <button onClick={()=>setShowRefund(true)} style={{flex:1,height:42,borderRadius:10,cursor:'pointer',fontFamily:'inherit',background:'var(--red-d)',border:'1px solid var(--red-b)',color:'var(--red)',fontSize:13,fontWeight:700}}>
-                  ↩ Issue refund
-                </button>
-              )}
+              {selectedCheck.status!=='refunded'&&(()=>{
+                // v5.7.5 - REFUND GUARD. While a tip window is open (pending /
+                // adjusting / capturing) there is nothing captured to refund and
+                // racing the capture would strand money; adyen-modify refuses
+                // with the same words (409 TIP_WINDOW_OPEN). Say it here first.
+                const cl=captureLegOf(selectedCheck);
+                const blocked=captureIsOpen(cl);
+                return (
+                  <button
+                    onClick={()=>{ if(blocked){ showToast(TIP_WINDOW_OPEN_MSG,'error'); return; } setShowRefund(true); }}
+                    title={blocked?TIP_WINDOW_OPEN_MSG:undefined}
+                    style={{flex:1,height:42,borderRadius:10,cursor:'pointer',fontFamily:'inherit',background:'var(--red-d)',border:'1px solid var(--red-b)',color:'var(--red)',fontSize:13,fontWeight:700,opacity:blocked?.55:1}}>
+                    ↩ Issue refund
+                  </button>
+                );
+              })()}
             </div>
           </>
         )}

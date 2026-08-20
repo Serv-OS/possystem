@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.5',
+    date: '2026-08-19',
+    changes: [
+      'TIP ON PRINTED RECEIPT, THE AMERICAN WAY. New venue setting under Back Office, Card readers, Card terminals: "Tip on printed receipt (United States)". Turn it on and a card payment sent from the main POS approves the card but holds the charge, the till prints a MERCHANT COPY with a TIP line, a TOTAL line and a signature line, the guest writes a tip and signs, and staff type the tip in later. The reader stops asking for a tip on its own screen while this is on, so guests are never asked twice. Main POS only: handheld, kiosk, QR, bar tabs and table pay all keep charging exactly as before.',
+      'Adding the tip happens in History. A check waiting on its slip shows a Tip pending badge in the check list and on the check itself, with a countdown to when the window closes. Two buttons: Add tip opens a keypad with a live preview of the new card total, Close with no tip charges the original amount and finishes the card. Tips over 20 percent of the bill get a plain warning that the bank re-authorises the card for the new total first, which usually takes under a minute.',
+      'A forgotten slip can only lose the tip, never the sale. Every venue picks a capture window (1 to 72 hours, normally 24) and any card nobody adjusted captures automatically at the original amount when the window closes. The check shows honest states the whole way: Tip pending, Adjusting, Capturing, Tip captured, or Tip failed with the actual reason, and a failed tip still ends with the original amount charged.',
+      'Refunds wait for the tip. While a card is still holding its charge there is nothing captured to give back, so the refund button explains: Tip window open for this card. Add the tip or close it with no tip first. Once the card captures, refunds work as normal.',
+      'The demo reader mirrors the whole flow: it skips its tip screen on these payments, and the tip can be added and captured from History end to end without a real card machine.',
+      'To go live this needs the hand applied database migration 20260823_tip_on_receipt, the sweep token secret, and deploys of five server functions (adyen-capture-sweep, adyen-modify, adyen-webhook, adyen-terminal-charge, terminal-job-create). Until those land the setting card still saves, but payments keep capturing at payment time as they do today.',
+    ],
+  },
+  {
     version: '5.7.4',
     date: '2026-08-19',
     changes: [

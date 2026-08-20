@@ -45,7 +45,8 @@
 //     drop every payment notification.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { verifyNotificationItem, cardFromWebhookAdditionalData, resolveAdyenRateCard, commissionForAmount } from '../_shared/adyen.ts';
+import { verifyNotificationItem, cardFromWebhookAdditionalData, resolveAdyenRateCard, commissionForAmount, adyenFetch, checkoutBase } from '../_shared/adyen.ts';
+import { insertCaptureRow, applyTipToClosedCheck } from '../_shared/tip_capture.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -100,6 +101,9 @@ const MODIFICATION_EVENTS = new Set([
   'CAPTURE', 'CAPTURE_FAILED', 'CANCELLATION', 'REFUND', 'REFUND_FAILED',
   'CHARGEBACK', 'CHARGEBACK_REVERSED', 'NOTIFICATION_OF_CHARGEBACK',
   'SECOND_CHARGEBACK', 'REQUEST_FOR_INFORMATION',
+  // v5.7.5 tip-on-receipt: the async outcome of a /amountUpdates tip adjust.
+  // On success the capture is kicked from here (see applyTipOnReceiptEvent).
+  'AUTHORISATION_ADJUSTMENT',
 ]);
 const CHARGEBACK_EVENTS = new Set([
   'CHARGEBACK', 'CHARGEBACK_REVERSED', 'NOTIFICATION_OF_CHARGEBACK',
@@ -259,6 +263,200 @@ async function resolveVenueTiers(locationId: string): Promise<any | null> {
   }
 }
 
+// ── v5.7.5 TIP ON PRINTED RECEIPT: capture-window side effects ───────────────
+// Ops terminal_captures is the ledger of manual-capture auths (US signature
+// tip flow). Three events drive it here:
+//   AUTHORISATION (success, manual-capture job)  ensure the row exists - the
+//     backstop for a charge-fn insert lost to a crash or an events-path settle.
+//   AUTHORISATION_ADJUSTMENT  the async verdict on a tip > 20 percent adjust.
+//     Success on an 'adjusting' row kicks the REAL capture at the new total
+//     (never capture before this confirms - scheme rule). Refusal captures the
+//     ORIGINAL amount instead (the sale is never lost to a failed tip) and
+//     takes the tip back off the closed check.
+//   CAPTURE / CAPTURE_FAILED  settle the row to captured/failed.
+// Replay-safe: callers reach this only on non-duplicate events (modKey), the
+// row updates are status-guarded, and the capture kick keys are deterministic.
+// Best-effort by construction - never throws, never blocks the ack.
+async function applyTipOnReceiptEvent(item: any, code: string, rowKey: string, okEvent: boolean, jobId: string | null): Promise<void> {
+  try {
+    if (code === 'AUTHORISATION') {
+      if (!okEvent || !jobId) return;
+      let j: any = null;
+      try {
+        const { data } = await admin.from('terminal_jobs')
+          .select('id, capture_mode, closed_check_id, location_id, currency, simulated, charge_minor')
+          .eq('id', jobId).maybeSingle();
+        j = data;
+      } catch { return; }   // capture_mode column pre-migration - nothing to do
+      if (j?.capture_mode !== 'manual') return;
+      const authMinor = Number(item?.amount?.value);
+      await insertCaptureRow(admin, {
+        jobId: j.id,
+        closedCheckId: j.closed_check_id ?? null,
+        locationId: j.location_id,
+        psp: rowKey,
+        merchantAccount: item?.merchantAccountCode ?? null,
+        currency: j.currency ?? item?.amount?.currency ?? null,
+        authMinor: Number.isFinite(authMinor) ? authMinor : Number(j.charge_minor ?? 0),
+        simulated: j.simulated === true,
+      });
+      return;
+    }
+
+    if (!['AUTHORISATION_ADJUSTMENT', 'CAPTURE', 'CAPTURE_FAILED'].includes(code)) return;
+    const { data: cap } = await admin.from('terminal_captures')
+      .select('*').eq('psp_reference', rowKey).maybeSingle();
+    if (!cap) return;   // not a tip-on-receipt payment (bar-tab holds, online, ...)
+    const nowIso = new Date().toISOString();
+    const cur = String(cap.currency || item?.amount?.currency || 'USD').toUpperCase();
+    const merchant = (cap.merchant_account as string | null) ?? (item?.merchantAccountCode ? String(item.merchantAccountCode) : null);
+
+    if (code === 'AUTHORISATION_ADJUSTMENT') {
+      if (cap.status !== 'adjusting') return;   // only an armed adjust reacts - replays and stray adjustments no-op
+      if (okEvent) {
+        // The bank re-authorised the new total - NOW the capture is safe.
+        const amount = Number(cap.final_minor ?? cap.auth_minor);
+        if (!merchant) {
+          await admin.from('terminal_captures').update({
+            error: 'adjustment confirmed but no merchant account known - sweep will capture', updated_at: nowIso,
+          }).eq('id', cap.id);
+          return;
+        }
+        // CAS-claim BEFORE the Adyen call (adjusting -> capturing, attempts+1):
+        // this webhook and the deadline sweep can never both fire the capture.
+        // Losing the race means someone else owns the row - stop silently.
+        const prevAttempts = Number(cap.attempts ?? 0);
+        const attempt = prevAttempts + 1;
+        const { data: claimed } = await admin.from('terminal_captures')
+          .update({ status: 'capturing', attempts: attempt, updated_at: nowIso })
+          .eq('id', cap.id).eq('status', 'adjusting').eq('attempts', prevAttempts)
+          .select('id').maybeSingle();
+        if (!claimed) return;
+        // Key namespace 'tipcapw' is deliberately DISTINCT from adyen-modify's
+        // 'tipcap': if the direct-capture attempt was refused there, reusing
+        // its key would make Adyen replay the refusal forever. The attempts
+        // salt makes every RETRY a fresh key too.
+        let res;
+        try {
+          res = await adyenFetch('POST', `${checkoutBase()}/payments/${encodeURIComponent(rowKey)}/captures`,
+            { merchantAccount: merchant, amount: { value: amount, currency: cur }, reference: `tipcapw:${cap.id}`.slice(0, 80) },
+            { idempotencyKey: `tipcapw:${cap.id}:${amount}:${attempt}` });
+        } catch (fe) {
+          // Network abort must not strand the row at 'capturing' - put it back
+          // to 'adjusting' so the deadline sweep retries at the final amount.
+          await admin.from('terminal_captures').update({
+            status: 'adjusting',
+            error: `post-adjust capture call failed: ${(fe as Error).message}`.slice(0, 500),
+            updated_at: new Date().toISOString(),
+          }).eq('id', cap.id).eq('status', 'capturing');
+          return;
+        }
+        if (res.ok) {
+          await admin.from('terminal_captures')
+            .update({ error: null, updated_at: new Date().toISOString() })
+            .eq('id', cap.id).eq('status', 'capturing');
+          await applyTipToClosedCheck(admin, {
+            closedCheckId: cap.closed_check_id, captureId: cap.id, psp: rowKey,
+            tipMinor: 0, legFlag: 'capturing',
+          });
+        } else {
+          // The adjustment stood; only the capture call bounced. Back to
+          // 'adjusting' - the deadline sweep retries at the same final amount.
+          await admin.from('terminal_captures').update({
+            status: 'adjusting',
+            error: `post-adjust capture refused (adyen ${res.status}): ${JSON.stringify(res.data).slice(0, 300)}`,
+            updated_at: new Date().toISOString(),
+          }).eq('id', cap.id).eq('status', 'capturing');
+        }
+      } else {
+        // Adjust REFUSED (wallets and most debit cards do not support it).
+        // Capture the ORIGINAL amount so the sale is never lost, mark the tip
+        // failed, and take the tip back off the closed check.
+        const tip = Number(cap.tip_minor ?? 0);
+        const authAmount = Number(cap.auth_minor);
+        const errNote = `tip adjustment refused (${item?.reason ?? 'no reason given'}) - captured the original amount, tip NOT charged`;
+        // Same CAS discipline as the success arm: claim BEFORE the Adyen call,
+        // and only the winner reverts the tip - exactly once.
+        const prevAttempts = Number(cap.attempts ?? 0);
+        const attempt = prevAttempts + 1;
+        const { data: claimed } = await admin.from('terminal_captures')
+          .update({ status: 'capturing', attempts: attempt, updated_at: nowIso })
+          .eq('id', cap.id).eq('status', 'adjusting').eq('attempts', prevAttempts)
+          .select('id').maybeSingle();
+        if (!claimed) return;
+        let captured = false;
+        if (merchant) {
+          try {
+            const res = await adyenFetch('POST', `${checkoutBase()}/payments/${encodeURIComponent(rowKey)}/captures`,
+              { merchantAccount: merchant, amount: { value: authAmount, currency: cur }, reference: `tipcapw:${cap.id}`.slice(0, 80) },
+              { idempotencyKey: `tipcapw:${cap.id}:${authAmount}:${attempt}` });
+            captured = res.ok;
+            if (!res.ok) console.error('[adyen-webhook] fallback capture at auth refused:', res.status, JSON.stringify(res.data).slice(0, 200));
+          } catch (fe) {
+            console.error('[adyen-webhook] fallback capture at auth threw:', (fe as Error).message);
+          }
+        }
+        await admin.from('terminal_captures').update({
+          // 'pending' fallback keeps the row in the sweep's net: final_minor is
+          // reset to the auth amount (and tip_minor cleared - the tip is being
+          // reverted off the check right below), so the sweep captures exactly
+          // the plain auth.
+          status: captured ? 'capturing' : 'pending',
+          final_minor: authAmount,
+          tip_minor: null,
+          error: errNote,
+          updated_at: new Date().toISOString(),
+        }).eq('id', cap.id).eq('status', 'capturing');
+        await applyTipToClosedCheck(admin, {
+          closedCheckId: cap.closed_check_id, captureId: cap.id, psp: rowKey,
+          tipMinor: tip > 0 ? -tip : 0,
+          legFlag: captured ? 'capturing' : 'pending',
+          tipError: errNote,
+        });
+      }
+      return;
+    }
+
+    // CAPTURE / CAPTURE_FAILED
+    const failed = code === 'CAPTURE_FAILED' || !okEvent;
+    if (!failed) {
+      await admin.from('terminal_captures')
+        .update({ status: 'captured', updated_at: nowIso })
+        .eq('id', cap.id).in('status', ['pending', 'adjusting', 'capturing']);
+      await applyTipToClosedCheck(admin, {
+        closedCheckId: cap.closed_check_id, captureId: cap.id, psp: rowKey,
+        tipMinor: 0, legFlag: 'captured',
+      });
+    } else {
+      // CAPTURE FAILED - whatever tip was applied never charged. Mirror the
+      // adjustment-refusal branch: take the applied tip back OFF the closed
+      // check, reset the row's money to the plain auth (final_minor = auth,
+      // tip_minor cleared), and mark it failed. A retry from History then
+      // applies a FRESH tip exactly once, and the deadline sweep can still
+      // rescue the sale at the auth amount if nobody retries.
+      //
+      // Replay-safe twice over: the modKey guard already blocks duplicate
+      // deliveries before this runs, and the status-guarded update below
+      // reverts ONLY when THIS event actually moved the row to 'failed'
+      // (a CAPTURE success=false followed by its CAPTURE_FAILED sibling has
+      // two different modKeys - the second finds the row already failed and
+      // must never revert the tip twice).
+      const tip = Number(cap.tip_minor ?? 0);
+      const err = `capture failed at Adyen (${item?.reason ?? 'no reason given'})${tip > 0 ? ' - tip reverted, NOT charged' : ''}`;
+      const { data: nowFailed } = await admin.from('terminal_captures')
+        .update({ status: 'failed', final_minor: Number(cap.auth_minor), tip_minor: null, error: err, updated_at: nowIso })
+        .eq('id', cap.id).in('status', ['pending', 'adjusting', 'capturing'])
+        .select('id').maybeSingle();
+      if (nowFailed) {
+        await applyTipToClosedCheck(admin, {
+          closedCheckId: cap.closed_check_id, captureId: cap.id, psp: rowKey,
+          tipMinor: tip > 0 ? -tip : 0, legFlag: 'failed', tipError: err,
+        });
+      }
+    }
+  } catch (e) { console.error('[adyen-webhook] tip-on-receipt apply:', (e as Error).message); }
+}
+
 // Apply ONE money event to the ledger (and, for the chargeback family, the
 // dispute queue). NEVER throws — the raw event is already durable; a bug here
 // costs a log line and a later replay, not an event.
@@ -276,7 +474,7 @@ async function applyMoneyEvent(item: any): Promise<'applied' | 'duplicate' | 'sk
     if (!rowKey) { console.error('[adyen-webhook] money event with no psp — skipped', code); return 'skipped'; }
 
     const { data: existing, error: readErr } = await platformAdmin.from('adyen_payments')
-      .select('psp_reference, location_id, amount_minor, currency, amount_refunded_minor, success, channel, card, merchant_reference, merchant_account, store, matched_terminal_job, matched_closed_check, raw')
+      .select('psp_reference, location_id, amount_minor, currency, amount_refunded_minor, success, channel, card, merchant_reference, merchant_account, store, matched_terminal_job, matched_closed_check, rate_category, raw')
       .eq('psp_reference', rowKey).maybeSingle();
     if (readErr) { console.error('[adyen-webhook] ledger read failed:', readErr.message); return 'failed'; }
 
@@ -348,6 +546,19 @@ async function applyMoneyEvent(item: any): Promise<'applied' | 'duplicate' | 'sk
       row.amount_minor = existing?.amount_minor ?? null;
       row.currency = existing?.currency ?? currency;
       row.success = existing?.success ?? null;
+      // v5.7.5 tip-on-receipt: a CAPTURE larger than the authorised amount is
+      // the tip landing (overcapture / post-adjust capture). The payment's
+      // true value is what was CAPTURED, so bump amount_minor and recompute
+      // what we earn at the SAME tier (rate_category unchanged by contract).
+      if (code === 'CAPTURE' && okEvent && Number.isFinite(amountMinor)
+          && existing?.amount_minor != null && amountMinor > Number(existing.amount_minor)) {
+        row.amount_minor = amountMinor;
+        const rc = (existing as any)?.rate_category as string | null;
+        if (rc && location_id) {
+          const tiers = await resolveVenueTiers(location_id);
+          if (tiers) row.commission_minor = commissionForAmount(amountMinor, tiers[rc]);
+        }
+      }
       if (code === 'REFUND' && okEvent && Number.isFinite(amountMinor)) {
         row.amount_refunded_minor = Number(existing?.amount_refunded_minor ?? 0) + amountMinor;
       } else if (code === 'REFUND_FAILED' && okEvent && Number.isFinite(amountMinor)
@@ -370,6 +581,11 @@ async function applyMoneyEvent(item: any): Promise<'applied' | 'duplicate' | 'sk
       ({ error: upErr } = await platformAdmin.from('adyen_payments').upsert(row, { onConflict: 'psp_reference' }));
     }
     if (upErr) { console.error('[adyen-webhook] ledger upsert failed:', upErr.message, rowKey); return 'failed'; }
+
+    // ── v5.7.5 tip-on-receipt capture window (best-effort, never blocks) ─────
+    // Runs only on NON-duplicate events (the modKey guard above already
+    // returned for replays), so the capture kick can never double-fire.
+    await applyTipOnReceiptEvent(item, code, rowKey, okEvent, job?.id ?? existing?.matched_terminal_job ?? null);
 
     // ── Chargeback family → dispute queue (model: ryft-webhook Dispute.*) ────
     if (CHARGEBACK_EVENTS.has(code)) {

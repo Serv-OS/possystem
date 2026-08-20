@@ -97,6 +97,15 @@ const RESULT_HOLD_MS = 4500;  // how long approved/declined stays up
 const PROP_W = 380;           // bezel width — the whole prop column keys off it
 const HOLD_KINDS = ['hold_start', 'hold_capture', 'hold_release', 'hold_increase'];
 
+// v5.7.5 - latched true when terminal_jobs.capture_mode does not exist yet
+// (migration 20260823_tip_on_receipt.sql not applied). The job poll then skips
+// the column instead of erroring every 2.5s - but the latch SELF-HEALS: every
+// 50 polls (~2 min) it resets and the full select is tried again, so a demo
+// reader left open picks the column up as soon as the migration lands, without
+// a reload. Still missing = one retried select, then latched for another 50.
+let _rdCaptureColMissing = false;
+let _rdCaptureColPolls = 0;
+
 /** Stable synthetic serial — mirrors paxpay Prefs.serial(): minted once, cached. */
 function demoSerial() {
   try {
@@ -365,13 +374,35 @@ export default function ReaderDemoSurface() {
       try {
         // Same filtered SELECT paxpay uses (OpsApi.pollPendingJob) — RLS
         // tj_select_terminal fences it to jobs addressed to this terminal.
-        const { data, error } = await supabase
-          .from('terminal_jobs')
-          .select('id, check_key, tip_basis_minor, due_minor, currency, tip_config, check_draft, status, created_at')
-          .eq('target_terminal_id', deviceId)
-          .eq('status', 'pending')
-          .order('created_at', { ascending: true })
-          .limit(1);
+        // v5.7.5: capture_mode rides along (tip-on-receipt jobs skip the tip
+        // screen - the tip arrives in writing later). Until migration
+        // 20260823_tip_on_receipt.sql lands the column does not exist and the
+        // select 42703s, so retry WITHOUT it and latch - the demo reader must
+        // never die over an unapplied migration. The latch self-heals every 50
+        // polls (see the counter above).
+        if (_rdCaptureColMissing && ++_rdCaptureColPolls >= 50) {
+          _rdCaptureColMissing = false;
+          _rdCaptureColPolls = 0;
+        }
+        let { data, error } = _rdCaptureColMissing
+          ? { data: null, error: null }
+          : await supabase
+            .from('terminal_jobs')
+            .select('id, check_key, tip_basis_minor, due_minor, currency, tip_config, check_draft, status, created_at, capture_mode')
+            .eq('target_terminal_id', deviceId)
+            .eq('status', 'pending')
+            .order('created_at', { ascending: true })
+            .limit(1);
+        if (_rdCaptureColMissing || (error && (error.code === '42703' || /capture_mode/.test(error.message || '')))) {
+          if (!_rdCaptureColMissing) { _rdCaptureColMissing = true; console.warn('[readerdemo] capture_mode column missing - polling without it'); }
+          ({ data, error } = await supabase
+            .from('terminal_jobs')
+            .select('id, check_key, tip_basis_minor, due_minor, currency, tip_config, check_draft, status, created_at')
+            .eq('target_terminal_id', deviceId)
+            .eq('status', 'pending')
+            .order('created_at', { ascending: true })
+            .limit(1));
+        }
         if (error) {
           setOnline(false);
           console.warn('[readerdemo] job poll failed:', error.message);
@@ -411,7 +442,13 @@ export default function ReaderDemoSurface() {
         };
         setJob(j);
         jobRef.current = j;
-        if (tipEnabled(row.tip_config)) {
+        // v5.7.5 - tip-on-receipt (capture_mode 'manual') jobs NEVER show the
+        // on-reader tip screen: the tip is written on the merchant slip and
+        // captured later. Mirrors the real reader, where the charge fn forces
+        // askGratuity off for manual jobs. Straight to commit with tip 0; the
+        // server's terminal_report_result inserts the simulated capture row on
+        // approval and tip_capture / the sweep finish the job end to end.
+        if (tipEnabled(row.tip_config) && row.capture_mode !== 'manual') {
           phaseRef.current = 'tip';   // stop the poll re-firing before the re-render lands
           setPhase('tip');
         } else {

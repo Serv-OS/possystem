@@ -361,6 +361,7 @@ export interface NexoPaymentOpts {
   tipMinor?: number;           // pre-agreed tip (tipping-from-POS mode)
   askGratuity?: boolean;       // terminal prompts for tip (tipping-from-terminal mode)
   preAuth?: boolean;           // bar tabs: authorisation only, capture later
+  manualCapture?: boolean;     // v5.7.5 tip-on-receipt: suppress auto-capture; we capture via Checkout API
   allowPartial?: boolean;      // partial approvals (gift/prepaid top-ups)
   merchantAccount?: string;
   storeId?: string;            // AfP: route to the venue's store
@@ -369,6 +370,10 @@ export interface NexoPaymentOpts {
 export function buildPaymentRequest(o: NexoPaymentOpts): any {
   const saleToAcquirer: string[] = [];
   if (o.preAuth) saleToAcquirer.push('authorisationType=PreAuth');
+  // v5.7.5 tip-on-receipt: manualCapture=true stops captureDelayHours auto-capture,
+  // so the capture is OURS (tip_capture / webhook kick / adyen-capture-sweep).
+  // Always paired with authorisationType=PreAuth by the caller.
+  if (o.manualCapture) saleToAcquirer.push('manualCapture=true');
   if (o.allowPartial) saleToAcquirer.push('tenderOption=AllowPartialAuthorisation');
   if (o.askGratuity) saleToAcquirer.push('tenderOption=AskGratuity');
   if (o.storeId) saleToAcquirer.push(`store=${o.storeId}`);
