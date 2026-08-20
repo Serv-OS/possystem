@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.20',
+    date: '2026-08-20',
+    items: [
+      'Timed menus now follow the VENUE clock, not each till device clock. A till whose operating system sat in a different timezone evaluated every schedule hours out and kept showing the default menu. All tills at a venue now flip menus at the same wall clock moment, whatever their own settings say. The venue timezone is set in Location settings.',
+    ],
+  },
+  {
     version: '5.7.19',
     date: '2026-08-20',
     items: [

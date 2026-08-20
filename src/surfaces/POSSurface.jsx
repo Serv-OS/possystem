@@ -6,6 +6,7 @@ import POSLockOverlay from '../components/POSLockOverlay';
 import PosWasteModal from '../components/PosWasteModal';
 import { useStore } from '../store';
 import { fetchMenuCategoryLinks } from '../lib/db';
+import { buildScheduleCtx } from '../lib/locationTime';
 import { linkedCategoryIdSet, categoryVisibleInMenu, menusWithCategories, allowedCategoryIds, itemInAllowedCats } from '../lib/menuMembership';
 import { supabase } from '../lib/supabase';
 import { pushReaderDisplay, clearReaderDisplay, cacheReaderDisplaySetting } from '../lib/readerDisplay';
@@ -201,10 +202,16 @@ export default function POSSurface() {
     const t = setInterval(() => _setClockTick(x => x + 1), 60_000);
     return () => clearInterval(t);
   }, []);
+  // v5.7.20 - the VENUE's clock decides menu schedules, never the device's.
+  // Live 20 Aug: a till whose OS sat on US Pacific time (10:06) evaluated a
+  // UK venue's 4-7pm window as "not yet" all evening and fell to the default
+  // menu on every test. Every till at a venue must flip at the same venue
+  // wall-clock moment regardless of its own OS timezone.
+  const _venueTz = useStore(s => s.locationConfig?.timezone) || 'Europe/London';
   const deviceMenuId = useMemo(() => {
-    const now = new Date();
-    const day = now.getDay() || 7; // ISO: Mon=1, Sun=7
-    const time = now.getHours() * 60 + now.getMinutes();
+    const ctx = buildScheduleCtx(_venueTz);
+    const day = ctx.isoDay || (new Date().getDay() || 7); // ISO: Mon=1, Sun=7
+    const time = ctx.nowMinutes;
     const isActive = (m) => {
       if (!m.schedule) return true;
       const s = m.schedule;
@@ -273,7 +280,7 @@ export default function POSSurface() {
     if (allMenus.length) return allMenus.slice().sort((a, b) => (b.priority || 0) - (a.priority || 0))[0].id;
     // 6. Nothing matches: show all categories (legacy behaviour).
     return null;
-  }, [menus, deviceConfig?.menuId, menuCategories, _categoryLinks, _clockTick]);
+  }, [menus, deviceConfig?.menuId, menuCategories, _categoryLinks, _clockTick, _venueTz]);
 
   // v4.7.7: mirror the resolved deviceMenuId into the store's activeMenuId so internal
   // getItemPrice calls (addItem fallback, setOrderType reprice) pick up per-menu pricing

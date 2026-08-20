@@ -11,6 +11,7 @@ import { useStore } from '../store';
 import { VERSION } from '../lib/version';
 import { fetchMenuCategoryLinks } from '../lib/db';
 import { menusWithCategories } from '../lib/menuMembership';
+import { buildScheduleCtx } from '../lib/locationTime';
 
 const readJSON = (store, key) => {
   try { return JSON.parse(store.getItem(key) || 'null'); } catch { return null; }
@@ -140,8 +141,10 @@ export default function MenuDiag() {
       <div style={S.head}>RESOLVER REPLICA (live, store inputs, device clock)</div>
       {(() => {
         const now = new Date();
-        const day = now.getDay() || 7;
-        const time = now.getHours() * 60 + now.getMinutes();
+        const tz = useStore.getState().locationConfig?.timezone || 'Europe/London';
+        const ctx = buildScheduleCtx(tz);
+        const day = ctx.isoDay || (now.getDay() || 7);
+        const time = ctx.nowMinutes;
         const schedActive = (m) => {
           if (!m.schedule) return true;
           const sc = m.schedule;
@@ -171,7 +174,7 @@ export default function MenuDiag() {
         } else { const d = all.find(m => m.isDefault || m.is_default); pick = d ? d.id : (all[0]?.id ?? null); path = d ? 'nothing scheduled, default' : 'nothing scheduled, first non-empty'; }
         const name = (id) => (menus || []).find(m => m.id === id)?.name || id || '(none)';
         return <>
-          <div style={S.row}>device clock: {now.toTimeString().slice(0, 5)} day {day}</div>
+          <div style={S.row}>device clock: {now.toTimeString().slice(0, 5)} | VENUE clock ({tz}): {String(Math.floor(time / 60)).padStart(2, '0')}:{String(time % 60).padStart(2, '0')} day {day}</div>
           <div style={S.row}>store categoryLinks: {(storeLinks || []).length}</div>
           {(menus || []).map(m => <div key={m.id} style={S.row}>{m.name}: schedActive {String(schedActive(m))} | hasCats {String(withCatsSet.has(m.id))}</div>)}
           <div style={{ ...S.row, fontWeight: 700 }}>SHOULD SHOW: {name(pick)} ({path})</div>
