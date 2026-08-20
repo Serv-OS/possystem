@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.16',
+    date: '2026-08-20',
+    items: [
+      'Device profiles: saving a profile no longer resets its position in the list. The loader never carried the sort order into memory, so every save wrote it back as zero. The loader now round-trips the real value.',
+    ],
+  },
+  {
     version: '5.7.15',
     date: '2026-08-20',
     items: [

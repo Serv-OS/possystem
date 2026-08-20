@@ -106,6 +106,7 @@ export default function DeviceProfiles() {
         autoPrintReceiptOnClose: p.auto_print_receipt_on_close !== false,
         orderNotifications: p.order_notifications !== false,
         menuId: p.menu_id,
+        sortOrder: p.sort_order || 0,
         deviceCount: countMap[p.id] || 0,
         serviceCharge: p.service_charge || null,
         isMaster: p.is_master || false,
