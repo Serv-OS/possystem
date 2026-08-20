@@ -34,6 +34,7 @@ import ManagerSurface from './surfaces/ManagerSurface';
 import StaffSurface from './surfaces/StaffSurface';
 import KioskAutoUpdate from './components/KioskAutoUpdate';
 import ChangeDueOverlay from './components/ChangeDueOverlay';
+import MenuDiag from './components/MenuDiag';
 import OnboardingSignSurface from './surfaces/OnboardingSignSurface';
 import RyftTestSurface from './surfaces/RyftTestSurface';
 import ReaderDemoSurface from './surfaces/ReaderDemoSurface';
@@ -313,7 +314,13 @@ export default function App() {
 
   // Validate device against Supabase (checks if admin removed it)
   // Uses a component so hooks work properly
-  return <ValidatedPOSApp pairedDevice={pairedDevice} staff={staff} surface={surface} setSurface={setSurface} toast={toast} shift={shift} theme={theme} setTheme={setTheme} syncPulse={syncPulse} handleSyncPulse={handleSyncPulse} showWhatsNew={showWhatsNew} setShowWhatsNew={setShowWhatsNew} deviceConfig={deviceConfig} />;
+  // v5.7.8 - ?diag=menu mounts the read-only stale-till truth panel over the POS
+  // (PIN screen included: it floats above whatever ValidatedPOSApp renders).
+  const diagMenu = new URLSearchParams(window.location.search).get('diag') === 'menu';
+  return <>
+    {diagMenu && <MenuDiag />}
+    <ValidatedPOSApp pairedDevice={pairedDevice} staff={staff} surface={surface} setSurface={setSurface} toast={toast} shift={shift} theme={theme} setTheme={setTheme} syncPulse={syncPulse} handleSyncPulse={handleSyncPulse} showWhatsNew={showWhatsNew} setShowWhatsNew={setShowWhatsNew} deviceConfig={deviceConfig} />
+  </>;
 }
 
 // v5.5.645: persistent Training Mode banner. Shown on every POS surface whenever

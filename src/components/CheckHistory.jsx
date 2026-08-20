@@ -747,7 +747,7 @@ function TipWindowCard({ check }){
 
 // ── Check History Panel ───────────────────────────────────────────────────────
 export default function CheckHistory(){
-  const {closedChecks,refundCheck,retryRefundReversal,showToast,location,taxRates}=useStore();
+  const {closedChecks,refundCheck,retryRefundReversal,showToast,location,taxRates,hydrateCaptureStatus}=useStore();
   const [search,setSearch]=useState('');
   const [dateFilter,setDateFilter]=useState('today');
   const [selected,setSelected]=useState(null);
@@ -756,6 +756,16 @@ export default function CheckHistory(){
   const [retrying,setRetrying]=useState(null);
 
   const selectedCheck=closedChecks.find(c=>c.id===selected);
+
+  // v5.7.8 - reconciler-closed checks can hold a live tip window whose leg
+  // stamping never landed (no capture flag on the card leg), so TipWindowCard
+  // renders nothing. On opening a check detail, let the store re-read the
+  // capture rows and patch the legs. The store action does all the gating
+  // (Adyen-looking un-stamped leg, once per check per session, silent failure).
+  useEffect(()=>{
+    if(selected) hydrateCaptureStatus?.(selected);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[selected]);
   const now=new Date();
   const startOfDay=new Date(now.getFullYear(),now.getMonth(),now.getDate());
   const startOfWeek=new Date(startOfDay.getTime()-startOfDay.getDay()*86400000);

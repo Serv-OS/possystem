@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.8',
+    date: '2026-08-20',
+    changes: [
+      'THE HISTORY TIP BUTTON NOW FINDS ITS PAYMENT WINDOW EVEN WHEN A CHECK CLOSED THROUGH THE BACKGROUND RECONCILER. Some card payments hold the charge open so staff can add the tip written on the signed slip. When a check closed through the background reconciler instead of the normal path, the till sometimes never learned the window existed, so History showed no Tip pending chip and no Add tip button while the money quietly waited. Now, opening such a check in History makes the till ask the payment service whether a window is open for it, and if one is, the chip, the countdown and the Add tip button appear exactly as they should. This is a read only check: it moves no money and runs at most once per check.',
+      'A hidden diagnostics view for support. Adding diag=menu to the till address shows a small dark panel over the screen with everything support needs to untangle a till showing the wrong menu: app version, whether an update is parked waiting for approval, the device profile and its pinned menu, the saved copies of that config in the browser, the menu the till actually resolved, every menu with its schedule and priority, and how many categories each menu owns. Read only, closes with the X, invisible unless you ask for it.',
+      'Server side: the payment function gained one read only question, capture status for a closed check. Same access rules as every other action, no writes, never talks to the card networks.',
+    ],
+  },
+  {
     version: '5.7.7',
     date: '2026-08-20',
     changes: [

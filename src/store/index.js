@@ -100,6 +100,11 @@ function attachCardToIntents(intents, cardReceipt) {
 // captured | failed as the money actually moves. Legs without a window are
 // untouched - every other sale keeps its exact prior shape.
 const CAPTURE_LEG_STATES = ['pending', 'adjusting', 'capturing', 'captured', 'failed', 'expired', 'cancelled'];
+// v5.7.8 - History capture-window self-heal. Check ids whose capture status has
+// already been looked up this session (hit or miss), so opening the same check
+// twice never re-fires the read. Module-level on purpose: survives store updates,
+// dies with the tab, exactly the "once per check per session" contract.
+const _captureStatusChecked = new Set();
 function attachCaptureToIntents(intents, capture) {
   if (!capture) return intents;
   const legPatch = {
@@ -5689,6 +5694,79 @@ export const useStore = create((set, get) => ({
       }),
     }));
     return { ok: true, status: legStatus, mode: j.mode || null, capture_id: j.capture_id || null, final_minor: j.final_minor ?? null, note: j.note || null };
+  },
+
+  // ── v5.7.8 History capture-window self-heal ────────────────────────────────
+  // A check that closed through the background reconciler can hold a live
+  // terminal_captures row (the tip window) whose leg stamping never reached the
+  // closed check: the card leg sits bare ({id, card, amountMinor}, no capture
+  // flag), so History shows no Tip pending chip and no Add tip button. When the
+  // operator opens such a check, ask adyen-modify 'capture_status' (read only)
+  // for the check's capture rows and re-stamp the in-memory legs so the existing
+  // TipWindowCard UI lights up. Silent on every failure - this is a repaint aid,
+  // never a money path. Fires at most once per check per session.
+  hydrateCaptureStatus: async (checkId) => {
+    if (isMock || !checkId || _captureStatusChecked.has(checkId)) return;
+    const chk = get().closedChecks.find(c => c.id === checkId);
+    if (!chk) return;
+    const legs = Array.isArray(chk.paymentIntents) ? chk.paymentIntents : [];
+    // Same processor resolution the refund path uses (cardLegsOf): the leg's own
+    // processor, else the check's. Only an Adyen-looking card leg WITHOUT a
+    // capture flag needs healing - a stamped leg already renders its window.
+    const fallbackProcessor = String(chk.processor || '').toLowerCase();
+    const isAdyenLeg = (l) => String(l?.processor || fallbackProcessor).toLowerCase() === 'adyen';
+    if (!legs.some(l => l && !l.capture && isAdyenLeg(l))) return;
+    _captureStatusChecked.add(checkId);
+    const locationId = getActiveLocationSync();
+    if (!locationId || locationId === 'loc-demo') return;
+    const token = await ensureAuthToken().catch(() => null);
+    if (!token) return;
+    let j = {};
+    try {
+      // Same fetch discipline as tipCapture / cardReversal.js: plain fetch, read
+      // the body, never trust HTTP 200 alone.
+      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/adyen-modify`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        body: JSON.stringify({ action: 'capture_status', location_id: locationId, closed_check_id: checkId }),
+      });
+      j = await res.json().catch(() => ({}));
+      if (!res.ok || j.ok !== true) return;
+    } catch { return; }
+    const rows = Array.isArray(j.captures) ? j.captures : [];
+    if (!rows.length) return;
+    set(s => ({
+      closedChecks: s.closedChecks.map(c => {
+        if (c.id !== checkId) return c;
+        const cur = Array.isArray(c.paymentIntents) ? c.paymentIntents : [];
+        if (!cur.length) return c;
+        let next = cur;
+        for (const row of rows) {
+          // terminal_captures.status uses the leg vocabulary verbatim
+          // (pending/adjusting/capturing/captured/failed/expired/cancelled);
+          // anything unrecognised is skipped rather than guessed at.
+          if (!row || !CAPTURE_LEG_STATES.includes(row.status)) continue;
+          // Match the row to its leg by capture ids first, then the leg id
+          // against the pspReference; a bare reconciler leg matches the first
+          // un-stamped Adyen leg (the incident shape: one leg, one row).
+          let idx = next.findIndex(l => l && ((l.captureId && l.captureId === row.id)
+            || (l.capturePsp && row.psp_reference && l.capturePsp === row.psp_reference)
+            || (row.psp_reference && l.id === row.psp_reference)));
+          if (idx < 0) idx = next.findIndex(l => l && !l.capture && isAdyenLeg(l));
+          if (idx < 0) continue;
+          next = next.map((l, i) => i !== idx ? l : {
+            ...l,
+            capture: row.status,
+            captureId: row.id,
+            ...(row.psp_reference ? { capturePsp: row.psp_reference } : {}),
+            ...(row.deadline_at ? { captureDeadline: row.deadline_at } : {}),
+            ...(Number.isFinite(Number(row.auth_minor)) ? { captureAuthMinor: Number(row.auth_minor) } : {}),
+            ...(row.status === 'failed' && row.error ? { tipError: String(row.error) } : {}),
+          });
+        }
+        return next === cur ? c : { ...c, paymentIntents: next };
+      }),
+    }));
   },
 
   refundCheck: async (checkId, opts = {}) => {

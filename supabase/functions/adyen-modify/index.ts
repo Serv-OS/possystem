@@ -55,9 +55,12 @@ Deno.serve(async (req) => {
   const locationId = String(body.location_id ?? '');
   // v5.7.5: 'tip_capture' identifies the payment by `reference` (terminal_captures
   // id OR pspReference), not psp_reference - see the block below the fence.
+  // v5.7.8: 'capture_status' is READ ONLY - it identifies by closed_check_id and
+  // needs no psp_reference either.
   const isTipCapture = action === 'tip_capture';
-  if (!locationId || !['capture', 'cancel', 'refund', 'adjust', 'tip_capture'].includes(action) || (!isTipCapture && !psp)) {
-    return json({ error: "action ('capture'|'cancel'|'refund'|'adjust'|'tip_capture'), psp_reference and location_id required" }, 400);
+  const isCaptureStatus = action === 'capture_status';
+  if (!locationId || !['capture', 'cancel', 'refund', 'adjust', 'tip_capture', 'capture_status'].includes(action) || (!isTipCapture && !isCaptureStatus && !psp)) {
+    return json({ error: "action ('capture'|'cancel'|'refund'|'adjust'|'tip_capture'|'capture_status'), psp_reference and location_id required" }, 400);
   }
 
   // Resolve venue + merchant account (either id space).
@@ -92,6 +95,25 @@ Deno.serve(async (req) => {
         .select('id').eq('device_uid', uid).eq('location_id', opsLocationId).maybeSingle(),
     ]);
     if (!ul && !dev) return json({ error: 'no access to this location' }, 403);
+  }
+
+  // ── v5.7.8 READ action 'capture_status' ────────────────────────────────────
+  // History self-heal: a check that closed through the background reconciler can
+  // hold a live terminal_captures row whose leg stamping never reached the
+  // closed check, so the till sees no tip window at all. This hands the fenced
+  // caller the capture rows for one closed check so the client can re-stamp its
+  // in-memory legs. STRICTLY READ ONLY: no writes, no adyenFetch, and the query
+  // is pinned to the fenced venue so no cross-venue check id can leak rows.
+  if (isCaptureStatus) {
+    const closedCheckId = String(body.closed_check_id ?? '').trim();
+    if (!closedCheckId) return json({ error: 'closed_check_id required' }, 400);
+    const { data: rows, error: qErr } = await opsAdmin.from('terminal_captures')
+      .select('id, psp_reference, status, auth_minor, tip_minor, final_minor, deadline_at, error, simulated')
+      .eq('closed_check_id', closedCheckId)
+      .eq('location_id', opsLocationId)
+      .order('created_at', { ascending: true });
+    if (qErr) return json({ error: qErr.message }, 500);
+    return json({ ok: true, captures: rows ?? [] });
   }
 
   // ── v5.7.5 TIP ON PRINTED RECEIPT: action 'tip_capture' ────────────────────
