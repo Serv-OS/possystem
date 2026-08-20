@@ -856,13 +856,17 @@ Deno.serve(async (req) => {
       }
     }
 
-    // ── bookings settlement (Phase 5): bkpay-<bookingId>-<kind> references ──
+    // ── bookings settlement (Phase 5): bkpay-<bookingId>-<kind>[-a<N>] refs ──
     // The ledger row was written at payment time; the webhook is the durable
     // confirmation that settles/corrects it. Idempotent: keyed updates only,
     // and the raw event is already stored above whatever happens here.
     const ref = String(item.merchantReference || '');
     if (ref.startsWith('bkpay-') && item.pspReference) {
       try {
+        // Reference parse is for the BOOKING ID (status promote below) only.
+        // Old refs have no -a suffix; new ones carry the attempt number.
+        const refMatch = ref.match(/^bkpay-(.+)-(hold|deposit|prepay)(?:-a\d+)?$/);
+        const bkKind = refMatch ? refMatch[2] : null;
         const okEvent = String(item.success) === 'true';
         const code = String(item.eventCode || '');
         let patch: Record<string, unknown> | null = null;
@@ -871,7 +875,7 @@ Deno.serve(async (req) => {
             ? { authorised_at: new Date().toISOString(), psp_reference: item.pspReference }
             : { status: 'failed', refusal_reason: item.reason || 'refused' };
           // capture-on-auth kinds settle to captured on a successful auth
-          if (okEvent && (ref.endsWith('-prepay') || ref.endsWith('-deposit'))) {
+          if (okEvent && (bkKind === 'prepay' || bkKind === 'deposit')) {
             patch.status = 'captured'; patch.captured_at = new Date().toISOString();
           } else if (okEvent) {
             patch.status = 'authorised';
@@ -884,7 +888,57 @@ Deno.serve(async (req) => {
           patch = { status: 'refunded' };
         }
         if (patch) {
-          await admin.from('booking_payments').update(patch).eq('merchant_reference', ref);
+          // v5.7.23 - settle by psp_reference (unique index), never by merchant
+          // reference: booking_pay stores the sync response's psp on ITS row,
+          // so the payment psp matches exactly one attempt. A reference-wide
+          // update flipped EVERY attempt for the booking+kind at once (a
+          // refused-then-retried card doubled or destroyed the credit).
+          // Modifications (CAPTURE/CANCELLATION/REFUND) point at the parent
+          // payment via originalReference - same rowKey rule as applyMoneyEvent.
+          const settleKey = code === 'AUTHORISATION'
+            ? String(item.pspReference)
+            : String(item.originalReference || item.pspReference);
+          const { data: settledRows } = await admin.from('booking_payments')
+            .update(patch).eq('psp_reference', settleKey).select('id');
+          if (!settledRows?.length) {
+            // Async-only flow: the row was inserted before any psp was known.
+            // Settle the single MOST RECENT still-open attempt for this
+            // reference - never a blanket reference-wide update.
+            const { data: cand } = await admin.from('booking_payments')
+              .select('id').eq('merchant_reference', ref)
+              .in('status', ['pending', 'failed'])
+              .order('created_at', { ascending: false }).limit(1);
+            if (cand?.length) {
+              await admin.from('booking_payments').update(patch).eq('id', cand[0].id);
+            }
+          }
+        }
+        // ── pay-before-commit backstop (v5.7.21): a booking the widget wrote
+        // as 'pending_payment' promotes here when the money confirms async
+        // (3DS/redirect flows answer the browser 'pending'; this webhook is
+        // the durable result). prepay → 'prepaid'; deposit/hold → 'confirmed'.
+        // v5.7.23: 'expired' promotes too - a capture landing after the
+        // 20-minute sweep RESURRECTS the booking (the money is captured, the
+        // booking must live; the table-overlap risk is accepted). Cancelled
+        // and no-show bookings still never come back.
+        const settled = patch && (patch.status === 'captured' || patch.status === 'authorised');
+        if (settled && refMatch) {
+          const bkId = refMatch[1];
+          const next = bkKind === 'prepay' ? 'prepaid' : 'confirmed';
+          const { data: promoted } = await admin.from('bookings')
+            .update({ status: next })
+            .eq('id', bkId).in('status', ['pending_payment', 'expired'])
+            .select('id');
+          if (promoted?.length) {
+            // The confirmation was deliberately NOT sent at booking time for
+            // pending_payment — fire it now the money is real. Ledger-gated
+            // inside booking-reminders, so racing the sync promote is safe.
+            fetch(`${SUPABASE_URL}/functions/v1/booking-reminders`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SERVICE_ROLE}` },
+              body: JSON.stringify({ action: 'confirm', booking_id: bkId }),
+            }).catch(() => {});
+          }
         }
         // A stored card token can arrive on the webhook rather than the sync
         // response — enrich the guest record when we get it.

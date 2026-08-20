@@ -24,8 +24,10 @@ import {
   loadBookings, createBookingAtomic, updateBookingRow,
   loadBookingRules, saveBookingRules, loadPackages,
   upsertPackageRow, deletePackageRow, moveBookingTables,
-  loadBookingPreorders, saveBookingPreorders,
+  loadBookingPreorders, saveBookingPreorders, loadBookingCredit,
 } from '../lib/bookings/bookingsData.js';
+import { packageItemsFor } from '../lib/bookings/packagePricing.js';
+import { buildScheduleCtx } from '../lib/locationTime.js';
 import { supabase, isMock, getActiveLocationSync, getLocationId } from '../lib/supabase.js';
 import { isTrainingMode } from '../lib/trainingMode.js';
 import { flushSingleSession } from '../sync/SessionSync.js';
@@ -41,6 +43,22 @@ async function resolveLocationId() {
 const todayISO = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
+// v5.7.23 - epoch ms → minute-of-day on the VENUE's wall clock. Passed into
+// sessionsToBlocks so a session's seatedAt converts in the venue timezone
+// (the optimiser stays pure and parity-copied; the clock comes from callers).
+const epochToVenueMin = (tz) => (epochMs) => {
+  try {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: tz || 'Europe/London', hour: '2-digit', minute: '2-digit', hour12: false,
+    }).format(new Date(epochMs));
+    const [h, m] = parts.split(':').map(Number);
+    return ((h === 24 ? 0 : h) || 0) * 60 + (m || 0);
+  } catch {
+    const d = new Date(epochMs);
+    return d.getHours() * 60 + d.getMinutes();
+  }
 };
 
 export const mintBookingId = () => `bk-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -96,11 +114,14 @@ export function bookingsSlice(set, get) {
       const pkg = packageId ? (get().packages || []).find((p) => p.id === packageId) : null;
       // A live POS tab blocks its table like a dining booking — but only when
       // suggesting for TODAY (a lunch tab must not block a dinner booking).
-      const isToday = !get().bookingsDate || get().bookingsDate === todayISO();
-      const now = new Date();
-      const nowMin = now.getHours() * 60 + now.getMinutes();
+      // v5.7.23 - the VENUE clock decides "today" and now-minutes, never the
+      // device clock (the v5.7.20 rule: this gates a business decision).
+      const ctx = buildScheduleCtx(get().locationConfig?.timezone);
+      const isToday = !get().bookingsDate || get().bookingsDate === ctx.ymd;
+      const nowMin = ctx.nowMinutes;
       const blocks = isToday
-        ? sessionsToBlocks(get().tables, get().bookings, rules?.turnBands || DEFAULT_TURN_BANDS, nowMin)
+        ? sessionsToBlocks(get().tables, get().bookings, rules?.turnBands || DEFAULT_TURN_BANDS, nowMin,
+            epochToVenueMin(get().locationConfig?.timezone))
         : [];
       return suggestTables({
         party,
@@ -213,12 +234,17 @@ export function bookingsSlice(set, get) {
     // six writers re-derive table status from session presence, so a stored
     // 'reserved'/'joined' flag would be wiped on the next boot or echo.
     upcomingBookingForTable: (tableId, { lookaheadMin = 180 } = {}) => {
-      const today = todayISO();
-      const now = new Date();
-      const nowMin = now.getHours() * 60 + now.getMinutes();
+      // v5.7.23 - the VENUE clock, never the device clock, decides whether a
+      // table reads "reserved" (the v5.7.20 rule: this gates a business
+      // decision).
+      const ctx = buildScheduleCtx(get().locationConfig?.timezone);
+      const today = ctx.ymd;
+      const nowMin = ctx.nowMinutes;
       const live = (get().bookings || []).filter((b) =>
         b.date === today &&
-        ['confirmed', 'prepaid', 'due', 'late'].includes(b.status) &&
+        // pending_payment (v5.7.21) still HOLDS its table — the guest is mid-
+        // payment; the 20-minute sweep frees it by flipping it to 'expired'.
+        ['confirmed', 'prepaid', 'due', 'late', 'pending_payment'].includes(b.status) &&
         (b.tables || []).includes(tableId) &&
         toMin(b.startTime) + (b.turnMinutes || 90) > nowMin &&
         toMin(b.startTime) <= nowMin + lookaheadMin
@@ -228,52 +254,17 @@ export function bookingsSlice(set, get) {
 
     // Materialise a package into ordinary order lines for `covers` guests.
     // course ints ride each line so the KDS fires in order — this is exactly
-    // the catering flow; nothing downstream changes. When per-seat PRE-ORDERS
-    // exist they REPLACE the package's choice lines (is_preorder_choice) — the
-    // fixed lines (welcome drink, sides) still load for everyone.
-    packageLinesToItems: (packageId, covers, preorders = []) => {
+    // the catering flow; nothing downstream changes. ALL pricing rules live in
+    // lib/bookings/packagePricing.js (v5.7.21, unit-tested): prepay packages
+    // land at 0.00 unless price_override > 0 (the money arrives as a tender
+    // leg at close), deposit packages at real prices; choice lines never
+    // auto-materialise — only actual booking_preorders picks land.
+    // v5.7.23: prepayCaptured gates the 0.00 pricing. A prepay booking with
+    // NO captured credit on the ledger prices like deposit (real prices).
+    packageLinesToItems: (packageId, covers, preorders = [], { prepayCaptured = true } = {}) => {
       const pkg = (get().packages || []).find((p) => p.id === packageId);
-      const menuItems = get().menuItems || [];
-      const hasPre = preorders.length > 0;
-      const fixed = (pkg?.lines || [])
-        .filter((l) => !(hasPre && l.isPreorderChoice))
-        .map((l) => {
-          const mi = l.itemId ? menuItems.find((m) => m.id === l.itemId) : null;
-          const price = l.priceOverride != null ? l.priceOverride : (mi?.price ?? 0);
-          return {
-            uid: `pl-${l.id}-${Date.now()}`,
-            itemId: l.itemId || `pkg-line-${l.id}`,
-            name: l.displayName || mi?.name || 'Package item',
-            price,
-            qty: Math.max(1, Math.round((l.qtyPerCover || 1) * covers)),
-            mods: [], notes: '', allergens: mi?.allergens || [],
-            course: l.course ?? 0,
-            fired: (l.course ?? 0) === 0,
-            seat: null,
-          };
-        });
-      // Pre-order rows: one line per seat choice, guest's name riding the notes
-      // so the KDS ticket and kitchen print show WHO each plate is for.
-      const chosen = preorders.map((r, i) => {
-        const mi = r.itemId ? menuItems.find((m) => m.id === r.itemId) : null;
-        const base = (pkg?.lines || []).find((l) => l.itemId && l.itemId === r.itemId && l.isPreorderChoice);
-        const price = base ? (base.priceOverride != null ? base.priceOverride : 0) : (mi?.price ?? 0);
-        const who = [r.seat ? `Seat ${r.seat}` : null, r.guestName || null].filter(Boolean).join(' · ');
-        return {
-          uid: `po-${r.id || i}-${Date.now()}`,
-          itemId: r.itemId || `preorder-${i}`,
-          name: r.displayName || mi?.name || 'Pre-order',
-          price,
-          qty: 1,
-          mods: [],
-          notes: [who, r.notes || null].filter(Boolean).join(' — '),
-          allergens: mi?.allergens || [],
-          course: r.course ?? 0,
-          fired: (r.course ?? 0) === 0,
-          seat: r.seat ?? null,
-        };
-      });
-      return [...fixed, ...chosen];
+      if (!pkg) return [];
+      return packageItemsFor({ pkg, covers, preorders, menuItems: get().menuItems || [], prepayCaptured });
     },
 
     // ── per-seat pre-orders (Phase 4) ────────────────────────────────────────
@@ -319,16 +310,46 @@ export function bookingsSlice(set, get) {
         allergens: b.customer.allergens || [],
       } : null;
       try {
+        // ── v5.7.21: the booking's money rides onto the session ──────────────
+        // Captured, not-yet-applied booking_payments (prepay/deposit) become
+        // the session's booking credit: visible from seating ("Package X PAID"
+        // / "Deposit applied at close") and auto-applied by CheckoutModal as a
+        // tender leg. Training tills carry the label but never real credit.
+        const pkg = b.packageId ? (get().packages || []).find((p) => p.id === b.packageId) : null;
+        let credit = { prepayMinor: 0, depositMinor: 0 };
+        if (b.packageId && !isTrainingMode()) {
+          try { credit = await loadBookingCredit(b.id); } catch { /* stays 0 — honest fallback */ }
+        }
+        // v5.7.23 - free food is EARNED: the prepay 0.00 pricing only applies
+        // when captured, un-applied prepay money is actually on the ledger. An
+        // unpaid prepay booking (pending_payment, expired, legacy unpaid
+        // 'prepaid') seats at REAL prices and the POS chip says so. No seat
+        // blocking - the party still sits. Training tills demo the paid flow
+        // (they commit nothing).
+        const prepayCaptured = pkg?.paymentModel !== 'prepay'
+          || isTrainingMode()
+          || (credit.prepayMinor || 0) > 0;
         // A package pre-loads the tab: its lines become ordinary order items
         // with course ints (the catering flow) via seatTableWithItems. Per-seat
-        // pre-orders (if taken at booking) replace the package's choice lines,
-        // each carrying "Seat N · Name" so the kitchen knows whose plate it is.
+        // pre-orders (if taken at booking) become the choice lines, each
+        // carrying "Seat N · Name" so the kitchen knows whose plate it is.
         const preorders = b.packageId ? await get().loadPreorders?.(b.id) : [];
-        const pkgItems = b.packageId ? get().packageLinesToItems?.(b.packageId, b.covers, preorders || []) : [];
+        const pkgItems = b.packageId ? get().packageLinesToItems?.(b.packageId, b.covers, preorders || [], { prepayCaptured }) : [];
+        const bookingRef = {
+          bookingId: b.id,
+          packageId: b.packageId || null,
+          packageName: pkg?.name || null,
+          paymentModel: pkg?.paymentModel || null,
+          prepaidMinor: credit.prepayMinor || 0,
+          depositMinor: credit.depositMinor || 0,
+          // The POS seating chip keys "Package unpaid, full prices apply" on
+          // this, not on prepaidMinor (training carries the label, no credit).
+          prepayUnpaid: !prepayCaptured,
+        };
         if (pkgItems?.length) {
-          get().seatTableWithItems?.(b.primaryTableId, pkgItems, { covers: b.covers, server: get().staff?.name, customer: seatCustomer });
+          get().seatTableWithItems?.(b.primaryTableId, pkgItems, { covers: b.covers, server: get().staff?.name, customer: seatCustomer, booking: bookingRef });
         } else {
-          get().seatTable?.(b.primaryTableId, { covers: b.covers, server: get().staff?.name, customer: seatCustomer });
+          get().seatTable?.(b.primaryTableId, { covers: b.covers, server: get().staff?.name, customer: seatCustomer, booking: bookingRef });
         }
         // Persist just this table's session immediately (the waitlist lesson:
         // a host stand's floor poll can flip the table back before the flush).
@@ -426,6 +447,7 @@ export function bookingsSlice(set, get) {
           source: row.source,
           packageId: row.package_id || null,
           note: row.note || '',
+          preorderToken: row.preorder_token || existing?.preorderToken || null,
           seatedAt: row.seated_at ? new Date(row.seated_at).getTime() : null,
         };
         return { bookings: existing ? list.map((b) => (b.id === row.id ? merged : b)) : [...list, merged] };

@@ -160,9 +160,13 @@ function IncludesList({ includes, compact = false }) {
   );
 }
 
-// ── confirmation-screen card capture ("Secure your booking") ──────────────────
-// Copy per paymentDue.kind. The booking is ALREADY CONFIRMED when this card
-// renders — no line here may ever imply the table is at risk.
+// ── card capture ("Secure your booking") ──────────────────────────────────────
+// Copy per paymentDue.kind. Two modes (v5.7.21 pay-before-commit):
+//   required=true  — the booking is 'pending_payment': the table is HELD for
+//                    20 minutes and only becomes confirmed/prepaid when the
+//                    money lands (onPaid fires with the promoted status).
+//   required=false — legacy screen (deploy skew: an old fn that confirmed
+//                    before money); the soft "either way" copy stays there.
 const CARD_ONLY = { paymentMethods: [{ type: 'scheme', name: 'Credit or debit card', brands: ['visa', 'mc', 'amex'] }] };
 const PAY_TITLE = {
   prepay: (amt) => `Pay ${amt} now — it comes off your bill`,
@@ -275,10 +279,11 @@ function GuestChoiceCards({ party, groups, getSel, onPick, getName, onName, bran
 // carried paymentDue (venue has card capture on; null = nothing to collect).
 // ADVANCED-flow Adyen Card, same pattern as components/AdyenPaymentForm.jsx:
 // the card encrypts in the browser, the money request runs through the
-// booking-widget fn (booking_pay), which knows the amount server-side. The
-// booking is already confirmed before this mounts, so every failure path here
-// stays soft — the guest can always sort payment with the venue instead.
-function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId }) {
+// booking-widget fn (booking_pay), which knows the amount server-side. In
+// required mode the booking is pending_payment (failure = retry, then the
+// 20-minute expiry); in legacy mode it was already confirmed, so every
+// failure path stays soft — the guest can sort payment with the venue.
+function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, required = false, onPaid = null }) {
   const holder = useRef(null);
   const dropinRef = useRef(null);
   const submittedRef = useRef(false); // pre-submit onError = setup failure → fallback copy
@@ -319,6 +324,10 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId }) {
               setPaidInfo({ pspReference: r.pspReference || null });
               setPhase('paid');
               actions.resolve({ resultCode: r.resultCode || 'Authorised' });
+              // v5.7.21 pay-before-commit: the fn's sync promote rides back as
+              // r.status ('prepaid' | 'confirmed') — hand it up so the page can
+              // move from the held screen to the real confirmation.
+              onPaid?.(r.status || null);
               return;
             }
             if (r?.error === 'card_refused') {
@@ -415,7 +424,9 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId }) {
             <div style={{ marginTop: 8, fontSize: 12.5, fontWeight: 600, color: '#b91c1c' }}>{payErr}</div>
           )}
           <div style={{ marginTop: 10, fontSize: 12, color: 'var(--muted)', lineHeight: 1.5 }}>
-            Your table is booked either way — you can also sort payment with the venue.
+            {required
+              ? 'Your table is held for 20 minutes while you pay. The booking only confirms once payment goes through.'
+              : 'Your table is booked either way — you can also sort payment with the venue.'}
           </div>
         </div>
       )}
@@ -751,20 +762,32 @@ export default function BookingWidget({ location }) {
     requestAnimationFrame(() => el.scrollIntoView({ block: 'center' }));
   });
 
+  // "Choose later" skip (v5.7.21): even inside the pre-order window the guest
+  // may defer — the fn mints the link and sends it. Keyed on package+date so a
+  // switch resets it derivation-style, no effects.
+  const [chooseLaterFor, setChooseLaterFor] = useState(null);
+
   // Everything about menu choices is DERIVED per render against the currently
   // selected offer — no effects, no resets.
   const forced = (forcedPre && selectedPkg && String(forcedPre.pkgId) === String(selectedPkg.id))
     ? forcedPre : null;
   const pkgGroups = (selectedPkg?.choiceGroups?.length ? selectedPkg.choiceGroups : forced?.groups) || [];
   const preDays = Number(selectedPkg?.preorderDaysBefore) || 0;
-  // Window test on the VENUE's calendar (cfg.today, never the browser's):
-  // inside the window the kitchen needs choices NOW; outside it the fn mints a
-  // completion token instead. The server recomputes — this only decides what
-  // the page shows first, and `forced` overrides it when the fn disagrees.
+  // The choose-now fork is SERVER-decided from v5.7.21 (each offer carries
+  // preorderChoiceAtBooking + preorderDeadline for this exact date): inside
+  // the window the deadline has already passed, so choices are taken at
+  // booking; outside it the guest gets a link, due by the deadline. The local
+  // daysAhead test is only the deploy-skew fallback, and `forced` overrides
+  // both when the fn disagrees.
   const daysAhead = Math.round((Date.parse(date) - Date.parse(cfg?.today || todayISO())) / 86400000);
-  const choicesNow = !!selectedPkg && pkgGroups.length > 0
-    && (forced ? true : (!!selectedPkg.requiresPreorder && daysAhead <= preDays));
-  const choicesLater = !!selectedPkg?.requiresPreorder && !choicesNow && daysAhead > preDays;
+  const inWindow = selectedPkg?.preorderChoiceAtBooking != null
+    ? !!selectedPkg.preorderChoiceAtBooking
+    : (!!selectedPkg?.requiresPreorder && daysAhead <= preDays);
+  const chooseLater = !!selectedPkg && chooseLaterFor === `${String(selectedPkg.id)}|${date}`;
+  const choicesNow = !!selectedPkg && pkgGroups.length > 0 && !chooseLater
+    && (forced ? true : (!!selectedPkg.requiresPreorder && inWindow));
+  const choicesLater = !!selectedPkg?.requiresPreorder && pkgGroups.length > 0 && !choicesNow;
+  const preorderDeadlineISO = selectedPkg?.preorderDeadline || addDaysISO(-preDays, date);
   const seatSel = (seat, course) =>
     (selectedPkg && preSel[`${String(selectedPkg.id)}|${seat}|${course}`]) || '';
   const choicesComplete = !choicesNow || pkgGroups.every((g) =>
@@ -814,9 +837,15 @@ export default function BookingWidget({ location }) {
       consent: consent || undefined,
       package_id: selectedPkg ? selectedPkg.id : undefined,
       preorders,
+      // In-window skip: the fn accepts the booking without choices and sends
+      // the pre-order link itself (v5.7.21 link-first).
+      choose_later: chooseLater || undefined,
     });
     setSubmitting(false);
-    if (r?.ok && (r.status === 'confirmed' || r.status === 'pending')) { setResult(r); return; }
+    // status is the REAL row status from v5.7.21: 'pending_payment' means the
+    // next screen takes the card; 'prepaid' books a nothing-due prepay package;
+    // legacy 'pending' = availability vanished mid-flight.
+    if (r?.ok && ['confirmed', 'prepaid', 'pending_payment', 'pending'].includes(r.status)) { setResult(r); return; }
     if (r?.error === 'preorders_required') {
       // Defensive: the fn wants choices the page didn't collect (offer drift).
       // Reveal the section from ITS choiceGroups and walk the guest there.
@@ -883,8 +912,48 @@ export default function BookingWidget({ location }) {
     </Shell>;
   }
 
+  // ── pay-before-commit screen (v5.7.21) ──────────────────────────────────────
+  // The booking is 'pending_payment': the table is HELD, the money decides.
+  // No "booked" language anywhere on this screen. Card refused → the payment
+  // card offers a retry; the 20-minute sweep frees the table if payment never
+  // lands. On sync success the card's onPaid promotes this page to the real
+  // confirmation with the status the fn answered.
+  if (result?.status === 'pending_payment') {
+    return <Shell {...shell}>
+      <div style={{ ...S.card, textAlign: 'center', padding: '34px 22px' }}>
+        <div style={{ fontSize: 38, marginBottom: 10 }}>💳</div>
+        <div style={S.h1}>Almost there, payment secures your table</div>
+        <div style={{
+          fontFamily: MONO, fontSize: 15, fontWeight: 700, margin: '12px 0 14px',
+          color: 'var(--ink)',
+        }}>
+          {fmtDateLong(result.date || date)} · {result.time || time} · {result.party || party} {(result.party || party) === 1 ? 'guest' : 'guests'}
+        </div>
+        {result.package && (
+          <div style={{ fontSize: 13.5, color: 'var(--muted)', marginBottom: 12 }}>
+            {result.package.name}
+          </div>
+        )}
+        {!isMock && supabase && result.paymentDue && result.bookingId ? (
+          <BookingPaymentCard
+            paymentDue={result.paymentDue}
+            adyen={result.adyen}
+            bookingId={result.bookingId}
+            opsId={opsId}
+            required
+            onPaid={(status) => setResult((prev) => ({ ...(prev || {}), status: status || 'confirmed', paid: true }))}
+          />
+        ) : (
+          <div style={S.sub}>We couldn’t start the payment here. Please call {venueName} to finish your booking.</div>
+        )}
+      </div>
+    </Shell>;
+  }
+
   // ── confirmed / pending screens ─────────────────────────────────────────────
-  if (result?.status === 'confirmed') {
+  // 'prepaid' is the row status of a paid (or nothing-due) prepay-package
+  // booking — the same confirmation screen.
+  if (result?.status === 'confirmed' || result?.status === 'prepaid') {
     // The fn's confirm carries { id, name, paymentModel } only — the money
     // figures come from the offer card in the last slots response (still keyed
     // to the date+party that was booked; nothing re-fetched since).
@@ -922,9 +991,18 @@ export default function BookingWidget({ location }) {
               </div>
             )}
             {confPkg && <IncludesList includes={confPkg.includes} compact />}
-            {result.preordersTaken && !result.preorderToken && (
+            {/* v5.7.21: the token now comes back for EVERY pre-order booking
+                (the link lets guests amend), so key this off preordersTaken. */}
+            {result.preordersTaken && (
               <div style={{ fontSize: 12.5, fontWeight: 700, color: '#15803d', marginTop: 8 }}>
                 Menu choices received ✓
+              </div>
+            )}
+            {result.paid && result.paymentDue && (
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: '#15803d', marginTop: 4 }}>
+                {PAID_LINE[result.paymentDue.kind]
+                  ? PAID_LINE[result.paymentDue.kind](fmtGBP((Number(result.paymentDue.amountMinor) || 0) / 100))
+                  : 'Payment received'} ✓
               </div>
             )}
             {(() => {
@@ -937,10 +1015,11 @@ export default function BookingWidget({ location }) {
             })()}
           </div>
         )}
-        {/* Card capture — only when the fn asked for it (paymentDue non-null)
-            and there's a real backend to pay through. Sits ABOVE the
-            choose-your-menu box: money first, menu after. */}
-        {!isMock && supabase && result.paymentDue && result.bookingId && (
+        {/* Card capture — legacy deploy-skew path only: a NEW fn books money-due
+            bookings as pending_payment (handled above), so this renders solely
+            when an OLD fn confirmed first and still wants the card. Skipped
+            once this page already took the payment (result.paid). */}
+        {!isMock && supabase && result.paymentDue && result.bookingId && !result.paid && (
           <BookingPaymentCard
             paymentDue={result.paymentDue}
             adyen={result.adyen}
@@ -948,7 +1027,7 @@ export default function BookingWidget({ location }) {
             opsId={opsId}
           />
         )}
-        {result.preorderToken && (
+        {result.preorderToken && !result.preordersTaken && (
           // Booked OUTSIDE the pre-order window: the guest chooses later via
           // this tokened link (the fn emails + texts the same one).
           <div style={{
@@ -1195,6 +1274,16 @@ export default function BookingWidget({ location }) {
           {choicesNow && (
             <div ref={choicesRef} style={{ marginTop: 14 }}>
               <div style={S.fieldLbl}>Menu choices</div>
+              {/* v5.7.21 fork copy: same-day / short-notice bookings are inside
+                  the pre-order window — the deadline has already passed, so the
+                  kitchen needs the choices now (or the guest defers by link). */}
+              <div style={{
+                marginBottom: 10, padding: '9px 12px', borderRadius: 10, fontSize: 12.5,
+                lineHeight: 1.5, color: 'var(--ink)', background: 'var(--bg)',
+                border: '1px dashed var(--line)',
+              }}>
+                Your date is inside the pre-order window, so the kitchen needs everyone’s choices now.
+              </div>
               <GuestChoiceCards
                 party={party} groups={pkgGroups} brand={brand} onBrand={onBrand}
                 getSel={seatSel}
@@ -1205,6 +1294,16 @@ export default function BookingWidget({ location }) {
                 getName={(seat) => preNames[seat] || ''}
                 onName={(seat, v) => setPreNames((m) => ({ ...m, [seat]: v }))}
               />
+              {/* Choose-later skip: mints the link server-side and sends it. */}
+              <button type="button"
+                onClick={() => { setChooseLaterFor(`${String(selectedPkg.id)}|${date}`); setSubmitErr(''); }}
+                style={{
+                  marginTop: 10, width: '100%', padding: '10px 12px', borderRadius: 10,
+                  border: '1px dashed var(--line)', background: 'transparent', cursor: 'pointer',
+                  fontFamily: 'inherit', fontSize: 13, fontWeight: 700, color: 'var(--muted)',
+                }}>
+                Choose later, email and text me a link instead
+              </button>
             </div>
           )}
           {choicesLater && (
@@ -1213,8 +1312,23 @@ export default function BookingWidget({ location }) {
               lineHeight: 1.5, color: 'var(--muted)', background: 'var(--bg)',
               border: '1px dashed var(--line)',
             }}>
-              Menu choices aren’t needed yet — we’ll email and text you a link,
-              choices due by {fmtDateLong(addDaysISO(-preDays, date))}.
+              {chooseLater ? (
+                <>
+                  Choosing later ✓. We will email and text you a link straight away
+                  {inWindow
+                    ? <>, please pick as soon as you can so the kitchen can prepare.</>
+                    : <>, choices due by <b style={{ color: 'var(--ink)' }}>{fmtDateLong(preorderDeadlineISO)}</b>.</>}{' '}
+                  <button type="button" style={{ ...S.linkBtn, fontSize: 12.5 }}
+                    onClick={() => setChooseLaterFor(null)}>
+                    Choose now instead
+                  </button>
+                </>
+              ) : (
+                <>
+                  We will email and text you a link to choose everyone’s menu,
+                  choices due by <b style={{ color: 'var(--ink)' }}>{fmtDateLong(preorderDeadlineISO)}</b>.
+                </>
+              )}
             </div>
           )}
         </div>

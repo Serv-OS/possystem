@@ -46,8 +46,10 @@ export function turnFor(party, turnBands = DEFAULT_TURN_BANDS) {
 // ── free check — half-open interval overlap ───────────────────────────────────
 // bookings: [{ id, tables: ['t1','t3'], startMin, turnMinutes, status }]
 // A booking ending exactly at another's start does NOT conflict — turn times
-// include the reset. 'departed' and dead statuses never block.
-const BLOCKING_EXCLUDED = new Set(['departed', 'cancelled', 'no_show']);
+// include the reset. 'departed' and dead statuses never block. 'expired'
+// (v5.7.21) is a pending_payment booking the guest never paid for - its
+// tables are FREED (mirrors create_booking's conflict exclusion, 20260824).
+const BLOCKING_EXCLUDED = new Set(['departed', 'cancelled', 'no_show', 'expired']);
 export function isTableFree(tableId, startMin, endMin, bookings = [], { skipId = null } = {}) {
   return !(bookings || []).some((b) => {
     if (b.id === skipId || BLOCKING_EXCLUDED.has(b.status)) return false;
@@ -171,7 +173,11 @@ export function toOptimiserBooking(b) {
 // nowMin + 30. Tables whose session came from seating a BOOKING are skipped --
 // that booking's own dining footprint already blocks them (no double-count).
 // Only meaningful for TODAY -- callers gate on the viewed date.
-export function sessionsToBlocks(tables, bookings, turnBands = DEFAULT_TURN_BANDS, nowMin = 0) {
+// v5.7.23 - epochToMin: caller-supplied epoch-ms -> minute-of-day converter on
+// the VENUE clock (the module stays pure and environment-free, so the venue
+// timezone must come IN from the caller; the fallback is the runtime's local
+// clock, which is only right when device and venue agree).
+export function sessionsToBlocks(tables, bookings, turnBands = DEFAULT_TURN_BANDS, nowMin = 0, epochToMin = null) {
   const seatedTables = new Set();
   for (const b of bookings || []) {
     if (b && b.status === 'dining') for (const id of b.tables || []) seatedTables.add(id);
@@ -182,8 +188,12 @@ export function sessionsToBlocks(tables, bookings, turnBands = DEFAULT_TURN_BAND
     let startMin = nowMin;
     const seated = Number(t.session.seatedAt);
     if (Number.isFinite(seated) && seated > 0) {
-      const d = new Date(seated);
-      startMin = d.getHours() * 60 + d.getMinutes();
+      if (typeof epochToMin === 'function') {
+        startMin = epochToMin(seated);
+      } else {
+        const d = new Date(seated);
+        startMin = d.getHours() * 60 + d.getMinutes();
+      }
     }
     if (startMin > nowMin) startMin = 0; // seated before midnight -- open since day start
     const covers = Number(t.session.covers) || 2;

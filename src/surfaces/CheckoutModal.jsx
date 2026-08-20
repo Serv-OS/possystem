@@ -1373,18 +1373,59 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   const billDue = splitWithReader ? Math.max(0, total - readerPaidMajor) : total;
   const leftToPay = billDue;
 
+  // ── v5.7.21: booking prepay/deposit credit riding the seated session ────────
+  // seatBooking stamped { bookingId, packageName, paymentModel, prepaidMinor,
+  // depositMinor } (CAPTURED, not-yet-applied booking_payments money) onto the
+  // session. Snapshotted once — it cannot change mid-checkout. This is a
+  // TENDER, not a discount: the check books gross and the credit lands as a
+  // payment leg at close, so only the remainder is due here.
+  const [bookingInfo] = useState(() => {
+    if (!tableId) return null;
+    try {
+      const b = useStore.getState().tables.find(t => t.id === tableId)?.session?.booking;
+      return (b && ((b.prepaidMinor || 0) + (b.depositMinor || 0)) > 0) ? b : null;
+    } catch { return null; }
+  });
+  const bookingCreditMajor = bookingInfo
+    ? ((bookingInfo.prepaidMinor || 0) + (bookingInfo.depositMinor || 0)) / 100 : 0;
+  // v5.7.23: SplitModal divides the GROSS bill and knows nothing about the booking credit, so splitting would re-charge money the booking already paid.
+  const splitWithBookingCredit = !!bookingInfo;
+
   const giftCredit = giftApplied?.applied ? giftApplied.applied / 100 : 0;
   // Loyalty discount applied to total
   const loyaltyCredit = loyaltyApplied?.discount_value ? loyaltyApplied.discount_value / 100 : 0;
   const promoCredit = promoApplied?.amount ? Number(promoApplied.amount) : 0;   // major units, from promo-redeem
+  // v5.7.21: booking credit applies FIRST and against the BILL only (a tip is
+  // for tonight's service, never pre-paid). Capped at the bill: an excess
+  // prepay just zeroes the due — it is NOT refunded here, the surplus stays
+  // visible on the booking's payment ledger.
+  const bookingApplied = Math.min(bookingCreditMajor, billDue);
   // v5.6.76: `billDue`, not `total`. THE choke point — the cash pad, the card
   // charge, the terminal dispatch amount, the gift-card cap and the reader-tip
   // derivation are all downstream of this one line, so they all collect the
   // remainder without any of them needing to know why.
-  const grand    = Math.max(0, billDue + tipAmt - giftCredit - loyaltyCredit - promoCredit);
+  const grand    = Math.max(0, billDue + tipAmt - bookingApplied - giftCredit - loyaltyCredit - promoCredit);
   // The review screen's "Remaining due" block: shown whenever the big number at
   // the top is NOT what staff are about to take.
-  const showRemainingDue = !!(giftApplied || loyaltyApplied || promoApplied) || splitWithReader;
+  const showRemainingDue = !!(giftApplied || loyaltyApplied || promoApplied) || splitWithReader || bookingApplied > 0;
+
+  // The booking credit legs a close consumes: prepay first, then deposit,
+  // capped to the applied figure. Shared by complete() (modal-driven close)
+  // and startTerminalJob (frozen into the draft for the reconciler path).
+  const bookingLegsFor = () => {
+    if (!bookingInfo || !(bookingApplied > 0.004)) return null;
+    let leftMinor = Math.round(bookingApplied * 100);
+    const legs = [];
+    const take = (haveMinor, method) => {
+      const amt = Math.min(Number(haveMinor) || 0, leftMinor);
+      if (amt > 0) { legs.push({ method, amountMinor: amt }); leftMinor -= amt; }
+    };
+    take(bookingInfo.prepaidMinor, 'booking_prepaid');
+    take(bookingInfo.depositMinor, 'booking_deposit');
+    return legs.length
+      ? { bookingId: bookingInfo.bookingId, appliedMinor: Math.round(bookingApplied * 100), legs }
+      : null;
+  };
 
   // Validate a promo code in real time (no write). On success, hold it; the store redeems it
   // atomically (bound to the order) on payment completion. Called from the unified gift/promo box;
@@ -1512,7 +1553,12 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     // a gift that cleared the bill but left a reader tip to charge is NOT gift-only.
     // v5.6.76: `billDue`, so both the gift-only test AND the change-due overlay below
     // work off the REMAINDER on a reader-part-paid table. Identical to `total` otherwise.
-    const dueAfterGift = Math.max(0, billDue + tip - ((staged?.applied || 0) / 100) - loyaltyCredit - promoCredit);
+    // v5.7.21: net of the booking credit too — it paid part of the bill already.
+    const dueAfterGift = Math.max(0, billDue + tip - bookingApplied - ((staged?.applied || 0) / 100) - loyaltyCredit - promoCredit);
+    // v5.7.21 — booking prepay/deposit tender legs this close consumes.
+    const bookingRecord = bookingLegsFor();
+    const bookingIntentLegs = (bookingRecord?.legs || [])
+      .map(l => ({ id: null, amountMinor: l.amountMinor, method: l.method }));
     const giftOnly = !!staged && dueAfterGift <= 0.005;
 
     // ── GIFT CARD DEBITS HERE, at commit — not when staff tapped Apply ──────────
@@ -1574,6 +1620,16 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     else if (hasGift) finalMethod = splitWithReader ? 'gift_card+split' : 'gift_card';
     if (hasLoyalty) finalMethod = `loyalty+${finalMethod}`;
     if (promoApplied) finalMethod = `promo+${finalMethod}`;
+    // v5.7.21 — booking credit on the check. Covers-everything ('booking' came
+    // from the review screen's close button and nothing else tendered): the
+    // method IS the credit kind. Partial: prefix, same idiom as gift/loyalty.
+    if (bookingRecord) {
+      if (method === 'booking' && !hasGift) {
+        finalMethod = [...new Set(bookingRecord.legs.map(l => l.method))].join('+');
+      } else {
+        finalMethod = `booking+${finalMethod}`;
+      }
+    }
     // v5.5.943: cash change goes to the global tap-to-dismiss overlay. `tendered` is
     // only ever non-null on the cash path, and dueAfterGift is the figure the tender
     // screen showed as owed — in pence, same idiom as the tender screen's maths.
@@ -1586,12 +1642,14 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     // this check is booked as 'split'. The cash is real and belongs in the drawer and in
     // cash_movements, so pop it here — for the till's own leg amount, not the whole
     // occupation (the reader legs went to a card). Gated on a cash tender.
-    if (splitWithReader && tendered != null) {
+    // v5.7.21: same for a booking-credit check — its method is 'booking+cash',
+    // which the store's === 'cash' gate would miss, so the drawer pops here.
+    if ((splitWithReader || bookingRecord) && tendered != null) {
       try {
         useStore.getState().openCashDrawer?.({
           type: 'cash_sale',
           amount: Math.max(0, Math.round(dueAfterGift * 100)) / 100,
-          reason: `Cash sale · split · ${tableId || ''}`.trim(),
+          reason: `Cash sale · ${splitWithReader ? 'split' : 'booking credit'} · ${tableId || ''}`.trim(),
           force: true,
         })?.catch?.(() => {});
       } catch { /* a drawer that will not open must never lose the sale */ }
@@ -1608,6 +1666,10 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
       giftCard: giftRecord || undefined,
       loyaltyRedemption: loyaltyApplied || undefined,
       promoRedemption: promoApplied || undefined,
+      // v5.7.21 — the booking credit consumed: summary for the record, legs in
+      // payment_intents below. apply_booking_payment stamps the ledger after
+      // the close (fire-and-forget, bottom of this function).
+      bookingPayment: bookingRecord || undefined,
       stripePaymentIntentId,
       // v5.5.808: when the terminal reported what it actually CAPTURED, stamp it
       // on the refundable card leg — the record must match the money taken (the
@@ -1621,6 +1683,9 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
       // exactly what shifted position 0 in the bug v5.6.70 fixed, and derivePayment
       // Intents keeps an amount-only leg for that reason. Reader legs with no
       // transactionId ARE dropped: there is nothing to refund by.
+      // v5.7.21 — booking credit legs append AFTER every card leg in all three
+      // branches (slot 0 stays the till's own card leg; booking legs carry
+      // id:null + method, so cardLegsOf can never refund a card against them).
       ...(splitWithReader
         ? { paymentIntents: [
             { id: stripePaymentIntentId || null,
@@ -1628,10 +1693,19 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
             ...legs.filter(l => l.transactionId).map(l => ({
               id: l.transactionId, amountMinor: Number(l.chargeMinor), card: l.card || null,
             })),
+            ...bookingIntentLegs,
           ] }
         : (stripePaymentIntentId && Number.isFinite(capturedMinor)
-            ? { paymentIntents: [{ id: stripePaymentIntentId, amountMinor: capturedMinor }] }
-            : {})),
+            ? { paymentIntents: [{ id: stripePaymentIntentId, amountMinor: capturedMinor }, ...bookingIntentLegs] }
+            : (bookingIntentLegs.length
+                ? { paymentIntents: [
+                    // Keep the card leg derivePaymentIntents would otherwise mint —
+                    // a legs list, once present, replaces its fallbacks outright.
+                    ...(stripePaymentIntentId
+                      ? [{ id: stripePaymentIntentId, amountMinor: Math.round(dueAfterGift * 100) || null }] : []),
+                    ...bookingIntentLegs,
+                  ] }
+                : {}))),
       // NOTE: piResult/processor are CardTerminal state — NOT in scope here. The processor rides
       // in as a parameter from the card call site (the pi the reader flow hands back).
       //
@@ -1655,6 +1729,18 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     // not wait on housekeeping. retireReaderLegs proves the row landed before it marks
     // anything, and leaves the legs visible in Unresolved payments if it never does.
     if (legs.length) retireReaderLegs(checkId, legs);
+    // v5.7.21 — stamp the booking's captured rows applied_to_check (+ which check
+    // consumed them). Best-effort and NOT awaited: the money maths above already
+    // honoured the credit; this is the ledger's bookkeeping. Server-side
+    // idempotent — only captured, un-applied rows update, so a retry no-ops.
+    if (bookingRecord?.bookingId && supabase && !isMock && !isTrainingMode()) {
+      supabase.rpc('apply_booking_payment', {
+        p_booking_id: bookingRecord.bookingId,
+        p_closed_check_id: checkId,
+      }).then(({ error }) => {
+        if (error) console.warn('[checkout] apply_booking_payment failed (credit still honoured on the check):', error.message);
+      }).catch(() => {});
+    }
   };
 
   // v5.5.172: tipping is collected ON THE READER for card payments — Stripe
@@ -1821,6 +1907,10 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
           // lets closeApprovedTerminalJob record (and therefore later REVERSE) a gift card
           // on a check it closed without this modal — it booked giftCard:null before.
           giftCard: paxGiftRecord,
+          // v5.7.21 — the booking credit already netted off dueMinor above. Frozen
+          // into the draft (same idiom as giftCard) so a reconciler-driven close
+          // books the same tender legs and stamps the ledger.
+          bookingPayment: bookingLegsFor() || null,
           source: 'pos_send_to_terminal',
           // ── v5.6.76: this job is the FINAL leg of a reader split ────────────
           // The modal normally books the check itself when the terminal approves.
@@ -2148,6 +2238,25 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                     <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{String.fromCodePoint(0x2212)}{String.fromCodePoint(0x00A3)}{readerPaidMajor.toFixed(2)}</span>
                   </div>
                 )}
+                {/* v5.7.21 — the booking's captured prepay/deposit, auto-applied as a
+                    tender. Deducted in the same idiom as the reader legs so the big
+                    "Remaining due" figure below is provably what staff will take. */}
+                {bookingApplied > 0 && (
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop:4 }}>
+                    <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>
+                      {String.fromCodePoint(0x2713)}{' '}
+                      {bookingInfo?.prepaidMinor > 0 && bookingInfo?.depositMinor > 0
+                        ? 'Booking payments'
+                        : bookingInfo?.prepaidMinor > 0
+                          ? `${bookingInfo?.packageName || 'Package'} prepaid`
+                          : 'Booking deposit'}
+                      {bookingCreditMajor > bookingApplied + 0.004 && (
+                        <span style={{ color:'var(--t3)', fontWeight:500 }}> (of {String.fromCodePoint(0x00A3)}{bookingCreditMajor.toFixed(2)} paid, the rest stays on the booking)</span>
+                      )}
+                    </span>
+                    <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{String.fromCodePoint(0x2212)}{String.fromCodePoint(0x00A3)}{bookingApplied.toFixed(2)}</span>
+                  </div>
+                )}
                 {loyaltyApplied && (
                   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop:4 }}>
                     <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>{'⭐'} {loyaltyApplied.reward_name} ({loyaltyApplied.points_deducted} pts)</span>
@@ -2213,6 +2322,18 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                   marginBottom:10, padding:'10px 12px', borderRadius:10, fontSize:12, lineHeight:1.5,
                   background:'var(--red-d)', color:'var(--red)', border:'1px solid var(--red-b)',
                 }}>{paxError}</div>
+              )}
+              {/* v5.7.21 — the booking credit covers the whole bill: nothing left for
+                  cash or card, so offer the one honest close. The tender legs and the
+                  apply_booking_payment stamp all happen inside complete(). */}
+              {bookingApplied > 0 && grand <= 0.005 && (
+                <button onClick={()=>complete('booking', tipAmt)} style={{
+                  width:'100%', marginBottom:10, padding:compact?'12px 10px':'14px 12px', borderRadius:compact?12:14,
+                  cursor:'pointer', fontFamily:'inherit', fontSize:compact?14:16, fontWeight:800,
+                  background:'var(--grn-d, rgba(34,197,94,.12))', border:'1.5px solid var(--grn-b, rgba(34,197,94,.4))', color:'var(--grn)',
+                }}>
+                  Close check · {String.fromCodePoint(0x00A3)}{bookingApplied.toFixed(2)} paid by booking
+                </button>
               )}
               {/* v5.5.793: compact tiles (~half height) — icon + label on one row, single subtitle */}
               <div style={{ display:'flex', gap:10, marginBottom:10 }}>
@@ -2284,25 +2405,29 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                     splitting a part-paid table would re-charge money already taken. The
                     till takes the remainder in one tender instead (any method), or the
                     party finishes on the reader. Disabled rather than silently wrong. */}
-                <button disabled={splitWithReader} onClick={()=>{
+                <button disabled={splitWithReader || splitWithBookingCredit} onClick={()=>{
                   if (giftRef.current) {
                     applyGift(null);
                     try { useStore.getState().showToast?.('Gift card removed — apply it to a split portion instead.', 'info'); } catch {}
                   }
                   setShowSplit(true);
                 }}
-                title={splitWithReader ? 'This table was part-paid on the card reader — take the remainder here in one payment, or finish it on the reader.' : undefined}
+                title={splitWithReader
+                  ? 'This table was part-paid on the card reader — take the remainder here in one payment, or finish it on the reader.'
+                  : splitWithBookingCredit
+                    ? 'This booking carries prepaid or deposit money that comes off the whole bill at close. Take the remainder here in one payment instead of splitting.'
+                    : undefined}
                 style={{
                   flex:1, minWidth:0, padding:'12px 8px', borderRadius:13, fontFamily:'inherit',
-                  cursor:splitWithReader?'not-allowed':'pointer', opacity:splitWithReader?0.45:1,
+                  cursor:(splitWithReader || splitWithBookingCredit)?'not-allowed':'pointer', opacity:(splitWithReader || splitWithBookingCredit)?0.45:1,
                   background:'var(--bg3)', border:'1.5px solid var(--bdr2)',
                   display:'flex', alignItems:'center', justifyContent:'center', gap:8,
                   color:'var(--t3)', fontSize:13, fontWeight:600, transition:'all .14s',
                 }}
-                onMouseEnter={e=>{ if (splitWithReader) return; e.currentTarget.style.borderColor='var(--acc-b)';e.currentTarget.style.color='var(--acc)';}}
-                onMouseLeave={e=>{ if (splitWithReader) return; e.currentTarget.style.borderColor='var(--bdr2)';e.currentTarget.style.color='var(--t3)';}}>
+                onMouseEnter={e=>{ if (splitWithReader || splitWithBookingCredit) return; e.currentTarget.style.borderColor='var(--acc-b)';e.currentTarget.style.color='var(--acc)';}}
+                onMouseLeave={e=>{ if (splitWithReader || splitWithBookingCredit) return; e.currentTarget.style.borderColor='var(--bdr2)';e.currentTarget.style.color='var(--t3)';}}>
                   <span>⚖</span>
-                  {splitWithReader
+                  {(splitWithReader || splitWithBookingCredit)
                     ? 'Split unavailable'
                     : <>Split check · {covers} {covers===1?'guest':'guests'}</>}
                 </button>
@@ -2460,13 +2585,14 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                 // entering another replaces it, so the whole bill is available again.
                 // v5.6.76: `billDue` — on a reader-part-paid table the card must only be
                 // able to cover the REMAINDER, or it debits money the reader already took.
-                totalMinor={Math.round(Math.max(0, billDue + tipAmt - loyaltyCredit - promoCredit) * 100)}
+                // v5.7.21: net of the booking credit too — same over-draw protection.
+                totalMinor={Math.round(Math.max(0, billDue + tipAmt - bookingApplied - loyaltyCredit - promoCredit) * 100)}
                 giftAlreadyApplied={giftApplied}
                 onRemove={() => { applyGift(null); setGiftError(''); }}
                 onApplied={(staged) => {
                   applyGift(staged);
                   setGiftError('');
-                  const remainingDue = Math.round(Math.max(0, billDue + tipAmt - loyaltyCredit - promoCredit) * 100) - staged.applied;
+                  const remainingDue = Math.round(Math.max(0, billDue + tipAmt - bookingApplied - loyaltyCredit - promoCredit) * 100) - staged.applied;
                   if (remainingDue <= 0) {
                     // Gift card covers the lot — close now. The debit fires inside complete().
                     complete('gift_card', tipAmt);

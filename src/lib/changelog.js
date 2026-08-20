@@ -7,6 +7,21 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.23',
+    date: '2026-08-20',
+    items: [
+      'Booking payments now settle before the booking confirms. A widget booking that owes money (prepay, deposit or card hold) holds the table as Awaiting payment, takes the card, and only then becomes confirmed or prepaid. If the guest never pays, the booking expires after 20 minutes and the table frees itself automatically. A payment that lands after the expiry brings the booking back, because the money is real.',
+      'A prepaid or deposit booking now carries its money onto the check. From seating, the session shows the package as paid or the deposit as applied at close, and the captured amount comes off the bill as a payment line instead of being lost.',
+      'Prepaid package items only land at 0.00 when the payment actually captured. A prepay booking with no money on file seats at full menu prices and the till says Package unpaid, full prices apply, so an unpaid party can never eat free.',
+      'Split check is unavailable while a booking credit rides the table, the same as a table part paid on the card reader. The remainder is taken in one payment so the credit can never be double counted.',
+      'Every booking on a choose your menu package now gets a pre order link, even when the guest chose at booking, so choices can be amended later. The diary inspector gains Send pre order link and Copy link.',
+      'Reminder and confirmation sending is now honest. Every skipped email or text comes back with the exact reason (no address, provider not set up, already sent, no online link configured) instead of silently doing nothing.',
+      'The diary now tells the truth about money. Prepaid only shows when a captured payment is actually on file, awaiting payment bookings show amber, expired ones grey, and the same payment detail is visible on the host stand as in Back Office. Booking blocks show the table name, never its internal id.',
+      'Guests booking inside the pre order window can now tap Choose later on the menu choices and get the link by email and text instead.',
+      'Bookings availability and the reserved state on the Tables screen now run on the venue clock, not the device clock, matching the rest of the app.',
+    ],
+  },
+  {
     version: '5.7.22',
     date: '2026-08-20',
     items: [

@@ -19,8 +19,9 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../store';
+import { supabase, isMock } from '../../lib/supabase';
 import { toMin, toHM, isTableFree, toOptimiserBooking, sessionsToBlocks } from '../../lib/bookings/optimiser.js';
-import { loadBookingPayments } from '../../lib/bookings/bookingsData.js';
+import { loadBookingPayments, lookupPreorderLinkBase } from '../../lib/bookings/bookingsData.js';
 import {
   mono, tintBg, tintBd, rulesOf, displayStatus, statusMeta, StatusBadge, isDead, isLive,
   useNowMin, money, initialsOf, bookingName, todayISO, EmptyNote, Chip, preorderStateFor, courseColor,
@@ -163,7 +164,7 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
                 const dead = st === 'no_show';
                 const isSel = b.id === sel;
                 const pkg = b.packageId ? packages.find((p) => p.id === b.packageId) : null;
-                const labels = (b.tables || []).map((id) => rows.find((t) => t.id === id)?.label || id).join(' + ');
+                const labels = (b.tables || []).map((id) => rows.find((t) => t.id === id)?.label || String(id).slice(-4)).join(' + ');
                 return (
                   <button
                     key={b.id}
@@ -284,7 +285,9 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
                     >
                       <div style={{ fontSize: 11, fontWeight: 800, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{bookingName(b)}</div>
                       <div style={{ fontSize: 10, color: 'var(--t2)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', ...mono }}>
-                        {b.covers} cvr · {String(b.startTime || '').slice(0, 5)} · {(b.tables || []).join('+')}
+                        {/* v5.7.23 - the table's NAME, never its raw id (t-1783614852190
+                            told the operator nothing). Fallback: the id's last 4 chars. */}
+                        {b.covers} cvr · {String(b.startTime || '').slice(0, 5)} · {(b.tables || []).map((id) => rows.find((t) => t.id === id)?.label || String(id).slice(-4)).join('+')}
                       </div>
                       {pkg && <div style={{ fontSize: 9, color: 'var(--grn)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{pkg.name}</div>}
                     </button>
@@ -333,9 +336,10 @@ function Kpi({ label, value, sub, col, last }) {
   );
 }
 
-// Live money state from the booking_payments ledger. RLS only lets a
-// BO-authenticated session read it; a paired host-stand device gets [] and
-// falls back to neutral copy — an empty read is "not visible here", never
+// Live money state from the booking_payments ledger. From migration 20260824
+// paired host stands read it too (the "paired device read" policy), so this is
+// the same truth in both places. A stand on a pre-migration DB still gets []
+// and falls back to neutral copy — an empty read is "not visible here", never
 // "unpaid".
 function PaymentState({ b, prepaid, hold }) {
   const [state, setState] = useState({ id: null, rows: null });
@@ -354,18 +358,109 @@ function PaymentState({ b, prepaid, hold }) {
     const failed = rows.find((r) => r.status === 'failed');
     const card = (r) => (r?.card_brand || r?.card_last4) ? ` (${[r.card_brand, r.card_last4 ? `···${r.card_last4}` : null].filter(Boolean).join(' ')})` : '';
     if (refunded) line = { txt: `Refund on file${card(refunded)}`, col: 'var(--orn)' };
-    else if (captured) line = { txt: `✓ ${money(captured.amount)} paid by card${card(captured)}`, col: 'var(--grn)' };
+    else if (captured) {
+      const kind = captured.kind === 'prepay' ? 'prepaid' : captured.kind === 'deposit' ? 'deposit paid' : 'paid';
+      const applied = captured.applied_to_check
+        ? ' · applied to the check' : ' · comes off the bill at close';
+      line = { txt: `✓ ${money(captured.amount)} ${kind} by card${card(captured)}${applied}`, col: 'var(--grn)' };
+    }
     else if (held) line = { txt: `✓ Card held${card(held)} — charged only on no-show`, col: 'var(--grn)' };
     else if (failed) line = { txt: 'Card payment FAILED — take payment at the venue', col: 'var(--red)' };
     else line = { txt: 'Card payment pending — confirmation arrives automatically', col: 'var(--t3)' };
+  } else if (b.status === 'pending_payment') {
+    line = { txt: 'Awaiting card payment. The guest has 20 minutes to pay before the booking expires and the table frees itself.', col: 'var(--orn)' };
+  } else if (b.status === 'expired') {
+    line = { txt: 'Expired unpaid. The table was freed automatically, the guest must rebook.', col: 'var(--t4)' };
   } else if (prepaid) {
-    line = { txt: 'Prepay is taken by card on the booking page. Settled amounts show in Back Office.', col: 'var(--t4)' };
+    line = { txt: 'No captured payment visible for this prepay booking yet. Check Back Office before treating it as paid.', col: 'var(--orn)' };
   } else if (hold > 0) {
     line = { txt: 'Held when booked online with card capture on — charged only on no-show.', col: 'var(--t4)' };
   } else {
     line = { txt: 'No card taken for this booking.', col: 'var(--t4)' };
   }
   return <div style={{ fontSize: 10.5, marginTop: 5, lineHeight: 1.45, color: line.col }}>{line.txt}</div>;
+}
+
+// ── Send / Copy the guest's pre-order link (v5.7.21, link-first) ─────────────
+// Send → booking-reminders {action:'send_link'} (mints the token if missing)
+// and the toast tells the HONEST per-channel outcome — every skip has its
+// reason. Copy builds the same link locally from the booking's minted token +
+// the venue slug; no messages fire.
+const SEND_REASONS = {
+  no_email_on_booking: 'no email on the booking',
+  no_phone_on_booking: 'no phone on the booking',
+  throttled_sent_under_60s_ago: 'already sent under a minute ago',
+  email_provider_unreachable: 'email service unreachable',
+  'send-sms_unreachable': 'SMS service unreachable',
+};
+const prettyReason = (r) => SEND_REASONS[r]
+  || (String(r || '').startsWith('email_provider_not_configured') ? 'email sending not set up'
+    : String(r || '').replace(/_/g, ' ') || 'unknown reason');
+
+function PreorderLinkActions({ b }) {
+  const showToast = useStore((s) => s.showToast);
+  const [sending, setSending] = useState(false);
+  // Cache: the send response's link (authoritative), else built from token+slug.
+  const linkRef = useRef({ forId: null, link: null });
+
+  const sendLink = async () => {
+    if (sending) return;
+    if (isMock || !supabase) { showToast?.('Not connected, cannot send the link here.', 'error'); return; }
+    setSending(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('booking-reminders', {
+        body: { action: 'send_link', booking_id: b.id },
+      });
+      if (error || !data) { showToast?.(`Link NOT sent: ${error?.message || 'no reply'}`, 'error'); return; }
+      if (data.link) linkRef.current = { forId: b.id, link: data.link };
+      if (!data.ok) {
+        showToast?.(`Link NOT sent: ${prettyReason(data.reason || data.error)}`, 'error');
+        return;
+      }
+      const part = (ch, r) => (r?.sent ? `${ch} sent` : `${ch} not sent (${prettyReason(r?.reason)})`);
+      const both = data.email?.sent && data.sms?.sent;
+      showToast?.(
+        `Pre-order link: ${part('email', data.email)} · ${part('SMS', data.sms)}`,
+        both ? 'success' : (data.email?.sent || data.sms?.sent) ? 'info' : 'error',
+      );
+    } finally { setSending(false); }
+  };
+
+  const copyLink = async () => {
+    let link = linkRef.current.forId === b.id ? linkRef.current.link : null;
+    if (!link) {
+      if (!b.preorderToken) {
+        showToast?.('No link minted yet. Press Send pre-order link first.', 'error');
+        return;
+      }
+      const base = await lookupPreorderLinkBase(b.locationId);
+      if (!base) {
+        showToast?.('No venue slug set (Back Office → Location settings), cannot build the link.', 'error');
+        return;
+      }
+      link = `${base}/book?preorder=${b.preorderToken}`;
+      linkRef.current = { forId: b.id, link };
+    }
+    try {
+      await navigator.clipboard.writeText(link);
+      showToast?.('Pre-order link copied.', 'success');
+    } catch {
+      showToast?.(`Could not copy. The link is ${link}`, 'info');
+    }
+  };
+
+  return (
+    <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+      <button className="btn btn-ghost" onClick={sendLink} disabled={sending}
+        style={{ flex: 1, height: 34, fontSize: 11.5, fontWeight: 700 }}>
+        {sending ? 'Sending…' : 'Send pre-order link'}
+      </button>
+      <button className="btn btn-ghost" onClick={copyLink}
+        style={{ flex: 1, height: 34, fontSize: 11.5, fontWeight: 700 }}>
+        Copy link
+      </button>
+    </div>
+  );
 }
 
 export function Inspector({ b, nowMin, packages, rules, tables, onClose }) {
@@ -379,7 +474,7 @@ export function Inspector({ b, nowMin, packages, rules, tables, onClose }) {
   const st = displayStatus(b, nowMin, packages);
   const start = toMin(b.startTime);
   const pkg = b.packageId ? packages.find((p) => p.id === b.packageId) : null;
-  const labels = (b.tables || []).map((id) => tables.find((t) => t.id === id)?.label || id);
+  const labels = (b.tables || []).map((id) => tables.find((t) => t.id === id)?.label || String(id).slice(-4));
   const section = tables.find((t) => t.id === (b.tables || [])[0])?.section;
   const sec = { padding: '14px 18px', borderBottom: '1px solid var(--bdr)' };
   const cardStyle = { background: 'var(--bg3)', borderRadius: 10, padding: '8px 10px', flex: 1 };
@@ -458,6 +553,12 @@ export function Inspector({ b, nowMin, packages, rules, tables, onClose }) {
               </div>
             );
           })()}
+          {/* v5.7.21 link-first: every requires_preorder booking has (or can
+              mint) a guest link — send it or copy it from here, even when
+              choices came in at booking (the link lets guests amend). */}
+          {pkg.requiresPreorder && isLive(b) && b.status !== 'dining' && (
+            <PreorderLinkActions b={b} />
+          )}
         </div>
       )}
 
@@ -645,7 +746,7 @@ function MovePanel({ b, onDone }) {
     const res = await moveBooking?.(b.id, tableIds);
     setBusyId(null);
     if (res?.ok) {
-      showToast?.(`Moved to ${tableIds.map((id) => grid.find((g) => g.id === id)?.label || id).join(' + ')}`, 'success');
+      showToast?.(`Moved to ${tableIds.map((id) => grid.find((g) => g.id === id)?.label || String(id).slice(-4)).join(' + ')}`, 'success');
       onDone?.();
     } else {
       showToast?.(res?.error === 'table_taken' ? 'That table was just taken — pick another' : `Move failed — ${res?.error || 'try again'}`, 'error');

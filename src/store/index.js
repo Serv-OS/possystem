@@ -137,6 +137,11 @@ function derivePaymentIntents(paymentInfo = {}) {
         id: p.id || null,
         amountMinor: Number.isFinite(p.amountMinor) ? p.amountMinor : null,
         ...(p.card ? { card: p.card } : {}),
+        // v5.7.21 — booking tender legs (method 'booking_prepaid' /
+        // 'booking_deposit', id null) ride payment_intents so the credit that
+        // paid part of the check is on the record. cardLegsOf filters on p.id,
+        // so refunds can never aim card money at one of these.
+        ...(p.method ? { method: p.method } : {}),
       }));
     return clean.length ? clean : null;
   }
@@ -1519,7 +1524,12 @@ export const useStore = create((set, get) => ({
   _updateTable: (id, patch) => set(s => ({ tables: s.tables.map(t => t.id===id ? { ...t, ...patch } : t) })),
 
   // Seat a table: create session, go to POS
-  seatTable: (tableId, { covers, server, customer } = {}) => {
+  // v5.7.21: optional `booking` — the seated booking's identity + captured
+  // prepay/deposit credit (minor units), stamped on the session so the POS
+  // shows "Package X PAID" from seating and CheckoutModal applies the money
+  // as a tender leg at close. Rides the session jsonb into active_sessions,
+  // so it survives cross-device pickup like everything else on the session.
+  seatTable: (tableId, { covers, server, customer, booking = null } = {}) => {
     // v4.6.67: pull the existing reservation's customer (if any) into the session
     // so the dine-in flow attributes loyalty automatically. v5.5.x: an explicit
     // `customer` (e.g. from Tables Ready seating a waitlist party) takes precedence —
@@ -1534,6 +1544,7 @@ export const useStore = create((set, get) => ({
       seatedAt: Date.now(), note: '', orderNote: '',
       subtotal: 0, total: 0,
       customer: seatCustomer,
+      ...(booking ? { booking } : {}),
     };
     get()._updateTable(tableId, { status:'open', session, reservation:null });
     set({ activeTableId:tableId, surface:'pos', orderType:'dine-in' });
@@ -1547,7 +1558,8 @@ export const useStore = create((set, get) => ({
   // Seat a table AND pre-populate its session with walk-in items.
   // v5.6.27: optional customer (bookings hand the guest across so dine-in
   // checkout gets loyalty + allergens, exactly like seatTable).
-  seatTableWithItems: (tableId, items, { covers, server, customer = null }) => {
+  // v5.7.21: optional `booking` — same contract as seatTable above.
+  seatTableWithItems: (tableId, items, { covers, server, customer = null, booking = null }) => {
     const now = Date.now();
     const session = {
       id: `ORD-${++_orderNum}`,
@@ -1557,6 +1569,7 @@ export const useStore = create((set, get) => ({
       subtotal: items.reduce((s,i)=>s+i.price*i.qty, 0),
       total: items.reduce((s,i)=>s+i.price*i.qty, 0) * 1.125,
       ...(customer ? { customer } : {}),
+      ...(booking ? { booking } : {}),
     };
     get()._updateTable(tableId, { status:'open', session, reservation:null });
     if (customer?.allergens?.length) {
@@ -4961,6 +4974,10 @@ export const useStore = create((set, get) => ({
       paymentIntents: attachCaptureToIntents(attachCardToIntents(derivePaymentIntents(paymentInfo), paymentInfo.cardReceipt), paymentInfo.capture),  // v5.5.323 legs + v5.5.719 card block + v5.7.5 tip-on-receipt capture window
       cardReceipt: paymentInfo.cardReceipt || null,              // v5.5.719: card-scheme receipt block (brand/last4/auth/AID/CVM) for the printed receipt
       loyaltyRedemption: paymentInfo.loyaltyRedemption || null,  // v5.5.315: link redeem→check for refund restore
+      // v5.7.21 — booking prepay/deposit credit consumed by this check. The
+      // durable copy is the tagged legs inside payment_intents (jsonb); this
+      // field is the in-memory summary { bookingId, appliedMinor, legs }.
+      bookingPayment: paymentInfo.bookingPayment || null,
       closedAt:   Date.now(),
       seatedAt:   session.seatedAt || null,   // Tables Ready: seat→close turn time feeds the waitlist estimator's learning loop
       status:     'paid',
@@ -5201,6 +5218,20 @@ export const useStore = create((set, get) => ({
       }
     } catch (e) { console.warn('[closeApprovedTerminalJob] capture stamp skipped:', e?.message || e); }
 
+    // ── v5.7.21: booking prepay/deposit credit the checkout applied ────────────
+    // CheckoutModal froze it into the draft (like giftCard): the terminal's due
+    // was already net of this credit, so the reconciler-closed check must carry
+    // the same tender legs the modal-closed one would — appended AFTER the card
+    // legs (slot 0 stays the till's own card leg; these have id:null so
+    // cardLegsOf can never route a refund at them).
+    if (Array.isArray(d.bookingPayment?.legs) && d.bookingPayment.legs.length) {
+      record.bookingPayment = d.bookingPayment;
+      record.paymentIntents = [
+        ...(record.paymentIntents || []),
+        ...d.bookingPayment.legs.map(l => ({ id: null, amountMinor: Number(l.amountMinor) || 0, method: l.method })),
+      ];
+    }
+
     // ── ELECT THE SINGLE CLOSER — the closed_checks PK does the arbitration ────
     const { ok, created } = await upsertClosedCheck(record);
 
@@ -5239,6 +5270,17 @@ export const useStore = create((set, get) => ({
     if (created) {
       depleteForSale(record);
       get().triggerChallenge21Check?.(record);
+      // v5.7.21 — stamp the booking's captured rows applied_to_check (server-side
+      // idempotent: only un-applied captured rows update, so a retry is a 0-count
+      // no-op). Best-effort, never blocks the close.
+      if (record.bookingPayment?.bookingId && supabase && !isMock) {
+        supabase.rpc('apply_booking_payment', {
+          p_booking_id: record.bookingPayment.bookingId,
+          p_closed_check_id: record.id,
+        }).then(({ error }) => {
+          if (error) console.warn('[closeApprovedTerminalJob] apply_booking_payment:', error.message);
+        }).catch(() => {});
+      }
       // Attribute loyalty only to the occupation that actually paid — never a re-seated party.
       if (liveIsPayingOccupation && table?.session?.customer?.phone) {
         get().attributeOrderToCustomer({ customer: table.session.customer, orderRecord: record }).catch(() => {});

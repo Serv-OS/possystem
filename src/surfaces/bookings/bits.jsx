@@ -53,16 +53,27 @@ export function useNowMin(intervalMs = 30000) {
 // late / due clock states do not apply.
 export const DUE_WINDOW = 15; // minutes before start that reads "due now"
 
+// v5.7.21 truth rules: 'pending_payment' (amber, Awaiting payment) and
+// 'expired' (grey) pass straight through; the late/due clock applies to both
+// confirmed AND prepaid live bookings; and "Prepaid" is only ever shown when
+// money is PROVEN — b.paidMinor is the captured booking_payments sum that
+// loadBookings attaches (null = ledger not visible here → trust the row
+// status). A prepay-package booking with no captured money reads Confirmed,
+// never Prepaid (the pre-v5.7.21 lie that hid the Provo incident).
 export function displayStatus(b, nowMin, packages = []) {
   if (!b) return 'confirmed';
-  if (b.status && b.status !== 'confirmed') return b.status; // dining / departed / no_show / cancelled
+  if (b.status && !['confirmed', 'prepaid'].includes(b.status)) return b.status; // pending_payment / expired / dining / departed / no_show / cancelled
   const start = toMin(String(b.startTime || '').slice(0, 5));
   if (Number.isFinite(nowMin)) {
     if (nowMin > start) return 'late';                       // past arrival, not seated
     if (nowMin >= start - DUE_WINDOW) return 'due';          // inside the grace window
   }
+  const paidKnown = b.paidMinor != null;
+  if (b.status === 'prepaid') {
+    return paidKnown && !(b.paidMinor > 0) ? 'confirmed' : 'prepaid';
+  }
   const pkg = b.packageId ? (packages || []).find((p) => p.id === b.packageId) : null;
-  if (pkg?.paymentModel === 'prepay') return 'prepaid';
+  if (pkg?.paymentModel === 'prepay' && paidKnown && b.paidMinor > 0) return 'prepaid';
   return 'confirmed';
 }
 
@@ -75,6 +86,10 @@ export const STATUS_META = {
   prepaid:   { col: 'var(--grn)', label: 'Prepaid' },
   no_show:   { col: 'var(--t4)',  label: 'No-show' },
   cancelled: { col: 'var(--t4)',  label: 'Cancelled' },
+  // v5.7.21 pay-before-commit: holding the table while the guest pays (the
+  // pg_cron sweep expires it at 20 minutes if they never do).
+  pending_payment: { col: 'var(--orn)', label: 'Awaiting payment' },
+  expired:         { col: 'var(--t4)',  label: 'Expired' },
 };
 export const statusMeta = (key) => STATUS_META[key] || STATUS_META.confirmed;
 
@@ -90,7 +105,8 @@ export function StatusBadge({ st, style = {} }) {
   );
 }
 
-export const isDead = (b) => !b || b.status === 'cancelled' || b.status === 'no_show';
+// 'expired' (v5.7.21) is dead: the guest never paid, the tables are freed.
+export const isDead = (b) => !b || b.status === 'cancelled' || b.status === 'no_show' || b.status === 'expired';
 export const isLive = (b) => !isDead(b) && b.status !== 'departed';
 
 export const bookingName = (b) => b?.customer?.name || (b?.source === 'walk_in' ? 'Walk-in' : `Party of ${b?.covers || '?'}`);

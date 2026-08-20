@@ -28,6 +28,96 @@
   5.7.22 and your changelog entry sits below the new 5.7.22 one — re-stamp to 5.7.23+
   when you ship.
 
+# Session - 20 Aug 2026 (v5.7.23) - adversarial-review fixes on the booking build
+
+## Done (NOT committed, NOT deployed - fixes the two v5.7.21 halves below; build renumbered 5.7.21 → 5.7.23 over the committed 5.7.22)
+- **Webhook credit clobber (CRITICAL)**: adyen-webhook bkpay settle now keys on
+  psp_reference (unique index; modifications resolve originalReference first, same
+  rowKey rule as applyMoneyEvent), falling back to the single MOST RECENT
+  pending/failed row for the reference - never a reference-wide update. Each
+  booking_pay attempt now mints a UNIQUE reference `bkpay-<id>-<kind>-a<N>`
+  (N = prior rows for that booking+kind + 1); webhook parse widened to accept
+  both old and new forms.
+- **Free-food gate**: packagePricing.packageItemsFor gains prepayCaptured; a prepay
+  booking with NO captured un-applied credit prices like deposit (real prices) and
+  the POS seating chip says "Package unpaid, full prices apply" (session.booking.prepayUnpaid).
+  Training tills still demo the paid flow. +4 unit tests.
+- **Promote-vs-expiry race**: booking-widget promotePaid and the webhook promote now
+  match status in ('pending_payment','expired') - a late capture RESURRECTS an expired
+  booking (money is real; overlap risk accepted, owner call). Zero rows matched is only
+  "already promoted" after a re-select shows the target status; otherwise the response
+  is an honest 409 paid_but_booking_not_promotable. Migration comment updated to match.
+- **Split guard**: CheckoutModal Split disabled while a booking credit rides the session
+  (same pattern as splitWithReader; SplitModal divides the gross bill).
+- **Venue clock**: bookingsSlice suggestBookingTables + upcomingBookingForTable use
+  buildScheduleCtx(locationConfig.timezone); sessionsToBlocks (BOTH parity copies) takes an
+  optional epochToMin param so seatedAt converts on the venue clock - passed from the slice
+  and from booking-widget (which previously read UTC hours: an hour out all UK summer).
+- **Diary labels**: timeline chips + list/inspector/move-toast fallbacks show the table
+  NAME, last-4-of-id fallback (never t-1783614852190).
+- 411/411 tests (incl. optimiser parity), build clean, all three fns esbuild-parse clean.
+- Deploy checklist unchanged: migration 20260824 FIRST, then booking-widget,
+  booking-reminders, adyen-webhook.
+
+# Session — 20 Aug 2026 (v5.7.21, CLIENT half) — booking money on the check
+
+## Done (NOT committed, NOT deployed — pairs with the server half below)
+- **Pricing engine `src/lib/bookings/packagePricing.js`** (+10 unit tests): prepay lines/picks
+  land at 0.00 unless price_override > 0 (upcharge); deposit = override ?? live menu price;
+  choice lines NEVER auto-materialise; unmatched pick prices per model (prepay→0, deposit→menu).
+  bookingsSlice.packageLinesToItems now delegates here.
+- **Credit plumbing**: seatBooking loads captured un-applied booking_payments (loadBookingCredit,
+  pounds→minor at the edge) → session.booking {bookingId, packageName, paymentModel,
+  prepaidMinor, depositMinor} via seatTable/seatTableWithItems (persists in active_sessions jsonb).
+  POS order-panel header shows "Package X £Y PAID · comes off the bill at close" from seating.
+- **CheckoutModal**: booking credit auto-applies FIRST against the bill (never the tip, never
+  below zero, excess stays on the booking); green deduction row; gift box capped net of it;
+  zero-due "Close check · paid by booking" button; closed check books GROSS with tagged legs
+  {method:'booking_prepaid'|'booking_deposit', amountMinor, id:null} inside payment_intents
+  (cardLegsOf filters id → refunds can't touch them) + record.bookingPayment summary; after
+  close fires apply_booking_payment RPC best-effort. PAX path freezes bookingPayment into the
+  checkDraft; closeApprovedTerminalJob books the same legs + fires the RPC.
+- **Diary/Inspector**: pending_payment = amber "Awaiting payment", expired = grey/dead;
+  displayStatus no longer calls an unpaid prepay booking "prepaid" (keys off captured rows via
+  loadBookings' booking_payments join; zero visible rows = UNKNOWN, never "unpaid");
+  PaymentState reads the ledger on host stands too; new Send pre-order link (honest per-channel
+  toast off send_link's {sent, reason}) + Copy link (local build from preorder_token + slug).
+- **BookingWidget**: pending_payment screen takes the card BEFORE any "booked" copy (table held
+  20 min, refused = retry, sync promote → real confirmation); accepts status 'prepaid';
+  server-decided fork copy (inside window = choose now, outside = link with deadline date);
+  "Choose later" skip sends choose_later:true.
+- **PackageBuilder**: prepay model shows "0.00 (included)" placeholder + model-aware hints;
+  preorder_days_before caption explains the real fork.
+- 407/407 tests, build clean, eslint no new errors on touched files.
+- **Deploy checklist unchanged** (see server half below): migration 20260824 FIRST, then the
+  three edge fns; the web app ships with the normal push.
+
+# Session — 20 Aug 2026 (v5.7.21, SERVER half) — bookings pay-before-commit
+
+## Done (NOT committed, NOT deployed — client half builds on top next)
+- **Migration `supabase/migrations/20260824_booking_payment_flow.sql`** (ops, hand-apply):
+  bookings.status gains 'pending_payment' + 'expired'; paired-device SELECT policy on
+  booking_payments (+ new applied_check_id column); SECURITY DEFINER
+  `apply_booking_payment(p_booking_id, p_closed_check_id)` (marks captured rows
+  applied_to_check, returns count, fenced to BO users + paired devices at the location);
+  create_booking conflict check now ignores 'expired'; SQL-only pg_cron job
+  `bookings-expire-unpaid` (*/5, expires 20-min-old unpaid pending_payment bookings).
+- **booking-widget**: books with 'pending_payment' when card capture on + money due (never
+  'prepaid'/'confirmed' before money); booking_pay sync success promotes (prepay→prepaid,
+  deposit/hold→confirmed) and fires the deferred confirmation; token minted at create for
+  EVERY requires_preorder booking; choose_later skip; per-offer preorderChoiceAtBooking +
+  preorderDeadline in slots; cardCaptureMinCovers now actually passed to paymentDueFor.
+- **booking-reminders**: new `send_link` action (mint-if-missing + email/SMS with honest
+  per-channel `{sent, reason}` results, 60s throttle, resendable); confirm refuses
+  pending_payment (409); send_due answers `checked/sent/skipped[]` — every skip named.
+- **adyen-webhook**: bkpay settle now also promotes pending_payment→prepaid/confirmed
+  (keyed on current status — never resurrects expired) and fires the confirmation.
+- **optimiser (BOTH parity copies)**: BLOCKING_EXCLUDED += 'expired'.
+- v5.7.21 + changelog. 397/397 tests, build clean, all fns esbuild-parse clean.
+- **Deploy checklist when this ships**: apply 20260824 BEFORE deploying booking-widget
+  (it writes status 'pending_payment' which the old CHECK rejects); deploy booking-widget,
+  booking-reminders, adyen-webhook.
+
 # Session — 20 Aug 2026 (v5.7.17) — ONE shared normaliseMenuRow, no more hand copies
 
 ## Done (committed + pushed to develop)

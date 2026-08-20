@@ -341,8 +341,8 @@ export default function PackageBuilder() {
                     <input type="number" min="0" max="60" style={{ ...S.inp, width: 58, fontFamily: MONO }}
                       value={draft.preorderDaysBefore ?? 0}
                       onChange={e => upd({ preorderDaysBefore: Math.max(0, Math.min(60, Number(e.target.value) || 0)) })}
-                      title="How many days before the visit choices must be in. 0 = at booking. Booked earlier than this, guests get an email + SMS link to choose." />
-                    days before — else guests are emailed + texted a link
+                      title={`Choices are due ${draft.preorderDaysBefore || 0} days before the visit. A booking MADE inside that window chooses at booking (the deadline has already passed); booked earlier, the guest gets an email + SMS link and can choose right up to the deadline.`} />
+                    days before. Booked inside this window guests choose at booking, booked earlier they get a link
                   </span>
                 )}
                 <button style={{ ...(draft.isActive ? S.pillOn : S.pill), marginLeft: 'auto' }}
@@ -360,7 +360,9 @@ export default function PackageBuilder() {
                   </div>
                 </div>
                 <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 4 }}>
-                  Price override: leave blank to inherit the item's price; 0 = included in the package price.
+                  {draft.paymentModel === 'prepay'
+                    ? <>Price override: on a <b>prepay</b> package every line lands at <b>0.00 (included)</b>. The package price was paid at booking and comes off the bill as a payment. Enter a price only for an extra charged ON TOP of the package.</>
+                    : <>Price override: leave blank to inherit the item's price; 0 = included in the package price. The deposit comes off the bill as a payment at close.</>}
                 </div>
                 {draft.requiresPreorder && !(draft.lines || []).some(l => l.isPreorderChoice) && (
                   <div style={{ marginTop: 8, padding: '8px 10px', borderRadius: 9, background: 'var(--red-d)', border: '1px solid var(--red-b)', color: 'var(--red)', fontSize: 11.5, lineHeight: 1.45 }}>
@@ -397,9 +399,11 @@ export default function PackageBuilder() {
                         </span>
                         <input type="number" min="0" step="0.5" style={{ ...S.inp, width: 92, fontFamily: MONO }}
                           value={l.priceOverride == null ? '' : l.priceOverride}
-                          placeholder={linked ? money(linked.price) : 'inherit'}
+                          placeholder={draft.paymentModel === 'prepay' ? '0.00 (included)' : (linked ? money(linked.price) : 'inherit')}
                           onChange={e => updLine(i, { priceOverride: e.target.value === '' ? null : Number(e.target.value) })}
-                          title="Price override — blank inherits the item's price, 0 = included in the package price" />
+                          title={draft.paymentModel === 'prepay'
+                            ? 'Prepay package: blank or 0 = included (lands at 0.00, the prepay covers it). A price here is an EXTRA charged on top.'
+                            : "Price override — blank inherits the item's price, 0 = included in the package price"} />
                         <button
                           style={l.isPreorderChoice ? S.choiceOn : S.choiceOff}
                           onClick={() => updLine(i, { isPreorderChoice: !l.isPreorderChoice })}

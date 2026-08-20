@@ -113,7 +113,7 @@ function Row({ b, sel, onSelect, nowMin, packages, tables }) {
   const isSel = b.id === sel;
   const po = preorderStateFor(b, packages);
   const pkg = b.packageId ? packages.find((p) => p.id === b.packageId) : null;
-  const labels = (b.tables || []).map((id) => tables.find((t) => t.id === id)?.label || id).join('+');
+  const labels = (b.tables || []).map((id) => tables.find((t) => t.id === id)?.label || String(id).slice(-4)).join('+');
   return (
     <button
       onClick={() => onSelect(isSel ? null : b.id)}

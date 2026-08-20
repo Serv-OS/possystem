@@ -1228,6 +1228,28 @@ export default function POSSurface() {
                   {session?.covers} covers · {session?.server}
                   {session?.seatedAt?<span style={{color:'var(--t4)'}}> · {Math.floor((Date.now()-session.seatedAt)/60000)}m</span>:''}
                 </div>
+                {/* v5.7.21 — the seated booking's money, visible from seating.
+                    Prepay: the package is PAID and posts as a tender leg at
+                    close. Deposit: the captured deposit applies at close. */}
+                {(session?.booking?.prepaidMinor > 0 || session?.booking?.depositMinor > 0) && (
+                  <div style={{fontSize:10.5,fontWeight:700,color:'var(--grn)',marginTop:2}}>
+                    {session.booking.prepaidMinor > 0 && (
+                      <span>✓ {session.booking.packageName ? `${session.booking.packageName} ` : 'Package '}{money(session.booking.prepaidMinor/100)} PAID · comes off the bill at close</span>
+                    )}
+                    {session.booking.prepaidMinor > 0 && session.booking.depositMinor > 0 && ' · '}
+                    {session.booking.depositMinor > 0 && (
+                      <span>✓ Deposit {money(session.booking.depositMinor/100)} applied at close</span>
+                    )}
+                  </div>
+                )}
+                {/* v5.7.23 - a prepay booking with NO captured credit seats at
+                    REAL prices (the free-food gate in seatBooking); the chip
+                    tells the server exactly that. */}
+                {session?.booking?.prepayUnpaid && (
+                  <div style={{fontSize:10.5,fontWeight:700,color:'var(--orn)',marginTop:2}}>
+                    ⚠ {session.booking.packageName || 'Package'} unpaid, full prices apply
+                  </div>
+                )}
               </div>
               {/* v4.6.36: drawer pulse shortcut — shows the bound drawer's name */}
               {Array.isArray(staff?.permissions) && staff.permissions.includes('openDrawer') && (() => {

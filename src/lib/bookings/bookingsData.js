@@ -11,7 +11,8 @@
 // back as { ok:false, error:'table_taken', tableId, bookingId } — the UI shows
 // alternatives, it never optimistically writes.
 
-import { supabase, isMock } from '../supabase';
+import { supabase, isMock, platformSupabase } from '../supabase';
+import { CUSTOMER_ROOT } from '../env';
 
 const isRealLoc = (l) => !!l && l !== 'loc-demo';
 
@@ -42,6 +43,15 @@ export function rowToBooking(r) {
     source: r.source,
     packageId: r.package_id || null,
     note: r.note || '',
+    // v5.7.21 link-first: the token is minted at create for EVERY
+    // requires_preorder booking — the Inspector's Copy link builds from it.
+    preorderToken: r.preorder_token || null,
+    // v5.7.21: captured booking_payments money, summed by loadBookings.
+    // null/undefined = NOT VISIBLE here (pre-migration RLS or the join
+    // failed) — never "unpaid". A number is the truth in minor units.
+    paidMinor: r._paidMinor ?? null,
+    paidPrepayMinor: r._paidPrepayMinor ?? null,
+    paidDepositMinor: r._paidDepositMinor ?? null,
     pacingOverrideBy: r.pacing_override_by || null,
     seatedSessionRef: r.seated_session_ref || null,
     seatedAt: r.seated_at ? new Date(r.seated_at).getTime() : null,
@@ -145,10 +155,15 @@ export async function loadBookings(locationId, dateISO) {
     const ids = (data || []).map((b) => b.id);
     let membership = new Map();
     const preCounts = new Map();
+    // v5.7.21: captured money per booking (booking_payments is readable by
+    // paired devices from migration 20260824). Missing map entry = ledger not
+    // visible (pre-migration RLS / error) → paidMinor stays null = "unknown".
+    const paid = new Map(); // booking_id → { total, prepay, deposit } minor
     if (ids.length) {
-      const [{ data: bt, error: btErr }, { data: po }] = await Promise.all([
+      const [{ data: bt, error: btErr }, { data: po }, { data: pay, error: payErr }] = await Promise.all([
         supabase.from('booking_tables').select('booking_id, table_id, is_primary').in('booking_id', ids),
         supabase.from('booking_preorders').select('booking_id').in('booking_id', ids),
+        supabase.from('booking_payments').select('booking_id, kind, amount, status').in('booking_id', ids).eq('status', 'captured'),
       ]);
       if (!btErr) {
         membership = (bt || []).reduce((m, row) => {
@@ -159,8 +174,30 @@ export async function loadBookings(locationId, dateISO) {
         }, new Map());
       }
       for (const r of po || []) preCounts.set(r.booking_id, (preCounts.get(r.booking_id) || 0) + 1);
+      // Only bookings WITH visible rows get a sum. A booking with none stays
+      // null = UNKNOWN — an RLS-filtered read (paired stand on a pre-migration
+      // DB) returns zero rows with NO error, indistinguishable from "unpaid",
+      // so absence must never be read as "no money".
+      if (!payErr) {
+        for (const r of pay || []) {
+          if (r.kind === 'refund') continue;
+          const p = paid.get(r.booking_id) || { total: 0, prepay: 0, deposit: 0 };
+          const minor = Math.round((Number(r.amount) || 0) * 100); // amount is POUNDS
+          p.total += minor;
+          if (r.kind === 'prepay') p.prepay += minor;
+          if (r.kind === 'deposit') p.deposit += minor;
+          paid.set(r.booking_id, p);
+        }
+      }
     }
-    return { data: (data || []).map((r) => rowToBooking({ ...r, _tables: membership.get(r.id) || [r.primary_table_id], _preorderCount: preCounts.get(r.id) || 0 })).filter(Boolean) };
+    return { data: (data || []).map((r) => rowToBooking({
+      ...r,
+      _tables: membership.get(r.id) || [r.primary_table_id],
+      _preorderCount: preCounts.get(r.id) || 0,
+      _paidMinor: paid.get(r.id)?.total ?? null,
+      _paidPrepayMinor: paid.get(r.id)?.prepay ?? null,
+      _paidDepositMinor: paid.get(r.id)?.deposit ?? null,
+    })).filter(Boolean) };
   } catch (e) {
     if (!warnAbsentOr(e, 'loadBookings')) console.warn('[bookingsData] loadBookings threw:', e?.message || e);
     return { data: [] };
@@ -299,20 +336,57 @@ export async function saveBookingPreorders(bookingId, locationId, rows) {
   } catch (e) { return { ok: false, error: e?.message }; }
 }
 
-// How many live future bookings still reference a package (delete warning).
-// Money ledger for one booking. RLS grants SELECT only to BO-authenticated
-// users (user_accessible_locations); a paired host-stand device gets [] —
-// callers must treat empty as "not visible", never "unpaid".
+// Money ledger for one booking. From migration 20260824 a paired host-stand
+// device can read this too (the "paired device read" policy) — but a stand on
+// a pre-migration DB still gets [], so callers must treat empty as "not
+// visible", never "unpaid".
 export async function loadBookingPayments(bookingId) {
   if (isMock || !supabase) return [];
   try {
     const { data, error } = await supabase.from('booking_payments')
-      .select('id, kind, status, amount, currency, card_last4, card_brand, captured_at, authorised_at')
+      .select('id, kind, status, amount, currency, card_last4, card_brand, applied_to_check, captured_at, authorised_at')
       .eq('booking_id', bookingId).order('created_at', { ascending: true });
     if (error) { warnAbsentOr(error, 'loadBookingPayments'); return []; }
     return data || [];
   } catch (e) { warnAbsentOr(e, 'loadBookingPayments'); return []; }
 }
+
+// v5.7.21 — the credit a seated booking carries onto its POS session: CAPTURED,
+// not-yet-applied money, summed by kind in MINOR units (booking_payments.amount
+// is pounds — converted once, here, at the edge). 'hold' rows are authorised,
+// never captured, so they can never become credit through this sum.
+export async function loadBookingCredit(bookingId) {
+  if (isMock || !supabase || !bookingId) return { prepayMinor: 0, depositMinor: 0 };
+  try {
+    const { data, error } = await supabase.from('booking_payments')
+      .select('kind, amount, status, applied_to_check')
+      .eq('booking_id', bookingId).eq('status', 'captured').eq('applied_to_check', false);
+    if (error) { warnAbsentOr(error, 'loadBookingCredit'); return { prepayMinor: 0, depositMinor: 0 }; }
+    let prepayMinor = 0, depositMinor = 0;
+    for (const r of data || []) {
+      const minor = Math.round((Number(r.amount) || 0) * 100);
+      if (r.kind === 'prepay') prepayMinor += minor;
+      else if (r.kind === 'deposit') depositMinor += minor;
+    }
+    return { prepayMinor, depositMinor };
+  } catch (e) { warnAbsentOr(e, 'loadBookingCredit'); return { prepayMinor: 0, depositMinor: 0 }; }
+}
+
+// v5.7.21 — the guest link base for the Inspector's Copy link, mirroring
+// booking-reminders' venueMeta: platform locations.ops_location_id (fallback:
+// id) → online_slug → https://<slug>.<CUSTOMER_ROOT>. null = no slug / no
+// platform reach; the caller says so instead of copying a dead link.
+export async function lookupPreorderLinkBase(opsLocationId) {
+  if (!opsLocationId || !platformSupabase) return null;
+  try {
+    const select = 'id, online_slug';
+    let r = (await platformSupabase.from('locations').select(select).eq('ops_location_id', opsLocationId).maybeSingle()).data;
+    if (!r) r = (await platformSupabase.from('locations').select(select).eq('id', opsLocationId).maybeSingle()).data;
+    return r?.online_slug ? `https://${r.online_slug}.${CUSTOMER_ROOT}` : null;
+  } catch { return null; }
+}
+
+// How many live future bookings still reference a package (delete warning).
 
 export async function countUpcomingBookingsForPackage(packageId) {
   if (isMock || !supabase || !packageId) return 0;

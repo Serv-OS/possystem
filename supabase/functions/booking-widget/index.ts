@@ -14,8 +14,19 @@
 //   book   → create the guest (unified org-scoped CRM, only-fill-blank),
 //            book the best candidate; audit row in booking_requests either way
 //
-// Payments are NOT here yet — card capture ships dark behind
-// booking_rules.card_capture_enabled and lands with the Adyen slice.
+// Payments (v5.7.21, pay-before-commit): when card capture is on and the
+// booking owes money (prepay/deposit/hold), book INSERTS with status
+// 'pending_payment' — never 'prepaid'/'confirmed' before money. booking_pay
+// promotes it on synchronous success (prepay → 'prepaid', deposit/hold →
+// 'confirmed'); the adyen-webhook bkpay capture is the async backstop. A
+// SQL-only pg_cron job expires unpaid pending_payment bookings after 20
+// minutes (migration 20260824). Bookings with nothing due keep the old
+// statuses exactly.
+//
+// Pre-order links (v5.7.21, link-first): the preorder_token is minted at
+// create for EVERY requires_preorder booking — even when choices are taken
+// at booking, so the link can amend them later. Deferred choices trigger the
+// booking-reminders 'send_link' action (fire-and-forget, ledger-audited).
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import {
@@ -78,6 +89,14 @@ const venueNowMin = (tz: string) => {
   const parts = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
   const [h, m] = parts.split(':').map(Number);
   return (h || 0) * 60 + (m || 0);
+};
+// v5.7.23 - epoch ms → minute-of-day on the VENUE clock, passed into
+// sessionsToBlocks (the fn runs in UTC; a session's seatedAt read with
+// getHours() here would be the UTC minute, an hour out all UK summer).
+const epochToVenueMin = (tz: string) => (epochMs: number) => {
+  const parts = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(epochMs));
+  const [h, m] = parts.split(':').map(Number);
+  return ((h === 24 ? 0 : h) || 0) * 60 + (m || 0);
 };
 
 function rulesFrom(r: Record<string, unknown> | null) {
@@ -204,7 +223,7 @@ Deno.serve(async (req) => {
       const { data: bk } = await db.from('bookings')
         .select('id, location_id, booking_date, start_time, covers, status, package_id, customer')
         .eq('preorder_token', token).maybeSingle();
-      if (!bk || ['cancelled', 'no_show', 'departed'].includes(bk.status)) {
+      if (!bk || ['cancelled', 'no_show', 'departed', 'expired'].includes(bk.status)) {
         return json({ ok: false, error: 'unknown_or_closed' }, 404);
       }
       const [{ data: loc2 }, { data: pkg2 }, { data: lines2 }, { data: existing }] = await Promise.all([
@@ -335,7 +354,7 @@ Deno.serve(async (req) => {
             covers: (r.session as Record<string, unknown>)?.covers,
           },
         }));
-        bookings.push(...sessionsToBlocks(sessTables, bookings, rules.turnBands, venueNowMin(tz)));
+        bookings.push(...sessionsToBlocks(sessTables, bookings, rules.turnBands, venueNowMin(tz), epochToVenueMin(tz)));
       } catch { /* availability falls back to bookings-only — never blocks the door */ }
     }
     const quote = (time: string) => suggestTables({
@@ -362,7 +381,7 @@ Deno.serve(async (req) => {
       const { data: pkgCounts } = await db.from('bookings')
         .select('package_id')
         .eq('location_id', locationId).eq('booking_date', date)
-        .not('package_id', 'is', null).not('status', 'in', '(cancelled,no_show)');
+        .not('package_id', 'is', null).not('status', 'in', '(cancelled,no_show,expired)');
       const counts = new Map<string, number>();
       for (const r of pkgCounts || []) counts.set(r.package_id, (counts.get(r.package_id) || 0) + 1);
       const offers = venue.packages
@@ -371,9 +390,17 @@ Deno.serve(async (req) => {
         .map((o) => {
           const pkgRow = venue.packages.find((x) => String(x.id) === String(o.id));
           const lines = venue.choiceLines.filter((l) => String(l.package_id) === String(o.id));
+          // The choose-now fork, decided SERVER-side for this date: inside the
+          // pre-order window the deadline has already passed, so choices are
+          // taken at booking; outside it the guest gets a link, due by the
+          // deadline date. The page keys its copy off these two fields.
+          const dl = new Date(`${date}T12:00:00`);
+          dl.setDate(dl.getDate() - (o.preorderDaysBefore || 0));
           return {
             ...o,
             choiceGroups: o.requiresPreorder ? choiceGroupsFor(String(o.id), venue.choiceLines) : [],
+            preorderChoiceAtBooking: o.requiresPreorder && daysAhead <= (o.preorderDaysBefore || 0),
+            preorderDeadline: o.requiresPreorder ? dl.toISOString().slice(0, 10) : null,
             terms: String(pkgRow?.terms || ''),
             // What the package includes, for the landing/confirmation display.
             includes: lines.map((l) => ({ name: l.display_name, course: l.course ?? 0, choice: !!l.is_preorder_choice })),
@@ -437,7 +464,7 @@ Deno.serve(async (req) => {
           const { count } = await db.from('bookings')
             .select('id', { count: 'exact', head: true })
             .eq('location_id', locationId).eq('booking_date', date)
-            .eq('package_id', String(row.id)).not('status', 'in', '(cancelled,no_show)');
+            .eq('package_id', String(row.id)).not('status', 'in', '(cancelled,no_show,expired)');
           booked = count || 0;
         }
         const offer = row ? packageOffer(row, date, party, booked) : null;
@@ -476,9 +503,30 @@ Deno.serve(async (req) => {
         });
       const completeNow = groups.length > 0 && groups.every((g) =>
         validRows.filter((r) => r.course === g.course).length >= party);
-      if (choicesDue && !completeNow) {
+      // "Choose later" skip (Peter, 19 Aug): even inside the window the guest
+      // may defer — the token + send_link below carry them to the link flow.
+      if (choicesDue && !completeNow && body.choose_later !== true) {
         return json({ ok: false, error: 'preorders_required', choiceGroups: groups, party });
       }
+
+      // ── pay-before-commit (v5.7.21) ──────────────────────────────────────
+      // What this booking owes is decided BEFORE the insert: money due means
+      // status 'pending_payment' (the table is held, the guest pays on the
+      // next screen, the 20-minute cron frees it if they never do). Nothing
+      // due keeps the old statuses exactly.
+      let paymentDue: { kind: string; amountMinor: number; label: string } | null = null;
+      const { data: rulesRow2 } = await db.from('booking_rules')
+        .select('card_capture_enabled, hold_per_cover, card_capture_min_covers')
+        .eq('location_id', locationId).maybeSingle();
+      if (rulesRow2?.card_capture_enabled) {
+        paymentDue = paymentDueFor({ covers: party }, pkg, {
+          holdPerCover: Number(rulesRow2.hold_per_cover) || 0,
+          cardCaptureMinCovers: Number(rulesRow2.card_capture_min_covers) || 0,
+        });
+      }
+      const createStatus = paymentDue
+        ? 'pending_payment'
+        : (pkg && pkg.payment_model === 'prepay' ? 'prepaid' : 'confirmed');
 
       const candidates = quote(time);
       let bookedId: string | null = null;
@@ -496,7 +544,7 @@ Deno.serve(async (req) => {
           p_primary_table_id: c.set[0],
           p_customer_id: customerId,
           p_customer: customerSnap,
-          p_status: pkg && pkg.payment_model === 'prepay' ? 'prepaid' : 'confirmed',
+          p_status: createStatus,
           p_source: 'widget',
           p_package_id: pkg ? String(pkg.id) : null,
           p_note: note,
@@ -506,30 +554,41 @@ Deno.serve(async (req) => {
         // table_taken → try the next candidate (someone booked between quote and write)
       }
 
-      // Persist choices; when the guest books far out, mint the completion token.
+      // Persist choices; mint the completion token for EVERY requires_preorder
+      // booking (v5.7.21, link-first) — even when choices came in at booking,
+      // the link lets guests amend them later.
       let preorderToken: string | null = null;
       let preorderDeadline: string | null = null;
       if (bookedId && pkg?.requires_preorder) {
         if (validRows.length) {
           await db.from('booking_preorders').insert(validRows.map((r) => ({ ...r, location_id: locationId, booking_id: bookedId })));
         }
-        if (!completeNow && groups.length > 0) {
-          preorderToken = (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, '');
-          const dl = new Date(`${date}T12:00:00`);
-          dl.setDate(dl.getDate() - (Number(pkg.preorder_days_before) || 0));
-          preorderDeadline = dl.toISOString().slice(0, 10);
-          await db.from('bookings').update({ preorder_token: preorderToken }).eq('id', bookedId);
-        }
+        preorderToken = (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, '');
+        const dl = new Date(`${date}T12:00:00`);
+        dl.setDate(dl.getDate() - (Number(pkg.preorder_days_before) || 0));
+        preorderDeadline = dl.toISOString().slice(0, 10);
+        await db.from('bookings').update({ preorder_token: preorderToken }).eq('id', bookedId);
       }
 
       // Booking confirmation SMS + email (Peter, 13 Aug: "didn't get SMS").
-      // Fire-and-forget to booking-reminders — its ledger sends each channel once.
-      if (bookedId) {
-        fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/booking-reminders`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}` },
+      // Fire-and-forget to booking-reminders — its ledger sends each channel
+      // once. NOT for pending_payment: no money, no "your table is booked" —
+      // the promote paths (booking_pay sync / adyen-webhook async) fire it.
+      const remindersUrl = `${Deno.env.get('SUPABASE_URL')}/functions/v1/booking-reminders`;
+      const remindersAuth = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}` };
+      if (bookedId && createStatus !== 'pending_payment') {
+        fetch(remindersUrl, {
+          method: 'POST', headers: remindersAuth,
           body: JSON.stringify({ action: 'confirm', booking_id: bookedId }),
         }).catch(() => {});
+        // Choices deferred (far-out booking, or the choose-later skip): send
+        // the pre-order link straight away, on top of the confirmation.
+        if (pkg?.requires_preorder && groups.length > 0 && !completeNow) {
+          fetch(remindersUrl, {
+            method: 'POST', headers: remindersAuth,
+            body: JSON.stringify({ action: 'send_link', booking_id: bookedId }),
+          }).catch(() => {});
+        }
       }
 
       // Every widget attempt lands in booking_requests — the audit/intake ledger.
@@ -544,16 +603,10 @@ Deno.serve(async (req) => {
         // Availability vanished mid-flight: the venue follows up by phone.
         return json({ ok: true, status: 'pending', message: 'That time was just taken — the venue will confirm your booking shortly.' });
       }
-      // Card capture (when the venue has it on): tell the page what this
-      // booking owes so the confirmation screen can take the card.
-      let paymentDue = null;
-      if (bookedId && (venue.rules as Record<string, unknown>)?.cardCaptureEnabled !== false) {
-        const { data: rulesRow2 } = await db.from('booking_rules').select('card_capture_enabled, hold_per_cover').eq('location_id', locationId).maybeSingle();
-        if (rulesRow2?.card_capture_enabled) {
-          paymentDue = paymentDueFor({ covers: party }, pkg, { holdPerCover: Number(rulesRow2.hold_per_cover) || 0 });
-        }
-      }
-      return json({ ok: true, status: 'confirmed', bookingId: bookedId, table: tableLabel, time, date, party,
+      // status is the REAL row status: 'pending_payment' means the page must
+      // take the card next (paymentDue says what for); the pg_cron sweep
+      // expires it in 20 minutes if it never pays.
+      return json({ ok: true, status: createStatus, bookingId: bookedId, table: tableLabel, time, date, party,
         package: pkg ? { id: pkg.id, name: pkg.name, paymentModel: pkg.payment_model } : null,
         preorderToken, preorderDeadline,
         preordersTaken: validRows.length > 0,
@@ -573,24 +626,83 @@ Deno.serve(async (req) => {
       const { data: bk } = await db.from('bookings')
         .select('id, location_id, covers, status, customer_id, customer, package_id, booking_date, start_time')
         .eq('id', bookingId).eq('location_id', locationId).maybeSingle();
-      if (!bk || ['cancelled', 'no_show', 'departed'].includes(bk.status)) {
+      if (!bk || ['cancelled', 'no_show', 'departed', 'expired'].includes(bk.status)) {
+        // 'expired' lands here when the guest comes back after the 20-minute
+        // sweep freed the table — they must rebook, never pay a dead booking.
         return json({ ok: false, error: 'unknown_or_closed' }, 404);
       }
-      const { data: rulesRow3 } = await db.from('booking_rules').select('card_capture_enabled, hold_per_cover').eq('location_id', locationId).maybeSingle();
+      const { data: rulesRow3 } = await db.from('booking_rules').select('card_capture_enabled, hold_per_cover, card_capture_min_covers').eq('location_id', locationId).maybeSingle();
       if (!rulesRow3?.card_capture_enabled) return json({ ok: false, error: 'card_capture_disabled' }, 403);
       const pkg3 = bk.package_id ? venue.packages.find((x) => String(x.id) === String(bk.package_id)) || null : null;
-      const due = paymentDueFor(bk, pkg3 || null, { holdPerCover: Number(rulesRow3.hold_per_cover) || 0 });
+      const due = paymentDueFor(bk, pkg3 || null, {
+        holdPerCover: Number(rulesRow3.hold_per_cover) || 0,
+        cardCaptureMinCovers: Number(rulesRow3.card_capture_min_covers) || 0,
+      });
       if (!due) return json({ ok: false, error: 'nothing_due' });
       if (!body.payment_method || typeof body.payment_method !== 'object') {
         return json({ ok: false, error: 'payment_method required' }, 400);
       }
+      // Promote pending_payment → prepaid/confirmed once the money side has
+      // succeeded. v5.7.23: 'expired' promotes too - a payment landing after
+      // the 20-minute sweep RESURRECTS the booking (the money is captured, the
+      // booking must live; the table-overlap risk is accepted). Zero rows
+      // matched is only "already promoted" when a re-select shows the booking
+      // ALREADY at the target status; any other status (cancelled, no_show,
+      // dining, ...) is an honest error, never a silent success. Fires the
+      // (ledger-idempotent) confirmation and, when pre-order choices are
+      // still missing, the pre-order link.
+      // → { ok:true, status } | { ok:false, status } (status = what the row says now)
+      const promotePaid = async () => {
+        const next = due.kind === 'prepay' ? 'prepaid' : 'confirmed';
+        const { data: promoted } = await db.from('bookings')
+          .update({ status: next })
+          .eq('id', bookingId).in('status', ['pending_payment', 'expired'])
+          .select('id');
+        if (!promoted?.length) {
+          const { data: cur } = await db.from('bookings')
+            .select('status').eq('id', bookingId).maybeSingle();
+          if (cur?.status === next) return { ok: true, status: next };
+          return { ok: false, status: cur?.status || null };
+        }
+        const url = `${Deno.env.get('SUPABASE_URL')}/functions/v1/booking-reminders`;
+        const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}` };
+        fetch(url, { method: 'POST', headers, body: JSON.stringify({ action: 'confirm', booking_id: bookingId }) }).catch(() => {});
+        if (pkg3?.requires_preorder) {
+          const { count: picked } = await db.from('booking_preorders')
+            .select('id', { count: 'exact', head: true }).eq('booking_id', bookingId);
+          if ((picked || 0) < (Number(bk.covers) || 1)) {
+            fetch(url, { method: 'POST', headers, body: JSON.stringify({ action: 'send_link', booking_id: bookingId }) }).catch(() => {});
+          }
+        }
+        return { ok: true, status: next };
+      };
+
       const { data: prior } = await db.from('booking_payments')
         .select('id').eq('booking_id', bookingId).eq('kind', due.kind)
         .in('status', ['authorised', 'captured']).limit(1);
-      if (prior?.length) return json({ ok: true, already: true, kind: due.kind });
+      if (prior?.length) {
+        // Money already in but the booking may still say pending_payment
+        // (webhook race, page retry) — heal the status before answering.
+        const pr = await promotePaid();
+        if (!pr.ok) {
+          // Paid, but the booking sits in a status the promote must not touch
+          // (cancelled / no_show / dining ...). Say so - the venue sorts it.
+          return json({ ok: false, error: 'paid_but_booking_not_promotable', status: pr.status }, 409);
+        }
+        return json({ ok: true, already: true, kind: due.kind, status: pr.status });
+      }
 
       const isHold = due.kind === 'hold';
-      const reference = `bkpay-${bookingId}-${due.kind}`;
+      // v5.7.23 - every attempt gets its OWN merchant reference (-a<N>). The
+      // shared per-booking+kind reference meant the webhook (then keyed on
+      // merchant_reference) flipped every attempt row at once on a
+      // refused-then-retried card. The webhook now settles by pspReference;
+      // the attempt suffix keeps each reference unique for Adyen-side tracing
+      // and the webhook's no-psp fallback path.
+      const { count: priorAttempts } = await db.from('booking_payments')
+        .select('id', { count: 'exact', head: true })
+        .eq('booking_id', bookingId).eq('kind', due.kind);
+      const reference = `bkpay-${bookingId}-${due.kind}-a${(priorAttempts || 0) + 1}`;
       const payment: Record<string, unknown> = {
         merchantAccount: ADYEN_MERCHANT,
         amount: { value: isHold ? 0 : due.amountMinor, currency: 'GBP' },
@@ -643,10 +755,27 @@ Deno.serve(async (req) => {
         }).eq('id', bk.customer_id);
       }
       if (!authorised && j.resultCode === 'Refused') {
+        // Booking stays pending_payment — the widget offers a retry, and the
+        // 20-minute sweep expires it if the guest never succeeds.
         return json({ ok: false, error: 'card_refused', refusalReason: j.refusalReason || null });
       }
+      // Synchronous success settles it here and now; a 3DS/redirect flow
+      // answers 'pending' and the adyen-webhook bkpay capture promotes later.
+      let bookingStatus: string | null = null;
+      if (authorised) {
+        const pr = await promotePaid();
+        if (!pr.ok) {
+          // The money captured but the booking cannot promote (it moved to a
+          // status the promote must not touch while the guest paid). Honest
+          // error - the payment row is on the ledger for the venue to resolve.
+          return json({ ok: false, error: 'paid_but_booking_not_promotable', status: pr.status,
+            kind: due.kind, pspReference: j.pspReference || null }, 409);
+        }
+        bookingStatus = pr.status;
+      }
       return json({ ok: true, kind: due.kind, resultCode: j.resultCode, pspReference: j.pspReference || null,
-        amountMinor: due.amountMinor, action: j.action || null });
+        amountMinor: due.amountMinor, action: j.action || null,
+        ...(bookingStatus ? { status: bookingStatus } : {}) });
     }
 
     return json({ error: `unknown action: ${action}` }, 400);
