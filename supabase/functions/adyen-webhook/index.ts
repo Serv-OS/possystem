@@ -442,6 +442,62 @@ async function applyTipOnReceiptEvent(item: any, code: string, rowKey: string, o
       // two different modKeys - the second finds the row already failed and
       // must never revert the tip twice).
       const tip = Number(cap.tip_minor ?? 0);
+      // v5.7.10 - LIVE-OBSERVED on this account (20 Aug, the £20+£4 tip): a
+      // capture ABOVE the auth is ACCEPTED at request time and refused HERE,
+      // asynchronously, with "Insufficient balance on payment" - the wording
+      // for overcapture-not-enabled. The request-time fallback in adyen-modify
+      // never sees it, so the fallback must live in this branch: re-authorise
+      // the new total with the bank (amountUpdates) and let the
+      // AUTHORISATION_ADJUSTMENT success arm above kick the capture. ONE-SHOT:
+      // never falls back when a successful adjustment already applied for this
+      // psp (then a same-worded failure is genuine and must revert), so the
+      // adjust -> capture -> fail -> adjust loop is impossible.
+      const reasonTxt = String(item?.reason ?? '');
+      const finalM = Number(cap.final_minor ?? cap.auth_minor);
+      const authM = Number(cap.auth_minor);
+      const overcaptureShaped = /insufficient balance|overcapture|over-capture|exceed|higher than|greater than/i.test(reasonTxt);
+      if (overcaptureShaped && tip > 0 && finalM > authM && merchant) {
+        let alreadyAdjusted = false;
+        try {
+          const { data: parent } = await platformAdmin.from('adyen_payments')
+            .select('raw').eq('psp_reference', rowKey).maybeSingle();
+          const mods: string[] = Array.isArray((parent?.raw as any)?.applied_modifications) ? (parent!.raw as any).applied_modifications : [];
+          alreadyAdjusted = mods.some((m) => String(m).startsWith('AUTHORISATION_ADJUSTMENT:') && String(m).endsWith(':true'));
+        } catch { /* unreadable parent = assume not adjusted; the one-shot still holds via applied_modifications next time */ }
+        if (!alreadyAdjusted) {
+          const prevAttempts = Number(cap.attempts ?? 0);
+          const attempt = prevAttempts + 1;
+          const { data: claimed } = await admin.from('terminal_captures')
+            .update({ status: 'adjusting', attempts: attempt, updated_at: nowIso })
+            .eq('id', cap.id).in('status', ['pending', 'capturing']).eq('attempts', prevAttempts)
+            .select('id').maybeSingle();
+          if (!claimed) return;   // someone else owns the row - stop silently
+          let adj;
+          try {
+            adj = await adyenFetch('POST', `${checkoutBase()}/payments/${encodeURIComponent(rowKey)}/amountUpdates`,
+              { merchantAccount: merchant, amount: { value: finalM, currency: cur }, industryUsage: 'delayedCharge', reference: `tipadjw:${cap.id}`.slice(0, 80) },
+              { idempotencyKey: `tipadjw:${cap.id}:${finalM}:${attempt}` });
+          } catch (fe) {
+            adj = { ok: false, status: 0, data: { message: (fe as Error).message } };
+          }
+          if (adj.ok) {
+            await admin.from('terminal_captures').update({
+              error: 'direct capture refused (overcapture not enabled) - re-authorising the new total with the bank',
+              updated_at: new Date().toISOString(),
+            }).eq('id', cap.id).eq('status', 'adjusting');
+            await applyTipToClosedCheck(admin, {
+              closedCheckId: cap.closed_check_id, captureId: cap.id, psp: rowKey,
+              tipMinor: 0, legFlag: 'adjusting',
+            });
+            return;   // the AUTHORISATION_ADJUSTMENT webhook takes it from here
+          }
+          // The adjust request itself bounced - restore and fall through to the
+          // normal revert-to-failed below (fresh read keeps the CAS numbers right).
+          await admin.from('terminal_captures').update({ status: 'capturing', updated_at: new Date().toISOString() })
+            .eq('id', cap.id).eq('status', 'adjusting');
+          cap.attempts = attempt;
+        }
+      }
       const err = `capture failed at Adyen (${item?.reason ?? 'no reason given'})${tip > 0 ? ' - tip reverted, NOT charged' : ''}`;
       const { data: nowFailed } = await admin.from('terminal_captures')
         .update({ status: 'failed', final_minor: Number(cap.auth_minor), tip_minor: null, error: err, updated_at: nowIso })

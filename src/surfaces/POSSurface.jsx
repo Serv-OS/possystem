@@ -201,12 +201,18 @@ export default function POSSurface() {
     const isActive = (m) => {
       if (!m.schedule) return true;
       const s = m.schedule;
-      if (s.days && Array.isArray(s.days) && !s.days.includes(day)) return false;
+      // v5.7.10: coerce day values to numbers - a schedule whose days arrive as
+      // strings (["1","2",...]) used to fail includes() on EVERY day, so the
+      // menu never showed anywhere (the 20 Aug Provo donuts incident: Main's
+      // schedule read as inactive, the resolver fell through to the first
+      // always-on menu, and every till showed the one-category Doboy menu).
+      if (s.days && Array.isArray(s.days) && s.days.length && !s.days.map(Number).includes(day)) return false;
       if (s.from && s.to) {
-        const [fh, fm] = s.from.split(':').map(Number);
-        const [th, tm] = s.to.split(':').map(Number);
+        const [fh, fm] = String(s.from).split(':').map(Number);
+        const [th, tm] = String(s.to).split(':').map(Number);
         const fromMin = fh * 60 + fm;
         const toMin = th * 60 + tm;
+        if (!Number.isFinite(fromMin) || !Number.isFinite(toMin)) return true; // unparsable window = never hide the menu
         if (fromMin <= toMin) return time >= fromMin && time <= toMin;
         // crosses midnight (e.g. 22:00–02:00)
         return time >= fromMin || time <= toMin;
@@ -232,6 +238,15 @@ export default function POSSurface() {
     const preferredOk = preferred && allMenus.some(m => m.id === preferred);   // pinned menu must itself have cats
     // 1. If device pinned to a (non-empty) menu that's currently active, honour it.
     if (preferredOk && activeNow.some(m => m.id === preferred)) return preferred;
+    // v5.7.10: a PINNED till whose menu is merely off-schedule must NEVER land
+    // on an arbitrary other menu (the old priority race picked the tiny Doboy
+    // menu at Provo and every till "only showed donuts"). The device profile
+    // pin is an operator statement of intent: fall to the venue's default menu
+    // if one is flagged, otherwise keep showing the pinned menu itself.
+    if (preferredOk) {
+      const defForPinned = allMenus.find(m => m.isDefault || m.is_default);
+      return defForPinned ? defForPinned.id : preferred;
+    }
     // 2. Otherwise pick highest-priority menu currently active.
     if (activeNow.length > 0) {
       return activeNow.slice().sort((a, b) => (b.priority || 0) - (a.priority || 0))[0].id;
@@ -239,8 +254,6 @@ export default function POSSurface() {
     // 3. No menus active right now: fall back to default flagged menu.
     const def = allMenus.find(m => m.isDefault || m.is_default);
     if (def) return def.id;
-    // 4. Device pinned (even if its schedule says inactive), provided it has cats.
-    if (preferredOk) return preferred;
     // 5. Any non-empty menu (highest priority) so the grid is never blank when items exist.
     if (allMenus.length) return allMenus.slice().sort((a, b) => (b.priority || 0) - (a.priority || 0))[0].id;
     // 6. Nothing matches: show all categories (legacy behaviour).

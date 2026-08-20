@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.10',
+    date: '2026-08-20',
+    items: [
+      'Menus: a till pinned to a menu no longer switches to a random other menu when the pinned menu has a time schedule. It now falls back to the venue default menu, or keeps the pinned menu showing. This was the cause of every till showing only donuts.',
+      'Menus: schedule day checks now tolerate number formatting differences, so a valid every day schedule can never make a menu vanish.',
+      'Tips (US): when the card provider refuses a tip capture because overcapture is not enabled, the system now automatically asks the bank to approve the new total and completes the tip. Verified end to end on a live payment.',
+    ],
+  },
+  {
     version: '5.7.9',
     date: '2026-08-20',
     changes: [
