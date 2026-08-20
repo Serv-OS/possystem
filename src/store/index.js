@@ -178,9 +178,13 @@ const _sbUpsertMenuNow = async (menu) => {
     location_id: locationId,
     name: menu.name,
     description: menu.description || '',
-    is_default: menu.isDefault || false,
-    is_active: menu.isActive !== false,
-    sort_order: menu.sortOrder || 0,
+    // v5.7.15 - read BOTH spellings. A tab holding raw snake rows (pre-5.7.14
+    // loaders) saved isDefault undefined here and silently un-starred the
+    // default menu on ANY save (live 20 Aug: saving a menu SCHEDULE wiped the
+    // flag). Same clobber class as the v5.7.9 device-profile guard.
+    is_default: (menu.isDefault ?? menu.is_default) || false,
+    is_active: (menu.isActive ?? menu.is_active) !== false,
+    sort_order: (menu.sortOrder ?? menu.sort_order) || 0,
     // v4.6.4: schedule (timed menus) + priority (tiebreaker when multiple menus active)
     schedule:   menu.schedule ?? null,
     priority:   menu.priority ?? 0,

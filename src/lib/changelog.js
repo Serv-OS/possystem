@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.15',
+    date: '2026-08-20',
+    items: [
+      'Menus: saving a menu (for example its time schedule) can no longer switch off the default star as a side effect. The save now reads the flag in both data spellings.',
+    ],
+  },
+  {
     version: '5.7.14',
     date: '2026-08-20',
     items: [
