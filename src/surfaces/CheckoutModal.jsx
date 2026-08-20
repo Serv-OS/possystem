@@ -1781,6 +1781,14 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         // The server still gates on the venue setting + processor; this flag
         // alone does nothing on a venue with it off.
         surface: isBarTab ? undefined : 'pos',
+        // v5.7.6 - table vs counter, for venues whose tip-on-receipt setting is
+        // scoped to table checks only. `tableId` is the authoritative split: it
+        // is POSSurface's activeTableId, the same fact that already decides the
+        // check key above (table:session key vs per-sale counter leg) and which
+        // close path runs afterwards (clearTable for a table, recordWalkInClosed
+        // for a walk-in). A bar tab never sends surface, so tableCheck stays
+        // undefined there too - the wrapper only forwards it beside surface:'pos'.
+        tableCheck: isBarTab ? undefined : !!tableId,
         closedCheckId: checkId,
         checkDraft: {
           tableId: tableId || null,

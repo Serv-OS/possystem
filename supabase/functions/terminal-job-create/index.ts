@@ -81,6 +81,10 @@ interface Body {
   check_draft?: Record<string, unknown>;
   training?: boolean;
   surface?: string;             // v5.7.5: 'pos' = main POS checkout; gates tip-on-receipt manual capture
+  table_check?: boolean;        // v5.7.6: rides with surface:'pos' - true when the check is attached
+                                // to a table/session, false for a counter/walk-in sale. Under scope
+                                // 'table_checks' only true opens a tip window; missing = false (a
+                                // stale till fails toward normal capture-at-payment behaviour).
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -367,6 +371,13 @@ Deno.serve(async (req) => {
   //     kiosk, QR and pay-at-table never send it),
   //   - the VENUE turned the setting on (locations.pos_settings.tip_on_receipt,
   //     read server-side - the client cannot assert it),
+  //   - the setting's SCOPE matches the sale (v5.7.6): 'all_pos' takes every
+  //     main-POS card payment paper; 'table_checks' takes only checks the till
+  //     marked table_check:true (attached to a table/session) - counter and
+  //     walk-in sales keep the on-reader tip prompt. A missing table_check
+  //     under 'table_checks' means NO manual capture: a stale till that never
+  //     learned the flag fails toward the normal capture-at-payment flow,
+  //     never toward an unexpected hold,
   //   - the job routes to Adyen (term.adyen_terminal_id) OR the demo reader
   //     (simulated jobs mirror the whole flow; their capture rows are inserted
   //     by terminal_report_result and short-circuit before any processor).
@@ -377,10 +388,18 @@ Deno.serve(async (req) => {
     const { data: loc } = await opsAdmin.from('locations')
       .select('pos_settings').eq('id', locationId).maybeSingle();
     const tor = readTipOnReceipt(loc?.pos_settings);
-    if (tor.enabled) {
+    const scopeHit = tor.scope === 'all_pos' || body.table_check === true;
+    if (tor.enabled && scopeHit) {
       captureMode = 'manual';
       console.log('[terminal-job-create] tip-on-receipt venue - capture_mode=manual', JSON.stringify({
-        job_id, terminal: target_terminal_id, capture_hours: tor.capture_hours, simulated: isDemoTerminal,
+        job_id, terminal: target_terminal_id, capture_hours: tor.capture_hours,
+        scope: tor.scope, table_check: body.table_check === true, simulated: isDemoTerminal,
+      }));
+    } else if (tor.enabled) {
+      // Loud on purpose - "the slip did not print" and "the reader asked for a
+      // tip" both start with proving which branch this create took.
+      console.log('[terminal-job-create] tip-on-receipt scope miss - normal capture', JSON.stringify({
+        job_id, terminal: target_terminal_id, scope: tor.scope, table_check: body.table_check === true,
       }));
     }
   }

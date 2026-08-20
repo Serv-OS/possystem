@@ -249,6 +249,9 @@ export async function findPaxTerminal({ posDeviceId } = {}) {
  * @param {boolean} p.suppressTip    this ONE sale takes no tip (bar tab / takeaway)
  * @param {string} p.closedCheckId   pre-minted, so the check can close without the POS
  * @param {object} p.checkDraft      everything recordClosedCheck needs EXCEPT the tip
+ * @param {boolean} p.tableCheck     v5.7.6, main POS only: this check sits on a table/session
+ *                                   (false = counter/walk-in). Travels only with surface:'pos';
+ *                                   scopes the tip-on-receipt window on mixed-service venues
  * @param {boolean} p.localBridge    THIS device will drive the reader itself — do not
  *                                   fire the cloud 'start' kick (see the block below)
  * @returns {{job: object, existing: boolean}}
@@ -399,7 +402,16 @@ export async function dispatchTerminalJob(p) {
       // line up. MPOS, kiosk, QR, bar holds and split legs never send it, so
       // they can never open a tip window by accident. Only ever the literal
       // 'pos' - no other value travels.
-      ...(p.surface === 'pos' ? { surface: 'pos' } : {}),
+      //
+      // v5.7.6 - table_check rides ONLY alongside surface:'pos'. true = the
+      // check being paid is attached to a table/session, false = counter or
+      // walk-in sale. It exists for venues whose tip-on-receipt setting is
+      // scoped to 'table_checks' (mixed counter + table service): the server
+      // only opens a tip window for table checks there, so counter guests
+      // keep the tip prompt on the reader. Explicit boolean, never absent on
+      // a main-POS create: under that scope the server treats a MISSING flag
+      // as false (normal capture), so a stale till degrades safely.
+      ...(p.surface === 'pos' ? { surface: 'pos', table_check: p.tableCheck === true } : {}),
     });
 
     rememberJob({ checkKey: p.checkKey, jobId: useJobId, closedCheckId: useClosedCheckId, locationId, at: Date.now() });

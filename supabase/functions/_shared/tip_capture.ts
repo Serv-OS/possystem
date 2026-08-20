@@ -17,6 +17,12 @@
 export interface TipOnReceiptSetting {
   enabled: boolean;
   capture_hours: number; // clamped 1..72, default 24
+  // v5.7.6 - which main-POS sales go paper. 'all_pos' = every card payment at
+  // the till (the v5.7.5 behaviour, and the default for any missing or unknown
+  // value so venues that enabled the setting before scope existed keep exactly
+  // what they had). 'table_checks' = only checks attached to a table; counter
+  // and walk-in sales keep the tip prompt on the reader.
+  scope: 'all_pos' | 'table_checks';
 }
 
 export function clampCaptureHours(v: unknown): number {
@@ -29,10 +35,14 @@ export function clampCaptureHours(v: unknown): number {
 export function readTipOnReceipt(posSettings: unknown): TipOnReceiptSetting {
   const s = (posSettings && typeof posSettings === 'object')
     ? (posSettings as Record<string, any>).tip_on_receipt : null;
-  if (!s || typeof s !== 'object') return { enabled: false, capture_hours: 24 };
+  if (!s || typeof s !== 'object') return { enabled: false, capture_hours: 24, scope: 'all_pos' };
   return {
     enabled: s.enabled === true,
     capture_hours: clampCaptureHours(s.capture_hours),
+    // Only the one recognised narrowing value counts; anything else (missing,
+    // typo, future value) falls back to 'all_pos' so an enabled venue never
+    // silently loses the flow it turned on.
+    scope: s.scope === 'table_checks' ? 'table_checks' : 'all_pos',
   };
 }
 

@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.6',
+    date: '2026-08-20',
+    changes: [
+      'TIP ON PRINTED RECEIPT CAN NOW BE TABLE CHECKS ONLY. The setting card in Back Office, Card readers, Card terminals grew a choice under the toggle: "All card payments at the till" (exactly what venues already had) or "Table checks only". Pick the second at a venue that runs a counter and tables at once: a guest paying at the counter faces the reader and picks their tip on its screen as normal, while a check on a table still approves and holds the card, prints the merchant slip with the tip line, and takes the written tip from History.',
+      'The till now tells the server whether the check being paid sits on a table. Counter and walk-in sales say no, table checks say yes, and the server only opens a tip window when the venue scope agrees. A till running an older version never says either, which under "Table checks only" simply means the payment captures at payment time as normal. Nothing can hold a charge by accident.',
+      'Venues that already turned the setting on are untouched: no saved choice means all card payments at the till, the behaviour they switched on. Handheld, kiosk, QR, bar tabs and table pay keep charging exactly as before, whatever the scope.',
+      'No database change needed. The scope saves inside the same venue setting the card already writes.',
+    ],
+  },
+  {
     version: '5.7.5',
     date: '2026-08-19',
     changes: [

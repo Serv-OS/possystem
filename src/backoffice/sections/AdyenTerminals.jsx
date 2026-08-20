@@ -73,6 +73,8 @@ export default function AdyenTerminals() {
   const [torLoaded, setTorLoaded] = useState(false);
   const [torEnabled, setTorEnabled] = useState(false);
   const [torHours, setTorHours] = useState(24);
+  // v5.7.6 - which POS sales go paper: 'all_pos' (default) or 'table_checks'.
+  const [torScope, setTorScope] = useState('all_pos');
   const [torBusy, setTorBusy] = useState(false);
   const [torMsg, setTorMsg] = useState('');
   const [modeTable, setModeTable] = useState(true);
@@ -100,6 +102,9 @@ export default function AdyenTerminals() {
       setTorEnabled(tor?.enabled === true);
       const h = Number(tor?.capture_hours);
       setTorHours(Number.isFinite(h) ? Math.max(1, Math.min(72, h)) : 24);
+      // Same fail-open-to-'all_pos' rule as the server (readTipOnReceipt):
+      // only the exact narrowing value counts, anything else means every till payment.
+      setTorScope(tor?.scope === 'table_checks' ? 'table_checks' : 'all_pos');
       setTorLoaded(true);
     } catch (e) {
       // Panel self-hides on hard failures (venue not provisioned etc.)
@@ -204,13 +209,14 @@ export default function AdyenTerminals() {
       const { data, error: readErr } = await supabase.from('locations')
         .select('pos_settings').eq('id', locId).maybeSingle();
       if (readErr) throw new Error(`could not read the current settings: ${readErr.message}`);
+      const scope = torScope === 'table_checks' ? 'table_checks' : 'all_pos';
       const { error: writeErr } = await supabase.from('locations').update({
-        pos_settings: { ...(data?.pos_settings || {}), tip_on_receipt: { enabled: torEnabled, capture_hours: hours } },
+        pos_settings: { ...(data?.pos_settings || {}), tip_on_receipt: { enabled: torEnabled, capture_hours: hours, scope } },
       }).eq('id', locId);
       if (writeErr) throw new Error(writeErr.message);
       setTorHours(hours);
       setTorMsg(torEnabled
-        ? `Saved. Tills pick it up next boot or Push to POS. Unadjusted cards capture automatically at the original amount after ${hours} hour${hours === 1 ? '' : 's'}.`
+        ? `Saved${scope === 'table_checks' ? ' for table checks only' : ''}. Tills pick it up next boot or Push to POS. Unadjusted cards capture automatically at the original amount after ${hours} hour${hours === 1 ? '' : 's'}.`
         : 'Saved. Tip on printed receipt is off. Cards capture at payment time as normal.');
     } catch (e) { setErr(e?.message || String(e)); }
     setTorBusy(false);
@@ -489,6 +495,27 @@ export default function AdyenTerminals() {
               </label>
             )}
           </div>
+          {torEnabled && (
+            <div style={{ marginTop: 10 }}>
+              <div style={S.label}>Which sales print the tip line</div>
+              <label style={{ fontSize: 12.5, display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer', marginTop: 6 }}>
+                <input type="radio" name="tor-scope" checked={torScope === 'all_pos'}
+                  onChange={() => setTorScope('all_pos')} />
+                <b>All card payments at the till</b>
+              </label>
+              <label style={{ fontSize: 12.5, display: 'flex', gap: 6, alignItems: 'flex-start', cursor: 'pointer', marginTop: 6 }}>
+                <input type="radio" name="tor-scope" checked={torScope === 'table_checks'}
+                  onChange={() => setTorScope('table_checks')} style={{ marginTop: 2 }} />
+                <span>
+                  <b>Table checks only</b>
+                  <span style={{ display: 'block', color: 'var(--t3)' }}>
+                    Counter and walk-in sales keep the tip prompt on the card reader; table checks
+                    print the signature slip and take the tip from History.
+                  </span>
+                </span>
+              </label>
+            </div>
+          )}
           {torEnabled && (
             <div style={{ ...S.desc, marginTop: 8 }}>
               A card nobody adjusts captures automatically at the original amount when the window
