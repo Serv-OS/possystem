@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.29',
+    date: '2026-08-20',
+    items: [
+      'Location settings: the timezone picker now offers every timezone in the world, grouped by region with a live UTC offset, a search box, and a Common group covering all US zones (Eastern, Central, Mountain, Arizona, Pacific, Alaska, Hawaii), Canada, Europe, Australia and more. The venue timezone drives every schedule and report day, so venues in the wrong zone now have the right one to choose.',
+    ],
+  },
+  {
     version: '5.7.28',
     date: '2026-08-20',
     items: [

@@ -8,23 +8,59 @@ import { isValidSlug, suggestSlug } from '../../lib/customerUrl';
 import { CUSTOMER_ROOT } from '../../lib/env';
 import { CURRENCIES, money, setActiveCurrency } from '../../lib/currency';
 
-const TIMEZONES = [
-  { value:'Europe/London',      label:'Europe/London (UK)' },
-  { value:'Europe/Paris',       label:'Europe/Paris (CET)' },
-  { value:'Europe/Berlin',      label:'Europe/Berlin (CET)' },
-  { value:'Europe/Amsterdam',   label:'Europe/Amsterdam (CET)' },
-  { value:'Europe/Dublin',      label:'Europe/Dublin' },
-  { value:'America/New_York',   label:'America/New York (ET)' },
-  { value:'America/Chicago',    label:'America/Chicago (CT)' },
-  { value:'America/Denver',     label:'America/Denver (MT)' },
-  { value:'America/Los_Angeles',label:'America/Los Angeles (PT)' },
-  { value:'America/Toronto',    label:'America/Toronto (ET)' },
-  { value:'Australia/Sydney',   label:'Australia/Sydney (AEDT)' },
-  { value:'Australia/Melbourne',label:'Australia/Melbourne (AEDT)' },
-  { value:'Asia/Dubai',         label:'Asia/Dubai (GST)' },
-  { value:'Asia/Singapore',     label:'Asia/Singapore (SGT)' },
-  { value:'Asia/Tokyo',         label:'Asia/Tokyo (JST)' },
+// v5.7.29: the venue timezone drives EVERY business-time decision in the
+// system (menu schedules, dayparts, booking slots, report days, auto-capture
+// windows), so the picker must offer every zone a venue could be in. The old
+// 15-entry list had ONE US zone (New York); the US alone needs Eastern,
+// Central, Mountain, Arizona (no DST), Pacific, Alaska and Hawaii. The full
+// IANA list comes from the browser (Intl.supportedValuesOf) grouped by region
+// with a live UTC offset on every entry; a curated Common group sits on top
+// for the zones venues actually pick. Falls back to the curated list on
+// browsers without supportedValuesOf.
+const COMMON_TIMEZONES = [
+  ['Europe/London', 'United Kingdom'], ['Europe/Dublin', 'Ireland'],
+  ['America/New_York', 'US Eastern'], ['America/Chicago', 'US Central'],
+  ['America/Denver', 'US Mountain'], ['America/Phoenix', 'US Arizona (no DST)'],
+  ['America/Los_Angeles', 'US Pacific'], ['America/Anchorage', 'US Alaska'],
+  ['Pacific/Honolulu', 'US Hawaii'], ['America/Puerto_Rico', 'Puerto Rico'],
+  ['America/Toronto', 'Canada Eastern'], ['America/Winnipeg', 'Canada Central'],
+  ['America/Edmonton', 'Canada Mountain'], ['America/Vancouver', 'Canada Pacific'],
+  ['America/Halifax', 'Canada Atlantic'], ['America/St_Johns', 'Newfoundland'],
+  ['Europe/Paris', 'France'], ['Europe/Berlin', 'Germany'], ['Europe/Amsterdam', 'Netherlands'],
+  ['Europe/Madrid', 'Spain'], ['Europe/Rome', 'Italy'], ['Europe/Lisbon', 'Portugal'],
+  ['Asia/Dubai', 'UAE'], ['Asia/Singapore', 'Singapore'], ['Asia/Hong_Kong', 'Hong Kong'],
+  ['Asia/Tokyo', 'Japan'], ['Australia/Sydney', 'Australia Eastern'],
+  ['Australia/Brisbane', 'Australia Queensland (no DST)'], ['Australia/Adelaide', 'Australia Central'],
+  ['Australia/Perth', 'Australia Western'], ['Pacific/Auckland', 'New Zealand'],
 ];
+
+// "UTC+01:00" style offset for a zone right now (DST aware).
+function tzOffsetLabel(tz) {
+  try {
+    const parts = new Intl.DateTimeFormat('en-GB', { timeZone: tz, timeZoneName: 'longOffset' }).formatToParts(new Date());
+    const p = parts.find(x => x.type === 'timeZoneName')?.value || '';
+    return p === 'GMT' ? 'UTC+00:00' : p.replace('GMT', 'UTC');
+  } catch { return ''; }
+}
+
+function buildTimezoneGroups() {
+  const common = COMMON_TIMEZONES.map(([value, name]) => ({
+    value, label: `${name} (${value.replace(/_/g, ' ')}, ${tzOffsetLabel(value)})`,
+  }));
+  let all = [];
+  try { all = typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : []; } catch { all = []; }
+  const byRegion = {};
+  for (const tz of all) {
+    const region = tz.includes('/') ? tz.split('/')[0] : 'Other';
+    if (region === 'Etc' || region === 'SystemV' || region === 'US' || region === 'Canada') continue;
+    (byRegion[region] ||= []).push({ value: tz, label: `${tz.replace(/_/g, ' ')} (${tzOffsetLabel(tz)})` });
+  }
+  const groups = [{ label: 'Common', zones: common }];
+  for (const region of Object.keys(byRegion).sort()) groups.push({ label: region, zones: byRegion[region] });
+  return groups;
+}
+const TIMEZONE_GROUPS = buildTimezoneGroups();
+const TIMEZONES = TIMEZONE_GROUPS.flatMap(g => g.zones); // kept for any legacy reader
 
 const HOURS = Array.from({ length: 48 }, (_, i) => {
   const h = Math.floor(i / 2);
@@ -89,6 +125,7 @@ export default function LocationSettings() {
   const [error, setError]       = useState('');
 
   const [timezone, setTimezone]     = useState('Europe/London');
+  const [tzFilter, setTzFilter]     = useState('');
   const [currency, setCurrency]     = useState('GBP');   // v5.5.326: per-location currency
   const [bizDayStart, setBizDayStart] = useState('06:00');
   const [collectionLeadMin, setCollectionLeadMin] = useState(30);
@@ -327,8 +364,26 @@ export default function LocationSettings() {
           Reports will show "today's" data from the correct local midnight — not the server or device time.
         </div>
         <label style={S.label}>Location timezone</label>
+        <input
+          style={{ ...S.select, marginBottom: 6 }}
+          placeholder="Search zones, for example Phoenix, Chicago, Sydney"
+          value={tzFilter}
+          onChange={e => setTzFilter(e.target.value)}
+        />
         <select style={S.select} value={timezone} onChange={e => setTimezone(e.target.value)}>
-          {TIMEZONES.map(tz => <option key={tz.value} value={tz.value}>{tz.label}</option>)}
+          {TIMEZONE_GROUPS.map(g => {
+            const q = tzFilter.trim().toLowerCase();
+            const zones = q ? g.zones.filter(z => z.label.toLowerCase().includes(q) || z.value.toLowerCase().includes(q)) : g.zones;
+            if (!zones.length) return null;
+            return (
+              <optgroup key={g.label} label={g.label}>
+                {zones.map(tz => <option key={`${g.label}:${tz.value}`} value={tz.value}>{tz.label}</option>)}
+              </optgroup>
+            );
+          })}
+          {/* keep the saved value selectable even when the filter hides its group */}
+          {tzFilter && !TIMEZONES.some(z => z.value === timezone && z.label.toLowerCase().includes(tzFilter.trim().toLowerCase()))
+            && <option value={timezone}>{timezone}</option>}
         </select>
         <div style={{ fontSize:11, color:'var(--t4)', marginTop:6 }}>
           Current time in {timezone}: <strong style={{ color:'var(--t2)' }}>
