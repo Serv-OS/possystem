@@ -296,8 +296,10 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
     return <Badge tone={over ? 'amber' : 'red'}>{over ? '+' : ''}{hm(variance)} {over ? 'over' : 'under'}</Badge>;
   }
 
-  if (loading) return <LoadingCard label="Loading timesheets…" />;
-
+  // v5.7.30: this memo used to sit BELOW the loading early-return, so the
+  // first render (loading) called one fewer hook than the next (React #310,
+  // "rendered more hooks than during the previous render") and the Timesheets
+  // page crashed on every open. Hooks must run unconditionally, above any return.
   const noShowByStaff = useMemo(() => {
     const m = {};
     for (const r of noShows) (m[r.staffId] = m[r.staffId] || []).push(r);
@@ -305,6 +307,8 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
       .map(([staffId, rows]) => ({ staffId, rows: rows.sort((a, b) => b.date.localeCompare(a.date)) }))
       .sort((a, b) => b.rows.length - a.rows.length);
   }, [noShows]);
+
+  if (loading) return <LoadingCard label="Loading timesheets…" />;
 
   return (
     <>

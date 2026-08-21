@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.30',
+    date: '2026-08-20',
+    items: [
+      'Workforce: the Timesheets page no longer crashes with an App Error when it opens. A no show summary was being prepared after the loading screen instead of before it.',
+    ],
+  },
+  {
     version: '5.7.29',
     date: '2026-08-20',
     items: [
