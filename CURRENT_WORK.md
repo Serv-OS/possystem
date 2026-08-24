@@ -1,3 +1,29 @@
+# Session, 24 Aug 2026 (v5.7.32), Tax Profiles slice 1: engine lands DARK (NOT committed)
+
+## Done (working tree only, no commit, no push, no deploys, no DB writes)
+- NEW src/lib/taxEngine.js: pure profiles engine (computeTax). Per-line rate or per_unit,
+  inclusive extract vs exclusive add, compound=true taxes base + prior taxable=true line
+  amounts in sort_order, pre/post_discount basis, order_types filter, half_up rounding at
+  invoice level (once per tax line across the order) or item level. Returns
+  exclusiveTaxTotal / inclusiveExtractedTotal / lines / legacyBreakdown (calculateOrderTax
+  shape, rate null for per_unit). makeCascadeResolver = the BINDING cascade: item profile
+  -> item legacy rate/overrides (SET-but-unmapped id, incl __not_in_menu__, = NO tax, stop)
+  -> category profile -> venue default profile -> legacy default rate -> none.
+- NEW src/lib/taxAdapter.js: buildLegacyProfiles(taxRates) synthesises one single-line
+  profile per legacy rate so the engine reproduces calculateOrderTax exactly.
+- NEW src/lib/taxEngine.test.js (22 tests): Omaha 100 -> 2.50 occupation -> 7.69 sales on
+  102.50 -> 110.19; Chicago 4-line 9.75 on 100; UK sugar VAT-inclusive + 0.25 per_unit x3;
+  mixed inclusive+exclusive; post_discount; order-type filter; per_unit inclusive rejected;
+  GOLDEN PARITY corpus (UK 20 inclusive default, 20/5/0 mix + overrides, US 8.875) equal to
+  calculateOrderTax to the penny. npm test 452/452 (was 430), build clean.
+- Migration supabase/migrations/20260825b_tax_profiles.sql (hand-apply, ops DB, re-runnable):
+  tax_profiles + tax_profile_lines, tax_profile_id on menu_items/menu_categories,
+  locations.default_tax_profile_id, indexes. RLS: SELECT anon+authenticated, writes
+  AUTHENTICATED ONLY, service_role full. NO anon write grants.
+- ZERO consumer switched: nothing imports taxEngine/taxAdapter outside the tests. Every
+  till, kiosk and customer page behaves exactly as v5.7.31.
+- Next slice: Back Office Tax profiles UI + consumer switch behind the cascade.
+
 # Session, 24 Aug 2026 (v5.7.31), Tax Profiles slice 0: exclusive tax is now CHARGED (NOT committed)
 
 ## Done (working tree only — no commit, no push, no deploys, no DB writes)

@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.32',
+    date: '2026-08-24',
+    items: [
+      'Groundwork release for tax profiles. A new tax engine lands in the codebase with a full test suite, ready for venues that need stacked taxes such as a city occupation tax that itself gets sales tax on top, several state, county and city rates on one item, or a per unit levy alongside VAT.',
+      'Nothing changes on any till, kiosk or customer page yet. No screen uses the new engine in this release. Every order is taxed exactly as it was in 5.7.31.',
+      'The new engine has been proven against the current tax calculation. For every configuration in use today, UK VAT inclusive pricing and US added on sales tax alike, it produces the same figures to the penny.',
+    ],
+  },
+  {
     version: '5.7.31',
     date: '2026-08-20',
     items: [
