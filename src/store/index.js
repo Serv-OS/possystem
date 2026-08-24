@@ -7,7 +7,8 @@ import { buildScheduleCtx } from '../lib/locationTime';
 import { computeCheckTotals } from '../lib/payments/checkTotals';
 import { operatorSwitchPatch, logoutPatch } from '../lib/cartHold';
 import { kitchenOverride, receiptOverride } from '../lib/itemDisplay';
-import { normaliseMenuRow } from '../lib/rowMapping';
+import { normaliseMenuRow, assembleTaxProfiles } from '../lib/rowMapping';
+import { buildLegacyProfiles } from '../lib/taxAdapter';
 import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, upsertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC, upsertModifierGroup, deleteModifierGroup } from '../lib/db';
 import { isSessionClosed } from '../sync/sessionClosure';
 import { markJobReconciled, closeTerminalSession, recallJob, forgetJob, cancelTerminalJob, buildCheckKey, fetchJob, fetchJobCapture } from '../lib/payments/terminalJobs';
@@ -238,6 +239,14 @@ const _sbUpsertCategoryNow = async (cat, isRetry = false) => {
     default_course: cat.defaultCourse ?? 1,
     spacer_slots: cat.spacerSlots ?? [],
     is_special: cat.isSpecial ?? cat.is_special ?? false,  // v5.5.316: persist so kiosk/online hide special cats
+    // v5.7.33: tax profile assignment — CONDITIONAL (touched-fields discipline):
+    // only written when the row carries the field. Every v5.7.33+ loader stamps
+    // taxProfileId on category rows, so normal saves round-trip the real DB
+    // value; a caller holding a pre-profile row (stale tab) simply leaves the
+    // column alone instead of nulling a saved assignment. Mirrored in db.js
+    // upsertMenuCategory — the CLAUDE.md two-paths gotcha.
+    ...(cat.taxProfileId !== undefined || cat.tax_profile_id !== undefined
+      ? { tax_profile_id: cat.taxProfileId ?? cat.tax_profile_id ?? null } : {}),
     updated_at: new Date().toISOString(),
   });
   // Parent still landing (or landed by ANOTHER tab a beat later): wait and retry once
@@ -438,6 +447,69 @@ const getCentresForItem = (item, config) => {
   return matched;
 };
 
+// ── Tax context (v5.7.33, delivery only — no consumer computes with it yet) ──
+// Packages everything lib/taxEngine.js needs into one object:
+//   profilesById          — DB tax profiles (normalised) MERGED with the
+//                           per-legacy-rate adapter profiles from
+//                           lib/taxAdapter.js buildLegacyProfiles(taxRates)
+//   itemProfileIds        — itemId -> tax_profile_id (menuItems[].taxProfileId)
+//   categoryProfileIds    — categoryId -> tax_profile_id (menuCategories[].taxProfileId)
+//   defaultProfileId /    — locations.default_tax_profile_id (both spellings so
+//   venueDefaultProfileId   the object spreads straight into makeCascadeResolver)
+//   legacyRateToProfileId — tax_rates.id -> adapter profile id
+//   legacyDefaultProfileId— adapter profile id of the is_default legacy rate
+//   taxRates              — the legacy rows themselves, untouched
+// The future cutover is: const ctx = useStore.getState().getTaxContext();
+// computeTax({ ..., profilesById: ctx.profilesById,
+//              resolveProfileId: makeCascadeResolver(ctx) }).
+// Memoised on the identity of its five input slices, so calling it on every
+// render is free until one of them actually changes.
+let _taxCtxCache = null;
+function _buildTaxContext(s) {
+  const { taxProfiles, menuItems, menuCategories, venueDefaultTaxProfileId, taxRates } = s;
+  const c = _taxCtxCache;
+  if (c
+      && c.taxProfiles === taxProfiles
+      && c.menuItems === menuItems
+      && c.menuCategories === menuCategories
+      && c.venueDefaultTaxProfileId === venueDefaultTaxProfileId
+      && c.taxRates === taxRates) {
+    return c.ctx;
+  }
+  const { profilesById: legacyProfiles, legacyRateToProfileId, legacyDefaultProfileId } =
+    buildLegacyProfiles(taxRates || []);
+  // DB profiles are keyed by their real uuid; adapter profiles by 'legacy:<rateId>' —
+  // the namespaces can never collide. Inactive DB profiles resolve nothing,
+  // exactly like inactive legacy rates in the adapter.
+  const profilesById = { ...legacyProfiles };
+  for (const p of (taxProfiles || [])) {
+    if (p && p.id && p.active !== false) profilesById[p.id] = p;
+  }
+  const itemProfileIds = {};
+  for (const i of (menuItems || [])) {
+    const pid = i?.taxProfileId ?? i?.tax_profile_id ?? null;
+    if (pid && i.id != null) itemProfileIds[i.id] = pid;
+  }
+  const categoryProfileIds = {};
+  for (const cat of (menuCategories || [])) {
+    const pid = cat?.taxProfileId ?? cat?.tax_profile_id ?? null;
+    if (pid && cat.id != null) categoryProfileIds[cat.id] = pid;
+  }
+  const defaultProfileId = venueDefaultTaxProfileId || null;
+  const ctx = {
+    profilesById,
+    itemProfileIds,
+    categoryProfileIds,
+    defaultProfileId,
+    venueDefaultProfileId: defaultProfileId,
+    legacyRateToProfileId,
+    legacyDefaultProfileId,
+    taxRates: taxRates || [],
+  };
+  _taxCtxCache = { taxProfiles, menuItems, menuCategories, venueDefaultTaxProfileId, taxRates, ctx };
+  return ctx;
+}
+
 export const useStore = create((set, get) => ({
   // Tables Ready — walk-in waitlist / live table-queue (slice in ./waitlistSlice.js).
   ...waitlistSlice(set, get),
@@ -623,9 +695,22 @@ export const useStore = create((set, get) => ({
       // v5.7.17: the shared normaliser in lib/rowMapping.js is the one copy.
       ...(snap.menus?.length ? { menus: snap.menus.map(normaliseMenuRow) } : {}),
       // Menu categories — full replace
-      ...(snap.menuCategories?.length ? { menuCategories: snap.menuCategories } : {}),
+      // v5.7.33: normalise tax_profile_id → taxProfileId on apply (push snapshots
+      // may carry raw snake rows; camel wins when both are present). Delivery
+      // only — nothing computes with the assignment yet.
+      ...(snap.menuCategories?.length ? { menuCategories: snap.menuCategories.map(c => ({
+        ...c,
+        taxProfileId: c.taxProfileId ?? c.tax_profile_id ?? null,
+      })) } : {}),
       // Tax rates — full replace
       ...(snap.taxRates?.length ? { taxRates: snap.taxRates } : {}),
+      // v5.7.33: tax profiles ride the push (same non-empty no-clear guard —
+      // a partial snapshot must never wipe a till's profiles). Normalised via
+      // the one shared assembler so raw-ish rows and store-shaped rows both land
+      // in the store shape. venueDefaultTaxProfileId only applies when SET —
+      // absent/null is a no-op, never a clear.
+      ...(snap.taxProfiles?.length ? { taxProfiles: assembleTaxProfiles(snap.taxProfiles, null) } : {}),
+      ...('venueDefaultTaxProfileId' in snap ? { venueDefaultTaxProfileId: snap.venueDefaultTaxProfileId ?? null } : {}),
       // Discount presets + rules — full replace
       ...(snap.discountPresets?.length ? { discountPresets: snap.discountPresets } : {}),
       ...(snap.discountRules?.length ? { discountRules: snap.discountRules } : {}),
@@ -1095,6 +1180,20 @@ export const useStore = create((set, get) => ({
   quickScreenAuto: null,
   locationConfig: { timezone: 'Europe/London', businessDayStart: '06:00', shifts: [] },
   taxRates: [],
+  // ── Tax profiles (v5.7.33, delivery only) ──────────────────────────────────
+  // Normalised camelCase profiles with nested lines (lib/rowMapping.js
+  // assembleTaxProfiles is the one normaliser). NOTHING computes with these
+  // yet — the engine (lib/taxEngine.js) is landed dark and every consumer
+  // still runs calculateOrderTax against taxRates above. Item assignments
+  // ride menuItems[].taxProfileId, category assignments menuCategories[]
+  // .taxProfileId, and the venue default (locations.default_tax_profile_id)
+  // lands here:
+  taxProfiles: [],
+  venueDefaultTaxProfileId: null,
+  // getTaxContext(): selector-shaped helper packaging everything the engine's
+  // makeCascadeResolver + computeTax need, memoised on its input slices so a
+  // future consumer can call it on every render for free. See _buildTaxContext.
+  getTaxContext: () => _buildTaxContext(get()),
   discountPresets: [],   // from discounts table — manual presets staff can apply
   discountRules: [],     // from discount_rules table — auto-discount rules
   setQuickScreenIds: (ids) => set({ quickScreenIds: ids }),
@@ -1204,7 +1303,9 @@ export const useStore = create((set, get) => ({
       // moving a product to a new category (or editing allergens, tax, etc.)
       // leaves variants with stale data, breaking reports, stamp cards, KDS
       // routing, compliance, and more.
-      const CASCADE_FIELDS = ['cat', 'cats', 'allergens', 'taxRateId', 'taxOverrides', 'centreId'];
+      // v5.7.33: taxProfileId joins the cascade — variants are sizes of the same
+      // product and must share the parent's tax profile override like taxRateId.
+      const CASCADE_FIELDS = ['cat', 'cats', 'allergens', 'taxRateId', 'taxOverrides', 'taxProfileId', 'centreId'];
       const hasCascade = CASCADE_FIELDS.some(f => f in patch);
       if (hasCascade && fullItem && !fullItem.parentId) {
         const cascadePatch = {};

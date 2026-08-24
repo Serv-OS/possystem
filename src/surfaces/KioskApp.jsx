@@ -25,6 +25,7 @@ import { decrementStockRPC, fetchActiveDiscountRules, shortOrderRef } from '../l
 import { logOrderActivity } from '../lib/activity';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
 import { calculateOrderTax } from '../lib/tax';
+import { assembleTaxProfiles } from '../lib/rowMapping';
 import { buildScheduleCtx } from '../lib/locationTime';
 import { depleteForSaleServer } from '../lib/stock/deplete';
 import KioskProductModal from './KioskProductModal';
@@ -97,7 +98,7 @@ function useKioskProfile(kioskId) {
 // Loads menu data scoped to this location. Returns items, categories, links, menus.
 // Uses the active-menu resolver (matching POS) so timed menus work.
 function useKioskMenu(profile, locationId, tz = 'Europe/London') {
-  const [data, setData] = useState({ items: [], categories: [], menus: [], links: [], taxRates: [] });
+  const [data, setData] = useState({ items: [], categories: [], menus: [], links: [], taxRates: [], taxProfiles: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [tick, setTick] = useState(0);
@@ -116,7 +117,7 @@ function useKioskMenu(profile, locationId, tz = 'Europe/London') {
         // v5.5.235: menu_category_links has no location_id column — filter via
         // the loaded menus' ids (which are already location-scoped). Previously
         // this was an unfiltered select('*') returning links from ALL locations.
-        const [iRes, cRes, mRes, tRes, pRes] = await Promise.all([
+        const [iRes, cRes, mRes, tRes, pRes, tpRes, tlRes] = await Promise.all([
           supabase.from('menu_items').select('*').eq('location_id', locationId).eq('archived', false).order('sort_order'),
           supabase.from('menu_categories').select('*').eq('location_id', locationId).order('sort_order'),
           supabase.from('menus').select('*').eq('location_id', locationId).eq('is_active', true),
@@ -133,6 +134,12 @@ function useKioskMenu(profile, locationId, tz = 'Europe/London') {
           // ('[kiosk] instruction group not found'). Same read OnlineSurface uses.
           supabase.from('config_pushes').select('snapshot->instructionGroupDefs')
             .eq('location_id', locationId).order('created_at', { ascending: false }).limit(1).maybeSingle(),
+          // v5.7.33: tax profiles + lines (anon SELECT), delivery only - stored in
+          // this hook's state ready for the profiles cutover, unused by any
+          // calculation today. Category/item assignments already ride the raw
+          // menu_categories / menu_items select('*') reads above (tax_profile_id).
+          supabase.from('tax_profiles').select('*').eq('location_id', locationId).order('sort_order'),
+          supabase.from('tax_profile_lines').select('*').eq('location_id', locationId).order('sort_order'),
         ]);
         // Fetch links only for this location's menus
         const menuIds = (mRes.data || []).map(m => m.id);
@@ -154,6 +161,9 @@ function useKioskMenu(profile, locationId, tz = 'Europe/London') {
           links: lRes.data || [],
           // v5.7.31: active rates only — same filter OnlineSurface applies.
           taxRates: (tRes.data || []).filter(r => r.active !== false),
+          // v5.7.33: both reads must have succeeded - never keep line-less profiles.
+          taxProfiles: (Array.isArray(tpRes.data) && Array.isArray(tlRes.data))
+            ? assembleTaxProfiles(tpRes.data, tlRes.data) : [],
         });
       } catch (e) {
         if (alive) setError(e?.message || 'Failed to load menu');

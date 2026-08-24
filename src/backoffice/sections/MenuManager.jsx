@@ -174,10 +174,17 @@ async function archiveVariantRow(id) {
 const ORDER_TYPES_TAX = ['dine-in', 'takeaway', 'delivery', 'bar', 'counter'];
 
 function TaxSection({ item, onUpdate, markBOChange }) {
-  const { taxRates } = useStore();
+  const { taxRates, taxProfiles } = useStore();
 
   const setTaxRate = (id) => {
     onUpdate({ taxRateId: id || null, tax_rate_id: id || null });
+    markBOChange();
+  };
+  // v5.7.33: tax PROFILE override (dark — tills still charge via the legacy
+  // rates below until the calculation cutover). Same dual-spelling patch
+  // pattern as setTaxRate so both save paths carry it.
+  const setTaxProfile = (id) => {
+    onUpdate({ taxProfileId: id || null, tax_profile_id: id || null });
     markBOChange();
   };
   const setOverride = (orderType, rateId) => {
@@ -201,8 +208,25 @@ function TaxSection({ item, onUpdate, markBOChange }) {
     return <option key={r.id} value={r.id}>{r.name} ({pct}% {r.type === 'inclusive' ? 'incl.' : 'excl.'})</option>;
   });
 
+  const activeProfiles = (taxProfiles || []).filter(p => p.active !== false);
+
   return (
     <div>
+      {/* v5.7.33: tax PROFILE override — setup only, nothing charges with it yet */}
+      {activeProfiles.length > 0 && (
+        <div style={{ marginBottom:16 }}>
+          <span style={{ fontSize:10, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', display:'block', marginBottom:5 }}>Tax profile (override)</span>
+          <select value={item.taxProfileId || ''} onChange={e => setTaxProfile(e.target.value)}
+            style={{ width:'100%', padding:'8px 11px', borderRadius:9, border:'1.5px solid var(--bdr2)', background:'var(--bg3)', color:'var(--t1)', fontSize:13, fontFamily:'inherit', outline:'none' }}>
+            <option value="">Inherit (category, then venue default)</option>
+            {activeProfiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+          <div style={{ fontSize:11, color:'var(--t4)', marginTop:5, lineHeight:1.6 }}>
+            Profiles are the new way to set up tax (Tax &amp; VAT → Tax profiles). Until the calculation switchover, the legacy rate below is what actually charges.
+          </div>
+        </div>
+      )}
+
       <div style={{ marginBottom:16 }}>
         <span style={{ fontSize:10, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', display:'block', marginBottom:5 }}>Default tax rate</span>
         <select value={item.taxRateId || ''} onChange={e => setTaxRate(e.target.value)}
@@ -3373,8 +3397,13 @@ function InstructionsTab() {
 
 // ── Edit Category Modal ───────────────────────────────────────────────────────
 function CatModal({ cat, roots, onSave, onDelete, onClose }) {
-  const [f, setF] = useState({ label:cat.label, icon:cat.icon||'🍽', color:cat.color||'#3b82f6', parentId:cat.parentId||'', accountingGroup:cat.accountingGroup||'', defaultCourse:cat.defaultCourse??1 });
+  // v5.7.33: taxProfileId rides the form — the patch flows through updateCategory
+  // → sbUpsertCategory (store) AND the push path's upsertMenuCategory (db.js),
+  // both of which now write tax_profile_id conditionally.
+  const [f, setF] = useState({ label:cat.label, icon:cat.icon||'🍽', color:cat.color||'#3b82f6', parentId:cat.parentId||'', accountingGroup:cat.accountingGroup||'', defaultCourse:cat.defaultCourse??1, taxProfileId:cat.taxProfileId||'' });
   const set = (k,v) => setF(p=>({...p,[k]:v}));
+  const { taxProfiles } = useStore();
+  const activeProfiles = (taxProfiles || []).filter(p => p.active !== false);
   const COURSES = [{v:0,l:'Immediate',hint:'Drinks, bread — fires instantly with order'},{v:1,l:'Course 1',hint:'Starters / first plates'},{v:2,l:'Course 2',hint:'Mains'},{v:3,l:'Course 3',hint:'Desserts'}];
   return (
     <div className="modal-back" onClick={e=>e.target===e.currentTarget&&onClose()}>
@@ -3405,11 +3434,23 @@ function CatModal({ cat, roots, onSave, onDelete, onClose }) {
               {roots.filter(r=>r.id!==cat.id).map(r=><option key={r.id} value={r.id}>Subcategory of: {r.label}</option>)}
             </select>
           </div>
+          {/* v5.7.33: tax profile assignment — setup only, nothing charges with it yet */}
+          {activeProfiles.length > 0 && (
+            <div><span style={lbl}>Tax profile</span>
+              <select value={f.taxProfileId} onChange={e=>set('taxProfileId',e.target.value)} style={{ ...inp, cursor:'pointer' }}>
+                <option value="">Inherit venue default</option>
+                {activeProfiles.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+              <div style={{ fontSize:10, color:'var(--t4)', marginTop:4, lineHeight:1.5 }}>
+                Items in this category use this profile unless the item has its own override. Tills switch to profile based calculation in an upcoming update.
+              </div>
+            </div>
+          )}
         </div>
         <div style={{ display:'flex', gap:7, marginTop:14 }}>
           <button onClick={()=>{if(confirm('Delete?'))onDelete();}} style={{ padding:'8px 12px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--red-d)', border:'1px solid var(--red-b)', color:'var(--red)', fontSize:12, fontWeight:600 }}>Delete</button>
           <button onClick={onClose} style={{ flex:1, padding:'8px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:12 }}>Cancel</button>
-          <button onClick={()=>onSave({...f,parentId:f.parentId||null})} disabled={!f.label.trim()} style={{ flex:2, padding:'8px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:13, fontWeight:800, opacity:f.label.trim()?1:.4 }}>Save</button>
+          <button onClick={()=>onSave({...f,parentId:f.parentId||null,taxProfileId:f.taxProfileId||null})} disabled={!f.label.trim()} style={{ flex:2, padding:'8px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:13, fontWeight:800, opacity:f.label.trim()?1:.4 }}>Save</button>
         </div>
       </div>
     </div>

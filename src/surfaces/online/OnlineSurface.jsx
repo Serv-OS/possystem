@@ -14,6 +14,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../../lib/supabase';
+import { assembleTaxProfiles } from '../../lib/rowMapping';
 import { isItemEightySixed } from '../../lib/itemAvailability';
 import { receiptOverride } from '../../lib/itemDisplay';
 import { dietaryBadges, DIET_LABELS } from '../../lib/dietary';
@@ -53,6 +54,10 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   const [eightySixIds, setEightySixIds] = useState([]); // v5.5.141: live 86 list from DB
   const [stockLevels, setStockLevels]   = useState({}); // v5.5.239: live stock counts from DB
   const [taxRates, setTaxRates]     = useState([]); // v5.5.154: UK VAT for cart breakdown
+  // v5.7.33: tax profiles + lines, fetched alongside taxRates and handed to the
+  // checkout components ready for the profiles cutover. NOTHING computes with
+  // them yet - every calculation still runs calculateOrderTax on taxRates.
+  const [taxProfiles, setTaxProfiles] = useState([]);
   // v5.5.155: tab-resume state. resumeTab/rounds/total populated when an
   // open-tab is found in localStorage AND verified live in DB.
   // existingTab stays set after the customer taps "Add more" — QrCheckout
@@ -226,7 +231,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         // failure (e.g. missing instruction_groups table) doesn't kill
         // the whole load. Instruction defs come from the config_pushes
         // snapshot since there's no dedicated DB table for them.
-        const [iRes, cRes, lRes, mRes, pRes, eRes, tRes, sRes] = await Promise.allSettled([
+        const [iRes, cRes, lRes, mRes, pRes, eRes, tRes, sRes, tpRes, tlRes] = await Promise.allSettled([
           supabase.from('menu_items').select('*')
             .eq('location_id', opsLocationId).eq('archived', false).order('sort_order'),
           supabase.from('menu_categories').select('*')
@@ -249,6 +254,12 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           supabase.from('tax_rates').select('id, name, rate, type, active, is_default').eq('location_id', opsLocationId),
           // v5.5.239: stock levels for remaining-count display + availability check
           supabase.from('stock_levels').select('item_id, par, remaining').eq('location_id', opsLocationId),
+          // v5.7.33: tax profiles + lines (anon SELECT), delivery only - unused
+          // by any calculation today. Category assignments already ride the
+          // menu_categories select('*') above (tax_profile_id), and item
+          // assignments the menu_items select('*') - both stay raw snake here.
+          supabase.from('tax_profiles').select('*').eq('location_id', opsLocationId).order('sort_order'),
+          supabase.from('tax_profile_lines').select('*').eq('location_id', opsLocationId).order('sort_order'),
         ]);
         if (!alive) return;
         const itemsData      = iRes.value?.data || [];
@@ -280,6 +291,11 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         // v5.5.154: only keep active rates; calculateOrderTax also filters
         // but doing it once here keeps the cart breakdown loop tight.
         setTaxRates((tRes.value?.data || []).filter(r => r.active !== false));
+        // v5.7.33: assemble profiles + lines into the store shape (one shared
+        // normaliser). Both reads must succeed - never keep line-less profiles.
+        if (Array.isArray(tpRes.value?.data) && Array.isArray(tlRes.value?.data)) {
+          setTaxProfiles(assembleTaxProfiles(tpRes.value.data, tlRes.value.data));
+        }
         // v5.5.239: stock levels — build { itemId: { par, remaining } } map
         const stockData = sRes.value?.data || [];
         if (stockData.length) {
@@ -831,6 +847,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         <OnlineCart
           cart={cart} theme={theme} orderType={orderType}
           taxRates={taxRates}
+          taxProfiles={taxProfiles} /* v5.7.33: delivered dark - unused until the profiles cutover */
           checkoutDisabledReason={browseOnly
             ? `We're closed${reopenShort ? ` — ordering opens ${reopenShort}` : ' — online ordering is unavailable right now'}.`
             : null}
@@ -849,6 +866,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           cart={cart} theme={theme} location={location}
           orderType={orderType} loyalty={loyalty}
           taxRates={taxRates}
+          taxProfiles={taxProfiles} /* v5.7.33: delivered dark - unused until the profiles cutover */
           orderAheadOnly={!!closedInfo}
           onClose={() => setShowCheckout(false)}
           onOpenLoyalty={() => { setShowCheckout(false); setShowLoyalty(true); }}
@@ -864,6 +882,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           cart={cart} theme={theme} location={location}
           tableId={tableId} tableLabel={effectiveTableLabel}
           taxRates={taxRates}
+          taxProfiles={taxProfiles} /* v5.7.33: delivered dark - unused until the profiles cutover */
           existingTab={existingTab}
           loyalty={loyalty}
           onClose={() => setShowCheckout(false)}

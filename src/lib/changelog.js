@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.33',
+    date: '2026-08-24',
+    items: [
+      'Tax profiles get their builder. Back Office, Tax and VAT now has a Tax profiles tab: create and edit named profiles, each a stack of tax lines with a name, jurisdiction, percentage rate, inclusive or exclusive mode, compounding, order type scoping and a choice of rounding per invoice or per item. A live preview shows exactly what a sample 10.00 item would be charged, worked out by the real new tax engine.',
+      'The profiles generated from your existing rates appear in the list, labelled as generated, and your venue default profile can be chosen right there. The old rates screen lives on under a Legacy rates tab and keeps working unchanged.',
+      'Assignments are ready too: pick a Tax profile on any category in Menu Manager, or a per item override in the item editor next to the existing tax rate field. Size variants inherit the parent item override automatically.',
+      'Per unit flat amount lines show in the builder but cannot be created yet; they arrive with the receipts update.',
+      'Plumbing under the hood: profiles load at boot, ride Push to POS, refresh on the same self heal cycle as menus, and are fetched by the online ordering, QR, catering and kiosk pages alongside the existing tax rates. Item, category and venue default assignments travel with the menu data on every one of those paths.',
+      'Nothing changes in any calculation. No screen computes tax with the new profiles yet, and the preview is display only. Every order on every channel is taxed exactly as it was in 5.7.32, to the penny.',
+    ],
+  },
+  {
     version: '5.7.32',
     date: '2026-08-24',
     items: [

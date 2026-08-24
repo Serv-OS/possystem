@@ -8,7 +8,7 @@ import BOLogin from './BOLogin';
 import LocationSwitcher from './LocationSwitcher';
 import { VERSION } from '../lib/version';
 import { CUSTOMER_ROOT, customerUrl } from '../lib/env';
-import { normaliseMenuRow } from '../lib/rowMapping';
+import { normaliseMenuRow, assembleTaxProfiles } from '../lib/rowMapping';
 import MenuManager from './sections/MenuManager';
 import FloorPlanBuilder from './sections/FloorPlanBuilder';
 import DeviceProfiles from './sections/DeviceProfiles';
@@ -481,6 +481,7 @@ export default function BackOfficeApp() {
       sortOrder: c.sort_order ?? c.sortOrder,
       defaultCourse: c.default_course ?? c.defaultCourse ?? 1,
       spacerSlots: c.spacer_slots ?? c.spacerSlots ?? [],
+      taxProfileId: c.tax_profile_id ?? c.taxProfileId ?? null,   // v5.7.33: profile assignment (dark)
     }));
     if (itemsRes.data?.length)   patch.menuItems       = itemsRes.data.map(item => ({
       ...item,
@@ -500,6 +501,7 @@ export default function BackOfficeApp() {
       assignedInstructionGroups: item.assigned_instruction_groups ?? item.assignedInstructionGroups ?? [],
       taxRateId:   item.tax_rate_id  ?? item.taxRateId  ?? null,
       taxOverrides: item.tax_overrides ?? item.taxOverrides ?? {},
+      taxProfileId: item.tax_profile_id ?? item.taxProfileId ?? null,   // v5.7.33: profile assignment (dark)
       // v4.6.3: ownership / sharing fields (added by v4.6.0 schema migration)
       scope:        item.scope         ?? 'local',
       orgId:        item.org_id        ?? item.orgId        ?? null,
@@ -544,6 +546,24 @@ export default function BackOfficeApp() {
         appliesTo: r.applies_to || ['all'],
         isDefault: r.is_default, active: r.active,
       }));
+    }
+
+    // v5.7.33: tax profiles + lines + the venue default profile (delivery only —
+    // nothing computes with these yet; they ride the Push to POS snapshot so
+    // tills receive them). Both table reads must succeed before applying, so a
+    // half-failed load never leaves line-less profiles in the store.
+    if (supabase) {
+      try {
+        const [profRes, lineRes, locRes] = await Promise.all([
+          supabase.from('tax_profiles').select('*').eq('location_id', locationId).order('sort_order'),
+          supabase.from('tax_profile_lines').select('*').eq('location_id', locationId).order('sort_order'),
+          supabase.from('locations').select('default_tax_profile_id').eq('id', locationId).maybeSingle(),
+        ]);
+        if (Array.isArray(profRes.data) && Array.isArray(lineRes.data)) {
+          patch.taxProfiles = assembleTaxProfiles(profRes.data, lineRes.data);
+        }
+        if (locRes.data) patch.venueDefaultTaxProfileId = locRes.data.default_tax_profile_id || null;
+      } catch (e) { console.warn('[BackOfficeApp] tax profiles load failed:', e?.message); }
     }
 
     if (Object.keys(patch).length) useStore.setState(patch);
@@ -943,6 +963,15 @@ function PushToPOSButton() {
       menuItems,
       menuCategories,
       taxRates: useStore.getState().taxRates || [],
+      // v5.7.33: tax profiles + the venue default ride the push so tills get
+      // them on Push to POS (delivery only — nothing computes with them yet).
+      // Item and category assignments ride menuItems/menuCategories above.
+      // Absent/empty is a no-op till-side (applyConfigUpdate no-clear guards).
+      taxProfiles: useStore.getState().taxProfiles || [],
+      // v5.7.33 review fix: ALWAYS carried, null included, so clearing the
+      // venue default propagates to running tills (apply guards on key
+      // presence, not truthiness).
+      venueDefaultTaxProfileId: useStore.getState().venueDefaultTaxProfileId ?? null,
       discountPresets: useStore.getState().discountPresets || [],
       discountRules: useStore.getState().discountRules || [],
       quickScreenIds: useStore.getState().quickScreenIds || [],

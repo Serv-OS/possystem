@@ -8,6 +8,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase, ensureAuthToken } from '../../lib/supabase';
+import { assembleTaxProfiles } from '../../lib/rowMapping';
 import { receiptOverride } from '../../lib/itemDisplay';
 import OnlineItemSheet from '../online/OnlineItemSheet';
 import OnlineCart from '../online/OnlineCart';
@@ -34,6 +35,9 @@ export default function CateringSurface({ location }) {
   const [items, setItems] = useState([]);
   const [cats, setCats] = useState([]);
   const [taxRates, setTaxRates] = useState([]);
+  // v5.7.33: tax profiles + lines, delivered dark alongside taxRates - handed to
+  // the cart/checkout ready for the profiles cutover, unused by any calculation.
+  const [taxProfiles, setTaxProfiles] = useState([]);
   const [eightySix, setEightySix] = useState([]);
   const [stockLevels, setStockLevels] = useState({});   // v5.6.69: { itemId: { par, remaining } }
   const [instGroupDefs, setInstGroupDefs] = useState([]);
@@ -69,7 +73,7 @@ export default function CateringSurface({ location }) {
         setFulfilment(settings.takeout_enabled ? 'collection' : settings.delivery_enabled ? 'delivery' : null);
         // Categories shown = those linked to the chosen menus; items + tax read directly (anon).
         const menuIds = settings.menu_ids || [];
-        const [{ data: linkRows }, { data: itemRows }, { data: catRows }, { data: taxRows }, { data: e86 }, { data: pushRow }, { data: brandRow }, { data: stockRows }] = await Promise.all([
+        const [{ data: linkRows }, { data: itemRows }, { data: catRows }, { data: taxRows }, { data: e86 }, { data: pushRow }, { data: brandRow }, { data: stockRows }, { data: profRows }, { data: lineRows }] = await Promise.all([
           menuIds.length ? supabase.from('menu_category_links').select('category_id').in('menu_id', menuIds) : Promise.resolve({ data: [] }),
           supabase.from('menu_items').select('*').eq('location_id', opsId).eq('archived', false).order('sort_order'),
           supabase.from('menu_categories').select('*').eq('location_id', opsId).order('sort_order'),
@@ -80,6 +84,11 @@ export default function CateringSurface({ location }) {
           // v5.6.69: stock levels — OnlineItemSheet's numeric option cap (v5.5.872)
           // was INERT on catering because stockLevels was never passed.
           supabase.from('stock_levels').select('item_id, par, remaining').eq('location_id', opsId),
+          // v5.7.33: tax profiles + lines (anon SELECT), delivery only - unused by
+          // any calculation today. Category/item assignments already ride the raw
+          // menu_categories / menu_items select('*') reads above (tax_profile_id).
+          supabase.from('tax_profiles').select('*').eq('location_id', opsId).order('sort_order'),
+          supabase.from('tax_profile_lines').select('*').eq('location_id', opsId).order('sort_order'),
         ]);
         const allow = new Set((linkRows || []).map((l) => l.category_id));
         // Match the POS rule (v4.7.6): a category is in a chosen menu if that menu is its
@@ -89,6 +98,10 @@ export default function CateringSurface({ location }) {
           !menuIds.length || menuIds.includes(c.menu_id) || allow.has(c.id) || (c.parent_id && allow.has(c.parent_id))));
         setItems(itemRows || []);
         setTaxRates(taxRows || []);
+        // v5.7.33: both reads must have succeeded - never keep line-less profiles.
+        if (Array.isArray(profRows) && Array.isArray(lineRows)) {
+          setTaxProfiles(assembleTaxProfiles(profRows, lineRows));
+        }
         setEightySix((e86 || []).map((r) => r.item_id));
         const counts = {};
         (stockRows || []).forEach((r) => { counts[r.item_id] = { par: r.par, remaining: r.remaining }; });
@@ -224,7 +237,7 @@ export default function CateringSurface({ location }) {
 
   if (checkout) return (
     <CateringCheckout
-      location={location} cfg={cfg} cart={cart} taxRates={taxRates} theme={theme} cur={cur}
+      location={location} cfg={cfg} cart={cart} taxRates={taxRates} taxProfiles={taxProfiles} theme={theme} cur={cur}
       fulfilment={fulfilment} eventDate={eventDate} eventTime={eventTime} subtotal={subtotal}
       onBack={() => setCheckout(false)}
     />
@@ -345,7 +358,7 @@ export default function CateringSurface({ location }) {
           onClose={() => setOpenItem(null)} onAdd={(it, mods, qty, notes) => { addToCart(it, mods, qty, notes); setOpenItem(null); }} />
       )}
       {showCart && (
-        <OnlineCart cart={cart} theme={theme} orderType={fulfilment || 'collection'} taxRates={taxRates}
+        <OnlineCart cart={cart} theme={theme} orderType={fulfilment || 'collection'} taxRates={taxRates} taxProfiles={taxProfiles}
           onClose={() => setShowCart(false)} onRemove={(uid) => setCart((c) => c.filter((l) => l.uid !== uid))}
           onUpdateQty={(uid, q) => setCart((c) => c.map((l) => (l.uid === uid ? { ...l, qty: Math.max(1, q) } : l)))}
           onCheckout={goCheckout} />

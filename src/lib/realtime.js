@@ -719,6 +719,7 @@ function mapMenuItemRow(item) {
     centreId:     item.centre_id    ?? item.centreId    ?? null,
     taxRateId:    item.tax_rate_id  ?? item.taxRateId   ?? null,
     taxOverrides: item.tax_overrides ?? item.taxOverrides ?? {},
+    taxProfileId: item.tax_profile_id ?? item.taxProfileId ?? null,   // v5.7.33: profile assignment (dark)
     assignedModifierGroups:    item.assigned_modifier_groups    ?? item.assignedModifierGroups    ?? [],
     assignedInstructionGroups: item.assigned_instruction_groups ?? item.assignedInstructionGroups ?? [],
     image: item.image ?? null,

@@ -97,7 +97,7 @@ import DeviceSetup from './surfaces/DeviceSetup';
 import StatusDrawer from './components/StatusDrawer';
 import SyncBridge from './sync/SyncBridge';
 import { fetchMenuCategoryLinks } from './lib/db';
-import { normaliseMenuRow } from './lib/rowMapping';
+import { normaliseMenuRow, assembleTaxProfiles } from './lib/rowMapping';
 import MasterOfflineModal from './components/MasterOfflineModal';
 import ActivityFeed from './components/ActivityFeed';
 import ConfigSyncBanner from './components/ConfigSyncBanner';
@@ -742,6 +742,37 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
         if (Array.isArray(linksQ.data)) {
           const lkey = rows => JSON.stringify(rows.map(l => [l.menu_id, l.category_id]).sort());
           if (lkey(linksQ.data) !== lkey(st.categoryLinks || [])) st.setCategoryLinks(linksQ.data);
+        }
+      } catch { /* best-effort */ }
+      // v5.7.33 - TAX PROFILES self-heal on the same cycle (delivery only -
+      // nothing computes with them yet). Small tables, same pattern as menus
+      // above: re-read, normalise via the one shared assembler, apply only on
+      // change. Its own try + Promise.all so a profiles read failing can never
+      // take the menus/links heal down with it, and vice versa. BOTH reads must
+      // succeed before applying - a half-failed read must not leave line-less
+      // profiles in the store.
+      try {
+        const st = useStore.getState();
+        const locId = st.location?.id;
+        if (!locId || locId === 'loc-demo') return;
+        const [profQ, lineQ, defQ] = await Promise.all([
+          supabase.from('tax_profiles').select('*').eq('location_id', locId).order('sort_order'),
+          supabase.from('tax_profile_lines').select('*').eq('location_id', locId).order('sort_order'),
+          supabase.from('locations').select('default_tax_profile_id').eq('id', locId).maybeSingle(),
+        ]);
+        // v5.7.33 review fix: the venue default heals too, INCLUDING a clear
+        // to null (a successful read always applies; a failed read keeps prior).
+        if (defQ && !defQ.error && defQ.data) {
+          const dv = defQ.data.default_tax_profile_id ?? null;
+          if (dv !== (useStore.getState().venueDefaultTaxProfileId ?? null)) useStore.setState({ venueDefaultTaxProfileId: dv });
+        }
+        if (Array.isArray(profQ.data) && Array.isArray(lineQ.data)) {
+          const mapped = assembleTaxProfiles(profQ.data, lineQ.data);
+          const pkey = rows => JSON.stringify((rows || []).map(p => [
+            p.id, p.name, p.active, p.sortOrder, p.rounding,
+            (p.lines || []).map(l => [l.id, l.name, l.jurisdiction, l.rate, l.flatAmount, l.lineType, l.mode, l.compound, l.taxable, l.taxBasis, l.orderTypes, l.sortOrder, l.active]),
+          ]).sort());
+          if (pkey(mapped) !== pkey(st.taxProfiles || [])) useStore.setState({ taxProfiles: mapped });
         }
       } catch { /* best-effort */ }
     };

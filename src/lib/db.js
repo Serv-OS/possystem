@@ -197,6 +197,12 @@ export const upsertMenuCategory = async (cat, locationId = null) => {
     default_course: cat.defaultCourse ?? cat.default_course ?? 1,
     spacer_slots: cat.spacerSlots ?? cat.spacer_slots ?? [],
     is_special: cat.isSpecial ?? cat.is_special ?? false,
+    // v5.7.33: tax profile assignment — CONDITIONAL (touched-fields discipline):
+    // only written when the row carries the field, so a caller holding a
+    // pre-profile row can never null a saved assignment. Mirror of
+    // _sbUpsertCategoryNow in store/index.js — the CLAUDE.md two-paths gotcha.
+    ...(cat.taxProfileId !== undefined || cat.tax_profile_id !== undefined
+      ? { tax_profile_id: cat.taxProfileId ?? cat.tax_profile_id ?? null } : {}),
     updated_at: new Date().toISOString(),
   });
   reportSave('category', result.error);   // v5.5.951 — loud, not console-only
@@ -270,6 +276,12 @@ export const upsertMenuItem = async (item, locationId = null) => {
     centre_id:    item.centreId    || item.centre_id    || null,
     tax_rate_id:  item.taxRateId   || item.tax_rate_id  || null,
     tax_overrides: item.taxOverrides || item.tax_overrides || {},
+    // v5.7.33: tax profile override — CONDITIONAL (touched-fields discipline):
+    // only written when the row carries the field. v5.7.33+ loaders stamp
+    // taxProfileId on every item row, so normal saves round-trip the real DB
+    // value; a caller holding a pre-profile row leaves the column alone.
+    ...(item.taxProfileId !== undefined || item.tax_profile_id !== undefined
+      ? { tax_profile_id: item.taxProfileId ?? item.tax_profile_id ?? null } : {}),
     image:        item.image || null,
     // v4.6.3: ownership / sharing fields (added by v4.6.0 schema migration)
     scope:           item.scope          || item.ownership_scope || 'local',

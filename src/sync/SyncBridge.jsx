@@ -16,7 +16,7 @@ import { startTerminalJobReconciler, stopTerminalJobReconciler } from './Termina
 // fail in production bundles and have caused multiple data-loss bugs.
 import { reconcilePendingChecks, onReconnect, periodicSync } from './DataSafe.js';
 import { getShowItemImages } from '../lib/locationTime';
-import { normaliseMenuRow } from '../lib/rowMapping';
+import { normaliseMenuRow, assembleTaxProfiles } from '../lib/rowMapping';
 
 const OPS_URL = import.meta.env.VITE_SUPABASE_URL;
 
@@ -288,7 +288,7 @@ export default function SyncBridge({ onSyncPulse }) {
           // unwrap() puts every leg back into the familiar { data, error } shape, so a
           // rejected leg reads as `data: null` and is skipped by the same guards below
           // that already skip an empty read. Nothing downstream changes shape.
-          const [floorSt, itemsSt, catsSt, menusSt, sessionsSt, profilesSt, modGroupsSt, e86St, stockSt, linksSt] = await Promise.allSettled([
+          const [floorSt, itemsSt, catsSt, menusSt, sessionsSt, profilesSt, modGroupsSt, e86St, stockSt, linksSt, taxProfilesSt, taxLinesSt, locTaxSt] = await Promise.allSettled([
             fetchFloorPlan(locationId),
             fetchMenuItems(locationId),
             fetchMenuCategories(locationId),
@@ -300,7 +300,14 @@ export default function SyncBridge({ onSyncPulse }) {
             sb ? sb.from('modifier_groups').select('*').eq('location_id', locationId).order('sort_order') : Promise.resolve({ data: null }),
             fetch86List(locationId),                                  // v5.5.142: hydrate eightySixIds on boot
             fetchStockLevels(locationId),                             // v5.5.239: hydrate stock counts on boot,
-            fetchMenuCategoryLinks(locationId)
+            fetchMenuCategoryLinks(locationId),
+            // v5.7.33: tax profiles + their lines + the venue default profile
+            // (delivery only — nothing computes with them yet). `data: null` on
+            // no client = "no read happened" and keeps the store's prior value,
+            // matching the modifier-groups convention above.
+            sb ? sb.from('tax_profiles').select('*').eq('location_id', locationId).order('sort_order') : Promise.resolve({ data: null }),
+            sb ? sb.from('tax_profile_lines').select('*').eq('location_id', locationId).order('sort_order') : Promise.resolve({ data: null }),
+            sb ? sb.from('locations').select('default_tax_profile_id').eq('id', locationId).maybeSingle() : Promise.resolve({ data: null }),
           ]);
           const unwrap = (r) => (r.status === 'fulfilled' && r.value) ? r.value : { data: null, error: r.reason || new Error('boot fetch failed') };
           const floorRes    = unwrap(floorSt);
@@ -313,7 +320,10 @@ export default function SyncBridge({ onSyncPulse }) {
           const modGroupsRes = unwrap(modGroupsSt);
           const e86Res      = unwrap(e86St);
           const stockRes    = unwrap(stockSt);
-          [floorSt, itemsSt, catsSt, menusSt, sessionsSt, profilesSt, modGroupsSt, e86St, stockSt]
+          const taxProfilesRes = unwrap(taxProfilesSt);
+          const taxLinesRes    = unwrap(taxLinesSt);
+          const locTaxRes      = unwrap(locTaxSt);
+          [floorSt, itemsSt, catsSt, menusSt, sessionsSt, profilesSt, modGroupsSt, e86St, stockSt, taxProfilesSt, taxLinesSt, locTaxSt]
             .filter(r => r.status === 'rejected')
             .forEach(r => console.warn('[SyncBridge] boot fetch leg failed (other slices still applied):', r.reason?.message || r.reason));
           // v5.5.142: write fetched 86 list into the store immediately so
@@ -424,6 +434,7 @@ export default function SyncBridge({ onSyncPulse }) {
             centreId: item.centre_id ?? item.centreId ?? null,
             taxRateId: item.tax_rate_id ?? item.taxRateId ?? null,
             taxOverrides: item.tax_overrides ?? item.taxOverrides ?? {},
+            taxProfileId: item.tax_profile_id ?? item.taxProfileId ?? null,   // v5.7.33: profile assignment (dark)
             // Must map snake_case → camelCase for modifier and instruction groups
             assignedModifierGroups: item.assigned_modifier_groups ?? item.assignedModifierGroups ?? [],
             assignedInstructionGroups: item.assigned_instruction_groups ?? item.assignedInstructionGroups ?? [],
@@ -511,6 +522,7 @@ export default function SyncBridge({ onSyncPulse }) {
             defaultCourse: cat.default_course ?? cat.defaultCourse ?? 1,
             spacerSlots: cat.spacer_slots ?? cat.spacerSlots ?? [],
             isSpecial: cat.is_special ?? cat.isSpecial ?? false,  // v5.5.316: map so POS/bar/inventory hide special cats
+            taxProfileId: cat.tax_profile_id ?? cat.taxProfileId ?? null,   // v5.7.33: profile assignment (dark)
           }));
           // v5.7.11: normalise to camelCase WITH the snake originals kept — raw DB rows
           // carried is_default/is_active only, and MenuManager reads isDefault, so the
@@ -539,6 +551,18 @@ export default function SyncBridge({ onSyncPulse }) {
             options: g.options ?? [],
             sortOrder: g.sort_order ?? 0,
           }));
+
+          // v5.7.33: tax profiles (delivery only — no calculation reads them yet).
+          // A SUCCESSFUL read wins INCLUDING empty (a venue with no profiles is a
+          // legitimate state); a failed read (`data: null`) keeps the store's
+          // prior value. BOTH tables must have read successfully before applying,
+          // so a half-failed boot can never leave line-less profiles in the store.
+          if (Array.isArray(taxProfilesRes.data) && Array.isArray(taxLinesRes.data)) {
+            patch.taxProfiles = assembleTaxProfiles(taxProfilesRes.data, taxLinesRes.data);
+          }
+          // Venue default profile: the locations row read succeeding is the win
+          // condition (its value may legitimately be null = no default set).
+          if (locTaxRes.data) patch.venueDefaultTaxProfileId = locTaxRes.data.default_tax_profile_id || null;
 
           // Load today's closed checks from Supabase — CRITICAL for sales history
           try {
