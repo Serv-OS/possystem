@@ -1,3 +1,39 @@
+# Session, 24 Aug 2026 (v5.7.31), Tax Profiles slice 0: exclusive tax is now CHARGED (NOT committed)
+
+## Done (working tree only — no commit, no push, no deploys, no DB writes)
+- THE DEFECT: every surface except MPOS computed exclusive (US added-on) sales tax for
+  display/records but never added it to what the customer pays. Kiosk wrote tax: 0 and
+  never loaded tax_rates at all.
+- Engine: calculateOrderTax now also returns exclusiveTax = the exclusive-mode lines'
+  tax only, rounded half-up to cents at order level. Inclusive-only checks: 0 exactly.
+  Never totalTax on a mixed check (that would re-charge inclusive VAT).
+- POS: computeCheckTotals gains ctx.taxRates + exclusiveTax term in total; getPOSTotals
+  passes store taxRates; SessionSync stamps the taxed total for PaxPay Table Pay.
+  CheckoutModal billDue/grand/split/gift/terminal all flow from the taxed total prop.
+  Booking credit now consumes tax (correct for prepaid packages, comment at the cap).
+- Online: remainingMinor + payment intent + queue rows + receipt + on-page totals all
+  carry exclusiveTaxMinor (scaled by the goods-discount ratio like the VAT display).
+- QR: total includes exclusiveTax; Catering: total/totalMinor include it at checkout
+  (taxBk memo moved to component body, finalize reuses it).
+- Kiosk (slice 0b): loads tax_rates at boot beside the menu fetch, computes tax with the
+  same calculateOrderTax call (items are raw menu_items rows: tax_rate_id/tax_overrides),
+  adds exclusiveTax to the charged total, writes real tax + tax_amount on the check.
+- MPOS: MTender/MCartSheet switched from totalTax to exclusiveTax for the added figure
+  (mixed-check fix); UK/US pure checks unchanged.
+- buildScheduleCtx moved verbatim to src/lib/scheduleCtx.js (pure); locationTime.js
+  re-exports it, so all existing imports still work. Needed so checkTotals.js loads
+  under node --test.
+- Migration supabase/migrations/20260825_tax_rate_precision.sql (hand-apply, ops DB):
+  tax_rates.rate → numeric(9,6) so 8.875% survives. Everything works before it applies.
+- Tests: tax.test.js +5 (UK zero-lock ×3, 8.875 on 47.20 = 4.19, mixed check),
+  NEW checkTotals.test.js golden UK lock (literal v5.7.30 totals) + US + basis tests.
+  npm test 430/430 (was 421), npm run build clean, lint counts identical to HEAD.
+- UK LOCK: inclusive-only configs yield exclusiveTax exactly 0 — zero movement.
+- Known residual: BarSurface passes its own subtotal as CheckoutModal total, so US
+  bar tabs still do not add tax (unchanged from v5.7.30, out of slice 0 scope).
+  Online tax_rates select still omits is_default ("Use default" items online resolve
+  no rate — pre-existing, untouched to keep UK movement at zero).
+
 # Session, 20 Aug 2026 (v5.7.24), venue-clock sweep FINAL tranche (COMMITTED + PUSHED)
 
 ## Done (committed to develop as v5.7.24)

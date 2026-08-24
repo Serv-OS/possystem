@@ -13,9 +13,12 @@
  * Pure: no store access, no I/O. Everything it needs arrives in `ctx`.
  */
 
-import { resolveServiceCharge } from '../serviceCharge';
-import { evaluateAutoDiscounts, toAppliedDiscount } from '../discountEngine';
-import { buildScheduleCtx } from '../locationTime';
+// .js extensions so Node's ESM loader can run this file under `npm test`
+// (checkTotals.test.js) — Vite resolves either form identically.
+import { resolveServiceCharge } from '../serviceCharge.js';
+import { evaluateAutoDiscounts, toAppliedDiscount } from '../discountEngine.js';
+import { buildScheduleCtx } from '../scheduleCtx.js';
+import { calculateOrderTax } from '../tax.js';
 
 /**
  * @param {object} ctx
@@ -28,11 +31,16 @@ import { buildScheduleCtx } from '../locationTime';
  * @param {Array}  ctx.discountRules         auto-discount rules
  * @param {string} [ctx.timezone]            venue timezone for schedule evaluation
  * @param {object} [ctx.deliveryQuote]       accepted courier quote, delivery only
+ * @param {Array}  [ctx.taxRates]            venue tax rates — enables the ADDED-ON
+ *                                           (exclusive) sales-tax term. Omitted =
+ *                                           exclusiveTax 0 and totals identical to
+ *                                           v5.7.30 (UK inclusive VAT contributes
+ *                                           nothing here either way).
  */
 export function computeCheckTotals(ctx) {
   const {
     items = [], checkDiscounts = [], covers = 1, serviceChargeWaived = false,
-    orderType, deviceConfig, discountRules, timezone, deliveryQuote,
+    orderType, deviceConfig, discountRules, timezone, deliveryQuote, taxRates,
   } = ctx || {};
 
   // Subtotal — voided items excluded, item discounts applied
@@ -64,6 +72,19 @@ export function computeCheckTotals(ctx) {
     ? (deliveryQuote.customerFeeMinor || 0) / 100
     : 0;
 
+  // v5.7.31: ADDED-ON sales tax (US exclusive rates). The POS has always
+  // RENDERED "+ Sales Tax" lines it never charged — the exclusive share now
+  // rides the total so the bill equals the receipt. The BASIS is deliberately
+  // the engine's existing one: item price × qty, pre item-discount, ignoring
+  // check-level discounts, service and delivery — identical to what the tax
+  // lines on screen and closed_checks.tax_amount already book. Inclusive (UK)
+  // VAT contributes exactly 0, so UK totals are byte-identical to v5.7.30.
+  let exclusiveTax = 0;
+  if (Array.isArray(taxRates) && taxRates.length) {
+    try { exclusiveTax = calculateOrderTax(items, taxRates, orderType || 'dine-in').exclusiveTax || 0; }
+    catch { exclusiveTax = 0; }   // fail toward the old behaviour, never a guessed charge
+  }
+
   return {
     subtotal, checkDiscount, discountedSub, service,
     autoDiscounts,                      // applied auto-discount lines (display + receipt)
@@ -72,7 +93,8 @@ export function computeCheckTotals(ctx) {
     serviceChargeApplicable: orderType === 'dine-in' && (deviceConfig?.serviceCharge?.enabled !== false),
     deliveryFee,                        // customer-facing delivery surcharge (£)
     deliveryQuote: orderType === 'delivery' ? (deliveryQuote || null) : null,
-    total: discountedSub + service + deliveryFee,
+    exclusiveTax,                       // added-on sales tax charged on top (0 for UK inclusive VAT)
+    total: discountedSub + service + deliveryFee + exclusiveTax,
     itemCount: items.filter(i => !i.voided).reduce((s, i) => s + i.qty, 0),
   };
 }
@@ -100,6 +122,9 @@ export function sessionTotalsMinor(session, opts) {
     discountRules: opts?.discountRules,
     timezone: opts?.timezone,
     deliveryQuote: null,
+    // v5.7.31: the stamped table-pay amount must match the till's bill — which
+    // now carries added-on sales tax. UK venues: 0, stamp unchanged.
+    taxRates: opts?.taxRates,
   });
   if (!Number.isFinite(t.total) || !Number.isFinite(t.subtotal)) return null;
   return {

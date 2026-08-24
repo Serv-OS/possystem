@@ -43,8 +43,11 @@ export default function MTender({ onBack, onConfirm }) {
   // v5.5.341: VAT-inclusive (UK) prices already CONTAIN the tax, so the bill is
   // just the gross subtotal — adding tax on top double-counted it. Only add when
   // the rate is exclusive (US sales tax).
+  // v5.7.31: add exclusiveTax (the exclusive-mode lines' share only), never
+  // totalTax — a check mixing inclusive and exclusive rates was re-charging the
+  // inclusive VAT on top. Pure-exclusive and pure-inclusive checks unchanged.
   const exclusive = !!taxResult?.hasExclusiveTax;
-  const preTip = exclusive ? subtotal + tax : subtotal;
+  const preTip = subtotal + (Number(taxResult?.exclusiveTax) || 0);
 
   // Tip in £ amount (computed from selected preset OR custom override).
   const [tipPct, setTipPct] = useState(12.5);
@@ -90,7 +93,8 @@ export default function MTender({ onBack, onConfirm }) {
           </div>
           {tax > 0 && (
             <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>
-              {exclusive ? `${money(subtotal)} + ${money(tax)} tax` : `incl. VAT ${money(tax)}`}
+              {/* v5.7.31: the "+" figure is the exclusive share actually charged, never totalTax */}
+              {exclusive ? `${money(subtotal)} + ${money(Number(taxResult?.exclusiveTax) || 0)} tax` : `incl. VAT ${money(tax)}`}
             </div>
           )}
         </div>

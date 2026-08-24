@@ -1512,7 +1512,8 @@ export default function POSSurface() {
                 {/* Tax breakdown — shown below service charge (memoized v5.5.890) */}
                 {footerTaxBreakdown?.breakdown?.length > 0 && footerTaxBreakdown.breakdown.filter(b => b.tax >= 0).map(b => {
                   const pct = (b.rate.rate*100).toFixed(1).replace('.0','');
-                  const label = footerTaxBreakdown.hasExclusiveTax ? `+ ${b.rate.name} (${pct}%)` : `incl. ${b.rate.name} (${pct}%)`;
+                  // v5.7.31: per-RATE prefix — on a mixed check only the exclusive lines are added to the total below; inclusive VAT stays "incl."
+                  const label = b.rate.type === 'exclusive' ? `+ ${b.rate.name} (${pct}%)` : `incl. ${b.rate.name} (${pct}%)`;
                   return (
                     <div key={b.rate.id} style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'var(--t4)',marginBottom:2}}>
                       <span>{label}</span>

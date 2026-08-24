@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { netOf, resolveTaxRate, purchaseNet } from './tax.js';
+import { netOf, resolveTaxRate, purchaseNet, calculateOrderTax } from './tax.js';
 
 const near = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} ≈ ${b}`);
 
@@ -91,4 +91,72 @@ test('GP on a VAT-inclusive price uses the net, not the shelf price', () => {
   near(((net - cost) / net) * 100, 70);            // 70% GP on net…
   // …vs the wrong answer if you used the gross price:
   near(((shelf - cost) / shelf) * 100, 75);        // 75% — overstated
+});
+
+// ── v5.7.31: exclusiveTax — the ADDED-ON share a surface must charge ─────────
+// The UK lock: any all-inclusive configuration yields exclusiveTax of EXACTLY 0
+// (not a rounding artefact), so UK payables cannot move by a penny.
+
+test('exclusiveTax is exactly 0 for a UK standard-rate check (all VAT20 inclusive)', () => {
+  const rates = [
+    { id: 'vat20', rate: 0.20, type: 'inclusive', active: true, is_default: true },
+  ];
+  const items = [
+    { price: 36.00, qty: 1, taxRateId: 'vat20' },
+    { price: 6.50,  qty: 2, taxRateId: 'vat20' },
+  ];
+  const r = calculateOrderTax(items, rates, 'dine-in');
+  assert.equal(r.exclusiveTax, 0);
+  assert.ok(r.totalTax > 0);                        // VAT is still extracted for display/records
+});
+
+test('exclusiveTax is exactly 0 for a mixed UK rate card (standard + reduced + zero)', () => {
+  const rates = [
+    { id: 'vat20', rate: 0.20, type: 'inclusive', active: true, is_default: true },
+    { id: 'vat5',  rate: 0.05, type: 'inclusive', active: true, is_default: false },
+    { id: 'zero',  rate: 0,    type: 'inclusive', active: true, is_default: false },
+  ];
+  const items = [
+    { price: 12.00, qty: 1, taxRateId: 'vat20' },
+    { price: 4.00,  qty: 2, taxRateId: 'vat5' },
+    { price: 2.50,  qty: 1, taxRateId: 'zero' },
+  ];
+  assert.equal(calculateOrderTax(items, rates, 'dine-in').exclusiveTax, 0);
+});
+
+test('exclusiveTax is exactly 0 for UK items on "Use default" (null rate id resolves the inclusive default)', () => {
+  const rates = [
+    { id: 'vat20', rate: 0.20, type: 'inclusive', active: true, is_default: true },
+  ];
+  const items = [
+    { price: 9.95, qty: 3, taxRateId: null },
+    { price: 5.00, qty: 1 },                          // no tax fields at all
+  ];
+  const r = calculateOrderTax(items, rates, 'takeaway');
+  assert.equal(r.exclusiveTax, 0);
+  assert.ok(r.totalTax > 0);                          // the default rate DID apply
+});
+
+test('exclusive 8.875% on 47.20 charges 4.19 on top (half-up cents)', () => {
+  const rates = [
+    { id: 'us', rate: 0.08875, type: 'exclusive', active: true, is_default: true },
+  ];
+  const items = [{ price: 47.20, qty: 1, taxRateId: 'us' }];
+  const r = calculateOrderTax(items, rates, 'dine-in');
+  assert.equal(r.exclusiveTax, 4.19);                 // 4.189 → half-up → 4.19
+  assert.ok(r.hasExclusiveTax);
+});
+
+test('a mixed inclusive+exclusive check charges ONLY the exclusive share on top', () => {
+  const rates = [
+    { id: 'vat20', rate: 0.20,    type: 'inclusive', active: true, is_default: false },
+    { id: 'us',    rate: 0.08875, type: 'exclusive', active: true, is_default: true },
+  ];
+  const items = [
+    { price: 12.00, qty: 1, taxRateId: 'vat20' },     // VAT already inside the price
+    { price: 10.00, qty: 1, taxRateId: 'us' },        // tax added on top
+  ];
+  const r = calculateOrderTax(items, rates, 'dine-in');
+  assert.equal(r.exclusiveTax, 0.89);                 // 0.8875 → half-up → 0.89, NEVER + the £2 VAT
+  near(r.totalTax, 2 + 0.8875, 1e-9);                 // records still carry the full tax picture
 });

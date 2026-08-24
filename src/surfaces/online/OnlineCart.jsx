@@ -125,7 +125,7 @@ export default function OnlineCart({ cart, theme, orderType, taxRates = [], onCl
                 show "incl VAT" rather than adding on top. */}
             {taxBreakdown.totalTax > 0 && taxBreakdown.breakdown.map((b, i) => (
               <Row key={i}
-                label={`incl. ${b.rate.name || `VAT ${(Number(b.rate.rate) * 100).toFixed(0)}%`}`}
+                label={`${b.rate.type === 'exclusive' ? '+ ' : 'incl. '}${b.rate.name || `VAT ${(Number(b.rate.rate) * 100).toFixed(0)}%`}`}
                 value={`${money(b.tax)}`}
                 muted={muted}/>
             ))}
@@ -134,7 +134,8 @@ export default function OnlineCart({ cart, theme, orderType, taxRates = [], onCl
             }}>
               <div style={{ fontSize: 15, fontWeight: 800 }}>Total</div>
               <div style={{ fontSize: 22, fontWeight: 900, letterSpacing: '-0.02em' }}>
-                {money(subtotal)}
+                {/* v5.7.31: added-on (exclusive) sales tax is charged, so the basket total carries it */}
+                {money(subtotal + (taxBreakdown.exclusiveTax || 0))}
               </div>
             </div>
           </div>

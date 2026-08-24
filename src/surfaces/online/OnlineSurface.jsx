@@ -246,7 +246,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           supabase.from('eighty_six').select('item_id').eq('location_id', opsLocationId),
           // v5.5.154: tax rates — UK VAT must show on every customer-
           // facing total for compliance. Selecting the columns calculateOrderTax needs.
-          supabase.from('tax_rates').select('id, name, rate, type, active').eq('location_id', opsLocationId),
+          supabase.from('tax_rates').select('id, name, rate, type, active, is_default').eq('location_id', opsLocationId),
           // v5.5.239: stock levels for remaining-count display + availability check
           supabase.from('stock_levels').select('item_id, par, remaining').eq('location_id', opsLocationId),
         ]);

@@ -230,6 +230,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     return {
       ...taxBreakdown,
       totalTax: taxBreakdown.totalTax * scale,
+      exclusiveTax: (taxBreakdown.exclusiveTax || 0) * scale,   // v5.7.31: the charged share scales with the goods discount too
       breakdown: taxBreakdown.breakdown.map(b => ({ ...b, tax: b.tax * scale, net: b.net * scale, gross: b.gross * scale })),
     };
   }, [taxBreakdown, autoDiscountMinor, subtotalMinor, discountedSubtotalMinor]);
@@ -249,9 +250,15 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orderType, _delivAddrKey, discountedSubtotalMinor, opsLocationId]);
   const deliveryFeeMinor = (orderType === 'delivery' && deliveryQuote?.available) ? (deliveryQuote.customerFeeMinor || 0) : 0;
-  const remainingMinor = Math.max(0, discountedSubtotalMinor - giftAppliedMinor - rewardDiscountMinor - promoAppliedMinor) + deliveryFeeMinor;
+  // v5.7.31: ADDED-ON sales tax (US exclusive rates) is part of what the customer
+  // pays — the tax lines were rendered but never charged. Scaled by the goods
+  // discount like the rest of the breakdown; UK inclusive VAT contributes 0 so
+  // UK totals are unchanged. Inside the credits max: a gift card may cover tax,
+  // exactly as it does at the POS till.
+  const exclusiveTaxMinor = Math.round((discountedTaxBreakdown?.exclusiveTax || 0) * 100);
+  const remainingMinor = Math.max(0, discountedSubtotalMinor + exclusiveTaxMinor - giftAppliedMinor - rewardDiscountMinor - promoAppliedMinor) + deliveryFeeMinor;
   const fullyPaid = remainingMinor <= 0;
-  const giftCoversAll = giftAppliedMinor >= discountedSubtotalMinor && deliveryFeeMinor === 0; // gift-only (no-card) path
+  const giftCoversAll = giftAppliedMinor >= discountedSubtotalMinor + exclusiveTaxMinor && deliveryFeeMinor === 0; // gift-only (no-card) path
 
   // Build collection slots — every 15 min between (now + leadMin) and the
   // next close time, snapped to :00 / :15 / :30 / :45.
@@ -541,7 +548,10 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     // v5.5.787: never apply more than the discounted bill. v5.5.901: also net off an
     // already-applied promo/reward, so the card is never over-drawn for credit the
     // customer isn't actually using.
-    const amountDueMinor = Math.max(0, discountedSubtotalMinor - promoAppliedMinor - rewardDiscountMinor);
+    // v5.7.31 review fix: the cap must include exclusive tax or a US gift card
+    // can never cover the bill (and the tax-only card remainder can fall under
+    // Stripe's 50 cent minimum, hard-blocking checkout). UK: term is 0.
+    const amountDueMinor = Math.max(0, discountedSubtotalMinor + exclusiveTaxMinor - promoAppliedMinor - rewardDiscountMinor);
     if (Math.min(giftCard.balance, amountDueMinor) <= 0) { setGiftError('Nothing to redeem'); return; }
     setGiftApplied(stageGiftCard({
       cardId: giftCard.card_id,
@@ -856,7 +866,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     try {
       const { ref, customer, items } = orderShape;
       // v5.5.787: offers reduce the bill — the receipt total/VAT must be the discounted figures.
-      const total = (discountedSubtotalMinor + deliveryFeeMinor) / 100;
+      const total = (discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor) / 100;
       const toEmail = (customer?.email || '').trim();
       if (toEmail) {
         sendEmailReceipt({
@@ -907,7 +917,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         status: 'prep',
         source: 'online',
         items, customer,
-        total: (discountedSubtotalMinor + deliveryFeeMinor) / 100,   // v5.5.657: include the delivery fee; v5.5.787: net of offers so the queue/kitchen total matches what was charged
+        total: (discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor) / 100,   // v5.5.657: include the delivery fee; v5.5.787: net of offers so the queue/kitchen total matches what was charged
         sent_at: sentAt.toISOString(),
         collection_time: collectionTimeLabel,
         is_asap: timeMode === 'asap',
@@ -985,7 +995,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       // v5.5.287: Decrement stock for each item in the order
       decrementOnlineStock(cart, opsLocationId);
 
-      onPlaced?.({ ref, collectionAt, total: (discountedSubtotalMinor + deliveryFeeMinor) / 100, paymentIntent: null });
+      onPlaced?.({ ref, collectionAt, total: (discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor) / 100, paymentIntent: null });
     } catch (e) {
       console.error('[OnlineCheckout] gift-only order failed:', e);
       setError('Could not save the order. Contact the venue.');
@@ -1019,7 +1029,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         status: 'prep',
         source: 'online',
         items, customer,
-        total: (discountedSubtotalMinor + deliveryFeeMinor) / 100,   // v5.5.657: include the delivery fee; v5.5.787: net of offers so the queue/kitchen total matches what was charged
+        total: (discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor) / 100,   // v5.5.657: include the delivery fee; v5.5.787: net of offers so the queue/kitchen total matches what was charged
         sent_at: sentAt.toISOString(),
         collection_time: collectionTimeLabel,
         is_asap: timeMode === 'asap',
@@ -1136,11 +1146,11 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           // pickupAt = the food-ready time, but ONLY for SCHEDULED orders (a future slot) so Stuart
           // collects then. ASAP orders dispatch IMMEDIATELY (Stuart finds a courier now) — never
           // scheduled to a future time, which surprised staff ("ASAP got scheduled for later").
-          dispatchDelivery({ opsLocationId, order: { ref, items, total: (discountedSubtotalMinor + deliveryFeeMinor) / 100, customer, pickupAt: (timeMode === 'asap' || !collectionAt) ? null : collectionAt.toISOString() }, quote: dq }).catch(() => {});
+          dispatchDelivery({ opsLocationId, order: { ref, items, total: (discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor) / 100, customer, pickupAt: (timeMode === 'asap' || !collectionAt) ? null : collectionAt.toISOString() }, quote: dq }).catch(() => {});
         }
       }
 
-      onPlaced?.({ ref, collectionAt, total: (discountedSubtotalMinor + deliveryFeeMinor) / 100, paymentIntent });
+      onPlaced?.({ ref, collectionAt, total: (discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor) / 100, paymentIntent });
     } catch (e) {
       console.error('[OnlineCheckout] post-payment write failed:', e);
       setError('Payment succeeded but we could not save the order. Contact the venue with ref ' + orderShape.ref + '.');
@@ -1668,7 +1678,8 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             ))}
             {discountedTaxBreakdown.totalTax > 0 && discountedTaxBreakdown.breakdown.map((b, i) => (
               <div key={`vat-${i}`} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 12, color: muted }}>
-                <span>incl. {b.rate.name || `VAT ${(Number(b.rate.rate) * 100).toFixed(0)}%`}</span>
+                {/* v5.7.31: exclusive (added-on) rates show "+" — they are charged on top and included in the Total below */}
+                <span>{b.rate.type === 'exclusive' ? '+ ' : 'incl. '}{b.rate.name || `VAT ${(Number(b.rate.rate) * 100).toFixed(0)}%`}</span>
                 <span>{money(b.tax)}</span>
               </div>
             ))}
@@ -1679,7 +1690,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             )}
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0 0', borderTop: `1px solid ${cardBdr}`, marginTop: 8 }}>
               <span style={{ fontSize: 14, fontWeight: 800 }}>Total</span>
-              <span style={{ fontSize: 18, fontWeight: 900 }}>{money((discountedSubtotalMinor + deliveryFeeMinor) / 100)}</span>
+              <span style={{ fontSize: 18, fontWeight: 900 }}>{money((discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor) / 100)}</span>
             </div>
           </div>
         </div>
@@ -1702,7 +1713,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
               display: 'flex', justifyContent: 'space-between', alignItems: 'center',
             }}>
               <span>Continue to payment</span>
-              <span>{money((discountedSubtotalMinor + deliveryFeeMinor) / 100)}</span>
+              <span>{money((discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor) / 100)}</span>
             </button>
           </div>
         )}

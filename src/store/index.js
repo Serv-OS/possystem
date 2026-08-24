@@ -2859,6 +2859,11 @@ export const useStore = create((set, get) => ({
       discountRules: get().discountRules,
       timezone: get().locationConfig?.timezone,
       deliveryQuote: get().deliveryQuote,
+      // v5.7.31: added-on (exclusive) sales tax now rides the bill. The POS
+      // rendered "+ Sales Tax" lines but never charged them — total now carries
+      // the exclusive share so screen, charge and record agree. UK inclusive
+      // VAT contributes 0: totals unchanged.
+      taxRates: get().taxRates,
     });
   },
 

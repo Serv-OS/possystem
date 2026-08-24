@@ -81,7 +81,9 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
           items: liveItems,
           subtotal: sub,
           tip: 0,
-          total: sub,
+          // v5.7.31 review fix: the printed bill must show the taxed total
+          // MTender then charges. UK inclusive: exclusiveTax is 0, unchanged.
+          total: sub + (Number(billTax?.exclusiveTax) || 0),
           taxAmount: billTax?.totalTax ?? null,
           taxBreakdown: billTax,
           status: 'open',
@@ -147,6 +149,9 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
   // from the price (shown "incl. VAT"); exclusive is added.
   const taxResult = useMemo(() => { try { return calculateOrderTax(items, taxRates, orderType); } catch { return null; } }, [items, taxRates, orderType]);
   const tax = Number(taxResult?.totalTax) || 0;
+  // v5.7.31: the ADDED figure is the exclusive share only — on a mixed
+  // inclusive+exclusive check, adding totalTax re-added the inclusive VAT.
+  const taxAdded = Number(taxResult?.exclusiveTax) || 0;
   const taxExclusive = !!taxResult?.hasExclusiveTax;
   const cartCount = items.reduce((s, i) => s + (i.qty || 0), 0);
   const sentCount = items.filter(i => i.status === 'sent').length;
@@ -229,12 +234,12 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
           <div style={{ padding:'12px 16px 24px' }}>
             <div style={{ display:'flex', justifyContent:'space-between', padding:'10px 0 4px', borderTop:'1px solid var(--bdr)' }}>
               <span style={{ fontSize:13, color:'var(--t3)', fontWeight:700 }}>{taxExclusive ? 'Subtotal' : 'Total'}</span>
-              <span style={{ fontSize:18, fontWeight:800, color:'var(--t1)', fontFamily:'var(--font-mono)' }}>{money(taxExclusive ? subtotal + tax : subtotal)}</span>
+              <span style={{ fontSize:18, fontWeight:800, color:'var(--t1)', fontFamily:'var(--font-mono)' }}>{money(taxExclusive ? subtotal + taxAdded : subtotal)}</span>
             </div>
             {tax > 0 && (
               <div style={{ display:'flex', justifyContent:'space-between', paddingBottom:6, fontSize:11, color:'var(--t4)' }}>
                 <span>{taxExclusive ? `Tax` : `incl. VAT`}</span>
-                <span style={{ fontFamily:'var(--font-mono)' }}>{taxExclusive ? `+${money(tax)}` : money(tax)}</span>
+                <span style={{ fontFamily:'var(--font-mono)' }}>{taxExclusive ? `+${money(taxAdded)}` : money(tax)}</span>
               </div>
             )}
             {sentCount > 0 && (

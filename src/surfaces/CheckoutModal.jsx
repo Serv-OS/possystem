@@ -1399,6 +1399,10 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   // for tonight's service, never pre-paid). Capped at the bill: an excess
   // prepay just zeroes the due — it is NOT refunded here, the surplus stays
   // visible on the booking's payment ledger.
+  // v5.7.31: billDue now includes added-on sales tax, so the booking credit
+  // consumes tax too. That is CORRECT for prepaid packages — the prepayment
+  // covers the TAXED total of what it bought. No double-count with gift /
+  // loyalty / promo credits: those subtract from `grand` AFTER billDue, below.
   const bookingApplied = Math.min(bookingCreditMajor, billDue);
   // v5.6.76: `billDue`, not `total`. THE choke point — the cash pad, the card
   // charge, the terminal dispatch amount, the gift-card cap and the reader-tip

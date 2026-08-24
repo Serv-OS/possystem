@@ -73,7 +73,7 @@ export default function CateringSurface({ location }) {
           menuIds.length ? supabase.from('menu_category_links').select('category_id').in('menu_id', menuIds) : Promise.resolve({ data: [] }),
           supabase.from('menu_items').select('*').eq('location_id', opsId).eq('archived', false).order('sort_order'),
           supabase.from('menu_categories').select('*').eq('location_id', opsId).order('sort_order'),
-          supabase.from('tax_rates').select('id, name, rate, type, active').eq('location_id', opsId),
+          supabase.from('tax_rates').select('id, name, rate, type, active, is_default').eq('location_id', opsId),
           supabase.from('eighty_six').select('item_id').eq('location_id', opsId),
           supabase.from('config_pushes').select('snapshot->instructionGroupDefs').eq('location_id', opsId).order('created_at', { ascending: false }).limit(1).maybeSingle(), // v5.5.891: defs only, not the whole menu snapshot
           supabase.from('locations').select('receipt_branding').eq('id', opsId).maybeSingle(),

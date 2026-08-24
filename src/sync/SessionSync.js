@@ -75,6 +75,9 @@ export async function flushSessions() {
     deviceConfig: _st.deviceConfig,
     discountRules: _st.discountRules,
     timezone: _st.locationConfig?.timezone,
+    // v5.7.31: the stamped bill must include added-on sales tax — a reader
+    // table-pay charges THIS number, and the till's bill now carries the tax.
+    taxRates: _st.taxRates,
   };
 
   for (const t of occupied) {

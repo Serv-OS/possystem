@@ -87,7 +87,20 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
   const deliveryFee = isDelivery && deliveryQuote?.available ? (deliveryQuote.customerFeeMinor || 0) / 100 : 0;
   const tip = useMemo(() => (cfg.tips_enabled && tipPct ? +(subtotal * tipPct / 100).toFixed(2) : 0), [cfg.tips_enabled, tipPct, subtotal]);
   const discount = promoApplied?.amount || 0;
-  const total = Math.max(0, +(subtotal + deliveryFee + tip - discount).toFixed(2));
+  // v5.7.31: tax breakdown at CHECKOUT (was only computed at finalize) — added-on
+  // (exclusive, US) sales tax is part of what the customer pays, so it belongs in
+  // the total the pay button charges, not just the record written afterwards.
+  // UK inclusive VAT contributes exactly 0: UK totals unchanged.
+  const taxBk = useMemo(() => {
+    try {
+      return calculateOrderTax(
+        cart.map((l) => ({ price: l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0), qty: l.qty || 1, taxRateId: l.taxRateId, taxOverrides: l.taxOverrides })),
+        taxRates || [], fulfilment,
+      );
+    } catch { return null; }
+  }, [cart, taxRates, fulfilment]);
+  const exclusiveTax = +(Number(taxBk?.exclusiveTax) || 0).toFixed(2);
+  const total = Math.max(0, +(subtotal + exclusiveTax + deliveryFee + tip - discount).toFixed(2));
   const totalMinor = Math.round(total * 100);
   const belowMin = isDelivery && deliveryQuote?.belowMinimum;   // v5.5.657: enforce delivery minimum
   const valid = name.trim() && /^\+?[0-9 ]{7,}$/.test(phone) && (!isDelivery || (addr1.trim() && postcode.trim())) && (payMode === 'later' || email.trim()) && !belowMin;
@@ -252,7 +265,8 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
       // closed_checks (paid, net) — mirrors the online paid-order record. Sales are dated to the
       // event day at the event time, so a pre-order counts on the day of the event — not the day it
       // was placed. Payment is still captured now. (eventMs is computed once in the component body.)
-      const taxBk = calculateOrderTax(cart.map((l) => ({ price: l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0), qty: l.qty || 1, taxRateId: l.taxRateId, taxOverrides: l.taxOverrides })), taxRates || [], fulfilment);
+      // v5.7.31: taxBk now computed once in the component body (the total charged
+      // above includes its exclusive share) — this record books the same figures.
       const closedAt = isNaN(eventMs) ? new Date().toISOString() : new Date(eventMs).toISOString();
       const closedCheck = {
         id: checkId, ref, location_id: opsId, server: 'Catering', staff_id: null, covers: 1,
@@ -356,7 +370,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
       <div style={{ ...center, paddingTop: 16 }}>
         <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 14, padding: 16, marginBottom: 14 }}>
           <div style={{ fontWeight: 800, marginBottom: 4 }}>{isDelivery ? 'Delivery' : 'Collection'} · {eventDate} at {eventTime}</div>
-          <div style={{ fontSize: 13, color: '#475569' }}>{cart.reduce((n, l) => n + (l.qty || 1), 0)} items · subtotal {money(subtotal, cur)}{deliveryFee ? ` · delivery ${money(deliveryFee, cur)}` : ''}{tip ? ` · tip ${money(tip, cur)}` : ''}{discount ? ` · promo −${money(discount, cur)}` : ''} · <b>total {money(total, cur)}</b></div>
+          <div style={{ fontSize: 13, color: '#475569' }}>{cart.reduce((n, l) => n + (l.qty || 1), 0)} items · subtotal {money(subtotal, cur)}{exclusiveTax ? ` · tax ${money(exclusiveTax, cur)}` : ''}{deliveryFee ? ` · delivery ${money(deliveryFee, cur)}` : ''}{tip ? ` · tip ${money(tip, cur)}` : ''}{discount ? ` · promo −${money(discount, cur)}` : ''} · <b>total {money(total, cur)}</b></div>
           {isDelivery && (
             <div style={{ fontSize: 12, color: '#92400e', background: '#fffbeb', border: '1px solid #fde68a', borderRadius: 8, padding: '8px 10px', marginTop: 10, lineHeight: 1.5 }}>
               ⏱ <b>{eventTime}</b> is when your order is ready to leave the kitchen. Delivery adds travel time on top — please choose a time that allows for the courier to reach you.

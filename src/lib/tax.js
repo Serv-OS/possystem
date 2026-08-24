@@ -69,6 +69,7 @@ export function calculateOrderTax(items = [], taxRates = [], orderType = 'dine-i
   let totalGross = 0;
   let totalTax = 0;
   let totalNet = 0;
+  let exclusiveTaxRaw = 0;
 
   items
     .filter(i => !i.voided)
@@ -79,6 +80,11 @@ export function calculateOrderTax(items = [], taxRates = [], orderType = 'dine-i
       totalGross += gross;
       totalTax += tax;
       totalNet += net;
+      // v5.7.31: the ADDED-ON portion of the bill. Only EXCLUSIVE-mode lines
+      // contribute — inclusive VAT is already inside the shelf price, so a check
+      // mixing both modes must charge only the exclusive share on top. An
+      // inclusive-only check yields exactly 0 here (never a rounding artefact).
+      if (rate && rate.type === 'exclusive') exclusiveTaxRaw += tax;
 
       if (rate) {
         const key = rate.id;
@@ -96,6 +102,11 @@ export function calculateOrderTax(items = [], taxRates = [], orderType = 'dine-i
     subtotal:  totalNet,
     totalTax,
     total:     totalGross,
+    // v5.7.31: what a surface must ADD to the payable. Rounded half-up to cents
+    // at ORDER level (8.875% on 47.20 → 4.189 → 4.19) so every channel charges
+    // the same penny. Inclusive-only checks: 0 exactly. Never use totalTax for
+    // the charge — on a mixed check that would re-charge the inclusive VAT.
+    exclusiveTax: Math.round(exclusiveTaxRaw * 100) / 100,
     breakdown: Object.values(breakdownMap).sort((a, b) => b.rate.rate - a.rate.rate),
     hasExclusiveTax: Object.values(breakdownMap).some(b => b.rate.type === 'exclusive'),
   };

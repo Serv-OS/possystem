@@ -137,11 +137,6 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
     return +(discountedSubtotal * Number(tipMode) / 100).toFixed(2);
   }, [tipMode, customTip, discountedSubtotal]);
 
-  const total = useMemo(
-    () => +(discountedSubtotal + serviceCharge + tipAmount).toFixed(2),
-    [discountedSubtotal, serviceCharge, tipAmount]
-  );
-
   // v5.5.154: UK VAT breakdown over the gross subtotal — items only.
   // Service charge and tip aren't VAT-rated. UK uses inclusive tax so
   // the figure shown is "incl. VAT £X.XX", not added on top.
@@ -155,6 +150,15 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
     taxRates,
     'dine-in',
   ), [cart, taxRates]);
+
+  // v5.7.31: ADDED-ON sales tax (US exclusive rates) is charged, not just shown.
+  // UK inclusive VAT contributes exactly 0 here, so UK totals are unchanged.
+  const exclusiveTax = +(Number(taxBreakdown?.exclusiveTax) || 0).toFixed(2);
+
+  const total = useMemo(
+    () => +(discountedSubtotal + exclusiveTax + serviceCharge + tipAmount).toFixed(2),
+    [discountedSubtotal, exclusiveTax, serviceCharge, tipAmount]
+  );
 
   // v5.5.156: phone required (was optional). Tab resume + force-close
   // identification key off phone-last-4, so an empty phone breaks the
@@ -735,10 +739,12 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
             ))}
             {/* v5.5.154: UK VAT breakdown — required on every customer-
                 facing total for compliance. Inclusive: shown as "incl."
-                on top of the subtotal which already contains the tax. */}
+                on top of the subtotal which already contains the tax.
+                v5.7.31: exclusive (added-on) rates show "+" and ARE charged
+                — the Total below includes them. */}
             {taxBreakdown.totalTax > 0 && taxBreakdown.breakdown.map((b, i) => (
               <SummaryLine key={`vat-${i}`}
-                label={`incl. ${b.rate.name || `VAT ${(Number(b.rate.rate) * 100).toFixed(0)}%`}`}
+                label={`${b.rate.type === 'exclusive' ? '+ ' : 'incl. '}${b.rate.name || `VAT ${(Number(b.rate.rate) * 100).toFixed(0)}%`}`}
                 value={b.tax} muted={muted}/>
             ))}
             {serviceCharge > 0 && <SummaryLine label={`Service charge (${serviceChargePct}%)`} value={serviceCharge} muted={muted}/>}
@@ -854,7 +860,7 @@ function PayStep({ pi, subtotal, serviceCharge, tipAmount, total, tableLabel, th
           <SummaryLine label="Subtotal" value={subtotal} muted={muted}/>
           {taxBreakdown?.totalTax > 0 && taxBreakdown.breakdown.map((b, i) => (
             <SummaryLine key={`vat-${i}`}
-              label={`incl. ${b.rate.name || `VAT ${(Number(b.rate.rate) * 100).toFixed(0)}%`}`}
+              label={`${b.rate.type === 'exclusive' ? '+ ' : 'incl. '}${b.rate.name || `VAT ${(Number(b.rate.rate) * 100).toFixed(0)}%`}`}
               value={b.tax} muted={muted}/>
           ))}
           {serviceCharge > 0 && <SummaryLine label="Service charge" value={serviceCharge} muted={muted}/>}

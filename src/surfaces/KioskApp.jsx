@@ -24,6 +24,7 @@ import { useStore } from '../store';
 import { decrementStockRPC, fetchActiveDiscountRules, shortOrderRef } from '../lib/db';
 import { logOrderActivity } from '../lib/activity';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
+import { calculateOrderTax } from '../lib/tax';
 import { buildScheduleCtx } from '../lib/locationTime';
 import { depleteForSaleServer } from '../lib/stock/deplete';
 import KioskProductModal from './KioskProductModal';
@@ -96,7 +97,7 @@ function useKioskProfile(kioskId) {
 // Loads menu data scoped to this location. Returns items, categories, links, menus.
 // Uses the active-menu resolver (matching POS) so timed menus work.
 function useKioskMenu(profile, locationId, tz = 'Europe/London') {
-  const [data, setData] = useState({ items: [], categories: [], menus: [], links: [] });
+  const [data, setData] = useState({ items: [], categories: [], menus: [], links: [], taxRates: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [tick, setTick] = useState(0);
@@ -115,10 +116,16 @@ function useKioskMenu(profile, locationId, tz = 'Europe/London') {
         // v5.5.235: menu_category_links has no location_id column — filter via
         // the loaded menus' ids (which are already location-scoped). Previously
         // this was an unfiltered select('*') returning links from ALL locations.
-        const [iRes, cRes, mRes, pRes] = await Promise.all([
+        const [iRes, cRes, mRes, tRes, pRes] = await Promise.all([
           supabase.from('menu_items').select('*').eq('location_id', locationId).eq('archived', false).order('sort_order'),
           supabase.from('menu_categories').select('*').eq('location_id', locationId).order('sort_order'),
           supabase.from('menus').select('*').eq('location_id', locationId).eq('is_active', true),
+          // v5.7.31: the venue's tax rates — the kiosk wrote tax: 0 on every check
+          // and never charged added-on (US exclusive) sales tax at all. Same read
+          // OnlineSurface does, plus is_default so "Use default" items resolve the
+          // venue default exactly as the POS engine promises. Rides this Promise.all,
+          // so a failure lands in the same catch as a failed menu load.
+          supabase.from('tax_rates').select('id, name, rate, type, active, is_default').eq('location_id', locationId),
           // v5.5.953: instruction-group DEFINITIONS (cooking preference etc.) have no DB
           // table — they ride the config-push snapshot. Online reads it, the POS applies
           // it, but the kiosk never loaded it, so KioskProductModal's def lookup fell back
@@ -145,6 +152,8 @@ function useKioskMenu(profile, locationId, tz = 'Europe/London') {
           categories: cRes.data || [],
           menus: mRes.data || [],
           links: lRes.data || [],
+          // v5.7.31: active rates only — same filter OnlineSurface applies.
+          taxRates: (tRes.data || []).filter(r => r.active !== false),
         });
       } catch (e) {
         if (alive) setError(e?.message || 'Failed to load menu');
@@ -247,7 +256,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
       .then(({ data }) => { if (data?.company_id) setCompanyId(data.company_id); if (data?.timezone) setKioskTz(data.timezone); })
       .catch(() => {});
   }, [locationId]);
-  const { items, categories, menus, links, activeMenuId, loading: menuLoading, error: menuError } = useKioskMenu(profile, locationId, kioskTz);
+  const { items, categories, menus, links, taxRates, activeMenuId, loading: menuLoading, error: menuError } = useKioskMenu(profile, locationId, kioskTz);
 
   // Auto-discount rules — fetched live (kiosk runs anonymously, no store.discountRules). Raw DB rows
   // feed the engine directly (it reads snake_case). Channel 'kiosk'; schedule/expiry in location tz.
@@ -550,7 +559,29 @@ export default function KioskApp({ kioskId, onUnpair }) {
   }, [cart, autoRules, kioskTz]);
   const autoDiscountTotal = +autoDiscounts.reduce((s, d) => s + (d.value || 0), 0).toFixed(2);
   const discountedSubtotal = Math.max(0, +(subtotal - autoDiscountTotal).toFixed(2));
-  const total = useMemo(() => discountedSubtotal + tip, [discountedSubtotal, tip]);
+  // v5.7.31 (slice 0b): the kiosk never loaded tax rates, wrote tax: 0 on every
+  // check, and never charged added-on (US exclusive) sales tax. Same engine call
+  // the POS makes — l.item is the raw menu_items row, so the rate id / overrides
+  // are snake_case; l.linePrice already includes the chosen modifiers. Basis
+  // matches the POS: pre-discount goods, no tax on the tip. UK inclusive VAT
+  // yields exclusiveTax 0 exactly — UK kiosks unchanged.
+  const taxBreakdown = useMemo(() => {
+    if (!taxRates?.length || !cart.length) return null;
+    try {
+      return calculateOrderTax(
+        cart.map(l => ({
+          price: l.linePrice,
+          qty: l.qty || 1,
+          taxRateId: l.item?.tax_rate_id || null,
+          taxOverrides: l.item?.tax_overrides || {},
+        })),
+        taxRates,
+        orderType === 'dineIn' ? 'dine-in' : 'takeaway',
+      );
+    } catch { return null; }
+  }, [cart, taxRates, orderType]);
+  const exclusiveTax = +(Number(taxBreakdown?.exclusiveTax) || 0).toFixed(2);
+  const total = useMemo(() => discountedSubtotal + exclusiveTax + tip, [discountedSubtotal, exclusiveTax, tip]);
   const cartItemCount = useMemo(() => cart.reduce((a, l) => a + l.qty, 0), [cart]);
 
   // v5.5.285: Count total usage of each item (by itemId) across the cart,
@@ -794,7 +825,12 @@ export default function KioskApp({ kioskId, onUnpair }) {
         discounts: autoDiscounts,
         subtotal: subtotal,
         tip: tip,
-        tax: 0,
+        // v5.7.31: REAL tax, not the literal 0 this wrote since the kiosk launched.
+        // tax_amount is what reports (Tax summary, Daily Trading VAT) read; the
+        // legacy `tax` column gets the same figure. Full engine basis — matches
+        // what the POS books for the identical order.
+        tax: taxBreakdown?.totalTax || 0,
+        tax_amount: taxBreakdown?.totalTax ?? null,
         total: grandTotal,
         order_type: orderTypeOut,
         status: 'paid',
@@ -1004,7 +1040,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
     } finally {
       setSubmitting(false);
     }
-  }, [submitting, kioskId, locationId, cart, subtotal, total, grandTotal, loyaltyCredit, giftCardCredit, promoCredit, promoApplied, verifiedLoyalty, loyaltyRedemption, giftCardPayment, tip, orderType, customerName, customerPhone, customerEmail, customerMarketingOptIn, tableNumber, resetSession]);
+  }, [submitting, kioskId, locationId, cart, subtotal, total, grandTotal, taxBreakdown, loyaltyCredit, giftCardCredit, promoCredit, promoApplied, verifiedLoyalty, loyaltyRedemption, giftCardPayment, tip, orderType, customerName, customerPhone, customerEmail, customerMarketingOptIn, tableNumber, resetSession]);
 
   // ─── Loading + error gates ───
   if (profLoading || menuLoading) {
@@ -1052,7 +1088,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
           onCancel={() => setScreen('menu')}
         />
       )}
-      {screen === 'cart' && <ScreenCart brandColor={brandColor} cart={cart} subtotal={subtotal} cartItemCount={cartItemCount} orderType={orderType} onUpdate={updateCartQty} onAddMore={() => setScreen('menu')} onContinue={() => setScreen('tip')} onShowAllergenPicker={() => setShowAllergenPicker(true)} onBack={() => setScreen('menu')} onCancel={resetSession} dailyCounts={dailyCounts} />}
+      {screen === 'cart' && <ScreenCart brandColor={brandColor} cart={cart} subtotal={subtotal} exclusiveTax={exclusiveTax} cartItemCount={cartItemCount} orderType={orderType} onUpdate={updateCartQty} onAddMore={() => setScreen('menu')} onContinue={() => setScreen('tip')} onShowAllergenPicker={() => setShowAllergenPicker(true)} onBack={() => setScreen('menu')} onCancel={resetSession} dailyCounts={dailyCounts} />}
       {screen === 'tip' && <ScreenTip brandColor={brandColor} subtotal={subtotal} tipPresets={tipPresets} tip={tip} onSetTip={setTip} onContinue={() => { if (loyaltyEnabled) setScreen('loyalty'); else setScreen('gift'); }} onBack={() => setScreen('cart')} onCancel={resetSession} />}
       {/* v5.5.219: loyalty/customer-details BEFORE pay so reward discount adjusts amount due */}
       {screen === 'loyalty' && <ScreenLoyalty brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} customerEmail={customerEmail} marketingOptIn={customerMarketingOptIn} locationId={locationId} companyId={companyId} subtotal={subtotal} cart={cart} loyaltyRedemption={loyaltyRedemption} onLoyaltyRedeem={setLoyaltyRedemption} verifiedLoyalty={verifiedLoyalty} onVerifiedLoyalty={setVerifiedLoyalty} onName={setCustomerName} onPhone={setCustomerPhone} onEmail={setCustomerEmail} onMarketingOptIn={setCustomerMarketingOptIn} onContinue={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'gift'); }} onSkip={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'gift'); }} submitting={submitting} placeOrderLabel={labelPlaceOrder} earlySignIn={!!loyaltyReturnScreen} onCancel={resetSession} />}
@@ -2214,7 +2250,7 @@ function iconBtnLg() {
 // Footer: "Items total" card + brand-color totals pill with item-count
 // badge + circular back button on the left.
 // ============================================================
-function ScreenCart({ brandColor, cart, subtotal, cartItemCount, orderType, onUpdate, onAddMore, onContinue, onShowAllergenPicker, onBack, onCancel, dailyCounts = {} }) {
+function ScreenCart({ brandColor, cart, subtotal, exclusiveTax = 0, cartItemCount, orderType, onUpdate, onAddMore, onContinue, onShowAllergenPicker, onBack, onCancel, dailyCounts = {} }) {
   const isPickup = orderType === 'takeaway';
   const titleKey = isPickup ? 'cart.title.pickup' : 'cart.title.dineIn';
   return (
@@ -2333,6 +2369,21 @@ function ScreenCart({ brandColor, cart, subtotal, cartItemCount, orderType, onUp
           }}>{money(subtotal)}</span>
         </div>
 
+        {/* v5.7.31: added-on (US exclusive) sales tax — charged, so shown. UK inclusive VAT: exclusiveTax is 0 and this row never renders. */}
+        {exclusiveTax > 0 && (
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '0 clamp(20px, 2.6vw, 28px)',
+            marginTop: 'calc(-1 * clamp(6px, 0.8vw, 8px))',
+            marginBottom: 'clamp(12px, 1.6vw, 16px)',
+          }}>
+            <span style={{ fontSize: 'clamp(13px, 1.6vw, 16px)', fontWeight: 700, color: 'var(--kFgFaint)' }}>+ Tax</span>
+            <span style={{ fontSize: 'clamp(13px, 1.6vw, 16px)', fontWeight: 700, color: 'var(--kFgFaint)', fontVariantNumeric: 'tabular-nums' }}>{money(exclusiveTax)}</span>
+          </div>
+        )}
+
         {/* Totals row — circular back button + brand-fill pill with count badge */}
         <div style={{
           display: 'flex',
@@ -2406,7 +2457,7 @@ function ScreenCart({ brandColor, cart, subtotal, cartItemCount, orderType, onUp
               fontWeight: 800,
               fontVariantNumeric: 'tabular-nums',
               letterSpacing: '-0.01em',
-            }}>{money(subtotal)}</span>
+            }}>{money(subtotal + exclusiveTax)}</span>
           </button>
         </div>
       </div>

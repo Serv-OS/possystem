@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.31',
+    date: '2026-08-20',
+    items: [
+      'Venues using added-on sales tax, common in the US, now charge it on the main channels. The till, mobile POS, online ordering, QR table ordering, catering and the kiosk all add the tax line to what the customer pays, exactly matching what is shown on screen. Before this the tax was shown and recorded but never actually charged. Bar tabs are the one channel still to follow, coming with the tax profiles work.',
+      'The kiosk now loads the venue tax rates, works out the tax on each order the same way the till does, and records the real tax figure on the check instead of zero.',
+      'UK venues are unchanged. VAT is already inside your prices, so every total stays exactly the same to the penny.',
+      'A check mixing VAT inclusive items with added-on tax items only charges the added-on portion on top. VAT already in a price is never added again.',
+    ],
+  },
+  {
     version: '5.7.30',
     date: '2026-08-20',
     items: [
