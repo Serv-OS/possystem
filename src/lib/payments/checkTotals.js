@@ -19,6 +19,7 @@ import { resolveServiceCharge } from '../serviceCharge.js';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../discountEngine.js';
 import { buildScheduleCtx } from '../scheduleCtx.js';
 import { calculateOrderTax } from '../tax.js';
+import { computeOrderTaxUnified } from '../taxCompute.js';
 
 /**
  * @param {object} ctx
@@ -36,6 +37,11 @@ import { calculateOrderTax } from '../tax.js';
  *                                           exclusiveTax 0 and totals identical to
  *                                           v5.7.30 (UK inclusive VAT contributes
  *                                           nothing here either way).
+ * @param {Object} [ctx.taxCtx]              v5.7.34: full tax context
+ *                                           (getTaxContext / buildLocalTaxCtx) —
+ *                                           when present the exclusive term comes
+ *                                           from the unified seam (profiles OR
+ *                                           legacy parity) instead of raw taxRates.
  */
 export function computeCheckTotals(ctx) {
   const {
@@ -80,7 +86,12 @@ export function computeCheckTotals(ctx) {
   // lines on screen and closed_checks.tax_amount already book. Inclusive (UK)
   // VAT contributes exactly 0, so UK totals are byte-identical to v5.7.30.
   let exclusiveTax = 0;
-  if (Array.isArray(taxRates) && taxRates.length) {
+  if (ctx?.taxCtx) {
+    // v5.7.34: the unified seam (profiles cascade OR legacy parity). On a
+    // legacy-equivalent venue this IS calculateOrderTax byte-for-byte.
+    try { exclusiveTax = computeOrderTaxUnified(items, ctx.taxCtx, orderType || 'dine-in').exclusiveTax || 0; }
+    catch { exclusiveTax = 0; }   // fail toward the old behaviour, never a guessed charge
+  } else if (Array.isArray(taxRates) && taxRates.length) {
     try { exclusiveTax = calculateOrderTax(items, taxRates, orderType || 'dine-in').exclusiveTax || 0; }
     catch { exclusiveTax = 0; }   // fail toward the old behaviour, never a guessed charge
   }
@@ -125,6 +136,9 @@ export function sessionTotalsMinor(session, opts) {
     // v5.7.31: the stamped table-pay amount must match the till's bill — which
     // now carries added-on sales tax. UK venues: 0, stamp unchanged.
     taxRates: opts?.taxRates,
+    // v5.7.34: full tax context so profile venues stamp the same bill the till
+    // computes through the unified seam. Absent = legacy taxRates term above.
+    taxCtx: opts?.taxCtx,
   });
   if (!Number.isFinite(t.total) || !Number.isFinite(t.subtotal)) return null;
   return {

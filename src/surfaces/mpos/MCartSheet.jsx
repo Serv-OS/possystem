@@ -12,7 +12,7 @@
 
 import { useMemo, useState, useEffect } from 'react';
 import { useStore } from '../../store';
-import { calculateOrderTax } from '../../lib/tax';
+import { computeOrderTaxUnified } from '../../lib/taxCompute';
 import { receiptTargetStatus } from '../../lib/printer';
 import { Sx, money, STATUS_PILL } from './MShellStyles';
 import MItemActions from './MItemActions';
@@ -22,7 +22,7 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
   const {
     activeTableId, tables, walkInOrder,
     removeItem, updateItemQty, orderType, setOrderNote,
-    printCustomerReceipt, locationConfig, showToast, staff, taxRates = [],
+    printCustomerReceipt, locationConfig, showToast, staff,
   } = useStore();
   // Print-bill UX is optimistic: tap → haptic + immediate "Sending…" toast →
   // button re-enables after ~800ms (debounce, prevents accidental double-tap)
@@ -71,7 +71,7 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
           return s + (i.discount?.value ? base * (1 - i.discount.value / 100) : base);
         }, 0);
         // v5.5.342: compute VAT so the printed bill shows the tax breakdown.
-        const billTax = (() => { try { return calculateOrderTax(liveItems, taxRates, orderType); } catch { return null; } })();
+        const billTax = (() => { try { return computeOrderTaxUnified(liveItems, useStore.getState().getTaxContext(), orderType); } catch { return null; } })();
         const checkShape = {
           id: `bill-${Date.now()}`,
           ref: activeTableId
@@ -147,7 +147,9 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
   const subtotal = items.reduce((s, i) => s + (i.price || 0) * (i.qty || 0), 0);
   // v5.5.342: surface VAT on the cart (was missing). Inclusive VAT is extracted
   // from the price (shown "incl. VAT"); exclusive is added.
-  const taxResult = useMemo(() => { try { return calculateOrderTax(items, taxRates, orderType); } catch { return null; } }, [items, taxRates, orderType]);
+  // v5.7.34: unified seam — same reads (totalTax / exclusiveTax / hasExclusiveTax).
+  const taxCtx = useStore(s => s.getTaxContext());
+  const taxResult = useMemo(() => { try { return computeOrderTaxUnified(items, taxCtx, orderType); } catch { return null; } }, [items, taxCtx, orderType]);
   const tax = Number(taxResult?.totalTax) || 0;
   // v5.7.31: the ADDED figure is the exclusive share only — on a mixed
   // inclusive+exclusive check, adding totalTax re-added the inclusive VAT.

@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { useStore } from '../store';
 import { printService } from '../lib/printer';
 import { money } from '../lib/currency';
-import { calculateOrderTax } from '../lib/tax';
+import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
 import { shortOrderRef } from '../lib/db';
 import { refundBreakdown, cardLegsOf, legRefundedMinor, toMinor } from '../lib/payments/refundMath';
 
@@ -747,7 +747,7 @@ function TipWindowCard({ check }){
 
 // ── Check History Panel ───────────────────────────────────────────────────────
 export default function CheckHistory(){
-  const {closedChecks,refundCheck,retryRefundReversal,showToast,location,taxRates,hydrateCaptureStatus}=useStore();
+  const {closedChecks,refundCheck,retryRefundReversal,showToast,location,hydrateCaptureStatus}=useStore();
   const [search,setSearch]=useState('');
   const [dateFilter,setDateFilter]=useState('today');
   const [selected,setSelected]=useState(null);
@@ -822,9 +822,11 @@ export default function CheckHistory(){
       // receipt matches what was printed originally.
       const nonVoided = (selectedCheck.items || []).filter(i => !i.voided);
       let taxBreakdown = null;
-      if (taxRates?.length) {
+      const reprintTaxCtx = useStore.getState().getTaxContext();
+      if (taxCtxHasConfig(reprintTaxCtx)) {
+        // v5.7.34: unified seam (legacy parity or profiles cascade).
         try {
-          taxBreakdown = calculateOrderTax(nonVoided, taxRates, selectedCheck.orderType || 'dine-in');
+          taxBreakdown = computeOrderTaxUnified(nonVoided, reprintTaxCtx, selectedCheck.orderType || 'dine-in');
         } catch {}
       }
       const result = await printService.printReceipt({

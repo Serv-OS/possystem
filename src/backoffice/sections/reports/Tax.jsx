@@ -1,6 +1,6 @@
 // v4.6.21: Tax report (replaces LegacyTax).
 //
-// Uses the authoritative calculateOrderTax helper on each check's items so the
+// Uses the authoritative unified tax seam (computeOrderTaxUnified) on each check's items so the
 // report matches what's charged at the till. Per-rate breakdown shows net,
 // tax, gross and line count. Per-order-type breakdown reveals how much tax is
 // coming from each channel (useful when takeaway/delivery have zero-rated
@@ -10,27 +10,30 @@
 
 import { useMemo } from 'react';
 import { useStore } from '../../../store';
-import { calculateOrderTax } from '../../../lib/tax';
+import { computeOrderTaxUnified } from '../../../lib/taxCompute';
 import { StatTile, ExportBtn, EmptyState } from './_charts';
 import { toCsv, downloadCsv } from './_csv';
 
 export default function Tax({ checks, fmt, fmtN }) {
   const { taxRates = [] } = useStore();
+  // v5.7.34: recompute through the UNIFIED SEAM — identical numbers on
+  // legacy-equivalent venues, profile-cascade numbers on profile venues.
+  const taxCtx = useStore(s => s.getTaxContext());
 
   const analysis = useMemo(() => {
-    // Per-rate rollup (via calculateOrderTax for correctness on inclusive/exclusive + overrides)
+    // Per-rate rollup (via the unified seam for correctness on inclusive/exclusive + overrides + profiles)
     const byRate = {};
     const byOrderType = {};
 
     let totalStoredTax = 0;  // sum of c.taxAmount when available
-    let totalDerivedTax = 0; // sum via calculateOrderTax
+    let totalDerivedTax = 0; // sum via computeOrderTaxUnified
     let hasStoredCount = 0;
     let derivedOnlyCount = 0;
     let totalNet = 0;
     let totalGross = 0;
 
     checks.filter(c => c.status !== 'voided').forEach(c => {
-      const result = calculateOrderTax(c.items || [], taxRates, c.orderType || 'dine-in');
+      const result = computeOrderTaxUnified(c.items || [], taxCtx, c.orderType || 'dine-in');
       totalDerivedTax += result.totalTax || 0;
       totalNet        += result.subtotal || result.totalNet || 0;
 
@@ -71,7 +74,7 @@ export default function Tax({ checks, fmt, fmtN }) {
       effectiveTaxRate: totalNet > 0 ? (totalDerivedTax / totalNet) * 100 : 0,
       variance: totalStoredTax > 0 ? totalStoredTax - totalDerivedTax : 0,
     };
-  }, [checks, taxRates]);
+  }, [checks, taxCtx]);
 
   const displayTax = analysis.hasStoredCount > analysis.derivedOnlyCount
     ? analysis.totalStoredTax
@@ -168,7 +171,7 @@ export default function Tax({ checks, fmt, fmtN }) {
       </div>
 
       <div style={{ marginTop:14, padding:'10px 12px', background:'var(--bg3)', border:'1px dashed var(--bdr)', borderRadius:8, fontSize:11, color:'var(--t4)', lineHeight:1.7 }}>
-        ⓘ Uses calculateOrderTax per check (the same helper used at point of sale) so breakdowns match what customers were charged. Variance shows the delta between stored tax_amount and the re-derived total. Values above 0.50 are red-flagged as a diagnostic — usually harmless rounding on inclusive-tax menus, investigate if significant.
+        ⓘ Recomputes each check through the same tax engine used at point of sale (tax profiles and legacy rates alike) so breakdowns match what customers were charged. Variance shows the delta between stored tax_amount and the re-derived total. Values above 0.50 are red-flagged as a diagnostic. Usually harmless rounding on inclusive-tax menus, investigate if significant.
       </div>
     </div>
   );

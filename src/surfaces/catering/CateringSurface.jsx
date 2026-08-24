@@ -9,6 +9,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase, ensureAuthToken } from '../../lib/supabase';
 import { assembleTaxProfiles } from '../../lib/rowMapping';
+import { buildLocalTaxCtx } from '../../lib/taxCompute';
 import { receiptOverride } from '../../lib/itemDisplay';
 import OnlineItemSheet from '../online/OnlineItemSheet';
 import OnlineCart from '../online/OnlineCart';
@@ -38,6 +39,8 @@ export default function CateringSurface({ location }) {
   // v5.7.33: tax profiles + lines, delivered dark alongside taxRates - handed to
   // the cart/checkout ready for the profiles cutover, unused by any calculation.
   const [taxProfiles, setTaxProfiles] = useState([]);
+  const [taxCatRows, setTaxCatRows] = useState([]);                              // v5.7.34: unfiltered, for the tax cascade
+  const [venueDefaultTaxProfileId, setVenueDefaultTaxProfileId] = useState(null); // v5.7.34: locations.default_tax_profile_id
   const [eightySix, setEightySix] = useState([]);
   const [stockLevels, setStockLevels] = useState({});   // v5.6.69: { itemId: { par, remaining } }
   const [instGroupDefs, setInstGroupDefs] = useState([]);
@@ -80,7 +83,9 @@ export default function CateringSurface({ location }) {
           supabase.from('tax_rates').select('id, name, rate, type, active, is_default').eq('location_id', opsId),
           supabase.from('eighty_six').select('item_id').eq('location_id', opsId),
           supabase.from('config_pushes').select('snapshot->instructionGroupDefs').eq('location_id', opsId).order('created_at', { ascending: false }).limit(1).maybeSingle(), // v5.5.891: defs only, not the whole menu snapshot
-          supabase.from('locations').select('receipt_branding').eq('id', opsId).maybeSingle(),
+          // v5.7.34: default_tax_profile_id rides the branding read — the venue
+          // default the reviewer flagged missing (cascade step 4 on this surface).
+          supabase.from('locations').select('receipt_branding, default_tax_profile_id').eq('id', opsId).maybeSingle(),
           // v5.6.69: stock levels — OnlineItemSheet's numeric option cap (v5.5.872)
           // was INERT on catering because stockLevels was never passed.
           supabase.from('stock_levels').select('item_id, par, remaining').eq('location_id', opsId),
@@ -102,6 +107,10 @@ export default function CateringSurface({ location }) {
         if (Array.isArray(profRows) && Array.isArray(lineRows)) {
           setTaxProfiles(assembleTaxProfiles(profRows, lineRows));
         }
+        // v5.7.34: UNFILTERED category rows + the venue default for the seam's
+        // cascade (the display `cats` above are menu-filtered).
+        setTaxCatRows(catRows || []);
+        setVenueDefaultTaxProfileId(brandRow?.default_tax_profile_id ?? null);
         setEightySix((e86 || []).map((r) => r.item_id));
         const counts = {};
         (stockRows || []).forEach((r) => { counts[r.item_id] = { par: r.par, remaining: r.remaining }; });
@@ -162,8 +171,15 @@ export default function CateringSurface({ location }) {
       q = Math.min(q, room);
     }
     const price = Number(item.pricing?.base ?? item.price ?? 0);
-    setCart((c) => [...c, { uid: `${item.id}-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`, itemId: item.id, name: item.menu_name || item.name, kitchenName: item.kitchen_name || null, receiptName: receiptOverride(item), cat: item.cat || null, cats: Array.isArray(item.cats) ? item.cats : null, parentId: item.parent_id || null, taxRateId: item.tax_rate_id || null, taxOverrides: item.tax_overrides || {}, price, qty: q, mods, notes }]);
+    setCart((c) => [...c, { uid: `${item.id}-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`, itemId: item.id, name: item.menu_name || item.name, kitchenName: item.kitchen_name || null, receiptName: receiptOverride(item), cat: item.cat || null, cats: Array.isArray(item.cats) ? item.cats : null, parentId: item.parent_id || null, taxRateId: item.tax_rate_id || null, taxOverrides: item.tax_overrides || {}, taxProfileId: item.tax_profile_id ?? null, price, qty: q, mods, notes }]);
   };
+
+  // v5.7.34: the unified seam's tax context — this surface's own fetches
+  // (profiles + raw tax_profile_id columns + venue default) in one object.
+  const taxCtx = useMemo(() => buildLocalTaxCtx({
+    taxProfiles, menuItems: items, menuCategories: taxCatRows,
+    venueDefaultProfileId: venueDefaultTaxProfileId, taxRates,
+  }), [taxProfiles, items, taxCatRows, venueDefaultTaxProfileId, taxRates]);
 
   // Date gating
   const minDays = Number(cfg?.lead_time_min_days ?? 0);
@@ -237,7 +253,7 @@ export default function CateringSurface({ location }) {
 
   if (checkout) return (
     <CateringCheckout
-      location={location} cfg={cfg} cart={cart} taxRates={taxRates} taxProfiles={taxProfiles} theme={theme} cur={cur}
+      location={location} cfg={cfg} cart={cart} taxRates={taxRates} taxCtx={taxCtx} theme={theme} cur={cur}
       fulfilment={fulfilment} eventDate={eventDate} eventTime={eventTime} subtotal={subtotal}
       onBack={() => setCheckout(false)}
     />
@@ -358,7 +374,7 @@ export default function CateringSurface({ location }) {
           onClose={() => setOpenItem(null)} onAdd={(it, mods, qty, notes) => { addToCart(it, mods, qty, notes); setOpenItem(null); }} />
       )}
       {showCart && (
-        <OnlineCart cart={cart} theme={theme} orderType={fulfilment || 'collection'} taxRates={taxRates} taxProfiles={taxProfiles}
+        <OnlineCart cart={cart} theme={theme} orderType={fulfilment || 'collection'} taxRates={taxRates} taxCtx={taxCtx}
           onClose={() => setShowCart(false)} onRemove={(uid) => setCart((c) => c.filter((l) => l.uid !== uid))}
           onUpdateQty={(uid, q) => setCart((c) => c.map((l) => (l.uid === uid ? { ...l, qty: Math.max(1, q) } : l)))}
           onCheckout={goCheckout} />

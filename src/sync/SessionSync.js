@@ -78,6 +78,9 @@ export async function flushSessions() {
     // v5.7.31: the stamped bill must include added-on sales tax — a reader
     // table-pay charges THIS number, and the till's bill now carries the tax.
     taxRates: _st.taxRates,
+    // v5.7.34: unified seam context — profile venues stamp the cascade figure;
+    // legacy-equivalent venues stamp byte-identical calculateOrderTax numbers.
+    taxCtx: _st.getTaxContext(),
   };
 
   for (const t of occupied) {

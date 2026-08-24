@@ -24,7 +24,7 @@ import { useStore } from '../store';
 import { decrementStockRPC, fetchActiveDiscountRules, shortOrderRef } from '../lib/db';
 import { logOrderActivity } from '../lib/activity';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
-import { calculateOrderTax } from '../lib/tax';
+import { computeOrderTaxUnified, buildLocalTaxCtx, taxCtxHasConfig } from '../lib/taxCompute';
 import { assembleTaxProfiles } from '../lib/rowMapping';
 import { buildScheduleCtx } from '../lib/locationTime';
 import { depleteForSaleServer } from '../lib/stock/deplete';
@@ -98,7 +98,7 @@ function useKioskProfile(kioskId) {
 // Loads menu data scoped to this location. Returns items, categories, links, menus.
 // Uses the active-menu resolver (matching POS) so timed menus work.
 function useKioskMenu(profile, locationId, tz = 'Europe/London') {
-  const [data, setData] = useState({ items: [], categories: [], menus: [], links: [], taxRates: [], taxProfiles: [] });
+  const [data, setData] = useState({ items: [], categories: [], menus: [], links: [], taxRates: [], taxProfiles: [], venueDefaultTaxProfileId: null });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [tick, setTick] = useState(0);
@@ -141,6 +141,12 @@ function useKioskMenu(profile, locationId, tz = 'Europe/London') {
           supabase.from('tax_profiles').select('*').eq('location_id', locationId).order('sort_order'),
           supabase.from('tax_profile_lines').select('*').eq('location_id', locationId).order('sort_order'),
         ]);
+        // v5.7.34: the venue default profile (locations.default_tax_profile_id,
+        // ops DB) — the read the reviewer flagged missing. Separate await so a
+        // column-less older DB fails soft without killing the menu load.
+        const defRes = await supabase.from('locations')
+          .select('default_tax_profile_id').eq('id', locationId).maybeSingle()
+          .then(r => r, () => ({ data: null }));
         // Fetch links only for this location's menus
         const menuIds = (mRes.data || []).map(m => m.id);
         const lRes = menuIds.length
@@ -164,6 +170,8 @@ function useKioskMenu(profile, locationId, tz = 'Europe/London') {
           // v5.7.33: both reads must have succeeded - never keep line-less profiles.
           taxProfiles: (Array.isArray(tpRes.data) && Array.isArray(tlRes.data))
             ? assembleTaxProfiles(tpRes.data, tlRes.data) : [],
+          // v5.7.34: venue default profile for the seam's cascade step 4.
+          venueDefaultTaxProfileId: defRes?.data?.default_tax_profile_id ?? null,
         });
       } catch (e) {
         if (alive) setError(e?.message || 'Failed to load menu');
@@ -266,7 +274,13 @@ export default function KioskApp({ kioskId, onUnpair }) {
       .then(({ data }) => { if (data?.company_id) setCompanyId(data.company_id); if (data?.timezone) setKioskTz(data.timezone); })
       .catch(() => {});
   }, [locationId]);
-  const { items, categories, menus, links, taxRates, activeMenuId, loading: menuLoading, error: menuError } = useKioskMenu(profile, locationId, kioskTz);
+  const { items, categories, menus, links, taxRates, taxProfiles, venueDefaultTaxProfileId, activeMenuId, loading: menuLoading, error: menuError } = useKioskMenu(profile, locationId, kioskTz);
+  // v5.7.34: local tax context for the unified seam — built from the kiosk's
+  // own fetches (profiles + raw tax_profile_id columns + venue default).
+  const kioskTaxCtx = useMemo(() => buildLocalTaxCtx({
+    taxProfiles, menuItems: items, menuCategories: categories,
+    venueDefaultProfileId: venueDefaultTaxProfileId, taxRates,
+  }), [taxProfiles, items, categories, venueDefaultTaxProfileId, taxRates]);
 
   // Auto-discount rules — fetched live (kiosk runs anonymously, no store.discountRules). Raw DB rows
   // feed the engine directly (it reads snake_case). Channel 'kiosk'; schedule/expiry in location tz.
@@ -575,21 +589,27 @@ export default function KioskApp({ kioskId, onUnpair }) {
   // are snake_case; l.linePrice already includes the chosen modifiers. Basis
   // matches the POS: pre-discount goods, no tax on the tip. UK inclusive VAT
   // yields exclusiveTax 0 exactly — UK kiosks unchanged.
+  // v5.7.34: through the unified seam — the kiosk now passes its delivered
+  // profiles (itemId + cat feed the cascade); legacy venues byte-identical.
   const taxBreakdown = useMemo(() => {
-    if (!taxRates?.length || !cart.length) return null;
+    if (!taxCtxHasConfig(kioskTaxCtx) || !cart.length) return null;
     try {
-      return calculateOrderTax(
+      return computeOrderTaxUnified(
         cart.map(l => ({
           price: l.linePrice,
           qty: l.qty || 1,
+          itemId: l.item?.id ?? null,
+          cat: l.item?.cat ?? null,
+          cats: Array.isArray(l.item?.cats) ? l.item.cats : null,
+          taxProfileId: l.item?.tax_profile_id ?? null,
           taxRateId: l.item?.tax_rate_id || null,
           taxOverrides: l.item?.tax_overrides || {},
         })),
-        taxRates,
+        kioskTaxCtx,
         orderType === 'dineIn' ? 'dine-in' : 'takeaway',
       );
     } catch { return null; }
-  }, [cart, taxRates, orderType]);
+  }, [cart, kioskTaxCtx, orderType]);
   const exclusiveTax = +(Number(taxBreakdown?.exclusiveTax) || 0).toFixed(2);
   const total = useMemo(() => discountedSubtotal + exclusiveTax + tip, [discountedSubtotal, exclusiveTax, tip]);
   const cartItemCount = useMemo(() => cart.reduce((a, l) => a + l.qty, 0), [cart]);

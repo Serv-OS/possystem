@@ -15,6 +15,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../../lib/supabase';
 import { assembleTaxProfiles } from '../../lib/rowMapping';
+import { buildLocalTaxCtx } from '../../lib/taxCompute';
 import { isItemEightySixed } from '../../lib/itemAvailability';
 import { receiptOverride } from '../../lib/itemDisplay';
 import { dietaryBadges, DIET_LABELS } from '../../lib/dietary';
@@ -54,10 +55,15 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   const [eightySixIds, setEightySixIds] = useState([]); // v5.5.141: live 86 list from DB
   const [stockLevels, setStockLevels]   = useState({}); // v5.5.239: live stock counts from DB
   const [taxRates, setTaxRates]     = useState([]); // v5.5.154: UK VAT for cart breakdown
-  // v5.7.33: tax profiles + lines, fetched alongside taxRates and handed to the
-  // checkout components ready for the profiles cutover. NOTHING computes with
-  // them yet - every calculation still runs calculateOrderTax on taxRates.
+  // v5.7.33: tax profiles + lines, fetched alongside taxRates.
+  // v5.7.34: LIVE — the cart/checkout/QR components now compute through the
+  // unified seam with the taxCtx built below (legacy venues byte-identical).
   const [taxProfiles, setTaxProfiles] = useState([]);
+  const [venueDefaultTaxProfileId, setVenueDefaultTaxProfileId] = useState(null);
+  // UNFILTERED category rows for the tax cascade — `categories` below is
+  // menu-filtered for display, and a cart line's home category must still
+  // resolve its tax profile even when another category put it on the menu.
+  const [taxCatRows, setTaxCatRows] = useState([]);
   // v5.5.155: tab-resume state. resumeTab/rounds/total populated when an
   // open-tab is found in localStorage AND verified live in DB.
   // existingTab stays set after the customer taps "Add more" — QrCheckout
@@ -236,7 +242,9 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
             .eq('location_id', opsLocationId).eq('archived', false).order('sort_order'),
           supabase.from('menu_categories').select('*')
             .eq('location_id', opsLocationId).order('sort_order'),
-          supabase.from('locations').select('receipt_branding')
+          // v5.7.34: default_tax_profile_id rides the branding read — the venue
+          // default the reviewer flagged missing (cascade step 4 on this surface).
+          supabase.from('locations').select('receipt_branding, default_tax_profile_id')
             .eq('id', opsLocationId).maybeSingle(),
           onlineMenuId
             ? supabase.from('menu_category_links').select('category_id').eq('menu_id', onlineMenuId)
@@ -285,6 +293,8 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         });
         setItems(itemsData);
         setCategories(cats);
+        setTaxCatRows(categoriesData);   // v5.7.34: unfiltered, for the tax cascade
+        setVenueDefaultTaxProfileId(lRes.value?.data?.default_tax_profile_id ?? null);
         setBranding(location.online_branding || brandingData);
         setInstGroupDefs(Array.isArray(snap?.instructionGroupDefs) ? snap.instructionGroupDefs : []);
         setEightySixIds((eRes.value?.data || []).map(r => r.item_id));
@@ -440,6 +450,13 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
     return s + unit * (l.qty || 1);
   }, 0);
 
+  // v5.7.34: the unified seam's tax context — this surface's own fetches
+  // (profiles + raw tax_profile_id columns + venue default) in one object.
+  const taxCtx = useMemo(() => buildLocalTaxCtx({
+    taxProfiles, menuItems: items, menuCategories: taxCatRows,
+    venueDefaultProfileId: venueDefaultTaxProfileId, taxRates,
+  }), [taxProfiles, items, taxCatRows, venueDefaultTaxProfileId, taxRates]);
+
   const addToCart = (item, mods, qty, notes = '') => {
     const price = Number(item.pricing?.base ?? item.price ?? 0);
     // v5.5.128: snapshot category info on the cart line so production
@@ -463,6 +480,9 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
       // works without re-fetching menu_items for each line.
       taxRateId: item.tax_rate_id || item.taxRateId || null,
       taxOverrides: item.tax_overrides || item.taxOverrides || {},
+      // v5.7.34: snapshot the item's tax profile too (cascade step 1) — same
+      // add-time snapshot rule the POS order lines follow.
+      taxProfileId: item.tax_profile_id ?? item.taxProfileId ?? null,
       price, qty, mods, notes: notes || '',
     }]);
     setOpenItem(null);
@@ -847,7 +867,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         <OnlineCart
           cart={cart} theme={theme} orderType={orderType}
           taxRates={taxRates}
-          taxProfiles={taxProfiles} /* v5.7.33: delivered dark - unused until the profiles cutover */
+          taxCtx={taxCtx} /* v5.7.34: the unified seam context - LIVE */
           checkoutDisabledReason={browseOnly
             ? `We're closed${reopenShort ? ` — ordering opens ${reopenShort}` : ' — online ordering is unavailable right now'}.`
             : null}
@@ -866,7 +886,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           cart={cart} theme={theme} location={location}
           orderType={orderType} loyalty={loyalty}
           taxRates={taxRates}
-          taxProfiles={taxProfiles} /* v5.7.33: delivered dark - unused until the profiles cutover */
+          taxCtx={taxCtx} /* v5.7.34: the unified seam context - LIVE */
           orderAheadOnly={!!closedInfo}
           onClose={() => setShowCheckout(false)}
           onOpenLoyalty={() => { setShowCheckout(false); setShowLoyalty(true); }}
@@ -882,7 +902,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           cart={cart} theme={theme} location={location}
           tableId={tableId} tableLabel={effectiveTableLabel}
           taxRates={taxRates}
-          taxProfiles={taxProfiles} /* v5.7.33: delivered dark - unused until the profiles cutover */
+          taxCtx={taxCtx} /* v5.7.34: the unified seam context - LIVE */
           existingTab={existingTab}
           loyalty={loyalty}
           onClose={() => setShowCheckout(false)}

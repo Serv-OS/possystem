@@ -2,20 +2,26 @@ import { useState } from 'react';
 import { PRODUCTION_CENTRES } from '../data/seed';
 import { printService } from '../lib/printer';
 import { useStore } from '../store';
-import { calculateOrderTax } from '../lib/tax';
+import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
 import { money } from '../lib/currency';
+// v5.7.34 rate-null guards: per-unit entries book rate: null in the breakdown —
+// breakdownLabel prints name + amount with no percent, breakdownIsExclusive
+// treats them as added-on. Byte-identical strings for every rate-backed entry.
+import { breakdownLabel, breakdownIsExclusive } from '../lib/receiptTax';
 
 // ── Receipt display & print ───────────────────────────────────────────────────
 export function ReceiptModal({ items, subtotal, service, total, checkDiscount, orderType, tableLabel, server, covers, customer, ref: checkRef, method, tip, onClose }) {
-  const { location, taxRates, showToast } = useStore();
+  const { location, showToast } = useStore();
   const now = new Date();
   const nonVoided = items.filter(i => !i.voided);
   const [printing, setPrinting] = useState(false);
 
-  // Calculate tax breakdown for receipt
+  // Calculate tax breakdown for receipt — v5.7.34: through the unified seam
+  // (byte-identical on legacy-equivalent venues; profiles cascade otherwise).
+  const taxCtx = useStore.getState().getTaxContext();
   const taxBreakdown = (() => {
-    if (!taxRates?.length) return null;
-    try { return calculateOrderTax(nonVoided, taxRates, orderType || 'dine-in'); }
+    if (!taxCtxHasConfig(taxCtx)) return null;
+    try { return computeOrderTaxUnified(nonVoided, taxCtx, orderType || 'dine-in'); }
     catch { return null; }
   })();
 
@@ -89,8 +95,7 @@ export function ReceiptModal({ items, subtotal, service, total, checkDiscount, o
       ${service > 0 ? `<div class="row muted"><span>Service charge (12.5%)</span><span>${money(service)}</span></div>` : ''}
       <div class="row total-row"><span>TOTAL</span><span>${money(total)}</span></div>
       ${(taxBreakdown?.breakdown||[]).filter(b=>b.tax>0).map(b => {
-        const pct = (b.rate.rate*100).toFixed(1).replace('.0','');
-        const label = b.rate.type==='exclusive' ? `${b.rate.name} (${pct}%)` : `of which ${b.rate.name} (${pct}%)`;
+        const label = breakdownIsExclusive(b) ? breakdownLabel(b, 1) : `of which ${breakdownLabel(b, 1)}`;
         return `<div class="row muted" style="font-size:10px"><span>${label}</span><span>${money(b.tax)}</span></div>`;
       }).join('')}
       <div class="line"></div>
@@ -154,11 +159,10 @@ export function ReceiptModal({ items, subtotal, service, total, checkDiscount, o
           {checkDiscount>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'var(--grn)',marginBottom:3}}><span>Discount</span><span>−{money(checkDiscount)}</span></div>}
           {service>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'var(--t3)',marginBottom:3}}><span>Service (12.5%)</span><span>{money(service)}</span></div>}
 
-          {/* Tax breakdown */}
-          {taxBreakdown?.breakdown?.filter(b=>b.tax>0).map(b => {
-            const pct = (b.rate.rate*100).toFixed(1).replace('.0','');
-            const label = b.rate.type==='exclusive' ? `${b.rate.name} (${pct}%)` : `of which ${b.rate.name} (${pct}%)`;
-            return <div key={b.rate.id} style={{display:'flex',justifyContent:'space-between',fontSize:10,color:'var(--t4)',marginBottom:2}}><span>{label}</span><span>{money(b.tax)}</span></div>;
+          {/* Tax breakdown (rate-null guarded: per-unit lines print name + amount) */}
+          {taxBreakdown?.breakdown?.filter(b=>b.tax>0).map((b, i) => {
+            const label = breakdownIsExclusive(b) ? breakdownLabel(b, 1) : `of which ${breakdownLabel(b, 1)}`;
+            return <div key={b.rate?.id ?? `pu-${i}`} style={{display:'flex',justifyContent:'space-between',fontSize:10,color:'var(--t4)',marginBottom:2}}><span>{label}</span><span>{money(b.tax)}</span></div>;
           })}
 
           <div style={{display:'flex',justifyContent:'space-between',fontSize:16,fontWeight:700,borderTop:'1px solid var(--bdr3)',paddingTop:8,marginTop:6}}>

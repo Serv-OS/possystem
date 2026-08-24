@@ -2,13 +2,14 @@
 // v5.5.154 — order-type-aware (dine-in / collection / delivery) + UK VAT
 // breakdown for legal compliance on customer-facing surfaces.
 
-import { calculateOrderTax } from '../../lib/tax';
+import { computeOrderTaxUnified } from '../../lib/taxCompute';
+import { breakdownIsExclusive, taxTermFor } from '../../lib/receiptTax';   // v5.7.34: rate-null guards + VAT/Sales Tax wording
 import { money } from '../../lib/currency';
 
 // checkoutDisabledReason (v5.5.802): when set, the Checkout button is disabled and
 // the reason shows above the CTAs — used while the venue is closed with no
 // order-ahead available (browse-only mode).
-export default function OnlineCart({ cart, theme, orderType, taxRates = [], onClose, onRemove, onUpdateQty, onCheckout, checkoutDisabledReason = null }) {
+export default function OnlineCart({ cart, theme, orderType, taxRates = [], taxCtx = null, onClose, onRemove, onUpdateQty, onCheckout, checkoutDisabledReason = null }) {
   const subtotal = cart.reduce((s, l) => {
     const unit = l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0);
     return s + unit * (l.qty || 1);
@@ -19,10 +20,16 @@ export default function OnlineCart({ cart, theme, orderType, taxRates = [], onCl
   const taxLineItems = cart.map(l => ({
     price: l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0),
     qty: l.qty || 1,
+    itemId: l.itemId ?? null,
+    cat: l.cat ?? null,
+    cats: Array.isArray(l.cats) ? l.cats : null,
+    taxProfileId: l.taxProfileId ?? null,
     taxRateId: l.taxRateId || l.tax_rate_id || null,
     taxOverrides: l.taxOverrides || l.tax_overrides || {},
   }));
-  const taxBreakdown = calculateOrderTax(taxLineItems, taxRates, orderType || 'dine-in');
+  // v5.7.34: unified seam — profiles cascade when the venue has any, byte-
+  // identical calculateOrderTax otherwise (taxCtx falls back to bare rates).
+  const taxBreakdown = computeOrderTaxUnified(taxLineItems, taxCtx || { taxRates }, orderType || 'dine-in');
 
   const muted   = theme.isLight ? '#6b6b70' : '#a0a0a8';
   const cardBdr = theme.isLight ? '#ececef' : '#2a2a30';
@@ -125,7 +132,7 @@ export default function OnlineCart({ cart, theme, orderType, taxRates = [], onCl
                 show "incl VAT" rather than adding on top. */}
             {taxBreakdown.totalTax > 0 && taxBreakdown.breakdown.map((b, i) => (
               <Row key={i}
-                label={`${b.rate.type === 'exclusive' ? '+ ' : 'incl. '}${b.rate.name || `VAT ${(Number(b.rate.rate) * 100).toFixed(0)}%`}`}
+                label={`${breakdownIsExclusive(b) ? '+ ' : 'incl. '}${b.rate?.name || b.name || (b.rate ? `${taxTermFor(taxBreakdown)} ${(Number(b.rate.rate) * 100).toFixed(0)}%` : 'Tax')}`}
                 value={`${money(b.tax)}`}
                 muted={muted}/>
             ))}

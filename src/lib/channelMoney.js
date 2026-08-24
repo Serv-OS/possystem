@@ -22,7 +22,7 @@
 //   tax_amount          our tax engine over matched lines (unknown refs book 0, never guessed)
 //   total               the channel's headline total (already nets all of the above)
 
-import { calculateOrderTax } from './tax.js';
+import { computeOrderTaxUnified } from './taxCompute.js';
 
 /** Modifier total for one line, per unit — includes modifier quantity. */
 export const modsTotal = (mods) =>
@@ -48,7 +48,7 @@ export const channelOrderTypeForTax = (svc) =>
  * `order` is the Orders Hub queue entry (items + customer jsonb with decoded
  * payments/charges/discounts). Pure — callers add ids/staff/method/timestamps.
  */
-export function buildChannelCloseFields(order, { menuItems = [], taxRates = [] } = {}) {
+export function buildChannelCloseFields(order, { menuItems = [], taxRates = [], taxCtx = null } = {}) {
   // Booked lines follow the NATIVE POS line contract: unit price INCLUDES modifier
   // prices (checkTotals, receipts, refunds all compute price × qty and ignore mod
   // prices). Channel queue rows arrive base-price + priced mods, so fold here; each
@@ -93,13 +93,20 @@ export function buildChannelCloseFields(order, { menuItems = [], taxRates = [] }
       // UNKNOWN ref: a sentinel id that matches no rate → resolves null → books ZERO.
       // A line that isn't in our menu must never inherit our default rate — we don't
       // guess tax for items we don't recognise (also the sheet answer to HubRise).
+      // v5.7.34: matched items also carry their profile cascade inputs; unknown
+      // refs carry NO itemId/cat so no profile can ever apply to them either.
+      itemId: mi ? mi.id : null,
+      cat: mi ? (mi.cat ?? (Array.isArray(mi.cats) ? mi.cats[0] : null)) : null,
+      taxProfileId: mi ? (mi.taxProfileId ?? mi.tax_profile_id ?? null) : null,
       taxRateId: mi ? (mi.taxRateId ?? null) : '__not_in_menu__',
       taxOverrides: mi?.taxOverrides || {},
     };
   });
   let taxBreakdown = null;
-  if (taxRates.length) {
-    try { taxBreakdown = calculateOrderTax(taxItems, taxRates, hrOrderType); } catch { /* conservative: null */ }
+  if (taxRates.length || taxCtx) {
+    // v5.7.34: through the unified seam — legacy-equivalent venues get
+    // calculateOrderTax byte-identical; profile venues get the cascade.
+    try { taxBreakdown = computeOrderTaxUnified(taxItems, taxCtx || { taxRates }, hrOrderType); } catch { /* conservative: null */ }
   }
 
   // Paid/due — from the decoded channel payments, same rule as the queue decode.

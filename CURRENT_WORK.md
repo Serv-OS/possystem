@@ -1,3 +1,107 @@
+# Session, 24 Aug 2026 (v5.7.34 continued), RECEIPTS HALF finished + review fixes (NOT committed)
+
+## Done (working tree only, no commit, no push, no deploys, no DB writes)
+- MONEY FIX (review finding 1): a cascade-resolved profile id matching NO loaded
+  profile used to book ZERO tax under source 'profiles'. Now: prepareTaxCtx DROPS
+  dangling item/category/venue-default assignments (venue becomes legacy-equivalent
+  again -> byte-identical parity path), makeCascadeResolver takes profilesById and
+  falls through steps 1/3/4 on unloaded ids (step 2's deliberate __not_in_menu__
+  stop untouched), and a dangling LINE-level snapshot falls to the cascade. 4 new
+  tests incl. the required one: item on a nonexistent profile id + legacy default
+  rate still taxes at the default.
+- UK RECEIPT REGRESSION (finding 2): printer.js rendered v2 named lines for EVERY
+  post-cutover check (all now carry taxV2). New gate receiptTax.shouldRenderV2:
+  v2 ONLY on an exclusive/per_unit component or source 'profiles' via a non-mirror
+  (non 'legacy-line:*') profile line; pure inclusive legacy-shaped checks keep the
+  EXACT legacy rendering. PROVEN by fixture: scratchpad harness rebuilt
+  buildCustomerReceipt from git HEAD, froze Date, same UK inclusive check with the
+  v2 record riding along -> 904 bytes vs 904 bytes BYTE-IDENTICAL. (Side effect,
+  per spec: a US legacy venue's receipt now prints named v2 lines, e.g. 8.875%
+  instead of the old 8.9% rounding.)
+- rate:null CRASH SWEEP (finding 3): per-unit entries book rate:null in the
+  legacy-shaped breakdown. taxEngine legacyBreakdown now stamps the line NAME on
+  per-unit entries; receiptTax gained breakdownPct/Name/Label/IsExclusive (byte-
+  identical strings for rate-backed entries, name + amount, no percent, for
+  per-unit). Guarded: printer.js (legacy branch + HTML fallback), sendReceipt
+  (text merge + HTML + plain text), ReceiptModal (print + preview), CheckoutModal,
+  OtherSurfaces PaymentScreen, POSSurface footer, QrCheckout x2, OnlineCart,
+  OnlineCheckout (the last four also keep 'VAT n%' fallback wording via
+  taxTermFor). Full grep re-run: remaining .rate.rate hits are tax_rates rows or
+  already-guarded (Tax.jsx/ZReport use ?. already).
+- CURRENCY (finding 4): printer.js HTML fallback now formats via money(n,
+  location.currency); CheckoutModal's 14 hardcoded pound signs (Total due, grand,
+  reader/booking/loyalty/gift/promo credit lines, gift-due headline, tender
+  placeholder, reward label, min-spend message) -> money()/currencySymbol().
+  sendReceipt already used money() throughout (device currency = venue currency
+  via setActiveCurrency at boot); its remaining hardcoded strings were the VAT
+  wording (below). NOTE: receiptRaster.js is image/QR helpers ONLY - Sunmi prints
+  the same buildCustomerReceipt ESC/POS bytes via window.RposPrinter, so the tax
+  block already prints there; no separate Sunmi builder exists. No refund-email
+  builder exists either (resend goes through sendEmailReceipt, covered).
+- WORDING (finding 5): receiptTax.taxTermFor drives sendReceipt text + HTML
+  ('VAT' byte-identical on inclusive-only checks, 'Sales Tax' when any exclusive
+  component) and the on-page fallback labels in QR/OnlineCart/OnlineCheckout.
+- PER-UNIT UNHIDDEN (finding 6): TaxManager's builder now offers 'Per-unit flat
+  amount' (guard text removed) - done only after the crash sweep above.
+- CHANGELOG (finding 7): v5.7.34 entry rewritten - UK claim now says totals and
+  recorded figures byte-identical AND printed receipts identical; added the
+  dangling-profile safety fix, receipts named lines, currency, wording and
+  per-unit items; honest Z note kept; no em or en dashes (verified by scan).
+- npm test 484/484 (was 470; +4 taxCompute dangling-id tests, +10 receiptTax
+  tests), npm run build clean, eslint: touched files show only pre-existing
+  errors (HEAD CheckoutModal lints to the identical error set; new modules clean).
+
+# Session, 24 Aug 2026 (v5.7.34), Tax Profiles CUTOVER: every surface computes through ONE seam (NOT committed)
+
+## Done (working tree only, no commit, no push, no deploys, no DB writes)
+- NEW src/lib/taxCompute.js, THE seam: computeOrderTaxUnified(items, taxCtx, orderType).
+  Detects LEGACY-EQUIVALENT venues (no item/category profile assignments; venue default
+  absent or a still-verbatim GENERATED mirror of the legacy default rate, remapped onto
+  the adapter profile) and routes their legacy shape through calculateOrderTax itself,
+  BYTE-identical, engine alongside for the v2 record. Profile venues compute the binding
+  cascade via taxEngine and the seam synthesises the legacy read shape
+  { subtotal, totalTax, total, exclusiveTax, breakdown, hasExclusiveTax } from it.
+  Result also carries taxV2 (version 2, named lines, exclusive/inclusive totals, source)
+  which rides INSIDE taxBreakdown so closed_checks.tax_breakdown gains the v2 shape
+  alongside the legacy one; old readers untouched. Engine failure = legacy fallback,
+  flagged 'legacy-fallback', never a guess. buildLocalTaxCtx() mirrors the store's
+  getTaxContext for the customer surfaces. Generated-mirror remap also pools mirror
+  exclusive lines into the adapter's tax.js single-round rule.
+- taxEngine.js additive: legacyBreakdown entries now carry net/gross/items (basisRaw +
+  count per acc line) so Tax/Z reports keep their read shape through the seam.
+- SWITCHED (all keep their exact read shapes): checkTotals (taxCtx param; getPOSTotals +
+  SessionSync stamp pass getTaxContext()), POSSurface footer + receipt snapshot,
+  CheckoutModal breakdown, store buildCloseRecord (orderType stays hardcoded 'dine-in'
+  DELIBERATELY: the record's own orderType field is hardcoded dine-in, computing under
+  another type would split record from tax; noted), store recordWalkInClosed (real
+  orderType), MPOSSurface close record, MTender, MCartSheet (bill print + cart memo),
+  MReceiptPrompt, KioskApp, OnlineCart, OnlineCheckout (+ taxV2 scales with the offer
+  discount), QrCheckout, CateringCheckout, channelMoney (taxCtx opt; store callers pass
+  it; unknown channel refs still book ZERO, itemId/cat withheld so no profile can apply),
+  ReceiptModal, CheckHistory reprint, reports/Tax.jsx, ZReport.
+- ZReport HONEST FIX: its inline per-item fork had NO default-rate fallback, so items on
+  "Use default" booked zero and the Z UNDERSTATED tax. Now derives per check through the
+  seam. Expect Z tax-by-rate to rise (correctly) at venues using Use default items.
+- Venue default reads ADDED where the reviewer flagged them missing: OnlineSurface +
+  CateringSurface (rides the receipt_branding locations select), KioskApp (own query in
+  useKioskMenu). Online/catering keep UNFILTERED category rows for the cascade; cart
+  lines snapshot taxProfileId at add time like the POS does.
+- BAR TABS (the documented v5.7.31 gap) CLOSED: tabBillWithTax() computes the tab through
+  the seam (orderType 'bar-tab', matching the record); fresh-tender CheckoutModal now
+  receives the taxed total, held-card capture bills/records it, and the closed check
+  gains taxAmount + taxBreakdown. GATED on the bill carrying an exclusive component:
+  UK (inclusive-only) bar tabs are byte-identical and still stamp no tax fields.
+- NEW src/lib/taxCompute.test.js (15 tests): UK full-seam byte-identity (deepEqual vs
+  calculateOrderTax incl. the generated venue-default mirror), The Cabin exclusive
+  default = slice-0 numbers, Chicago 4-line category profile = stacked v2 lines + 9.75
+  charge, edited-mirror detection, line-snapshot forcing, invalid-config fallback.
+- npm test 470/470 (was 455), npm run build clean, eslint: no new errors (the one new
+  hit, an unused var in the new test, fixed; MCartSheet preserve-manual-memoization
+  verified pre-existing by linting a reconstructed original).
+- NOT switched (out of scope, legacy-rate margin helpers only): netOf/resolveTaxRate in
+  MenuManager/Recipes/StockReports GP maths; server-side trading-report VAT (reads
+  closed_checks.tax_amount, unchanged).
+
 # Session, 24 Aug 2026 (v5.7.32), Tax Profiles slice 1: engine lands DARK (NOT committed)
 
 ## Done (working tree only, no commit, no push, no deploys, no DB writes)

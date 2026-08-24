@@ -23,7 +23,8 @@ import { getLocationProcessor } from '../../lib/payments/processor';
 import RyftPaymentForm from '../../components/RyftPaymentForm';
 import { readRyftStoredCard } from '../../lib/payments/ryft';
 import { attributeOnlineOrder } from '../../lib/customerLookup';
-import { calculateOrderTax } from '../../lib/tax';
+import { computeOrderTaxUnified } from '../../lib/taxCompute';
+import { breakdownIsExclusive, taxTermFor } from '../../lib/receiptTax';   // v5.7.34: rate-null guards + VAT/Sales Tax wording
 import { fetchActiveDiscountRules } from '../../lib/db';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../../lib/discountEngine';
 import { buildScheduleCtx } from '../../lib/locationTime';
@@ -31,7 +32,7 @@ import { stashTab } from '../../lib/qrTabStorage';
 import { syncQrTableSession } from '../../lib/qrTableSession';
 import { money, currencySymbol, stripeCurrency } from '../../lib/currency';
 
-export default function QrCheckout({ cart, theme, location, tableId, tableLabel, loyalty, taxRates = [], existingTab = null, onClose, onPlaced }) {
+export default function QrCheckout({ cart, theme, location, tableId, tableLabel, loyalty, taxRates = [], taxCtx = null, existingTab = null, onClose, onPlaced }) {
   // v5.5.155: when existingTab is set the customer is in "Add more"
   // mode — they already opened a tab earlier and tapped Add more on
   // the resume screen. Skip Stripe pre-auth + card input entirely;
@@ -140,16 +141,22 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   // v5.5.154: UK VAT breakdown over the gross subtotal — items only.
   // Service charge and tip aren't VAT-rated. UK uses inclusive tax so
   // the figure shown is "incl. VAT £X.XX", not added on top.
-  const taxBreakdown = useMemo(() => calculateOrderTax(
+  // v5.7.34: through the unified seam — profiles cascade when the venue has
+  // any assigned, byte-identical calculateOrderTax otherwise.
+  const taxBreakdown = useMemo(() => computeOrderTaxUnified(
     cart.map(l => ({
       price: l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0),
       qty: l.qty || 1,
+      itemId: l.itemId ?? null,
+      cat: l.cat ?? null,
+      cats: Array.isArray(l.cats) ? l.cats : null,
+      taxProfileId: l.taxProfileId ?? null,
       taxRateId: l.taxRateId || l.tax_rate_id || null,
       taxOverrides: l.taxOverrides || l.tax_overrides || {},
     })),
-    taxRates,
+    taxCtx || { taxRates },
     'dine-in',
-  ), [cart, taxRates]);
+  ), [cart, taxCtx, taxRates]);
 
   // v5.7.31: ADDED-ON sales tax (US exclusive rates) is charged, not just shown.
   // UK inclusive VAT contributes exactly 0 here, so UK totals are unchanged.
@@ -744,7 +751,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
                 — the Total below includes them. */}
             {taxBreakdown.totalTax > 0 && taxBreakdown.breakdown.map((b, i) => (
               <SummaryLine key={`vat-${i}`}
-                label={`${b.rate.type === 'exclusive' ? '+ ' : 'incl. '}${b.rate.name || `VAT ${(Number(b.rate.rate) * 100).toFixed(0)}%`}`}
+                label={`${breakdownIsExclusive(b) ? '+ ' : 'incl. '}${b.rate?.name || b.name || (b.rate ? `${taxTermFor(taxBreakdown)} ${(Number(b.rate.rate) * 100).toFixed(0)}%` : 'Tax')}`}
                 value={b.tax} muted={muted}/>
             ))}
             {serviceCharge > 0 && <SummaryLine label={`Service charge (${serviceChargePct}%)`} value={serviceCharge} muted={muted}/>}
@@ -860,7 +867,7 @@ function PayStep({ pi, subtotal, serviceCharge, tipAmount, total, tableLabel, th
           <SummaryLine label="Subtotal" value={subtotal} muted={muted}/>
           {taxBreakdown?.totalTax > 0 && taxBreakdown.breakdown.map((b, i) => (
             <SummaryLine key={`vat-${i}`}
-              label={`${b.rate.type === 'exclusive' ? '+ ' : 'incl. '}${b.rate.name || `VAT ${(Number(b.rate.rate) * 100).toFixed(0)}%`}`}
+              label={`${breakdownIsExclusive(b) ? '+ ' : 'incl. '}${b.rate?.name || b.name || (b.rate ? `${taxTermFor(taxBreakdown)} ${(Number(b.rate.rate) * 100).toFixed(0)}%` : 'Tax')}`}
               value={b.tax} muted={muted}/>
           ))}
           {serviceCharge > 0 && <SummaryLine label="Service charge" value={serviceCharge} muted={muted}/>}

@@ -15,6 +15,7 @@ import { supabase, getLocationId } from './supabase';
 import { shortOrderRef } from './db.js';
 import { loadLocationBranding, mergeBrandingIntoLocation, invalidateBrandingCache } from './receiptBranding';
 import { money } from './currency.js';
+import { v2ReceiptLines, taxLineLabel, breakdownLabel, breakdownIsExclusive } from './receiptTax.js';
 import { consolidateReceiptLines } from './receiptLines.js';
 import { cardReceiptLines } from './cardReceipt.js';
 
@@ -110,6 +111,10 @@ export async function buildCustomerReceipt({ location, check, items, totals }) {
     grand:    Number(totals?.grand    ?? totals?.total   ?? check?.total ?? 0) || 0,
     taxBreakdown: totals?.taxBreakdown,
   };
+  // v5.7.34: venue currency. money(n, code) falls back to the device's active
+  // currency then GBP, so the output is byte-identical to the old `\xA3${...}`
+  // strings on every GBP venue and prints $ at USD venues.
+  const mny = (n) => money(n, location?.currency);
   const b = new EscPosBuilder(42);
   const now = new Date();
   const timeStr = now.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
@@ -168,7 +173,7 @@ export async function buildCustomerReceipt({ location, check, items, totals }) {
     b.divider();
     if (d.channel) b.bold(true).line(String(d.channel).toUpperCase() + (d.serviceType ? `  ·  ${String(d.serviceType).toUpperCase()}` : '')).bold(false);
     // v5.5.850: 3-state — a partial channel payment prints the amount still to collect.
-    b.line(d.paid ? 'PAID online' : (Number(d.paidAmount) > 0 ? `PART-PAID \xA3${(+d.paidAmount).toFixed(2)} — COLLECT \xA3${(+d.due).toFixed(2)}` : 'UNPAID — collect on delivery'));
+    b.line(d.paid ? 'PAID online' : (Number(d.paidAmount) > 0 ? `PART-PAID ${mny(+d.paidAmount)} — COLLECT ${mny(+d.due)}` : 'UNPAID — collect on delivery'));
     if (d.expected) b.fontB().line(`Wanted: ${d.expected}`).fontA();
     if (d.name) b.line(d.name);
     if (d.phone) b.line(d.phone);
@@ -179,7 +184,7 @@ export async function buildCustomerReceipt({ location, check, items, totals }) {
   b.divider().bold(true).line('ITEMS').bold(false);
 
   consolidateReceiptLines(items).forEach(item=>{
-    const linePrice=`\xA3${(item.price*item.qty).toFixed(2)}`;
+    const linePrice=mny(item.price*item.qty);
     // Triple-naming: receipts print the item's explicit receipt name when the
     // line carries one (snapshotted at add time), else the POS line name.
     const printName=item.receiptName||item.name;
@@ -191,42 +196,61 @@ export async function buildCustomerReceipt({ location, check, items, totals }) {
   });
 
   b.divider();
-  if(totals.subtotal!==totals.grand) b.twoCol('Subtotal',`\xA3${totals.subtotal.toFixed(2)}`);
+  if(totals.subtotal!==totals.grand) b.twoCol('Subtotal',mny(totals.subtotal));
   // v5.5.853: itemised discount lines (POS manual/auto + channel promos) — the customer
   // could see a Subtotal→TOTAL drop with no explanation. Named, one line each.
   (Array.isArray(check?.discounts) ? check.discounts : []).forEach(d => {
     const amt = Number(d.amount ?? d.value) || 0;
-    if (amt > 0) b.twoCol((d.label || d.name || 'Discount').substring(0, 34), `-\xA3${amt.toFixed(2)}`);
+    if (amt > 0) b.twoCol((d.label || d.name || 'Discount').substring(0, 34), `-${mny(amt)}`);
   });
-  if(totals.service>0) b.twoCol('Service',`\xA3${totals.service.toFixed(2)}`);
-  if(totals.tip>0) b.twoCol('Tip',`\xA3${totals.tip.toFixed(2)}`);
+  if(totals.service>0) b.twoCol('Service',mny(totals.service));
+  if(totals.tip>0) b.twoCol('Tip',mny(totals.tip));
   // v5.5.657: delivery fee line (online/POS/catering delivery orders)
   const _delFee = Number(check?.customer?.delivery_fee ?? check?.delivery?.deliveryFee ?? check?.deliveryFee ?? 0) || 0;
-  if(_delFee>0) b.twoCol('Delivery',`\xA3${_delFee.toFixed(2)}`);
+  if(_delFee>0) b.twoCol('Delivery',mny(_delFee));
 
-  // Tax breakdown
-  if(totals.taxBreakdown?.breakdown?.length) {
-    const hasExcl = totals.taxBreakdown.hasExclusiveTax;
-    if(hasExcl) {
-      // US: show net + tax lines
-      b.twoCol('Subtotal (ex. tax)',`\xA3${totals.taxBreakdown.subtotal.toFixed(2)}`);
-      totals.taxBreakdown.breakdown.forEach(br => {
-        const pct = (br.rate.rate*100).toFixed(1).replace('.0','');
-        b.twoCol(`${br.rate.name} (${pct}%)`,`\xA3${br.tax.toFixed(2)}`);
-      });
-    } else {
-      // UK: show 'of which VAT' lines under total
-      totals.taxBreakdown.breakdown.forEach(br => {
-        if(br.tax > 0) {
-          const pct = (br.rate.rate*100).toFixed(1).replace('.0','');
-          b.fontB().twoCol(`  of which ${br.rate.name} (${pct}%)`,`\xA3${br.tax.toFixed(2)}`).fontA();
-        }
-      });
+  // Tax breakdown — v5.7.34: NAMED LINES from the check's v2 record, but ONLY
+  // when the check actually needs them (an exclusive/per_unit component, or a
+  // real non-mirror profile — the gate lives in receiptTax.shouldRenderV2).
+  // Every pure inclusive legacy-shaped check — every UK VAT check — takes the
+  // legacy branch below, whose output is BYTE-identical to the pre-cutover
+  // builder. Per-unit v2 lines print name + amount with no percent.
+  {
+    const _tb = totals.taxBreakdown;
+    const _v2 = v2ReceiptLines(_tb);
+    if (_v2) {
+      const excl = _v2.filter(l => l.exclusive);
+      const incl = _v2.filter(l => !l.exclusive);
+      if (excl.length) {
+        // US: show net + added-on tax lines above the total
+        if (_tb?.subtotal != null) b.twoCol('Subtotal (ex. tax)', mny(_tb.subtotal));
+        excl.forEach(l => b.twoCol(taxLineLabel(l).substring(0, 30), mny(l.amount)));
+      }
+      // UK-style 'of which' lines for tax already inside the price
+      incl.forEach(l => b.fontB().twoCol(`  of which ${taxLineLabel(l)}`.substring(0, 34), mny(l.amount)).fontA());
+    } else if (_tb?.breakdown?.length) {
+      const hasExcl = _tb.hasExclusiveTax;
+      if(hasExcl) {
+        // US: show net + tax lines (rate-null guard: per-unit entries print
+        // the line name + amount, no percent, via breakdownLabel)
+        b.twoCol('Subtotal (ex. tax)',mny(_tb.subtotal));
+        _tb.breakdown.forEach(br => {
+          b.twoCol(breakdownLabel(br, 1),mny(br.tax));
+        });
+      } else {
+        // UK: show 'of which VAT' lines under total — byte-identical to the
+        // pre-cutover output (breakdownLabel reproduces the exact pct string)
+        _tb.breakdown.forEach(br => {
+          if(br.tax > 0) {
+            b.fontB().twoCol(`  of which ${breakdownLabel(br, 1)}`,mny(br.tax)).fontA();
+          }
+        });
+      }
     }
   }
 
   b.bold(true).doubleHeight()
-   .twoCol('TOTAL',`\xA3${totals.grand.toFixed(2)}`)
+   .twoCol('TOTAL',mny(totals.grand))
    .normal();
 
   // v5.5.853: channel orders can be paid in legs (part on the platform, balance at the
@@ -234,7 +258,7 @@ export async function buildCustomerReceipt({ location, check, items, totals }) {
   const _chPays = Array.isArray(check?.customer?.payments) ? check.customer.payments.filter(p => Number(p.amount)) : [];
   if (_chPays.length) {
     b.divider();
-    _chPays.forEach(p => b.twoCol(`${p.name || 'Payment'}${p.ref ? ` (${p.ref})` : ''}`.substring(0, 30), `\xA3${Number(p.amount).toFixed(2)}`));
+    _chPays.forEach(p => b.twoCol(`${p.name || 'Payment'}${p.ref ? ` (${p.ref})` : ''}`.substring(0, 30), mny(Number(p.amount))));
     b.twoCol('Status','PAID');
   } else if(check?.method) b.divider().twoCol('Payment',check.method.toUpperCase()).twoCol('Status','PAID');
 
@@ -328,7 +352,7 @@ export async function buildMerchantTipSlip({ location, check, totals }) {
   // The money: the authorised amount, then the guest's write-in lines.
   const grand = Number(totals?.grand ?? check?.total ?? 0) || 0;
   b.divider();
-  b.bold(true).doubleHeight().twoCol('AMOUNT', money(grand)).normal();
+  b.bold(true).doubleHeight().twoCol('AMOUNT', money(grand, location?.currency)).normal();
   b.lf();
   b.bold(true).line('TIP:   ____________________').lf();
   b.line('TOTAL: ____________________').bold(false).lf();
@@ -386,7 +410,7 @@ export function buildKitchenTicket({ table, server, covers, course, centreName, 
       : delivery.serviceType === 'collection' ? 'COLLECTION'
       : delivery.serviceType === 'eat_in' ? 'EAT IN' : 'ORDER';
     // v5.5.850: 3-state — partial channel payments show what's paid vs what to collect.
-    b.bold(true).line(`${st}  ·  ${delivery.paid ? 'PAID' : (Number(delivery.paidAmount) > 0 ? `PART \xA3${(+delivery.paidAmount).toFixed(2)} — COLLECT \xA3${(+delivery.due).toFixed(2)}` : 'UNPAID — COLLECT')}`).bold(false);
+    b.bold(true).line(`${st}  ·  ${delivery.paid ? 'PAID' : (Number(delivery.paidAmount) > 0 ? `PART ${money(+delivery.paidAmount)} — COLLECT ${money(+delivery.due)}` : 'UNPAID — COLLECT')}`).bold(false);
     if (delivery.expected) b.fontB().line(`Wanted: ${delivery.expected}`).fontA();
     if (delivery.name) b.line(delivery.name);
     if (delivery.phone) b.line(delivery.phone);
@@ -394,17 +418,17 @@ export function buildKitchenTicket({ table, server, covers, course, centreName, 
       const a = delivery.address;
       [a.line1, a.line2, [a.city, a.postcode].filter(Boolean).join(' ')].filter(Boolean).forEach(l => b.line(l));
     }
-    if (delivery.deliveryFee != null && Number(delivery.deliveryFee) > 0) b.fontB().line(`Delivery fee: \xA3${Number(delivery.deliveryFee).toFixed(2)}`).fontA();
+    if (delivery.deliveryFee != null && Number(delivery.deliveryFee) > 0) b.fontB().line(`Delivery fee: ${money(Number(delivery.deliveryFee))}`).fontA();
     // v5.5.847: channel charges + discounts (Deliveroo/UberEats/JustEat via HubRise).
     // The order total already nets these — printing them means the packer sees the same
     // breakdown the customer saw, and a promo order no longer looks mispriced.
     (delivery.charges || []).forEach(ch => {
       const amt = Number(ch.amount) || 0;
-      if (amt !== 0) b.fontB().line(`${ch.name || 'Charge'}: \xA3${amt.toFixed(2)}`).fontA();
+      if (amt !== 0) b.fontB().line(`${ch.name || 'Charge'}: ${money(amt)}`).fontA();
     });
     (delivery.discounts || []).forEach(d => {
       const amt = Number(d.amount) || 0;
-      if (amt !== 0) b.fontB().bold(true).line(`${d.name || 'Discount'}: -\xA3${amt.toFixed(2)}`).bold(false).fontA();
+      if (amt !== 0) b.fontB().bold(true).line(`${d.name || 'Discount'}: -${money(amt)}`).bold(false).fontA();
     });
     if (delivery.notes) b.red().bold(true).underline(true).line(delivery.notes).underline(false).bold(false).black();
     b.divider();
@@ -527,9 +551,9 @@ export function buildTestPage() {
    .bold(true).line('Bold text').bold(false)
    .doubleBoth().line('Large').normal()
    .divider()
-   .twoCol('Subtotal', '\xA312.50')
-   .twoCol('Service',  '\xA3 1.56')
-   .bold(true).doubleHeight().twoCol('TOTAL','\xA314.06').normal()
+   .twoCol('Subtotal', money(12.50))
+   .twoCol('Service',  money(1.56))
+   .bold(true).doubleHeight().twoCol('TOTAL',money(14.06)).normal()
    .divider()
    .center().bold(true).line('Connection OK \u2713').bold(false)
    .fontB().line(new Date().toLocaleString()).fontA()
@@ -540,10 +564,12 @@ export function buildTestPage() {
 // ─── HTML fallback builders ───────────────────────────────────────────────────
 function buildReceiptHtml({ location, check, items, totals }) {
   const now = new Date();
+  // v5.7.34: venue currency (byte-identical for GBP, symbol swaps for USD/EUR).
+  const mny = (n) => money(Number(n) || 0, location?.currency);
   const rows = consolidateReceiptLines(items).map(item=>{
     const modLines = Array.isArray(item.mods) ? item.mods : (item.mods ? item.mods.split(' · ') : []);
     return `
-    <div class="row"><span>${item.qty>1?`${item.qty}\xD7 `:''}${item.receiptName||item.name}</span><span>\xA3${(item.price*item.qty).toFixed(2)}</span></div>
+    <div class="row"><span>${item.qty>1?`${item.qty}\xD7 `:''}${item.receiptName||item.name}</span><span>${mny(item.price*item.qty)}</span></div>
     ${modLines.map(m=>`<div style="padding-left:8px;font-size:10px">${typeof m==='string'?m:(m.label||'')}</div>`).join('')}
   `;}).join('');
   return `
@@ -554,15 +580,15 @@ function buildReceiptHtml({ location, check, items, totals }) {
     <div class="row"><span>Server: ${check?.server}</span><span>${check?.tableLabel||check?.orderType}</span></div>
     <div class="divider"></div>${rows}
     <div class="divider"></div>
-    ${(totals.service>0||totals.delivery>0)?`<div class="row"><span>Subtotal</span><span>\xA3${totals.subtotal?.toFixed(2)}</span></div>`:''}
-    ${totals.service>0?`<div class="row"><span>Service</span><span>\xA3${totals.service?.toFixed(2)}</span></div>`:''}
-    ${totals.delivery>0?`<div class="row"><span>Delivery</span><span>\xA3${totals.delivery?.toFixed(2)}</span></div>`:''}
-    ${totals.tip>0?`<div class="row"><span>Tip</span><span>\xA3${totals.tip?.toFixed(2)}</span></div>`:''}
-    <div class="row bold big"><span>TOTAL</span><span>\xA3${totals.grand?.toFixed(2)}</span></div>
+    ${(totals.service>0||totals.delivery>0)?`<div class="row"><span>Subtotal</span><span>${mny(totals.subtotal)}</span></div>`:''}
+    ${totals.service>0?`<div class="row"><span>Service</span><span>${mny(totals.service)}</span></div>`:''}
+    ${totals.delivery>0?`<div class="row"><span>Delivery</span><span>${mny(totals.delivery)}</span></div>`:''}
+    ${totals.tip>0?`<div class="row"><span>Tip</span><span>${mny(totals.tip)}</span></div>`:''}
+    <div class="row bold big"><span>TOTAL</span><span>${mny(totals.grand)}</span></div>
     ${totals.taxBreakdown?.breakdown?.filter(b=>b.tax>0).map(b => {
-      const pct = (b.rate.rate*100).toFixed(1).replace('.0','');
-      const label = b.rate.type==='exclusive' ? `${b.rate.name} (${pct}%)` : `of which ${b.rate.name} (${pct}%)`;
-      return `<div class="row" style="font-size:10px;color:#666"><span>${label}</span><span>\xA3${b.tax.toFixed(2)}</span></div>`;
+      // rate-null guard (per-unit entries): name + amount, no percent, no crash
+      const label = breakdownIsExclusive(b) ? breakdownLabel(b, 1) : `of which ${breakdownLabel(b, 1)}`;
+      return `<div class="row" style="font-size:10px;color:#666"><span>${label}</span><span>${mny(b.tax)}</span></div>`;
     }).join('') || ''}
     ${(() => {
       // Card-scheme block (masked PAN / scheme / auth code / entry / CVM / AID). Values are

@@ -3,7 +3,8 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { ALLERGENS } from '../data/seed';
 import SplitModal from '../components/SplitModal';
 import { useStore } from '../store';
-import { calculateOrderTax } from '../lib/tax';
+import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
+import { breakdownLabel } from '../lib/receiptTax';   // v5.7.34: rate-null guard (per-unit lines)
 import {
   resolvePlatformLocationId,
   getAssignedNetworkReader,
@@ -655,7 +656,7 @@ function CashTransaction({ grand, onComplete, onBack }) {
             {entered ? 'Tendered' : 'Enter amount or tap quick cash'}
           </div>
           <div style={{ fontSize:22, fontWeight:800, fontFamily:'var(--font-mono)', color:isValid?'var(--grn)':entered?'var(--acc)':'var(--t4)' }}>
-            {entered ? `${money(tendered)}` : '£—'}
+            {entered ? `${money(tendered)}` : `${currencySymbol()}—`}
           </div>
         </div>
       </div>
@@ -808,7 +809,7 @@ function GiftCardEntry({ totalMinor, giftAlreadyApplied, onApplied, onRemove, on
     onApplied(staged);
   };
 
-  const sym = String.fromCodePoint(0x00A3);
+  const sym = currencySymbol();   // v5.7.34: venue currency, not hardcoded \u00a3
   const alreadyAppliedAmt = (giftAlreadyApplied?.applied || 0) / 100;
   const remainingDue = totalMinor / 100;
 
@@ -1076,7 +1077,7 @@ function LoyaltyRewardsEntry({ customer, loyaltyData, items = [], total, onAppli
             {r.description && <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2 }}>{r.description}</div>}
             {r.type === 'discount_fixed' && r.value?.amount_minor && (
               <div style={{ fontSize: 11, color: 'var(--grn)', marginTop: 2, fontWeight: 600 }}>
-                {String.fromCodePoint(0x00A3)}{(r.value.amount_minor / 100).toFixed(2)} off
+                {money(r.value.amount_minor / 100)} off
               </div>
             )}
             {r.type === 'discount_percent' && r.value?.percent && (
@@ -1156,7 +1157,7 @@ async function retireReaderLegs(closedCheckId, legs) {
 // ─── Main checkout modal ──────────────────────────────────────────────────────
 export default function CheckoutModal({ items, subtotal, service, deliveryFee = 0, total, orderType, covers, tableId, tabName, customer, onClose, onComplete }) {
   const compact = useCompact();
-  const { taxRates, deviceConfig, myDrawer, pendingLoyaltyReward, setPendingLoyaltyReward } = useStore();
+  const { deviceConfig, myDrawer, pendingLoyaltyReward, setPendingLoyaltyReward } = useStore();
   // v5.5.731: while checkout is open, hold the auto-sign-out guard so an idle timeout can't sign the
   // operator out mid-transaction (e.g. customer taking >15s to tap the reader = no POS activity).
   useEffect(() => {
@@ -1448,16 +1449,18 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         setPromoApplied({ code, code_id: data.code_id, offer_id: data.offer?.id, ...data.discount });
         return { ok: true };
       }
-      const reasons = { not_found: 'Code not found', expired: 'Code expired', not_yet_active: 'Not active yet', already_used: 'Already used', usage_limit: 'Usage limit reached', min_spend: `Minimum spend £${Number(data?.min_spend || 0).toFixed(2)}`, wrong_venue: 'Not valid at this venue', customer_mismatch: 'Belongs to another customer', customer_required: 'Attach the customer first', inactive: 'Offer inactive', voided: 'Code voided' };
+      const reasons = { not_found: 'Code not found', expired: 'Code expired', not_yet_active: 'Not active yet', already_used: 'Already used', usage_limit: 'Usage limit reached', min_spend: `Minimum spend ${money(Number(data?.min_spend || 0))}`, wrong_venue: 'Not valid at this venue', customer_mismatch: 'Belongs to another customer', customer_required: 'Attach the customer first', inactive: 'Offer inactive', voided: 'Code voided' };
       return { error: reasons[data?.reason] || 'Invalid code' };
     } catch (e) { return { error: e.message || 'Could not check code' }; }
   };
 
-  // Calculate tax breakdown
+  // Calculate tax breakdown — v5.7.34: through the unified seam (profiles
+  // cascade OR byte-identical legacy parity). Same read shape as before.
+  const taxCtx = useStore(s => s.getTaxContext());
   const taxBreakdown = useMemo(() => {
-    if (!taxRates?.length) return null;
-    try { return calculateOrderTax(items?.filter(i=>!i.voided)||[], taxRates, orderType); } catch { return null; }
-  }, [items, taxRates, orderType]);
+    if (!taxCtxHasConfig(taxCtx)) return null;
+    try { return computeOrderTaxUnified(items?.filter(i=>!i.voided)||[], taxCtx, orderType); } catch { return null; }
+  }, [items, taxCtx, orderType]);
   const hasTax = taxBreakdown?.breakdown?.length > 0;
   const hasExclusive = taxBreakdown?.hasExclusiveTax;
 
@@ -2190,13 +2193,13 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                       <span>Subtotal (ex. tax)</span>
                       <span style={{ fontFamily:'var(--font-mono)' }}>{money(taxBreakdown.subtotal)}</span>
                     </div>
-                    {taxBreakdown.breakdown.map(b => {
-                      const pct = (b.rate.rate*100).toFixed(3).replace(/\.?0+$/,'');
-                      return <div key={b.rate.id} style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--t3)', marginBottom:4 }}>
-                        <span>{b.rate.name} ({pct}%)</span>
+                    {taxBreakdown.breakdown.map((b, i) => (
+                      // rate-null guard: per-unit lines render name + amount, no percent
+                      <div key={b.rate?.id ?? `pu-${i}`} style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--t3)', marginBottom:4 }}>
+                        <span>{breakdownLabel(b, 3)}</span>
                         <span style={{ fontFamily:'var(--font-mono)' }}>{money(b.tax)}</span>
-                      </div>;
-                    })}
+                      </div>
+                    ))}
                   </>
                 ) : (
                   <div style={{ display:'flex', justifyContent:'space-between', fontSize:13, color:'var(--t3)', marginBottom: hasTax ? 2 : 5 }}>
@@ -2204,13 +2207,12 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                     <span style={{ fontFamily:'var(--font-mono)' }}>{money(subtotal)}</span>
                   </div>
                 )}
-                {hasTax && !hasExclusive && taxBreakdown.breakdown.map(b => {
-                  const pct = (b.rate.rate*100).toFixed(1).replace('.0','');
-                  return <div key={b.rate.id} style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--t4)', marginBottom:4 }}>
-                    <span>  of which {b.rate.name} ({pct}%)</span>
+                {hasTax && !hasExclusive && taxBreakdown.breakdown.map((b, i) => (
+                  <div key={b.rate?.id ?? `pu-${i}`} style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--t4)', marginBottom:4 }}>
+                    <span>  of which {breakdownLabel(b, 1)}</span>
                     <span style={{ fontFamily:'var(--font-mono)' }}>{money(b.tax)}</span>
-                  </div>;
-                })}
+                  </div>
+                ))}
                 {service > 0 ? (
                   <div style={{ display:'flex', justifyContent:'space-between', fontSize:13, color:'var(--t3)', marginBottom:5 }}>
                     <span>Service charge</span>
@@ -2231,7 +2233,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                 <div style={{ height:1, background:'var(--bdr)', margin:'8px 0' }}/>
                 <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
                   <span style={{ fontSize:15, fontWeight:600, color:'var(--t2)' }}>{showRemainingDue ? 'Subtotal' : 'Total due'}</span>
-                  <span style={{ fontSize:showRemainingDue?(compact?16:18):(compact?20:26), fontWeight:800, color:showRemainingDue?'var(--t2)':'var(--acc)', fontFamily:'var(--font-mono)', letterSpacing:'-.02em' }}>{String.fromCodePoint(0x00A3)}{total.toFixed(2)}</span>
+                  <span style={{ fontSize:showRemainingDue?(compact?16:18):(compact?20:26), fontWeight:800, color:showRemainingDue?'var(--t2)':'var(--acc)', fontFamily:'var(--font-mono)', letterSpacing:'-.02em' }}>{money(total)}</span>
                 </div>
                 {/* v5.6.76: the reader's legs, deducted in the same idiom as a gift
                     card or loyalty reward — so the big "Remaining due" figure below is
@@ -2239,7 +2241,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                 {splitWithReader && (
                   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop:4 }}>
                     <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>{String.fromCodePoint(0x1F4B3)} Paid on the card reader</span>
-                    <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{String.fromCodePoint(0x2212)}{String.fromCodePoint(0x00A3)}{readerPaidMajor.toFixed(2)}</span>
+                    <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{String.fromCodePoint(0x2212)}{money(readerPaidMajor)}</span>
                   </div>
                 )}
                 {/* v5.7.21 — the booking's captured prepay/deposit, auto-applied as a
@@ -2255,16 +2257,16 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                           ? `${bookingInfo?.packageName || 'Package'} prepaid`
                           : 'Booking deposit'}
                       {bookingCreditMajor > bookingApplied + 0.004 && (
-                        <span style={{ color:'var(--t3)', fontWeight:500 }}> (of {String.fromCodePoint(0x00A3)}{bookingCreditMajor.toFixed(2)} paid, the rest stays on the booking)</span>
+                        <span style={{ color:'var(--t3)', fontWeight:500 }}> (of {money(bookingCreditMajor)} paid, the rest stays on the booking)</span>
                       )}
                     </span>
-                    <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{String.fromCodePoint(0x2212)}{String.fromCodePoint(0x00A3)}{bookingApplied.toFixed(2)}</span>
+                    <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{String.fromCodePoint(0x2212)}{money(bookingApplied)}</span>
                   </div>
                 )}
                 {loyaltyApplied && (
                   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop:4 }}>
                     <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>{'⭐'} {loyaltyApplied.reward_name} ({loyaltyApplied.points_deducted} pts)</span>
-                    <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{String.fromCodePoint(0x2212)}{String.fromCodePoint(0x00A3)}{loyaltyCredit.toFixed(2)}</span>
+                    <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{String.fromCodePoint(0x2212)}{money(loyaltyCredit)}</span>
                   </div>
                 )}
                 {giftApplied && (
@@ -2272,13 +2274,13 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                     {/* v5.5.902: removable — the card has not been debited yet, so taking it
                         off costs the customer nothing (before, the money had already gone). */}
                     <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>{String.fromCodePoint(0x1F381)} Gift card (...{giftApplied.code_last4}) <button onClick={()=>{ applyGift(null); setGiftError(''); }} style={{ marginLeft:6, background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:12, textDecoration:'underline' }}>remove</button></span>
-                    <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{String.fromCodePoint(0x2212)}{String.fromCodePoint(0x00A3)}{giftCredit.toFixed(2)}</span>
+                    <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{String.fromCodePoint(0x2212)}{money(giftCredit)}</span>
                   </div>
                 )}
                 {promoApplied && (
                   <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline', marginTop:4 }}>
                     <span style={{ fontSize:13, color:'var(--grn)', fontWeight:600 }}>{String.fromCodePoint(0x1F3AB)} {promoApplied.label || promoApplied.code} <button onClick={()=>{ setPromoApplied(null); }} style={{ marginLeft:6, background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:12, textDecoration:'underline' }}>remove</button></span>
-                    <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{promoCredit > 0 ? `${String.fromCodePoint(0x2212)}${String.fromCodePoint(0x00A3)}${promoCredit.toFixed(2)}` : '✓'}</span>
+                    <span style={{ fontSize:14, fontWeight:700, color:'var(--grn)', fontFamily:'var(--font-mono)' }}>{promoCredit > 0 ? `${String.fromCodePoint(0x2212)}${money(promoCredit)}` : '✓'}</span>
                   </div>
                 )}
                 {showRemainingDue && (
@@ -2286,7 +2288,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                     <div style={{ height:1, background:'var(--bdr)', margin:'6px 0' }}/>
                     <div style={{ display:'flex', justifyContent:'space-between', alignItems:'baseline' }}>
                       <span style={{ fontSize:15, fontWeight:700, color:'var(--t1)' }}>Remaining due</span>
-                      <span style={{ fontSize:compact?20:26, fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)', letterSpacing:'-.02em' }}>{String.fromCodePoint(0x00A3)}{grand.toFixed(2)}</span>
+                      <span style={{ fontSize:compact?20:26, fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)', letterSpacing:'-.02em' }}>{money(grand)}</span>
                     </div>
                   </>
                 )}
@@ -2336,7 +2338,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                   cursor:'pointer', fontFamily:'inherit', fontSize:compact?14:16, fontWeight:800,
                   background:'var(--grn-d, rgba(34,197,94,.12))', border:'1.5px solid var(--grn-b, rgba(34,197,94,.4))', color:'var(--grn)',
                 }}>
-                  Close check · {String.fromCodePoint(0x00A3)}{bookingApplied.toFixed(2)} paid by booking
+                  Close check · {money(bookingApplied)} paid by booking
                 </button>
               )}
               {/* v5.5.793: compact tiles (~half height) — icon + label on one row, single subtitle */}
@@ -2393,7 +2395,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                 onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--bdr2)';e.currentTarget.style.color='var(--t3)';}}>
                   <span>{String.fromCodePoint(0x1F381)}</span>
                   {giftApplied
-                    ? `Gift card ${String.fromCodePoint(0x00A3)}${giftCredit.toFixed(2)} · ${String.fromCodePoint(0x00A3)}${grand.toFixed(2)} due`
+                    ? `Gift card ${money(giftCredit)} · ${money(grand)} due`
                     : 'Gift card or promo code'}
                 </button>
 

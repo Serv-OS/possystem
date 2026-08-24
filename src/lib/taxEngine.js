@@ -68,12 +68,23 @@ export function validateProfile(profile) {
  *   5. legacy default rate (adapter profile for the is_default tax_rates row)
  *   6. no tax
  *
+ * v5.7.34 MONEY FIX: when cfg.profilesById is supplied, a profile-id step
+ * (1, 3, 4) whose id matches NO loaded profile FALLS THROUGH to the next step
+ * instead of resolving. Without this, an assignment pointing at a deleted or
+ * unloaded profile reached computeTax, hit `if (!profile) continue` and booked
+ * ZERO tax - a dangling assignment must never create a tax-free sale. Step 2
+ * keeps its deliberate stop semantics (a SET legacy rate id that maps to
+ * nothing is the channel opt-out and MUST resolve no tax); its targets are
+ * built alongside profilesById so they can never dangle anyway.
+ *
  * @param {Object} cfg
  * @param {Object} cfg.itemProfileIds       itemId -> tax_profile_id
  * @param {Object} cfg.categoryProfileIds   categoryId -> tax_profile_id
  * @param {string} cfg.venueDefaultProfileId
  * @param {Object} cfg.legacyRateToProfileId  legacy tax_rates.id -> adapter profile id
  * @param {string} cfg.legacyDefaultProfileId adapter profile id for the legacy default rate
+ * @param {Object} [cfg.profilesById]       loaded profiles - enables the dangling-id
+ *                                          fall-through above (omitted = old behaviour)
  * @returns {Function} (orderLine, orderType) -> profileId | null
  */
 export function makeCascadeResolver({
@@ -82,11 +93,14 @@ export function makeCascadeResolver({
   venueDefaultProfileId = null,
   legacyRateToProfileId = {},
   legacyDefaultProfileId = null,
+  profilesById = null,
 } = {}) {
+  // With no profilesById supplied every id counts as loaded (legacy call shape).
+  const loaded = (pid) => !!pid && (!profilesById || !!profilesById[pid]);
   return function resolveProfileId(orderLine, orderType) {
-    // 1. item profile
+    // 1. item profile (dangling id falls through - see MONEY FIX above)
     const itemProfile = orderLine.itemId != null ? itemProfileIds[orderLine.itemId] : null;
-    if (itemProfile) return itemProfile;
+    if (loaded(itemProfile)) return itemProfile;
 
     // 2. item legacy rate (same override semantics as resolveTaxRate in tax.js:
     //    an override present for this order type wins even when null/falsy -
@@ -98,12 +112,12 @@ export function makeCascadeResolver({
       return legacyRateToProfileId[rateId] || null;   // unmapped SET id = NO tax, cascade stops
     }
 
-    // 3. category profile
+    // 3. category profile (dangling id falls through)
     const catProfile = orderLine.categoryId != null ? categoryProfileIds[orderLine.categoryId] : null;
-    if (catProfile) return catProfile;
+    if (loaded(catProfile)) return catProfile;
 
-    // 4. venue default profile
-    if (venueDefaultProfileId) return venueDefaultProfileId;
+    // 4. venue default profile (dangling id falls through to the legacy default)
+    if (loaded(venueDefaultProfileId)) return venueDefaultProfileId;
 
     // 5. legacy default rate
     if (legacyDefaultProfileId) return legacyDefaultProfileId;
@@ -205,11 +219,17 @@ export function computeTax({
       const accKey = `${profileId}:${pl.id}`;   // two profiles may reuse a line id (review ADV4)
       let a = acc.get(accKey);
       if (!a) {
-        a = { pl, level, raw: 0, itemRoundedSum: 0, legacy: profileId.startsWith('legacy:') };
+        a = { pl, level, raw: 0, itemRoundedSum: 0, basisRaw: 0, count: 0, legacy: profileId.startsWith('legacy:') };
         acc.set(accKey, a);
       }
       a.raw += amount;
       a.itemRoundedSum += roundMinor(amount);   // used only when level === 'item'
+      // v5.7.34: goods basis + line count per tax line, so legacyBreakdown can
+      // carry the net/gross/items fields calculateOrderTax's breakdown entries
+      // have (reports read them). Goods only - the compound add-on is excluded,
+      // matching legacy's "net = the goods, tax on top/inside" bookkeeping.
+      a.basisRaw += basis;
+      a.count += 1;
     }
   }
 
@@ -246,13 +266,24 @@ export function computeTax({
 
     // Legacy-shaped breakdown, RAW like calculateOrderTax (it never rounds
     // totalTax or the per-rate figures). rate is null for per_unit lines.
+    // v5.7.34: entries also carry net/gross/items so Tax/Z report rollups keep
+    // their read shape when profile venues flow through the unified seam.
     legacyTotalTax += a.raw;
     const rateObj = isPerUnit
       ? null
       : (pl.legacyRate || { id: pl.id, name: pl.name, rate: Number(pl.rate) || 0, type: pl.mode || 'exclusive' });
     const key = rateObj ? (rateObj.id ?? pl.id) : `per_unit:${pl.id}`;
-    const entry = legacyMap.get(key) || { rate: rateObj, tax: 0 };
+    // Per-unit entries (rate: null) carry the LINE NAME at top level so a
+    // renderer can still print "Sugar Levy  0.75" - there is no rate object
+    // to read a name off (v5.7.34 rate-null guard sweep).
+    const entry = legacyMap.get(key) ||
+      (rateObj
+        ? { rate: rateObj, tax: 0, net: 0, gross: 0, items: 0 }
+        : { rate: null, name: pl.name || 'Tax', tax: 0, net: 0, gross: 0, items: 0 });
     entry.tax += a.raw;
+    entry.net += isInclusive ? (a.basisRaw - a.raw) : a.basisRaw;
+    entry.gross += isInclusive ? a.basisRaw : (a.basisRaw + a.raw);
+    entry.items += a.count;
     legacyMap.set(key, entry);
   }
 

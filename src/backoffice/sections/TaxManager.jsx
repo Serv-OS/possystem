@@ -97,11 +97,10 @@ function LineEditor({ line, index, count, onChange, onRemove, onMove }) {
           <label style={S.label}>Line type</label>
           <select style={S.select} value={line.lineType || 'rate'} onChange={e => set('lineType', e.target.value)}>
             <option value="rate">Percentage rate</option>
-            {/* Hidden behind the plan rule: no per-unit creation until receipts
-                can print the line. Existing per_unit rows (none today) stay editable. */}
-            <option value="per_unit" disabled={line.lineType !== 'per_unit'}>
-              Per-unit flat amount (coming with the receipts update)
-            </option>
+            {/* v5.7.34: unhidden — every receipt/renderer now prints per-unit
+                lines (name + amount, no percent) and the rate-null guard sweep
+                is in place, so per-unit creation is safe to offer. */}
+            <option value="per_unit">Per-unit flat amount</option>
           </select>
         </div>
         {line.lineType === 'per_unit' ? (

@@ -8,12 +8,12 @@ import { useState, useEffect } from 'react';
 import { useStore } from '../../store';
 import { sendEmailReceipt } from '../../lib/sendReceipt';
 import { getActiveLocationSync } from '../../lib/supabase';
-import { calculateOrderTax } from '../../lib/tax';
+import { computeOrderTaxUnified } from '../../lib/taxCompute';
 import { receiptTargetStatus } from '../../lib/printer';
 import { Sx } from './MShellStyles';
 
 export default function MReceiptPrompt({ check, onDone }) {
-  const { customer, walkInOrder, locationConfig, printCustomerReceipt, taxRates = [] } = useStore();
+  const { customer, walkInOrder, locationConfig, printCustomerReceipt } = useStore();
   const [mode, setMode] = useState(null); // null | 'email' | 'print'
   const [email, setEmail] = useState(customer?.email || walkInOrder?.customer?.email || '');
   const [busy, setBusy] = useState(false);
@@ -66,7 +66,7 @@ export default function MReceiptPrompt({ check, onDone }) {
       // tax lines (was omitted — receipts printed with no VAT). Prefer the
       // breakdown stored on the check; recompute from items as a fallback.
       const taxBreakdown = check.taxBreakdown
-        || (() => { try { return calculateOrderTax(check.items || [], taxRates, check.orderType || 'takeaway'); } catch { return null; } })();
+        || (() => { try { return computeOrderTaxUnified(check.items || [], useStore.getState().getTaxContext(), check.orderType || 'takeaway'); } catch { return null; } })();
       const result = await printCustomerReceipt?.({
         location: locationConfig,
         check,

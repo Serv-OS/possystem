@@ -8,14 +8,14 @@
 
 import { useMemo, useState } from 'react';
 import { useStore } from '../../store';
-import { calculateOrderTax } from '../../lib/tax';
+import { computeOrderTaxUnified } from '../../lib/taxCompute';
 import { Sx, money } from './MShellStyles';
 import { adyenLocalBridgeAvailable } from '../../lib/payments/adyenLocalTerminal';
 
 const TIP_PRESETS = [10, 12.5, 15, 20];
 
 export default function MTender({ onBack, onConfirm }) {
-  const { activeTableId, tables, walkInOrder, taxRates = [], orderType, deviceConfig } = useStore();
+  const { activeTableId, tables, walkInOrder, orderType, deviceConfig } = useStore();
 
   const order = useMemo(() => {
     if (activeTableId) {
@@ -35,10 +35,13 @@ export default function MTender({ onBack, onConfirm }) {
     const base = (i.price || 0) * (i.qty || 0);
     return s + (i.discount?.value ? base * (1 - i.discount.value / 100) : base);
   }, 0);
+  // v5.7.34: unified seam — same read shape (totalTax / exclusiveTax /
+  // hasExclusiveTax); legacy-equivalent venues byte-identical.
+  const taxCtx = useStore(s => s.getTaxContext());
   const taxResult = useMemo(() => {
-    try { return calculateOrderTax(order.items, taxRates, orderType); }
+    try { return computeOrderTaxUnified(order.items, taxCtx, orderType); }
     catch { return { totalTax: 0 }; }
-  }, [order.items, taxRates, orderType]);
+  }, [order.items, taxCtx, orderType]);
   const tax = Number(taxResult?.totalTax) || 0;
   // v5.5.341: VAT-inclusive (UK) prices already CONTAIN the tax, so the bill is
   // just the gross subtotal — adding tax on top double-counted it. Only add when

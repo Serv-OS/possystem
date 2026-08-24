@@ -13,7 +13,7 @@ import { logOrderActivity, logActivity } from '../../lib/activity';
 import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient';
 import { getLocationProcessor } from '../../lib/payments/processor';
 import RyftPaymentForm from '../../components/RyftPaymentForm';
-import { calculateOrderTax } from '../../lib/tax';
+import { computeOrderTaxUnified } from '../../lib/taxCompute';
 import { sendEmailReceipt } from '../../lib/sendReceipt';
 import { getDeliveryQuote, recordDeliverySurcharge } from '../../lib/delivery/quoteService';
 import AddressAutocomplete from '../../components/AddressAutocomplete';
@@ -50,7 +50,7 @@ const center = { maxWidth: 640, margin: '0 auto', padding: '0 16px' };
 const lbl = { display: 'block', fontSize: 12, fontWeight: 700, color: '#475569', marginBottom: 5 };
 const inp = { width: '100%', boxSizing: 'border-box', border: '1px solid #cbd5e1', borderRadius: 10, padding: '9px 12px', fontSize: 14, fontFamily: 'inherit' };
 
-export default function CateringCheckout({ location, cfg, cart, taxRates, theme, cur, fulfilment, eventDate, eventTime, subtotal, onBack }) {
+export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx = null, theme, cur, fulfilment, eventDate, eventTime, subtotal, onBack }) {
   const opsId = location.ops_location_id || location.id;
   const platformLocationId = location.id;
   const [name, setName] = useState(''); const [phone, setPhone] = useState(''); const [email, setEmail] = useState('');
@@ -91,14 +91,16 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, theme,
   // (exclusive, US) sales tax is part of what the customer pays, so it belongs in
   // the total the pay button charges, not just the record written afterwards.
   // UK inclusive VAT contributes exactly 0: UK totals unchanged.
+  // v5.7.34: through the unified seam — profiles cascade when assigned,
+  // byte-identical calculateOrderTax otherwise.
   const taxBk = useMemo(() => {
     try {
-      return calculateOrderTax(
-        cart.map((l) => ({ price: l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0), qty: l.qty || 1, taxRateId: l.taxRateId, taxOverrides: l.taxOverrides })),
-        taxRates || [], fulfilment,
+      return computeOrderTaxUnified(
+        cart.map((l) => ({ price: l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0), qty: l.qty || 1, itemId: l.itemId ?? null, cat: l.cat ?? null, cats: Array.isArray(l.cats) ? l.cats : null, taxProfileId: l.taxProfileId ?? null, taxRateId: l.taxRateId, taxOverrides: l.taxOverrides })),
+        taxCtx || { taxRates: taxRates || [] }, fulfilment,
       );
     } catch { return null; }
-  }, [cart, taxRates, fulfilment]);
+  }, [cart, taxCtx, taxRates, fulfilment]);
   const exclusiveTax = +(Number(taxBk?.exclusiveTax) || 0).toFixed(2);
   const total = Math.max(0, +(subtotal + exclusiveTax + deliveryFee + tip - discount).toFixed(2));
   const totalMinor = Math.round(total * 100);

@@ -11,6 +11,11 @@ import { isTrainingMode } from './trainingMode';
 import { loadLocationBranding } from './receiptBranding';
 import { money } from './currency';  // v5.5.326: shared multi-currency formatter
 import { cardReceiptLines } from './cardReceipt';  // v5.5.719: card-scheme block (masked PAN/auth/CVM)
+// v5.7.34: shared receipt tax vocabulary + rate-null guards. taxTermFor keeps
+// 'VAT' byte-identical on inclusive-only venues and says 'Sales Tax' the moment
+// any exclusive component is on the check; breakdownLabel renders per-unit
+// entries (rate: null) as name + amount with no percent and no crash.
+import { taxTermFor, breakdownLabel } from './receiptTax';
 const FUNC_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/message-templates`;
 
 /**
@@ -107,14 +112,14 @@ export async function sendEmailReceipt({ to, locationId, check, locationLabel, b
   const deliveryFee = Number(check.customer?.delivery_fee ?? check.deliveryFee) || 0;
   if (deliveryFee > 0) itemLines.push(`Delivery: ${money(deliveryFee)}`);
   if (tip > 0) itemLines.push(`Gratuity: ${money(tip)}`);
+  const taxTerm = taxTermFor(taxBk);   // 'VAT' (inclusive-only) | 'Sales Tax' (any exclusive)
   if (taxBk?.breakdown?.length) {
     itemLines.push('');
     taxBk.breakdown.forEach(br => {
-      const pct = (br.rate.rate * 100).toFixed(1).replace('.0', '');
-      itemLines.push(`${br.rate.name} (${pct}%): Net ${money(br.net)} — VAT ${money(br.tax)}`);
+      itemLines.push(`${breakdownLabel(br, 1)}: Net ${money(br.net)} — ${taxTerm} ${money(br.tax)}`);
     });
   } else if (Number(check.taxAmount)) {
-    itemLines.push(`Includes VAT of ${money(check.taxAmount)}`);
+    itemLines.push(`Includes ${taxTerm} of ${money(check.taxAmount)}`);
   }
 
   // Build merge data for template resolution
@@ -193,6 +198,7 @@ function buildReceiptHtml({ check, locationLabel, branding, greetingText }) {
   const taxAmount  = Number(check.taxAmount) || 0;
   const total      = Number(check.total) || 0;
   const taxBk      = check.taxBreakdown;
+  const taxTerm    = taxTermFor(taxBk);   // v5.7.34: 'VAT' | 'Sales Tax'
 
   // CSS styles
   const S = {
@@ -288,14 +294,13 @@ function buildReceiptHtml({ check, locationLabel, branding, greetingText }) {
         <div style="display:flex;gap:8px;margin-bottom:4px;font-weight:700;font-size:10px;text-transform:uppercase;letter-spacing:.04em;">
           <span style="flex:1;">Rate</span>
           <span style="width:70px;text-align:right;">Net</span>
-          <span style="width:70px;text-align:right;">VAT</span>
+          <span style="width:70px;text-align:right;">${escapeHtml(taxTerm)}</span>
           <span style="width:70px;text-align:right;">Gross</span>
         </div>
         ${taxBk.breakdown.map(br => {
-          const pct = (br.rate.rate * 100).toFixed(1).replace('.0','');
           return `
           <div style="display:flex;gap:8px;margin-bottom:2px;font-size:12px;">
-            <span style="flex:1;">${escapeHtml(br.rate.name)} (${pct}%)</span>
+            <span style="flex:1;">${escapeHtml(breakdownLabel(br, 1))}</span>
             <span style="width:70px;text-align:right;${S.mono}">${money(br.net)}</span>
             <span style="width:70px;text-align:right;${S.mono}">${money(br.tax)}</span>
             <span style="width:70px;text-align:right;${S.mono}">${money(br.gross)}</span>
@@ -309,7 +314,7 @@ function buildReceiptHtml({ check, locationLabel, branding, greetingText }) {
         </div>
       </div>` : taxAmount ? `
       <div style="${S.dividerDash}margin-top:10px;padding-top:8px;font-size:11px;${S.muted}">
-        <div style="${S.row}"><span>Includes VAT of</span><span style="${S.mono}">${money(taxAmount)}</span></div>
+        <div style="${S.row}"><span>Includes ${escapeHtml(taxTerm)} of</span><span style="${S.mono}">${money(taxAmount)}</span></div>
       </div>` : ''}
 
       <!-- Payment -->
@@ -365,6 +370,7 @@ function buildReceiptText({ check, locationLabel, branding }) {
   const taxAmount = Number(check.taxAmount) || 0;
   const total    = Number(check.total) || 0;
   const taxBk    = check.taxBreakdown;
+  const taxTerm  = taxTermFor(taxBk);   // v5.7.34: 'VAT' | 'Sales Tax'
 
   const pad = (l, r, w = 44) => {
     const gap = Math.max(1, w - l.length - r.length);
@@ -418,15 +424,14 @@ function buildReceiptText({ check, locationLabel, branding }) {
     lines.push('TAX SUMMARY');
     lines.push('-'.repeat(44));
     taxBk.breakdown.forEach(br => {
-      const pct = (br.rate.rate * 100).toFixed(1).replace('.0', '');
-      lines.push(`${br.rate.name} (${pct}%)`);
-      lines.push(`  Net: ${money(br.net)}  VAT: ${money(br.tax)}  Gross: ${money(br.gross)}`);
+      lines.push(breakdownLabel(br, 1));
+      lines.push(`  Net: ${money(br.net)}  ${taxTerm}: ${money(br.tax)}  Gross: ${money(br.gross)}`);
     });
     lines.push('-'.repeat(44));
-    lines.push(`Total Net: ${money(taxBk.subtotal)}  VAT: ${money(taxBk.totalTax)}  Gross: ${money(taxBk.total)}`);
+    lines.push(`Total Net: ${money(taxBk.subtotal)}  ${taxTerm}: ${money(taxBk.totalTax)}  Gross: ${money(taxBk.total)}`);
   } else if (taxAmount) {
     lines.push('');
-    lines.push(pad('Includes VAT of', money(taxAmount)));
+    lines.push(pad(`Includes ${taxTerm} of`, money(taxAmount)));
   }
 
   lines.push('');

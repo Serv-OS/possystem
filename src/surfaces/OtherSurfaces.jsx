@@ -3,6 +3,8 @@ import { useStore } from '../store';
 import { VERSION } from '../lib/version';
 import { supabase, isMock } from '../lib/supabase';
 import { money, currencySymbol } from '../lib/currency';
+// v5.7.34 rate-null guards: per-unit tax lines book rate: null in the breakdown
+import { breakdownLabel } from '../lib/receiptTax';
 // ══════════════════════════════════════════════════════════════════════════════
 // Payment Screen
 // ══════════════════════════════════════════════════════════════════════════════
@@ -59,19 +61,17 @@ export function PaymentScreen({ subtotal, service, total, items, taxBreakdown, o
             // US exclusive: show net subtotal, then tax, then total
             <>
               <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--t3)' }}><span>Subtotal (ex. tax)</span><span>{money(taxBreakdown.subtotal)}</span></div>
-              {taxBreakdown.breakdown.map(b => {
-                const pct = (b.rate.rate*100).toFixed(3).replace(/\.?0+$/,'');
-                return <div key={b.rate.id} style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--t3)', marginTop:2 }}><span>{b.rate.name} ({pct}%)</span><span>{money(b.tax)}</span></div>;
-              })}
+              {taxBreakdown.breakdown.map((b, i) => (
+                <div key={b.rate?.id ?? `pu-${i}`} style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--t3)', marginTop:2 }}><span>{breakdownLabel(b, 3)}</span><span>{money(b.tax)}</span></div>
+              ))}
             </>
           ) : hasTax ? (
             // UK inclusive: show gross subtotal, then VAT breakdown
             <>
               <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--t3)' }}><span>Subtotal (incl. VAT)</span><span>{money(subtotal)}</span></div>
-              {taxBreakdown.breakdown.map(b => {
-                const pct = (b.rate.rate*100).toFixed(1).replace('.0','');
-                return <div key={b.rate.id} style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--t4)', marginTop:1 }}><span>  of which {b.rate.name} ({pct}%)</span><span>{money(b.tax)}</span></div>;
-              })}
+              {taxBreakdown.breakdown.map((b, i) => (
+                <div key={b.rate?.id ?? `pu-${i}`} style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--t4)', marginTop:1 }}><span>  of which {breakdownLabel(b, 1)}</span><span>{money(b.tax)}</span></div>
+              ))}
             </>
           ) : (
             <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--t3)' }}><span>Subtotal</span><span>{money(subtotal)}</span></div>

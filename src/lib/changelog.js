@@ -7,6 +7,24 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.34',
+    date: '2026-08-24',
+    items: [
+      'Tax profiles go live. Every surface that computes tax, the till, checkout, mobile POS, kiosk, online ordering, QR table ordering, catering, bar tabs, receipts, reprints and the tax reports, now computes through one shared tax engine that understands both the new tax profiles and the existing rates.',
+      'UK venues are unchanged. Venues configured purely through the existing rates, including the generated profile that mirrors your default rate, are detected and routed through the exact same calculation as before: every UK total and recorded figure is byte-identical, and printed receipts render the same bytes as before too. The VAT lines on screen, in emails and on paper keep their exact wording and amounts.',
+      'Venues that assign a real tax profile, to an item, a category or as the venue default, are charged by the profile: stacked lines such as state plus county plus city plus RTA, compounding occupation taxes, and per order type scoping all work on every channel.',
+      'Safety fix: an item or venue assigned to a tax profile that no longer exists (deleted, or not yet loaded on the device) now falls through to the next rule and ultimately the venue default rate. Previously such a sale could book zero tax.',
+      'Receipts understand the new profiles. When a check carries an added-on or per-unit tax component, or a real tax profile, the receipt prints each named tax line with its amount (per-unit lines print with no percent). Pure inclusive VAT checks keep the exact legacy receipt.',
+      'Receipts, receipt emails and the checkout totals now show the venue currency symbol everywhere money prints; pound signs are no longer hardcoded. GBP venues see identical output.',
+      'Wording follows the venue: inclusive-only venues keep the word VAT exactly as before; a venue with any added-on component says Sales Tax on thermal receipts, emails and on-page totals.',
+      'Per-unit flat amount tax lines (for example a sugar levy per can) can now be created in the Tax profiles builder; every renderer prints them safely as name plus amount.',
+      'Closed checks now record a version 2 tax breakdown with each named tax line and its amount, alongside the existing breakdown. Nothing that reads the old shape changes.',
+      'Bar tabs finally charge added-on sales tax. Opening a tab and paying at close, or capturing a held card, now bills the taxed total and records the tax on the check. This only activates when the bill actually carries an added-on component, so UK bar tabs are untouched.',
+      'Honest correction on the Z report: its tax by rate table previously skipped items set to Use default, so it UNDERSTATED tax for default rated items. It now derives through the same engine as the till, including the venue default. Expect the Z tax split to be slightly higher and correct at venues using Use default items; the till and the main Tax report were always right.',
+      'The online ordering, catering and kiosk pages now read the venue default tax profile, closing the gap where a venue default assigned in Back Office was not visible to those channels.',
+    ],
+  },
+  {
     version: '5.7.33',
     date: '2026-08-24',
     items: [

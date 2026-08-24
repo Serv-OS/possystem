@@ -15,7 +15,7 @@ import { captureLoyaltyByPhone } from '../lib/customerLookup';
 import { getAssignedNetworkReader } from '../lib/networkReader';
 import { CATEGORIES, MENU_ITEMS as SEED_MENU_ITEMS, ALLERGENS, QUICK_IDS, CAT_META } from '../data/seed';
 import { daypartOfHour } from '../lib/quickRank';
-import { calculateOrderTax } from '../lib/tax';
+import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
 import { resolveQuickItems } from '../lib/quickRank';
 import ProductModal, { AllergenModal } from '../components/ProductModal';
 import InlineItemFlow from '../components/InlineItemFlow';
@@ -35,6 +35,7 @@ import AllergenCheckoutModal from '../components/AllergenCheckoutModal';
 import TableActionsModal from '../components/TableActionsModal';
 import Challenge21Modal from '../components/Challenge21Modal';
 import { money, stripeCurrency, getActiveCurrencyCode } from '../lib/currency';
+import { breakdownLabel, breakdownIsExclusive } from '../lib/receiptTax';   // v5.7.34: rate-null guards
 import { Icon, emojiToIcon } from '../components/ServOSIcons';
 
 const COURSE_COLORS = {
@@ -75,7 +76,6 @@ export default function POSSurface() {
     quickScreenMode,
     quickScreenAuto,
     menus,
-    taxRates,
     showItemImages,
     takeawayCustomerDetails,
     location,
@@ -400,11 +400,14 @@ export default function POSSurface() {
   // v5.5.890: footer tax breakdown was an un-memoized IIFE in the totals JSX — recomputed the
   // whole tax engine on every render (every keystroke / store write). Same memo pattern as
   // CheckoutModal. Display-only.
+  // v5.7.34: through the unified seam — legacy-equivalent venues get
+  // calculateOrderTax byte-identical, profile venues get the cascade.
+  const taxCtx = useStore(s => s.getTaxContext());
   const footerTaxBreakdown = useMemo(() => {
-    if (!taxRates?.length || !items.length) return null;
-    try { return calculateOrderTax(items.filter(i => !i.voided), taxRates, orderType || 'dine-in'); }
+    if (!taxCtxHasConfig(taxCtx) || !items.length) return null;
+    try { return computeOrderTaxUnified(items.filter(i => !i.voided), taxCtx, orderType || 'dine-in'); }
     catch { return null; }
-  }, [items, taxRates, orderType]);
+  }, [items, taxCtx, orderType]);
   const { subtotal, service, total, itemCount, checkDiscount, discountedSub, serviceChargeWaived, serviceChargeApplicable, autoDiscounts = [], deliveryFee = 0, deliveryQuote = null } = getPOSTotals();
   // v5.5.646: auto-fetch an Uber Direct delivery quote when a delivery order has an
   // address + items, so the surcharge is on the bill BEFORE checkout. Debounced; the
@@ -862,8 +865,8 @@ export default function POSSurface() {
       const tip = paymentInfo.tip || 0;
       const grand = total + tip;
       let taxBreakdown = null;
-      if (taxRates?.length) {
-        try { taxBreakdown = calculateOrderTax(nonVoided, taxRates, orderType || 'dine-in'); } catch {}
+      if (taxCtxHasConfig(taxCtx)) {
+        try { taxBreakdown = computeOrderTaxUnified(nonVoided, taxCtx, orderType || 'dine-in'); } catch {}
       }
       const tableLabel = activeTable?.label || null;
       const server = session?.server || staff?.name || null;
@@ -1510,12 +1513,12 @@ export default function POSSurface() {
                   </div>
                 )}
                 {/* Tax breakdown — shown below service charge (memoized v5.5.890) */}
-                {footerTaxBreakdown?.breakdown?.length > 0 && footerTaxBreakdown.breakdown.filter(b => b.tax >= 0).map(b => {
-                  const pct = (b.rate.rate*100).toFixed(1).replace('.0','');
+                {footerTaxBreakdown?.breakdown?.length > 0 && footerTaxBreakdown.breakdown.filter(b => b.tax >= 0).map((b, i) => {
                   // v5.7.31: per-RATE prefix — on a mixed check only the exclusive lines are added to the total below; inclusive VAT stays "incl."
-                  const label = b.rate.type === 'exclusive' ? `+ ${b.rate.name} (${pct}%)` : `incl. ${b.rate.name} (${pct}%)`;
+                  // v5.7.34: rate-null guard — per-unit lines (rate: null) are added-on, render name + amount with no percent
+                  const label = breakdownIsExclusive(b) ? `+ ${breakdownLabel(b, 1)}` : `incl. ${breakdownLabel(b, 1)}`;
                   return (
-                    <div key={b.rate.id} style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'var(--t4)',marginBottom:2}}>
+                    <div key={b.rate?.id ?? `pu-${i}`} style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'var(--t4)',marginBottom:2}}>
                       <span>{label}</span>
                       <span style={{fontFamily:'var(--font-mono)'}}>{money(b.tax)}</span>
                     </div>

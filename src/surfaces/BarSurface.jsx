@@ -13,6 +13,7 @@ import { isTrainingMode } from '../lib/trainingMode';
 import { money, currencySymbol } from '../lib/currency';
 import { kitchenOverride, receiptOverride } from '../lib/itemDisplay';
 import { giftRecordFrom } from '../lib/giftCommit';
+import { computeOrderTaxUnified } from '../lib/taxCompute';
 
 const CAT_META = {
   quick:    { icon:'⚡', color:'#e8a020' },
@@ -378,11 +379,33 @@ export default function BarSurface() {
   const [holdCloseState, setHoldCloseState] = useState('idle'); // idle | capturing | error
   const [holdCloseErr, setHoldCloseErr] = useState(null);
 
+  // v5.7.34 — the documented v5.7.31 gap: bar tabs passed UNTAXED totals into
+  // CheckoutModal, so venues with added-on (exclusive) sales tax undercharged
+  // every fresh-tender tab close. The bill now computes through the unified
+  // seam (order type 'bar-tab', same as the record). GATED on the bill actually
+  // carrying an exclusive component: on inclusive-only venues (every UK site)
+  // exclusiveTax is exactly 0, this returns the tab total unchanged and stamps
+  // nothing, so UK bar tabs are byte-identical to before.
+  const tabBillWithTax = (tab) => {
+    const items = tab.rounds.flatMap(r => r.items.filter(i => !i.voided));
+    let bd = null;
+    try { bd = computeOrderTaxUnified(items, useStore.getState().getTaxContext(), 'bar-tab'); }
+    catch { bd = null; }   // fail toward the old behaviour, never a guessed charge
+    const exclusiveTax = Number(bd?.exclusiveTax) || 0;
+    const active = exclusiveTax > 0;
+    return {
+      taxBreakdown: active ? bd : null,
+      exclusiveTax: active ? exclusiveTax : 0,
+      total: active ? +(((tab.total || 0) + exclusiveTax).toFixed(2)) : (tab.total || 0),
+    };
+  };
+
   // Build + record a bar-tab closed check. Shared by the fresh-tender checkout
   // AND the held-card capture so the row shape is identical either way.
   const recordTabClosedCheck = (tab, payInfo) => {
     const allItems = tab.rounds.flatMap(r => r.items.filter(i => !i.voided));
     const subtotal = tab.total || 0;
+    const bill = tabBillWithTax(tab);   // v5.7.34: tax on the record (null on inclusive-only venues)
     recordWalkInClosedCheck({
       // v5.5.902: adopt CheckoutModal's pre-minted check id when it sent one — it is the
       // id the gift-card debit was keyed to, so a later refund can find the ledger row.
@@ -398,7 +421,10 @@ export default function BarSurface() {
       subtotal,
       service: 0,
       tip: payInfo?.tip || 0,
-      total: payInfo?.grand != null ? payInfo.grand : subtotal,
+      total: payInfo?.grand != null ? payInfo.grand : bill.total,
+      // v5.7.34: bar-tab records finally carry tax (previously always absent).
+      // Only stamped when the bill has an exclusive component - see tabBillWithTax.
+      ...(bill.taxBreakdown ? { taxAmount: bill.taxBreakdown.totalTax ?? null, taxBreakdown: bill.taxBreakdown } : {}),
       method: payInfo?.method || 'card',
       // v5.5.902: giftRecordFrom also folds in the per-portion legs of a SPLIT bar tab,
       // which used to be dropped here entirely (nothing to reverse on a refund).
@@ -509,7 +535,9 @@ export default function BarSurface() {
 
   // v5.5.324: capture the held card for (up to) the running total, then close.
   const captureHeldTab = async (tab) => {
-    const totalMinor = Math.round((tab.total || 0) * 100);
+    // v5.7.34: bill includes added-on sales tax (UK inclusive-only: unchanged).
+    const billTotal = tabBillWithTax(tab).total;
+    const totalMinor = Math.round(billTotal * 100);
     const heldMinor = tab.preAuthHeldMinor != null ? tab.preAuthHeldMinor : Math.round((tab.preAuthAmount || 0) * 100);
     const captureMinor = Math.min(totalMinor, heldMinor || totalMinor);
     if (captureMinor <= 0) { setHoldCloseErr('Nothing to charge'); setHoldCloseState('error'); return; }
@@ -541,7 +569,7 @@ export default function BarSurface() {
       }
       recordTabClosedCheck(tab, {
         method: 'card',
-        grand: tab.total || 0,
+        grand: billTotal,   // v5.7.34: the taxed bill (UK inclusive-only: === tab.total)
         // v5.6.94: stamp WHICH processor held the card (v5.5.808's rule — the
         // refund routes by this). An Adyen-held tab recorded processor
         // 'stripe', so a refund would route to Stripe with an Adyen psp
@@ -891,12 +919,16 @@ export default function BarSurface() {
       {showTabCheckout && activeTab && (() => {
         const allItems = activeTab.rounds.flatMap(r => r.items);
         const subtotal = activeTab.total;
+        // v5.7.34: the bill CheckoutModal charges now carries added-on
+        // (exclusive) sales tax via the seam. Inclusive-only venues (UK):
+        // bill.total === subtotal, byte-identical.
+        const bill = tabBillWithTax(activeTab);
         return (
           <CheckoutModal
             items={allItems}
             subtotal={subtotal}
             service={0}
-            total={subtotal}
+            total={bill.total}
             orderType="bar-tab"
             covers={1}
             tableId={activeTab.tableId}
@@ -916,7 +948,9 @@ export default function BarSurface() {
       {/* v5.5.324: held-card close — capture the pre-auth instead of re-tendering */}
       {holdClose?.tab && (() => {
         const tab = holdClose.tab;
-        const totalMinor = Math.round((tab.total || 0) * 100);
+        // v5.7.34: the bill captured from the held card includes added-on
+        // sales tax via the seam (UK inclusive-only: unchanged).
+        const totalMinor = Math.round(tabBillWithTax(tab).total * 100);
         const heldMinor = tab.preAuthHeldMinor != null ? tab.preAuthHeldMinor : Math.round((tab.preAuthAmount || 0) * 100);
         const captureMinor = Math.min(totalMinor, heldMinor || totalMinor);
         const shortfall = totalMinor - captureMinor;

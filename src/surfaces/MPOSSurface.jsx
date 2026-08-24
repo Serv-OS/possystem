@@ -25,7 +25,7 @@ import { queueWrite, dismissItem } from '../sync/OfflineQueue';
 import { getActiveLocationSync, isMock } from '../lib/supabase';
 import { isTrainingMode } from '../lib/trainingMode';
 import { getNextOrderRefLocal } from '../lib/db';
-import { calculateOrderTax } from '../lib/tax';
+import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
 import PINScreen from './PINScreen';
 import MHome from './mpos/MHome';
 import MOrdersList from './mpos/MOrdersList';
@@ -300,8 +300,9 @@ function MPOSRouter() {
     const subtotal = items.reduce((s, i) => s + (i.price || 0) * (i.qty || 0), 0);
     const orderType = st.orderType || 'takeaway';
     let taxBreakdown = null;
-    if (st.taxRates?.length) {
-      try { taxBreakdown = calculateOrderTax(items, st.taxRates, orderType); }
+    if (st.taxRates?.length || taxCtxHasConfig(st.getTaxContext())) {
+      // v5.7.34: unified seam — legacy parity or profiles cascade, same shape.
+      try { taxBreakdown = computeOrderTaxUnified(items, st.getTaxContext(), orderType); }
       catch { /* leave VAT unsplit rather than book a guess */ }
     }
     return {

@@ -13,6 +13,7 @@
 
 import { useRef, useMemo } from 'react';
 import { useStore } from '../../../store';
+import { computeOrderTaxUnified } from '../../../lib/taxCompute';
 import { computeSalesStats } from './SalesSummary';
 import { ExportBtn } from './_charts';
 
@@ -58,35 +59,36 @@ export default function ZReport({ checks, periodLabelText, rangeFrom, rangeTo, f
     return Object.values(m).sort((a, b) => b.total - a.total);
   }, [checks]);
 
-  // Tax by rate (prefer stored taxAmount when available, else derive per-rate via calculateOrderTax)
+  // Tax by rate — v5.7.34: derived through the UNIFIED SEAM per check (the same
+  // engine every till charges with), replacing an inline per-item fork that had
+  // NO default-rate fallback: items on "Use default" (taxRateId null) booked
+  // zero here, so the Z report UNDERSTATED tax for default-rated items. The
+  // seam resolves the venue default (and per-order-type overrides, and tax
+  // profiles) exactly as the point of sale does. Read shape unchanged:
+  // [{ label, rate, tax, net, gross }].
+  const taxCtx = useStore(s => s.getTaxContext());
   const taxByRate = useMemo(() => {
-    const rateMap = {};
-    taxRates.forEach(r => { rateMap[r.id] = { label: r.label || `${(r.rate*100).toFixed(0)}%`, rate: r.rate, tax: 0, net: 0, gross: 0 }; });
-
-    // Re-run calculateOrderTax on each non-void check to get per-rate breakdown
+    const m = {};
     checks.filter(c => c.status !== 'voided').forEach(c => {
-      (c.items || []).filter(i => !i.voided).forEach(item => {
-        const rateId = item.taxOverrides?.[c.orderType] ?? item.taxRateId;
-        if (!rateId || !rateMap[rateId]) return;
-        const rate = taxRates.find(r => r.id === rateId);
-        if (!rate) return;
-        const gross = (item.price || 0) * (item.qty || 1);
-        let net, tax;
-        if (rate.type === 'inclusive') {
-          net = gross / (1 + rate.rate);
-          tax = gross - net;
-        } else {
-          net = gross;
-          tax = gross * rate.rate;
+      let res = null;
+      try { res = computeOrderTaxUnified(c.items || [], taxCtx, c.orderType || 'dine-in'); } catch { return; }
+      (res?.breakdown || []).forEach(b => {
+        const key = b.rate?.id ?? 'per-unit';
+        if (!m[key]) {
+          const src = b.rate ? (taxRates.find(r => r.id === b.rate.id) || b.rate) : null;
+          m[key] = {
+            label: src ? (src.label || `${((Number(src.rate) || 0) * 100).toFixed(0)}%`) : 'Per-unit levy',
+            rate: src ? Number(src.rate) || 0 : null,
+            tax: 0, net: 0, gross: 0,
+          };
         }
-        rateMap[rateId].gross += gross;
-        rateMap[rateId].net   += net;
-        rateMap[rateId].tax   += tax;
+        m[key].tax   += b.tax   || 0;
+        m[key].net   += b.net   || 0;
+        m[key].gross += b.gross || 0;
       });
     });
-
-    return Object.values(rateMap).filter(r => r.gross > 0).sort((a, b) => b.gross - a.gross);
-  }, [checks, taxRates]);
+    return Object.values(m).filter(r => r.gross > 0).sort((a, b) => b.gross - a.gross);
+  }, [checks, taxCtx, taxRates]);
 
   const voidCount = checks.filter(c => c.status === 'voided').length;
   const refundCount = checks.reduce((s, c) => s + (c.refunds?.length || 0), 0);

@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { supabase, platformSupabase, isMock, getLocationId, ensureAuthToken, getActiveLocationSync } from '../lib/supabase';
-import { calculateOrderTax } from '../lib/tax';
+import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
 import { resolveServiceCharge } from '../lib/serviceCharge';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
 import { buildScheduleCtx } from '../lib/locationTime';
@@ -2965,6 +2965,9 @@ export const useStore = create((set, get) => ({
       // the exclusive share so screen, charge and record agree. UK inclusive
       // VAT contributes 0: totals unchanged.
       taxRates: get().taxRates,
+      // v5.7.34: the unified seam context — profile venues charge the cascade;
+      // legacy-equivalent venues route byte-identical calculateOrderTax.
+      taxCtx: get().getTaxContext(),
     });
   },
 
@@ -5077,10 +5080,16 @@ export const useStore = create((set, get) => ({
   buildCloseRecord: (session, table, paymentInfo = {}, { idOverride } = {}) => {
     const { staff, taxRates } = get();
 
-    // Calculate tax breakdown at point of close
+    // Calculate tax breakdown at point of close — v5.7.34 through the unified
+    // seam (byte-identical on legacy-equivalent venues; profiles cascade
+    // otherwise; taxV2 named-lines record rides inside the same object).
+    // orderType stays the 'dine-in' hardcode DELIBERATELY: this record's own
+    // orderType field is hardcoded 'dine-in' three lines down, and computing
+    // tax under any other type while recording dine-in would let per-order-type
+    // taxOverrides (e.g. zero-rated takeaway) split the record from its tax.
     let taxBreakdown = null;
-    if (taxRates?.length) {
-      try { taxBreakdown = calculateOrderTax(session.items.filter(i=>!i.voided), taxRates, 'dine-in'); } catch {}
+    if (taxRates?.length || taxCtxHasConfig(get().getTaxContext())) {
+      try { taxBreakdown = computeOrderTaxUnified(session.items.filter(i=>!i.voided), get().getTaxContext(), 'dine-in'); } catch {}
     }
 
     const ref = getNextOrderRefLocal();
@@ -5654,7 +5663,7 @@ export const useStore = create((set, get) => ({
       const o = get().orderQueue.find(q => q.ref === walkInOrder._channelRef);
       if (o) {
         const { staff, menuItems, taxRates } = get();
-        const f = buildChannelCloseFields(o, { menuItems: menuItems || [], taxRates: taxRates || [] });
+        const f = buildChannelCloseFields(o, { menuItems: menuItems || [], taxRates: taxRates || [], taxCtx: get().getTaxContext() });
         const record = {
           id: `chk-hr-${o.ref}`,            // deterministic — same id as the prepaid booking path
           ref: o.ref,
@@ -5730,9 +5739,11 @@ export const useStore = create((set, get) => ({
     const { staff, taxRates } = get();
     const subtotal = walkInOrder.items.reduce((s, i) => s + i.price * i.qty, 0);
     // v4.6.19 — compute tax at close so tax_amount can be stored with the row
+    // v5.7.34 — through the unified seam (legacy parity or profiles cascade);
+    // taxBreakdown now also carries the taxV2 named-lines record.
     let taxBreakdown = null;
-    if (taxRates?.length) {
-      try { taxBreakdown = calculateOrderTax(walkInOrder.items.filter(i=>!i.voided), taxRates, orderType); } catch {}
+    if (taxRates?.length || taxCtxHasConfig(get().getTaxContext())) {
+      try { taxBreakdown = computeOrderTaxUnified(walkInOrder.items.filter(i=>!i.voided), get().getTaxContext(), orderType); } catch {}
     }
     // If the walk-in was reopened from orderQueue (OrdersHub openOrder) it already
     // has a ref (e.g. '#6720'). Reuse it so the closed check matches what the user
@@ -7299,7 +7310,7 @@ export const useStore = create((set, get) => ({
     try {
       const locId = getActiveLocationSync();
       const { menuItems = [], taxRates = [] } = get();
-      const f = buildChannelCloseFields(o, { menuItems, taxRates });
+      const f = buildChannelCloseFields(o, { menuItems, taxRates, taxCtx: get().getTaxContext() });
       const { error } = await supabase.from('closed_checks').insert({
         id: `chk-hr-${o.ref}`, ref: o.ref, location_id: locId,
         server: o.customer?.channel || 'HubRise', staff_id: null, covers: 1,

@@ -1488,11 +1488,12 @@ function CatGlyph({ cat, size = 20 }) {
 
 function ItemsLibrary() {
   const { menuItems, menuCategories, addMenuItem, updateMenuItem, archiveMenuItem,
-          eightySixIds, toggle86, markBOChange, showToast, taxRates } = useStore();
+          eightySixIds, toggle86, markBOChange, showToast, taxRates, taxProfiles } = useStore();
 
   const recipeCosts = useRecipeCosts();          // v5.5.813 — B7 COST + GP%
   const [hovRow, setHovRow] = useState(null);
   const [bulkTaxId, setBulkTaxId] = useState(''); // v5.5.961 — bulk tax fix-up strip
+  const [bulkProfileId, setBulkProfileId] = useState(''); // v5.7.34 — bulk tax profile apply
 
   // Ex-VAT net selling price — the same basis Inventory → Reports → Recipe GP
   // uses, so GP% can never disagree between the two screens.
@@ -1672,6 +1673,44 @@ function ItemsLibrary() {
                 Apply to all {missingTax.length}
               </button>
               <span style={{ fontSize:10.5, color:'var(--t4)' }}>Only fills the gaps — items that already have a rate are untouched.</span>
+            </div>
+          );
+        })()}
+
+        {/* v5.7.34: bulk TAX PROFILE apply — the profiles sibling of the rate
+            fix-up above. Two scopes: fill only the items with no profile, or
+            stamp every active item (a US venue pointing its whole menu at one
+            combined profile in a click). Writes item.taxProfileId only. */}
+        {!showArchived && (() => {
+          const profiles = (taxProfiles || []).filter(p => p.active !== false);
+          if (!profiles.length) return null;
+          const activeItems = menuItems.filter(i => !i.archived);
+          const missingProfile = activeItems.filter(i => !i.taxProfileId);
+          if (!activeItems.length) return null;
+          const apply = (targets, label) => {
+            targets.forEach(i => updateMenuItem(i.id, { taxProfileId: bulkProfileId }));
+            markBOChange();
+            const pName = profiles.find(p => p.id === bulkProfileId)?.name || 'Tax profile';
+            showToast(`${pName} set on ${targets.length} item${targets.length===1?'':'s'} (${label})`, 'success');
+          };
+          return (
+            <div style={{ padding:'8px 12px', borderBottom:'1px solid var(--bdr)', background:'color-mix(in srgb, var(--acc) 9%, transparent)', display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', flexShrink:0 }}>
+              <span style={{ fontSize:12, fontWeight:700, color:'var(--t2)' }}>Tax profile quick apply</span>
+              <select value={bulkProfileId} onChange={e=>setBulkProfileId(e.target.value)} style={{ ...inp, width:'auto', fontSize:11, cursor:'pointer' }}>
+                <option value="">— pick a profile —</option>
+                {profiles.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+              <button disabled={!bulkProfileId || !missingProfile.length}
+                onClick={()=>apply(missingProfile, 'items without a profile')}
+                style={{ padding:'6px 14px', borderRadius:8, cursor:(bulkProfileId&&missingProfile.length)?'pointer':'not-allowed', fontFamily:'inherit', background:(bulkProfileId&&missingProfile.length)?'var(--acc)':'var(--bg3)', border:'none', color:(bulkProfileId&&missingProfile.length)?'#0b0c10':'var(--t4)', fontSize:12, fontWeight:800 }}>
+                Fill {missingProfile.length} without one
+              </button>
+              <button disabled={!bulkProfileId}
+                onClick={()=>{ if (window.confirm(`Set this profile on ALL ${activeItems.length} items? Existing item profiles are replaced. Per-item legacy tax settings still take priority where set.`)) apply(activeItems, 'all items'); }}
+                style={{ padding:'6px 14px', borderRadius:8, cursor:bulkProfileId?'pointer':'not-allowed', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr)', color:bulkProfileId?'var(--t1)':'var(--t4)', fontSize:12, fontWeight:800 }}>
+                Apply to all {activeItems.length}
+              </button>
+              <span style={{ fontSize:10.5, color:'var(--t4)' }}>Categories and the venue default cover items with no profile of their own.</span>
             </div>
           );
         })()}

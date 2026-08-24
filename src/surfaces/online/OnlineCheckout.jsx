@@ -36,7 +36,8 @@ import { getDeliveryQuote, recordDeliverySurcharge } from '../../lib/delivery/qu
 import { dispatchDelivery } from '../../lib/delivery/dispatch';
 import { sendEmailReceipt } from '../../lib/sendReceipt';
 import { getDayWindows, resolveLocalDateTime } from '../../lib/openingHours';
-import { calculateOrderTax } from '../../lib/tax';
+import { computeOrderTaxUnified } from '../../lib/taxCompute';
+import { breakdownIsExclusive, taxTermFor } from '../../lib/receiptTax';   // v5.7.34: rate-null guards + VAT/Sales Tax wording
 import { money, stripeCurrency } from '../../lib/currency';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
@@ -77,7 +78,7 @@ function decrementOnlineStock(cart, locationId) {
 // orderAheadOnly (v5.5.802): the venue is currently CLOSED and the customer is
 // ordering ahead for reopening — timing is forced to a scheduled slot (slots only
 // ever fall inside opening windows) and the ASAP option isn't offered.
-export default function OnlineCheckout({ cart, theme, location, orderType, loyalty, taxRates = [], onClose, onPlaced, onOpenLoyalty, onLoyaltyVerified, orderAheadOnly = false }) {
+export default function OnlineCheckout({ cart, theme, location, orderType, loyalty, taxRates = [], taxCtx = null, onClose, onPlaced, onOpenLoyalty, onLoyaltyVerified, orderAheadOnly = false }) {
   const opsLocationId = location.ops_location_id || location.id; // ops DB
   const platformLocationId = location.id;                         // platform DB
   const tz = location.timezone || 'Europe/London';
@@ -203,16 +204,22 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   const autoDiscountMinor = Math.round(autoDiscounts.reduce((s, d) => s + (d.value || 0), 0) * 100);
 
   // v5.5.154: UK VAT breakdown — required on customer-facing receipts/totals.
-  const taxBreakdown = useMemo(() => calculateOrderTax(
+  // v5.7.34: through the unified seam — profiles cascade when assigned,
+  // byte-identical calculateOrderTax otherwise.
+  const taxBreakdown = useMemo(() => computeOrderTaxUnified(
     cart.map(l => ({
       price: l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0),
       qty: l.qty || 1,
+      itemId: l.itemId ?? null,
+      cat: l.cat ?? null,
+      cats: Array.isArray(l.cats) ? l.cats : null,
+      taxProfileId: l.taxProfileId ?? null,
       taxRateId: l.taxRateId || l.tax_rate_id || null,
       taxOverrides: l.taxOverrides || l.tax_overrides || {},
     })),
-    taxRates,
+    taxCtx || { taxRates },
     orderType || 'collection',
-  ), [cart, taxRates, orderType]);
+  ), [cart, taxCtx, taxRates, orderType]);
 
   // v5.5.243: Combined deduction calculation (auto-discount → gift card → loyalty reward)
   const giftAppliedMinor = giftApplied?.applied || 0;
@@ -232,6 +239,14 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       totalTax: taxBreakdown.totalTax * scale,
       exclusiveTax: (taxBreakdown.exclusiveTax || 0) * scale,   // v5.7.31: the charged share scales with the goods discount too
       breakdown: taxBreakdown.breakdown.map(b => ({ ...b, tax: b.tax * scale, net: b.net * scale, gross: b.gross * scale })),
+      // v5.7.34: the v2 named-lines record scales with the goods discount too —
+      // its figures must describe the same discounted bill as the legacy keys.
+      ...(taxBreakdown.taxV2 ? { taxV2: {
+        ...taxBreakdown.taxV2,
+        lines: taxBreakdown.taxV2.lines.map(l => ({ ...l, amount: l.amount * scale })),
+        exclusiveTaxTotal: taxBreakdown.taxV2.exclusiveTaxTotal * scale,
+        inclusiveExtractedTotal: taxBreakdown.taxV2.inclusiveExtractedTotal * scale,
+      } } : {}),
     };
   }, [taxBreakdown, autoDiscountMinor, subtotalMinor, discountedSubtotalMinor]);
   // v5.5.648: live delivery quote (Uber Direct, or the configured fee for HubRise-bridge
@@ -1679,7 +1694,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             {discountedTaxBreakdown.totalTax > 0 && discountedTaxBreakdown.breakdown.map((b, i) => (
               <div key={`vat-${i}`} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 12, color: muted }}>
                 {/* v5.7.31: exclusive (added-on) rates show "+" — they are charged on top and included in the Total below */}
-                <span>{b.rate.type === 'exclusive' ? '+ ' : 'incl. '}{b.rate.name || `VAT ${(Number(b.rate.rate) * 100).toFixed(0)}%`}</span>
+                <span>{breakdownIsExclusive(b) ? '+ ' : 'incl. '}{b.rate?.name || b.name || (b.rate ? `${taxTermFor(discountedTaxBreakdown)} ${(Number(b.rate.rate) * 100).toFixed(0)}%` : 'Tax')}</span>
                 <span>{money(b.tax)}</span>
               </div>
             ))}
