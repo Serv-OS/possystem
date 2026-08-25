@@ -181,6 +181,10 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
               : `${t.maxCovers || 0} seats`;
             const later = upcomingCount(t.id);
             const pickTarget = active || next || null;
+            // Text is fixed-px while the table scales with zoom, so gate how many
+            // lines render on the bubble's on-screen height — never clip mid-line.
+            const rw = (t.w || 60) * scale, rh = (t.h || 60) * scale;
+            const lines = rh >= 46 ? 3 : rh >= 32 ? 2 : 1;
             return (
               <div key={t.id}
                 onClick={onPickBooking && pickTarget ? () => onPickBooking(pickTarget.id) : undefined}
@@ -188,7 +192,7 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
                 style={{
                 position: 'absolute',
                 left: PAD + (t.x || 0) * scale, top: PAD + (t.y || 0) * scale,
-                width: (t.w || 60) * scale, height: (t.h || 60) * scale,
+                width: rw, height: rh,
                 borderRadius: t.shape === 'rd' ? '50%' : 12,
                 border: `2px solid ${hot ? 'var(--acc)' : tintBd(col, 45)}`,
                 background: hot ? tintBg('var(--acc)', 18) : tintBg(col),
@@ -204,9 +208,16 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
                     background: 'var(--uv)', color: 'var(--bg)', border: '1.5px solid var(--bg1)', zIndex: 2,
                   }}>{later}</span>
                 )}
-                <div style={{ fontSize: 12, fontWeight: 800, color: col, lineHeight: 1.1 }}>{t.label || t.id}</div>
-                <div style={{ fontSize: 9, fontWeight: 600, color: 'var(--t2)', maxWidth: '92%', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{line2}</div>
-                <div style={{ fontSize: 9, color: 'var(--t3)', maxWidth: '92%', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', ...mono }}>{line3}</div>
+                <div style={{ fontSize: rh < 30 ? 10 : 12, fontWeight: 800, color: col, lineHeight: 1.1 }}>{t.label || t.id}</div>
+                {/* 2-line mode: skip a literal "free" (the colour already says it) in favour of seats */}
+                {lines >= 2 && (
+                  <div style={{ fontSize: 9, fontWeight: 600, color: 'var(--t2)', maxWidth: '92%', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {lines === 2 && line2 === 'free' ? line3 : line2}
+                  </div>
+                )}
+                {lines >= 3 && (
+                  <div style={{ fontSize: 9, color: 'var(--t3)', maxWidth: '92%', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', ...mono }}>{line3}</div>
+                )}
               </div>
             );
           })}

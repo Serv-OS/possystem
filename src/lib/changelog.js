@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.43',
+    date: '2026-08-25',
+    items: [
+      'Bookings host stand: the pairing screen now points to Back Office, Channels, Table bookings (where the new pairing box lives) instead of Tables Ready.',
+      'Bookings floor map: table bubbles no longer clip their text when zoomed out. Small bubbles show fewer lines instead of half-cut ones, and free tables show their seat count.',
+    ],
+  },
+  {
     version: '5.7.42',
     date: '2026-08-25',
     items: [
