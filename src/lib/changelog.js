@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.41',
+    date: '2026-08-25',
+    items: [
+      'Table bookings: the host stand pairing box now lives in the Table bookings section too, where you would look for it. One pairing still covers Bookings and Tables Ready on the same tablet.',
+      'Booking pre order reminders now run on a server clock every 15 minutes instead of relying on a host stand being awake. Needs the small database update supplied with this release.',
+    ],
+  },
+  {
     version: '5.7.40',
     date: '2026-08-25',
     items: [

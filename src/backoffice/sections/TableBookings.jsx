@@ -18,6 +18,8 @@ import { money } from '../../lib/currency';
 import { CUSTOMER_ROOT } from '../../lib/env';
 import { platformSupabase, getLocationId } from '../../lib/supabase';
 import { DEFAULT_RULES, DEFAULT_TURN_BANDS } from '../../lib/bookings/optimiser.js';
+import { claimWaitlistDevice } from '../../lib/waitlist/waitlistData';
+import { getActiveLocationSync } from '../../lib/supabase';
 
 const MONO = 'var(--font-mono, ui-monospace, monospace)';
 
@@ -108,6 +110,27 @@ export default function TableBookings() {
   };
   const toggleNoOnline = (id) => {
     patch({ noOnlineTables: noOnlineTables.includes(id) ? noOnlineTables.filter((x) => x !== id) : [...noOnlineTables, id] });
+  };
+
+  // v5.7.41 — pair a host stand FROM HERE. Bookings host stands claim through
+  // the shared waitlist_devices plumbing (one pairing covers Bookings and
+  // Tables Ready), but the claim box only ever lived in the Tables Ready
+  // config screen — operators setting up BOOKINGS looked here and found
+  // nothing. Same claim, both homes.
+  const showToast = useStore((st) => st.showToast);
+  const [pairCode, setPairCode] = useState('');
+  const [pairBusy, setPairBusy] = useState(false);
+  const pairStand = async () => {
+    const cc = pairCode.trim().toUpperCase();
+    if (cc.length < 4) { showToast?.('Enter the code shown on the host stand', 'error'); return; }
+    setPairBusy(true);
+    try {
+      const loc = getActiveLocationSync() || await getLocationId().catch(() => null);
+      const res = await claimWaitlistDevice(cc, loc);
+      if (res && res.location_id) { setPairCode(''); showToast?.('Host stand paired', 'success'); }
+      else showToast?.('That code was not found. Check the host stand screen.', 'error');
+    } catch (e) { showToast?.(e?.message || 'Could not pair', 'error'); }
+    finally { setPairBusy(false); }
   };
 
   return (
@@ -316,6 +339,28 @@ function Row({ label, sub, children }) {
         {sub && <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2, lineHeight: 1.4 }}>{sub}</div>}
       </div>
       {children}
+
+      {/* ── Pair a host stand ── */}
+      <div style={{ ...S.section, marginTop: 14, maxWidth: 640 }}>
+        <div style={S.h2}>Pair a host stand</div>
+        <div style={{ fontSize: 12.5, color: 'var(--t3)', lineHeight: 1.7, margin: '6px 0 12px' }}>
+          A tablet at the door runs the bookings diary, the floor and pre-orders.
+          On the tablet open the ServOS Bookings app (or ?mode=bookings in a browser).
+          It shows a 6 character pairing code. Type it here. One pairing covers
+          Bookings and Tables Ready on the same tablet.
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <input value={pairCode}
+            onChange={(e) => setPairCode(e.target.value.toUpperCase().slice(0, 8))}
+            onKeyDown={(e) => e.key === 'Enter' && pairStand()}
+            placeholder="CODE"
+            style={{ padding: '10px 14px', borderRadius: 10, border: '1.5px solid var(--bdr)', background: 'var(--bg2)', color: 'var(--t1)', fontFamily: MONO, fontSize: 16, letterSpacing: '.2em', width: 130, textTransform: 'uppercase' }} />
+          <button onClick={pairStand} disabled={pairBusy}
+            style={{ padding: '10px 18px', borderRadius: 10, border: 'none', cursor: pairBusy ? 'default' : 'pointer', background: 'var(--acc)', color: '#0b0c10', fontWeight: 800, fontFamily: 'inherit', fontSize: 13, opacity: pairBusy ? 0.6 : 1 }}>
+            {pairBusy ? 'Pairing…' : 'Pair host stand'}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
