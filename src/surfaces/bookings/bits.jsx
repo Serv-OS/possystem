@@ -4,7 +4,7 @@
 // presentation helpers only: status derivation, token tints, steppers,
 // toggles and chips. No store access, no DB.
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
 import { toMin, DEFAULT_TURN_BANDS, DEFAULT_RULES } from '../../lib/bookings/optimiser.js';
 
 export const mono = { fontFamily: 'var(--font-mono)' };
@@ -51,6 +51,25 @@ export function useNowMin(intervalMs = 30000) {
 // ── status derivation ─────────────────────────────────────────────────────────
 // nowMin === null ⇒ the diary is showing a day that is not today, so the
 // late / due clock states do not apply.
+// Host stands run on 11 inch iPads (1194px landscape, 834px portrait), where the
+// fixed side panels leave the floor plan the SMALLEST region on screen. These
+// styles are inline objects, so the globals.css media-query pattern cannot reach
+// them; this hook is the equivalent seam. Matches the 1260px POS breakpoint.
+export function useNarrowStand(breakpoint = 1260) {
+  const q = `(max-width: ${breakpoint}px)`;
+  const subscribe = useCallback((cb) => {
+    if (typeof window === 'undefined' || !window.matchMedia) return () => {};
+    const mq = window.matchMedia(q);
+    mq.addEventListener('change', cb);
+    return () => mq.removeEventListener('change', cb);
+  }, [q]);
+  const read = useCallback(
+    () => (typeof window !== 'undefined' && window.matchMedia ? window.matchMedia(q).matches : false),
+    [q],
+  );
+  return useSyncExternalStore(subscribe, read, () => false);
+}
+
 export const DUE_WINDOW = 15; // minutes before start that reads "due now"
 
 // v5.7.21 truth rules: 'pending_payment' (amber, Awaiting payment) and

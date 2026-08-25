@@ -11,7 +11,7 @@ import { useStore } from '../../store';
 import { toMin, toHM } from '../../lib/bookings/optimiser.js';
 import {
   mono, tintBg, tintBd, rulesOf, displayStatus, useNowMin, money,
-  sessionTotal, bookingName, todayISO, isLive,
+  sessionTotal, bookingName, todayISO, isLive, useNarrowStand,
 } from './bits.jsx';
 
 // The POS's exact table colours (TablesSurface.jsx STATUS map) — one visual
@@ -22,6 +22,32 @@ const POS_OCCUPIED = '#e8a020';
 const POS_RESERVED = '#a855f7';
 
 const PAD = 10;
+
+// Does this string actually fit the bubble? MEASURED with the real font rather
+// than guessed from a characters-times-em constant, which was wrong often enough
+// to leave "Open tab" and "6 se..." sliced on the plan. Cached per string+size.
+const textWidth = (() => {
+  let ctx = null;
+  let fams = null;
+  const cache = new Map();
+  return (text, size, weight, family = 'body') => {
+    const key = `${family}|${weight}|${size}|${text}`;
+    const hit = cache.get(key);
+    if (hit !== undefined) return hit;
+    if (!ctx && typeof document !== 'undefined') {
+      ctx = document.createElement('canvas').getContext('2d');
+      const cs = getComputedStyle(document.body);
+      // The third line is MONOSPACE, which is far wider than the body face at the
+      // same size. Measuring it with the body font is what left "6 seats" sliced.
+      fams = { body: cs.fontFamily || 'sans-serif', mono: cs.getPropertyValue('--font-mono') || 'monospace' };
+    }
+    if (!ctx) return String(text).length * size * 0.62; // no canvas: conservative guess
+    ctx.font = `${weight} ${size}px ${fams[family] || fams.body}`;
+    const w = ctx.measureText(String(text)).width;
+    cache.set(key, w);
+    return w;
+  };
+})();
 
 // onPickBooking: parent (Service view) selects the tile's booking for its
 // inspector. showWalkIn: the Service view hides the walk-in panel while its
@@ -37,6 +63,11 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
   const nowMin = useNowMin();
   const statusNow = isToday ? nowMin : null;
 
+  const narrow = useNarrowStand();
+  // Portrait on an iPad leaves about 300px beside the two panels, which is not a
+  // floor plan, it is a postage stamp. Below this width the walk-in panel moves
+  // UNDER the plan so the plan gets the full width of the stand.
+  const stacked = useNarrowStand(950);
   const [walk, setWalk] = useState(2);
   const [seating, setSeating] = useState(false);
   const [msg, setMsg] = useState('');
@@ -58,13 +89,22 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
     for (const t of floorTables) { mx = Math.max(mx, (t.x || 0) + (t.w || 60)); my = Math.max(my, (t.y || 0) + (t.h || 60)); }
     return { mx, my };
   }, [floorTables]);
-  const fitScale = Math.max(0.5, Math.min((wrapSize.w - PAD * 2) / bounds.mx, (wrapSize.h - PAD * 2 - 18) / bounds.my));
+  // Fit MUST fit. The old floor of 0.5 meant a wide floor plan needing 0.48 was
+  // forced to 0.5 and silently ran off the right edge of the pane, hiding whole
+  // tables on an 11 inch iPad while the button still claimed "Fit" (Peter, 25 Aug:
+  // bar tables B5..B9 were simply not on screen). MIN_SCALE is a legibility floor
+  // only, and the manual zoom-out floor matches it so the two agree.
+  const MIN_SCALE = 0.28;
+  const fitScale = Math.max(
+    MIN_SCALE,
+    Math.min((wrapSize.w - PAD * 2) / bounds.mx, (wrapSize.h - PAD * 2 - 18) / bounds.my),
+  );
   // Zoom controls MATCH THE POS floor plan (v4.6.57 system): auto-fit until
-  // the user zooms, − / + step 0.1 within 0.4–1.6, Fit snaps back to auto.
+  // the user zooms, − / + step 0.1, Fit snaps back to auto.
   const [zoom, setZoom] = useState(1);
   const [autoFit, setAutoFit] = useState(true);
   const scale = autoFit ? fitScale : zoom;
-  const zoomOut = () => { setAutoFit(false); setZoom(+Math.max(0.4, (autoFit ? fitScale : zoom) - 0.1).toFixed(2)); };
+  const zoomOut = () => { setAutoFit(false); setZoom(+Math.max(MIN_SCALE, (autoFit ? fitScale : zoom) - 0.1).toFixed(2)); };
   const zoomIn = () => { setAutoFit(false); setZoom(+Math.min(1.6, (autoFit ? fitScale : zoom) + 0.1).toFixed(2)); };
 
   // ── what each table is doing right now ──────────────────────────────────────
@@ -110,19 +150,25 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
   const openTabs = floorTables.filter((t) => t.session);
 
   return (
-    <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex' }}>
+    <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: stacked ? 'column' : 'row' }}>
       {/* ── canvas ── */}
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', padding: 14 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 10, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 14, fontWeight: 800, letterSpacing: '-0.01em' }}>Floor — live from POS</span>
           <span style={{ flex: 1 }} />
-          <Legend col={POS_FREE} label="Free" />
-          <Legend col={POS_SEATED} label="Seated" />
-          <Legend col={POS_OCCUPIED} label="Occupied" />
-          <Legend col={POS_RESERVED} label="Booked" />
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, color: 'var(--t3)' }}>
-            <span style={{ width: 14, height: 8, border: `1.5px dashed ${tintBd('var(--acc)', 55)}`, borderRadius: 3 }} /> Joined
-          </span>
+          {/* The legend wraps onto a second row on a portrait stand and shoves the
+              zoom controls down with it. The plan itself matters more than its key. */}
+          {!stacked && (
+            <>
+              <Legend col={POS_FREE} label="Free" />
+              <Legend col={POS_SEATED} label="Seated" />
+              <Legend col={POS_OCCUPIED} label="Occupied" />
+              <Legend col={POS_RESERVED} label="Booked" />
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, color: 'var(--t3)' }}>
+                <span style={{ width: 14, height: 8, border: `1.5px dashed ${tintBd('var(--acc)', 55)}`, borderRadius: 3 }} /> Joined
+              </span>
+            </>
+          )}
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, marginLeft: 4 }}>
             <button onClick={zoomOut} title="Zoom out"
               style={{ width: 24, height: 24, borderRadius: 6, border: 'none', background: 'var(--bg3)', color: 'var(--t1)', fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' }}>−</button>
@@ -133,8 +179,11 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
               style={{ height: 24, padding: '0 8px', borderRadius: 6, border: 'none', background: autoFit ? 'var(--acc-d)' : 'var(--bg3)', color: autoFit ? 'var(--acc)' : 'var(--t2)', fontSize: 10, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', textTransform: 'uppercase', letterSpacing: '.07em' }}>Fit</button>
           </span>
         </div>
-        <div ref={wrapRef} style={{ flex: 1, minHeight: 0, position: 'relative', background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 16, overflow: 'auto' }}>
-          <div style={{ position: 'relative', width: bounds.mx * scale + PAD * 2, height: bounds.my * scale + PAD * 2, minWidth: '100%', minHeight: '100%' }}>
+        <div ref={wrapRef} style={{ flex: 1, minHeight: 0, position: 'relative', background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 16, overflow: 'auto', display: 'flex' }}>
+          {/* margin:auto centres the plan in a pane that is usually taller than the
+              plan, and (unlike flex centring) still scrolls to the true top-left
+              when the plan is the bigger one. */}
+          <div style={{ position: 'relative', width: bounds.mx * scale + PAD * 2, height: bounds.my * scale + PAD * 2, margin: 'auto', flexShrink: 0 }}>
           {floorTables.length === 0 && (
             <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', color: 'var(--t3)', fontSize: 13 }}>
               No floor plan yet — build one in Back Office → Floor plan.
@@ -171,20 +220,54 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
               : sessCol
               || (next ? POS_RESERVED : POS_FREE);
             const hot = sugSet.has(t.id);
-            const line2 = active ? bookingName(active)
-              : t.session ? (t.session.server || 'Open tab')
-              : next ? String(next.startTime || '').slice(0, 5)
-              : 'free';
-            const line3 = active ? `${active.covers} cvr · ${String(active.startTime || '').slice(0, 5)}`
-              : t.session ? `${t.session.covers || '—'} cvr`
-              : next ? bookingName(next)
-              : `${t.maxCovers || 0} seats`;
+            // Type is sized FROM the bubble, and the line count is derived from the
+            // height the type actually needs, so nothing is ever sliced in half at
+            // any zoom. Round tables get a narrower text box: a circle's usable
+            // width at the top and bottom of the stack is far less than its box.
+            const rw = (t.w || 60) * scale, rh = (t.h || 60) * scale;
+            const round = t.shape === 'rd';
+            const infoSize = Math.min(10, Math.max(7, Math.round(rh * 0.22)));
+            const inner = rh - 8;
+            const textW = round ? '74%' : '92%';
+            // border-box: the 2px border on each side is INSIDE rw, and the text
+            // line's maxWidth percentage applies to that shrunken content box.
+            const textPx = Math.max(0, (rw - 4) * (round ? 0.74 : 0.92) - 1);
+            // The table's own name always shows, so shrink it until it fits rather
+            // than letting it ellipsis into something unreadable at low zoom.
+            const label = String(t.label || t.id);
+            let labelSize = Math.min(13, Math.max(6, Math.round(rh * 0.30)));
+            while (labelSize > 6 && textWidth(label, labelSize, 800) > textPx) labelSize -= 1;
+            const labelH = labelSize * 1.15;
+            const infoH = infoSize * 1.3;
+            const lines = inner >= labelH + infoH * 2 ? 3 : inner >= labelH + infoH ? 2 : 1;
+            // A bar stool at fit scale is about 34px across, where "6 seats" turns
+            // into "6 se...". Try shorter wordings first, and if none of them fit,
+            // render NO line at all: an ellipsised unit reads as broken, while the
+            // colour and the table name still carry the state on their own.
+            const fits = (s, family) => textWidth(s, infoSize, 600, family) <= textPx;
+            const pick = (...cands) => cands.find((c) => fits(c, 'body')) || null;
+            const pickMono = (...cands) => cands.find((c) => fits(c, 'mono')) || null;
+            const covers = (n) => pickMono(`${n} cvr`, `${n}`);
+
+            const firstWord = (s) => String(s || '').split(' ')[0];
+            const isFree = !active && !t.session && !next;
+            const line2 = active ? pick(bookingName(active), firstWord(bookingName(active)))
+              : t.session ? (t.session.server
+                  ? pick(t.session.server, firstWord(t.session.server))
+                  : pick('Open tab', 'Tab'))
+              : next ? pick(String(next.startTime || '').slice(0, 5))
+              : pick('free');
+            const line3 = active ? pickMono(
+                `${active.covers} cvr · ${String(active.startTime || '').slice(0, 5)}`,
+                `${active.covers} cvr`, `${active.covers}`)
+              : t.session ? covers(t.session.covers || '—')
+              : next ? pickMono(bookingName(next), firstWord(bookingName(next)))
+              : pickMono(`${t.maxCovers || 0} seats`, `${t.maxCovers || 0}`);
+            // In 2-line mode a free table is better served by its seat count than by
+            // the word "free", which the colour already says.
+            const slot2 = lines === 2 && isFree ? line3 : line2;
             const later = upcomingCount(t.id);
             const pickTarget = active || next || null;
-            // Text is fixed-px while the table scales with zoom, so gate how many
-            // lines render on the bubble's on-screen height — never clip mid-line.
-            const rw = (t.w || 60) * scale, rh = (t.h || 60) * scale;
-            const lines = rh >= 46 ? 3 : rh >= 32 ? 2 : 1;
             return (
               <div key={t.id}
                 onClick={onPickBooking && pickTarget ? () => onPickBooking(pickTarget.id) : undefined}
@@ -208,15 +291,12 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
                     background: 'var(--uv)', color: 'var(--bg)', border: '1.5px solid var(--bg1)', zIndex: 2,
                   }}>{later}</span>
                 )}
-                <div style={{ fontSize: rh < 30 ? 10 : 12, fontWeight: 800, color: col, lineHeight: 1.1 }}>{t.label || t.id}</div>
-                {/* 2-line mode: skip a literal "free" (the colour already says it) in favour of seats */}
-                {lines >= 2 && (
-                  <div style={{ fontSize: 9, fontWeight: 600, color: 'var(--t2)', maxWidth: '92%', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    {lines === 2 && line2 === 'free' ? line3 : line2}
-                  </div>
+                <div style={{ fontSize: labelSize, fontWeight: 800, color: col, lineHeight: 1.15, maxWidth: textW, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</div>
+                {lines >= 2 && slot2 && (
+                  <div style={{ fontSize: infoSize, fontWeight: 600, color: 'var(--t2)', lineHeight: 1.3, maxWidth: textW, whiteSpace: 'nowrap' }}>{slot2}</div>
                 )}
-                {lines >= 3 && (
-                  <div style={{ fontSize: 9, color: 'var(--t3)', maxWidth: '92%', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', ...mono }}>{line3}</div>
+                {lines >= 3 && line3 && (
+                  <div style={{ fontSize: infoSize, color: 'var(--t3)', lineHeight: 1.3, maxWidth: textW, whiteSpace: 'nowrap', ...mono }}>{line3}</div>
                 )}
               </div>
             );
@@ -227,7 +307,9 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
 
       {/* ── right panel ── */}
       {showWalkIn && (
-      <div style={{ width: 330, flexShrink: 0, background: 'var(--bg1)', borderLeft: '1px solid var(--bdr)', overflowY: 'auto', padding: 16 }}>
+      <div style={stacked
+        ? { flexShrink: 0, maxHeight: '38%', background: 'var(--bg1)', borderTop: '1px solid var(--bdr)', overflowY: 'auto', padding: 12 }
+        : { width: narrow ? 262 : 330, flexShrink: 0, background: 'var(--bg1)', borderLeft: '1px solid var(--bdr)', overflowY: 'auto', padding: narrow ? 12 : 16 }}>
         <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 9 }}>Seat a walk-in</div>
         <div style={{ display: 'flex', gap: 6, marginBottom: 12, flexWrap: 'wrap' }}>
           {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map((n) => (

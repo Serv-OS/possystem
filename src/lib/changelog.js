@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.45',
+    date: '2026-08-25',
+    items: [
+      'Bookings floor plan now actually fits. "Fit" was refusing to go below 50%, so on an iPad the right hand tables ran off the edge and could not be seen at all. It now scales to whatever the screen needs.',
+      'The floor plan gets more of the screen on an iPad: the day list and the walk-in panel are trimmed, and in portrait the walk-in panel moves under the plan instead of squeezing it into a strip.',
+      'Table bubbles never cut their text again. Type is sized from the bubble, wording shortens when space is tight, and any line that still will not fit is left out rather than sliced.',
+      'The plan sits centred in its pane, and the booking inspector matches the walk-in panel width so the floor no longer jumps size when a booking is selected.',
+    ],
+  },
+  {
     version: '5.7.44',
     date: '2026-08-25',
     items: [

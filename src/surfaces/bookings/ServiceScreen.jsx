@@ -13,12 +13,13 @@ import { useStore } from '../../store';
 import { toMin } from '../../lib/bookings/optimiser.js';
 import {
   mono, tintBg, rulesOf, displayStatus, statusMeta, isDead,
-  useNowMin, bookingName, todayISO, preorderStateFor,
+  useNowMin, bookingName, todayISO, preorderStateFor, useNarrowStand,
 } from './bits.jsx';
 import FloorScreen from './FloorScreen.jsx';
 import { Inspector } from './DiaryScreen.jsx';
 
 export default function ServiceScreen({ sel, onSelect, onBook }) {
+  const narrow = useNarrowStand();
   const bookings = useStore((s) => s.bookings) || [];
   const tables = useStore((s) => s.tables) || [];
   const packages = useStore((s) => s.packages) || [];
@@ -54,7 +55,9 @@ export default function ServiceScreen({ sel, onSelect, onBook }) {
   return (
     <div style={{ flex: 1, minWidth: 0, minHeight: 0, display: 'flex' }}>
       {/* ── left rail: today's list ── */}
-      <div style={{ width: 264, flexShrink: 0, background: 'var(--bg1)', borderRight: '1px solid var(--bdr)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      {/* On an 11 inch stand every pixel here is taken from the floor plan, which
+          is the thing the host actually reads. Narrow trims this rail back. */}
+      <div style={{ width: narrow ? 208 : 264, flexShrink: 0, background: 'var(--bg1)', borderRight: '1px solid var(--bdr)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
         <div style={{ padding: '10px 12px 0', flexShrink: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <button className="btn btn-ghost btn-xs" onClick={() => shiftDay(-1)} style={{ ...mono }}>‹</button>
@@ -98,8 +101,10 @@ export default function ServiceScreen({ sel, onSelect, onBook }) {
       <FloorScreen onPickBooking={(id) => onSelect(id)} showWalkIn={!selected} />
 
       {/* ── right: inspector for the selected booking ── */}
+      {/* MUST match the walk-in panel's width: the two swap places on the same
+          edge, so any difference resizes the floor plan under the host's finger. */}
       {selected && (
-        <div style={{ width: 330, flexShrink: 0, background: 'var(--bg1)', borderLeft: '1px solid var(--bdr)', overflowY: 'auto' }}>
+        <div style={{ width: narrow ? 262 : 330, flexShrink: 0, background: 'var(--bg1)', borderLeft: '1px solid var(--bdr)', overflowY: 'auto' }}>
           <Inspector b={selected} nowMin={nowMin} packages={packages} rules={rules} tables={topTables} onClose={() => onSelect(null)} />
         </div>
       )}

@@ -601,11 +601,13 @@ export function Inspector({ b, nowMin, packages, rules, tables, onClose }) {
         {b.status === 'dining' && (
           <button className="btn btn-ghost" onClick={() => updateBooking?.(b.id, { status: 'departed', departedAt: Date.now() })} style={{ height: 44 }}>Mark departed</button>
         )}
+        {/* Three across a 262px panel on a narrow stand: minWidth 0 and tighter
+            padding, or .btn's nowrap pushes the labels through the borders. */}
         {isLive(b) && b.status !== 'dining' && (
           <div style={{ display: 'flex', gap: 8 }}>
-            <button className="btn btn-ghost" onClick={() => setMoving((m) => !m)} style={{ flex: 1, height: 40 }}>{moving ? 'Close move' : 'Move table'}</button>
-            <button className="btn btn-red" onClick={() => updateBooking?.(b.id, { status: 'no_show' })} style={{ flex: 1, height: 40 }}>No-show</button>
-            <button className="btn btn-ghost" onClick={() => cancelBooking?.(b.id)} style={{ flex: 1, height: 40 }}>Cancel</button>
+            <button className="btn btn-ghost" onClick={() => setMoving((m) => !m)} style={{ flex: 1, minWidth: 0, height: 40, padding: '0 10px', fontSize: 12 }}>{moving ? 'Close' : 'Move'}</button>
+            <button className="btn btn-red" onClick={() => updateBooking?.(b.id, { status: 'no_show' })} style={{ flex: 1, minWidth: 0, height: 40, padding: '0 10px', fontSize: 12 }}>No-show</button>
+            <button className="btn btn-ghost" onClick={() => cancelBooking?.(b.id)} style={{ flex: 1, minWidth: 0, height: 40, padding: '0 10px', fontSize: 12 }}>Cancel</button>
           </div>
         )}
       </div>
