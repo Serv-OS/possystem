@@ -289,6 +289,16 @@ const sbUpsertMenuItem = async (item) => {
 import { INITIAL_KDS, SHIFT, MENU_ITEMS, CATEGORIES, STAFF as STAFF_SEED, QUICK_IDS, ALLERGENS as ALLERGEN_DEFS } from '../data/seed';
 import { money } from '../lib/currency';
 
+// v5.7.35 — ?mode=kds pins the KDS surface for this page load (read once; the
+// mode param is the operator's explicit intent, so profile defaults must not
+// override it). Extendable to other internal surfaces if more links need pins.
+const URL_SURFACE_PIN = (() => {
+  try {
+    return new URLSearchParams(window.location.search).get('mode') === 'kds' ? 'kds' : null;
+  } catch { return null; }
+})();
+
+
 // ─── ID helpers ──────────────────────────────────────────────────────────────
 let _itemUid = 1;
 const uid = () => `i${_itemUid++}`;
@@ -609,6 +619,12 @@ export const useStore = create((set, get) => ({
 
   // ── Navigation ────────────────────────────
   surface: (() => {
+    // v5.7.35: an explicit ?mode=kds in the URL is operator INTENT and pins the
+    // KDS surface — before this, the link fell through to the POS app and the
+    // profile defaultSurface snapped it to 'pos' at boot, so the KDS link
+    // "loaded the POS" on any POS-paired browser. The pin also suppresses the
+    // boot defaultSurface snap (see setDeviceConfig).
+    if (URL_SURFACE_PIN) return URL_SURFACE_PIN;
     // Apply defaultSurface from device config on startup
     try {
       const dc = JSON.parse(localStorage.getItem('rpos-device-config') || 'null');
@@ -888,7 +904,9 @@ export const useStore = create((set, get) => ({
     // screen they are working on mid-shift.
     const prevDefaultSurface = get().deviceConfig?.defaultSurface;
     set({ deviceConfig: finalConfig, trainingMode: training });
-    if (finalConfig?.defaultSurface && finalConfig.defaultSurface !== prevDefaultSurface) set({ surface: finalConfig.defaultSurface });
+    // v5.7.35: an explicit URL surface pin (?mode=kds) beats the profile's
+    // default surface — the operator asked for a specific screen by link.
+    if (finalConfig?.defaultSurface && finalConfig.defaultSurface !== prevDefaultSurface && !URL_SURFACE_PIN) set({ surface: finalConfig.defaultSurface });
   },
   // v5.5.645: explicit setter (used at boot + by any manual override). Keeps the
   // module singleton and the React state in lock-step.

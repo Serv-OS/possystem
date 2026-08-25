@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.35',
+    date: '2026-08-20',
+    items: [
+      'The KDS link works: opening the app with mode=kds now goes straight to the kitchen display on any paired device, instead of falling through to the POS.',
+    ],
+  },
+  {
     version: '5.7.34',
     date: '2026-08-24',
     items: [
