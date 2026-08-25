@@ -110,19 +110,35 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
     const from = Number.isFinite(nowMin) ? nowMin : startMin;
     const freeNextHour = rows.filter((t) => isTableFree(t.id, from, from + 60, optBookings)).length;
     const atRisk = bookings.filter((b) => ['late', 'due'].includes(displayStatus(b, nowMin, packages))).length;
-    let held = 0, prepaid = 0;
+    // PREPAID IS MONEY, so it comes off the ledger total loadBookings already put
+    // on every row (paidPrepayMinor, minor units), never off the package price
+    // list. A prepay package with no captured payment is a party that has only
+    // PROMISED to pay: its own badge on this screen reads Confirmed, so a green
+    // Prepaid figure beside it made the screen contradict itself and the greener
+    // number won. null means the ledger is not readable from this device, which
+    // is not the same as zero, so that case is flagged rather than counted.
+    // No card can be asked for at all unless the venue switched capture on.
+    const canTakeCards = !!rules.cardCaptureEnabled;
+    const minCovers = rules.cardCaptureMinCovers || 0;
+    let held = 0, prepaid = 0, prepaidHidden = false;
     for (const b of alive) {
       const pkg = b.packageId ? packages.find((p) => p.id === b.packageId) : null;
-      if (pkg?.paymentModel === 'prepay') {
-        prepaid += String(pkg.priceUnit || '').includes('cover') ? (pkg.price || 0) * (b.covers || 0) : (pkg.price || 0);
-      } else if (b.status === 'confirmed' && !CARD_IMPOSSIBLE_SOURCES.has(b.source || 'host')) {
-        // Only an ONLINE booking can carry a card, and even then this is what the
-        // rules would ask for, not what the ledger holds. Labelled as expected.
+      // Ledger first, so the money still counts if the package was deleted.
+      const isPrepay = (b.paidPrepayMinor || 0) > 0 || pkg?.paymentModel === 'prepay';
+      if (isPrepay) {
+        if (b.paidPrepayMinor != null) prepaid += b.paidPrepayMinor / 100;
+        else if (!CARD_IMPOSSIBLE_SOURCES.has(b.source || 'host')) prepaidHidden = true;
+      } else if (b.status === 'confirmed' && canTakeCards && (b.covers || 0) >= minCovers
+                 && !CARD_IMPOSSIBLE_SOURCES.has(b.source || 'host')) {
+        // Only an ONLINE booking at a venue with capture ON can carry a card, and
+        // even then this is what the rules would ask for, not what the ledger
+        // holds. Labelled as expected, never as money taken.
         held += (rules.holdPerCover || 0) * (b.covers || 0);
       }
     }
-    return { coversBooked, seated, capacity, freeNextHour, atRisk, held, prepaid };
-  }, [bookings, rows, optBookings, nowMin, startMin, packages, rules.holdPerCover]);
+    return { coversBooked, seated, capacity, freeNextHour, atRisk, held, prepaid, prepaidHidden };
+  }, [bookings, rows, optBookings, nowMin, startMin, packages,
+    rules.holdPerCover, rules.cardCaptureEnabled, rules.cardCaptureMinCovers]);
 
   const selected = bookings.find((b) => b.id === sel) || null;
 
@@ -143,7 +159,11 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
           <Kpi label="Free tables" value={kpi.freeNextHour} sub="next hour" />
           <Kpi label="At risk" value={kpi.atRisk} sub="late + due" col={kpi.atRisk > 0 ? 'var(--red)' : undefined} />
           <Kpi label="Holds expected" value={money(kpi.held)} sub="online bookings" />
-          <Kpi label="Prepaid" value={money(kpi.prepaid)} sub="packages" col="var(--grn)" last />
+          <Kpi
+            label="Prepaid"
+            value={kpi.prepaidHidden && !kpi.prepaid ? 'Hidden' : money(kpi.prepaid, 2)}
+            sub={kpi.prepaidHidden ? 'captured, some not visible here' : 'captured at booking'}
+            col="var(--grn)" last />
         </div>
 
         {/* day switcher + view toggle */}
@@ -322,7 +342,7 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
           : (
             <div style={{ padding: 18, color: 'var(--t3)', fontSize: 12, lineHeight: 1.5 }}>
               <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--t2)', marginBottom: 8 }}>Nothing selected</div>
-              Tap a booking block to see the guest, payment and POS handover here.
+              Tap a booking block to see the guest, the payment and its POS tab here.
               <button className="btn btn-ghost" onClick={onBook} style={{ marginTop: 16, width: '100%', height: 40 }}>Take a booking</button>
             </div>
           )}

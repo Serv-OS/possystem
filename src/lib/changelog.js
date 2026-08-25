@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.50',
+    date: '2026-08-25',
+    items: [
+      'The Prepaid total on the bookings diary now counts money that was actually captured, not the package price list. A party of 8 on a £60 per head package who never finished paying was adding £480 to a green Prepaid figure while their own row still read Confirmed, so the screen contradicted itself.',
+      'The card holds total is now zero unless the venue has card capture switched on, and it respects the minimum covers setting. It was multiplying the rules by covers for venues that cannot ask for a card at all.',
+      'Prepaid totals show the pence.',
+    ],
+  },
+  {
     version: '5.7.49',
     date: '2026-08-25',
     items: [
