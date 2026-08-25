@@ -15,6 +15,9 @@ const STATUS = {
   seated:    { color:'#60a5fa', bg:'rgba(96,165,250,.10)', border:'rgba(96,165,250,.3)',  label:'Seated'    },
   occupied:  { color:'#e8a020', bg:'rgba(232,160,32,.14)', border:'rgba(232,160,32,.4)',  label:'Occupied'  },
   reserved:  { color:'#a855f7', bg:'rgba(168,85,247,.12)', border:'rgba(168,85,247,.35)', label:'Reserved'  },
+  // A member table of a seated join. Carries the party's amber so it never reads
+  // as free, but keeps its own label so staff know the bill lives elsewhere.
+  joined:    { color:'#e8a020', bg:'rgba(232,160,32,.10)', border:'rgba(232,160,32,.3)',  label:'Joined'    },
 };
 
 function mins(ts) {
@@ -310,8 +313,10 @@ function ReservationModal({ table, existing, onConfirm, onCancel }) {
 
 // ─── Table Node ───────────────────────────────────────────────────────────────
 function TableNode({ table, onClick }) {
-  const { tables, upcomingBookingForTable } = useStore();
+  const { tables, upcomingBookingForTable, joinedPartyForTable } = useStore();
   const session = table.session;
+  // Member of a seated join: the party's check is on the primary table.
+  const joined = !session ? joinedPartyForTable?.(table.id) : null;
   // v5.6.27: "reserved" is DISPLAY-DERIVED from the Table Bookings module —
   // the next live booking claiming this table today (upcomingBookingForTable).
   // table.reservation / persisted status 'reserved' are dead.
@@ -319,6 +324,7 @@ function TableNode({ table, onClick }) {
   // Derive display status: seated = session exists but no items yet
   const displayStatus = (table.status === 'occupied' && session && session.items?.filter(i=>!i.voided).length === 0)
     ? 'seated'
+    : joined ? 'joined'
     : bk ? 'reserved'
     : (table.status === 'reserved' && !session) ? 'available'  // stale persisted status, no live booking
     : table.status;
@@ -355,6 +361,12 @@ function TableNode({ table, onClick }) {
       {displayStatus === 'seated' && session && (
         <div style={{ fontSize:9, color:sm.color, marginTop:2, fontWeight:600 }}>
           {session.covers} cvr · seated
+        </div>
+      )}
+
+      {displayStatus === 'joined' && joined && (
+        <div style={{ fontSize:9, color:sm.color, marginTop:2, fontWeight:600, lineHeight:1.25 }}>
+          {joined.primaryLabel ? `Bill on ${joined.primaryLabel}` : 'Joined party'}
         </div>
       )}
 

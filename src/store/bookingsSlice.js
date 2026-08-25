@@ -496,6 +496,21 @@ export function bookingsSlice(set, get) {
       });
     },
 
+    // A table that is a MEMBER of a SEATED join, not the primary. The party has one
+    // check, on the primary table, so a member carries no session of its own and
+    // would otherwise read as free on the floor, inviting a second tab for a party
+    // that already has one (Peter, 25 Aug: ten covers across T5 and T7, and T7 sat
+    // there looking empty).
+    joinedPartyForTable: (tableId) => {
+      if (!tableId) return null;
+      const b = (get().bookings || []).find((x) => x.status === 'dining'
+        && x.primaryTableId && x.primaryTableId !== tableId
+        && (x.tables || []).includes(tableId));
+      if (!b) return null;
+      const primary = (get().tables || []).find((t) => t.id === b.primaryTableId);
+      return { booking: b, primaryTableId: b.primaryTableId, primaryLabel: primary?.label || null };
+    },
+
     // Re-read one booking's join from the DB and merge it in. Never shrinks the
     // list: a membership row that has not replicated yet must not drop a table we
     // already know about.

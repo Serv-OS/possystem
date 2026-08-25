@@ -256,8 +256,16 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
             // Session colours MATCH THE POS (TablesSurface STATUS map): a check
             // with items = Occupied orange, seated-nothing-ordered = light blue.
             // Same table, same colour, till or host stand (Peter, 13 Aug).
-            const sessCol = t.session
-              ? ((t.session.items || []).filter((i) => !i.voided).length ? POS_OCCUPIED : POS_SEATED)
+            // A JOINED party has ONE check, on the primary table, so the member
+            // tables carry no session of their own. Colouring a member by the
+            // absence of a session painted it the same green as an empty table,
+            // which is the one thing it is not: ten people are sitting at it
+            // (Peter, 25 Aug). A member borrows the party's colour instead.
+            const partySession = t.session || (active
+              ? floorTables.find((x) => x.id === active.primaryTableId)?.session
+              : null) || null;
+            const sessCol = partySession
+              ? ((partySession.items || []).filter((i) => !i.voided).length ? POS_OCCUPIED : POS_SEATED)
               : null;
             const col = active
               ? (st === 'late' ? 'var(--red)' : st === 'due' ? 'var(--orn)' : (sessCol || 'var(--acc)'))

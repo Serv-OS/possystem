@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.56',
+    date: '2026-08-25',
+    items: [
+      'The second table of a joined party no longer looks empty. A party sitting across two tables has one bill, which lives on the first table, so the second one had no tab of its own and was being drawn in the same green as a free table.',
+      'On the POS that table now reads "Joined" and says which table holds the bill, so nobody opens a second tab for a party that already has one.',
+    ],
+  },
+  {
     version: '5.7.55',
     date: '2026-08-25',
     items: [
