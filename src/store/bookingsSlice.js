@@ -21,7 +21,7 @@ import {
   DEFAULT_TURN_BANDS, DEFAULT_RULES,
 sessionsToBlocks } from '../lib/bookings/optimiser.js';
 import {
-  loadBookings, createBookingAtomic, updateBookingRow, rowToBooking,
+  loadBookings, createBookingAtomic, updateBookingRow, rowToBooking, loadBookingTables,
   loadBookingRules, saveBookingRules, loadPackages,
   upsertPackageRow, deletePackageRow, moveBookingTables,
   loadBookingPreorders, saveBookingPreorders, loadBookingCredit,
@@ -486,8 +486,27 @@ export function bookingsSlice(set, get) {
           preorderCount: existing?.preorderCount ?? mapped.preorderCount,
         };
         pendingBookingTables.delete(row.id); // folded in above
+        // First sight of this booking on this device: settle its join from the DB
+        // rather than trusting that the membership stream got here first. Buffering
+        // above wins the race when both events arrive; this covers the case where
+        // the membership events were missed entirely, which is what left a joined
+        // party showing one table until someone reloaded (Peter, 25 Aug).
+        if (!existing) get().refreshBookingTables?.(row.id);
         return { bookings: existing ? list.map((b) => (b.id === row.id ? merged : b)) : [...list, merged] };
       });
+    },
+
+    // Re-read one booking's join from the DB and merge it in. Never shrinks the
+    // list: a membership row that has not replicated yet must not drop a table we
+    // already know about.
+    refreshBookingTables: async (bookingId) => {
+      const ids = await loadBookingTables(bookingId);
+      if (!ids || !ids.length) return;
+      set((s) => ({
+        bookings: (s.bookings || []).map((b) => (b.id === bookingId
+          ? { ...b, tables: mergeBookingTables(b.primaryTableId, b.tables || [], ids) }
+          : b)),
+      }));
     },
 
     applyBookingTablesRealtime: (payload) => {

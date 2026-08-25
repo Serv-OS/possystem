@@ -336,6 +336,26 @@ export async function saveBookingPreorders(bookingId, locationId, rows) {
   } catch (e) { return { ok: false, error: e?.message }; }
 }
 
+// The tables ONE booking occupies, straight from the source. A booking and its
+// booking_tables rows are written in a single transaction but travel to other
+// devices on two independent realtime streams with no ordering promise, so a
+// booking that arrives by realtime cannot be trusted to know its own join. This
+// settles it with one query instead of hoping the other stream arrived first.
+// Primary first, matching how loadBookings builds the same list.
+export async function loadBookingTables(bookingId) {
+  if (isMock || !supabase || !bookingId) return null;
+  try {
+    const { data, error } = await supabase.from('booking_tables')
+      .select('table_id, is_primary').eq('booking_id', bookingId);
+    if (error) { warnAbsentOr(error, 'loadBookingTables'); return null; }
+    const arr = [];
+    for (const r of data || []) {
+      if (r.is_primary) arr.unshift(r.table_id); else arr.push(r.table_id);
+    }
+    return arr.length ? arr : null;
+  } catch (e) { warnAbsentOr(e, 'loadBookingTables'); return null; }
+}
+
 // Money ledger for one booking. From migration 20260824 a paired host-stand
 // device can read this too (the "paired device read" policy) — but a stand on
 // a pre-migration DB still gets [], so callers must treat empty as "not

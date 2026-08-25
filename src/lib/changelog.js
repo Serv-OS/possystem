@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.55',
+    date: '2026-08-25',
+    items: [
+      'Messages on screen can now be read. A long one used to run off both edges and get cut in half, which is exactly when it matters most, because a long message is usually an error explaining what went wrong.',
+      'A booking seen for the first time on a device now checks which tables it uses instead of assuming. The previous release stopped the tables being thrown away when they arrived early, but a booking already on screen with the wrong tables stayed wrong until someone reloaded.',
+    ],
+  },
+  {
     version: '5.7.54',
     date: '2026-08-25',
     items: [

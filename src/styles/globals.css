@@ -192,7 +192,11 @@ button { font-family: inherit; }
   padding: 11px 22px; border-radius: 22px;
   font-size: 13px; font-weight: 700;
   display: flex; align-items: center; gap: 9px;
-  z-index: 300; white-space: nowrap;
+  z-index: 300;
+  /* A long message used to run off both edges of the screen and be unreadable,
+     which is exactly when a toast matters most: it is usually an error. */
+  max-width: min(560px, calc(100vw - 32px));
+  white-space: normal; text-align: center; line-height: 1.45;
   box-shadow: var(--sh2);
   animation: toastIn .2s cubic-bezier(.2,.8,.3,1);
   letter-spacing: .01em;
