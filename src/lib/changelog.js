@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.42',
+    date: '2026-08-25',
+    items: [
+      'Fixes the Table bookings page crashing on open after 5.7.41. The new pairing box had been placed inside the wrong part of the page.',
+    ],
+  },
+  {
     version: '5.7.41',
     date: '2026-08-25',
     items: [

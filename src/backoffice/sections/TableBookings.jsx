@@ -326,19 +326,6 @@ export default function TableBookings() {
           </div>
         </div>
       </div>
-    </div>
-  );
-}
-
-// ── BO-idiom controls (PackageBuilder styling, RulesScreen semantics) ─────────
-function Row({ label, sub, children }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: '1px solid var(--bdr)' }}>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>{label}</div>
-        {sub && <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2, lineHeight: 1.4 }}>{sub}</div>}
-      </div>
-      {children}
 
       {/* ── Pair a host stand ── */}
       <div style={{ ...S.section, marginTop: 14, maxWidth: 640 }}>
@@ -361,6 +348,20 @@ function Row({ label, sub, children }) {
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── BO-idiom controls (PackageBuilder styling, RulesScreen semantics) ─────────
+function Row({ label, sub, children }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: '1px solid var(--bdr)' }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>{label}</div>
+        {sub && <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2, lineHeight: 1.4 }}>{sub}</div>}
+      </div>
+      {children}
+
     </div>
   );
 }
