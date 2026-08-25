@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.44',
+    date: '2026-08-25',
+    items: [
+      'Bookings iPad app: opening the app no longer kicks you out to Safari showing the customer booking page. The Widget screen was loading its live preview at boot, and the iOS shell treats off-site frames as external links. The preview now loads only while the Widget screen is open, and never inside the app (the link is shown to open in Safari instead).',
+    ],
+  },
+  {
     version: '5.7.43',
     date: '2026-08-25',
     items: [

@@ -145,10 +145,14 @@ struct POSWebView: UIViewRepresentable {
                 } else {
                     decisionHandler(.allow)
                 }
-            } else {
-                // Anything off-host opens in Safari, never inside the POS.
+            } else if navigationAction.targetFrame == nil || navigationAction.targetFrame?.isMainFrame == true {
+                // Off-host top-level navigations open in Safari, never inside the POS.
                 UIApplication.shared.open(url)
                 decisionHandler(.cancel)
+            } else {
+                // Off-host SUBframes stay embedded — an <iframe> (widget preview,
+                // payment frame) must never rip the user out to Safari on load.
+                decisionHandler(.allow)
             }
         }
 

@@ -251,7 +251,7 @@ export default function BookingsSurface() {
           <Pane show={screen === 'rules'}><RulesScreen /></Pane>
           <Pane show={screen === 'events'}><EventsScreen /></Pane>
           <Pane show={screen === 'reports'}><ReportsScreen /></Pane>
-          <Pane show={screen === 'widget'}><WidgetScreen /></Pane>
+          <Pane show={screen === 'widget'}><WidgetScreen show={screen === 'widget'} /></Pane>
         </div>
       </div>
     </div>

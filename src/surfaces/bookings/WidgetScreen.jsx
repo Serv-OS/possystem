@@ -51,7 +51,14 @@ const monoBox = {
   cursor: 'pointer', textAlign: 'left', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
 };
 
-export default function WidgetScreen() {
+// The iOS shell (RposIOS user agent) sends every off-host FRAME load to Safari,
+// so mounting the preview iframe inside the app rips the user out to the /book
+// page on launch (all screens mount at boot — Pane only hides). In the shell we
+// swap the preview for the copyable link; everywhere else the iframe mounts only
+// while this screen is actually on show.
+const IN_IOS_SHELL = typeof navigator !== 'undefined' && /RposIOS/.test(navigator.userAgent);
+
+export default function WidgetScreen({ show = true }) {
   const bookingRules = useStore((s) => s.bookingRules);
   const updateBookingRules = useStore((s) => s.updateBookingRules);
   const currentLocationId = useStore((s) => s.currentLocationId);
@@ -160,22 +167,32 @@ export default function WidgetScreen() {
             )}
           </div>
 
-          {/* live preview of the real /book page */}
-          {bookUrl && (
+          {/* live preview of the real /book page — never inside the iOS shell */}
+          {bookUrl && !IN_IOS_SHELL && (
             <div style={{ flex: '0 1 560px', minWidth: 320 }}>
               <div style={{ ...label, marginBottom: 8 }}>Live preview</div>
-              <iframe
-                src={bookUrl}
-                title="Booking widget preview"
-                sandbox="allow-scripts allow-same-origin allow-forms"
-                style={{
-                  width: 560, maxWidth: '100%', height: 640, display: 'block',
-                  border: '1px solid var(--bdr)', borderRadius: 16, background: 'var(--bg1)',
-                }}
-              />
+              {show && (
+                <iframe
+                  src={bookUrl}
+                  title="Booking widget preview"
+                  sandbox="allow-scripts allow-same-origin allow-forms"
+                  style={{
+                    width: 560, maxWidth: '100%', height: 640, display: 'block',
+                    border: '1px solid var(--bdr)', borderRadius: 16, background: 'var(--bg1)',
+                  }}
+                />
+              )}
               <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 8, lineHeight: 1.5 }}>
                 The real page, live — what a guest sees right now, obeying this venue's rules and pacing.
                 {!widgetEnabled && ' Selling is OFF, so guests currently see the closed notice.'}
+              </div>
+            </div>
+          )}
+          {bookUrl && IN_IOS_SHELL && (
+            <div style={{ flex: '0 1 560px', minWidth: 320 }}>
+              <div style={{ ...label, marginBottom: 8 }}>Preview</div>
+              <div style={{ padding: 16, borderRadius: 14, border: '1px dashed var(--bdr2)', fontSize: 12, color: 'var(--t3)', lineHeight: 1.6 }}>
+                The live preview opens in Safari on this device. Tap the booking link above to see exactly what a guest sees.
               </div>
             </div>
           )}
