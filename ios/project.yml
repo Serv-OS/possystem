@@ -286,6 +286,61 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
 
+
+  ServOS Manager:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      # Same Swift files as POS; the POS asset catalog and the POS-generated
+      # Info.plist are excluded so Manager ships its own.
+      - path: ServOSPOS
+        excludes:
+          - "Assets.xcassets"
+          - "Info.plist"
+      - path: ServOSManager/Assets.xcassets
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: co.posup.rpos.manager
+        PRODUCT_NAME: ServOS Manager
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: LYQ8K25MGZ
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SUPPORTS_MACCATALYST: NO
+    info:
+      path: ServOSManager/Info.plist
+      properties:
+        CFBundleDisplayName: ServOS Manager
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        LSRequiresIPhoneOS: true
+        # Per-app keys read by Config.swift (shared source tree).
+        # ?mode=manager is a native URL mode (ManagerSurface: Home, Reports,
+        # Team, Ops, Kitchen, gated by pairing then a staff PIN).
+        RPOSAppURL: "https://possystem-liard.vercel.app/?mode=manager"
+        # Manager reads, it never scans: camera denied, no permission declared.
+        RPOSAllowsCamera: false
+        UILaunchScreen:
+          UIColorName: LaunchBackground
+        UIRequiresFullScreen: false
+        UIStatusBarHidden: true
+        UIViewControllerBasedStatusBarAppearance: false
+        UIApplicationSupportsIndirectInputEvents: true
+        ITSAppUsesNonExemptEncryption: false
+        # Orientations identical to POS: iPad all, iPhone portrait only. Manager
+        # is a phone app with a floating bottom tab bar, so portrait is the case
+        # that matters.
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+
 schemes:
   ServOS POS:
     build:
@@ -323,6 +378,14 @@ schemes:
     build:
       targets:
         ServOS Bookings: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+  ServOS Manager:
+    build:
+      targets:
+        ServOS Manager: all
     run:
       config: Debug
     archive:
