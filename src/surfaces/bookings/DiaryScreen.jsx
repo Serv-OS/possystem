@@ -524,10 +524,25 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
   const heldRow = (payRows || []).find((r) => r.status === 'authorised' && r.kind === 'hold');
   const onFile = capturedRow || heldRow || null;
 
-  const seatNow = () => {
+  // seatBooking REFUSES when any of the booking's tables still has a live POS tab
+  // (overwriting one would destroy a real check). It reports that through a toast,
+  // which the host stand never rendered, so the button simply looked broken. The
+  // toast is fixed separately; this shows the reason at the button as well, because
+  // a refusal the operator cannot see is the same as no refusal at all.
+  const [seatErr, setSeatErr] = useState('');
+  const seatNow = async () => {
     const seat = useStore.getState().seatBooking;
-    if (typeof seat === 'function') seat(b.id);
-    else updateBooking?.(b.id, { status: 'dining', seatedAt: Date.now() });
+    if (typeof seat !== 'function') {
+      updateBooking?.(b.id, { status: 'dining', seatedAt: Date.now() });
+      return;
+    }
+    setSeatErr('');
+    const res = await seat(b.id);
+    if (res && res.ok === false) {
+      setSeatErr(res.error === 'table_open'
+        ? 'Still has an open tab. Cash it off on the POS, or move this booking to a free table.'
+        : (res.error || 'Could not open the tab for this booking.'));
+    }
   };
 
   // Only steps that SAY something. This used to print four lines whatever the
@@ -661,7 +676,12 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
 
       <div style={{ padding: '14px 18px', display: 'flex', flexDirection: 'column', gap: 8 }}>
         {isLive(b) && b.status !== 'dining' && (
-          <button className="btn btn-acc" onClick={seatNow} style={{ height: 44, fontWeight: 800 }}>Seat now — open POS tab</button>
+          <>
+            <button className="btn btn-acc" onClick={seatNow} style={{ height: 44, fontWeight: 800 }}>Seat now, open POS tab</button>
+            {seatErr && (
+              <div style={{ fontSize: 11.5, color: 'var(--red)', lineHeight: 1.45, marginTop: -2 }}>{seatErr}</div>
+            )}
+          </>
         )}
         {b.status === 'dining' && (
           <button className="btn btn-ghost" onClick={() => updateBooking?.(b.id, { status: 'departed', departedAt: Date.now() })} style={{ height: 44 }}>Mark departed</button>

@@ -170,12 +170,16 @@ export default function BookingsSurface() {
   const goBook = () => setScreen('book');
   const onBooked = (id) => { setSel(id); setScreen('service'); };
 
-  if (stage === 'boot') return <GateScreen><div style={{ color: 'var(--t3)', ...mono }}>Starting…</div></GateScreen>;
-  if (stage === 'pair') return <PairScreen code={claimCode} />;
-  if (stage === 'pin') return <PinScreen loc={loc} venueName={venueName || venue?.name || ''} onOk={(op) => { setOperator(op); setStage('app'); }} />;
+  // The toast rides EVERY stage, not just the app: a pairing or PIN failure raised
+  // through showToast would be just as invisible as the seating refusal was.
+  if (stage === 'boot') return <><GateScreen><div style={{ color: 'var(--t3)', ...mono }}>Starting…</div></GateScreen><BookingsToast /></>;
+  if (stage === 'pair') return <><PairScreen code={claimCode} /><BookingsToast /></>;
+  if (stage === 'pin') return <><PinScreen loc={loc} venueName={venueName || venue?.name || ''} onOk={(op) => { setOperator(op); setStage('app'); }} /><BookingsToast /></>;
 
   return (
     <div style={{ height: '100vh', display: 'flex', overflow: 'hidden', background: 'var(--bg)', color: 'var(--t1)' }}>
+      {/* position:fixed, so it sits outside this flex row and over everything. */}
+      <BookingsToast />
       {/* ── nav rail ── */}
       <div style={{
         width: 64, flexShrink: 0, background: 'var(--bg1)', borderRight: '1px solid var(--bdr)',
@@ -254,6 +258,32 @@ export default function BookingsSurface() {
           <Pane show={screen === 'widget'}><WidgetScreen show={screen === 'widget'} /></Pane>
         </div>
       </div>
+    </div>
+  );
+}
+
+// v5.7.52 — store.showToast() sets `toast`, but the only <Toast> in the app lives
+// inside the POS shell (App.jsx ValidatedPOSApp), and the host stand returns from
+// its own branch. So every refusal raised anywhere in this tree was discarded
+// silently. That is why "Seat now" looked dead: seatBooking REFUSES when a table
+// still has an open POS tab and says so through a toast that never rendered.
+// Same family as the vanishing-categories saga and the invisible BO toasts:
+// control-test the feedback channel before debugging the feature.
+// Mirrors MPOSToast in src/surfaces/MPOSSurface.jsx.
+function BookingsToast() {
+  const toast = useStore((s) => s.toast);
+  if (!toast) return null;
+  const map = {
+    success: { bg: 'var(--grn-d)', bdr: 'var(--grn-b)', color: 'var(--grn)' },
+    error:   { bg: 'var(--red-d)', bdr: 'var(--red-b)', color: 'var(--red)' },
+    warning: { bg: 'var(--acc-d)', bdr: 'var(--acc-b)', color: 'var(--acc)' },
+    info:    { bg: 'var(--bg3)',   bdr: 'var(--bdr2)',  color: 'var(--t1)'  },
+  };
+  const c = map[toast.type] || map.info;
+  return (
+    <div className="toast" key={toast.key}
+      style={{ background: c.bg, border: `1px solid ${c.bdr}`, color: c.color, zIndex: 100003 }}>
+      {toast.msg}
     </div>
   );
 }

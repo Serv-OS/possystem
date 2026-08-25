@@ -300,7 +300,7 @@ export function bookingsSlice(set, get) {
         .filter((t) => t?.session);
       if (openOn.length) {
         const labels = openOn.map((t) => t.label || t.id).join(', ');
-        get().showToast?.(`${labels} still has an open tab — cash it off or move this booking first`, 'error');
+        get().showToast?.(`${labels} still has an open tab. Cash it off, or move this booking first.`, 'error');
         return { ok: false, error: 'table_open' };
       }
       const seatCustomer = b.customer ? {

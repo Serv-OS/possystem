@@ -7,6 +7,24 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.52',
+    date: '2026-08-25',
+    items: [
+      'The bookings host stand can finally show a message. It had no way to display one at all, so every warning and every refusal raised anywhere on that screen was thrown away silently.',
+      '"Seat now" looked broken as a result. It was working correctly and refusing, because seating a booking onto a table that still has a live tab would destroy a real check, but the reason it gave was invisible. The refusal now appears as a message and again under the button, naming the tables to clear.',
+    ],
+  },
+  {
+    version: '5.7.51',
+    date: '2026-08-25',
+    items: [
+      'The courier status timeline now actually fills in. Every webhook event a courier sent was being filed with no link back to the delivery it belonged to, and the screen that reads them back was asking for two columns that have never existed on that table, so the timeline was empty on every delivery that has ever run.',
+      'The Back Office delivery drawer was also reading three fields that are not on the event record, so even a found event would have shown a blank line. It now shows the status and the time it arrived.',
+      'The POS delivery drawer gained the same timeline. It was already fetching the events and throwing them away.',
+      'Note: events recorded before this release stay unlinked and will not appear. Only deliveries from this release onward build a timeline.',
+    ],
+  },
+  {
     version: '5.7.50',
     date: '2026-08-25',
     items: [
