@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.40',
+    date: '2026-08-25',
+    items: [
+      'Terminals: Time Clock is now a device type of its own. Add one, get a pairing code, type it into the Time Clock app. Clocks need no profile, prep centre or printer, so those fields stay hidden.',
+    ],
+  },
+  {
     version: '5.7.39',
     date: '2026-08-25',
     items: [

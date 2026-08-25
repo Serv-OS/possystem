@@ -27,6 +27,11 @@ const DEVICE_TYPES = [
   { id:'kds',      label:'Kitchen Display',  icon:'📺' },
   { id:'kiosk',    label:'Self-service Kiosk',icon:'⬜' },
   { id:'handheld', label:'Handheld',         icon:'📱' },
+  // v5.7.40: the Time Clock finally has its own type. Until now a clock only
+  // worked by borrowing a browser's existing POS pairing (invisible, unfindable
+  // in this screen), and the iPad Time Clock app had no way in at all. A clock
+  // needs no profile, no prep centre and no printer: it is a PIN pad.
+  { id:'clock',    label:'Time Clock',       icon:'⏰' },
 ];
 
 const DEFAULT_PROFILES = [
@@ -163,12 +168,12 @@ export default function DeviceRegistry() {
       name: newDevice.name.trim(),
       type: newDevice.type,
       pairing_code: code,
-      profile_id: newDevice.type !== 'kds' ? (newDevice.profileId || null) : null,
+      profile_id: !['kds','clock'].includes(newDevice.type) ? (newDevice.profileId || null) : null,
       centre_id: newDevice.type === 'kds' ? (newDevice.centreId || null) : null,
       // v5.5.835: receipts route to the printer set on the device — so a device created
       // without one cannot print at all. Set it here at creation rather than making the
       // operator go back into Edit afterwards.
-      receipt_printer_id: newDevice.type !== 'kds' ? (newDevice.receiptPrinterId || null) : null,
+      receipt_printer_id: !['kds','clock'].includes(newDevice.type) ? (newDevice.receiptPrinterId || null) : null,
       status: 'unpaired',
     }).select().single();
     setWorking(false);
@@ -239,7 +244,7 @@ export default function DeviceRegistry() {
     const { data, error } = await supabase.from('devices').update({
       name: editForm.name.trim(),
       type: editForm.type,
-      profile_id: editForm.type !== 'kds' ? (editForm.profileId || null) : null,
+      profile_id: !['kds','clock'].includes(editForm.type) ? (editForm.profileId || null) : null,
       centre_id: editForm.type === 'kds' ? (editForm.centreId || null) : null,
       receipt_printer_id: editForm.receiptPrinterId || null,
     }).eq('id', editId).select('id');
@@ -314,7 +319,7 @@ export default function DeviceRegistry() {
               </div>
               {/* v5.5.835: receipt printer at creation time. KDS never prints receipts,
                   so the field is hidden for it — same rule as the edit form. */}
-              {newDevice.type !== 'kds' && (
+              {!['kds','clock'].includes(newDevice.type) && (
                 <div style={{ marginBottom:16, maxWidth:360 }}>
                   <label style={S.label}>Receipt printer</label>
                   <PrinterSelect value={newDevice.receiptPrinterId} onChange={v=>setNewDevice(d=>({...d,receiptPrinterId:v}))} />
