@@ -125,7 +125,14 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
 
   // ── what each table is doing right now ──────────────────────────────────────
   const activeNow = useMemo(() => bookings.filter((b) => {
-    if (!isLive(b) || !Number.isFinite(statusNow)) return false;
+    if (!isLive(b)) return false;
+    // A SEATED party is active until someone marks them departed. The turn band is
+    // an estimate of how long they will stay, never evidence that they left, so
+    // keying on it made a dining table quietly stop being its booking the moment
+    // the estimate elapsed: it lost its guest name and stopped opening the booking
+    // when tapped, while the party was still sitting there with an open tab.
+    if (b.status === 'dining') return true;
+    if (!Number.isFinite(statusNow)) return false;
     const s = toMin(b.startTime);
     return statusNow >= s - 15 && statusNow < s + (b.turnMinutes || 90);
   }), [bookings, statusNow]);
@@ -304,7 +311,14 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
             // the word "free", which the colour already says.
             const slot2 = lines === 2 && isFree ? line3 : line2;
             const later = upcomingCount(t.id);
-            const pickTarget = active || next || null;
+            // seatBooking stamps the booking id onto the session it opens, so a
+            // table with a tab can always find its way back to its booking even if
+            // the booking has fallen out of activeNow for any reason.
+            const seatedBookingId = t.session?.booking?.bookingId || null;
+            const fromSession = seatedBookingId
+              ? bookings.find((bk) => bk.id === seatedBookingId) || null
+              : null;
+            const pickTarget = active || fromSession || next || null;
             return (
               <div key={t.id}
                 onClick={onPickBooking && pickTarget ? () => onPickBooking(pickTarget.id) : undefined}

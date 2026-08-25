@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.53',
+    date: '2026-08-25',
+    items: [
+      'Tapping a seated table on the floor opens its booking again. A party stopped counting as seated the moment its expected turn time ran out, so once a table had been sitting longer than booked it lost the guest name and tapping it did nothing, even though they were still there with an open tab.',
+      'A party is now treated as seated until someone marks them departed, which is the only thing that actually means they have gone. A table also remembers which booking opened its tab, as a second way back.',
+    ],
+  },
+  {
     version: '5.7.52',
     date: '2026-08-25',
     items: [
