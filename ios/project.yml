@@ -1,4 +1,4 @@
-# XcodeGen project spec for the ServOS iOS shells (POS + KDS + Time Clock).
+# XcodeGen project spec for the ServOS iOS shells (POS + KDS + Time Clock + Waitlist).
 # Run `xcodegen generate` in this directory to produce "ServOS POS.xcodeproj".
 # Tested against XcodeGen 2.46.0 syntax. Nothing here is committed to a pbxproj
 # by hand; the .xcodeproj is a build artifact and should stay out of git.
@@ -183,6 +183,57 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
 
+  ServOS Waitlist:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      # Same Swift files as POS; the POS asset catalog and the POS-generated
+      # Info.plist are excluded so KDS ships its own.
+      - path: ServOSPOS
+        excludes:
+          - "Assets.xcassets"
+          - "Info.plist"
+      - path: ServOSWaitlist/Assets.xcassets
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: co.posup.rpos.waitlist
+        PRODUCT_NAME: ServOS Waitlist
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: LYQ8K25MGZ
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SUPPORTS_MACCATALYST: NO
+    info:
+      path: ServOSWaitlist/Info.plist
+      properties:
+        CFBundleDisplayName: ServOS Waitlist
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        LSRequiresIPhoneOS: true
+        # Per-app keys read by Config.swift (shared source tree).
+        # ?mode=waitlist is a native URL mode (WaitlistSurface, Tables Ready).
+        RPOSAppURL: "https://possystem-liard.vercel.app/?mode=waitlist"
+        # The waitlist is a host stand: camera denied, no permission declared.
+        RPOSAllowsCamera: false
+        UILaunchScreen:
+          UIColorName: LaunchBackground
+        UIRequiresFullScreen: false
+        UIStatusBarHidden: true
+        UIViewControllerBasedStatusBarAppearance: false
+        UIApplicationSupportsIndirectInputEvents: true
+        ITSAppUsesNonExemptEncryption: false
+        # Orientations identical to POS: iPad all, iPhone portrait only.
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+
 schemes:
   ServOS POS:
     build:
@@ -204,6 +255,14 @@ schemes:
     build:
       targets:
         ServOS Time Clock: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+  ServOS Waitlist:
+    build:
+      targets:
+        ServOS Waitlist: all
     run:
       config: Debug
     archive:
