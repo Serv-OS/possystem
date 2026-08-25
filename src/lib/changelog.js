@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.57',
+    date: '2026-08-25',
+    items: [
+      'The host stand no longer tries to open a till shift. It is not a till and the database was right to refuse it, but the refusal came out as a raw database error in the middle of a seating that had worked. The Tables Ready stand was doing the same thing silently.',
+      'When a shift genuinely cannot be opened, the message now says what to do about it rather than quoting the database.',
+    ],
+  },
+  {
     version: '5.7.56',
     date: '2026-08-25',
     items: [

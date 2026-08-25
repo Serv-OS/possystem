@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { supabase, platformSupabase, isMock, getLocationId, ensureAuthToken, getActiveLocationSync } from '../lib/supabase';
+import { supabase, platformSupabase, isMock, getLocationId, ensureAuthToken, getActiveLocationSync, isHostStandMode } from '../lib/supabase';
 import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
 import { resolveServiceCharge } from '../lib/serviceCharge';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
@@ -4518,6 +4518,13 @@ export const useStore = create((set, get) => ({
     // If one is already open, just return it (idempotent).
     if (get().currentShift?.status === 'open') return get().currentShift;
     if (isMock || !supabase) return null;
+    // v5.7.57: host stands take no money and the shifts policy does not admit
+    // them. Refuse here rather than letting the INSERT bounce off RLS, so a
+    // future caller on that surface cannot resurrect the raw-error toast.
+    if (!get().canRunShiftLifecycle()) {
+      console.info('[openShift] skipped: host stands do not open till shifts');
+      return null;
+    }
     // TRAINING MODE: open a LOCAL in-memory shift so the POS works normally, but
     // never write a shifts row.
     if (isTrainingMode()) {
@@ -4556,7 +4563,18 @@ export const useStore = create((set, get) => ({
       // taken afterwards is written with shift_id null and drops out of the Z report.
       reportSave('shift open', err);
       console.warn('[openShift] failed:', err?.message || err);
-      get().showToast?.(`Shift did not open: ${err?.message || 'unknown error'} — cash takings will not be attributed to a shift`, 'error');
+      // v5.7.57: say it in words an operator can act on. A permission refusal
+      // (Postgres 42501, row-level security) means this device is not registered
+      // as a till for this venue, which is a pairing problem, not a database one.
+      // Everything else keeps the underlying message, which is usually a network
+      // or constraint fault worth reading verbatim.
+      const msg = String(err?.message || '');
+      const refused = err?.code === '42501' || /row-level security/i.test(msg);
+      get().showToast?.(
+        refused
+          ? 'Shift did not open. This device is not registered as a till for this venue, so cash takings will not be attributed to a shift. Re-pair it, or open the shift from Back Office.'
+          : `Shift did not open: ${msg || 'unknown error'}. Cash takings will not be attributed to a shift.`,
+        'error');
       return null;
     }
   },
@@ -4651,6 +4669,8 @@ export const useStore = create((set, get) => ({
   // auto-close the old one and open a fresh one.
   reconcileShiftOnMount: async () => {
     if (isMock) return;
+    // A host stand is not a till. See canRunShiftLifecycle below.
+    if (!get().canRunShiftLifecycle()) return;
     try {
       await get().loadCurrentShift?.();
       const current = get().currentShift;
@@ -4690,6 +4710,27 @@ export const useStore = create((set, get) => ({
       console.warn('[reconcileShiftOnMount] failed:', err?.message || err);
     }
   },
+
+  // Is this browser allowed to run the shift lifecycle at all?
+  //
+  // v5.7.57: it is not, on a host stand. Tables Ready and Table Bookings pair
+  // through waitlist_devices on an anonymous session, so the shifts policy
+  // (pos_can_access OR is_super_admin) matches neither branch. The damage was
+  // in two steps and both are silent on their own:
+  //   1. loadCurrentShift SELECTs shifts. RLS filters the row set to empty
+  //      rather than erroring, so the stand concludes "no shift is open" even
+  //      when the till has had one open since this morning.
+  //   2. reconcileShiftOnMount believes that and calls openShift, whose INSERT
+  //      is refused: new row violates row-level security policy for table
+  //      "shifts". openShift treats a refusal as money damage (correctly, on a
+  //      till) and raises a red toast.
+  // The stand had no <Toast> until v5.7.52, so this ran unseen for the whole
+  // life of the surface. The first thing the new toast showed the owner was a
+  // raw Postgres error in the middle of a seating that had worked perfectly.
+  //
+  // Nothing on a host stand reads currentShift and nothing on it takes money,
+  // so the honest answer is to leave the till tables alone entirely.
+  canRunShiftLifecycle: () => !isHostStandMode(),
 
   // ── Petty cash + cash drawer (v4.6.30) ────────
   pettyCashEntries: [],

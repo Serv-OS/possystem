@@ -247,11 +247,17 @@ export default function useSupabaseInit() {
 
       // v4.6.37: reconcile shift lifecycle. Creates/auto-closes as needed
       // so every subsequent cash sale + movement carries a shift_id.
-      try {
-        await useStore.getState().reconcileShiftOnMount?.();
-        await useStore.getState().loadShiftHistory?.();
-      } catch (err) {
-        console.warn('[useSupabaseInit] shift reconcile failed:', err?.message || err);
+      // v5.7.57: this hook runs on EVERY surface, host stands included, and a
+      // host stand can neither read nor write shifts (see canRunShiftLifecycle
+      // in the store). Skipping the whole block keeps currentShift honestly
+      // null there instead of "null because RLS hid the open shift".
+      if (useStore.getState().canRunShiftLifecycle?.() !== false) {
+        try {
+          await useStore.getState().reconcileShiftOnMount?.();
+          await useStore.getState().loadShiftHistory?.();
+        } catch (err) {
+          console.warn('[useSupabaseInit] shift reconcile failed:', err?.message || err);
+        }
       }
 
       // v4.6.40: load the currently open drawer session (if any) for this POS.

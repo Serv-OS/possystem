@@ -43,11 +43,38 @@ let _resolvedLocationId = null;
 // (?mode=) or the persisted rpos-device-mode. Accept all BO spellings.
 export function isBackOfficeMode() {
   try {
+    const mode = getDeviceMode();
+    return mode === 'office' || mode === 'backoffice' || mode === 'admin';
+  } catch { return false; }
+}
+
+// The surface this browser is running, resolved the same way isBackOfficeMode
+// resolves it: the ?mode= query param first, then the persisted rpos-device-mode.
+// Returns '' when neither is set (a browser that has not picked a mode yet).
+export function getDeviceMode() {
+  try {
     let mode = '';
     try { mode = new URL(window.location.href).searchParams.get('mode') || ''; } catch { /* no window */ }
     if (!mode) { try { mode = localStorage.getItem('rpos-device-mode') || ''; } catch { /* none */ } }
-    return mode === 'office' || mode === 'backoffice' || mode === 'admin';
-  } catch { return false; }
+    return mode;
+  } catch { return ''; }
+}
+
+// v5.7.57: Host stands are Tables Ready (?mode=waitlist) and Table Bookings
+// (?mode=bookings). Both pair through waitlist_devices on an anonymous auth
+// session, so they have NO devices row and NO user_profiles.location_id. In the
+// database that makes them a different identity class from a till: the waitlist
+// and bookings tables are fenced with waitlist_can_write(), while the money
+// tables (shifts, closed_checks, cash_movements, drawer_sessions) are fenced
+// with pos_can_access(), which a host stand deliberately fails.
+//
+// A host stand seats guests, it never takes money, so it must never touch the
+// till tables. Anything on a shared boot path that writes one has to check this
+// first, or the write is refused by RLS and surfaces as a raw Postgres error
+// during an operation that actually succeeded.
+const HOST_STAND_MODES = new Set(['waitlist', 'bookings']);
+export function isHostStandMode() {
+  return HOST_STAND_MODES.has(getDeviceMode());
 }
 
 export const getLocationId = async () => {
