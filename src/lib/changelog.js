@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.47',
+    date: '2026-08-25',
+    items: [
+      'Bookings floor plan is measured before it is drawn, so it opens at the right size instead of resizing itself on the first frame.',
+      'Zooming the floor plan now snaps instead of sliding. Table shape and position were being animated along with the colours, which made every zoom press crawl.',
+    ],
+  },
+  {
     version: '5.7.46',
     date: '2026-08-25',
     items: [

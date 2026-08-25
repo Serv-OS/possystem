@@ -6,7 +6,7 @@
 // and a right panel that seats walk-ins through the same optimiser the Book
 // flow uses (next quarter hour, top candidate highlighted on the plan).
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../store';
 import { toMin, toHM } from '../../lib/bookings/optimiser.js';
 import {
@@ -77,16 +77,20 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
   // ── scale-to-fit ────────────────────────────────────────────────────────────
   const wrapRef = useRef(null);
   const [wrapSize, setWrapSize] = useState({ w: 900, h: 440 });
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = wrapRef.current;
-    if (!el || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(() => {
+    if (!el) return;
+    const measure = () => {
       const w = el.clientWidth, h = el.clientHeight;
       // Screens stay mounted and hide with display:none, and a hidden pane measures
       // 0x0. Storing that would recompute the fit at minimum scale, so switching to
       // another tab and back would paint the plan tiny before it snapped back.
-      if (w > 0 && h > 0) setWrapSize({ w, h });
-    });
+      // The equality bailout stops every no-op observer fire re-rendering every tile.
+      if (w > 0 && h > 0) setWrapSize((p) => (p.w === w && p.h === h ? p : { w, h }));
+    };
+    measure(); // in a LAYOUT effect, so the seeded size above is never painted
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
@@ -287,7 +291,11 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
                 background: hot ? tintBg('var(--acc)', 18) : tintBg(col),
                 boxShadow: hot ? `0 0 0 4px ${tintBg('var(--acc)', 15)}` : 'none',
                 display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                overflow: 'visible', textAlign: 'center', transition: 'all 140ms cubic-bezier(.2,.8,.3,1)',
+                overflow: 'visible', textAlign: 'center',
+                // NOT "all": left/top/width/height are all scale-driven, so every
+                // zoom press animated 30 boxes and any scale correction crawled for
+                // 140ms instead of snapping. Only the status colours should move.
+                transition: 'background 140ms cubic-bezier(.2,.8,.3,1), border-color 140ms cubic-bezier(.2,.8,.3,1), box-shadow 140ms cubic-bezier(.2,.8,.3,1)',
                 cursor: onPickBooking && pickTarget ? 'pointer' : 'default',
               }}>
                 {later > 0 && (
