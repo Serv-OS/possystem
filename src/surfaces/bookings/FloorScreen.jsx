@@ -80,7 +80,13 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
   useEffect(() => {
     const el = wrapRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
-    const ro = new ResizeObserver(() => setWrapSize({ w: el.clientWidth, h: el.clientHeight }));
+    const ro = new ResizeObserver(() => {
+      const w = el.clientWidth, h = el.clientHeight;
+      // Screens stay mounted and hide with display:none, and a hidden pane measures
+      // 0x0. Storing that would recompute the fit at minimum scale, so switching to
+      // another tab and back would paint the plan tiny before it snapped back.
+      if (w > 0 && h > 0) setWrapSize({ w, h });
+    });
     ro.observe(el);
     return () => ro.disconnect();
   }, []);

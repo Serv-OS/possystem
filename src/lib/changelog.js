@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.46',
+    date: '2026-08-25',
+    items: [
+      'Bookings floor plan no longer flashes tiny when you leave the Service tab and come back. A hidden screen measures as zero, and that zero was being used to size the plan.',
+    ],
+  },
+  {
     version: '5.7.45',
     date: '2026-08-25',
     items: [
