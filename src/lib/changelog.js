@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.54',
+    date: '2026-08-25',
+    items: [
+      'A booking spread across joined tables now highlights every one of them, not just the first. A booking and the list of tables it uses reach each device separately, and when the tables arrived first they were thrown away, leaving the booking holding only one table and no join outline.',
+    ],
+  },
+  {
     version: '5.7.53',
     date: '2026-08-25',
     items: [

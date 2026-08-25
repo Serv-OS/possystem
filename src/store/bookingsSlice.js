@@ -63,6 +63,36 @@ const epochToVenueMin = (tz) => (epochMs) => {
 
 export const mintBookingId = () => `bk-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 
+// Member tables whose booking_tables event beat its bookings event here. Held until
+// the booking lands, then merged in. Entries are pruned so a membership row for a
+// booking that never arrives (another date, another venue) cannot accumulate.
+const PENDING_TABLES_TTL_MS = 5 * 60 * 1000;
+const pendingBookingTables = new Map(); // booking_id -> { ids: Set, at: epochMs }
+
+function bufferBookingTable(bookingId, tableId) {
+  const now = Date.now();
+  for (const [k, v] of pendingBookingTables) {
+    if (now - v.at > PENDING_TABLES_TTL_MS) pendingBookingTables.delete(k);
+  }
+  const entry = pendingBookingTables.get(bookingId) || { ids: new Set(), at: now };
+  entry.ids.add(tableId);
+  entry.at = now;
+  pendingBookingTables.set(bookingId, entry);
+}
+
+// Primary stays FIRST, matching the order loadBookings builds (it unshifts the
+// primary), because primaryTableId is what seating and the POS handover key on.
+function mergeBookingTables(primaryTableId, ...lists) {
+  const out = [];
+  const seen = new Set();
+  for (const id of [primaryTableId, ...lists.flat()]) {
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
 // Store tables → optimiser tables. Excludes merged split-check children
 // (parentId) exactly like the waitlist's tablesView.
 const optimiserTables = (tables = []) =>
@@ -438,8 +468,14 @@ export function bookingsSlice(set, get) {
         const merged = {
           ...(existing || {}),
           ...mapped,
-          // membership rows arrive on their own channel event; keep what we have
-          tables: existing?.tables?.length ? existing.tables : (row.primary_table_id ? [row.primary_table_id] : []),
+          // Membership rows arrive on their own channel. Fold in any that got here
+          // FIRST, so a joined booking does not land holding only its primary table.
+          tables: mergeBookingTables(
+            row.primary_table_id,
+            existing?.tables || [],
+            mapped.tables || [],
+            [...(pendingBookingTables.get(row.id)?.ids || [])],
+          ),
           customer: mapped.customer || existing?.customer || null,
           preorderToken: mapped.preorderToken || existing?.preorderToken || null,
           // the paid* totals come from loadBookings' join and are NOT on a realtime
@@ -449,13 +485,22 @@ export function bookingsSlice(set, get) {
           paidDepositMinor: existing?.paidDepositMinor ?? mapped.paidDepositMinor,
           preorderCount: existing?.preorderCount ?? mapped.preorderCount,
         };
+        pendingBookingTables.delete(row.id); // folded in above
         return { bookings: existing ? list.map((b) => (b.id === row.id ? merged : b)) : [...list, merged] };
       });
     },
 
     applyBookingTablesRealtime: (payload) => {
       const row = payload?.new;
-      if (!row?.booking_id) return;
+      if (!row?.booking_id || !row?.table_id) return;
+      // create_booking writes the booking and its member tables in ONE transaction,
+      // but they arrive on TWO independent realtime streams with no ordering promise
+      // between them. A membership event for a booking this device has not seen yet
+      // used to be dropped by the map below, and the bookings event that followed
+      // then fell back to the primary table alone. A party joined across T5 and T7
+      // therefore highlighted only T5, with no join outline (Peter, 25 Aug).
+      const known = (get().bookings || []).some((b) => b.id === row.booking_id);
+      if (!known) { bufferBookingTable(row.booking_id, row.table_id); return; }
       set((s) => ({
         bookings: (s.bookings || []).map((b) => {
           if (b.id !== row.booking_id) return b;
