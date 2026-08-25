@@ -20,7 +20,7 @@ struct ReconnectingView: View {
                     .font(.title3.weight(.semibold))
                     .foregroundColor(.white)
 
-                Text("ServOS POS retries automatically every few seconds.")
+                Text("\(Config.displayName) retries automatically every few seconds.")
                     .font(.subheadline)
                     .foregroundColor(.white.opacity(0.6))
                     .multilineTextAlignment(.center)

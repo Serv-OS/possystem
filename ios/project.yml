@@ -1,7 +1,19 @@
-# XcodeGen project spec for the ServOS POS iOS shell.
+# XcodeGen project spec for the ServOS iOS shells (POS + KDS).
 # Run `xcodegen generate` in this directory to produce "ServOS POS.xcodeproj".
 # Tested against XcodeGen 2.46.0 syntax. Nothing here is committed to a pbxproj
 # by hand; the .xcodeproj is a build artifact and should stay out of git.
+#
+# ONE source tree, MULTIPLE app targets:
+#   - Every target compiles the same Swift files in ServOSPOS/.
+#   - App-specific behaviour comes from that target's generated Info.plist:
+#       RPOSAppURL       (String) — the web app URL the shell hosts
+#       RPOSAllowsCamera (Bool)   — grant camera to our origin (POS QR scan);
+#                                   targets setting true must ALSO declare
+#                                   NSCameraUsageDescription. Absent/false =
+#                                   camera denied and no permission string.
+#   - Each target has its OWN asset catalog (AppIcon + LaunchBackground).
+# To add another app: copy the KDS target + scheme stanzas, change bundle id,
+# display name, RPOSAppURL and the asset catalog path. See README.md.
 
 name: ServOS POS
 
@@ -27,7 +39,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: co.posup.rpos.pos
         PRODUCT_NAME: ServOS POS
         MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: "2"
+        CURRENT_PROJECT_VERSION: "3"
         # Signing stays Automatic. The team is chosen in Xcode by the owner.
         # After first signing, record the 10-character team id here as
         # DEVELOPMENT_TEAM so `xcodegen generate` does not wipe the choice.
@@ -43,6 +55,9 @@ targets:
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         LSRequiresIPhoneOS: true
+        # Per-app keys read by Config.swift (shared source tree).
+        RPOSAppURL: "https://possystem-liard.vercel.app/?mode=pos"
+        RPOSAllowsCamera: true
         # Camera is used by the web app's QR scanning (getUserMedia).
         # Microphone is deliberately NOT requested; the shell denies it.
         NSCameraUsageDescription: "ServOS POS uses the camera to scan QR codes for table ordering, loyalty and gift cards."
@@ -65,11 +80,71 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
 
+  ServOS KDS:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      # Same Swift files as POS; the POS asset catalog and the POS-generated
+      # Info.plist are excluded so KDS ships its own.
+      - path: ServOSPOS
+        excludes:
+          - "Assets.xcassets"
+          - "Info.plist"
+      - path: ServOSKDS/Assets.xcassets
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: co.posup.rpos.kds
+        PRODUCT_NAME: ServOS KDS
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: LYQ8K25MGZ
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SUPPORTS_MACCATALYST: NO
+    info:
+      path: ServOSKDS/Info.plist
+      properties:
+        CFBundleDisplayName: ServOS KDS
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        LSRequiresIPhoneOS: true
+        # Per-app keys read by Config.swift (shared source tree).
+        # v5.7.35 pins the KDS surface from the mode param.
+        RPOSAppURL: "https://possystem-liard.vercel.app/?mode=kds"
+        # KDS never scans: camera denied in the WebView permission handler and
+        # NO NSCameraUsageDescription is declared (no camera permission at all).
+        RPOSAllowsCamera: false
+        UILaunchScreen:
+          UIColorName: LaunchBackground
+        UIRequiresFullScreen: false
+        UIStatusBarHidden: true
+        UIViewControllerBasedStatusBarAppearance: false
+        UIApplicationSupportsIndirectInputEvents: true
+        ITSAppUsesNonExemptEncryption: false
+        # Orientations identical to POS: iPad all, iPhone portrait only.
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+
 schemes:
   ServOS POS:
     build:
       targets:
         ServOS POS: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+  ServOS KDS:
+    build:
+      targets:
+        ServOS KDS: all
     run:
       config: Debug
     archive:

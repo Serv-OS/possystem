@@ -1,17 +1,48 @@
 import Foundation
 
-/// Central configuration for the ServOS POS iOS shell.
+/// Central configuration for the ServOS iOS shells (POS, KDS, ...).
 ///
-/// Single source of truth for the target URL, mirroring the Android wrapper's
-/// `POS_URL` constant in `android/.../MainActivity.java`.
+/// ONE source tree serves every app target. Anything app-specific lives in
+/// that target's Info.plist (generated from its `info.properties` stanza in
+/// `project.yml`), read here at runtime:
+///
+///   RPOSAppURL       (String, required)  — the web app URL this shell hosts
+///   RPOSAllowsCamera (Bool, optional)    — grant camera to our origin
+///                                          (default false = deny; a target
+///                                          setting true must ALSO declare
+///                                          NSCameraUsageDescription)
+///
+/// Shared, non-app-specific configuration stays as constants below.
 enum Config {
 
-    /// The web app this shell hosts.
+    /// The web app this shell hosts, from the target's Info.plist.
     ///
-    /// Per the staging-cutover pointing matrix the POS shells always point at
+    /// Per the staging-cutover pointing matrix these shells always point at
     /// PROD (MPOS and menuboard wrappers are the ones pointed at dev).
-    /// Same URL as the Android POS APK.
-    static let posURL = URL(string: "https://possystem-liard.vercel.app/?mode=pos")!
+    /// POS: https://possystem-liard.vercel.app/?mode=pos
+    /// KDS: https://possystem-liard.vercel.app/?mode=kds
+    static let appURL: URL = {
+        guard let raw = Bundle.main.object(forInfoDictionaryKey: "RPOSAppURL") as? String,
+              let url = URL(string: raw) else {
+            // A target without a valid RPOSAppURL is a broken build; fail
+            // loudly at launch rather than silently loading nothing.
+            fatalError("RPOSAppURL missing or invalid in Info.plist")
+        }
+        return url
+    }()
+
+    /// Whether this app grants getUserMedia CAMERA requests from our origin.
+    /// POS: true (QR scanning). KDS: false (never scans; no camera permission
+    /// string in its Info.plist either). Missing key = deny, the safe default.
+    static let allowsCamera: Bool =
+        (Bundle.main.object(forInfoDictionaryKey: "RPOSAllowsCamera") as? Bool) ?? false
+
+    /// The app's user-facing name (used by native UI like ReconnectingView).
+    static var displayName: String {
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+            ?? (Bundle.main.object(forInfoDictionaryKey: "CFBundleName") as? String)
+            ?? "ServOS"
+    }
 
     /// Hosts that stay inside the WebView. Everything else opens in Safari.
     ///

@@ -89,7 +89,7 @@ struct POSWebView: UIViewRepresentable {
         scrollView.delegate = context.coordinator  // viewForZooming -> nil blocks pinch zoom
 
         context.coordinator.webView = webView
-        webView.load(URLRequest(url: Config.posURL))
+        webView.load(URLRequest(url: Config.appURL))
         return webView
     }
 
@@ -174,10 +174,13 @@ struct POSWebView: UIViewRepresentable {
                      initiatedByFrame frame: WKFrameInfo,
                      type: WKMediaCaptureType,
                      decisionHandler: @escaping (WKPermissionDecision) -> Void) {
-            let isOurOrigin = origin.host.lowercased() == Config.posURL.host?.lowercased()
-            if type == .camera && isOurOrigin {
+            let isOurOrigin = origin.host.lowercased() == Config.appURL.host?.lowercased()
+            if type == .camera && isOurOrigin && Config.allowsCamera {
+                // Camera-enabled targets (POS) skip WebKit's per-site prompt;
                 // iOS still shows the one-time system camera prompt
-                // (NSCameraUsageDescription); this skips WebKit's per-site prompt.
+                // (NSCameraUsageDescription). Targets with RPOSAllowsCamera
+                // false/absent (KDS) deny outright and ship no camera
+                // permission string at all.
                 decisionHandler(.grant)
             } else {
                 decisionHandler(.deny)
@@ -206,7 +209,7 @@ struct POSWebView: UIViewRepresentable {
         /// Keep-alive: iOS killed the web process (long suspension or memory
         /// pressure). Reload immediately so the till comes back on its own.
         func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-            webView.load(URLRequest(url: Config.posURL))
+            webView.load(URLRequest(url: Config.appURL))
         }
 
         private func handleFailure(_ error: Error) {
@@ -228,7 +231,7 @@ struct POSWebView: UIViewRepresentable {
                 guard let self = self, let webView = self.webView else { return }
                 // Retry the SAME url. Another failure re-enters handleFailure
                 // and re-arms this timer, giving the endless 5 second loop.
-                webView.load(URLRequest(url: Config.posURL))
+                webView.load(URLRequest(url: Config.appURL))
             }
         }
 
