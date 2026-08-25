@@ -460,7 +460,24 @@ export function KDSSurface() {
         }
       })
       .subscribe();
-    return () => { supabase.removeChannel(channel); };
+
+    // v5.7.39 — KDS SELF-HEAL (the iPad incident: the app suspends, the
+    // realtime socket dies silently, and a kitchen screen that trusts push
+    // alone goes deaf — tickets printed but never appeared). The house rule
+    // from this week applies to the KITCHEN most of all: push is the fast
+    // path, never the only path. Full refetch on wake, on network return,
+    // and every 20 seconds as the backstop. load() replaces the pending/held
+    // lists wholesale, so a missed INSERT/UPDATE/bump all reconcile.
+    const onVisible = () => { if (document.visibilityState === 'visible') load(); };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('online', load);
+    const pollId = setInterval(load, 20000);
+    return () => {
+      supabase.removeChannel(channel);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('online', load);
+      clearInterval(pollId);
+    };
   }, [locationId, centreId]);
 
   const handleBump = async (ticketId) => {

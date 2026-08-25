@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.39',
+    date: '2026-08-25',
+    items: [
+      'The kitchen display now refreshes itself every 20 seconds and whenever the screen wakes, so tickets can never silently stop arriving even if the live connection drops. Found on the iPad KDS app, where orders printed in the kitchen but never appeared on screen.',
+    ],
+  },
+  {
     version: '5.7.38',
     date: '2026-08-25',
     items: [
