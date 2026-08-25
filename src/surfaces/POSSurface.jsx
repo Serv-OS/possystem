@@ -45,6 +45,13 @@ const COURSE_COLORS = {
   3:{label:'Course 3', color:'#e8a020',bg:'rgba(232,160,32,.1)'},
 };
 
+// v5.7.38: category names like "Burgers/Sandwiches" have no space, so at iPad
+// widths the rail's emergency break-word snapped them one character after the
+// slash ("Burgers/S andwiches"). A zero-width space after each "/" gives the
+// browser a real word boundary there, so the line wraps cleanly after the
+// slash and break-word only ever fires for a single word wider than the rail.
+const slashBreak = (s) => String(s ?? '').replace(/\//g, '/\u200B');
+
 export default function POSSurface() {
   const compact = useCompact();
   const {
@@ -1647,7 +1654,8 @@ export default function POSSurface() {
                 </div>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{display:'flex',alignItems:'center',gap:6}}>
-                    <span style={{fontSize:13,fontWeight:600,color:isActive?color:'var(--t1)',letterSpacing:'-.01em',overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',lineHeight:1.2,wordBreak:'break-word'}}>{c.label}</span>
+                    {/* v5.7.38: word-boundary wrapping — slashBreak() + overflowWrap (last resort) replace wordBreak, which snapped "Burgers/Sandwiches" mid word */}
+                    <span style={{fontSize:13,fontWeight:600,color:isActive?color:'var(--t1)',letterSpacing:'-.01em',overflow:'hidden',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical',lineHeight:1.2,overflowWrap:'break-word',hyphens:'none'}}>{slashBreak(c.label)}</span>
                     {hasSubcats && <span style={{fontSize:8,color:'var(--t4)',flexShrink:0}}>▾</span>}
                   </div>
                   <div style={{fontSize:9,fontFamily:'var(--font-mono)',color:'var(--t4)',marginTop:2,letterSpacing:'.06em'}}>{count} items</div>
@@ -1800,7 +1808,8 @@ export default function POSSurface() {
                 })}
               </div>
             )}
-            <div style={{display:'grid',gridTemplateColumns:'repeat(6, 1fr)',gridAutoRows:`minmax(${compact?80:110}px,auto)`,gap:compact?4:8}}>
+            {/* v5.7.38: columns live in .prod-grid (globals.css) — 6 normally, 5 at ≤1260px so 11" iPads stop clipping tiles */}
+            <div className="prod-grid" style={{gridAutoRows:`minmax(${compact?80:110}px,auto)`,gap:compact?4:8}}>
                 {displayItems.map(item=>{
                   // Spacer — empty transparent cell, invisible to customers
                   if (item._spacer) return <div key={item.id} style={{ borderRadius:14, background:'transparent', pointerEvents:'none' }}/>;
@@ -1904,8 +1913,8 @@ export default function POSSurface() {
                             {is86&&<span style={{fontSize:9,fontWeight:800,padding:'2px 5px',borderRadius:4,background:'var(--red-d)',color:'var(--red)',border:'1px solid var(--red-b)'}}>86'd</span>}
                           </div>
                         </div>
-                        {/* Name */}
-                        <div style={{
+                        {/* Name — v5.7.38: .prod-card-name = two-line clamp + ellipsis (was a hard clip at narrow widths) */}
+                        <div className="prod-card-name" style={{
                           fontSize:13,fontWeight:700,lineHeight:1.3,flex:1,marginBottom:8,
                           color:is86?'var(--t4)':flagged?'var(--red)':hasImg?'#fff':'var(--t1)',
                           textShadow:hasImg?'0 1px 4px rgba(0,0,0,1), 0 2px 8px rgba(0,0,0,.8)':'none',

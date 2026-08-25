@@ -562,15 +562,20 @@ export default function TablesSurface() {
           {/* Status legend + section filter — only on floor view */}
           {view==='floor' && (
             <>
+              {/* v5.7.38: at ≤1260px (11" iPad) the legend words hide via .floor-legend-word
+                  (globals.css) leaving dot + count, so the row no longer collides with the
+                  section chips; title= keeps the meaning on hold/hover. 1280+ unchanged. */}
               <div style={{ display:'flex', gap:10, marginLeft:16 }}>
                 {Object.entries(STATUS).map(([s,m])=>(
-                  <div key={s} style={{ display:'flex', alignItems:'center', gap:5, fontSize:11, color:'var(--t3)' }}>
+                  <div key={s} title={m.label} style={{ display:'flex', alignItems:'center', gap:5, fontSize:11, color:'var(--t3)' }}>
                     <div style={{ width:8, height:8, borderRadius:'50%', background:m.color }}/>
-                    <span style={{ color:'var(--t2)' }}>{counts[s]}</span> {m.label}
+                    <span style={{ color:'var(--t2)' }}>{counts[s]}</span> <span className="floor-legend-word">{m.label}</span>
                   </div>
                 ))}
               </div>
-              <div style={{ marginLeft:'auto', display:'flex', gap:4 }}>
+              {/* v5.7.38: .floor-chips lets the chips wrap at ≤1260px instead of clipping
+                  at the pane edge; desktop (1280+) keeps the single nowrap row untouched */}
+              <div className="floor-chips" style={{ marginLeft:'auto', display:'flex', gap:4 }}>
                 {sections.map(s=>(
                   <button key={s.id} onClick={()=>setSection(s.id)} style={{
                     padding:'4px 12px', borderRadius:20, fontSize:12, fontWeight:600, cursor:'pointer', fontFamily:'inherit',

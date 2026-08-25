@@ -234,6 +234,41 @@ button { font-family: inherit; }
 .prod-card:active:not(.prod-card--disabled) { transform: scale(.98); }
 .prod-card--disabled { opacity: .42; cursor: not-allowed; }
 
+/* v5.7.38: responsive product grid. Six columns on tills and desktops; an
+   11" iPad in landscape is 1194 CSS px wide and six columns there clip the
+   tile name and the price/opts row. Viewports ≤1260px get five columns;
+   1280+ keeps the exact six-column layout it always had. */
+.prod-grid { display: grid; grid-template-columns: repeat(6, 1fr); }
+@media (max-width: 1260px) {
+  .prod-grid { grid-template-columns: repeat(5, 1fr); }
+}
+
+/* v5.7.38: tile name at iPad widths — two-line clamp ending in an ellipsis
+   instead of the old hard horizontal clip ("Cheeseburge"). break-word is a
+   LAST resort for a single word wider than the tile; hyphens off so nothing
+   invents "Cheese-burger". Scoped to ≤1260px so 1280+ tills render the name
+   exactly as they always have. */
+@media (max-width: 1260px) {
+  .prod-card-name {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    overflow-wrap: break-word;
+    hyphens: none;
+  }
+}
+
+/* v5.7.38: floor-plan header at iPad widths — the status legend drops its
+   words (dot + count only) so it no longer collides with the section filter
+   chips on the right, and the chips may wrap to a second line instead of
+   clipping at the pane edge. Full labels + the single nowrap chip row return
+   at 1280+ (tills, desktops), pixel-identical to before. */
+@media (max-width: 1260px) {
+  .floor-legend-word { display: none; }
+  .floor-chips { flex-wrap: wrap; justify-content: flex-end; min-width: 0; padding: 6px 0; }
+}
+
 /* ── Category nav button ── */
 .cat-btn {
   width: 100%; border-radius: 12px; cursor: pointer;

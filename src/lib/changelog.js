@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.38',
+    date: '2026-08-25',
+    items: [
+      'The POS now fits an 11 inch iPad properly. The menu grid shows five tiles per row on iPad sized screens so item names and prices are no longer cut off, and long names end with three dots instead of stopping mid letter. Bigger tills and desktops keep the six tile layout exactly as before.',
+      'Category names in the menu rail no longer break mid word. A name like Burgers/Sandwiches now wraps neatly after the slash instead of splitting one letter in.',
+      'On the floor plan, the status legend and the section filters no longer overlap on iPad. At narrower sizes the legend shows just the coloured dot and the count, and the full labels come back on bigger screens.',
+    ],
+  },
+  {
     version: '5.7.37',
     date: '2026-08-25',
     items: [
