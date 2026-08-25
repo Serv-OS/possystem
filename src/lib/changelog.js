@@ -7,6 +7,19 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.48',
+    date: '2026-08-25',
+    items: [
+      'Departed parties no longer sit under "Next up" on the host stand. They were only being filtered for cancelled, no-show and expired, so a table that had left still read as waiting, was counted again as finished, and inflated the booked covers.',
+      'Walk-ins no longer claim a card is held. The figure was the venue rules multiplied by covers, not a real payment, and it defaulted to £20 per cover for a venue with no rules saved, so every walk-in showed a card hold that never existed. Card state now comes only from the payments ledger, and no money figure shows when nothing is on file.',
+      'You can now take a walk-in guest name and mobile at the door. Both are optional, and the party then shows by name on the floor, in the tabs list and on the POS tab.',
+      'Seating a walk-in now opens a POS tab. It never did before, so there was nothing to ring orders into, and it also skipped the check that stops you seating onto a table with a live tab.',
+      'The new booking screen no longer offers card options it cannot deliver. Three payment buttons were selectable with "Card held" preselected, and none of them did anything or reached the booking.',
+      'Payment figures on a booking now show the pence. Real amounts were being rounded to whole pounds, so a £48.50 payment displayed as £49.',
+      'The booking panel that read "POS and CRM handover" is now "This booking", and it only lists the lines that say something. A seated walk-in was being shown four lines of which three were empty statements.',
+    ],
+  },
+  {
     version: '5.7.47',
     date: '2026-08-25',
     items: [

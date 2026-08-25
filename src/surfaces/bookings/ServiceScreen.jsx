@@ -12,7 +12,7 @@ import { useMemo } from 'react';
 import { useStore } from '../../store';
 import { toMin } from '../../lib/bookings/optimiser.js';
 import {
-  mono, tintBg, rulesOf, displayStatus, statusMeta, isDead,
+  mono, tintBg, displayStatus, statusMeta, isLive,
   useNowMin, bookingName, todayISO, preorderStateFor, useNarrowStand,
 } from './bits.jsx';
 import FloorScreen from './FloorScreen.jsx';
@@ -23,18 +23,19 @@ export default function ServiceScreen({ sel, onSelect, onBook }) {
   const bookings = useStore((s) => s.bookings) || [];
   const tables = useStore((s) => s.tables) || [];
   const packages = useStore((s) => s.packages) || [];
-  const bookingRules = useStore((s) => s.bookingRules);
   const bookingsDate = useStore((s) => s.bookingsDate);
   const setBookingsDate = useStore((s) => s.setBookingsDate);
 
-  const rules = rulesOf(bookingRules);
   const isToday = !bookingsDate || bookingsDate === todayISO();
   const tick = useNowMin();
   const nowMin = isToday ? tick : null;
 
   const topTables = useMemo(() => tables.filter((t) => !t.parentId), [tables]);
 
-  const live = useMemo(() => bookings.filter((b) => !isDead(b) && b.status !== 'cancelled'), [bookings]);
+  // isLive, NOT isDead: isDead only rules out cancelled / no-show / expired, so a
+  // DEPARTED party stayed in this list, showed up under "Next up" (its status is
+  // not 'dining'), was counted again by doneCount, and inflated the Booked covers.
+  const live = useMemo(() => bookings.filter(isLive), [bookings]);
   const byTime = (a, b) => toMin(a.startTime) - toMin(b.startTime) || bookingName(a).localeCompare(bookingName(b));
   const nextUp = useMemo(() => live.filter((b) => b.status !== 'dining').sort(byTime), [live]);
   const seated = useMemo(() => live.filter((b) => b.status === 'dining').sort(byTime), [live]);
@@ -105,7 +106,7 @@ export default function ServiceScreen({ sel, onSelect, onBook }) {
           edge, so any difference resizes the floor plan under the host's finger. */}
       {selected && (
         <div style={{ width: narrow ? 262 : 330, flexShrink: 0, background: 'var(--bg1)', borderLeft: '1px solid var(--bdr)', overflowY: 'auto' }}>
-          <Inspector b={selected} nowMin={nowMin} packages={packages} rules={rules} tables={topTables} onClose={() => onSelect(null)} />
+          <Inspector b={selected} nowMin={nowMin} packages={packages} tables={topTables} onClose={() => onSelect(null)} />
         </div>
       )}
     </div>

@@ -11,7 +11,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../store';
 import { toMin, toHM, turnFor } from '../../lib/bookings/optimiser.js';
 import {
-  mono, tintBg, tintBd, rulesOf, money, initialsOf, Chip, SectionTitle,
+  mono, tintBg, tintBd, rulesOf, initialsOf, Chip, SectionTitle,
 } from './bits.jsx';
 
 const COVERS = [1, 2, 3, 4, 5, 6, 7, 8, 10, 12];
@@ -30,7 +30,6 @@ export default function BookScreen({ onBooked }) {
   const [results, setResults] = useState([]);
   const [guest, setGuest] = useState(null);
   const [walkIn, setWalkIn] = useState(false);
-  const [pay, setPay] = useState('hold');
   const [note, setNote] = useState('');
   const [taken, setTaken] = useState(null);   // table id that was taken mid-flight
   const [err, setErr] = useState('');
@@ -248,24 +247,17 @@ export default function BookScreen({ onBooked }) {
           Walk-in / no guest attached
         </label>
 
-        {/* payment options — display only (Phase 5 does the charging) */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
-          {[
-            { k: 'hold', t: 'Card held, no charge', d: `${money(rules.holdPerCover)} per cover, captured only on no-show` },
-            { k: 'deposit', t: 'Deposit', d: '£10 per cover, redeemed against the bill as tender' },
-            { k: 'prepay', t: 'Full prepay', d: 'Package price, charged now, order lines queued to POS' },
-          ].map((o) => (
-            <button key={o.k} onClick={() => setPay(o.k)} style={{
-              textAlign: 'left', padding: '10px 12px', borderRadius: 12, cursor: 'pointer',
-              background: pay === o.k ? tintBg('var(--grn)') : 'var(--bg1)',
-              border: `1.5px solid ${pay === o.k ? tintBd('var(--grn)') : 'var(--bdr)'}`,
-              transition: 'all 140ms cubic-bezier(.2,.8,.3,1)',
-            }}>
-              <div style={{ fontSize: 12, fontWeight: 700, color: pay === o.k ? 'var(--grn)' : 'var(--t1)' }}>{o.t}</div>
-              <div style={{ fontSize: 10.5, color: 'var(--t3)', marginTop: 2 }}>{o.d}</div>
-            </button>
-          ))}
-          <div style={{ fontSize: 10, color: 'var(--t4)' }}>Display only for now — no card is charged until the payments phase.</div>
+        {/* This used to be three selectable payment buttons with "Card held, no
+            charge" PRESELECTED, none of which did anything: the choice was never
+            sent to createBooking and the stand cannot take card details. That is
+            why a phone booking looked like it had a card on file (Peter, 25 Aug).
+            Card holds are real, but only through the online widget. */}
+        <div style={{ padding: '10px 12px', borderRadius: 12, border: '1px dashed var(--bdr2)', marginBottom: 12 }}>
+          <div style={{ fontSize: 11.5, fontWeight: 700, color: 'var(--t2)' }}>No card is taken here</div>
+          <div style={{ fontSize: 10.5, color: 'var(--t3)', marginTop: 3, lineHeight: 1.5 }}>
+            Card holds are taken when a guest books online and card capture is switched on in Rules.
+            A booking taken over the phone has no card against it, and the bill is settled on the POS tab.
+          </div>
         </div>
 
         <input className="input" placeholder="Note — occasion, allergies, requests…" value={note} onChange={(e) => setNote(e.target.value)} style={{ width: '100%', height: 40, boxSizing: 'border-box', marginBottom: 12 }} />

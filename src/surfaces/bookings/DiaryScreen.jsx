@@ -23,9 +23,14 @@ import { supabase, isMock } from '../../lib/supabase';
 import { toMin, toHM, isTableFree, toOptimiserBooking, sessionsToBlocks } from '../../lib/bookings/optimiser.js';
 import { loadBookingPayments, lookupPreorderLinkBase } from '../../lib/bookings/bookingsData.js';
 import {
-  mono, tintBg, tintBd, rulesOf, displayStatus, statusMeta, StatusBadge, isDead, isLive,
+  mono, tintBg, tintBd, rulesOf, displayStatus, statusMeta, StatusBadge, isLive,
   useNowMin, money, initialsOf, bookingName, todayISO, EmptyNote, Chip, preorderStateFor, courseColor,
 } from './bits.jsx';
+
+// Nothing created AT THE STAND can hold a card: BookScreen's payment buttons are
+// display only, and createBooking stores no payment fields. So for these sources
+// an empty ledger means "no card", not "cannot see it from here".
+const CARD_IMPOSSIBLE_SOURCES = new Set(['walk_in', 'host']);
 
 const MIN_SLOT_W = 24;   // narrowest a 15-min column may go before overflow-x kicks in
 const GUTTER = 104;      // row-label column (border-box, divider included)
@@ -98,7 +103,7 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
 
   // ── KPI strip (all computed, never static) ──────────────────────────────────
   const kpi = useMemo(() => {
-    const alive = bookings.filter((b) => !isDead(b));
+    const alive = bookings.filter(isLive); // isLive, not isDead: a DEPARTED party is finished
     const coversBooked = alive.reduce((s, b) => s + (b.covers || 0), 0);
     const seated = bookings.filter((b) => b.status === 'dining').reduce((s, b) => s + (b.covers || 0), 0);
     const capacity = rows.reduce((s, t) => s + (t.maxCovers || 0), 0);
@@ -110,7 +115,9 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
       const pkg = b.packageId ? packages.find((p) => p.id === b.packageId) : null;
       if (pkg?.paymentModel === 'prepay') {
         prepaid += String(pkg.priceUnit || '').includes('cover') ? (pkg.price || 0) * (b.covers || 0) : (pkg.price || 0);
-      } else if (b.status === 'confirmed') {
+      } else if (b.status === 'confirmed' && !CARD_IMPOSSIBLE_SOURCES.has(b.source || 'host')) {
+        // Only an ONLINE booking can carry a card, and even then this is what the
+        // rules would ask for, not what the ledger holds. Labelled as expected.
         held += (rules.holdPerCover || 0) * (b.covers || 0);
       }
     }
@@ -135,7 +142,7 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
           <Kpi label="Seated now" value={`${kpi.seated} / ${kpi.capacity}`} sub="covers / capacity" />
           <Kpi label="Free tables" value={kpi.freeNextHour} sub="next hour" />
           <Kpi label="At risk" value={kpi.atRisk} sub="late + due" col={kpi.atRisk > 0 ? 'var(--red)' : undefined} />
-          <Kpi label="Held on card" value={money(kpi.held)} sub={`${money(rules.holdPerCover)} per cover`} />
+          <Kpi label="Holds expected" value={money(kpi.held)} sub="online bookings" />
           <Kpi label="Prepaid" value={money(kpi.prepaid)} sub="packages" col="var(--grn)" last />
         </div>
 
@@ -311,7 +318,7 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
       {/* inspector */}
       <div style={{ width: 330, flexShrink: 0, background: 'var(--bg1)', borderLeft: '1px solid var(--bdr)', overflowY: 'auto' }}>
         {selected
-          ? <Inspector b={selected} nowMin={nowMin} packages={packages} rules={rules} tables={rows} onClose={() => onSelect(null)} />
+          ? <Inspector b={selected} nowMin={nowMin} packages={packages} tables={rows} onClose={() => onSelect(null)} />
           : (
             <div style={{ padding: 18, color: 'var(--t3)', fontSize: 12, lineHeight: 1.5 }}>
               <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--t2)', marginBottom: 8 }}>Nothing selected</div>
@@ -341,15 +348,17 @@ function Kpi({ label, value, sub, col, last }) {
 // the same truth in both places. A stand on a pre-migration DB still gets []
 // and falls back to neutral copy — an empty read is "not visible here", never
 // "unpaid".
-function PaymentState({ b, prepaid, hold }) {
+function useBookingPayments(bookingId) {
   const [state, setState] = useState({ id: null, rows: null });
   useEffect(() => {
     let alive = true;
-    loadBookingPayments(b.id).then((rows) => { if (alive) setState({ id: b.id, rows }); });
+    loadBookingPayments(bookingId).then((rows) => { if (alive) setState({ id: bookingId, rows }); });
     return () => { alive = false; };
-  }, [b.id]);
-  const rows = state.id === b.id ? state.rows : null;
+  }, [bookingId]);
+  return state.id === bookingId ? state.rows : null; // null = not read yet
+}
 
+function PaymentState({ b, prepaid, rows }) {
   let line = null;
   if (rows && rows.length) {
     const captured = rows.find((r) => r.status === 'captured' && r.kind !== 'refund');
@@ -362,7 +371,9 @@ function PaymentState({ b, prepaid, hold }) {
       const kind = captured.kind === 'prepay' ? 'prepaid' : captured.kind === 'deposit' ? 'deposit paid' : 'paid';
       const applied = captured.applied_to_check
         ? ' · applied to the check' : ' · comes off the bill at close';
-      line = { txt: `✓ ${money(captured.amount)} ${kind} by card${card(captured)}${applied}`, col: 'var(--grn)' };
+      // 2dp: money() defaults to whole pounds, which would print a real £48.50
+      // capture as £49. Never round a figure that was actually charged.
+      line = { txt: `✓ ${money(captured.amount, 2)} ${kind} by card${card(captured)}${applied}`, col: 'var(--grn)' };
     }
     else if (held) line = { txt: `✓ Card held${card(held)} — charged only on no-show`, col: 'var(--grn)' };
     else if (failed) line = { txt: 'Card payment FAILED — take payment at the venue', col: 'var(--red)' };
@@ -373,10 +384,12 @@ function PaymentState({ b, prepaid, hold }) {
     line = { txt: 'Expired unpaid. The table was freed automatically, the guest must rebook.', col: 'var(--t4)' };
   } else if (prepaid) {
     line = { txt: 'No captured payment visible for this prepay booking yet. Check Back Office before treating it as paid.', col: 'var(--orn)' };
-  } else if (hold > 0) {
-    line = { txt: 'Held when booked online with card capture on — charged only on no-show.', col: 'var(--t4)' };
+  } else if (CARD_IMPOSSIBLE_SOURCES.has(b.source || 'host')) {
+    line = { txt: 'Taken at the venue, so no card is on file. Payment happens on the POS tab.', col: 'var(--t4)' };
+  } else if (rows) {
+    line = { txt: 'No card on file for this booking.', col: 'var(--t4)' };
   } else {
-    line = { txt: 'No card taken for this booking.', col: 'var(--t4)' };
+    line = { txt: 'Checking for a card on file…', col: 'var(--t4)' };
   }
   return <div style={{ fontSize: 10.5, marginTop: 5, lineHeight: 1.45, color: line.col }}>{line.txt}</div>;
 }
@@ -463,7 +476,9 @@ function PreorderLinkActions({ b }) {
   );
 }
 
-export function Inspector({ b, nowMin, packages, rules, tables, onClose }) {
+// `rules` was dropped from the props in v5.7.48: the only thing it fed was the
+// invented card hold, and money now comes from the booking_payments ledger.
+export function Inspector({ b, nowMin, packages, tables, onClose }) {
   const updateBooking = useStore((s) => s.updateBooking);
   const cancelBooking = useStore((s) => s.cancelBooking);
   const [moving, setMoving] = useState(false);
@@ -479,7 +494,14 @@ export function Inspector({ b, nowMin, packages, rules, tables, onClose }) {
   const sec = { padding: '14px 18px', borderBottom: '1px solid var(--bdr)' };
   const cardStyle = { background: 'var(--bg3)', borderRadius: 10, padding: '8px 10px', flex: 1 };
   const prepaid = pkg?.paymentModel === 'prepay';
-  const hold = (rules.holdPerCover || 0) * (b.covers || 0);
+  // MONEY COMES FROM THE LEDGER, NEVER FROM THE RULES. This used to be
+  // rules.holdPerCover x covers, and since rulesOf() falls back to £20 per cover
+  // for a venue with no saved rules, every walk-in claimed "Card held" over an
+  // invented figure (Peter, 25 Aug). A hold is real only if a row says so.
+  const payRows = useBookingPayments(b.id);
+  const capturedRow = (payRows || []).find((r) => r.status === 'captured' && r.kind !== 'refund');
+  const heldRow = (payRows || []).find((r) => r.status === 'authorised' && r.kind === 'hold');
+  const onFile = capturedRow || heldRow || null;
 
   const seatNow = () => {
     const seat = useStore.getState().seatBooking;
@@ -487,11 +509,25 @@ export function Inspector({ b, nowMin, packages, rules, tables, onClose }) {
     else updateBooking?.(b.id, { status: 'dining', seatedAt: Date.now() });
   };
 
+  // Only steps that SAY something. This used to print four lines whatever the
+  // booking was, so a seated walk-in read "Via walk_in", "No card taken", "No
+  // package attached" and one useful line, which is why it looked like developer
+  // notes rather than anything a host needs mid-service (Peter, 25 Aug).
+  const sourceLabel = { walk_in: 'Walk-in', host: 'Taken by the team', online: 'Booked online', widget: 'Booked online' }[b.source] || 'Taken by the team';
   const steps = [
-    { t: 'Booking created', d: `Via ${b.source || 'host'} · ${b.covers} covers · turn ${b.turnMinutes || 90} min${b.pacingOverrideBy ? ` · pacing override by ${b.pacingOverrideBy}` : ''}` },
-    { t: 'Payment', d: prepaid ? `${pkg?.name || 'Package'} prepaid at booking — posts to the check as tender when the tab closes` : hold > 0 ? `${money(hold)} held on card (${money(rules.holdPerCover)} × ${b.covers}) — captured only on no-show` : 'No card taken for this booking' },
-    { t: 'Package', d: pkg ? `${pkg.name} — lines queue to the POS carrying their courses` : 'No package attached — à la carte' },
-    { t: 'POS handover', d: b.status === 'dining' ? `Seated — tab open on ${labels.join(' + ')}` : `On seat, a pre-loaded tab opens on ${labels[0] || 'the table'} with the guest attached` },
+    { t: 'Booked', d: `${sourceLabel} · ${b.covers} covers · table held ${b.turnMinutes || 90} min${b.pacingOverrideBy ? ` · pacing override by ${b.pacingOverrideBy}` : ''}` },
+    ...(prepaid || onFile ? [{
+      t: 'Payment',
+      d: prepaid ? `${pkg?.name || 'Package'} prepaid at booking, posts to the check as tender when the tab closes`
+        : capturedRow ? `${money(capturedRow.amount, 2)} already paid, comes off the bill at close`
+        : `${money(heldRow.amount, 2)} held on the card, charged only on a no-show`,
+    }] : []),
+    ...(pkg ? [{ t: 'Package', d: `${pkg.name}, lines queue to the POS carrying their courses` }] : []),
+    {
+      t: 'On the POS',
+      d: b.status === 'dining' ? `Seated, tab open on ${labels.join(' + ')}`
+        : `On seat, a tab opens on ${labels[0] || 'the table'}${b.customer?.name ? ' with the guest attached' : ''}`,
+    },
   ];
 
   return (
@@ -526,7 +562,9 @@ export function Inspector({ b, nowMin, packages, rules, tables, onClose }) {
 
       {b.customer && (
         <div style={sec}>
-          <SecLabel>Guest — from CRM</SecLabel>
+          {/* Not always "from CRM": a walk-in's name and number are typed at the
+              door, so the plain label is the one that is true in every case. */}
+          <SecLabel>Guest</SecLabel>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div style={{ width: 38, height: 38, borderRadius: 999, display: 'grid', placeItems: 'center', background: tintBg('var(--uv)'), border: `1px solid ${tintBd('var(--uv)')}`, color: 'var(--uv)', fontSize: 13, fontWeight: 800 }}>
               {initialsOf(b.customer.name)}
@@ -566,17 +604,23 @@ export function Inspector({ b, nowMin, packages, rules, tables, onClose }) {
         <SecLabel>Payment</SecLabel>
         <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
           <span style={{ fontSize: 12, color: 'var(--t2)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-            {prepaid ? `${pkg?.name || 'Package'} · prepaid` : hold > 0 ? 'Card held, no charge' : 'Nothing on file'}
+            {capturedRow ? `${pkg?.name || 'Paid'} · ${capturedRow.kind === 'prepay' ? 'prepaid' : capturedRow.kind === 'deposit' ? 'deposit' : 'paid'}`
+              : heldRow ? 'Card held, no charge'
+              : 'Nothing on file'}
           </span>
-          <span style={{ fontSize: 16, fontWeight: 800, color: 'var(--grn)', ...mono, flexShrink: 0 }}>
-            {prepaid ? money(String(pkg.priceUnit || '').includes('cover') ? pkg.price * b.covers : pkg.price) : money(hold)}
-          </span>
+          {/* No figure at all when nothing is on file. A green number beside
+              "Nothing on file" is exactly how the invented hold read as real. */}
+          {onFile && (
+            <span style={{ fontSize: 16, fontWeight: 800, color: 'var(--grn)', ...mono, flexShrink: 0 }}>
+              {money(onFile.amount, 2)}
+            </span>
+          )}
         </div>
-        <PaymentState b={b} prepaid={prepaid} hold={hold} />
+        <PaymentState b={b} prepaid={prepaid} rows={payRows} />
       </div>
 
       <div style={sec}>
-        <SecLabel>POS &amp; CRM handover</SecLabel>
+        <SecLabel>This booking</SecLabel>
         {steps.map((s2) => (
           <div key={s2.t} style={{ display: 'flex', gap: 10, marginBottom: 10 }}>
             <span style={{ width: 6, height: 6, borderRadius: 999, background: 'var(--blu)', marginTop: 5, flexShrink: 0 }} />

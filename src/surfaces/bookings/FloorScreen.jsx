@@ -71,6 +71,12 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
   const [walk, setWalk] = useState(2);
   const [seating, setSeating] = useState(false);
   const [msg, setMsg] = useState('');
+  // Walk-ins are still guests: taking a name and a mobile means the party shows by
+  // name on the floor and in the tabs list, and the number is there to chase them
+  // if they wander off with the table (Peter, 25 Aug). Both stay OPTIONAL, because
+  // a queue at the door will not wait for typing.
+  const [walkName, setWalkName] = useState('');
+  const [walkPhone, setWalkPhone] = useState('');
 
   const floorTables = useMemo(() => tables.filter((t) => !t.parentId), [tables]);
 
@@ -147,12 +153,33 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
   const seatWalkIn = async () => {
     if (!sug || seating) return;
     setSeating(true); setMsg('');
-    const { createBooking, updateBooking } = useStore.getState();
+    const { createBooking } = useStore.getState();
+    const name = walkName.trim();
+    const phone = walkPhone.trim();
+    // Create as CONFIRMED, then seat through seatBooking, the same door every
+    // other booking goes through. Writing status:'dining' straight into the row
+    // skipped all of it: no POS tab ever opened for a walk-in (so nothing could
+    // be rung in against the table), no guard against seating onto a table that
+    // already had a live check, and no guest or server on the session.
     const res = createBooking ? await createBooking({
       covers: walk, time: nextQ, tables: sug.set, primaryTableId: sug.set[0],
-      source: 'walk_in', status: 'dining', customer: null,
+      source: 'walk_in', status: 'confirmed',
+      customer: (name || phone) ? { name: name || 'Walk-in', phone: phone || null } : null,
     }) : { ok: false, error: 'Bookings store not wired' };
-    if (res.ok) { await updateBooking?.(res.booking.id, { seatedAt: Date.now() }); setMsg(`Seated on ${sug.label}`); }
+    if (res.ok) {
+      const seat = useStore.getState().seatBooking;
+      const seated = seat ? await seat(res.booking.id) : null;
+      if (seated && seated.ok === false) {
+        // seatBooking already toasts the reason; the booking stays on the diary
+        // as confirmed so the host can move it or cash the old tab off.
+        setMsg(seated.error === 'table_open'
+          ? `${sug.label} still has an open tab, booking held on the diary`
+          : 'Could not open the tab, booking held on the diary');
+      } else {
+        setMsg(`Seated ${name || 'walk-in'} on ${sug.label}`);
+      }
+      setWalkName(''); setWalkPhone('');
+    }
     else setMsg(res.error || 'Could not seat the party');
     setSeating(false);
   };
@@ -335,6 +362,18 @@ export default function FloorScreen({ onPickBooking = null, showWalkIn = true })
               transition: 'all 140ms cubic-bezier(.2,.8,.3,1)',
             }}>{n}</button>
           ))}
+        </div>
+
+        {/* Optional guest capture. Blank is fine and seats exactly as before. */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 12 }}>
+          <input
+            className="input" value={walkName} onChange={(e) => setWalkName(e.target.value)}
+            placeholder="Name (optional)" autoComplete="off"
+            style={{ width: '100%', height: 36, boxSizing: 'border-box', fontSize: 12.5 }} />
+          <input
+            className="input" value={walkPhone} onChange={(e) => setWalkPhone(e.target.value)}
+            placeholder="Mobile (optional)" type="tel" inputMode="tel" autoComplete="off"
+            style={{ width: '100%', height: 36, boxSizing: 'border-box', fontSize: 12.5, ...mono }} />
         </div>
 
         {sug ? (
