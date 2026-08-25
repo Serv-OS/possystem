@@ -481,6 +481,7 @@ function PreorderLinkActions({ b }) {
 export function Inspector({ b, nowMin, packages, tables, onClose }) {
   const updateBooking = useStore((s) => s.updateBooking);
   const cancelBooking = useStore((s) => s.cancelBooking);
+  const markBookingNoShow = useStore((s) => s.markBookingNoShow);
   const [moving, setMoving] = useState(false);
   // Render-adjustment (not an effect — the repo lint forbids sync setState in
   // effects): selecting a different booking closes the move panel.
@@ -645,12 +646,30 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
         {b.status === 'dining' && (
           <button className="btn btn-ghost" onClick={() => updateBooking?.(b.id, { status: 'departed', departedAt: Date.now() })} style={{ height: 44 }}>Mark departed</button>
         )}
+        {/* A mis-tap on Mark departed or No-show used to be final: those statuses
+            fail isLive, so the panel offered no buttons at all and the party was
+            gone from the stand with no way back. Returns a seated party to dining
+            and anyone else to confirmed. */}
+        {['departed', 'no_show'].includes(b.status) && (
+          <button
+            className="btn btn-ghost"
+            onClick={() => updateBooking?.(b.id, b.seatedAt
+              ? { status: 'dining', departedAt: null }
+              : { status: 'confirmed', departedAt: null })}
+            style={{ height: 44 }}
+          >
+            {b.status === 'departed' ? 'Undo departed' : 'Undo no-show'}
+          </button>
+        )}
         {/* Three across a 262px panel on a narrow stand: minWidth 0 and tighter
             padding, or .btn's nowrap pushes the labels through the borders. */}
         {isLive(b) && b.status !== 'dining' && (
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn btn-ghost" onClick={() => setMoving((m) => !m)} style={{ flex: 1, minWidth: 0, height: 40, padding: '0 10px', fontSize: 12 }}>{moving ? 'Close' : 'Move'}</button>
-            <button className="btn btn-red" onClick={() => updateBooking?.(b.id, { status: 'no_show' })} style={{ flex: 1, minWidth: 0, height: 40, padding: '0 10px', fontSize: 12 }}>No-show</button>
+            {/* markBookingNoShow, not a raw status write: it also bumps the guest's
+                lifetime no-show count on the CRM record, which is what drives the
+                card-hold prompt on their next booking. */}
+            <button className="btn btn-red" onClick={() => (markBookingNoShow || updateBooking)?.(b.id, { status: 'no_show' })} style={{ flex: 1, minWidth: 0, height: 40, padding: '0 10px', fontSize: 12 }}>No-show</button>
             <button className="btn btn-ghost" onClick={() => cancelBooking?.(b.id)} style={{ flex: 1, minWidth: 0, height: 40, padding: '0 10px', fontSize: 12 }}>Cancel</button>
           </div>
         )}

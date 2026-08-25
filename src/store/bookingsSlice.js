@@ -21,7 +21,7 @@ import {
   DEFAULT_TURN_BANDS, DEFAULT_RULES,
 sessionsToBlocks } from '../lib/bookings/optimiser.js';
 import {
-  loadBookings, createBookingAtomic, updateBookingRow,
+  loadBookings, createBookingAtomic, updateBookingRow, rowToBooking,
   loadBookingRules, saveBookingRules, loadPackages,
   upsertPackageRow, deletePackageRow, moveBookingTables,
   loadBookingPreorders, saveBookingPreorders, loadBookingCredit,
@@ -430,25 +430,24 @@ export function bookingsSlice(set, get) {
       set((s) => {
         const list = s.bookings || [];
         const existing = list.find((b) => b.id === row.id);
+        // Map through rowToBooking, the SAME mapper loadBookings uses, instead of
+        // a hand-listed copy. The hand-listed one silently omitted departedAt,
+        // cancelledAt, cancelReason and createdBy, and every column added to the
+        // mapper in future would have gone missing here too.
+        const mapped = rowToBooking(row);
         const merged = {
           ...(existing || {}),
-          id: row.id,
-          locationId: row.location_id,
-          customerId: row.customer_id || null,
-          customer: row.customer || existing?.customer || null,
-          date: row.booking_date,
-          startTime: String(row.start_time || '').slice(0, 5),
-          turnMinutes: row.turn_minutes,
-          covers: row.covers,
-          primaryTableId: row.primary_table_id,
+          ...mapped,
           // membership rows arrive on their own channel event; keep what we have
-          tables: existing?.tables?.length ? existing.tables : [row.primary_table_id],
-          status: row.status,
-          source: row.source,
-          packageId: row.package_id || null,
-          note: row.note || '',
-          preorderToken: row.preorder_token || existing?.preorderToken || null,
-          seatedAt: row.seated_at ? new Date(row.seated_at).getTime() : null,
+          tables: existing?.tables?.length ? existing.tables : (row.primary_table_id ? [row.primary_table_id] : []),
+          customer: mapped.customer || existing?.customer || null,
+          preorderToken: mapped.preorderToken || existing?.preorderToken || null,
+          // the paid* totals come from loadBookings' join and are NOT on a realtime
+          // row, so keep the last known figures rather than nulling money to null.
+          paidMinor: existing?.paidMinor ?? mapped.paidMinor,
+          paidPrepayMinor: existing?.paidPrepayMinor ?? mapped.paidPrepayMinor,
+          paidDepositMinor: existing?.paidDepositMinor ?? mapped.paidDepositMinor,
+          preorderCount: existing?.preorderCount ?? mapped.preorderCount,
         };
         return { bookings: existing ? list.map((b) => (b.id === row.id ? merged : b)) : [...list, merged] };
       });

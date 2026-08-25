@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.49',
+    date: '2026-08-25',
+    items: [
+      'Marking a booking departed or no-show can now be undone. A mis-tap used to be final, because both statuses hid every button on the panel.',
+      'Marking a no-show now counts against the guest on their CRM record. The button was writing the status directly and skipping the counter, which is the thing that decides whether to ask that guest for a card next time.',
+      'Bookings arriving from another device now carry every field, not a hand-written subset. Departed and cancelled times were being left behind, and any new field would have gone the same way.',
+    ],
+  },
+  {
     version: '5.7.48',
     date: '2026-08-25',
     items: [
