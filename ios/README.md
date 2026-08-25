@@ -1,67 +1,42 @@
-# RPOS iOS App
+# ServOS POS for iOS (WKWebView shell)
 
-WebView wrapper for the RPOS POS system with native WiFi printer support.
+iPad-first WebView wrapper around the PROD POS web app, mirroring the Android wrapper in `android/`.
 
-## Setup in Xcode
+- **Loads** `https://possystem-liard.vercel.app/?mode=pos` (one constant in `ServOSPOS/Config.swift`; POS points at prod per the pointing matrix).
+- **No .xcodeproj in git.** `xcodegen generate` builds it from `project.yml` (XcodeGen 2.46.0 installed).
+- **No hardware bridges in v1.** `window.RposPrinter` is left undefined on purpose, so printing falls back to the Supabase `print_jobs` queue and the LAN print agent. The shell injects `window.RposIOS = { platform: 'ios', version: '1.0.0' }` so the web app can detect it.
 
-1. Open Xcode → File → New → Project
-2. Choose **App** (not SwiftUI — use Storyboard/UIKit)
-3. Settings:
-   - Product Name: `RestaurantOS`
-   - Bundle Identifier: `co.posup.rpos.ios`
-   - Language: **Swift**
-   - Interface: **Storyboard**
-   - Uncheck: Include Tests
+## From zero to TestFlight (owner steps)
 
-4. **Replace generated files** with the files in this folder:
-   - Delete `ViewController.swift` (generated) → replace with ours
-   - Delete `AppDelegate.swift` (generated) → replace with ours
-   - Replace `Info.plist` entries with ours (or replace the whole file)
+1. **Install Xcode** from the Mac App Store (large download, let it finish fully).
+2. **Point the tools at it**, in Terminal:
+   `sudo xcode-select -s /Applications/Xcode.app && sudo xcodebuild -license accept`
+3. **Add your Apple ID**: Xcode -> Settings -> Accounts -> + -> your Apple Developer Apple ID.
+4. **Generate and open the project**:
+   `cd ios && xcodegen generate && open "ServOS POS.xcodeproj"`
+5. **Pick the team**: select the "ServOS POS" target -> Signing & Capabilities -> Team (leave signing on Automatic). The bundle id `co.posup.rpos.pos` registers itself on first automatic signing.
+6. **Create the app record**: appstoreconnect.apple.com -> Apps -> + -> New App -> platform iOS, name ServOS POS, bundle id `co.posup.rpos.pos`.
+7. **Archive and upload**: in Xcode, Product -> Archive -> Distribute App -> TestFlight & App Store -> Upload.
+8. **Add testers**: App Store Connect -> your app -> TestFlight -> Internal Testing -> add internal testers.
 
-5. **Add Printer folder**:
-   - File → Add Files → select `Printer/NetworkPrinter.swift` and `Printer/PrinterBridge.swift`
+## Before App Store submission
 
-6. **Main.storyboard** — delete the default ViewController scene. Our AppDelegate creates the window programmatically.
+- **App icon** is a placeholder slot. See `ServOSPOS/Assets.xcassets/AppIcon.appiconset/PLACEHOLDER.md`. Export the Signal green S mark on Ink from the Brand Guidelines; do not ship without it (archive validation fails).
+- **Team id**: after step 5, put your 10 character team id into `project.yml` as `DEVELOPMENT_TEAM` under the target settings. Otherwise the next `xcodegen generate` forgets the team you picked in Xcode.
 
-7. **Signing**: Xcode → Project → Signing & Capabilities → set your Team
+## Later automation
 
-8. **Run** on iPad or iPad simulator
+- Claude can archive and upload from the CLI once you hand over an **App Store Connect API key**: appstoreconnect.apple.com -> Users and Access -> Integrations -> App Store Connect API -> Team Keys -> Generate (role App Manager). Hand it over the same way as the Supabase PAT.
+- `exportOptions.plist` is already set up for that (app-store-connect method, automatic signing).
 
-## Architecture
+## Legacy folder
 
-```
-React app (JS)
-  └─ window.RposPrinter (injected JS shim)
-       └─ window.webkit.messageHandlers.RposPrinter.postMessage(...)
-            └─ PrinterBridge.swift (WKScriptMessageHandler)
-                 └─ NetworkPrinter.swift (Network.framework TCP)
-                      └─ WiFi → Port 9100 → Printer
-```
+- **`RestaurantOS/`** is the previous hand-assembled UIKit scaffold (bundle id `co.posup.rpos.ios`). It is NOT part of this build; XcodeGen only compiles `ServOSPOS/`. Its `Printer/PrinterBridge.swift` (WKScriptMessageHandler printer bridge) is a useful starting point if a native `RposPrinter` bridge is wanted in v2.
 
-## Print flow
+## What the shell does
 
-1. React app calls `window.RposPrinter.print(base64, ip, port, callbackId)`
-2. JS shim routes to `window.webkit.messageHandlers.RposPrinter.postMessage`
-3. `PrinterBridge` receives message, decodes base64 to Data
-4. `NetworkPrinter` opens TCP connection to printer IP:9100
-5. Sends ESC/POS bytes, closes connection
-6. Fires `window.__rposPrintCallback(callbackId, success, error)` back to React
-
-## Supported printers
-
-- Sunmi NT311 (80mm, network)
-- Epson TM-m30 (80mm, network)
-- Star TSP654ii (80mm, network)
-- Any ESC/POS printer on TCP port 9100
-
-## iOS permissions required
-
-- Local Network — for TCP connections to printers (prompted on first use)
-- Camera — for future barcode scanning
-
-## Notes
-
-- `UIRequiresPersistentWifi = true` keeps WiFi active even when idle
-- `isIdleTimerDisabled = true` keeps screen on permanently
-- Only `possystem-liard.vercel.app` and Supabase URLs are allowed in the WebView
-- Landscape orientation only
+- **Never sleeps**: `isIdleTimerDisabled` on, re-asserted whenever the app becomes active.
+- **Never white-screens**: any load failure shows a native Reconnecting view and retries the same URL every 5 seconds until it loads. A killed web process reloads itself.
+- **Stays put**: our host and `*.supabase.co` (plus localhost) load in the WebView; everything else opens in Safari.
+- **POS-friendly WebView**: no pinch zoom, no scroll bounce, no long-press callouts, inline media with no tap (order chime works), camera granted to our origin for QR scanning, microphone always denied.
+- **Orientation**: iPad all orientations, iPhone portrait only (runs on iPhone so TestFlight review cannot crash it).

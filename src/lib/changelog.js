@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.36',
+    date: '2026-08-20',
+    items: [
+      'Groundwork: the iPad POS app project is in the repository, ready to build and upload to TestFlight once Xcode is set up. No change to the web app.',
+    ],
+  },
+  {
     version: '5.7.35',
     date: '2026-08-20',
     items: [

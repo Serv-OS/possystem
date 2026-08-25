@@ -1,0 +1,75 @@
+# XcodeGen project spec for the ServOS POS iOS shell.
+# Run `xcodegen generate` in this directory to produce "ServOS POS.xcodeproj".
+# Tested against XcodeGen 2.46.0 syntax. Nothing here is committed to a pbxproj
+# by hand; the .xcodeproj is a build artifact and should stay out of git.
+
+name: ServOS POS
+
+options:
+  createIntermediateGroups: true
+  developmentLanguage: en
+  deploymentTarget:
+    iOS: "16.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+
+targets:
+  ServOS POS:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - path: ServOSPOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: co.posup.rpos.pos
+        PRODUCT_NAME: ServOS POS
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        # Signing stays Automatic. The team is chosen in Xcode by the owner.
+        # After first signing, record the 10-character team id here as
+        # DEVELOPMENT_TEAM so `xcodegen generate` does not wipe the choice.
+        CODE_SIGN_STYLE: Automatic
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SUPPORTS_MACCATALYST: NO
+    info:
+      path: ServOSPOS/Info.plist
+      properties:
+        CFBundleDisplayName: ServOS POS
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        LSRequiresIPhoneOS: true
+        # Camera is used by the web app's QR scanning (getUserMedia).
+        # Microphone is deliberately NOT requested; the shell denies it.
+        NSCameraUsageDescription: "ServOS POS uses the camera to scan QR codes for table ordering, loyalty and gift cards."
+        # App Transport Security stays at the secure default (https only).
+        # The POS URL is https; no arbitrary-loads exception is added.
+        UILaunchScreen:
+          UIColorName: LaunchBackground
+        UIRequiresFullScreen: false
+        UIStatusBarHidden: true
+        UIViewControllerBasedStatusBarAppearance: false
+        UIApplicationSupportsIndirectInputEvents: true
+        ITSAppUsesNonExemptEncryption: false
+        # iPad: all orientations. iPhone: portrait only (big-screen app, but it
+        # must run without crashing on iPhone for TestFlight review).
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+
+schemes:
+  ServOS POS:
+    build:
+      targets:
+        ServOS POS: all
+    run:
+      config: Debug
+    archive:
+      config: Release
