@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.37',
+    date: '2026-08-25',
+    items: [
+      'A stuck card payment can now be checked and cleared from the till in one tap. When a payment on an Adyen card machine loses its connection part way through, the card screen used to sit on "Taking the card" or "Outcome not confirmed" with a Cancel button that could only refuse. That button now reads "Check card machine": it asks the card machine itself what happened and acts on the real answer. If the card paid, the sale completes normally. If the card declined or the payment was cancelled, staff can retry. And if the machine never received the payment at all, the till says so, confirms nothing was charged, and lets staff send it again.',
+      'The till also checks by itself. If a card payment has shown "Taking the card" for 25 seconds with no movement, the till quietly asks the card machine what happened, and keeps asking every 30 seconds until it has an answer. One wedged payment can no longer stop service.',
+      'If the card machine is genuinely still taking the payment, the till says so and leaves it alone. Nothing here guesses: every outcome comes from the card machine\'s own record of the payment, and the payment is only ever marked paid, declined or never received from that record.',
+    ],
+  },
+  {
     version: '5.7.36',
     date: '2026-08-20',
     items: [

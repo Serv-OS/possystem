@@ -1,3 +1,41 @@
+# Session, 25 Aug 2026, v5.7.37 — staff self-rescue for wedged Adyen card payments (NOT committed)
+
+## Done (working tree only, no commit, no push, no deploys, no DB writes)
+- INCIDENT (25 Aug, third of its class): an Adyen job wedges in 'charging'/'unknown'
+  when the one long sync call drops (reader wifi blip); Cancel refuses post-send and
+  one stuck payment stops service. The server truth-check already existed
+  (adyen-terminal-charge action 'result', proven 3x by hand today) — it just had no
+  caller on the till.
+- terminalJobs.js: new checkJobWithReader(jobId) — POSTs {action:'result', job_id},
+  returns {kind:'settled',body} | {kind:'never_received'} (the 409 safe:true) |
+  {kind:'in_progress'} | {kind:'error',message}; never throws. callFn now stamps
+  err.safe from the body so the discriminator never reads message text.
+- PaxTerminal.jsx: on an ADYEN job in 'charging' or 'unknown' the dead Cancel becomes
+  "Check card machine" (unknown also keeps its blocked panel, reworded to point at the
+  button). Settled -> re-read the row via fetchJob and let the EXISTING settle effect
+  complete/fail (no forked completion logic). never_received -> toast + inline msg
+  "nothing was charged, try again", row is already charging_unsent server-side, sheet
+  returns to pre-send state (v5.6.88 re-kick handles resend on the next card press).
+  in_progress -> "finish or cancel it on the machine", stay. Ryft untouched: its
+  'charging' cancel is a REAL processor void (v5.5.905) and keeps the Cancel button.
+- AUTO-RESCUE: 25s in 'charging'/'unknown' with no status change -> one automatic
+  check, then every 30s while wedged. Timers fire through runCheckRef (v5.7.12 rule),
+  deps are [wedged, status] primitives so parent re-renders can't churn them; a
+  checkingRef latch means one check in flight ever (manual + both timers share it);
+  auto runs stay quiet on non-answers.
+- charging_unsent (pre-send stuck): unchanged — "Cancel payment" via cancelTerminalJob,
+  as before.
+- Version 5.7.37 + changelog (operator English, no em/en dashes).
+- VERIFIED: npm run build clean; npm test 484/484 (baseline 484); eslint touched files
+  = zero NEW errors (the 11 reported are byte-for-byte at HEAD too: 10 old escaped
+  quotes deep in changelog.js + the pre-existing unused cancelIsLive).
+
+## Next
+- Peter: commit/push when happy. NOTHING deployed; no edge fn changed (the 'result'
+  action was already live and proven — this is client-only).
+
+---
+
 # Session, 24 Aug 2026 (v5.7.34 continued), RECEIPTS HALF finished + review fixes (NOT committed)
 
 ## Done (working tree only, no commit, no push, no deploys, no DB writes)

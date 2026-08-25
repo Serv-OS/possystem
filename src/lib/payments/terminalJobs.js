@@ -126,6 +126,11 @@ async function callFn(name, body) {
     // reference was used, not whether a card was charged against it — and those
     // two cases must be handled in opposite directions.
     err.jobStatus = j?.job_status ?? null;
+    // v5.7.37 — the server's "provably nothing was charged" marker. adyen-terminal-charge
+    // sends `safe: true` on exactly the refusals where it has PROVEN no card moved (the
+    // reader answered NotFound and the row was reset to charging_unsent). checkJobWithReader
+    // discriminates on this, never on the message text.
+    err.safe = j?.safe === true;
     throw err;
   }
   return j;
@@ -497,6 +502,58 @@ export async function fetchJobCapture(job) {
   } catch (e) {
     console.warn('[terminalJobs] capture-window fetch failed:', e?.message || e);
     return null;
+  }
+}
+
+/**
+ * v5.7.37 — ask the READER what actually happened to a wedged Adyen job.
+ *
+ * The staff self-rescue for the "sync response dropped" incident class: a job
+ * stuck in 'charging' or 'unknown' because the one long cloud call between the
+ * edge fn and the terminal died (reader wifi blip) — the card may have been
+ * taken, refused, or never seen at all, and until now only a manager with DB
+ * access could find out. adyen-terminal-charge action 'result' sends the reader
+ * a nexo TransactionStatusRequest and settles the job from the reader's OWN
+ * answer, so this helper just names the four outcomes the till must handle:
+ *
+ *   { kind: 'settled', body }    the reader answered and the job is now settled
+ *                                server-side (body is the fn's settledBody:
+ *                                job_status = approved/reconciled/declined/
+ *                                cancelled/expired, plus transaction_id,
+ *                                auth_code, card). Re-read the row and let the
+ *                                normal settle path run.
+ *   { kind: 'never_received' }   the reader answered NotFound — PROVABLY nothing
+ *                                was charged. The server has already reset the
+ *                                job to charging_unsent, so a retry is safe
+ *                                (the v5.6.88 re-kick handles the resend).
+ *   { kind: 'in_progress' }      the reader is genuinely mid-payment (or the
+ *                                check could not decide). Leave it alone.
+ *   { kind: 'error', message }   transport/fence/processor failure. Nothing
+ *                                settled, nothing reset — try again later.
+ *
+ * NEVER THROWS. Adyen jobs only — the fn refuses other processors (that comes
+ * back as kind:'error'), and Ryft keeps its own live-cancel path.
+ */
+export async function checkJobWithReader(jobId) {
+  if (!jobId) return { kind: 'error', message: 'no job to check' };
+  if (isMock || !supabase) return { kind: 'error', message: 'offline' };
+  try {
+    const j = await callFn('adyen-terminal-charge', { action: 'result', job_id: jobId });
+    // {ok:true, state:'processing', status} — mid-payment, or the fn could not
+    // reach/parse an answer. Either way: not settled, not reset, do nothing.
+    if (j?.state === 'processing') return { kind: 'in_progress', status: j?.status ?? null };
+    // settledBody: {ok:true, state, status, job_status, transaction_id, auth_code,
+    // card, decline_reason, payment_session_id, capture?}. job_status is the RAW
+    // row status; state folds reconciled→approved and expired→cancelled.
+    if (j?.ok === true && j?.job_status) return { kind: 'settled', body: j };
+    return { kind: 'error', message: 'unrecognised answer from the card machine check' };
+  } catch (e) {
+    // 409 {ok:false, safe:true, error:'terminal never received the payment — retry'}
+    // — the ONE branch where the server both proves nothing was charged AND has
+    // already reset the row to charging_unsent. Discriminated on the safe flag,
+    // never the message text.
+    if (e?.status === 409 && e?.safe === true) return { kind: 'never_received' };
+    return { kind: 'error', message: e?.message || 'could not check the card machine' };
   }
 }
 

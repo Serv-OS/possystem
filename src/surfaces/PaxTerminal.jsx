@@ -16,6 +16,11 @@
  *   2. `unknown` is a dead end, on purpose. No retry button, no "try again",
  *      no dismiss. It is never auto-retried (double charge) and never dropped
  *      (lost sale) — a manager resolves it from the Back Office queue.
+ *      v5.7.37 — on ADYEN jobs it is no longer a dead end for staff: the sheet
+ *      offers "Check card machine" (and auto-checks by itself), which asks the
+ *      READER what really happened via adyen-terminal-charge 'result'. The
+ *      server settles the job from the reader's own answer, so this is still
+ *      never a client-side guess — the dead-end rule's point is preserved.
  *
  *   3. The tip and the charge come off the job's INTEGERS (tip_minor,
  *      charge_minor), never re-derived from the displayed pounds. Never round twice.
@@ -24,7 +29,8 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { pollTerminalJob, cancelTerminalJob, fetchJob } from '../lib/payments/terminalJobs';
+import { pollTerminalJob, cancelTerminalJob, fetchJob, checkJobWithReader } from '../lib/payments/terminalJobs';
+import { useStore } from '../store';
 import { money } from '../lib/currency';
 
 const STATUS_COPY = {
@@ -47,8 +53,16 @@ export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete
   const [job, setJob] = useState(initialJob);
   const [cancelBusy, setCancelBusy] = useState(false);
   const [cancelMsg, setCancelMsg] = useState('');
+  const [checkBusy, setCheckBusy] = useState(false);
+  const [checkMsg, setCheckMsg] = useState('');
   const abortRef = useRef(null);
   const doneRef = useRef(false);
+  // v5.7.37 — one reader-check in flight, EVER. The manual button and the two
+  // auto-rescue timers all fire through this latch, so they can never overlap.
+  const checkingRef = useRef(false);
+  // The timers fire through this ref (v5.7.12 rule), so they always run the
+  // current render's closure — never a stale job object.
+  const runCheckRef = useRef(null);
   // v5.7.12 - the settle handoff must survive parent re-renders. The old
   // pattern (setTimeout in the effect + clearTimeout in its cleanup, with
   // onComplete - an inline closure with a fresh identity every parent render -
@@ -141,7 +155,20 @@ export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete
   // — a card that already paid comes back as already_captured ("refund instead"), never a
   // false cancel. So the client offers it for every LIVE status and lets the server rule.
   const LIVE = ['pending', 'claimed', 'tipping', 'charging_unsent', 'charging'];
-  const canOfferCancel = LIVE.includes(status) && !blocked;
+  // v5.7.37 — STAFF SELF-RESCUE FOR A WEDGED ADYEN JOB (live incident 25 Aug,
+  // third of its class). The Adyen cloud charge is ONE long sync call; when the
+  // response drops (reader wifi blip) the job wedges in 'charging' or 'unknown',
+  // cancel refuses ("too late"), and one stuck payment stops service. The truth
+  // check has existed server-side all along: adyen-terminal-charge 'result' asks
+  // the READER via a nexo TransactionStatusRequest and settles from its answer.
+  // In those two states the dead Cancel becomes "Check card machine" — same slot,
+  // same tap, an answer instead of a refusal. Adyen only: on Ryft, cancel during
+  // 'charging' is a REAL processor void (v5.5.905) and must stay exactly as it is.
+  // The processor comes off the job row (falling back to the create-response row —
+  // pollTerminalJob's timeout can synthesise a row without it).
+  const processor = job?.processor ?? initialJob?.processor ?? null;
+  const wedged = processor === 'adyen' && (status === 'charging' || status === 'unknown');
+  const canOfferCancel = LIVE.includes(status) && !blocked && !(processor === 'adyen' && status === 'charging');
   // Once the terminal is holding a card, say so on the button — cancelling then is a real
   // processor void, not a quiet local abort.
   const cancelIsLive = !!job?.charged_at;
@@ -163,6 +190,84 @@ export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete
     }
     setCancelBusy(false);
   };
+
+  // ── v5.7.37: ask the reader what actually happened ──────────────────────────
+  // One function, two callers (the button and the auto-rescue timers), one
+  // in-flight latch. `auto` runs stay quiet on non-answers so a 30s tick never
+  // spams staff; the manual tap always says something.
+  const runReaderCheck = async (auto = false) => {
+    if (checkingRef.current || doneRef.current || unmountedRef.current || !job?.id) return;
+    checkingRef.current = true;
+    setCheckBusy(true);
+    if (!auto) setCheckMsg('');
+    try {
+      const r = await checkJobWithReader(job.id);
+      if (unmountedRef.current || doneRef.current) return;
+      if (r.kind === 'settled') {
+        // The server settled the row from the reader's answer. Re-read the FULL
+        // row and hand it to the existing settle effect — approved/reconciled
+        // flows on exactly as if the poll had seen it (onComplete with the job's
+        // own integers), declined/cancelled/expired takes the existing failed
+        // path. NO forked completion logic here.
+        const fresh = await fetchJob(job.id).catch(() => null);
+        if (unmountedRef.current || doneRef.current) return;
+        setCheckMsg('');
+        // Fallback if the row read fails on the same bad network: merge the
+        // fn's settledBody onto what we hold. Conservative — needs_human is
+        // never invented or cleared client-side.
+        setJob(fresh || {
+          ...job,
+          status: r.body.job_status || r.body.status,
+          transaction_id: r.body.transaction_id ?? job.transaction_id ?? null,
+          auth_code: r.body.auth_code ?? job.auth_code ?? null,
+          card: r.body.card ?? job.card ?? null,
+        });
+      } else if (r.kind === 'never_received') {
+        // PROVEN: the reader answered NotFound, so no card moved, and the server
+        // has already reset the job to charging_unsent — the sheet returns to its
+        // pre-send state, where Cancel works and a re-press of the card button
+        // re-kicks the same job (v5.6.88).
+        const msg = 'The card machine never received this payment. Nothing was charged. Try again.';
+        useStore.getState().showToast?.(msg, 'info');
+        setCheckMsg(msg);
+        const fresh = await fetchJob(job.id).catch(() => null);
+        if (unmountedRef.current || doneRef.current) return;
+        setJob(fresh || { ...job, status: 'charging_unsent' });
+      } else if (r.kind === 'in_progress') {
+        if (!auto) {
+          const msg = 'The card machine is taking this payment. Finish or cancel it on the machine.';
+          useStore.getState().showToast?.(msg, 'info');
+          setCheckMsg(msg);
+        }
+      } else if (!auto) {
+        setCheckMsg(`Could not check the card machine: ${r.message || 'try again'}.`);
+      }
+    } finally {
+      checkingRef.current = false;
+      if (!unmountedRef.current) setCheckBusy(false);
+    }
+  };
+  // Committed-render closure only — same idiom as onCompleteRef above.
+  useEffect(() => { runCheckRef.current = runReaderCheck; });
+
+  // ── v5.7.37: auto-rescue ────────────────────────────────────────────────────
+  // A healthy Adyen tender settles inside the sync call, so a job still 'charging'
+  // (or 'unknown') 25 seconds after last changing status is exactly the wedge —
+  // check once, then every 30 seconds while it stays wedged. Deps are two
+  // primitives (a status string and a boolean derived from it + the processor),
+  // so a parent re-render can NEVER churn this effect — the v5.7.12 rule: the
+  // timers fire through runCheckRef and only a status change or unmount clears
+  // them. Any status change restarts the 25s clock; leaving the wedge (settled,
+  // or reset to charging_unsent) stops the timers for good.
+  useEffect(() => {
+    if (!wedged) return undefined;
+    let interval = null;
+    const first = setTimeout(() => {
+      runCheckRef.current?.(true);
+      interval = setInterval(() => { runCheckRef.current?.(true); }, 30_000);
+    }, 25_000);
+    return () => { clearTimeout(first); if (interval) clearInterval(interval); };
+  }, [wedged, status]);
 
   const dueGbp    = (job?.due_minor ?? 0) / 100;
   const tipGbp    = job?.tip_minor != null ? job.tip_minor / 100 : null;
@@ -203,7 +308,10 @@ export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete
           </div>
           <div style={{ fontSize: 12, lineHeight: 1.6 }}>
             {status === 'unknown'
-              ? 'The card may or may not have been charged. Do NOT take payment again — that risks charging the customer twice. A manager must resolve this in Back Office → Unreconciled payments before this check can close.'
+              ? (wedged
+                // v5.7.37 — an Adyen unknown has a self-service answer: the reader itself.
+                ? 'The card may or may not have been charged. Do NOT take payment again — that risks charging the customer twice. Tap "Check card machine" below to ask the card machine what happened. A manager can also resolve this in Back Office → Unreconciled payments.'
+                : 'The card may or may not have been charged. Do NOT take payment again — that risks charging the customer twice. A manager must resolve this in Back Office → Unreconciled payments before this check can close.')
               : 'The terminal reported a different amount from the one we asked for. This check is held until a manager checks it in Back Office → Unreconciled payments.'}
           </div>
           {job?.last_error && (
@@ -217,11 +325,20 @@ export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete
       {cancelMsg && (
         <div style={{ marginTop: 14, fontSize: 12, color: 'var(--red)' }}>{cancelMsg}</div>
       )}
+      {checkMsg && (
+        <div style={{ marginTop: 14, fontSize: 12, color: 'var(--t2)', lineHeight: 1.5 }}>{checkMsg}</div>
+      )}
 
       <div style={{ display: 'flex', gap: 10, justifyContent: 'center', marginTop: 22, flexWrap: 'wrap' }}>
         {canOfferCancel && (
           <button className="btn" style={{ height: 44, padding: '0 18px' }} disabled={cancelBusy} onClick={doCancel}>
             {cancelBusy ? 'Cancelling…' : 'Cancel payment'}
+          </button>
+        )}
+        {/* v5.7.37 — the wedged Adyen states get an answer instead of a dead Cancel. */}
+        {wedged && (
+          <button className="btn" style={{ height: 44, padding: '0 18px' }} disabled={checkBusy} onClick={() => runReaderCheck(false)}>
+            {checkBusy ? 'Checking…' : 'Check card machine'}
           </button>
         )}
         {['declined', 'cancelled', 'expired'].includes(status) && (
