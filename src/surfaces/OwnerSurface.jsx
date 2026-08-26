@@ -37,6 +37,20 @@ export default function OwnerSurface() {
     return () => { prev.forEach((p) => { p.n.style.overflow = p.overflow; p.n.style.height = p.height; }); };
   }, []);
 
+  // Owner runs on a PHONE with a notch, so it goes edge to edge and pads its own
+  // chrome with env(safe-area-inset-*). Without viewport-fit=cover iOS insets the
+  // whole web view instead, leaving a band above the app in the shell's colour,
+  // which is wrong in light mode and never matches the page. Set here and
+  // reverted on unmount, NOT in index.html: every other surface has zero inset
+  // handling, so turning this on globally would slide them under the notch.
+  useEffect(() => {
+    const m = document.querySelector('meta[name="viewport"]');
+    if (!m) return undefined;
+    const prev = m.getAttribute('content');
+    m.setAttribute('content', 'width=device-width, initial-scale=1.0, viewport-fit=cover');
+    return () => { if (prev) m.setAttribute('content', prev); };
+  }, []);
+
   useEffect(() => {
     if (isMock || !supabase) { setSession(null); return; }
     supabase.auth.getSession().then(({ data }) => setSession(data?.session || null));
@@ -52,7 +66,12 @@ export default function OwnerSurface() {
 function Shell({ children }) {
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg, #0F1211)', color: 'var(--t1)', fontFamily: 'var(--font, system-ui, sans-serif)' }}>
-      <div style={{ maxWidth: 520, margin: '0 auto', padding: '16px 14px 40px' }}>{children}</div>
+      {/* The page paints its own background through the notch and the home bar,
+          so the app reads as one continuous surface on a phone. */}
+      <div style={{
+        maxWidth: 520, margin: '0 auto',
+        padding: 'calc(16px + env(safe-area-inset-top, 0px)) 14px calc(40px + env(safe-area-inset-bottom, 0px))',
+      }}>{children}</div>
     </div>
   );
 }

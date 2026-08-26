@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.59',
+    date: '2026-08-26',
+    items: [
+      'Owner app: the top of the screen now runs behind the notch and paints its own background through it, and the bottom clears the home bar. Same fix the Manager app just got.',
+    ],
+  },
+  {
     version: '5.7.58',
     date: '2026-08-26',
     items: [
