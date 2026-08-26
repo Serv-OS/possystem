@@ -121,7 +121,7 @@ export default function KioskSurface() {
         <div style={{ fontSize: 64, marginBottom: 12 }}>🖥️</div>
         <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: '-0.02em', marginBottom: 6 }}>Pair this kiosk</div>
         <div style={{ fontSize: 13, color: 'rgba(255,255,255,0.7)', marginBottom: 28 }}>
-          Generate a pairing code in Back Office → Kiosks → + New kiosk
+          Generate a pairing code in Back Office → Channels → Kiosks
         </div>
         <input
           autoFocus

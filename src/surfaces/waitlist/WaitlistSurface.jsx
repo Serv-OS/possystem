@@ -255,7 +255,7 @@ function PairScreen({ code }) {
         <div style={{ fontSize: 13, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.1em', ...mono }}>Pair this host stand</div>
         <div style={{ fontSize: 42, fontWeight: 800, letterSpacing: '.12em', margin: '16px 0', color: 'var(--acc)', ...mono }}>{code || '······'}</div>
         <div style={{ fontSize: 13, color: 'var(--t2)', lineHeight: 1.5 }}>
-          In Back Office → Tables Ready → Devices, enter this code to pair this tablet. This screen links automatically once it's attached to a venue.
+          In Back Office → Channels → Tables Ready, enter this code to pair this tablet. This screen links automatically once it's attached to a venue.
         </div>
       </div>
     </Screen>

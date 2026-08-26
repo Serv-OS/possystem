@@ -1,7 +1,7 @@
 // src/surfaces/ManagerSurface.jsx
 //
 // ServOS Manager (?mode=manager) — the owner app + ops tablet merged into one role-adaptive phone
-// app. Flow mirrors the Ops surface: pair the phone (Back Office → Devices) → staff PIN → app.
+// app. Flow mirrors the Ops surface: pair the phone (Back Office → Operations → Devices) → staff PIN → app.
 // Floating bottom tab bar: Home · Reports · Team · Ops · Kitchen, shown per the signed-in role.
 //
 // ADDITIVE + reuse-first: pairing/PIN reuse the ops device layer (opsHeartbeat/opsRegisterDevice/
@@ -48,6 +48,24 @@ export default function ManagerSurface() {
     return () => { if (prevSkin) el.setAttribute('data-skin', prevSkin); else el.removeAttribute('data-skin'); if (prevTheme) el.setAttribute('data-theme', prevTheme); else el.removeAttribute('data-theme'); };
   }, [dark]);
 
+  // Manager is the one app that runs on a PHONE with a notch, so it goes edge to
+  // edge and pads its own chrome with env(safe-area-inset-*). Without
+  // viewport-fit=cover iOS insets the whole web view instead, which left a band
+  // above the app painted in the shell's colour: dark, even in light mode, and
+  // visibly not part of the app (Peter, 26 Aug).
+  //
+  // Set HERE and reverted on unmount rather than in index.html, because
+  // viewport-fit=cover is global: every env() in the app is 0 today, so turning
+  // it on everywhere would slide MPOS (which has no fixed chrome and no insets)
+  // straight under the notch.
+  useEffect(() => {
+    const m = document.querySelector('meta[name="viewport"]');
+    if (!m) return undefined;
+    const prev = m.getAttribute('content');
+    m.setAttribute('content', 'width=device-width, initial-scale=1.0, viewport-fit=cover');
+    return () => { if (prev) m.setAttribute('content', prev); };
+  }, []);
+
   // boot: anon session → heartbeat → claimed? PIN : pair
   useEffect(() => {
     let live = true;
@@ -93,7 +111,13 @@ export default function ManagerSurface() {
   const visibleTabs = TABS.filter((t) => flags[t.flag]);
   // If the active tab isn't allowed for this role, fall back to the first visible one.
   const activeTab = visibleTabs.some((t) => t.key === tab) ? tab : (visibleTabs[0]?.key || 'home');
-  const refreshSnap = () => { if (loc) fetchManagerSnapshot(loc).then((r) => { if (r?.ok) { setSnap(r); setSnapErr(''); } else setSnapErr(r?.error || 'Could not load'); }); };
+  // Returns the promise so a caller can show progress until it actually lands.
+  const refreshSnap = () => {
+    if (!loc) return Promise.resolve();
+    return fetchManagerSnapshot(loc).then((r) => {
+      if (r?.ok) { setSnap(r); setSnapErr(''); } else setSnapErr(r?.error || 'Could not load');
+    });
+  };
   const ctx = { loc, venueName, operator, flags, setTab, snap, snapErr, refreshSnap, dark,
     opsJump,
     goOps: (view) => { setOpsJump({ view, k: Date.now() }); setTab('ops'); },
@@ -140,18 +164,34 @@ function ManagerToast() {
 }
 
 function Screen({ children }) {
-  return <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 24, background: 'var(--bg)', color: 'var(--t1)' }}>{children}<ManagerToast /></div>;
+  return <div style={{
+    minHeight: '100vh', display: 'grid', placeItems: 'center',
+    padding: 'calc(24px + env(safe-area-inset-top, 0px)) 24px calc(24px + env(safe-area-inset-bottom, 0px))',
+    background: 'var(--bg)', color: 'var(--t1)',
+  }}>{children}<ManagerToast /></div>;
 }
 
 function Shell({ ctx, tabs, active, onTab, onLogout, children }) {
   return (
-    <div style={{ height: '100%', minHeight: '100vh', overflowY: 'auto', WebkitOverflowScrolling: 'touch', background: 'var(--bg)', color: 'var(--t1)', maxWidth: 480, margin: '0 auto', padding: '0 14px 92px' }}>
+    <div style={{
+      height: '100%', minHeight: '100vh', overflowY: 'auto', WebkitOverflowScrolling: 'touch',
+      background: 'var(--bg)', color: 'var(--t1)', maxWidth: 480, margin: '0 auto',
+      // The notch eats the top and the home indicator eats the bottom. The page
+      // paints its own background through both, so the app looks continuous.
+      padding: '0 14px calc(92px + env(safe-area-inset-bottom, 0px))',
+      paddingTop: 'env(safe-area-inset-top, 0px)',
+    }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '14px 4px 12px' }}>
         <div className="sv-glass" style={{ width: 36, height: 36, borderRadius: 11, display: 'grid', placeItems: 'center', fontFamily: 'Syne, Space Grotesk, sans-serif', fontWeight: 800, color: 'var(--acc)', flexShrink: 0 }}>S</div>
         <button onClick={onLogout} title="Switch user" style={{ flex: 1, minWidth: 0, textAlign: 'left', background: 'none', border: 'none', padding: 0, cursor: 'pointer', color: 'inherit', fontFamily: 'inherit' }}>
           <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--t1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ctx.venueName || 'ServOS Manager'}</div>
           {ctx.operator && <div style={{ fontSize: 10.5, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.08em', ...mono }}>{ctx.operator.name} · {ctx.operator.role || 'staff'}</div>}
         </button>
+        {/* The snapshot refreshes itself every 30s, but there was no way to ASK
+            for fresh numbers, which is the first thing anyone does when a figure
+            looks stale (Peter, 26 Aug). Spins while it fetches so the tap is
+            visibly acknowledged. */}
+        <RefreshButton onRefresh={ctx.refreshSnap} />
         <button onClick={ctx.toggleTheme} aria-label="Theme" className="sv-glass" style={{ width: 38, height: 38, borderRadius: 11, display: 'grid', placeItems: 'center', cursor: 'pointer', color: 'var(--t1)', border: '1px solid var(--bdr)', flexShrink: 0 }}>
           {ctx.dark ? '☾' : '☀'}
         </button>
@@ -166,9 +206,37 @@ function Shell({ ctx, tabs, active, onTab, onLogout, children }) {
   );
 }
 
+function RefreshButton({ onRefresh }) {
+  const [busy, setBusy] = useState(false);
+  const go = async () => {
+    if (busy || !onRefresh) return;
+    setBusy(true);
+    // Always hold the spinner briefly: a snapshot that returns in 40ms would
+    // otherwise flash and read as "nothing happened".
+    const started = Date.now();
+    try { await onRefresh(); } catch { /* the surface shows its own error line */ }
+    const held = Date.now() - started;
+    if (held < 450) await new Promise((r) => setTimeout(r, 450 - held));
+    setBusy(false);
+  };
+  return (
+    <button
+      onClick={go} disabled={busy} aria-label="Refresh" title="Refresh"
+      className="sv-glass"
+      style={{
+        width: 38, height: 38, borderRadius: 11, display: 'grid', placeItems: 'center',
+        cursor: busy ? 'default' : 'pointer', color: busy ? 'var(--acc)' : 'var(--t1)',
+        border: '1px solid var(--bdr)', flexShrink: 0, fontSize: 17, lineHeight: 1,
+      }}
+    >
+      <span style={{ display: 'block', animation: busy ? 'spin .7s linear infinite' : 'none' }}>↻</span>
+    </button>
+  );
+}
+
 function TabBar({ tabs, active, onTab }) {
   return (
-    <div style={{ position: 'fixed', left: 0, right: 0, bottom: 0, display: 'flex', justifyContent: 'center', padding: '0 14px 14px', pointerEvents: 'none', zIndex: 30 }}>
+    <div style={{ position: 'fixed', left: 0, right: 0, bottom: 0, display: 'flex', justifyContent: 'center', padding: '0 14px calc(14px + env(safe-area-inset-bottom, 0px))', pointerEvents: 'none', zIndex: 30 }}>
       <div className="sv-glass" style={{ pointerEvents: 'auto', display: 'flex', gap: 2, padding: 6, borderRadius: 999, maxWidth: 480, width: '100%', justifyContent: 'space-around' }}>
         {tabs.map((t) => {
           const on = t.key === active;
@@ -194,7 +262,10 @@ function PairScreen({ code }) {
       <div className="sv-glass" style={{ padding: 28, textAlign: 'center', maxWidth: 340 }}>
         <div style={{ fontSize: 13, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.1em', ...mono }}>Pair this phone</div>
         <div style={{ fontSize: 40, fontWeight: 800, letterSpacing: '.12em', margin: '14px 0', color: 'var(--acc)', ...mono }}>{code || '······'}</div>
-        <div style={{ fontSize: 13, color: 'var(--t2)', lineHeight: 1.5 }}>In Back Office → Settings → Devices, enter this code to link this phone to your venue. This screen updates automatically once it's paired.</div>
+        {/* Operations → Devices, NOT Settings → Devices. Manager registers through
+            the ops device layer (opsRegisterDevice), which is the same list the
+            Ops tablet pairs into. The Settings group has no Devices page at all. */}
+        <div style={{ fontSize: 13, color: 'var(--t2)', lineHeight: 1.5 }}>In Back Office → Operations → Devices, enter this code to link this phone to your venue. This screen updates automatically once it&apos;s paired.</div>
       </div>
     </Screen>
   );

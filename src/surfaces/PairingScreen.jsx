@@ -182,7 +182,7 @@ export default function PairingScreen({ onPaired }) {
         <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 16, fontFamily: 'monospace' }}>v{VERSION}</div>
         <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 8, lineHeight: 1.6 }}>
           Generate a pairing code in your back office:<br />
-          <strong>Back Office → Devices → Add terminal</strong>
+          <strong>Back Office → Hardware → Terminals</strong>
         </div>
 
         {/* Admin bypass link */}

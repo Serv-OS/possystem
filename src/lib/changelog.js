@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.58',
+    date: '2026-08-26',
+    items: [
+      'Manager app: the pairing screen sent you to the wrong place. It said Settings, Devices, and there is no Devices page under Settings. It is Operations, Devices.',
+      'Manager app: added a refresh button beside the theme and sign out buttons. The figures already refreshed themselves every 30 seconds but there was no way to ask for them now.',
+      'Manager app: the top of the screen now runs behind the notch and paints its own background through it, instead of leaving a band in the wrong colour. The bottom tab bar also clears the home bar.',
+      'Fixed four more screens that pointed at menus by the wrong name: the till pairing screen said Devices when it is Hardware then Terminals, the PIN screen said Staff when it is Team, the kiosk and the Tables Ready stand were both missing which menu to open first.',
+    ],
+  },
+  {
     version: '5.7.57',
     date: '2026-08-25',
     items: [

@@ -119,7 +119,7 @@ export default function PINScreen() {
         <div style={{ fontSize: 13, color: 'var(--t3)', marginTop: 6 }}>
           {loadedStaff === null ? 'Loading staff…'
             : staff.length ? ((nfcOn || hasCards) ? '💳 Tap your card, or enter your PIN' : 'Enter your PIN to sign in')
-            : 'No staff configured — go to Back Office → Staff'}
+            : 'No staff configured — go to Back Office → Team'}
         </div>
       </div>
 
@@ -163,7 +163,7 @@ export default function PINScreen() {
             <div style={{ maxWidth: 320 }}>
               <div style={{ fontSize: 32, marginBottom: 12 }}>👥</div>
               <div style={{ fontSize: 15, fontWeight: 700, color: 'var(--t1)', marginBottom: 8 }}>No staff members set up yet</div>
-              <div style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 20, lineHeight: 1.6 }}>Go to <strong>Back Office → Staff & Access</strong> and add your staff members. They'll appear here automatically.</div>
+              <div style={{ fontSize: 13, color: 'var(--t3)', marginBottom: 20, lineHeight: 1.6 }}>Go to <strong>Back Office → Team</strong> and add your staff members. They'll appear here automatically.</div>
               <button onClick={() => { localStorage.setItem('rpos-device-mode', 'backoffice'); window.location.reload(); }} style={{ padding: '10px 20px', borderRadius: 10, cursor: 'pointer', fontFamily: 'inherit', background: 'var(--acc)', border: 'none', color: '#fff', fontSize: 13, fontWeight: 700, display: 'block', width: '100%' }}>Go to Back Office →</button>
             </div>
           ) : (
