@@ -14,6 +14,8 @@
 // Deno support. Secrets: ADYEN_API_KEY / ADYEN_MERCHANT_ACCOUNT / ADYEN_ENV /
 // ADYEN_CLIENT_KEY (served to the client — it is a publishable key).
 
+import { createClient } from 'npm:@supabase/supabase-js@2';
+
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
 
@@ -22,6 +24,42 @@ const MERCHANT = Deno.env.get('ADYEN_MERCHANT_ACCOUNT') ?? '';
 const CLIENT_KEY = Deno.env.get('ADYEN_CLIENT_KEY') ?? '';
 const ENV = (Deno.env.get('ADYEN_ENV') ?? 'test').toLowerCase();
 const CHECKOUT_BASE = ENV === 'live' ? 'https://checkout-live.adyen.com' : 'https://checkout-test.adyen.com';
+
+// ── Store routing (26 Aug 2026) ─────────────────────────────────────────────
+// FranPOS's Adyen account moved onto the Balance Platform, where card routing
+// hangs off the STORE, not the merchant account. Terminals name their store
+// implicitly, so POS kept working while every ECOM request (no store) started
+// refusing with 905_1 "could not find an acquirer account". The venue's store
+// id already lives in merchant_adyen_accounts (terminal provisioning wrote it)
+// so resolve it from there: by location when the caller sends one, else the
+// single receive_payments_ok row for this merchant. Never fails the payment —
+// no store resolved just means the request goes out exactly as before.
+const platformAdmin = createClient(
+  Deno.env.get('PLATFORM_SUPABASE_URL') ?? '',
+  Deno.env.get('PLATFORM_SUPABASE_SERVICE_ROLE_KEY') ?? '',
+  { auth: { autoRefreshToken: false, persistSession: false } },
+);
+let storeCache: { at: number; key: string; store: string | null } | null = null;
+async function resolveStore(locationId?: string): Promise<string | null> {
+  const key = locationId || '*';
+  if (storeCache && storeCache.key === key && Date.now() - storeCache.at < 60_000) return storeCache.store;
+  let store: string | null = null;
+  try {
+    let q = platformAdmin.from('merchant_adyen_accounts')
+      .select('location_id, store_id, receive_payments_ok')
+      .eq('merchant_account', MERCHANT);
+    if (locationId) q = q.eq('location_id', locationId);
+    const { data, error } = await q;
+    if (error) console.error('[adyen-checkout] store lookup failed:', error.message);
+    const rows = (data ?? []).filter((r) => r.receive_payments_ok && r.store_id);
+    if (rows.length === 1) store = rows[0].store_id as string;
+    else if (rows.length > 1) console.error('[adyen-checkout] ambiguous store: pass location_id (rows:', rows.length, ')');
+  } catch (e) {
+    console.error('[adyen-checkout] store lookup threw:', (e as Error).message);
+  }
+  storeCache = { at: Date.now(), key, store };
+  return store;
+}
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -61,6 +99,8 @@ Deno.serve(async (req) => {
         channel: 'Web',
       };
       if (body.shopper_email) session.shopperEmail = String(body.shopper_email);
+      const sessionStore = await resolveStore(body.location_id ? String(body.location_id) : undefined);
+      if (sessionStore) session.store = sessionStore;
 
       const res = await fetch(`${CHECKOUT_BASE}/v72/sessions`, {
         method: 'POST',
@@ -111,6 +151,8 @@ Deno.serve(async (req) => {
       };
       if (body.browser_info) payment.browserInfo = body.browser_info;
       if (body.shopper_email) payment.shopperEmail = String(body.shopper_email);
+      const store = await resolveStore(body.location_id ? String(body.location_id) : undefined);
+      if (store) payment.store = store;
 
       const res = await fetch(`${CHECKOUT_BASE}/v72/payments`, {
         method: 'POST',

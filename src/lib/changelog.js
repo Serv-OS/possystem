@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.69',
+    date: '2026-08-26',
+    items: [
+      'Online card payments repaired after FranPOS’s Adyen account moved to the Balance Platform: every e-commerce payment now names the venue’s Adyen store (from merchant_adyen_accounts), which is where card routing lives on the new platform. In-person was unaffected because terminals carry their store implicitly',
+      'Verified live: refused with 905_1 all evening, authorised first try after the store was added, with the card-not-present commission stamped correctly',
+    ],
+  },
+  {
     version: '5.7.68',
     date: '2026-08-26',
     items: [
