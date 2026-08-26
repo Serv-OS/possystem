@@ -2419,6 +2419,68 @@ export const useStore = create((set, get) => ({
 
   // ── SEND TO KITCHEN ────────────────────────
   // Fires courses 0+1, marks table occupied, updates totals
+  // v5.7.72: reprint production tickets for already-sent lines. The Reprint modal
+  // existed for ages but its confirm handler only ever showed a toast — nothing
+  // reached a printer. This routes the SAME per-centre jobs sendToKitchen builds,
+  // marked REPRINT on the docket, WITHOUT touching item status/fired state and
+  // WITHOUT minting KDS tickets (KDS has its own recall). Returns the number of
+  // station jobs routed so the caller can toast honestly.
+  reprintKitchenTickets: (uids) => {
+    const { activeTableId, tables, staff, orderType } = get();
+    const uidSet = new Set(uids || []);
+    if (!uidSet.size) return 0;
+    const table = tables.find(t => t.id === activeTableId);
+    const session = table?.session;
+    const source = session?.items || get().walkInOrder?.items || [];
+    const items = source.filter(i => uidSet.has(i.uid) && !i.voided && !i.noKitchen);
+    if (!items.length) { get().showToast('Nothing to reprint for this order', 'warn'); return 0; }
+    const routingConfig = (() => {
+      try {
+        const stored = get().printRouting;
+        if (stored?.centres?.length) return stored;
+        return JSON.parse(localStorage.getItem('rpos-print-routing') || 'null') || { centres: [], routing: {} };
+      } catch { return { centres: [], routing: {} }; }
+    })();
+    const byCentre = {};
+    items.forEach(item => {
+      getCentresForItem(item, routingConfig).forEach(cid => {
+        if (!byCentre[cid]) byCentre[cid] = [];
+        byCentre[cid].push(item);
+      });
+    });
+    const centreNameOf = (cid) => {
+      const centre = routingConfig.centres?.find(c => c.id === cid);
+      return centre?.printer?.name || centre?.name || { pc1:'Hot kitchen', pc2:'Cold section', pc3:'Pizza oven', pc4:'Bar', pc5:'Expo / pass' }[cid] || 'Kitchen';
+    };
+    let stations = 0;
+    Object.entries(byCentre).forEach(([centreId, centreItems]) => {
+      stations++;
+      get().routePrintJob({
+        centreId,
+        printerName: centreNameOf(centreId),
+        tableLabel: table?.label || orderType || 'Walk-in',
+        server: staff?.name || session?.server || 'Server',
+        covers: session?.covers || 0,
+        course: centreItems[0]?.course ?? 1,
+        reprint: true,
+        type: 'kitchen',
+        items: centreItems.map(i => ({
+          qty: i.qty, name: i.kitchenName || i.menu_name || i.menuName || i.name,
+          mods: [
+            ...(i.mods?.map(m => (m._instruction ? m.label : (m.name || m.label))).filter(Boolean) || []),
+            ...(i.allergens?.length ? [`⚠ ${i.allergens.map(a=>a.toUpperCase()).join(' · ')}`] : []),
+            ...(i.notes ? [`📝 ${i.notes}`] : []),
+          ],
+          course: i.course ?? 1,
+          // Reprint means the kitchen wants the docket again NOW — never HOLD headers.
+          fired: true,
+          centreId, uid: i.uid,
+        })),
+      });
+    });
+    return stations;
+  },
+
   sendToKitchen: (opts) => {
     // v4.6.44: tolerate any arg shape. POSSurface legacy callers pass
     // sendToKitchen(null) or sendToKitchen(tableId) as positional args.
@@ -6682,7 +6744,7 @@ export const useStore = create((set, get) => ({
             table: job.tableLabel || '', server: job.server || '', covers: job.covers || 0,
             course: job.course || null, centreName: centre?.name || job.printerName || 'Kitchen',
             items: [units[i]], sentAt: basePrintJob.sentAt, delivery: job.delivery || null,
-            itemLabel: `ITEM ${i + 1} OF ${total}`,
+            itemLabel: `ITEM ${i + 1} OF ${total}`, reprint: !!job.reprint,
           }, printerId, { idempotencyKey: `${idempotencyKey}-i${i}` });
           if (!r?.ok) allOk = false; else lastJobId = r.jobId;
         }
@@ -6716,6 +6778,7 @@ export const useStore = create((set, get) => ({
             items: printItems,
             sentAt: basePrintJob.sentAt,
             delivery: job.delivery || null,   // HubRise/delivery context block (null for all other tickets)
+            reprint: !!job.reprint,           // v5.7.72: duplicate docket — banner, never a new order
           }, printerId, { idempotencyKey });
 
       // Any outcome here is "first attempt done". PrintRetrier handles persistent retries.

@@ -365,7 +365,7 @@ export async function buildMerchantTipSlip({ location, check, totals }) {
   return b.toBytes();
 }
 
-export function buildKitchenTicket({ table, server, covers, course, centreName, items, sentAt, delivery, itemLabel }) {
+export function buildKitchenTicket({ table, server, covers, course, centreName, items, sentAt, delivery, itemLabel, reprint }) {
   const b = new EscPosBuilder(42);
   const time = new Date(sentAt||Date.now()).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
 
@@ -392,6 +392,10 @@ export function buildKitchenTicket({ table, server, covers, course, centreName, 
   } else {
     b.center().line('WALK-IN').left();
   }
+
+  // v5.7.72: duplicate docket requested from the till — still in doubleBoth so it
+  // prints BIG. The kitchen must not read this as a new order.
+  if (reprint) b.center().line('** REPRINT **').left();
 
   // Coffee-shop "sticker" mode: one ticket per item, numbered ITEM X OF Y.
   if (itemLabel) b.center().bold(true).line(itemLabel).bold(false).left();

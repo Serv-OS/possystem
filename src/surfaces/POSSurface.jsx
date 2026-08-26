@@ -59,6 +59,7 @@ export default function POSSurface() {
     addItem, addCustomItem, removeItem, updateItemQty, updateItemNote, configureLineOptions,
     updateItemSeat, updateItemCourse, setOrderNote,
     sendToKitchen, fireCourse, saveTableSession, toggleServiceCharge,
+    reprintKitchenTickets,
     openCashDrawer,
     cashDrawers, myDrawer, needsCashIn,
     cashInDrawer, cashOutDrawer, computeExpectedCash, currentDrawerSession,
@@ -2059,7 +2060,12 @@ export default function POSSurface() {
           items={items.filter(i=>i.status==='sent')}
           tableLabel={activeTable?.label || orderType}
           onClose={()=>setShowReprint(false)}
-          onReprint={(uids)=>showToast(`Reprinted ${uids.length} ticket${uids.length!==1?'s':''} to kitchen`, 'success')}
+          onReprint={(uids)=>{
+            // v5.7.72: this handler was toast-only since the modal shipped — nothing
+            // ever reached a printer. The store action routes real per-centre jobs.
+            const stations = reprintKitchenTickets(uids);
+            if (stations > 0) showToast(`Reprinted ${uids.length} item${uids.length!==1?'s':''} to ${stations} station${stations!==1?'s':''}`, 'success');
+          }}
         />
       )}
       {showCustom&&(

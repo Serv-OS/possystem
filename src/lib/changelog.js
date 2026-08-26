@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.72',
+    date: '2026-08-26',
+    items: [
+      'POS Reprint actually prints now. The Reprint modal has existed for months but its confirm button only ever showed the success toast, no ticket was ever sent to any printer. Selected items now route real per-station production tickets through the same path as Send to kitchen',
+      'Reprinted dockets carry a big ** REPRINT ** banner so the kitchen never reads one as a new order, and item states are untouched (nothing re-fires, KDS is not duplicated)',
+      'The toast is honest: it reports how many stations were printed to, and warns instead when the selection has nothing kitchen-routable',
+    ],
+  },
+  {
     version: '5.7.71',
     date: '2026-08-26',
     items: [
