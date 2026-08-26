@@ -97,6 +97,26 @@ export async function startSessionReconciler() {
       const GRACE_MS = 30_000; // 30s grace period for new sessions before we trust Supabase
       const healIds = []; // v5.5.639: tables to re-publish to the DB (occupied locally, missing remotely)
 
+      // ONE SESSION ID, ONE TABLE. A session id is minted once at seating and a
+      // transfer MOVES it to another table, so the same id appearing on two
+      // tables can only mean one side is stale. These indexes let both branches
+      // below tell a moved session from a lost one: re-adding a DB row whose
+      // session id the store already holds on ANOTHER table would duplicate the
+      // party (the transfer-race bug of 26 Aug: items on T1 AND T3), and
+      // self-healing a local session whose id the DB holds elsewhere would
+      // resurrect the pre-move table from a device that missed the move.
+      // absorbedSessions covers COMBINES, where the source's id disappears into
+      // the destination's session rather than moving intact.
+      const indexSession = (map, sess, tid) => {
+        if (!sess) return;
+        if (sess.id) map.set(sess.id, tid);
+        for (const aid of sess.absorbedSessions || []) { if (aid) map.set(aid, tid); }
+      };
+      const localTableBySession = new Map();
+      for (const t of tables) indexSession(localTableBySession, t.session, t.id);
+      const dbTableBySession = new Map();
+      for (const [tid, c] of supabaseOpen) indexSession(dbTableBySession, c.session, tid);
+
       const newTables = tables.map(t => {
         const inSupabase = supabaseOpen.has(t.id);
         const inStore = !!t.session;
@@ -146,6 +166,15 @@ export async function startSessionReconciler() {
         // Gate on a genuinely-live session so a legitimately-closed/empty/stale one is never revived.
         if (inStore && !inSupabase) {
           const sess = t.session;
+          // The session MOVED: the DB holds this exact session id on another
+          // table, so this local copy is the pre-transfer view (typically a
+          // device that slept through the move). Healing it would republish the
+          // OLD table and duplicate the party. Adopt the DB's view instead.
+          const dbHome = sess?.id ? dbTableBySession.get(sess.id) : null;
+          if (dbHome && dbHome !== t.id) {
+            changed = true;
+            return { ...t, session: null, status: 'available', childIds: [] };
+          }
           const live = !!sess && (
             (sess.items?.length > 0) || isActive ||
             (sess.seatedAt && (now - sess.seatedAt) < SELF_HEAL_MAX_AGE_MS)
@@ -158,8 +187,14 @@ export async function startSessionReconciler() {
 
         if (!inStore && inSupabase) {
           // Table is open in Supabase but NOT in store — another device opened it
-          changed = true;
           const entry = supabaseOpen.get(t.id);
+          // ...unless this device holds the SAME session on a DIFFERENT table:
+          // then the session was TRANSFERRED here and the DB row is the stale
+          // source awaiting its delete. Re-adding it would put the party on two
+          // tables at once. Leave it; the flush's delete pass removes the row.
+          const localHome = entry.session?.id ? localTableBySession.get(entry.session.id) : null;
+          if (localHome && localHome !== t.id) return t;
+          changed = true;
           return { ...t, session: entry.session, status: 'occupied' };
         }
 

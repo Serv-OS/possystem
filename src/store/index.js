@@ -11,6 +11,9 @@ import { normaliseMenuRow, assembleTaxProfiles } from '../lib/rowMapping';
 import { buildLegacyProfiles } from '../lib/taxAdapter';
 import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, upsertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC, upsertModifierGroup, deleteModifierGroup } from '../lib/db';
 import { isSessionClosed } from '../sync/sessionClosure';
+// Same import shape bookingsSlice already uses; SessionSync touches the store
+// only at call time, so the module cycle is benign.
+import { persistTransfer } from '../sync/SessionSync';
 import { markJobReconciled, closeTerminalSession, recallJob, forgetJob, cancelTerminalJob, buildCheckKey, fetchJob, fetchJobCapture } from '../lib/payments/terminalJobs';
 import { printService } from '../lib/printer';
 import { hubrisePushStock, isHubriseConnected, hubrisePushStatus, isHubriseAutoReceipt } from '../lib/hubrise';
@@ -1966,6 +1969,11 @@ export const useStore = create((set, get) => ({
 
     const mergedItems = destHasSession ? [...toItems, ...fromItems] : fromItems;
     const mergedSubtotal = mergedItems.reduce((s, i) => s + (i.price||0)*(i.qty||1), 0);
+    // absorbedSessions = the ids of every session merged INTO this one. The
+    // reconciler's one-session-one-table guards key on session id, and a combine
+    // makes the source's id vanish into the destination's; without this lineage a
+    // device that slept through the combine would self-heal the source table back
+    // onto the floor with its items, next to the merged copy.
     const mergedSession = destHasSession
       ? {
           ...to.session,
@@ -1973,6 +1981,11 @@ export const useStore = create((set, get) => ({
           covers: (to.session.covers || 0) + (from.session.covers || 0),
           subtotal: mergedSubtotal,
           total: mergedSubtotal * 1.125,
+          absorbedSessions: [...new Set([
+            ...(to.session.absorbedSessions || []),
+            ...(from.session.absorbedSessions || []),
+            from.session.id,
+          ].filter(Boolean))],
         }
       : { ...from.session, items: mergedItems, subtotal: mergedSubtotal, total: mergedSubtotal * 1.125 };
 
@@ -1984,6 +1997,14 @@ export const useStore = create((set, get) => ({
       }),
       activeTableId: toId,
     }));
+
+    // Persist the move NOW, not on the debounced flush. The debounce plus the
+    // delete-pass grace left the source's active_sessions row alive for ~4s, and
+    // the SessionReconciler re-adds any DB-open table missing from the store
+    // every 10s, so a tick in that window resurrected the source table and the
+    // party appeared on BOTH tables with the items duplicated (26 Aug: T1→T3,
+    // then →B6). An operator transfer is deliberate; it writes through at once.
+    persistTransfer(fromId, toId).catch(e => console.warn('[transferTable] persist failed:', e?.message || e));
 
     if (sentItems.length) {
       try {

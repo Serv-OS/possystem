@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.67',
+    date: '2026-08-26',
+    items: [
+      'Moving or combining a table no longer leaves the party on both tables. The move happened instantly on screen but reached the shared record on a delay, and the safety net that rescues lost tables could fire inside that gap and bring the original table back, items and all.',
+      'A transfer now writes through to the shared record immediately, and the safety net has learned the difference between a lost table and a moved one: the same order can never be restored onto two tables at once, even by a device that slept through the move.',
+    ],
+  },
+  {
     version: '5.7.66',
     date: '2026-08-26',
     items: [

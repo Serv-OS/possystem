@@ -316,6 +316,50 @@ export async function flushSingleSession(tableId) {
   }
 }
 
+// ── Deliberate table transfer ────────────────────────────────────────────────
+// Persist a transfer IMMEDIATELY: publish the destination's merged session and
+// delete the source's row, with NO debounce and NO grace period.
+//
+// WHY: transferTable used to change only the in-memory tables and leave
+// persistence to the debounced flush, whose delete pass waits 600ms + a 3s
+// grace. The SessionReconciler re-adds any DB-open table missing from the store
+// every 10s, so if its tick landed inside that ~4s window it resurrected the
+// SOURCE table from its still-present DB row, the delete pass then saw the
+// table occupied again and never deleted it, and the floor showed the party on
+// BOTH tables with the items duplicated (Peter, 26 Aug: T1→T3, then →B6).
+// The grace period exists to absorb accidental wobbles; an operator-initiated
+// transfer is not a wobble, so it writes through at once.
+export async function persistTransfer(fromId, toId) {
+  if (!fromId || !toId) return;
+  if (!_locationId) {
+    try { _locationId = await getLocationId(); } catch { return; }
+  }
+  if (!_locationId) return;
+
+  // Destination first: if we die between the two writes, the DB briefly holds
+  // the session on both tables (today's bug, self-corrects on the next flush)
+  // rather than on neither (an order lost).
+  await flushSingleSession(toId);
+
+  delete _clearedAt[fromId];
+  _lastSent[fromId] = 'cleared';   // the delete-pass latch: already handled
+  try {
+    const backup = JSON.parse(localStorage.getItem('rpos-session-backup') || '{}');
+    if (backup[fromId] !== undefined) { delete backup[fromId]; localStorage.setItem('rpos-session-backup', JSON.stringify(backup)); }
+  } catch { /* backup best-effort */ }
+
+  const match = { location_id: _locationId, table_id: fromId };
+  if (isOnline()) {
+    try {
+      const { error } = await supabase.from('active_sessions').delete().match(match);
+      if (error) { console.warn('[SessionSync] persistTransfer delete error — queueing:', error.message || error); queueWrite({ type: 'delete', table: 'active_sessions', match }); }
+      else console.log('[SessionSync] ✓ transfer persisted:', fromId, '→', toId);
+    } catch (e) { console.warn('[SessionSync] persistTransfer threw — queueing:', e?.message || e); queueWrite({ type: 'delete', table: 'active_sessions', match }); }
+  } else {
+    queueWrite({ type: 'delete', table: 'active_sessions', match });
+  }
+}
+
 // ── Load on boot ──────────────────────────────────────────────────────────────
 export async function loadSessions() {
   if (!_locationId) _locationId = await getLocationId().catch(() => null);
