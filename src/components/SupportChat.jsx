@@ -7,6 +7,8 @@
 // the widget) can never happen.
 import { useEffect, useRef, useState } from 'react';
 import { Icon } from './ServOSIcons';
+import { useStore } from '../store';
+import { VERSION } from '../lib/version';
 
 const CHAT_SRC = 'https://posupject.vercel.app/chat.js';
 const CHAT_SITE_KEY = 'chat_4a8301c6412705dac3ce';
@@ -19,6 +21,16 @@ const MOUNT_ID = 'rpos-support-chat-mount';
 export default function SupportChat({ open, onClose }) {
   const injectedRef = useRef(false);
   const [loadState, setLoadState] = useState('idle'); // idle | loading | ready | failed
+  // The till already knows all of this, so support should never have to open with
+  // "which site are you?". Sent as a claim, not an identity: the CRM stores it
+  // under "reported by the device" and authorises nothing from it. Deliberately
+  // no customer data, no order data, and only the staff member's display name.
+  // Same fields the rest of the app uses to name these things: locationConfig
+  // falls back to `label` (see MReceiptPrompt), and a terminal is identified by
+  // its device PROFILE, which is what the ShiftBar shows the operator.
+  const venueName = useStore((s) => s.locationConfig?.name || s.locationConfig?.label);
+  const deviceName = useStore((s) => s.deviceConfig?.profileName);
+  const staffName = useStore((s) => s.staff?.name);
 
   useEffect(() => {
     if (!open || injectedRef.current || loadState === 'failed') return;
@@ -32,6 +44,13 @@ export default function SupportChat({ open, onClose }) {
     s.setAttribute('data-target', `#${MOUNT_ID}`);
     s.setAttribute('data-title', 'ServOS Support');
     s.setAttribute('data-api', CHAT_API);
+    // Only send keys we actually have, so a half-booted till does not post empties.
+    const ctx = {};
+    if (venueName) ctx.Venue = venueName;
+    if (deviceName) ctx.Terminal = deviceName;
+    if (staffName) ctx['Signed in'] = staffName;
+    ctx.App = `ServOS POS v${VERSION}`;
+    s.setAttribute('data-context', JSON.stringify(ctx));
     s.onload = () => setLoadState('ready');
     // Allow a retry on a dead connection — clearing the latch lets the next
     // open inject a fresh script tag (the failed one never ran, so no dupe).
