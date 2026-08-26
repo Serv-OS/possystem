@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { useStore } from '../store';
 import { ServOSIcon } from '../components/ServOSBrand';
 import { Icon } from '../components/ServOSIcons';
+import SupportChat from '../components/SupportChat';
 import { broadcastConfigPush } from '../sync/SyncBridge';
 import { supabase, isMock, platformSupabase, getLocationId, setResolvedLocationId, clearResolvedLocationId } from '../lib/supabase';
 import BOLogin from './BOLogin';
@@ -283,6 +284,7 @@ export default function BackOfficeApp() {
   const [section, setSection] = useState('overview');
   const [orgCtx, setOrgCtx] = useState(null); // { orgName, locationName, locationId, orgId, role }
   const [showLocationSwitcher, setShowLocationSwitcher] = useState(false);
+  const [showSupport, setShowSupport] = useState(false);
   // v5.5.367 ServOS: which nav accordion is open (single-open); auto-opens the
   // section that contains the current route.
   const [openNav, setOpenNav] = useState(null);
@@ -754,6 +756,19 @@ export default function BackOfficeApp() {
               <span style={{ fontSize:10, color:'var(--t4)' }}>▾</span>
             </button>
           )}
+          {/* Support chat — sits under the venue so it reads as "here, at this
+              site", and above Sign out, which stays the last thing in the list. */}
+          <button onClick={() => setShowSupport(true)} title="Chat with the ServOS team" style={{
+            width:'100%', padding:'9px 10px', borderRadius:9,
+            cursor:'pointer', textAlign:'left', fontSize:12,
+            fontWeight:600, border:'1px solid var(--bdr)',
+            fontFamily:'inherit', background:'transparent',
+            color:'var(--t3)', display:'flex', alignItems:'center', gap:8,
+            marginBottom:6, transition:'all .1s',
+          }}>
+            <Icon name="support" size={14} />
+            <span style={{ flex:1 }}>Support</span>
+          </button>
           {authUser && !isMock && (
             <button onClick={() => { localStorage.removeItem('rpos-bo-location'); clearResolvedLocationId(); supabase.auth.signOut().then(() => window.location.reload()); }} style={{
               width:'100%', padding:'8px 10px', borderRadius:9,
@@ -886,6 +901,18 @@ export default function BackOfficeApp() {
         </div>
       </div>
       {showLocationSwitcher && <LocationSwitcher onClose={() => setShowLocationSwitcher(false)} />}
+      {/* left:236 clears the Back Office sidebar. The context differs from the
+          till: a back office user has a login, not a PIN, and no terminal. */}
+      <SupportChat
+        open={showSupport}
+        onClose={() => setShowSupport(false)}
+        left={236}
+        context={{
+          Venue: orgCtx?.locationName || 'No venue selected',
+          'Signed in': authUser?.email || 'Not signed in',
+          Area: 'Back Office',
+        }}
+      />
     </div>
   );
 }

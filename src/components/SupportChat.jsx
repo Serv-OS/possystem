@@ -18,7 +18,9 @@ const CHAT_SITE_KEY = 'chat_4a8301c6412705dac3ce';
 const CHAT_API = 'https://yuevuqvldtmjwwzjrddo.supabase.co/functions/v1/chat';
 const MOUNT_ID = 'rpos-support-chat-mount';
 
-export default function SupportChat({ open, onClose }) {
+// `left` is where the panel starts: it sits just clear of whatever navigation
+// opened it. 58 is the POS rail; the Back Office sidebar is 236.
+export default function SupportChat({ open, onClose, left = 58, context: extraContext }) {
   const injectedRef = useRef(false);
   const [loadState, setLoadState] = useState('idle'); // idle | loading | ready | failed
   // The till already knows all of this, so support should never have to open with
@@ -45,11 +47,14 @@ export default function SupportChat({ open, onClose }) {
     s.setAttribute('data-title', 'ServOS Support');
     s.setAttribute('data-api', CHAT_API);
     // Only send keys we actually have, so a half-booted till does not post empties.
+    // A caller can override or add: the Back Office knows its signed-in user and
+    // its selected venue, but has no terminal and no PIN'd staff member.
     const ctx = {};
     if (venueName) ctx.Venue = venueName;
     if (deviceName) ctx.Terminal = deviceName;
     if (staffName) ctx['Signed in'] = staffName;
-    ctx.App = `ServOS POS v${VERSION}`;
+    ctx.App = `ServOS v${VERSION}`;
+    Object.assign(ctx, extraContext || {});
     s.setAttribute('data-context', JSON.stringify(ctx));
     s.onload = () => setLoadState('ready');
     // Allow a retry on a dead connection — clearing the latch lets the next
@@ -61,7 +66,7 @@ export default function SupportChat({ open, onClose }) {
   return (
     <div style={{ display: open ? 'contents' : 'none' }}>
       <div onClick={onClose} style={{ position:'fixed', inset:0, background:'rgba(0,0,0,.4)', zIndex:200, backdropFilter:'blur(2px)' }}/>
-      <div style={{ position:'fixed', left:58, top:0, bottom:0, width:390, maxWidth:'calc(100vw - 66px)', background:'var(--bg1)', borderRight:'1px solid var(--bdr)', zIndex:201, display:'flex', flexDirection:'column', boxShadow:'4px 0 24px rgba(0,0,0,.25)', animation:'slideRight .2s cubic-bezier(.2,.8,.3,1)', overflow:'hidden' }}>
+      <div style={{ position:'fixed', left, top:0, bottom:0, width:390, maxWidth:`calc(100vw - ${left + 8}px)`, background:'var(--bg1)', borderRight:'1px solid var(--bdr)', zIndex:201, display:'flex', flexDirection:'column', boxShadow:'4px 0 24px rgba(0,0,0,.25)', animation:'slideRight .2s cubic-bezier(.2,.8,.3,1)', overflow:'hidden' }}>
 
         {/* Header */}
         <div style={{ padding:'16px 18px 14px', borderBottom:'1px solid var(--bdr)', display:'flex', alignItems:'center', gap:10, flexShrink:0 }}>

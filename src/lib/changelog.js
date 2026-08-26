@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.62',
+    date: '2026-08-26',
+    items: [
+      'Support chat is now in the Back Office too, in the bottom left under the venue name.',
+      'The chat now tells our support team where it was opened from, so nobody has to start by asking which site you are. From a till it carries the venue, the terminal and who is signed in. From the Back Office it carries the venue and your login. No customer or order information is ever sent.',
+    ],
+  },
+  {
     version: '5.7.61',
     date: '2026-08-26',
     items: [
