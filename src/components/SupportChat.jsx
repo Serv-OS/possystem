@@ -9,7 +9,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Icon } from './ServOSIcons';
 import { useStore } from '../store';
 import { VERSION } from '../lib/version';
-import { getActiveLocationSync } from '../lib/supabase';
+import { getActiveLocationSync, supabase } from '../lib/supabase';
 
 const CHAT_SRC = 'https://posupject.vercel.app/chat.js';
 const CHAT_SITE_KEY = 'chat_4a8301c6412705dac3ce';
@@ -35,8 +35,26 @@ export default function SupportChat({ open, onClose, left = 58, context: extraCo
   const deviceName = useStore((s) => s.deviceConfig?.profileName);
   const staffName = useStore((s) => s.staff?.name);
 
+  // The venue's permanent public ID, the thing the CRM actually matches on. It is
+  // NOT in locationConfig, which is loaded from the platform DB, so read it from
+  // the ops locations row on first open. undefined = not looked up yet, and the
+  // script injection below waits for that so the code is in the context from the
+  // very first message. null = no code, which just means the CRM will not resolve
+  // a venue and the bot asks, exactly as it does today.
+  const [venueCode, setVenueCode] = useState(undefined);
   useEffect(() => {
-    if (!open || injectedRef.current || loadState === 'failed') return;
+    if (!open || venueCode !== undefined) return;
+    let alive = true;
+    const id = (() => { try { return getActiveLocationSync(); } catch { return null; } })();
+    if (!id || id === 'loc-demo' || !supabase) { setVenueCode(null); return undefined; }
+    supabase.from('locations').select('venue_code').eq('id', id).maybeSingle()
+      .then(({ data }) => { if (alive) setVenueCode(data?.venue_code || null); })
+      .catch(() => { if (alive) setVenueCode(null); });
+    return () => { alive = false; };
+  }, [open, venueCode]);
+
+  useEffect(() => {
+    if (!open || venueCode === undefined || injectedRef.current || loadState === 'failed') return;
     injectedRef.current = true;
     setLoadState('loading');
     const s = document.createElement('script');
@@ -57,6 +75,9 @@ export default function SupportChat({ open, onClose, left = 58, context: extraCo
     // is the only unambiguous handle, so send it and let the CRM map it.
     const locId = (() => { try { return getActiveLocationSync(); } catch { return null; } })();
     if (locId && locId !== 'loc-demo') ctx.VenueId = locId;
+    // The code is what the CRM matches on: short, permanent, and copied into the
+    // CRM record by hand when the venue is set up.
+    if (venueCode) ctx.VenueCode = venueCode;
     if (deviceName) ctx.Terminal = deviceName;
     if (staffName) ctx['Signed in'] = staffName;
     ctx.App = `ServOS v${VERSION}`;
@@ -67,7 +88,7 @@ export default function SupportChat({ open, onClose, left = 58, context: extraCo
     // open inject a fresh script tag (the failed one never ran, so no dupe).
     s.onerror = () => { setLoadState('failed'); injectedRef.current = false; s.remove(); };
     document.body.appendChild(s);
-  }, [open, loadState]);
+  }, [open, loadState, venueCode, extraContext]);
 
   return (
     <div style={{ display: open ? 'contents' : 'none' }}>

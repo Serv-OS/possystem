@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.64',
+    date: '2026-08-26',
+    items: [
+      'Every venue now has a short permanent ID of its own, like SV-1001, generated automatically when the venue is created. You will find it beside the venue name in the admin portal, and clicking it copies it.',
+      'Copy that ID into the venue record in the CRM once, when you set the venue up. From then on the support chat carries it, so support knows exactly which site is asking without anyone having to work it out from a name. Names could never do this: the till calls a site "Leeds" while the CRM may hold three different Leeds venues.',
+    ],
+  },
+  {
     version: '5.7.63',
     date: '2026-08-26',
     items: [
