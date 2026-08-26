@@ -27,7 +27,9 @@ alter table public.locations
   alter column venue_code
   set default 'SV-' || lpad(nextval('public.venue_code_seq')::text, 4, '0');
 
--- Existing venues, oldest first, so the numbers follow the order they were opened.
+-- Backfill existing venues. NOTE: an UPDATE has no guaranteed row order, so the
+-- numbers do NOT follow creation order, and that is fine. A venue code is an
+-- identifier, not a sequence anyone should read meaning into.
 update public.locations
    set venue_code = 'SV-' || lpad(nextval('public.venue_code_seq')::text, 4, '0')
  where venue_code is null;
