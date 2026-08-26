@@ -497,7 +497,7 @@ export default function POSSurface() {
   // going from a non-empty cart back to empty (post-transaction). On a
   // fresh POS mount with no cart the reader keeps its prior state.
   const _prevItemCountRef = useRef(0);
-  const _loyaltyEnabledRef = useRef(false); // v5.5.369: broadcast to the customer display so its keypad shows reliably
+  const _loyaltyEnabledRef = useRef(null); // v5.5.369: broadcast to the customer display so its keypad shows reliably; null = not yet resolved (v5.7.70 — never broadcast a guess)
   useEffect(() => {
     const nonVoided = (items || []).filter(i => !i.voided);
     const lineItems = nonVoided.map(i => {
@@ -537,7 +537,7 @@ export default function POSSurface() {
       }
     } else {
       if (displayUsesReader(mode)) pushReaderDisplay({ lineItems, totalMinor, currency: stripeCurrency() });
-      if (displayUsesScreen(mode)) publishDisplay({ items: displayItems, total: total || 0, state: 'active', currency: getActiveCurrencyCode(), loyaltyEnabled: _loyaltyEnabledRef.current });
+      if (displayUsesScreen(mode)) publishDisplay({ items: displayItems, total: total || 0, state: 'active', currency: getActiveCurrencyCode(), ...(typeof _loyaltyEnabledRef.current === 'boolean' ? { loyaltyEnabled: _loyaltyEnabledRef.current } : {}) });
     }
   }, [items, total]);
 
@@ -546,8 +546,21 @@ export default function POSSurface() {
   useEffect(() => {
     if (!displayUsesScreen()) return;
     // POS resolves loyalty-enabled (it has reliable auth + locationId) and
-    // broadcasts it so the rear screen's keypad gate is dependable.
-    isLoyaltyEnabled().then(v => { _loyaltyEnabledRef.current = !!v; }).catch(() => {});
+    // broadcasts it so the rear screen's keypad gate is dependable. null means
+    // "could not ask" (token race at mount, endpoint blip) — retry until we get
+    // a real answer; until then the broadcasts omit the flag entirely so the
+    // display's own knowledge stands (v5.7.70 — a guessed false hid the keypad).
+    let loyaltyProbeStopped = false;
+    const resolveLoyalty = (attempt = 0) => {
+      isLoyaltyEnabled().then(v => {
+        if (loyaltyProbeStopped) return;
+        if (typeof v === 'boolean') _loyaltyEnabledRef.current = v;
+        else if (attempt < 8) setTimeout(() => resolveLoyalty(attempt + 1), 4000);
+      }).catch(() => {
+        if (!loyaltyProbeStopped && attempt < 8) setTimeout(() => resolveLoyalty(attempt + 1), 4000);
+      });
+    };
+    resolveLoyalty();
     const unsubPhone = onCustomerPhone(async (phone) => {
       if (!phone) return;
       try {
@@ -570,7 +583,7 @@ export default function POSSurface() {
         publishLoyalty({ rewardSelected: reward.label || reward.reward_name || reward.name || 'Reward' });
       } catch { /* noop */ }
     });
-    return () => { unsubPhone(); unsubRedeem(); };
+    return () => { loyaltyProbeStopped = true; unsubPhone(); unsubRedeem(); };
   }, []);
 
   const firedCourses = session?.firedCourses || [];

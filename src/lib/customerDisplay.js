@@ -15,7 +15,7 @@
 // Sibling of readerDisplay.js (which targets the WisePOS E screen). Destination is
 // chosen per terminal via device_profiles.customer_display_mode (off|reader|screen|auto).
 
-import { supabase, isMock } from './supabase';
+import { supabase, isMock, ensureAuthToken } from './supabase';
 
 // ── Destination mode (per terminal) ─────────────────────────────────────────
 const MODE_KEY = 'rpos-customer-display-mode';
@@ -167,23 +167,30 @@ export function onRedeemReward(cb) {
 }
 
 // ── Loyalty enabled? (gates the phone-capture keypad on the display) ─────────
+/**
+ * Three-state: true/false = the venue's answer, null = COULD NOT ASK (no
+ * pairing, no token, endpoint down). Callers must only trust a boolean —
+ * broadcasting a null-collapsed `false` to the display suppressed the keypad
+ * whenever this raced or failed at POS mount (v5.7.70).
+ */
 export async function isLoyaltyEnabled() {
   try {
     if (isMock || !supabase) return false;
     const dev = JSON.parse(localStorage.getItem('rpos-device') || 'null');
     const locationId = dev?.locationId;
-    if (!locationId) return false;
+    if (!locationId) return null;
+    try { await ensureAuthToken(); } catch { /* getSession below may still hold one */ }
     const { data: s } = await supabase.auth.getSession();
     const token = s?.session?.access_token;
-    if (!token) return false;
+    if (!token) return null;
     const res = await fetch(
       `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/loyalty-config?location_id=${encodeURIComponent(locationId)}`,
       { headers: { authorization: `Bearer ${token}` } });
-    if (!res.ok) return false;
+    if (!res.ok) return null;
     const j = await res.json();
     // loyalty-config GET returns { config: { enabled, ... }, rewards, tiers } —
     // the flag lives at j.config.enabled, not the top level (j.enabled was always
     // undefined → keypad never showed). Fall back to j.enabled just in case.
     return !!(j?.config?.enabled ?? j?.enabled);
-  } catch { return false; }
+  } catch { return null; }
 }

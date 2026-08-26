@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.70',
+    date: '2026-08-26',
+    items: [
+      'Customer display: the loyalty keypad no longer vanishes when the till’s loyalty check races or fails at startup. The till now retries until it gets a real answer and omits the flag from its broadcasts until then, so the display’s own knowledge is not overwritten by a guess',
+      'The loyalty-enabled probe now establishes an auth session first instead of silently reporting "off" when the token was not ready',
+    ],
+  },
+  {
     version: '5.7.69',
     date: '2026-08-26',
     items: [

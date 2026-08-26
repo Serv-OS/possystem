@@ -73,7 +73,10 @@ export default function CustomerDisplaySurface() {
     let unsub = () => {};
     (async () => {
       try { await ensureAuthToken(); } catch { /* anon realtime ok */ }
-      try { setLoyaltyEnabled(await isLoyaltyEnabled()); } catch { /* default off */ }
+      try {
+        const v = await isLoyaltyEnabled();
+        if (typeof v === 'boolean') setLoyaltyEnabled(v); // null = could not ask — stay off until the POS broadcast says
+      } catch { /* default off */ }
       try {
         const dev = JSON.parse(localStorage.getItem('rpos-device') || 'null');
         if (dev?.profileId && supabase) {
