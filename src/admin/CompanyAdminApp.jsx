@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase';
 import BOLogin from '../backoffice/BOLogin';
 import AdminBillingManager from './sections/AdminBillingManager';
 import AdminRevenue from './sections/AdminRevenue';
+import AdminReseller from './sections/AdminReseller';
 import { money, CURRENCIES } from '../lib/currency';
 import { ServOSIcon, ServOSWordmark } from '../components/ServOSBrand';
 
@@ -437,6 +438,7 @@ function AdminPanel({ authUser }) {
           { id:'new-org', label:'+ New organisation' },
           { id:'billing', label:'Processing', icon:'💳' },
           { id:'revenue', label:'Revenue', icon:'📈' },
+          { id:'reseller', label:'FranPOS', icon:'🧾' },
         ].map(n => (
           <button key={n.id} onClick={() => { setSection(n.id); setMsg({ type:'', text:'' }); }}
             style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 16px', margin:'1px 8px', borderRadius:8, cursor:'pointer', fontSize:13,
@@ -473,6 +475,7 @@ function AdminPanel({ authUser }) {
 
         {/* ── Revenue: what the platform makes (payments + SaaS) ── */}
         {section === 'revenue' && <AdminRevenue />}
+        {section === 'reseller' && <AdminReseller />}
 
         {/* ── Orgs list ── */}
         {section === 'orgs' && (

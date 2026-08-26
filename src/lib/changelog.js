@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.65',
+    date: '2026-08-26',
+    items: [
+      'Admin portal: a new FranPOS section works out what FranPOS owes us each month. We process on their card account, so our card margin lands with them, and they keep 0.10% plus 5 per transaction and owe us the rest.',
+      'Pick a month and it shows the statement per venue: payments, volume, our commission, their share, and the net due. One click turns it into a numbered invoice, tracked from draft to sent to paid, with a printable copy to send them.',
+      'Payments that carry no rate classification are counted and flagged, never guessed onto an invoice. The buy rate is a setting, so a renegotiation is an edit, not a code change, and every invoice remembers the rate it was computed at.',
+    ],
+  },
+  {
     version: '5.7.64',
     date: '2026-08-26',
     items: [

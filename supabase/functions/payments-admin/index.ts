@@ -916,5 +916,221 @@ Deno.serve(async (req) => {
     return json({ error: ryftErr(link.data) || `Couldn't create a Ryft portal link (${link.status})`, ryft: link.data }, 502);
   }
 
+  // ── Reseller (FranPOS) residuals ──────────────────────────────────────────
+  // We process on FranPOS's Adyen account, so every venue's card markup settles
+  // to FranPOS. They keep the buy rate (0.10% + 5 minor units per transaction,
+  // reseller terms 26 Aug 2026) and owe us the rest of each payment's stamped
+  // commission. These actions compute that residual and run the invoice ledger,
+  // because nothing arrives unless we bill them.
+
+  if (action === 'reseller_statement' || action === 'reseller_invoice_create') {
+    const month = String(body.month ?? '');
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) return json({ error: 'month must be YYYY-MM' }, 400);
+    const from = new Date(`${month}-01T00:00:00Z`);
+    const to = new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth() + 1, 1));
+    const isMissingColumn = (msg: unknown) => /does not exist|42703|PGRST204|Could not find the/i.test(String(msg ?? ''));
+
+    // The buy rate this statement is computed at. Falls back to the signed
+    // terms if the migration has not been applied yet, and says so.
+    let buyPercent = 0.10, buyFixedMinor = 5, buyFromSettings = false;
+    {
+      const { data: st, error: stErr } = await platformAdmin.from('platform_settings')
+        .select('adyen_reseller_buy_percent, adyen_reseller_buy_fixed_minor').maybeSingle();
+      if (!stErr && st) {
+        if (st.adyen_reseller_buy_percent != null) { buyPercent = Number(st.adyen_reseller_buy_percent); buyFromSettings = true; }
+        if (st.adyen_reseller_buy_fixed_minor != null) buyFixedMinor = Number(st.adyen_reseller_buy_fixed_minor);
+      }
+    }
+
+    // Same paging + column ladder as `revenue`, so a pre-migration ledger
+    // degrades honestly instead of erroring.
+    const BASE = 'location_id, amount_minor, amount_refunded_minor, success, last_event_code, currency';
+    const LADDER = [`${BASE}, commission_minor`, BASE];
+    let ladderIdx = 0;
+    const rows: any[] = [];
+    for (let fromIdx = 0; fromIdx < 20000; fromIdx += 1000) {
+      let res = await platformAdmin.from('adyen_payments').select(LADDER[ladderIdx])
+        .gte('created_at', from.toISOString()).lt('created_at', to.toISOString())
+        .order('created_at', { ascending: true }).range(fromIdx, fromIdx + 999);
+      while (res.error && isMissingColumn(res.error.message) && ladderIdx < LADDER.length - 1) {
+        ladderIdx++;
+        res = await platformAdmin.from('adyen_payments').select(LADDER[ladderIdx])
+          .gte('created_at', from.toISOString()).lt('created_at', to.toISOString())
+          .order('created_at', { ascending: true }).range(fromIdx, fromIdx + 999);
+      }
+      if (res.error) return json({ error: `payments read failed: ${res.error.message}` }, 500);
+      const batch = (res.data ?? []) as any[];
+      rows.push(...batch);
+      if (batch.length < 1000) break;
+    }
+
+    const { data: locs } = await platformAdmin.from('locations').select('id, name');
+    const nameById = new Map<string, string>();
+    for (const l of locs ?? []) nameById.set(l.id, l.name);
+
+    // Per currency, per venue. One invoice per currency: FranPOS cannot be
+    // billed a GBP+USD blend on one line, and minor units never cross currencies.
+    const isPayment = (r: any) => r.success === true && r.last_event_code !== 'CANCELLATION';
+    type VLine = {
+      location_id: string; name: string;
+      count: number; volume_minor: number;
+      gross_commission_minor: number; buy_share_minor: number; net_due_minor: number;
+      unrated_count: number; unrated_volume_minor: number; refunds_minor: number;
+    };
+    const byCur = new Map<string, Map<string, VLine>>();
+    for (const r of rows) {
+      const cur = String(r.currency || 'GBP');
+      if (!byCur.has(cur)) byCur.set(cur, new Map());
+      const perLoc = byCur.get(cur)!;
+      const key = r.location_id ?? 'unmatched';
+      if (!perLoc.has(key)) {
+        perLoc.set(key, {
+          location_id: key, name: key === 'unmatched' ? '(unmatched payments)' : (nameById.get(key) ?? key),
+          count: 0, volume_minor: 0, gross_commission_minor: 0, buy_share_minor: 0, net_due_minor: 0,
+          unrated_count: 0, unrated_volume_minor: 0, refunds_minor: 0,
+        });
+      }
+      const line = perLoc.get(key)!;
+      line.refunds_minor += Number(r.amount_refunded_minor) || 0;
+      if (!isPayment(r)) continue;
+      const amount = Number(r.amount_minor) || 0;
+      line.count++;
+      line.volume_minor += amount;
+      const gross = ladderIdx === 0 && r.commission_minor != null ? Number(r.commission_minor) : null;
+      if (gross === null) {
+        // No stamped commission: flag it, never invent it. These payments are
+        // excluded from the invoice total and surfaced for a backfill.
+        line.unrated_count++;
+        line.unrated_volume_minor += amount;
+        continue;
+      }
+      // FranPOS's cut, rounded the same half-up way commissionForAmount rounds
+      // ours, so the two sides of the split are computed identically.
+      const buy = Math.floor((amount * buyPercent) / 100 + 0.5) + buyFixedMinor;
+      // A tiny payment can price below the buy rate. That is a real loss on the
+      // transaction, and hiding it by clamping to zero would overstate what
+      // FranPOS owes across the month.
+      line.gross_commission_minor += gross;
+      line.buy_share_minor += buy;
+      line.net_due_minor += gross - buy;
+    }
+
+    const statements = [...byCur.entries()].map(([currency, perLoc]) => {
+      const lines = [...perLoc.values()].sort((a, b) => b.net_due_minor - a.net_due_minor);
+      const sum = (f: (l: VLine) => number) => lines.reduce((s, l) => s + f(l), 0);
+      return {
+        currency,
+        lines,
+        totals: {
+          count: sum((l) => l.count), volume_minor: sum((l) => l.volume_minor),
+          gross_commission_minor: sum((l) => l.gross_commission_minor),
+          buy_share_minor: sum((l) => l.buy_share_minor),
+          net_due_minor: sum((l) => l.net_due_minor),
+          unrated_count: sum((l) => l.unrated_count), unrated_volume_minor: sum((l) => l.unrated_volume_minor),
+          refunds_minor: sum((l) => l.refunds_minor),
+        },
+      };
+    }).filter((s) => s.totals.count > 0 || s.totals.refunds_minor > 0);
+
+    const config = { buy_percent: buyPercent, buy_fixed_minor: buyFixedMinor, from_settings: buyFromSettings, commission_classified: ladderIdx === 0 };
+
+    if (action === 'reseller_statement') return json({ success: true, month, config, statements });
+
+    // ── create: persist one invoice per currency ──
+    if (!statements.length) return json({ error: 'Nothing to invoice for that month.' }, 400);
+    const created: any[] = [];
+    for (const s of statements) {
+      const row = {
+        counterparty: 'FranPOS',
+        period: month,
+        currency: s.currency,
+        invoice_number: `FP-${month}-${s.currency}`,
+        payment_count: s.totals.count,
+        volume_minor: s.totals.volume_minor,
+        gross_commission_minor: s.totals.gross_commission_minor,
+        buy_share_minor: s.totals.buy_share_minor,
+        net_due_minor: s.totals.net_due_minor,
+        unrated_count: s.totals.unrated_count,
+        unrated_volume_minor: s.totals.unrated_volume_minor,
+        buy_percent: buyPercent,
+        buy_fixed_minor: buyFixedMinor,
+        breakdown: { lines: s.lines, refunds_minor: s.totals.refunds_minor },
+        created_by: caller.id ?? null,
+      };
+      const { data: inv, error: invErr } = await platformAdmin.from('reseller_invoices')
+        .insert(row).select().single();
+      if (invErr) {
+        const dup = /duplicate key|reseller_invoices_live_key/i.test(String(invErr.message));
+        return json({
+          error: dup
+            ? `An invoice for ${month} ${s.currency} already exists. Void it first if it needs regenerating.`
+            : (isMissingColumn(invErr.message)
+              ? 'The reseller_invoices table is missing. Apply migration 20260826_PLATFORM_reseller_invoicing.sql first.'
+              : `invoice insert failed: ${invErr.message}`),
+          created,
+        }, dup ? 409 : 500);
+      }
+      created.push(inv);
+    }
+    return json({ success: true, month, config, invoices: created });
+  }
+
+  if (action === 'reseller_invoices') {
+    const { data, error } = await platformAdmin.from('reseller_invoices')
+      .select('*').order('period', { ascending: false }).order('created_at', { ascending: false }).limit(60);
+    if (error) {
+      return /does not exist|42P01/i.test(String(error.message))
+        ? json({ success: true, invoices: [], table_missing: true })
+        : json({ error: error.message }, 500);
+    }
+    return json({ success: true, invoices: data ?? [] });
+  }
+
+  if (action === 'reseller_invoice_mark') {
+    const id = String(body.id ?? '');
+    const status = String(body.status ?? '');
+    if (!id) return json({ error: 'id required' }, 400);
+    if (!['sent', 'paid', 'void'].includes(status)) return json({ error: 'status must be sent, paid or void' }, 400);
+    const { data: cur } = await platformAdmin.from('reseller_invoices').select('status').eq('id', id).maybeSingle();
+    if (!cur) return json({ error: 'invoice not found' }, 404);
+    // Forward only, plus void from anywhere. Paid never silently un-pays.
+    const legal: Record<string, string[]> = { draft: ['sent', 'void'], sent: ['paid', 'void'], paid: ['void'], void: [] };
+    if (!legal[cur.status]?.includes(status)) {
+      return json({ error: `cannot move an invoice from ${cur.status} to ${status}` }, 409);
+    }
+    const patch: Record<string, unknown> = { status };
+    if (status === 'sent') patch.sent_at = new Date().toISOString();
+    if (status === 'paid') patch.paid_at = new Date().toISOString();
+    if (typeof body.notes === 'string') patch.notes = body.notes.slice(0, 2000);
+    const { data, error } = await platformAdmin.from('reseller_invoices').update(patch).eq('id', id).select().single();
+    if (error) return json({ error: error.message }, 500);
+    return json({ success: true, invoice: data });
+  }
+
+  if (action === 'reseller_config') {
+    if (body.set) {
+      const pct = Number(body.set.buy_percent);
+      const fixed = Number(body.set.buy_fixed_minor);
+      if (!Number.isFinite(pct) || pct < 0 || pct > 5) return json({ error: 'buy_percent must be between 0 and 5' }, 400);
+      if (!Number.isInteger(fixed) || fixed < 0 || fixed > 100) return json({ error: 'buy_fixed_minor must be a whole number of minor units, 0 to 100' }, 400);
+      const { error } = await platformAdmin.from('platform_settings')
+        .update({ adyen_reseller_buy_percent: pct, adyen_reseller_buy_fixed_minor: fixed, updated_at: new Date().toISOString(), updated_by_user_id: caller.id ?? null })
+        .eq('id', true);
+      if (error) {
+        return /does not exist|42703|PGRST204/i.test(String(error.message))
+          ? json({ error: 'platform_settings is missing the reseller columns. Apply migration 20260826_PLATFORM_reseller_invoicing.sql first.' }, 400)
+          : json({ error: error.message }, 500);
+      }
+    }
+    const { data: st } = await platformAdmin.from('platform_settings')
+      .select('adyen_reseller_buy_percent, adyen_reseller_buy_fixed_minor').maybeSingle();
+    return json({
+      success: true,
+      buy_percent: st?.adyen_reseller_buy_percent ?? 0.10,
+      buy_fixed_minor: st?.adyen_reseller_buy_fixed_minor ?? 5,
+      from_settings: st?.adyen_reseller_buy_percent != null,
+    });
+  }
+
   return json({ error: `unknown action: ${action}` }, 400);
 });
