@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.68',
+    date: '2026-08-26',
+    items: [
+      'Online checkout: "Continue to payment" no longer freezes while the loyalty membership check runs — it reuses the lookup already started when the phone was typed, shows "One moment…" on the button, and gives up after 2.5 seconds instead of hanging',
+      'If the membership answer arrives after the customer has moved on, the loyalty sign-in prompt appears on the gift-card step instead of being lost',
+    ],
+  },
+  {
     version: '5.7.67',
     date: '2026-08-26',
     items: [

@@ -16,7 +16,7 @@
 //     Apply-only: the discount is staged locally; loyalty-redeem fires
 //     after payment succeeds and the order exists (v5.5.897).
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { supabase, platformSupabase } from '../../lib/supabase';
 import { decrementStockRPC, fetchActiveDiscountRules } from '../../lib/db';
@@ -86,6 +86,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
 
   // Payment step: 'details' → 'gift' → 'pay'
   const [step, setStep] = useState('details');
+  // v5.7.68: current step readable from stale closures (late loyalty lookup)
+  const stepRef = useRef('details');
+  useEffect(() => { stepRef.current = step; }, [step]);
   const [pi, setPi] = useState(null);             // { client_secret, stripe_account, ... }
   const [stripePromise, setStripePromise] = useState(null);
   const [processor, setProcessor] = useState('stripe');   // 'stripe' | 'ryft' — defaults stripe (fail-safe)
@@ -145,7 +148,15 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   const [gateWorking, setGateWorking] = useState(false);
   const [gateError, setGateError]     = useState('');
 
-  // Debounced phone lookup for loyalty member detection
+  // Debounced phone lookup for loyalty member detection.
+  // v5.7.68: the in-flight promise is kept in a ref so the Continue button can
+  // await the SAME request instead of firing a second cold call — the double
+  // fetch was the multi-second freeze on "Continue to payment".
+  const loyaltyLookupRef = useRef({ phone: null, promise: null });
+  const lookupLoyaltyMember = (normalised, companyId) =>
+    fetch(`${FUNCTIONS_URL}/loyalty-balance?phone=${encodeURIComponent(normalised)}&company_id=${encodeURIComponent(companyId)}`)
+      .then(r => (r.ok ? r.json() : null))
+      .catch(() => null);
   useEffect(() => {
     if (loyalty?.verified || loyaltyHintDismissed) return; // already signed in or dismissed
     const normalised = (phone || '').replace(/[\s\-()]/g, '');
@@ -153,10 +164,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     const companyId = location.company_id;
     if (!companyId) return;
     const timer = setTimeout(() => {
-      fetch(`${FUNCTIONS_URL}/loyalty-balance?phone=${encodeURIComponent(normalised)}&company_id=${encodeURIComponent(companyId)}`)
-        .then(r => r.ok ? r.json() : null)
-        .then(j => { if (j?.member_code) setLoyaltyHint(j); })
-        .catch(() => {});
+      const promise = lookupLoyaltyMember(normalised, companyId);
+      loyaltyLookupRef.current = { phone: normalised, promise };
+      promise.then(j => { if (j?.member_code) setLoyaltyHint(j); });
     }, 600);
     return () => clearTimeout(timer);
   }, [phone, loyalty?.verified, loyaltyHintDismissed, location.company_id]);
@@ -408,18 +418,32 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     if (loyalty?.verified || loyaltyHintDismissed) { setStep('gift'); return; }
     // If we already detected a hint, show the gate
     if (loyaltyHint) { setShowLoyaltyGate(true); return; }
-    // Otherwise do a quick one-shot check before proceeding
+    // v5.7.68: quick membership check WITHOUT the hang. Reuse the debounced
+    // lookup if one is already in flight (the old code fired a SECOND fetch and
+    // awaited it with no feedback — a multi-second freeze on cold starts), show
+    // a working state on the button, and cap the wait at 2.5s. Past the cap the
+    // customer moves on; if the answer lands while they are still on the gift
+    // step, the sign-in gate pops there instead.
     const companyId = location.company_id;
-    if (companyId && phone) {
-      const normalised = phone.replace(/[\s\-()]/g, '');
-      if (normalised.length >= 7) {
-        try {
-          const r = await fetch(`${FUNCTIONS_URL}/loyalty-balance?phone=${encodeURIComponent(normalised)}&company_id=${encodeURIComponent(companyId)}`);
-          if (r.ok) {
-            const j = await r.json();
-            if (j?.member_code) { setLoyaltyHint(j); setShowLoyaltyGate(true); return; }
-          }
-        } catch {}
+    const normalised = phone.replace(/[\s\-()]/g, '');
+    if (companyId && normalised.length >= 7) {
+      setWorking(true);
+      try {
+        let p = loyaltyLookupRef.current.phone === normalised ? loyaltyLookupRef.current.promise : null;
+        if (!p) {
+          p = lookupLoyaltyMember(normalised, companyId);
+          loyaltyLookupRef.current = { phone: normalised, promise: p };
+        }
+        const j = await Promise.race([p, new Promise(res => setTimeout(() => res('timeout'), 2500))]);
+        if (j === 'timeout') {
+          p.then(late => {
+            if (late?.member_code && stepRef.current === 'gift') { setLoyaltyHint(late); setShowLoyaltyGate(true); }
+          });
+        } else if (j?.member_code) {
+          setLoyaltyHint(j); setShowLoyaltyGate(true); return;
+        }
+      } finally {
+        setWorking(false);
       }
     }
     setStep('gift');
@@ -1727,7 +1751,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
               fontFamily: 'inherit',
               display: 'flex', justifyContent: 'space-between', alignItems: 'center',
             }}>
-              <span>Continue to payment</span>
+              <span>{working ? 'One moment…' : 'Continue to payment'}</span>
               <span>{money((discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor) / 100)}</span>
             </button>
           </div>
