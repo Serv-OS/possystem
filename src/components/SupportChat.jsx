@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Icon } from './ServOSIcons';
 import { useStore } from '../store';
 import { VERSION } from '../lib/version';
+import { getActiveLocationSync } from '../lib/supabase';
 
 const CHAT_SRC = 'https://posupject.vercel.app/chat.js';
 const CHAT_SITE_KEY = 'chat_4a8301c6412705dac3ce';
@@ -51,6 +52,11 @@ export default function SupportChat({ open, onClose, left = 58, context: extraCo
     // its selected venue, but has no terminal and no PIN'd staff member.
     const ctx = {};
     if (venueName) ctx.Venue = venueName;
+    // The venue NAME cannot identify the customer on its own: the POS calls a site
+    // "Leeds" while the CRM holds three Leeds venues under different brands. The id
+    // is the only unambiguous handle, so send it and let the CRM map it.
+    const locId = (() => { try { return getActiveLocationSync(); } catch { return null; } })();
+    if (locId && locId !== 'loc-demo') ctx.VenueId = locId;
     if (deviceName) ctx.Terminal = deviceName;
     if (staffName) ctx['Signed in'] = staffName;
     ctx.App = `ServOS v${VERSION}`;

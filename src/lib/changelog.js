@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.63',
+    date: '2026-08-26',
+    items: [
+      'Support chat now sends the venue id as well as its name, so our support team can tell exactly which site is asking. The name on its own was not enough: the till calls a site "Leeds" while the CRM holds three different Leeds venues.',
+    ],
+  },
+  {
     version: '5.7.62',
     date: '2026-08-26',
     items: [

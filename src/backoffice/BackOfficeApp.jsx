@@ -909,6 +909,8 @@ export default function BackOfficeApp() {
         left={236}
         context={{
           Venue: orgCtx?.locationName || 'No venue selected',
+          // The id is what the CRM can map; the name alone is ambiguous across brands.
+          ...(orgCtx?.locationId ? { VenueId: orgCtx.locationId } : {}),
           'Signed in': authUser?.email || 'Not signed in',
           Area: 'Back Office',
         }}
