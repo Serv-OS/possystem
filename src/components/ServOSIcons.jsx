@@ -14,6 +14,7 @@ const PATHS = {
   ai:        '<path d="M12 3l1.6 4.4L18 9l-4.4 1.6L12 15l-1.6-4.4L6 9l4.4-1.6z"/><path d="M18 15l.8 2.2L21 18l-2.2.8L18 21l-.8-2.2L15 18l2.2-.8z"/>',
   status:    '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   office:    '<path d="M3 21V8l9-5 9 5v13"/><path d="M9 21v-6h6v6"/>',
+  support:   '<path d="M4 14v-2a8 8 0 0 1 16 0v2"/><rect x="2.5" y="13" width="4.5" height="6.5" rx="1.8"/><rect x="17" y="13" width="4.5" height="6.5" rx="1.8"/><path d="M20 19.5v1a2 2 0 0 1-2 2h-4"/>',
   kds:       '<rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 9h18M8 22h8M12 18v4"/>',
 
   // ── order modes ──

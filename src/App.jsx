@@ -95,6 +95,7 @@ import KioskSurface from './surfaces/KioskSurface';
 import CustomerDisplaySurface from './surfaces/CustomerDisplaySurface';
 import DeviceSetup from './surfaces/DeviceSetup';
 import StatusDrawer from './components/StatusDrawer';
+import SupportChat from './components/SupportChat';
 import SyncBridge from './sync/SyncBridge';
 import { fetchMenuCategoryLinks } from './lib/db';
 import { normaliseMenuRow, assembleTaxProfiles } from './lib/rowMapping';
@@ -1128,6 +1129,7 @@ function ShiftBar({ version, onWhatsNew, theme, onToggleTheme, syncPulse }) {
 function Sidebar({ surface, setSurface }) {
   const { setAppMode, syncStatus, deviceConfig } = useStore();
   const [showStatus, setShowStatus] = useState(false);
+  const [showSupport, setShowSupport] = useState(false);
 
   const hidden = deviceConfig?.hiddenFeatures || [];
   const allOk = syncStatus.printerOnline && !syncStatus.pendingChanges;
@@ -1187,10 +1189,24 @@ function Sidebar({ surface, setSurface }) {
         <span style={{ fontSize:9, fontWeight:700, letterSpacing:'.04em' }}>Office</span>
       </button>
 
+      {/* Support chat button */}
+      <button onClick={() => setShowSupport(true)} title="Support" style={{
+        width:46, height:46, borderRadius:10, cursor:'pointer',
+        display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:2,
+        background:'transparent', border:'1px solid transparent',
+        color:'var(--t3)', transition:'all .15s', fontFamily:'inherit',
+      }}
+      onMouseEnter={e=>{e.currentTarget.style.background='var(--bg3)';e.currentTarget.style.color='var(--t1)';}}
+      onMouseLeave={e=>{e.currentTarget.style.background='transparent';e.currentTarget.style.color='var(--t3)';}}>
+        <Icon name="support" size={20} />
+        <span style={{ fontSize:9, fontWeight:700, letterSpacing:'.04em' }}>Support</span>
+      </button>
+
       <div style={{ marginTop:'auto' }}><StaffAvatar /></div>
     </nav>
 
     {showStatus && <StatusDrawer onClose={() => setShowStatus(false)} />}
+    <SupportChat open={showSupport} onClose={() => setShowSupport(false)} />
     </>
   );
 }

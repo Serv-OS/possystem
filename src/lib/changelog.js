@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.61',
+    date: '2026-08-26',
+    items: [
+      'POS: a Support button now sits on the left rail, under Office. It opens a chat panel beside the rail where staff can talk to the ServOS support team directly from the till. The conversation survives closing the panel — reopen it and you carry on where you left off.',
+    ],
+  },
+  {
     version: '5.7.60',
     date: '2026-08-26',
     items: [
