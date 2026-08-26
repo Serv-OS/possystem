@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.60',
+    date: '2026-08-26',
+    items: [
+      'Staff app: the notch and home bar handling it was already written with has been switched on. The code was there but it could never do anything, because the app had never told the phone it wanted the full screen. It now runs edge to edge and paints its own background top and bottom.',
+    ],
+  },
+  {
     version: '5.7.59',
     date: '2026-08-26',
     items: [

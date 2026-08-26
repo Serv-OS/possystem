@@ -399,6 +399,63 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
 
+
+  ServOS Staff:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      # Same Swift files as POS; the POS asset catalog and the POS-generated
+      # Info.plist are excluded so Staff ships its own.
+      - path: ServOSPOS
+        excludes:
+          - "Assets.xcassets"
+          - "Info.plist"
+      - path: ServOSStaff/Assets.xcassets
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: co.posup.rpos.staff
+        PRODUCT_NAME: ServOS Staff
+        MARKETING_VERSION: "1.0.0"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: LYQ8K25MGZ
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        SUPPORTS_MACCATALYST: NO
+    info:
+      path: ServOSStaff/Info.plist
+      properties:
+        CFBundleDisplayName: ServOS Staff
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        LSRequiresIPhoneOS: true
+        # Per-app keys read by Config.swift (shared source tree).
+        # ?mode=staff is a native URL mode (StaffSurface): the staff member's own
+        # phone. Shifts, News, Timesheets, Me. It signs in with an email and
+        # password on a SEPARATE Supabase client (rpos-staff-auth), and every
+        # read goes through the staff-portal edge fn, which serves only their own
+        # data. On iOS each app has its own cookie store, so a staff member
+        # signing in here can never disturb a till or the back office.
+        RPOSAppURL: "https://possystem-liard.vercel.app/?mode=staff"
+        # Nothing to scan: camera denied.
+        RPOSAllowsCamera: false
+        UILaunchScreen:
+          UIColorName: LaunchBackground
+        UIRequiresFullScreen: false
+        UIStatusBarHidden: true
+        UIViewControllerBasedStatusBarAppearance: false
+        UIApplicationSupportsIndirectInputEvents: true
+        ITSAppUsesNonExemptEncryption: false
+        # A personal phone app, so portrait is the case that matters.
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+
 schemes:
   ServOS POS:
     build:
@@ -452,6 +509,14 @@ schemes:
     build:
       targets:
         ServOS Owner: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+  ServOS Staff:
+    build:
+      targets:
+        ServOS Staff: all
     run:
       config: Debug
     archive:

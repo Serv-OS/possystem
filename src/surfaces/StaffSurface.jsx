@@ -45,6 +45,21 @@ export default function StaffSurface() {
   // Per-device theme, same pattern as the Manager app. Dark is the default.
   const [dark, setDark] = useState(() => localStorage.getItem('staff-theme') !== 'light');
 
+  // This surface was already written against env(safe-area-inset-*), but every
+  // one of those was resolving to its 0px fallback: env() only reports real
+  // insets once the page opts into the full screen with viewport-fit=cover, and
+  // nothing ever set it. So the notch handling here has been dead since it was
+  // written. Set on mount and reverted on unmount rather than in index.html,
+  // because the surfaces that have NO inset handling would then render under the
+  // notch instead of above it.
+  useEffect(() => {
+    const m = document.querySelector('meta[name="viewport"]');
+    if (!m) return undefined;
+    const prev = m.getAttribute('content');
+    m.setAttribute('content', 'width=device-width, initial-scale=1.0, viewport-fit=cover');
+    return () => { if (prev) m.setAttribute('content', prev); };
+  }, []);
+
   // The staff app deliberately uses the servos glass skin (same as Manager).
   useEffect(() => {
     const el = document.documentElement;
@@ -256,6 +271,7 @@ function Shell({ title, right, children, onRefresh, refreshing }) {
       overscrollBehaviorY: 'contain',
       background: 'var(--bg)', color: 'var(--t1)', maxWidth: 560, margin: '0 auto',
       padding: '18px 14px calc(124px + env(safe-area-inset-bottom, 0px))',
+      paddingTop: 'calc(18px + env(safe-area-inset-top, 0px))',
     }}>
       {(pull > 0 || refreshing) && (
         <div style={{ display: 'flex', justifyContent: 'center', height: refreshing ? 30 : pull / 2, alignItems: 'center', color: 'var(--t3)', fontSize: 12, fontWeight: 700, overflow: 'hidden', transition: refreshing ? 'none' : 'height .15s' }}>
