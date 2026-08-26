@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.71',
+    date: '2026-08-26',
+    items: [
+      'Customer display: reward cards now say what the reward actually gives ("£1.00 off", "10% off", "Free <item>"), mirroring the POS checkout, instead of just the reward name and points',
+      'Stamp-card rewards on the display say "Free with your stamp card" instead of the misleading "0 pts"',
+    ],
+  },
+  {
     version: '5.7.70',
     date: '2026-08-26',
     items: [

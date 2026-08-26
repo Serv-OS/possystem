@@ -341,6 +341,20 @@ function PhoneKeypad({ value, brand, C, onKey, onBackspace, onSubmit }) {
   );
 }
 
+// What the reward actually gives — the customer-facing benefit line (v5.7.71).
+// Mirrors the POS checkout's rendering (CheckoutModal) so both sides say the same thing.
+function rewardBenefit(r) {
+  const v = r?.value || {};
+  if (r?.type === 'discount_fixed' && v.amount_minor) return `${money(v.amount_minor / 100)} off`;
+  if (r?.type === 'discount_percent' && v.percent) return `${v.percent}% off`;
+  if (r?.type === 'free_item') {
+    const names = (v.eligible_items || []).map(ei => ei.name).filter(Boolean);
+    return names.length ? `Free ${names.slice(0, 2).join(' or ')}` : 'Free item';
+  }
+  if (r?.type === 'free_delivery') return 'Free delivery';
+  return '';
+}
+
 function LoyaltyResultPanel({ result, brand, venueName, C, onRedeem }) {
   if (result?.error) {
     return <Centered><div style={{ fontSize: 44 }}>⚠️</div><div style={{ fontSize: 24, fontWeight: 700, marginTop: 10 }}>Sorry — please try again</div></Centered>;
@@ -373,8 +387,13 @@ function LoyaltyResultPanel({ result, brand, venueName, C, onRedeem }) {
                   background: C.surface, border: `1.5px solid ${brand}66`, color: C.text,
                 }}>
                   <div style={{ fontSize: 18, fontWeight: 700 }}>{r.label}</div>
+                  {rewardBenefit(r) && <div style={{ fontSize: 16, color: brand, fontWeight: 800, marginTop: 2 }}>{rewardBenefit(r)}</div>}
                   {r.description && <div style={{ fontSize: 13, color: C.dim, marginTop: 2 }}>{r.description}</div>}
-                  {r.pointsCost != null && <div style={{ fontSize: 13, color: brand, fontWeight: 700, marginTop: 4 }}>{r.pointsCost} pts</div>}
+                  {r.pointsCost != null && (
+                    <div style={{ fontSize: 13, color: brand, fontWeight: 700, marginTop: 4 }}>
+                      {r.stamp ? 'Free with your stamp card' : `${r.pointsCost} pts`}
+                    </div>
+                  )}
                 </button>
               ))}
             </div>
