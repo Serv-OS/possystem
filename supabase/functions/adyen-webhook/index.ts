@@ -89,7 +89,10 @@ async function hmacOk(item: any): Promise<boolean | null> {
 // already present in raw.applied_modifications are skipped, which is what makes
 // the REFUND `amount_refunded_minor` increment replay-safe and lets the
 // backfill rerun the entire event history without double counting.
-// AUTHORISATION needs no key: re-applying it rewrites the same values.
+// AUTHORISATION needs no key, but its re-apply is NOT a plain rewrite: it must
+// never shrink a tip-bumped amount (capBumped guard) and never erase a
+// successful cancel (wasCancelled guard). Together with the duplicate-CAPTURE
+// re-raise above, that pair is what makes ?backfill=1 genuinely idempotent.
 //
 // KNOWN NARROW RACE: two CONCURRENT deliveries of the SAME refund could both
 // read the row before either writes. Adyen retries minutes apart and per-venue
@@ -153,19 +156,19 @@ async function resolveLocation(item: any, jobOpsLocationId: string | null): Prom
 // merchantReference `tj-<job id>` is stamped by adyen-terminal-charge at
 // dispatch; payment_session_id carries the pspReference after settle.
 async function matchTerminalJob(merchantReference: string, paymentPsp: string):
-  Promise<{ id: string; closed_check_id: string | null; location_id: string | null } | null> {
+  Promise<{ id: string; closed_check_id: string | null; location_id: string | null; capture_mode?: string | null } | null> {
   try {
     if (merchantReference.startsWith('tj-')) {
       const jobId = merchantReference.slice(3);
       if (UUID_RE.test(jobId)) {
         const { data } = await admin.from('terminal_jobs')
-          .select('id, closed_check_id, location_id').eq('id', jobId).maybeSingle();
+          .select('id, closed_check_id, location_id, capture_mode').eq('id', jobId).maybeSingle();
         if (data?.id) return data;
       }
     }
     if (paymentPsp) {
       const { data } = await admin.from('terminal_jobs')
-        .select('id, closed_check_id, location_id').eq('payment_session_id', paymentPsp).maybeSingle();
+        .select('id, closed_check_id, location_id, capture_mode').eq('payment_session_id', paymentPsp).maybeSingle();
       if (data?.id) return data;
     }
   } catch (e) { console.error('[adyen-webhook] terminal_jobs match:', (e as Error).message); }
@@ -539,7 +542,26 @@ async function applyMoneyEvent(item: any): Promise<'applied' | 'duplicate' | 'sk
 
     const modKey = `${code}:${itemPsp}:${okEvent}`;
     if (isModification) {
-      if (applied.includes(modKey)) return 'duplicate';
+      if (applied.includes(modKey)) {
+        // A duplicate successful CAPTURE above the stored amount re-applies its
+        // bump. Idempotent, it only ever raises, and it touches nothing else,
+        // so a backfill that replayed the AUTHORISATION first (flattening the
+        // tip bump) heals the row when the CAPTURE replays after it.
+        const capMinor = Number(item?.amount?.value);
+        if (code === 'CAPTURE' && okEvent && Number.isFinite(capMinor)
+            && existing?.amount_minor != null && capMinor > Number(existing.amount_minor)) {
+          const patch: Record<string, unknown> = { amount_minor: capMinor, updated_at: new Date().toISOString() };
+          const rc = (existing as any)?.rate_category as string | null;
+          const loc = existing?.location_id ?? null;
+          if (rc && loc) {
+            const tiers = await resolveVenueTiers(loc);
+            if (tiers) patch.commission_minor = commissionForAmount(capMinor, tiers[rc]);
+          }
+          const { error: fixErr } = await platformAdmin.from('adyen_payments').update(patch).eq('psp_reference', rowKey);
+          if (fixErr) console.error('[adyen-webhook] duplicate-capture bump repair failed:', fixErr.message, rowKey);
+        }
+        return 'duplicate';
+      }
       applied.push(modKey);
       raw.applied_modifications = applied;
       raw.last_modification = item;
@@ -577,10 +599,32 @@ async function applyMoneyEvent(item: any): Promise<'applied' | 'duplicate' | 'sk
 
     if (!isModification) {
       // AUTHORISATION — the payment itself. Sets the money + card facts.
-      row.amount_minor = Number.isFinite(amountMinor) ? amountMinor : existing?.amount_minor ?? null;
+      // NEVER SHRINK on replay: if a successful CAPTURE already bumped this row
+      // above the auth amount (US tip on receipt), a redelivered AUTHORISATION
+      // or a ?backfill=1 replay must not flatten it back to the pre-tip amount.
+      // The CAPTURE replay would then be a modKey duplicate and the tip would be
+      // gone from the ledger, and from the FranPOS invoice, forever. Paired with
+      // the re-raise in the duplicate path above, this makes backfill idempotent.
+      const capBumped = applied.some((m) => String(m).startsWith('CAPTURE:') && String(m).endsWith(':true'))
+        && existing?.amount_minor != null
+        && Number(existing.amount_minor) > (Number.isFinite(amountMinor) ? amountMinor : -1);
+      const effAmount = capBumped ? Number(existing!.amount_minor) : amountMinor;
+      row.amount_minor = Number.isFinite(effAmount) ? effAmount : existing?.amount_minor ?? null;
       row.currency = currency ?? existing?.currency ?? null;
       row.success = okEvent;
-      row.last_event_code = 'AUTHORISATION';
+      // A redelivered auth must not erase a cancel that already succeeded, or a
+      // dead payment re-enters the reseller invoice.
+      const wasCancelled = applied.some((m) => String(m).startsWith('CANCELLATION:') && String(m).endsWith(':true'));
+      row.last_event_code = wasCancelled ? 'CANCELLATION' : 'AUTHORISATION';
+      // Bucket the payment in the month it was AUTHORISED, not the month its
+      // webhook happened to arrive (backfill mints rows at replay time, which
+      // would bill an August payment in whatever month the backfill ran).
+      const evDate = item?.eventDate ? new Date(String(item.eventDate)) : null;
+      if (evDate && !isNaN(evDate.getTime())) row.authorised_at = evDate.toISOString();
+      // Manual-capture flow (US tip on receipt): money only moves at CAPTURE,
+      // so the reseller statement must not invoice an auth that never captured.
+      // Only stamped when known true; omitting the key preserves the DB value.
+      if ((job as any)?.capture_mode === 'manual') row.capture_required = true;
       const card = cardFromWebhookAdditionalData(item?.additionalData);
       row.card = card ?? existing?.card ?? null;
       // v5.7.3 — classify the payment into its pricing tier and stamp what we
@@ -590,9 +634,11 @@ async function applyMoneyEvent(item: any): Promise<'applied' | 'duplicate' | 'sk
       const rateCategory = classifyRateCategory(item, channel as string | null);
       row.rate_category = rateCategory;
       row.commission_minor = null;
-      if (okEvent && location_id && Number.isFinite(amountMinor)) {
+      if (okEvent && location_id && Number.isFinite(effAmount)) {
         const tiers = await resolveVenueTiers(location_id);
-        row.commission_minor = tiers ? commissionForAmount(amountMinor, tiers[rateCategory]) : null;
+        // effAmount, not amountMinor: a replay on a tip-bumped row must re-stamp
+        // commission on the CAPTURED total, or the invoice loses the tip margin.
+        row.commission_minor = tiers ? commissionForAmount(effAmount, tiers[rateCategory]) : null;
       }
     } else {
       // Modifications never rewrite the payment amount or its success flag —
@@ -606,14 +652,21 @@ async function applyMoneyEvent(item: any): Promise<'applied' | 'duplicate' | 'sk
       // the tip landing (overcapture / post-adjust capture). The payment's
       // true value is what was CAPTURED, so bump amount_minor and recompute
       // what we earn at the SAME tier (rate_category unchanged by contract).
+      if (code === 'CAPTURE' && okEvent) row.captured_at = new Date().toISOString();
       if (code === 'CAPTURE' && okEvent && Number.isFinite(amountMinor)
           && existing?.amount_minor != null && amountMinor > Number(existing.amount_minor)) {
         row.amount_minor = amountMinor;
         const rc = (existing as any)?.rate_category as string | null;
+        let restamped: number | null = null;
         if (rc && location_id) {
           const tiers = await resolveVenueTiers(location_id);
-          if (tiers) row.commission_minor = commissionForAmount(amountMinor, tiers[rc]);
+          if (tiers) restamped = commissionForAmount(amountMinor, tiers[rc]);
         }
+        // ALWAYS stamp the column on the bump path. If the tier read failed we
+        // write null (= unrated), so the reseller statement excludes and FLAGS
+        // the payment instead of silently billing the stale pre-tip commission
+        // beside the post-tip amount.
+        row.commission_minor = restamped;
       }
       if (code === 'REFUND' && okEvent && Number.isFinite(amountMinor)) {
         row.amount_refunded_minor = Number(existing?.amount_refunded_minor ?? 0) + amountMinor;
@@ -625,15 +678,24 @@ async function applyMoneyEvent(item: any): Promise<'applied' | 'duplicate' | 'sk
       row.last_event_code =
         (code === 'REFUND' && !okEvent) ? 'REFUND_FAILED'
         : (code === 'CAPTURE' && !okEvent) ? 'CAPTURE_FAILED'
+        // A REFUSED cancel means the payment STANDS and settles. Stamping it
+        // 'CANCELLATION' made a live payment vanish from the reseller invoice.
+        : (code === 'CANCELLATION' && !okEvent) ? 'CANCELLATION_FAILED'
         : code;
     }
 
     let { error: upErr } = await platformAdmin.from('adyen_payments')
       .upsert(row, { onConflict: 'psp_reference' });
-    if (upErr && isMissingColumn(upErr.message) && ('rate_category' in row || 'commission_minor' in row)) {
-      // Migration 20260821b not applied yet — the ledger write must never break.
+    if (upErr && isMissingColumn(upErr.message)
+        && ('rate_category' in row || 'commission_minor' in row
+          || 'authorised_at' in row || 'capture_required' in row || 'captured_at' in row)) {
+      // Migrations 20260821b / 20260826 not applied yet — the ledger write must
+      // never break while a deploy precedes its hand-applied DDL.
       delete row.rate_category;
       delete row.commission_minor;
+      delete row.authorised_at;
+      delete row.capture_required;
+      delete row.captured_at;
       ({ error: upErr } = await platformAdmin.from('adyen_payments').upsert(row, { onConflict: 'psp_reference' }));
     }
     if (upErr) { console.error('[adyen-webhook] ledger upsert failed:', upErr.message, rowKey); return 'failed'; }

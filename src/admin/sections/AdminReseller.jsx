@@ -67,6 +67,8 @@ export default function AdminReseller() {
   const [statement, setStatement] = useState(null);
   const [config, setConfig] = useState(null);
   const [invoices, setInvoices] = useState([]);
+  const [remit, setRemit] = useState(null);
+  const [remitDraft, setRemitDraft] = useState(null);
   const [tableMissing, setTableMissing] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -77,6 +79,7 @@ export default function AdminReseller() {
     try {
       const j = await callPaymentsAdmin('reseller_invoices');
       setInvoices(j.invoices ?? []);
+      setRemit(j.remit ?? null);
       setTableMissing(!!j.table_missing);
     } catch (e) { setError(String(e.message || e)); }
   }, []);
@@ -108,10 +111,16 @@ export default function AdminReseller() {
 
   const mark = async (inv, status) => {
     const verb = { sent: 'Mark as sent to FranPOS', paid: 'Mark as PAID', void: 'VOID this invoice' }[status];
-    if (!confirm(`${verb}: ${inv.invoice_number}?`)) return;
+    let notes;
+    if (status === 'void') {
+      // The audit trail's most important entry: why the number FranPOS was
+      // sent no longer stands. The server refuses a reasonless void too.
+      notes = prompt(`Why is ${inv.invoice_number} being voided? This is recorded and shown if FranPOS asks.`);
+      if (!notes || !notes.trim()) return;
+    } else if (!confirm(`${verb}: ${inv.invoice_number}?`)) return;
     setBusy(true); setError('');
     try {
-      await callPaymentsAdmin('reseller_invoice_mark', { id: inv.id, status });
+      await callPaymentsAdmin('reseller_invoice_mark', { id: inv.id, status, ...(notes ? { notes } : {}) });
       await loadInvoices();
     } catch (e) { setError(String(e.message || e)); }
     setBusy(false);
@@ -131,10 +140,25 @@ export default function AdminReseller() {
     setBusy(false);
   };
 
+  const saveRemit = async () => {
+    setBusy(true); setError('');
+    try {
+      const j = await callPaymentsAdmin('reseller_config', { set_remit: {
+        ...remitDraft, terms_days: Number(remitDraft.terms_days) || 14,
+      } });
+      setRemit(j.remit ?? null);
+      setRemitDraft(null);
+    } catch (e) { setError(String(e.message || e)); }
+    setBusy(false);
+  };
+
   // Print one invoice: a minimal document in a new window, then the browser's
   // own print dialog. No PDF library, nothing to install, works everywhere.
   const printInvoice = (inv) => {
     const lines = inv.breakdown?.lines ?? [];
+    const issued = (inv.sent_at || inv.created_at || '').slice(0, 10);
+    const termsDays = Number(remit?.terms_days) || 14;
+    const due = issued ? new Date(new Date(issued).getTime() + termsDays * 86400000).toISOString().slice(0, 10) : '';
     const esc = (s) => String(s ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
     const w = window.open('', '_blank', 'width=820,height=900');
     if (!w) { setError('The print window was blocked. Allow popups for this site.'); return; }
@@ -152,11 +176,17 @@ export default function AdminReseller() {
       <h1>ServOS App Inc</h1>
       <div class="muted">Card processing residuals</div>
       <div class="row">
-        <div><div class="muted">Billed to</div><strong>FranPOS</strong></div>
+        <div>
+          <div class="muted">From</div>
+          <div style="white-space:pre-line">${esc(remit?.from_block || 'ServOS App Inc\n[address not set: Admin, FranPOS, Invoice details]')}</div>
+          <div class="muted" style="margin-top:12px">Billed to</div>
+          <div style="white-space:pre-line"><strong>${esc(remit?.billed_to_block || 'FranPOS\n[entity and address not set]')}</strong></div>
+        </div>
         <div style="text-align:right">
           <div><strong>${esc(inv.invoice_number)}</strong></div>
           <div class="muted">Period: ${esc(inv.period)} &nbsp; Currency: ${esc(inv.currency)}</div>
-          <div class="muted">Issued: ${esc((inv.sent_at || inv.created_at || '').slice(0, 10))}</div>
+          <div class="muted">Issued: ${esc(issued)}</div>
+          <div class="muted"><strong>Due: ${esc(due)}</strong></div>
         </div>
       </div>
       <table>
@@ -172,7 +202,11 @@ export default function AdminReseller() {
       <div class="foot">
         Computed per transaction as the venue commission less the FranPOS buy rate of ${esc(inv.buy_percent)}% plus ${esc(inv.buy_fixed_minor)} minor units, under the reseller terms between ServOS App Inc and FranPOS.
         ${inv.unrated_count > 0 ? `<br/>${esc(inv.unrated_count)} payment(s) totalling ${esc(money(inv.unrated_volume_minor, inv.currency))} carried no rate classification and are EXCLUDED from this invoice.` : ''}
-        <br/>Payment terms: as per agreement.
+        ${inv.breakdown?.unsettled_count > 0 ? `<br/>${esc(inv.breakdown.unsettled_count)} authorised but never captured payment(s) totalling ${esc(money(inv.breakdown.unsettled_volume_minor, inv.currency))} are WITHHELD: no money moved.` : ''}
+        ${inv.breakdown?.replaces_note ? `<br/><strong>${esc(inv.breakdown.replaces_note)}.</strong>` : ''}
+        <br/>${esc(remit?.tax_line || '[Tax line not set: confirm treatment with the accountant in Admin, FranPOS, Invoice details]')}
+        <br/><strong>Remit to:</strong> <span style="white-space:pre-line">${esc(remit?.bank_block || '[Bank details not set: Admin, FranPOS, Invoice details]')}</span>
+        <br/>Reference the invoice number on payment.
       </div>
     <script>window.print()</script></body></html>`);
     w.document.close();
@@ -236,7 +270,13 @@ export default function AdminReseller() {
       {!loading && statement && statement.statements?.length === 0 && (
         <div style={{ ...S.card, color: 'var(--t3)', textAlign: 'center' }}>No card payments in {month}.</div>
       )}
-      {!loading && statement?.statements?.map((s) => (
+      {!loading && statement?.statements?.map((s) => {
+        const monthOpen = month >= monthNow();
+        const live = invoices.find((i) => i.period === month && i.currency === s.currency && i.status !== 'void');
+        const drifted = live && Number(live.net_due_minor) !== Number(s.totals.net_due_minor);
+        const rateChanged = live && config
+          && (Number(live.buy_percent) !== Number(config.buy_percent) || Number(live.buy_fixed_minor) !== Number(config.buy_fixed_minor));
+        return (
         <div key={s.currency} style={S.card}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
             <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--t1)' }}>{month} · {s.currency}</div>
@@ -244,12 +284,34 @@ export default function AdminReseller() {
             <div style={{ fontSize: 13, color: 'var(--t2)' }}>
               FranPOS owes <b style={{ color: 'var(--grn)', fontSize: 16 }}>{money(s.totals.net_due_minor, s.currency)}</b>
             </div>
-            <button onClick={createInvoice} disabled={busy || tableMissing} style={{ ...S.btn, ...S.btnPrimary }}>Create invoice</button>
+            {live ? (
+              <span style={{ fontSize: 12, color: 'var(--t2)' }}>Invoiced: <b>{live.invoice_number}</b> ({live.status})</span>
+            ) : (
+              <button onClick={createInvoice} disabled={busy || tableMissing || monthOpen}
+                title={monthOpen ? 'The month is still open. Invoice after it ends so nothing is missed.' : undefined}
+                style={{ ...S.btn, ...S.btnPrimary, opacity: monthOpen ? 0.5 : 1 }}>Create invoice</button>
+            )}
           </div>
+          {monthOpen && !live && (
+            <div style={S.note}>This month is still open. The figures below grow until it ends; the invoice unlocks then.</div>
+          )}
+          {drifted && (
+            <div style={S.note}>
+              {rateChanged
+                ? <>This statement is priced at the current buy rate, while invoice {live.invoice_number} kept the rate that governed it. The invoice is correct; do not regenerate just for this.</>
+                : <>The month has CHANGED since {live.invoice_number} was created (late webhooks or a backfill): invoice says {money(live.net_due_minor, s.currency)}, the ledger now says {money(s.totals.net_due_minor, s.currency)}. Void it with a reason and regenerate before sending.</>}
+            </div>
+          )}
           {s.totals.unrated_count > 0 && (
             <div style={S.note}>
               {s.totals.unrated_count} payment(s) totalling {money(s.totals.unrated_volume_minor, s.currency)} carry no
               stamped commission and are excluded. Run the webhook backfill, then regenerate.
+            </div>
+          )}
+          {s.totals.unsettled_count > 0 && (
+            <div style={S.note}>
+              {s.totals.unsettled_count} payment(s) totalling {money(s.totals.unsettled_volume_minor, s.currency)} were
+              authorised but never captured, so no money moved and they are withheld from the invoice.
             </div>
           )}
           <div style={{ overflowX: 'auto' }}>
@@ -287,7 +349,60 @@ export default function AdminReseller() {
             </table>
           </div>
         </div>
-      ))}
+        );
+      })}
+
+      {/* ── invoice details (remit block) ── */}
+      <div style={S.card}>
+        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 10 }}>
+          <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--t1)' }}>Invoice details</div>
+          <div style={{ flex: 1 }} />
+          {!remitDraft && (
+            <button onClick={() => setRemitDraft({
+              from_block: remit?.from_block || 'ServOS App Inc\n', billed_to_block: remit?.billed_to_block || 'FranPOS\n',
+              bank_block: remit?.bank_block || '', terms_days: remit?.terms_days || 14, tax_line: remit?.tax_line || '',
+            })} style={{ ...S.btn, ...S.btnGhost, padding: '5px 10px', fontSize: 11 }}>{remit ? 'Edit' : 'Set up'}</button>
+          )}
+        </div>
+        {!remit && !remitDraft && (
+          <div style={S.note}>
+            Accounts payable departments bounce invoices without addresses, bank details, a due date and a
+            tax line. Set them once here and every printed invoice carries them.
+          </div>
+        )}
+        {remit && !remitDraft && (
+          <div style={{ fontSize: 12, color: 'var(--t2)', display: 'flex', gap: 24, flexWrap: 'wrap' }}>
+            <div style={{ whiteSpace: 'pre-line' }}><b style={{ color: 'var(--t3)', fontSize: 10 }}>FROM</b><br/>{remit.from_block}</div>
+            <div style={{ whiteSpace: 'pre-line' }}><b style={{ color: 'var(--t3)', fontSize: 10 }}>BILLED TO</b><br/>{remit.billed_to_block}</div>
+            <div style={{ whiteSpace: 'pre-line' }}><b style={{ color: 'var(--t3)', fontSize: 10 }}>REMIT TO</b><br/>{remit.bank_block || 'not set'}</div>
+            <div><b style={{ color: 'var(--t3)', fontSize: 10 }}>TERMS</b><br/>{remit.terms_days || 14} days</div>
+          </div>
+        )}
+        {remitDraft && (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            {[['from_block', 'From (our legal entity and address)'], ['billed_to_block', 'Billed to (their legal entity and address)'], ['bank_block', 'Remit to (bank details for payment)']].map(([k, lab]) => (
+              <div key={k} style={{ gridColumn: k === 'bank_block' ? '1 / -1' : undefined }}>
+                <label style={S.label}>{lab}</label>
+                <textarea value={remitDraft[k]} onChange={(e) => setRemitDraft((d) => ({ ...d, [k]: e.target.value }))}
+                  rows={3} style={{ ...S.input, width: '100%', resize: 'vertical', fontFamily: 'inherit' }} />
+              </div>
+            ))}
+            <div>
+              <label style={S.label}>Payment terms (days)</label>
+              <input value={remitDraft.terms_days} onChange={(e) => setRemitDraft((d) => ({ ...d, terms_days: e.target.value }))} style={{ ...S.input, width: 90 }} />
+            </div>
+            <div>
+              <label style={S.label}>Tax line (confirm with the accountant)</label>
+              <input value={remitDraft.tax_line} onChange={(e) => setRemitDraft((d) => ({ ...d, tax_line: e.target.value }))}
+                placeholder="For example: No VAT applicable, services outside the scope of UK VAT." style={{ ...S.input, width: '100%' }} />
+            </div>
+            <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 8 }}>
+              <button onClick={saveRemit} disabled={busy} style={{ ...S.btn, ...S.btnPrimary }}>Save</button>
+              <button onClick={() => setRemitDraft(null)} style={{ ...S.btn, ...S.btnGhost }}>Cancel</button>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* ── invoice ledger ── */}
       <div style={S.card}>

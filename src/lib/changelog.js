@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.66',
+    date: '2026-08-26',
+    items: [
+      'The FranPOS invoicing survived its own adversarial review: 26 confirmed findings fixed across the agreement, the payment ledger and the invoice screen.',
+      'The ledger no longer loses a tip when its records are replayed, a refused cancellation no longer hides a live payment, and a payment that was authorised but never captured is withheld from the invoice and flagged, because no money moved.',
+      'Invoices can only be created once a month has ended, a regenerated invoice gets a new number so FranPOS never holds two same-numbered documents with different totals, voiding needs a written reason, and every status change is recorded with who and when.',
+      'A renegotiated buy rate applies from the current month onward and never reprices history. The printed invoice now carries addresses, bank details, a due date and a tax line, set once under Invoice details.',
+      'Months are billed by when the payment was authorised, not by when its record happened to arrive.',
+    ],
+  },
+  {
     version: '5.7.65',
     date: '2026-08-26',
     items: [
