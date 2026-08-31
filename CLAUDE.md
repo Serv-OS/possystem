@@ -53,7 +53,13 @@ Codebase: ~97,000 lines across 246 source files
 | PWA | `public/manifest.json` + `public/sw.js` |
 | AI | Claude API via Vercel serverless (`api/ai.js`) |
 
-**No test framework. No TypeScript. No SSR.**
+**Tests: `npm test`** (node --test, 511 tests / 48 suites, all green as of 31 Aug 2026). They cover the money and
+compliance logic: tax engines, check totals, receipt + refund + card-reversal maths, discounts, package pricing,
+costing/UOM, timesheets, statutory breaks, leave, pay periods, rota clash + optimiser parity, access control,
+staff auth, training mode, courier/ezCater/HubRise integrations. Add a test when you touch any of those.
+(This line used to read "No test framework" - it was stale, and that error reached an investor document.)
+
+**No TypeScript in the app** (edge functions ARE TypeScript). **No SSR. No browser-level E2E yet.**
 
 ---
 
