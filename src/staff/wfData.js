@@ -406,7 +406,7 @@ export async function saveSettings(patch, locationId, orgId) {
 // Its own column and its own writer, so saving the rest of the venue settings
 // can never blank it. The phone NEVER reads this; the server is the only judge.
 // ============================================================================
-export const GEOFENCE_DEFAULTS = { enabled: false, lat: null, lng: null, radius_m: 150, accuracy_ceiling_m: 100 };
+export const GEOFENCE_DEFAULTS = { enabled: false, lat: null, lng: null, radius_m: 150, accuracy_ceiling_m: 100, pos_login_clock_in: false };
 
 /** Metres between two lat/lng points. Haversine; good to ~0.3% at venue scale. */
 export function metresBetween(lat1, lng1, lat2, lng2) {
@@ -427,6 +427,9 @@ export async function saveClockGeofence(patch, locationId, orgId) {
     // Floor of 50m: below that honest staff get refused on ordinary GPS drift.
     radius_m: Math.min(2000, Math.max(50, parseInt(patch.radius_m, 10) || 150)),
     accuracy_ceiling_m: Math.min(500, Math.max(20, parseInt(patch.accuracy_ceiling_m, 10) || 100)),
+    // Independent of the fence: a till is inside the venue by definition, so
+    // this works whether or not phone clocking is switched on.
+    pos_login_clock_in: !!patch.pos_login_clock_in,
   };
   if (clean.enabled && (clean.lat == null || clean.lng == null)) {
     throw new Error('Pin the venue on the map before switching the fence on.');

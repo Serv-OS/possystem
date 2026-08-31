@@ -194,7 +194,17 @@ Deno.serve(async (req) => {
         const onboardingOpen = openOnboardingSteps(onbRows?.[0], staff);
         outstanding = { training, onboardingOpen, total: training.length + onboardingOpen };
       } catch (e) { console.error('[workforce-clock] outstanding:', (e as Error).message); }
-      return json({ ok: true, staff: who, ...stateOf(open), announcements, outstanding });
+      // Does this venue want the till to offer a shift start on first sign-in?
+      // The POS cannot read wf_venue_settings itself (RLS is scoped to Back
+      // Office users, and a till runs an anonymous device session), so the
+      // policy travels back with the status it already asks for.
+      let posLoginClockIn = false;
+      try {
+        const { data: gs } = await admin.from('wf_venue_settings')
+          .select('clock_geofence').eq('location_id', location_id).maybeSingle();
+        posLoginClockIn = !!(gs?.clock_geofence as any)?.pos_login_clock_in;
+      } catch { /* policy is optional; never block a status read */ }
+      return json({ ok: true, staff: who, ...stateOf(open), announcements, outstanding, posLoginClockIn });
     }
 
     if (action === 'in') {

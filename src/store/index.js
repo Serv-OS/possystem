@@ -4,6 +4,7 @@ import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
 import { resolveServiceCharge } from '../lib/serviceCharge';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
 import { buildScheduleCtx } from '../lib/locationTime';
+import { clockStatusForPos } from '../lib/posClockIn';
 import { computeCheckTotals } from '../lib/payments/checkTotals';
 import { operatorSwitchPatch, logoutPatch } from '../lib/cartHold';
 import { kitchenOverride, receiptOverride } from '../lib/itemDisplay';
@@ -558,6 +559,36 @@ export const useStore = create((set, get) => ({
     if (restored && restored.count) {
       get().showToast?.(`Your held order is back — ${restored.count} item${restored.count === 1 ? '' : 's'}`, 'info');
     }
+    // Offer to start their shift, if the venue asked for it and they are not
+    // already clocked in. Fire-and-forget: signing in must never wait on, or be
+    // blocked by, the clock.
+    get().maybeOfferShiftStart?.(newStaff);
+  },
+
+  // ── Shift start on first till sign-in of the day ──────────────────────────
+  // Asked once per operator per day, per device. Training mode never clocks
+  // anybody in — it commits nothing, by invariant.
+  shiftStartPrompt: null,
+  clearShiftStartPrompt: () => set({ shiftStartPrompt: null }),
+  maybeOfferShiftStart: async (member) => {
+    try {
+      if (!member?.pin || isTrainingMode()) return;
+      const locationId = getActiveLocationSync();
+      if (!locationId || locationId === 'loc-demo') return;
+      // Once a day per operator: a sign-out and back in mid-shift must not
+      // re-ask, and neither should a second till.
+      const today = new Date().toISOString().slice(0, 10);
+      const key = `rpos-shift-offer-${member.id}-${today}`;
+      try { if (localStorage.getItem(key)) return; } catch { /* private mode */ }
+
+      const st = await clockStatusForPos({ locationId, pin: member.pin });
+      if (!st?.posLoginClockIn) return;          // venue has not switched it on
+      if (st.state === 'in' || st.state === 'break') return;  // already on shift
+      try { localStorage.setItem(key, '1'); } catch { /* noop */ }
+      // Only prompt if this operator is still the one signed in.
+      if (String(get().staff?.id) !== String(member.id)) return;
+      set({ shiftStartPrompt: { id: member.id, name: member.name, pin: member.pin, locationId } });
+    } catch { /* the clock is never allowed to break signing in */ }
   },
 
   logout: () => {

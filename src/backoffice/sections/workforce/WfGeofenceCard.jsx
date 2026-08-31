@@ -34,6 +34,7 @@ export default function WfGeofenceCard({ ctx, geofence, showToast, onSaved }) {
   const [lat, setLat]           = useState(g.lat ?? null);
   const [lng, setLng]           = useState(g.lng ?? null);
   const [radius, setRadius]     = useState(g.radius_m ?? 150);
+  const [posLogin, setPosLogin] = useState(!!g.pos_login_clock_in);
   const [saving, setSaving]     = useState(false);
   const [locating, setLocating] = useState(false);
   const [testResult, setTestResult] = useState(null);
@@ -107,7 +108,8 @@ export default function WfGeofenceCard({ ctx, geofence, showToast, onSaved }) {
     setSaving(true);
     try {
       const saved = await wf.saveClockGeofence(
-        { enabled, lat, lng, radius_m: radius, accuracy_ceiling_m: g.accuracy_ceiling_m ?? 100 },
+        { enabled, lat, lng, radius_m: radius, accuracy_ceiling_m: g.accuracy_ceiling_m ?? 100,
+          pos_login_clock_in: posLogin },
         ctx.locationId, ctx.orgId,
       );
       onSaved?.(saved);
@@ -198,6 +200,21 @@ export default function WfGeofenceCard({ ctx, geofence, showToast, onSaved }) {
             the pub next door. 150m is a sensible start.
           </div>
         </div>
+
+        <label style={{ display: 'flex', alignItems: 'flex-start', gap: 10, cursor: 'pointer',
+                        borderTop: '1px solid var(--bdr)', paddingTop: 14 }}>
+          <input type="checkbox" checked={posLogin} onChange={e => setPosLogin(e.target.checked)} style={{ marginTop: 3 }} />
+          <span>
+            <span style={{ fontWeight: 600, color: 'var(--t1)' }}>Offer to start a shift when staff sign in to a till</span>
+            <span style={{ display: 'block', fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>
+              The first time someone signs in to the POS each day, it asks &ldquo;Start your shift?&rdquo;.
+              It asks rather than clocking silently, so a manager stepping on the till for a minute
+              does not open a shift they never meant to start. No location check is needed: the till
+              is already in the venue. Kitchen staff who never touch a till still use the app or the
+              clock screen.
+            </span>
+          </span>
+        </label>
 
         <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
           <button className="btn btn-acc" onClick={save} disabled={saving}>

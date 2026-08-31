@@ -20,6 +20,7 @@ import { resolveSignIn } from './lib/staffAuth';
 import { logSignIn } from './lib/signInAudit';
 import { loadStaffRoster } from './lib/staffRoster';
 import PINScreen from './surfaces/PINScreen';
+import ShiftStartPrompt from './components/ShiftStartPrompt';
 import POSSurface from './surfaces/POSSurface';
 import BarSurface from './surfaces/BarSurface';
 import TablesSurface from './surfaces/TablesSurface';
@@ -918,6 +919,8 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
         </div>
       </div>
       {toast && <Toast toast={toast} />}
+      {/* First till sign-in of the day: "Start your shift?" (venue opt-in). */}
+      <ShiftStartPrompt />
       <ChangeDueOverlay />
       {orderAlert && surface !== 'kds' && <OrderAlert alert={orderAlert} onDismiss={dismissOrderAlert} setSurface={setSurface} />}
       {showWhatsNew && <Suspense fallback={null}><WhatsNewModal onClose={()=>setShowWhatsNew(false)} /></Suspense>}

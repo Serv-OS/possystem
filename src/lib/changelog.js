@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.77',
+    date: '2026-08-31',
+    items: [
+      'The till can now start a shift. The first time someone signs in to the POS each day it asks "Start your shift?" and clocks them in on Yes. Switch it on per venue in Back Office, Workforce, Settings',
+      'It asks rather than clocking silently, because signing in to a till is not always the start of a shift. A manager stepping on for two minutes would otherwise open a shift and stay clocked in until someone noticed',
+      'Asked once per person per day, so signing out and back in mid shift does not ask again. Never in training mode, and never if they are already clocked in from the app or the clock screen',
+      'No location check on this route: the till is already inside the venue, which is also why it is the fallback when a phone cannot get a GPS fix',
+    ],
+  },
+  {
     version: '5.7.76',
     date: '2026-08-31',
     items: [
