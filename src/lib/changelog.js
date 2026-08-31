@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.81',
+    date: '2026-08-31',
+    items: [
+      'Online ordering now shows pictures on modifier options, so a "Box of 3" shows the actual donuts instead of a list of names. The picture comes from the matching item, exactly as the kiosk has done for months, so there is nothing extra to upload or set',
+      'Only items you have marked as sellable on their own lend their picture, so pure modifiers such as sauces and cooking preferences stay as clean text',
+    ],
+  },
+  {
     version: '5.7.80',
     date: '2026-08-31',
     items: [

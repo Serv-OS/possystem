@@ -3,7 +3,7 @@
 // at top, name + description, variant picker if applicable, modifier groups
 // with clear required/optional labels, qty stepper, sticky bottom CTA.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 import { supabase } from '../../lib/supabase';
 import { money } from '../../lib/currency';
 import { dietaryBadges, DIET_LABELS } from '../../lib/dietary';
@@ -18,6 +18,8 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
   // Sub-picks for nested modifiers. Key: `${parentGroupId}:${parentOptionId}`,
   // value: option object (single) — sub-groups are single-pick by convention.
   const [subPicks, setSubPicks]     = useState({});
+
+
   // Quantity-mode picks. For groups where selection_type='quantity', pick
   // counts per option are tracked here. Key: groupId, value: { optionId: qty }.
   const [qtyPicks, setQtyPicks]     = useState({});
@@ -69,6 +71,22 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
     }
     return map;
   }, [allItems]);
+  // v5.7.81: modifier options inherit the picture of the sold-alone sub-item of
+  // the same name, so "Box of 3" shows the actual donuts. The kiosk has done
+  // this since v5.5.30; online never did, so the same menu looked rich on the
+  // kiosk and like a plain list on a phone.
+  //
+  // It reuses `subitemByName` below, which already indexes exactly the right
+  // rows for the 86 lookup: sold-alone only (pure-modifier sub-items are not
+  // curated for customers and must not leak their media), keyed on every name
+  // alias, in both camelCase and snake_case. Defined after it, so the map is in
+  // scope. An explicit image on the option always wins.
+  const resolveOptMedia = useCallback((opt) => {
+    const key = String(opt?.name || opt?.label || '').trim().toLowerCase();
+    const match = key ? subitemByName.get(key) : null;
+    return { image: opt?.image || match?.image || null };
+  }, [subitemByName]);
+
   const resolveOptItemId = (opt) => {
     if (opt?.itemId || opt?.item_id) return opt.itemId || opt.item_id;
     const key = String(opt?.name || opt?.label || '').trim().toLowerCase();
@@ -577,7 +595,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
                       const count = qtyPicks[g.id]?.[optKey] || 0;
                       const canAdd = totalPicked < max;
                       return (
-                        <QtyOptionRow key={optKey}
+                        <QtyOptionRow key={optKey} media={resolveOptMedia(opt)}
                           option={opt} count={count} canAdd={canAdd} is86={optIs86(opt)}
                           onInc={() => { setErrors([]); setQtyPicks(s => ({ ...s, [g.id]: { ...(s[g.id] || {}), [optKey]: count + 1 } })); }}
                           onDec={() => { setErrors([]); setQtyPicks(s => ({ ...s, [g.id]: { ...(s[g.id] || {}), [optKey]: Math.max(0, count - 1) } })); }}
@@ -625,6 +643,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
                       <div key={opt.id || opt.name}>
                         <OptionRow
                           label={opt.name || opt.label}
+                          media={resolveOptMedia(opt)}
                           priceDelta={Number(opt.price) || 0}
                           checked={checked}
                           onClick={onClick}
@@ -744,7 +763,7 @@ function Section({ title, meta, required, erroring, children }) {
   );
 }
 
-function OptionRow({ label, priceDelta, absolutePrice, checked, onClick, mode, theme, cardBdr, inputBg, is86 = false }) {
+function OptionRow({ label, priceDelta, absolutePrice, checked, onClick, mode, theme, cardBdr, inputBg, is86 = false, media }) {
   // Two pricing modes:
   //   • absolutePrice (used for variants): "£2.50" — variants ARE their own price
   //   • priceDelta (used for modifiers):   "+£0.50" / "−£0.50" — modifies base
@@ -770,6 +789,11 @@ function OptionRow({ label, priceDelta, absolutePrice, checked, onClick, mode, t
       fontWeight: checked ? 800 : 600,
     }}>
       <Indicator checked={checked} mode={mode} accent={theme.accent} cardBdr={cardBdr}/>
+      {media?.image && (
+        <img src={media.image} alt="" loading="lazy" style={{
+          width: 46, height: 46, borderRadius: 9, objectFit: 'cover', flexShrink: 0,
+        }}/>
+      )}
       <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere', fontSize: 14, fontWeight: 600, textDecoration: is86 ? 'line-through' : 'none' }}>{label}</span>
       {is86
         ? <span style={{ fontSize: 11, fontWeight: 800, color: '#dc2626', flexShrink: 0 }}>Sold out</span>
@@ -843,7 +867,7 @@ function VariantRow({ variant, active, price, onClick, theme, cardBdr, inputBg, 
 }
 
 // Quantity-mode option row — +/- stepper, current count.
-function QtyOptionRow({ option, count, canAdd, onInc, onDec, theme, cardBdr, inputBg, is86 = false }) {
+function QtyOptionRow({ option, count, canAdd, onInc, onDec, theme, cardBdr, inputBg, is86 = false, media }) {
   const px = Number(option.price) || 0;
   return (
     <div style={{
@@ -855,6 +879,11 @@ function QtyOptionRow({ option, count, canAdd, onInc, onDec, theme, cardBdr, inp
       color: theme.fg, fontFamily: 'inherit',
       opacity: is86 ? 0.55 : 1, filter: is86 ? 'grayscale(0.6)' : undefined,
     }}>
+      {media?.image && (
+        <img src={media.image} alt="" loading="lazy" style={{
+          width: 46, height: 46, borderRadius: 9, objectFit: 'cover', flexShrink: 0,
+        }}/>
+      )}
       <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere', fontSize: 14, fontWeight: 600, textDecoration: is86 ? 'line-through' : 'none' }}>{option.name || option.label}</span>
       {is86
         ? <span style={{ fontSize: 11, fontWeight: 800, color: '#dc2626', flexShrink: 0 }}>Sold out</span>
