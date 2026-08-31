@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.73',
+    date: '2026-08-31',
+    items: [
+      'Back Office, Workforce, Settings: a new "Clock in from a phone" card. Pin the venue by standing at the staff door and pressing "Use my location", drag to adjust, and set how far from the pin still counts as being at work. The green circle on the map shows exactly what the fence covers',
+      '"Test from where I am" reports your distance from the pin and whether a staff member standing there would be allowed to clock in, so the fence can be checked by walking rather than guessing',
+      'Groundwork only: the fence is saved but nothing enforces it yet. The staff app still needs its location permission before phone clocking goes live',
+    ],
+  },
+  {
     version: '5.7.72',
     date: '2026-08-26',
     items: [

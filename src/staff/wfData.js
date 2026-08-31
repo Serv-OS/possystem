@@ -373,8 +373,8 @@ export async function deleteSection(id) {
 // ============================================================================
 // VENUE SETTINGS (wf_venue_settings — PK location_id)
 // ============================================================================
-const DEFAULT_SETTINGS = { currency: 'GBP', labourTargetPct: 0.28, accrualRate: 0.1207, premiums: {}, salesSource: 'pos', payPeriodType: 'monthly', payPeriodStartDay: 1, payPeriodAnchor: null, payDay: null, settings: {} };
-const mapSettings = r => ({ currency: r.currency || 'GBP', labourTargetPct: Number(r.labour_target_pct ?? 0.28), accrualRate: Number(r.accrual_rate ?? 0.1207), premiums: r.premiums || {}, salesSource: r.sales_source || 'pos', payPeriodType: r.pay_period_type || 'monthly', payPeriodStartDay: Number(r.pay_period_start_day ?? 1), payPeriodAnchor: r.pay_period_anchor || null, payDay: r.pay_day ?? null, settings: r.settings || {} });
+const DEFAULT_SETTINGS = { currency: 'GBP', labourTargetPct: 0.28, accrualRate: 0.1207, premiums: {}, salesSource: 'pos', payPeriodType: 'monthly', payPeriodStartDay: 1, payPeriodAnchor: null, payDay: null, settings: {}, clockGeofence: {} };
+const mapSettings = r => ({ currency: r.currency || 'GBP', labourTargetPct: Number(r.labour_target_pct ?? 0.28), accrualRate: Number(r.accrual_rate ?? 0.1207), premiums: r.premiums || {}, salesSource: r.sales_source || 'pos', payPeriodType: r.pay_period_type || 'monthly', payPeriodStartDay: Number(r.pay_period_start_day ?? 1), payPeriodAnchor: r.pay_period_anchor || null, payDay: r.pay_day ?? null, settings: r.settings || {}, clockGeofence: r.clock_geofence || {} });
 export async function loadSettings(locationId) {
   if (isMock || !supabase) { const a = lsGet('settings'); return a[0] || { ...DEFAULT_SETTINGS }; }
   if (!locationId) return { ...DEFAULT_SETTINGS };
@@ -392,10 +392,60 @@ export async function saveSettings(patch, locationId, orgId) {
     pay_period_type: patch.payPeriodType || 'monthly', pay_period_start_day: patch.payPeriodStartDay ?? 1,
     pay_period_anchor: patch.payPeriodAnchor || null, pay_day: patch.payDay ?? null,
     settings: patch.settings || {}, updated_at: new Date().toISOString(),
+    // clock_geofence is deliberately ABSENT: it is a security control with its own
+    // writer (saveClockGeofence). Including it here would let an unrelated settings
+    // save blank the venue's fence.
   };
   const { data, error } = await supabase.from('wf_venue_settings').upsert(row, { onConflict: 'location_id' }).select().single();
   if (error) throw new Error(error.message);
   return mapSettings(data);
+}
+
+// ============================================================================
+// CLOCK GEOFENCE (wf_venue_settings.clock_geofence) — mobile clock-in fence.
+// Its own column and its own writer, so saving the rest of the venue settings
+// can never blank it. The phone NEVER reads this; the server is the only judge.
+// ============================================================================
+export const GEOFENCE_DEFAULTS = { enabled: false, lat: null, lng: null, radius_m: 150, accuracy_ceiling_m: 100 };
+
+/** Metres between two lat/lng points. Haversine; good to ~0.3% at venue scale. */
+export function metresBetween(lat1, lng1, lat2, lng2) {
+  const R = 6371000, rad = Math.PI / 180;
+  const dLat = (lat2 - lat1) * rad, dLng = (lng2 - lng1) * rad;
+  const a = Math.sin(dLat / 2) ** 2
+    + Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(dLng / 2) ** 2;
+  return Math.round(2 * R * Math.asin(Math.sqrt(a)));
+}
+
+export async function saveClockGeofence(patch, locationId, orgId) {
+  const clean = {
+    ...GEOFENCE_DEFAULTS,
+    ...patch,
+    enabled: !!patch.enabled,
+    lat: patch.lat == null ? null : Number(patch.lat),
+    lng: patch.lng == null ? null : Number(patch.lng),
+    // Floor of 50m: below that honest staff get refused on ordinary GPS drift.
+    radius_m: Math.min(2000, Math.max(50, parseInt(patch.radius_m, 10) || 150)),
+    accuracy_ceiling_m: Math.min(500, Math.max(20, parseInt(patch.accuracy_ceiling_m, 10) || 100)),
+  };
+  if (clean.enabled && (clean.lat == null || clean.lng == null)) {
+    throw new Error('Pin the venue on the map before switching the fence on.');
+  }
+  if (clean.lat != null && (Math.abs(clean.lat) > 90 || Math.abs(clean.lng) > 180)) {
+    throw new Error('That pin is not a real place. Set it again.');
+  }
+  if (isMock || !supabase) {
+    const a = lsGet('settings'); const cur = a[0] || { ...DEFAULT_SETTINGS };
+    lsSet('settings', [{ ...cur, clockGeofence: clean }]); return clean;
+  }
+  const org = await resolveOrgForLocation(locationId, orgId);
+  const { data, error } = await supabase
+    .from('wf_venue_settings')
+    .upsert({ location_id: locationId, org_id: org, clock_geofence: clean, updated_at: new Date().toISOString() },
+            { onConflict: 'location_id' })
+    .select('clock_geofence').single();
+  if (error) throw new Error(error.message);
+  return data?.clock_geofence || clean;
 }
 
 // ============================================================================

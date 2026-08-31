@@ -11,6 +11,7 @@ import { Icon } from '../../../components/ServOSIcons';
 import { Card, EmptyState, th, td, inputStyle, labelStyle, LoadingCard } from '../../../staff/wfUi';
 import * as wf from '../../../staff/wfData';
 import { payPeriod, shiftPayPeriod } from '../../../staff/wfWeek';
+import WfGeofenceCard from './WfGeofenceCard';
 
 // Live "what you'll get" line under the pay-period fields — current period,
 // the next one, and the computed pay day, straight from the same function
@@ -222,6 +223,14 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* ───────────── MOBILE CLOCK-IN FENCE ───────────── */}
+      <WfGeofenceCard
+        ctx={ctx}
+        geofence={settings?.clockGeofence}
+        showToast={showToast}
+        onSaved={(gf) => onSettingsSaved?.({ ...(settings || {}), clockGeofence: gf })}
+      />
+
       {/* ───────────── VENUE ───────────── */}
       <Card>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 15, fontWeight: 700, marginBottom: 4 }}>
