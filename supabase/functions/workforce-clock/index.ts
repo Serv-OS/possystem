@@ -101,23 +101,49 @@ Deno.serve(async (req) => {
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
 
   const authHeader = req.headers.get('Authorization') ?? '';
-  const { data: { user } } = await admin.auth.getUser(authHeader.replace('Bearer ', ''));
-  if (!user) return json({ error: 'unauthorized' }, 401); // valid (incl. anonymous) session required
+  const bearer = authHeader.replace('Bearer ', '');
+  // The staff app (staff-portal) clocks OUT through here with the service role
+  // and an already-authenticated staff_id, so the hours, statutory-break and
+  // pay maths below stays the ONE implementation. Without this seam the phone
+  // path would need its own copy, and two copies of pay maths always drift.
+  const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+  const isService = !!SERVICE_ROLE && bearer === SERVICE_ROLE;
 
   let body: Record<string, any>;
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
   const { location_id, pin, action } = body;
-  if (!location_id || !pin || !action) return json({ error: 'location_id, pin and action required' }, 400);
+  const staffIdIn = isService ? body.staff_id : null;   // never honoured from a client
+
+  if (!isService) {
+    const { data: { user } } = await admin.auth.getUser(bearer);
+    if (!user) return json({ error: 'unauthorized' }, 401); // valid (incl. anonymous) session required
+  }
+  if (!location_id || !action) return json({ error: 'location_id and action required' }, 400);
+  if (!staffIdIn && !pin) return json({ error: 'pin required' }, 400);
 
   try {
-    // Validate the PIN against active POS users at this location.
-    const { data: members } = await admin.from('staff_members')
-      .select('id, name, role, color, initials, active, pin').eq('location_id', location_id).eq('active', true);
-    const member = (members ?? []).find((m: any) => m.pin && String(m.pin) === String(pin));
-    if (!member) return json({ error: 'PIN not recognised' }, 404);
-
-    const org = await orgFor(location_id);
-    const staff = await ensureWfStaff(member, location_id, org);
+    let member: any;
+    let staff: any;
+    if (staffIdIn) {
+      // Service-role path: the caller already proved who this is (staff-portal
+      // resolves it from the portal JWT), so there is no PIN to check. Still
+      // fenced to the venue, so a wrong location_id cannot reach someone else's
+      // timesheet.
+      const { data: sRow } = await admin.from('wf_staff')
+        .select('*').eq('id', staffIdIn).eq('location_id', location_id).maybeSingle();
+      if (!sRow) return json({ error: 'staff not found at this location' }, 404);
+      staff = sRow;
+      member = { id: sRow.pos_user_id ?? sRow.id, name: sRow.full_name ?? sRow.name ?? 'Staff',
+                 role: sRow.role_key ?? null, color: '#15C26A', initials: null };
+    } else {
+      // Validate the PIN against active POS users at this location.
+      const { data: members } = await admin.from('staff_members')
+        .select('id, name, role, color, initials, active, pin').eq('location_id', location_id).eq('active', true);
+      member = (members ?? []).find((m: any) => m.pin && String(m.pin) === String(pin));
+      if (!member) return json({ error: 'PIN not recognised' }, 404);
+      const org = await orgFor(location_id);
+      staff = await ensureWfStaff(member, location_id, org);
+    }
 
     // Current open timesheet (no clock_out), latest first.
     const { data: openRows } = await admin.from('wf_timesheets')

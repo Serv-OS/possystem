@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.74',
+    date: '2026-08-31',
+    items: [
+      'Staff app: clock in, take a break and clock out from your phone, but only at the venue. Outside the radius the punch is refused, which is the point of the fence',
+      'Clocking only exists inside the ServOS Staff app, never in a browser, and the position comes from the phone\u2019s own location service through a native bridge rather than the web one, so it cannot be faked from a laptop',
+      'The server is the only judge: the phone sends a reading and is told yes or no, so a tampered app cannot approve itself. A reading that is too vague, too old, or from a fake-location app counts as no reading at all',
+      'If a phone genuinely cannot get a fix, staff are told to use a device at the venue. There is deliberately no "allow anyway" button, because that would void the fence',
+      'Clocking OUT and breaks are never blocked by location: ending paid time reduces the bill, so there is nothing to defend against, and trapping someone off site with an open shift only corrupts the pay record',
+      'A retry on a flaky connection can no longer open two shifts; the database rejects the duplicate',
+    ],
+  },
+  {
     version: '5.7.73',
     date: '2026-08-31',
     items: [

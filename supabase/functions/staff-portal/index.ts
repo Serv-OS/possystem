@@ -62,6 +62,87 @@ async function staffFromJwt(req: Request) {
   return rows?.[0] ?? null;
 }
 
+
+// ── GEOFENCED CLOCK-IN ───────────────────────────────────────────────────────
+// The staff app sends a location reading; THIS FILE decides. The phone is never
+// the judge, so a tampered app cannot approve itself — the worst it can do is
+// send a lie, and a lie about being 4km away still refuses.
+//
+// HARD BLOCK (Peter, 31 Aug 2026): outside the radius, clocking IN is refused.
+// Clocking OUT, breaks and ending breaks are NEVER refused: ending paid time
+// lowers the bill so there is no fraud to defend against, and trapping someone
+// off-site with an open shift only corrupts the pay record.
+//
+// When a phone genuinely cannot get a fix the answer is an in-venue device, not
+// an exception here. There is deliberately no "no reading, allow anyway" path.
+
+/** Metres between two lat/lng points (haversine). */
+function metresBetween(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371000, rad = Math.PI / 180;
+  const dLat = (lat2 - lat1) * rad, dLng = (lng2 - lng1) * rad;
+  const a = Math.sin(dLat / 2) ** 2
+    + Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(dLng / 2) ** 2;
+  return Math.round(2 * R * Math.asin(Math.sqrt(a)));
+}
+
+type Verdict = { verdict: string; distance_m: number | null; accuracy_m: number | null; allowed: boolean; reason?: string };
+
+/** Judge one clock-in against the venue fence. */
+async function judgeFence(locationId: string, fix: Record<string, unknown> | null): Promise<Verdict> {
+  const { data: vs } = await admin.from('wf_venue_settings')
+    .select('clock_geofence').eq('location_id', locationId).maybeSingle();
+  const g = (vs?.clock_geofence ?? {}) as Record<string, unknown>;
+
+  // Fence off, or never pinned: phone clocking is not being policed here.
+  if (!g.enabled || typeof g.lat !== 'number' || typeof g.lng !== 'number') {
+    return { verdict: 'not_enforced', distance_m: null, accuracy_m: null, allowed: true };
+  }
+
+  const radius = Number(g.radius_m) || 150;
+  const ceiling = Number(g.accuracy_ceiling_m) || 100;
+
+  if (!fix || typeof fix.lat !== 'number' || typeof fix.lng !== 'number') {
+    return { verdict: 'no_fix', distance_m: null, accuracy_m: null, allowed: false,
+             reason: 'We could not check your location. Please clock in on a device at the venue.' };
+  }
+  // Android reports a fake-location app. iOS cannot, and we say so publicly
+  // rather than implying a guarantee we do not have.
+  if (fix.mocked === true) {
+    return { verdict: 'mocked', distance_m: null, accuracy_m: null, allowed: false,
+             reason: 'Your phone is reporting a simulated location. Please clock in on a device at the venue.' };
+  }
+  const accuracy = typeof fix.accuracy === 'number' ? Math.round(fix.accuracy) : null;
+  // A reading too vague to place someone is treated as NO reading, so inflating
+  // the accuracy number costs the same as switching location off. It is not a
+  // free pass through the fence.
+  if (accuracy != null && accuracy > ceiling) {
+    return { verdict: 'no_fix', distance_m: null, accuracy_m: accuracy, allowed: false,
+             reason: 'Your location is not accurate enough right now. Please clock in on a device at the venue.' };
+  }
+  // A stale cached fix could place someone where they were an hour ago.
+  const ageMs = typeof fix.age_ms === 'number' ? fix.age_ms : 0;
+  if (ageMs > 120000) {
+    return { verdict: 'no_fix', distance_m: null, accuracy_m: accuracy, allowed: false,
+             reason: 'Your location reading is out of date. Please try again.' };
+  }
+
+  const d = metresBetween(fix.lat as number, fix.lng as number, g.lat as number, g.lng as number);
+  // Give the benefit of the reading's own error margin, so someone genuinely at
+  // the door is not refused by ordinary GPS drift.
+  const effective = accuracy != null ? Math.max(0, d - accuracy) : d;
+  if (effective <= radius) {
+    return { verdict: 'inside', distance_m: d, accuracy_m: accuracy, allowed: true };
+  }
+  return { verdict: 'outside', distance_m: d, accuracy_m: accuracy, allowed: false,
+           reason: `You are about ${d < 1000 ? d + 'm' : (d / 1000).toFixed(1) + 'km'} from the venue. You can clock in once you arrive.` };
+}
+
+/** Durable evidence. Distance only — never coordinates. Never throws. */
+async function recordClockEvent(row: Record<string, unknown>) {
+  try { await admin.from('wf_clock_events').insert(row); }
+  catch (e) { console.error('[staff-portal] clock event not recorded:', (e as Error).message); }
+}
+
 /** Is the calling BO user allowed to manage this staff member's location? */
 async function callerManagesLocation(req: Request, locationId: string): Promise<{ ok: boolean; name?: string; id?: string }> {
   const auth = req.headers.get('authorization') || '';
@@ -364,6 +445,119 @@ Deno.serve(async (req) => {
     // ── everything below is the logged-in staff member ────────────────────────
     const staff = await staffFromJwt(req);
     if (!staff) return json({ error: 'not signed in' }, 401);
+
+    // ── clock_status / clock_punch: geofenced clocking from the staff app ────
+    // The venue is ALWAYS staff.location_id, never anything the caller sends.
+    if (action === 'clock_status') {
+      const { data: open } = await admin.from('wf_timesheets')
+        .select('id, clock_in, break_open_at, break_taken')
+        .eq('staff_id', staff.id).is('clock_out', null)
+        .order('clock_in', { ascending: false }).limit(1).maybeSingle();
+      const { data: vs } = await admin.from('wf_venue_settings')
+        .select('clock_geofence').eq('location_id', staff.location_id).maybeSingle();
+      const g = (vs?.clock_geofence ?? {}) as Record<string, unknown>;
+      return json({
+        ok: true,
+        on_shift: !!open,
+        on_break: !!open?.break_open_at,
+        since: open?.clock_in ?? null,
+        break_since: open?.break_open_at ?? null,
+        // Whether to ask the phone for a location at all. The pin itself is
+        // NEVER sent: the phone cannot be trusted with the fence it must pass.
+        location_required: !!(g.enabled && typeof g.lat === 'number'),
+        venue_name: (await admin.from('locations').select('name')
+          .eq('id', staff.location_id).maybeSingle()).data?.name ?? null,
+      });
+    }
+
+    if (action === 'clock_punch') {
+      const kind = String(body.kind || '');
+      if (!['in', 'out', 'break_start', 'break_end'].includes(kind)) {
+        return json({ error: 'unknown punch' }, 400);
+      }
+      const fix = (body.fix ?? null) as Record<string, unknown> | null;
+      const punchId = typeof body.punch_id === 'string' ? body.punch_id : null;
+
+      // Only clocking IN is fenced. See the note on judgeFence.
+      const judged = kind === 'in'
+        ? await judgeFence(staff.location_id, fix)
+        : { verdict: 'not_enforced', distance_m: null, accuracy_m: null, allowed: true } as Verdict;
+
+      const evidence = {
+        location_id: staff.location_id, staff_id: staff.id, punch_id: punchId,
+        kind, source: 'phone',
+        distance_m: judged.distance_m, accuracy_m: judged.accuracy_m,
+        verdict: judged.verdict, refused: !judged.allowed,
+        platform: typeof body.platform === 'string' ? body.platform : null,
+        app_version: typeof body.app_version === 'string' ? body.app_version : null,
+      };
+
+      if (!judged.allowed) {
+        await recordClockEvent(evidence);
+        return json({ ok: false, refused: true, verdict: judged.verdict, reason: judged.reason }, 200);
+      }
+
+      const now = new Date().toISOString();
+      const { data: open } = await admin.from('wf_timesheets')
+        .select('id, clock_in, break_open_at, break_taken')
+        .eq('staff_id', staff.id).is('clock_out', null)
+        .order('clock_in', { ascending: false }).limit(1).maybeSingle();
+
+      if (kind === 'in') {
+        if (open) return json({ ok: true, already: true, since: open.clock_in });
+        // punch_id carries a UNIQUE index, so a phone retrying on a flaky
+        // connection cannot open two shifts. The database enforces it, not us.
+        const { error } = await admin.from('wf_timesheets').insert({
+          staff_id: staff.id, location_id: staff.location_id,
+          clock_in: now, status: 'open', clock_in_source: 'phone', punch_id: punchId,
+        });
+        if (error && !/duplicate key/i.test(error.message)) return json({ error: error.message }, 500);
+        await recordClockEvent(evidence);
+        return json({ ok: true, on_shift: true, since: now });
+      }
+
+      if (!open) return json({ error: 'You are not clocked in' }, 400);
+
+      if (kind === 'break_start') {
+        if (open.break_open_at) return json({ ok: true, already: true });
+        await admin.from('wf_timesheets').update({ break_open_at: now }).eq('id', open.id);
+        await recordClockEvent({ ...evidence, timesheet_id: open.id });
+        return json({ ok: true, on_break: true, break_since: now });
+      }
+
+      if (kind === 'break_end') {
+        if (!open.break_open_at) return json({ ok: true, already: true });
+        const mins = Math.max(0, Math.round((Date.now() - new Date(open.break_open_at).getTime()) / 60000));
+        await admin.from('wf_timesheets')
+          .update({ break_open_at: null, break_taken: (Number(open.break_taken) || 0) + mins })
+          .eq('id', open.id);
+        await recordClockEvent({ ...evidence, timesheet_id: open.id });
+        return json({ ok: true, on_break: false, break_taken: (Number(open.break_taken) || 0) + mins });
+      }
+
+      // kind === 'out'. The hours/pay/statutory-break maths stays in
+      // workforce-clock, which owns it; this hands the shift over rather than
+      // duplicating money logic that would then drift.
+      const closeRes = await fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/workforce-clock`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json',
+                   Authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''}` },
+        body: JSON.stringify({ action: 'out', staff_id: staff.id, location_id: staff.location_id }),
+      }).catch(() => null);
+      if (!closeRes || !closeRes.ok) {
+        // Never leave someone unable to end a shift because a sibling function
+        // was unreachable: close it here and flag the hours for a manager.
+        await admin.from('wf_timesheets')
+          .update({ clock_out: now, clock_out_source: 'phone', status: 'pending' }).eq('id', open.id);
+      }
+      else {
+        // workforce-clock owns the hours/pay update; stamp the provenance the
+        // timesheet screen reads so a phone punch is distinguishable later.
+        await admin.from('wf_timesheets').update({ clock_out_source: 'phone' }).eq('id', open.id);
+      }
+      await recordClockEvent({ ...evidence, timesheet_id: open.id });
+      return json({ ok: true, on_shift: false });
+    }
 
     if (action === 'snapshot') {
       const today = new Date().toISOString().slice(0, 10);

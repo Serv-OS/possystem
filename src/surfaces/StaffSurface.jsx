@@ -16,6 +16,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { staffSupabase as supabase, isMock } from '../lib/supabase';
 import { Icon } from '../components/ServOSIcons';
+import ClockCard from '../staff/ClockCard';
 
 const glass = { padding: '14px 16px', borderRadius: 16 };
 
@@ -351,6 +352,9 @@ function ShiftsTab({ snap, onChanged }) {
   const TONE = { pending: 'var(--amber)', approved: 'var(--grn)', denied: 'var(--red)' };
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {/* Geofenced clocking — native app only; renders a pointer to the venue
+          device in a plain browser (see ClockCard). */}
+      <ClockCard call={withJwt} venueFallbackName={snap?.staff?.location_name} />
       {!shifts.length
         ? <div className="sv-glass" style={glass}>No published shifts in the next two weeks. When the rota is published, they show here.</div>
         : shifts.map((s, i) => (
