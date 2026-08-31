@@ -268,6 +268,42 @@ const COLOURS = ['#3b82f6','#e8a020','#22c55e','#a855f7','#ef4444','#22d3ee','#f
 const ICONS   = ['🍽','🥗','🍖','🍕','🍸','☕','🎂','🥤','🌿','🔥','❄️','⭐','🌮','🦞','🍜','🥩','🍤','🥚','🥐'];
 
 // ── Root ─────────────────────────────────────────────────────────────────────
+// A number box whose value is NOT recomputed from the model on every keystroke.
+//
+// The min/max pick boxes used to derive `value` from the saved number and blank
+// themselves whenever that number matched one of the quick buttons. Typing "12"
+// therefore went: "1" -> saves min 1 -> 1 is a quick button -> box blanks -> the
+// "1" is gone. Any number starting 1 to 5 was impossible to enter, so a "Box of
+// 12" could never be given a minimum of 12. Holding the typed text locally
+// while focused fixes it; the model still owns the value everywhere else.
+function PickNumBox({ value, min, max, onCommit, style, placeholder = 'N' }) {
+  const [text, setText] = useState('');
+  const [typing, setTyping] = useState(false);
+  const shown = typing ? text : (value == null ? '' : String(value));
+  return (
+    <input
+      type="number" min={min} max={max} style={style} placeholder={placeholder}
+      value={shown}
+      onFocus={() => { setTyping(true); setText(value == null ? '' : String(value)); }}
+      onBlur={() => {
+        setTyping(false);
+        const n = parseInt(text, 10);
+        // An empty or nonsense entry falls back to the smallest legal value
+        // rather than silently keeping a number the operator just cleared.
+        onCommit(Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : min);
+      }}
+      onChange={(e) => {
+        setText(e.target.value);
+        const n = parseInt(e.target.value, 10);
+        // Commit as they type ONLY once the value is already in range, so the
+        // rest of the editor stays live without fighting the keystrokes.
+        if (Number.isFinite(n) && n >= min && n <= max) onCommit(n);
+      }}
+      onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+    />
+  );
+}
+
 export default function MenuManager() {
   const [tab, setTab] = useState('menu');
   const [importOpen, setImportOpen] = useState(false);
@@ -3200,9 +3236,9 @@ function ModifiersTab() {
                     if (!valid) return null;
                     return <button key={v} onClick={()=>upd({min:v})} style={{ width:28, height:28, borderRadius:7, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:act?700:400, border:`1px solid ${act?'var(--acc)':'var(--bdr)'}`, background:act?'var(--acc-d)':'var(--bg3)', color:act?'var(--acc)':'var(--t3)', flexShrink:0 }}>{v}</button>;
                   })}
-                  <input type="number" min="1" max={sel.max>=99?50:sel.max||3} style={{ ...inp, width:44, padding:'3px 5px', fontSize:11 }}
-                    value={!([1,2,3,4,5].includes(sel.min||1)) ? (sel.min||1) : ''} placeholder="N"
-                    onChange={e=>upd({min:Math.max(1,parseInt(e.target.value)||1)})}/>
+                  <PickNumBox value={sel.min||1} min={1} max={sel.max>=99?50:sel.max||3}
+                    style={{ ...inp, width:48, padding:'3px 5px', fontSize:11 }}
+                    onCommit={v=>upd({min:v})}/>
                   <span style={{ fontSize:9, color:'var(--t4)', flexShrink:0 }}>of {sel.max>=99?'∞':sel.max||3}</span>
                 </div>
               )}
@@ -3215,8 +3251,9 @@ function ModifiersTab() {
                     const act = v===99 ? (sel.max||0)>=99 : (sel.max||3)===v;
                     return <button key={l} onClick={()=>upd({max:v, min: (sel.min||0)>v&&v<99?v:sel.min||0})} style={{ width:28, height:28, borderRadius:7, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:act?700:400, border:`1px solid ${act?'var(--acc)':'var(--bdr)'}`, background:act?'var(--acc-d)':'var(--bg3)', color:act?'var(--acc)':'var(--t3)', flexShrink:0 }}>{l}</button>;
                   })}
-                  <input type="number" min="2" max="50" style={{ ...inp, width:44, padding:'3px 5px', fontSize:11 }} value={(sel.max||3)<99&&![2,3,4,5].includes(sel.max||3)?sel.max:''} placeholder="N"
-                    onChange={e=>upd({max:parseInt(e.target.value)||2, min:(sel.min||0)>parseInt(e.target.value)?parseInt(e.target.value):sel.min||0})}/>
+                  <PickNumBox value={(sel.max||3)>=99?null:(sel.max||3)} min={2} max={50}
+                    style={{ ...inp, width:48, padding:'3px 5px', fontSize:11 }}
+                    onCommit={v=>upd({max:v, min:(sel.min||0)>v?v:sel.min||0})}/>
                 </div>
               )}
             </div>

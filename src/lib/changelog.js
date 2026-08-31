@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.79',
+    date: '2026-08-31',
+    items: [
+      'Fixed modifier group minimum and maximum picks refusing any number that starts with 1 to 5. The box cleared itself after each keystroke, so typing 12 lost the 1 and you could never get past single figures. A "Box of 12" can now actually require 12',
+      'Both boxes now keep what you type until you click away or press Enter, and clamp to the allowed range at that point instead of fighting you mid number',
+    ],
+  },
+  {
     version: '5.7.78',
     date: '2026-08-31',
     items: [
