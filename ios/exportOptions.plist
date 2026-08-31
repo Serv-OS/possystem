@@ -11,6 +11,8 @@
 	       teamID (10 char Apple Developer team id)
 	     and pass App Store Connect API auth to xcodebuild:
 	       -authenticationKeyPath / -authenticationKeyID / -authenticationKeyIssuerID -->
+	<key>teamID</key>
+	<string>LYQ8K25MGZ</string>
 	<key>method</key>
 	<string>app-store-connect</string>
 	<key>signingStyle</key>
