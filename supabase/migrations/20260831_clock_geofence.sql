@@ -25,15 +25,25 @@
 begin;
 
 -- ── 1. The venue pin ────────────────────────────────────────────────────────
-alter table public.locations
-  add column if not exists clock_geofence           jsonb not null default '{}'::jsonb;
+-- Deliberately on wf_venue_settings, NOT on locations. `locations` still carries
+-- a legacy `USING(true)` policy (the pending Stage 3 lockdown), so anyone holding
+-- the public app key could move the fence. wf_venue_settings is fenced properly
+-- on all four operations by user_accessible_locations(), verified 31 Aug 2026.
+--
+-- Its own COLUMN rather than a key inside the existing `settings` jsonb, because
+-- saveSettings() in src/staff/wfData.js rewrites that blob wholesale on every
+-- save of the Workforce settings screen. A security control must not be able to
+-- be blanked by an unrelated form submit.
+alter table public.wf_venue_settings
+  add column if not exists clock_geofence jsonb not null default '{}'::jsonb;
 
-comment on column public.locations.clock_geofence is
+comment on column public.wf_venue_settings.clock_geofence is
   'Mobile clock-in geofence. Shape: {"enabled":bool,"lat":num,"lng":num,'
   '"radius_m":int,"accuracy_ceiling_m":int,"pinned_at":timestamptz,'
   '"pinned_by":uuid,"attested_at":timestamptz,"attested_by":uuid}. '
   'enabled=false (default) means phone clocking is OFF for this venue and only '
-  'the paired tablet may clock. Set via Back Office, Workforce, Settings.';
+  'an in-venue device may clock. Read server-side with the service role; the '
+  'phone never receives it, because the phone is never the judge.';
 
 -- ── 2. Punch provenance on the timesheet ────────────────────────────────────
 -- wf_timesheets records nothing today about HOW a punch arrived.
