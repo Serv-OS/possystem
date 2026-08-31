@@ -11,6 +11,10 @@ import Foundation
 ///                                          (default false = deny; a target
 ///                                          setting true must ALSO declare
 ///                                          NSCameraUsageDescription)
+///   RPOSAllowsLocation (Bool, optional)  — expose window.RposLocation
+///                                          (default false; a target setting
+///                                          true must ALSO declare
+///                                          NSLocationWhenInUseUsageDescription)
 ///
 /// Shared, non-app-specific configuration stays as constants below.
 enum Config {
@@ -36,6 +40,15 @@ enum Config {
     /// string in its Info.plist either). Missing key = deny, the safe default.
     static let allowsCamera: Bool =
         (Bundle.main.object(forInfoDictionaryKey: "RPOSAllowsCamera") as? Bool) ?? false
+
+    /// Whether this app exposes the native location bridge (window.RposLocation).
+    /// Staff: true — the geofenced clock-in needs a CoreLocation reading the web
+    /// page cannot fake by overriding navigator.geolocation. Every other target:
+    /// false, and they ship no location permission string at all, so they can
+    /// never prompt. A target setting true MUST also declare
+    /// NSLocationWhenInUseUsageDescription or iOS terminates the app on request.
+    static let allowsLocation: Bool =
+        (Bundle.main.object(forInfoDictionaryKey: "RPOSAllowsLocation") as? Bool) ?? false
 
     /// The app's user-facing name (used by native UI like ReconnectingView).
     static var displayName: String {

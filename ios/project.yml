@@ -440,6 +440,12 @@ targets:
         RPOSAppURL: "https://possystem-liard.vercel.app/?mode=staff"
         # Nothing to scan: camera denied.
         RPOSAllowsCamera: false
+        # Geofenced clock-in: the ONLY target with location. The bridge
+        # (LocationBridge.swift) is registered only when this is true, and iOS
+        # terminates the app on a location request if the usage string below is
+        # missing, so the two must always move together.
+        RPOSAllowsLocation: true
+        NSLocationWhenInUseUsageDescription: "Used only when you clock in or out, to confirm you are at your venue. Your location is checked against the venue and the distance is recorded. Your position is never stored or shared."
         UILaunchScreen:
           UIColorName: LaunchBackground
         UIRequiresFullScreen: false

@@ -25,7 +25,40 @@ struct POSWebView: UIViewRepresentable {
 
     /// Lets the web app detect the iOS shell (window.RposIOS marker).
     private static let shellMarkerScript = WKUserScript(
-        source: "window.RposIOS = { platform: 'ios', version: '\(Config.marketingVersion)' };",
+        source: "window.RposIOS = { platform: 'ios', version: '\(Config.marketingVersion)'"
+              + ", hasLocation: \(Config.allowsLocation) };",
+        injectionTime: .atDocumentStart,
+        forMainFrameOnly: true
+    )
+
+    /// window.RposLocation.get() -> Promise<{lat,lng,accuracy,age_ms}>
+    /// Rejects with an Error whose message is one of:
+    /// denied | restricted | unavailable | timeout | off.
+    private static let locationBridgeScript = WKUserScript(
+        source: """
+        (function () {
+          var seq = 0, waiting = {};
+          window.__rposLocationCallback = function (id, ok, json) {
+            var w = waiting[id]; if (!w) return; delete waiting[id];
+            var data; try { data = JSON.parse(json); } catch (e) { data = {}; }
+            if (ok) { w.resolve(data); } else { w.reject(new Error(data.error || 'unavailable')); }
+          };
+          window.RposLocation = {
+            get: function () {
+              return new Promise(function (resolve, reject) {
+                var id = 'loc' + (++seq);
+                waiting[id] = { resolve: resolve, reject: reject };
+                try {
+                  window.webkit.messageHandlers.rposLocation.postMessage({ id: id });
+                } catch (e) { delete waiting[id]; reject(new Error('unavailable')); }
+                setTimeout(function () {
+                  if (waiting[id]) { delete waiting[id]; reject(new Error('timeout')); }
+                }, 15000);
+              });
+            }
+          };
+        })();
+        """,
         injectionTime: .atDocumentStart,
         forMainFrameOnly: true
     )
@@ -68,6 +101,7 @@ struct POSWebView: UIViewRepresentable {
         let userContent = WKUserContentController()
         userContent.addUserScript(Self.shellMarkerScript)
         userContent.addUserScript(Self.selectionSuppressionScript)
+        if Config.allowsLocation { userContent.addUserScript(Self.locationBridgeScript) }
         configuration.userContentController = userContent
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
@@ -89,6 +123,16 @@ struct POSWebView: UIViewRepresentable {
         scrollView.delegate = context.coordinator  // viewForZooming -> nil blocks pinch zoom
 
         context.coordinator.webView = webView
+
+        // Native location for the geofenced clock-in (Staff target only).
+        // Registered after the WKWebView exists because the bridge replies by
+        // evaluating JS on it.
+        if Config.allowsLocation {
+            let bridge = LocationBridge(webView: webView)
+            context.coordinator.locationBridge = bridge
+            userContent.add(bridge, name: LocationBridge.handlerName)
+        }
+
         webView.load(URLRequest(url: Config.appURL))
         return webView
     }
@@ -106,6 +150,10 @@ struct POSWebView: UIViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, UIScrollViewDelegate {
         private let connection: ConnectionState
         weak var webView: WKWebView?
+        /// Retained for the app's lifetime: WKUserContentController holds the
+        /// handler weakly, so without this the bridge deallocates and every
+        /// location request silently never answers.
+        var locationBridge: LocationBridge?
         private var retryTimer: Timer?
 
         init(connection: ConnectionState) {
