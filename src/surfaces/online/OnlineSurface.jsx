@@ -374,15 +374,15 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
 
   const theme = useMemo(() => ({
     // Menu Appearance saves the brand colour as `brand_color` — prefer it (accent_color is legacy).
-    accent: branding?.brand_color || branding?.accent_color || FALLBACK_ACCENT,
-    bg:     branding?.background    || FALLBACK_BG,
-    fg:     branding?.foreground    || FALLBACK_FG,
+    accent: normaliseColour(branding?.brand_color || branding?.accent_color) || FALLBACK_ACCENT,
+    bg:     normaliseColour(branding?.background) || FALLBACK_BG,
+    fg:     normaliseColour(branding?.foreground) || FALLBACK_FG,
     logo:   branding?.logo_url      || null,
     hero:   branding?.hero_url      || null,
     logoShape: branding?.logo_shape || 'rounded',
     headerStyle: branding?.header_style || 'cinematic',
     name:   location.name           || 'Restaurant',
-    isLight: isLightBackground(branding?.background || FALLBACK_BG),
+    isLight: isLightBackground(normaliseColour(branding?.background) || FALLBACK_BG),
   }), [branding, location.name]);
 
   // Themeable menu (prototype design system): brand-colour palette as CSS vars + themed header.
@@ -493,7 +493,10 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   const muted    = theme.isLight ? '#6b6b70' : '#a0a0a8';
   const cardBg   = theme.isLight ? '#fafafa' : '#16161a';
   const cardBdr  = theme.isLight ? '#ececef' : '#2a2a30';
-  const headerBg = theme.isLight ? 'rgba(255,255,255,0.95)' : 'rgba(14,14,16,0.95)';
+  // The sticky bars were hardcoded white or near-black whatever the venue chose,
+  // so a themed storefront showed a white slab between the hero and the menu.
+  // Follow the real background instead (v5.7.80).
+  const headerBg = vars ? 'var(--bg)' : theme.bg;
 
   // v5.5.147: QR confirm-table gate. Per-location qr_table_mode controls
   // whether the customer is forced through this screen:
@@ -1718,6 +1721,23 @@ function ConfirmTableScreen({ theme, cardBdr, muted, locationName, presetLabel, 
 }
 
 // ── colour utils ─────────────────────────────────────────────────────────────
+// Colours reach us from Menu Appearance and have been saved BOTH with and
+// without a leading hash ("#FEC5DC" and "FEC5DC"). A bare hex is not a valid
+// CSS colour, so the browser silently drops the declaration: the online item
+// sheet rendered fully transparent and the sticky bar fell back to white, while
+// the rest of the page looked right because the newer theme pipeline repairs
+// the value on its way through. Repair it here too, on read, so existing venues
+// are fixed without anybody having to re-save. (v5.7.80)
+function normaliseColour(v) {
+  if (!v) return null;
+  const t = String(v).trim();
+  if (!t) return null;
+  if (/^#/.test(t)) return t;
+  // A bare 3, 4, 6 or 8 digit hex is the case we have actually seen in the wild.
+  if (/^[0-9a-f]{3,8}$/i.test(t) && [3, 4, 6, 8].includes(t.length)) return `#${t}`;
+  return t;   // named colours, rgb(), anything else: leave alone
+}
+
 function isLightBackground(hex) {
   if (!hex) return true;
   const c = hex.replace('#', '');

@@ -28,6 +28,19 @@ async function uploadAsset(file, locationId, kind) {
   return `${data.publicUrl}?t=${Date.now()}`;
 }
 
+// A hex typed without its leading hash is not a valid CSS colour, so the
+// storefront silently drops it: the online item sheet rendered transparent and
+// the sticky bar fell back to white. Repair it when the field loses focus, so
+// typing is never fought mid entry. The storefront also repairs on read, for
+// venues that were saved before this existed. (v5.7.80)
+function normaliseHex(v) {
+  const t = String(v ?? '').trim();
+  if (!t) return '';
+  if (/^#/.test(t)) return t;
+  if (/^[0-9a-f]{3,8}$/i.test(t) && [3, 4, 6, 8].includes(t.length)) return `#${t}`;
+  return t;
+}
+
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
   sub: { fontSize: 13, color: 'var(--t3)', marginTop: 4, marginBottom: 18 },
@@ -235,7 +248,10 @@ export default function MenuAppearance() {
               <div style={S.field}><label style={S.label}>Body background colour</label>
                 <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
                   <input type="color" value={mt.bodyBg || '#f6f2ec'} onChange={(e) => set({ background: e.target.value })} style={{ width: 46, height: 38, border: '1px solid var(--bdr2)', borderRadius: 8, background: 'none', cursor: 'pointer' }} />
-                  <input style={{ ...S.input, maxWidth: 130 }} value={branding.background || ''} onChange={(e) => set({ background: e.target.value })} placeholder="#f6f2ec" />
+                  <input style={{ ...S.input, maxWidth: 130 }} value={branding.background || ''}
+                    onChange={(e) => set({ background: e.target.value })}
+                    onBlur={(e) => { const n = normaliseHex(e.target.value); if (n !== e.target.value) set({ background: n }); }}
+                    placeholder="#f6f2ec" />
                   {branding.background && <button style={S.ghost} onClick={() => set({ background: '' })}>Reset</button>}
                 </div>
                 <div style={S.hint}>The page background behind the menu. Blank = the default warm cream.</div>
@@ -270,7 +286,10 @@ export default function MenuAppearance() {
               <div style={S.field}><label style={S.label}>Portal background override <span style={{ color: 'var(--t4)', fontWeight: 500 }}>optional</span></label>
                 <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
                   <input type="color" value={branding.portal?.background || '#f6f2ec'} onChange={(e) => setPortal({ background: e.target.value })} style={{ width: 46, height: 38, border: '1px solid var(--bdr2)', borderRadius: 8, background: 'none', cursor: 'pointer' }} />
-                  <input style={{ ...S.input, maxWidth: 130 }} value={branding.portal?.background || ''} onChange={(e) => setPortal({ background: e.target.value })} placeholder="inherit" />
+                  <input style={{ ...S.input, maxWidth: 130 }} value={branding.portal?.background || ''}
+                    onChange={(e) => setPortal({ background: e.target.value })}
+                    onBlur={(e) => { const n = normaliseHex(e.target.value); if (n !== e.target.value) setPortal({ background: n }); }}
+                    placeholder="inherit" />
                   {branding.portal?.background && <button style={S.ghost} onClick={() => setPortal({ background: null })}>Reset</button>}
                 </div>
               </div>

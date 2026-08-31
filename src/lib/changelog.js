@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.80',
+    date: '2026-08-31',
+    items: [
+      'Online ordering: a background colour typed without its leading # was not a valid colour, so the browser ignored it. The item sheet rendered see-through over the menu and the bar under the header fell back to white. The storefront now repairs the value on read, so venues saved that way are fixed without touching anything, and Menu Appearance adds the # for you when you leave the field',
+      'The bar holding Collection, Sign in and the category chips now follows the venue background instead of being hardcoded white, so it no longer appears as a white slab between the hero image and a coloured menu',
+      'The plus button on modifier options now picks a readable colour against the brand colour. On a dark brand it was a near black plus on a near black circle and effectively invisible',
+    ],
+  },
+  {
     version: '5.7.79',
     date: '2026-08-31',
     items: [

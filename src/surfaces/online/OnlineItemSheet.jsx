@@ -874,7 +874,9 @@ function QtyOptionRow({ option, count, canAdd, onInc, onDec, theme, cardBdr, inp
         <button onClick={onInc} disabled={!canAdd || is86} style={{
           width: 30, height: 30, borderRadius: '50%', border: 'none',
           background: (canAdd && !is86) ? theme.accent : `${theme.fg}10`,
-          color: (canAdd && !is86) ? '#0b0c10' : `${theme.fg}40`,
+          // contrastFg, not a hardcoded near-black: on a dark brand colour the
+          // plus was black on navy and effectively invisible (v5.7.80).
+          color: (canAdd && !is86) ? contrastFg(theme.accent) : `${theme.fg}40`,
           fontSize: 18, fontWeight: 800, cursor: (canAdd && !is86) ? 'pointer' : 'not-allowed',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           fontFamily: 'inherit',
