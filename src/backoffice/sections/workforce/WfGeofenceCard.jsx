@@ -39,6 +39,24 @@ export default function WfGeofenceCard({ ctx, geofence, showToast, onSaved }) {
   const [locating, setLocating] = useState(false);
   const [testResult, setTestResult] = useState(null);
 
+  // The parent loads venue settings ASYNCHRONOUSLY and first renders this card
+  // with an empty object. useState only reads its initial value once, so
+  // without this the saved fence stayed invisible and the screen looked like it
+  // had reset itself (it had not — the row was in the database all along).
+  // Re-sync whenever a genuinely different saved fence arrives, but never while
+  // the operator is mid-edit, which would yank the pin out from under them.
+  const savedSig = JSON.stringify([g.enabled, g.lat, g.lng, g.radius_m, g.pos_login_clock_in]);
+  const appliedSig = useRef(savedSig);
+  useEffect(() => {
+    if (appliedSig.current === savedSig) return;
+    appliedSig.current = savedSig;
+    setEnabled(!!g.enabled);
+    setLat(g.lat ?? null);
+    setLng(g.lng ?? null);
+    setRadius(g.radius_m ?? 150);
+    setPosLogin(!!g.pos_login_clock_in);
+  }, [savedSig, g.enabled, g.lat, g.lng, g.radius_m, g.pos_login_clock_in]);
+
   const mapEl   = useRef(null);
   const mapRef  = useRef(null);
   const markRef = useRef(null);

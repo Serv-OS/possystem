@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.78',
+    date: '2026-08-31',
+    items: [
+      'Fixed the clock-in fence appearing to reset itself. The pin, the radius and the switches were always saved correctly; the settings screen just never showed them back, because it read the values once before they had finished loading and then kept the blanks',
+      'Your saved fence now appears when the page opens, and an edit in progress is never overwritten by a background refresh',
+    ],
+  },
+  {
     version: '5.7.77',
     date: '2026-08-31',
     items: [
