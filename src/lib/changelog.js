@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.75',
+    date: '2026-08-31',
+    items: [
+      'Fixed clocking in from the staff app failing with a database error. The phone was writing its own timesheet row instead of using the one routine the time clock tablet uses, and it was missing the organisation reference the record requires',
+      'The same fault would also have paid nothing for the shift: the tablet snapshots the pay rate when you clock in, and the phone was not. Every punch from a phone now goes through the same routine as the tablet, so hours, breaks and pay are calculated one way only',
+    ],
+  },
+  {
     version: '5.7.74',
     date: '2026-08-31',
     items: [

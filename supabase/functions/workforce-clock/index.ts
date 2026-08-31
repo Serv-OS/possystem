@@ -124,6 +124,7 @@ Deno.serve(async (req) => {
   try {
     let member: any;
     let staff: any;
+    let org: any;
     if (staffIdIn) {
       // Service-role path: the caller already proved who this is (staff-portal
       // resolves it from the portal JWT), so there is no PIN to check. Still
@@ -133,6 +134,7 @@ Deno.serve(async (req) => {
         .select('*').eq('id', staffIdIn).eq('location_id', location_id).maybeSingle();
       if (!sRow) return json({ error: 'staff not found at this location' }, 404);
       staff = sRow;
+      org = sRow.org_id ?? await orgFor(location_id);
       member = { id: sRow.pos_user_id ?? sRow.id, name: sRow.full_name ?? sRow.name ?? 'Staff',
                  role: sRow.role_key ?? null, color: '#15C26A', initials: null };
     } else {
@@ -141,7 +143,7 @@ Deno.serve(async (req) => {
         .select('id, name, role, color, initials, active, pin').eq('location_id', location_id).eq('active', true);
       member = (members ?? []).find((m: any) => m.pin && String(m.pin) === String(pin));
       if (!member) return json({ error: 'PIN not recognised' }, 404);
-      const org = await orgFor(location_id);
+      org = await orgFor(location_id);
       staff = await ensureWfStaff(member, location_id, org);
     }
 

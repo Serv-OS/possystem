@@ -497,66 +497,41 @@ Deno.serve(async (req) => {
         return json({ ok: false, refused: true, verdict: judged.verdict, reason: judged.reason }, 200);
       }
 
-      const now = new Date().toISOString();
-      const { data: open } = await admin.from('wf_timesheets')
-        .select('id, clock_in, break_open_at, break_taken')
-        .eq('staff_id', staff.id).is('clock_out', null)
-        .order('clock_in', { ascending: false }).limit(1).maybeSingle();
-
-      if (kind === 'in') {
-        if (open) return json({ ok: true, already: true, since: open.clock_in });
-        // punch_id carries a UNIQUE index, so a phone retrying on a flaky
-        // connection cannot open two shifts. The database enforces it, not us.
-        const { error } = await admin.from('wf_timesheets').insert({
-          staff_id: staff.id, location_id: staff.location_id,
-          clock_in: now, status: 'open', clock_in_source: 'phone', punch_id: punchId,
-        });
-        if (error && !/duplicate key/i.test(error.message)) return json({ error: error.message }, 500);
-        await recordClockEvent(evidence);
-        return json({ ok: true, on_shift: true, since: now });
-      }
-
-      if (!open) return json({ error: 'You are not clocked in' }, 400);
-
-      if (kind === 'break_start') {
-        if (open.break_open_at) return json({ ok: true, already: true });
-        await admin.from('wf_timesheets').update({ break_open_at: now }).eq('id', open.id);
-        await recordClockEvent({ ...evidence, timesheet_id: open.id });
-        return json({ ok: true, on_break: true, break_since: now });
-      }
-
-      if (kind === 'break_end') {
-        if (!open.break_open_at) return json({ ok: true, already: true });
-        const mins = Math.max(0, Math.round((Date.now() - new Date(open.break_open_at).getTime()) / 60000));
-        await admin.from('wf_timesheets')
-          .update({ break_open_at: null, break_taken: (Number(open.break_taken) || 0) + mins })
-          .eq('id', open.id);
-        await recordClockEvent({ ...evidence, timesheet_id: open.id });
-        return json({ ok: true, on_break: false, break_taken: (Number(open.break_taken) || 0) + mins });
-      }
-
-      // kind === 'out'. The hours/pay/statutory-break maths stays in
-      // workforce-clock, which owns it; this hands the shift over rather than
-      // duplicating money logic that would then drift.
-      const closeRes = await fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/workforce-clock`, {
+      // Every punch is executed by workforce-clock, through the service-role
+      // seam. It owns shift linking, the pay-rate snapshot, statutory breaks
+      // and the pay maths. An earlier version of this file inserted the
+      // timesheet itself and got it wrong twice over: no org_id (NOT NULL, so
+      // it threw) and no rate snapshot (so clock-out would have paid zero).
+      // One implementation, always.
+      const wcRes = await fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/workforce-clock`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json',
                    Authorization: `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''}` },
-        body: JSON.stringify({ action: 'out', staff_id: staff.id, location_id: staff.location_id }),
+        body: JSON.stringify({ action: kind, staff_id: staff.id, location_id: staff.location_id }),
       }).catch(() => null);
-      if (!closeRes || !closeRes.ok) {
-        // Never leave someone unable to end a shift because a sibling function
-        // was unreachable: close it here and flag the hours for a manager.
-        await admin.from('wf_timesheets')
-          .update({ clock_out: now, clock_out_source: 'phone', status: 'pending' }).eq('id', open.id);
+
+      const wc = wcRes ? await wcRes.json().catch(() => ({})) : {};
+      if (!wcRes || !wcRes.ok) {
+        // 409 = already in that state; the phone should just resync, not error.
+        if (wcRes?.status === 409) { await recordClockEvent(evidence); return json({ ok: true, already: true }); }
+        await recordClockEvent({ ...evidence, refused: true, verdict: 'error' });
+        return json({ error: wc?.error || 'Could not record that punch. Try again.' }, 502);
       }
-      else {
-        // workforce-clock owns the hours/pay update; stamp the provenance the
-        // timesheet screen reads so a phone punch is distinguishable later.
-        await admin.from('wf_timesheets').update({ clock_out_source: 'phone' }).eq('id', open.id);
+
+      // Provenance for the timesheet screen: which punches came from a phone.
+      const { data: sheet } = await admin.from('wf_timesheets')
+        .select('id').eq('staff_id', staff.id)
+        .order('clock_in', { ascending: false }).limit(1).maybeSingle();
+      if (sheet?.id) {
+        const stamp: Record<string, unknown> = kind === 'in'
+          ? { clock_in_source: 'phone', punch_id: punchId }
+          : kind === 'out' ? { clock_out_source: 'phone' } : {};
+        if (Object.keys(stamp).length) {
+          await admin.from('wf_timesheets').update(stamp).eq('id', sheet.id);
+        }
       }
-      await recordClockEvent({ ...evidence, timesheet_id: open.id });
-      return json({ ok: true, on_shift: false });
+      await recordClockEvent({ ...evidence, timesheet_id: sheet?.id ?? null });
+      return json({ ok: true, kind, ...wc });
     }
 
     if (action === 'snapshot') {
