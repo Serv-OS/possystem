@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.76',
+    date: '2026-08-31',
+    items: [
+      'Timesheets: a second clock in on the same rostered day is no longer invisible. Both punches link to the same rota shift, and the screen was showing one and silently dropping the other, so hours genuinely worked could go unpaid. The extra punch now gets its own row',
+      'This affected the time clock tablet too, not just the new phone clocking. Any venue where someone clocked out and back in on one day was losing the second stretch from this screen',
+    ],
+  },
+  {
     version: '5.7.75',
     date: '2026-08-31',
     items: [

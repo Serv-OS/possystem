@@ -106,9 +106,15 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
   }
   useEffect(() => { reload(); /* eslint-disable-next-line */ }, [ctx?.locationId, range.from, range.to]);
 
+  // One shift can end up with SEVERAL timesheets: clock in, clock out, then
+  // clock in again on the same rostered day. Both punches link to the same
+  // published shift. Keep the FIRST (the one the shift row displays) and note
+  // which id that is, so the extras below are rendered as their own rows
+  // instead of being silently dropped. Before v5.7.76 they vanished from this
+  // screen entirely, which is hours worked and not paid.
   const tsByShift = useMemo(() => {
     const m = {};
-    (sheets || []).forEach(t => { if (t.shiftId) m[t.shiftId] = t; });
+    (sheets || []).forEach(t => { if (t.shiftId && !m[t.shiftId]) m[t.shiftId] = t; });
     return m;
   }, [sheets]);
 
@@ -145,7 +151,9 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
       };
     });
     (sheets || []).forEach(ts => {
-      if (ts.shiftId && shiftIds.has(ts.shiftId)) return;          // already joined above
+      // Skip ONLY the timesheet actually shown on the shift row above. A second
+      // punch against the same shift falls through and gets its own row.
+      if (ts.shiftId && shiftIds.has(ts.shiftId) && tsByShift[ts.shiftId]?.id === ts.id) return;
       const iso = ts.clockIn ? localParts(ts.clockIn, tz).date : null;   // venue-local date (UTC stamps shift the day near midnight)
       const inRange = iso && iso >= range.from && iso <= range.to;
       const undated = !iso;                                        // legacy generated rows
