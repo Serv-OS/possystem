@@ -193,7 +193,15 @@ export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete
         if (fresh) setJob(fresh);
         setCancelMsg('Cancelled. The card machine never took this payment.');
       } else {
-        setCancelMsg('Cancel sent to the card machine. Checking what happened…');
+        // v5.7.88: never leave the button silent. The usual reason a cancel
+        // "does nothing" is that the card was ALREADY approved, which is the one
+        // case where cancelling would be wrong. Say so, rather than looking broken.
+        const fresh = await fetchJob(job.id).catch(() => null);
+        if (fresh) setJob(fresh);
+        setCancelMsg(
+          fresh && ['approved', 'reconciled'].includes(fresh.status)
+            ? 'Too late to cancel, the card has already paid. Refund it instead.'
+            : 'Cancel sent to the card machine. Checking what happened…');
       }
       setCancelBusy(false);
       return;

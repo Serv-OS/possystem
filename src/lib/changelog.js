@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.88',
+    date: '2026-09-01',
+    items: [
+      'Cancel now always answers. If the card has already been approved it says so and points at a refund, instead of appearing to do nothing, which is what it looked like when a payment completed on the card machine just as the cashier pressed cancel',
+      'Cancelling at the card machine application list is now shown as a cancellation rather than a decline',
+    ],
+  },
+  {
     version: '5.7.87',
     date: '2026-09-01',
     items: [
