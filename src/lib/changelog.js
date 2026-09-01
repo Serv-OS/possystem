@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.86',
+    date: '2026-09-01',
+    items: [
+      'Staff can now cancel a card payment from the till while the card machine is still waiting. The Cancel button used to disappear the moment the payment reached the machine, so a customer changing their mind left the check locked until the machine timed out on its own',
+      'Cancelling asks the card machine to stop and then checks what actually happened, so a payment that went through at the last second is still recorded as a payment rather than lost as a cancellation',
+    ],
+  },
+  {
     version: '5.7.85',
     date: '2026-09-01',
     items: [

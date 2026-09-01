@@ -29,7 +29,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { pollTerminalJob, cancelTerminalJob, fetchJob, checkJobWithReader } from '../lib/payments/terminalJobs';
+import { pollTerminalJob, cancelTerminalJob, fetchJob, checkJobWithReader, abortTerminalJob } from '../lib/payments/terminalJobs';
 import { useStore } from '../store';
 import { money } from '../lib/currency';
 
@@ -168,13 +168,36 @@ export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete
   // pollTerminalJob's timeout can synthesise a row without it).
   const processor = job?.processor ?? initialJob?.processor ?? null;
   const wedged = processor === 'adyen' && (status === 'charging' || status === 'unknown');
-  const canOfferCancel = LIVE.includes(status) && !blocked && !(processor === 'adyen' && status === 'charging');
+  // v5.7.86: Adyen tenders used to be excluded here, so staff had NO way to stop
+  // a payment once it reached the terminal. That is the ordinary case of a
+  // customer changing their mind, and it left the check locked until the
+  // terminal timed out on its own. The abort is safe because it never decides
+  // the outcome: it asks the terminal to stop, then asks what really happened.
+  const canOfferCancel = LIVE.includes(status) && !blocked;
+  const cancelNeedsAbort = processor === 'adyen' && status === 'charging';
   // Once the terminal is holding a card, say so on the button — cancelling then is a real
   // processor void, not a quiet local abort.
   const cancelIsLive = !!job?.charged_at;
 
   const doCancel = async () => {
     setCancelBusy(true); setCancelMsg('');
+    // A tender already on the terminal has to be stopped AT the terminal; the
+    // plain job cancel only works before it was sent.
+    if (cancelNeedsAbort) {
+      const res = await abortTerminalJob(job.id);
+      if (res?.kind === 'settled') {
+        const fresh = await fetchJob(job.id).catch(() => null);
+        if (fresh) setJob(fresh);
+      } else if (res?.kind === 'never_received') {
+        const fresh = await fetchJob(job.id).catch(() => null);
+        if (fresh) setJob(fresh);
+        setCancelMsg('Cancelled. The card machine never took this payment.');
+      } else {
+        setCancelMsg('Cancel sent to the card machine. Checking what happened…');
+      }
+      setCancelBusy(false);
+      return;
+    }
     const r = await cancelTerminalJob(job.id);
     if (r?.ok) {
       // Re-read rather than assuming — we report what the server says happened.

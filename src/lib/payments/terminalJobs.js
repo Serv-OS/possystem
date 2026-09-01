@@ -563,6 +563,30 @@ export async function checkJobWithReader(jobId) {
   }
 }
 
+/**
+ * Cancel an IN-FLIGHT Adyen tender from the till (v5.7.86).
+ *
+ * The nexo abort has existed on the server since the beginning but nothing
+ * could ever send it: the Cancel button was hidden for Adyen while charging, so
+ * a staff member watching a customer walk away had no way to end the tender and
+ * the check stayed locked until the terminal gave up on its own, minutes later.
+ *
+ * Abort is ADVISORY by protocol — the card may already have been authorised —
+ * so this never decides the outcome itself. It asks the terminal to stop, then
+ * asks what actually happened. `result` is the authority, and it now also
+ * consults Adyen's ledger, so a tender that completed in the same instant is
+ * still recorded as a payment rather than lost as a cancel.
+ */
+export async function abortTerminalJob(jobId) {
+  try {
+    await callFn('adyen-terminal-charge', { action: 'abort', job_id: jobId });
+  } catch {
+    // Best effort. Even if the abort never lands, the check below still runs
+    // and is what actually settles the job.
+  }
+  return checkJobWithReader(jobId);
+}
+
 /** Read one job. Goes through the edge function, not RLS — see terminal-job-status. */
 export async function fetchJob(jobId) {
   const j = await callFn('terminal-job-status', { job_id: jobId });
