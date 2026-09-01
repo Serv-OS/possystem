@@ -15,6 +15,7 @@ import { chargeRyftTerminal } from '../lib/payments/ryftTerminal';
 import { fetchCustomerByPhone } from '../lib/customerLookup';
 import { redeemLoyaltyReward } from '../lib/loyaltyRedeem';
 import { stageGiftCard, commitGiftCard, giftCardCheckRecord, reverseGiftCard } from '../lib/giftCommit';
+import { declineLine } from '../lib/declineMessage';
 import { money, currencySymbol, stripeCurrency, getActiveCurrencyCode } from '../lib/currency';
 import { publishDisplay, displayUsesScreen, publishTipRequest, onCustomerTip } from '../lib/customerDisplay';
 import { isTrainingMode } from '../lib/trainingMode';
@@ -206,7 +207,12 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
       if (e.message === 'cancelled') return;             // user cancelled — handled by cancelRestFlow
       setRestState('error');
       // v5.5.808: a definitive decline reads as a decline, not a generic failure/timeout.
-      setErrorMsg(e.declined ? 'Card declined — try another card' : (e.message || 'Terminal payment failed'));
+      // v5.7.82: and it now says WHICH decline. "Try another card" was actively
+      // wrong advice for a wrong PIN, a contactless limit or an unreachable
+      // terminal, which are the three most common refusals on a busy bar.
+      setErrorMsg(e.declined
+        ? declineLine(e.refusalReason, e.errorCondition)
+        : (e.message || 'Terminal payment failed'));
     } finally {
       ryftAbortRef.current = null;
       ryftFlightRef.current = null;

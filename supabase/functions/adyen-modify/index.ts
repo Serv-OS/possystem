@@ -381,7 +381,21 @@ Deno.serve(async (req) => {
   }
 
   const amountMinor = body.amount_minor != null ? Math.round(Number(body.amount_minor)) : null;
-  const currency = String(body.currency || 'GBP').toUpperCase();
+  // v5.7.82: a refund MUST be in the currency the payment was taken in. Falling
+  // back to GBP silently refunded US dollar sales as pounds, which Adyen either
+  // refuses or, worse, processes at the wrong value. The original payment is the
+  // only authority; the caller's value is honoured only when it agrees, and the
+  // GBP default now applies solely when nothing else is known.
+  let currency = String(body.currency || '').toUpperCase();
+  if (!currency) {
+    const { data: paid } = await platformAdmin.from('adyen_payments')
+      .select('currency').eq('psp_reference', psp).maybeSingle();
+    currency = String(paid?.currency || '').toUpperCase();
+  }
+  if (!currency) {
+    console.warn(`adyen-modify: no currency known for ${psp}, defaulting to GBP`);
+    currency = 'GBP';
+  }
   const reference = String(body.reference || `${action}:${psp}:${amountMinor ?? 'full'}`).slice(0, 80);
   // v968: the Idempotency-Key is only deterministic when the CALLER supplied a
   // reference (their operation id). A derived (action,psp,amount) key made two

@@ -90,9 +90,14 @@ export async function chargeRyftTerminal({ locationId, posDeviceId, amountMinor,
     // IMMEDIATELY — a decline must never present as a 2-minute timeout.
     const declined = s.declined === true || (!!s.lastError && s.state !== 'succeeded');
     if (declined || s.state === 'failed') {
-      const err = new Error(declined ? 'Card declined — try another card' : 'Card declined or cancelled on the terminal');
+      // v5.7.82: carry the processor's OWN reason so the till can tell staff
+      // what to actually do. The message here is a fallback for callers that do
+      // not map it themselves.
+      const err = new Error(declined ? 'Card declined' : 'Card declined or cancelled on the terminal');
       err.declined = declined;
       err.lastError = s.lastError || null;
+      err.refusalReason = s.refusalReason || s.lastError || null;
+      err.errorCondition = s.errorCondition || null;
       throw err;
     }
     if (s.state === 'succeeded') {

@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.82',
+    date: '2026-09-01',
+    items: [
+      'Card declines now tell staff what actually happened and what to do. Until now every refusal said "Card declined, try another card", which was wrong advice for the three most common ones: a wrong PIN wants the same card again, a contactless limit wants the same card inserted, and an unreachable card machine is not a card problem at all',
+      'Wrong PIN, not enough balance, card not accepted, bank unreachable, contactless limit reached, cancelled, timed out and machine busy each now show their own message and the right next step',
+      'Refunds are now made in the currency the payment was actually taken in. It was defaulting to pounds, so refunding a US dollar sale was refunded in the wrong currency',
+    ],
+  },
+  {
     version: '5.7.81',
     date: '2026-08-31',
     items: [

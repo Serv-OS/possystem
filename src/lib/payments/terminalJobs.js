@@ -131,6 +131,12 @@ async function callFn(name, body) {
     // reader answered NotFound and the row was reset to charging_unsent). checkJobWithReader
     // discriminates on this, never on the message text.
     err.safe = j?.safe === true;
+    // v5.7.82: the processor's OWN refusal text, so the till can tell staff what
+    // to do rather than always saying "try another card". Adyen sends these on
+    // every refusal; we were throwing them away at this line.
+    err.declined = j?.declined === true;
+    err.refusalReason = j?.refusalReason ?? j?.decline_reason ?? null;
+    err.errorCondition = j?.errorCondition ?? null;
     throw err;
   }
   return j;

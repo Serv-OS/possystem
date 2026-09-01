@@ -471,6 +471,8 @@ export function parsePaymentResponse(body: any): {
   serviceId: string | null;   // MessageHeader.ServiceID — binds a response to ITS attempt
   poiid: string | null;       // MessageHeader.POIID — binds it to ITS terminal
   errorCondition: string | null;
+  refusalReason: string | null;    // Adyen's own text, e.g. 'Not enough balance'
+  refusalCode: string | null;      // Adyen's raw refusal code when present
   pspReference: string | null;
   poiTransactionId: string | null;
   poiTimestamp: string | null;
@@ -496,7 +498,14 @@ export function parsePaymentResponse(body: any): {
     result,
     serviceId: header?.ServiceID ?? null,
     poiid: header?.POIID ?? null,
+    // v5.7.82: Adyen's OWN refusal reason wins. ErrorCondition is a coarse nexo
+    // bucket ('Refusal') that cannot tell "wrong PIN" from "no balance" from
+    // "terminal unreachable", so preferring it threw away the only text that
+    // tells the operator what to do next. Both are kept: the reason drives what
+    // staff are told, the condition still drives control flow.
     errorCondition: response?.ErrorCondition ?? additional['refusalReason'] ?? null,
+    refusalReason: additional['refusalReason'] ?? additional['message'] ?? null,
+    refusalCode: additional['refusalReasonRaw'] ?? additional['refusalReasonCode'] ?? null,
     pspReference: additional['pspReference'] ?? null,
     poiTransactionId: poiTx?.TransactionID ?? null,
     poiTimestamp: poiTx?.TimeStamp ?? null,

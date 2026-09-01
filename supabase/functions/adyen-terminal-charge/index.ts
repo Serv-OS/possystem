@@ -151,7 +151,7 @@ async function settleFromResponse(jobId: string, p: ReturnType<typeof parsePayme
     p_transaction_id: p.poiTransactionId ?? p.pspReference,
     p_auth_code: p.card.authCode,
     p_card: settleCard(p),
-    p_decline_reason: success ? null : (p.errorCondition ?? 'declined'),
+    p_decline_reason: success ? null : (p.refusalReason ?? p.errorCondition ?? 'declined'),
     p_source: source,
     p_session_amount_minor: effectiveAuthorized ?? (success ? chargeMinor : null),
   });
@@ -368,7 +368,12 @@ Deno.serve(async (req) => {
       if (!res.ok) return json({ ok: false, error: `adyen ${res.status}` }, 200);
       const parsed = parsePaymentResponse(res.data);
       if (parsed.result !== 'Success') {
-        return json({ ok: false, error: parsed.errorCondition || 'declined', declined: true }, 200);
+        // The till needs the reason itself to choose what to tell staff; the
+        // condition stays alongside it so cancels and timeouts stay separable
+        // from genuine card refusals.
+        return json({ ok: false, error: parsed.errorCondition || 'declined', declined: true,
+                      refusalReason: parsed.refusalReason, refusalCode: parsed.refusalCode,
+                      errorCondition: parsed.errorCondition }, 200);
       }
       return json({
         ok: true,
