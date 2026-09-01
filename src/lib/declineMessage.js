@@ -29,28 +29,45 @@ export function declineMessage(reason, errorCondition) {
   if (c === 'busy' || r.includes('in progress'))
     return { title: 'Card machine is busy', advice: 'Another payment is still running on it. Wait, then try again.', retrySameCard: true };
 
-  // Genuine refusals, in the order Adyen's test plan exercises them.
-  if (r.includes('acquirer') && r.includes('cancel'))
-    return { title: 'Cancelled by the bank', advice: 'The bank stopped this payment. Try the card again or use another.', retrySameCard: true };
-  if (r.includes('fraud') || r.includes('pick up') || r.includes('restricted'))
+  // Genuine refusals. These strings are the ones OBSERVED from a live Adyen
+  // S1F2L on the test merchant account (1 Sep 2026), in both the shapes we
+  // receive: the terminal sends a numbered code ("210 Not enough balance") and
+  // the webhook sends clean text ("Not enough balance"). Matching on the words
+  // covers both. The earlier version guessed at the documented wording and
+  // matched almost none of them.
+  //
+  // NOTE for certification: amounts 1.21, 1.23, 1.29 and 1.30 (AR001, AR003,
+  // AR005, AR006) all come back as "Declined online" on this terminal, so they
+  // cannot be told apart. That is Adyen's behaviour, not a gap here.
+  if (r.includes('acquirer fraud') || r.includes('fraud') || r.includes('pick up') || r.includes('restricted'))
     return { title: 'Card refused', advice: 'Please ask for another card or another payment method.', retrySameCard: false };
   if (r.includes('not enough balance') || r.includes('insufficient'))
     return { title: 'Not enough money on the card', advice: 'Ask the customer for another card, or take part payment.', retrySameCard: false };
+  if (r.includes('pin incorrect') || r.includes('invalid online pin') || (r.includes('pin') && (r.includes('incorrect') || r.includes('invalid') || r.includes('wrong'))))
+    return { title: 'Wrong PIN', advice: 'Ask the customer to try their PIN again.', retrySameCard: true };
+  if (r.includes('pin tries') || (r.includes('pin') && r.includes('exceeded')))
+    return { title: 'Too many PIN attempts', advice: 'The card is locked. Please ask for another card.', retrySameCard: false };
+  // Contactless fallback and limits: the fix is to INSERT the same card.
+  if (r.includes('ctls fallback') || r.includes('contactless fallback') || r.includes('contactless')
+      || (r.includes('withdrawal') && (r.includes('amount') || r.includes('count'))))
+    return { title: 'Please insert the card', advice: 'Contactless could not be used. Ask the customer to insert the same card.', retrySameCard: true };
   if (r.includes('acquirer error') || r.includes('issuer unavailable') || r.includes('try again later'))
     return { title: 'Bank could not be reached', advice: 'A temporary problem at the bank. Try the same card again.', retrySameCard: true };
-  if (r.includes('pin') && (r.includes('incorrect') || r.includes('invalid') || r.includes('wrong')))
-    return { title: 'Wrong PIN', advice: 'Ask the customer to try their PIN again.', retrySameCard: true };
-  if (r.includes('pin tries') || r.includes('pin_tries') || r.includes('exceeded') && r.includes('pin'))
-    return { title: 'Too many PIN attempts', advice: 'The card is locked. Please ask for another card.', retrySameCard: false };
-  // Contactless limits: the fix is to INSERT the same card, not to change card.
-  if (r.includes('contactless') || (r.includes('withdrawal') && (r.includes('amount') || r.includes('count'))))
-    return { title: 'Contactless limit reached', advice: 'Ask the customer to insert the same card instead of tapping.', retrySameCard: true };
   if (r.includes('not supported') || r.includes('not_supported'))
     return { title: 'Card type not accepted', advice: 'This card type cannot be taken here. Please ask for another.', retrySameCard: false };
   if (r.includes('expired'))
     return { title: 'Card expired', advice: 'Please ask for another card.', retrySameCard: false };
   if (r.includes('referral'))
     return { title: 'Card needs authorisation', advice: 'The bank wants the customer to call them. Ask for another card.', retrySameCard: false };
+  // The terminal refusing to start at all is not a card problem, and telling
+  // staff to ask for another card sends them the wrong way entirely.
+  if (r.includes('low battery') || r.includes('battery'))
+    return { title: 'Card machine needs charging', advice: 'Put it on charge or use another card machine. Nothing was charged.', retrySameCard: true };
+  if (r.includes('failed starting transaction'))
+    return { title: 'Card machine could not start', advice: 'Nothing was charged. Try again, or use another card machine.', retrySameCard: true };
+  // The generic one Adyen returns for several different refusals.
+  if (r.includes('declined online') || r.includes('declined'))
+    return { title: 'Card declined', advice: 'Please ask for another card.', retrySameCard: false };
 
   // Unknown reason: still show Adyen's own words rather than inventing advice.
   if (reason && r !== 'declined' && r !== 'refused')

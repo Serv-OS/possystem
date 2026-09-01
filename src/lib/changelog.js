@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.83',
+    date: '2026-09-01',
+    items: [
+      'Decline messages rebuilt against what the card machine actually sends, gathered from live test transactions rather than from documentation. Wrong PIN, not enough balance, card refused and contactless fallback now each show their own message and the right next step',
+      'A flat battery on the card machine now says so and tells staff to charge it or use another machine, instead of telling them the card was declined',
+    ],
+  },
+  {
     version: '5.7.82',
     date: '2026-09-01',
     items: [
