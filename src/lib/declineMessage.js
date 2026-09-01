@@ -65,6 +65,11 @@ export function declineMessage(reason, errorCondition) {
     return { title: 'Card machine needs charging', advice: 'Put it on charge or use another card machine. Nothing was charged.', retrySameCard: true };
   if (r.includes('failed starting transaction'))
     return { title: 'Card machine could not start', advice: 'Nothing was charged. Try again, or use another card machine.', retrySameCard: true };
+  // Not a card problem at all: the venue's payment account has no acquirer set
+  // up for this card type or entry method. Staff cannot fix it and must not be
+  // sent hunting for another card, so this points at the manager instead.
+  if (r.includes('noacquirerfound') || r.includes('no acquirer'))
+    return { title: 'This card type is not set up here', advice: 'Take another payment method and tell your manager, the venue payment settings need updating.', retrySameCard: false };
   // The card was never read properly. Telling staff to ask for another card is
   // wrong here: the SAME card usually works on the next try, or on chip.
   if (r.includes('invalid card details') || r.includes('no or invalid card')

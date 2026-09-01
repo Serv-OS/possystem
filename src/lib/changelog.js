@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.92',
+    date: '2026-09-01',
+    items: [
+      'When a card type has not been set up on the venue payment account, the till now says so and tells staff to take another payment method and inform a manager, instead of showing a technical code or sending them to ask for a different card they cannot fix',
+    ],
+  },
+  {
     version: '5.7.91',
     date: '2026-09-01',
     items: [
