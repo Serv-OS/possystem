@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.91',
+    date: '2026-09-01',
+    items: [
+      'A card the machine could not read now says so and suggests inserting it instead of swiping, rather than telling staff to ask for another card when the same card will usually work on the next try',
+    ],
+  },
+  {
     version: '5.7.90',
     date: '2026-09-01',
     items: [

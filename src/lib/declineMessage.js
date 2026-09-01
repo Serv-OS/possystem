@@ -65,6 +65,11 @@ export function declineMessage(reason, errorCondition) {
     return { title: 'Card machine needs charging', advice: 'Put it on charge or use another card machine. Nothing was charged.', retrySameCard: true };
   if (r.includes('failed starting transaction'))
     return { title: 'Card machine could not start', advice: 'Nothing was charged. Try again, or use another card machine.', retrySameCard: true };
+  // The card was never read properly. Telling staff to ask for another card is
+  // wrong here: the SAME card usually works on the next try, or on chip.
+  if (r.includes('invalid card details') || r.includes('no or invalid card')
+      || r.includes('card details provided'))
+    return { title: 'Card could not be read', advice: 'Try again, or insert the card instead of swiping.', retrySameCard: true };
   // Cancelling at the application list is a shopper cancel, not a decline.
   if (r.includes('cancelled app selection') || r.includes('cancelled tx'))
     return { title: 'Payment cancelled', advice: 'The customer cancelled on the card machine. Start again when ready.', retrySameCard: true };
