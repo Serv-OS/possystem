@@ -81,6 +81,121 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
       return { result: { period: 'today', items: top } };
     }
 
+    // "What is broken right now, and what do I do about it?"
+    //
+    // There is no error log in the POS, so this does not pretend to be one. It
+    // reads the signals that genuinely mean something is wrong — a printer that
+    // cannot be reached, an unacknowledged ops alert, an order that has sat in
+    // the queue too long, items 86'd — and returns the CONCRETE detail needed
+    // to act: which printer, which IP, how long, what the device actually said.
+    //
+    // The fix hints are deliberately mechanical (a EHOSTUNREACH is a network
+    // route problem, not a paper problem). The model does the judging; this
+    // tool must not guess, because a confident wrong diagnosis during service
+    // is worse than none.
+    case 'get_pos_health': {
+      if (!supabase || !locationId) return { result: { error: 'Not connected' } };
+      const now = Date.now();
+      const mins = (t) => t ? Math.round((now - new Date(t).getTime()) / 60000) : null;
+      // Minutes stop being readable within the hour. A printer that last worked
+      // in April is "since 22 Apr", not "190784 min ago" — and the difference
+      // decides whether this is a live service problem or decommissioned kit.
+      const ago = (t) => {
+        const m = mins(t);
+        if (m == null) return null;
+        if (m < 90) return `${m} min ago`;
+        if (m < 60 * 36) return `${Math.round(m / 60)} hours ago`;
+        const d = Math.round(m / 1440);
+        return d < 14 ? `${d} days ago`
+          : `${d} days ago (${new Date(t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })})`;
+      };
+
+      const [{ data: health }, { data: agents }, { data: alerts }, { data: queue }] = await Promise.all([
+        supabase.from('printer_health').select('*').eq('location_id', locationId),
+        supabase.from('printer_agents').select('*').eq('location_id', locationId),
+        supabase.from('ops_alerts').select('id, type, severity, title, body, status, created_at')
+          .eq('location_id', locationId).neq('status', 'acknowledged')
+          .order('created_at', { ascending: false }).limit(25),
+        supabase.from('order_queue').select('id, status, created_at, channel')
+          .eq('location_id', locationId).in('status', ['received', 'prep'])
+          .order('created_at', { ascending: true }).limit(100),
+      ]);
+
+      const problems = [];
+
+      for (const h of health || []) {
+        if (h.status === 'online' && !(h.consecutive_failures > 0)) continue;
+        const err = h.last_error || '';
+        // Read the device's own words rather than inventing a cause.
+        const hint = /EHOSTUNREACH|No route to host/i.test(err) ? 'The printer is not reachable on the network. Check it is powered on and on the same network, and that its IP has not changed.'
+          : /ECONNREFUSED/i.test(err) ? 'The printer answered but refused the connection. Check it is in the right mode and nothing else holds port 9100.'
+          : /ETIMEDOUT|after \d+ms/i.test(err) ? 'The printer did not answer in time — usually Wi-Fi drop-out or the printer asleep.'
+          : /paper|cover|drawer/i.test(err) ? 'The printer reported a physical fault. Check paper and that the cover is shut.'
+          : null;
+        const downMins = mins(h.last_success_at);
+        const longDead = downMins != null && downMins > 60 * 24 * 7;   // over a week
+        problems.push({
+          area: 'printer',
+          // Down for a week or more is almost certainly kit that was removed or
+          // never reconfigured, not a fault to chase mid-service. Saying so
+          // stops the assistant sending someone to check a printer that has not
+          // existed since April.
+          severity: longDead ? 'low' : h.status === 'offline' ? 'high' : 'medium',
+          stale: longDead || undefined,
+          what: `Printer ${h.printer_id} is ${h.status}`,
+          detail: err || null,
+          since: h.last_success_at ? `last printed ${ago(h.last_success_at)}` : 'has never printed',
+          failures: h.consecutive_failures || 0,
+          suggested_fix: longDead
+            ? 'This has been down long enough that it is probably no longer installed. Confirm whether it still exists before chasing it.'
+            : hint,
+        });
+      }
+
+      const agent = (agents || [])[0];
+      const agentAge = agent ? Math.round((now - new Date(agent.last_seen).getTime()) / 1000) : null;
+      if (!agent) {
+        problems.push({ area: 'print agent', severity: 'high', what: 'No print agent detected',
+          detail: 'Nothing is listening to send jobs to the printers.',
+          suggested_fix: 'Check the print agent is running on the till or back-office machine.' });
+      } else if (agentAge > 120) {
+        problems.push({ area: 'print agent', severity: 'high',
+          what: `Print agent "${agent.hostname}" last checked in ${Math.round(agentAge / 60)} min ago`,
+          detail: 'It should check in every few seconds, so it has probably stopped or lost the network.',
+          suggested_fix: 'Restart the print agent on ' + agent.hostname + '.' });
+      }
+
+      for (const a of alerts || []) {
+        problems.push({
+          area: 'ops alert', severity: a.severity === 'critical' ? 'high' : a.severity === 'major' ? 'medium' : 'low',
+          what: a.title, detail: a.body || null,
+          since: `raised ${ago(a.created_at)}`, alert_type: a.type,
+          suggested_fix: a.type === 'temp_breach' ? 'Check the unit and record the reading again. If it is still out, move the stock and log the corrective action.' : null,
+        });
+      }
+
+      // A queue is not an error, but an order sitting far too long is.
+      const stale = (queue || []).filter(o => mins(o.created_at) > 45);
+      if (stale.length) {
+        problems.push({
+          area: 'orders', severity: 'medium',
+          what: `${stale.length} order${stale.length === 1 ? '' : 's'} still open after 45+ minutes`,
+          detail: stale.slice(0, 5).map(o => `${o.channel || 'order'} ${String(o.id).slice(0, 8)} — ${mins(o.created_at)} min in ${o.status}`).join('; '),
+          suggested_fix: 'Check whether these were served and never bumped, or genuinely missed.',
+        });
+      }
+
+      const order = { high: 0, medium: 1, low: 2 };
+      problems.sort((a, b) => order[a.severity] - order[b.severity]);
+      return { result: {
+        healthy: problems.length === 0,
+        checked: ['printers', 'print agent', 'ops alerts', 'order queue'],
+        problem_count: problems.length,
+        problems,
+        note: 'These are live operational signals. The POS does not keep a crash log, so a fault that leaves no trace here will not appear.',
+      } };
+    }
+
     case 'get_printer_status': {
       if (!supabase || !locationId) return { result: { error: 'Not connected' } };
       const [{ data: health }, { data: agents }] = await Promise.all([

@@ -5,6 +5,7 @@
  */
 
 const ALLOWED_TOOLS_FOH = [
+  'get_pos_health',
   'get_sales_summary',
   'get_top_items',
   'search_item_sales',
@@ -31,6 +32,7 @@ const ALLOWED_TOOLS_FOH = [
 ];
 
 const ALLOWED_TOOLS_BOH = [
+  'get_pos_health',
   'get_sales_summary',
   'get_top_items',
   'search_item_sales',
@@ -129,6 +131,12 @@ const TOOL_DEFINITIONS = {
   get_open_tables: {
     name: 'get_open_tables',
     description: 'Get details of all currently open/occupied tables: table number, covers, server, items ordered, running total, and how long they\'ve been seated. Use for "what tables are open", "who has been waiting longest", "what does table 3 owe".',
+    input_schema: { type: 'object', properties: {}, required: [] },
+  },
+
+  get_pos_health: {
+    name: 'get_pos_health',
+    description: "What is currently wrong with this POS: printers that cannot be reached (including the device's own error text), a print agent that has stopped checking in, unacknowledged ops alerts such as temperature breaches, and orders stuck in the queue. Use this for questions like \"what is broken\", \"why is nothing printing\", \"is anything wrong\", and before suggesting a fix, so the advice can be specific rather than generic.",
     input_schema: { type: 'object', properties: {}, required: [] },
   },
 
@@ -361,7 +369,21 @@ RULES:
 - Keep answers to 1-3 lines unless data requires more
 - Always use £ for currency
 
-NEVER: delete data, change prices, modify the menu, discuss non-restaurant topics`;
+NEVER: delete data, change prices, modify the menu, discuss non-restaurant topics
+DIAGNOSING FAULTS:
+When someone reports something not working — "the printer isn't working", "nothing is
+printing", "orders aren't coming through", "is anything wrong" — call get_pos_health
+FIRST, then answer from what it returns.
+
+- Name the specific thing. "Kitchen printer, not reachable on the network since 14:02"
+  beats "there is a printer problem".
+- Quote what the device actually said if it helps them act on it.
+- Give the next physical step, in order of what is most likely and easiest to check.
+- If get_pos_health reports healthy, say so plainly and ask what they saw. Do NOT
+  invent a cause. The POS keeps no crash log, so a fault can be real and leave no
+  trace here, and guessing during service sends someone to fix the wrong thing.
+- Never claim you have fixed anything. You can only look and advise.
+`;
 
 const SYSTEM_BOH = `You are an AI assistant for restaurant managers in the back office. You help with reporting, menu management, and operational insight.
 
@@ -397,7 +419,21 @@ FOR ALL WRITE ACTIONS:
 
 Always use £ for currency. Format data tables clearly when comparing multiple values.
 
-NEVER: delete anything, make bulk changes, modify floor plans or printer configs, access staff PINs`;
+NEVER: delete anything, make bulk changes, modify floor plans or printer configs, access staff PINs
+DIAGNOSING FAULTS:
+When someone reports something not working — "the printer isn't working", "nothing is
+printing", "orders aren't coming through", "is anything wrong" — call get_pos_health
+FIRST, then answer from what it returns.
+
+- Name the specific thing. "Kitchen printer, not reachable on the network since 14:02"
+  beats "there is a printer problem".
+- Quote what the device actually said if it helps them act on it.
+- Give the next physical step, in order of what is most likely and easiest to check.
+- If get_pos_health reports healthy, say so plainly and ask what they saw. Do NOT
+  invent a cause. The POS keeps no crash log, so a fault can be real and leave no
+  trace here, and guessing during service sends someone to fix the wrong thing.
+- Never claim you have fixed anything. You can only look and advise.
+`;
 
 const SYSTEM_ROTA = `You are an expert hospitality workforce scheduler. Given staff (with availability + pay rates), section coverage minimums, the week's sales forecast and a target labour-cost %, produce a one-week staff rota.
 
