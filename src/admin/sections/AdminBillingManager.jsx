@@ -922,9 +922,13 @@ function AdyenPayoutPanel({ location, onError }) {
 
       {awaiting && (
         <div style={{ padding: 10, borderRadius: 8, fontSize: 12, lineHeight: 1.5, marginBottom: 10, ...kindStyle('awaiting_enablement') }}>
-          Awaiting enablement from the payment partner. The pipeline below is built and idempotent —
-          re-run any step once Adyen confirms the balance platform is on; nothing needs redeploying.
-          {st.enablement_message ? ` (${st.enablement_message})` : ''}
+          <b>Connect this venue with Enter Adyen details.</b> Onboard it in the Adyen
+          Customer Area, then paste the ids in. Everything afterwards works normally.
+          <div style={{ marginTop: 6, opacity: 0.85 }}>
+            Automatic onboarding stays unavailable until Adyen grants our API credential the
+            account-creation permissions. Nothing is wrong with this venue, and nothing needs
+            redeploying when they do.
+          </div>
         </div>
       )}
 

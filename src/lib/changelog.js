@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.96',
+    date: '2026-09-01',
+    items: [
+      'Corrected the onboarding message. It said the balance platform was not switched on. It is switched on; what is refused is our API credential, which has not been granted the account-creation permissions. Naming the wrong cause sent us to ask Adyen the wrong question and made venues look broken when they were not',
+      'The panel now points straight at Enter Adyen details, which is the route that works today, instead of telling you to wait and retry',
+    ],
+  },
+  {
     version: '5.7.95',
     date: '2026-09-01',
     items: [

@@ -93,7 +93,11 @@ function classify(r: R): { kind: Kind; message: string } {
   if (r.status === 401 || r.status === 403) {
     return {
       kind: 'awaiting_enablement',
-      message: 'Awaiting enablement from the payment partner. The balance platform is not switched on for this account yet (or the API key is missing the role). Nothing is wrong with the venue — retry once Adyen confirms enablement.',
+      // v5.7.96: this used to say the balance platform was not switched on. It
+      // IS on; what is refused is our credential, which has not been granted the
+      // account-creation roles. Saying the wrong cause sent people to ask Adyen
+      // the wrong question, and made a venue look broken when it was not.
+      message: 'Automatic onboarding is unavailable: Adyen has not granted our API credential the account-creation permissions. Connect the venue by hand with Enter Adyen details, which works normally.',
     };
   }
   const d: any = r.data ?? {};
