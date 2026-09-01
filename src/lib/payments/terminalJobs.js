@@ -587,6 +587,57 @@ export async function abortTerminalJob(jobId) {
   return checkJobWithReader(jobId);
 }
 
+/**
+ * On boot, pick up any card payment that was still running when this till last
+ * stopped (v5.7.89 — Adyen test NH003).
+ *
+ * Every job is written to localStorage as it starts, but until now nothing ever
+ * read them back. A till that crashed, was closed, or ran out of battery mid
+ * payment came back knowing nothing: the payment stayed open in the database,
+ * the check stayed locked, and the only way out was a manager. On a shared iPad
+ * picked up and put down all shift, that is not an edge case.
+ *
+ * Resolution is delegated to checkJobWithReader, which asks the terminal and,
+ * since v5.7.84, falls back to Adyen's own ledger. So it still works when the
+ * terminal that took the payment is now off or in someone else's hand.
+ *
+ * Deliberately quiet: it returns only jobs STILL unresolved after asking. A
+ * payment that finished normally while the till was off needs no announcement.
+ *
+ * @returns {Promise<Array<{jobId:string,status:string,checkKey:string}>>}
+ */
+export async function recoverInFlightJobs() {
+  if (isMock || !supabase) return [];
+  const handles = Object.values(readAll()).filter(h => h?.jobId);
+  if (!handles.length) return [];
+
+  // Anything older than a day is litter from a previous shift, not a live
+  // tender, and must never resurface as a payment prompt.
+  const DAY = 24 * 60 * 60 * 1000;
+  const fresh = [];
+  for (const h of handles) {
+    if (!h.at || Date.now() - h.at > DAY) forgetJob(h.checkKey);
+    else fresh.push(h);
+  }
+  if (!fresh.length) return [];
+
+  let rows = [];
+  try { rows = await fetchJobs(fresh.map(h => h.jobId)); } catch { return []; }
+  const byId = new Map(rows.map(r => [r.id, r]));
+  const needsAttention = [];
+
+  for (const h of fresh) {
+    const row = byId.get(h.jobId);
+    if (!row || !LIVE_STATUSES.includes(row.status)) { forgetJob(h.checkKey); continue; }
+    try {
+      const r = await checkJobWithReader(h.jobId);
+      if (r?.kind === 'settled' || r?.kind === 'never_received') { forgetJob(h.checkKey); continue; }
+    } catch { /* fall through and report it */ }
+    needsAttention.push({ jobId: h.jobId, status: row.status, checkKey: h.checkKey });
+  }
+  return needsAttention;
+}
+
 /** Read one job. Goes through the edge function, not RLS — see terminal-job-status. */
 export async function fetchJob(jobId) {
   const j = await callFn('terminal-job-status', { job_id: jobId });

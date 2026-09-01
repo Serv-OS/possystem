@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useStore, capClosedChecks } from '../store';
+import { recoverInFlightJobs } from '../lib/payments/terminalJobs';
 import { subscribeToSessions, scheduleFlush, flushSessions, teardown as teardownSessions } from './SessionSync';
 // v5.6.27: ReservationSync RETIRED — bookings replaced the thin per-table reservation
 // (table_reservations). The Tables screen now derives 'reserved' from the bookings
@@ -137,6 +138,26 @@ function getSharedState() {
 
 export default function SyncBridge({ onSyncPulse }) {
   const isApplyingRef = useRef(false);
+
+  // v5.7.89 (Adyen NH003): a card payment that was still running when this till
+  // last stopped is picked back up here. Runs once, after a short delay so it
+  // never competes with the boot load for the network. Silent unless something
+  // genuinely still needs a person.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      recoverInFlightJobs()
+        .then((open) => {
+          if (!open?.length) return;
+          useStore.getState().showToast?.(
+            open.length === 1
+              ? 'A card payment was still running when this till last closed. Check the card machine before taking it again.'
+              : `${open.length} card payments were still running when this till last closed. Check the card machine before taking them again.`,
+            'warn');
+        })
+        .catch(() => { /* boot must never fail on this */ });
+    }, 4000);
+    return () => clearTimeout(t);
+  }, []);
 
   useEffect(() => {
     // Load persisted operational state on mount

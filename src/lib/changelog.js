@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.89',
+    date: '2026-09-01',
+    items: [
+      'A card payment that was still running when the till last closed is now picked back up when the till starts. Before this, a till that crashed, was closed or ran flat mid payment came back knowing nothing: the payment stayed open, the check stayed locked, and only a manager could clear it',
+      'It resolves quietly. Most of the time the payment finished while the till was off and the check simply closes itself. Staff are only told when something genuinely still needs looking at',
+      'It also works when the card machine that took the payment is now switched off or in someone else\u2019s hand, because it falls back to asking Adyen',
+    ],
+  },
+  {
     version: '5.7.88',
     date: '2026-09-01',
     items: [
