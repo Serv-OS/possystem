@@ -877,7 +877,47 @@ Deno.serve(async (req) => {
     const cond = ts?.Response?.Result === 'Success' ? 'found'
       : ts?.Response?.ErrorCondition === 'InProgress' ? 'in_progress'
       : ts?.Response?.ErrorCondition === 'NotFound' ? 'not_found' : 'unknown';
-    if (cond === 'in_progress') return json({ ok: true, state: 'processing', status: job.status });
+    if (cond === 'in_progress') {
+      // v5.7.85: "in progress" forever is not in progress. A real authorisation
+      // finishes in seconds, so a terminal still claiming one after two minutes
+      // with NOTHING in Adyen's ledger is a dead tender: the customer walked, or
+      // an on-terminal prompt (tip, PIN, application choice) timed out and left
+      // the transaction open. Asking again changes nothing, which is exactly how
+      // a check ends up wedged for the rest of service.
+      //
+      // So END it rather than observe it: send the nexo abort the terminal is
+      // waiting for, then re-read the ledger before deciding anything. The
+      // ledger re-read is what keeps this safe. If the abort raced a real
+      // authorisation, the row is there and we settle from it instead.
+      const stalled = Date.now() - new Date(job.created_at).getTime() > 120_000;
+      const led = stalled ? await askAdyenLedger(job).catch(() => ({ verdict: 'too_soon' as const })) : { verdict: 'too_soon' as const };
+      if (stalled && led.verdict === 'nothing') {
+        const ab = buildAbortRequest({
+          poiid: poiid as string, saleId: `servos-${String(job.location_id).slice(0, 8)}`,
+          serviceId: newServiceId(), origServiceId: job.nexo_service_id,
+          reason: 'MerchantAbort',
+        });
+        await adyenFetch('POST', terminalEndpoint(maa!.merchant_account, poiid as string, 'sync', maa!.region === 'US' ? 'us' : 'eu'), ab, { timeoutMs: 15_000 }).catch(() => null);
+        // Give a racing authorisation a moment to reach the ledger, then look again.
+        await new Promise((r) => setTimeout(r, 2_000));
+        const after = await askAdyenLedger(job).catch(() => ({ verdict: 'too_soon' as const }));
+        if (after.verdict === 'charged') {
+          const ad = (after.row as any)?.raw?.authorisation?.additionalData ?? {};
+          const ok = (after.row as any).success === true;
+          await settleCard(job.id, ok ? 'approved' : 'declined', {
+            transaction_id: (after.row as any).psp_reference ?? null,
+            decline_reason: ok ? null : (ad?.refusalReason ?? 'declined'),
+          }).catch(() => {});
+        } else {
+          await opsAdmin.from('terminal_jobs')
+            .update({ status: 'cancelled', decline_reason: 'The card machine was still waiting and Adyen has no record of this payment, so it was cancelled and nothing was charged', updated_at: new Date().toISOString() })
+            .eq('id', job.id).in('status', ['charging', 'unknown']);
+        }
+        const { data: st } = await opsAdmin.from('terminal_jobs').select('*').eq('id', job.id).maybeSingle();
+        return json(await withCapture(settledBody(st ?? job), st ?? job));
+      }
+      return json({ ok: true, state: 'processing', status: job.status });
+    }
     if (cond === 'unknown') {
       const v = await askAdyenLedger(job).catch(() => ({ verdict: 'too_soon' as const }));
       if (v.verdict === 'nothing') {

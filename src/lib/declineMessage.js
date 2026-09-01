@@ -65,6 +65,9 @@ export function declineMessage(reason, errorCondition) {
     return { title: 'Card machine needs charging', advice: 'Put it on charge or use another card machine. Nothing was charged.', retrySameCard: true };
   if (r.includes('failed starting transaction'))
     return { title: 'Card machine could not start', advice: 'Nothing was charged. Try again, or use another card machine.', retrySameCard: true };
+  // Observed on the S1F2L when an on-terminal prompt times out with no card.
+  if (r.includes('did not present') || r.includes('no card presented'))
+    return { title: 'No card was presented', advice: 'Try again when the customer is ready.', retrySameCard: true };
   // The generic one Adyen returns for several different refusals.
   if (r.includes('declined online') || r.includes('declined'))
     return { title: 'Card declined', advice: 'Please ask for another card.', retrySameCard: false };

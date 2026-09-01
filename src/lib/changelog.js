@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.85',
+    date: '2026-09-01',
+    items: [
+      'A card machine left waiting is now actually cancelled instead of watched. If it still claims a payment is in progress after two minutes and Adyen has no record of it, the till sends the cancel the machine is waiting for and frees the check. Previously it sat there until the machine gave up on its own, which took over four minutes',
+      'The ledger is re-checked immediately after the cancel is sent, so a payment that authorised at the last moment is still recorded properly rather than lost',
+      'Added the message for a prompt that times out with no card presented, which was reaching staff as a raw code',
+    ],
+  },
+  {
     version: '5.7.84',
     date: '2026-09-01',
     items: [
