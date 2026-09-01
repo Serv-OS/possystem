@@ -153,6 +153,49 @@ async function resolveLocation(item: any, jobOpsLocationId: string | null): Prom
 }
 
 // Best-effort OPS lookup: the terminal job this payment settled (POS card leg).
+
+// ── A refund that FAILED downstream must un-refund the sale ──────────────────
+// v5.7.87. REFUND_FAILED already reverses amount_refunded_minor on the payments
+// ledger, but it never touched the sale itself, and the sale is what staff and
+// every report read. So a refund Adyen later rejected still showed as refunded:
+// the customer was told their money was on its way, the check said done, and
+// nobody found out until someone reconciled a statement.
+//
+// The refund is matched by the reference we minted when we sent it,
+// `rf:<refundId>:<legId>` (src/lib/payments/refundMath.js refundReference), so
+// the exact refund entry can be found rather than guessing by amount.
+//
+// The entry is marked failed rather than deleted. A refund that was attempted
+// and refused is a thing that happened, and erasing it would leave a customer
+// complaint with no record behind it.
+async function unRefundOnFailure(merchantReference: string, reason: string | null) {
+  const m = /^rf:([^:]+):/.exec(merchantReference || '');
+  if (!m) return;
+  const refundId = m[1];
+  try {
+    const { data: rows } = await admin.from('closed_checks')
+      .select('id, refunded, refunds')
+      .contains('refunds', JSON.stringify([{ id: refundId }]))
+      .limit(1);
+    const check = rows?.[0];
+    if (!check) return;
+    const refunds = (Array.isArray(check.refunds) ? check.refunds : []).map((r: any) =>
+      r?.id === refundId
+        ? { ...r, failed: true, failedReason: reason || 'Refund refused by the card processor', failedAt: new Date().toISOString() }
+        : r);
+    // Only the failed entry loses its standing; any OTHER refund on this check
+    // that did succeed still counts, so `refunded` is recomputed rather than
+    // blanket-cleared.
+    const stillRefunded = refunds.some((r: any) => r?.failed !== true && r?.isFullRefund === true);
+    await admin.from('closed_checks')
+      .update({ refunds, refunded: stillRefunded })
+      .eq('id', check.id);
+    console.log(`[adyen-webhook] refund ${refundId} failed, sale ${check.id} un-refunded`);
+  } catch (e) {
+    console.error('[adyen-webhook] could not un-refund the sale:', (e as Error).message);
+  }
+}
+
 // merchantReference `tj-<job id>` is stamped by adyen-terminal-charge at
 // dispatch; payment_session_id carries the pspReference after settle.
 async function matchTerminalJob(merchantReference: string, paymentPsp: string):
@@ -674,6 +717,13 @@ async function applyMoneyEvent(item: any): Promise<'applied' | 'duplicate' | 'sk
         && applied.includes(`REFUND:${itemPsp}:true`)) {
         // A refund we previously counted has failed downstream — take it back.
         row.amount_refunded_minor = Math.max(0, Number(existing?.amount_refunded_minor ?? 0) - amountMinor);
+      }
+      // ...and the SALE has to be corrected too, not just the ledger. Fire and
+      // forget: the webhook must still acknowledge to Adyen either way, or they
+      // retry a notification we already handled.
+      if (code === 'REFUND_FAILED' || (code === 'REFUND' && !okEvent)) {
+        unRefundOnFailure(String(item?.merchantReference ?? ''), item?.reason ?? null)
+          .catch(() => {});
       }
       row.last_event_code =
         (code === 'REFUND' && !okEvent) ? 'REFUND_FAILED'

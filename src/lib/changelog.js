@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.87',
+    date: '2026-09-01',
+    items: [
+      'A refund that the card processor later rejects now corrects the sale as well as the payment record. Until now the sale still showed as refunded, so staff believed the customer had their money back when the refund had actually failed, and nobody would find out until someone reconciled a statement',
+      'The failed refund is marked as failed rather than deleted, so there is still a record that it was attempted and refused. If a check has another refund that did succeed, that one still stands',
+    ],
+  },
+  {
     version: '5.7.86',
     date: '2026-09-01',
     items: [
