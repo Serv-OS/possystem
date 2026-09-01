@@ -510,7 +510,22 @@ export function parsePaymentResponse(body: any): {
     poiTransactionId: poiTx?.TransactionID ?? null,
     poiTimestamp: poiTx?.TimeStamp ?? null,
     authorizedMinor: toMinor(amounts?.AuthorizedAmount),
-    tipMinor: toMinor(amounts?.TipAmount),
+    // v5.7.90: a tip added ON the terminal does not always arrive in
+    // AmountsResp.TipAmount. Adyen also reports it in additionalData as
+    // posAmountGratuityValue, and which one you get depends on the terminal and
+    // the tipping mode. Reading only the first meant the authorised amount came
+    // back higher than we asked for with nothing to explain the difference, so
+    // the leg was PARKED for a manager: the customer had paid, tip included, and
+    // the check would not close.
+    //
+    // The units differ and that matters. AmountsResp is in MAJOR units (2.50),
+    // additionalData gratuity is already MINOR (250). Treating one as the other
+    // is a hundredfold error on a live tip, so they are converted separately.
+    tipMinor: toMinor(amounts?.TipAmount)
+      ?? (Number.isFinite(Number(additional['posAmountGratuityValue']))
+            ? Math.round(Number(additional['posAmountGratuityValue']))
+            : null)
+      ?? toMinor(additional['tipAmount']),
     card: {
       brand: instrument?.PaymentBrand ?? additional['paymentMethod'] ?? null,
       last4,

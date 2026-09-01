@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.90',
+    date: '2026-09-01',
+    items: [
+      'A tip added by the customer on the card machine is now always credited. The card machine reports the tip in more than one place depending on the model and the tipping mode, and we only read one of them. When it arrived any other way the payment came back higher than we asked for with nothing to explain it, so the check was held for a manager even though the customer had paid in full including the tip',
+    ],
+  },
+  {
     version: '5.7.89',
     date: '2026-09-01',
     items: [
