@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.94',
+    date: '2026-09-01',
+    items: [
+      'The merchant account is now chosen from a list read live from Adyen rather than typed. It was the one field where a mistake failed silently and late: a wrong name saved fine, then every payment at that venue was refused with an acquirer error that looked like a card problem',
+      'Choosing an account also sets the region for you, from the account\u2019s own country, so card machines cannot end up pointed at the wrong Adyen endpoint',
+      'If the list cannot be read the field falls back to typing, so onboarding is never blocked by it',
+    ],
+  },
+  {
     version: '5.7.93',
     date: '2026-09-01',
     items: [

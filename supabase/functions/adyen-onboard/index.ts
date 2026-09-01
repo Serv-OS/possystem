@@ -229,6 +229,35 @@ Deno.serve(async (req) => {
     const { data: maa } = await platformAdmin.from('merchant_adyen_accounts').select('*').eq('location_id', loc.id).maybeSingle();
     const merchant = maa?.merchant_account || ADYEN_MERCHANT_ACCOUNT;
 
+    // ── list_merchants: the real merchant accounts, so nobody types one ──────
+    // v5.7.94. Typing the merchant account by hand is the one field in manual
+    // onboarding that fails silently and late: a wrong name is accepted here,
+    // then every payment at that venue is refused with an acquirer error that
+    // looks like a card problem. Adyen already knows the list, so ask it.
+    //
+    // Degrades on purpose: if the Management credential cannot read merchants
+    // the form falls back to free text rather than blocking onboarding, because
+    // being unable to type a name at all would be worse than typing it badly.
+    if (action === 'list_merchants') {
+      const r = await mgmt('GET', '/merchants?pageSize=100');
+      if (!r.ok) {
+        const c = classify(r);
+        return json({ ok: true, merchants: [], degraded: true, message: c.message });
+      }
+      const merchants = (r.data?.data ?? [])
+        .map((m: any) => ({
+          id: m?.id ?? null,
+          name: m?.name ?? m?.id ?? null,
+          status: m?.status ?? null,
+          // The country is what tells an operator which region to choose, and
+          // choosing the wrong region silently points card machines at the
+          // wrong Adyen endpoint.
+          country: m?.country ?? null,
+        }))
+        .filter((m: any) => m.id);
+      return json({ ok: true, merchants, degraded: false });
+    }
+
     // ── save_manual: type in what the Adyen Customer Area already created ────
     // v5.7.93. The API onboarding path (`start`) cannot be used: the credential
     // FranPOS issued us is refused by Legal Entity Management and Balance

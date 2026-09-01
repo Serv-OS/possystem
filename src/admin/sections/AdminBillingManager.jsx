@@ -851,6 +851,8 @@ function AdyenPayoutPanel({ location, onError }) {
   // behaves identically.
   const [manual, setManual] = useState(null);   // null = form closed
   const [manualBusy, setManualBusy] = useState(false);
+  // The real merchant accounts from Adyen. null = not fetched, [] = could not.
+  const [merchants, setMerchants] = useState(null);
   const [copied, setCopied] = useState(false);
 
   const load = useCallback(async () => {
@@ -968,8 +970,46 @@ function AdyenPayoutPanel({ location, onError }) {
             Onboard the venue in the Adyen Customer Area first, then copy the ids from that screen
             into here. Leave a box empty to keep what is already saved.
           </div>
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ ...S.label, color: 'var(--t3)', marginBottom: 4 }}>Merchant account *</div>
+            {merchants === null ? (
+              <div style={{ fontSize: 12, color: 'var(--t3)' }}>Loading the list from Adyen…</div>
+            ) : merchants.length ? (
+              <>
+                <select style={{ ...S.input, fontSize: 12.5 }} value={manual.merchant_account || ''}
+                  onChange={(e) => {
+                    const pick = merchants.find((m) => m.id === e.target.value);
+                    setManual((m) => ({
+                      ...m,
+                      merchant_account: e.target.value,
+                      // The merchant's own country decides the endpoint, so the
+                      // region follows the choice instead of being guessed again.
+                      region: pick?.country === 'US' ? 'US' : (pick ? 'EU' : m.region),
+                    }));
+                  }}>
+                  <option value="">Choose the merchant account…</option>
+                  {merchants.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}{m.country ? ` (${m.country})` : ''}{m.status && m.status !== 'active' ? ` — ${m.status}` : ''}
+                    </option>
+                  ))}
+                </select>
+                <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 5 }}>
+                  Straight from Adyen, so it cannot be mistyped. Choosing one sets the region for you.
+                </div>
+              </>
+            ) : (
+              <>
+                <input style={{ ...S.input, ...S.inputMono, fontSize: 12 }} value={manual.merchant_account || ''}
+                  placeholder="e.g. Franpos US"
+                  onChange={(e) => setManual((m) => ({ ...m, merchant_account: e.target.value }))} />
+                <div style={{ fontSize: 11, color: 'var(--orn, #e8a020)', marginTop: 5 }}>
+                  Could not read the list from Adyen, so type it exactly as it appears in the Customer Area.
+                </div>
+              </>
+            )}
+          </div>
           {[
-            ['merchant_account', 'Merchant account', 'e.g. Franpos US', true],
             ['store_id', 'Store Id', 'ST32DG5223...'],
             ['account_holder_id', 'Account holder Id', 'AH32DB9223...'],
             ['balance_account_id', 'Balance Account Id', 'BA32DH2223...'],
@@ -1019,12 +1059,18 @@ function AdyenPayoutPanel({ location, onError }) {
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <button style={{ ...S.btn, ...S.btnPrim, opacity: busy ? 0.6 : 1 }} disabled={!!busy || !!manual}
-          onClick={() => setManual({
+          onClick={() => {
+            if (merchants === null) {
+              callAdyenOnboard('list_merchants', { location_id: location.id })
+                .then((r) => setMerchants(r?.merchants || []))
+                .catch(() => setMerchants([]));
+            }
+            setManual({
             merchant_account: ids.merchant_account || '', store_id: ids.store_id || '',
             account_holder_id: ids.account_holder_id || '', balance_account_id: ids.balance_account_id || '',
             legal_entity_id: ids.legal_entity_id || '', split_profile_id: ids.split_profile_id || '',
             region: st.region || 'EU',
-          })}>
+          }); }}>
           Enter Adyen details
         </button>
         <button style={{ ...S.btn, ...S.btnGhost, opacity: busy ? 0.6 : 1 }} disabled={!!busy}
