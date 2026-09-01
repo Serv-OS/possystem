@@ -229,6 +229,66 @@ Deno.serve(async (req) => {
     const { data: maa } = await platformAdmin.from('merchant_adyen_accounts').select('*').eq('location_id', loc.id).maybeSingle();
     const merchant = maa?.merchant_account || ADYEN_MERCHANT_ACCOUNT;
 
+    // ── save_manual: type in what the Adyen Customer Area already created ────
+    // v5.7.93. The API onboarding path (`start`) cannot be used: the credential
+    // FranPOS issued us is refused by Legal Entity Management and Balance
+    // Platform (401), and rather than wait on that, venues are being onboarded
+    // BY HAND in the Adyen Customer Area, the way FranPOS themselves do it.
+    //
+    // So the ids already exist over there; ServOS just has nowhere to put them.
+    // This is that place. Everything else in the system reads these same
+    // columns, so a hand-onboarded venue behaves exactly like an API-onboarded
+    // one: card routing names the store, commission splits find the balance
+    // account, and the payouts screen reports real state.
+    //
+    // Stored verbatim after a shape check. Adyen ids are prefixed and fixed
+    // length, and a transposed character here would fail later at payment time
+    // with an error nobody would trace back to a typing mistake.
+    if (action === 'save_manual') {
+      const clean = (v: unknown) => String(v ?? '').trim();
+      const fields = {
+        merchant_account:   clean(body.merchant_account),
+        store_id:           clean(body.store_id),
+        account_holder_id:  clean(body.account_holder_id),
+        balance_account_id: clean(body.balance_account_id),
+        legal_entity_id:    clean(body.legal_entity_id),
+        split_profile_id:   clean(body.split_profile_id),
+        region:             clean(body.region).toUpperCase() === 'US' ? 'US' : 'EU',
+      };
+      const shape: Record<string, RegExp> = {
+        store_id: /^ST[0-9A-Z]{10,}$/i,
+        account_holder_id: /^AH[0-9A-Z]{10,}$/i,
+        balance_account_id: /^BA[0-9A-Z]{10,}$/i,
+        legal_entity_id: /^LE[0-9A-Z]{10,}$/i,
+      };
+      const bad: string[] = [];
+      for (const [k, re] of Object.entries(shape)) {
+        const v = (fields as any)[k];
+        if (v && !re.test(v)) bad.push(k);
+      }
+      if (bad.length) {
+        return json({ error: `These do not look like Adyen ids: ${bad.join(', ')}. Copy them exactly from the Customer Area.` }, 400);
+      }
+      if (!fields.merchant_account) return json({ error: 'Merchant account is required' }, 400);
+
+      // Empty means "leave alone", so a partial paste never wipes what is
+      // already stored. Clearing a field is a deliberate act, not a side effect.
+      const patch: Record<string, unknown> = { location_id: loc.id, updated_at: new Date().toISOString() };
+      for (const [k, v] of Object.entries(fields)) if (v) patch[k] = v;
+      // A venue with a store CAN take card payments; that is what the store is.
+      if (fields.store_id) patch.receive_payments_ok = true;
+      if (fields.balance_account_id) patch.payouts_ok = true;
+
+      const { error } = await platformAdmin.from('merchant_adyen_accounts')
+        .upsert(patch, { onConflict: 'location_id' });
+      if (error) return json({ error: error.message }, 500);
+
+      logStep('save_manual', loc.id, { fields: Object.keys(patch), region: fields.region });
+      const { data: after } = await platformAdmin.from('merchant_adyen_accounts')
+        .select('*').eq('location_id', loc.id).maybeSingle();
+      return json({ ok: true, saved: after });
+    }
+
     // ── status: everything known + a live enablement probe ───────────────────
     if (action === 'status') {
       let enablement: 'enabled' | 'awaiting_enablement' | 'unknown' = 'unknown';

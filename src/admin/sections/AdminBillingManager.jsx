@@ -845,6 +845,12 @@ function AdyenPayoutPanel({ location, onError }) {
   const [busy, setBusy] = useState(null);    // action name while one runs
   const [msg, setMsg] = useState(null);      // { kind, text } from the last action
   const [link, setLink] = useState(null);    // { url, expires_at } freshly minted
+  // v5.7.93: venues are onboarded BY HAND in the Adyen Customer Area (the API
+  // credential is refused by Legal Entity Management), so the ids it creates are
+  // typed in here. Same columns the API path writes, so everything downstream
+  // behaves identically.
+  const [manual, setManual] = useState(null);   // null = form closed
+  const [manualBusy, setManualBusy] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const load = useCallback(async () => {
@@ -955,8 +961,74 @@ function AdyenPayoutPanel({ location, onError }) {
         <div style={{ padding: 10, borderRadius: 8, fontSize: 12, lineHeight: 1.5, marginBottom: 12, ...kindStyle(msg.kind) }}>{msg.text}</div>
       )}
 
+      {manual && (
+        <div style={{ ...box, marginTop: 0, marginBottom: 12 }}>
+          <div style={{ ...S.label, color: 'var(--t2)', marginBottom: 4 }}>Enter the Adyen details for this venue</div>
+          <div style={{ fontSize: 12, color: 'var(--t3)', lineHeight: 1.55, marginBottom: 12 }}>
+            Onboard the venue in the Adyen Customer Area first, then copy the ids from that screen
+            into here. Leave a box empty to keep what is already saved.
+          </div>
+          {[
+            ['merchant_account', 'Merchant account', 'e.g. Franpos US', true],
+            ['store_id', 'Store Id', 'ST32DG5223...'],
+            ['account_holder_id', 'Account holder Id', 'AH32DB9223...'],
+            ['balance_account_id', 'Balance Account Id', 'BA32DH2223...'],
+            ['legal_entity_id', 'Legal entity Id (optional)', 'LE32...'],
+            ['split_profile_id', 'Split configuration Id (optional)', 'SP...'],
+          ].map(([key, label, ph, req]) => (
+            <div key={key} style={{ marginBottom: 10 }}>
+              <div style={{ ...S.label, color: 'var(--t3)', marginBottom: 4 }}>
+                {label}{req ? ' *' : ''}
+              </div>
+              <input
+                style={{ ...S.input, ...S.inputMono, fontSize: 12 }}
+                value={manual[key] || ''}
+                placeholder={ph}
+                onChange={(e) => setManual((m) => ({ ...m, [key]: e.target.value }))}
+              />
+            </div>
+          ))}
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ ...S.label, color: 'var(--t3)', marginBottom: 4 }}>Region</div>
+            <select style={{ ...S.input, fontSize: 12.5 }} value={manual.region || 'EU'}
+              onChange={(e) => setManual((m) => ({ ...m, region: e.target.value }))}>
+              <option value="EU">Europe (UK and EU venues)</option>
+              <option value="US">United States</option>
+            </select>
+            <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 5 }}>
+              This decides which Adyen endpoint the card machines talk to. Getting it wrong stops payments.
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button style={{ ...S.btn, ...S.btnPrim, opacity: manualBusy ? 0.6 : 1 }} disabled={manualBusy}
+              onClick={async () => {
+                setManualBusy(true); setMsg(null);
+                try {
+                  const r = await callAdyenOnboard('save_manual', { location_id: location.id, ...manual });
+                  if (r.ok) { setManual(null); setMsg({ kind: 'ok', text: 'Adyen details saved for this venue.' }); await load(); }
+                  else setMsg({ kind: r.kind || 'error', text: r.message || r.error || 'Could not save' });
+                } catch (e) { setMsg({ kind: 'error', text: e.message }); }
+                finally { setManualBusy(false); }
+              }}>
+              {manualBusy ? 'Saving…' : 'Save Adyen details'}
+            </button>
+            <button style={{ ...S.btn, ...S.btnGhost }} disabled={manualBusy} onClick={() => setManual(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
+
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <button style={{ ...S.btn, ...S.btnPrim, opacity: busy ? 0.6 : 1 }} disabled={!!busy}
+        <button style={{ ...S.btn, ...S.btnPrim, opacity: busy ? 0.6 : 1 }} disabled={!!busy || !!manual}
+          onClick={() => setManual({
+            merchant_account: ids.merchant_account || '', store_id: ids.store_id || '',
+            account_holder_id: ids.account_holder_id || '', balance_account_id: ids.balance_account_id || '',
+            legal_entity_id: ids.legal_entity_id || '', split_profile_id: ids.split_profile_id || '',
+            region: st.region || 'EU',
+          })}>
+          Enter Adyen details
+        </button>
+        <button style={{ ...S.btn, ...S.btnGhost, opacity: busy ? 0.6 : 1 }} disabled={!!busy}
+          title="Only works once Adyen grants our credential the onboarding permissions. Use Enter Adyen details until then."
           onClick={() => run('start')}>
           {busy === 'start' ? 'Working…' : started ? 'Continue onboarding' : 'Start onboarding'}
         </button>

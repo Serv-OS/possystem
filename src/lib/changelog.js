@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.93',
+    date: '2026-09-01',
+    items: [
+      'Venues can now be connected to Adyen by hand. Onboard the venue in the Adyen Customer Area, then paste the store, account holder and balance account ids into Admin, Processing, Enter Adyen details. Everything afterwards behaves exactly as if it had been set up automatically: card routing finds the store, commission splits find the balance account, and the payouts screen shows real state',
+      'This is the route to use while the automatic onboarding is unavailable, because the credential we were issued is refused by Adyen for account creation',
+      'The ids are checked for shape before saving, so a mistyped or transposed id is caught immediately rather than failing later at payment time with an error nobody would trace back to a typing mistake',
+      'Leaving a box empty keeps whatever is already saved, so a partial paste never wipes a venue that is already connected',
+    ],
+  },
+  {
     version: '5.7.92',
     date: '2026-09-01',
     items: [
