@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.84',
+    date: '2026-09-01',
+    items: [
+      'A payment that never reaches the card machine no longer blocks the till. When the card machine cannot answer, usually because it is off, flat or off the network, the till now asks Adyen instead. If Adyen has no record of the payment then nothing was charged, and the check clears itself',
+      'It also clears itself faster: the first check is after 8 seconds rather than 25, then every 10 seconds, so staff rarely see the state at all',
+      'The message while it resolves now says what is happening in plain words instead of instructing staff to go and find a manager',
+      'Safety is unchanged: the till still refuses to release a payment it cannot prove was not charged, and it waits 90 seconds before treating a missing Adyen record as proof, so a slow confirmation is never mistaken for no payment',
+    ],
+  },
+  {
     version: '5.7.83',
     date: '2026-09-01',
     items: [

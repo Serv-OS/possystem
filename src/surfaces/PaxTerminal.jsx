@@ -262,10 +262,14 @@ export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete
   useEffect(() => {
     if (!wedged) return undefined;
     let interval = null;
+    // v5.7.84: 25 seconds then every 30 was written for a developer watching a
+    // screen, not for a bar with a customer waiting. The server now resolves
+    // most of these from Adyen's own ledger, so check sooner and more often;
+    // the whole point is that staff never have to understand this state.
     const first = setTimeout(() => {
       runCheckRef.current?.(true);
-      interval = setInterval(() => { runCheckRef.current?.(true); }, 30_000);
-    }, 25_000);
+      interval = setInterval(() => { runCheckRef.current?.(true); }, 10_000);
+    }, 8_000);
     return () => { clearTimeout(first); if (interval) clearInterval(interval); };
   }, [wedged, status]);
 
@@ -310,7 +314,7 @@ export default function PaxTerminal({ job: initialJob, terminalLabel, onComplete
             {status === 'unknown'
               ? (wedged
                 // v5.7.37 — an Adyen unknown has a self-service answer: the reader itself.
-                ? 'The card may or may not have been charged. Do NOT take payment again — that risks charging the customer twice. Tap "Check card machine" below to ask the card machine what happened. A manager can also resolve this in Back Office → Unreconciled payments.'
+                ? 'Checking with the card machine and with Adyen. This usually clears itself in a few seconds. Do not take payment again yet, in case the card was charged. If it does not clear, tap Check card machine.'
                 : 'The card may or may not have been charged. Do NOT take payment again — that risks charging the customer twice. A manager must resolve this in Back Office → Unreconciled payments before this check can close.')
               : 'The terminal reported a different amount from the one we asked for. This check is held until a manager checks it in Back Office → Unreconciled payments.'}
           </div>

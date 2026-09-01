@@ -66,6 +66,37 @@ const platformAdmin = createClient(
 const SETTLED = ['approved', 'declined', 'cancelled', 'expired', 'reconciled'];
 const settledState = (s: string) => (s === 'reconciled' ? 'approved' : s === 'expired' ? 'cancelled' : s);
 
+
+// ── Ask ADYEN what happened, not the terminal ────────────────────────────────
+// v5.7.84. The terminal is the WRONG thing to ask when a payment is stuck,
+// because the usual reason it is stuck is that the terminal is off, flat or off
+// the network. Adyen still knows: every authorisation and refusal reaches
+// adyen_payments through the webhook, keyed on the merchant reference we set.
+//
+// So: no row for this job, and the job is old enough that a webhook would have
+// landed, means the payment never happened. That is a PROOF of nothing charged,
+// which is what lets us clear the till instead of parking the check for a
+// manager in the middle of service.
+//
+// The age floor matters. Webhooks are usually seconds but not instantly, and
+// concluding "nothing charged" from a webhook that simply has not arrived yet
+// is how you release a check that a customer really did pay for.
+const LEDGER_GRACE_MS = 90_000;
+
+async function askAdyenLedger(job: any): Promise<
+  { verdict: 'charged'; row: any } | { verdict: 'nothing' } | { verdict: 'too_soon' }
+> {
+  const ref = `tj-${job.id}`;
+  const { data: row } = await platformAdmin.from('adyen_payments')
+    .select('psp_reference, success, amount_minor, currency, card, raw, last_event_code')
+    .eq('merchant_reference', ref)
+    .order('created_at', { ascending: false })
+    .limit(1).maybeSingle();
+  if (row) return { verdict: 'charged', row };
+  const ageMs = Date.now() - new Date(job.created_at).getTime();
+  return ageMs < LEDGER_GRACE_MS ? { verdict: 'too_soon' } : { verdict: 'nothing' };
+}
+
 function settledBody(job: any) {
   const state = settledState(job.status);
   return {
@@ -805,19 +836,59 @@ Deno.serve(async (req) => {
     if ((job.status !== 'charging' && job.status !== 'unknown') || !job.nexo_service_id) {
       return json({ ok: true, state: 'processing', status: job.status });
     }
+    // If Adyen's own ledger already knows the answer, take it: it is the same
+    // truth the terminal would give, and it works when the terminal does not.
+    const early = await askAdyenLedger(job).catch(() => ({ verdict: 'too_soon' as const }));
+    if (early.verdict === 'charged') {
+      const ad = (early.row as any)?.raw?.authorisation?.additionalData ?? {};
+      const ok = (early.row as any).success === true;
+      await settleCard(job.id, ok ? 'approved' : 'declined', {
+        transaction_id: (early.row as any).psp_reference ?? null,
+        decline_reason: ok ? null : (ad?.refusalReason ?? 'declined'),
+      }).catch(() => {});
+      const { data: st } = await opsAdmin.from('terminal_jobs').select('*').eq('id', job.id).maybeSingle();
+      if (st && SETTLED.includes(st.status)) return json(await withCapture(settledBody(st), st));
+    }
+
     const { maa, poiid } = await resolveTarget();
-    if (!maa?.merchant_account || !poiid) return json({ ok: true, state: 'processing', status: job.status });
-    const statusReq = buildTransactionStatusRequest({
-      poiid, saleId: `servos-${String(job.location_id).slice(0, 8)}`,
+    const noTarget = !maa?.merchant_account || !poiid;
+    const statusReq = noTarget ? null : buildTransactionStatusRequest({
+      poiid: poiid as string, saleId: `servos-${String(job.location_id).slice(0, 8)}`,
       serviceId: newServiceId(), origServiceId: job.nexo_service_id,
     });
-    const res = await adyenFetch('POST', terminalEndpoint(maa.merchant_account, poiid, 'sync', maa.region === 'US' ? 'us' : 'eu'), statusReq, { timeoutMs: 30_000 });
-    if (!res.ok) return json({ ok: true, state: 'processing', status: job.status });
+    const res = noTarget
+      ? { ok: false, data: null }
+      : await adyenFetch('POST', terminalEndpoint(maa!.merchant_account, poiid as string, 'sync', maa!.region === 'US' ? 'us' : 'eu'), statusReq, { timeoutMs: 30_000 });
+    if (!res.ok) {
+      // The terminal could not be reached. Adyen's ledger is the fallback, and
+      // it is the branch that actually matters in service: a dead terminal used
+      // to leave the check blocked with no way out.
+      const v = await askAdyenLedger(job).catch(() => ({ verdict: 'too_soon' as const }));
+      if (v.verdict === 'nothing') {
+        await opsAdmin.from('terminal_jobs')
+          .update({ status: 'cancelled', decline_reason: 'Card machine could not be reached and Adyen has no record of this payment, so nothing was charged', updated_at: new Date().toISOString() })
+          .eq('id', job.id).in('status', ['charging', 'unknown']);
+        const { data: st } = await opsAdmin.from('terminal_jobs').select('*').eq('id', job.id).maybeSingle();
+        return json(await withCapture(settledBody(st ?? job), st ?? job));
+      }
+      return json({ ok: true, state: 'processing', status: job.status });
+    }
     const ts = res.data?.SaleToPOIResponse?.TransactionStatusResponse ?? {};
     const cond = ts?.Response?.Result === 'Success' ? 'found'
       : ts?.Response?.ErrorCondition === 'InProgress' ? 'in_progress'
       : ts?.Response?.ErrorCondition === 'NotFound' ? 'not_found' : 'unknown';
-    if (cond === 'in_progress' || cond === 'unknown') return json({ ok: true, state: 'processing', status: job.status });
+    if (cond === 'in_progress') return json({ ok: true, state: 'processing', status: job.status });
+    if (cond === 'unknown') {
+      const v = await askAdyenLedger(job).catch(() => ({ verdict: 'too_soon' as const }));
+      if (v.verdict === 'nothing') {
+        await opsAdmin.from('terminal_jobs')
+          .update({ status: 'cancelled', decline_reason: 'The card machine gave no answer and Adyen has no record of this payment, so nothing was charged', updated_at: new Date().toISOString() })
+          .eq('id', job.id).in('status', ['charging', 'unknown']);
+        const { data: st } = await opsAdmin.from('terminal_jobs').select('*').eq('id', job.id).maybeSingle();
+        return json(await withCapture(settledBody(st ?? job), st ?? job));
+      }
+      return json({ ok: true, state: 'processing', status: job.status });
+    }
     if (cond === 'not_found') {
       // The terminal never saw the request — provably nothing charged. Revert so
       // the till can retry (the one branch where reverting in-flight is safe).
