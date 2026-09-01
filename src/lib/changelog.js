@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.95',
+    date: '2026-09-01',
+    items: [
+      'The store is now chosen from a list of the merchant\u2019s real stores instead of pasting a 26 character id. Pasting the wrong one pointed a venue\u2019s card machines at another venue\u2019s store, which sends real money to the wrong place and looks fine until somebody reads a payout',
+      'Stores are listed by their reference, and the one whose reference matches this venue\u2019s own code is marked and selected automatically. Put the venue code such as SV-1007 in the store reference when you create the store in Adyen, and the two systems line up by themselves from then on',
+      'Changing the merchant account clears the store and reloads the list, so a store from the previous merchant can never be left behind',
+    ],
+  },
+  {
     version: '5.7.94',
     date: '2026-09-01',
     items: [

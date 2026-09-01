@@ -853,6 +853,8 @@ function AdyenPayoutPanel({ location, onError }) {
   const [manualBusy, setManualBusy] = useState(false);
   // The real merchant accounts from Adyen. null = not fetched, [] = could not.
   const [merchants, setMerchants] = useState(null);
+  // Stores for the CHOSEN merchant. Refetched when the merchant changes.
+  const [stores, setStores] = useState(null);
   const [copied, setCopied] = useState(false);
 
   const load = useCallback(async () => {
@@ -982,10 +984,24 @@ function AdyenPayoutPanel({ location, onError }) {
                     setManual((m) => ({
                       ...m,
                       merchant_account: e.target.value,
+                      store_id: '',
                       // The merchant's own country decides the endpoint, so the
                       // region follows the choice instead of being guessed again.
                       region: pick?.country === 'US' ? 'US' : (pick ? 'EU' : m.region),
                     }));
+                    setStores(null);
+                    if (e.target.value) {
+                      callAdyenOnboard('list_stores', { location_id: location.id, merchant_account: e.target.value })
+                        .then((r) => {
+                          const list = r?.stores || [];
+                          setStores(list);
+                          // Pre-pick the store whose Adyen reference matches this
+                          // venue's own code, so the common case needs no thought.
+                          const hit = list.find((st) => st.suggested);
+                          if (hit) setManual((m) => ({ ...m, store_id: hit.id }));
+                        })
+                        .catch(() => setStores([]));
+                    }
                   }}>
                   <option value="">Choose the merchant account…</option>
                   {merchants.map((m) => (
@@ -1009,8 +1025,43 @@ function AdyenPayoutPanel({ location, onError }) {
               </>
             )}
           </div>
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ ...S.label, color: 'var(--t3)', marginBottom: 4 }}>Store</div>
+            {!manual.merchant_account ? (
+              <div style={{ fontSize: 12, color: 'var(--t3)' }}>Choose a merchant account first.</div>
+            ) : stores === null ? (
+              <div style={{ fontSize: 12, color: 'var(--t3)' }}>Loading this merchant&rsquo;s stores…</div>
+            ) : stores.length ? (
+              <>
+                <select style={{ ...S.input, fontSize: 12.5 }} value={manual.store_id || ''}
+                  onChange={(e) => setManual((m) => ({ ...m, store_id: e.target.value }))}>
+                  <option value="">Choose the store…</option>
+                  {stores.map((st) => (
+                    <option key={st.id} value={st.id}>
+                      {st.reference || st.id}{st.description ? ` — ${st.description}` : ''}
+                      {st.suggested ? '   ← matches this venue' : ''}
+                      {st.status && st.status !== 'active' ? `  (${st.status})` : ''}
+                    </option>
+                  ))}
+                </select>
+                <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 5 }}>
+                  Shown by the store reference set in Adyen. Put this venue&rsquo;s code
+                  (for example SV-1007) in that field when you create the store and it
+                  will match itself here every time.
+                </div>
+              </>
+            ) : (
+              <>
+                <input style={{ ...S.input, ...S.inputMono, fontSize: 12 }} value={manual.store_id || ''}
+                  placeholder="ST32DG5223..."
+                  onChange={(e) => setManual((m) => ({ ...m, store_id: e.target.value }))} />
+                <div style={{ fontSize: 11, color: 'var(--orn, #e8a020)', marginTop: 5 }}>
+                  No stores found for this merchant, or the list could not be read. Paste the Store Id from the Customer Area.
+                </div>
+              </>
+            )}
+          </div>
           {[
-            ['store_id', 'Store Id', 'ST32DG5223...'],
             ['account_holder_id', 'Account holder Id', 'AH32DB9223...'],
             ['balance_account_id', 'Balance Account Id', 'BA32DH2223...'],
             ['legal_entity_id', 'Legal entity Id (optional)', 'LE32...'],

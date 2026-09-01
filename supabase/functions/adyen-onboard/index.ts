@@ -105,6 +105,8 @@ function classify(r: R): { kind: Kind; message: string } {
 
 // Durable audit trail — platform adyen_webhook_events (event_key is the pk).
 // Fire-and-forget: a logging failure must never fail the step it records.
+const clean_ = (v: unknown) => String(v ?? '').trim();
+
 function logStep(step: string, locationId: string, raw: unknown) {
   void platformAdmin.from('adyen_webhook_events').insert({
     event_key: `onboard:${step}:${locationId}:${Date.now()}`,
@@ -256,6 +258,48 @@ Deno.serve(async (req) => {
         }))
         .filter((m: any) => m.id);
       return json({ ok: true, merchants, degraded: false });
+    }
+
+    // ── list_stores: the merchant's real stores, matched to our venue code ───
+    // v5.7.95. Pasting a raw ST32... id is the second silent-failure field: it
+    // is 26 characters of noise, and the wrong one points a venue's card
+    // machines at ANOTHER venue's store, which routes real money to the wrong
+    // place and looks like nothing is wrong until someone reads a payout.
+    //
+    // Adyen's store carries a merchant-chosen `reference`, so the fix is to put
+    // OUR venue code (SV-1007) in that field when the store is created. Then the
+    // two systems share a human-readable key and the id never has to be typed.
+    // `suggested` marks the store whose reference matches this venue, so the
+    // right one is picked by default and a wrong pick has to be deliberate.
+    if (action === 'list_stores') {
+      const m = clean_(body.merchant_account) || merchant;
+      if (!m) return json({ ok: true, stores: [], degraded: true, message: 'Choose a merchant account first' });
+      const r = await mgmt('GET', `/merchants/${encodeURIComponent(m)}/stores?pageSize=100`);
+      if (!r.ok) {
+        const c = classify(r);
+        return json({ ok: true, stores: [], degraded: true, message: c.message });
+      }
+      // The venue code lives on the OPS locations row, not the platform one.
+      let venueCode: string | null = null;
+      try {
+        const { data: opsLoc } = await opsAdmin.from('locations')
+          .select('venue_code').eq('id', loc.ops_location_id ?? loc.id).maybeSingle();
+        venueCode = opsLoc?.venue_code ?? null;
+      } catch { /* matching is a convenience, never a requirement */ }
+
+      const stores = (r.data?.data ?? []).map((st: any) => {
+        const reference = st?.reference ?? null;
+        return {
+          id: st?.id ?? null,
+          reference,
+          description: st?.description ?? st?.shopperStatement ?? null,
+          status: st?.status ?? null,
+          suggested: !!(venueCode && reference
+            && String(reference).trim().toUpperCase() === String(venueCode).trim().toUpperCase()),
+        };
+      }).filter((st: any) => st.id);
+
+      return json({ ok: true, stores, venue_code: venueCode, degraded: false });
     }
 
     // ── save_manual: type in what the Adyen Customer Area already created ────
