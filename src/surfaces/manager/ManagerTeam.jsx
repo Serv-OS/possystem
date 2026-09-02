@@ -295,6 +295,21 @@ export default function ManagerTeam({ ctx }) {
                   <div style={{ fontSize: 11, color: 'var(--t3)', ...mono }}>on {Math.floor(p.onForMins / 60)}h{p.onForMins % 60}m{p.onBreak ? ' · on break' : ''}</div>
                 </div>
                 {p.onBreak && <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--orn)', ...mono }}>BREAK</span>}
+                {p.id && (
+                  <button className="sv-btn sv-btn-ghost" disabled={acting === p.id}
+                    onClick={async () => {
+                      // v5.8.21: a manager ends this person's shift. Server-side clock-out (same
+                      // maths as the Time Clock), recorded against the manager's PIN.
+                      if (!confirm(`Clock ${nameOf[p.staffId] || 'this person'} out now?`)) return;
+                      setActing(p.id);
+                      const r = await managerApprove(loc, pin, 'timesheet.clock_out', p.id);
+                      setActing(null);
+                      if (onResult(r)) refreshSnap?.();
+                    }}
+                    style={{ fontSize: 12, fontWeight: 700, padding: '6px 10px' }}>
+                    {acting === p.id ? '…' : 'Clock out'}
+                  </button>
+                )}
               </div>
             ))}
           </div>

@@ -102,7 +102,15 @@ export default function TimeClockSurface() {
       setBusy(true);
       try {
         const r = await callClock('status', next);
-        setSession(r);
+        // v5.8.21: keep the PIN WITH the session. The punch buttons used the
+        // keypad state, which is emptied by any reset, so a status screen left
+        // open (or restored) sent an empty PIN and the server replied
+        // "pin required" to a member of staff who had just typed it.
+        setSession({ ...r, pin: next });
+        // A status screen must not sit there for hours: back to the keypad
+        // after a minute untouched, so the next person does not act as this one.
+        if (resetTimer.current) clearTimeout(resetTimer.current);
+        resetTimer.current = setTimeout(() => { setSession(null); setFlash(null); setPin(''); }, 60_000);
       } catch (e) {
         setShake(true); setError(e.code === 404 ? 'PIN not recognised' : (e.message || 'Error'));
         setTimeout(() => setShake(false), 500);
@@ -115,7 +123,7 @@ export default function TimeClockSurface() {
     if (busy || !session) return;
     setBusy(true); setError('');
     try {
-      const r = await callClock(action, pin);
+      const r = await callClock(action, session?.pin || pin);
       const name = (r.staff?.name || '').split(' ')[0];
       // Show the punch time in the VENUE tz, not the device's (the punch is server-stamped UTC).
       const now = fmtTime(r.since || new Date().toISOString(), tz);

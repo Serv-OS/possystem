@@ -287,6 +287,18 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
     } catch (e) { showToast?.('Approve failed: ' + e.message, 'error'); reload(); }
   }
 
+  // v5.8.21: a manager clocks someone out from here. The clock-out runs server-side with the
+  // same maths as the Time Clock; the signed-in Back Office user is the accountable operator.
+  async function clockOutNow(r) {
+    if (!r.ts || r.ts.clockOut) return;
+    if (!confirm(`Clock ${r.name || 'this person'} out now?`)) return;
+    try {
+      const res = await wf.managerClockOut(ctx.locationId, r.ts.id);
+      showToast?.(`Clocked out${res?.actualHours != null ? ` — ${res.actualHours}h worked` : ''}`, 'success');
+      reload();
+    } catch (e) { showToast?.('Clock out failed: ' + e.message, 'error'); }
+  }
+
   async function remove(r) {
     if (!r.ts) return;
     if (r.ts.status === 'paid') { showToast?.('This timesheet was paid in a closed payroll run — it is part of the payroll record and cannot be deleted.', 'error'); return; }
@@ -487,6 +499,9 @@ export default function WfTimesheets({ ctx, staff, roles, sections, settings, we
                         ) : (
                           <span style={{ display: 'inline-flex', gap: 6 }}>
                             <button className="btn btn-ghost btn-xs" onClick={() => (editing ? setEditId(null) : openEdit(r))}><Icon name="edit" size={12} /> {editing ? 'Close' : 'Edit'}</button>
+                            {r.ts?.clockIn && !r.ts?.clockOut && (
+                              <button className="btn btn-ghost btn-xs" onClick={() => clockOutNow(r)} title="End this open shift now"><Icon name="clock" size={13} /> Clock out now</button>
+                            )}
                             <button className="btn btn-ghost btn-xs" onClick={() => approve(r)}><Icon name="check" size={13} /> Approve</button>
                           </span>
                         )}

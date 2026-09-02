@@ -1224,3 +1224,19 @@ export async function applyDueRateChanges() {
   if (error) { console.warn('[wf] applyDueRateChanges:', error.message); return 0; }
   return Number(data) || 0;
 }
+
+/**
+ * v5.8.21: a manager clocks a member of staff out from Back Office. Goes through
+ * manager-approve (the signed-in Back Office user is the accountable operator)
+ * which runs the real clock-out in workforce-clock, so hours/breaks/pay are
+ * computed exactly as if the person had pressed Clock out themselves.
+ */
+export async function managerClockOut(locationId, timesheetId) {
+  if (isMock || !supabase) { const a = lsGet('timesheets'); const i = a.findIndex(x => x.id === timesheetId); if (i >= 0) { a[i] = { ...a[i], clock_out: new Date().toISOString() }; lsSet('timesheets', a); } return { ok: true }; }
+  const { data, error } = await supabase.functions.invoke('manager-approve', {
+    body: { action: 'timesheet.clock_out', ops_location_id: locationId, target_id: timesheetId },
+  });
+  if (error) { let b = null; try { b = await error.context?.json?.(); } catch { /* keep */ } throw new Error(b?.error || error.message || 'Clock out failed'); }
+  if (data?.error) throw new Error(data.error);
+  return data;
+}

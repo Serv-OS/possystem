@@ -19,6 +19,7 @@ const open = (p) => p && p.outMs == null;
 /** Staff currently clocked in (open punch). */
 export function onShiftNow(punches, nowMs = Date.now()) {
   return (punches || []).filter(open).map((p) => ({
+    id: p.id || null,          // v5.8.21: timesheet id, so a manager can clock this person out
     staffId: p.staffId,
     onForMins: Math.max(0, Math.round((nowMs - p.inMs) / 60000)),
     onBreak: !!p.breakOpen,

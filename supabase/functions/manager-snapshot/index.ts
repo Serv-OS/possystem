@@ -131,7 +131,7 @@ Deno.serve(async (req) => {
     const punches = (tsRows ?? [])
       .filter((t: any) => t.clock_in && (t.clock_out == null || ymd(new Date(t.clock_in), tz) === today))
       .map((t: any) => ({
-        staffId: t.staff_id, name: nameOf[t.staff_id] || 'Staff',
+        id: t.id, staffId: t.staff_id, name: nameOf[t.staff_id] || 'Staff',
         inMs: ms(t.clock_in), outMs: ms(t.clock_out),
         breakMins: Number(t.break_taken) || 0, breakOpen: !!t.break_open_at,
         dob: dobOf[t.staff_id] || null,

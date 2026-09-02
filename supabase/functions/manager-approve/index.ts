@@ -13,6 +13,10 @@
 //
 //   POST { action, ops_location_id, pin, target_id, decision?, heal? }   (token in Authorization)
 //   actions: 'timesheet.approve' | 'timeoff.decide' (decision: 'approved' | 'denied')
+//            'timesheet.clock_out' (v5.8.21: a manager clocks a member of staff out; the
+//            hours/break/pay maths runs in workforce-clock via its service-role staff_id seam)
+//   pin is optional for a Back Office user (user_locations / super_admin): that signed-in user
+//   is the accountable operator instead.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
@@ -22,6 +26,22 @@ const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: 
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const sb = createClient(Deno.env.get('SUPABASE_URL') ?? '', SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } });
 const nowIso = () => new Date().toISOString();
+
+// v5.8.21: a signed-in Back Office user acting from the Workforce screens has no
+// staff PIN. If the bearer is a user with access to the venue, they are the
+// accountable operator (audit records their user id + email).
+async function boOperator(req: Request, loc: string): Promise<{ id: string; name?: string; role?: string; permissions?: string[] } | null> {
+  const token = (req.headers.get('Authorization') ?? '').replace('Bearer ', '');
+  if (!token) return null;
+  const { data: { user } } = await sb.auth.getUser(token);
+  if (!user || user.is_anonymous) return null;
+  const [{ data: ul }, { data: prof }] = await Promise.all([
+    sb.from('user_locations').select('location_id').eq('user_id', user.id).eq('location_id', loc).maybeSingle(),
+    sb.from('user_profiles').select('role, full_name').eq('id', user.id).maybeSingle(),
+  ]);
+  if (!ul && prof?.role !== 'super_admin') return null;
+  return { id: user.id, name: (prof as any)?.full_name || user.email || 'Back Office user', role: 'manager', permissions: ['manager_approvals'] };
+}
 
 // Device/caller authorized for this location? (same fence as manager-snapshot)
 async function deviceAuthorized(req: Request, loc: string): Promise<boolean> {
@@ -76,11 +96,33 @@ Deno.serve(async (req) => {
   if (action !== 'po.raise' && !target_id) return json({ error: 'action and target_id required' }, 400);
 
   if (!(await deviceAuthorized(req, loc))) return json({ error: 'no access to this location' }, 403);
-  const op = await resolveOperator(loc, pin);
-  if (!op) return json({ error: 'PIN not recognised' }, 403);
+  const op = pin ? await resolveOperator(loc, pin) : await boOperator(req, loc);
+  if (!op) return json({ error: pin ? 'PIN not recognised' : 'PIN required' }, 403);
   if (!canApprove(op)) return json({ error: 'not allowed to approve' }, 403);
 
   try {
+    // ── v5.8.21 timesheet.clock_out ─────────────────────────────────────────
+    // A manager ends someone's open shift (forgotten clock-out, staff gone home,
+    // or a stale 190-hour sheet). The clock-out itself runs in workforce-clock
+    // through its service-role staff_id seam, so the auto-break, statutory floor,
+    // paid-break and pay maths stay the ONE implementation.
+    if (action === 'timesheet.clock_out') {
+      const { data: ts } = await sb.from('wf_timesheets')
+        .select('id, org_id, staff_id, clock_in, clock_out, location_id').eq('id', target_id).eq('location_id', loc).maybeSingle();
+      if (!ts) return json({ error: 'timesheet not found' }, 404);
+      if (ts.clock_out) return json({ error: 'already clocked out' }, 409);
+      const res = await fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/workforce-clock`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SERVICE_ROLE}` },
+        body: JSON.stringify({ location_id: loc, staff_id: ts.staff_id, action: 'out' }),
+      });
+      const out = await res.json().catch(() => ({}));
+      if (!res.ok || out?.error) return json({ error: out?.error || `clock-out failed (${res.status})` }, res.status >= 500 ? 502 : 400);
+      await audit(loc, ts.org_id, op.id, op.name, 'timesheet.manager_clock_out', 'wf_timesheets', target_id,
+        { clock_in: ts.clock_in, clock_out: null }, { clock_out: nowIso(), actual_hours: out.actualHours ?? null, by: op.name ?? op.id });
+      return json({ ok: true, actualHours: out.actualHours ?? null, staff: out.staff ?? null });
+    }
+
     if (action === 'timesheet.approve') {
       const { data: ts } = await sb.from('wf_timesheets')
         .select('id, location_id, org_id, status, clock_in, clock_out, break_taken, scheduled_hours, effective_rate')

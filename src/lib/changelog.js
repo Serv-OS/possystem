@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.21',
+    date: '2 Sep 2026',
+    items: [
+      'A manager can now clock a member of staff out. In Back Office → Workforce → Timesheets any open shift has a "Clock out now" button. In the Manager app the On shift list has a Clock out button against each person, confirmed with the manager PIN. The clock-out is worked out exactly as if the person had pressed the button themselves (breaks, statutory minimum, pay) and is written to the audit trail against the manager.',
+      'Time Clock said "pin required" when pressing Clock out straight after entering the PIN. The PIN now stays with the status screen, and a status screen left untouched returns to the keypad after a minute.',
+      'A member of staff whose stored initials no longer matched their name showed the wrong avatar on the POS. Alex Carter now shows AC.',
+    ],
+  },
+  {
     v: '5.8.20',
     date: '2 Sep 2026',
     items: [
