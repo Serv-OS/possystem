@@ -55,6 +55,11 @@ export default function OnlineOrdering({ setSection }) {
   const [branding, setBranding] = useState(BLANK_BRANDING);
   const [menuId, setMenuId]   = useState('');
   const [leadMin, setLeadMin] = useState(30);
+  // v5.8.1: the busy prep rule. Blank means no rule, which is the default and
+  // leaves the flat lead time behaving exactly as it always has.
+  const [busyStepOrders, setBusyStepOrders]   = useState('');
+  const [busyStepMinutes, setBusyStepMinutes] = useState('');
+  const [busyMaxMinutes, setBusyMaxMinutes]   = useState('');
   const [deliveryModuleOn, setDeliveryModuleOn] = useState(null);  // null = not yet known
   const [deliveryOn, setDeliveryOn] = useState(false);
   // v5.5.959: the Gift cards / Loyalty pills were hardcoded enabled={true} — a fresh
@@ -116,6 +121,10 @@ export default function OnlineOrdering({ setSection }) {
         // Platform location row — the home of online_branding / online_menu_id / etc
         if (platformSupabase) {
           const select = 'id, name, company_id, online_slug, online_enabled, qr_enabled, online_menu_id, online_branding, online_collection_lead_min, online_delivery_enabled';
+          // v5.8.1: read SEPARATELY. Adding these to the select above would make
+          // the whole row come back empty on any venue whose migration has not
+          // run, and this screen would look broken rather than just missing a
+          // setting.
           let r = null;
           if (opsLocId) {
             const r1 = await platformSupabase.from('locations').select(select).eq('ops_location_id', opsLocId).maybeSingle();
@@ -134,6 +143,9 @@ export default function OnlineOrdering({ setSection }) {
             });
             setMenuId(r.online_menu_id || '');
             setLeadMin(typeof r.online_collection_lead_min === 'number' ? r.online_collection_lead_min : 30);
+            setBusyStepOrders(r.online_busy_step_orders ?? '');
+            setBusyStepMinutes(r.online_busy_step_minutes ?? '');
+            setBusyMaxMinutes(r.online_busy_max_minutes ?? '');
             setDeliveryOn(!!r.online_delivery_enabled);
             // v5.7.98: delivery on the storefront is meaningless without the
             // delivery module, which owns the radius, the pricing and the
@@ -260,6 +272,9 @@ export default function OnlineOrdering({ setSection }) {
     const { data, error: err } = await saveLocation(opsLocId, {
       online_menu_id:             menuId || null,
       online_collection_lead_min: Math.max(0, parseInt(leadMin, 10) || 0),
+      online_busy_step_orders:  busyStepOrders  === '' ? null : Math.max(0, parseInt(busyStepOrders, 10) || 0),
+      online_busy_step_minutes: busyStepMinutes === '' ? null : Math.max(0, parseInt(busyStepMinutes, 10) || 0),
+      online_busy_max_minutes:  busyMaxMinutes  === '' ? null : Math.max(0, parseInt(busyMaxMinutes, 10) || 0),
       online_delivery_enabled:    !!deliveryOn,
     });
 
@@ -311,6 +326,9 @@ export default function OnlineOrdering({ setSection }) {
     if (data.online_branding) setBranding({ ...BLANK_BRANDING, ...data.online_branding });
     setMenuId(data.online_menu_id || '');
     setLeadMin(typeof data.online_collection_lead_min === 'number' ? data.online_collection_lead_min : 30);
+    setBusyStepOrders(data.online_busy_step_orders ?? '');
+    setBusyStepMinutes(data.online_busy_step_minutes ?? '');
+    setBusyMaxMinutes(data.online_busy_max_minutes ?? '');
     setDeliveryOn(!!data.online_delivery_enabled);
     setSaved(true);
     setTimeout(() => setSaved(false), 3000);
@@ -401,6 +419,38 @@ export default function OnlineOrdering({ setSection }) {
           value={leadMin}
           onChange={v => setLeadMin(parseInt(v, 10) || 0)}
           help={`Customers can pick a collection time at least ${leadMin} minute${leadMin === 1 ? '' : 's'} from now.`}/>
+
+        {/* v5.8.1: the flat lead time above is right when the kitchen is quiet
+            and wrong the moment it is not. This makes it rise with the queue. */}
+        <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--bdr)' }}>
+          <div style={{ ...S.label, marginBottom: 2 }}>Add time when the kitchen is busy</div>
+          <div style={{ fontSize: 11.5, color: 'var(--t4)', lineHeight: 1.55, marginBottom: 10 }}>
+            Optional. Leave blank and the collection time above is used all day, however busy you are.
+            Only orders still being cooked count. Orders already made and waiting on the shelf do not.
+          </div>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+            <div style={{ flex: '1 1 150px', minWidth: 0 }}>
+              <Field label="For every this many live orders" type="number" min="0"
+                value={busyStepOrders} onChange={v => setBusyStepOrders(v)} placeholder="10" />
+            </div>
+            <div style={{ flex: '1 1 150px', minWidth: 0 }}>
+              <Field label="Add this many minutes" type="number" min="0"
+                value={busyStepMinutes} onChange={v => setBusyStepMinutes(v)} placeholder="5" />
+            </div>
+            <div style={{ flex: '1 1 150px', minWidth: 0 }}>
+              <Field label="Never add more than" type="number" min="0"
+                value={busyMaxMinutes} onChange={v => setBusyMaxMinutes(v)} placeholder="30" />
+            </div>
+          </div>
+          {busyStepOrders && busyStepMinutes ? (
+            <div style={{ fontSize: 11.5, color: 'var(--grn)', marginTop: 8, lineHeight: 1.6 }}>
+              With {busyStepOrders} orders on, you would quote{' '}
+              <b>{Number(leadMin) + Number(busyStepMinutes)} minutes</b>. With {Number(busyStepOrders) * 4} on,{' '}
+              <b>{Number(leadMin) + Math.min(Number(busyStepMinutes) * 4, Number(busyMaxMinutes) || 45)} minutes</b>.
+              Quiet times stay at {leadMin}.
+            </div>
+          ) : null}
+        </div>
 
         <div style={{ marginTop:14, display:'flex', alignItems:'center', justifyContent:'space-between', gap:10, padding:'10px 0' }}>
           <div style={{ flex:1 }}>

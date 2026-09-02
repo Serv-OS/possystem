@@ -217,13 +217,19 @@ export default function PackageBuilder() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
               {/* name + description — one header row: name left, description grows right */}
               <div style={{ ...S.section, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-                <span style={{ display: 'flex', alignItems: 'center', gap: 8, flex: '0 1 280px', minWidth: 180 }}>
+                {/* v5.8.1: was flex '0 1 280px' with minWidth 180, so the name
+                    never grew and refused to shrink past 180 while the
+                    description next to it shrank to nothing. Both now share the
+                    same behaviour and wrap onto their own lines when the row
+                    runs out of room, which is what a name and a description
+                    should do rather than one starving the other. */}
+                <span style={{ display: 'flex', alignItems: 'center', gap: 8, flex: '1 1 240px', minWidth: 0 }}>
                   <input style={{ ...S.inp, flex: 1, minWidth: 0, height: 44, fontSize: 18, fontWeight: 800 }}
                     value={draft.name} onChange={e => upd({ name: e.target.value })}
                     placeholder="Package name" title="Tap to rename — saves with Save package" />
                   <span style={{ fontSize: 13, color: 'var(--t4)', flexShrink: 0 }} title="Editable">✎</span>
                 </span>
-                <input style={{ ...S.inp, flex: '1 1 300px', minWidth: 0, textOverflow: 'ellipsis' }} value={draft.description || ''}
+                <input style={{ ...S.inp, flex: '2 1 260px', minWidth: 0, textOverflow: 'ellipsis' }} value={draft.description || ''}
                   onChange={e => upd({ description: e.target.value })}
                   placeholder="Description — shown on the booking widget" />
               </div>

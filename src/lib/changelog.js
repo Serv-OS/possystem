@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.8.1',
+    date: '2026-09-01',
+    items: [
+      'The busy collection time can now actually be set. Back Office, Channels, Online ordering, under the collection lead time: how many live orders count as a step, how many minutes each step adds, and a ceiling. It shows you a worked example as you type, and leaving it blank keeps the flat time exactly as it is today',
+      'Packages and events: the package name no longer holds its width while the description next to it is squeezed to nothing. The name could never grow and refused to shrink below a fixed floor, so on a narrower screen it starved everything beside it. Both now share the row and drop onto separate lines when there is no room',
+    ],
+  },
+  {
     version: '5.8.0',
     date: '2026-09-01',
     items: [
