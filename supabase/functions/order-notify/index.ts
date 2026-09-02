@@ -23,6 +23,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { resolveAndRender, wrapInEmailHtml } from '../_shared/template-resolver.ts';
 import { resolveSenderFrom, type Sender } from '../_shared/sending-domain.ts';
+import { collectionLabel } from '../_shared/collection-label.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -240,7 +241,8 @@ Deno.serve(async (req) => {
     // Now: the clock time goes in its own tag, and the minutes are derived from
     // it against the moment the order was placed, in the venue's timezone.
     estimated_time: estimatedMinutes(order, venueTz),
-    collection_time: String(order.collection_time || '').trim() || 'shortly',
+    // Day-aware: "Tomorrow 12:45" for a pre-order, "12:45" for today.
+    collection_time: collectionLabel((order.customer as Record<string, unknown>)?.collection_at || order.collection_time, venueTz) || 'shortly',
     order_items: itemsText(order.items),
     collection_point: 'the counter',
   };

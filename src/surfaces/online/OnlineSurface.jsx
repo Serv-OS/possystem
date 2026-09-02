@@ -653,7 +653,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
             <button onClick={() => setJustOpenedCode(null)} style={{ marginLeft: 10, background: 'rgba(255,255,255,.25)', border: 'none', borderRadius: 7, color: '#fff', padding: '3px 10px', cursor: 'pointer', fontWeight: 700 }}>Got it</button>
           </div>
         )}
-        <OrderTracker orderRef={trackerRef} locationId={opsLocationId} theme={theme}
+        <OrderTracker tz={location?.timezone || 'Europe/London'} orderRef={trackerRef} locationId={opsLocationId} theme={theme}
           onClose={() => { setTrackerRef(null); if (!isQr) setOrderType(null); }}/>
       </>
     );

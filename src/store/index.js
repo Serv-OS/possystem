@@ -292,6 +292,7 @@ const sbUpsertMenuItem = async (item) => {
 };
 import { INITIAL_KDS, SHIFT, MENU_ITEMS, CATEGORIES, STAFF as STAFF_SEED, QUICK_IDS, ALLERGENS as ALLERGEN_DEFS } from '../data/seed';
 import { money } from '../lib/currency';
+import { orderCollectionLabel } from '../lib/collectionLabel';
 
 // v5.7.35 — ?mode=kds pins the KDS surface for this page load (read once; the
 // mode param is the operator's explicit intent, so profile defaults must not
@@ -2901,8 +2902,11 @@ export const useStore = create((set, get) => ({
       const PAGE = 200;
       for (let i = 0; i < 10; i++) {   // safety cap ≤ 2000/tick
         const { data, error } = await supabase.from('order_queue')
-          .select('ref, type, total, items, customer, sent_at, collection_time, is_asap')
-          .eq('location_id', locId).eq('source', 'catering')
+          .select('ref, type, source, total, items, customer, sent_at, collection_time, is_asap')
+          // v5.8.16: online pre-orders too. Their fire timer lives only in memory, so a
+          // till reload before the fire moment lost it and the order never reached the
+          // kitchen. Same due-and-unrouted filter; routeKioskOrderPrints dedups by claim.
+          .eq('location_id', locId).in('source', ['catering', 'online'])
           .is('kitchen_routed_at', null).neq('status', 'collected')
           .lte('sent_at', new Date().toISOString())
           .gte('sent_at', floorIso)
@@ -2911,7 +2915,7 @@ export const useStore = create((set, get) => ({
         if (error || !data?.length) break;
         for (const row of data) {
           await get().routeKioskOrderPrints?.({
-            ref: row.ref, source: 'catering',
+            ref: row.ref, source: row.source || 'catering',
             items: row.items || [], customer: row.customer || null,
             collectionTime: row.collection_time || null, isASAP: !!row.is_asap,
             sentAt: row.sent_at ? new Date(row.sent_at).getTime() : Date.now(),
@@ -2920,7 +2924,7 @@ export const useStore = create((set, get) => ({
           // dispatches its courier now (event day), not at order time. Master-only (this fn is
           // master-gated) + each row routes once (kitchen_routed_at), so no double dispatch.
           // Self-delivery orders just fire to the kitchen above (no dispatch).
-          if (row.type === 'delivery' && row.customer?.delivery_mode === 'uber' && !isTrainingMode()) {
+          if (row.source === 'catering' && row.type === 'delivery' && row.customer?.delivery_mode === 'uber' && !isTrainingMode()) {
             const quote = { customerFeeMinor: Math.round(Number(row.customer.delivery_fee || 0) * 100), dropoff: row.customer.address || null, currency: 'GBP', dispatchable: true, quoteId: null };
             dispatchDelivery({ opsLocationId: locId, order: { ref: row.ref, items: row.items || [], total: row.total, customer: row.customer }, quote })
               .then((res) => { if (res?.trackingUrl) sendDeliveryTrackingSMS({ opsLocationId: locId, phone: row.customer?.phone, trackingUrl: res.trackingUrl, ref: row.ref }); })
@@ -7101,11 +7105,8 @@ export const useStore = create((set, get) => ({
         // same breakdown the customer saw. Absent for non-channel orders.
         charges:   Array.isArray(order.customer?.charges)   && order.customer.charges.length   ? order.customer.charges   : null,
         discounts: Array.isArray(order.customer?.discounts) && order.customer.discounts.length ? order.customer.discounts : null,
-        expected: order.isASAP ? 'ASAP' : (() => {
-          const ct = order.collectionTime; if (!ct) return null;
-          const d = new Date(ct);
-          return isNaN(d.getTime()) ? String(ct) : d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
-        })(),
+        // v5.8.16: day-aware ("Tomorrow 12:45") in venue time, from the stored instant.
+        expected: order.isASAP ? 'ASAP' : (orderCollectionLabel(order, get().locationConfig?.timezone) || null),
       } : null;
 
       // Per-centre KDS tickets. v5.5.132: status MUST be 'pending' — that's
@@ -7268,7 +7269,7 @@ export const useStore = create((set, get) => ({
           channel: c.channel, serviceType: c.serviceType, paid: !!c.paid,
           paidAmount: c.paidAmount ?? null, due: c.due ?? null,   // v5.5.850 partial payments
           name: c.name, phone: c.phone, address: addr, notes: c.notes,
-          expected: order.isASAP ? 'ASAP' : (order.collectionTime ? new Date(order.collectionTime).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : null),
+          expected: order.isASAP ? 'ASAP' : (orderCollectionLabel(order, get().locationConfig?.timezone) || null),
         },
       };
       const totals = { subtotal, service: Math.max(0, +(total - subtotal).toFixed(2)), tip: 0, grand: total };
@@ -7308,7 +7309,7 @@ export const useStore = create((set, get) => ({
           channel: c.channel || SRC[order.source] || null, serviceType: svcType, paid: !!(c.paid || order.paid),
           paidAmount: c.paidAmount ?? null, due: c.due ?? null,   // v5.5.850 partial payments
           name: c.name, phone: c.phone, address: addr, notes: c.notes, deliveryFee: deliveryFee || 0,
-          expected: order.isASAP ? 'ASAP' : (order.collectionTime ? new Date(order.collectionTime).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : null),
+          expected: order.isASAP ? 'ASAP' : (orderCollectionLabel(order, get().locationConfig?.timezone) || null),
         } : null,
       };
       // service = whatever's left after subtotal + delivery + tip (keeps a catering tip out of the

@@ -26,6 +26,7 @@ import { statusLabel, statusColor, statusIcon } from '../lib/delivery/status';
 import { courierPhase, courierLegs, courierLateness } from '../lib/delivery/courierTimes';
 import { buildChannelCloseFields } from '../lib/channelMoney';
 import CourierTrackingQR from '../components/CourierTrackingQR';
+import { collectionLabel, orderCollectionLabel } from '../lib/collectionLabel';
 
 // ── Channel definitions ────────────────────────────────────────────────────────
 const FILTER_TABS = [
@@ -152,6 +153,7 @@ export default function OrdersHub() {
   };
 
   // ── Build unified order pool ──────────────────────────────────────────────
+  const hubTz = useStore(st => st.locationConfig?.timezone) || 'Europe/London';
   const allOrders = useMemo(() => {
     const out = [];
 
@@ -204,6 +206,13 @@ export default function OrdersHub() {
         status: o.status || 'received',
         createdAt: o.createdAt, sentAt: o.sentAt,
         collectionTime: o.collectionTime, isASAP: o.isASAP,
+        // v5.8.16: a pre-order whose kitchen fire moment (sent_at) is still in
+        // the future is HELD, not live: shown violet with when it fires, and
+        // left out of the live count. Online pre-orders are written as 'prep'
+        // so this is derived, not read off the status.
+        held: !!(o.sentAt && Number(o.sentAt) > Date.now()),
+        firesLabel: (o.sentAt && Number(o.sentAt) > Date.now()) ? collectionLabel(Number(o.sentAt), hubTz) : null,
+        whenLabel: orderCollectionLabel(o, hubTz),
         source: o.source || 'pos',
         paid: !!o.paid,
         paymentMethod: o.paymentMethod || null,
@@ -212,7 +221,7 @@ export default function OrdersHub() {
     });
 
     return out;
-  }, [tables, tabs, orderQueue, tick]);
+  }, [tables, tabs, orderQueue, tick, hubTz]);
 
   // ── Apply filters ────────────────────────────────────────────────────────
   const filtered = useMemo(() => {
@@ -302,7 +311,7 @@ export default function OrdersHub() {
 
   // Counts for tab badges
   const counts = useMemo(() => {
-    const active = allOrders.filter(o => !DONE_STATUSES.includes(o.status));
+    const active = allOrders.filter(o => !DONE_STATUSES.includes(o.status) && !o.held);
     return Object.fromEntries(FILTER_TABS.map(t => [
       t.id,
       t.id === 'all'
@@ -994,7 +1003,7 @@ export default function OrdersHub() {
                 {/* Expected collection / delivery time so staff know when it's needed. */}
                 {(() => {
                   const raw = viewOrder._raw || {};
-                  const ct = viewOrder.collectionTime || raw.collection_time || null;
+                  const ct = viewOrder.whenLabel || viewOrder.collectionTime || raw.collection_time || null;
                   const asap = viewOrder.isASAP ?? raw.is_asap;
                   if (!ct && !asap) return null;
                   const isDel = viewOrder.channel === 'delivery' || raw.type === 'delivery' || viewOrder.customer.delivery_mode != null;
@@ -1047,7 +1056,7 @@ export default function OrdersHub() {
               const label = hasRow ? statusLabel(st) : (isScheduledOrder ? 'Scheduled' : 'Not sent to a courier yet');
               const color = hasRow ? statusColor(st) : (isScheduledOrder ? '#a855f7' : '#888780');
               const canSend = !hasRow || st === 'failed';        // never re-dispatch a canceled order
-              const readyTime = viewOrder.collectionTime || viewOrder._raw?.collection_time || null;
+              const readyTime = viewOrder.whenLabel || viewOrder.collectionTime || viewOrder._raw?.collection_time || null;
               const legRow = (leg) => (
                 <div style={{ display:'flex', justifyContent:'space-between', fontSize:12.5, padding:'2px 0' }}>
                   <span style={{ color:'var(--t3)' }}>{leg.label}</span>
@@ -1256,6 +1265,7 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
     statusColor = '#a855f7'; // violet — distinct from prep/ready
   }
   if (order.status === 'active' && order._kind === 'table') { statusText = 'In service';  statusColor = '#3b82f6'; }
+  if (order.held) { statusText = order.firesLabel ? `Fires ${order.firesLabel}` : 'Scheduled'; statusColor = '#a855f7'; }
   if (order.status === 'active' && order._kind === 'tab')   { statusText = 'Open tab';    statusColor = '#a855f7'; }
 
   const NEXT = { received:'Mark in prep →', prep:'Mark ready →', ready:'Mark collected →' };
@@ -1296,7 +1306,7 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
             {order.server  && <span style={{ fontSize:10, color:'var(--t3)' }}>👤 {order.server}</span>}
             {order.covers  && <span style={{ fontSize:10, color:'var(--t3)' }}>🧑 {order.covers}</span>}
             {el            && <span style={{ fontSize:10, color:'var(--t4)' }}>⏱ {el}</span>}
-            {order.collectionTime && <span style={{ fontSize:10, fontWeight:700, color:'var(--acc)' }}>{order.isASAP ? '⚡ ASAP' : `⏰ ${order.collectionTime}`}</span>}
+            {order.collectionTime && <span style={{ fontSize:10, fontWeight:700, color:'var(--acc)' }}>{order.isASAP ? '⚡ ASAP' : `⏰ ${order.whenLabel || order.collectionTime}`}</span>}
           </div>
         </div>
         <span style={{ fontSize:10, fontWeight:700, padding:'3px 8px', borderRadius:12, background:`${statusColor}18`, color:statusColor, border:`1px solid ${statusColor}40`, whiteSpace:'nowrap', flexShrink:0 }}>

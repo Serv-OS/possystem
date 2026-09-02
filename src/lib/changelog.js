@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.16',
+    date: '2 Sep 2026',
+    items: [
+      'An order placed for tomorrow now SAYS tomorrow, everywhere. The confirmation SMS and email read "Ready around Tomorrow 12:45", the tracker reads "Collection Tomorrow 12:45", the Orders Hub chip reads "Tomorrow 12:45" and the kitchen ticket "Wanted: Tomorrow 12:45". Further out it shows the day and date. Before this every one of them said just "12:45", so nobody could tell an advance order from a lunchtime one.',
+      'On the Orders Hub an advance order is now shown in violet as "Fires Tomorrow 11:45" (its kitchen start time) and is not counted as live until it fires, the same as a scheduled order taken on the till.',
+      'An online advance order whose kitchen timer was lost when the till reloaded used to never reach the kitchen. The 5-minute release sweep now covers online pre-orders as well as catering.',
+    ],
+  },
+  {
     v: '5.8.15',
     date: '2 Sep 2026',
     items: [

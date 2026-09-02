@@ -9,6 +9,7 @@ import { supabase } from '../../lib/supabase';
 import { money } from '../../lib/currency';
 import { trackDelivery } from '../../lib/delivery/dispatch';
 import { courierPhase, courierLegs, courierLateness } from '../../lib/delivery/courierTimes';
+import { collectionLabel } from '../../lib/collectionLabel';
 
 const STEPS = [
   { key: 'received', label: 'Received',  icon: '📥', desc: 'We\'ve got your order.' },
@@ -17,7 +18,7 @@ const STEPS = [
   { key: 'collected',label: 'Collected', icon: '✅', desc: 'Enjoy!' },
 ];
 
-export default function OrderTracker({ orderRef, locationId, theme, onClose }) {
+export default function OrderTracker({ orderRef, locationId, theme, onClose, tz = 'Europe/London' }) {
   const [order, setOrder] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
@@ -301,13 +302,13 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose }) {
                     only place that would not tell them when to set off. For
                     delivery, collection_time is when the food LEAVES, not when
                     it lands, so it must not be labelled as an arrival. */}
-                {order.is_asap
+                {(() => { const when = collectionLabel(order.customer?.collection_at || order.collection_time, tz); return order.is_asap
                   ? (isDelivery
-                      ? <>⚡ <b>ASAP</b> — leaving the kitchen around <b>{order.collection_time}</b>. Your courier is arranged once it’s ready.</>
-                      : <>⚡ <b>ASAP</b> — ready for collection around <b>{order.collection_time}</b></>)
+                      ? <>⚡ <b>ASAP</b> — leaving the kitchen around <b>{when}</b>. Your courier is arranged once it’s ready.</>
+                      : <>⚡ <b>ASAP</b> — ready for collection around <b>{when}</b></>)
                   : (isDelivery
-                      ? <>🗓 Leaving the kitchen around <b>{order.collection_time}</b></>
-                      : <>🗓 Collection at <b>{order.collection_time}</b></>)}
+                      ? <>🗓 Leaving the kitchen <b>{when}</b></>
+                      : <>🗓 Collection <b>{when}</b></>); })()}
               </div>
             )}
           </div>
