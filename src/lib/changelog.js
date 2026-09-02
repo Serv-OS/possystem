@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.8.2',
+    date: '2026-09-01',
+    items: [
+      'The busy collection time now counts the whole kitchen, not just online orders. It was reading the online order queue, which does not include table service, so a venue with 22 tables on and two online orders would have told customers the kitchen was quiet while it was buried',
+      'It now reads the kitchen board itself, so tables, counter, online, kiosk and delivery all count towards how busy you are',
+      'An order sent to two stations, say the kitchen and the bar, counts once rather than twice, because it is one order\u2019s worth of food',
+      'Only tickets from the last four hours count, so a ticket nobody ever cleared last week cannot inflate today\u2019s quote',
+    ],
+  },
+  {
     version: '5.8.1',
     date: '2026-09-01',
     items: [

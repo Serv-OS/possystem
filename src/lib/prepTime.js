@@ -14,14 +14,14 @@
 // already waiting on the shelf are NOT counted: the food is made, so it is not
 // competing for kitchen time, and counting it would inflate the quote all day.
 
-/** Statuses that still need kitchen time. Verified against the live order_queue
- *  on 1 Sep 2026: the real values are received / prep / ready / cancelled.
- *  'ready' is food already made and waiting on the shelf, so it is NOT counted:
- *  it is not competing for kitchen time and counting it would inflate the quote
- *  all day. 'cancelled' is gone. */
-export const LIVE_PREP_STATUSES = ['received', 'prep'];
+/** KDS ticket states that still need kitchen time. 'bumped' is served. */
+export const LIVE_TICKET_STATUSES = ['pending', 'fired'];
 
-/** Ceiling on ADDED minutes when the venue has not set its own. */
+/** How far back a ticket still counts as live. A ticket nobody ever bumped
+ *  three days ago is data debris, not kitchen load, and counting it would
+ *  inflate every quote for ever. */
+const LIVE_WINDOW_HOURS = 4;
+
 const DEFAULT_MAX_ADDED = 45;
 
 /**
@@ -57,19 +57,42 @@ export function prepRuleFromLocation(location) {
 }
 
 /**
- * How many orders this venue is still cooking. Never throws and never blocks a
- * customer: if the count cannot be read we return null and the caller falls
- * back to the flat lead time, which is the behaviour that exists today.
+ * How many orders the kitchen is currently working on, across EVERY channel.
+ *
+ * This reads the kitchen board (kds_tickets), not the online order queue. That
+ * matters: order_queue holds online, kiosk and counter orders but NOT table
+ * service, and on 1 Sep this venue had 22 open tables against a handful of
+ * online orders. Quoting from order_queue would have told a customer the
+ * kitchen was quiet while it was buried in covers.
+ *
+ * Counting DISTINCT tickets-per-order, not tickets: one order routed to the
+ * kitchen and the bar raises two tickets, and that is one order's worth of
+ * food, not two. `table_label` is the per-order grouping the board itself uses
+ * (a table number, or "Online OL-XXX" / "Kiosk K-XXX" for the other channels).
+ *
+ * Never throws and never blocks a customer: if it cannot be read we return null
+ * and the caller falls back to the flat lead time.
  */
 export async function liveOrderCount(supabase, opsLocationId) {
   if (!supabase || !opsLocationId) return null;
   try {
-    const { count, error } = await supabase
-      .from('order_queue')
-      .select('id', { count: 'exact', head: true })
+    const since = new Date(Date.now() - LIVE_WINDOW_HOURS * 3600_000).toISOString();
+    const { data, error } = await supabase
+      .from('kds_tickets')
+      .select('table_label')
       .eq('location_id', opsLocationId)
-      .in('status', LIVE_PREP_STATUSES);
-    if (error) return null;
-    return typeof count === 'number' ? count : null;
+      .in('status', LIVE_TICKET_STATUSES)
+      .gt('sent_at', since)
+      .limit(2000);
+    if (error || !Array.isArray(data)) return null;
+    // A ticket with no label cannot be grouped, so it counts as its own order
+    // rather than silently collapsing every unlabelled ticket into one.
+    let unlabelled = 0;
+    const labels = new Set();
+    for (const t of data) {
+      if (t?.table_label) labels.add(String(t.table_label));
+      else unlabelled += 1;
+    }
+    return labels.size + unlabelled;
   } catch { return null; }
 }
