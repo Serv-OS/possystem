@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.9',
+    date: '2 Sep 2026',
+    items: [
+      'QR OPEN-TAB TIPS WERE BEING BOOKED AS SALES. A guest on a QR tab picked a tip, was charged it, and when the tab closed (force-close from the Orders Hub, or the guest closing it themselves) the whole amount was written as goods with tip: 0. The tip never reached the Tips report or the tronc pool, and Xero was told it was VAT-able revenue. Each round now carries its tip and every close path books it as a tip.',
+      'A tip on a second or later QR round was dropped entirely. Now carried and charged like round one.',
+      'Online orders now carry the tip on the order too, so a reprinted receipt shows it as a tip instead of deriving it as a service charge.',
+    ],
+  },
+  {
     v: '5.8.8',
     date: '2 Sep 2026',
     items: [

@@ -1030,7 +1030,10 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         type: orderType,
         status: 'prep',
         source: 'online',
-        items, customer,
+        items,
+        // order_queue has no tip column. The receipt reprint reads customer.tip;
+        // without it the tip is derived as "service" and printed as one.
+        customer: tipMinor > 0 ? { ...customer, tip: tipMinor / 100 } : customer,
         total: (discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor + tipMinor) / 100,   // v5.5.657: include the delivery fee; v5.5.787: net of offers; v5.8.8: + tip, matching kiosk so the Orders Hub total is what was charged
         sent_at: sentAt.toISOString(),
         collection_time: collectionTimeLabel,
@@ -1142,7 +1145,10 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         // → collected so operators don't touch the order at all.
         status: 'prep',
         source: 'online',
-        items, customer,
+        items,
+        // order_queue has no tip column. The receipt reprint reads customer.tip;
+        // without it the tip is derived as "service" and printed as one.
+        customer: tipMinor > 0 ? { ...customer, tip: tipMinor / 100 } : customer,
         total: (discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor + tipMinor) / 100,   // v5.5.657: include the delivery fee; v5.5.787: net of offers; v5.8.8: + tip, matching kiosk so the Orders Hub total is what was charged
         sent_at: sentAt.toISOString(),
         collection_time: collectionTimeLabel,

@@ -228,6 +228,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
         tab_open: true,
         tab_join_code: existingTab?.rounds?.[0]?.customer?.tab_join_code || tabJoinCode,
         round_ref: ref,
+        tip: tipAmount,   // this round's tip, see v5.8.9 note on round 1
       };
       const queueRow = {
         ref,
@@ -237,7 +238,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
         source: 'qr',
         items,
         customer: roundCustomer,
-        total: subtotal, // round subtotal — close-time aggregates across rounds
+        total: subtotal + tipAmount, // round subtotal + this round's tip; close-time aggregates across rounds
         sent_at: new Date().toISOString(),
         collection_time: null,
         is_asap: true,
@@ -417,6 +418,13 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
           tab_surcharge_fixed:         Number(location.qr_tab_left_open_surcharge_fixed ?? 0),
           tab_force_close_after_min:   Number(location.qr_tab_force_close_after_minutes ?? 0),
         } : { paid: true }),
+        // v5.8.9: order_queue has no tip column, and `total` above already
+        // INCLUDES the tip. Without these two the close paths (force-close,
+        // customer self-close) had nothing to subtract, so they booked the
+        // whole total as goods: the guest paid a tip, it never reached the
+        // tips report or the tronc pool, and Xero posted it as VAT-able sales.
+        tip: tipAmount,
+        service_charge: serviceCharge,
       };
 
       // 1. order_queue — kitchen routing fires off this INSERT (master device

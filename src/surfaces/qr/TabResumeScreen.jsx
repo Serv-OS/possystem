@@ -138,6 +138,7 @@ export default function TabResumeScreen({
 
       // Aggregate items across all rounds for the closed_check.
       const allItems = (rounds || []).flatMap(r => r.items || []);
+      const tabTip = +(rounds || []).reduce((t, r) => t + (Number(r?.customer?.tip) || 0), 0).toFixed(2);
       try {
         await supabase.from('closed_checks').insert({
           id: `chk-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
@@ -149,8 +150,9 @@ export default function TabResumeScreen({
           customer: { ...(rounds?.[0]?.customer || {}), tab_closed_at: new Date().toISOString() },
           items: allItems.map(i => ({ ...i, voided: false })),
           discounts: [],
-          subtotal: runningTotal,
-          service: 0, tip: 0, tax_amount: null,
+          // v5.8.9: runningTotal includes each round's tip (customer.tip). Book it as a tip.
+          subtotal: +(runningTotal - tabTip).toFixed(2),
+          service: 0, tip: tabTip, tax_amount: null,
           total: runningTotal,
           method: 'card',
           // Refund routing (refundCheck reads top-level processor + payment_intents).

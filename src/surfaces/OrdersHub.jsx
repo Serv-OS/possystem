@@ -533,7 +533,8 @@ export default function OrdersHub() {
       // history view. Capture the error and surface it as a toast.
       let closedCheckError = null;
       try {
-        const { error: ccErr } = await supabase.from('closed_checks').insert({
+        const { error: ccErr } = const tabTip = +(tab.rows || []).reduce((t, r) => t + (Number(r?.customer?.tip) || 0), 0).toFixed(2);
+        await supabase.from('closed_checks').insert({
           id: `chk-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
           ref: tab.firstRow?.ref || tab.payment_intent_id,
           location_id: tab.firstRow?.location_id || null,
@@ -551,9 +552,12 @@ export default function OrdersHub() {
           },
           items: tab.allItems.map(i => ({ ...i, voided: false })),
           discounts: [],
-          subtotal: tab.total,
+          // v5.8.9: each round carries customer.tip and its total INCLUDES it.
+          // Booking tab.total as subtotal with tip: 0 charged the guest a tip
+          // the venue then kept as sales. Split it back out.
+          subtotal: +(tab.total - tabTip).toFixed(2),
           service: surcharge,
-          tip: 0, tax_amount: null,
+          tip: tabTip, tax_amount: null,
           total: totalCollected,
           method: 'card',
           // Refund routing: refundCheck reads top-level processor + refunds each
@@ -705,9 +709,9 @@ export default function OrdersHub() {
           customer: { ...o.customer, tab_closed_at: new Date().toISOString(), surcharge_applied: surcharge },
           items: (o.items || []).map(i => ({ ...i, voided: false })),
           discounts: [],
-          subtotal: o.total,
+          subtotal: +((Number(o.total) || 0) - (Number(o.customer?.tip) || 0)).toFixed(2),   // v5.8.9: o.total includes the tip
           service: surcharge,                 // surface the auto-surcharge in the service line
-          tip: 0, tax_amount: null,
+          tip: Number(o.customer?.tip) || 0, tax_amount: null,
           total: captureAmount,                // what was actually charged
           method: 'card',
           closed_at: new Date().toISOString(),
