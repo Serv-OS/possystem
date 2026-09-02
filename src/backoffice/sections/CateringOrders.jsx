@@ -50,7 +50,9 @@ export default function CateringOrders() {
       const inst = o.customer?.collection_at ? new Date(o.customer.collection_at) : (o.sent_at ? new Date(o.sent_at) : null);
       const event_date = inst && !Number.isNaN(inst.getTime()) ? inst.toLocaleDateString('en-CA', { timeZone: tz }) : null;
       const event_time = inst && !Number.isNaN(inst.getTime()) ? inst.toLocaleTimeString('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }) : (o.collection_time || null);
-      return { ...o, event_date, event_time, paid: o.paid ?? (o.source === 'online' ? true : o.paid) };
+      // v5.8.20: online and kiosk rows are prepaid before they ever reach the queue, but their
+      // paid flag is false (not null), so ?? never fired and they showed as Pay later.
+      return { ...o, event_date, event_time, paid: !!(o.paid || o.customer?.paid || o.source === 'online' || o.source === 'kiosk') };
     }).filter((o) => o.event_date);
     setOrders(rows); setCur(cfg?.currency || 'gbp');
   };

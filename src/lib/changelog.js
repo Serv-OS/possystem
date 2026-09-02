@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.20',
+    date: '2 Sep 2026',
+    items: [
+      '"Send to kitchen again" did nothing on an order for a later day. It was quietly re-arming the order\u2019s own timer for tomorrow and returning. It now prints and puts the ticket on the KDS immediately, whatever day the order is for.',
+      'A closed venue with "Days ahead" set to 0 no longer offers order-ahead for another day. If it reopens later today, ordering for later today still works. The closed screen used a fixed 7-day window before and ignored the setting.',
+      'Back Office → Advance orders showed online orders as "Pay later". They are paid before they reach the queue and now show as Paid.',
+    ],
+  },
+  {
     v: '5.8.19',
     date: '2 Sep 2026',
     items: [

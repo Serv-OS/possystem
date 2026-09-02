@@ -121,7 +121,14 @@ export default function CustomerBoot({ slug, mode, tableId }) {
       // v5.5.802: closed ≠ locked out. The customer can always browse the full
       // menu, and — when the venue reopens within the checkout's 7-day slot
       // window — order ahead (checkout forces a scheduled slot, never ASAP).
-      const canOrderAhead = !!(next && (next.getTime() - Date.now()) < 7 * 24 * 60 * 60 * 1000);
+      // v5.8.20: honour the venue's "days ahead" setting. 0 = today only, so a
+      // venue that is closed now but reopens LATER TODAY still takes an order
+      // for later today, while one that reopens tomorrow does not. Blank = 7.
+      const maxDays = (loc.online_advance_days === null || loc.online_advance_days === undefined)
+        ? 7 : Math.max(0, Number(loc.online_advance_days) || 0);
+      const ymd = (d) => d.toLocaleDateString('en-CA', { timeZone: tz });
+      const dayDiff = next ? Math.round((Date.parse(ymd(next)) - Date.parse(ymd(new Date()))) / 86400000) : Infinity;
+      const canOrderAhead = !!(next && dayDiff <= maxDays);
       const closedInfo = { reopenAt: next, canOrderAhead };
       if (browseClosed) return <OnlineSurface location={loc} closedInfo={closedInfo}/>;
       return <ClosedScreen location={loc} nextOpens={next} canOrderAhead={canOrderAhead}

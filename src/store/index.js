@@ -6900,7 +6900,10 @@ export const useStore = create((set, get) => ({
       // this device disconnects before the timer pops.
       const sentAtMs = order.sentAt || Date.now();
       const waitMs = sentAtMs - Date.now();
-      if (waitMs > 60_000) {
+      // v5.8.20: a FORCED re-send (Orders Hub 'Send to kitchen again') must route
+      // NOW. Before this it re-armed the timer for tomorrow and returned, so the
+      // button did nothing on any advance order.
+      if (waitMs > 60_000 && !opts?.force) {
         // Cap at 24h so a scheduled-for-tomorrow order doesn't keep a
         // setTimeout pinned forever. Master-boot backfill picks it up
         // closer to the time. setTimeout's max safe delay is ~24.8 days.
@@ -6918,7 +6921,7 @@ export const useStore = create((set, get) => ({
       // kitchen_routed_at NULL and stays in the Orders Hub for staff to release manually. Nothing
       // is lost. (order.sentAt defaults to now() for ASAP rows with no sent_at, so they're never
       // mistaken for stale.)
-      if (!order.manualRelease && Date.now() - sentAtMs > STALE_ORDER_FLOOR_MS) {
+      if (!order.manualRelease && !opts?.force && Date.now() - sentAtMs > STALE_ORDER_FLOOR_MS) {
         console.warn('[routeKioskOrderPrints] HELD stale order', order.ref, 'fire moment',
           new Date(sentAtMs).toISOString(), `(${Math.round((Date.now() - sentAtMs) / 60000)} min ago)`);
         const lastToast = useStore._staleHeldToastAt || 0;
