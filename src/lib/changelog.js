@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.13',
+    date: '2 Sep 2026',
+    items: [
+      'Opening hours editor made plain. Each row now reads Open [time] Close [time]. A second row on the same day reads "and". If the close is earlier than the open, one sentence underneath says "Closes at 01:00 the next morning." The previous version labelled dozens of dropdown options "(next day)", which was confusing. Back to 30-minute steps. "+ Window" is now "+ Add hours".',
+    ],
+  },
+  {
     v: '5.8.12',
     date: '2 Sep 2026',
     items: [
