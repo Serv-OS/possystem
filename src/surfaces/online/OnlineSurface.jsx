@@ -503,7 +503,9 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   const [busyLive, setBusyLive] = useState(null);
   useEffect(() => {
     let alive = true;
-    const read = () => liveOrderCount(supabase, opsLocationId).then((n) => { if (alive) setBusyLive(n); });
+    // `.load` not `.live`: orders already made and waiting on the pass are on
+    // the Orders Hub but are not kitchen work, so they must not add time here.
+    const read = () => liveOrderCount(supabase, opsLocationId).then((n) => { if (alive) setBusyLive(n?.load ?? null); });
     read();
     const t = setInterval(read, 60_000);
     return () => { alive = false; clearInterval(t); };

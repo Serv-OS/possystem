@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.5',
+    date: '1 Sep 2026',
+    items: [
+      'Busy prep time now counts kitchen WORK, not the Orders Hub headline. An order already made and sitting on the pass is still live for staff, but it no longer adds minutes to the next customer\u2019s quote.',
+      'The live-order read returns both figures from one query: live (Orders Hub parity) and load (still to be made).',
+    ],
+  },
+  {
     version: '5.8.4',
     date: '2026-09-01',
     items: [

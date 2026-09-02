@@ -90,11 +90,13 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   const [busyLive, setBusyLive] = useState(null);
   useEffect(() => {
     let alive = true;
-    liveOrderCount(supabase, opsLocationId).then((n) => { if (alive) setBusyLive(n); });
+    // `.load` is kitchen work still to do. The Orders Hub `.live` figure also
+    // counts orders sitting made on the pass, which are not competing for time.
+    liveOrderCount(supabase, opsLocationId).then((n) => { if (alive) setBusyLive(n?.load ?? null); });
     // Re-read while the customer is still choosing: a slot quoted five minutes
     // ago can be wrong by the time they reach the payment step.
     const t = setInterval(() => {
-      liveOrderCount(supabase, opsLocationId).then((n) => { if (alive) setBusyLive(n); });
+      liveOrderCount(supabase, opsLocationId).then((n) => { if (alive) setBusyLive(n?.load ?? null); });
     }, 60_000);
     return () => { alive = false; clearInterval(t); };
   }, [opsLocationId]);
