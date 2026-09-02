@@ -19,6 +19,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import { prepMinutes, prepRuleFromLocation, liveOrderCount } from '../../lib/prepTime';
+import { tipRuleFor, tipChips, tipInitialKey, tipAmount as calcTip } from '../../lib/tipping';
 import { supabase, platformSupabase } from '../../lib/supabase';
 import { decrementStockRPC, fetchActiveDiscountRules } from '../../lib/db';
 import { logOrderActivity, logActivity } from '../../lib/activity';
@@ -91,6 +92,13 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // column is NOT NULL DEFAULT 30, so only a genuine null should fall back.
   const baseLeadMin = Number.isFinite(Number(location.online_collection_lead_min))
     ? Number(location.online_collection_lead_min) : 30;
+  // v5.8.8: tipping on online orders, set on the module (Back Office > Online
+  // Ordering > Tipping on online orders). Online never took a tip before: every
+  // write below carried tip: 0. Off by default, so nothing changes for a venue
+  // that has not chosen to ask.
+  const tipRule = useMemo(() => tipRuleFor(location, 'online'), [location]);
+  const [tipKey, setTipKey] = useState(() => tipInitialKey(tipRule));
+  const [customTip, setCustomTip] = useState('');
   // Separate setting, separate job: when the kitchen STARTS a pre-order.
   const kitchenStartMin = Number.isFinite(Number(location.collection_lead_minutes))
     ? Number(location.collection_lead_minutes) : baseLeadMin;
@@ -310,7 +318,10 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // UK totals are unchanged. Inside the credits max: a gift card may cover tax,
   // exactly as it does at the POS till.
   const exclusiveTaxMinor = Math.round((discountedTaxBreakdown?.exclusiveTax || 0) * 100);
-  const remainingMinor = Math.max(0, discountedSubtotalMinor + exclusiveTaxMinor - giftAppliedMinor - rewardDiscountMinor - promoAppliedMinor) + deliveryFeeMinor;
+  // Tip is on the DISCOUNTED subtotal, never VAT-rated, and never reduced by a
+  // gift card or reward, so it is added after the max(0, ...) with delivery.
+  const tipMinor = tipRule.on ? Math.round(calcTip(discountedSubtotalMinor / 100, tipKey, customTip) * 100) : 0;
+  const remainingMinor = Math.max(0, discountedSubtotalMinor + exclusiveTaxMinor - giftAppliedMinor - rewardDiscountMinor - promoAppliedMinor) + deliveryFeeMinor + tipMinor;
   const fullyPaid = remainingMinor <= 0;
   const giftCoversAll = giftAppliedMinor >= discountedSubtotalMinor + exclusiveTaxMinor && deliveryFeeMinor === 0; // gift-only (no-card) path
 
@@ -977,7 +988,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           check: {
             id: closedCheck.id, ref, items, customer, closedAt: Date.now(), total,
             discountAmount: autoDiscountMinor / 100,
-            service: 0, tip: 0, taxAmount: discountedTaxBreakdown?.totalTax || 0, taxBreakdown: discountedTaxBreakdown,
+            service: 0, tip: tipMinor / 100, taxAmount: discountedTaxBreakdown?.totalTax || 0, taxBreakdown: discountedTaxBreakdown,
             method: closedCheck.method || 'card', server: 'Online',
           },
         }).catch(() => {});
@@ -1020,7 +1031,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         status: 'prep',
         source: 'online',
         items, customer,
-        total: (discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor) / 100,   // v5.5.657: include the delivery fee; v5.5.787: net of offers so the queue/kitchen total matches what was charged
+        total: (discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor + tipMinor) / 100,   // v5.5.657: include the delivery fee; v5.5.787: net of offers; v5.8.8: + tip, matching kiosk so the Orders Hub total is what was charged
         sent_at: sentAt.toISOString(),
         collection_time: collectionTimeLabel,
         is_asap: timeMode === 'asap',
@@ -1047,7 +1058,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           discounts: autoDiscounts,
           subtotal,
           service: 0,
-          tip: 0,
+          tip: tipMinor / 100,
           tax_amount: discountedTaxBreakdown?.totalTax || null, // v5.5.787: VAT on the discounted amount
           total: remainingMinor / 100,   // NET of gift card + loyalty (what was actually paid) — matches POS/kiosk
           method: rewardApplied && giftApplied ? 'split' : giftApplied ? 'gift_card' : rewardApplied ? 'loyalty' : 'gift_card',
@@ -1098,7 +1109,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       // v5.5.287: Decrement stock for each item in the order
       decrementOnlineStock(cart, opsLocationId);
 
-      onPlaced?.({ ref, collectionAt, total: (discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor) / 100, paymentIntent: null });
+      onPlaced?.({ ref, collectionAt, total: (discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor + tipMinor) / 100, paymentIntent: null });
     } catch (e) {
       console.error('[OnlineCheckout] gift-only order failed:', e);
       setError('Could not save the order. Contact the venue.');
@@ -1132,7 +1143,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         status: 'prep',
         source: 'online',
         items, customer,
-        total: (discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor) / 100,   // v5.5.657: include the delivery fee; v5.5.787: net of offers so the queue/kitchen total matches what was charged
+        total: (discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor + tipMinor) / 100,   // v5.5.657: include the delivery fee; v5.5.787: net of offers; v5.8.8: + tip, matching kiosk so the Orders Hub total is what was charged
         sent_at: sentAt.toISOString(),
         collection_time: collectionTimeLabel,
         is_asap: timeMode === 'asap',
@@ -1175,7 +1186,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
           discounts: autoDiscounts,
           subtotal,
           service: 0,
-          tip: 0,
+          tip: tipMinor / 100,
           tax_amount: discountedTaxBreakdown?.totalTax || null, // v5.5.154: VAT for reports + receipt; v5.5.787: on the discounted amount
           total: remainingMinor / 100,   // NET of gift card + loyalty (what was actually paid) — matches POS/kiosk
           method: (giftApplied || rewardApplied) ? 'split' : 'card',
@@ -1253,7 +1264,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         }
       }
 
-      onPlaced?.({ ref, collectionAt, total: (discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor) / 100, paymentIntent });
+      onPlaced?.({ ref, collectionAt, total: (discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor + tipMinor) / 100, paymentIntent });
     } catch (e) {
       console.error('[OnlineCheckout] post-payment write failed:', e);
       setError('Payment succeeded but we could not save the order. Contact the venue with ref ' + orderShape.ref + '.');
@@ -1758,6 +1769,21 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
             <SlotPicker slots={slots} value={slot} onChange={setSlot} theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
           )}
 
+          {tipRule.on && (<>
+            <SectionTitle>Tip</SectionTitle>
+            <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(6, tipChips(tipRule).length)}, 1fr)`, gap: 6 }}>
+              {tipChips(tipRule).map(c => (
+                <TipChip key={c.key} active={tipKey === c.key} onClick={() => setTipKey(c.key)} theme={theme} cardBdr={cardBdr}>{c.label}</TipChip>
+              ))}
+            </div>
+            {tipKey === 'custom' && (
+              <div style={{ marginTop: 8 }}>
+                <input type="number" min="0" step="0.01" value={customTip} onChange={e => setCustomTip(e.target.value)} placeholder="Tip amount"
+                  style={{ width: '100%', boxSizing: 'border-box', padding: '10px 12px', borderRadius: 10, border: `1px solid ${cardBdr}`, background: inputBg, color: theme.fg, fontSize: 14, fontFamily: 'inherit' }} />
+              </div>
+            )}
+          </>)}
+
           {/* 3. Summary */}
           <SectionTitle>Order summary</SectionTitle>
           <div style={{ background: inputBg, border: `1px solid ${cardBdr}`, borderRadius: 12, padding: '12px 14px' }}>
@@ -1791,9 +1817,14 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
                 <span>Delivery</span><span style={{ fontWeight: 700 }}>{money(deliveryFeeMinor / 100)}</span>
               </div>
             )}
+            {tipMinor > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 13 }}>
+                <span>Tip</span><span style={{ fontWeight: 700 }}>{money(tipMinor / 100)}</span>
+              </div>
+            )}
             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0 0', borderTop: `1px solid ${cardBdr}`, marginTop: 8 }}>
               <span style={{ fontSize: 14, fontWeight: 800 }}>Total</span>
-              <span style={{ fontSize: 18, fontWeight: 900 }}>{money((discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor) / 100)}</span>
+              <span style={{ fontSize: 18, fontWeight: 900 }}>{money((discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor + tipMinor) / 100)}</span>
             </div>
           </div>
         </div>
@@ -2328,6 +2359,21 @@ function buildCollectionSlots(location, tz, leadMin) {
     if (out.length >= 60) break; // reasonable upper bound
   }
   return out;
+}
+
+function TipChip({ active, onClick, theme, cardBdr, children }) {
+  return (
+    <button onClick={onClick} className="op-btn"
+      style={{
+        padding: '12px 6px', borderRadius: 12,
+        background: active ? theme.accent : 'transparent',
+        color: active ? contrastFg(theme.accent) : theme.fg,
+        border: `2px solid ${active ? theme.accent : cardBdr}`,
+        boxShadow: active ? `0 4px 14px ${theme.accent}55` : 'none',
+        fontSize: 13, fontWeight: 800, cursor: 'pointer', fontFamily: 'inherit',
+        opacity: active ? 1 : 0.75,
+      }}>{children}</button>
+  );
 }
 
 function contrastFg(hex) {

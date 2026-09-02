@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.8',
+    date: '2 Sep 2026',
+    items: [
+      'TIPPING IS NOW SET ON EACH MODULE. Online ordering and QR each have their own rule in Back Office \u2192 Online Ordering: on or off, the percentages offered, which one is pre-selected, and whether a custom amount is allowed. Catering settings gained the same controls. Kiosk already had its own.',
+      'QR no longer pre-selects a 10% tip at every venue. That was hardcoded and no operator could turn it off. It now defaults to \u201cNo tip\u201d selected, and the venue chooses from there. Where a QR service charge is also set, the screen says so next to the tipping switch.',
+      'Online ordering can take a tip for the first time. It is off unless you switch it on. The tip is worked out on the discounted subtotal, is never VAT-rated, is never eaten by a gift card or reward, and appears as its own line on the order and in the Orders Hub total, the same as a kiosk order.',
+      'Catering tip chips were hardcoded as 0 / default / 15 / 20. They now come from the list you set, with an optional custom amount.',
+      'Needs two migrations: tipping_config on the Platform locations table, and two catering columns on Ops.',
+    ],
+  },
+  {
     v: '5.8.7',
     date: '2 Sep 2026',
     items: [

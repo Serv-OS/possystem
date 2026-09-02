@@ -1,0 +1,87 @@
+// src/lib/tipping.js
+//
+// One shape for "how do we ask this customer for a tip", used by online
+// ordering, QR and catering. Kiosk keeps device_profiles.kiosk_tip_presets and
+// the card reader keeps location_reader_settings; both pre-date this and the
+// reader one is pushed to hardware, so neither is re-pointed here.
+//
+//   { on: bool, pct: number[], default: number|null, custom: bool }
+//
+// `default` is the pre-selected chip. null means "No tip" is pre-selected.
+// That is deliberate: a pre-ticked gratuity the operator cannot switch off is
+// a Tipping Act 2023 problem, and QR shipped exactly that for months.
+
+export const TIP_MODULES = ['online', 'qr'];
+
+export const TIP_DEFAULTS = Object.freeze({
+  online: Object.freeze({ on: false, pct: [5, 10, 12.5, 15], default: null, custom: true }),
+  qr:     Object.freeze({ on: true,  pct: [5, 10, 12.5, 15], default: null, custom: true }),
+});
+
+const clampPct = (n) => {
+  const x = Number(n);
+  return Number.isFinite(x) && x > 0 && x <= 100 ? Math.round(x * 100) / 100 : null;
+};
+
+/** Normalise one module's rule. Tolerates partial or garbage input. */
+export function normaliseTipRule(raw, fallback = TIP_DEFAULTS.qr) {
+  const r = raw && typeof raw === 'object' ? raw : {};
+  const pct = Array.isArray(r.pct)
+    ? [...new Set(r.pct.map(clampPct).filter(v => v !== null))].sort((a, b) => a - b)
+    : [...fallback.pct];
+  const def = clampPct(r.default);
+  return {
+    on: typeof r.on === 'boolean' ? r.on : fallback.on,
+    pct: pct.length ? pct : [...fallback.pct],
+    // The default must be one of the chips, or it silently vanishes in the UI.
+    default: def !== null && pct.includes(def) ? def : null,
+    custom: typeof r.custom === 'boolean' ? r.custom : fallback.custom,
+  };
+}
+
+/** The rule for a module from a location row (platform.locations.tipping_config). */
+export function tipRuleFor(location, module) {
+  const fallback = TIP_DEFAULTS[module] || TIP_DEFAULTS.qr;
+  const cfg = location?.tipping_config;
+  return normaliseTipRule(cfg && typeof cfg === 'object' ? cfg[module] : null, fallback);
+}
+
+/** Catering stores its rule as columns, not jsonb. Same shape out. */
+export function tipRuleFromCatering(cfg) {
+  return normaliseTipRule({
+    on: !!cfg?.tips_enabled,
+    pct: Array.isArray(cfg?.tip_percentages) ? cfg.tip_percentages : [5, 10, 15, 20],
+    default: cfg?.tip_default_pct,
+    custom: cfg?.tip_allow_custom !== false,
+  }, { on: false, pct: [5, 10, 15, 20], default: null, custom: true });
+}
+
+/**
+ * Chip list for the UI. Always starts with "No tip"; ends with custom if allowed.
+ * @returns {{ key:string, label:string }[]}
+ */
+export function tipChips(rule) {
+  const out = [{ key: '0', label: 'No tip' }];
+  rule.pct.forEach(p => out.push({ key: String(p), label: `${p}%` }));
+  if (rule.custom) out.push({ key: 'custom', label: '✏️' });
+  return out;
+}
+
+/** The chip key to pre-select. */
+export function tipInitialKey(rule) {
+  return rule.default !== null ? String(rule.default) : '0';
+}
+
+/** Money. Tips are on the discounted subtotal and are never VAT-rated. */
+export function tipAmount(subtotal, key, customValue) {
+  if (!key || key === '0') return 0;
+  if (key === 'custom') return Math.max(0, Math.round((Number(customValue) || 0) * 100) / 100);
+  const p = Number(key);
+  if (!Number.isFinite(p) || p <= 0) return 0;
+  return Math.round(Math.max(0, Number(subtotal) || 0) * p) / 100;
+}
+
+/** For Back Office: parse "5, 10, 12.5" into a clean list. */
+export function parsePctList(text) {
+  return [...new Set(String(text || '').split(/[,\s]+/).map(clampPct).filter(v => v !== null))].sort((a, b) => a - b);
+}

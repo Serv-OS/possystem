@@ -9,6 +9,7 @@
 import { useEffect, useState } from 'react';
 import { supabase, platformSupabase, getActiveLocationSync } from '../../lib/supabase';
 import { CUSTOMER_ROOT, customerUrl, groupCaterUrl } from '../../lib/env';
+import { parsePctList } from '../../lib/tipping';
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -34,7 +35,7 @@ const DAYS = [['mon', 'Mon'], ['tue', 'Tue'], ['wed', 'Wed'], ['thu', 'Thu'], ['
 const BLANK = (locId) => ({
   location_id: locId, enabled: false, currency: 'gbp', slug: '', banner_message: '',
   hours: {}, closures: [], lead_time_min_days: '', lead_time_max_days: '', prep_time_minutes: '',
-  order_minimum: '', tips_enabled: false, tip_default_pct: '',
+  order_minimum: '', tips_enabled: false, tip_default_pct: '', tip_percentages: '5, 10, 15, 20', tip_allow_custom: true,
   takeout_enabled: false, takeout_dining_option: 'collection',
   delivery_enabled: false, delivery_dining_option: 'delivery',
   menu_ids: [], item_limits: {}, allow_tax_exempt: false, allow_promo: false, allow_pay_later: false,
@@ -47,7 +48,7 @@ function fromRow(r) {
     location_id: r.location_id, enabled: r.enabled, currency: r.currency || 'gbp', slug: r.slug || '', banner_message: r.banner_message || '',
     hours: r.hours || {}, closures: r.closures || [],
     lead_time_min_days: r.lead_time_min_days ?? '', lead_time_max_days: r.lead_time_max_days ?? '', prep_time_minutes: r.prep_time_minutes ?? '',
-    order_minimum: major(r.order_minimum_minor), tips_enabled: r.tips_enabled, tip_default_pct: r.tip_default_pct ?? '',
+    order_minimum: major(r.order_minimum_minor), tips_enabled: r.tips_enabled, tip_default_pct: r.tip_default_pct ?? '', tip_percentages: (Array.isArray(r.tip_percentages) ? r.tip_percentages : [5, 10, 15, 20]).join(', '), tip_allow_custom: r.tip_allow_custom !== false,
     takeout_enabled: r.takeout_enabled, takeout_dining_option: r.takeout_dining_option || 'collection',
     delivery_enabled: r.delivery_enabled, delivery_dining_option: r.delivery_dining_option || 'delivery',
     menu_ids: r.menu_ids || [], item_limits: r.item_limits || {}, allow_tax_exempt: r.allow_tax_exempt, allow_promo: r.allow_promo, allow_pay_later: r.allow_pay_later,
@@ -61,7 +62,7 @@ function toRow(s) {
     location_id: s.location_id, enabled: !!s.enabled, currency: s.currency || 'gbp', slug: s.slug || null, banner_message: s.banner_message || null,
     hours: s.hours && Object.keys(s.hours).length ? s.hours : null, closures: s.closures && s.closures.length ? s.closures : null,
     lead_time_min_days: num(s.lead_time_min_days), lead_time_max_days: num(s.lead_time_max_days), prep_time_minutes: num(s.prep_time_minutes), kitchen_fire_time: null,
-    order_minimum_minor: minor(s.order_minimum), tips_enabled: !!s.tips_enabled, tip_default_pct: num(s.tip_default_pct),
+    order_minimum_minor: minor(s.order_minimum), tips_enabled: !!s.tips_enabled, tip_default_pct: num(s.tip_default_pct), tip_percentages: parsePctList(s.tip_percentages), tip_allow_custom: !!s.tip_allow_custom,
     takeout_enabled: !!s.takeout_enabled, takeout_dining_option: s.takeout_dining_option || null,
     delivery_enabled: !!s.delivery_enabled, delivery_dining_option: s.delivery_dining_option || null,
     menu_ids: s.menu_ids && s.menu_ids.length ? s.menu_ids : null, item_limits: s.item_limits && Object.keys(s.item_limits).length ? s.item_limits : null,
@@ -235,7 +236,9 @@ export default function CateringSettings() {
         <div style={S.row3}>
           <div style={S.field}><label style={S.label}>Order minimum ({cur})</label><input type="number" min={0} step="0.01" style={S.input} value={s.order_minimum} onChange={(e) => set({ order_minimum: e.target.value })} /></div>
           <div style={S.field}><label style={S.label}>Tips</label><label style={{ ...S.toggle, paddingTop: 8 }}><input type="checkbox" checked={s.tips_enabled} onChange={(e) => set({ tips_enabled: e.target.checked })} /> Allow tipping</label></div>
-          {s.tips_enabled && <div style={S.field}><label style={S.label}>Default tip %</label><input type="number" min={0} max={100} style={S.input} value={s.tip_default_pct} onChange={(e) => set({ tip_default_pct: e.target.value })} /></div>}
+          {s.tips_enabled && <div style={S.field}><label style={S.label}>Percentages offered</label><input style={S.input} value={s.tip_percentages} onChange={(e) => set({ tip_percentages: e.target.value })} placeholder="5, 10, 15, 20" /><div style={S.hint}>Comma separated. "No tip" is always offered first.</div></div>}
+          {s.tips_enabled && <div style={S.field}><label style={S.label}>Pre-selected tip %</label><input type="number" min={0} max={100} style={S.input} value={s.tip_default_pct} onChange={(e) => set({ tip_default_pct: e.target.value })} placeholder="blank = No tip" /><div style={S.hint}>Must be one of the percentages above. Blank or 0 = "No tip" pre-selected.</div></div>}
+          {s.tips_enabled && <div style={S.field}><label style={S.label}>Custom amount</label><label style={{ ...S.toggle, paddingTop: 8 }}><input type="checkbox" checked={s.tip_allow_custom} onChange={(e) => set({ tip_allow_custom: e.target.checked })} /> Allow the customer to type an amount</label></div>}
         </div>
       </div>
 

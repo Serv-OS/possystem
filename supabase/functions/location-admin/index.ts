@@ -64,6 +64,8 @@ const LOCATION_FIELDS = new Set([
   'online_menu_id', 'online_collection_lead_min', 'online_delivery_enabled',
   // v5.7.99 busy prep rule: add N minutes for every M live orders, capped.
   'online_busy_step_orders', 'online_busy_step_minutes', 'online_busy_max_minutes',
+  // v5.8.8 tipping on the module: {online:{on,pct,default,custom}, qr:{...}}
+  'tipping_config',
   // OnlineOrdering.jsx:264-266  (QR core)
   'qr_payment_mode', 'qr_table_mode', 'qr_service_charge_pct',
   // OnlineOrdering.jsx:279-283  (QR tab)
@@ -247,6 +249,27 @@ async function coerce(key: string, v: unknown, opsLocationId: string): Promise<{
     case 'business_day_start': {
       const s = String(v ?? '');
       return TIME_RE.test(s) ? { value: s } : { err: 'expected HH:MM' };
+    }
+    case 'tipping_config': {
+      // {online:{on,pct[],default,custom}, qr:{...}}. Keys beyond the two
+      // modules are dropped; pct is capped at 12 values in (0,100].
+      if (v === null) return { value: null };
+      if (!isPlainObject(v)) return { err: 'expected an object keyed by module' };
+      const out: Record<string, unknown> = {};
+      for (const mod of ['online', 'qr']) {
+        const r = (v as Record<string, unknown>)[mod];
+        if (!isPlainObject(r)) continue;
+        const pctRaw = Array.isArray(r.pct) ? r.pct.slice(0, 12) : [];
+        const pct = [...new Set(pctRaw.map(Number).filter(n => Number.isFinite(n) && n > 0 && n <= 100).map(n => Math.round(n * 100) / 100))].sort((a, b) => a - b);
+        const def = Number(r.default);
+        out[mod] = {
+          on: r.on === true,
+          pct,
+          default: Number.isFinite(def) && pct.includes(def) ? def : null,
+          custom: r.custom !== false,
+        };
+      }
+      return { value: out };
     }
     case 'shifts': {
       const s = cleanShifts(v);

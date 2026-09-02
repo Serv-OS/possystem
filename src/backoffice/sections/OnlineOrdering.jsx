@@ -15,6 +15,7 @@ import { CUSTOMER_ROOT, customerUrl, groupOrderUrl } from '../../lib/env';
 import { getVenueUberConfig } from '../../lib/delivery/deliveryConfig';
 import QRCode from 'qrcode';
 import { prepMinutes } from '../../lib/prepTime';
+import { TIP_DEFAULTS, normaliseTipRule, parsePctList } from '../../lib/tipping';
 
 // Reuses the existing receipt-assets bucket with an online/ prefix so logo
 // + hero uploads don't collide with the receipt branding's logo/QR assets.
@@ -56,6 +57,9 @@ export default function OnlineOrdering({ setSection }) {
   const [branding, setBranding] = useState(BLANK_BRANDING);
   const [menuId, setMenuId]   = useState('');
   const [leadMin, setLeadMin] = useState(30);
+  // v5.8.8: tipping, set on the module. Online and QR each own a rule.
+  const [tipOnline, setTipOnline] = useState({ ...TIP_DEFAULTS.online });
+  const [tipQr, setTipQr]         = useState({ ...TIP_DEFAULTS.qr });
   // v5.8.1: the busy prep rule. Blank means no rule, which is the default and
   // leaves the flat lead time behaving exactly as it always has.
   const [busyStepOrders, setBusyStepOrders]   = useState('');
@@ -163,6 +167,14 @@ export default function OnlineOrdering({ setSection }) {
                 setBusyMaxMinutes(busy.online_busy_max_minutes ?? '');
               }
             } catch { /* columns not migrated yet — blank means "no rule" */ }
+            // v5.8.8: tipping_config, its own read for the same reason.
+            try {
+              const { data: t } = await platformSupabase
+                .from('locations').select('tipping_config').eq('id', r.id).maybeSingle();
+              const cfg = t?.tipping_config && typeof t.tipping_config === 'object' ? t.tipping_config : {};
+              setTipOnline(normaliseTipRule(cfg.online, TIP_DEFAULTS.online));
+              setTipQr(normaliseTipRule(cfg.qr, TIP_DEFAULTS.qr));
+            } catch { /* not migrated — defaults stand */ }
             setDeliveryOn(!!r.online_delivery_enabled);
             // v5.7.98: delivery on the storefront is meaningless without the
             // delivery module, which owns the radius, the pricing and the
@@ -293,6 +305,10 @@ export default function OnlineOrdering({ setSection }) {
       online_busy_step_minutes: busyStepMinutes === '' ? null : Math.max(0, parseInt(busyStepMinutes, 10) || 0),
       online_busy_max_minutes:  busyMaxMinutes  === '' ? null : Math.max(0, parseInt(busyMaxMinutes, 10) || 0),
       online_delivery_enabled:    !!deliveryOn,
+      tipping_config: {
+        online: normaliseTipRule(tipOnline, TIP_DEFAULTS.online),
+        qr:     normaliseTipRule(tipQr, TIP_DEFAULTS.qr),
+      },
     });
 
     // v5.5.153: QR settings save now SURFACES errors to the BO UI instead
@@ -613,6 +629,11 @@ function QrSettingsBlock({
 
   return (
     <div style={{ ...S.card, boxSizing: 'border-box', maxWidth: '100%', overflow: 'hidden' }}>
+      <TipRuleEditor
+        title="Tipping on online orders"
+        intro="Asked on the checkout, on the discounted subtotal, never VAT-rated. Off means no tip section is shown at all."
+        rule={tipOnline} onChange={setTipOnline} />
+
       <h3 style={S.h2}>QR ordering</h3>
       <div style={{ fontSize: 12, color: 'var(--t4)', marginBottom: 14, lineHeight: 1.5 }}>
         Settings + downloadable QR codes for table-side ordering. Print one per table or stick on table tents.
@@ -655,6 +676,12 @@ function QrSettingsBlock({
         value={servicePct}
         onChange={v => setServicePct(parseFloat(v) || 0)}
         help="Auto-applied to every QR order. 0 = none. Capped at 50%."/>
+
+      <TipRuleEditor
+        title="Tipping at the table (QR)"
+        intro="Until now QR pre-selected 10% at every venue and could not be switched off. Nothing is pre-selected unless you choose it here."
+        rule={tipQr} onChange={setTipQr}
+        warn={Number(servicePct) > 0 ? `A ${servicePct}% service charge is already added to every QR order. Asking for a tip on top is legal but is the pattern that draws complaints.` : null} />
 
       {/* v5.5.149: open-tab guardrails — only relevant when tabs are allowed */}
       {showsTabSettings && (
@@ -883,7 +910,7 @@ function ImageUpload({ label, url, kind, uploading, inputRef, onPick, onClear, h
   );
 }
 
-function Field({ label, value, onChange, placeholder, type = 'text', min, help }) {
+function Field({ label, value, onChange, placeholder, type = 'text', min, help, onBlur }) {
   return (
     <div>
       <div style={S.label}>{label}</div>
@@ -891,7 +918,7 @@ function Field({ label, value, onChange, placeholder, type = 'text', min, help }
         value={value || ''}
         onChange={e => onChange(e.target.value)}
         placeholder={placeholder}
-        style={S.input}/>
+        style={S.input} onBlur={onBlur} />
       {help && <div style={{ fontSize:11, color:'var(--t4)', marginTop:4 }}>{help}</div>}
     </div>
   );
@@ -944,3 +971,46 @@ const S = {
   btn:  { padding:'10px 20px', borderRadius:8, border:'none', cursor:'pointer', fontSize:13, fontWeight:700, fontFamily:'inherit' },
   link: { background:'transparent', border:'none', color:'var(--acc)', textDecoration:'underline', cursor:'pointer', fontFamily:'inherit', padding:0, fontSize:'inherit' },
 };
+
+
+// v5.8.8: one editor for a module's tipping rule. Percentages are typed as a
+// list; the pre-selected chip must be one of them or it is cleared.
+function TipRuleEditor({ title, intro, rule, onChange, warn }) {
+  const [pctText, setPctText] = useState((rule.pct || []).join(', '));
+  useEffect(() => { setPctText((rule.pct || []).join(', ')); }, [rule.pct]);
+  const set = (patch) => onChange(normaliseTipRule({ ...rule, ...patch }, rule));
+  return (
+    <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--bdr)' }}>
+      <div style={{ ...S.label, marginBottom: 2 }}>{title}</div>
+      <div style={{ fontSize: 11.5, color: 'var(--t4)', lineHeight: 1.55, marginBottom: 10 }}>{intro}</div>
+      <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer', marginBottom: 10 }}>
+        <input type="checkbox" checked={!!rule.on} onChange={e => set({ on: e.target.checked })} />
+        Ask for a tip
+      </label>
+      {rule.on && (
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+          <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+            <Field label="Percentages offered" value={pctText}
+              onChange={v => setPctText(v)}
+              onBlur={() => set({ pct: parsePctList(pctText) })}
+              placeholder="5, 10, 12.5, 15"
+              help="Comma separated. 'No tip' is always the first option." />
+          </div>
+          <div style={{ flex: '1 1 160px', minWidth: 0 }}>
+            <div style={S.label}>Pre-selected</div>
+            <select style={S.select} value={rule.default === null ? '' : String(rule.default)}
+              onChange={e => set({ default: e.target.value === '' ? null : Number(e.target.value) })}>
+              <option value="">No tip</option>
+              {(rule.pct || []).map(p => <option key={p} value={p}>{p}%</option>)}
+            </select>
+          </div>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer', paddingBottom: 8 }}>
+            <input type="checkbox" checked={rule.custom !== false} onChange={e => set({ custom: e.target.checked })} />
+            Allow a custom amount
+          </label>
+        </div>
+      )}
+      {rule.on && warn ? <div style={{ fontSize: 11.5, color: 'var(--amber, #b45309)', marginTop: 8, lineHeight: 1.5 }}>⚠ {warn}</div> : null}
+    </div>
+  );
+}

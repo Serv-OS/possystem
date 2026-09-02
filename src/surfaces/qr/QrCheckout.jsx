@@ -31,6 +31,7 @@ import { buildScheduleCtx } from '../../lib/locationTime';
 import { stashTab } from '../../lib/qrTabStorage';
 import { syncQrTableSession } from '../../lib/qrTableSession';
 import { money, currencySymbol, stripeCurrency } from '../../lib/currency';
+import { tipRuleFor, tipChips, tipInitialKey, tipAmount as calcTip } from '../../lib/tipping';
 
 export default function QrCheckout({ cart, theme, location, tableId, tableLabel, loyalty, taxRates = [], taxCtx = null, existingTab = null, onClose, onPlaced }) {
   // v5.5.155: when existingTab is set the customer is in "Add more"
@@ -63,7 +64,11 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   const [email, setEmail] = useState('');
   const [notes, setNotes] = useState('');
 
-  const [tipMode, setTipMode] = useState('10');                // '0' | '5' | '10' | '12.5' | '15' | 'custom'
+  // v5.8.8: the rule is set on the module (Back Office > Online Ordering >
+  // Tipping at the table). This used to hardcode '10' as the starting value,
+  // which pre-ticked a 10% gratuity at every venue with no way to turn it off.
+  const tipRule = tipRuleFor(location, 'qr');
+  const [tipMode, setTipMode] = useState(() => tipInitialKey(tipRule));
   const [customTip, setCustomTip] = useState('');
 
   // v5.5.150: payNow vs openTab. Defaults sensibly per location.qr_payment_mode:
@@ -132,11 +137,9 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
     serviceChargePct > 0 ? +(discountedSubtotal * serviceChargePct / 100).toFixed(2) : 0,
     [discountedSubtotal, serviceChargePct]);
 
-  const tipAmount = useMemo(() => {
-    if (tipMode === 'custom') return Math.max(0, Number(customTip) || 0);
-    if (tipMode === '0') return 0;
-    return +(discountedSubtotal * Number(tipMode) / 100).toFixed(2);
-  }, [tipMode, customTip, discountedSubtotal]);
+  const tipAmount = useMemo(() => (
+    tipRule.on ? calcTip(discountedSubtotal, tipMode, customTip) : 0
+  ), [tipRule.on, tipMode, customTip, discountedSubtotal]);
 
   // v5.5.154: UK VAT breakdown over the gross subtotal — items only.
   // Service charge and tip aren't VAT-rated. UK uses inclusive tax so
@@ -712,16 +715,18 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
             </>
           )}
 
+          {tipRule.on && (<>
           <SectionTitle>Tip</SectionTitle>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 6 }}>
-            {['0','5','10','12.5','15','custom'].map(opt => (
-              <TipChip key={opt} active={tipMode === opt} onClick={() => setTipMode(opt)}
+          <div style={{ display: 'grid', gridTemplateColumns: `repeat(${Math.min(6, tipChips(tipRule).length)}, 1fr)`, gap: 6 }}>
+            {tipChips(tipRule).map(c => (
+              <TipChip key={c.key} active={tipMode === c.key} onClick={() => setTipMode(c.key)}
                 theme={theme} cardBdr={cardBdr}>
-                {opt === '0' ? 'No tip' : opt === 'custom' ? '✏️' : `${opt}%`}
+                {c.label}
               </TipChip>
             ))}
           </div>
-          {tipMode === 'custom' && (
+          </>)}
+          {tipRule.on && tipMode === 'custom' && (
             <Field label="Custom tip (£)" value={customTip} onChange={setCustomTip} placeholder="0.00" type="number" theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
           )}
 

@@ -209,7 +209,7 @@ export async function lookupLocationBySlug(slug, platformSupabase) {
       // from the wait quoted to the customer. The checkout needs it to stamp
       // sent_at on a pre-order.
       platformSupabase.from('locations')
-        .select('online_busy_step_orders, online_busy_step_minutes, online_busy_max_minutes, collection_lead_minutes')
+        .select('online_busy_step_orders, online_busy_step_minutes, online_busy_max_minutes, collection_lead_minutes, tipping_config')
         .eq('id', data.id).maybeSingle(),
     ]);
     if (qrRes.status === 'fulfilled' && qrRes.value?.data) Object.assign(data, qrRes.value.data);

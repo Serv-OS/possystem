@@ -18,6 +18,7 @@ import { sendEmailReceipt } from '../../lib/sendReceipt';
 import { getDeliveryQuote, recordDeliverySurcharge } from '../../lib/delivery/quoteService';
 import AddressAutocomplete from '../../components/AddressAutocomplete';
 import { commitRedemption } from '../../lib/commitRedemptions';
+import { tipRuleFromCatering, tipChips, tipInitialKey, tipAmount as calcTip } from '../../lib/tipping';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 const money = (n, cur) => `${({ gbp: '£', usd: '$', eur: '€' }[cur] || '£')}${Number(n || 0).toFixed(2)}`;
@@ -56,7 +57,11 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
   const [name, setName] = useState(''); const [phone, setPhone] = useState(''); const [email, setEmail] = useState('');
   const [addr1, setAddr1] = useState(''); const [postcode, setPostcode] = useState(''); const [addrGeo, setAddrGeo] = useState(null);
   const [taxId, setTaxId] = useState(''); const [promo, setPromo] = useState(''); const [notes, setNotes] = useState('');
-  const [tipPct, setTipPct] = useState(0);
+  // v5.8.8: the whole rule comes from Catering settings (on/off, chips, the
+  // pre-selected one, custom). The chips used to be hardcoded [0, default, 15, 20].
+  const tipRule = useMemo(() => tipRuleFromCatering(cfg), [cfg]);
+  const [tipKey, setTipKey] = useState(() => tipInitialKey(tipRule));
+  const [customTip, setCustomTip] = useState('');
   const [promoApplied, setPromoApplied] = useState(null);  // { code, amount, name }
   const [promoErr, setPromoErr] = useState(''); const [promoBusy, setPromoBusy] = useState(false);
   const [payMode, setPayMode] = useState('now');           // 'now' | 'later'
@@ -85,7 +90,7 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isDelivery, addr1, postcode, subtotal, opsId]);
   const deliveryFee = isDelivery && deliveryQuote?.available ? (deliveryQuote.customerFeeMinor || 0) / 100 : 0;
-  const tip = useMemo(() => (cfg.tips_enabled && tipPct ? +(subtotal * tipPct / 100).toFixed(2) : 0), [cfg.tips_enabled, tipPct, subtotal]);
+  const tip = useMemo(() => (tipRule.on ? calcTip(subtotal, tipKey, customTip) : 0), [tipRule.on, tipKey, customTip, subtotal]);
   const discount = promoApplied?.amount || 0;
   // v5.7.31: tax breakdown at CHECKOUT (was only computed at finalize) — added-on
   // (exclusive, US) sales tax is part of what the customer pays, so it belongs in
@@ -424,9 +429,10 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
                 {promoErr && <div style={{ color: '#dc2626', fontSize: 12.5, marginTop: 5 }}>{promoErr}</div>}
               </div>
             )}
-            {cfg.tips_enabled && (
+            {tipRule.on && (
               <div style={{ marginTop: 12 }}><label style={lbl}>Add a tip</label>
-                <div style={{ display: 'flex', gap: 8 }}>{[0, Number(cfg.tip_default_pct) || 10, 15, 20].filter((v, i, a) => a.indexOf(v) === i).map((p) => <button key={p} onClick={() => setTipPct(p)} style={{ padding: '8px 14px', borderRadius: 99, border: '1px solid #cbd5e1', background: tipPct === p ? theme.brand : '#fff', color: tipPct === p ? '#fff' : '#0f172a', cursor: 'pointer', fontWeight: 700 }}>{p === 0 ? 'No tip' : `${p}%`}</button>)}</div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>{tipChips(tipRule).map((c) => <button key={c.key} onClick={() => setTipKey(c.key)} style={{ padding: '8px 14px', borderRadius: 99, border: '1px solid #cbd5e1', background: tipKey === c.key ? theme.brand : '#fff', color: tipKey === c.key ? '#fff' : '#0f172a', cursor: 'pointer', fontWeight: 700 }}>{c.label}</button>)}</div>
+                {tipKey === 'custom' && <input type="number" min={0} step="0.01" value={customTip} onChange={(e) => setCustomTip(e.target.value)} placeholder="Amount" style={{ ...inp, marginTop: 8, maxWidth: 160 }} />}
               </div>
             )}
             <div style={{ marginTop: 12 }}><label style={lbl}>Notes for the venue <span style={{ color: '#94a3b8', fontWeight: 500 }}>dietary needs, setup, etc.</span></label><textarea style={{ ...inp, minHeight: 70, resize: 'vertical' }} value={notes} onChange={(e) => setNotes(e.target.value)} /></div>
