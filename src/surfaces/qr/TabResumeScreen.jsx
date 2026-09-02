@@ -20,6 +20,7 @@ import { supabase } from '../../lib/supabase';
 import { clearStashedTab } from '../../lib/qrTabStorage';
 import { money } from '../../lib/currency';
 import { ryftTab } from '../../lib/payments/ryft';
+import { adyenTab } from '../../lib/payments/adyenTab';
 
 export default function TabResumeScreen({
   slug, tableId, tableLabel,
@@ -53,6 +54,15 @@ export default function TabResumeScreen({
         const cap = Number(r.captured_amount || 0);
         // Real hold currency (echoed by capture) so an overage MIT matches it.
         data = { captured: !!r.success, captured_amount: cap, shortfall: Number(r.shortfall || 0), currency: (r.currency || 'gbp').toLowerCase(), amount: cap };
+      } else if (tab.processor === 'adyen' || rounds?.[0]?.customer?.processor === 'adyen') {
+        // v5.8.17: Adyen pre-auth, captured for the running total.
+        const r = await adyenTab('tab_capture', {
+          location_id: locId, psp_reference: tab.payment_intent_id,
+          amount_minor: Math.round(runningTotal * 100),
+          hold_minor: Math.round(Number(rounds?.[0]?.customer?.pre_auth_amount || 0) * 100) || undefined,
+          reference: `tabclose:${tab.tab_ref || tab.payment_intent_id}`.slice(0, 60),
+        });
+        data = { captured: !!r.captured, captured_amount: Number(r.captured_amount || 0), shortfall: Number(r.shortfall || 0), currency: (r.currency || 'gbp').toLowerCase(), amount: Number(r.captured_amount || 0), error: r.error };
       } else {
         const res = await fetch('/api/stripe-capture', {
           method: 'POST',

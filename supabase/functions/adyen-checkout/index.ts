@@ -149,6 +149,20 @@ Deno.serve(async (req) => {
         returnUrl: String(body.return_url || 'https://dev.serv-os.app/'),
         shopperInteraction: 'Ecommerce',
       };
+      // v5.8.17 QR OPEN TAB: a pre-authorisation that is captured LATER for the
+      // real bill (or cancelled). Both additional-data keys are the ones our
+      // terminal path already sends in SaleToAcquirerData, so they are proven
+      // on this account. No captureDelayHours: the earlier attempt used a 7-day
+      // delay, which would have auto-charged an abandoned tab in full. A tab
+      // nobody closes now simply expires on Adyen (28 days, sooner per scheme).
+      if (body.capture_method === 'manual') {
+        payment.additionalData = { ...(payment.additionalData as object || {}), authorisationType: 'PreAuth', manualCapture: 'true' };
+      }
+      if (body.store_card && body.shopper_reference) {
+        payment.shopperReference = String(body.shopper_reference).slice(0, 80);
+        payment.storePaymentMethod = true;
+        payment.recurringProcessingModel = 'UnscheduledCardOnFile';
+      }
       if (body.browser_info) payment.browserInfo = body.browser_info;
       if (body.shopper_email) payment.shopperEmail = String(body.shopper_email);
       const store = await resolveStore(body.location_id ? String(body.location_id) : undefined);
@@ -187,6 +201,48 @@ Deno.serve(async (req) => {
       const j = await res.json().catch(() => ({}));
       if (!res.ok) return json({ error: j.message || `Adyen refused (${res.status})` }, 502);
       return json({ ok: true, resultCode: j.resultCode || null, pspReference: j.pspReference || null, refusalReason: j.refusalReason || null, action: j.action || null });
+    }
+
+    // ── v5.8.17 QR open tab close: customer-callable, like ryft-tab ──────────
+    // The psp reference is the secret (only the tab holder's phone and the
+    // venue know it), exactly as the Ryft session id is on ryft-tab. Capture can
+    // only move money TO the venue, never out.
+    //   tab_capture { psp_reference, amount_minor, hold_minor?, currency?, reference? }
+    //     -> { ok, captured, captured_amount, shortfall, currency }
+    //   tab_cancel  { psp_reference, reference? } -> { ok }
+    if (action === 'tab_capture' || action === 'tab_cancel') {
+      const psp = String(body.psp_reference || '').trim();
+      if (!psp) return json({ error: 'psp_reference required' }, 400);
+      const currency = String(body.currency || 'GBP').toUpperCase();
+      const hdr = (key: string) => ({ 'X-API-Key': API_KEY, 'Content-Type': 'application/json', 'Idempotency-Key': key.slice(0, 64) });
+      if (action === 'tab_cancel') {
+        const res = await fetch(`${CHECKOUT_BASE}/v72/payments/${encodeURIComponent(psp)}/cancels`, {
+          method: 'POST', headers: hdr(`tabcan:${psp}`),
+          body: JSON.stringify({ merchantAccount: MERCHANT, reference: String(body.reference || `tab-cancel:${psp}`).slice(0, 80) }),
+        });
+        const j = await res.json().catch(() => ({}));
+        if (!res.ok) return json({ ok: false, error: j.message || `Adyen refused the cancel (${res.status})` }, 200);
+        return json({ ok: true, status: j.status || 'received' });
+      }
+      const wanted = Math.round(Number(body.amount_minor));
+      if (!Number.isFinite(wanted) || wanted < 1) return json({ error: 'amount_minor must be a positive integer' }, 400);
+      const hold = Number.isFinite(Number(body.hold_minor)) && Number(body.hold_minor) > 0 ? Math.round(Number(body.hold_minor)) : null;
+      const tryCapture = async (value: number, salt: string) => {
+        const res = await fetch(`${CHECKOUT_BASE}/v72/payments/${encodeURIComponent(psp)}/captures`, {
+          method: 'POST', headers: hdr(`tabcap:${psp}:${value}:${salt}`),
+          body: JSON.stringify({ merchantAccount: MERCHANT, amount: { value, currency }, reference: String(body.reference || `tab-capture:${psp}`).slice(0, 80) }),
+        });
+        const j = await res.json().catch(() => ({}));
+        return { ok: res.ok, j, status: res.status };
+      };
+      // Bill above the hold: try the real bill first (some schemes allow an
+      // overcapture), then fall back to the hold and report the shortfall so
+      // staff collect it, the same contract the Stripe path returns.
+      let r = await tryCapture(wanted, 'a');
+      let captured = wanted;
+      if (!r.ok && hold && wanted > hold) { r = await tryCapture(hold, 'b'); captured = hold; }
+      if (!r.ok) return json({ ok: false, captured: false, error: r.j?.message || `Adyen refused the capture (${r.status})` }, 200);
+      return json({ ok: true, captured: true, captured_amount: captured, shortfall: Math.max(0, wanted - captured), currency: currency.toLowerCase(), amount: captured, modification_psp: r.j?.pspReference || null });
     }
 
     return json({ error: `unknown action: ${action}` }, 400);

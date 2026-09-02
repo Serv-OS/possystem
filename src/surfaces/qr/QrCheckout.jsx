@@ -79,7 +79,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   const [payChoice, setPayChoice] = useState(
     paymentMode === 'open_tab' ? 'open_tab' : 'pay_now'
   );
-  const openTabAvailable = processor !== 'adyen';
+  const openTabAvailable = true;   // v5.8.17: Adyen open tabs via pre-auth (was hidden in v5.8.15)
   useEffect(() => { if (!openTabAvailable && payChoice === 'open_tab') setPayChoice('pay_now'); }, [openTabAvailable, payChoice]);
   const isOpenTab = payChoice === 'open_tab' && openTabAvailable;
   // v5.5.160: enforce a sensible MINIMUM pre-auth even when the venue config
@@ -273,9 +273,9 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
     if (processor === 'ryft') { setError(''); setStep('pay'); return; }
     // v5.8.15: Adyen venues were falling through to the STRIPE path below and
     // taking a Stripe payment on an Adyen venue. The Drop-in creates its own
-    // session (adyen-checkout), exactly as OnlineCheckout does. Open tabs are
-    // not offered on Adyen yet: adyen-create-session refuses manual capture
-    // until the Phase-2 hold design lands, so the option is hidden below.
+    // session (adyen-checkout), exactly as OnlineCheckout does.
+    // v5.8.17: an open tab is a pre-authorisation (capture_method manual, card
+    // kept on file) captured at close through adyen-checkout tab_capture.
     if (processor === 'adyen') { setError(''); setStep('pay'); return; }
     setWorking(true); setError('');
     try {
@@ -681,9 +681,12 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
           <div style={{ padding: '0 24px 16px' }}>
             <AdyenPaymentForm
               locationId={platformLocationId}
-              amountMinor={Math.round(total * 100)}
+              amountMinor={Math.round((isOpenTab ? tabPreAuthAmount : total) * 100)}
               currency={stripeCurrency()}
               reference={orderShape?.ref}
+              captureMethod={isOpenTab ? 'manual' : 'automatic'}
+              storeCard={isOpenTab}
+              shopperReference={orderShape?.ref}
               customerEmail={orderShape?.customer?.email}
               onSuccess={onPaymentSuccess}
               onError={(e) => setError(e?.message || 'Payment failed')}

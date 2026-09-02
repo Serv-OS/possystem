@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.17',
+    date: '2 Sep 2026',
+    items: [
+      'QR open tabs now work on Adyen venues. The tab is opened as a pre-authorisation on the customer\u2019s card and captured for the real bill when it is closed, from the Orders Hub or by the customer on their phone. The Open tab button is back.',
+      'If the final bill is above the hold, the capture is tried at the full bill first and falls back to the held amount, reporting the shortfall to staff exactly as the Stripe path does. A tab nobody closes is left to expire on Adyen rather than being charged in full.',
+    ],
+  },
+  {
     v: '5.8.16',
     date: '2 Sep 2026',
     items: [

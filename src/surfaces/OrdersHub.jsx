@@ -27,6 +27,7 @@ import { courierPhase, courierLegs, courierLateness } from '../lib/delivery/cour
 import { buildChannelCloseFields } from '../lib/channelMoney';
 import CourierTrackingQR from '../components/CourierTrackingQR';
 import { collectionLabel, orderCollectionLabel } from '../lib/collectionLabel';
+import { adyenTab } from '../lib/payments/adyenTab';
 
 // ── Channel definitions ────────────────────────────────────────────────────────
 const FILTER_TABS = [
@@ -448,6 +449,16 @@ export default function OrdersHub() {
         // Use the hold's real currency (echoed by capture) for the overage —
         // never assume GBP, or a USD/EUR venue's MIT would currency-mismatch.
         data = { captured: !!r.success, captured_amount: Number(r.captured_amount || 0), shortfall: Number(r.shortfall || 0), currency: (r.currency || 'gbp').toLowerCase() };
+      } else if (tab.processor === 'adyen') {
+        // v5.8.17: Adyen pre-auth. Same normalised shape as the other two.
+        const r = await adyenTab('tab_capture', {
+          location_id: tab.firstRow?.location_id,
+          psp_reference: tab.payment_intent_id,
+          amount_minor: Math.round(finalTotal * 100),
+          hold_minor: Math.round(Number(tab.preAuthAmount || 0) * 100) || undefined,
+          reference: `tabclose:${tab.firstRow?.ref || tab.payment_intent_id}`.slice(0, 60),
+        });
+        data = { captured: !!r.captured, captured_amount: Number(r.captured_amount || 0), shortfall: Number(r.shortfall || 0), currency: (r.currency || 'gbp').toLowerCase(), amount: Number(r.captured_amount || 0), error: r.error };
       } else {
         const res = await fetch('/api/stripe-capture', {
           method: 'POST',
@@ -693,17 +704,30 @@ export default function OrdersHub() {
     setClosingTabRef(o.ref);
     const captureAmount = preAuth > 0 ? Math.min(finalTotal, preAuth) : finalTotal;
     try {
-      const res = await fetch('/api/stripe-capture', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          paymentIntentId: pi,
-          stripeAccount: acct,
-          amountToCapture: Math.round(captureAmount * 100), // pence
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.captured) {
+      let data;
+      if (o.customer?.processor === 'adyen') {
+        // v5.8.17: Adyen pre-auth capture (customer-safe fn, same shape).
+        const r = await adyenTab('tab_capture', {
+          location_id: o.location_id, psp_reference: pi,
+          amount_minor: Math.round(finalTotal * 100),
+          hold_minor: preAuth > 0 ? Math.round(preAuth * 100) : undefined,
+          reference: `tabclose:${o.ref}`.slice(0, 60),
+        });
+        data = { captured: !!r.captured, captured_amount: Number(r.captured_amount || 0), error: r.error };
+      } else {
+        const res = await fetch('/api/stripe-capture', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            paymentIntentId: pi,
+            stripeAccount: acct,
+            amountToCapture: Math.round(captureAmount * 100), // pence
+          }),
+        });
+        data = await res.json();
+        if (!res.ok) throw new Error(data?.error || 'Capture failed');
+      }
+      if (!data.captured) {
         throw new Error(data?.error || 'Capture failed');
       }
       // Write closed_checks now that the bill has been captured.

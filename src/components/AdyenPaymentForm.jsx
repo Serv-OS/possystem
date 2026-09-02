@@ -32,6 +32,9 @@ export default function AdyenPaymentForm({
   locationId,                // v5.8.15: platform location id. adyen-checkout resolves the
                              // venue's store from it; without it the fn falls back to
                              // "the only Adyen store", which stops being true at venue 2.
+  captureMethod = 'automatic', // v5.8.17: 'manual' = pre-authorise, capture later (QR open tab)
+  storeCard = false,           // v5.8.17: keep the card on file (shopper_reference required)
+  shopperReference,
   onSuccess,
   onError,
 }) {
@@ -70,6 +73,8 @@ export default function AdyenPaymentForm({
               const r = await payViaServer({
                 action: 'make_payment',
                 ...(locationId ? { location_id: locationId } : {}),
+                ...(captureMethod === 'manual' ? { capture_method: 'manual' } : {}),
+                ...(storeCard && shopperReference ? { store_card: true, shopper_reference: shopperReference } : {}),
                 amount_minor: amountMinor,
                 currency: String(currency).toUpperCase(),
                 reference,
