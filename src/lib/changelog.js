@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.97',
+    date: '2026-09-01',
+    items: [
+      'Removed Start onboarding, New onboarding link, Configure splits and Set up daily payout from the payments screen. Every one of them called an Adyen service our credential is refused on, so all four could ever do was fail in a way that looked like our fault',
+      'Venues are connected with Enter Adyen details instead, and splits and payouts are set in the Adyen Customer Area, which is how FranPOS do it',
+      'The underlying code is still there and still works, so if Adyen ever grants the permissions the buttons come back in minutes with nothing else to change',
+    ],
+  },
+  {
     version: '5.7.96',
     date: '2026-09-01',
     items: [

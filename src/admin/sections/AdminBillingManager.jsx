@@ -816,7 +816,7 @@ function AdyenBlock({ location, defaults, onError }) {
           </>
         )}
       </div>
-      <AdyenPayoutPanel location={location} onError={onError} />
+      <AdyenPayoutPanel location={location} />
     </>
   );
 }
@@ -840,11 +840,9 @@ function OnbStep({ done, label, detail }) {
   );
 }
 
-function AdyenPayoutPanel({ location, onError }) {
+function AdyenPayoutPanel({ location }) {
   const [st, setSt] = useState(null);        // null = loading, {error} or adyen-onboard status payload
-  const [busy, setBusy] = useState(null);    // action name while one runs
   const [msg, setMsg] = useState(null);      // { kind, text } from the last action
-  const [link, setLink] = useState(null);    // { url, expires_at } freshly minted
   // v5.7.93: venues are onboarded BY HAND in the Adyen Customer Area (the API
   // credential is refused by Legal Entity Management), so the ids it creates are
   // typed in here. Same columns the API path writes, so everything downstream
@@ -855,7 +853,6 @@ function AdyenPayoutPanel({ location, onError }) {
   const [merchants, setMerchants] = useState(null);
   // Stores for the CHOSEN merchant. Refetched when the merchant changes.
   const [stores, setStores] = useState(null);
-  const [copied, setCopied] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -866,22 +863,6 @@ function AdyenPayoutPanel({ location, onError }) {
 
   useEffect(() => { setSt(null); load(); }, [load]);
 
-  const run = async (action, payload = {}) => {
-    setBusy(action); setMsg(null);
-    try {
-      const r = await callAdyenOnboard(action, { location_id: location.id, ...payload });
-      if (r.ok) {
-        if (r.onboarding_link?.url) { setLink(r.onboarding_link); setCopied(false); }
-        if (action === 'configure_splits') setMsg({ kind: 'ok', text: `Split profile live (${r.split_profile_id}) — one commission rule per payment type: ${(r.tier_summary || []).join(' · ')}. Remainder to the venue.` });
-        if (action === 'setup_sweep') setMsg({ kind: 'ok', text: `${r.existed ? 'Sweep already in place' : r.updated ? 'Sweep updated' : 'Sweep created'} (${r.sweep?.id}) — ${r.sweep?.schedule} push of the full balance to the venue bank.` });
-        if (action === 'start' && !r.onboarding_link) setMsg({ kind: 'ok', text: r.next || 'Accounts created.' });
-        await load();
-      } else {
-        setMsg({ kind: r.kind || 'error', text: r.message || r.error || 'failed' });
-      }
-    } catch (e) { setMsg({ kind: 'error', text: e.message }); }
-    finally { setBusy(null); }
-  };
 
   const box = { marginTop: 14, padding: '14px 16px', borderRadius: 12, background: 'var(--bg2)', border: '1px solid var(--bdr2)' };
 
@@ -897,11 +878,8 @@ function AdyenPayoutPanel({ location, onError }) {
   }
 
   const ids = st.ids || {};
-  const started = !!(ids.legal_entity_id || ids.account_holder_id || ids.balance_account_id);
   const awaiting = st.enablement === 'awaiting_enablement';
   const hasSweep = Array.isArray(st.sweeps) && st.sweeps.length > 0;
-  const splitsReady = !!st.prerequisites?.configure_splits?.ok;
-  const splitsWhy = (st.prerequisites?.configure_splits?.missing || []).join('; ');
   const bal = Array.isArray(st.balances) && st.balances.length ? st.balances[0] : null;
 
   const kindStyle = (kind) => kind === 'ok'
@@ -946,22 +924,6 @@ function AdyenPayoutPanel({ location, onError }) {
           <Stat label="Total balance" value={fmtMinor(bal.total_minor, bal.currency)} accent />
           <Stat label="Pending" value={fmtMinor(bal.pending_minor, bal.currency)} />
           <Stat label="Available" value={fmtMinor(bal.available_minor, bal.currency)} />
-        </div>
-      )}
-
-      {link?.url && (
-        <div style={{ padding: 10, borderRadius: 8, background: 'var(--bg1)', border: '1px solid var(--bdr)', marginBottom: 12 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t2)', marginBottom: 6 }}>
-            Hosted onboarding link — single use, expires in 4 minutes. Send or open it NOW; mint a new one any time.
-          </div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <input readOnly value={link.url} style={{ ...S.input, ...S.inputMono, fontSize: 11 }} onFocus={(e) => e.target.select()} />
-            <button style={{ ...S.btn, ...S.btnGhost }} onClick={async () => {
-              try { await navigator.clipboard.writeText(link.url); setCopied(true); setTimeout(() => setCopied(false), 2000); }
-              catch { onError?.('Copy failed — select the link and copy it manually.'); }
-            }}>{copied ? 'Copied' : 'Copy'}</button>
-            <button style={{ ...S.btn, ...S.btnPrim }} onClick={() => window.open(link.url, '_blank', 'noopener')}>Open</button>
-          </div>
         </div>
       )}
 
@@ -1113,7 +1075,7 @@ function AdyenPayoutPanel({ location, onError }) {
       )}
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <button style={{ ...S.btn, ...S.btnPrim, opacity: busy ? 0.6 : 1 }} disabled={!!busy || !!manual}
+        <button style={{ ...S.btn, ...S.btnPrim, opacity: manual ? 0.6 : 1 }} disabled={!!manual}
           onClick={() => {
             if (merchants === null) {
               callAdyenOnboard('list_merchants', { location_id: location.id })
@@ -1128,32 +1090,16 @@ function AdyenPayoutPanel({ location, onError }) {
           }); }}>
           Enter Adyen details
         </button>
-        <button style={{ ...S.btn, ...S.btnGhost, opacity: busy ? 0.6 : 1 }} disabled={!!busy}
-          title="Only works once Adyen grants our credential the onboarding permissions. Use Enter Adyen details until then."
-          onClick={() => run('start')}>
-          {busy === 'start' ? 'Working…' : started ? 'Continue onboarding' : 'Start onboarding'}
-        </button>
-        <button style={{ ...S.btn, ...S.btnGhost, opacity: !ids.legal_entity_id || busy ? 0.5 : 1 }}
-          disabled={!ids.legal_entity_id || !!busy}
-          title={ids.legal_entity_id ? 'Mint a fresh hosted onboarding link (single use, 4 minutes)' : 'Needs the legal entity — run Start onboarding first'}
-          onClick={() => run('refresh_link')}>
-          {busy === 'refresh_link' ? 'Working…' : 'New onboarding link'}
-        </button>
-        <button style={{ ...S.btn, ...S.btnGhost, opacity: !splitsReady || busy ? 0.5 : 1 }}
-          disabled={!splitsReady || !!busy}
-          title={splitsReady ? 'Write one commission rule per payment type from the venue\'s resolved rate card onto the venue store' : `Not ready: ${splitsWhy}`}
-          onClick={() => run('configure_splits')}>
-          {busy === 'configure_splits' ? 'Working…' : 'Configure splits'}
-        </button>
-        <button style={{ ...S.btn, ...S.btnGhost, opacity: !ids.balance_account_id || busy ? 0.5 : 1 }}
-          disabled={!ids.balance_account_id || !!busy}
-          title={ids.balance_account_id
-            ? 'Create the daily push sweep — full available balance to the venue bank (re-checks for the bank account automatically)'
-            : 'Needs the balance account — run Start onboarding first'}
-          onClick={() => run('setup_sweep')}>
-          {busy === 'setup_sweep' ? 'Working…' : 'Set up daily payout'}
-        </button>
-        <button style={{ ...S.btn, ...S.btnGhost }} disabled={!!busy} onClick={() => { setSt(null); setMsg(null); load(); }}>Refresh</button>
+        {/* v5.7.97: Start onboarding / New onboarding link / Configure splits /
+            Set up daily payout are GONE from the UI. Every one of them calls an
+            Adyen API our credential is refused on, so all four could ever do was
+            fail in a way that looked like our fault. Venues are onboarded by hand
+            in the Customer Area instead, and splits and payouts are set there too.
+
+            The server actions are deliberately still there and still work. If
+            Adyen ever grants the permissions, putting these buttons back is a few
+            lines, and nothing else has to change. */}
+        <button style={{ ...S.btn, ...S.btnGhost }} disabled={manualBusy} onClick={() => { setSt(null); setMsg(null); load(); }}>Refresh</button>
       </div>
     </div>
   );
