@@ -12,6 +12,7 @@ import { useEffect, useRef, useState } from 'react';
 import { platformSupabase, supabase, getLocationId } from '../../lib/supabase';
 import { saveLocation } from '../../lib/locationAdmin';
 import { CUSTOMER_ROOT, customerUrl, groupOrderUrl } from '../../lib/env';
+import { getVenueUberConfig } from '../../lib/delivery/deliveryConfig';
 import QRCode from 'qrcode';
 
 // Reuses the existing receipt-assets bucket with an online/ prefix so logo
@@ -54,6 +55,7 @@ export default function OnlineOrdering({ setSection }) {
   const [branding, setBranding] = useState(BLANK_BRANDING);
   const [menuId, setMenuId]   = useState('');
   const [leadMin, setLeadMin] = useState(30);
+  const [deliveryModuleOn, setDeliveryModuleOn] = useState(null);  // null = not yet known
   const [deliveryOn, setDeliveryOn] = useState(false);
   // v5.5.959: the Gift cards / Loyalty pills were hardcoded enabled={true} — a fresh
   // venue with both OFF showed both ON. Read the REAL company-level flags; absent
@@ -133,6 +135,13 @@ export default function OnlineOrdering({ setSection }) {
             setMenuId(r.online_menu_id || '');
             setLeadMin(typeof r.online_collection_lead_min === 'number' ? r.online_collection_lead_min : 30);
             setDeliveryOn(!!r.online_delivery_enabled);
+            // v5.7.98: delivery on the storefront is meaningless without the
+            // delivery module, which owns the radius, the pricing and the
+            // courier. Read it so the toggle can tell the truth rather than
+            // letting a venue advertise a service it cannot perform.
+            getVenueUberConfig(await getLocationId())
+              .then((d) => setDeliveryModuleOn(!!d?.config?.enabled))
+              .catch(() => setDeliveryModuleOn(null));
             // v5.5.147: probe QR settings separately so a missing-column error
             // (migration not run yet) doesn't break the rest of this page.
             try {
@@ -398,8 +407,16 @@ export default function OnlineOrdering({ setSection }) {
             <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)' }}>Allow delivery</div>
             <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>Show Delivery alongside Collection at checkout. The delivery fee + fulfilment (self-delivery, or a courier) are set in <b>Channels → Delivery</b> — the fee is added to the customer's total automatically.</div>
           </div>
-          <Toggle on={deliveryOn} onChange={setDeliveryOn}/>
+          <Toggle on={deliveryOn && deliveryModuleOn !== false}
+            onChange={(v) => { if (deliveryModuleOn !== false) setDeliveryOn(v); }}/>
         </div>
+        {deliveryModuleOn === false && (
+          <div style={{ fontSize:11.5, lineHeight:1.55, color:'var(--orn, #b4740a)', background:'var(--orn-d, rgba(232,160,32,.10))',
+                        border:'1px solid var(--orn-b, rgba(232,160,32,.35))', borderRadius:10, padding:'9px 11px', marginTop:2 }}>
+            <b>Delivery is switched off for this venue.</b> Turn it on in <b>Channels → Delivery</b>,
+            where the radius, the pricing and the courier live. It will appear here by itself once it is on.
+          </div>
+        )}
       </div>
 
       {/* v5.5.147/149: QR ordering settings + per-table QR-code generator */}

@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.98',
+    date: '2026-09-01',
+    items: [
+      'Online ordering can no longer offer delivery when delivery itself is switched off. The two settings were completely independent, so a venue could advertise delivery on its storefront with no radius, no pricing and no courier behind it, and take orders nobody could fulfil',
+      'Turning delivery on in Channels, Delivery now switches it on for the storefront too, which is what turning delivery on ought to mean. Turning it off closes it on the storefront as well',
+      'If delivery is off, the storefront toggle is held off and explains where to turn it on, instead of letting it be set to something that cannot work',
+    ],
+  },
+  {
     version: '5.7.97',
     date: '2026-09-01',
     items: [

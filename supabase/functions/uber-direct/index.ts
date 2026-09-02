@@ -47,6 +47,40 @@ const ENV_STUART_SECRET = Deno.env.get('STUART_CLIENT_SECRET') ?? '';
 const ENV_STUART_DEFAULT = (Deno.env.get('STUART_ENV') ?? ENV_DEFAULT) as 'sandbox' | 'prod';
 const sb = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } });
 
+// v5.7.98: the online storefront's "Allow delivery" flag lives on the PLATFORM
+// locations row, while every setting that makes delivery actually work (radius,
+// pricing, courier account) lives here in venue_uber_config. The two were wholly
+// independent, so a venue could advertise delivery online with no radius, no
+// price and no courier behind it, and take orders nobody could fulfil.
+const platformSb = createClient(
+  Deno.env.get('PLATFORM_SUPABASE_URL') ?? '',
+  Deno.env.get('PLATFORM_SUPABASE_SERVICE_ROLE_KEY') ?? '',
+  { auth: { autoRefreshToken: false, persistSession: false } },
+);
+
+/**
+ * Delivery is either on for this venue or it is not, in both places.
+ *
+ * Turning the module ON opens it on the storefront, which is what an operator
+ * means by "enable delivery". Turning it OFF closes it there too, because
+ * leaving it advertised takes orders that cannot be delivered.
+ *
+ * Never throws: a storefront flag failing to mirror must not fail the save the
+ * operator actually asked for.
+ */
+async function mirrorDeliveryToStorefront(opsLocationId: string, enabled: boolean) {
+  try {
+    const { data: ploc } = await platformSb.from('locations')
+      .select('id').eq('ops_location_id', opsLocationId).maybeSingle();
+    if (!ploc?.id) { console.warn(`uber-direct: no platform location for ${opsLocationId}, storefront flag not mirrored`); return; }
+    const { error } = await platformSb.from('locations')
+      .update({ online_delivery_enabled: enabled }).eq('id', ploc.id);
+    if (error) console.error('uber-direct: could not mirror the storefront delivery flag:', error.message);
+  } catch (e) {
+    console.error('uber-direct: mirroring the storefront delivery flag threw:', (e as Error).message);
+  }
+}
+
 const NON_SECRET = [
   'location_id', 'enabled', 'delivery_mode', 'uber_customer_id', 'pickup_address', 'pickup_contact',
   'radius_miles', 'dispatch_backend', 'surcharge_policy', 'flat_fee_minor', 'fallback_fee_minor', 'sms_tracking', 'env',
@@ -154,7 +188,10 @@ Deno.serve(async (req) => {
       const { error } = await sb.from('venue_uber_config').upsert(allowed, { onConflict: 'location_id' });
       if (error) return json({ error: error.message }, 500);
       const { data } = await sb.from('venue_uber_config').select('*').eq('location_id', loc).maybeSingle();
-      return json({ ok: true, config: pickNonSecret(data) });
+      // Keep the storefront in step whenever the on/off state was part of this
+      // save. Awaited, so what the operator is told back is the truth.
+      if ('enabled' in patch) await mirrorDeliveryToStorefront(loc, !!patch.enabled);
+      return json({ ok: true, config: pickNonSecret(data), storefront_delivery: !!data?.enabled });
     }
 
     // ── Platform onboarding: create an Uber Direct SUB-ORG for this venue (Organizations API).
@@ -530,7 +567,12 @@ Deno.serve(async (req) => {
         ref ? sb.from('order_queue').select('ref, type, status, total, customer, items, created_at').eq('location_id', loc).eq('ref', ref).maybeSingle() : Promise.resolve({ data: null }),
         ref ? sb.from('delivery_quotes').select('*').eq('location_id', loc).eq('order_ref', ref).order('created_at', { ascending: false }).limit(1).maybeSingle() : Promise.resolve({ data: null }),
         ref ? sb.from('delivery_surcharges').select('*').eq('location_id', loc).eq('order_ref', ref).order('created_at', { ascending: false }).limit(1).maybeSingle() : Promise.resolve({ data: null }),
-        ref ? sb.from('delivery_status_events').select('*').eq('location_id', loc).eq('order_ref', ref).order('created_at', { ascending: true }) : Promise.resolve({ data: [] }),
+        // delivery_status_events has NO order_ref and NO created_at (event_id pk, delivery_id,
+        // location_id, status, payload, received_at) — the old query filtered on columns that do
+        // not exist, so the timeline always came back empty. Join on delivery_id and order by
+        // received_at. No location_id filter: `del` is already scoped to `loc` above, and legacy
+        // event rows written before this fix carry a null location_id.
+        del?.id ? sb.from('delivery_status_events').select('*').eq('delivery_id', del.id).order('received_at', { ascending: true }) : Promise.resolve({ data: [] }),
       ]);
       return json({ ok: true, delivery: del, order: orderRes.data || null, quote: quoteRes.data || null, surcharge: surchargeRes.data || null, events: eventsRes.data || [] });
     }
