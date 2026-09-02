@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.11',
+    date: '2 Sep 2026',
+    items: [
+      'The till quoted a different collection wait to the website (45 vs 90) for the same kitchen. The till had cached the venue settings at boot and used its own in-memory order count. Taking a phone order now reads the same two sources the website reads, fresh, with the old figures kept only as the offline fallback.',
+      'A Push to POS now also refreshes the cached venue settings on every till.',
+    ],
+  },
+  {
     v: '5.8.10',
     date: '2 Sep 2026',
     items: [

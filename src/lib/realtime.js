@@ -19,6 +19,7 @@ import { isHubriseAutoReceipt } from './hubrise';
 // refund echoes land here, so capping only the local sale paths would still let a busy
 // venue grow this array without limit.
 import { capClosedChecks } from '../store';
+import { getLocationConfig, clearLocationConfigCache } from './locationTime';
 
 let channels = [];
 let _rtLocation = null;   // the location the current channel set is subscribed to (for idempotency)
@@ -181,6 +182,14 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       // DB (self-healing deviceConfig), same window-event pattern as
       // rpos-master-offline. Dispatched on every push, snapshot or not.
       try { window.dispatchEvent(new Event('rpos-config-push')); } catch { /* non-browser */ }
+      // v5.8.11: the venue settings (timezone, kitchen-start lead, quoted wait,
+      // busy rule) are cached for the whole session in locationTime. Nothing on
+      // the till ever refreshed them, so a rule changed in Back Office reached
+      // the website immediately and the till never. Bust and re-read on push.
+      try {
+        clearLocationConfigCache();
+        getLocationConfig(locationId).then((cfg) => { if (cfg) store.setState({ locationConfig: cfg }); }).catch(() => {});
+      } catch { /* best effort */ }
       if (push.snapshot) {
         store.getState().setConfigUpdate(push.snapshot);
         // v5.5.311: Auto-apply on UNATTENDED surfaces (KDS / kiosk / orders /

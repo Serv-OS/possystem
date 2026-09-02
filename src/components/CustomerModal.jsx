@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useStore, getCollectionSlots } from '../store';
-import { kitchenLoadFromStore, prepMinutes } from '../lib/prepTime';
+import { kitchenLoadFromStore, prepMinutes, liveOrderCount } from '../lib/prepTime';
+import { supabase, getLocationId } from '../lib/supabase';
+import { getLocationConfig, clearLocationConfigCache } from '../lib/locationTime';
 import AddressAutocomplete from './AddressAutocomplete';
 
 export default function CustomerModal({ orderType, existing, onConfirm, onCancel }) {
@@ -22,11 +24,36 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
   const liveTables  = useStore(st => st.tables);
   const liveTabs    = useStore(st => st.tabs);
   const liveQueue   = useStore(st => st.orderQueue);
-  const quotedLead  = prepMinutes(
-    typeof leadBase === 'number' ? leadBase : 30,
-    kitchenLoadFromStore({ tables: liveTables, tabs: liveTabs, orderQueue: liveQueue }).load,
-    busyRule,
-  ).minutes;
+  // v5.8.11: read the SAME two sources the website reads, fresh, when the
+  // modal opens. The store's copy of the venue settings is cached for the
+  // whole session (locationTime._locationConfigCache) and its order count is
+  // the till's own memory, so a rule changed in Back Office never reached an
+  // open till: the website quoted 90 while the counter quoted 45 for the same
+  // kitchen at the same moment. The in-memory figures stay as the offline
+  // fallback only.
+  const [fresh, setFresh] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const locId = await getLocationId();
+        if (!locId || locId === 'loc-demo') return;
+        clearLocationConfigCache();
+        const [cfg, count] = await Promise.all([
+          getLocationConfig(locId),
+          liveOrderCount(supabase, locId),
+        ]);
+        if (alive && cfg) setFresh({ cfg, load: count?.load ?? null });
+      } catch { /* offline: fall back to the store below */ }
+    })();
+    return () => { alive = false; };
+  }, []);
+  const effBase = typeof fresh?.cfg?.quoteLeadMinutes === 'number' ? fresh.cfg.quoteLeadMinutes
+    : (typeof leadBase === 'number' ? leadBase : 30);
+  const effRule = fresh?.cfg?.busyRule || busyRule;
+  const effLoad = typeof fresh?.load === 'number' ? fresh.load
+    : kitchenLoadFromStore({ tables: liveTables, tabs: liveTabs, orderQueue: liveQueue }).load;
+  const quotedLead  = prepMinutes(effBase, effLoad, effRule).minutes;
   const [name, setName]       = useState(existing?.name || '');
   const [phone, setPhone]     = useState(existing?.phone || '');
   const [email, setEmail]     = useState(existing?.email || '');
