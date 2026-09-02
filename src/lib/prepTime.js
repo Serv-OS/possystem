@@ -14,10 +14,22 @@
 // already waiting on the shelf are NOT counted: the food is made, so it is not
 // competing for kitchen time, and counting it would inflate the quote all day.
 
-/** Order-queue states the Orders Hub treats as finished. Everything else on the
- *  queue is still open work. Kept identical to DONE_STATUSES in OrdersHub.jsx:
- *  the number quoted to a customer has to be the number staff can see. */
+/** Order-queue states the Orders Hub treats as finished. Kept identical to
+ *  DONE_STATUSES in OrdersHub.jsx: the number quoted to a customer has to be
+ *  the number staff can see. */
 export const DONE_STATUSES = ['collected', 'paid', 'cancelled'];
+
+/** States that are NOT work in the kitchen yet.
+ *
+ *  A 'scheduled' order is a pre-order for later, often another day. It is
+ *  deliberately held out of the kitchen until shortly before its collection
+ *  time (store/index.js fireScheduledOrder), at which point it becomes a normal
+ *  queue order and starts counting. Counting it while it waits would let a
+ *  healthy pre-order book quote an hour's wait to somebody standing there now. */
+export const NOT_YET_WORKING = ['scheduled'];
+
+/** Everything the busy count treats as "not open work right now". */
+export const EXCLUDED_STATUSES = [...DONE_STATUSES, ...NOT_YET_WORKING];
 
 const DEFAULT_MAX_ADDED = 45;
 
@@ -77,16 +89,29 @@ export function prepRuleFromLocation(location) {
  */
 export async function liveOrderCount(supabase, opsLocationId) {
   if (!supabase || !opsLocationId) return null;
+  const rows = (q) => q.then(r => (r?.error ? null : (Array.isArray(r?.data) ? r.data : null)));
   const head = (q) => q.then(r => (r?.error ? null : (typeof r?.count === 'number' ? r.count : null)));
   try {
-    const [tables, tabs, queue] = await Promise.all([
-      head(supabase.from('active_sessions').select('table_id', { count: 'exact', head: true })
-        .eq('location_id', opsLocationId)),
+    const [floor, sessions, tabs, queue] = await Promise.all([
+      rows(supabase.from('floor_tables').select('id').eq('location_id', opsLocationId).limit(1000)),
+      rows(supabase.from('active_sessions').select('table_id').eq('location_id', opsLocationId).limit(1000)),
       head(supabase.from('bar_tabs').select('id', { count: 'exact', head: true })
         .eq('location_id', opsLocationId).neq('status', 'closed')),
       head(supabase.from('order_queue').select('ref', { count: 'exact', head: true })
-        .eq('location_id', opsLocationId).not('status', 'in', `(${DONE_STATUSES.join(',')})`)),
+        .eq('location_id', opsLocationId).not('status', 'in', `(${EXCLUDED_STATUSES.join(',')})`)),
     ]);
+
+    // Only sessions whose table is actually ON the floor plan count, because
+    // that is what the Orders Hub shows. Provo carries five session rows but
+    // only two live tables: the other three are orphans left by table splits
+    // and one from June that nothing has ever cleared. Counting those would
+    // have quoted customers a busier kitchen than exists, for ever.
+    let tables = null;
+    if (floor && sessions) {
+      const onFloor = new Set(floor.map(f => String(f.id)));
+      tables = sessions.filter(s2 => onFloor.has(String(s2.table_id))).length;
+    }
+
     if (tables === null && tabs === null && queue === null) return null;
     return (tables || 0) + (tabs || 0) + (queue || 0);
   } catch { return null; }

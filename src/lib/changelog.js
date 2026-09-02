@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.8.4',
+    date: '2026-09-01',
+    items: [
+      'The busy order count now matches the Orders Hub exactly. Table sessions only count when the table is actually on the floor plan, which is what the Hub shows. Provo carries five session rows but two real tables: the other three are leftovers from table splits and one from June that nothing ever cleared, and counting those would have quoted a busier kitchen than exists, permanently',
+      'Pre-orders for later no longer count until they enter the kitchen. A scheduled order is held out of the queue until shortly before its collection time, so a healthy pre-order book can no longer quote an hour\u2019s wait to somebody standing at the counter now',
+    ],
+  },
+  {
     version: '5.8.3',
     date: '2026-09-01',
     items: [
