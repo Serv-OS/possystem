@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.14',
+    date: '2 Sep 2026',
+    items: [
+      'Opening hours follow the calendar day, the way you already think about them. A late night is "Open 17:00, Close Midnight" on one day and "Open Midnight, Close 03:00" on the next, as two normal rows. The "closes the next morning" wording is gone. A row that closes at midnight says "Open until midnight", a Midnight-to-Midnight row says "Open all day", and a row whose close is earlier than its open gets a nudge to enter it as two rows instead.',
+    ],
+  },
+  {
     v: '5.8.13',
     date: '2 Sep 2026',
     items: [

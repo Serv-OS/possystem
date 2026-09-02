@@ -72,7 +72,7 @@ const HOURS = Array.from({ length: 48 }, (_, i) => {
   const h = Math.floor(i / 2);
   const m = (i % 2) * 30;
   const s = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
-  return { value: s, label: s === '00:00' ? '00:00 (midnight)' : s };
+  return { value: s, label: s === '00:00' ? 'Midnight' : s };
 });
 const toMin = (hhmm) => { const [h, m] = String(hhmm || '').split(':').map(Number); return (h || 0) * 60 + (m || 0); };
 
@@ -829,19 +829,29 @@ function OpeningHoursCard({ hours, setHours, timezone, closedDateInput, setClose
                   <div style={{ fontSize:12, color:'var(--t4)', fontStyle:'italic', paddingTop:6 }}>Closed</div>
                 )}
                 {windows.map((w, idx) => {
-                  const overnight = !!(w.open && w.close && toMin(w.close) <= toMin(w.open));
+                  // v5.8.14: hours belong to the calendar day. A late night is
+                  // "until Midnight" today plus "Midnight to 03:00" tomorrow, as
+                  // two ordinary rows. That is how the engine has always read it
+                  // (a close at/before the open runs to the next day). The only
+                  // things worth SAYING are the two special cases below; a close
+                  // earlier than the open that is not midnight gets a nudge
+                  // towards the two-row form rather than a "next morning" label.
+                  const untilMidnight = w.close === '00:00' && w.open && w.open !== '00:00';
+                  const allDay = w.open === '00:00' && w.close === '00:00';
+                  const endsBeforeStart = !!(w.open && w.close && !untilMidnight && !allDay && toMin(w.close) <= toMin(w.open));
+                  const nextDay = DAY_LABELS[(DAY_LABELS.findIndex(d => d.key === key) + 1) % DAY_LABELS.length]?.label;
                   return (
                     <div key={idx} style={{ display:'flex', flexDirection:'column', gap:3 }}>
                       <div style={{ display:'flex', gap:6, alignItems:'center' }}>
                         {idx > 0 && <span style={{ fontSize:11, color:'var(--t4)' }}>and</span>}
                         <span style={{ fontSize:11, color:'var(--t3)', fontWeight:600 }}>Open</span>
-                        <select style={{ ...S.select, width:110, padding:'6px 8px', fontSize:12 }}
+                        <select style={{ ...S.select, width:120, padding:'6px 8px', fontSize:12 }}
                           value={w.open || '09:00'}
                           onChange={e => setWindowField(key, idx, 'open', e.target.value)}>
                           {HOURS.map(h => <option key={h.value} value={h.value}>{h.label}</option>)}
                         </select>
                         <span style={{ fontSize:11, color:'var(--t3)', fontWeight:600 }}>Close</span>
-                        <select style={{ ...S.select, width:110, padding:'6px 8px', fontSize:12 }}
+                        <select style={{ ...S.select, width:120, padding:'6px 8px', fontSize:12 }}
                           value={w.close || '17:00'}
                           onChange={e => setWindowField(key, idx, 'close', e.target.value)}>
                           {HOURS.map(h => <option key={h.value} value={h.value}>{h.label}</option>)}
@@ -851,9 +861,17 @@ function OpeningHoursCard({ hours, setHours, timezone, closedDateInput, setClose
                           ✕
                         </button>
                       </div>
-                      {overnight && (
+                      {untilMidnight && (
                         <div style={{ fontSize:11, color:'var(--t4)', paddingLeft: idx > 0 ? 28 : 0 }}>
-                          Closes at {w.close} the next morning.
+                          Open until midnight. For the early hours, add Midnight to {'\u2026'} on {nextDay}.
+                        </div>
+                      )}
+                      {allDay && (
+                        <div style={{ fontSize:11, color:'var(--t4)', paddingLeft: idx > 0 ? 28 : 0 }}>Open all day.</div>
+                      )}
+                      {endsBeforeStart && (
+                        <div style={{ fontSize:11, color:'var(--amb, #b45309)', paddingLeft: idx > 0 ? 28 : 0 }}>
+                          Ends before it starts. For a late night, close at Midnight here and add Midnight to {w.close} on {nextDay}.
                         </div>
                       )}
                     </div>
