@@ -11,7 +11,13 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
   // The count comes from the store the Orders Hub renders, so the number staff
   // quote and the number they can see cannot drift apart.
   const tz          = useStore(st => st.locationConfig?.timezone);
-  const leadBase    = useStore(st => st.locationConfig?.collectionLeadMinutes);
+  // The wait we QUOTE, not collectionLeadMinutes (that is when the kitchen
+  // STARTS a pre-order — a different setting answering a different question).
+  // Falling back to the kitchen-start lead is still far better than the old
+  // hard-coded 15, which promised a caller a time the website would refuse.
+  const quoteBase   = useStore(st => st.locationConfig?.quoteLeadMinutes);
+  const kitchenBase = useStore(st => st.locationConfig?.collectionLeadMinutes);
+  const leadBase    = typeof quoteBase === 'number' ? quoteBase : kitchenBase;
   const busyRule    = useStore(st => st.locationConfig?.busyRule) || {};
   const liveTables  = useStore(st => st.tables);
   const liveTabs    = useStore(st => st.tabs);

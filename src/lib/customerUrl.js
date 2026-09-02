@@ -203,8 +203,13 @@ export async function lookupLocationBySlug(slug, platformSupabase) {
       data.company_id
         ? platformSupabase.from('companies').select('name').eq('id', data.company_id).maybeSingle()
         : Promise.resolve({ data: null }),
+      // collection_lead_minutes rides along here, not in the main select, for
+      // the same reason: it is the KITCHEN START lead (how far ahead of a
+      // promised collection the kitchen begins), which is a different setting
+      // from the wait quoted to the customer. The checkout needs it to stamp
+      // sent_at on a pre-order.
       platformSupabase.from('locations')
-        .select('online_busy_step_orders, online_busy_step_minutes, online_busy_max_minutes')
+        .select('online_busy_step_orders, online_busy_step_minutes, online_busy_max_minutes, collection_lead_minutes')
         .eq('id', data.id).maybeSingle(),
     ]);
     if (qrRes.status === 'fulfilled' && qrRes.value?.data) Object.assign(data, qrRes.value.data);

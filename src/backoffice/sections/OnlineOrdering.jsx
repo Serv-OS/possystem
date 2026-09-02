@@ -431,11 +431,11 @@ export default function OnlineOrdering({ setSection }) {
         </div>
 
         <Field
-          label="Collection lead time (minutes)"
+          label="Collection wait quoted to customers (minutes)"
           type="number" min="0"
           value={leadMin}
           onChange={v => setLeadMin(parseInt(v, 10) || 0)}
-          help={`Customers can pick a collection time at least ${leadMin} minute${leadMin === 1 ? '' : 's'} from now.`}/>
+          help={`The wait shown online, at the kiosk, on a QR menu and to staff taking a phone order. Nothing can be collected sooner than ${leadMin} minute${leadMin === 1 ? '' : 's'} from now. Separate from "Fire to kitchen N minutes before collection" in Location Settings, which is when the kitchen STARTS a pre-order.`}/>
 
         {/* v5.8.1: the flat lead time above is right when the kitchen is quiet
             and wrong the moment it is not. This makes it rise with the queue. */}

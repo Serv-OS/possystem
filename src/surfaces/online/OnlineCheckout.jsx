@@ -91,6 +91,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // column is NOT NULL DEFAULT 30, so only a genuine null should fall back.
   const baseLeadMin = Number.isFinite(Number(location.online_collection_lead_min))
     ? Number(location.online_collection_lead_min) : 30;
+  // Separate setting, separate job: when the kitchen STARTS a pre-order.
+  const kitchenStartMin = Number.isFinite(Number(location.collection_lead_minutes))
+    ? Number(location.collection_lead_minutes) : baseLeadMin;
   const [busyLive, setBusyLive] = useState(null);
   useEffect(() => {
     let alive = true;
@@ -371,13 +374,19 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     const collectionAt = timeMode === 'asap'
       ? new Date(Date.now() + leadMin * 60_000)
       : (slot ? new Date(slot.iso) : new Date(Date.now() + leadMin * 60_000));
-    // The kitchen fire moment. ASAP is by construction "now". A scheduled slot
-    // must use the BASE lead: leadMin carries today's queue depth, and firing a
-    // ticket for next Wednesday 45 minutes early because this Saturday is busy
-    // just plates food that then sits.
+    // The kitchen fire moment, and it is its OWN setting.
+    //   collection_lead_minutes  = how far ahead of a promised collection the
+    //                              kitchen starts cooking. Set in Location
+    //                              Settings as "Fire to kitchen N minutes
+    //                              before collection".
+    //   online_collection_lead_min + the busy rule = the wait we QUOTE.
+    // These answer different questions and must not be swapped. ASAP is "now"
+    // by construction. A pre-order for next Wednesday fires on the kitchen
+    // start lead, never on today's queue depth, or a busy Saturday would plate
+    // Wednesday's food 45 minutes early to sit under a lamp.
     const sentAt = timeMode === 'asap'
       ? new Date(collectionAt.getTime() - leadMin * 60_000)
-      : new Date(collectionAt.getTime() - baseLeadMin * 60_000);
+      : new Date(collectionAt.getTime() - kitchenStartMin * 60_000);
     const ref = `OL-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
     // ONE id for the order: the closed_checks row id AND the idempotency anchor for the promo +
     // loyalty redemptions. They MUST be the same value — loyalty-refund finds the rows to reverse

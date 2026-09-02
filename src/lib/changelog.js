@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.7',
+    date: '2 Sep 2026',
+    items: [
+      'The two collection settings are now clearly two different things, because they always were. "Fire to kitchen N minutes before collection" in Location Settings is when the KITCHEN STARTS a pre-order. "Collection wait quoted to customers" in Online Ordering is what the CUSTOMER is told. They answer different questions and were being used interchangeably.',
+      'A pre-order now fires to the kitchen on the kitchen-start setting, not on how busy the venue happened to be when the order was placed. Ordering during a Saturday rush for pickup next Wednesday no longer plates Wednesday\u2019s food 45 minutes early.',
+      'Staff taking a phone order now quote the same wait the website is quoting, busy uplift included, instead of a number that came from the kitchen-start setting.',
+      'The Online Ordering field is relabelled and says plainly what it does and how it differs from the Location Settings one.',
+    ],
+  },
+  {
     v: '5.8.6',
     date: '1 Sep 2026',
     items: [

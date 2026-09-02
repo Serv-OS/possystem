@@ -47,7 +47,7 @@ export async function getLocationConfig(explicitLocationId = null) {
   // through the same cached config.
   if (platformSupabase) {
     try {
-      const select = 'timezone, business_day_start, shifts, collection_lead_minutes, opening_hours, currency';
+      const select = 'id, timezone, business_day_start, shifts, collection_lead_minutes, opening_hours, currency';
       // First try the right join key.
       const r1 = await platformSupabase.from('locations').select(select).eq('ops_location_id', locationId).maybeSingle();
       let row = r1.data;
@@ -69,9 +69,30 @@ export async function getLocationConfig(explicitLocationId = null) {
           businessDayStart: row.business_day_start || '06:00',
           shifts: row.shifts || [],
           opening_hours: row.opening_hours || null,
+          // KITCHEN START: how far ahead of a promised collection the kitchen
+          // begins. Set in Location Settings. Drives sent_at on a pre-order.
           collectionLeadMinutes: typeof row.collection_lead_minutes === 'number' ? row.collection_lead_minutes : 30,
+          // COLLECTION WAIT: what a customer is told. Filled by the defensive
+          // read below, because these columns are newer than this select and
+          // joining them here would empty the whole row on an unmigrated venue
+          // — which would take the timezone and currency down with them.
+          quoteLeadMinutes: null,
+          busyRule: {},
           currency: row.currency || 'GBP',
         };
+        try {
+          const { data: q } = await platformSupabase.from('locations')
+            .select('online_collection_lead_min, online_busy_step_orders, online_busy_step_minutes, online_busy_max_minutes')
+            .eq('id', row.id ?? locationId).maybeSingle();
+          if (q) {
+            if (typeof q.online_collection_lead_min === 'number') cfg.quoteLeadMinutes = q.online_collection_lead_min;
+            cfg.busyRule = {
+              stepOrders: q.online_busy_step_orders,
+              stepMinutes: q.online_busy_step_minutes,
+              maxMinutes: q.online_busy_max_minutes,
+            };
+          }
+        } catch { /* not migrated — staff fall back to the kitchen-start lead */ }
         _locationConfigCache.set(locationId, cfg);
         return cfg;
       }
