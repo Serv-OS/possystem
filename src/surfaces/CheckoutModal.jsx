@@ -288,6 +288,7 @@ function CardTerminal({ items, grand, tipAmt, onComplete, onBack }) {
           // prompts the customer for the tip and Stripe adjusts the PI
           // amount on confirm. amountReceived post-capture = base + tip.
           amount_minor: Math.round(grand * 100),
+          tip_basis_minor: Math.round((Number.isFinite(Number(tipBasis)) ? Number(tipBasis) : subtotal) * 100),   // v5.8.19
           currency: stripeCurrency(),                                              // TODO: read from location.currency
           line_items: lineItems,
         }),
@@ -1161,7 +1162,7 @@ async function retireReaderLegs(closedCheckId, legs) {
 }
 
 // ─── Main checkout modal ──────────────────────────────────────────────────────
-export default function CheckoutModal({ items, subtotal, service, deliveryFee = 0, total, orderType, covers, tableId, tabName, customer, onClose, onComplete }) {
+export default function CheckoutModal({ items, subtotal, service, deliveryFee = 0, total, tipBasis, orderType, covers, tableId, tabName, customer, onClose, onComplete }) {
   const compact = useCompact();
   const { deviceConfig, myDrawer, pendingLoyaltyReward, setPendingLoyaltyReward } = useStore();
   // v5.5.731: while checkout is open, hold the auto-sign-out guard so an idle timeout can't sign the
@@ -1851,7 +1852,10 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         checkKey,
         targetTerminalId: paxTarget.id,
         posDeviceId: getPosDeviceId(),
-        tipBasisMinor: toMinor(billDue),
+        // v5.8.19: tip % on the food and drink after discounts. billDue carried
+        // the service charge, delivery and tax, so "15%" on a 12.5% service table
+        // was 15% of subtotal + service + VAT.
+        tipBasisMinor: toMinor(Number.isFinite(Number(tipBasis)) ? Number(tipBasis) : subtotal),
         dueMinor,
         currency: getActiveCurrencyCode?.() || 'GBP',
         // v5.5.841 — NO tipConfig IS SENT. The bands are the TERMINAL'S, resolved

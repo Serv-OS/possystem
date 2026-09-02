@@ -1169,7 +1169,12 @@ export default function OrdersHub() {
 
             <div style={{ display:'flex', gap:8, marginTop:14 }}>
               {viewOrder._kind === 'queue' && (
-                <button onClick={() => { try { useStore.getState().routeKioskOrderPrints?.({ ...viewOrder._raw, ref: viewOrder.ref }, { force: true }); useStore.getState().showToast?.('Sent to the kitchen again', 'success'); } catch { /* toast covers it */ } }}
+                <button onClick={async () => {
+                  // The route reports its own outcome (routing, printed, no printer mapped,
+                  // no matching centre). A blind "sent" toast here hid those reasons.
+                  try { await useStore.getState().routeKioskOrderPrints?.({ ...viewOrder._raw, ref: viewOrder.ref, items: viewOrder.items }, { force: true }); }
+                  catch (e) { useStore.getState().showToast?.(`Could not send: ${e?.message || e}`, 'error'); }
+                }}
                   title="Print the kitchen ticket and put it on the KDS again, e.g. if the ticket never arrived"
                   style={{ flex:1, padding:11, borderRadius:10, background:'var(--bg2)', border:'1px solid var(--bdr)', color:'var(--t2)', fontSize:12, fontWeight:700, cursor:'pointer', fontFamily:'inherit' }}>
                   🍳 Send to kitchen again

@@ -59,10 +59,15 @@ export function prepMinutes(baseMin, liveOrders, rule = {}) {
   // FLOOR, not ceil: the first order of the day must not instantly add time.
   // With a step of 10, the bump arrives at the 10th live order, not the 1st.
   const steps = Math.floor(live / stepOrders);
-  const cap = Number.isFinite(Number(rule.maxMinutes)) && Number(rule.maxMinutes) > 0
-    ? Number(rule.maxMinutes) : DEFAULT_MAX_ADDED;
-  const added = Math.min(steps * stepMinutes, cap);
-  return { minutes: base + added, added, busy: added > 0 };
+  // v5.8.19: maxMinutes is the most the venue will ever QUOTE (the total),
+  // not the most it will add. "Capped at an hour" means the customer never
+  // sees more than 60, which is what an operator means by it. With no cap
+  // set, the added time is bounded at 45 minutes as before.
+  const rawAdded = steps * stepMinutes;
+  const hasCap = Number.isFinite(Number(rule.maxMinutes)) && Number(rule.maxMinutes) > 0;
+  const minutes = hasCap ? Math.min(base + rawAdded, Math.max(base, Number(rule.maxMinutes))) : base + Math.min(rawAdded, DEFAULT_MAX_ADDED);
+  const added = minutes - base;
+  return { minutes, added, busy: added > 0 };
 }
 
 /** The rule as stored on the location row. */

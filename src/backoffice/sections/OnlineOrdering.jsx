@@ -491,8 +491,8 @@ export default function OnlineOrdering({ setSection }) {
                 value={busyStepMinutes} onChange={v => setBusyStepMinutes(v)} placeholder="5" />
             </div>
             <div style={{ flex: '1 1 150px', minWidth: 0 }}>
-              <Field label="Never add more than" type="number" min="0"
-                value={busyMaxMinutes} onChange={v => setBusyMaxMinutes(v)} placeholder="30" />
+              <Field label="Never quote more than (total minutes)" type="number" min="0"
+                value={busyMaxMinutes} onChange={v => setBusyMaxMinutes(v)} placeholder="60" />
             </div>
           </div>
           {/* Ask the ENGINE, never restate the sum. The old preview added a step

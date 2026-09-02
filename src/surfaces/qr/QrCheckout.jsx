@@ -32,7 +32,7 @@ import { buildScheduleCtx } from '../../lib/locationTime';
 import { stashTab } from '../../lib/qrTabStorage';
 import { syncQrTableSession } from '../../lib/qrTableSession';
 import { money, currencySymbol, stripeCurrency } from '../../lib/currency';
-import { tipRuleFor, tipChips, tipInitialKey, tipAmount as calcTip } from '../../lib/tipping';
+import { tipRuleFor, tipChips, tipInitialKey, tipInitialKeyFor, tipAmount as calcTip } from '../../lib/tipping';
 
 export default function QrCheckout({ cart, theme, location, tableId, tableLabel, loyalty, taxRates = [], taxCtx = null, existingTab = null, onClose, onPlaced }) {
   // v5.5.155: when existingTab is set the customer is in "Add more"
@@ -70,6 +70,9 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   // which pre-ticked a 10% gratuity at every venue with no way to turn it off.
   const tipRule = tipRuleFor(location, 'qr');
   const [tipMode, setTipMode] = useState(() => tipInitialKey(tipRule));
+  // v5.8.19: once the venue's service charge is known, a pre-selected tip on top
+  // of it is the "tipping twice" trap. Reset to No tip (chips stay available).
+  useEffect(() => { if (Number(serviceChargePct) > 0) setTipMode(tipInitialKeyFor(tipRule, { serviceCharge: 1 })); }, [serviceChargePct]); // eslint-disable-line react-hooks/exhaustive-deps
   const [customTip, setCustomTip] = useState('');
 
   // v5.5.150: payNow vs openTab. Defaults sensibly per location.qr_payment_mode:

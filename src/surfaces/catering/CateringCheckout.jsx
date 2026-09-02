@@ -90,8 +90,9 @@ export default function CateringCheckout({ location, cfg, cart, taxRates, taxCtx
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isDelivery, addr1, postcode, subtotal, opsId]);
   const deliveryFee = isDelivery && deliveryQuote?.available ? (deliveryQuote.customerFeeMinor || 0) / 100 : 0;
-  const tip = useMemo(() => (tipRule.on ? calcTip(subtotal, tipKey, customTip) : 0), [tipRule.on, tipKey, customTip, subtotal]);
   const discount = promoApplied?.amount || 0;
+  // v5.8.19: tip on the food after the discount, never on the delivery fee or tax.
+  const tip = useMemo(() => (tipRule.on ? calcTip(Math.max(0, subtotal - discount), tipKey, customTip) : 0), [tipRule.on, tipKey, customTip, subtotal, discount]);
   // v5.7.31: tax breakdown at CHECKOUT (was only computed at finalize) — added-on
   // (exclusive, US) sales tax is part of what the customer pays, so it belongs in
   // the total the pay button charges, not just the record written afterwards.

@@ -55,7 +55,9 @@ export default function MTender({ onBack, onConfirm }) {
   // Tip in £ amount (computed from selected preset OR custom override).
   const [tipPct, setTipPct] = useState(12.5);
   const [customTip, setCustomTip] = useState(null); // null | number
-  const tipAmount = customTip != null ? customTip : (preTip * tipPct) / 100;
+  // v5.8.19: the tip % applies to the goods, not to goods + sales tax (preTip
+  // is what the card takes before the tip; it stays the charge basis).
+  const tipAmount = customTip != null ? customTip : (subtotal * tipPct) / 100;
   const grand = preTip + tipAmount;
 
   const paymentMode = deviceConfig?.paymentMode || 'tap_to_pay';
@@ -110,7 +112,7 @@ export default function MTender({ onBack, onConfirm }) {
           <div style={{ display:'grid', gridTemplateColumns:'repeat(2, 1fr)', gap:10, marginBottom:10 }}>
             {TIP_PRESETS.map(p => {
               const active = customTip == null && tipPct === p;
-              const amt = (preTip * p) / 100;
+              const amt = (subtotal * p) / 100;
               return (
                 <button key={p} onClick={() => onPickPreset(p)} style={{
                   padding:'18px 8px', borderRadius:14,

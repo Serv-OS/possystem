@@ -66,7 +66,7 @@ Deno.serve(async (req) => {
     capture_method?: 'automatic' | 'manual'; // v5.5.324: 'manual' = pre-auth hold (bar tabs)
   };
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
-  const { pos_device_id, amount_minor, currency, line_items, closed_check_id, skip_tipping, capture_method } = body ?? {};
+  const { pos_device_id, amount_minor, currency, line_items, closed_check_id, skip_tipping, capture_method, tip_basis_minor } = body ?? {};
   // v5.5.324: bar-tab pre-authorisation. 'manual' creates a hold (auth) that is
   // captured later when the tab closes. Anything else (incl. undefined) stays
   // 'automatic' so every existing card payment is byte-for-byte unchanged.
@@ -192,7 +192,11 @@ Deno.serve(async (req) => {
   try {
     const processParams: Record<string, unknown> = { payment_intent: pi.id };
     if (tippingEnabled) {
-      processParams.process_config = { tipping: { amount_eligible: amount_minor } };
+      // v5.8.19: the % buttons are computed on the FOOD AND DRINK AFTER
+      // DISCOUNTS (tip_basis_minor from the till), not on the whole bill with
+      // service charge and tax inside it. Falls back to the bill for old tills.
+      const eligible = Number.isFinite(Number(tip_basis_minor)) && Number(tip_basis_minor) > 0 ? Math.round(Number(tip_basis_minor)) : amount_minor;
+      processParams.process_config = { tipping: { amount_eligible: eligible } };
     } else {
       processParams.process_config = { skip_tipping: true };
     }

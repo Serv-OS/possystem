@@ -85,3 +85,35 @@ export function tipAmount(subtotal, key, customValue) {
 export function parsePctList(text) {
   return [...new Set(String(text || '').split(/[,\s]+/).map(clampPct).filter(v => v !== null))].sort((a, b) => a - b);
 }
+
+// ── The tip BASIS: one rule, every surface, both countries ──────────────────
+//
+// A tip percentage applies to the FOOD AND DRINK AFTER DISCOUNTS, and to
+// nothing else. Not added-on sales tax, not a service charge, not a delivery
+// fee. In the UK prices are VAT-inclusive so this is the price as printed; in
+// the US it is the pre-tax subtotal. Verified 2 Sep 2026 against:
+//   - Emily Post (US): sit-down service "15-20%, pre-tax".
+//   - IRS Rev. Rul. 2012-18 Example B: suggested tips "of 15%, 18% and 20% of
+//     the price of food and beverages" count as tips; a tip must be "free from
+//     compulsion" with "the unrestricted right to determine the amount".
+//   - Debrett's (UK): 10-15% "of the bill" when service is not included.
+//   - Which? (UK, 2025): a service charge and a tip are alternatives; one in
+//     six people tipped on top of a service charge without realising.
+//
+// Before this, seven surfaces multiplied seven different amounts (the card
+// reader included service charge AND tax; the kiosk ignored discounts; MPOS
+// added sales tax; the Adyen terminal used whatever the card took).
+export function tipBasis({ goods = 0, discounts = 0 } = {}) {
+  return Math.max(0, +((Number(goods) || 0) - (Number(discounts) || 0)).toFixed(2));
+}
+export function tipBasisMinor({ goodsMinor = 0, discountsMinor = 0 } = {}) {
+  return Math.max(0, Math.round((Number(goodsMinor) || 0) - (Number(discountsMinor) || 0)));
+}
+
+// When an automatic service charge is already on the bill, nothing is
+// pre-selected, whatever the venue's default: the "tipping twice" trap that
+// Which? measured. The chips stay available; the guest chooses.
+export function tipInitialKeyFor(rule, { serviceCharge = 0 } = {}) {
+  if (Number(serviceCharge) > 0) return '0';
+  return tipInitialKey(rule);
+}

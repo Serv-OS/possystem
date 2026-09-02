@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.19',
+    date: '2 Sep 2026',
+    items: [
+      'TIPS ARE NOW WORKED OUT THE SAME WAY EVERYWHERE. The percentage applies to the food and drink after discounts, and to nothing else: no added-on sales tax, no service charge, no delivery fee. In the UK that is the price as printed; in the US it is the pre-tax subtotal. Verified against Emily Post, the IRS ruling on tips, Debrett\u2019s and Which?. Before this the card reader tipped on service and tax, the kiosk ignored discounts and the handset added sales tax.',
+      'Where a service charge is already on the bill, No tip is pre-selected on QR whatever the venue default, so nobody tips twice by accident.',
+      'The busy-time cap is now the most you will ever QUOTE, not the most that gets added. "Capped at an hour" means the customer never sees more than 60 minutes.',
+      'Orders Hub "Send to kitchen again" now reports what actually happened (routed, printed, no printer mapped, no matching centre) instead of a blind "sent" message.',
+    ],
+  },
+  {
     v: '5.8.18',
     date: '2 Sep 2026',
     items: [
