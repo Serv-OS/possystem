@@ -48,7 +48,12 @@ const TAG_CUSTOMER_NAME: MergeTag = { tag: 'customer_name', label: 'Customer Nam
 const TAG_ORDER_NUMBER: MergeTag = { tag: 'order_number', label: 'Order Number', example: '1042' };
 const TAG_VENUE_NAME: MergeTag = { tag: 'venue_name', label: 'Venue Name', example: 'The Red Lion' };
 const TAG_ORDER_TOTAL: MergeTag = { tag: 'order_total', label: 'Order Total', example: '£27.50' };
-const TAG_ESTIMATED_TIME: MergeTag = { tag: 'estimated_time', label: 'Est. Time (mins)', example: '15' };
+// Two tags, two fixed units, because one tag carrying both was unusable: the
+// send path put "15-20" in it for ASAP orders and a clock time like "18:15" in
+// it for pre-orders, so every email read "Estimated time: 18:15 minutes" and no
+// operator could write a sentence that was right for both.
+const TAG_ESTIMATED_TIME: MergeTag = { tag: 'estimated_time', label: 'Est. wait (minutes)', example: '35' };
+const TAG_COLLECTION_TIME: MergeTag = { tag: 'collection_time', label: 'Ready at (venue clock)', example: '18:15' };
 const TAG_TABLE_NUMBER: MergeTag = { tag: 'table_number', label: 'Table Number', example: '12' };
 const TAG_DATE: MergeTag = { tag: 'date', label: 'Date', example: '24 May 2026' };
 const TAG_TIME: MergeTag = { tag: 'time', label: 'Time', example: '7:30 PM' };
@@ -101,10 +106,10 @@ export const MESSAGE_TYPES: MessageTypeDef[] = [
     description: 'Sent when a new order is placed (online or in-venue)',
     category: 'Orders',
     channels: ['email', 'sms'],
-    mergeTags: [TAG_CUSTOMER_NAME, TAG_ORDER_NUMBER, TAG_VENUE_NAME, TAG_ORDER_TOTAL, TAG_ESTIMATED_TIME, TAG_ORDER_ITEMS],
+    mergeTags: [TAG_CUSTOMER_NAME, TAG_ORDER_NUMBER, TAG_VENUE_NAME, TAG_ORDER_TOTAL, TAG_ESTIMATED_TIME, TAG_COLLECTION_TIME, TAG_ORDER_ITEMS],
     defaults: {
       sms: {
-        body: `Thanks {{customer_name}}! Order #{{order_number}} confirmed at {{venue_name}}. Total: {{order_total}}.`,
+        body: `Thanks {{customer_name}}! Order #{{order_number}} confirmed at {{venue_name}}. Ready around {{collection_time}}. Total: {{order_total}}.`,
       },
       email: {
         subject: `Order #{{order_number}} confirmed — {{venue_name}}`,
@@ -115,7 +120,7 @@ Your order #{{order_number}} at {{venue_name}} has been confirmed.
 {{order_items}}
 
 Order total: {{order_total}}
-Estimated time: {{estimated_time}} minutes
+Ready around {{collection_time}} (about {{estimated_time}} minutes)
 
 Thank you for your order!`,
       },

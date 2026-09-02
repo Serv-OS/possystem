@@ -184,9 +184,11 @@ Deno.serve(async (req) => {
   // Venue + company for branding/templates.
   const locationId = String(order.location_id || '');
   let venueName = 'our venue';
+  let venueTz = 'Europe/London';
   let currency: string | null = null;
   try {
-    const { data: loc } = await opsAdmin.from('locations').select('name, currency').eq('id', locationId).maybeSingle();
+    const { data: loc } = await opsAdmin.from('locations').select('name, currency, timezone').eq('id', locationId).maybeSingle();
+    venueTz = ((loc as Record<string, unknown>)?.timezone as string) || venueTz;
     if (loc?.name) venueName = loc.name;
     currency = (loc as Record<string, unknown>)?.currency as string | null;
   } catch { /* name is best-effort */ }
@@ -200,13 +202,45 @@ Deno.serve(async (req) => {
     if (pl?.company_id) companyId = String(pl.company_id);
   } catch { /* templates fall back to defaults */ }
 
+  // Minutes between placing the order and the promised time. collection_time is
+  // a venue wall-clock "HH:MM", so both sides are read in the venue timezone and
+  // a wrap past midnight adds a day. Returns a plain number of minutes, never a
+  // range and never a clock time, so the word "minutes" in a template is always
+  // true. Falls back to an empty string rather than inventing a figure.
+  function estimatedMinutes(o: Record<string, unknown>, tz: string): string {
+    const label = String(o?.collection_time || '').trim();
+    const m = /^(\d{1,2}):(\d{2})$/.exec(label);
+    if (!m) return '';
+    const placed = new Date(String(o?.created_at || '') || Date.now());
+    if (Number.isNaN(placed.getTime())) return '';
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false,
+    }).formatToParts(placed);
+    const hh = Number(parts.find((p) => p.type === 'hour')?.value);
+    const mm = Number(parts.find((p) => p.type === 'minute')?.value);
+    if (!Number.isFinite(hh) || !Number.isFinite(mm)) return '';
+    let delta = (Number(m[1]) * 60 + Number(m[2])) - (hh * 60 + mm);
+    if (delta < 0) delta += 1440;          // promised time is tomorrow
+    if (delta > 12 * 60) return '';        // a pre-order days out: minutes are meaningless
+    return String(delta);
+  }
+
   const firstName = String(customer.name || '').trim().split(' ')[0] || 'there';
   const mergeData: Record<string, string> = {
     customer_name: firstName,
     order_number: ref,
     venue_name: venueName,
     order_total: moneyFor(currency, Number(order.total || 0)),
-    estimated_time: order.is_asap === false && order.collection_time ? String(order.collection_time) : '15-20',
+    // The order already carries the time the customer was quoted, uplift and
+    // all, in order_queue.collection_time (an HH:MM label in VENUE wall clock).
+    // This line used to throw it away and send the literal string '15-20' for
+    // every ASAP order, so a customer shown "45 min prep time - busy" at
+    // checkout got an email promising 15-20 minutes. For pre-orders it did the
+    // opposite and put a clock time into a sentence ending in "minutes".
+    // Now: the clock time goes in its own tag, and the minutes are derived from
+    // it against the moment the order was placed, in the venue's timezone.
+    estimated_time: estimatedMinutes(order, venueTz),
+    collection_time: String(order.collection_time || '').trim() || 'shortly',
     order_items: itemsText(order.items),
     collection_point: 'the counter',
   };

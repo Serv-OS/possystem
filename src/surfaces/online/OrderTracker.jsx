@@ -41,7 +41,13 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose }) {
         // with it. Two other call sites already guard on location; this one did not.
         const { data, error } = await supabase
           .from('order_queue')
-          .select('ref, status, total, items, collection_time, is_asap')
+          // v5.8.6: `type` and `customer` are needed by the courier block and
+          // the delivery labelling below. Without them the poll overwrote the
+          // realtime payload with a row missing both, so the live courier card
+          // flickered in and vanished, and a delivery order was labelled
+          // "Collection". This query is already fenced on ref AND location_id,
+          // which is the same trust level as the realtime payload it merges.
+          .select('ref, status, total, items, collection_time, is_asap, type, customer')
           .eq('ref', orderRef).eq('location_id', locationId).maybeSingle();
         if (!alive) return;
         if (error) {
@@ -289,10 +295,18 @@ export default function OrderTracker({ orderRef, locationId, theme, onClose }) {
             </div>
             {order.collection_time && (
               <div style={{ marginTop: 12, padding: '10px 12px', borderRadius: 10, background: `${theme.accent}15`, border: `1px solid ${cardBdr}`, fontSize: 12 }}>
+                {/* The promised time is stored for ASAP orders too, with the
+                    busy uplift already baked in. This branch used to hide it,
+                    so the one page a customer keeps open while waiting was the
+                    only place that would not tell them when to set off. For
+                    delivery, collection_time is when the food LEAVES, not when
+                    it lands, so it must not be labelled as an arrival. */}
                 {order.is_asap
-                  ? <>⚡ <b>ASAP</b> — we'll start preparing right away.{isDelivery ? ' Your courier is arranged once it’s ready.' : ''}</>
+                  ? (isDelivery
+                      ? <>⚡ <b>ASAP</b> — leaving the kitchen around <b>{order.collection_time}</b>. Your courier is arranged once it’s ready.</>
+                      : <>⚡ <b>ASAP</b> — ready for collection around <b>{order.collection_time}</b></>)
                   : (isDelivery
-                      ? <>🗓 {orderType === 'delivery' ? 'Delivery' : 'Collection'} for <b>{order.collection_time}</b></>
+                      ? <>🗓 Leaving the kitchen around <b>{order.collection_time}</b></>
                       : <>🗓 Collection at <b>{order.collection_time}</b></>)}
               </div>
             )}

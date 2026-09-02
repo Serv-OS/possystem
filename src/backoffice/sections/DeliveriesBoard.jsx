@@ -160,8 +160,8 @@ export default function DeliveriesBoard() {
                     <div style={{ ...S.head, marginBottom: 8 }}>Status timeline</div>
                     {detail.events.map((ev, i) => (
                       <div key={ev.event_id || i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--t3)', marginBottom: 3 }}>
-                        <span>{statusLabel(ev.mapped_status || ev.raw_status) || ev.event_kind}</span>
-                        <span>{fmtTime(ev.created_at)}</span>
+                        <span>{statusLabel(ev.status)}</span>
+                        <span>{fmtTime(ev.received_at)}</span>
                       </div>
                     ))}
                   </div>

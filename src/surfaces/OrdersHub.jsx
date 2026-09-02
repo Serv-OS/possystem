@@ -1072,6 +1072,19 @@ export default function OrdersHub() {
                   {hasRow && d?.tracking_url && phase !== 'terminal_bad' && (
                     <CourierTrackingQR trackingUrl={d.tracking_url} courierName={d.courier_name} courierPhone={d.courier_phone} muted="var(--t3)" fg="var(--t1)" />
                   )}
+                  {/* Webhook status timeline. delDetail.events is delivery_status_events joined on
+                      delivery_id — columns are `status` (already the mapped status) and `received_at`. */}
+                  {Array.isArray(delDetail?.events) && delDetail.events.length > 0 && (
+                    <div style={{ marginTop:8, borderTop:'1px solid var(--bdr)', paddingTop:8 }}>
+                      <div style={{ fontSize:11, fontWeight:800, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.05em', marginBottom:4 }}>Timeline</div>
+                      {delDetail.events.map((ev, i) => (
+                        <div key={ev.event_id || i} style={{ display:'flex', justifyContent:'space-between', fontSize:12, color:'var(--t3)', padding:'1px 0' }}>
+                          <span>{statusLabel(ev.status)}</span>
+                          <span>{ev.received_at ? new Date(ev.received_at).toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' }) : '—'}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   {!hasRow && isScheduledOrder && (
                     <div style={{ fontSize:11.5, color:'var(--t3)', marginTop:8 }}>🗓 Scheduled{readyTime ? ` for ${readyTime}` : ''} — a courier is arranged automatically nearer the time.</div>
                   )}

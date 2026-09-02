@@ -86,7 +86,11 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // v5.7.99: the quoted wait rises with the queue. `busyLive` is null until the
   // count comes back (and stays null if it cannot be read), which yields exactly
   // the flat lead time this line always produced.
-  const baseLeadMin = Number(location.online_collection_lead_min) || 30;
+  // Number(...) || 30 turned an explicit 0 into 30, so a venue that set "no
+  // wait" was quoted 30 here while the storefront banner showed nothing. The
+  // column is NOT NULL DEFAULT 30, so only a genuine null should fall back.
+  const baseLeadMin = Number.isFinite(Number(location.online_collection_lead_min))
+    ? Number(location.online_collection_lead_min) : 30;
   const [busyLive, setBusyLive] = useState(null);
   useEffect(() => {
     let alive = true;
@@ -309,14 +313,37 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
 
   // Build collection slots — every 15 min between (now + leadMin) and the
   // next close time, snapped to :00 / :15 / :30 / :45.
-  const slots = useMemo(() => buildCollectionSlots(location, tz, leadMin), [location, tz, leadMin]);
+  // v5.8.6: rebuild on a timer as well as on leadMin. buildCollectionSlots
+  // reads `new Date()` internally, so with no busy rule set leadMin never
+  // changes and the list was computed ONCE at mount. A customer who browsed for
+  // twenty minutes was still being offered slots from twenty minutes ago, some
+  // of them already in the past.
+  const [nowTick, setNowTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setNowTick(n => n + 1), 60_000);
+    return () => clearInterval(t);
+  }, []);
+  const slots = useMemo(() => buildCollectionSlots(location, tz, leadMin), [location, tz, leadMin, nowTick]);
 
   // When the customer first picks Schedule, auto-select the earliest slot
   // so the dropdowns aren't empty and "Place order" isn't blocked on a
   // micro-interaction.
   useEffect(() => {
-    if (timeMode === 'scheduled' && !slot && slots.length) setSlot(slots[0]);
+    if (timeMode !== 'scheduled') return;
+    if (!slots.length) return;
+    // A slot already chosen must be re-checked every time the list rebuilds.
+    // Previously this only ever fired when nothing was selected, so a customer
+    // who picked 18:15 and then took their time (or hit a rush that pushed the
+    // uplift up) kept a slot the checkout no longer offers, and the venue
+    // accepted a collection time it could not make.
+    if (slot && !slots.some(s2 => s2.iso === slot.iso)) {
+      setSlot(slots[0]);
+      setSlotMoved(true);
+      return;
+    }
+    if (!slot) setSlot(slots[0]);
   }, [timeMode, slot, slots]);
+  const [slotMoved, setSlotMoved] = useState(false);
 
   const muted   = theme.isLight ? '#6b6b70' : '#a0a0a8';
   const cardBdr = theme.isLight ? '#ececef' : '#2a2a30';
@@ -344,7 +371,13 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     const collectionAt = timeMode === 'asap'
       ? new Date(Date.now() + leadMin * 60_000)
       : (slot ? new Date(slot.iso) : new Date(Date.now() + leadMin * 60_000));
-    const sentAt = new Date(collectionAt.getTime() - leadMin * 60_000);
+    // The kitchen fire moment. ASAP is by construction "now". A scheduled slot
+    // must use the BASE lead: leadMin carries today's queue depth, and firing a
+    // ticket for next Wednesday 45 minutes early because this Saturday is busy
+    // just plates food that then sits.
+    const sentAt = timeMode === 'asap'
+      ? new Date(collectionAt.getTime() - leadMin * 60_000)
+      : new Date(collectionAt.getTime() - baseLeadMin * 60_000);
     const ref = `OL-${Math.random().toString(36).slice(2, 7).toUpperCase()}`;
     // ONE id for the order: the closed_checks row id AND the idempotency anchor for the promo +
     // loyalty redemptions. They MUST be the same value — loyalty-refund finds the rows to reverse
@@ -2216,6 +2249,14 @@ function SlotPicker({ slots, value, onChange, theme, cardBdr, inputBg }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Advance a YYYY-MM-DD by one calendar day without touching real time, so DST
+// transitions cannot skip or repeat a day.
+function nextIsoDate(iso) {
+  const [y, m, d] = iso.split('-').map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, d + 1));
+  return dt.toISOString().slice(0, 10);
+}
+
 // Build the next ~24h of valid collection slots.
 // Slots are 15-min increments inside opening windows, starting at the
 // earliest slot ≥ now+leadMin, snapped to :00/:15/:30/:45.
@@ -2230,9 +2271,15 @@ function buildCollectionSlots(location, tz, leadMin) {
   const ceil = Math.ceil(m / 15) * 15;
   earliest.setMinutes(ceil, 0, 0);
 
-  // Walk up to 7 days ahead, generate slots inside open windows ≥ earliest
+  // Walk up to 7 days ahead, generate slots inside open windows ≥ earliest.
+  // Days are advanced on the VENUE CALENDAR, not by adding 24h of real time:
+  // across a DST change a 24h hop lands on the same date twice (or skips one),
+  // which silently lost a whole day of bookable slots twice a year.
+  const seen = new Set();
+  let cursorIso = now.toLocaleDateString('en-CA', { timeZone: tz });
   for (let dayOffset = 0; dayOffset < 7; dayOffset++) {
-    const probe = new Date(now.getTime() + dayOffset * 24 * 60 * 60_000);
+    const probe = resolveLocalDateTime(cursorIso, 12 * 60, tz);   // midday, safe from DST edges
+    cursorIso = nextIsoDate(cursorIso);
     const windows = getDayWindows(hours, tz, probe);
     if (!windows.length) continue;
     const dayLabel = probe.toLocaleDateString('en-GB', { timeZone: tz, weekday: 'short', day: 'numeric', month: 'short' });
@@ -2244,13 +2291,24 @@ function buildCollectionSlots(location, tz, leadMin) {
     for (const w of windows) {
       const [oh, om] = w.open.split(':').map(Number);
       const [ch, cm] = w.close.split(':').map(Number);
-      // Earliest valid slot in this window
-      let cur = resolveLocalDateTime(isoDate, oh * 60 + om, tz);
-      const end = resolveLocalDateTime(isoDate, ch * 60 + cm, tz);
+      const openMin  = oh * 60 + om;
+      const closeMin = ch * 60 + cm;
+      let cur = resolveLocalDateTime(isoDate, openMin, tz);
+      // A window that closes at or before it opens runs past midnight ("17:00
+      // to 01:00", or "12:00 to 00:00"). The close belongs to the NEXT day.
+      // Without this the while-loop below never ran once, so a late-night venue
+      // was offered no scheduled collection slots at all — and when it was shut
+      // the ASAP chip is hidden too, so there was no way to order at all.
+      const end = closeMin <= openMin
+        ? resolveLocalDateTime(nextIsoDate(isoDate), closeMin, tz)
+        : resolveLocalDateTime(isoDate, closeMin, tz);
       while (cur.getTime() < end.getTime()) {
-        if (cur.getTime() >= earliest.getTime()) {
+        const iso = cur.toISOString();
+        // Overnight windows overlap the next day's pass, so dedupe by instant.
+        if (cur.getTime() >= earliest.getTime() && !seen.has(iso)) {
+          seen.add(iso);
           out.push({
-            iso: cur.toISOString(),
+            iso,
             day: dayOffset === 0 ? 'Today' : (dayOffset === 1 ? 'Tomorrow' : dayLabel),
             label: cur.toLocaleTimeString('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }),
           });

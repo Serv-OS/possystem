@@ -1,9 +1,26 @@
 import { useState, useEffect } from 'react';
 import { useStore, getCollectionSlots } from '../store';
+import { kitchenLoadFromStore, prepMinutes } from '../lib/prepTime';
 import AddressAutocomplete from './AddressAutocomplete';
 
 export default function CustomerModal({ orderType, existing, onConfirm, onCancel }) {
   const { searchCustomers, searchCustomersLive, addToHistory, showToast, takeawayCustomerDetails } = useStore();
+  // v5.8.6: quote the same wait the kitchen is actually carrying. The slot grid
+  // was hard-coded to now+15 regardless of the venue's lead time, so a caller
+  // was promised a time the website would have refused for the same order.
+  // The count comes from the store the Orders Hub renders, so the number staff
+  // quote and the number they can see cannot drift apart.
+  const tz          = useStore(st => st.locationConfig?.timezone);
+  const leadBase    = useStore(st => st.locationConfig?.collectionLeadMinutes);
+  const busyRule    = useStore(st => st.locationConfig?.busyRule) || {};
+  const liveTables  = useStore(st => st.tables);
+  const liveTabs    = useStore(st => st.tabs);
+  const liveQueue   = useStore(st => st.orderQueue);
+  const quotedLead  = prepMinutes(
+    typeof leadBase === 'number' ? leadBase : 30,
+    kitchenLoadFromStore({ tables: liveTables, tabs: liveTabs, orderQueue: liveQueue }).load,
+    busyRule,
+  ).minutes;
   const [name, setName]       = useState(existing?.name || '');
   const [phone, setPhone]     = useState(existing?.phone || '');
   const [email, setEmail]     = useState(existing?.email || '');
@@ -20,7 +37,7 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
   const [slotIdx, setSlotIdx] = useState(() => {
     if (!existing?.collectionTime) return 0;
     try {
-      const all = getCollectionSlots();
+      const all = getCollectionSlots(quotedLead, tz);
       const futureSlots = all.slice(1);
       const matchIdx = futureSlots.findIndex(s => s.label === existing.collectionTime);
       return matchIdx >= 0 ? matchIdx : 0;
@@ -29,7 +46,7 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
   const [results, setResults] = useState([]);
   const [searched, setSearched] = useState(false);
 
-  const slots = getCollectionSlots();
+  const slots = getCollectionSlots(quotedLead, tz);
   const isCollection = orderType === 'collection';
   const isDelivery = orderType === 'delivery';
   // v5.5.799: quick-service venues can relax takeaway/collection to a single name field

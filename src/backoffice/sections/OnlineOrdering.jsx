@@ -14,6 +14,7 @@ import { saveLocation } from '../../lib/locationAdmin';
 import { CUSTOMER_ROOT, customerUrl, groupOrderUrl } from '../../lib/env';
 import { getVenueUberConfig } from '../../lib/delivery/deliveryConfig';
 import QRCode from 'qrcode';
+import { prepMinutes } from '../../lib/prepTime';
 
 // Reuses the existing receipt-assets bucket with an online/ prefix so logo
 // + hero uploads don't collide with the receipt branding's logo/QR assets.
@@ -143,9 +144,25 @@ export default function OnlineOrdering({ setSection }) {
             });
             setMenuId(r.online_menu_id || '');
             setLeadMin(typeof r.online_collection_lead_min === 'number' ? r.online_collection_lead_min : 30);
-            setBusyStepOrders(r.online_busy_step_orders ?? '');
-            setBusyStepMinutes(r.online_busy_step_minutes ?? '');
-            setBusyMaxMinutes(r.online_busy_max_minutes ?? '');
+            // v5.8.6: the busy rule has to be read HERE, in its own defensive
+            // select. The select above never asked for these three columns, so
+            // r.online_busy_* was always undefined and the boxes rendered blank
+            // on every reload. The operator then saved the page and the blanks
+            // were written back as null, silently deleting a rule they had set.
+            // That is why every venue read null. Same separate-read pattern as
+            // the qr_* block below, so a venue whose migration has not run
+            // still gets the rest of the page.
+            try {
+              const { data: busy } = await platformSupabase
+                .from('locations')
+                .select('online_busy_step_orders, online_busy_step_minutes, online_busy_max_minutes')
+                .eq('id', r.id).maybeSingle();
+              if (busy) {
+                setBusyStepOrders(busy.online_busy_step_orders ?? '');
+                setBusyStepMinutes(busy.online_busy_step_minutes ?? '');
+                setBusyMaxMinutes(busy.online_busy_max_minutes ?? '');
+              }
+            } catch { /* columns not migrated yet — blank means "no rule" */ }
             setDeliveryOn(!!r.online_delivery_enabled);
             // v5.7.98: delivery on the storefront is meaningless without the
             // delivery module, which owns the radius, the pricing and the
@@ -430,11 +447,11 @@ export default function OnlineOrdering({ setSection }) {
           </div>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end' }}>
             <div style={{ flex: '1 1 150px', minWidth: 0 }}>
-              <Field label="For every this many live orders" type="number" min="0"
+              <Field label="For every this many live orders" type="number" min="1"
                 value={busyStepOrders} onChange={v => setBusyStepOrders(v)} placeholder="10" />
             </div>
             <div style={{ flex: '1 1 150px', minWidth: 0 }}>
-              <Field label="Add this many minutes" type="number" min="0"
+              <Field label="Add this many minutes" type="number" min="1"
                 value={busyStepMinutes} onChange={v => setBusyStepMinutes(v)} placeholder="5" />
             </div>
             <div style={{ flex: '1 1 150px', minWidth: 0 }}>
@@ -442,14 +459,25 @@ export default function OnlineOrdering({ setSection }) {
                 value={busyMaxMinutes} onChange={v => setBusyMaxMinutes(v)} placeholder="30" />
             </div>
           </div>
-          {busyStepOrders && busyStepMinutes ? (
-            <div style={{ fontSize: 11.5, color: 'var(--grn)', marginTop: 8, lineHeight: 1.6 }}>
-              With {busyStepOrders} orders on, you would quote{' '}
-              <b>{Number(leadMin) + Number(busyStepMinutes)} minutes</b>. With {Number(busyStepOrders) * 4} on,{' '}
-              <b>{Number(leadMin) + Math.min(Number(busyStepMinutes) * 4, Number(busyMaxMinutes) || 45)} minutes</b>.
-              Quiet times stay at {leadMin}.
-            </div>
-          ) : null}
+          {/* Ask the ENGINE, never restate the sum. The old preview added a step
+              per example and applied the cap only to the second one, so a cap
+              set below the step advertised a rise the engine would never make.
+              It also lit up green on a 0, which prepMinutes reads as "rule off",
+              so an operator could be told a rule was protecting them when it
+              was not. Both numbers now come from the same call the storefront
+              makes, cap and floor included. */}
+          {Number(busyStepOrders) > 0 && Number(busyStepMinutes) > 0 ? (() => {
+            const rule = { stepOrders: busyStepOrders, stepMinutes: busyStepMinutes, maxMinutes: busyMaxMinutes };
+            const one  = prepMinutes(Number(leadMin), Number(busyStepOrders), rule).minutes;
+            const four = prepMinutes(Number(leadMin), Number(busyStepOrders) * 4, rule).minutes;
+            return (
+              <div style={{ fontSize: 11.5, color: 'var(--grn)', marginTop: 8, lineHeight: 1.6 }}>
+                With {busyStepOrders} orders on, you would quote <b>{one} minutes</b>.
+                With {Number(busyStepOrders) * 4} on, <b>{four} minutes</b>.
+                Quiet times stay at {leadMin}.
+              </div>
+            );
+          })() : null}
         </div>
 
         <div style={{ marginTop:14, display:'flex', alignItems:'center', justifyContent:'space-between', gap:10, padding:'10px 0' }}>

@@ -23,6 +23,7 @@ import { supabase, platformSupabase, getLocationId, ensureAuthToken } from '../l
 import { useStore } from '../store';
 import { decrementStockRPC, fetchActiveDiscountRules, shortOrderRef } from '../lib/db';
 import { logOrderActivity } from '../lib/activity';
+import { prepMinutes, prepRuleFromLocation, liveOrderCount } from '../lib/prepTime';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
 import { computeOrderTaxUnified, buildLocalTaxCtx, taxCtxHasConfig } from '../lib/taxCompute';
 import { assembleTaxProfiles } from '../lib/rowMapping';
@@ -267,12 +268,33 @@ export default function KioskApp({ kioskId, onUnpair }) {
     if (!locationId || !platformSupabase) return;
     platformSupabase
       .from('locations')
-      .select('company_id, timezone')
+      .select('company_id, timezone, online_collection_lead_min, online_busy_step_orders, online_busy_step_minutes, online_busy_max_minutes')
       .or(`ops_location_id.eq.${locationId},id.eq.${locationId}`)
       .limit(1)
       .maybeSingle()
-      .then(({ data }) => { if (data?.company_id) setCompanyId(data.company_id); if (data?.timezone) setKioskTz(data.timezone); })
+      .then(({ data }) => {
+        if (data?.company_id) setCompanyId(data.company_id);
+        if (data?.timezone) setKioskTz(data.timezone);
+        if (data) setVenueRow(data);
+      })
       .catch(() => {});
+  }, [locationId]);
+
+  // v5.8.6: the kiosk used to promise a fixed operator constant (default 8
+  // minutes) that no amount of kitchen depth could move, so on a Saturday with
+  // forty tickets on the pass it still said "~8 min wait" while the venue's own
+  // website said fifty. Same rule, same count, same answer.
+  const [venueRow, setVenueRow] = useState(null);
+  const [kioskLoad, setKioskLoad] = useState(null);
+  useEffect(() => {
+    if (!locationId) return;
+    let alive = true;
+    const read = () => liveOrderCount(supabase, locationId)
+      .then(n => { if (alive) setKioskLoad(n?.load ?? null); })
+      .catch(() => {});
+    read();
+    const t = setInterval(read, 60_000);
+    return () => { alive = false; clearInterval(t); };
   }, [locationId]);
   const { items, categories, menus, links, taxRates, taxProfiles, venueDefaultTaxProfileId, activeMenuId, loading: menuLoading, error: menuError } = useKioskMenu(profile, locationId, kioskTz);
   // v5.7.34: local tax context for the unified seam — built from the kiosk's
@@ -482,7 +504,13 @@ export default function KioskApp({ kioskId, onUnpair }) {
   const tableMode = profile?.kiosk_table_mode || 'either';
   const loyaltyEnabled = profile?.kiosk_loyalty_enabled !== false;
   const idleTimeoutSec = profile?.kiosk_idle_timeout_sec || 60;
-  const avgWaitMinutes = profile?.kiosk_avg_wait_minutes || 8;
+  // `??` not `||`: a saved 0 means "do not promise a wait", and `||` silently
+  // turned it back into 8 so the operator could never switch the pill off.
+  const kioskWaitFallback = profile?.kiosk_avg_wait_minutes ?? 8;
+  const venueLeadMin = Number(venueRow?.online_collection_lead_min);
+  const avgWaitMinutes = (Number.isFinite(venueLeadMin) && venueLeadMin > 0 && kioskLoad != null)
+    ? prepMinutes(venueLeadMin, kioskLoad, prepRuleFromLocation(venueRow)).minutes
+    : kioskWaitFallback;
   const bannerFor = (screen) => banners.find(b => b.screen === screen && b.imageUrl);
   // v5.3.4: theme is dominant. brand_bg_color only takes effect if it visually matches the theme
   // (avoids the bug where saving a dark bg via the picker AND switching to light theme leaves a dark bg).
@@ -4418,7 +4446,7 @@ function ScreenDone({ brandColor, customerName, customerPhone, orderNumber, orde
         <div style={{ fontSize: 16, color: Wm, maxWidth: 360, lineHeight: 1.5, marginBottom: 8 }}>
           {orderType === 'dineIn' && tableNumber ? 'Your order will be brought to table ' + tableNumber + '.' : 'We will call your number when ready.'}
         </div>
-        <div style={{ fontSize: 13, color: Wm, marginBottom: 40 }}>Average wait: {avgWaitMinutes || 8} mins</div>
+        {avgWaitMinutes ? <div style={{ fontSize: 13, color: Wm, marginBottom: 40 }}>Average wait: {avgWaitMinutes} mins</div> : null}
         {phoneMasked && (
           <div style={{ fontSize: 13, color: Wm, marginBottom: 30 }}>📱 Receipt sent to {phoneMasked}</div>
         )}

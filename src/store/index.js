@@ -361,12 +361,26 @@ function calcSessionTotals(session) {
   return { ...session, subtotal, total: subtotal * 1.125 };
 }
 
-export function getCollectionSlots() {
-  const slots = [], now = new Date(), start = new Date(now);
-  start.setMinutes(Math.ceil((now.getMinutes()+15)/15)*15, 0, 0);
+// Collection slots for a staff-taken phone or counter order.
+//
+// This used to hard-code "now + 15 minutes" and ignore the venue's lead time
+// entirely, so at a venue set to 45 minutes a member of staff read "18:15" off
+// their screen and told the caller that, while the website quoted 18:45 or
+// later for the same kitchen at the same moment. It also formatted labels on
+// the DEVICE clock, which is wrong for any till not set to venue time.
+//
+// leadMin should already include the busy uplift where the caller can compute
+// it (see kitchenLoadFromStore + prepMinutes).
+export function getCollectionSlots(leadMin = 15, tz = undefined) {
+  const lead = Math.max(0, Number(leadMin) || 0);
+  const slots = [], now = new Date();
+  const start = new Date(now.getTime() + lead * 60000);
+  start.setMinutes(Math.ceil(start.getMinutes() / 15) * 15, 0, 0);
+  const opts = { hour: '2-digit', minute: '2-digit' };
+  if (tz) opts.timeZone = tz;
   for (let i=0; i<12; i++) {
     const t = new Date(start.getTime() + i*15*60000);
-    slots.push({ value:t.toISOString(), label:t.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}), isASAP:i===0 });
+    slots.push({ value:t.toISOString(), label:t.toLocaleTimeString('en-GB', opts), isASAP:i===0 });
   }
   return slots;
 }

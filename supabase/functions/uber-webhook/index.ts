@@ -34,9 +34,20 @@ Deno.serve(async (req) => {
   const p = parseDeliveryResp(evt);
   const status = mapUberStatus(p.rawStatus);
 
+  // Resolve the delivery this event belongs to BEFORE recording it. delivery_id is the ONLY
+  // join key the timeline has (get_delivery_detail reads events by delivery_id), so writing
+  // nulls here orphaned every event and the timeline was permanently empty. Same fix as
+  // stuart-webhook — keep the two in step.
+  let evDel: { id: string; location_id: string | null } | null = null;
+  if (deliveryId) {
+    const { data } = await sb.from('courier_deliveries')
+      .select('id, location_id').eq('uber_delivery_id', deliveryId).maybeSingle();
+    evDel = (data as any) || null;
+  }
+
   // Idempotency: first writer wins; a duplicate event is acked without reprocessing.
   const { data: inserted } = await sb.from('delivery_status_events')
-    .upsert({ event_id: eventId, delivery_id: null, location_id: null, status, payload: evt, received_at: new Date().toISOString() }, { onConflict: 'event_id', ignoreDuplicates: true })
+    .upsert({ event_id: eventId, delivery_id: evDel?.id ?? null, location_id: evDel?.location_id ?? null, status, payload: evt, received_at: new Date().toISOString() }, { onConflict: 'event_id', ignoreDuplicates: true })
     .select('event_id');
   if (!inserted || inserted.length === 0) return new Response('ok (dup)', { status: 200 });
 

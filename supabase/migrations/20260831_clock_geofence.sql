@@ -22,7 +22,6 @@
 -- the punch record keeps distance in metres and the verdict, nothing else.
 -- Reversible: every statement is additive and guarded.
 
-begin;
 
 -- ── 1. The venue pin ────────────────────────────────────────────────────────
 -- Deliberately on wf_venue_settings, NOT on locations. `locations` still carries
@@ -115,7 +114,6 @@ $$;
 comment on function public.purge_wf_clock_events is
   'Deletes clock evidence older than 90 days. Scheduled nightly via pg_cron.';
 
-commit;
 
 -- ── 5. Schedule the purge (run separately; pg_cron must be enabled) ─────────
 -- select cron.schedule('wf-clock-events-purge', '30 3 * * *',

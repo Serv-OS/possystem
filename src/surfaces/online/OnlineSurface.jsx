@@ -511,11 +511,17 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
     return () => { alive = false; clearInterval(t); };
   }, [opsLocationId]);
   const prepBanner = useMemo(() => {
-    const base = Number(location.online_collection_lead_min) || 0;
-    if (!base) return null;
+    // Same fallback as the checkout. `|| 0` treated a venue with no column set
+    // as "no wait" and hid the pill, while the checkout quoted 30 and pushed
+    // every slot 30 minutes out. One setting, two different promises.
+    const base = Number.isFinite(Number(location.online_collection_lead_min))
+      ? Number(location.online_collection_lead_min) : 30;
+    if (base <= 0) return null;
     const { minutes, busy } = prepMinutes(base, busyLive ?? 0, prepRuleFromLocation(location));
-    return busy ? `${minutes} min prep time · busy` : `${minutes} min prep time`;
-  }, [location, busyLive]);
+    // A QR diner is sitting at a table waiting for food, not collecting it.
+    const noun = isQr ? 'wait' : 'prep time';
+    return busy ? `${minutes} min ${noun} · busy` : `${minutes} min ${noun}`;
+  }, [location, busyLive, isQr]);
 
   const headerBg = vars ? 'var(--bg)' : theme.bg;
 
@@ -695,7 +701,9 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
       {/* Themeable header (cinematic / framed / compact) */}
       <MenuHeader theme={mt} name={location.name} pills={
         isQr
-          ? [{ label: `Table ${effectiveTableLabel}` }]
+          // v5.8.6: a QR diner had no wait signal anywhere in the journey. The
+          // pill that used to show it was left behind in a dead component.
+          ? [{ label: `Table ${effectiveTableLabel}` }].concat(prepBanner ? [{ label: prepBanner }] : [])
           : (mt.showOpenStatus
             ? (closedInfo
               ? [{ label: reopenShort ? `Closed — opens ${reopenShort}` : 'Closed' }]

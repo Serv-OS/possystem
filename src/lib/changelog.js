@@ -7,6 +7,25 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.6',
+    date: '1 Sep 2026',
+    items: [
+      'THE BUSY RULE WAS BEING DELETED EVERY TIME YOU OPENED THE PAGE. Back Office rendered the three busy-rule boxes but never actually asked the database for them, so they came back blank on every reload and the next Save wrote the blanks over your rule. That is why every venue read \u201cno rule\u201d. Now read in their own query.',
+      'One order used to be quoted four different times. The confirmation email and SMS sent a hard-coded \u201c15-20 minutes\u201d for every ASAP order no matter what the website had just promised, and for a pre-order it sent \u201cEstimated time: 18:15 minutes\u201d. Messages now quote the real time stored on the order, with a separate tag for the clock time and the minutes.',
+      'The order tracker showed no time at all for ASAP orders even though the correct one was already saved against them. It now shows it, and a delivery is told when the food LEAVES rather than being handed the courier pickup time as if it were an arrival.',
+      'A venue open past midnight (17:00 to 01:00, or closing at 00:00) was offered NO collection slots at all, and if it was shut at the time there was no way to order at all. Overnight windows now work.',
+      'Collection slots were worked out once when the sheet opened and never again, so somebody browsing for twenty minutes was still shown times from twenty minutes ago. They now rebuild every minute, and a time you already picked is moved forward and flagged if the kitchen falls behind it.',
+      'Pre-orders no longer inflate today\u2019s wait. An order for Saturday is held out of the count until its kitchen start time, whichever channel took it.',
+      'Open bar tabs were being counted as zero on the storefront, so a busy pub read as completely quiet and never added time. Counting now happens on the server where the tabs are visible.',
+      'The kiosk promised a fixed number of minutes that no amount of kitchen depth could move. It now uses the same rule as the website. Setting it to 0 hides it, which it previously refused to do.',
+      'QR diners were the only customers given no wait time anywhere. They now see it on the menu header.',
+      'Staff taking a phone order were shown collection times starting 15 minutes out no matter what the venue lead time was set to, so a caller was promised a time the website would have refused. The counter now uses the venue lead time, the live kitchen load, and the venue clock.',
+      'A venue that sets its collection time to 0 no longer has the storefront say one thing and the checkout say 30.',
+      'The busy-rule preview in Back Office now asks the real engine instead of restating the sum, so it can no longer promise a rise the cap would prevent, and entering 0 no longer shows a green confirmation for a rule that is actually switched off.',
+      'Twice a year a daylight-saving change silently lost a whole day of bookable slots. Days are now walked on the venue calendar.',
+    ],
+  },
+  {
     v: '5.8.5',
     date: '1 Sep 2026',
     items: [

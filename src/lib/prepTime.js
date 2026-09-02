@@ -74,26 +74,44 @@ export function prepRuleFromLocation(location) {
   };
 }
 
+/** States that are NOT work in the kitchen yet, by status.
+ *  (The stronger test is sent_at, below: a pre-order is not work until its
+ *  kitchen fire moment arrives, whatever its status says.) */
+
 /**
  * Two counts, from one read, because they answer two different questions.
  *
  *   live  what the Orders Hub shows. Everything the venue has accepted and not
  *         finished with: open tables, open bar tabs, and every queue order that
- *         is not collected, paid or cancelled. This is the operational number.
+ *         is not collected, paid or cancelled. The operational number.
  *
  *   load  what the KITCHEN still has to make. The same set minus anything
- *         already 'ready' on the pass. This is the number that drives the
- *         quoted wait, and it is the one prepMinutes should be given.
+ *         already 'ready' on the pass. This drives the quoted wait, and it is
+ *         the one prepMinutes should be given.
  *
- * They are deliberately allowed to disagree. Provo today is live 27, load 25:
- * two collection orders have been made and are waiting to be picked up. Adding
- * kitchen time for those would punish the next customer for somebody else being
- * slow to turn up.
+ * They are deliberately allowed to disagree. An order made and waiting to be
+ * picked up is still live for staff, but adding kitchen time for it would
+ * punish the next customer for somebody else being slow to turn up.
  *
- * Three sources, because that is what an order is in this system:
- *   - open table sessions   (active_sessions, joined to floor_tables)
- *   - open bar tabs         (bar_tabs, not closed)
- *   - the order queue       (order_queue)  online, kiosk, counter, delivery, 3rd party
+ * PRE-ORDERS ARE HELD OUT BY sent_at, NOT BY STATUS. order_queue.sent_at is the
+ * kitchen fire moment (collection time minus the lead). A pre-order for Saturday
+ * carries a Saturday sent_at, so it is not work today and must not inflate
+ * today's quote. Filtering on status alone does not work: online pre-orders are
+ * written as 'prep' from the moment they are paid for, and the in-memory
+ * 'scheduled' status is never persisted, so status would have missed every one
+ * of them. sent_at is populated on every live row from all five sources
+ * (online, kiosk, pos, hubrise, catering), and null is treated as "already
+ * firing" so a source that ever stops setting it fails toward counting.
+ *
+ * BAR TABS NEED THE RPC. bar_tabs is tenant-fenced by pos_can_access(), and the
+ * online storefront reads on an anonymous session. RLS does not error there, it
+ * filters every row and hands back a count of ZERO, which is indistinguishable
+ * from a genuinely empty bar. A bar-led venue would therefore never read busy.
+ * So we ask the database to count for us through online_kitchen_load(), a
+ * SECURITY DEFINER function that sees past RLS and returns both figures. The
+ * direct reads below remain as a fallback for any project where that function
+ * has not been created yet, and they log the fact rather than quietly
+ * under-reporting.
  *
  * THREE EARLIER ATTEMPTS WERE WRONG, and all three would have hurt service:
  *   1. order_queue alone left OUT table service entirely, so a venue with 22
@@ -101,9 +119,7 @@ export function prepRuleFromLocation(location) {
  *   2. kitchen tickets inside a 4 hour window read 0 at a venue with ~27 open
  *      orders, because the tickets were sent before the window opened.
  *   3. raw active_sessions counted five tables at Provo where the floor plan
- *      has two. The other three are orphans left by table splits, one of them
- *      from June. Hence the join to floor_tables: a session on a table that no
- *      longer exists is not a table anyone can serve.
+ *      has two. The rest are orphans left by table splits, one from June.
  *
  * Never throws and never blocks a customer: any source that fails is skipped,
  * and if they all fail we return null and the flat lead time applies.
@@ -112,8 +128,21 @@ export function prepRuleFromLocation(location) {
  */
 export async function liveOrderCount(supabase, opsLocationId) {
   if (!supabase || !opsLocationId) return null;
+
+  // Preferred path: one server-side count that can see bar tabs.
+  try {
+    const { data, error } = await supabase.rpc('online_kitchen_load', { p_location_id: opsLocationId });
+    if (!error && data) {
+      const row = Array.isArray(data) ? data[0] : data;
+      const live = Number(row?.live_orders);
+      const load = Number(row?.kitchen_load);
+      if (Number.isFinite(live) && Number.isFinite(load)) return { live, load };
+    }
+  } catch { /* function not deployed on this project — fall through */ }
+
   const rows = (q) => q.then(r => (r?.error ? null : (Array.isArray(r?.data) ? r.data : null)));
   const head = (q) => q.then(r => (r?.error ? null : (typeof r?.count === 'number' ? r.count : null)));
+  const nowIso = new Date().toISOString();
   try {
     const [floor, sessions, tabs, queue] = await Promise.all([
       rows(supabase.from('floor_tables').select('id').eq('location_id', opsLocationId).limit(1000)),
@@ -121,8 +150,11 @@ export async function liveOrderCount(supabase, opsLocationId) {
       head(supabase.from('bar_tabs').select('id', { count: 'exact', head: true })
         .eq('location_id', opsLocationId).neq('status', 'closed')),
       // Statuses rather than a head count, so one read gives both figures.
+      // sent_at.lte.now holds pre-orders out until their kitchen fire moment.
       rows(supabase.from('order_queue').select('status').eq('location_id', opsLocationId)
-        .not('status', 'in', `(${EXCLUDED_STATUSES.join(',')})`).limit(2000)),
+        .not('status', 'in', `(${DONE_STATUSES.join(',')})`)
+        .or(`sent_at.is.null,sent_at.lte.${nowIso}`)
+        .limit(2000)),
     ]);
 
     // Only sessions whose table is actually ON the floor plan count, because
@@ -143,4 +175,31 @@ export async function liveOrderCount(supabase, opsLocationId) {
     const base = (tables || 0) + (tabs || 0);
     return { live: base + (qLive || 0), load: base + (qLoad || 0) };
   } catch { return null; }
+}
+
+/**
+ * The same count as liveOrderCount, but from state the POS already holds in
+ * memory, so a staff surface needs no round trip and cannot disagree with the
+ * Orders Hub it sits next to. Mirrors OrdersHub.jsx's allOrders assembly.
+ *
+ * @param {{tables?:Array, tabs?:Array, orderQueue?:Array}} state
+ * @returns {{live:number, load:number}}
+ */
+export function kitchenLoadFromStore(state = {}) {
+  const tables = (state.tables || []).filter(t => t && t.status !== 'available' && t.session).length;
+  const tabs = (state.tabs || []).filter(t => t && t.status !== 'closed').length;
+  const now = Date.now();
+  const q = (state.orderQueue || []).filter((o) => {
+    if (!o) return false;
+    if (DONE_STATUSES.includes(o.status)) return false;
+    // Held out until its kitchen fire moment, same rule as the server count.
+    const fire = o.sentAt || o.sent_at;
+    if (fire) { const t = new Date(fire).getTime(); if (Number.isFinite(t) && t > now) return false; }
+    return true;
+  });
+  const base = tables + tabs;
+  return {
+    live: base + q.length,
+    load: base + q.filter(o => !KITCHEN_FINISHED.includes(o.status)).length,
+  };
 }

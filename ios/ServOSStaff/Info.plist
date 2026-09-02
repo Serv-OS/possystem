@@ -24,8 +24,12 @@
 	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Used only when you clock in or out, to confirm you are at your venue. Your location is checked against the venue and the distance is recorded. Your position is never stored or shared.</string>
 	<key>RPOSAllowsCamera</key>
 	<false/>
+	<key>RPOSAllowsLocation</key>
+	<true/>
 	<key>RPOSAppURL</key>
 	<string>https://possystem-liard.vercel.app/?mode=staff</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
