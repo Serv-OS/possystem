@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.8.0',
+    date: '2026-09-01',
+    items: [
+      'Packages and events now fits smaller screens. The package list was a fixed width that refused to shrink, so on anything narrower than a wide desktop the editor beside it was squeezed to a sliver and its fields ran off the screen',
+      'Both columns now flex and the editor drops below the list when there is not room for both, so it stays usable on a laptop or an iPad instead of only on a large monitor',
+    ],
+  },
+  {
     version: '5.7.99',
     date: '2026-09-01',
     items: [

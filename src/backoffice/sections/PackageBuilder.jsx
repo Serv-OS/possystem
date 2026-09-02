@@ -174,9 +174,15 @@ export default function PackageBuilder() {
       <Head title="Packages & events"
         sub="Sold through the booking widget and the host stand. Each package carries its own price and payment rule, its own availability, and the order lines that land on the POS when the party is seated." />
 
-      <div style={{ display: 'flex', gap: 18, marginTop: 14, alignItems: 'flex-start' }}>
+      {/* v5.8.0: this was a fixed 400px list that refused to shrink beside the
+          editor, so on anything narrower than a wide desktop the editor was
+          squeezed to a sliver and its fields ran off the screen. Both columns
+          now flex and the row wraps, so the editor drops BELOW the list on a
+          narrow screen instead of being crushed next to it. No breakpoint is
+          guessed: it reflows at whatever width it actually runs out of room. */}
+      <div style={{ display: 'flex', gap: 18, marginTop: 14, alignItems: 'flex-start', flexWrap: 'wrap' }}>
         {/* ── list ── */}
-        <div style={{ width: 400, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ flex: '1 1 300px', minWidth: 260, maxWidth: 400, display: 'flex', flexDirection: 'column', gap: 8 }}>
           {(packages || []).map(p => (
             <button key={p.id} onClick={() => selectPkg(p.id)} style={p.id === selId ? S.cardOn : S.card}>
               <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
@@ -202,7 +208,7 @@ export default function PackageBuilder() {
         </div>
 
         {/* ── detail ── */}
-        <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ flex: '999 1 480px', minWidth: 0 }}>
           {!hasAny ? (
             <div style={S.empty}>No packages yet — create your first.</div>
           ) : !draft ? (
@@ -240,7 +246,7 @@ export default function PackageBuilder() {
               {/* the four metric cards */}
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'stretch' }}>
                 <Metric label="Price" flex="1 1 210px">
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                     <input type="number" min="0" step="0.5" style={{ ...S.inp, flex: '1 1 96px', minWidth: 0, fontFamily: MONO, fontWeight: 700 }}
                       value={draft.price ?? 0} onChange={e => upd({ price: e.target.value === '' ? 0 : Number(e.target.value) })} />
                     <select style={{ ...S.inp, flex: '1.2 1 120px', minWidth: 0, paddingRight: 26 }} value={draft.priceUnit}
@@ -448,7 +454,7 @@ export default function PackageBuilder() {
               </div>
 
               {/* save bar */}
-              <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                 <button style={S.btnPrimary} onClick={save} disabled={busy}>
                   {busy ? 'Saving…' : saved ? '✓ Saved' : 'Save package'}
                 </button>
