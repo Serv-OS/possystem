@@ -62,12 +62,20 @@ function buildTimezoneGroups() {
 const TIMEZONE_GROUPS = buildTimezoneGroups();
 const TIMEZONES = TIMEZONE_GROUPS.flatMap(g => g.zones); // kept for any legacy reader
 
-const HOURS = Array.from({ length: 48 }, (_, i) => {
-  const h = Math.floor(i / 2);
-  const m = (i % 2) * 30;
+// v5.8.12: 15-minute steps (was 30, so 23:45 or 00:15 could not be set), and
+// midnight labelled as such. A close time at or before the open time has
+// always meant "the next morning" (src/lib/openingHours.js), but the list gave
+// no sign of it, so a venue open 17:00 to 01:00 read the list as stopping at
+// 23:30 and believed overnight hours could not be entered. The close select
+// below labels those options "(next day)".
+const HOURS = Array.from({ length: 96 }, (_, i) => {
+  const h = Math.floor(i / 4);
+  const m = (i % 4) * 15;
   const s = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
-  return { value: s, label: s };
+  return { value: s, label: s === '00:00' ? '00:00 (midnight)' : s };
 });
+const toMin = (hhmm) => { const [h, m] = String(hhmm || '').split(':').map(Number); return (h || 0) * 60 + (m || 0); };
+const closeLabel = (h, open) => (open && toMin(h.value) <= toMin(open)) ? `${h.value} (next day)` : h.label;
 
 // Strip junk and coerce types so the JSONB column gets clean data and the
 // migration can rely on shape. Days that aren't a valid weekday key are
@@ -829,11 +837,14 @@ function OpeningHoursCard({ hours, setHours, timezone, closedDateInput, setClose
                       {HOURS.map(h => <option key={h.value} value={h.value}>{h.label}</option>)}
                     </select>
                     <span style={{ fontSize:11, color:'var(--t4)' }}>to</span>
-                    <select style={{ ...S.select, width:90, padding:'6px 8px', fontSize:12 }}
+                    <select style={{ ...S.select, width:120, padding:'6px 8px', fontSize:12 }}
                       value={w.close || '17:00'}
                       onChange={e => setWindowField(key, idx, 'close', e.target.value)}>
-                      {HOURS.map(h => <option key={h.value} value={h.value}>{h.label}</option>)}
+                      {HOURS.map(h => <option key={h.value} value={h.value}>{closeLabel(h, w.open)}</option>)}
                     </select>
+                    {w.open && w.close && toMin(w.close) <= toMin(w.open) && (
+                      <span style={{ fontSize:11, color:'var(--t4)' }}>closes next day</span>
+                    )}
                     <button onClick={() => removeWindow(key, idx)}
                       style={{ ...S.btn, background:'var(--red-d)', color:'var(--red)', border:'1px solid var(--red-b)', padding:'4px 9px', fontSize:11 }}>
                       ✕

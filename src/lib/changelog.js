@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.12',
+    date: '2 Sep 2026',
+    items: [
+      'Opening hours can now be set in 15-minute steps (was 30), and a close time earlier than the open time is labelled "(next day)" with a "closes next day" note on the row. Overnight hours like 17:00 to 01:00 always worked underneath, but nothing in the editor said so.',
+    ],
+  },
+  {
     v: '5.8.11',
     date: '2 Sep 2026',
     items: [
