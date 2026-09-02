@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    version: '5.8.3',
+    date: '2026-09-01',
+    items: [
+      'The busy collection time now counts open orders exactly as the Orders Hub counts them: open tables, open bar tabs, and the order queue minus anything collected, paid or cancelled. The number quoted to a customer can no longer disagree with the screen staff are looking at',
+      'This corrects two earlier attempts that were both wrong in ways that would have hurt service. Counting only the online queue left table service out completely, and counting recent kitchen tickets read zero at a venue with around thirty orders open, because the tickets were older than the window even though the orders were not finished',
+    ],
+  },
+  {
     version: '5.8.2',
     date: '2026-09-01',
     items: [

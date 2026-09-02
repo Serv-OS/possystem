@@ -14,13 +14,10 @@
 // already waiting on the shelf are NOT counted: the food is made, so it is not
 // competing for kitchen time, and counting it would inflate the quote all day.
 
-/** KDS ticket states that still need kitchen time. 'bumped' is served. */
-export const LIVE_TICKET_STATUSES = ['pending', 'fired'];
-
-/** How far back a ticket still counts as live. A ticket nobody ever bumped
- *  three days ago is data debris, not kitchen load, and counting it would
- *  inflate every quote for ever. */
-const LIVE_WINDOW_HOURS = 4;
+/** Order-queue states the Orders Hub treats as finished. Everything else on the
+ *  queue is still open work. Kept identical to DONE_STATUSES in OrdersHub.jsx:
+ *  the number quoted to a customer has to be the number staff can see. */
+export const DONE_STATUSES = ['collected', 'paid', 'cancelled'];
 
 const DEFAULT_MAX_ADDED = 45;
 
@@ -57,42 +54,40 @@ export function prepRuleFromLocation(location) {
 }
 
 /**
- * How many orders the kitchen is currently working on, across EVERY channel.
+ * How many orders are open right now, counted exactly as the Orders Hub counts
+ * them, so the busy time can never disagree with the screen staff are looking
+ * at.
  *
- * This reads the kitchen board (kds_tickets), not the online order queue. That
- * matters: order_queue holds online, kiosk and counter orders but NOT table
- * service, and on 1 Sep this venue had 22 open tables against a handful of
- * online orders. Quoting from order_queue would have told a customer the
- * kitchen was quiet while it was buried in covers.
+ * Three sources, because that is what an order is in this system:
+ *   - open table sessions   (active_sessions)
+ *   - open bar tabs         (bar_tabs, not closed)
+ *   - the order queue       (order_queue, not collected / paid / cancelled)
+ *     which carries online, kiosk, counter, delivery and third party.
  *
- * Counting DISTINCT tickets-per-order, not tickets: one order routed to the
- * kitchen and the bar raises two tickets, and that is one order's worth of
- * food, not two. `table_label` is the per-order grouping the board itself uses
- * (a table number, or "Online OL-XXX" / "Kiosk K-XXX" for the other channels).
+ * TWO EARLIER ATTEMPTS WERE WRONG, and both would have hurt service:
+ *   1. order_queue alone left OUT table service entirely, so a venue with 22
+ *      tables on read as quiet.
+ *   2. kitchen tickets inside a 4 hour window read 0 at a venue with ~27 open
+ *      orders, because the tickets were sent earlier than the window even
+ *      though the orders were still open.
+ * Matching the Hub is the only definition that cannot drift from what staff see.
  *
- * Never throws and never blocks a customer: if it cannot be read we return null
- * and the caller falls back to the flat lead time.
+ * Never throws and never blocks a customer: any source that fails is skipped,
+ * and if they all fail we return null and the flat lead time applies.
  */
 export async function liveOrderCount(supabase, opsLocationId) {
   if (!supabase || !opsLocationId) return null;
+  const head = (q) => q.then(r => (r?.error ? null : (typeof r?.count === 'number' ? r.count : null)));
   try {
-    const since = new Date(Date.now() - LIVE_WINDOW_HOURS * 3600_000).toISOString();
-    const { data, error } = await supabase
-      .from('kds_tickets')
-      .select('table_label')
-      .eq('location_id', opsLocationId)
-      .in('status', LIVE_TICKET_STATUSES)
-      .gt('sent_at', since)
-      .limit(2000);
-    if (error || !Array.isArray(data)) return null;
-    // A ticket with no label cannot be grouped, so it counts as its own order
-    // rather than silently collapsing every unlabelled ticket into one.
-    let unlabelled = 0;
-    const labels = new Set();
-    for (const t of data) {
-      if (t?.table_label) labels.add(String(t.table_label));
-      else unlabelled += 1;
-    }
-    return labels.size + unlabelled;
+    const [tables, tabs, queue] = await Promise.all([
+      head(supabase.from('active_sessions').select('table_id', { count: 'exact', head: true })
+        .eq('location_id', opsLocationId)),
+      head(supabase.from('bar_tabs').select('id', { count: 'exact', head: true })
+        .eq('location_id', opsLocationId).neq('status', 'closed')),
+      head(supabase.from('order_queue').select('ref', { count: 'exact', head: true })
+        .eq('location_id', opsLocationId).not('status', 'in', `(${DONE_STATUSES.join(',')})`)),
+    ]);
+    if (tables === null && tabs === null && queue === null) return null;
+    return (tables || 0) + (tabs || 0) + (queue || 0);
   } catch { return null; }
 }
