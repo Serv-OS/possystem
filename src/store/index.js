@@ -6865,7 +6865,10 @@ export const useStore = create((set, get) => ({
   // creates per-centre kds_tickets, and calls routePrintJob per centre.
   // Idempotent via a conditional UPDATE on kitchen_routed_at — only the
   // first claimer (typically master POS) does the work.
-  routeKioskOrderPrints: async (order) => {
+  // v5.8.18: opts.force re-sends an order that was already routed (ticket lost,
+  // printer offline). Skips the once-only memo and the DB claim gate; the claim
+  // UPDATE still runs so a never-routed row gets stamped.
+  routeKioskOrderPrints: async (order, opts = {}) => {
     if (!order?.ref || !Array.isArray(order.items) || !order.items.length) return;
     if (!supabase) return;
     // v5.5.131: surface routing diagnostics as on-screen toasts on the master
@@ -6973,12 +6976,12 @@ export const useStore = create((set, get) => ({
           }
         } catch {}
         if (!useStore._routedRefs) useStore._routedRefs = new Set();
-        if (useStore._routedRefs.has(order.ref)) return;
+        if (!opts?.force && useStore._routedRefs.has(order.ref)) return;
         useStore._routedRefs.add(order.ref);
         markRouted(order.ref);   // v5.5.860: survives refresh — the in-memory set doesn't
       } else {
         if (r.error) { console.warn('[routeKioskOrderPrints] claim failed', r.error); return; }
-        if (!r.data?.length) return; // Another device already routed
+        if (!r.data?.length && !opts?.force) return; // Another device already routed
         markRouted(order.ref);   // v5.5.860: claim won — remember locally too, so a later claim-reset can never re-print here
       }
       // v5.5.861: we are now COMMITTED to printing this order on this device — this is

@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.18',
+    date: '2 Sep 2026',
+    items: [
+      'Orders Hub has a day filter: Today, Tomorrow, Later, All days. Today is the default, so advance orders stay on the till without cluttering the live list. Tables and bar tabs always count as today.',
+      'Orders Hub: "Send to kitchen again" on any queue order. Prints the ticket and puts it back on the KDS, for when a ticket never arrived.',
+      'Back Office → Channels → "Catering orders" is now "Advance orders" and shows online orders placed for a later day alongside catering, grouped by day.',
+      'Online Ordering: new "Days ahead customers can order" setting. 0 means today only, for venues that do not take orders in advance. Blank keeps 7 days. Needs a one-column migration on the Platform database.',
+    ],
+  },
+  {
     v: '5.8.17',
     date: '2 Sep 2026',
     items: [

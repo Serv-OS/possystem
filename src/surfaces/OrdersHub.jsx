@@ -59,6 +59,20 @@ const Q_STATUS = {
 };
 const DONE_STATUSES = ['collected', 'paid', 'cancelled'];
 
+// v5.8.18: 'today' | 'tomorrow' | 'later' | 'past', on the VENUE calendar.
+function dayKeyOf(source, tz) {
+  if (!source) return 'today';
+  const d = new Date(source);
+  if (Number.isNaN(d.getTime())) return 'today';
+  const ymd = (x) => x.toLocaleDateString('en-CA', { timeZone: tz });
+  const now = new Date();
+  const that = ymd(d), today = ymd(now);
+  if (that === today) return 'today';
+  if (that < today) return 'past';
+  if (that === ymd(new Date(now.getTime() + 86400000))) return 'tomorrow';
+  return 'later';
+}
+
 // v5.5.659: an order counts as paid (no money outstanding) if it carries a paid flag, OR it came
 // from a channel that is ALWAYS prepaid before it reaches the queue (online/kiosk). Anything else —
 // catering pay-later, an unpaid walk-in/phone order, an unpaid (test/cash) HubRise order — still
@@ -92,6 +106,8 @@ export default function OrdersHub() {
   const knownIds = useMemo(() => new Set((menuItems || []).map(m => m.id)), [menuItems]);
 
   const [filter, setFilter]     = useState('all');
+  // v5.8.18: which DAY. Advance orders stay on the till but off today's list.
+  const [dayFilter, setDayFilter] = useState('today');
   const [search, setSearch]     = useState('');
   const [myOrders, setMyOrders] = useState(false);
   const [showDone, setShowDone] = useState(false);
@@ -212,6 +228,7 @@ export default function OrdersHub() {
         // left out of the live count. Online pre-orders are written as 'prep'
         // so this is derived, not read off the status.
         held: !!(o.sentAt && Number(o.sentAt) > Date.now()),
+        dayKey: dayKeyOf(o.customer?.collection_at || o.sentAt || o.createdAt, hubTz),
         firesLabel: (o.sentAt && Number(o.sentAt) > Date.now()) ? collectionLabel(Number(o.sentAt), hubTz) : null,
         whenLabel: orderCollectionLabel(o, hubTz),
         source: o.source || 'pos',
@@ -228,6 +245,8 @@ export default function OrdersHub() {
   const filtered = useMemo(() => {
     let list = allOrders;
     if (filter !== 'all') list = list.filter(o => o.channel === filter);
+    // Tables and bar tabs are always 'today'. A past-day order that is still open shows under Today too.
+    if (dayFilter !== 'all') list = list.filter(o => { const k = o.dayKey || 'today'; return dayFilter === 'today' ? (k === 'today' || k === 'past') : k === dayFilter; });
     if (!showDone) list = list.filter(o => !DONE_STATUSES.includes(o.status));
     if (myOrders && staff) {
       const me = staff.name?.toLowerCase();
@@ -242,7 +261,7 @@ export default function OrdersHub() {
       );
     }
     return list.sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
-  }, [allOrders, filter, search, myOrders, showDone, staff]);
+  }, [allOrders, filter, dayFilter, search, myOrders, showDone, staff]);
 
   // Split into sections
   const tableOrders = filtered.filter(o => o.channel === 'table');
@@ -941,6 +960,20 @@ export default function OrdersHub() {
             );
           })}
         </div>
+        {/* v5.8.18: day filter. Advance orders stay on the till, off today's list. */}
+        <div style={{ display:'flex', gap:6, padding:'6px 0 2px' }}>
+          {[['today','Today'],['tomorrow','Tomorrow'],['later','Later'],['all','All days']].map(([id,label]) => {
+            const n = id === 'all' ? 0 : allOrders.filter(o => o._kind === 'queue' && !DONE_STATUSES.includes(o.status) && (id === 'today' ? (o.dayKey === 'today' || o.dayKey === 'past') : o.dayKey === id)).length;
+            const active = dayFilter === id;
+            return (
+              <button key={id} onClick={() => setDayFilter(id)} style={{
+                padding:'4px 10px', cursor:'pointer', fontFamily:'inherit', borderRadius:999,
+                border:`1px solid ${active ? 'var(--acc)' : 'var(--bdr)'}`, background: active ? 'var(--acc)' : 'transparent',
+                color: active ? '#fff' : 'var(--t3)', fontSize:11.5, fontWeight: active ? 800 : 600, whiteSpace:'nowrap',
+              }}>{label}{n > 0 ? ` · ${n}` : ''}</button>
+            );
+          })}
+        </div>
       </div>
 
       {/* ── Content ─────────────────────────────────────────────────── */}
@@ -1135,6 +1168,13 @@ export default function OrdersHub() {
             })()}
 
             <div style={{ display:'flex', gap:8, marginTop:14 }}>
+              {viewOrder._kind === 'queue' && (
+                <button onClick={() => { try { useStore.getState().routeKioskOrderPrints?.({ ...viewOrder._raw, ref: viewOrder.ref }, { force: true }); useStore.getState().showToast?.('Sent to the kitchen again', 'success'); } catch { /* toast covers it */ } }}
+                  title="Print the kitchen ticket and put it on the KDS again, e.g. if the ticket never arrived"
+                  style={{ flex:1, padding:11, borderRadius:10, background:'var(--bg2)', border:'1px solid var(--bdr)', color:'var(--t2)', fontSize:12, fontWeight:700, cursor:'pointer', fontFamily:'inherit' }}>
+                  🍳 Send to kitchen again
+                </button>
+              )}
               <button onClick={printReceipt} disabled={printBusy} style={{ flex:1, padding:11, borderRadius:10, background:'var(--bg2)', border:'1px solid var(--bdr)', color:'var(--t1)', fontWeight:700, cursor: printBusy?'wait':'pointer', fontFamily:'inherit', opacity: printBusy?0.6:1 }}>{printBusy ? 'Printing…' : '🧾 Print receipt'}</button>
             </div>
             <div style={{ fontSize:11, color:'var(--t3)', marginTop:8 }}>Already paid{viewOrder.paymentMethod ? ` · ${viewOrder.paymentMethod}` : ''}. Advance it from its card (prep → ready → collected).</div>

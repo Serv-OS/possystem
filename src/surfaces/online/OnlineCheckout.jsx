@@ -337,7 +337,10 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     const t = setInterval(() => setNowTick(n => n + 1), 60_000);
     return () => clearInterval(t);
   }, []);
-  const slots = useMemo(() => buildCollectionSlots(location, tz, leadMin), [location, tz, leadMin, nowTick]);
+  // v5.8.18: how far ahead this venue takes orders. 0 = today only.
+  const advanceDays = (location.online_advance_days !== null && location.online_advance_days !== undefined && Number.isFinite(Number(location.online_advance_days)))
+    ? Math.max(0, Number(location.online_advance_days)) : 7;
+  const slots = useMemo(() => buildCollectionSlots(location, tz, leadMin, advanceDays), [location, tz, leadMin, nowTick, advanceDays]);
 
   // When the customer first picks Schedule, auto-select the earliest slot
   // so the dropdowns aren't empty and "Place order" isn't blocked on a
@@ -2311,7 +2314,7 @@ function nextIsoDate(iso) {
 // Build the next ~24h of valid collection slots.
 // Slots are 15-min increments inside opening windows, starting at the
 // earliest slot ≥ now+leadMin, snapped to :00/:15/:30/:45.
-function buildCollectionSlots(location, tz, leadMin) {
+function buildCollectionSlots(location, tz, leadMin, maxDaysAhead = 7) {
   const hours = location.opening_hours;
   if (!hours?.weekly) return [];
   const out = [];
@@ -2328,7 +2331,8 @@ function buildCollectionSlots(location, tz, leadMin) {
   // which silently lost a whole day of bookable slots twice a year.
   const seen = new Set();
   let cursorIso = now.toLocaleDateString('en-CA', { timeZone: tz });
-  for (let dayOffset = 0; dayOffset < 7; dayOffset++) {
+  const days = Math.max(0, Math.min(60, Number(maxDaysAhead) || 0)) + 1;   // today + N ahead
+  for (let dayOffset = 0; dayOffset < days; dayOffset++) {
     const probe = resolveLocalDateTime(cursorIso, 12 * 60, tz);   // midday, safe from DST edges
     cursorIso = nextIsoDate(cursorIso);
     const windows = getDayWindows(hours, tz, probe);

@@ -64,6 +64,8 @@ const LOCATION_FIELDS = new Set([
   'online_menu_id', 'online_collection_lead_min', 'online_delivery_enabled',
   // v5.7.99 busy prep rule: add N minutes for every M live orders, capped.
   'online_busy_step_orders', 'online_busy_step_minutes', 'online_busy_max_minutes',
+  // v5.8.18: allow orders in advance (0 = today only, null = 7)
+  'online_advance_days',
   // v5.8.8 tipping on the module: {online:{on,pct,default,custom}, qr:{...}}
   'tipping_config',
   // OnlineOrdering.jsx:264-266  (QR core)
@@ -298,6 +300,11 @@ async function coerce(key: string, v: unknown, opsLocationId: string): Promise<{
       return data ? { value: id } : { err: 'no such menu at this location' };
     }
     case 'collection_lead_minutes':
+    case 'online_advance_days': {
+      if (v === null || v === undefined || v === '') return { value: null };
+      const n = int(v, 0, 60);
+      return n === null ? { err: 'expected a whole number of days, 0 to 60' } : { value: n };
+    }
     case 'online_collection_lead_min':
     case 'qr_tab_force_close_after_minutes': {
       const n = int(v, 0, 100_000);

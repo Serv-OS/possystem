@@ -57,6 +57,8 @@ export default function OnlineOrdering({ setSection }) {
   const [branding, setBranding] = useState(BLANK_BRANDING);
   const [menuId, setMenuId]   = useState('');
   const [leadMin, setLeadMin] = useState(30);
+  // v5.8.18: '' = 7 days (legacy), 0 = today only
+  const [advanceDays, setAdvanceDays] = useState('');
   // v5.8.8: tipping, set on the module. Online and QR each own a rule.
   const [tipOnline, setTipOnline] = useState({ ...TIP_DEFAULTS.online });
   const [tipQr, setTipQr]         = useState({ ...TIP_DEFAULTS.qr });
@@ -167,6 +169,12 @@ export default function OnlineOrdering({ setSection }) {
                 setBusyMaxMinutes(busy.online_busy_max_minutes ?? '');
               }
             } catch { /* columns not migrated yet — blank means "no rule" */ }
+            // v5.8.18: advance-order limit, own defensive read for the same reason.
+            try {
+              const { data: adv } = await platformSupabase
+                .from('locations').select('online_advance_days').eq('id', r.id).maybeSingle();
+              if (adv) setAdvanceDays(adv.online_advance_days == null ? '' : String(adv.online_advance_days));
+            } catch { /* not migrated — legacy 7 days */ }
             // v5.8.8: tipping_config, its own read for the same reason.
             try {
               const { data: t } = await platformSupabase
@@ -301,6 +309,7 @@ export default function OnlineOrdering({ setSection }) {
     const { data, error: err } = await saveLocation(opsLocId, {
       online_menu_id:             menuId || null,
       online_collection_lead_min: Math.max(0, parseInt(leadMin, 10) || 0),
+      online_advance_days: advanceDays === '' ? null : Math.max(0, Math.min(60, parseInt(advanceDays, 10) || 0)),
       online_busy_step_orders:  busyStepOrders  === '' ? null : Math.max(0, parseInt(busyStepOrders, 10) || 0),
       online_busy_step_minutes: busyStepMinutes === '' ? null : Math.max(0, parseInt(busyStepMinutes, 10) || 0),
       online_busy_max_minutes:  busyMaxMinutes  === '' ? null : Math.max(0, parseInt(busyMaxMinutes, 10) || 0),
@@ -452,6 +461,17 @@ export default function OnlineOrdering({ setSection }) {
           value={leadMin}
           onChange={v => setLeadMin(parseInt(v, 10) || 0)}
           help={`The wait shown online, at the kiosk, on a QR menu and to staff taking a phone order. Nothing can be collected sooner than ${leadMin} minute${leadMin === 1 ? '' : 's'} from now. Separate from "Fire to kitchen N minutes before collection" in Location Settings, which is when the kitchen STARTS a pre-order.`}/>
+
+        {/* v5.8.18: some venues only take orders for the day. */}
+        <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--bdr)' }}>
+          <div style={{ ...S.label, marginBottom: 2 }}>Orders in advance</div>
+          <div style={{ fontSize: 11.5, color: 'var(--t4)', lineHeight: 1.55, marginBottom: 10 }}>
+            How far ahead a customer can schedule a collection or delivery. <b>0</b> means today only: the
+            Schedule option only offers times later today. Leave blank for 7 days.
+          </div>
+          <Field label="Days ahead customers can order (0 = today only)" type="number" min="0"
+            value={advanceDays} onChange={v => setAdvanceDays(v)} placeholder="7" />
+        </div>
 
         {/* v5.8.1: the flat lead time above is right when the kitchen is quiet
             and wrong the moment it is not. This makes it rise with the queue. */}

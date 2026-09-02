@@ -7,6 +7,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../lib/supabase';
+import { getLocationConfig } from '../../lib/locationTime';
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -37,10 +38,21 @@ export default function CateringOrders() {
 
   const load = async (id) => {
     const [{ data }, { data: cfg }] = await Promise.all([
-      supabase.from('order_queue').select('*').eq('location_id', id).eq('source', 'catering').order('event_date', { ascending: true }).limit(2000),
+      supabase.from('order_queue').select('*').eq('location_id', id).in('source', ['catering', 'online']).order('sent_at', { ascending: true }).limit(2000),
       supabase.from('catering_site_settings').select('currency').eq('location_id', id).maybeSingle(),
     ]);
-    setOrders(data || []); setCur(cfg?.currency || 'gbp');
+    // v5.8.18: online advance orders alongside catering. An online row has no
+    // event_date, so derive the day from customer.collection_at (venue tz).
+    let tz = 'Europe/London';
+    try { tz = (await getLocationConfig(id))?.timezone || tz; } catch { /* default */ }
+    const rows = (data || []).map((o) => {
+      if (o.event_date) return o;
+      const inst = o.customer?.collection_at ? new Date(o.customer.collection_at) : (o.sent_at ? new Date(o.sent_at) : null);
+      const event_date = inst && !Number.isNaN(inst.getTime()) ? inst.toLocaleDateString('en-CA', { timeZone: tz }) : null;
+      const event_time = inst && !Number.isNaN(inst.getTime()) ? inst.toLocaleTimeString('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false }) : (o.collection_time || null);
+      return { ...o, event_date, event_time, paid: o.paid ?? (o.source === 'online' ? true : o.paid) };
+    }).filter((o) => o.event_date);
+    setOrders(rows); setCur(cfg?.currency || 'gbp');
   };
   useEffect(() => {
     (async () => { try { const id = await getActiveLocationSync(); setLocId(id); if (supabase && id) await load(id); } catch {} finally { setLoading(false); } })();
@@ -72,11 +84,11 @@ export default function CateringOrders() {
   const itemsCount = (o) => (o.items || []).reduce((n, i) => n + (i.qty || 1), 0);
 
   if (loading) return <div style={S.empty}>Loading…</div>;
-  if (!supabase || !locId) return <div style={S.empty}>Pick a location to see catering orders.</div>;
+  if (!supabase || !locId) return <div style={S.empty}>Pick a location to see advance orders.</div>;
 
   return (
     <div>
-      <h1 style={S.h1}>Catering orders</h1>
+      <h1 style={S.h1}>Advance orders</h1>
       <div style={S.sub}>Forward view of your catering pre-orders for kitchen planning. Each shows on the live Orders Hub on its event day.</div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(150px,1fr))', gap: 10, marginBottom: 16, maxWidth: 620 }}>
