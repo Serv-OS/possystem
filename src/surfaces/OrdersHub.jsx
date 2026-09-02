@@ -533,8 +533,8 @@ export default function OrdersHub() {
       // history view. Capture the error and surface it as a toast.
       let closedCheckError = null;
       try {
-        const { error: ccErr } = const tabTip = +(tab.rows || []).reduce((t, r) => t + (Number(r?.customer?.tip) || 0), 0).toFixed(2);
-        await supabase.from('closed_checks').insert({
+        const tabTip = +(tab.rows || []).reduce((t, r) => t + (Number(r?.customer?.tip) || 0), 0).toFixed(2);
+        const { error: ccErr } = await supabase.from('closed_checks').insert({
           id: `chk-${Date.now()}-${Math.random().toString(36).slice(2,5)}`,
           ref: tab.firstRow?.ref || tab.payment_intent_id,
           location_id: tab.firstRow?.location_id || null,
