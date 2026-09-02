@@ -29,6 +29,9 @@ export default function AdyenPaymentForm({
   currency = 'GBP',
   reference,                 // OUR order ref — becomes Adyen's merchantReference
   customerEmail,
+  locationId,                // v5.8.15: platform location id. adyen-checkout resolves the
+                             // venue's store from it; without it the fn falls back to
+                             // "the only Adyen store", which stops being true at venue 2.
   onSuccess,
   onError,
 }) {
@@ -44,7 +47,7 @@ export default function AdyenPaymentForm({
       try {
         // Client key + environment come from the fn so live/test stays a
         // server-side switch (ADYEN_ENV) the bundle never hardcodes.
-        const { data: cfg, error: cfgErr } = await supabase.functions.invoke('adyen-checkout', { body: { action: 'status' } });
+        const { data: cfg, error: cfgErr } = await supabase.functions.invoke('adyen-checkout', { body: { action: 'status', ...(locationId ? { location_id: locationId } : {}) } });
         if (cfgErr || cfg?.error || !cfg?.ok) throw new Error(cfg?.error || cfgErr?.message || 'Could not start the payment');
         if (!live) return;
 
@@ -66,6 +69,7 @@ export default function AdyenPaymentForm({
               lastFailure.current = null;
               const r = await payViaServer({
                 action: 'make_payment',
+                ...(locationId ? { location_id: locationId } : {}),
                 amount_minor: amountMinor,
                 currency: String(currency).toUpperCase(),
                 reference,

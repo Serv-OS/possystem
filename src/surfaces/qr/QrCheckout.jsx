@@ -20,6 +20,7 @@ import { supabase } from '../../lib/supabase';
 import { logOrderActivity } from '../../lib/activity';
 import { getStripeForAccount, createPaymentIntent } from '../../lib/stripeClient';
 import { getLocationProcessor } from '../../lib/payments/processor';
+import AdyenPaymentForm from '../../components/AdyenPaymentForm';
 import RyftPaymentForm from '../../components/RyftPaymentForm';
 import { readRyftStoredCard } from '../../lib/payments/ryft';
 import { attributeOnlineOrder } from '../../lib/customerLookup';
@@ -78,7 +79,9 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
   const [payChoice, setPayChoice] = useState(
     paymentMode === 'open_tab' ? 'open_tab' : 'pay_now'
   );
-  const isOpenTab = payChoice === 'open_tab';
+  const openTabAvailable = processor !== 'adyen';
+  useEffect(() => { if (!openTabAvailable && payChoice === 'open_tab') setPayChoice('pay_now'); }, [openTabAvailable, payChoice]);
+  const isOpenTab = payChoice === 'open_tab' && openTabAvailable;
   // v5.5.160: enforce a sensible MINIMUM pre-auth even when the venue config
   // is 0 / null. Stripe rejects amount=0 PIs and a £0 hold leaves us with
   // no card on file to capture from. £25 is a safe starter — if the bill
@@ -268,6 +271,12 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
     // manual-capture hold + the card stored (Unscheduled), exactly like Stripe's
     // pre-auth, and the close path captures the actual bill (see render block).
     if (processor === 'ryft') { setError(''); setStep('pay'); return; }
+    // v5.8.15: Adyen venues were falling through to the STRIPE path below and
+    // taking a Stripe payment on an Adyen venue. The Drop-in creates its own
+    // session (adyen-checkout), exactly as OnlineCheckout does. Open tabs are
+    // not offered on Adyen yet: adyen-create-session refuses manual capture
+    // until the Phase-2 hold design lands, so the option is hidden below.
+    if (processor === 'adyen') { setError(''); setStep('pay'); return; }
     setWorking(true); setError('');
     try {
       // Anonymous sign-in so the connected-account edge fn accepts the JWT
@@ -668,7 +677,20 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
           <div style={{ flex: 1, height: 4, borderRadius: 2, background: step === 'pay' ? theme.accent : cardBdr }}/>
         </div>
 
-        {step === 'pay' && processor === 'ryft' ? (
+        {step === 'pay' && processor === 'adyen' ? (
+          <div style={{ padding: '0 24px 16px' }}>
+            <AdyenPaymentForm
+              locationId={platformLocationId}
+              amountMinor={Math.round(total * 100)}
+              currency={stripeCurrency()}
+              reference={orderShape?.ref}
+              customerEmail={orderShape?.customer?.email}
+              onSuccess={onPaymentSuccess}
+              onError={(e) => setError(e?.message || 'Payment failed')}
+            />
+            {error && <div style={{ color: theme.danger || '#e5484d', fontSize: 13, marginTop: 10 }}>{error}</div>}
+          </div>
+        ) : step === 'pay' && processor === 'ryft' ? (
           <div style={{ padding: '0 24px 16px' }}>
             <RyftPaymentForm
               amountMinor={Math.round((isOpenTab ? tabPreAuthAmount : total) * 100)}
@@ -716,9 +738,11 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
                 <PayChoiceCard active={payChoice === 'pay_now'} onClick={() => setPayChoice('pay_now')}
                   theme={theme} cardBdr={cardBdr} inputBg={inputBg}
                   title="💳 Pay now" sub="Pay this round and we'll bring it over."/>
-                <PayChoiceCard active={payChoice === 'open_tab'} onClick={() => setPayChoice('open_tab')}
-                  theme={theme} cardBdr={cardBdr} inputBg={inputBg}
-                  title="📋 Open tab" sub={`Hold ${currencySymbol()}${tabPreAuthAmount} on your card; staff close the tab when you're done.`}/>
+                {openTabAvailable && (
+                  <PayChoiceCard active={payChoice === 'open_tab'} onClick={() => setPayChoice('open_tab')}
+                    theme={theme} cardBdr={cardBdr} inputBg={inputBg}
+                    title="📋 Open tab" sub={`Hold ${currencySymbol()}${tabPreAuthAmount} on your card; staff close the tab when you're done.`}/>
+                )}
               </div>
             </>
           )}

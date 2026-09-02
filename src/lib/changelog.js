@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.15',
+    date: '2 Sep 2026',
+    items: [
+      'QR ordering on an Adyen venue was silently taking payment through STRIPE. The QR checkout only knew Stripe and Ryft, so Adyen fell through to the Stripe path. QR pay-now now uses the same Adyen card form as online ordering.',
+      'On an Adyen venue the QR "Open tab" option is hidden for now, rather than taking a Stripe hold. Adyen holds (authorise, adjust, capture later) are a separate piece of work.',
+      'The Adyen card form now tells the server which venue it is paying. Before this it relied on there being exactly one Adyen venue, which would have broken the moment a second one went live.',
+    ],
+  },
+  {
     v: '5.8.14',
     date: '2 Sep 2026',
     items: [

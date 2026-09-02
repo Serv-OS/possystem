@@ -1335,6 +1335,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         {step === 'pay' && processor === 'adyen' ? (
           <div style={{ padding: '0 24px 16px' }}>
             <AdyenPaymentForm
+              locationId={platformLocationId}
               amountMinor={remainingMinor}
               currency={stripeCurrency()}
               reference={orderShape?.ref}
