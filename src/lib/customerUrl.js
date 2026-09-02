@@ -188,7 +188,12 @@ export async function lookupLocationBySlug(slug, platformSupabase) {
     // independent and were run SEQUENTIALLY — 4 round-trips before a customer page could
     // paint. Now fired together; each stays individually defensive (a missing-column error
     // on a partially-migrated venue only loses its own fields, exactly as before).
-    const [qrRes, tabRes, coRes] = await Promise.allSettled([
+    // v5.7.99: the busy prep rule is read SEPARATELY and defensively, exactly
+    // like the QR settings below. It must never join the main select: that one
+    // has no missing-column fallback, so a column that is not there yet would
+    // make the whole row come back empty and every storefront would report
+    // "venue not found" until the migration ran.
+    const [qrRes, tabRes, coRes, busyRes] = await Promise.allSettled([
       platformSupabase.from('locations')
         .select('qr_payment_mode, qr_table_mode, qr_service_charge_pct')
         .eq('id', data.id).maybeSingle(),
@@ -198,10 +203,14 @@ export async function lookupLocationBySlug(slug, platformSupabase) {
       data.company_id
         ? platformSupabase.from('companies').select('name').eq('id', data.company_id).maybeSingle()
         : Promise.resolve({ data: null }),
+      platformSupabase.from('locations')
+        .select('online_busy_step_orders, online_busy_step_minutes, online_busy_max_minutes')
+        .eq('id', data.id).maybeSingle(),
     ]);
     if (qrRes.status === 'fulfilled' && qrRes.value?.data) Object.assign(data, qrRes.value.data);
     if (tabRes.status === 'fulfilled' && tabRes.value?.data) Object.assign(data, tabRes.value.data);
     if (coRes.status === 'fulfilled' && coRes.value?.data?.name) data.company_name = coRes.value.data.name;
+    if (busyRes.status === 'fulfilled' && busyRes.value?.data) Object.assign(data, busyRes.value.data);
     _slugCache.set(slug, { row: data, at: Date.now() });
     return data;
   } catch (e) {

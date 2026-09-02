@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    version: '5.7.99',
+    date: '2026-09-01',
+    items: [
+      'Collection times can now rise with how busy the kitchen is. Set it to add so many minutes for every so many live orders, with a ceiling, and a quiet Tuesday still quotes your normal time while a Saturday quotes honestly instead of promising 30 minutes to the fortieth order of the hour',
+      'Orders already made and waiting on the shelf are not counted, because they are not competing for kitchen time. Only orders still being cooked count',
+      'The storefront header shows the live figure and marks it busy, so customers see the real wait before they build a basket rather than at the payment step',
+      'Off by default and unchanged for every venue until the rule is set. If the order count cannot be read the flat time is used, so a customer is never blocked by it',
+    ],
+  },
+  {
     version: '5.7.98',
     date: '2026-09-01',
     items: [

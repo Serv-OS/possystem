@@ -62,6 +62,8 @@ const LOCATION_FIELDS = new Set([
   'online_slug', 'online_enabled', 'qr_enabled',
   // OnlineOrdering.jsx:249-251
   'online_menu_id', 'online_collection_lead_min', 'online_delivery_enabled',
+  // v5.7.99 busy prep rule: add N minutes for every M live orders, capped.
+  'online_busy_step_orders', 'online_busy_step_minutes', 'online_busy_max_minutes',
   // OnlineOrdering.jsx:264-266  (QR core)
   'qr_payment_mode', 'qr_table_mode', 'qr_service_charge_pct',
   // OnlineOrdering.jsx:279-283  (QR tab)
@@ -277,6 +279,16 @@ async function coerce(key: string, v: unknown, opsLocationId: string): Promise<{
     case 'qr_tab_force_close_after_minutes': {
       const n = int(v, 0, 100_000);
       return n === null ? { err: 'expected a whole number of minutes >= 0' } : { value: n };
+    }
+    // The busy rule. Empty means "no rule", which is why null is allowed here
+    // and a 0 step is treated as off rather than as a divide by zero later.
+    case 'online_busy_step_orders':
+    case 'online_busy_step_minutes':
+    case 'online_busy_max_minutes': {
+      if (v === null || v === '' || v === undefined) return { value: null };
+      // A step of 500 orders or 500 added minutes is a typo, not a policy.
+      const n = int(v, 0, 500);
+      return n === null ? { err: 'expected a whole number between 0 and 500' } : { value: n };
     }
     case 'qr_payment_mode': {
       const s = String(v ?? '');

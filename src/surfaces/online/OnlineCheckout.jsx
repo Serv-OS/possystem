@@ -18,6 +18,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
+import { prepMinutes, prepRuleFromLocation, liveOrderCount } from '../../lib/prepTime';
 import { supabase, platformSupabase } from '../../lib/supabase';
 import { decrementStockRPC, fetchActiveDiscountRules } from '../../lib/db';
 import { logOrderActivity, logActivity } from '../../lib/activity';
@@ -82,7 +83,26 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   const opsLocationId = location.ops_location_id || location.id; // ops DB
   const platformLocationId = location.id;                         // platform DB
   const tz = location.timezone || 'Europe/London';
-  const leadMin = Number(location.online_collection_lead_min) || 30;
+  // v5.7.99: the quoted wait rises with the queue. `busyLive` is null until the
+  // count comes back (and stays null if it cannot be read), which yields exactly
+  // the flat lead time this line always produced.
+  const baseLeadMin = Number(location.online_collection_lead_min) || 30;
+  const [busyLive, setBusyLive] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    liveOrderCount(supabase, opsLocationId).then((n) => { if (alive) setBusyLive(n); });
+    // Re-read while the customer is still choosing: a slot quoted five minutes
+    // ago can be wrong by the time they reach the payment step.
+    const t = setInterval(() => {
+      liveOrderCount(supabase, opsLocationId).then((n) => { if (alive) setBusyLive(n); });
+    }, 60_000);
+    return () => { alive = false; clearInterval(t); };
+  }, [opsLocationId]);
+  const prep = useMemo(
+    () => prepMinutes(baseLeadMin, busyLive ?? 0, prepRuleFromLocation(location)),
+    [baseLeadMin, busyLive, location],
+  );
+  const leadMin = prep.minutes;
 
   // Payment step: 'details' → 'gift' → 'pay'
   const [step, setStep] = useState('details');

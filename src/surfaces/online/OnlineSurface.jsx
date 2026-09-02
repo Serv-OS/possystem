@@ -14,6 +14,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../../lib/supabase';
+import { prepMinutes, prepRuleFromLocation, liveOrderCount } from '../../lib/prepTime';
 import { assembleTaxProfiles } from '../../lib/rowMapping';
 import { buildLocalTaxCtx } from '../../lib/taxCompute';
 import { isItemEightySixed } from '../../lib/itemAvailability';
@@ -496,6 +497,24 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   // The sticky bars were hardcoded white or near-black whatever the venue chose,
   // so a themed storefront showed a white slab between the hero and the menu.
   // Follow the real background instead (v5.7.80).
+  // v5.7.99: the prep time shown on the header follows the kitchen. A venue that
+  // is 20 orders deep should say so before the customer builds a basket, not
+  // surprise them at checkout.
+  const [busyLive, setBusyLive] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    const read = () => liveOrderCount(supabase, opsLocationId).then((n) => { if (alive) setBusyLive(n); });
+    read();
+    const t = setInterval(read, 60_000);
+    return () => { alive = false; clearInterval(t); };
+  }, [opsLocationId]);
+  const prepBanner = useMemo(() => {
+    const base = Number(location.online_collection_lead_min) || 0;
+    if (!base) return null;
+    const { minutes, busy } = prepMinutes(base, busyLive ?? 0, prepRuleFromLocation(location));
+    return busy ? `${minutes} min prep time · busy` : `${minutes} min prep time`;
+  }, [location, busyLive]);
+
   const headerBg = vars ? 'var(--bg)' : theme.bg;
 
   // v5.5.147: QR confirm-table gate. Per-location qr_table_mode controls
@@ -678,7 +697,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           : (mt.showOpenStatus
             ? (closedInfo
               ? [{ label: reopenShort ? `Closed — opens ${reopenShort}` : 'Closed' }]
-              : [{ label: 'Open now', dot: true, green: true }].concat(Number(location.online_collection_lead_min) ? [{ label: `${Number(location.online_collection_lead_min)} min prep time` }] : []))
+              : [{ label: 'Open now', dot: true, green: true }].concat(prepBanner ? [{ label: prepBanner }] : []))
             : [])
       }/>
 
