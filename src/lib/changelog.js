@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.10',
+    date: '2 Sep 2026',
+    items: [
+      'Back Office → Online Ordering crashed on open with "tipOnline is not defined". The two new tipping editors were rendered inside the QR settings block without being handed the state they edit. Fixed.',
+    ],
+  },
+  {
     v: '5.8.9',
     date: '2 Sep 2026',
     items: [

@@ -525,7 +525,9 @@ export default function OnlineOrdering({ setSection }) {
         tabSurchargeFixed={qrTabSurchargeFixed} setTabSurchargeFixed={setQrTabSurchargeFixed}
         tabForceCloseMin={qrTabForceCloseMin} setTabForceCloseMin={setQrTabForceCloseMin}
         tables={tables}
-        downloading={downloading} setDownloading={setDownloading}/>
+        downloading={downloading} setDownloading={setDownloading}
+        tipOnline={tipOnline} setTipOnline={setTipOnline}
+        tipQr={tipQr} setTipQr={setTipQr}/>
 
       {/* Save */}
       <div style={{ display:'flex', alignItems:'center', gap:12 }}>
@@ -556,6 +558,10 @@ function QrSettingsBlock({
   tabSurchargeFixed, setTabSurchargeFixed,
   tabForceCloseMin, setTabForceCloseMin,
   tables, downloading, setDownloading,
+  // v5.8.10: the two tip editors render inside this block but their state
+  // lives in OnlineOrdering. They were referenced here without being passed,
+  // which threw "tipOnline is not defined" the moment the page opened.
+  tipOnline, setTipOnline, tipQr, setTipQr,
 }) {
   const showsTabSettings = paymentMode === 'open_tab' || paymentMode === 'both';
   const buildQrUrl = (table) => {
