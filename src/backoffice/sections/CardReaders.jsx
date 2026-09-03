@@ -102,7 +102,7 @@ export default function CardReaders() {
         supabase.from('devices')
           .select('id, name, type, status')
           .eq('location_id', opsLocId)
-          .in('type', ['pos', 'kiosk', 'mpos'])   /* v5.8.24: a handset can own a reader too */
+          .in('type', ['pos', 'kiosk', 'handheld'])   /* v5.8.24: a handset can own a reader too */
           .order('name', { ascending: true }),
       ]);
       setLocationName(loc?.name ?? '(unknown)');

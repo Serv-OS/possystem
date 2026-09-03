@@ -10,7 +10,7 @@ export const CHANGELOG = [
     v: '5.8.24',
     date: '3 Sep 2026',
     items: [
-      'Back Office → Card readers: the "till:" picker now lists MPOS handsets as well as tills and kiosks, so an Adyen reader can be pointed at the handset that will use it. Needs a one-line database migration (the binding function refused handsets too).',
+      'Back Office → Card readers: the "till:" picker now lists MPOS handsets (device type handheld) as well as tills and kiosks, so an Adyen reader can be pointed at the handset that will use it. Needs a one-line database migration (the binding function refused handsets too).',
     ],
   },
   {

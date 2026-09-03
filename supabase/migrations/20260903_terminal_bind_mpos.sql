@@ -1,5 +1,5 @@
 -- Allow a card reader to be bound to an MPOS device, not only a till or kiosk.
--- The Card readers "till:" picker and this function both refused type mpos, so
+-- The Card readers "till:" picker and this function both refused type handheld (the MPOS device type), so
 -- an Adyen reader could never be pointed at a handset (3 Sep 2026).  OPS project.
 
 CREATE OR REPLACE FUNCTION public.set_terminal_settings(p_terminal_id uuid, p_tip_config jsonb DEFAULT NULL::jsonb, p_bound_pos_device_id uuid DEFAULT NULL::uuid, p_modes jsonb DEFAULT NULL::jsonb, p_label text DEFAULT NULL::text, p_idle_screen jsonb DEFAULT NULL::jsonb)
@@ -41,7 +41,7 @@ begin
       select 1 from devices d
        where d.id = p_bound_pos_device_id
          and d.location_id = t.location_id
-         and d.type in ('pos', 'kiosk', 'mpos')
+         and d.type in ('pos', 'kiosk', 'handheld')
     ) then
       raise exception 'that device is not a POS till, MPOS or kiosk at this terminal''s venue';
     end if;

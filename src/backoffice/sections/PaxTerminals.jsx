@@ -160,7 +160,7 @@ export default function PaxTerminals() {
         .from('devices')
         .select('id, name, type')
         .eq('location_id', locId)
-        .in('type', ['pos', 'kiosk', 'mpos'])   /* v5.8.24: a handset can own a reader too */
+        .in('type', ['pos', 'kiosk', 'handheld'])   /* v5.8.24: a handset can own a reader too */
         .order('name');
       setPosDevices(devs || []);
 
