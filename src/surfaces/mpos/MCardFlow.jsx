@@ -113,6 +113,10 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
         return;
       }
       // No native bridge (browser/dev) and no hardware reader → simulate.
+      // v5.8.26: say which payment mode this handset thinks it is in. A profile
+      // changed in Back Office after pairing stays cached on the device until a
+      // Push to POS or a re-pair, and that is invisible without this line.
+      setStatusMsg(`Simulated approval — this handset's payment mode is "${paymentMode}". For a card reader, set the device profile to "Assigned network reader" and press Push to POS in Back Office.`);
       setPhase('sim');
     } catch (e) {
       setErrorMsg(e?.message || String(e));
