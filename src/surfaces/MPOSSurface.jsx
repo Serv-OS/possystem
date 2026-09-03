@@ -788,9 +788,11 @@ function MPOSRouter() {
               //  • queue   → not yet supported (order_queue detail) — toast
               //  • closed  → open the closed-check detail (reprint / refund)
               if (o._kind === 'table') {
-                setActiveTableId(o.tableId);
+                const tableId = o.tableId || o._table?.id || null;
+                if (!tableId) { showToast?.('Could not find that table', 'error'); return; }
+                setActiveTableId(tableId);
                 useStore.getState().setOrderType('dine-in');
-                setFlow({ screen: 'tableView', context: { tableId: o.tableId } });
+                setFlow({ screen: 'tableView', context: { tableId } });
               } else if (o._kind === 'closed') {
                 // Find the underlying closedChecks row by id (MOrdersList uses
                 // the wrapped shape — look up the live record so refunds

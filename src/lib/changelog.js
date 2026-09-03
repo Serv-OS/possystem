@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.30',
+    date: '3 Sep 2026',
+    items: [
+      'MPOS: tapping an open table on the Orders screen now opens that table so you can carry on the order. The list was not passing the table id through, so the tap opened nothing.',
+    ],
+  },
+  {
     v: '5.8.29',
     date: '3 Sep 2026',
     items: [

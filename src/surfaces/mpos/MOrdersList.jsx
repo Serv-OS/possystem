@@ -42,6 +42,7 @@ export default function MOrdersList({ onOpenOrder }) {
     .filter(t => t.status !== 'available' && t.session)
     .map(t => ({
       _kind:'table', id:`tbl-${t.id}`,
+      tableId:t.id,   // v5.8.30: the tap handler opens by tableId; this was missing, so tapping a table did nothing
       ref:`Table ${t.label}`, displayName:`Table ${t.label}`,
       tableLabel:t.label, server:t.session?.server, customer:null,
       status:t.status === 'bill' ? 'bill_req' : 'open',
