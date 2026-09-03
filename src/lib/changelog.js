@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.28',
+    date: '3 Sep 2026',
+    items: [
+      'MPOS now refreshes its device profile like the till does: on Push to POS, on waking, and every five minutes. It never did. The handset only ever had the settings written at pairing, which did not include the payment mode, so it was Tap to Pay for life whatever Back Office said. This is the reason a handset could never be pointed at a card reader.',
+    ],
+  },
+  {
     v: '5.8.27',
     date: '3 Sep 2026',
     items: [

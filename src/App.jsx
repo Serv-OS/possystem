@@ -310,7 +310,7 @@ export default function App() {
   // MPOS — phone-shaped POS for servers/runners. Reuses the same store + sync
   // layer as ?mode=pos but with a portrait, single-column UI. Phase 1A: walk-in
   // only, cash + REST card. Phase 1B will add Stripe Tap to Pay native bridges.
-  if (deviceMode === 'mpos') return <><SyncBridge onSyncPulse={handleSyncPulse}/><MPOSSurface /></>;
+  if (deviceMode === 'mpos') return <><SyncBridge onSyncPulse={handleSyncPulse}/><MposDeviceProfileSync pairedDevice={pairedDevice}/><MPOSSurface /></>;
 
   // Time Clock — dedicated second-tablet surface for staff to clock in/out + breaks.
   // Pairs to a location like a POS; punches write server-side via workforce-clock.
@@ -416,6 +416,47 @@ function configFromProfile(profile) {
     // Keep the terminal name a previous config may have stamped on this till.
     terminalName: useStore.getState().deviceConfig?.terminalName,
   };
+}
+
+// v5.8.28: the MPOS route returns before ValidatedPOSApp mounts, so it never ran
+// the device-profile refresh the till gets (Push to POS, wake, 5-min timer). Its
+// deviceConfig was whatever pairing wrote, which never included payment_mode, so
+// a handset was Tap to Pay forever no matter what the profile said. This does
+// for the handset exactly what ValidatedPOSApp does for the till, with the same
+// mapping (profileRowToProfile -> configFromProfile) and the same change gate.
+function MposDeviceProfileSync({ pairedDevice }) {
+  useEffect(() => {
+    if (!pairedDevice?.id || !supabase) return;
+    let inFlight = false;
+    const refresh = async () => {
+      if (inFlight) return; inFlight = true;
+      try {
+        const { data } = await supabase.from('devices').select('id, status, profile_id').eq('id', pairedDevice.id).single();
+        if (!data?.profile_id) return;
+        const { data: row } = await supabase.from('device_profiles').select('*').eq('id', data.profile_id).single();
+        if (!row) return;
+        const next = configFromProfile(profileRowToProfile(row));
+        const prev = useStore.getState().deviceConfig;
+        if (!deviceConfigChanged(prev, next)) return;
+        try { localStorage.setItem('rpos-device-config', JSON.stringify(next)); } catch { /* quota */ }
+        useStore.getState().setDeviceConfig(next);
+      } catch { /* offline: keep the cache */ }
+      finally { inFlight = false; }
+    };
+    refresh();
+    const onVisible = () => { if (document.visibilityState === 'visible') refresh(); };
+    window.addEventListener('rpos-config-push', refresh);
+    window.addEventListener('online', refresh);
+    document.addEventListener('visibilitychange', onVisible);
+    const t = setInterval(refresh, 5 * 60 * 1000);
+    return () => {
+      window.removeEventListener('rpos-config-push', refresh);
+      window.removeEventListener('online', refresh);
+      document.removeEventListener('visibilitychange', onVisible);
+      clearInterval(t);
+    };
+  }, [pairedDevice?.id]);
+  return null;
 }
 
 // v5.7.7: material-change gate. setDeviceConfig snaps the surface back to
