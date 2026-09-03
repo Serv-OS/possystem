@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.22',
+    date: '3 Sep 2026',
+    items: [
+      'MPOS discounts now come from Back Office. The handset was showing a fixed demo list (Staff meal, Loyalty 10%, NHS, Happy hour, Comp) and ignoring every discount a venue had set up. Item and order discounts now use the venue\u2019s own list, the same one the till shows. The demo list only appears if a venue has none.',
+    ],
+  },
+  {
     v: '5.8.21',
     date: '2 Sep 2026',
     items: [
