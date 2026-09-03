@@ -96,14 +96,16 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
         // Card readers takes the same cloud terminal-job route the till uses. The
         // Stripe registry lookup below used to be the only path, so an Adyen reader
         // bound to an MPOS was invisible and the MPOS "simulated" the approval.
-        const { terminal } = await findPaxTerminal({ posDeviceId: getPosDeviceId() });
+        const { terminal, reason } = await findPaxTerminal({ posDeviceId: getPosDeviceId() });
         if (terminal && (terminal.adyen_terminal_id || terminal.ryft_terminal_id)) {
           await runCloudTerminalFlow(terminal);
           return;
         }
         const reader = await getAssignedNetworkReader();
         if (!reader) {
-          setStatusMsg('No reader assigned — using simulated approval');
+          // v5.8.26: say WHY, on screen. The lookup's reason was being discarded, so
+          // staff saw a simulated approval with no clue which link was missing.
+          setStatusMsg(`No reader assigned — using simulated approval. ${reason || 'No card terminal is bound to this handset in Back Office → Card readers.'} (this handset: ${String(getPosDeviceId() || 'no device id').slice(0, 8)})`);
           setPhase('sim');
           return;
         }

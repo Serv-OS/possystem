@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.26',
+    date: '3 Sep 2026',
+    items: [
+      'MPOS: when a card payment falls back to a simulated approval, the screen now says why (no reader bound to this handset, or every reader assigned to another till) and shows the handset\u2019s own device id, so the fix in Card readers is obvious.',
+    ],
+  },
+  {
     v: '5.8.25',
     date: '3 Sep 2026',
     items: [
