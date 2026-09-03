@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.23',
+    date: '3 Sep 2026',
+    items: [
+      'MPOS can now take card payments on an Adyen reader bound to it. With the handset set to "Assigned network reader", Confirm sends the payment to the reader bound to that device in Back Office → Card readers, over the cloud, exactly as the till does. Before this the MPOS only knew how to talk to Stripe readers, so an Adyen reader was invisible to it and the payment quietly went to a simulated approval.',
+    ],
+  },
+  {
     v: '5.8.22',
     date: '3 Sep 2026',
     items: [

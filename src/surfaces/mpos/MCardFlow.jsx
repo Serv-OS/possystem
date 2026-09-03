@@ -29,7 +29,7 @@ import { tapToPayAvailable, tapInit, tapCollect, tapCancel } from '../../lib/tap
 import { isTrainingMode } from '../../lib/trainingMode';
 import { adyenLocalBridgeAvailable, runAdyenLocalPayment, abortAdyenLocalPayment } from '../../lib/payments/adyenLocalTerminal';
 import { resolveSelfHostedAdyenTerminal } from '../../lib/payments/localTerminalIdentity';
-import { dispatchTerminalJob, buildCheckKey, toMinor, forgetJob, getPosDeviceId, cancelTerminalJob } from '../../lib/payments/terminalJobs';
+import { dispatchTerminalJob, buildCheckKey, toMinor, forgetJob, getPosDeviceId, cancelTerminalJob, findPaxTerminal, pollTerminalJob, abortTerminalJob } from '../../lib/payments/terminalJobs';
 
 // Stage → what the person holding the terminal is actually being asked to do.
 // NOTHING here may say "hand it to the customer" or "sent to the card machine":
@@ -92,6 +92,15 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
         return;
       }
       if (paymentMode === 'assigned_reader') {
+        // v5.8.23: an Adyen (or Ryft) reader bound to THIS device in Back Office →
+        // Card readers takes the same cloud terminal-job route the till uses. The
+        // Stripe registry lookup below used to be the only path, so an Adyen reader
+        // bound to an MPOS was invisible and the MPOS "simulated" the approval.
+        const { terminal } = await findPaxTerminal({ posDeviceId: getPosDeviceId() });
+        if (terminal && (terminal.adyen_terminal_id || terminal.ryft_terminal_id)) {
+          await runCloudTerminalFlow(terminal);
+          return;
+        }
         const reader = await getAssignedNetworkReader();
         if (!reader) {
           setStatusMsg('No reader assigned — using simulated approval');
@@ -138,6 +147,89 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
   // one go (due_minor = grand) and suppressTip stops the reader raising a SECOND
   // gratuity prompt on top. The tip is recorded on the closed check by MPOS's normal
   // close path, which is what the Tips report and tronc read.
+  // v5.8.23: CLOUD terminal job to a reader bound to this MPOS. Same job row, same
+  // server-side settle, same recovery as the till; the only difference from the
+  // local flow above is that dispatch fires Adyen's cloud 'start' and we poll.
+  const runCloudTerminalFlow = async (terminal) => {
+    setPhase('local');
+    stage('starting');
+    const st = useStore.getState();
+    const locationId = getActiveLocationSync();
+    const tableId = activeTableId || null;
+    const session = tableId ? st.tables.find(t => t.id === tableId)?.session : null;
+    const items = (tableId ? (session?.items || []) : (st.walkInOrder?.items || [])).filter(i => !i.voided);
+    const grandMinor = toMinor(grand);
+    const tipMinor = Math.min(toMinor(payment?.tip), grandMinor);
+    const billMinor = grandMinor - tipMinor;
+    if (!(grandMinor > 0)) throw new Error('There is nothing for the card to take.');
+    const closedCheckId = localJobRef.current?.closedCheckId || `chk-${Date.now()}`;
+    const checkKey = buildCheckKey({ locationId, tableId, sessionId: session?.id, leg: tableId ? undefined : closedCheckId });
+    const { job, kickError } = await dispatchTerminalJob({
+      checkKey,
+      targetTerminalId: terminal.id,
+      posDeviceId: getPosDeviceId(),
+      tipBasisMinor: billMinor,
+      dueMinor: grandMinor,
+      currency: getActiveCurrencyCode?.() || 'GBP',
+      suppressTip: true,
+      closedCheckId,
+      checkDraft: {
+        tableId, tableLabel: tableId, sessionId: session?.id || null, locationId,
+        orderType: st.orderType || (tableId ? 'dine-in' : 'takeaway'),
+        covers: session?.covers ?? 1,
+        server: st.staff?.name || session?.server || null,
+        staffId: st.staff?.id || null,
+        items,
+        discounts: session?.discounts || [],
+        subtotalMinor: toMinor(payment?.subtotal),
+        totalMinor: billMinor,
+        tipMinor,
+        seatedAt: session?.seatedAt ?? null,
+        source: 'mpos_cloud_terminal',   // MPOS closes its own check, like the local flow
+      },
+      localBridge: false,
+    });
+    localJobRef.current = { jobId: job.id, checkKey, closedCheckId, cloud: true };
+    if (kickError) {
+      forgetJob(checkKey);
+      throw new Error(`Could not reach the card machine: ${kickError}`);
+    }
+    if (localCancelRequestedRef.current) {
+      await cancelTerminalJob(job.id);
+      forgetJob(checkKey);
+      return;
+    }
+    stage('waiting');
+    const done = await pollTerminalJob(job.id, { onUpdate: (j) => stage(j?.status || 'waiting') });
+    if (done?.status === 'approved') {
+      forgetJob(checkKey);
+      setPhase('approved');
+      onApproved?.({
+        method: 'card',
+        processor: done.processor || (terminal.adyen_terminal_id ? 'adyen' : 'ryft'),
+        closedCheckId,
+        paymentIntentId: done.transaction_id || done.payment_session_id || null,
+        cardReceipt: done.card || null,
+        tip: payment.tip,
+        grand,
+      });
+      return;
+    }
+    if (done?.status === 'unknown' || done?.needs_human) {
+      throw new Error(
+        'The result of this payment is not confirmed yet. DO NOT take payment again. '
+        + 'Check the card terminal and Back Office → Card readers before retrying.',
+      );
+    }
+    if (done?.status === 'cancelled') {
+      forgetJob(checkKey);
+      onCancel?.();
+      return;
+    }
+    forgetJob(checkKey);
+    throw new Error(done?.decline_reason || done?.last_error || 'The card was declined.');
+  };
+
   const runAdyenLocalTerminalFlow = async () => {
     setPhase('local');
     stage('starting');
@@ -269,6 +361,7 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
     if (localAbortSentRef.current) return;
     localAbortSentRef.current = true;
     stage('cancelling');
+    if (live.cloud) { abortTerminalJob(live.jobId); return; }   // v5.8.23 cloud job: server-side abort
     abortAdyenLocalPayment(live.jobId);
   };
 
