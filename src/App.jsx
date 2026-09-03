@@ -364,6 +364,15 @@ function profileRowToProfile(row) {
     defaultSurface: row.default_surface || 'tables',
     enabledOrderTypes: row.enabled_order_types || ['dine-in'],
     assignedSection: row.assigned_section || null,
+    // v5.8.27: MPOS payment settings. These were never mapped here, so a handset
+    // kept whatever mode it had when it was PAIRED and every profile refresh
+    // (Push to POS, wake, 5-min timer) silently reset it to Tap to Pay. A venue
+    // that switched the MPOS profile to "Assigned network reader" could never
+    // get the handset to use its card reader.
+    paymentMode: row.payment_mode || 'tap_to_pay',
+    assignedReaderId: row.assigned_reader_id || null,
+    runnerMode: row.runner_mode === true,
+    customerDisplayMode: row.customer_display_mode || 'auto',
     hiddenFeatures: row.hidden_features || [],
     tableServiceEnabled: row.table_service_enabled !== false,
     quickScreenEnabled: row.quick_screen_enabled !== false,
@@ -385,6 +394,10 @@ function configFromProfile(profile) {
     defaultSurface: profile.defaultSurface || 'tables',
     enabledOrderTypes: profile.enabledOrderTypes || ['dine-in'],
     assignedSection: profile.assignedSection || null,
+    paymentMode: profile.paymentMode || 'tap_to_pay',           // v5.8.27, see profileRowToProfile
+    assignedReaderId: profile.assignedReaderId || null,
+    runnerMode: profile.runnerMode === true,
+    customerDisplayMode: profile.customerDisplayMode || 'auto',
     hiddenFeatures: profile.hiddenFeatures || [],
     tableServiceEnabled: profile.tableServiceEnabled !== false,
     quickScreenEnabled: profile.quickScreenEnabled !== false,
@@ -414,6 +427,7 @@ const CONFIG_COMPARE_KEYS = [
   'tableServiceEnabled', 'quickScreenEnabled', 'isMaster',
   'autoPrintReceiptOnClose', 'orderNotifications', 'menuId', 'trainingMode',
   'enabledOrderTypes', 'hiddenFeatures', 'serviceCharge', 'signout',
+  'paymentMode', 'assignedReaderId', 'runnerMode', 'customerDisplayMode',   // v5.8.27
 ];
 function deviceConfigChanged(prev, next) {
   if (!prev) return true;

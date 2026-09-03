@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.27',
+    date: '3 Sep 2026',
+    items: [
+      'MPOS payment mode now follows the device profile. Before this a handset only knew the mode it had when it was paired, and every profile refresh (Push to POS, waking up, the five-minute check) quietly reset it to Tap to Pay. Switching the MPOS profile to "Assigned network reader" in Back Office therefore never reached the handset, and card payments went to a simulated approval. Runner mode and the assigned reader follow the profile the same way.',
+    ],
+  },
+  {
     v: '5.8.26',
     date: '3 Sep 2026',
     items: [
