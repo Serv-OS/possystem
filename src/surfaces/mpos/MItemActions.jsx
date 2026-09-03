@@ -30,6 +30,16 @@ export default function MItemActions({ item, onClose }) {
   const { activeTableId, staff, updateItemCourse, updateItemNote, addItemDiscount, removeItemDiscount, voidItem, removeItem } = useStore();
   // v5.5.961: profile can hide course management on this device
   const hideCourses = useStore(s => (s.deviceConfig?.hiddenFeatures || []).includes('courses'));
+  // v5.8.21: the venue's OWN discounts from Back Office (discounts table, loaded
+  // into store.discountPresets by SyncBridge), the same list the POS DiscountModal
+  // shows. The ladder above was a hard-coded demo set, so anything a venue set up
+  // in Back Office never appeared on the handset. Demo ladder stays as fallback.
+  const venuePresets = useStore(s => s.discountPresets);
+  const ladder = (venuePresets || []).filter(d => d && d.active !== false && Number(d.value) > 0).length
+    ? [...venuePresets].filter(d => d && d.active !== false && Number(d.value) > 0)
+        .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+        .map(d => ({ id: d.id, label: d.label || d.name, type: d.type || 'percent', value: Number(d.value), requiresManager: !!d.requiresManager, scope: d.scope, categoryIds: d.categoryIds }))
+    : DISCOUNTS;
   const sent = item?.status === 'sent';
   const [view, setView] = useState('main'); // main | course | discount | note
   // Pending discount waiting on a manager PIN
@@ -174,7 +184,7 @@ export default function MItemActions({ item, onClose }) {
           <div>
             <div style={{ fontSize:13, fontWeight:800, color:'var(--t1)', marginBottom:8 }}>Apply discount to this item</div>
             <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
-              {DISCOUNTS.map(d => (
+              {ladder.map(d => (
                 <button key={d.id} onClick={() => applyDiscount(d)} style={{
                   padding:'12px 14px', borderRadius:11, fontFamily:'inherit', cursor:'pointer',
                   border:'1.5px solid var(--bdr)', background:'var(--bg2)',
