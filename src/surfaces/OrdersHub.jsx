@@ -791,7 +791,9 @@ export default function OrdersHub() {
   };
 
   const openOrder = (o) => {
-    if (o._kind === 'table') { setActiveTableId(o.tableId); setSurface('tables'); }
+    // v5.8.29: open the table's CHECK in the POS (activeTableId drives POSSurface),
+    // not the floor plan, which needed a second tap on the same table.
+    if (o._kind === 'table') { setActiveTableId(o.tableId); setSurface('pos'); }
     else if (o._kind === 'tab') { setSurface('bar'); }
     // Already paid (e.g. a catering pre-order paid online): opening it loaded it into the POS
     // pay flow, which would take payment a SECOND time. Show it read-only instead — staff still
@@ -1351,7 +1353,13 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
       transition:'border-color .12s',
     }}
     onMouseEnter={e => e.currentTarget.style.borderColor = `${color}66`}
-    onMouseLeave={e => e.currentTarget.style.borderColor = `${color}28`}>
+    onMouseLeave={e => e.currentTarget.style.borderColor = `${color}28`}
+    // v5.8.29: the whole card opens the order. Before this only the small
+    // "Open →" button did, and on a till screen tapping the card itself did
+    // nothing, which read as "I cannot open the table". Taps on the card's own
+    // buttons (advance, accept, close tab) keep doing what they say.
+    onClick={(e) => { if (e.target.closest?.('button, a, input, select')) return; onOpen?.(); }}
+    role="button" tabIndex={0}>
       {/* Colour strip */}
       <div style={{ height:3, background:`linear-gradient(90deg,${color},${color}88)` }}/>
 

@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.29',
+    date: '3 Sep 2026',
+    items: [
+      'Orders Hub: tapping anywhere on an order card now opens it. Before, only the small "Open" button did, and tapping the card itself did nothing.',
+      'Orders Hub: opening a table order now opens that table\u2019s check in the POS, not the floor plan.',
+    ],
+  },
+  {
     v: '5.8.28',
     date: '3 Sep 2026',
     items: [
