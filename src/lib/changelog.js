@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.25',
+    date: '3 Sep 2026',
+    items: [
+      'MPOS tip buttons now come from the reader bound to the handset (the bands set in Back Office → Card readers), not a fixed 10 / 12.5 / 15 / 20. Nothing is pre-selected: the customer chooses. If the reader has tipping switched off the chips are hidden.',
+    ],
+  },
+  {
     v: '5.8.24',
     date: '3 Sep 2026',
     items: [

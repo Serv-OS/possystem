@@ -6,12 +6,17 @@
 // device (Tap to Pay or assigned reader); cash always happens at the counter
 // where the drawer lives, so server staff route those at the till instead.
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { useStore } from '../../store';
 import { computeOrderTaxUnified } from '../../lib/taxCompute';
 import { Sx, money } from './MShellStyles';
 import { adyenLocalBridgeAvailable } from '../../lib/payments/adyenLocalTerminal';
+import { findPaxTerminal, getPosDeviceId } from '../../lib/payments/terminalJobs';
 
+// Fallback only. v5.8.25: the chips come from the reader bound to this handset
+// (terminal_devices.tip_config, the same bands the reader's own tip screen and
+// Back Office → Card readers show). This list was hard-coded, so the bands a venue
+// set never appeared on the handset.
 const TIP_PRESETS = [10, 12.5, 15, 20];
 
 export default function MTender({ onBack, onConfirm }) {
@@ -53,7 +58,29 @@ export default function MTender({ onBack, onConfirm }) {
   const preTip = subtotal + (Number(taxResult?.exclusiveTax) || 0);
 
   // Tip in £ amount (computed from selected preset OR custom override).
-  const [tipPct, setTipPct] = useState(12.5);
+  // No tip pre-selected: this is the customer's screen, and a pre-ticked tip is the
+  // exact thing the venue tipping settings were built to stop.
+  const [tipPct, setTipPct] = useState(0);
+  const [tipBands, setTipBands] = useState({ presets: TIP_PRESETS, enabled: true, allowCustom: true });
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const { terminal } = await findPaxTerminal({ posDeviceId: getPosDeviceId() });
+        const tc = terminal?.tip_config;
+        if (!alive || !tc) return;
+        const bands = (Array.isArray(tc.percentBands) ? tc.percentBands : Array.isArray(tc.tip_percentages) ? tc.tip_percentages : [])
+          .map(Number).filter(n => Number.isFinite(n) && n > 0);
+        const enabled = tc.enabled !== false && tc.tipping_enabled !== false;
+        setTipBands({
+          presets: enabled ? (bands.length ? bands : TIP_PRESETS) : [],   // off = no chips at all
+          enabled,
+          allowCustom: tc.allowCustom !== false && tc.allow_custom !== false,
+        });
+      } catch { /* keep the fallback */ }
+    })();
+    return () => { alive = false; };
+  }, []);
   const [customTip, setCustomTip] = useState(null); // null | number
   // v5.8.19: the tip % applies to the goods, not to goods + sales tax (preTip
   // is what the card takes before the tip; it stays the charge basis).
@@ -106,11 +133,13 @@ export default function MTender({ onBack, onConfirm }) {
 
         {/* Tip prompt */}
         <div style={{ padding:'4px 16px 8px' }}>
-          <div style={{ fontSize:14, fontWeight:800, color:'var(--t1)', textAlign:'center', marginBottom:14 }}>
-            Add a tip?
-          </div>
+          {tipBands.enabled && (
+            <div style={{ fontSize:14, fontWeight:800, color:'var(--t1)', textAlign:'center', marginBottom:14 }}>
+              Add a tip?
+            </div>
+          )}
           <div style={{ display:'grid', gridTemplateColumns:'repeat(2, 1fr)', gap:10, marginBottom:10 }}>
-            {TIP_PRESETS.map(p => {
+            {tipBands.presets.map(p => {
               const active = customTip == null && tipPct === p;
               const amt = (subtotal * p) / 100;
               return (
