@@ -93,7 +93,7 @@ export default function AdyenTerminals() {
       }
       const locId = getActiveLocationSync();
       const { data: devs } = await supabase.from('devices')
-        .select('id, name, type').eq('location_id', locId).in('type', ['pos', 'kiosk']);
+        .select('id, name, type').eq('location_id', locId).in('type', ['pos', 'kiosk', 'mpos'])   /* v5.8.24: a handset can own a reader too */;
       setPosDevices(devs || []);
       // v5.7.5 - venue tip-on-receipt setting off ops locations.pos_settings
       const { data: locRow } = await supabase.from('locations')
