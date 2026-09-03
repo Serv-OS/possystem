@@ -24,8 +24,8 @@ android {
         applicationId "co.posup.rpos.mpos"
         minSdk 26
         targetSdk 34
-        versionCode 3          // bump every release; UpdateChecker compares this to latest-mpos.json
-        versionName "1.3-diag"
+        versionCode 4          // bump every release; UpdateChecker compares this to latest-mpos.json
+        versionName "1.4"
     }
 
     signingConfigs {
