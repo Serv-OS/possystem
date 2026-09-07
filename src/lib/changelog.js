@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.31',
+    date: '7 Sep 2026',
+    items: [
+      'Timed menus now work on online ordering and QR. Leave the menu picker in Online Ordering on "Automatic" and the storefront follows the same rule as the kiosk and till: the menu whose schedule is on now, highest priority wins, default menu if nothing is on. It re-checks every minute on the venue clock. Before this the "Automatic" option existed but the storefront showed every category all day.',
+    ],
+  },
+  {
     v: '5.8.30',
     date: '3 Sep 2026',
     items: [

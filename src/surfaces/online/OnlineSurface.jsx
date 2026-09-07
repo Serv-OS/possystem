@@ -18,6 +18,7 @@ import { prepMinutes, prepRuleFromLocation, liveOrderCount } from '../../lib/pre
 import { assembleTaxProfiles } from '../../lib/rowMapping';
 import { buildLocalTaxCtx } from '../../lib/taxCompute';
 import { isItemEightySixed } from '../../lib/itemAvailability';
+import { resolveActiveMenu } from '../../lib/mpos/resolveActiveMenu';
 import { receiptOverride } from '../../lib/itemDisplay';
 import { dietaryBadges, DIET_LABELS } from '../../lib/dietary';
 import { getStashedTab, clearStashedTab, stashTab } from '../../lib/qrTabStorage';
@@ -53,6 +54,14 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
 
   const [items, setItems]           = useState([]);
   const [categories, setCategories] = useState([]);
+  // v5.8.31: timed menus online. When no menu is pinned ("Use whichever menu is
+  // active" in Back Office) the storefront resolves the live menu on the venue
+  // clock every minute, exactly as the kiosk and till do. It used to show every
+  // category regardless of schedule.
+  const [rawCats, setRawCats]     = useState([]);
+  const [menusRows, setMenusRows] = useState([]);
+  const [allLinks, setAllLinks]   = useState([]);
+  const [menuTick, setMenuTick]   = useState(0);
   const [eightySixIds, setEightySixIds] = useState([]); // v5.5.141: live 86 list from DB
   const [stockLevels, setStockLevels]   = useState({}); // v5.5.239: live stock counts from DB
   const [taxRates, setTaxRates]     = useState([]); // v5.5.154: UK VAT for cart breakdown
@@ -238,7 +247,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
         // failure (e.g. missing instruction_groups table) doesn't kill
         // the whole load. Instruction defs come from the config_pushes
         // snapshot since there's no dedicated DB table for them.
-        const [iRes, cRes, lRes, mRes, pRes, eRes, tRes, sRes, tpRes, tlRes] = await Promise.allSettled([
+        const [iRes, cRes, lRes, mRes, pRes, eRes, tRes, sRes, tpRes, tlRes, menusRes] = await Promise.allSettled([
           supabase.from('menu_items').select('*')
             .eq('location_id', opsLocationId).eq('archived', false).order('sort_order'),
           supabase.from('menu_categories').select('*')
@@ -269,6 +278,8 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           // assignments the menu_items select('*') - both stay raw snake here.
           supabase.from('tax_profiles').select('*').eq('location_id', opsLocationId).order('sort_order'),
           supabase.from('tax_profile_lines').select('*').eq('location_id', opsLocationId).order('sort_order'),
+          // v5.8.31: the venue's menus, for schedule resolution when none is pinned.
+          supabase.from('menus').select('*').eq('location_id', opsLocationId).order('sort_order'),
         ]);
         if (!alive) return;
         const itemsData      = iRes.value?.data || [];
@@ -292,8 +303,23 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
           catsErr:  cRes.reason?.message || cRes.value?.error?.message,
           linksErr: mRes.reason?.message || mRes.value?.error?.message,
         });
+        // v5.8.31: links for EVERY menu at the venue (the links table has no venue
+        // column, so it is keyed by the menu ids just fetched). Only needed when the
+        // storefront is following timed menus rather than a pinned one.
+        const menusData = (menusRes?.value?.data || []).filter(m => m && m.is_active !== false);
+        let linksAll = [];
+        if (!onlineMenuId && menusData.length) {
+          try {
+            const { data: la } = await supabase.from('menu_category_links').select('menu_id, category_id').in('menu_id', menusData.map(m => m.id));
+            linksAll = la || [];
+          } catch { /* fall back to showing everything */ }
+          if (!alive) return;
+        }
         setItems(itemsData);
         setCategories(cats);
+        setRawCats(categoriesData);
+        setMenusRows(menusData);
+        setAllLinks(linksAll);
         setTaxCatRows(categoriesData);   // v5.7.34: unfiltered, for the tax cascade
         setVenueDefaultTaxProfileId(lRes.value?.data?.default_tax_profile_id ?? null);
         setBranding(location.online_branding || brandingData);
@@ -372,6 +398,19 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opsLocationId, onlineMenuId]);
+
+  // v5.8.31: follow the timed menus. Same resolver as the MPOS (schedule on the
+  // venue clock, then priority, then default), re-run every minute so breakfast
+  // drops off and lunch appears without a reload. A pinned menu bypasses this.
+  useEffect(() => { const t = setInterval(() => setMenuTick(n => n + 1), 60_000); return () => clearInterval(t); }, []);
+  useEffect(() => {
+    if (onlineMenuId) return;                 // pinned: load() already filtered
+    if (!menusRows.length) return;            // no menus defined: everything shows
+    const active = resolveActiveMenu({ menus: menusRows, deviceConfig: { menuId: null }, timezone: location?.timezone });
+    if (!active) { setCategories(rawCats); return; }
+    const linked = new Set(allLinks.filter(l => l.menu_id === active).map(l => l.category_id));
+    setCategories(rawCats.filter(c => c.menu_id === active || linked.has(c.id) || (c.parent_id && linked.has(c.parent_id))));
+  }, [onlineMenuId, menusRows, allLinks, rawCats, menuTick, location?.timezone]);
 
   const theme = useMemo(() => ({
     // Menu Appearance saves the brand colour as `brand_color` — prefer it (accent_color is legacy).

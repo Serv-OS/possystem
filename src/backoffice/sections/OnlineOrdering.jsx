@@ -427,7 +427,7 @@ export default function OnlineOrdering({ setSection }) {
           </div>
         ) : (
           <select value={menuId} onChange={e => setMenuId(e.target.value)} style={{ ...S.select, maxWidth:360 }}>
-            <option value="">— Use whichever menu is active —</option>
+            <option value="">Automatic: follow timed menus (schedule, then priority, then default)</option>
             {menus.map(m => (
               <option key={m.id} value={m.id}>
                 {m.name}{m.is_default ? ' · default' : ''}{m.is_active === false ? ' (inactive)' : ''}
