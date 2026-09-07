@@ -8,9 +8,10 @@ import { useMemo } from 'react';
 import { useStore } from '../../store';
 import { Sx, money } from './MShellStyles';
 import MBottomSheet from './MBottomSheet';
+import { resolveItemPrice } from '../../lib/menuPricing';
 
 export default function MVariantPicker({ parent, onPick, onClose }) {
-  const { menuItems = [], eightySixIds = [] } = useStore();
+  const { menuItems = [], eightySixIds = [], orderType, activeMenuId } = useStore();
 
   const variants = useMemo(() =>
     (menuItems || []).filter(i =>
@@ -30,7 +31,10 @@ export default function MVariantPicker({ parent, onPick, onClose }) {
           </div>
         )}
         {variants.map(v => {
-          const price = v?.pricing?.base ?? v?.price ?? 0;
+          // Absolute price of THIS size on the live order type and active menu
+          // (each child carries its own pricing and tiers), the number
+          // MItemDetail will show and store.addItem will charge.
+          const price = resolveItemPrice(v, orderType, activeMenuId);
           return (
             <button key={v.id} onClick={() => onPick?.(v)} style={{
               width:'100%', padding:'14px 14px', borderRadius:12, border:'1px solid var(--bdr)',

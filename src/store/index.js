@@ -4,6 +4,7 @@ import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
 import { resolveServiceCharge } from '../lib/serviceCharge';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
 import { buildScheduleCtx } from '../lib/locationTime';
+import { resolveItemPrice, cartUnitPrice } from '../lib/menuPricing';
 import { clockStatusForPos } from '../lib/posClockIn';
 import { computeCheckTotals } from '../lib/payments/checkTotals';
 import { operatorSwitchPatch, logoutPatch } from '../lib/cartHold';
@@ -981,7 +982,10 @@ export const useStore = create((set, get) => ({
     { id:'menu-2', name:'Bar menu',     description:'Drinks and bar snacks',scope:'local', assignedProfiles:['prof-2'],isDefault:false, isActive:true, sortOrder:1 },
     { id:'menu-3', name:'Lunch menu',   description:'Midday menu',          scope:'local', assignedProfiles:[], isDefault:false, isActive:true, sortOrder:2 },
   ] : []),
-  activeMenuId: 'menu-1',
+  // The menu the till's resolver picked (POSSurface mirrors deviceMenuId here).
+  // null until the first resolve: the old 'menu-1' default was a phantom id that
+  // never matched a real tier, and the charge path below never read it anyway.
+  activeMenuId: null,
   setActiveMenuId: id => set({ activeMenuId: id }),
   // v5.7.18 - menu_category_links, store-held. The links used to live in
   // one-shot component fetches inside POSSurface/BarSurface; when the fetch
@@ -1509,20 +1513,9 @@ export const useStore = create((set, get) => ({
   //   3. p[channel]                 — channel default (the existing dineIn/takeaway/collection/delivery)
   //   4. p.base                     — fallback
   // Backward compatible: callers passing (item, orderType) still work — menuId is optional.
-  getItemPrice: (item, orderType = 'dineIn', menuId = null) => {
-    const p = item?.pricing;
-    if (!p) return item?.price || 0;
-    const MAP = { 'dine-in':'dineIn', 'takeaway':'takeaway', 'collection':'collection', 'delivery':'delivery', 'dineIn':'dineIn' };
-    const key = MAP[orderType] || 'dineIn';
-    // 1+2: menu-specific tier, if set
-    if (menuId && p.menus && p.menus[menuId]) {
-      const tier = p.menus[menuId];
-      if (tier[key] !== null && tier[key] !== undefined) return tier[key];
-      if (tier.all  !== null && tier.all  !== undefined) return tier.all;
-    }
-    // 3+4: channel default → base
-    return (p[key] !== null && p[key] !== undefined) ? p[key] : (p.base || 0);
-  },
+  // The precedence itself lives in src/lib/menuPricing.js (ONE resolver shared with the
+  // kiosk, menu board, online and QR). This is a thin delegate so callers do not change.
+  getItemPrice: (item, orderType = 'dineIn', menuId = null) => resolveItemPrice(item, orderType, menuId),
 
   // Reorder items within a category
   reorderMenuItems: (catId, fromIdx, toIdx) => {
@@ -2113,34 +2106,18 @@ export const useStore = create((set, get) => ({
   addItem: (item, mods=[], pizzaConfig=null, opts={}) => {
     const { activeTableId, staff, tables } = get();
     const qty = opts.qty || 1;
-    // v4.5.5: when caller doesn't pass an explicit linePrice (e.g. quick add),
-    // resolve the price via getItemPrice(item, currentOrderType) so per-channel pricing
-    // (dineIn / takeaway / collection / delivery) is applied. Fixes pricing schema being
-    // wired but POS never reading channel keys.
+    // v4.5.5 / v4.5.7: the unit price the cart charges. The branch (no linePrice
+    // = resolved price; linePrice == base * qty = the dumb-base shortcut, swap in
+    // the resolved price; otherwise scale the modifier-laden line by the
+    // resolved / base ratio) now lives in src/lib/menuPricing.js cartUnitPrice so
+    // node --test covers it. It is passed the store's activeMenuId (mirrored from
+    // the till's resolver) so the tier the tile shows is the tier the cart
+    // charges; before, the charge path never read the menu and charged base
+    // while the tile showed the lunch price.
     const _currentOrderType = get().orderType;
-    const _channelPrice = (() => {
-      try { return get().getItemPrice(item, _currentOrderType); }
-      catch { return item?.pricing?.base ?? item?.price ?? 0; }
-    })();
-    // v4.5.7: if caller passed linePrice but it equals item.pricing.base * qty, the
-    // caller is using the dumb-base shortcut (e.g. QuickAdd) and we should swap in the
-    // channel-aware price instead. If linePrice differs from base*qty, modifiers are at
-    // play (e.g. ProductModal added surcharges) — we SCALE the linePrice by the channel
-    // ratio so per-channel pricing applies even when modifiers are stacked.
     let price;
-    const _basePrice = item?.pricing?.base ?? item?.price ?? 0;
-    if (opts.linePrice == null) {
-      price = _channelPrice;
-    } else if (_basePrice && Math.abs(opts.linePrice/qty - _basePrice) < 0.001) {
-      // Caller passed plain base — use channel price instead
-      price = _channelPrice;
-    } else if (_basePrice && _channelPrice && _basePrice !== _channelPrice) {
-      // Caller passed modifiers-included price — scale by channel ratio
-      const ratio = _channelPrice / _basePrice;
-      price = (opts.linePrice / qty) * ratio;
-    } else {
-      price = opts.linePrice / qty;
-    }
+    try { price = cartUnitPrice(item, _currentOrderType, get().activeMenuId, opts.linePrice, qty); }
+    catch { price = opts.linePrice != null ? opts.linePrice / qty : (item?.pricing?.base ?? item?.price ?? 0); }
     const newItem = {
       uid: uid(), itemId: item.id,
       name: opts.displayName || item.name,
@@ -3147,10 +3124,18 @@ export const useStore = create((set, get) => ({
   // ── Order type / customer ─────────────────
   orderType: 'dine-in',
   // v4.5.6: when order type changes (dine-in / takeaway / collection / delivery),
-  // reprice every item in every cart against the new channel. Covers BOTH:
-  //   - tables[].session.items (dine-in tables)
-  //   - walkInOrder.items (walk-in / takeaway / collection / delivery flow)
+  // reprice the order the toggle belongs to against the new channel:
+  //   - walkInOrder.items (walk-in / takeaway / collection / delivery flow), always
+  //   - the ACTIVE table's session.items, only when the new type is dine-in
   // Without this, items added BEFORE the toggle keep their old price (was the bug).
+  // It used to reprice EVERY table's items at the new type, so a phone tapping
+  // New order, Takeaway put the takeaway price on every dine-in table, and a
+  // table tap on the phone (setOrderType('dine-in')) rewrote tables it never
+  // opened. Other tables are left exactly as they are.
+  // A line's price carries its modifier surcharges (every till and phone add
+  // path passes (base + surcharge) * qty and cartUnitPrice stacks the surcharge
+  // on the resolved price), so the reprice re-stacks the line's mods on the new
+  // unit price instead of wiping them to the bare item price.
   setOrderType: t => set(s => {
     const fn = s.getItemPrice;
     if (!fn) return { orderType:t };
@@ -3158,12 +3143,15 @@ export const useStore = create((set, get) => ({
     const repriceItems = (items) => (items || []).map(it => {
       const src = menu.find(m => m && m.id === it.itemId);
       if (!src) return it;
-      const newUnitPrice = fn(src, t);
+      // Same menu the tile and addItem price with, so the reprice keeps the tier.
+      const newUnitPrice = fn(src, t, s.activeMenuId);
       if (newUnitPrice == null) return it;
-      return { ...it, price: newUnitPrice };
+      const modSum = (it.mods || []).reduce((sum, m) => sum + (Number(m?.price) || 0), 0);
+      return { ...it, price: newUnitPrice + modSum };
     });
-    const tables = (s.tables || []).map(tb => {
-      if (!tb.session?.items) return tb;
+    const activeId = t === 'dine-in' ? s.activeTableId : null;
+    const tables = !activeId ? s.tables : (s.tables || []).map(tb => {
+      if (tb.id !== activeId || !tb.session?.items) return tb;
       return { ...tb, session: { ...tb.session, items: repriceItems(tb.session.items) } };
     });
     const walkInOrder = s.walkInOrder?.items

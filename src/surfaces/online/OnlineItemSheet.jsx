@@ -9,7 +9,13 @@ import { money } from '../../lib/currency';
 import { dietaryBadges, DIET_LABELS } from '../../lib/dietary';
 import { orderOptionFlow, flowOrderedMods } from '../../lib/optionFlow';
 
-export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs = [], eightySixIds = [], stockLevels = {}, cart = [], onClose, onAdd }) {
+// priceFor: the surface's own unit price rule, so the sheet total is the same
+// number the card shows and the cart line charges. Defaults to the plain base
+// price (the rule every caller used before), so a caller that does not pass
+// one (catering) prices exactly as it always has. The sheet never picks a
+// channel or menu itself: only the surface that owns the cart may do that.
+const basePriceOf = (it) => Number(it?.pricing?.base ?? it?.price ?? 0);
+export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs = [], eightySixIds = [], stockLevels = {}, cart = [], priceFor = basePriceOf, onClose, onAdd }) {
   const [qty, setQty]               = useState(1);
   const [modGroups, setModGroups]   = useState([]);  // top-level groups assigned to item
   const [allModGroups, setAllModGroups] = useState([]); // includes nested sub-groups (lookup)
@@ -204,7 +210,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
     return () => { alive = false; };
   }, [modGroupIds.join(','), instGroupIds.join(',')]);
 
-  const basePrice = Number(effectiveItem.pricing?.base ?? effectiveItem.price ?? 0);
+  const basePrice = priceFor(effectiveItem);
 
   // Standard mod totals (single + multi-pick groups)
   const modsTotal = Object.entries(selections).reduce((sum, [, val]) => {
@@ -499,7 +505,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {variants.map(v => {
                   const active = v.id === selectedVariant?.id;
-                  const vPrice = Number(v.pricing?.base ?? v.price ?? 0);
+                  const vPrice = priceFor(v);
                   // v5.5.141: 86'd variants are visible but not selectable
                   // so the customer can SEE the size exists but knows it's
                   // out — same pattern as the menu cards.

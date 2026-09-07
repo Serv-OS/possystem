@@ -6,30 +6,40 @@
 // Search box is always visible at the top and bypasses the category step
 // when a query is present.
 
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo } from 'react';
 import { useStore } from '../../store';
-import { fetchMenuCategoryLinks } from '../../lib/db';
 import { Sx, money } from './MShellStyles';
 import MAllergenPicker from './MAllergenPicker';
 import MVoiceOrder from './MVoiceOrder';
-import { resolveActiveMenu } from '../../lib/mpos/resolveActiveMenu';
+import { resolveItemPrice, variantFromPrice } from '../../lib/menuPricing';
 
-export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, headerSub }) {
+// categoryLinks: the menu_category_links rows MPOSSurface resolved the active
+// menu with (store links, or its early-boot backstop fetch). Same list, same
+// menu, so the category filter here can never disagree with the price tier.
+export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, headerSub, categoryLinks: linksProp = null }) {
   const {
     activeTableId, tables, walkInOrder,
     menuCategories = [], menuItems = [], eightySixIds = [],
-    allergens = [], menus = [], deviceConfig, locationConfig,
+    allergens = [],
+    categoryLinks: storeLinks = [],
+    orderType, activeMenuId,
   } = useStore();
-  // Active menu resolution — same logic the desktop POS uses (resolveActiveMenu
-  // ports POSSurface's deviceMenuId chain). Honours device-profile pinning,
-  // schedule-based scheduling, default-flagged menus, in priority order. This
-  // is what fixes "I set Main in BO but the phone still shows Test menu" —
-  // we now use the EXACT same resolver. Schedules evaluate on the VENUE's
-  // configured timezone (v5.7.22), never the phone's own clock.
-  const effectiveMenuId = useMemo(
-    () => resolveActiveMenu({ menus, deviceConfig, timezone: locationConfig?.timezone }),
-    [menus, deviceConfig, locationConfig?.timezone]
-  );
+  const categoryLinks = Array.isArray(linksProp) ? linksProp : storeLinks;
+
+  // The active menu is resolved ONCE, in MPOSSurface (always mounted while the
+  // phone is in use), through the shared resolver and mirrored into
+  // store.activeMenuId, exactly as the desktop till does (POSSurface v4.7.7).
+  // Reading it from the store here means the tiles, the category filter,
+  // store.addItem and the setOrderType reprice all use the same menu, and the
+  // value is already populated before this screen mounts. It used to be
+  // resolved here, which left the store at null until the menu screen opened.
+  const effectiveMenuId = activeMenuId ?? null;
+
+  // ONE price rule for every number on this screen: the till's resolver on the
+  // live order type and the active menu (tier[channel] > tier.all >
+  // pricing[channel] > base > legacy price). Tiles, "from" prices and the
+  // cart bar all go through here, and store.addItem resolves the same way.
+  const priceOf = (item) => resolveItemPrice(item, orderType, effectiveMenuId);
 
   const [query, setQuery] = useState('');
   const [activeCatId, setActiveCatId] = useState(null);
@@ -57,23 +67,6 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
   const cartCount = activeItems.reduce((s, i) => s + (i.qty || 0), 0);
   const cartSubtotal = activeItems.reduce((s, i) => s + (i.price || 0) * (i.qty || 0), 0);
 
-  // v5.5.788: mirror the POS rule (v4.7.6) — a menu owns a category via
-  // category.menuId (primary home) OR the menu_category_links join table.
-  // MPOS previously matched menuId only, so categories joined to the active
-  // menu via links showed on the POS/bar but never on the phone.
-  const [categoryLinks, setCategoryLinks] = useState([]);
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const { data } = await fetchMenuCategoryLinks();
-        if (alive) setCategoryLinks(data || []);
-      } catch (e) {
-        console.warn('[MMenu] fetchMenuCategoryLinks failed:', e?.message || e);
-      }
-    })();
-    return () => { alive = false; };
-  }, []);
   const linkedCatIds = useMemo(() => effectiveMenuId
     ? new Set((categoryLinks || []).filter(l => l.menu_id === effectiveMenuId).map(l => l.category_id))
     : new Set(), [categoryLinks, effectiveMenuId]);
@@ -156,11 +149,19 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
     });
     return idx;
   }, [menuItems]);
+  // "from" is the cheapest CHILD at its own resolved price (each size carries
+  // its own tiers), zeros ignored, through the shared variantFromPrice so the
+  // tile agrees with the kiosk card and the size picker. Only the sizes
+  // MVariantPicker will actually offer count (not hidden, not 86'd), so the
+  // tile never reads FROM a price the picker cannot sell and the SIZES pill
+  // never counts a size that cannot be picked. When every size is hidden or
+  // 86'd the raw list is kept so the item still reads as a parent.
   const variantInfo = (item) => {
     const kids = childrenIndex[item.id] || [];
     if (!kids.length) return null;
-    const prices = kids.map(k => Number(k?.pricing?.base ?? k?.price ?? 0)).filter(p => p > 0);
-    return { kids, fromPrice: prices.length ? Math.min(...prices) : 0 };
+    const live = kids.filter(k => !k.hidden && !eightySixIds.includes(k.id));
+    const offered = live.length ? live : kids;
+    return { kids: offered, fromPrice: variantFromPrice(item, offered, orderType, effectiveMenuId) ?? 0 };
   };
 
   // Picked category, only when not searching
@@ -254,6 +255,7 @@ export default function MMenu({ onPickItem, onOpenCart, onBack, headerTitle, hea
             items={itemsToShow}
             allergenHits={allergenHits}
             variantInfo={variantInfo}
+            priceOf={priceOf}
             eightySixIds={eightySixIds}
             empty={
               showSearch
@@ -364,7 +366,7 @@ function CategoriesGrid({ categories, countFor, onPick }) {
 }
 
 // ── Items list (used for both category drill-in and search results) ──────────
-function ItemsList({ items, empty, onPick, allergenHits, variantInfo, eightySixIds = [] }) {
+function ItemsList({ items, empty, onPick, allergenHits, variantInfo, priceOf, eightySixIds = [] }) {
   if (!items.length) {
     return (
       <div style={Sx.emptyBlock}>
@@ -388,6 +390,7 @@ function ItemsList({ items, empty, onPick, allergenHits, variantInfo, eightySixI
             onTap={() => is86 ? null : onPick?.(item)}
             allergenHits={allergenHits ? allergenHits(item) : []}
             variantInfo={variantInfo ? variantInfo(item) : null}
+            ownPrice={priceOf ? priceOf(item) : (item?.pricing?.base ?? item?.price ?? 0)}
             is86={is86}
           />
         );
@@ -396,12 +399,12 @@ function ItemsList({ items, empty, onPick, allergenHits, variantInfo, eightySixI
   );
 }
 
-function ItemRow({ item, onTap, allergenHits = [], variantInfo = null, is86 = false }) {
+function ItemRow({ item, onTap, allergenHits = [], variantInfo = null, ownPrice = 0, is86 = false }) {
   // If this item is a variant parent (children link to it via parentId), the
   // displayed price is "from £X" using the cheapest child — parents typically
-  // have base price 0 since the price lives on the children.
+  // have base price 0 since the price lives on the children. ownPrice arrives
+  // already resolved for the live order type and active menu (MMenu.priceOf).
   const isParent = !!variantInfo?.kids?.length;
-  const ownPrice = item?.pricing?.base ?? item?.price ?? 0;
   const displayPrice = isParent ? (variantInfo.fromPrice || 0) : ownPrice;
   const hasMods =
     !isParent && (

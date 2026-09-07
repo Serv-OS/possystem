@@ -7,6 +7,19 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.32',
+    date: '7 Sep 2026',
+    items: [
+      'Digital menu board follows timed menus. Each board has a new "Follow timed menus" switch in Back Office. When it is on, the TV shows only the categories on the menu that is live right now on the venue clock, re-checked every minute, and prices follow that menu too. If nothing on the board is on the live menu the TV shows the full board rather than going blank. Boards with the switch off are unchanged.',
+      'One menu rule for every screen. The till, kiosk, phone, online ordering and menu board now share one resolver instead of four copies that had drifted. The kiosk, phone and online pick up the fixes the till already had: the default menu breaks a tie, days saved as text still match, empty menus are skipped, and a pinned menu that is off schedule falls back to the default. The phone now re-checks the menu every minute like the till.',
+      'One price rule for every screen. Per menu price tiers and channel prices (dine in, takeaway, collection, delivery) now apply on the kiosk, phone, online ordering, QR tables and the menu board, the same as the till. Sizes included: a tier set on a size such as Half is honoured everywhere.',
+      'Kiosk sizes fixed. Items with sizes showed £0.00 on the card and in the sheet header, and sizes showed a "+£1.00" gap instead of a price. The card now says "from £2.85" with a Sizes pill, the header shows the cheapest until you pick, and each size shows its own price. Sizes that are sold out or 86d are hidden like on the till.',
+      'Till charges what the tile shows. Under a timed menu the tile showed the menu price but the line rang the base price. The add path now uses the active menu, sizes included. A modifier surcharge is added on top of the menu price rather than being scaled with it.',
+      'Online and QR: the basket reprices when you switch between collection and delivery or when a timed menu flips, so the checkout total always matches the menu.',
+      'Menu tier editor: the Base box on a menu tier was saved but never read. It now applies after "Default for this menu".',
+    ],
+  },
+  {
     v: '5.8.31',
     date: '7 Sep 2026',
     items: [

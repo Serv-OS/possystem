@@ -18,7 +18,8 @@ import { prepMinutes, prepRuleFromLocation, liveOrderCount } from '../../lib/pre
 import { assembleTaxProfiles } from '../../lib/rowMapping';
 import { buildLocalTaxCtx } from '../../lib/taxCompute';
 import { isItemEightySixed } from '../../lib/itemAvailability';
-import { resolveActiveMenu } from '../../lib/mpos/resolveActiveMenu';
+import { resolveActiveMenu } from '../../lib/menus/resolveActiveMenu';
+import { resolveItemPrice, repriceCartLines } from '../../lib/menuPricing';
 import { receiptOverride } from '../../lib/itemDisplay';
 import { dietaryBadges, DIET_LABELS } from '../../lib/dietary';
 import { getStashedTab, clearStashedTab, stashTab } from '../../lib/qrTabStorage';
@@ -62,6 +63,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   const [menusRows, setMenusRows] = useState([]);
   const [allLinks, setAllLinks]   = useState([]);
   const [menuTick, setMenuTick]   = useState(0);
+  const [resolvedMenuId, setResolvedMenuId] = useState(null); // the timed menu the resolver picked (null when pinned or none)
   const [eightySixIds, setEightySixIds] = useState([]); // v5.5.141: live 86 list from DB
   const [stockLevels, setStockLevels]   = useState({}); // v5.5.239: live stock counts from DB
   const [taxRates, setTaxRates]     = useState([]); // v5.5.154: UK VAT for cart breakdown
@@ -399,18 +401,63 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [opsLocationId, onlineMenuId]);
 
-  // v5.8.31: follow the timed menus. Same resolver as the MPOS (schedule on the
-  // venue clock, then priority, then default), re-run every minute so breakfast
-  // drops off and lunch appears without a reload. A pinned menu bypasses this.
+  // v5.8.31: follow the timed menus. The ONE shared resolver (src/lib/menus/
+  // resolveActiveMenu.js, the till's chain: schedule on the venue clock, then
+  // priority with the default breaking ties, then default, empty menus
+  // skipped), re-run every minute so breakfast drops off and lunch appears
+  // without a reload. A pinned online_menu_id bypasses this by design (Back
+  // Office "Use whichever menu is active" vs a pin) and is never routed
+  // through the pinned-off-schedule branch.
   useEffect(() => { const t = setInterval(() => setMenuTick(n => n + 1), 60_000); return () => clearInterval(t); }, []);
   useEffect(() => {
     if (onlineMenuId) return;                 // pinned: load() already filtered
-    if (!menusRows.length) return;            // no menus defined: everything shows
-    const active = resolveActiveMenu({ menus: menusRows, deviceConfig: { menuId: null }, timezone: location?.timezone });
+    if (!menusRows.length) { setResolvedMenuId(null); return; }   // no menus defined: everything shows
+    const active = resolveActiveMenu({ menus: menusRows, categories: rawCats, links: allLinks, pinnedMenuId: null, timezone: location?.timezone });
+    setResolvedMenuId(active || null);        // pricing follows the same menu the categories do
     if (!active) { setCategories(rawCats); return; }
     const linked = new Set(allLinks.filter(l => l.menu_id === active).map(l => l.category_id));
-    setCategories(rawCats.filter(c => c.menu_id === active || linked.has(c.id) || (c.parent_id && linked.has(c.parent_id))));
+    const inMenu = rawCats.filter(c => c.menu_id === active || linked.has(c.id) || (c.parent_id && linked.has(c.parent_id)));
+    // Never-blank: a storefront must not show zero categories because of the
+    // menu filter. Fall back to every category rather than an empty page.
+    setCategories(inMenu.length ? inMenu : rawCats);
   }, [onlineMenuId, menusRows, allLinks, rawCats, menuTick, location?.timezone]);
+
+  // Pricing: every surface prices like the till, so this is the till's own
+  // resolver (src/lib/menuPricing.js resolveItemPrice) with this surface's
+  // channel and menu. Menu = the pinned online_menu_id when Back Office pinned
+  // one, else the timed menu resolved above. Channel = the order type in use:
+  // 'collection' or 'delivery' online, 'dine-in' at a QR table (resolveItemPrice
+  // maps 'dine-in' to the dineIn key). Precedence, the till's:
+  //   tier[channel] > tier.all > tier.base > pricing[channel] > pricing.base > legacy price
+  // So a Provo collection order for Half charges 3.02 (its collection price)
+  // with no tier, and 1.23 under the Bar tier, the numbers the till charges.
+  // Card, sheet, cart line, checkout totals and the order_queue line price all
+  // come from this one function (addToCart writes priceFor(item) as l.price and
+  // every checkout reads l.price), so the customer sees one number throughout.
+  // Catering keeps its own base rule and does not use this.
+  const effectiveMenuId = onlineMenuId || resolvedMenuId;
+  const priceFor = (it) => resolveItemPrice(it, orderType, effectiveMenuId);
+
+  // Reprice the cart whenever the channel or the menu changes, mirroring the
+  // till (store.setOrderType reprices the open order with the active menu).
+  // addToCart snapshots l.price at add time; before this nothing ever touched
+  // it again, so a customer who added Half at Collection (3.02), tapped the
+  // header pill and picked Delivery saw every card at 2.85 while the cart
+  // line, the checkout subtotal, the Stripe or Adyen amount and the
+  // order_queue line price all still carried 3.02. The same happened when a
+  // timed menu flipped at the minute tick under a cart that already had lines.
+  // Online lines keep modifiers in l.mods with their own prices, so a plain
+  // unit-price swap is the whole reprice. Lines whose row is no longer in
+  // items are left as they are. The mapping is pure (repriceCartLines) and
+  // returns the same line objects when nothing changed, so React state only
+  // moves when a price actually did.
+  useEffect(() => {
+    if (!orderType) return;
+    setCart(c => {
+      const next = repriceCartLines(c, items, orderType, effectiveMenuId);
+      return next.some((l, i) => l !== c[i]) ? next : c;
+    });
+  }, [orderType, effectiveMenuId, items]);
 
   const theme = useMemo(() => ({
     // Menu Appearance saves the brand colour as `brand_color` — prefer it (accent_color is legacy).
@@ -471,7 +518,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
     const kids = childrenByParent[item.id];
     if (!kids?.length) return null;
     const prices = kids
-      .map(k => Number(k.pricing?.base ?? k.price ?? 0))
+      .map(k => priceFor(k))
       .filter(p => p > 0);
     return { kids, fromPrice: prices.length ? Math.min(...prices) : 0 };
   };
@@ -498,7 +545,9 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
   }), [taxProfiles, items, taxCatRows, venueDefaultTaxProfileId, taxRates]);
 
   const addToCart = (item, mods, qty, notes = '') => {
-    const price = Number(item.pricing?.base ?? item.price ?? 0);
+    // The cart line's unit price. Checkout (online and QR) charges l.price as-is,
+    // so this one call is what the customer pays.
+    const price = priceFor(item);
     // v5.5.128: snapshot category info on the cart line so production
     // routing on the operator side can bucket the item to the right
     // kitchen station regardless of whether the master device's local
@@ -885,7 +934,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
                   const is86 = itemSoldOut || variantsAllSoldOut;
                   const stock = stockLevels[item.id] || null;
                   return (
-                    <ItemCard key={item.id} item={item} theme={theme}
+                    <ItemCard key={item.id} item={item} theme={theme} priceFor={priceFor}
                       cardBg={cardBg} cardBdr={cardBdr} muted={muted}
                       variantInfo={vinfo}
                       is86={is86}
@@ -925,7 +974,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
 
       {openItem && (
         <OnlineItemSheet
-          item={openItem} theme={theme} allItems={items} orderType={orderType}
+          item={openItem} theme={theme} allItems={items} priceFor={priceFor}
           instGroupDefs={instGroupDefs}
           eightySixIds={eightySixIds}
           stockLevels={stockLevels} cart={cart}
@@ -1568,8 +1617,9 @@ function Hero({ theme, muted, leadMin, tableLabel }) {
   );
 }
 
-function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick, variantInfo, is86 = false, stock = null }) {
-  const ownPrice = Number(item.pricing?.base ?? item.price ?? 0);
+function ItemCard({ item, theme, cardBg, cardBdr, muted, onPick, variantInfo, is86 = false, stock = null, priceFor = null }) {
+  // priceFor = the surface's price rule (the till's resolver for this channel and menu); the inline base read is only a last resort.
+  const ownPrice = priceFor ? priceFor(item) : Number(item.pricing?.base ?? item.price ?? 0);
   const isVariantParent = !!variantInfo?.kids?.length;
   // Variant parents have base price 0; show "from £X" using cheapest child.
   const displayPrice = isVariantParent ? (variantInfo.fromPrice || 0) : ownPrice;

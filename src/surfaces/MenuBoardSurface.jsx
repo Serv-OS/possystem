@@ -8,14 +8,24 @@
 // it never goes blank offline. No SyncBridge (read-only), like CustomerDisplay.
 //
 // Phase 1: render + auto-fit + auto-balance + 86 "sold out" + marketing mode +
-// offline cache. Builder, drag-arrange, pagination, dayparting come later
-// (see MENU_BOARD_PLAN.md).
+// offline cache. Builder, drag-arrange, pagination come later (see
+// MENU_BOARD_PLAN.md).
+//
+// Follow timed menus (layout.followMenus, default false): when a board asks for
+// it, the arranged categories are narrowed to the menu that is live on the
+// VENUE clock (the shared resolver, same schedules as the till, kiosk, phone and
+// online) and prices read that menu's tier. Menus, links and the venue timezone
+// ride the same cache so an offline boot still evaluates. Never blank: if the
+// narrowing would leave nothing, or the menus read fails, the full arranged
+// board shows. See src/lib/menuBoardMenus.js (shared with the BO preview).
 
 import { useEffect, useState, useRef, useLayoutEffect, useCallback, useMemo } from 'react';
-import { supabase, isMock, ensureAuthToken } from '../lib/supabase';
-import { fetchMenuCategories, fetchMenuItems, fetch86List } from '../lib/db';
+import { supabase, platformSupabase, isMock, ensureAuthToken } from '../lib/supabase';
+import { fetchMenuCategories, fetchMenuItems, fetch86List, fetchMenus, fetchMenuCategoryLinks } from '../lib/db';
 import { money } from '../lib/currency';
 import { dietaryBadges } from '../lib/dietary';
+import { resolveBoardPrice } from '../lib/menuPricing';
+import { boardFollowsMenus, resolveBoardMenu, applyMenuToSections } from '../lib/menuBoardMenus';
 
 const DEFAULT_THEME = { bgColor: '#14110d', textColor: '#F5EFE6', mutedColor: '#B8AE9E', accent: '#E8A23C', font: '', footerNote: '', logoUrl: null, bgImageUrl: null };
 const DEFAULT_DISPLAY = { showDescription: true, showAllergens: true, showPrices: true, showImages: false, soldOut: 'grey', textScale: 1, hidePriceless: false };
@@ -39,18 +49,40 @@ const genCode = () => {
   return out;
 };
 
-// Board price: prefer the dine-in price, then any-channel, then base, then legacy scalar.
-const boardPrice = (it) => {
-  const p = it.pricing;
-  if (p && typeof p === 'object') {
-    for (const k of ['dineIn', 'all', 'base']) if (p[k] != null && Number(p[k]) > 0) return Number(p[k]);
-    if (p.base != null) return Number(p.base) || 0;
-  }
-  return Number(it.price) || 0;
-};
+// Board price: the active menu's tier (dineIn, then all) when one exists, else the
+// board's own display chain: dineIn, then any-channel, then base, then legacy scalar.
+// Shared with the Back Office preview via src/lib/menuPricing.js. activeMenuId null
+// means "no active menu known", which is exactly the pre-tier behaviour.
+const boardPrice = (it, activeMenuId = null) => resolveBoardPrice(it, activeMenuId);
 // GF/V/VG/DF badge resolution now shared (src/lib/dietary.js) with the print
 // menu + online storefront — imported above, do not re-fork the map here.
 const visibleItem = (it) => !it.archived && (!it.visibility || it.visibility.kiosk !== false);
+
+// Venue clock for "Follow timed menus". The timezone an operator sets in Location
+// Settings lives on the PLATFORM locations row (joined by ops_location_id, anon
+// readable, kept that way on purpose in 20260805c B6); the ops locations.timezone
+// column is a legacy default and is only read when the platform row cannot be.
+// Never the device clock: a US venue's TV must flip menus on the venue's time,
+// not on London's. Returns null when nothing could be read so the caller can
+// keep the last good value from the cache.
+async function fetchVenueTimezone(locId) {
+  if (!locId) return null;
+  try {
+    if (platformSupabase) {
+      const { data } = await platformSupabase.from('locations').select('timezone')
+        .or(`ops_location_id.eq.${locId},id.eq.${locId}`).limit(1).maybeSingle();
+      if (data?.timezone) return data.timezone;
+    }
+  } catch { /* platform read failed, try the ops column */ }
+  try {
+    if (supabase) {
+      const { data } = await supabase.from('locations').select('timezone').eq('id', locId).maybeSingle();
+      if (data?.timezone) return data.timezone;
+    }
+  } catch { /* ops read failed too, caller keeps the last good tz */ }
+  return null;
+}
+let warnedNoTz = false;
 
 export default function MenuBoardSurface() {
   // Two ways to drive a screen:
@@ -70,8 +102,10 @@ export default function MenuBoardSurface() {
 
   const [locId, setLocId] = useState(null);
   const [resolving, setResolving] = useState(true);
-  const [data, setData] = useState(null);   // { board, cats:[], items:[], six:Set }
+  const [data, setData] = useState(null);   // { board, cats:[], items:[], six:Set, menus:[], links:[], tz }
+  const dataRef = useRef(null);             // last data set, so a failed timezone read keeps the last good tz
   const reloadTimer = useRef(null);
+  const menusSubSeq = useRef(0);            // unique topic per menus subscription, see the Follow-timed-menus effect
 
   // Lock the viewport to 1:1 for signage. TV browsers (notably LG webOS) otherwise
   // apply their own default zoom, scaling the board past the screen ("zoomed in /
@@ -163,28 +197,50 @@ export default function MenuBoardSurface() {
         supabase.from('menu_boards').select('*').eq('id', effectiveBoardId).maybeSingle(),
         fetchMenuCategories(id), fetchMenuItems(id), fetch86List(id),
       ]);
+      const board = boardRes?.data || null;
       const next = {
-        board: boardRes?.data || null,
+        board,
         cats: catsRes?.data || [],
         items: itemsRes?.data || [],
         six: new Set((sixRes?.data || []).map((r) => r.item_id)),
+        menus: [], links: [], tz: null,
       };
+      // Follow timed menus: only when the published board asks for it, so a
+      // board with the flag off makes exactly the reads it always has. Each
+      // extra read degrades on its own: no menus = no active menu = the full
+      // arranged board and no tier (never blank); a failed timezone read keeps
+      // the last good value rather than silently jumping to London.
+      if (boardFollowsMenus(board)) {
+        const [mRes, lRes, tzRes] = await Promise.allSettled([fetchMenus(id), fetchMenuCategoryLinks(id), fetchVenueTimezone(id)]);
+        next.menus = (mRes.status === 'fulfilled' && Array.isArray(mRes.value?.data)) ? mRes.value.data : [];
+        next.links = (lRes.status === 'fulfilled' && Array.isArray(lRes.value?.data)) ? lRes.value.data : [];
+        next.tz = (tzRes.status === 'fulfilled' && tzRes.value) || dataRef.current?.tz || null;
+        if (mRes.status === 'fulfilled' && mRes.value?.error) console.warn('[menuboard] menus read failed, showing every category:', mRes.value.error.message);
+        if (!next.tz && !warnedNoTz) { warnedNoTz = true; console.warn('[menuboard] venue timezone unknown, timed menus evaluate on Europe/London'); }
+      }
+      dataRef.current = next;
       setData(next);
       try { localStorage.setItem(cacheKey(id, effectiveBoardId), JSON.stringify({ ...next, six: [...next.six] })); } catch {}
     } catch (e) { console.warn('[menuboard] load', e?.message); }
   }, [effectiveBoardId]);
+
+  const reload = useCallback(() => { clearTimeout(reloadTimer.current); reloadTimer.current = setTimeout(() => load(locId), 400); }, [load, locId]);
 
   // boot: render cache instantly, then refresh + subscribe
   useEffect(() => {
     if (!locId || !effectiveBoardId) return;
     try {
       const c = JSON.parse(localStorage.getItem(cacheKey(locId, effectiveBoardId)) || 'null');
-      if (c) setData({ ...c, six: new Set(c.six || []) });
+      if (c) {
+        // A cache written before "Follow timed menus" simply lacks the fields.
+        const d = { ...c, six: new Set(c.six || []), menus: Array.isArray(c.menus) ? c.menus : [], links: Array.isArray(c.links) ? c.links : [], tz: c.tz || null };
+        dataRef.current = d;
+        setData(d);
+      }
     } catch {}
     load(locId);
 
     if (isMock || !supabase) return;
-    const reload = () => { clearTimeout(reloadTimer.current); reloadTimer.current = setTimeout(() => load(locId), 400); };
     const ch = supabase.channel(`menuboard:${locId}:${effectiveBoardId}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'eighty_six', filter: `location_id=eq.${locId}` }, reload)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'menu_items', filter: `location_id=eq.${locId}` }, reload)
@@ -192,7 +248,38 @@ export default function MenuBoardSurface() {
       .subscribe();
     const poll = setInterval(() => load(locId), 90000);   // safety net for missed events / long uptime
     return () => { supabase.removeChannel(ch); clearInterval(poll); clearTimeout(reloadTimer.current); };
-  }, [locId, load, effectiveBoardId]);
+  }, [locId, load, effectiveBoardId, reload]);
+
+  // Follow timed menus: schedule and membership edits reach the TV live too.
+  // Only while the board follows menus (a board with the flag off subscribes to
+  // exactly what it always has). `menus` carries location_id so it filters like
+  // the main channel; menu_category_links has no location column, so it is
+  // filtered by this venue's menu ids (re-subscribed when that set changes).
+  // The 90s poll above remains the safety net if either table is not published.
+  //
+  // The topic carries a sequence number. removeChannel() only sends a leave and
+  // keeps the phoenix channel registered until the server acks it, so a
+  // re-subscribe under the SAME topic in the same commit (menuIdsKey changed)
+  // got the leaving instance back from supabase.channel(): the new bindings
+  // were attached to a dying object, subscribe() was a no-op, and the ack then
+  // tore the bindings down. No throw, no warning, and no menus or links events
+  // ever reached the TV again until a reload. A fresh topic per subscription
+  // can never collide with the one that is leaving.
+  const followMenus = boardFollowsMenus(data?.board);
+  const menuIdsKey = followMenus
+    ? (data?.menus || []).map((m) => m?.id).filter((x) => typeof x === 'string' && /^[A-Za-z0-9_-]+$/.test(x)).sort().join(',')
+    : '';
+  useEffect(() => {
+    if (!followMenus || !locId || !effectiveBoardId || isMock || !supabase) return;
+    let ch = null;
+    try {
+      ch = supabase.channel(`menuboard-menus:${locId}:${effectiveBoardId}:${++menusSubSeq.current}`)
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'menus', filter: `location_id=eq.${locId}` }, reload);
+      if (menuIdsKey) ch = ch.on('postgres_changes', { event: '*', schema: 'public', table: 'menu_category_links', filter: `menu_id=in.(${menuIdsKey})` }, reload);
+      ch.subscribe();
+    } catch (e) { console.warn('[menuboard] menus realtime', e?.message); }
+    return () => { if (ch) { try { supabase.removeChannel(ch); } catch { /* already gone */ } } };
+  }, [followMenus, menuIdsKey, locId, effectiveBoardId, reload]);
 
   // No board yet → device-pairing screen (shows the code to type into Back Office).
   if (pairing && !effectiveBoardId) return <PairScreen code={screen?.code} />;
@@ -221,13 +308,29 @@ function Board({ data }) {
   const orientation = data.board?.orientation || 'landscape';
   const textScale = Math.max(0.6, Math.min(1.6, Number(disp.textScale) || 1));
 
+  // Follow timed menus (layout.followMenus). The live menu is resolved on the
+  // VENUE clock (data.tz, never the device clock) by the shared resolver, and
+  // re-evaluated every minute so the TV flips at a schedule boundary without a
+  // push. It narrows the arranged sections (never to nothing, see
+  // applyMenuToSections) and picks the price tier. Null = flag off, no menus
+  // known, or nothing resolved = the board is exactly its arranged blocks with
+  // no tier, which is byte-for-byte the pre-flag behaviour.
+  const followMenus = boardFollowsMenus(data.board);
+  const [, setClockTick] = useState(0);
+  useEffect(() => {
+    if (!followMenus) return;
+    const t = setInterval(() => setClockTick((x) => x + 1), 60_000);
+    return () => clearInterval(t);
+  }, [followMenus]);
+  const activeMenuId = resolveBoardMenu({ board: data.board, menus: data.menus, categories: data.cats, links: data.links, timezone: data.tz });
+
   const boardRef = useRef(null);
   const contentRef = useRef(null);
   const flowRef = useRef(null);
   const [fitTick, setFitTick] = useState(0);
 
   // ordered sections; content flows column-by-column and fills the screen
-  const sections = mode === 'menu' ? buildSections(data) : [];
+  const sections = mode === 'menu' ? buildSections(data, activeMenuId) : [];
   const fixedCols = Number(data.board?.layout?.columns) || 0;   // operator override; 0 = Auto
   const totalItems = sections.reduce((n, s) => n + ((s.items && s.items.length) || 0), 0);
 
@@ -257,7 +360,7 @@ function Board({ data }) {
       if (fits()) { best = mid; lo = mid + 1; } else hi = mid - 1;
     }
     root.style.fontSize = best + 'px';
-  }, [data, mode, orientation, fixedCols, textScale, totalItems, fitTick]);
+  }, [data, mode, orientation, fixedCols, textScale, totalItems, fitTick, activeMenuId]);
 
   useEffect(() => {
     const refit = () => setFitTick((t) => t + 1);
@@ -333,7 +436,7 @@ function Board({ data }) {
         <div ref={contentRef} style={{ flex: '1 1 auto', minHeight: 0, overflow: 'hidden' }}>
           <div ref={flowRef} style={{ height: '100%', columnGap: '1.7em', columnFill: 'auto' }}>
             {sections.map((sec) => (
-              <Section key={sec.cat.id} sec={sec} theme={theme} disp={disp} six={data.six} />
+              <Section key={sec.cat.id} sec={sec} theme={theme} disp={disp} six={data.six} activeMenuId={activeMenuId} />
             ))}
           </div>
         </div>
@@ -347,17 +450,17 @@ function Board({ data }) {
   );
 }
 
-function Section({ sec, theme, disp, six }) {
+function Section({ sec, theme, disp, six, activeMenuId = null }) {
   const { cat, items } = sec;
   return (
     <div style={{ marginBottom: '1.4em', breakInside: 'avoid', WebkitColumnBreakInside: 'avoid', ...(sec.span === 'all' ? { columnSpan: 'all', WebkitColumnSpan: 'all', breakInside: 'auto' } : null) }}>
       <div style={{ fontSize: '0.82em', fontWeight: 700, letterSpacing: '.12em', color: theme.accent, marginBottom: '0.55em', textTransform: 'uppercase', breakAfter: 'avoid', WebkitColumnBreakAfter: 'avoid' }}>{cat.label}</div>
-      {items.filter((it) => !(disp.hidePriceless && boardPrice(it) <= 0 && !(it._variants || []).length)).map((it) => {
+      {items.filter((it) => !(disp.hidePriceless && boardPrice(it, activeMenuId) <= 0 && !(it._variants || []).length)).map((it) => {
         const variants = it._variants || [];
         const hasVar = variants.length > 0;
         const sold = six.has(it.id);
         const diet = dietaryBadges(it);
-        const price = boardPrice(it);
+        const price = boardPrice(it, activeMenuId);
         return (
           <div key={it.id} style={{ marginBottom: '0.65em', opacity: sold ? 0.42 : 1, breakInside: 'avoid', WebkitColumnBreakInside: 'avoid' }}>
             {/* product line */}
@@ -390,7 +493,7 @@ function Section({ sec, theme, disp, six }) {
               <div style={{ marginTop: '.18em', marginLeft: '.2em', paddingLeft: (disp.showImages && it.image) ? '3em' : '0.9em', borderLeft: `0.14em solid ${theme.accent}40` }}>
                 {variants.map((v) => {
                   const vsold = six.has(v.id);
-                  const vp = boardPrice(v);
+                  const vp = boardPrice(v, activeMenuId);
                   return (
                     <div key={v.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.5em', marginBottom: '.4em', opacity: vsold ? 0.42 : 1 }}>
                       <span style={{ fontSize: '0.46em', color: theme.mutedColor }}>{v.menu_name || v.name}</span>
@@ -412,7 +515,10 @@ function Section({ sec, theme, disp, six }) {
 // Ordered, non-empty category sections. Variant children (items with a parent_id
 // pointing at a visible item — e.g. Regular/Large under "Pepsi Max") are nested
 // onto their parent as `_variants` rather than shown as flat top-level rows.
-function buildSections(data) {
+// activeMenuId (Follow timed menus) narrows the result to the categories on that
+// menu, in the arranged order, falling back to the full board when nothing
+// with items would survive. Null = no narrowing.
+function buildSections(data, activeMenuId = null) {
   const visible = data.items.filter(visibleItem);
   const byId = Object.fromEntries(visible.map((i) => [i.id, i]));
   const kids = {};
@@ -434,9 +540,10 @@ function buildSections(data) {
     const byCatId = Object.fromEntries(cats.map((c) => [c.id, c]));
     cats = blocks.map((b) => { spanById[b.categoryId] = b.span; return byCatId[b.categoryId]; }).filter(Boolean);
   }
-  return cats
+  const sections = cats
     .map((cat) => ({ cat, span: spanById[cat.id], items: (itemsByCat[cat.id] || []).map((it) => ({ ...it, _variants: kids[it.id] || [] })) }))
     .filter((s) => s.items.length > 0);
+  return applyMenuToSections(sections, { categories: data.cats, links: data.links, activeMenuId });
 }
 
 function Splash({ text, sub, inline }) {

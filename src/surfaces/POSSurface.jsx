@@ -7,7 +7,9 @@ import PosWasteModal from '../components/PosWasteModal';
 import { useStore } from '../store';
 import { fetchMenuCategoryLinks } from '../lib/db';
 import { buildScheduleCtx } from '../lib/locationTime';
-import { linkedCategoryIdSet, categoryVisibleInMenu, menusWithCategories, allowedCategoryIds, itemInAllowedCats } from '../lib/menuMembership';
+import { resolveActiveMenu } from '../lib/menus/resolveActiveMenu';
+import { variantFromPrice } from '../lib/menuPricing';
+import { linkedCategoryIdSet, categoryVisibleInMenu, allowedCategoryIds, itemInAllowedCats } from '../lib/menuMembership';
 import { supabase } from '../lib/supabase';
 import { pushReaderDisplay, clearReaderDisplay, cacheReaderDisplaySetting } from '../lib/readerDisplay';
 import { publishDisplay, getCustomerDisplayMode, displayUsesReader, displayUsesScreen, cacheCustomerDisplayMode, onCustomerPhone, publishLoyalty, onRedeemReward, isLoyaltyEnabled } from '../lib/customerDisplay';
@@ -217,79 +219,20 @@ export default function POSSurface() {
   // menu on every test. Every till at a venue must flip at the same venue
   // wall-clock moment regardless of its own OS timezone.
   const _venueTz = useStore(s => s.locationConfig?.timezone) || 'Europe/London';
-  const deviceMenuId = useMemo(() => {
-    const ctx = buildScheduleCtx(_venueTz);
-    const day = ctx.isoDay || (new Date().getDay() || 7); // ISO: Mon=1, Sun=7
-    const time = ctx.nowMinutes;
-    const isActive = (m) => {
-      if (!m.schedule) return true;
-      const s = m.schedule;
-      // v5.7.10: coerce day values to numbers - a schedule whose days arrive as
-      // strings (["1","2",...]) used to fail includes() on EVERY day, so the
-      // menu never showed anywhere (the 20 Aug Provo donuts incident: Main's
-      // schedule read as inactive, the resolver fell through to the first
-      // always-on menu, and every till showed the one-category Doboy menu).
-      if (s.days && Array.isArray(s.days) && s.days.length && !s.days.map(Number).includes(day)) return false;
-      if (s.from && s.to) {
-        const [fh, fm] = String(s.from).split(':').map(Number);
-        const [th, tm] = String(s.to).split(':').map(Number);
-        const fromMin = fh * 60 + fm;
-        const toMin = th * 60 + tm;
-        if (!Number.isFinite(fromMin) || !Number.isFinite(toMin)) return true; // unparsable window = never hide the menu
-        if (fromMin <= toMin) return time >= fromMin && time <= toMin;
-        // crosses midnight (e.g. 22:00–02:00)
-        return time >= fromMin || time <= toMin;
-      }
-      return true;
-    };
-    const liveMenus = (menus || []).filter(m => m.isActive !== false && m.is_active !== false);
-    // v5.5.x: NEVER resolve to a menu that has no categories — an empty menu (e.g. a
-    // half-built "New Test" menu that's still active) would otherwise win the schedule/
-    // priority race and blank the POS grid entirely. Prefer menus that actually have at
-    // least one top-level category; only fall back to all live menus if none do.
-    // v5.6.97 ROOT-CAUSE FIX: "has categories" must count menu_category_links too.
-    // A device pinned to a menu whose categories were all ASSIGNED via links (the
-    // normal Menu Manager flow for existing categories) was treated as empty here,
-    // failed preferredOk, and the resolver silently fell back to the default menu —
-    // so the profile's menu restriction worked on bar tabs (which reads the pin
-    // directly) but the POS grid showed the full menu.
-    const menusWithCats = menusWithCategories(menuCategories, _categoryLinks);
-    const withCats = liveMenus.filter(m => menusWithCats.has(m.id));
-    const allMenus = withCats.length ? withCats : liveMenus;
-    const activeNow = allMenus.filter(isActive);
-    const preferred = deviceConfig?.menuId;
-    const preferredOk = preferred && allMenus.some(m => m.id === preferred);   // pinned menu must itself have cats
-    // 1. If device pinned to a (non-empty) menu that's currently active, honour it.
-    if (preferredOk && activeNow.some(m => m.id === preferred)) return preferred;
-    // v5.7.10: a PINNED till whose menu is merely off-schedule must NEVER land
-    // on an arbitrary other menu (the old priority race picked the tiny Doboy
-    // menu at Provo and every till "only showed donuts"). The device profile
-    // pin is an operator statement of intent: fall to the venue's default menu
-    // if one is flagged, otherwise keep showing the pinned menu itself.
-    if (preferredOk) {
-      const defForPinned = allMenus.find(m => m.isDefault || m.is_default);
-      return defForPinned ? defForPinned.id : preferred;
-    }
-    // 2. Otherwise pick the highest-priority menu currently active. v5.7.12:
-    // the DEFAULT menu breaks ties - with several always-active menus at equal
-    // priority the old stable sort picked whichever row happened to load first
-    // (live 20 Aug: an unpinned till showed the one-category Bar menu). Auto
-    // mode now reads: the default menu, unless a scheduled or higher-priority
-    // menu is live right now.
-    if (activeNow.length > 0) {
-      return activeNow.slice().sort((a, b) =>
-        ((b.priority || 0) - (a.priority || 0))
-        || (((b.isDefault || b.is_default) ? 1 : 0) - (((a.isDefault || a.is_default)) ? 1 : 0))
-      )[0].id;
-    }
-    // 3. No menus active right now: fall back to default flagged menu.
-    const def = allMenus.find(m => m.isDefault || m.is_default);
-    if (def) return def.id;
-    // 5. Any non-empty menu (highest priority) so the grid is never blank when items exist.
-    if (allMenus.length) return allMenus.slice().sort((a, b) => (b.priority || 0) - (a.priority || 0))[0].id;
-    // 6. Nothing matches: show all categories (legacy behaviour).
-    return null;
-  }, [menus, deviceConfig?.menuId, menuCategories, _categoryLinks, _clockTick, _venueTz]);
+  // The chain itself now lives in src/lib/menus/resolveActiveMenu.js (ONE
+  // resolver shared with the kiosk, the phone and the online storefront). The
+  // behaviour here is unchanged: live menus, skip empty menus (links count,
+  // v5.6.97), pinned on schedule, pinned off schedule falls to the default
+  // (v5.7.10), highest priority with the default breaking ties (v5.7.12),
+  // default, highest priority non empty, null. _clockTick stays in the deps so
+  // the venue clock is re-read every minute.
+  const deviceMenuId = useMemo(() => resolveActiveMenu({
+    menus,
+    categories: menuCategories,
+    links: _categoryLinks,
+    pinnedMenuId: deviceConfig?.menuId,
+    timezone: _venueTz,
+  }), [menus, deviceConfig?.menuId, menuCategories, _categoryLinks, _clockTick, _venueTz]);
 
   // v4.7.7: mirror the resolved deviceMenuId into the store's activeMenuId so internal
   // getItemPrice calls (addItem fallback, setOrderType reprice) pick up per-menu pricing
@@ -1840,9 +1783,16 @@ export default function POSSurface() {
                   const isHot=rank>=0&&rank<3;
                   const variantKids=childrenByParent.get(item.id)||[];
                   const isVariantParent=variantKids.length>0||item.type==='variants';
+                  // The tile shows what the cart charges. MENU_ITEMS.price is
+                  // already resolved for the live order type and device menu
+                  // (tier, channel, base), and a size child is priced by
+                  // running that same resolver on the CHILD row, so "from" is
+                  // the cheapest size at the price it will actually be charged.
+                  // Both used to read pricing.base, so under the Bar tier the
+                  // tile said "from £2.85" while the cart line was £1.23.
                   const fromPrice=isVariantParent&&variantKids.length>0
-                    ? Math.min(...variantKids.map(c=>c.pricing?.base??c.price??0))
-                    : (item.pricing?.base??item.price??0);
+                    ? (variantFromPrice(item, variantKids, orderType, deviceMenuId)??0)
+                    : (item.price??item.pricing?.base??0);
                   const hasOptions=(item.assignedModifierGroups?.length>0)||(item.assignedInstructionGroups?.length>0)||(item.modifierGroups?.length>0);
                   const accentColor = is86?'var(--t4)':flagged?'var(--red)':catColor;
                   const count = dailyCounts[item.id];

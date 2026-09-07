@@ -5,27 +5,30 @@
 // row: pick which categories show, reorder them, set display options + columns +
 // orientation + mode + branding, then Publish (paired screens refresh live).
 // Keys here MUST match MenuBoardSurface.jsx (layout/display_options/theme/marketing).
+// layout.followMenus ("Follow timed menus", default false) narrows the board to
+// the menu live on the venue clock; the preview mirrors the TV through the same
+// shared helpers (src/lib/menuBoardMenus.js).
 
 import { useEffect, useMemo, useState, useCallback, useRef, useLayoutEffect } from 'react';
 import { supabase, isMock, getActiveLocationSync } from '../../lib/supabase';
 import { reportSave } from '../../lib/saveHealth';
-import { fetchMenuCategories, fetchMenuItems, fetch86List } from '../../lib/db';
+import { fetchMenuCategories, fetchMenuItems, fetch86List, fetchMenus, fetchMenuCategoryLinks } from '../../lib/db';
+import { getLocationConfig } from '../../lib/locationTime';
 import { money } from '../../lib/currency';
+import { resolveBoardPrice } from '../../lib/menuPricing';
+import { resolveBoardMenu, applyMenuToSections } from '../../lib/menuBoardMenus';
 
 const ASSET_BUCKET = 'receipt-assets';
 const FONTS = ['', 'Plus Jakarta Sans', 'Space Grotesk', 'Inter', 'Georgia', 'Oswald'];
 const DEF_THEME = { bgColor: '#14110d', textColor: '#F5EFE6', accent: '#E8A23C', font: '', footerNote: '', logoUrl: '', bgImageUrl: '' };
 const DEF_DISP = { showDescription: true, showAllergens: true, showPrices: true, showImages: false, soldOut: 'grey', textScale: 1, hidePriceless: false };
-const newBoard = (n) => ({ name: `Menu board ${n}`, orientation: 'landscape', mode: 'menu', layout: { columns: 'auto', blocks: [] }, display_options: { ...DEF_DISP }, theme: { ...DEF_THEME }, marketing: { mediaUrl: '', mediaType: 'image', fit: 'cover' } });
+// followMenus defaults false here so the Edit merge (`{ ...newBoard(1).layout, ...b.layout }`)
+// gives every board saved before the flag existed the exact behaviour it has today.
+const newBoard = (n) => ({ name: `Menu board ${n}`, orientation: 'landscape', mode: 'menu', layout: { columns: 'auto', blocks: [], followMenus: false }, display_options: { ...DEF_DISP }, theme: { ...DEF_THEME }, marketing: { mediaUrl: '', mediaType: 'image', fit: 'cover' } });
 
-const boardPrice = (it) => {
-  const p = it.pricing;
-  if (p && typeof p === 'object') {
-    for (const k of ['dineIn', 'all', 'base']) if (p[k] != null && Number(p[k]) > 0) return Number(p[k]);
-    if (p.base != null) return Number(p.base) || 0;
-  }
-  return Number(it.price) || 0;
-};
+// Same price rule as MenuBoardSurface (shared in src/lib/menuPricing.js): the active
+// menu's tier when one exists, else dineIn, any-channel, base, legacy scalar.
+const boardPrice = (it, activeMenuId = null) => resolveBoardPrice(it, activeMenuId);
 const DIET = { gf: 'GF', glutenfree: 'GF', 'gluten-free': 'GF', 'gluten free': 'GF', v: 'V', veg: 'V', vegetarian: 'V', vg: 'VG', vegan: 'VG', df: 'DF', dairyfree: 'DF', 'dairy-free': 'DF' };
 const dietaryBadges = (it) => {
   const out = [], seen = new Set();
@@ -47,8 +50,13 @@ export default function MenuBoards() {
   const [locId, setLocId] = useState(null);
   const [screens, setScreens] = useState([]);
   const [cats, setCats] = useState([]);
+  const [allCats, setAllCats] = useState([]);      // every category row (subs too), for menu membership
   const [items, setItems] = useState([]);
   const [six, setSix] = useState(new Set());
+  const [menus, setMenus] = useState([]);          // Follow timed menus: what the preview needs to mirror the TV
+  const [links, setLinks] = useState([]);
+  const [tz, setTz] = useState(null);              // venue timezone (platform locations row); null = read failed
+  const [menusOk, setMenusOk] = useState(true);    // false = menus could not be read; the preview shows everything
   const [editing, setEditing] = useState(null);   // board object (new or existing)
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState('');
@@ -65,16 +73,25 @@ export default function MenuBoards() {
       const id = getActiveLocationSync();
       setLocId(id);
       if (isMock || !supabase || !id) { setLoading(false); return; }
-      const [b, c, it, s, scr] = await Promise.all([
+      const [b, c, it, s, scr, m, l, cfg] = await Promise.all([
         supabase.from('menu_boards').select('*').eq('location_id', id).order('created_at'),
         fetchMenuCategories(id), fetchMenuItems(id), fetch86List(id),
         supabase.from('menu_board_screens').select('*').eq('location_id', id).order('created_at'),
+        // Follow timed menus: menus + links + the venue clock for the live preview.
+        // Best effort: a failure here must not take the builder down, it only
+        // leaves the preview unfiltered (with a note under the toggle).
+        fetchMenus(id).catch(() => null), fetchMenuCategoryLinks(id).catch(() => null), getLocationConfig(id).catch(() => null),
       ]);
       setScreens(b?.data || []);
+      setAllCats(c?.data || []);
       setCats((c?.data || []).filter(x => !x.parent_id && !x.is_special).sort((a, z) => (a.sort_order || 0) - (z.sort_order || 0)));
       setItems(it?.data || []);
       setSix(new Set((s?.data || []).map(r => r.item_id)));
       setPaired(scr?.data || []);
+      setMenus(Array.isArray(m?.data) ? m.data : []);
+      setLinks(Array.isArray(l?.data) ? l.data : []);
+      setTz(cfg?.timezone || null);
+      setMenusOk(!!m && !m.error);
     } catch (e) { setErr(e.message || 'Could not load'); }
     finally { setLoading(false); }
   }, []);
@@ -187,6 +204,7 @@ export default function MenuBoards() {
 
   if (editing) return (
     <Editor board={editing} setBoard={setEditing} cats={cats} itemsByCat={itemsByCat} six={six}
+      allCats={allCats} menus={menus} links={links} tz={tz} menusOk={menusOk}
       onSave={() => save(false)} onPublish={() => save(true)} onCancel={() => setEditing(null)}
       onUpload={upload} busy={busy} err={err} />
   );
@@ -259,7 +277,7 @@ export default function MenuBoards() {
   );
 }
 
-function Editor({ board, setBoard, cats, itemsByCat, six, onSave, onPublish, onCancel, onUpload, busy, err }) {
+function Editor({ board, setBoard, cats, itemsByCat, six, allCats = [], menus = [], links = [], tz = null, menusOk = true, onSave, onPublish, onCancel, onUpload, busy, err }) {
   const set = (patch) => setBoard(b => ({ ...b, ...patch }));
   const setLayout = (patch) => setBoard(b => ({ ...b, layout: { ...b.layout, ...patch } }));
   const setDisp = (patch) => setBoard(b => ({ ...b, display_options: { ...b.display_options, ...patch } }));
@@ -270,6 +288,33 @@ function Editor({ board, setBoard, cats, itemsByCat, six, onSave, onPublish, onC
   const selIds = blocks.map(x => x.categoryId);
   const offCats = cats.filter(c => !selIds.includes(c.id));
   const [dragI, setDragI] = useState(null);
+
+  // Follow timed menus: the preview mirrors the TV. Same shared resolver on the
+  // venue clock (tz from the platform locations row), re-evaluated every minute
+  // while the flag is on, so the operator sees what the screen shows right now.
+  const followMenus = board.layout?.followMenus === true;
+  const [, setClockTick] = useState(0);
+  useEffect(() => {
+    if (!followMenus) return;
+    const t = setInterval(() => setClockTick(x => x + 1), 60_000);
+    return () => clearInterval(t);
+  }, [followMenus]);
+  const activeMenuId = resolveBoardMenu({ board, menus, categories: allCats, links, timezone: tz });
+  const activeMenu = activeMenuId ? menus.find(m => m.id === activeMenuId) : null;
+  // Which arranged blocks the TV is showing right now (after the never-blank fallback),
+  // so the list can flag the ones that are hidden by the live menu.
+  const shownNow = new Set(applyMenuToSections(
+    blocks.map(b => ({ id: b.categoryId, items: itemsByCat[b.categoryId] || [] })),
+    { categories: allCats, links, activeMenuId, categoryIdOf: s => s.id },
+  ).map(s => s.id));
+  const hiddenNow = (catId) => followMenus && !!activeMenuId && !shownNow.has(catId);
+  let venueClock = '';
+  try { venueClock = tz ? new Date().toLocaleTimeString('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit' }) : ''; } catch { venueClock = ''; }
+  const followStatus = !followMenus ? null
+    : !menusOk ? 'Menus could not be loaded, so this preview shows every category. The TV applies the schedule.'
+    : menus.length === 0 ? 'No menus are set up at this venue yet, so the board shows every category.'
+    : activeMenu ? `On now: ${activeMenu.name || activeMenuId}${venueClock ? ` (${venueClock} at the venue)` : ''}. The preview follows it.`
+    : 'No menu is on right now, so the board shows every category.';
   const addCat = (id) => setLayout({ blocks: [...blocks, { categoryId: id, span: 1 }] });
   const removeBlk = (i) => setLayout({ blocks: blocks.filter((_, j) => j !== i) });
   const reorder = (from, to) => { if (from == null || to == null || from === to) return; const a = [...blocks]; const [m] = a.splice(from, 1); a.splice(to, 0, m); setLayout({ blocks: a }); };
@@ -311,7 +356,9 @@ function Editor({ board, setBoard, cats, itemsByCat, six, onSave, onPublish, onC
                     onDragEnd={() => setDragI(null)}
                     style={{ ...S.row, cursor: 'grab', borderRadius: 6, background: dragI === i ? 'var(--bg3)' : 'transparent' }}>
                     <span style={{ color: 'var(--t4)', fontSize: 15, cursor: 'grab', userSelect: 'none' }} title="Drag to reorder">⠿</span>
-                    <span style={{ flex: 1, fontSize: 13, color: 'var(--t1)' }}>{catLabel(blk.categoryId)} <span style={{ color: 'var(--t4)', fontSize: 11 }}>· {(itemsByCat[blk.categoryId] || []).length} items</span></span>
+                    <span style={{ flex: 1, fontSize: 13, color: 'var(--t1)' }}>{catLabel(blk.categoryId)} <span style={{ color: 'var(--t4)', fontSize: 11 }}>· {(itemsByCat[blk.categoryId] || []).length} items</span>
+                      {hiddenNow(blk.categoryId) && <span title="Not on the menu that is on right now" style={{ marginLeft: 6, fontSize: 10.5, color: 'var(--t4)', border: '1px solid var(--bdr2)', borderRadius: 6, padding: '1px 6px' }}>hidden now</span>}
+                    </span>
                     <button style={blk.span === 'all' ? S.spanOn : S.spanOff} onClick={() => toggleSpan(i)} title="Span the full width of the board (hero)">Full width</button>
                     <button style={S.miniX} onClick={() => removeBlk(i)}>✕</button>
                   </div>
@@ -328,6 +375,15 @@ function Editor({ board, setBoard, cats, itemsByCat, six, onSave, onPublish, onC
 
               <Section title="Layout & display">
                 <Field label="Columns"><Pills opts={[['auto', 'Auto'], ['2', '2'], ['3', '3'], ['4', '4']]} val={String(board.layout.columns)} on={v => setLayout({ columns: v === 'auto' ? 'auto' : Number(v) })} /></Field>
+                <div>
+                  <Toggle on={followMenus} label="Follow timed menus" set={v => setLayout({ followMenus: v })} />
+                  <div style={{ fontSize: 11.5, color: 'var(--t4)', marginTop: 6, lineHeight: 1.5, maxWidth: 560 }}>
+                    Show only the categories on the menu that is on right now. Uses the same schedules as the till, kiosk and online ordering. Prices follow that menu too.
+                  </div>
+                  {followStatus && (
+                    <div style={{ fontSize: 11.5, color: activeMenu && menusOk ? 'var(--grn)' : 'var(--t3)', marginTop: 4, lineHeight: 1.5 }}>{followStatus}</div>
+                  )}
+                </div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 4 }}>
                   <Toggle on={board.display_options.showDescription} label="Descriptions" set={v => setDisp({ showDescription: v })} />
                   <Toggle on={board.display_options.showAllergens} label="Allergens" set={v => setDisp({ showAllergens: v })} />
@@ -374,7 +430,7 @@ function Editor({ board, setBoard, cats, itemsByCat, six, onSave, onPublish, onC
         {/* ── live preview ── */}
         <div style={{ position: 'sticky', top: 12 }}>
           <div style={S.lbl}>Live preview</div>
-          <Preview board={board} cats={cats} itemsByCat={itemsByCat} six={six} />
+          <Preview board={board} cats={cats} itemsByCat={itemsByCat} six={six} allCats={allCats} links={links} activeMenuId={activeMenuId} />
           <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 8, lineHeight: 1.5 }}>The real display auto-scales type to fill the screen. Publish to push to paired displays.</div>
         </div>
       </div>
@@ -382,14 +438,18 @@ function Editor({ board, setBoard, cats, itemsByCat, six, onSave, onPublish, onC
   );
 }
 
-function Preview({ board, cats, itemsByCat, six }) {
+// activeMenuId: the menu the board follows right now (Follow timed menus), or null.
+// It narrows the arranged blocks exactly as the TV does (same shared helper, same
+// never-blank fallback) and picks the price tier. Null = arranged blocks, no tier.
+function Preview({ board, cats, itemsByCat, six, allCats = [], links = [], activeMenuId = null }) {
   const t = { ...DEF_THEME, ...board.theme };
   const disp = { ...DEF_DISP, ...board.display_options };
   const ar = board.orientation === 'portrait' ? '9 / 16' : '16 / 9';
   const areaRef = useRef(null), flowRef = useRef(null);
 
   const blocks = board.layout?.blocks || [];
-  const secs = blocks.map(b => ({ id: b.categoryId, label: cats.find(c => c.id === b.categoryId)?.label, items: itemsByCat[b.categoryId] || [], span: b.span })).filter(s => s.label);
+  const arranged = blocks.map(b => ({ id: b.categoryId, label: cats.find(c => c.id === b.categoryId)?.label, items: itemsByCat[b.categoryId] || [], span: b.span })).filter(s => s.label);
+  const secs = applyMenuToSections(arranged, { categories: allCats, links, activeMenuId, categoryIdOf: s => s.id });
   const fixedCols = Number(board.layout?.columns) || 0;   // 0 = Auto
   const totalItems = secs.reduce((n, s) => n + ((s.items && s.items.length) || 0), 0);
 
@@ -441,10 +501,10 @@ function Preview({ board, cats, itemsByCat, six }) {
                 {secs.map(sec => (
                   <div key={sec.id} style={{ marginBottom: '1.2em', breakInside: 'avoid', WebkitColumnBreakInside: 'avoid', ...(sec.span === 'all' ? { columnSpan: 'all', WebkitColumnSpan: 'all', breakInside: 'auto' } : null) }}>
                     <div style={{ fontSize: '0.82em', letterSpacing: '.08em', color: t.accent, marginBottom: '0.4em', textTransform: 'uppercase', fontWeight: 700, breakAfter: 'avoid', WebkitColumnBreakAfter: 'avoid' }}>{sec.label}</div>
-                    {sec.items.filter(it => !(disp.hidePriceless && boardPrice(it) <= 0 && !(it._variants || []).length)).map(it => {
+                    {sec.items.filter(it => !(disp.hidePriceless && boardPrice(it, activeMenuId) <= 0 && !(it._variants || []).length)).map(it => {
                       const variants = it._variants || [];
                       const hasVar = variants.length > 0;
-                      const sold = six.has(it.id), price = boardPrice(it), diet = dietaryBadges(it);
+                      const sold = six.has(it.id), price = boardPrice(it, activeMenuId), diet = dietaryBadges(it);
                       const muted = t.mutedColor || '#8a8276';
                       return <div key={it.id} style={{ marginBottom: '0.3em', opacity: sold ? 0.45 : 1, breakInside: 'avoid', WebkitColumnBreakInside: 'avoid' }}>
                         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 5 }}>
@@ -460,7 +520,7 @@ function Preview({ board, cats, itemsByCat, six }) {
                             : !hasVar && disp.showPrices && price > 0 && <span style={{ fontSize: '0.56em', background: t.accent, color: '#1c1206', borderRadius: 6, padding: '0 5px', flexShrink: 0 }}>{money(price)}</span>}
                         </div>
                         {hasVar && <div style={{ marginTop: 1, marginLeft: 1, paddingLeft: (disp.showImages && it.image) ? '2.3em' : 8, borderLeft: `2px solid ${t.accent}55` }}>
-                          {variants.map(v => { const vs = six.has(v.id), vp = boardPrice(v);
+                          {variants.map(v => { const vs = six.has(v.id), vp = boardPrice(v, activeMenuId);
                             return <div key={v.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 4, marginBottom: '0.2em', opacity: vs ? 0.45 : 1 }}>
                               <span style={{ fontSize: '0.5em', color: muted }}>{v.menu_name || v.name}</span>
                               {vs ? <span style={{ fontSize: '0.45em', color: '#f3b0b0' }}>SOLD OUT</span> : disp.showPrices && vp > 0 && <span style={{ fontSize: '0.5em', background: t.accent, color: '#1c1206', borderRadius: 5, padding: '0 4px' }}>{money(vp)}</span>}

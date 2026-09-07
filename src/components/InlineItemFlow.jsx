@@ -3,6 +3,7 @@ import { useStore } from '../store';
 import { ALLERGENS } from '../data/seed';
 import { money } from '../lib/currency';
 import { orderOptionFlow, flowOrderedMods } from '../lib/optionFlow';
+import { resolveItemPrice } from '../lib/menuPricing';
 
 // ══════════════════════════════════════════════════════════════════════════════
 // InlineItemFlow — replaces ProductModal for POS
@@ -33,7 +34,7 @@ function resolveOptItemId(opt, menuItems) {
 // the same (targetItem, mods, cfg, opts) shape; the caller replaces the line
 // in place instead of adding.
 export default function InlineItemFlow({ item, menuItems, activeAllergens = [], onConfirm, onCancel, mode = 'add', basePriceOverride = null, lockedQty = null }) {
-  const { modifierGroupDefs, instructionGroupDefs, eightySixIds, dailyCounts } = useStore();
+  const { modifierGroupDefs, instructionGroupDefs, eightySixIds, dailyCounts, orderType, activeMenuId } = useStore();
 
   // ── Resolve variant children from menuItems ──────────────────────────────
   const variantChildren = useMemo(() =>
@@ -354,6 +355,7 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
             item={item}
             variantChildren={variantChildren}
             onPick={pickVariant}
+            priceOf={(v) => resolveItemPrice(v, orderType, activeMenuId)}
           />
         )}
         {step === 'modifiers' && (
@@ -432,7 +434,12 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
 }
 
 // ── Variant step: large tap-friendly buttons ──────────────────────────────────
-function VariantStep({ item, variantChildren, onPick }) {
+// priceOf: the unit price the cart will charge for a size (the shared resolver
+// on the live order type and the store's active menu). Each size carries its
+// own pricing and tiers, so the button reads the CHILD row through the same
+// rule store.addItem uses. It used to read pricing.base, so under the Bar tier
+// Half said £2.85 while the cart line was £1.23, and on takeaway £2.85 vs 3.01.
+function VariantStep({ item, variantChildren, onPick, priceOf = null }) {
   const label = item.variantLabel || 'Size';
   return (
     <div>
@@ -441,7 +448,7 @@ function VariantStep({ item, variantChildren, onPick }) {
       </div>
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(140px,1fr))', gap:10 }}>
         {variantChildren.map(v => {
-          const price = v.pricing?.base ?? v.price ?? 0;
+          const price = priceOf ? priceOf(v) : (v.pricing?.base ?? v.price ?? 0);
           return (
             <button key={v.id} onClick={() => onPick(v)}
               style={{ display:'flex', flexDirection:'column', alignItems:'flex-start', padding:'16px 16px 14px',

@@ -104,15 +104,21 @@ export function buildCatalog(opts: {
   const instrGroups = opts.instructionGroups || [];
   const imageIdByItem = opts.imageIdByItem || {};
 
-  // Resolve the price for a given price channel, mirroring store.getItemPrice exactly:
-  //   menu+channel -> menu.all -> channel default -> base. So HubRise publishes the
-  // operator's DELIVERY price (and any per-menu "Deliveroo +X" tier), not the base price.
+  // Resolve the price for a given price channel, mirroring the app's ONE resolver,
+  // src/lib/menuPricing.js resolveItemPrice (what the till, kiosk, phone, boards,
+  // online and QR all charge):
+  //   menu+channel -> menu.all -> menu.base -> channel default -> base.
+  // menu.base is the tier editor's Base field (PerMenuPricingTiers). So HubRise
+  // publishes the operator's DELIVERY price (and any per-menu "Deliveroo +X" tier),
+  // not the base price, and a Base typed into a tier is honoured on that menu
+  // exactly as it is on the venue's own screens.
   const resolvePrice = (pricing: any, menuId: string | null): number => {
     const p = pricing || {};
     if (menuId && p.menus && p.menus[menuId]) {
       const t = p.menus[menuId];
       if (t[channel] != null) return t[channel];
       if (t.all != null) return t.all;
+      if (t.base != null) return t.base;
     }
     if (p[channel] != null) return p[channel];
     return p.base != null ? p.base : (p.price != null ? p.price : 0);

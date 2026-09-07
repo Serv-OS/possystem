@@ -3,9 +3,12 @@
 *
 * Item-level UI for setting per-menu price overrides.
 * Writes to item.pricing.menus[menuId][channel].
-* Resolver in store.getItemPrice already reads this shape.
+* The shared resolver (src/lib/menuPricing.js resolveItemPrice, which
+* store.getItemPrice delegates to) reads this shape on every surface.
 *
-* Resolution order in resolver: menu+channel -> menu.all -> channel default -> base
+* Resolution order in resolver: menu+channel -> menu.all -> menu.base -> channel default -> base
+* (menu.base is the Base field below. It was written but never read before the
+* shared resolver, see menuTierPrice.)
 *
 * Empty input clears the channel. If all channels for a menu are empty,
 * the menu key is removed from pricing.menus.

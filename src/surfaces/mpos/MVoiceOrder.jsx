@@ -20,6 +20,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useStore } from '../../store';
 import { Sx, money } from './MShellStyles';
 import MBottomSheet from './MBottomSheet';
+import { resolveItemPrice, planCartLine } from '../../lib/menuPricing';
 
 const SpeechRecognitionImpl =
   typeof window !== 'undefined'
@@ -28,7 +29,25 @@ const SpeechRecognitionImpl =
 const supported = !!SpeechRecognitionImpl;
 
 export default function MVoiceOrder({ onClose }) {
-  const { menuItems = [], modifierGroupDefs = [], addItem, setOrderNote } = useStore();
+  const { menuItems = [], modifierGroupDefs = [], addItem, setOrderNote, orderType, activeMenuId } = useStore();
+
+  // Prices on this sheet are the till's: the shared resolver on the live order
+  // type and the active menu (mirrored into the store by MPOSSurface). The surcharge
+  // of a parsed line is the sum of its resolved mod picks, priced exactly as
+  // confirm() builds the mods array, so the preview and the cart line agree.
+  const pickSurcharge = (p) => (p.mod_picks || []).reduce((sum, pick) => {
+    const group = modifierGroupDefs.find(g => g.id === pick.group_id);
+    const opt = group?.options?.find(o => o.id === pick.option_id);
+    if (!group || !opt) return sum;
+    const pickQty = Math.max(1, Math.round(Number(pick.qty) || 1));
+    return sum + (Number(opt.price) || 0) * pickQty;
+  }, 0);
+  const lineQty = (p) => Math.max(1, Math.round(p.qty || 1));
+  const planFor = (item, p) => planCartLine(item, orderType, activeMenuId, { modSurcharge: pickSurcharge(p), qty: lineQty(p) });
+  // A variant parent is any item with child rows (parentId), typed 'variants'
+  // or not, the same test MMenu, MPOSSurface.goItem and the kiosk use. Going
+  // by the type flag alone let an untyped parent through at £0.00 with no size.
+  const isVariantParent = (item) => (item?.type || 'simple') === 'variants' || menuItems.some(m => m?.parentId === item?.id);
   const [phase, setPhase] = useState('ready'); // ready | listening | parsing | confirm | error
   const [transcriptUI, setTranscriptUI] = useState('');
   const [interimUI, setInterimUI] = useState('');
@@ -156,7 +175,7 @@ export default function MVoiceOrder({ onClose }) {
       // model returns one anyway (e.g. due to fuzzy id reasoning) we skip it
       // rather than adding a £0 placeholder line. The clarification banner
       // covers the user-visible side.
-      if ((item.type || 'simple') === 'variants') {
+      if (isVariantParent(item)) {
         console.warn('[voice] refusing to add parent-variant item', item.id);
         return;
       }
@@ -188,7 +207,10 @@ export default function MVoiceOrder({ onClose }) {
       (p.mod_labels || []).forEach(label => {
         mods.push({ id: `voice-${label}`, name: label, label, price: 0, _instruction: true });
       });
-      addItem(item, mods, null, { qty: Math.max(1, Math.round(p.qty || 1)), notes: (p.notes || '').trim() || undefined });
+      // Same linePrice shape MItemDetail passes: null with no surcharge (addItem
+      // resolves the tier / channel price), the till's (base + surcharge) * qty
+      // otherwise, so the cart charges what the confirm list showed.
+      addItem(item, mods, null, { qty: lineQty(p), notes: (p.notes || '').trim() || undefined, linePrice: planFor(item, p).linePrice });
     });
     if (parsed.order_note?.trim()) setOrderNote(parsed.order_note.trim());
     onClose?.();
@@ -293,8 +315,8 @@ export default function MVoiceOrder({ onClose }) {
                 <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
                   {parsed.suggestions.slice(0, 5).map((s, i) => {
                     const item = menuItems.find(m => m.id === s.item_id);
-                    if (!item || (item.type || 'simple') === 'variants') return null;
-                    const price = item?.pricing?.base ?? item?.price ?? 0;
+                    if (!item || isVariantParent(item)) return null;
+                    const price = resolveItemPrice(item, orderType, activeMenuId);
                     return (
                       <button
                         key={i}
@@ -346,8 +368,8 @@ export default function MVoiceOrder({ onClose }) {
                       </div>
                     );
                   }
-                  const isParentVariant = (item.type || 'simple') === 'variants';
-                  const price = item?.pricing?.base ?? item?.price ?? 0;
+                  const isParentVariant = isVariantParent(item);
+                  const lineTotal = isParentVariant ? 0 : planFor(item, p).lineTotal;
                   return (
                     <div key={i} style={{
                       padding:'10px 12px',
@@ -390,7 +412,7 @@ export default function MVoiceOrder({ onClose }) {
                       </div>
                       {!isParentVariant && (
                         <div style={{ fontSize:13, fontWeight:800, color:'var(--t2)', fontFamily:'var(--font-mono)' }}>
-                          {money(price * (p.qty || 1))}
+                          {money(lineTotal)}
                         </div>
                       )}
                     </div>

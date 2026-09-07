@@ -15,9 +15,10 @@ import { useState, useMemo } from 'react';
 import { useStore } from '../../store';
 import { Sx, money } from './MShellStyles';
 import { flowOrderedMods } from '../../lib/optionFlow';
+import { resolveItemPrice, planCartLine } from '../../lib/menuPricing';
 
 export default function MItemDetail({ item, onClose, onAdded }) {
-  const { addItem, modifierGroupDefs = [], instructionGroupDefs = [], eightySixIds = [], menuItems = [], dailyCounts = {} } = useStore();
+  const { addItem, modifierGroupDefs = [], instructionGroupDefs = [], eightySixIds = [], menuItems = [], dailyCounts = {}, orderType, activeMenuId } = useStore();
   const [qty, setQty] = useState(1);
   const [stockErr, setStockErr] = useState(null);   // v5.6.69 — "Only N × X left"
   const [notes, setNotes] = useState('');
@@ -32,7 +33,11 @@ export default function MItemDetail({ item, onClose, onAdded }) {
   // from real modifier surcharges.
   const [pickedInstructions, setPickedInstructions] = useState([]);
 
-  const basePrice = item?.pricing?.base ?? item?.price ?? 0;
+  // The unit price the till would show for this item (or this size: a variant
+  // child carries its own pricing and tiers) on the live order type and the
+  // active menu, through the shared resolver. Was pricing.base, which ignored
+  // every channel price and menu tier while the cart charged the resolved one.
+  const basePrice = resolveItemPrice(item, orderType, activeMenuId);
 
   const groups = useMemo(() => {
     const assigned = item?.assignedModifierGroups || [];
@@ -194,7 +199,12 @@ export default function MItemDetail({ item, onClose, onAdded }) {
     return total;
   }, [selectedMods]);
 
-  const linePrice = (basePrice + modSurcharge) * qty;
+  // What the cart line will charge, read back through the same cartUnitPrice
+  // branch store.addItem runs (planCartLine), so the Add button and the cart
+  // agree by construction: no surcharge charges the resolved unit price;
+  // surcharges ride on base and scale by resolved / base, the till's shape.
+  const cartPlan = planCartLine(item, orderType, activeMenuId, { modSurcharge, qty });
+  const linePrice = cartPlan.lineTotal;
 
   // Required-group validation
   const missingRequired = useMemo(() => {
@@ -266,7 +276,9 @@ export default function MItemDetail({ item, onClose, onAdded }) {
       instKeys: pickedInstructions.map(p => p.groupId),
       buildModGroup: buildGroupMods, buildInst,
     });
-    addItem(item, flatMods, null, { qty, notes: notes.trim() || undefined });
+    // linePrice is null when there is no surcharge (addItem resolves the unit
+    // price itself) and the till's (base + surcharge) * qty shape otherwise.
+    addItem(item, flatMods, null, { qty, notes: notes.trim() || undefined, linePrice: cartPlan.linePrice });
     onAdded?.();
   };
 

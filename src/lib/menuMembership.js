@@ -42,7 +42,8 @@ export function menusWithCategories(categories, links) {
   const topLevel = new Set();
   const out = new Set();
   for (const c of categories || []) {
-    if (!c || c.parentId || c.parent_id || c.isSpecial) continue;
+    // Kiosk and online feed raw snake rows (is_special), the store feeds camel.
+    if (!c || c.parentId || c.parent_id || c.isSpecial || c.is_special) continue;
     topLevel.add(c.id);
     const home = c.menuId || c.menu_id;
     if (home) out.add(home);

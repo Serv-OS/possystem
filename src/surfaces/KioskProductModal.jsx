@@ -38,6 +38,7 @@ import { t, useKioskLang } from '../lib/i18n';
 import { displayName } from '../lib/itemDisplay';
 import { money } from '../lib/currency';
 import { orderOptionFlow } from '../lib/optionFlow';
+import { resolveItemPrice, variantChildren, variantFromPrice } from '../lib/menuPricing';
 
 // ============================================================
 // VALIDATION HELPERS (pure)
@@ -219,7 +220,12 @@ function summarizeForDisplay(groups, selections, nestedSelections, subGroupsCach
 // MAIN COMPONENT
 // ============================================================
 
-export default function KioskProductModal({ item, allItems = [], brandColor, brandAccent, basePrice, addLabel, onAdd, onCancel, dailyCounts = {}, cartItemUsage = {} }) {
+// orderType + activeMenuId: the channel and live menu KioskApp prices with, so the
+// synthesised Size group prices its variants through the same resolver as the
+// card and the cart line (src/lib/menuPricing.js). Without them a variant child
+// with a menu tier showed and charged base here while the board and online
+// showed the tier.
+export default function KioskProductModal({ item, allItems = [], brandColor, brandAccent, basePrice, addLabel, onAdd, onCancel, dailyCounts = {}, cartItemUsage = {}, orderType = 'dineIn', activeMenuId = null }) {
   // Subscribe to language changes so t() strings re-render if the customer
   // switches language while the modal is open.
   useKioskLang();
@@ -372,13 +378,29 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
     (async () => {
       let result = [];
 
-      // ── Synthesize 'Size' group for variants-type items ──
-      if (item?.type === 'variants') {
-        const children = (allItems || [])
-          .filter(i => i.parent_id === item.id && i.archived !== true)
-          .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
-        if (children.length > 0) {
-          const cheapestPrice = Math.min(...children.map(c => c.pricing?.base ?? c.price ?? 0));
+      // ── Synthesize 'Size' group for a variant parent ──
+      // A parent is any item with live child rows (parent_id), typed
+      // 'variants' or not, the same test the till (POSSurface) and online use.
+      // Sizes that are 86'd or sold out are not offered at all, the till's own
+      // filter (POSSurface builds variantChildren with !eightySixIds), so a
+      // size the venue has run out of cannot be added and sent to the kitchen.
+      // Each size carries itemId: the child row's id, so the per-tap gate
+      // (resolveOptItemId, getOptionStock, modMaxQty) covers a size that is
+      // 86'd or runs out while the sheet is open, exactly like any linked
+      // modifier option.
+      {
+        const soldOut = (c) => eightySixIds.includes(c.id)
+          || (dailyCounts[c.id] && Number(dailyCounts[c.id].remaining) <= 0);
+        const sizes = variantChildren(item, allItems).filter(c => !soldOut(c));
+        if (sizes.length > 0) {
+          // Each size priced by the shared resolver (menu tier, channel, base),
+          // the same number the kiosk card and the cart line use for that child.
+          // Sizes are ABSOLUTE prices, never deltas from the cheapest: price
+          // stays 0 (the delta walk skips this group anyway) and the button
+          // label and the charge both read __absolutePrice. Cheapest ignores
+          // unpriced sizes, as the card and online do.
+          const childPrice = (c) => resolveItemPrice(c, orderType, activeMenuId);
+          const cheapestPrice = variantFromPrice(item, sizes, orderType, activeMenuId) || 0;
           result.push(normalizeGroup({
             id: '__variants__',
             name: 'Size',
@@ -386,11 +408,12 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
             min: 1, max: 1, min_select: 1, max_select: 1,
             __isVariantGroup: true,
             __cheapestPrice: cheapestPrice,
-            options: children.map(c => ({
+            options: sizes.map(c => ({
               id: c.id,
               name: c.name,
-              price: ((c.pricing?.base ?? c.price ?? 0) - cheapestPrice),
-              __absolutePrice: c.pricing?.base ?? c.price ?? 0,
+              itemId: c.id,
+              price: 0,
+              __absolutePrice: childPrice(c),
             })),
           }));
         }
@@ -494,7 +517,7 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
       }
     })();
     return () => { alive = false; };
-  }, [item, allItems]);
+  }, [item, allItems, orderType, activeMenuId]);
 
   // ── Derived state ──
   const validation = useMemo(
@@ -526,12 +549,15 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
     })));
   }, [loading, groups]);
   const variantGroup = groups.find(g => g.__isVariantGroup);
+  const pickedVariantId = variantGroup ? (selections[variantGroup.id] || [])[0] : null;
+  const pickedVariantOpt = (variantGroup && pickedVariantId) ? variantGroup.options.find(o => o.id === pickedVariantId) : null;
+  // A variant parent is never charged its own basePrice (0). Before a size is
+  // picked the header shows "from <cheapest>"; once picked, that size's absolute
+  // resolved price is the base the modifier deltas stack on, and it is the
+  // priceEach handed to addToCart, so the cart line, the kiosk total and the
+  // order line all carry the tier price (Half on the Bar menu = 1.23).
   let effectiveBase = basePrice || 0;
-  if (variantGroup) {
-    const pickedVariantId = (selections[variantGroup.id] || [])[0];
-    const pickedOpt = pickedVariantId ? variantGroup.options.find(o => o.id === pickedVariantId) : null;
-    effectiveBase = pickedOpt ? pickedOpt.__absolutePrice : variantGroup.__cheapestPrice;
-  }
+  if (variantGroup) effectiveBase = pickedVariantOpt ? pickedVariantOpt.__absolutePrice : variantGroup.__cheapestPrice;
   const totalPriceEach = effectiveBase + priceDelta(groups, selections, nestedSelections, subGroupsCache);
   const totalPrice = totalPriceEach * qty;
 
@@ -790,7 +816,9 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
           }}>{item.description}</div>
         )}
 
-        {/* Base price — brand color, large */}
+        {/* Base price, brand color, large. Variant parent: "from <cheapest size>"
+            until a size is picked, then that size's absolute resolved price.
+            Never 0.00 for a parent. Same figures as the kiosk card and online. */}
         <div style={{
           fontSize: 'clamp(26px, 3.4vw, 38px)',
           fontWeight: 800,
@@ -798,7 +826,13 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
           letterSpacing: '-0.01em',
           marginBottom: 'clamp(20px, 2.6vw, 28px)',
           fontVariantNumeric: 'tabular-nums',
-        }}>{money(Number(basePrice ?? 0))}</div>
+        }}>
+          {variantGroup
+            ? (pickedVariantOpt
+                ? money(Number(pickedVariantOpt.__absolutePrice ?? 0))
+                : <><span style={{ fontSize: '0.55em', fontWeight: 700, opacity: 0.7, marginRight: 8 }}>{t('menu.from')}</span>{money(Number(variantGroup.__cheapestPrice ?? 0))}</>)
+            : money(Number(basePrice ?? 0))}
+        </div>
 
         {/* Allergens — icon + label, then comma list. Brand-color text matches reference. */}
         {Array.isArray(item?.allergens) && item.allergens.length > 0 && (
@@ -900,11 +934,15 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
                 {(g.options || []).map(opt => {
                   const optCount = picked.filter(id => id === opt.id).length;
                   const isSelected = optCount > 0;
-                  const priceLabel = (opt.price && opt.price > 0)
-                    ? '+£' + Number(opt.price).toFixed(2)
-                    : (opt.price && opt.price < 0)
-                      ? '-£' + Math.abs(opt.price).toFixed(2)
-                      : '';
+                  // Size buttons show each size's ABSOLUTE resolved price (online
+                  // and the till do the same). Modifier options keep their +£x delta.
+                  const priceLabel = g.__isVariantGroup
+                    ? money(Number(opt.__absolutePrice ?? 0))
+                    : (opt.price && opt.price > 0)
+                      ? '+£' + Number(opt.price).toFixed(2)
+                      : (opt.price && opt.price < 0)
+                        ? '-£' + Math.abs(opt.price).toFixed(2)
+                        : '';
                   const atCap = picked.length >= g._max && !g._isSingle;
                   const showStepper = !g._isSingle && optCount > 0;
                   const sub = opt.subGroupId ? subGroupsCache[opt.subGroupId] : null;

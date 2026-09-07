@@ -18,13 +18,14 @@
 // MTender wizard (card via REST + simulated). Phase 1D adds order management
 // (refunds, voids, manager-PIN, swipe actions).
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useStore } from '../store';
 import useSupabaseInit from '../lib/useSupabaseInit';
 import { queueWrite, dismissItem } from '../sync/OfflineQueue';
 import { getActiveLocationSync, isMock } from '../lib/supabase';
 import { isTrainingMode } from '../lib/trainingMode';
-import { getNextOrderRefLocal } from '../lib/db';
+import { getNextOrderRefLocal, fetchMenuCategoryLinks } from '../lib/db';
+import { resolveActiveMenu } from '../lib/menus/resolveActiveMenu';
 import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
 import PINScreen from './PINScreen';
 import MHome from './mpos/MHome';
@@ -129,8 +130,77 @@ function firedCoursesOnSend(items) {
 }
 
 function MPOSRouter() {
-  const { deviceConfig, activeTableId, setActiveTableId, showToast } = useStore();
+  const {
+    deviceConfig, activeTableId, setActiveTableId, showToast,
+    menus = [], menuCategories = [], locationConfig,
+    categoryLinks: storeLinks = [], setActiveMenuId,
+  } = useStore();
   const runnerMode = !!deviceConfig?.runnerMode;
+
+  // ── Active menu, resolved HERE and mirrored into store.activeMenuId ──────
+  // This router is mounted for as long as the phone is in use, so the store's
+  // activeMenuId is populated before any setOrderType call (a table tap, an
+  // Orders row tap, New order) and stays fresh while the phone sits on the
+  // Tables or Orders tab. It used to live in MMenu, which is only mounted on
+  // the menu screen: a fresh launch that tapped T5 repriced the table with
+  // menuId null, so a Half the till had charged at the Bar tier (1.23) showed
+  // and charged 2.85 on the phone, and the same window reopened whenever a
+  // timed menu flipped while the phone was off the menu screen.
+  //
+  // v5.5.788: a menu owns a category via category.menuId (primary home) OR the
+  // menu_category_links join table. The store's links (SyncBridge boot + App
+  // self-heal) are the truth; the local fetch is only a backstop seed for the
+  // early-boot window. MMenu receives the same list for its category filter.
+  const [localLinks, setLocalLinks] = useState([]);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const { data } = await fetchMenuCategoryLinks();
+        if (alive) setLocalLinks(data || []);
+      } catch (e) {
+        console.warn('[MPOS] fetchMenuCategoryLinks failed:', e?.message || e);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+  const categoryLinks = (storeLinks && storeLinks.length) ? storeLinks : localLinks;
+
+  // Re-read the venue clock every minute so a timed menu flips at its boundary
+  // without the phone having to receive a push or remount (the till and kiosk
+  // already did this).
+  const [clockTick, setClockTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setClockTick(x => x + 1), 60_000);
+    return () => clearInterval(t);
+  }, []);
+
+  // The ONE shared resolver (src/lib/menus/resolveActiveMenu.js), the exact
+  // chain the desktop POS runs: pinned on schedule, pinned off schedule falls
+  // to the default, highest priority with the default breaking ties, default,
+  // highest priority non empty, null. Empty menus are skipped (links count).
+  // Schedules evaluate on the VENUE's configured timezone (v5.7.22), never
+  // the phone's own clock.
+  const resolvedMenuId = useMemo(
+    () => resolveActiveMenu({
+      menus,
+      categories: menuCategories,
+      links: categoryLinks,
+      pinnedMenuId: deviceConfig?.menuId,
+      timezone: locationConfig?.timezone,
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [menus, menuCategories, categoryLinks, deviceConfig?.menuId, locationConfig?.timezone, clockTick]
+  );
+
+  // Mirror into the store exactly as the desktop till does (POSSurface v4.7.7),
+  // so store.addItem, the setOrderType reprice, MMenu, MItemDetail,
+  // MVariantPicker and MVoiceOrder all read the same menu. MPOS and the
+  // desktop POS never share a tab (App.jsx mounts one or the other), so the
+  // two mirrors cannot fight.
+  useEffect(() => {
+    if (setActiveMenuId) setActiveMenuId(resolvedMenuId);
+  }, [resolvedMenuId, setActiveMenuId]);
 
   const [tab, setTab] = useState(runnerMode ? 'orders' : 'home');
   // flow.screen: null | 'newOrder' | 'covers' | 'tableView' | 'menu' | 'item' | 'cart'
@@ -622,6 +692,7 @@ function MPOSRouter() {
       <MMenu
         headerTitle={headerTitle}
         headerSub={tableId ? null : (orderType || '').toUpperCase()}
+        categoryLinks={categoryLinks}
         onPickItem={goItem}
         onOpenCart={goCart}
         onBack={() => {

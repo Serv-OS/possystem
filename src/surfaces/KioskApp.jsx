@@ -28,6 +28,8 @@ import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine'
 import { computeOrderTaxUnified, buildLocalTaxCtx, taxCtxHasConfig } from '../lib/taxCompute';
 import { assembleTaxProfiles } from '../lib/rowMapping';
 import { buildScheduleCtx } from '../lib/locationTime';
+import { resolveActiveMenu } from '../lib/menus/resolveActiveMenu';
+import { resolveItemPrice, variantFromPrice } from '../lib/menuPricing';
 import { depleteForSaleServer } from '../lib/stock/deplete';
 import KioskProductModal from './KioskProductModal';
 import { t, setLang, useKioskLang, LANGUAGES, getLanguageMeta } from '../lib/i18n';
@@ -183,37 +185,20 @@ function useKioskMenu(profile, locationId, tz = 'Europe/London') {
     return () => { alive = false; };
   }, [locationId]);
 
-  // Resolve active menu — same logic as POSSurface v4.6.5.
-  // v5.7.22 — timed menus flip on the VENUE's clock, never the kiosk's own OS
-  // timezone (same fix as the desktop resolver in v5.7.20).
-  const activeMenuId = useMemo(() => {
-    const ctx = buildScheduleCtx(tz);
-    const day = ctx.isoDay || (new Date().getDay() || 7);
-    const time = ctx.nowMinutes;
-    const isActive = (m) => {
-      if (!m.schedule) return true;
-      const s = m.schedule;
-      if (s.days && Array.isArray(s.days) && !s.days.includes(day)) return false;
-      if (s.from && s.to) {
-        const [fh, fm] = s.from.split(':').map(Number);
-        const [th, tm] = s.to.split(':').map(Number);
-        const fromMin = fh * 60 + fm;
-        const toMin = th * 60 + tm;
-        if (fromMin <= toMin) return time >= fromMin && time <= toMin;
-        return time >= fromMin || time <= toMin;
-      }
-      return true;
-    };
-    const allMenus = data.menus;
-    const activeNow = allMenus.filter(isActive);
-    const preferred = profile?.menu_id;
-    if (preferred && activeNow.some(m => m.id === preferred)) return preferred;
-    if (activeNow.length > 0) return activeNow.slice().sort((a, b) => (b.priority || 0) - (a.priority || 0))[0].id;
-    const def = allMenus.find(m => m.is_default);
-    if (def) return def.id;
-    if (preferred) return preferred;
-    return null;
-  }, [data.menus, profile?.menu_id, tick, tz]);
+  // Resolve active menu through the ONE shared resolver (src/lib/menus/
+  // resolveActiveMenu.js), the same chain the till runs. The kiosk gains the
+  // till's hardening: string or empty days, unparsable windows, empty menus
+  // skipped (links count), a pin to a missing or empty menu ignored, a pinned
+  // menu that is off schedule falls to the default, and the default breaks
+  // priority ties. Timed menus flip on the VENUE's clock (v5.7.22), never the
+  // kiosk's own OS timezone; `tick` re-reads it every minute.
+  const activeMenuId = useMemo(() => resolveActiveMenu({
+    menus: data.menus,
+    categories: data.categories,
+    links: data.links,
+    pinnedMenuId: profile?.menu_id,
+    timezone: tz,
+  }), [data.menus, data.categories, data.links, profile?.menu_id, tick, tz]);
 
   return { ...data, activeMenuId, loading, error };
 }
@@ -222,18 +207,11 @@ function useKioskMenu(profile, locationId, tz = 'Europe/London') {
 // PRICING
 // ============================================================
 
-// Same resolver shape as store.getItemPrice. menu+channel → menu.all → channel → base.
+// Same resolver as store.getItemPrice: menu+channel, then menu.all, then channel, then
+// base. The precedence lives in src/lib/menuPricing.js (shared with the till, menu
+// board, online and QR); this keeps the kiosk's name and signature for its callers.
 function resolvePrice(item, orderType, menuId) {
-  const p = item?.pricing;
-  if (!p) return item?.price || 0;
-  const KEY_MAP = { 'dine-in': 'dineIn', dineIn: 'dineIn', takeaway: 'takeaway', collection: 'collection', delivery: 'delivery' };
-  const key = KEY_MAP[orderType] || 'dineIn';
-  if (menuId && p.menus && p.menus[menuId]) {
-    const tier = p.menus[menuId];
-    if (tier[key] !== null && tier[key] !== undefined) return tier[key];
-    if (tier.all !== null && tier.all !== undefined) return tier.all;
-  }
-  return (p[key] !== null && p[key] !== undefined) ? p[key] : (p.base || 0);
+  return resolveItemPrice(item, orderType, menuId);
 }
 
 // v5.5.35: customer-facing display name lives in a shared util so the
@@ -545,9 +523,13 @@ export default function KioskApp({ kioskId, onUnpair }) {
     // v5.3.1: include sub-categories (Coffee under Drinks, etc). Only filter out is_special.
     // v5.5.788: also include a sub-category whose PARENT is linked to the active menu
     // (matches OnlineSurface/POS — the sub follows its parent into the menu).
-    const eligible = categories
-      .filter(c => !c.is_special)
+    const nonSpecial = categories.filter(c => !c.is_special);
+    const inMenu = nonSpecial
       .filter(c => !activeMenuId || c.menu_id === activeMenuId || linkedIds.has(c.id) || (c.parent_id && linkedIds.has(c.parent_id)));
+    // Never-blank: a customer surface must not show zero categories because of
+    // the menu filter (the resolver already skips empty menus, this covers the
+    // case where no menu owns any category). Fall back to every category.
+    const eligible = (activeMenuId && !inMenu.length && nonSpecial.length) ? nonSpecial : inMenu;
     // v5.5.873: order as a TREE, not a flat sort. A sub-category's sort_order is scoped WITHIN its
     // parent (0,1,2…), so a flat global sort scattered subs among the top-level categories and the
     // sidebar stopped matching Back Office (e.g. a sub at sort_order 0 jumped above its parent at 2).
@@ -742,8 +724,14 @@ export default function KioskApp({ kioskId, onUnpair }) {
     setCart(prev => {
       const existing = prev.find(l => l.key === key);
       if (existing) {
+        // Merge onto the FRESH unit price, the number the sheet just showed.
+        // The same item and the same picks can be priced differently a minute
+        // later (a timed menu came on at the tick, or the order type flipped),
+        // and the till reprices whole lines on that change, so the earlier
+        // unit is repriced too rather than the new unit charged at the old
+        // price the customer was never shown.
         return prev.map(l => l.key === key
-          ? { ...l, qty: l.qty + qty, lineTotal: (l.qty + qty) * l.linePrice }
+          ? { ...l, qty: l.qty + qty, linePrice, lineTotal: (l.qty + qty) * linePrice }
           : l
         );
       }
@@ -1128,7 +1116,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
         else setScreen('menu');
       }} onBack={() => setScreen('attract')} onCancel={resetSession} />}
       {screen === 'tableNumber' && <ScreenTableNumber brandColor={brandColor} locationId={locationId} value={tableNumber} onChange={setTableNumber} onContinue={() => setScreen('menu')} onBack={() => setScreen('orderType')} onCancel={resetSession} />}
-      {screen === 'menu' && <ScreenMenu brandColor={brandColor} brandAccent={brandAccent} categories={visibleCategories} items={visibleItems} selectedCategoryId={selectedCategoryId} onSelectCategory={setSelectedCategoryId} onSelectItem={(item) => { setSelectedItem(item); setScreen('item'); }} cartItemCount={cartItemCount} subtotal={subtotal} onCart={() => setScreen('cart')} orderType={orderType} activeMenuId={activeMenuId} banner={bannerFor('menu')} allergenFilter={allergenFilter} onShowAllergenPicker={() => setShowAllergenPicker(true)} eightySixIds={eightySixIds} dailyCounts={dailyCounts} onBack={() => setScreen('orderType')} onCancel={resetSession} />}
+      {screen === 'menu' && <ScreenMenu brandColor={brandColor} brandAccent={brandAccent} categories={visibleCategories} items={visibleItems} allItems={items} selectedCategoryId={selectedCategoryId} onSelectCategory={setSelectedCategoryId} onSelectItem={(item) => { setSelectedItem(item); setScreen('item'); }} cartItemCount={cartItemCount} subtotal={subtotal} onCart={() => setScreen('cart')} orderType={orderType} activeMenuId={activeMenuId} banner={bannerFor('menu')} allergenFilter={allergenFilter} onShowAllergenPicker={() => setShowAllergenPicker(true)} eightySixIds={eightySixIds} dailyCounts={dailyCounts} onBack={() => setScreen('orderType')} onCancel={resetSession} />}
       {screen === 'item' && selectedItem && (
         <KioskProductModal
           item={selectedItem}
@@ -1137,6 +1125,8 @@ export default function KioskApp({ kioskId, onUnpair }) {
           brandAccent={brandAccent}
           addLabel={labelAddToOrder}
           basePrice={resolvePrice(selectedItem, orderType, activeMenuId)}
+          orderType={orderType}
+          activeMenuId={activeMenuId}
           dailyCounts={dailyCounts}
           cartItemUsage={cartItemUsage}
           onAdd={({ qty, selections, summary, priceEach, mods, instructions }) => {
@@ -1837,9 +1827,26 @@ function ScreenTableNumber({ brandColor, value, onChange, onContinue, onBack, on
 //   - TOP BAR simplified to back button + allergen icon button
 // All customer-facing strings translated via t().
 // ============================================================
-function ScreenMenu({ brandColor, brandAccent, categories, items, selectedCategoryId, onSelectCategory, onSelectItem, cartItemCount, subtotal, onCart, orderType, activeMenuId, banner, allergenFilter, onShowAllergenPicker, eightySixIds = [], dailyCounts = {}, onBack, onCancel }) {
+function ScreenMenu({ brandColor, brandAccent, categories, items, allItems = [], selectedCategoryId, onSelectCategory, onSelectItem, cartItemCount, subtotal, onCart, orderType, activeMenuId, banner, allergenFilter, onShowAllergenPicker, eightySixIds = [], dailyCounts = {}, onBack, onCancel }) {
   const hasCart = cartItemCount > 0;
   const hasAllergenFilter = allergenFilter && allergenFilter.size > 0;
+  // Child rows bucketed by parent so a variant parent's card can show
+  // "from <cheapest size>" without re-scanning the whole menu per card.
+  // `items` holds parents only (visibleItems drops parent_id rows), so the
+  // children come from the full list. Sizes that are 86'd or sold out are
+  // left out, the same filter KioskProductModal applies to its Size group
+  // (and the till applies to its variant children), so the card never quotes
+  // "from" a size the sheet will not offer.
+  const kidsOf = useMemo(() => {
+    const map = {};
+    for (const i of (allItems || [])) {
+      if (!i?.parent_id) continue;
+      if (eightySixIds.includes(i.id)) continue;
+      if (dailyCounts[i.id] && Number(dailyCounts[i.id].remaining) <= 0) continue;
+      (map[i.parent_id] = map[i.parent_id] || []).push(i);
+    }
+    return map;
+  }, [allItems, eightySixIds, dailyCounts]);
   const itemWord = cartItemCount === 1 ? t('menu.itemSingular') : t('menu.itemPlural');
   return (
     <div style={fullScreen()}>
@@ -2038,6 +2045,7 @@ function ScreenMenu({ brandColor, brandAccent, categories, items, selectedCatego
                   key={it.id}
                   item={it}
                   price={resolvePrice(it, orderType, activeMenuId)}
+                  fromPrice={variantFromPrice(it, kidsOf[it.id] || [], orderType, activeMenuId)}
                   brandColor={brandColor}
                   allergenFilter={allergenFilter}
                   is86={is86}
@@ -2116,7 +2124,9 @@ function ScreenMenu({ brandColor, brandAccent, categories, items, selectedCatego
 }
 
 // ----- MenuItemCard (extracted so the grid map stays readable) -----
-function MenuItemCard({ item, price, brandColor, allergenFilter, onSelect, is86 = false, stock = null }) {
+// fromPrice: null for a plain item; for a variant parent the cheapest size's
+// resolved price (channel + active menu tier), 0 when every size is unpriced.
+function MenuItemCard({ item, price, fromPrice = null, brandColor, allergenFilter, onSelect, is86 = false, stock = null }) {
   const itemAllergens = Array.isArray(item.allergens) ? item.allergens.map(a => String(a).toLowerCase()) : [];
   const flagged = allergenFilter && Array.from(allergenFilter).some(a => itemAllergens.includes(String(a).toLowerCase()));
   return (
@@ -2226,8 +2236,31 @@ function MenuItemCard({ item, price, brandColor, allergenFilter, onSelect, is86 
             fontVariantNumeric: 'tabular-nums',
             letterSpacing: '-0.01em',
             whiteSpace: 'nowrap',
-          }}>{money(Number(price))}</div>
+          }}>
+            {/* Variant parent: "from <cheapest size>", each size priced by the
+                shared resolver for the live channel and menu (zeros ignored),
+                the same figure online shows. The parent's own price is 0 and
+                is never shown. All sizes unpriced: no figure, the Sizes pill
+                below says why. Plain items are unchanged. */}
+            {fromPrice != null
+              ? (fromPrice > 0
+                  ? <><span style={{ fontSize: '0.62em', fontWeight: 700, opacity: 0.7, marginRight: 4 }}>{t('menu.from')}</span>{money(fromPrice)}</>
+                  : null)
+              : money(Number(price))}
+          </div>
         </div>
+        {fromPrice != null && (
+          <div>
+            <span style={{
+              display: 'inline-block',
+              padding: '3px 10px', borderRadius: 99,
+              background: 'var(--kSurface2)', color: brandColor,
+              border: '1px solid var(--kBorder1)',
+              fontSize: 'clamp(11px, 1.3vw, 13px)', fontWeight: 700,
+              letterSpacing: '0.04em', textTransform: 'uppercase',
+            }}>{t('menu.sizes')}</span>
+          </div>
+        )}
 
         {/* Description */}
         {item.description && (
