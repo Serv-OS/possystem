@@ -278,6 +278,10 @@ async function logDemoHold(action: string, ctx: Record<string, unknown>) {
 // says test or live; that config carries the key and the device host for
 // every reader message and Checkout modification below. A live venue without
 // live keys FAILS CLOSED (503 with the reason) before anything is dispatched.
+// PER VENUE REGION (8 Sep 2026): the same row's region ('UK' | 'US') picks the
+// live secret set and the classic Terminal API host (terminal-api-live for
+// UK, terminal-api-live-us for US). Every terminalEndpoint call passes
+// cfg.region, never a value re-derived from the row.
 const notConfigured = (cfg: AdyenConfig) => (cfg.configured ? null : json({ error: adyenNotConfiguredMessage(cfg) }, 503));
 
 Deno.serve(async (req) => {
@@ -334,12 +338,12 @@ Deno.serve(async (req) => {
       const { data: ploc } = await platformAdmin.from('locations')
         .select('id').eq('ops_location_id', opsLocId).maybeSingle();
       const platformLocId = ploc?.id ?? opsLocId;
-      const [{ data: maa }, env] = await Promise.all([
+      const [{ data: maa }, target] = await Promise.all([
         platformAdmin.from('merchant_adyen_accounts')
           .select('merchant_account, store_id, region').eq('location_id', platformLocId).maybeSingle(),
         adyenEnvForLocation(platformAdmin, platformLocId),
       ]);
-      const cfg = adyenConfig(env);
+      const cfg = adyenConfig(target);   // { env, region }: the venue's secret set and hosts
       // A row still naming the OTHER environment's merchant account (flipped
       // before set_environment rewrote it) must not reach the live host.
       if (maa) maa.merchant_account = effectiveMerchantAccount(cfg, maa.merchant_account) || null;
@@ -413,7 +417,7 @@ Deno.serve(async (req) => {
         preAuth: true,
         storeId: maa.store_id ?? undefined,
       });
-      const res = await adyenFetch('POST', terminalEndpoint(maa.merchant_account, term.adyen_terminal_id, 'sync', maa.region === 'US' ? 'us' : 'eu', cfg), nexo, { cfg, timeoutMs: 165_000 });
+      const res = await adyenFetch('POST', terminalEndpoint(maa.merchant_account, term.adyen_terminal_id, 'sync', cfg.region, cfg), nexo, { cfg, timeoutMs: 165_000 });
       if (!res.ok) return json({ ok: false, error: `adyen ${res.status}` }, 200);
       const parsed = parsePaymentResponse(res.data);
       if (parsed.result !== 'Success') {
@@ -653,13 +657,13 @@ Deno.serve(async (req) => {
     const platformLocId = ploc?.id ?? job.location_id;
     // Account row + the venue's environment in one wait: the config every
     // reader message for this job goes out with.
-    const [{ data: maa }, env] = await Promise.all([
+    const [{ data: maa }, target] = await Promise.all([
       platformAdmin.from('merchant_adyen_accounts')
         .select('merchant_account, store_id, region, receive_payments_ok')
         .eq('location_id', platformLocId).maybeSingle(),
       adyenEnvForLocation(platformAdmin, platformLocId),
     ]);
-    const cfg = adyenConfig(env);
+    const cfg = adyenConfig(target);   // { env, region }: the venue's secret set and hosts
     // A row still naming the OTHER environment's merchant account (flipped
     // before set_environment rewrote it) must not reach the live host.
     if (maa) maa.merchant_account = effectiveMerchantAccount(cfg, maa.merchant_account) || null;
@@ -779,7 +783,7 @@ Deno.serve(async (req) => {
     // CLOUD TRANSPORT: one long sync call carries the whole cardholder interaction.
     let res;
     try {
-      res = await adyenFetch('POST', terminalEndpoint(maa.merchant_account, poiid, 'sync', maa.region === 'US' ? 'us' : 'eu', cfg), nexo, { cfg, timeoutMs: 165_000 });
+      res = await adyenFetch('POST', terminalEndpoint(maa.merchant_account, poiid, 'sync', cfg.region, cfg), nexo, { cfg, timeoutMs: 165_000 });
     } catch (e) {
       // Outcome UNKNOWABLE (timeout/network) — row stays 'charging'; recovery owns it.
       console.error('adyen-terminal-charge: sync transport error', (e as Error).message);
@@ -845,7 +849,7 @@ Deno.serve(async (req) => {
           poiid: rPoiid, saleId: `servos-${String(job.location_id).slice(0, 8)}`,
           serviceId: newServiceId(), origServiceId: job.nexo_service_id,
         });
-        const sres = await adyenFetch('POST', terminalEndpoint(rMaa.merchant_account, rPoiid, 'sync', rMaa.region === 'US' ? 'us' : 'eu', rCfg), statusReq, { cfg: rCfg, timeoutMs: 15_000 });
+        const sres = await adyenFetch('POST', terminalEndpoint(rMaa.merchant_account, rPoiid, 'sync', rCfg.region, rCfg), statusReq, { cfg: rCfg, timeoutMs: 15_000 });
         const ts = sres.ok ? (sres.data?.SaleToPOIResponse?.TransactionStatusResponse ?? null) : null;
         if (ts?.Response?.Result === 'Success') {
           const inner = parsePaymentResponse(ts?.RepeatedMessageResponse?.RepeatedResponseMessageBody ?? {});
@@ -895,7 +899,7 @@ Deno.serve(async (req) => {
     });
     const res = noTarget
       ? { ok: false, data: null }
-      : await adyenFetch('POST', terminalEndpoint(maa!.merchant_account, poiid as string, 'sync', maa!.region === 'US' ? 'us' : 'eu', cfg), statusReq, { cfg, timeoutMs: 30_000 });
+      : await adyenFetch('POST', terminalEndpoint(maa!.merchant_account, poiid as string, 'sync', cfg.region, cfg), statusReq, { cfg, timeoutMs: 30_000 });
     if (!res.ok) {
       // The terminal could not be reached. Adyen's ledger is the fallback, and
       // it is the branch that actually matters in service: a dead terminal used
@@ -934,7 +938,7 @@ Deno.serve(async (req) => {
           serviceId: newServiceId(), origServiceId: job.nexo_service_id,
           reason: 'MerchantAbort',
         });
-        await adyenFetch('POST', terminalEndpoint(maa!.merchant_account, poiid as string, 'sync', maa!.region === 'US' ? 'us' : 'eu', cfg), ab, { cfg, timeoutMs: 15_000 }).catch(() => null);
+        await adyenFetch('POST', terminalEndpoint(maa!.merchant_account, poiid as string, 'sync', cfg.region, cfg), ab, { cfg, timeoutMs: 15_000 }).catch(() => null);
         // Give a racing authorisation a moment to reach the ledger, then look again.
         await new Promise((r) => setTimeout(r, 2_000));
         const after = await askAdyenLedger(job).catch(() => ({ verdict: 'too_soon' as const }));
@@ -993,7 +997,7 @@ Deno.serve(async (req) => {
         poiid, saleId: `servos-${String(job.location_id).slice(0, 8)}`,
         serviceId: newServiceId(), origServiceId: job.nexo_service_id,
       });
-      await adyenFetch('POST', terminalEndpoint(maa.merchant_account, poiid, 'sync', maa.region === 'US' ? 'us' : 'eu', cfg), ab, { cfg, timeoutMs: 15_000 }).catch(() => null);
+      await adyenFetch('POST', terminalEndpoint(maa.merchant_account, poiid, 'sync', cfg.region, cfg), ab, { cfg, timeoutMs: 15_000 }).catch(() => null);
     }
     // Abort is advisory — the tender may already have completed. The job stays
     // 'charging'; 'result' / the webhook decides the truth.

@@ -10,8 +10,10 @@
 // _shared/adyen.ts has waited for this fn since Phase 0.
 //
 // Register as: https://tbetcegmszzotrwdtqhi.supabase.co/functions/v1/adyen-bp-webhook
-// Secret: ADYEN_BP_HMAC_KEY = the HMAC key generated on that webhook's config
-// page in the Balance Platform Customer Area.
+// Secrets: ADYEN_BP_HMAC_KEY (test) and, per live region, ADYEN_LIVE_UK_BP_HMAC_KEY
+// and ADYEN_LIVE_US_BP_HMAC_KEY (the unsuffixed ADYEN_LIVE_BP_HMAC_KEY is the
+// UK fallback) = the HMAC key generated on that webhook's config page in each
+// account's Balance Platform Customer Area.
 //
 // PHILOSOPHY (same as adyen-webhook): durability first, semantics second.
 // Every event lands RAW in PLATFORM adyen_bp_events (migration 20260821, which
@@ -47,7 +49,7 @@
 //   npx supabase functions deploy adyen-bp-webhook --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { verifyRawBodyHmac, adyenConfig, normalizeAdyenEnv, type AdyenEnv } from '../_shared/adyen.ts';
+import { verifyRawBodyHmac, normalizeAdyenEnv, normaliseAdyenRegion, webhookKeysFor, adyenSecretName, ADYEN_REGIONS, type AdyenEnv, type AdyenRegion } from '../_shared/adyen.ts';
 
 // Everything this fn reads and writes lives in the PLATFORM project: the
 // landing table, merchant_adyen_accounts and adyen_payouts.
@@ -57,24 +59,46 @@ const platformAdmin = createClient(
   { auth: { autoRefreshToken: false, persistSession: false } },
 );
 
-// PER VENUE ENVIRONMENT (7 Sep 2026): Adyen posts test and live balance
-// platform notifications to this ONE URL, each signed with its own HMAC key
-// (ADYEN_BP_HMAC_KEY for test, ADYEN_LIVE_BP_HMAC_KEY for live). The payload's
-// own `environment` field only orders the attempts (it is unverified until a
-// key matches); whichever key verifies the raw body is the environment of
-// record, stamped on adyen_payouts.live and logged.
-async function verifyBpSignature(rawBody: string, headerSig: string, declared: unknown): Promise<{ valid: boolean; env: AdyenEnv | null; anyKey: boolean; tried: AdyenEnv[] }> {
-  const tried: AdyenEnv[] = [];
-  if (!headerSig) return { valid: false, env: null, anyKey: false, tried };
+// PER VENUE ENVIRONMENT AND REGION (7 and 8 Sep 2026): Adyen posts test and
+// live balance platform notifications to this ONE URL, each signed with its
+// own HMAC key: ADYEN_BP_HMAC_KEY for test, and per live region
+// ADYEN_LIVE_UK_BP_HMAC_KEY and ADYEN_LIVE_US_BP_HMAC_KEY (the UK and US live
+// accounts are different Adyen accounts). The payload's own `environment`
+// field only orders the attempts (it is unverified until a key matches); the
+// candidates for each environment come from webhookKeysFor (live: every
+// configured region key, UK then US; test: the test key). Whichever key
+// verifies the raw body is the environment AND region of record, stamped on
+// adyen_payouts.live and logged.
+type Tried = { env: AdyenEnv; region: AdyenRegion };
+const triedLabel = (t: Tried) => (t.env === 'live' ? `live ${t.region}` : 'test');
+async function verifyBpSignature(rawBody: string, headerSig: string, declared: unknown): Promise<{ valid: boolean; env: AdyenEnv | null; region: AdyenRegion | null; anyKey: boolean; tried: Tried[] }> {
+  const tried: Tried[] = [];
+  if (!headerSig) return { valid: false, env: null, region: null, anyKey: false, tried };
   const first = normalizeAdyenEnv(declared);
   const order: AdyenEnv[] = first === 'live' ? ['live', 'test'] : ['test', 'live'];
   for (const env of order) {
-    const key = adyenConfig(env).bpHmacKey;
-    if (!key) continue;
-    tried.push(env);
-    if (await verifyRawBodyHmac(rawBody, headerSig, key)) return { valid: true, env, anyKey: true, tried };
+    for (const c of webhookKeysFor(env === 'live', 'bpHmacKey')) {
+      tried.push({ env, region: c.region });
+      if (await verifyRawBodyHmac(rawBody, headerSig, c.hmacKey)) return { valid: true, env, region: c.region, anyKey: true, tried };
+    }
   }
-  return { valid: false, env: null, anyKey: tried.length > 0, tried };
+  return { valid: false, env: null, region: null, anyKey: tried.length > 0, tried };
+}
+
+// The region a balance platform event NAMES: the one region of the venue
+// row(s) carrying its account holder or balance account (a stored 'EU' reads
+// as UK). Read BEFORE verification only to tell a missing region key from a
+// forgery and to name the secret; nothing is trusted from it. Null when the
+// event names no venue we know, or an ambiguous set of them.
+async function namedRegion(data: any): Promise<AdyenRegion | null> {
+  const ah = String(data?.accountHolder?.id ?? data?.accountHolderId ?? '').trim();
+  const ba = String(data?.balanceAccount?.id ?? data?.balanceAccountId ?? '').trim();
+  if (!ah && !ba) return null;
+  const base = platformAdmin.from('merchant_adyen_accounts').select('region');
+  const { data: rows, error } = await (ah ? base.eq('account_holder_id', ah) : base.eq('balance_account_id', ba)).limit(5);
+  if (error) { console.error('[adyen-bp-webhook] named region lookup failed:', error.message); return null; }
+  const regions = new Set<AdyenRegion>((rows ?? []).map((r: any) => normaliseAdyenRegion(r?.region)));
+  return regions.size === 1 ? [...regions][0] : null;
 }
 
 // Same capability→flags mapping adyen-onboard uses on its status sync. Under
@@ -123,7 +147,8 @@ Deno.serve(async (req) => {
   const sig = await verifyBpSignature(rawBody, headerSig, payload?.environment);
   const hmacValid = sig.valid;
   const matchedEnv: AdyenEnv | null = sig.env;
-  if (hmacValid) console.log(`[adyen-bp-webhook] HMAC verified with the ${matchedEnv} key (payload says ${payload?.environment ?? 'nothing'})`);
+  const matchedRegion: AdyenRegion | null = sig.region;
+  if (hmacValid) console.log(`[adyen-bp-webhook] HMAC verified with the ${matchedEnv === 'live' ? `live ${matchedRegion}` : 'test'} key (payload says ${payload?.environment ?? 'nothing'})`);
 
   // ── 1. Land it durably (PLATFORM adyen_bp_events, migration 20260821) ─────
   const { data: landed, error: landErr } = await platformAdmin.from('adyen_bp_events').insert({
@@ -145,12 +170,19 @@ Deno.serve(async (req) => {
   // ── 2. Fail closed on signature ──────────────────────────────────────────
   if (!hmacValid) {
     const declaredLive = normalizeAdyenEnv(payload?.environment) === 'live';
-    const liveKeyMissing = declaredLive && !sig.tried.includes('live');
-    console.error(`[adyen-bp-webhook] HMAC ${sig.anyKey ? `INVALID with the ${sig.tried.join(' and ')} key${sig.tried.length > 1 ? 's' : ''}` : 'unverifiable (ADYEN_BP_HMAC_KEY / ADYEN_LIVE_BP_HMAC_KEY not set)'}${liveKeyMissing ? ' (payload says live and ADYEN_LIVE_BP_HMAC_KEY is not set)' : ''}, stored raw (${landed?.id}), refusing`);
-    // A live event that could not even be tried against a live key is a
+    const liveKeyMissing = declaredLive && !sig.tried.some((t) => t.env === 'live');
+    // The region the event NAMES (its account holder or balance account on a
+    // venue row) whose live key was never tried because it is not set: the
+    // same configuration gap as no live key at all (8 Sep 2026; it used to
+    // read as a forgery, 401, with the missing secret never named).
+    const named = declaredLive && !liveKeyMissing ? await namedRegion(data) : null;
+    const namedKeyMissing = !!named && !sig.tried.some((t) => t.env === 'live' && t.region === named);
+    const liveNames = ADYEN_REGIONS.map((r) => adyenSecretName('live', 'bpHmacKey', r)).join(' / ');
+    console.error(`[adyen-bp-webhook] HMAC ${sig.anyKey ? `INVALID with the ${sig.tried.map(triedLabel).join(' and ')} key${sig.tried.length > 1 ? 's' : ''}` : `unverifiable (${adyenSecretName('test', 'bpHmacKey')} / ${liveNames} not set)`}${liveKeyMissing ? ` (payload says live and neither ${liveNames} is set)` : ''}${namedKeyMissing && named ? ` (the event names the ${named} account and ${adyenSecretName('live', 'bpHmacKey', named)} is not set)` : ''}, stored raw (${landed?.id}), refusing`);
+    // A live event that could not even be tried against ITS live key is a
     // configuration gap, not a forgery: 503 so Adyen keeps retrying and the
     // event is applied once the key exists (the standard webhook's verdict).
-    if (liveKeyMissing) return new Response('live balance platform HMAC key not configured', { status: 503 });
+    if (liveKeyMissing || namedKeyMissing) return new Response('live balance platform HMAC key not configured', { status: 503 });
     return new Response('invalid hmac', { status: 401 });
   }
 
@@ -223,6 +255,7 @@ Deno.serve(async (req) => {
           updated_at: new Date().toISOString(),
         };
         if (matchedEnv) payout.live = matchedEnv === 'live';   // the key that verified (20260907 migration)
+        if (matchedEnv === 'live' && matchedRegion) (payout.raw as Record<string, unknown>).region = matchedRegion;   // which live account signed it
         let { error } = await platformAdmin.from('adyen_payouts').upsert(payout, { onConflict: 'reference' });
         if (error && /live|42703|does not exist/i.test(String(error.message)) && 'live' in payout) {
           delete payout.live;                                // 20260907 not applied yet

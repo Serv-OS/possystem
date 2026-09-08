@@ -953,6 +953,9 @@ function AdyenPayoutPanel({ location }) {
             ? { kind: failed[0].kind || 'error', text: `${failed.map((s) => `${s.step}: ${s.message}`).join('; ')}` }
             : { kind: 'ok', text: r.next || 'Accounts created.' });
         }
+        // 8 Sep 2026: a row write that had to retry without the region column
+        // (the region migration is still to run) comes back as a warning.
+        if (r.warning) setMsg((m) => ({ kind: 'warning', text: `${m?.text ? `${m.text} ` : ''}${r.warning}` }));
         await load();
       } else {
         setMsg({ kind: r.kind || 'error', text: r.message || r.error || 'failed' });
@@ -1002,7 +1005,7 @@ function AdyenPayoutPanel({ location }) {
 
   const kindStyle = (kind) => kind === 'ok'
     ? { background: 'var(--grn-d)', color: 'var(--grn)', border: '1px solid var(--grn-b)' }
-    : kind === 'awaiting_enablement'
+    : kind === 'awaiting_enablement' || kind === 'warning'
     ? { background: 'var(--orn-d, rgba(230,160,60,.12))', color: 'var(--orn)', border: '1px solid var(--orn-b, var(--bdr2))' }
     : kind === 'missing_prerequisite'
     ? { background: 'var(--bg3)', color: 'var(--t2)', border: '1px solid var(--bdr2)' }
@@ -1133,7 +1136,9 @@ function AdyenPayoutPanel({ location }) {
                       store_id: '',
                       // The merchant's own country decides the endpoint, so the
                       // region follows the choice instead of being guessed again.
-                      region: pick?.country === 'US' ? 'US' : (pick ? 'EU' : m.region),
+                      // Region codes are UK and US (8 Sep 2026, EU is gone).
+                      region: pick?.country === 'US' ? 'US' : (pick ? 'UK' : m.region),
+                      region_touched: !!pick || !!m.region_touched,
                     }));
                     setStores(null);
                     if (e.target.value) {
@@ -1227,13 +1232,14 @@ function AdyenPayoutPanel({ location }) {
           ))}
           <div style={{ marginBottom: 12 }}>
             <div style={{ ...S.label, color: 'var(--t3)', marginBottom: 4 }}>Region</div>
-            <select style={{ ...S.input, fontSize: 12.5 }} value={manual.region || 'EU'}
-              onChange={(e) => setManual((m) => ({ ...m, region: e.target.value }))}>
-              <option value="EU">Europe (UK and EU venues)</option>
+            <select style={{ ...S.input, fontSize: 12.5 }} value={manual.region === 'US' ? 'US' : 'UK'}
+              onChange={(e) => setManual((m) => ({ ...m, region: e.target.value, region_touched: true }))}>
+              <option value="UK">United Kingdom (Adyen EU data centre)</option>
               <option value="US">United States</option>
             </select>
             <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 5 }}>
-              This decides which Adyen endpoint the card machines talk to. Getting it wrong stops payments.
+              The UK and US live accounts are different Adyen accounts: this decides which keys, Checkout host
+              and Terminal API endpoint the venue uses. Getting it wrong stops payments.
             </div>
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
@@ -1241,9 +1247,20 @@ function AdyenPayoutPanel({ location }) {
               onClick={async () => {
                 setManualBusy(true); setMsg(null);
                 try {
-                  const r = await callAdyenOnboard('save_manual', { location_id: location.id, ...manual });
-                  if (r.ok) { setManual(null); setMsg({ kind: 'ok', text: 'Adyen details saved for this venue.' }); await load(); }
-                  else setMsg({ kind: r.kind || 'error', text: r.message || r.error || 'Could not save' });
+                  const { region_touched, ...fields } = manual;
+                  // The region only rides when the admin chose it here, or the
+                  // venue has no row yet (8 Sep 2026): sending the prefilled
+                  // value on every save meant a UK save was refused until the
+                  // region migration runs, even when only the store id changed.
+                  if (!region_touched && st.account_row !== false) delete fields.region;
+                  const r = await callAdyenOnboard('save_manual', { location_id: location.id, ...fields });
+                  if (r.ok) {
+                    setManual(null);
+                    setMsg(r.warning
+                      ? { kind: 'warning', text: `Adyen details saved. ${r.warning}` }
+                      : { kind: 'ok', text: 'Adyen details saved for this venue.' });
+                    await load();
+                  } else setMsg({ kind: r.kind || 'error', text: r.message || r.error || 'Could not save' });
                 } catch (e) { setMsg({ kind: 'error', text: e.message }); }
                 finally { setManualBusy(false); }
               }}>
@@ -1266,7 +1283,10 @@ function AdyenPayoutPanel({ location }) {
             merchant_account: ids.merchant_account || '', store_id: ids.store_id || '',
             account_holder_id: ids.account_holder_id || '', balance_account_id: ids.balance_account_id || '',
             legal_entity_id: ids.legal_entity_id || '', split_profile_id: ids.split_profile_id || '',
-            region: st.region || 'EU',
+            // a stored legacy 'EU' reads as UK. The region is only SENT when
+            // the admin picks one here or the venue has no row yet (8 Sep 2026).
+            region: st.region === 'US' ? 'US' : 'UK',
+            region_touched: false,
           }); }}>
           Enter Adyen details
         </button>

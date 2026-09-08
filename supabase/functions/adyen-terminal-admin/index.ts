@@ -31,29 +31,48 @@
 // 'environment' is read only so the venue can show its badge.
 //
 // Scope: needs an API key with Management API "Terminals read/write" roles.
-// If ADYEN_MANAGEMENT_KEY (ADYEN_LIVE_MANAGEMENT_KEY for a live venue) is set
-// it is used for management calls; otherwise that set's API key. A 401/403
-// from Adyen surfaces as scope_missing so the BO can say exactly what to fix
-// instead of a dead button.
+// If ADYEN_MANAGEMENT_KEY (ADYEN_LIVE_<REGION>_MANAGEMENT_KEY for a live
+// venue) is set it is used for management calls; otherwise that set's API
+// key. A 401/403 from Adyen surfaces as scope_missing so the BO can say
+// exactly what to fix instead of a dead button.
 //
 // PER VENUE ENVIRONMENT (7 Sep 2026): the venue's merchant_adyen_accounts
 // .environment ('test' | 'live') picks the secret set for every Management
-// and Terminal API call here. Two more actions manage it:
-//   environment     → { environment, liveConfigured, testConfigured, liveMissing, canSetEnvironment }
+// and Terminal API call here.
+// PER VENUE REGION (8 Sep 2026): the same row's region ('UK' | 'US'; a
+// legacy 'EU' reads as UK, no row = by the location's currency) picks WHICH
+// live set (ADYEN_LIVE_UK_* or ADYEN_LIVE_US_*), the Terminal API host, and
+// the market (currency and country) for stores and payment methods. Three
+// actions manage the pair:
+//   environment     → { environment, region, liveConfigured, liveRegionsConfigured,
+//                       testConfigured, liveMissing, canSetEnvironment, canSetRegion,
+//                       regionLocked, regionLockReason }
 //                     any Back Office user with access (read only).
+//                     liveConfigured and liveMissing are for THIS venue's
+//                     region; liveRegionsConfigured lists every usable live set.
 //   set_environment → ADMIN. { environment: 'test' | 'live', reprovision?: true }
 //                     super_admin only (8 Sep 2026, was owner too). Flips the
-//                     venue's row (created with environment only when it does
-//                     not exist). Refused with 409 + needs_reprovision while
-//                     the row or its readers were provisioned on the current
+//                     venue's row (created when it does not exist). Needs the
+//                     region's live merchant account to go live, and writes
+//                     it. Refused with 409 + needs_reprovision while the row
+//                     or its readers were provisioned on the current
 //                     environment, unless reprovision is true (then the ids
 //                     are cleared).
+//   set_region      → ADMIN. { region: 'UK' | 'US' }. super_admin only.
+//                     Refused while the venue is live or holds a store or
+//                     readers (provisioning is per account). Writes
+//                     merchant_adyen_accounts.region, creating the row when
+//                     missing. Until 20260908_PLATFORM_adyen_region_uk.sql
+//                     runs the database refuses 'UK' and this answers
+//                     'Run migration 20260908_PLATFORM_adyen_region_uk.sql first'.
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import {
   managementBase, buildMenuInputRequest, buildAmountInputRequest, parseAmountInputResponse, buildDisplayImageRequest,
   buildDisplayIdleRequest, newServiceId, adyenFetch, terminalEndpoint,
-  adyenConfig, adyenEnvForLocation, adyenSecretName, normalizeAdyenEnv, assertAdyenConfigured, effectiveMerchantAccount, type AdyenConfig,
+  adyenConfig, adyenEnvForLocation, adyenSecretName, normalizeAdyenEnv, assertAdyenConfigured, effectiveMerchantAccount,
+  parseAdyenRegion, liveRegionsConfigured, isAdyenRegionCheckError, adyenRegionMigrationMessage, ADYEN_REGION_MIGRATION,
+  type AdyenConfig,
 } from '../_shared/adyen.ts';
 
 const opsAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
@@ -82,11 +101,35 @@ async function mgmt<T = Record<string, unknown>>(cfg: AdyenConfig, method: strin
 
 const scopeMissing = (status: number) => status === 401 || status === 403;
 
+// Write a merchant_adyen_accounts row that names its region. Before
+// 20260908_PLATFORM_adyen_region_uk.sql runs, the OLD check constraint
+// refuses 'UK': a UK write is retried WITHOUT the column (the old default
+// 'EU' reads as UK everywhere) and the caller gets a warning naming the
+// migration, so a store create or an environment flip never fails on the
+// region alone. A US write passes either check. set_region does NOT use this:
+// it must refuse, because silently keeping 'EU' is not what was asked.
+async function upsertAccountRow(patch: Record<string, unknown>, select?: string): Promise<{ error: { message: string } | null; warning: string | null }> {
+  const run = async (p: Record<string, unknown>) => {
+    const q = platformAdmin.from('merchant_adyen_accounts').upsert(p, { onConflict: 'location_id' });
+    return select ? await q.select(select).maybeSingle() : await q;
+  };
+  let { error } = await run(patch);
+  if (error && isAdyenRegionCheckError(error) && parseAdyenRegion(patch.region) === 'UK') {
+    const { region: _region, ...rest } = patch;
+    ({ error } = await run(rest));
+    if (!error) return { error: null, warning: adyenRegionMigrationMessage() };
+  }
+  return { error: error ?? null, warning: null };
+}
+
+// Currency symbol for text shown ON a reader (the pay at table menu).
+const currencySymbol = (currency: string) => (currency === 'USD' ? '$' : currency === 'EUR' ? '€' : '£');
+
 // A store with no payment methods bricks its terminals ("no payment method
 // configured" on the reader). Request the card schemes for the store; test
 // auto-approves, live goes to Adyen review. Idempotent — "already exists"
-// style refusals are fine. Currency and country come from the VENUE (8 Sep
-// 2026: they were hardcoded GBP/GB, wrong for a US venue).
+// style refusals are fine. Currency and country follow the venue's REGION
+// (8 Sep 2026: they were hardcoded GBP/GB, wrong for a US venue).
 async function ensurePaymentMethods(cfg: AdyenConfig, merchant: string, storeId: string, market: { currency: string; country: string }): Promise<{ requested: string[]; errors: string[] }> {
   const requested: string[] = [];
   const errors: string[] = [];
@@ -154,27 +197,56 @@ Deno.serve(async (req) => {
     // are read too: set_environment must know whether the row was set up on
     // the OTHER environment (Adyen store, legal entity, balance account and
     // reader ids are environment specific).
-    const [{ data: maa }, env] = await Promise.all([
+    const [{ data: maa }, target] = await Promise.all([
       platformAdmin.from('merchant_adyen_accounts')
         .select('merchant_account, store_id, region, receive_payments_ok, legal_entity_id, account_holder_id, balance_account_id, split_profile_id, transfer_instrument_id, business_line_id')
         .eq('location_id', loc.id).maybeSingle(),
       adyenEnvForLocation(platformAdmin, loc.id),
     ]);
-    const cfg = adyenConfig(env);
-    const liveCfg = adyenConfig('live');
-    const testCfg = adyenConfig('test');
+    // adyenEnvForLocation answers { env, region } (8 Sep 2026): env is the
+    // row's environment, region the row's region normalised ('EU' reads as
+    // 'UK'; no row = by the location's currency). `env` and `region` stay
+    // plain strings below (the actions compare and report them); every
+    // config is built from both so the venue's REGION set is the one used,
+    // including the live and test probes that decide what the switch offers.
+    const { env, region } = target;
+    const cfg = adyenConfig(target);
+    const liveCfg = adyenConfig('live', region);
+    const testCfg = adyenConfig('test', region);
+    const liveRegions = liveRegionsConfigured();   // every usable live set, UK then US
 
-    // Can the venue actually WORK live? The api key and prefix make the set
-    // `configured`, but the online paths (adyen-checkout status, the Drop-in,
-    // booking_pay) also need the live client key and a merchant account. The
-    // switch must not unlock on a half set. The merchant account must be the
-    // LIVE secret: the row's own name was written on the current (test)
-    // environment and used to satisfy this rule, which let a venue go live
-    // carrying FranPOS_ServOS_TEST (8 Sep 2026).
+    // Can the venue actually WORK live on ITS region? The api key, prefix and
+    // merchant account make the region set `configured`, but the online paths
+    // (adyen-checkout status, the Drop-in, booking_pay) also need the live
+    // client key. The switch must not unlock on a half set. The merchant
+    // account must be the LIVE secret of the region: the row's own name was
+    // written on the current (test) environment and used to satisfy this
+    // rule, which let a venue go live carrying FranPOS_ServOS_TEST (8 Sep
+    // 2026). Names carry the region (ADYEN_LIVE_US_CLIENT_KEY), never values.
     const liveMissing = [...liveCfg.missing];
-    if (!liveCfg.clientKey) liveMissing.push(adyenSecretName('live', 'clientKey'));
-    if (!liveCfg.merchantAccount) liveMissing.push(adyenSecretName('live', 'merchantAccount'));
+    if (!liveCfg.clientKey) liveMissing.push(adyenSecretName('live', 'clientKey', region));
+    if (!liveCfg.merchantAccount && !liveMissing.includes(adyenSecretName('live', 'merchantAccount', region))) {
+      liveMissing.push(adyenSecretName('live', 'merchantAccount', region));
+    }
     const liveReady = liveMissing.length === 0;
+
+    // Provisioning is per Adyen account (environment AND region): store,
+    // legal entity, account holder, balance account, split profile, bank and
+    // business line ids, plus the boarded readers. Read once here for the
+    // environment answer, set_environment and set_region.
+    const provisioned = ['store_id', 'legal_entity_id', 'account_holder_id', 'balance_account_id', 'split_profile_id', 'transfer_instrument_id', 'business_line_id']
+      .filter((k) => !!(maa as Record<string, unknown> | null)?.[k]);
+    const { count: readerCount } = await platformAdmin.from('payment_devices')
+      .select('id', { count: 'exact', head: true }).eq('location_id', loc.id).eq('processor', 'adyen').neq('status', 'retired');
+    const readers = Number(readerCount) || 0;
+    // The region may only change while nothing at Adyen belongs to it yet.
+    const setupParts = [provisioned.length ? 'payments store' : '', readers ? `${readers} card reader${readers === 1 ? '' : 's'}` : ''].filter(Boolean);
+    const regionLockReason: string | null = env === 'live'
+      ? 'The venue is live. Switch it back to test cards before changing its region.'
+      : setupParts.length
+        ? `This venue's ${setupParts.join(' and ')} ${setupParts.length > 1 || readers > 1 ? 'were' : 'was'} set up on the ${region} account. Clear that setup first (switch environments with reprovision, or unlink the readers).`
+        : null;
+    const regionLocked = regionLockReason !== null;
     // OWNER RULE (8 Sep 2026): only a ServOS super_admin may move a venue
     // between test cards and real money, create its Adyen store or request
     // its card schemes. Venue roles, the owner included, read the state only.
@@ -183,24 +255,81 @@ Deno.serve(async (req) => {
     // supplied flag.
     const isServosAdmin = prof?.role === 'super_admin';
     const canSetEnvironment = isServosAdmin;
+    const canSetRegion = isServosAdmin;
     const adminOnly = () => json({ error: 'ServOS admin only' }, 403);
 
-    // ── environment: read the venue's Adyen environment (never the values) ──
+    // ── environment: read the venue's Adyen environment and region (never the values) ──
     if (action === 'environment') {
       return json({
         ok: true,
         environment: env,
-        liveConfigured: liveReady,             // api key, prefix, client key AND a merchant account
+        region,                                // 'UK' | 'US' (a stored legacy 'EU' reads as 'UK')
+        storedRegion: maa?.region ?? null,     // the raw column, so the admin can see a legacy 'EU'
+        liveConfigured: liveReady,             // THIS region: api key, prefix, client key AND a merchant account
+        liveRegionsConfigured: liveRegions,    // every live set with api key, prefix and merchant account
         testConfigured: testCfg.configured,
-        liveMissing,                           // secret NAMES only
+        liveMissing,                           // secret NAMES of this region's set only
         canSetEnvironment,
+        canSetRegion,
+        regionLocked,                          // live, or a store or readers exist on the current account
+        regionLockReason,
+        provisioned,
+        readers,
+      });
+    }
+
+    // ── set_region: UK or US, before anything at Adyen belongs to the venue ──
+    // super_admin only (OWNER RULE). The live account, the Terminal API host
+    // and the Drop-in environment all hang off this, so it is refused while
+    // the venue is live or holds a store or readers: those were created on
+    // ONE Adyen account and would silently point at the wrong one. Writes
+    // merchant_adyen_accounts.region and creates the row when there is none.
+    // Until 20260908_PLATFORM_adyen_region_uk.sql runs, the old check
+    // constraint refuses 'UK' and the answer names the migration.
+    if (action === 'set_region') {
+      if (!isServosAdmin) return adminOnly();
+      const next = parseAdyenRegion(body.region);
+      if (!next) return json({ error: "region must be 'UK' or 'US'" }, 400);
+      if (regionLocked) return json({ ok: false, error: regionLockReason, locked: true }, 409);
+      if (String(maa?.region ?? '').trim().toUpperCase() === next) {
+        return json({ ok: true, region: next, previous: region, unchanged: true, liveConfigured: adyenConfig('live', next).configured, liveRegionsConfigured: liveRegions });
+      }
+      const patch: Record<string, unknown> = { location_id: loc.id, region: next, updated_at: new Date().toISOString() };
+      // A test venue whose merchant_account is the OLD region's test account
+      // moves to the new region's test account (the test set is one set, so
+      // this only changes anything when ADYEN_TEST_US_MERCHANT_ACCOUNT is set).
+      const nextTestCfg = adyenConfig('test', next);
+      const rowMerchant = String(maa?.merchant_account ?? '').trim();
+      if (rowMerchant && testCfg.merchantAccount && nextTestCfg.merchantAccount
+          && rowMerchant.toLowerCase() === testCfg.merchantAccount.toLowerCase()
+          && nextTestCfg.merchantAccount.toLowerCase() !== rowMerchant.toLowerCase()) {
+        patch.merchant_account = nextTestCfg.merchantAccount;
+      }
+      const { error: regionErr } = await platformAdmin.from('merchant_adyen_accounts')
+        .upsert(patch, { onConflict: 'location_id' }).select('location_id, region').maybeSingle();
+      if (regionErr) {
+        if (isAdyenRegionCheckError(regionErr)) {
+          return json({ ok: false, error: `Run migration ${ADYEN_REGION_MIGRATION} first`, migration: ADYEN_REGION_MIGRATION, detail: adyenRegionMigrationMessage() }, 409);
+        }
+        return json({ ok: false, error: `region write failed: ${regionErr.message}` }, 500);
+      }
+      const nextLive = adyenConfig('live', next);
+      console.log(`[adyen-terminal-admin] ${caller.id} set region=${next} for ${loc.id} (was ${maa?.region ?? 'unset'}, read as ${region})`);
+      return json({
+        ok: true,
+        region: next,
+        previous: region,
+        liveConfigured: nextLive.configured && !!nextLive.clientKey,
+        liveRegionsConfigured: liveRegions,
+        merchantAccount: (patch.merchant_account as string | undefined) ?? maa?.merchant_account ?? null,
+        warning: patch.merchant_account ? `The merchant account was switched to the ${next} test account (${patch.merchant_account}).` : null,
       });
     }
 
     // ── set_environment: flip the venue between test and live ────────────────
-    // super_admin only (OWNER RULE above). The upsert writes environment (plus
-    // updated_at) on an existing row and creates a row with environment only
-    // when none exists.
+    // super_admin only (OWNER RULE above). The upsert writes environment and
+    // region (plus updated_at) on an existing row and creates a row with
+    // those when none exists.
     //
     // PROVISIONING IS PER ENVIRONMENT. Adyen store ids, legal entity ids,
     // account holder and balance account ids all belong to the environment
@@ -219,21 +348,17 @@ Deno.serve(async (req) => {
     //
     // Flipping to live without the live keys is allowed but warned: that venue
     // fails closed on every card call until the keys are set. Flipping to
-    // live without ADYEN_LIVE_MERCHANT_ACCOUNT is refused outright: nothing
-    // sensible could be written into merchant_account.
+    // live without the REGION'S live merchant account
+    // (ADYEN_LIVE_UK_MERCHANT_ACCOUNT or ADYEN_LIVE_US_MERCHANT_ACCOUNT) is
+    // refused outright: nothing sensible could be written into merchant_account.
     if (action === 'set_environment') {
       if (!isServosAdmin) return adminOnly();
       const raw = String(body.environment ?? '').trim().toLowerCase();
       if (raw !== 'test' && raw !== 'live') return json({ error: "environment must be 'test' or 'live'" }, 400);
       const next = normalizeAdyenEnv(raw);
       if (next === 'live' && next !== env && !liveCfg.merchantAccount) {
-        return json({ ok: false, error: `Set ${adyenSecretName('live', 'merchantAccount')} on the server first: the venue's live merchant account name comes from it.` }, 400);
+        return json({ ok: false, error: `Set ${adyenSecretName('live', 'merchantAccount', region)} on the server first: the venue's ${region} live merchant account name comes from it.` }, 400);
       }
-      const provisioned = ['store_id', 'legal_entity_id', 'account_holder_id', 'balance_account_id', 'split_profile_id', 'transfer_instrument_id', 'business_line_id']
-        .filter((k) => !!(maa as Record<string, unknown> | null)?.[k]);
-      const { count: readerCount } = await platformAdmin.from('payment_devices')
-        .select('id', { count: 'exact', head: true }).eq('location_id', loc.id).eq('processor', 'adyen').neq('status', 'retired');
-      const readers = Number(readerCount) || 0;
       const provisionedOnCurrent = next !== env && (provisioned.length > 0 || readers > 0);
       if (provisionedOnCurrent && body.reprovision !== true) {
         const parts = [
@@ -249,10 +374,13 @@ Deno.serve(async (req) => {
           readers,
         }, 409);
       }
-      const patch: Record<string, unknown> = { location_id: loc.id, environment: next, updated_at: new Date().toISOString() };
-      // The merchant account belongs to the environment: on a change it is
-      // the TARGET set's secret (null only when that secret is unset, which
-      // the live guard above already refused).
+      // The row carries its region explicitly from here on (a new row would
+      // otherwise take the database default; a legacy 'EU' row is rewritten
+      // to 'UK'). upsertAccountRow retries a 'UK' the old check refuses.
+      const patch: Record<string, unknown> = { location_id: loc.id, environment: next, region, updated_at: new Date().toISOString() };
+      // The merchant account belongs to the environment AND region: on a
+      // change it is the TARGET set's secret for this region (null only when
+      // that secret is unset, which the live guard above already refused).
       const merchantWas = maa?.merchant_account ?? null;
       const merchantNext = next !== env ? ((next === 'live' ? liveCfg : testCfg).merchantAccount || null) : merchantWas;
       if (next !== env) patch.merchant_account = merchantNext;
@@ -263,9 +391,7 @@ Deno.serve(async (req) => {
           receive_payments_ok: false, payouts_ok: false, verification_status: null,
         });
       }
-      const { error: envErr } = await platformAdmin.from('merchant_adyen_accounts')
-        .upsert(patch, { onConflict: 'location_id' })
-        .select('location_id, environment').maybeSingle();
+      const { error: envErr, warning: regionWarning } = await upsertAccountRow(patch, 'location_id, environment');
       if (envErr) {
         const hint = /environment|42703|does not exist/i.test(envErr.message)
           ? ' (apply supabase/migrations/20260907_PLATFORM_adyen_environment.sql to the platform DB first)' : '';
@@ -295,25 +421,26 @@ Deno.serve(async (req) => {
         if (tdErr) console.error('[adyen-terminal-admin] ops terminal link clear failed:', tdErr.message);
       }
       const warnings: string[] = [];
+      if (regionWarning) warnings.push(regionWarning);
       if (next === 'live' && !liveReady) {
-        warnings.push(`Live keys are not fully configured (${liveMissing.join(', ')}): this venue will refuse every card call until they are set.`);
+        warnings.push(`Live keys for the ${region} account are not fully configured (${liveMissing.join(', ')}): this venue will refuse every card call until they are set.`);
       }
       if (provisionedOnCurrent) {
         warnings.push(`Store and reader setup from the ${env} system was cleared. Run store setup and register the readers again on ${next}.`);
       }
       if (next !== env && merchantNext !== merchantWas) {
         warnings.push(merchantNext
-          ? `The merchant account was switched to the ${next} account (${merchantNext})${merchantWas ? `, replacing ${merchantWas}` : ''}.`
-          : `No ${next} merchant account is configured on the server; the venue's merchant account was cleared.`);
+          ? `The merchant account was switched to the ${region} ${next} account (${merchantNext})${merchantWas ? `, replacing ${merchantWas}` : ''}.`
+          : `No ${region} ${next} merchant account is configured on the server; the venue's merchant account was cleared.`);
       }
-      console.log(`[adyen-terminal-admin] ${caller.id} set environment=${next} for ${loc.id} (was ${env}${provisionedOnCurrent ? ', reprovision' : ''})`);
-      return json({ ok: true, environment: next, previous: env, liveConfigured: liveReady, reprovisioned: provisionedOnCurrent, warning: warnings.join(' ') || null });
+      console.log(`[adyen-terminal-admin] ${caller.id} set environment=${next} for ${loc.id} (${region}, was ${env}${provisionedOnCurrent ? ', reprovision' : ''})`);
+      return json({ ok: true, environment: next, region, previous: env, liveConfigured: liveReady, liveRegionsConfigured: liveRegions, reprovisioned: provisionedOnCurrent, warning: warnings.join(' ') || null });
     }
 
     // The row's name wins, unless it names the OTHER environment's secret
     // account (a row flipped before set_environment rewrote it).
     const merchant = effectiveMerchantAccount(cfg, maa?.merchant_account);
-    if (!merchant) return json({ error: `no merchant account configured for card payments (${adyenSecretName(cfg.env, 'merchantAccount')})` }, 500);
+    if (!merchant) return json({ error: `no merchant account configured for card payments (${adyenSecretName(cfg.env, 'merchantAccount', cfg.region)})` }, 500);
 
     // ── status: everything the panel needs to decide what to show ────────────
     if (action === 'status') {
@@ -352,22 +479,25 @@ Deno.serve(async (req) => {
         processor: loc.payment_processor || 'stripe',
         merchant,
         environment: cfg.env,
+        region: cfg.region,
+        dropinEnvironment: cfg.dropinEnvironment,
         liveConfigured: liveReady,
+        liveRegionsConfigured: liveRegions,
         storeId: maa?.store_id || null,
         receivePaymentsOk: maa?.receive_payments_ok ?? null,
         scopeOk: !scopeMissing(probe.status),
         scopeError: scopeMissing(probe.status)
-          ? `Adyen refused the Management API call (${probe.status}) for merchant ${merchant} on ${cfg.env}. Either the API credential behind ${adyenSecretName(cfg.env, 'apiKey')} lacks the Management roles (Stores, Terminals, Terminal settings, Payment methods; set ${adyenSecretName(cfg.env, 'managementKey')} to a credential that has them) or that merchant account does not exist on ${cfg.env}.`
+          ? `Adyen refused the Management API call (${probe.status}) for merchant ${merchant} on ${cfg.env} (${cfg.region}). Either the API credential behind ${adyenSecretName(cfg.env, 'apiKey', cfg.region)} lacks the Management roles (Stores, Terminals, Terminal settings, Payment methods; set ${adyenSecretName(cfg.env, 'managementKey', cfg.region)} to a credential that has them) or that merchant account does not exist on ${cfg.env} (${cfg.region}).`
           : null,
       });
     }
 
-    // The venue's market for payment methods and the store. Platform
-    // locations carries no country column, so the market is read off data
-    // that exists: a USD venue, or a merchant row already on the US region,
-    // is US; everything else is GB.
-    const venueCurrency = String((loc as Record<string, unknown>).currency || 'GBP').toUpperCase();
-    const venueCountry = (venueCurrency === 'USD' || maa?.region === 'US') ? 'US' : 'GB';
+    // The venue's market for payment methods, the store, gratuities and
+    // standalone payments follows its REGION (8 Sep 2026): US => USD and US,
+    // UK => GBP and GB. Platform locations carries no country column; its
+    // currency only fed the region when the row had none (adyenEnvForLocation).
+    const venueCurrency: string = region === 'US' ? 'USD' : 'GBP';
+    const venueCountry: string = region === 'US' ? 'US' : 'GB';
     const market = { currency: venueCurrency, country: venueCountry };
 
     // ── ensure_store: the venue's physical store at Adyen + our mapping row ──
@@ -408,14 +538,15 @@ Deno.serve(async (req) => {
       if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
       if (!r.ok) return json({ ok: false, error: (r.data as Record<string, unknown>)?.detail || (r.data as Record<string, unknown>)?.title || `store create failed (${r.status})` }, 200);
       const storeId = String((r.data as Record<string, unknown>).id || '');
-      // region: keep the row's own value; only a brand new row gets one,
-      // derived from the venue's country (it used to be forced to 'EU').
-      const mapping: Record<string, unknown> = { location_id: loc.id, merchant_account: merchant, store_id: storeId, receive_payments_ok: true };
-      if (!maa?.region) mapping.region = venueCountry === 'US' ? 'US' : 'EU';
-      const { error: upErr } = await platformAdmin.from('merchant_adyen_accounts').upsert(mapping, { onConflict: 'location_id' });
+      // The row names the region the store was created on ('UK' | 'US'; a
+      // legacy 'EU' row is rewritten to 'UK'). upsertAccountRow retries a
+      // 'UK' the old check refuses and reports the migration as a warning:
+      // the store exists at Adyen, so the mapping must land either way.
+      const mapping: Record<string, unknown> = { location_id: loc.id, merchant_account: merchant, store_id: storeId, receive_payments_ok: true, region };
+      const { error: upErr, warning: regionWarning } = await upsertAccountRow(mapping);
       if (upErr) return json({ ok: false, error: `store created (${storeId}) but mapping write failed: ${upErr.message}` }, 500);
       const pm = await ensurePaymentMethods(cfg, merchant, storeId, market);
-      return json({ ok: true, storeId, existing: false, paymentMethods: pm, environment: cfg.env, reference: venueCode });
+      return json({ ok: true, storeId, existing: false, paymentMethods: pm, environment: cfg.env, region, reference: venueCode, warning: regionWarning });
     }
 
     // Everything below needs the store mapping.
@@ -615,7 +746,7 @@ Deno.serve(async (req) => {
         .map((n: unknown) => Math.round(Number(n)))
         .filter((n: number) => Number.isFinite(n) && n > 0 && n <= 100))].slice(0, 4);
       const gratuities = [{
-        currency: 'GBP',
+        currency: market.currency,   // the venue's region: GBP for UK, USD for US
         usePredefinedTipEntries: true,
         predefinedTipEntries: pcts.map((n: number) => `${n}%`),
         allowCustomAmount: body.allow_custom !== false,
@@ -641,7 +772,7 @@ Deno.serve(async (req) => {
       const tid = String(body.terminal_id || '');
       if (!tid) return json({ error: 'terminal_id required' }, 400);
       const r = await mgmt(cfg, 'PATCH', `/terminals/${encodeURIComponent(tid)}/terminalSettings`, {
-        standalone: { enableStandalone: body.enabled === true, currencyCode: 'GBP' },
+        standalone: { enableStandalone: body.enabled === true, currencyCode: market.currency },
       });
       if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
       if (!r.ok) return json({ ok: false, error: (r.data as Record<string, unknown>)?.detail || `standalone update failed (${r.status})` }, 200);
@@ -714,13 +845,13 @@ Deno.serve(async (req) => {
         .filter((f) => billBy.has(String(f.id)))
         .sort((a, b) => String(a.label).localeCompare(String(b.label), undefined, { numeric: true }))
         .slice(0, 20)
-        .map((f) => `${f.label}  ·  £${((billBy.get(String(f.id)) || 0) / 100).toFixed(2)}`);
+        .map((f) => `${f.label}  ·  ${currencySymbol(market.currency)}${((billBy.get(String(f.id)) || 0) / 100).toFixed(2)}`);
       if (!entries.length) entries.push('No open tables');
       const menu = buildMenuInputRequest({
         poiid: tid, saleId: 'servos-menutest', serviceId: newServiceId(),
         title: 'Pay at table — choose the table', entries,
       });
-      const r = await adyenFetch('POST', terminalEndpoint(merchant, tid, 'sync', (maa?.region === 'US') ? 'us' : 'eu', cfg), menu, { cfg, timeoutMs: 75_000 });
+      const r = await adyenFetch('POST', terminalEndpoint(merchant, tid, 'sync', cfg.region, cfg), menu, { cfg, timeoutMs: 75_000 });
       return json({ ok: r.ok, status: r.status, entries, response: r.data }, 200);
     }
 
@@ -735,7 +866,7 @@ Deno.serve(async (req) => {
         poiid: tid, saleId: 'servos-amttest', serviceId: newServiceId(),
         title: 'Split — enter amount to pay',
       });
-      const r = await adyenFetch('POST', terminalEndpoint(merchant, tid, 'sync', (maa?.region === 'US') ? 'us' : 'eu', cfg), msg, { cfg, timeoutMs: 75_000 });
+      const r = await adyenFetch('POST', terminalEndpoint(merchant, tid, 'sync', cfg.region, cfg), msg, { cfg, timeoutMs: 75_000 });
       return json({ ok: r.ok, status: r.status, parsed: parseAmountInputResponse(r.data), response: r.data }, 200);
     }
 
@@ -779,7 +910,7 @@ Deno.serve(async (req) => {
       // both answers, so one tap settles the shape question per model.
       const rendered = (d: unknown) =>
         !!(d as Record<string, any>)?.SaleToPOIResponse?.DisplayResponse?.OutputResult;
-      const ep = terminalEndpoint(merchant, tid, 'sync', (maa?.region === 'US') ? 'us' : 'eu', cfg);
+      const ep = terminalEndpoint(merchant, tid, 'sync', cfg.region, cfg);
       const objMsg = buildDisplayImageRequest({ poiid: tid, saleId: 'servos-brand', serviceId: newServiceId(), imageB64: b64img });
       const arrMsg = buildDisplayImageRequest({ poiid: tid, saleId: 'servos-brand', serviceId: newServiceId(), imageB64: b64img });
       (arrMsg.SaleToPOIRequest.DisplayRequest as Record<string, unknown>).DisplayOutput =
@@ -811,7 +942,7 @@ Deno.serve(async (req) => {
       // pushed image with 'Back to idle' doing nothing.
       (msg.SaleToPOIRequest.DisplayRequest as Record<string, unknown>).DisplayOutput =
         [ (msg.SaleToPOIRequest.DisplayRequest as Record<string, any>).DisplayOutput ];
-      const r = await adyenFetch('POST', terminalEndpoint(merchant, tid, 'sync', (maa?.region === 'US') ? 'us' : 'eu', cfg), msg, { cfg, timeoutMs: 30_000 });
+      const r = await adyenFetch('POST', terminalEndpoint(merchant, tid, 'sync', cfg.region, cfg), msg, { cfg, timeoutMs: 30_000 });
       void platformAdmin.from('adyen_webhook_events').insert({
         event_key: `brand:${tid}:${Date.now()}`,
         raw: { action: 'test_idle', httpStatus: r.status, response: r.data ?? null },
@@ -841,7 +972,7 @@ Deno.serve(async (req) => {
       // The venue's device host (cfg.deviceBase: test default device-api-test,
       // live default terminal-api-live, or the explicit *_DEVICE_BASE override)
       // and its key. Never the test host for a live venue.
-      const res = await adyenFetch('POST', terminalEndpoint(merchant, tid, 'async', (maa?.region === 'US') ? 'us' : 'eu', cfg), msg, { cfg, timeoutMs: 30_000 });
+      const res = await adyenFetch('POST', terminalEndpoint(merchant, tid, 'async', cfg.region, cfg), msg, { cfg, timeoutMs: 30_000 });
       return json({ ok: res.ok, status: res.status, body: JSON.stringify(res.data ?? null).slice(0, 300) });
     }
 

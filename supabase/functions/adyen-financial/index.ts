@@ -119,11 +119,15 @@ Deno.serve(async (req) => {
   if (locErr) return json({ error: `location lookup failed: ${locErr.message}` }, 500);
   if (!loc) return json({ error: 'location not found in platform DB' }, 404);
 
-  // The venue's Adyen environment picks the secret set for the two Adyen
-  // calls below (balances, payout setup link). Read-only actions never need it.
+  // The venue's Adyen environment AND region pick the secret set (the LEM and
+  // BCL keys of that region's live set; the hosts are the same for UK and US)
+  // for the two Adyen calls below (balances, payout setup link). Read-only
+  // actions never need it.
   let cfg;
-  try { cfg = adyenConfig(await adyenEnvForLocation(platformAdmin, loc.id)); }
-  catch (e) { return json({ error: (e as Error).message }, 500); }
+  try {
+    const target = await adyenEnvForLocation(platformAdmin, loc.id);   // { env, region }
+    cfg = adyenConfig(target);
+  } catch (e) { return json({ error: (e as Error).message }, 500); }
 
   // ── payments: summary tiles + paged list ─────────────────────────────────
   if (action === 'payments') {

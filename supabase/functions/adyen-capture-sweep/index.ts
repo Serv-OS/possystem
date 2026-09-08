@@ -78,10 +78,12 @@ const isAlreadyCaptured = (bodyText: string) =>
 const isDeadAuth = (bodyText: string) =>
   /expire|no longer|too old|cannot be captured/i.test(bodyText);
 
-// Resolve the venue's merchant account and its Adyen ENVIRONMENT (7 Sep
-// 2026: per venue, on merchant_adyen_accounts.environment). Resolved per row
-// and memoised for the run: one sweep can touch several venues, each on its
-// own secret set. A DB error on the environment read is thrown, never guessed.
+// Resolve the venue's merchant account and its Adyen ENVIRONMENT and REGION
+// (7 and 8 Sep 2026: per venue, on merchant_adyen_accounts.environment and
+// .region). Resolved per row and memoised for the run: one sweep can touch
+// several venues, each on its own secret set (a US venue captures on the US
+// live account and host, a UK venue on the UK one). A DB error on the read
+// is thrown, never guessed.
 type Venue = { merchant: string | null; cfg: AdyenConfig };
 type VenueMemo = Map<string, Promise<Venue>>;
 // The memo is PER RUN (created inside the handler): a warm isolate must see a
@@ -94,11 +96,11 @@ function venueFor(venueMemo: VenueMemo, opsLocationId: string): Promise<Venue> {
       const { data: ploc } = await platformAdmin.from('locations')
         .select('id').eq('ops_location_id', key).maybeSingle();
       const platformId = ploc?.id ?? key;
-      const [{ data: maa }, env] = await Promise.all([
+      const [{ data: maa }, target] = await Promise.all([
         platformAdmin.from('merchant_adyen_accounts').select('merchant_account').eq('location_id', platformId).maybeSingle(),
         adyenEnvForLocation(platformAdmin, platformId),
       ]);
-      const cfg = adyenConfig(env);
+      const cfg = adyenConfig(target);   // { env, region }: this venue's secret set and Checkout host
       // Never the OTHER environment's merchant name on this host (8 Sep 2026).
       return { merchant: effectiveMerchantAccount(cfg, maa?.merchant_account) || null, cfg };
     })();

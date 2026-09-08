@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.37',
+    date: '8 Sep 2026',
+    items: [
+      'Live Adyen keys are now per region. The UK live account and the US live account are different accounts, so each venue has a region (UK or US) chosen in the admin portal, and live payments, readers, the card form and webhooks all use that region\'s keys and hosts. Secret names carry the region, for example ADYEN_LIVE_UK_API_KEY.',
+      'Webhooks from either live account are checked against the right region\'s key, and a notification for a region with no key yet is held rather than accepted.',
+      'Admin portal: Region select above the environment switch, locked while a venue is live or has a store. A platform migration renames the stored region from EU to UK.',
+    ],
+  },
+  {
     v: '5.8.36',
     date: '8 Sep 2026',
     items: [

@@ -40,16 +40,29 @@
 // this receiver makes (tip captures, amount updates). adyen_payments.live and
 // merchant_adyen_disputes.live are stamped from the same flag.
 //
+// PER REGION (8 Sep 2026): the UK and US live accounts are DIFFERENT Adyen
+// accounts with their own HMAC keys (ADYEN_LIVE_UK_HMAC_KEY and
+// ADYEN_LIVE_US_HMAC_KEY; the unsuffixed ADYEN_LIVE_HMAC_KEY is the UK
+// fallback). A notification does not say which account signed it before it
+// is verified, so a live item is tried against EVERY configured live region
+// key, UK then US (webhookKeysFor), and the region whose key verified is the
+// region of record: it is logged, stamped into the ledger row's raw.region,
+// and picks the Checkout host + key for any modification made from here. A
+// stored event replayed by the backfill carries no region, so the venue's
+// own merchant_adyen_accounts.region decides then. A test notification uses
+// the one test key.
+//
 // SECURITY, staged deliberately:
-//   - Basic auth: if ADYEN_WEBHOOK_USER/_PASS (or ADYEN_LIVE_WEBHOOK_USER/_PASS
-//     for live notifications) are set, requests must match (Adyen sends the
-//     credentials you configure on the webhook).
-//   - HMAC (ADYEN_HMAC_KEY / ADYEN_LIVE_HMAC_KEY): verified per-item via
-//     _shared/adyen.ts verifyNotificationItem (same signing recipe this file
-//     used to inline). A LIVE notification while ADYEN_LIVE_HMAC_KEY is unset
-//     is refused with 503 before anything is stored (webhookHmacPolicy): the
-//     test key never verifies a live item and a live item is never accepted
-//     unverified.
+//   - Basic auth: if any webhook pair is set (ADYEN_WEBHOOK_USER/_PASS for
+//     test, ADYEN_LIVE_UK_WEBHOOK_USER/_PASS and ADYEN_LIVE_US_WEBHOOK_USER/
+//     _PASS for live, the live regions falling back to the test pair),
+//     requests must match one of the configured pairs for the notification's
+//     environment (Adyen sends the credentials you configure on the webhook).
+//   - HMAC: verified per-item via _shared/adyen.ts verifyNotificationItem
+//     (same signing recipe this file used to inline). A LIVE notification
+//     while NO live region key is set is refused with 503 before anything is
+//     stored: the test key never verifies a live item and a live item is
+//     never accepted unverified.
 //     We VERIFY AND RECORD hmac_valid on every item but do NOT reject yet —
 //     ⚠ GO-LIVE TASK: flip REJECT_INVALID_HMAC to true once real test events
 //     verify green. Until then an invalid signature is logged LOUDLY below.
@@ -59,14 +72,18 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import {
   verifyNotificationItem, cardFromWebhookAdditionalData, resolveAdyenRateCard, commissionForAmount, adyenFetch, checkoutBase,
-  adyenConfig, webhookHmacPolicy, isUnknownColumnError, ADYEN_LIVE_FAIL_CLOSED, type AdyenConfig,
+  adyenConfig, isUnknownColumnError, ADYEN_LIVE_FAIL_CLOSED, webhookKeysFor, webhookAuthPairsFor, adyenAccountForLocation,
+  adyenSecretName, ADYEN_REGIONS, adyenRegionForMerchantAccount, type AdyenConfig, type AdyenRegion, type WebhookKeyCandidate,
 } from '../_shared/adyen.ts';
 import { insertCaptureRow, applyTipToClosedCheck } from '../_shared/tip_capture.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
-// The secret set for one notification: its top level live flag decides.
-const cfgForLive = (live: boolean | null | undefined): AdyenConfig => adyenConfig(live ? 'live' : 'test');
+// The secret set for one notification: its top level live flag decides the
+// environment, the region whose HMAC key verified it (or, on a replay, the
+// venue's own region) decides WHICH live set. No region known = UK.
+const cfgFor = (live: boolean | null | undefined, region: AdyenRegion | null | undefined): AdyenConfig =>
+  adyenConfig(live ? 'live' : 'test', region ?? 'UK');
 // ARMED 19 Aug (was the go-live task): 51/51 signed events in adyen_events
 // verified hmac_valid=true with the shared recipe, so a bad signature is now an
 // attack or a key rotation, not a setup doubt — and either must bounce.
@@ -81,19 +98,42 @@ const platformAdmin = createClient(
   { auth: { autoRefreshToken: false, persistSession: false } },
 );
 
-// null = unverifiable (no key configured on TEST / item carries no signature),
-// kept distinct from false so adyen_events.hmac_valid preserves the old
-// semantics. The key is the one for the notification's environment
-// (cfg.hmacKey). A LIVE notification with no live key is FALSE, never null:
-// the handler refuses the whole notification before this runs (503, Adyen
-// retries), and this is the belt to that brace. The test key never verifies
-// a live item (webhookHmacPolicy).
-async function hmacOk(item: any, cfg: AdyenConfig): Promise<boolean | null> {
-  const verdict = webhookHmacPolicy(cfg, !!item?.additionalData?.hmacSignature);
-  if (verdict === 'reject') return false;
-  if (verdict === 'unverifiable') return null;
-  try { return await verifyNotificationItem(item, cfg.hmacKey); }
-  catch (e) { console.error('[adyen-webhook] hmac check failed:', (e as Error).message); return false; }
+// valid: null = unverifiable (no key configured on TEST / item carries no
+// signature), kept distinct from false so adyen_events.hmac_valid preserves
+// the old semantics. `candidates` are the keys for the notification's
+// environment (webhookKeysFor: every configured live region key for a live
+// item, UK then US; the test key for a test item), tried in order; the one
+// that verifies names the region. A LIVE notification with no live key is
+// FALSE, never null: the handler refuses the whole notification before this
+// runs (503, Adyen retries), and this is the belt to that brace. The test key
+// never verifies a live item (it is never among a live item's candidates).
+async function hmacOk(item: any, live: boolean, candidates: WebhookKeyCandidate[]): Promise<{ valid: boolean | null; region: AdyenRegion | null }> {
+  if (!candidates.length) return { valid: live ? false : null, region: null };
+  if (!item?.additionalData?.hmacSignature) return { valid: null, region: null };
+  for (const c of candidates) {
+    try {
+      if (await verifyNotificationItem(item, c.hmacKey)) return { valid: true, region: c.region };
+    } catch (e) { console.error('[adyen-webhook] hmac check failed:', (e as Error).message); }
+  }
+  return { valid: false, region: null };
+}
+
+// The region of a venue's own account row (a stored 'EU' reads as 'UK'; no
+// row = by the location's currency), for replays that carry no verified
+// region. Null when unknown, never a guess that hides a DB error.
+async function regionForLocation(locationId: string | null | undefined): Promise<AdyenRegion | null> {
+  if (!locationId) return null;
+  try { return (await adyenAccountForLocation(platformAdmin, locationId)).region; }
+  catch (e) { console.error('[adyen-webhook] region lookup failed:', (e as Error).message); return null; }
+}
+
+// The live account a merchant account NAME belongs to (the region whose live
+// set names it, else the one region of the live venue rows carrying it), for
+// a live item that has no verified region and no venue, and for the pre
+// verification "is this region's key even set" check. Null when unknown.
+async function regionForMerchant(merchantAccount: unknown): Promise<AdyenRegion | null> {
+  try { return await adyenRegionForMerchantAccount(platformAdmin, merchantAccount, true); }
+  catch (e) { console.error('[adyen-webhook] merchant account region lookup failed:', (e as Error).message); return null; }
 }
 
 // ── Money-event parsing → adyen_payments / merchant_adyen_disputes ──────────
@@ -363,10 +403,12 @@ async function resolveVenueTiers(locationId: string): Promise<any | null> {
 // Replay-safe: callers reach this only on non-duplicate events (modKey), the
 // row updates are status-guarded, and the capture kick keys are deterministic.
 // Best-effort by construction - never throws, never blocks the ack.
-// cfg = the notification's environment: every capture / amountUpdates below
-// goes to THAT environment's Checkout host with THAT key (a live payment is
-// never touched with test keys, and the other way round).
-async function applyTipOnReceiptEvent(item: any, code: string, rowKey: string, okEvent: boolean, jobId: string | null, cfg: AdyenConfig): Promise<void> {
+// cfg = the notification's environment AND region: every capture /
+// amountUpdates below goes to THAT account's Checkout host with THAT key (a
+// live payment is never touched with test keys, a US payment never with the
+// UK set, and the other way round). cfg null = a LIVE payment whose region is
+// unknown: nothing is posted (see `post` below), the row waits for a replay.
+async function applyTipOnReceiptEvent(item: any, code: string, rowKey: string, okEvent: boolean, jobId: string | null, cfg: AdyenConfig | null): Promise<void> {
   try {
     if (code === 'AUTHORISATION') {
       if (!okEvent || !jobId) return;
@@ -399,6 +441,17 @@ async function applyTipOnReceiptEvent(item: any, code: string, rowKey: string, o
     const nowIso = new Date().toISOString();
     const cur = String(cap.currency || item?.amount?.currency || 'USD').toUpperCase();
     const merchant = (cap.merchant_account as string | null) ?? (item?.merchantAccountCode ? String(item.merchantAccountCode) : null);
+    // Every outbound modification goes to the region of record's host with
+    // its key. A LIVE payment with NO region of record (8 Sep 2026: no
+    // verified key, no stored region, no venue, a merchant account neither
+    // live set names) has cfg null: posting to a guessed UK host would only
+    // have Adyen refuse the unknown psp and lose the capture. The throw lands
+    // in each site's existing failure path, which leaves the row for the
+    // deadline sweep or a replay that can resolve the venue.
+    const post = (path: string, body: unknown, idempotencyKey: string) => {
+      if (!cfg) throw new Error(`no region of record for this live payment (merchant account ${merchant ?? 'unknown'} matches neither live set): modification skipped, left for a replay`);
+      return adyenFetch('POST', `${checkoutBase(cfg)}${path}`, body, { cfg, idempotencyKey });
+    };
 
     if (code === 'AUTHORISATION_ADJUSTMENT') {
       if (cap.status !== 'adjusting') return;   // only an armed adjust reacts - replays and stray adjustments no-op
@@ -427,9 +480,9 @@ async function applyTipOnReceiptEvent(item: any, code: string, rowKey: string, o
         // salt makes every RETRY a fresh key too.
         let res;
         try {
-          res = await adyenFetch('POST', `${checkoutBase(cfg)}/payments/${encodeURIComponent(rowKey)}/captures`,
+          res = await post(`/payments/${encodeURIComponent(rowKey)}/captures`,
             { merchantAccount: merchant, amount: { value: amount, currency: cur }, reference: `tipcapw:${cap.id}`.slice(0, 80) },
-            { cfg, idempotencyKey: `tipcapw:${cap.id}:${amount}:${attempt}` });
+            `tipcapw:${cap.id}:${amount}:${attempt}`);
         } catch (fe) {
           // Network abort must not strand the row at 'capturing' - put it back
           // to 'adjusting' so the deadline sweep retries at the final amount.
@@ -476,9 +529,9 @@ async function applyTipOnReceiptEvent(item: any, code: string, rowKey: string, o
         let captured = false;
         if (merchant) {
           try {
-            const res = await adyenFetch('POST', `${checkoutBase(cfg)}/payments/${encodeURIComponent(rowKey)}/captures`,
+            const res = await post(`/payments/${encodeURIComponent(rowKey)}/captures`,
               { merchantAccount: merchant, amount: { value: authAmount, currency: cur }, reference: `tipcapw:${cap.id}`.slice(0, 80) },
-              { cfg, idempotencyKey: `tipcapw:${cap.id}:${authAmount}:${attempt}` });
+              `tipcapw:${cap.id}:${authAmount}:${attempt}`);
             captured = res.ok;
             if (!res.ok) console.error('[adyen-webhook] fallback capture at auth refused:', res.status, JSON.stringify(res.data).slice(0, 200));
           } catch (fe) {
@@ -563,9 +616,9 @@ async function applyTipOnReceiptEvent(item: any, code: string, rowKey: string, o
           if (!claimed) return;   // someone else owns the row - stop silently
           let adj;
           try {
-            adj = await adyenFetch('POST', `${checkoutBase(cfg)}/payments/${encodeURIComponent(rowKey)}/amountUpdates`,
+            adj = await post(`/payments/${encodeURIComponent(rowKey)}/amountUpdates`,
               { merchantAccount: merchant, amount: { value: finalM, currency: cur }, industryUsage: 'delayedCharge', reference: `tipadjw:${cap.id}`.slice(0, 80) },
-              { cfg, idempotencyKey: `tipadjw:${cap.id}:${finalM}:${attempt}` });
+              `tipadjw:${cap.id}:${finalM}:${attempt}`);
           } catch (fe) {
             adj = { ok: false, status: 0, data: { message: (fe as Error).message } };
           }
@@ -607,10 +660,11 @@ async function applyTipOnReceiptEvent(item: any, code: string, rowKey: string, o
 // costs a log line and a later replay, not an event.
 // `live` is the notification's top level flag (null when a stored event has
 // no record of it); it stamps adyen_payments.live / merchant_adyen_disputes.live
-// and picks the config every outbound modification uses.
-async function applyMoneyEvent(item: any, live: boolean | null = null): Promise<'applied' | 'duplicate' | 'skipped' | 'failed'> {
+// and picks the config every outbound modification uses. `region` is the
+// region whose HMAC key verified the notification (null on a replay or an
+// unsigned test item); with none, the venue's own row decides, else UK.
+async function applyMoneyEvent(item: any, live: boolean | null = null, region: AdyenRegion | null = null): Promise<'applied' | 'duplicate' | 'skipped' | 'failed'> {
   try {
-    const cfg = cfgForLive(live);
     const code = String(item?.eventCode || '');
     if (!LEDGER_EVENTS.has(code)) return 'skipped';
     const isModification = MODIFICATION_EVENTS.has(code);
@@ -668,6 +722,26 @@ async function applyMoneyEvent(item: any, live: boolean | null = null): Promise<
       : String(item?.merchantReference ?? '');
     const job = await matchTerminalJob(merchantReference, rowKey);
     const location_id = existing?.location_id ?? await resolveLocation(item, job?.location_id ?? null, live);
+    // The region of record: the key that verified this notification, else
+    // the one already stamped on the row, else the venue's own row. It picks
+    // the Checkout host + key for any modification made below and is kept on
+    // the ledger row (raw.region) so a later replay and the reseller invoice
+    // can tell the UK account from the US one.
+    const regionOfRecord: AdyenRegion | null = region
+      ?? (ADYEN_REGIONS.includes(raw.region) ? raw.region as AdyenRegion : null)
+      ?? await regionForLocation(location_id)
+      // 8 Sep 2026: no venue either (a backfill replay, an unsigned item):
+      // the merchant account names the live account when either live set or
+      // one region's live venue rows carry it.
+      ?? (live ? await regionForMerchant(item?.merchantAccountCode) : null);
+    if (regionOfRecord) raw.region = regionOfRecord;
+    // The config every outbound modification below uses. A LIVE item whose
+    // region is STILL unknown gets none: cfgFor would default to the UK set
+    // and post a US payment's capture to the UK host, where Adyen refuses the
+    // unknown psp and the capture is lost. The ledger row is still written;
+    // the modification is skipped loudly and left for a replay with a venue.
+    const cfg: AdyenConfig | null = (live && !regionOfRecord) ? null : cfgFor(live, regionOfRecord);
+    if (!cfg) console.error(`[adyen-webhook] ⚠ live ${code} ${rowKey} has no region of record (merchant account ${item?.merchantAccountCode ?? 'unknown'}, venue ${location_id ?? 'unresolved'}): no outbound modification will be made from this event`);
 
     const amountMinor = Number(item?.amount?.value);
     const currency = item?.amount?.currency ? String(item.amount.currency) : null;
@@ -976,30 +1050,62 @@ Deno.serve(async (req) => {
   // the secret set for basic auth, the HMAC key, the ledger stamp and the
   // Checkout config of any modification made from here.
   const live = String(body?.live) === 'true';
-  const cfg = cfgForLive(live);
 
-  // Basic auth, when configured on the webhook in the Customer Area. The live
-  // pair falls back to the test pair when unset (Adyen posts both here).
-  if (cfg.webhookUser) {
+  // Basic auth, when configured on the webhook in the Customer Area. On live
+  // ANY configured region pair is accepted (UK, US, then the test pair as
+  // the fallback); on test, the test pair. Adyen posts every account here.
+  const authPairs = webhookAuthPairsFor(live, 'webhook');
+  if (authPairs.length) {
     const got = req.headers.get('authorization') || '';
-    const want = 'Basic ' + btoa(`${cfg.webhookUser}:${cfg.webhookPass}`);
-    if (got !== want) return new Response('unauthorized', { status: 401 });
+    const ok = authPairs.some((p) => got === 'Basic ' + btoa(`${p.user}:${p.pass}`));
+    if (!ok) return new Response('unauthorized', { status: 401 });
   }
 
-  // FAIL CLOSED on live: a live flagged notification with no ADYEN_LIVE_HMAC_KEY
-  // is refused outright, BEFORE anything is stored or applied. Setting one JSON
-  // field must never turn the armed HMAC check into "unverifiable, accepted".
-  // 503 so Adyen keeps retrying and the notification lands once the key is set.
-  if (webhookHmacPolicy(cfg, true) === 'reject') {
-    console.error('[adyen-webhook] live notification refused:', ADYEN_LIVE_FAIL_CLOSED, '(set ADYEN_LIVE_HMAC_KEY)');
+  // FAIL CLOSED on live: a live flagged notification while NO live region HMAC
+  // key is set is refused outright, BEFORE anything is stored or applied.
+  // Setting one JSON field must never turn the armed HMAC check into
+  // "unverifiable, accepted". 503 so Adyen keeps retrying and the
+  // notification lands once a key is set.
+  const hmacCandidates = webhookKeysFor(live);
+  if (live && !hmacCandidates.length) {
+    const names = ADYEN_REGIONS.map((r) => adyenSecretName('live', 'hmacKey', r)).join(' or ');
+    console.error('[adyen-webhook] live notification refused:', ADYEN_LIVE_FAIL_CLOSED, `(set ${names})`);
     return new Response(ADYEN_LIVE_FAIL_CLOSED, { status: 503 });
   }
 
   const items = Array.isArray(body?.notificationItems) ? body.notificationItems : [];
+  // A live item names its merchant account. When that account belongs to a
+  // region whose HMAC key is NOT set (say ADYEN_LIVE_UK_HMAC_KEY is set and
+  // the US key is not yet), verification against the other region's key can
+  // only fail, and that is a configuration gap, not a forgery: refuse 503
+  // (Adyen retries) naming the secret, never 401 'invalid hmac' (8 Sep 2026).
+  // The account is matched by name against each live set, then against the
+  // live venue rows; an unknown name changes nothing here.
+  if (live) {
+    const codes = [...new Set(items.map((w: any) => String((w?.NotificationRequestItem ?? w)?.merchantAccountCode ?? '').trim()).filter(Boolean))] as string[];
+    for (const code of codes) {
+      const named = await regionForMerchant(code);
+      if (named && !hmacCandidates.some((c) => c.region === named)) {
+        const name = adyenSecretName('live', 'hmacKey', named);
+        console.error(`[adyen-webhook] live notification for the ${named} account (${code}) refused: ${ADYEN_LIVE_FAIL_CLOSED} (set ${name})`);
+        return new Response(ADYEN_LIVE_FAIL_CLOSED, { status: 503 });
+      }
+    }
+  }
+  // Every item in one notification comes from the same account: once a key
+  // verifies, that region's key is tried first for the rest.
+  let matchedRegion: AdyenRegion | null = null;
   for (const wrap of items) {
     const item = wrap?.NotificationRequestItem ?? wrap;
     if (!item) continue;
-    const valid = await hmacOk(item, cfg);
+    const ordered = matchedRegion
+      ? [...hmacCandidates.filter((c) => c.region === matchedRegion), ...hmacCandidates.filter((c) => c.region !== matchedRegion)]
+      : hmacCandidates;
+    const { valid, region: itemRegion } = await hmacOk(item, live, ordered);
+    if (valid === true && itemRegion && itemRegion !== matchedRegion) {
+      matchedRegion = itemRegion;
+      if (live) console.log(`[adyen-webhook] live notification verified with the ${itemRegion} key`);
+    }
     if (valid === false) {
       // LOUD either way — this line is what proves the recipe against real
       // events so REJECT_INVALID_HMAC can be armed for go-live.
@@ -1029,7 +1135,7 @@ Deno.serve(async (req) => {
     // ── money events → platform ledger (+ disputes). Best-effort on top of the
     // stored raw row: parse failures log and NEVER block the ack.
     if (LEDGER_EVENTS.has(String(item.eventCode || ''))) {
-      const res = await applyMoneyEvent(item, live);
+      const res = await applyMoneyEvent(item, live, live ? matchedRegion : null);
       if ((res === 'applied' || res === 'duplicate') && stored?.id) {
         const { error: pErr } = await admin.from('adyen_events')
           .update({ processed_at: new Date().toISOString() }).eq('id', stored.id);

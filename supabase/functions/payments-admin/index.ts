@@ -40,7 +40,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { createSubAccount, getAccount, createAccountLink, authorizeAccount, listBalanceTransactions, listPlatformFees, ryftConfigured } from '../_shared/ryft.ts';
-import { RATE_TIERS, resolveAdyenRateCard, sanitizeRateCard } from '../_shared/adyen.ts';
+import { RATE_TIERS, resolveAdyenRateCard, sanitizeRateCard, upsertAdyenAccountRow } from '../_shared/adyen.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -240,13 +240,22 @@ Deno.serve(async (req) => {
       if ('markup_percent' in body) patch.markup_percent = numOrNull(body.markup_percent);
       if ('markup_fixed_pence' in body) patch.markup_fixed_pence = intOrNull(body.markup_fixed_pence);
       if ('rate_card' in body) patch.rate_card = sanitizeRateCard(body.rate_card);
-      const { error } = await platformAdmin.from('merchant_adyen_accounts')
-        .upsert(patch, { onConflict: 'location_id' });
+      // 8 Sep 2026: this upsert CREATES the row for a venue that has none, and
+      // saving a rate card is usually the first thing done for a new venue. A
+      // bare upsert took the database DEFAULT region, which silently turned a
+      // USD venue (shown as US in the admin, resolved by currency) into a UK
+      // one on the next load. upsertAdyenAccountRow stamps the resolved region
+      // on a create and names the region migration in `warning` when the old
+      // check refused 'UK' (the pricing still lands).
+      let write: Awaited<ReturnType<typeof upsertAdyenAccountRow>>;
+      try { write = await upsertAdyenAccountRow(platformAdmin, patch); }
+      catch (e) { return json({ error: `pricing update failed: ${(e as Error).message}` }, 500); }
+      const { error, warning } = write;
       if (error) {
         if ('rate_card' in body && isMissingColumn(error.message)) return json({ error: migrationHint }, 500);
         return json({ error: `pricing update failed: ${error.message}` }, 500);
       }
-      return json({ success: true });
+      return json({ success: true, warning: warning ?? null, region: write.region });
     }
 
     // get — defaults first (flat + card), retrying without the card column

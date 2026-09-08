@@ -111,9 +111,9 @@ export default function AdyenTerminals() {
   const [standalone, setStandalone] = useState(false);
   const [standaloneWas, setStandaloneWas] = useState(false);
   // Per venue Adyen environment (7 Sep 2026): the fn's 'environment' answer
-  // { environment, liveConfigured, testConfigured, liveMissing }. Names only,
-  // never secret values. Read only here (OWNER RULE, 8 Sep 2026): the switch
-  // lives in the ServOS admin portal.
+  // { environment, region, liveConfigured, testConfigured, liveMissing }.
+  // Names only, never secret values. Read only here (OWNER RULE, 8 Sep 2026):
+  // the switch and the region select live in the ServOS admin portal.
   const [envInfo, setEnvInfo] = useState(null);
   // Set when the status probe failed on a LIVE venue (fails closed without
   // live keys). The panel then stays on screen with the state and the error,
@@ -182,10 +182,11 @@ export default function AdyenTerminals() {
     </div>
   ) : null;
 
-  // Badge in the panel header: the venue's environment, read only.
+  // Badge in the panel header: the venue's environment and its region
+  // ('UK' | 'US', the Adyen account it is on), read only.
   const envBadge = envInfo ? (
     <span style={{ ...S.pill, ...(isLive ? S.pillLive : S.pillTest), marginLeft: 8, verticalAlign: 'middle' }}>
-      {isLive ? 'LIVE, real money' : 'Test cards'}
+      {isLive ? 'LIVE, real money' : 'Test cards'}{envInfo.region ? ` · ${envInfo.region}` : ''}
     </span>
   ) : null;
 

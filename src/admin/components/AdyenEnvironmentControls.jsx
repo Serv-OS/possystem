@@ -12,14 +12,21 @@
 // user_profiles.role, the same lookup adyen-onboard fences on). The venue's
 // Back Office shows the state only.
 //
-// Renders two things:
-//   1. Environment: the state, the switch, the typed LIVE confirm when going
-//      live (only offered while the server reports the live secret set as
-//      configured), one confirm going back to test, and the reprovision
-//      flow: the fn answers 409 + needs_reprovision while the venue's store
-//      or readers were set up on the current environment, and the flip is
-//      retried with reprovision: true after a confirm.
-//   2. Store: while the venue has no Adyen store, the Create store box with
+// Renders three things:
+//   1. Region (8 Sep 2026): UK or US, the Adyen account the venue is on. The
+//      UK and US live accounts are different accounts (keys, Checkout host,
+//      Terminal API host, Drop-in environment), so the select sits ABOVE the
+//      environment switch and is disabled while the venue is live or already
+//      holds a store or readers (the fn's regionLocked). It calls set_region;
+//      until the platform migration 20260908_PLATFORM_adyen_region_uk.sql
+//      runs the fn refuses 'UK' with a message naming it, shown as is.
+//   2. Environment: the state, the switch, the typed LIVE confirm when going
+//      live (only offered while the server reports THIS region's live secret
+//      set as configured), one confirm going back to test, and the
+//      reprovision flow: the fn answers 409 + needs_reprovision while the
+//      venue's store or readers were set up on the current environment, and
+//      the flip is retried with reprovision: true after a confirm.
+//   3. Store: while the venue has no Adyen store, the Create store box with
 //      the address and phone prefilled from the venue (on live the fn
 //      refuses a placeholder). Once the store exists, the card scheme review
 //      status and a "Request card schemes again" repair button.
@@ -84,13 +91,17 @@ function splitAddress(text) {
   };
 }
 
+const REGION_LABELS = { UK: 'United Kingdom (Adyen EU data centre)', US: 'United States' };
+
 export default function AdyenEnvironmentControls({ opsLocationId, platformLocationId, venueName, callAdmin, onChanged }) {
-  // The fn's 'environment' answer { environment, liveConfigured,
-  // testConfigured, liveMissing, canSetEnvironment }. Names only, never
-  // secret values.
+  // The fn's 'environment' answer { environment, region, liveConfigured,
+  // liveRegionsConfigured, testConfigured, liveMissing, canSetEnvironment,
+  // canSetRegion, regionLocked, regionLockReason }. Names only, never
+  // secret values. liveConfigured and liveMissing are for THIS venue's region.
   const [envInfo, setEnvInfo] = useState(null);
   const [envErr, setEnvErr] = useState('');
   const [envBusy, setEnvBusy] = useState(false);
+  const [regionBusy, setRegionBusy] = useState(false);
   const [liveConfirm, setLiveConfirm] = useState(false);   // the "type LIVE" box is open
   const [liveTyped, setLiveTyped] = useState('');
   // The fn's 'status' answer (venue, merchant, storeId, scopeOk, scopeError,
@@ -141,10 +152,44 @@ export default function AdyenEnvironmentControls({ opsLocationId, platformLocati
 
   const isLive = envInfo?.environment === 'live';
   const name = status?.venue || venueName || 'this venue';
+  // The venue's region ('UK' | 'US'). An older fn build sends none: the
+  // select then shows UK (the only account before 8 Sep 2026) and stays
+  // disabled until the fn is redeployed.
+  const region = envInfo?.region === 'US' ? 'US' : 'UK';
+  const regionKnown = !!envInfo?.region;
+  const liveRegions = Array.isArray(envInfo?.liveRegionsConfigured) ? envInfo.liveRegionsConfigured : null;
   // The fn refuses everyone but a super_admin with 403; the switch is hidden
   // rather than shown dead. Older fn builds do not send the flag, so an
   // absent value keeps the switch visible.
   const canSetEnv = envInfo?.canSetEnvironment !== false;
+  const canSetRegion = envInfo?.canSetRegion !== false && regionKnown;
+  const regionLocked = envInfo?.regionLocked === true || isLive;
+  const regionLockReason = envInfo?.regionLockReason || (isLive ? 'The venue is live. Switch it back to test cards before changing its region.' : '');
+
+  // Move the venue between the UK and US Adyen accounts. Only while nothing
+  // at Adyen belongs to it yet (the fn refuses otherwise, 409). The fn also
+  // refuses 'UK' until the platform migration runs; its message names it.
+  const setRegion = async (next) => {
+    if (!next || next === region || regionBusy) return;
+    if (!window.confirm(
+      `Move ${name} to the ${next} Adyen account?\n\n`
+      + `Its live keys, Checkout host and card reader endpoint all follow the region. `
+      + `Live keys for ${next} are ${liveRegions ? (liveRegions.includes(next) ? 'set' : 'NOT set yet') : 'unknown'} on the server.`,
+    )) return;
+    setRegionBusy(true); setErr(''); setNotice('');
+    try {
+      const r = await callAdmin('set_region', { region: next });
+      if (r.ok === false) throw new Error(r.error || 'could not change the region');
+      setEnvInfo((prev) => ({ ...(prev || {}), region: r.region, liveConfigured: r.liveConfigured ?? prev?.liveConfigured, liveRegionsConfigured: r.liveRegionsConfigured ?? prev?.liveRegionsConfigured }));
+      setNotice(r.unchanged ? `${name} is already on the ${r.region} account.` : `${name} is now on the ${r.region} Adyen account.`);
+      if (r.warning) setErr(r.warning);
+      await load();
+      onChanged?.();
+    } catch (e) {
+      setErr(e?.data?.error || e?.message || String(e));
+    }
+    setRegionBusy(false);
+  };
 
   // Flip the venue's environment through the fn, then reload so the status
   // probe runs against the new secret set. The fn REFUSES (409 +
@@ -157,11 +202,11 @@ export default function AdyenEnvironmentControls({ opsLocationId, platformLocati
     try {
       const r = await callAdmin('set_environment', { environment: next, ...(reprovision ? { reprovision: true } : {}) });
       if (r.ok === false) throw new Error(r.error || 'could not change the environment');
-      setEnvInfo((prev) => ({ ...(prev || {}), environment: r.environment, liveConfigured: r.liveConfigured ?? prev?.liveConfigured }));
+      setEnvInfo((prev) => ({ ...(prev || {}), environment: r.environment, region: r.region ?? prev?.region, liveConfigured: r.liveConfigured ?? prev?.liveConfigured, liveRegionsConfigured: r.liveRegionsConfigured ?? prev?.liveRegionsConfigured }));
       setLiveConfirm(false); setLiveTyped('');
       setPmResult(null);
       setNotice(r.environment === 'live'
-        ? `${name} now takes LIVE payments. Real cards are charged from now on.`
+        ? `${name} now takes LIVE payments on the ${r.region || region} account. Real cards are charged from now on.`
         : `${name} is back on test cards. Nobody is charged.`);
       if (r.warning) setErr(r.warning);
       await load();
@@ -190,7 +235,7 @@ export default function AdyenEnvironmentControls({ opsLocationId, platformLocati
       setEnvironment('test');
       return;
     }
-    if (!envInfo.liveConfigured) return;   // switch is disabled anyway
+    if (!envInfo.liveConfigured) return;   // switch is disabled anyway (this region's live set is incomplete)
     setLiveConfirm((v) => !v); setLiveTyped('');
   };
 
@@ -235,6 +280,48 @@ export default function AdyenEnvironmentControls({ opsLocationId, platformLocati
 
   return (
     <div>
+      {/* ── region: the Adyen account (UK or US) the venue is on ── */}
+      {envInfo && (
+        <div style={S.block}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+            <div style={{ flex: '1 1 240px', minWidth: 0 }}>
+              <div style={S.label}>Region (ServOS admin only)</div>
+              <div style={{ fontSize: 14, fontWeight: 800, marginTop: 2 }}>
+                <span style={{ ...S.pill, background: 'var(--bg3, var(--bdr2))', color: 'var(--t1)', border: '1px solid var(--bdr2)', marginRight: 8 }}>{region}</span>
+                {REGION_LABELS[region]}
+              </div>
+              <div style={{ ...S.desc, marginTop: 4 }}>
+                The UK and US live accounts are different Adyen accounts. The region picks the live keys, the Checkout host,
+                the card reader endpoint and the Drop-in environment for {name}.
+                {liveRegions && <> Live keys are set on the server for: <span style={S.mono}>{liveRegions.length ? liveRegions.join(', ') : 'none'}</span>.</>}
+              </div>
+            </div>
+            {canSetRegion ? (
+              <select
+                style={{ ...S.input, minWidth: 220, opacity: regionLocked || regionBusy ? 0.6 : 1, cursor: regionLocked ? 'not-allowed' : 'pointer' }}
+                value={region}
+                disabled={regionLocked || regionBusy || envBusy}
+                title={regionLocked ? regionLockReason : 'Move the venue between the UK and US Adyen accounts'}
+                onChange={(e) => setRegion(e.target.value)}>
+                <option value="UK">UK</option>
+                <option value="US">US</option>
+              </select>
+            ) : (
+              <div style={{ ...S.desc, maxWidth: 240 }}>{regionKnown ? 'Only a ServOS super admin can change this.' : 'The server has not been updated for regions yet.'}</div>
+            )}
+          </div>
+          {canSetRegion && regionLocked && (
+            <div style={{ ...S.desc, marginTop: 8 }}>{regionLockReason}</div>
+          )}
+          {envInfo.storedRegion && envInfo.storedRegion !== region && (
+            <div style={{ ...S.desc, marginTop: 8, color: 'var(--orn, #e8a020)' }}>
+              The database still stores the old code <span style={S.mono}>{envInfo.storedRegion}</span> for this venue (read as {region}).
+              It becomes {region} once the platform migration <span style={S.mono}>20260908_PLATFORM_adyen_region_uk.sql</span> is run.
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── environment: test cards or live, real money ── */}
       {envInfo ? (
         <div style={{ ...S.block, border: `1px solid ${isLive ? 'var(--red-b, var(--red))' : 'var(--bdr2)'}` }}>
@@ -243,10 +330,15 @@ export default function AdyenEnvironmentControls({ opsLocationId, platformLocati
               <div style={S.label}>Environment (ServOS admin only)</div>
               <div style={{ fontSize: 14, fontWeight: 800, marginTop: 2, color: isLive ? 'var(--red)' : 'var(--t1)' }}>
                 {isLive ? 'LIVE, real money' : 'Test cards'}
+                {regionKnown && (
+                  <span style={{ ...S.pill, marginLeft: 8, verticalAlign: 'middle', background: isLive ? 'var(--red)' : 'var(--bg3, var(--bdr2))', color: isLive ? '#fff' : 'var(--t2)', border: `1px solid ${isLive ? 'var(--red)' : 'var(--bdr2)'}` }}>
+                    {isLive ? `LIVE · ${region}` : `TEST · ${region}`}
+                  </span>
+                )}
               </div>
               <div style={{ ...S.desc, marginTop: 4 }}>
                 {isLive
-                  ? `Every card taken at ${name} is charged for real: tills, online, table pay and bookings. Refunds and disputes are real too.`
+                  ? `Every card taken at ${name} is charged for real on the ${region} account: tills, online, table pay and bookings. Refunds and disputes are real too.`
                   : `Card payments at ${name} go to the Adyen test system. Only test cards work. Nobody is charged.`}
               </div>
             </div>
@@ -255,8 +347,8 @@ export default function AdyenEnvironmentControls({ opsLocationId, platformLocati
                 <span style={{ fontSize: 12, fontWeight: 700, color: isLive ? 'var(--red)' : 'var(--t3)' }}>{isLive ? 'Live' : 'Test'}</span>
                 <EnvSwitch
                   on={isLive}
-                  disabled={envBusy || (!isLive && !envInfo.liveConfigured)}
-                  title={isLive ? 'Switch back to test cards' : envInfo.liveConfigured ? 'Switch to live payments' : 'Live keys are not set on the server yet'}
+                  disabled={envBusy || regionBusy || (!isLive && !envInfo.liveConfigured)}
+                  title={isLive ? 'Switch back to test cards' : envInfo.liveConfigured ? `Switch to live payments on the ${region} account` : `Live keys for the ${region} account are not set on the server yet`}
                   onToggle={onEnvToggle}
                 />
               </div>
@@ -267,16 +359,19 @@ export default function AdyenEnvironmentControls({ opsLocationId, platformLocati
 
           {canSetEnv && !isLive && !envInfo.liveConfigured && (
             <div style={{ ...S.desc, marginTop: 10, color: 'var(--orn, #e8a020)' }}>
-              <b>Live keys are not fully set on the server yet</b>
+              <b>Live keys for the {region} account are not fully set on the server yet</b>
               {Array.isArray(envInfo.liveMissing) && envInfo.liveMissing.length > 0 && (
                 <> (missing: <span style={S.mono}>{envInfo.liveMissing.join(', ')}</span>)</>
               )}. The switch unlocks once they are in place.
+              {liveRegions && liveRegions.length > 0 && !liveRegions.includes(region) && (
+                <> Live keys are set for {liveRegions.join(', ')}; if this venue belongs there, change its region above.</>
+              )}
             </div>
           )}
 
           {liveConfirm && !isLive && (
             <div style={{ marginTop: 12, padding: 12, borderRadius: 8, background: 'var(--red-d, rgba(255,90,74,.1))', border: '1px solid var(--red-b, var(--red))' }}>
-              <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--red)' }}>Switch {name} to live payments?</div>
+              <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--red)' }}>Switch {name} to live payments on the {region} account?</div>
               <div style={{ ...S.desc, marginTop: 4, color: 'var(--t2)' }}>
                 From the moment you confirm, every card taken there charges the customer for real. Type <b>LIVE</b> to confirm.
               </div>

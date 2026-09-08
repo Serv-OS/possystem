@@ -12,18 +12,21 @@
 //      adyen_webhook_events; Phase 3 wires the POS to answer with the bill.
 //
 // Auth: Basic auth credentials configured on the CA endpoint —
-// ADYEN_EVENTS_USER / ADYEN_EVENTS_PASS for the test set, ADYEN_LIVE_EVENTS_USER
-// / ADYEN_LIVE_EVENTS_PASS for live (falling back to the test pair when unset).
-// Either set authenticates: test and live terminals post to this ONE URL.
-// Fail closed until set. Deployed with verify_jwt=false (Adyen calls this).
+// ADYEN_EVENTS_USER / ADYEN_EVENTS_PASS for the test set, and per live region
+// ADYEN_LIVE_UK_EVENTS_USER / _PASS and ADYEN_LIVE_US_EVENTS_USER / _PASS
+// (the unsuffixed ADYEN_LIVE_EVENTS_* names are the UK fallback; a live
+// region with no pair of its own falls back to the test pair). ANY configured
+// pair authenticates: test, UK live and US live terminals all post to this
+// ONE URL. Fail closed until set. Deployed with verify_jwt=false (Adyen calls this).
 //
-// PER VENUE ENVIRONMENT (7 Sep 2026): once the terminal's venue is known its
-// merchant_adyen_accounts.environment picks the config for every reader
-// message sent from here (menus, amount entry, display text). The charge
-// itself is kicked through adyen-terminal-charge, which resolves the venue again.
+// PER VENUE ENVIRONMENT AND REGION (7 and 8 Sep 2026): once the terminal's
+// venue is known its merchant_adyen_accounts row (environment + region) picks
+// the config for every reader message sent from here (menus, amount entry,
+// display text), including the regional Terminal API host. The charge itself
+// is kicked through adyen-terminal-charge, which resolves the venue again.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { parsePaymentResponse, buildMenuInputRequest, parseMenuInputResponse, buildAmountInputRequest, parseAmountInputResponse, buildDisplayRequest, newServiceId, adyenFetch, terminalEndpoint, adyenConfig, adyenEnvForLocation, adyenNotConfiguredMessage } from '../_shared/adyen.ts';
+import { parsePaymentResponse, buildMenuInputRequest, parseMenuInputResponse, buildAmountInputRequest, parseAmountInputResponse, buildDisplayRequest, newServiceId, adyenFetch, terminalEndpoint, adyenConfig, adyenEnvForLocation, adyenNotConfiguredMessage, webhookAuthPairsFor } from '../_shared/adyen.ts';
 
 const opsAdmin = createClient(
   Deno.env.get('SUPABASE_URL') ?? '',
@@ -36,21 +39,12 @@ const platformAdmin = createClient(
   { auth: { autoRefreshToken: false, persistSession: false } },
 );
 
-// The credential pairs that may post here: the test set and the live set
-// (the live pair falls back to the test pair inside adyenConfig). Read at
-// call time, so a secret change needs no redeploy.
+// The credential pairs that may post here: every configured live region pair
+// (UK, then US) and the test pair, deduplicated (webhookAuthPairsFor; a live
+// region with no pair of its own already falls back to the test pair inside
+// the resolver). Read at call time, so a secret change needs no redeploy.
 function eventCredentialSets(): { user: string; pass: string }[] {
-  const seen = new Set<string>();
-  const out: { user: string; pass: string }[] = [];
-  for (const env of ['test', 'live'] as const) {
-    const c = adyenConfig(env);
-    if (!c.eventsUser || !c.eventsPass) continue;
-    const key = `${c.eventsUser}:${c.eventsPass}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push({ user: c.eventsUser, pass: c.eventsPass });
-  }
-  return out;
+  return webhookAuthPairsFor(true, 'events').map((c) => ({ user: c.user, pass: c.pass }));
 }
 
 function authorized(req: Request): boolean {
@@ -253,18 +247,18 @@ Deno.serve(async (req) => {
           // Account row + the venue's environment in ONE wait (7 Sep 2026):
           // the config below is what every reader message goes out with.
           const platformLocId = maaRow?.id ?? term.location_id;
-          const [{ data: maa }, env] = await Promise.all([
+          const [{ data: maa }, target] = await Promise.all([
             platformAdmin.from('merchant_adyen_accounts')
               .select('merchant_account, region').eq('location_id', platformLocId).maybeSingle(),
             adyenEnvForLocation(platformAdmin, platformLocId),
           ]);
-          const cfg = adyenConfig(env);
+          const cfg = adyenConfig(target);   // { env, region }: the venue's secret set and hosts
           mark('merchant');
           if (!maa?.merchant_account) { console.log('[pay-at-table] no merchant account'); return; }
           if (!cfg.configured) { console.error(`[pay-at-table] ${adyenNotConfiguredMessage(cfg)} (${cfg.env})`); return; }
           const saleId = `servos-${String(term.location_id).slice(0, 8)}`;
           const askInput = (msg: unknown) =>
-            adyenFetch('POST', terminalEndpoint(maa.merchant_account, poiid, 'sync', maa.region === 'US' ? 'us' : 'eu', cfg), msg, { cfg, timeoutMs: 90_000 });
+            adyenFetch('POST', terminalEndpoint(maa.merchant_account, poiid, 'sync', cfg.region, cfg), msg, { cfg, timeoutMs: 90_000 });
 
           // v5.6.70 — SAY IT ON THE READER. Every refusal below used to `return`
           // silently, so the screen simply fell back to the home menu and staff
@@ -275,7 +269,7 @@ Deno.serve(async (req) => {
           // up. Shape is unproven on this fleet, hence never awaited: worst case is
           // the same dead air we already had.
           const status = (text: string) => {
-            adyenFetch('POST', terminalEndpoint(maa.merchant_account, poiid, 'sync', maa.region === 'US' ? 'us' : 'eu', cfg),
+            adyenFetch('POST', terminalEndpoint(maa.merchant_account, poiid, 'sync', cfg.region, cfg),
               buildDisplayRequest({ poiid, saleId, serviceId: newServiceId(), text }), { cfg, timeoutMs: 8_000 })
               .then((r) => { marks[`display_${text.slice(0, 12)}`] = r.status; },
                     (e) => { marks[`display_${text.slice(0, 12)}`] = -1; console.log(`[pay-at-table] display rejected: ${(e as Error)?.message}`); });
