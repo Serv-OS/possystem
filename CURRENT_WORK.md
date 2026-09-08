@@ -12,6 +12,9 @@
 - Edge function deploys: first attempt 401 (expired token). All 13 REDEPLOYED 8 Sep after Peter refreshed the token; status action verified for Provo (environment test, inPerson true).
 - 8 Sep 16:09Z: platform migration APPLIED by Peter (verified); PR #1 MERGED (main 41493330); app.serv-os.app verified serving 5.8.33. CI rebuilt the four APKs from main (same version codes).
 
+- v5.8.34 (03f63c80): go live rehearsal fixes (see project_adyen_migration memory). 14 functions redeployed.
+- v5.8.35 (c714e56a): Adyen environment switch, ensure_store and ensure_payment_methods are super_admin only; controls moved to the admin portal (src/admin/components/AdyenEnvironmentControls.jsx inside AdminBillingManager's venue card); venue Back Office shows state only. adyen-terminal-admin redeployed. Verified: platform locations has NO country column (reviewer blocker was real).
+
 ## Parked, needs Peter
 - Android repoint to app.serv-os.app (POS 12/2.1, MPOS 5/1.5, menuboard 3/1.2) is a patch in the session scratchpad (android_live_repoint.patch), NOT committed: .github/workflows/build-*.yml auto publish APKs to the live app-releases bucket on any push to develop or main. Apply only after PR #1 is merged and app.serv-os.app verified. Local gradle was blocked by the classifier.
 - Security migrations 20260907b_* (5 files) plus docs/PRE_LIVE_SECURITY_MIGRATIONS.md are DRAFTS marked DO NOT RUN: 12 breaks and 25 gaps from the adversarial pass are recorded in the runbook and not applied (the fix agent hit the session limit).
