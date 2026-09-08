@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.38',
+    date: '8 Sep 2026',
+    items: [
+      'Admin portal: one button registers the web origins (with wildcards) and the venue\'s Apple Pay shop domains on the region\'s live Adyen credential through the API, so no venue address is ever typed into the Customer Area by hand. It also runs by itself when a venue is switched to live.',
+    ],
+  },
+  {
     v: '5.8.37',
     date: '8 Sep 2026',
     items: [

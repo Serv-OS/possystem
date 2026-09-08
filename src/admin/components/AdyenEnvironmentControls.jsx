@@ -12,7 +12,7 @@
 // user_profiles.role, the same lookup adyen-onboard fences on). The venue's
 // Back Office shows the state only.
 //
-// Renders three things:
+// Renders four things:
 //   1. Region (8 Sep 2026): UK or US, the Adyen account the venue is on. The
 //      UK and US live accounts are different accounts (keys, Checkout host,
 //      Terminal API host, Drop-in environment), so the select sits ABOVE the
@@ -26,7 +26,17 @@
 //      reprovision flow: the fn answers 409 + needs_reprovision while the
 //      venue's store or readers were set up on the current environment, and
 //      the flip is retried with reprovision: true after a confirm.
-//   3. Store: while the venue has no Adyen store, the Create store box with
+//   3. Web origins and Apple Pay (8 Sep 2026): one button that runs the fn's
+//      register_origins (the ServOS hosts and the *.serv-os.app and
+//      *.dev.serv-os.app wildcards on the venue's API credential's allowed
+//      origins, through the Management API because the live Customer Area
+//      screen refuses wildcards) and register_apple_pay_domains (the venue's
+//      storefront hosts on the merchant's Apple Pay payment method), then
+//      lists what was added, what was there already and what Adyen refused
+//      with its message. Shown for test and live venues; the fn also runs
+//      both by itself when a venue is switched to live and the answer's
+//      web_origins / apple_pay_domains land in the same list.
+//   4. Store: while the venue has no Adyen store, the Create store box with
 //      the address and phone prefilled from the venue (on live the fn
 //      refuses a placeholder). Once the store exists, the card scheme review
 //      status and a "Request card schemes again" repair button.
@@ -43,6 +53,7 @@
 //                       changed so the host can refresh its own pills.
 
 import { useEffect, useState, useCallback } from 'react';
+import { registrationLines } from '../../lib/payments/adyenOrigins';
 
 const S = {
   block: { marginTop: 14, padding: '14px 16px', borderRadius: 12, background: 'var(--bg2)', border: '1px solid var(--bdr2)' },
@@ -75,6 +86,25 @@ function EnvSwitch({ on, disabled, title, onToggle }) {
       }}>
       <span style={{ ...S.switchKnob, transform: on ? 'translateX(20px)' : 'translateX(0)' }} />
     </button>
+  );
+}
+
+// One registration answer from the fn ({ added, existing, failed, error,
+// note }) as a titled list: added in green, already there in plain text,
+// each refusal in red with Adyen's status and message.
+const LINE_TONES = { ok: 'var(--grn)', info: 'var(--t2)', warn: 'var(--orn, #e8a020)', err: 'var(--red)' };
+function RegistrationLines({ title, result }) {
+  const lines = registrationLines(result);
+  if (!lines.length) return null;
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--t1)' }}>{title}</div>
+      <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+        {lines.map((l, i) => (
+          <li key={i} style={{ fontSize: 12, lineHeight: 1.5, color: LINE_TONES[l.tone] || 'var(--t2)', wordBreak: 'break-word' }}>{l.text}</li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -117,6 +147,11 @@ export default function AdyenEnvironmentControls({ opsLocationId, platformLocati
   const [pmResult, setPmResult] = useState(null);
   // The store's address and phone. On live the fn refuses a placeholder.
   const [storeForm, setStoreForm] = useState({ line1: '', city: '', postal_code: '', phone: '' });
+  // The last register_origins / register_apple_pay_domains answers (from the
+  // button, or from set_environment's web_origins / apple_pay_domains when
+  // the venue was just switched to live).
+  const [domainsBusy, setDomainsBusy] = useState(false);
+  const [domainsResult, setDomainsResult] = useState(null);
 
   const load = useCallback(async () => {
     // Environment first. It never touches Adyen, so it answers even when the
@@ -205,6 +240,9 @@ export default function AdyenEnvironmentControls({ opsLocationId, platformLocati
       setEnvInfo((prev) => ({ ...(prev || {}), environment: r.environment, region: r.region ?? prev?.region, liveConfigured: r.liveConfigured ?? prev?.liveConfigured, liveRegionsConfigured: r.liveRegionsConfigured ?? prev?.liveRegionsConfigured }));
       setLiveConfirm(false); setLiveTyped('');
       setPmResult(null);
+      // A move to live registers the web origins and Apple Pay domains by
+      // itself; show what happened in the same list the button fills.
+      if (r.web_origins || r.apple_pay_domains) setDomainsResult({ origins: r.web_origins || null, applePay: r.apple_pay_domains || null });
       setNotice(r.environment === 'live'
         ? `${name} now takes LIVE payments on the ${r.region || region} account. Real cards are charged from now on.`
         : `${name} is back on test cards. Nobody is charged.`);
@@ -274,6 +312,24 @@ export default function AdyenEnvironmentControls({ opsLocationId, platformLocati
       setNotice('Card schemes requested on the store.');
     } catch (e) { setErr(e?.message || String(e)); }
     setBusy('');
+  };
+
+  // Put the ServOS hosts on the venue's API credential and the venue's
+  // storefront on the merchant's Apple Pay method. Two calls, each caught on
+  // its own so a refused one never hides the other's lines. The fn answers
+  // 200 with ok false and the detail on an Adyen refusal; a thrown answer
+  // (403 for a venue role, 500 for a live venue without keys) becomes the
+  // error line of that half.
+  const registerDomains = async () => {
+    setDomainsBusy(true); setErr(''); setNotice('');
+    const run = async (action) => {
+      try { return await callAdmin(action, {}); }
+      catch (e) { return { ok: false, error: e?.data?.error || e?.message || String(e) }; }
+    };
+    const origins = await run('register_origins');
+    const applePay = await run('register_apple_pay_domains');
+    setDomainsResult({ origins, applePay });
+    setDomainsBusy(false);
   };
 
   const storeFormComplete = !!(storeForm.line1.trim() && storeForm.city.trim() && storeForm.postal_code.trim() && storeForm.phone.trim());
@@ -397,6 +453,48 @@ export default function AdyenEnvironmentControls({ opsLocationId, platformLocati
         <div style={S.block}>
           <div style={S.label}>Environment (ServOS admin only)</div>
           <div style={{ ...S.desc, marginTop: 4 }}>{envErr ? `Could not read the venue's environment: ${envErr}` : 'Reading the venue\'s environment…'}</div>
+        </div>
+      )}
+
+      {/* ── web origins and Apple Pay: the credential and the merchant know the hosts ── */}
+      {envInfo && (
+        <div style={S.block}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+            <div style={{ flex: '1 1 240px', minWidth: 0 }}>
+              <div style={S.label}>Web origins and Apple Pay (ServOS admin only)</div>
+              <div style={{ fontSize: 13, fontWeight: 700, marginTop: 2 }}>
+                Allowed origins on the {region} {isLive ? 'live' : 'test'} API credential and Apple Pay domains on the merchant
+              </div>
+              <div style={{ ...S.desc, marginTop: 4 }}>
+                Puts <span style={S.mono}>app.serv-os.app</span>, <span style={S.mono}>serv-os.app</span>, <span style={S.mono}>dev.serv-os.app</span> and
+                the <span style={S.mono}>*.serv-os.app</span> and <span style={S.mono}>*.dev.serv-os.app</span> wildcards on the credential's allowed
+                origins (the live Customer Area refuses wildcards in its screen; the API accepts them), and registers {name}'s storefront
+                addresses on the merchant's Apple Pay payment method. Safe to run again: nothing is added twice. Runs by itself when a venue is switched to live.
+              </div>
+            </div>
+            {canSetEnv ? (
+              <button style={{ ...S.btn, ...S.btnPrim, opacity: domainsBusy || envBusy ? 0.6 : 1 }}
+                disabled={domainsBusy || envBusy || regionBusy}
+                title="Register the ServOS web origins on this venue's API credential and its storefront domains for Apple Pay"
+                onClick={registerDomains}>
+                {domainsBusy ? 'Registering…' : 'Register web origins and Apple Pay domains'}
+              </button>
+            ) : (
+              <div style={{ ...S.desc, maxWidth: 240 }}>Only a ServOS super admin can run this.</div>
+            )}
+          </div>
+          {domainsResult && (
+            <>
+              <RegistrationLines
+                title={['Web origins', domainsResult.origins?.region ? `on the ${[domainsResult.origins.region, domainsResult.origins.environment].filter(Boolean).join(' ')} credential` : ''].filter(Boolean).join(' ')}
+                result={domainsResult.origins}
+              />
+              <RegistrationLines
+                title={['Apple Pay domains', domainsResult.applePay?.merchant ? `on ${domainsResult.applePay.merchant}` : ''].filter(Boolean).join(' ')}
+                result={domainsResult.applePay}
+              />
+            </>
+          )}
         </div>
       )}
 
