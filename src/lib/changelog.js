@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.35',
+    date: '8 Sep 2026',
+    items: [
+      'Moving a venue between test cards and live, creating its Adyen store, and requesting card schemes are now ServOS admin actions. They live in the admin portal, Processing, on each venue card, and the server refuses any venue user, owners included.',
+      'Venue Back Office, Card readers, now shows the state only: Test cards or LIVE, real money, the red banner while live, and a note that ServOS moves venues between the two. Readers, tips and terminal settings stay with the venue.',
+      'Admin portal store form asks for the venue street, town, postcode and phone, prefilled from the venue record, and shows the card scheme review result after a live store is created.',
+    ],
+  },
+  {
     v: '5.8.34',
     date: '8 Sep 2026',
     items: [

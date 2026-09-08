@@ -14,13 +14,20 @@
 //
 // ENVIRONMENT (7 Sep 2026): dev and live share one Supabase project pair, so
 // the Adyen environment is a PER VENUE setting on merchant_adyen_accounts
-// ('test' | 'live', default 'test'). The block at the top of this panel reads
-// it through the fn's 'environment' action and flips it with 'set_environment'.
-// Going live means typing LIVE, and is only offered when the server reports
-// the live secret set as configured. Going back to test is one confirm. While
-// live, a red banner runs across the panel. The environment probe never talks
-// to Adyen, so it still answers when a live venue's status probe fails closed
-// (live keys missing), which is exactly when the way back to test is needed.
+// ('test' | 'live', default 'test'). This panel READS it through the fn's
+// 'environment' action and shows it: a badge in the header (Test cards or
+// LIVE, real money) and a red banner across the panel while live.
+//
+// OWNER RULE (8 Sep 2026): the venue cannot move itself between test and
+// live, create its Adyen store or request its card schemes. Those controls
+// (the switch, the typed LIVE confirm, the reprovision flow, the Create store
+// box, Request card schemes again) live in the ServOS admin portal,
+// src/admin/components/AdyenEnvironmentControls.jsx, and the fn refuses
+// set_environment, ensure_store and ensure_payment_methods for anyone but a
+// super_admin. The environment probe never talks to Adyen, so it still
+// answers when a live venue's status probe fails closed (live keys missing);
+// the panel then shows the state, the error and "Contact ServOS support".
+// With no store yet it shows one line: ServOS registers it at go live.
 
 import { useEffect, useState, useCallback } from 'react';
 import { supabase, getActiveLocationSync } from '../../lib/supabase';
@@ -46,26 +53,7 @@ const S = {
   pillLive: { background: 'var(--red)', color: '#fff', border: '1px solid var(--red)', letterSpacing: '.06em' },
   // Runs edge to edge across the card (the card pads 20px) while the venue is live.
   liveBanner: { margin: '-20px -20px 16px', padding: '10px 20px', borderRadius: '14px 14px 0 0', background: 'var(--red)', color: '#fff', fontSize: 12.5, fontWeight: 700, lineHeight: 1.4, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' },
-  switchTrack: { position: 'relative', width: 46, height: 26, borderRadius: 999, border: '1px solid var(--bdr2)', padding: 0, background: 'var(--bg3, var(--bdr2))', transition: 'background .15s', flexShrink: 0 },
-  switchKnob: { position: 'absolute', top: 2, left: 2, width: 20, height: 20, borderRadius: 999, background: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,.35)', transition: 'transform .15s' },
 };
-
-// The environment switch. Off = test cards, on = live, real money. It only
-// draws the state: the click handler decides whether a confirm box opens.
-function EnvSwitch({ on, disabled, title, onToggle }) {
-  return (
-    <button type="button" role="switch" aria-checked={on} disabled={disabled} title={title} onClick={onToggle}
-      style={{
-        ...S.switchTrack,
-        background: on ? 'var(--red)' : 'var(--bg3, var(--bdr2))',
-        borderColor: on ? 'var(--red)' : 'var(--bdr2)',
-        opacity: disabled ? 0.5 : 1,
-        cursor: disabled ? 'not-allowed' : 'pointer',
-      }}>
-      <span style={{ ...S.switchKnob, transform: on ? 'translateX(20px)' : 'translateX(0)' }} />
-    </button>
-  );
-}
 
 const onlineDot = (iso) => {
   const on = iso && Date.now() - new Date(iso).getTime() < 5 * 60_000;
@@ -85,7 +73,7 @@ async function callAdmin(action, payload = {}) {
   const data = await res.json();
   if (!res.ok) {
     // The fn's payload rides on the error so callers can act on structured
-    // refusals (set_environment answers 409 + needs_reprovision).
+    // refusals (a 403 'ServOS admin only', for one).
     const err = new Error(data?.error || `HTTP ${res.status}`);
     err.status = res.status;
     err.data = data;
@@ -124,19 +112,13 @@ export default function AdyenTerminals() {
   const [standaloneWas, setStandaloneWas] = useState(false);
   // Per venue Adyen environment (7 Sep 2026): the fn's 'environment' answer
   // { environment, liveConfigured, testConfigured, liveMissing }. Names only,
-  // never secret values.
+  // never secret values. Read only here (OWNER RULE, 8 Sep 2026): the switch
+  // lives in the ServOS admin portal.
   const [envInfo, setEnvInfo] = useState(null);
-  const [envBusy, setEnvBusy] = useState(false);
-  const [liveConfirm, setLiveConfirm] = useState(false);   // the "type LIVE" box is open
-  const [liveTyped, setLiveTyped] = useState('');
   // Set when the status probe failed on a LIVE venue (fails closed without
-  // live keys). The panel then stays on screen with the environment block
-  // only, so there is a way back to test from this screen.
+  // live keys). The panel then stays on screen with the state and the error,
+  // pointing the venue at ServOS support.
   const [statusErr, setStatusErr] = useState('');
-  // The store's address and phone (8 Sep 2026). The store is the record Adyen
-  // keeps for the venue; on live the fn refuses a placeholder. Prefilled from
-  // the ops locations.address ("9a New Street, Huddersfield, HD3 4LN").
-  const [storeForm, setStoreForm] = useState({ line1: '', city: '', postal_code: '', country: 'GB', phone: '' });
 
   const load = useCallback(async () => {
     // Environment first. It never touches Adyen, so it answers even when the
@@ -149,7 +131,10 @@ export default function AdyenTerminals() {
       console.warn('[AdyenTerminals] environment', e?.message || e);
     }
     try {
-      const st = await callAdmin('status');
+      // probe: true keeps the durable store diagnostic (the fn logs the
+      // store's splitConfiguration to adyen_webhook_events) on the venue's
+      // own panel only; the admin portal's cards read status without it.
+      const st = await callAdmin('status', { probe: true });
       setStatus(st);
       setStatusErr('');
       if (st.storeId) {
@@ -163,19 +148,7 @@ export default function AdyenTerminals() {
       setPosDevices(devs || []);
       // v5.7.5 - venue tip-on-receipt setting off ops locations.pos_settings
       const { data: locRow } = await supabase.from('locations')
-        .select('pos_settings, address').eq('id', locId).maybeSingle();
-      // Rough split of the free text address for the store form: the last
-      // comma part is the postcode, the one before it the town, the rest the
-      // street. The operator corrects it before creating the store.
-      const parts = String(locRow?.address || '').split(',').map((p) => p.trim()).filter(Boolean);
-      if (parts.length) {
-        setStoreForm((f) => ({
-          ...f,
-          line1: f.line1 || (parts.length >= 3 ? parts.slice(0, -2).join(', ') : parts[0]),
-          city: f.city || (parts.length >= 3 ? parts[parts.length - 2] : (parts[1] || '')),
-          postal_code: f.postal_code || (parts.length >= 2 ? parts[parts.length - 1] : ''),
-        }));
-      }
+        .select('pos_settings').eq('id', locId).maybeSingle();
       const tor = locRow?.pos_settings?.tip_on_receipt;
       setTorEnabled(tor?.enabled === true);
       const h = Number(tor?.capture_hours);
@@ -186,7 +159,7 @@ export default function AdyenTerminals() {
       setTorLoaded(true);
     } catch (e) {
       // Panel self-hides on hard failures (venue not provisioned etc.), with
-      // one exception: a LIVE venue keeps the environment block (see statusErr).
+      // one exception: a LIVE venue keeps the state on screen (see statusErr).
       // The previous status and fleet are DROPPED (8 Sep 2026): after a flip
       // to live whose probe fails, the panel used to keep showing the test
       // store, the test readers and "Register a new reader" as if nothing
@@ -200,56 +173,6 @@ export default function AdyenTerminals() {
 
   const isLive = envInfo?.environment === 'live';
   const venueName = status?.venue || 'this venue';
-  // Owner or super admin only (the fn refuses everyone else with 403); the
-  // switch is hidden rather than shown dead. Older fn builds do not send the
-  // flag, so an absent value keeps the switch visible.
-  const canSetEnv = envInfo?.canSetEnvironment !== false;
-
-  // Flip the venue's environment through the fn, then reload so the status
-  // probe runs against the new secret set. The fn REFUSES (409 +
-  // needs_reprovision) while the venue's store or readers were set up on the
-  // current environment: Adyen ids belong to one environment, so the flip
-  // must clear them and the operator sets up again. That is confirmed here
-  // and retried with reprovision: true.
-  const setEnvironment = async (next, reprovision = false) => {
-    setEnvBusy(true); setErr(''); setNotice('');
-    try {
-      const r = await callAdmin('set_environment', { environment: next, ...(reprovision ? { reprovision: true } : {}) });
-      if (r.ok === false) throw new Error(r.error || 'could not change the environment');
-      setEnvInfo((prev) => ({ ...(prev || {}), environment: r.environment, liveConfigured: r.liveConfigured ?? prev?.liveConfigured }));
-      setLiveConfirm(false); setLiveTyped('');
-      setNotice(r.environment === 'live'
-        ? `${venueName} now takes LIVE payments. Real cards are charged from now on.`
-        : `${venueName} is back on test cards. Nobody is charged.`);
-      if (r.warning) setErr(r.warning);
-      await load();
-    } catch (e) {
-      if (e?.data?.needs_reprovision && !reprovision) {
-        setEnvBusy(false);
-        if (window.confirm(`${e.data.error || e.message}\n\nSwitch ${venueName} to ${next} anyway and set up again afterwards?`)) {
-          await setEnvironment(next, true);
-        }
-        return;
-      }
-      setErr(e?.message || String(e));
-    }
-    setEnvBusy(false);
-  };
-
-  const onEnvToggle = () => {
-    if (envBusy || !envInfo || !canSetEnv) return;
-    if (isLive) {
-      if (!window.confirm(
-        `Switch ${venueName} back to test cards?\n\n`
-        + 'Real cards stop working at this venue until you switch live back on. '
-        + 'Payments already taken are not affected, but refunding a live payment needs live switched back on first.',
-      )) return;
-      setEnvironment('test');
-      return;
-    }
-    if (!envInfo.liveConfigured) return;   // switch is disabled anyway
-    setLiveConfirm((v) => !v); setLiveTyped('');
-  };
 
   // Red banner across the panel while the venue is live.
   const liveBanner = isLive ? (
@@ -259,76 +182,21 @@ export default function AdyenTerminals() {
     </div>
   ) : null;
 
-  // Small badge in the panel header (the Adyen card terminals list header).
+  // Badge in the panel header: the venue's environment, read only.
   const envBadge = envInfo ? (
     <span style={{ ...S.pill, ...(isLive ? S.pillLive : S.pillTest), marginLeft: 8, verticalAlign: 'middle' }}>
-      {isLive ? 'LIVE' : 'TEST'}
+      {isLive ? 'LIVE, real money' : 'Test cards'}
     </span>
   ) : null;
 
-  // The environment block: state, one line of what it means, the switch, and
-  // the "type LIVE" confirm box when going live.
-  const envBlock = envInfo ? (
-    <div style={{ marginTop: 14, padding: 14, borderRadius: 10, background: 'var(--bg2)', border: `1px solid ${isLive ? 'var(--red-b, var(--red))' : 'var(--bdr)'}` }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <div style={{ flex: '1 1 240px', minWidth: 0 }}>
-          <div style={S.label}>Environment</div>
-          <div style={{ fontSize: 14, fontWeight: 800, marginTop: 2, color: isLive ? 'var(--red)' : 'var(--t1)' }}>
-            {isLive ? 'LIVE, real money' : 'Test cards'}
-          </div>
-          <div style={{ ...S.desc, marginTop: 4 }}>
-            {isLive
-              ? 'Every card taken at this venue is charged for real: tills, online, table pay and bookings. Refunds and disputes are real too.'
-              : 'Card payments at this venue go to the Adyen test system. Only test cards work. Nobody is charged.'}
-          </div>
-        </div>
-        {canSetEnv ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontSize: 12, fontWeight: 700, color: isLive ? 'var(--red)' : 'var(--t3)' }}>{isLive ? 'Live' : 'Test'}</span>
-            <EnvSwitch
-              on={isLive}
-              disabled={envBusy || (!isLive && !envInfo.liveConfigured)}
-              title={isLive ? 'Switch back to test cards' : envInfo.liveConfigured ? 'Switch to live payments' : 'Live keys are not set on the server yet'}
-              onToggle={onEnvToggle}
-            />
-          </div>
-        ) : (
-          <div style={{ ...S.desc, color: 'var(--t3)', maxWidth: 220 }}>Only the owner can change this.</div>
-        )}
-      </div>
-
-      {canSetEnv && !isLive && !envInfo.liveConfigured && (
-        <div style={{ ...S.desc, marginTop: 10, color: 'var(--orn)' }}>
-          <b>Live keys are not fully set on the server yet.</b> Ask ServOS support to add them
-          {Array.isArray(envInfo.liveMissing) && envInfo.liveMissing.length > 0 && (
-            <> (missing: <span style={S.mono}>{envInfo.liveMissing.join(', ')}</span>)</>
-          )}. The switch unlocks once they are in place.
-        </div>
-      )}
-
-      {liveConfirm && !isLive && (
-        <div style={{ marginTop: 12, padding: 12, borderRadius: 8, background: 'var(--red-d, rgba(255,90,74,.1))', border: '1px solid var(--red-b, var(--red))' }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--red)' }}>Switch {venueName} to live payments?</div>
-          <div style={{ ...S.desc, marginTop: 4, color: 'var(--t2)' }}>
-            From the moment you confirm, every card taken here charges the customer for real. Type <b>LIVE</b> to confirm.
-          </div>
-          <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-            <input
-              style={{ ...S.input, ...S.mono, width: 140, letterSpacing: '.1em' }}
-              value={liveTyped}
-              onChange={(e) => setLiveTyped(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && liveTyped.trim() === 'LIVE' && !envBusy) setEnvironment('live'); }}
-              placeholder="Type LIVE" autoFocus autoCapitalize="characters" autoComplete="off" spellCheck={false}
-            />
-            <button style={{ ...S.btn, background: 'var(--red)', borderColor: 'var(--red)', color: '#fff' }}
-              disabled={envBusy || liveTyped.trim() !== 'LIVE'}
-              onClick={() => setEnvironment('live')}>
-              {envBusy ? 'Switching…' : 'Switch to live'}
-            </button>
-            <button style={S.btn} disabled={envBusy} onClick={() => { setLiveConfirm(false); setLiveTyped(''); }}>Cancel</button>
-          </div>
-        </div>
-      )}
+  // One line of what the state means. Changing it is a ServOS action (OWNER
+  // RULE, 8 Sep 2026), done from the admin portal, never from here.
+  const envLine = envInfo ? (
+    <div style={{ ...S.desc, marginTop: 10, color: isLive ? 'var(--red)' : 'var(--t3)' }}>
+      {isLive
+        ? 'Every card taken at this venue is charged for real: tills, online, table pay and bookings. Refunds and disputes are real too.'
+        : 'Card payments at this venue go to the Adyen test system. Only test cards work. Nobody is charged.'}
+      {' '}Moving between test and live is done by ServOS support.
     </div>
   ) : null;
 
@@ -336,15 +204,16 @@ export default function AdyenTerminals() {
   if (!ready && !(isLive && statusErr)) return null;   // self-gating sibling
 
   // A live venue whose status probe failed (live keys missing, fail closed):
-  // show only the banner, the environment block and the error, so the
-  // operator can switch back to test. Nothing below needs a status payload.
+  // show only the banner, the state and the error. The way back to test is a
+  // ServOS action now, so the venue is pointed at support. Nothing below
+  // needs a status payload.
   if (!ready) {
     return (
       <div style={S.card}>
         {liveBanner}
         <h2 style={S.h2}>💳 Card terminals{envBadge}</h2>
-        {envBlock}
-        <div style={S.err}>Could not reach Adyen for this venue: {statusErr}</div>
+        {envLine}
+        <div style={S.err}>Could not reach Adyen for this venue: {statusErr}. Contact ServOS support.</div>
         {err && <div style={S.err}>{err}</div>}
         {notice && <div style={S.ok}>{notice}</div>}
       </div>
@@ -386,27 +255,10 @@ export default function AdyenTerminals() {
       const body = action === 'assign' && adoptId ? { ...payload, terminal_device_id: adoptId } : payload;
       const r = await callAdmin(action, body);
       if (r.ok === false) throw new Error(r.error === 'scope_missing' ? (status.scopeError || 'API key missing Management role') : (r.error || 'failed'));
-      if (action === 'ensure_store') {
-        // The card schemes were requested on the new store. On live Adyen
-        // reviews them, and until they are approved a payment routed through
-        // this store is refused; the operator needs to see that, not just
-        // "Store created" (8 Sep 2026).
-        const pm = r.paymentMethods || { requested: [], errors: [] };
-        const live = r.environment === 'live' || isLive;
-        const requested = (pm.requested || []).length ? `Card schemes requested: ${pm.requested.join(', ')}.` : 'No card schemes were requested.';
-        setNotice(r.existing
-          ? `This venue already has a store (${r.storeId}).`
-          : `Store created (${r.storeId}). ${requested}${live ? ' Adyen must approve them before this store can take cards; check the Customer Area.' : ''}`);
-        if ((pm.errors || []).length) setErr(`Some card schemes were refused: ${pm.errors.join('; ')}. Use "Request card schemes again" once fixed.`);
-      } else if (action === 'ensure_payment_methods') {
-        setNotice(`Card schemes requested on the store: ${(r.requested || []).join(', ') || 'none'}.${isLive ? ' Adyen must approve them before this store can take cards.' : ''}`);
-        if ((r.errors || []).length) setErr(`Some card schemes were refused: ${r.errors.join('; ')}`);
-      } else {
-        setNotice(
-          action === 'assign' ? (r.adopted ? 'Reader linked to the ServOS terminal — it can now take cards on its own screen' : 'Terminal registered to this venue')
-            : 'Done',
-        );
-      }
+      setNotice(
+        action === 'assign' ? (r.adopted ? 'Reader linked to the ServOS terminal, it can now take cards on its own screen' : 'Terminal registered to this venue')
+          : 'Done',
+      );
       if (action === 'assign' && r.adopted) setAdoptId('');
       await load();
     } catch (e) { setErr(e?.message || String(e)); }
@@ -510,57 +362,20 @@ export default function AdyenTerminals() {
         then on. These readers run their own payment software, so there is no code to type.
       </p>
 
-      {/* ── environment: test cards or live, real money (7 Sep 2026) ── */}
-      {envBlock}
+      {/* environment: read only here (OWNER RULE, 8 Sep 2026) */}
+      {envLine}
 
       {!status.scopeOk && <div style={S.err}>{status.scopeError}</div>}
 
-      {/* ── no store yet: the one-time venue setup ── */}
-      {status.scopeOk && !status.storeId && (
-        <div style={{ marginTop: 14, padding: 14, borderRadius: 10, background: 'var(--bg2)', border: '1px solid var(--bdr)' }}>
-          <div style={{ fontSize: 13, fontWeight: 700 }}>One-time setup — create this venue's payments store</div>
-          <div style={{ ...S.desc, marginTop: 4 }}>
-            Terminals and payments route through a store per physical venue. This creates
-            "{status.venue}" as a store on your payments account ({status.merchant}) and maps it here.
-            {isLive ? ' This is the live record Adyen keeps for the venue: check the address and phone number.' : ''}
-          </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 8, marginTop: 10 }}>
-            {[
-              ['line1', 'Street address', '9a New Street'],
-              ['city', 'Town or city', 'Huddersfield'],
-              ['postal_code', 'Postcode', 'HD3 4LN'],
-              ['phone', 'Phone number', '+44 1484 000000'],
-            ].map(([key, label, ph]) => (
-              <label key={key} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                <span style={S.label}>{label}{isLive ? ' *' : ''}</span>
-                <input style={S.input} value={storeForm[key]} placeholder={ph}
-                  onChange={(e) => setStoreForm((f) => ({ ...f, [key]: e.target.value }))} />
-              </label>
-            ))}
-          </div>
-          <button style={{ ...S.btn, ...S.btnPrim, marginTop: 10 }}
-            disabled={!!busy || (isLive && !(storeForm.line1.trim() && storeForm.city.trim() && storeForm.postal_code.trim() && storeForm.phone.trim()))}
-            onClick={() => run('store', 'ensure_store', {
-              address: { line1: storeForm.line1.trim(), city: storeForm.city.trim(), postal_code: storeForm.postal_code.trim(), country: storeForm.country || 'GB' },
-              phone: storeForm.phone.trim(),
-            })}>
-            {busy === 'store' ? 'Creating…' : `Create store for ${status.venue}`}
-          </button>
-        </div>
+      {/* no store yet: ServOS registers it from the admin portal */}
+      {!status.storeId && (
+        <div style={{ ...S.desc, marginTop: 14 }}>Store not registered yet. ServOS will register it when the venue goes live.</div>
       )}
 
-      {/* ── register by serial — the onboarding motion ── */}
+      {/* register by serial: the onboarding motion */}
       {status.scopeOk && status.storeId && (
         <div style={{ marginTop: 14, padding: 14, borderRadius: 10, background: 'var(--bg2)', border: '1px solid var(--bdr)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-            <div style={{ fontSize: 13, fontWeight: 700, flex: '1 1 auto' }}>Register a new reader</div>
-            {/* Repair a store whose card schemes were refused or never requested
-                (a store with none refuses every payment routed through it). */}
-            <button style={S.btn} disabled={!!busy} title="Ask Adyen for Visa, Mastercard, Amex and Maestro on this venue's store again"
-              onClick={() => run('pm', 'ensure_payment_methods', {})}>
-              {busy === 'pm' ? 'Requesting…' : 'Request card schemes again'}
-            </button>
-          </div>
+          <div style={{ fontSize: 13, fontWeight: 700 }}>Register a new reader</div>
           <div style={{ ...S.desc, marginTop: 4 }}>
             Plug the reader in, connect it to WiFi, then type the serial number from the label on
             the reader (or its box). It registers to this venue in one step.

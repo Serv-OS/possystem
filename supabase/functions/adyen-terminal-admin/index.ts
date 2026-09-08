@@ -7,17 +7,28 @@
 // the venue's STORE + a linked ops terminal_devices row the charge path and
 // till-binding already understand.
 //
-// Actions (all BO-fenced):
+// Actions (all BO-fenced; the ones marked ADMIN also need super_admin):
 //   status       → processor, merchant, store mapping, Management-API scope probe
-//   ensure_store → create the venue's Adyen store + merchant_adyen_accounts row
+//   ensure_store → ADMIN. create the venue's Adyen store + merchant_adyen_accounts row
+//   ensure_payment_methods → ADMIN. request the card schemes on the store again
 //   list         → Adyen fleet for the merchant, split store vs inventory,
 //                  joined to our terminal_devices links
 //   assign       → reassign terminal to the venue store + payment_devices row
 //                  + ops terminal_devices row (paired, ready to bind to a till)
 //   unlink       → retire the ops row (terminal stays boarded at Adyen)
 //
-// Auth: BO JWT → user_locations membership (or super_admin) — the ryft-terminals
+// Auth: BO JWT → user_locations membership (or super_admin), the ryft-terminals
 // fence, verbatim in spirit. All writes service-role.
+//
+// OWNER RULE (8 Sep 2026): a venue (any Back Office role, the owner included)
+// must not move itself between test cards and live, create the Adyen store or
+// request its card schemes. Those are ServOS internal actions, run from the
+// admin portal (?mode=admin, src/admin/components/AdyenEnvironmentControls.jsx)
+// by a platform super_admin. The check is the caller's user_profiles.role,
+// the same lookup adyen-onboard fences on, never a client supplied flag. A
+// venue role gets 403 { error: 'ServOS admin only' }. Every other action
+// stays open to Back Office users with access to the venue, and
+// 'environment' is read only so the venue can show its badge.
 //
 // Scope: needs an API key with Management API "Terminals read/write" roles.
 // If ADYEN_MANAGEMENT_KEY (ADYEN_LIVE_MANAGEMENT_KEY for a live venue) is set
@@ -29,12 +40,14 @@
 // .environment ('test' | 'live') picks the secret set for every Management
 // and Terminal API call here. Two more actions manage it:
 //   environment     → { environment, liveConfigured, testConfigured, liveMissing, canSetEnvironment }
-//   set_environment → { environment: 'test' | 'live', reprovision?: true }
-//                     owner / super_admin only. Flips the venue's row (created
-//                     with environment only when it does not exist). Refused
-//                     with 409 + needs_reprovision while the row or its readers
-//                     were provisioned on the current environment, unless
-//                     reprovision is true (then the ids are cleared).
+//                     any Back Office user with access (read only).
+//   set_environment → ADMIN. { environment: 'test' | 'live', reprovision?: true }
+//                     super_admin only (8 Sep 2026, was owner too). Flips the
+//                     venue's row (created with environment only when it does
+//                     not exist). Refused with 409 + needs_reprovision while
+//                     the row or its readers were provisioned on the current
+//                     environment, unless reprovision is true (then the ids
+//                     are cleared).
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import {
@@ -99,7 +112,10 @@ Deno.serve(async (req) => {
     const action = String(body.action || 'status');
     // `locationId` is accepted as an alias (the environment actions use it);
     // it is fenced exactly like ops_location_id.
-    const opsLocationId = String(body.ops_location_id || body.locationId || body.location_id || '');
+    // The admin portal sends the PLATFORM id; it is canonicalised to the ops
+    // id once the venue row is resolved below, so the ops side queries (link
+    // rows, venue code) hit the right venue whichever id the caller knew.
+    let opsLocationId = String(body.ops_location_id || body.locationId || body.location_id || '');
     if (!opsLocationId || opsLocationId === 'loc-demo') return json({ error: 'ops_location_id required' }, 400);
 
     // ── BO fence (the ryft-terminals pattern) ────────────────────────────────
@@ -113,10 +129,25 @@ Deno.serve(async (req) => {
     if (!ul && prof?.role !== 'super_admin') return json({ error: 'No access to this location' }, 403);
 
     // ── venue resolution: ops → platform → merchant mapping ──────────────────
-    const select = 'id, name, payment_processor, currency, country';
-    let { data: loc } = await platformAdmin.from('locations').select(select).eq('ops_location_id', opsLocationId).maybeSingle();
-    if (!loc) ({ data: loc } = await platformAdmin.from('locations').select(select).eq('id', opsLocationId).maybeSingle());
+    // No `country` in this select: platform locations has no such column
+    // (000_baseline_platform.sql, read off the live catalog 6 Aug 2026), and
+    // a bad column makes PostgREST answer 400 for EVERY action. The market
+    // is derived further down from currency and the merchant row's region.
+    // A query error is a 500 with the message, never folded into the 404,
+    // so a schema mismatch is visible the next time.
+    const select = 'id, name, payment_processor, currency, ops_location_id';
+    let { data: loc, error: locErr } = await platformAdmin.from('locations').select(select).eq('ops_location_id', opsLocationId).maybeSingle();
+    if (locErr) return json({ error: `platform locations lookup failed: ${locErr.message}` }, 500);
+    if (!loc) ({ data: loc, error: locErr } = await platformAdmin.from('locations').select(select).eq('id', opsLocationId).maybeSingle());
+    if (locErr) return json({ error: `platform locations lookup failed: ${locErr.message}` }, 500);
     if (!loc) return json({ error: 'location not found in platform DB' }, 404);
+    // platform locations.ops_location_id is THE ops mapping (3 of 6 venues
+    // carry different ids in the two DBs). A caller that only knew the
+    // platform id (the admin portal) is moved onto the ops id here, so the
+    // reprovision clear of terminal_devices and the venue code lookup below
+    // reach the venue's own ops rows.
+    const mappedOps = (loc as Record<string, unknown>).ops_location_id;
+    if (mappedOps) opsLocationId = String(mappedOps);
 
     // Account row + the venue's environment in one wait. The environment
     // picks the secret set for EVERY Adyen call below. The provisioning ids
@@ -144,9 +175,15 @@ Deno.serve(async (req) => {
     if (!liveCfg.clientKey) liveMissing.push(adyenSecretName('live', 'clientKey'));
     if (!liveCfg.merchantAccount) liveMissing.push(adyenSecretName('live', 'merchantAccount'));
     const liveReady = liveMissing.length === 0;
-    // Only the owner (or ServOS super admin) may move a venue between test
-    // cards and real money. Every other Back Office role can read the state.
-    const canSetEnvironment = prof?.role === 'owner' || prof?.role === 'super_admin';
+    // OWNER RULE (8 Sep 2026): only a ServOS super_admin may move a venue
+    // between test cards and real money, create its Adyen store or request
+    // its card schemes. Venue roles, the owner included, read the state only.
+    // Same source of truth as adyen-onboard's fence: the caller's
+    // user_profiles.role, read above with the service role, never a client
+    // supplied flag.
+    const isServosAdmin = prof?.role === 'super_admin';
+    const canSetEnvironment = isServosAdmin;
+    const adminOnly = () => json({ error: 'ServOS admin only' }, 403);
 
     // ── environment: read the venue's Adyen environment (never the values) ──
     if (action === 'environment') {
@@ -161,7 +198,7 @@ Deno.serve(async (req) => {
     }
 
     // ── set_environment: flip the venue between test and live ────────────────
-    // Owner or super_admin only. The upsert writes environment (plus
+    // super_admin only (OWNER RULE above). The upsert writes environment (plus
     // updated_at) on an existing row and creates a row with environment only
     // when none exists.
     //
@@ -185,7 +222,7 @@ Deno.serve(async (req) => {
     // live without ADYEN_LIVE_MERCHANT_ACCOUNT is refused outright: nothing
     // sensible could be written into merchant_account.
     if (action === 'set_environment') {
-      if (!canSetEnvironment) return json({ error: 'Only the owner can change the payments environment' }, 403);
+      if (!isServosAdmin) return adminOnly();
       const raw = String(body.environment ?? '').trim().toLowerCase();
       if (raw !== 'test' && raw !== 'live') return json({ error: "environment must be 'test' or 'live'" }, 400);
       const next = normalizeAdyenEnv(raw);
@@ -286,9 +323,12 @@ Deno.serve(async (req) => {
       // point at a PER-VENUE balance account or the platform's liable account?
       // Research: balances/payouts per venue exist ONLY if a per-venue balance
       // account exists; a store alone routes payments and nothing else. Fired
-      // from the panel's normal status load and logged durably so no extra
-      // clicks are needed to answer it.
-      if (maa?.store_id) {
+      // from the venue panel's normal status load (it sends probe: true) and
+      // logged durably so no extra clicks are needed to answer it. The admin
+      // portal's per venue cards call status too, so the probe is opt in:
+      // without the flag a page view writes no rows and makes no extra
+      // Management call per venue.
+      if (maa?.store_id && body.probe === true) {
         mgmt(cfg, 'GET', `/stores/${encodeURIComponent(maa.store_id)}`).then((sr) => {
           void platformAdmin.from('adyen_webhook_events').insert({
             event_key: `probe:store:${maa.store_id}:${Date.now()}`,
@@ -296,9 +336,19 @@ Deno.serve(async (req) => {
           }).then(() => {}, () => {});
         }).catch(() => {});
       }
+      // The venue's postal address, for the admin portal's store form (the
+      // platform row's address is often empty; the ops one is what the venue
+      // types in Back Office, Venue settings). Read with the service role so
+      // the admin portal needs no ops RLS of its own. Prefill only.
+      let venueAddress: string | null = null;
+      try {
+        const { data: opsLoc } = await opsAdmin.from('locations').select('address').eq('id', opsLocationId).maybeSingle();
+        venueAddress = opsLoc?.address ? String(opsLoc.address) : null;
+      } catch { /* prefill only */ }
       return json({
         ok: true,
         venue: loc.name,
+        venueAddress,
         processor: loc.payment_processor || 'stripe',
         merchant,
         environment: cfg.env,
@@ -312,14 +362,18 @@ Deno.serve(async (req) => {
       });
     }
 
-    // The venue's market for payment methods and the store: the platform
-    // row's currency, and its country (US venues) else GB.
-    const venueCountry = String((loc as Record<string, unknown>).country || '').toUpperCase() === 'US' ? 'US' : 'GB';
-    const venueCurrency = String((loc as Record<string, unknown>).currency || (venueCountry === 'US' ? 'USD' : 'GBP')).toUpperCase();
+    // The venue's market for payment methods and the store. Platform
+    // locations carries no country column, so the market is read off data
+    // that exists: a USD venue, or a merchant row already on the US region,
+    // is US; everything else is GB.
+    const venueCurrency = String((loc as Record<string, unknown>).currency || 'GBP').toUpperCase();
+    const venueCountry = (venueCurrency === 'USD' || maa?.region === 'US') ? 'US' : 'GB';
     const market = { currency: venueCurrency, country: venueCountry };
 
     // ── ensure_store: the venue's physical store at Adyen + our mapping row ──
+    // ADMIN (OWNER RULE): the store is created by ServOS, never by the venue.
     if (action === 'ensure_store') {
+      if (!isServosAdmin) return adminOnly();
       if (maa?.store_id) return json({ ok: true, storeId: maa.store_id, existing: true });
       const a = (body.address || {}) as Record<string, string>;
       const phone = String(body.phone || '').replace(/[^\d+]/g, '');
@@ -368,7 +422,9 @@ Deno.serve(async (req) => {
     if (!maa?.store_id) return json({ ok: false, error: 'no_store', hint: 'Run ensure_store first — the venue has no payments store yet.' }, 200);
 
     // ── ensure_payment_methods: repair a store missing its card schemes ──────
+    // ADMIN (OWNER RULE): changes the venue's store at Adyen.
     if (action === 'ensure_payment_methods') {
+      if (!isServosAdmin) return adminOnly();
       const pm = await ensurePaymentMethods(cfg, merchant, maa.store_id as string, market);
       return json({ ok: pm.errors.length === 0, ...pm });
     }

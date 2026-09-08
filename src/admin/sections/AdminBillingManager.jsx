@@ -17,10 +17,17 @@
 // client-side writes silently no-op — reads stay direct where allowed, writes
 // go through the edge fn.
 //
+// OWNER RULE (8 Sep 2026): the per venue Adyen ENVIRONMENT switch (test
+// cards or live, real money) and the one time STORE setup are ServOS internal
+// actions. They render here, inside each Adyen venue card, through
+// AdyenEnvironmentControls; the venue's Back Office shows the state only and
+// the adyen-terminal-admin fn refuses them for anyone but a super_admin.
+//
 // Themed with the same CSS variables as the customer back office.
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { supabase, platformSupabase } from '../../lib/supabase';
+import AdyenEnvironmentControls from '../components/AdyenEnvironmentControls';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
@@ -55,6 +62,35 @@ async function callAdyenOnboard(action, payload) {
   const j = await res.json().catch(() => ({}));
   if (j.error && j.ok === undefined) throw new Error(j.error);
   return j;
+}
+
+// Call adyen-terminal-admin for ONE venue with the signed-in (Ops) super_admin
+// token, the same session callAdyenOnboard uses. The fn fences on
+// user_locations membership OR super_admin, so the admin needs no
+// user_locations row at the venue. It resolves the venue from either id: the
+// ops id is sent when the platform row knows it, else the platform id, which
+// the fn maps onto the ops id itself. Non-2xx answers THROW with .status and
+// .data so AdyenEnvironmentControls can act on structured refusals
+// (set_environment answers 409 + needs_reprovision).
+function terminalAdminFor(location) {
+  return async (action, payload = {}) => {
+    const { data: session } = await supabase.auth.getSession();
+    const token = session?.session?.access_token;
+    if (!token) throw new Error('not authenticated');
+    const res = await fetch(`${FUNCTIONS_URL}/adyen-terminal-admin`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ action, ops_location_id: location.ops_location_id || location.id, location_id: location.id, ...payload }),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error(j?.error || `HTTP ${res.status}`);
+      err.status = res.status;
+      err.data = j;
+      throw err;
+    }
+    return j;
+  };
 }
 
 // The four pricing tiers (migration 20260821b) — order matches the venue's
@@ -157,7 +193,10 @@ export default function AdminBillingManager({ authUser }) {
       }
       if (Object.keys(merged).length) setPlatformDefaults(prev => ({ ...prev, ...merged }));
 
-      let q = platformSupabase.from('locations').select('id, name, company_id, timezone, payment_processor').order('name');
+      // No `country` here: platform locations has no such column, and a bad
+      // column fails the whole query (no venue cards at all). The payout
+      // form's default country is derived from currency instead.
+      let q = platformSupabase.from('locations').select('id, name, company_id, timezone, payment_processor, ops_location_id, address, currency').order('name');
       if (filterCompanyId) q = q.eq('company_id', filterCompanyId);
       const { data: locs, error: locErr } = await q;
       if (locErr) throw locErr;
@@ -690,6 +729,10 @@ const AdyenRow = ({ ok, children }) => (
 
 function AdyenBlock({ location, defaults, onError }) {
   const [st, setSt] = useState(null);   // null=loading, {error} or status payload
+  // Bumped by AdyenEnvironmentControls after a flip or a store create, so the
+  // connection pill here and the payout panel below re-read the venue.
+  const [envRev, setEnvRev] = useState(0);
+  const callTerminalAdmin = useMemo(() => terminalAdminFor(location), [location.id, location.ops_location_id]);   // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     let live = true;
     (async () => {
@@ -708,7 +751,7 @@ function AdyenBlock({ location, defaults, onError }) {
       } catch (e) { if (live) setSt({ error: e.message }); }
     })();
     return () => { live = false; };
-  }, [location.id]);
+  }, [location.id, envRev]);
 
   // Per-venue TIERED rate card (v5.7.3). merchant_adyen_accounts is
   // service-role-only, so reads AND writes go through payments-admin
@@ -779,8 +822,8 @@ function AdyenBlock({ location, defaults, onError }) {
         <div style={{ fontSize: 13, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
           <span>Adyen — connected <span style={{ fontWeight: 400, color: 'var(--t3)' }}>· {st.merchantAccount}</span></span>
           {/* This VENUE's environment (merchant_adyen_accounts.environment),
-              not the global default. Switched by the venue in Back Office,
-              Card readers, Environment. */}
+              not the global default. Switched below, in the Environment
+              controls (ServOS admin only since 8 Sep 2026). */}
           <span
             title={st.environment === 'live' ? 'Live, real money at this venue' : 'Test cards only at this venue'}
             style={{ ...S.pill, ...(st.environment === 'live' ? { background: 'var(--red)', color: '#fff', borderColor: 'var(--red)' } : {}) }}>
@@ -827,7 +870,17 @@ function AdyenBlock({ location, defaults, onError }) {
           </>
         )}
       </div>
-      <AdyenPayoutPanel location={location} />
+      {/* Environment switch + store setup: ServOS internal (OWNER RULE),
+          above the payout onboarding so a venue is put live, given its
+          store, then onboarded for payouts, in that order. */}
+      <AdyenEnvironmentControls
+        opsLocationId={location.ops_location_id || null}
+        platformLocationId={location.id}
+        venueName={location.name}
+        callAdmin={callTerminalAdmin}
+        onChanged={() => setEnvRev((n) => n + 1)}
+      />
+      <AdyenPayoutPanel key={envRev} location={location} />
     </>
   );
 }
@@ -938,7 +991,8 @@ function AdyenPayoutPanel({ location }) {
     const parts = String(location.address || '').split(',').map((p) => p.trim()).filter(Boolean);
     setStartForm({
       legal_name: location.legal_name || location.name || '',
-      country: (location.country || 'GB').toUpperCase(),
+      // Platform locations has no country column: a USD venue is US, else GB.
+      country: String(location.currency || '').toUpperCase() === 'USD' ? 'US' : 'GB',
       street: parts.length >= 3 ? parts.slice(0, -2).join(', ') : (parts[0] || ''),
       city: parts.length >= 3 ? parts[parts.length - 2] : (parts[1] || ''),
       postal_code: parts.length >= 2 ? parts[parts.length - 1] : '',
