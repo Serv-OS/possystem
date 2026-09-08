@@ -1,3 +1,27 @@
+# Session, 7 to 8 Sep 2026, v5.8.32 and v5.8.33, live cutover preparation
+
+## Decisions (Peter, 7 Sep evening)
+- NO separate staging. develop -> dev.serv-os.app (test cards), main -> app.serv-os.app (live). Same Supabase pair.
+- Adyen environment is a PER VENUE setting. Provo is the first live venue. Every other venue stays on test cards.
+
+## Done and pushed to develop
+- v5.8.32 (e416d185): timed menus on the menu board (layout.followMenus), ONE menu resolver (src/lib/menus/resolveActiveMenu.js) and ONE price rule (src/lib/menuPricing.js) for till, kiosk, MPOS, online, QR and board. Kiosk sizes fixed. Till charges what the tile shows. Online basket reprices on channel or menu change. Tier Base field honoured.
+- v5.8.33 (a41884f9): Adyen environment per venue. _shared/adyen.ts adyenConfig(env) from ADYEN_* (test) or ADYEN_LIVE_* (live), fail closed on live without key or prefix. All 13 Adyen functions and booking-widget resolve the venue first. Live Checkout host fixed (company prefix). Idempotency-Key on /payments. Webhook HMAC by the notification live flag. adyen-terminal-admin environment and set_environment (reprovision guard). Back Office Card readers Environment block, LIVE typed confirm, red banner. 647 tests green, build exit 0.
+- Platform migration supabase/migrations/20260907_PLATFORM_adyen_environment.sql: SAFE TO RUN (environment column plus live flags). Peter runs it on yhzjgyrkyjabvhblqxzu.
+- PR #1 develop -> main: https://github.com/Serv-OS/possystem/pull/1 (the git merge to main was blocked by the auto mode classifier). Merging makes app.serv-os.app and *.serv-os.app serve the current build.
+- Edge function deploys: first attempt 401 (expired token). Redeployed 8 Sep after Peter refreshed the token; see the deploy log line in the next entry or the chat.
+
+## Parked, needs Peter
+- Android repoint to app.serv-os.app (POS 12/2.1, MPOS 5/1.5, menuboard 3/1.2) is a patch in the session scratchpad (android_live_repoint.patch), NOT committed: .github/workflows/build-*.yml auto publish APKs to the live app-releases bucket on any push to develop or main. Apply only after PR #1 is merged and app.serv-os.app verified. Local gradle was blocked by the classifier.
+- Security migrations 20260907b_* (5 files) plus docs/PRE_LIVE_SECURITY_MIGRATIONS.md are DRAFTS marked DO NOT RUN: 12 breaks and 25 gaps from the adversarial pass are recorded in the runbook and not applied (the fix agent hit the session limit).
+
+## Known leftovers
+- Test AMS1 and S1F2L cannot take live cards, live readers must be ordered. MPOS on the S1F2L sends plaintext nexo which live readers refuse (needs SaleToPOISecuredMessage).
+- Kiosk cart lines store the parent item id. Online sheet title shows the size name once picked (pre existing).
+- Part paid table remainder at the till (task #106), schedulers, tronc pooling code, MenuDiag resolver copy.
+
+---
+
 # Session, 25 Aug 2026, v5.7.37 — staff self-rescue for wedged Adyen card payments (NOT committed)
 
 ## Done (working tree only, no commit, no push, no deploys, no DB writes)
