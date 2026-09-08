@@ -1,0 +1,25 @@
+# ServOS WiFi Portal Bridge — Fly.io app.
+# Fly gives a DEDICATED IPv4 (~$2/mo: `fly ips allocate-v4`) → that IP goes in UniFi's
+# "External Portal Server" field. One instance, multi-tenant (slug from Host header).
+app = "servos-wifi-bridge"
+primary_region = "lhr"   # London — close to UK venues
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  CUSTOMER_ROOT = "serv-os.app"
+  PORTAL_HOST_SUFFIX = "portal.serv-os.app"
+  # DEFAULT_SLUG = "location1"   # uncomment for a single-venue demo before DNS wildcard is set
+  PORT = "8080"
+
+[http_service]
+  internal_port = 8080
+  force_https = false        # UniFi may hit http first; the bridge only 302s to https
+  auto_stop_machines = false # always-on: guests can connect any time
+  auto_start_machines = true
+  min_machines_running = 1
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

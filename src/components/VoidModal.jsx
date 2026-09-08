@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { STAFF } from '../data/seed';
+import { useStore } from '../store';
+import { money } from '../lib/currency';
 
 const VOID_REASONS = [
   'Customer changed mind',
@@ -13,13 +14,20 @@ const VOID_REASONS = [
   'Other',
 ];
 
-const managerPins = STAFF.filter(s => s.role === 'Manager').map(s => ({ pin: s.pin, name: s.name, id: s.id }));
+const managerPinsFrom = (staffMembers) =>
+  (staffMembers || [])
+    .filter(s => s.role === 'Manager' && s.active !== false)
+    .map(s => ({ pin: s.pin, name: s.name, id: s.id }));
 
 export default function VoidModal({ type, items, totalValue, onConfirm, onCancel }) {
-  const [step, setStep]       = useState('pin');   // pin | reason | confirm
+  const { staffMembers, staff: currentUser } = useStore();
+  const managerPins = managerPinsFrom(staffMembers);
+  const managerLoggedIn = currentUser?.role === 'Manager';
+
+  const [step, setStep]       = useState(managerLoggedIn ? 'reason' : 'pin');
   const [pin, setPin]         = useState('');
   const [pinError, setPinError] = useState('');
-  const [manager, setManager]   = useState(null);
+  const [manager, setManager]   = useState(managerLoggedIn ? currentUser : null);
   const [reason, setReason]     = useState('');
   const [freeText, setFreeText] = useState('');
 
@@ -61,7 +69,7 @@ export default function VoidModal({ type, items, totalValue, onConfirm, onCancel
             </div>
             <div style={{ fontSize:12, color:'var(--t3)', marginTop:2 }}>
               {isCheck
-                ? `${items.length} item${items.length!==1?'s':''} · £${totalValue.toFixed(2)} total`
+                ? `${items.length} item${items.length!==1?'s':''} · ${money(totalValue)} total`
                 : items.map(i => `${i.qty}× ${i.name}`).join(', ')}
             </div>
           </div>

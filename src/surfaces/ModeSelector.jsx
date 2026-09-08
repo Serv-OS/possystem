@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { VERSION } from '../lib/version';
+import { ServOSIcon, ServOSWordmark } from '../components/ServOSBrand';
 
 function Card({ icon, title, desc, note, accent, onClick }) {
   const [hover, setHover] = useState(false);
@@ -23,7 +24,7 @@ function Card({ icon, title, desc, note, accent, onClick }) {
   );
 }
 
-export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelectAdmin }) {
+export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelectAdmin, onSelectMPOS, onSelectClock, onSelectMenuBoard, onSelectWaitlist, onSelectManager, onSelectBookings }) {
   return (
     <div style={{
       minHeight: '100vh',
@@ -34,36 +35,77 @@ export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelect
     }}>
       {/* Header */}
       <div style={{ textAlign: 'center', marginBottom: 56 }}>
-        <div style={{
-          width: 56, height: 56, borderRadius: 16,
-          background: 'linear-gradient(135deg, #d4881c, #e8a020)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 28, fontWeight: 800, color: '#fff',
-          margin: '0 auto 20px',
-          boxShadow: '0 8px 30px rgba(212,136,28,0.25)',
-        }}>R</div>
-        <div style={{ fontSize: 32, fontWeight: 800, color: '#f1f5f9', marginBottom: 10 }}>Restaurant OS</div>
+        <div style={{ margin: '0 auto 20px', width: 56 }}><ServOSIcon size={56} /></div>
+        <div style={{ marginBottom: 10 }}><ServOSWordmark fontSize={34} color="#f1f5f9" /></div>
         <div style={{ fontSize: 16, color: '#64748b' }}>What is this device being used for?</div>
       </div>
 
-      {/* Main two cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, width: '100%', maxWidth: 680, marginBottom: 20 }}>
+      {/* Main cards */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 20, width: '100%', maxWidth: 720, marginBottom: 20 }}>
         <Card
           icon="🖥"
           title="POS Terminal"
           desc="A till, counter screen, or handheld used by staff to take orders and process payments."
           note="Requires a pairing code from Back Office"
-          accent="#d4881c"
-          href='?mode=pos' onClick={onSelectPOS}
+          accent="#E8743C"
+          onClick={onSelectPOS}
+        />
+        <Card
+          icon="📱"
+          title="MPOS (mobile)"
+          desc="A phone or Sunmi handheld used by servers and runners — portrait UI, Stripe Tap to Pay, walk-in orders."
+          note="Pairs to a location like a regular POS"
+          accent="#22c55e"
+          onClick={onSelectMPOS}
+        />
+        <Card
+          icon="🕐"
+          title="Time Clock"
+          desc="A dedicated tablet by the staff entrance — staff enter their PIN to clock in/out and take breaks."
+          note="Pairs to a location like a regular POS"
+          accent="#a855f7"
+          onClick={onSelectClock}
         />
         <Card
           icon="🏢"
           title="Back Office"
           desc="For owners and managers — menu builder, staff, reports, device management and settings."
-          note="Requires a Restaurant OS account"
+          note="Requires a Serv OS account"
           accent="#6366f1"
           onClick={onSelectBackOffice}
         />
+        <Card
+          icon="📺"
+          title="Menu Board"
+          desc="A TV or display showing your menu — categories, prices and allergens, updating live. Marks items sold out automatically."
+          note="Pairs to a location like a regular POS"
+          accent="#0ea5e9"
+          onClick={onSelectMenuBoard}
+        />
+        <Card
+          icon="🪑"
+          title="Tables Ready"
+          desc="Front-of-house walk-in waitlist — capture a party, get a smart wait quote, text guests when their table's ready, and seat them as tables free up."
+          note="Pairs to a location, then staff sign in by PIN"
+          accent="#7C5CFF"
+          onClick={onSelectWaitlist}
+        />
+        {onSelectBookings && <Card
+          icon="📅"
+          title="Bookings"
+          desc="The reservations diary + host stand — take bookings with smart table combinations, see the whole service on a timeline, and seat parties straight into a POS tab."
+          note="Runs on the venue's floor plan — set up join groups in Back Office"
+          accent="#E8A020"
+          onClick={onSelectBookings}
+        />}
+        {onSelectManager && <Card
+          icon="📲"
+          title="Manager"
+          desc="The owner app + ops tablet in one phone — takings, the live floor, team & approvals, ops checks and kitchen, adapting to who signs in."
+          note="Pairs to a location, then staff sign in by PIN"
+          accent="#15C26A"
+          onClick={onSelectManager}
+        />}
       </div>
 
       {/* Internal admin — subtle */}
@@ -82,8 +124,8 @@ export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelect
         >
           <span style={{ fontSize: 18 }}>🔐</span>
           <div style={{ textAlign: 'left' }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: '#64748b' }}>Restaurant OS Internal — Company Admin</div>
-            <div style={{ fontSize: 12, color: '#334155' }}>Your internal tool for creating and managing restaurants on the platform</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: '#64748b' }}>Serv OS Internal — Company Admin</div>
+            <div style={{ fontSize: 12, color: '#334155' }}>Your internal tool for creating and managing venues on the platform</div>
           </div>
         </button>
       </div>

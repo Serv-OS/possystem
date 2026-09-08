@@ -21,10 +21,36 @@
  *  └── Same — options are plain strings
  */
 import { useState, useMemo, useCallback, useEffect } from 'react';
-import { useStore } from '../../store';
-import { ALLERGENS } from '../../data/seed';
-import { supabase, isMock, getLocationId } from '../../lib/supabase';
-import { upsertMenuItem, uploadProductImage, deleteProductImage, saveQuickScreenIds } from '../../lib/db';
+import { useStore, findDuplicateProductName } from '../../store';
+// PIZZA_* are used by PizzaBuilder below in unconditional JSX — without them the
+// pizza tab throws ReferenceError during render and main.jsx's ErrorBoundary
+// swaps the WHOLE app (POS shell included) for the red error page.
+import { ALLERGENS, PIZZA_SIZES, PIZZA_BASES, PIZZA_CRUSTS, PIZZA_TOPPINGS } from '../../data/seed';
+import { supabase, isMock, getLocationId, getActiveLocationSync } from '../../lib/supabase';
+import { upsertMenuItem, uploadProductImage, deleteProductImage, saveQuickScreenIds, setMenuItemScope, linkCategoryToMenu, unlinkCategoryFromMenu, fetchMenuCategoryLinks } from '../../lib/db';
+import { reportSave } from '../../lib/saveHealth';
+import { rankQuickPicks, DAYPARTS } from '../../lib/quickRank';
+import { getLocationConfig } from '../../lib/locationTime';
+// v4.7.8: per-menu pricing tier UI (item-level)
+import PerMenuPricingTiers from './PerMenuPricingTiers';
+import MenuImportModal from '../components/MenuImportModal';
+import { money } from '../../lib/currency';
+import { orderOptionFlow } from '../../lib/optionFlow';
+// v5.5.813: recipe-derived cost + GP% on the Items list. Same engine + same
+// ex-VAT net-price basis as Inventory → Reports → Recipe GP, so the two screens
+// can never disagree about a dish's margin.
+import { fetchRecipes, buildCostingCtx, costRecipeWith } from '../../lib/stock/recipes';
+import { resolveTaxRate, netOf } from '../../lib/tax';
+
+// Dietary tags — stored on menu_items.tags (jsonb). The tag id is what the print
+// menu + digital menu board map to a GF/V/VG/DF badge (see printMenu.js DIET map),
+// so these ids MUST stay in that map's key set.
+const DIET_TAGS = [
+  { id:'vegetarian',  label:'Vegetarian', badge:'V',  icon:'🥗' },
+  { id:'vegan',       label:'Vegan',      badge:'VG', icon:'🌱' },
+  { id:'gluten-free', label:'Gluten-free',badge:'GF', icon:'🌾' },
+  { id:'dairy-free',  label:'Dairy-free', badge:'DF', icon:'🥛' },
+];
 
 // ── Clone item helper ─────────────────────────────────────────────────────────
 async function cloneItem(item, menuItems, addMenuItem, updateMenuItem, markBOChange, showToast, setSelItemId) {
@@ -33,6 +59,15 @@ async function cloneItem(item, menuItems, addMenuItem, updateMenuItem, markBOCha
   if (!cloneName?.trim()) return; // cancelled
 
   const name = cloneName.trim();
+
+  // DUPLICATE-NAME GUARD (v5.5.797) — refuse a clone name that matches a live
+  // top-level product (trimmed, case-insensitive). Native alert: store toasts
+  // don't render in ?mode=office, and this flow already uses window.prompt.
+  const dup = findDuplicateProductName(menuItems, name);
+  if (dup) {
+    window.alert(`A product called "${dup.menuName || dup.name}" already exists — choose a different name.`);
+    return;
+  }
 
   // Clone the parent item — strip id, parentId, keep everything else
   const newItem = addMenuItem({
@@ -44,14 +79,21 @@ async function cloneItem(item, menuItems, addMenuItem, updateMenuItem, markBOCha
     price:                    item.price,
     pricing:                  item.pricing ? { ...item.pricing } : { base: item.price || 0 },
     allergens:                [...(item.allergens || [])],
+    tags:                     [...(item.tags || [])],
     assignedModifierGroups:   [...(item.assignedModifierGroups || [])],
     assignedInstructionGroups:[...(item.assignedInstructionGroups || [])],
+    optionGroupOrder:         Array.isArray(item.optionGroupOrder) ? [...item.optionGroupOrder] : null,   // v5.5.948 combined flow order
     modifierGroups:           item.modifierGroups ? [...item.modifierGroups] : undefined,
     visibility:               { ...(item.visibility || { pos:true, kiosk:true, online:true }) },
     soldAlone:                item.soldAlone ?? true,
     centreId:                 item.centreId || null,
     sortOrder:                (item.sortOrder ?? 0) + 1,
   });
+  // Store-level backstop (stale list race) — same rule, same message
+  if (!newItem) {
+    window.alert(`A product called "${name}" already exists — choose a different name.`);
+    return;
+  }
 
   // Clone child variants if the original has sizes
   if (item.type === 'variants') {
@@ -75,6 +117,7 @@ async function cloneItem(item, menuItems, addMenuItem, updateMenuItem, markBOCha
           price: child.price,
           pricing: child.pricing ? { ...child.pricing } : { base: child.price || 0 },
           allergens: [...(child.allergens || [])],
+          tags: [...(child.tags || [])],
           assignedModifierGroups: [...(child.assignedModifierGroups || [])],
           sortOrder: i,
         });
@@ -94,13 +137,54 @@ async function cloneItem(item, menuItems, addMenuItem, updateMenuItem, markBOCha
 }
 
 
+// ── Archive a variant / size row ──────────────────────────────────────────────
+// Detaches a size from its parent and archives it. Two callers: the list view's
+// inline × and the item editor's Variants tab — both used to fire this as
+// `.then(({error}) => console.error(...))` under an unconditional green toast, so
+// a rejected write left the size selling on every other till while the operator
+// was told it was gone.
+//   • reportSave so a failing session raises the Back Office save-health banner
+//   • .eq('location_id') — the v5.5.834 modifier-group precedent (store/index.js
+//     ~862): filtering on `id` alone is a cross-tenant hazard the moment two
+//     venues share a row id
+// Returns { error }; the caller reverts its optimistic state and warns on error.
+async function archiveVariantRow(id) {
+  if (isMock) return { error: null };
+  const locId = getActiveLocationSync() || await getLocationId().catch(() => null);
+  if (!locId || locId === 'loc-demo') {
+    const error = new Error('No location');
+    reportSave('variant archive', error);
+    return { error };
+  }
+  const { data, error } = await supabase.from('menu_items')
+    .update({ archived: true, parent_id: null, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .eq('location_id', locId)
+    .select('id');
+  // An update that matched NO rows comes back as a plain success with an empty body —
+  // a row RLS hides, or one carrying a different location_id than this session resolved,
+  // reads exactly like a save. Ask for the id back and treat nothing as the failure it is.
+  const err = error || (!data || data.length === 0
+    ? new Error('Variant archive matched 0 rows — RLS blocked it or the row is scoped to another location')
+    : null);
+  reportSave('variant archive', err);
+  return { error: err };
+}
+
 const ORDER_TYPES_TAX = ['dine-in', 'takeaway', 'delivery', 'bar', 'counter'];
 
 function TaxSection({ item, onUpdate, markBOChange }) {
-  const { taxRates } = useStore();
+  const { taxRates, taxProfiles } = useStore();
 
   const setTaxRate = (id) => {
     onUpdate({ taxRateId: id || null, tax_rate_id: id || null });
+    markBOChange();
+  };
+  // v5.7.33: tax PROFILE override (dark — tills still charge via the legacy
+  // rates below until the calculation cutover). Same dual-spelling patch
+  // pattern as setTaxRate so both save paths carry it.
+  const setTaxProfile = (id) => {
+    onUpdate({ taxProfileId: id || null, tax_profile_id: id || null });
     markBOChange();
   };
   const setOverride = (orderType, rateId) => {
@@ -124,8 +208,25 @@ function TaxSection({ item, onUpdate, markBOChange }) {
     return <option key={r.id} value={r.id}>{r.name} ({pct}% {r.type === 'inclusive' ? 'incl.' : 'excl.'})</option>;
   });
 
+  const activeProfiles = (taxProfiles || []).filter(p => p.active !== false);
+
   return (
     <div>
+      {/* v5.7.33: tax PROFILE override — setup only, nothing charges with it yet */}
+      {activeProfiles.length > 0 && (
+        <div style={{ marginBottom:16 }}>
+          <span style={{ fontSize:10, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', display:'block', marginBottom:5 }}>Tax profile (override)</span>
+          <select value={item.taxProfileId || ''} onChange={e => setTaxProfile(e.target.value)}
+            style={{ width:'100%', padding:'8px 11px', borderRadius:9, border:'1.5px solid var(--bdr2)', background:'var(--bg3)', color:'var(--t1)', fontSize:13, fontFamily:'inherit', outline:'none' }}>
+            <option value="">Inherit (category, then venue default)</option>
+            {activeProfiles.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+          <div style={{ fontSize:11, color:'var(--t4)', marginTop:5, lineHeight:1.6 }}>
+            Profiles are the new way to set up tax (Tax &amp; VAT → Tax profiles). Until the calculation switchover, the legacy rate below is what actually charges.
+          </div>
+        </div>
+      )}
+
       <div style={{ marginBottom:16 }}>
         <span style={{ fontSize:10, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', display:'block', marginBottom:5 }}>Default tax rate</span>
         <select value={item.taxRateId || ''} onChange={e => setTaxRate(e.target.value)}
@@ -167,16 +268,62 @@ const COLOURS = ['#3b82f6','#e8a020','#22c55e','#a855f7','#ef4444','#22d3ee','#f
 const ICONS   = ['🍽','🥗','🍖','🍕','🍸','☕','🎂','🥤','🌿','🔥','❄️','⭐','🌮','🦞','🍜','🥩','🍤','🥚','🥐'];
 
 // ── Root ─────────────────────────────────────────────────────────────────────
+// A number box whose value is NOT recomputed from the model on every keystroke.
+//
+// The min/max pick boxes used to derive `value` from the saved number and blank
+// themselves whenever that number matched one of the quick buttons. Typing "12"
+// therefore went: "1" -> saves min 1 -> 1 is a quick button -> box blanks -> the
+// "1" is gone. Any number starting 1 to 5 was impossible to enter, so a "Box of
+// 12" could never be given a minimum of 12. Holding the typed text locally
+// while focused fixes it; the model still owns the value everywhere else.
+function PickNumBox({ value, min, max, onCommit, style, placeholder = 'N' }) {
+  const [text, setText] = useState('');
+  const [typing, setTyping] = useState(false);
+  const shown = typing ? text : (value == null ? '' : String(value));
+  return (
+    <input
+      type="number" min={min} max={max} style={style} placeholder={placeholder}
+      value={shown}
+      onFocus={() => { setTyping(true); setText(value == null ? '' : String(value)); }}
+      onBlur={() => {
+        setTyping(false);
+        const n = parseInt(text, 10);
+        // An empty or nonsense entry falls back to the smallest legal value
+        // rather than silently keeping a number the operator just cleared.
+        onCommit(Number.isFinite(n) ? Math.min(max, Math.max(min, n)) : min);
+      }}
+      onChange={(e) => {
+        setText(e.target.value);
+        const n = parseInt(e.target.value, 10);
+        // Commit as they type ONLY once the value is already in range, so the
+        // rest of the editor stays live without fighting the keystrokes.
+        if (Number.isFinite(n) && n >= min && n <= max) onCommit(n);
+      }}
+      onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+    />
+  );
+}
+
 export default function MenuManager() {
   const [tab, setTab] = useState('menu');
+  const [importOpen, setImportOpen] = useState(false);
+  const { menus } = useStore();
+  const defaultMenuId = menus?.[0]?.id;
   return (
-    <div style={{ display:'flex', flexDirection:'column', height:'100%', overflow:'hidden' }}>
-      <nav style={{ display:'flex', borderBottom:'1px solid var(--bdr)', background:'var(--bg1)', flexShrink:0 }}>
+    <div className="bo-workspace" style={{ display:'flex', flexDirection:'column', height:'100%', overflow:'hidden' }}>
+      <nav style={{ display:'flex', borderBottom:'1px solid var(--bdr)', background:'var(--bg1)', flexShrink:0, alignItems:'center' }}>
         {[['menu','🍽 Menus'],['quick','⚡ Quick Screen'],['items','📋 Items'],['modifiers','⊕ Modifier groups'],['instructions','📝 Instruction groups']].map(([id,label])=>(
           <button key={id} onClick={()=>setTab(id)} style={{ padding:'0 20px', height:46, cursor:'pointer', fontFamily:'inherit', border:'none', borderBottom:`3px solid ${tab===id?'var(--acc)':'transparent'}`, background:'transparent', color:tab===id?'var(--acc)':'var(--t3)', fontSize:13, fontWeight:tab===id?800:500 }}>
             {label}
           </button>
         ))}
+        <div style={{ flex:1 }} />
+        <button
+          onClick={()=>setImportOpen(true)}
+          title="Drop a menu file, AI builds it"
+          style={{ margin:'0 12px', padding:'0 14px', height:32, cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:700, border:'1px solid var(--acc-b)', borderRadius:8, background:'var(--acc-d)', color:'var(--acc)' }}>
+          ↗ Import menu
+        </button>
       </nav>
       <div style={{ flex:1, overflow:'hidden' }}>
         {tab==='menu'         && <MenuTab />}
@@ -185,6 +332,12 @@ export default function MenuManager() {
         {tab==='modifiers'    && <ModifiersTab />}
         {tab==='instructions' && <InstructionsTab />}
       </div>
+      {importOpen && (
+        <MenuImportModal
+          menuId={defaultMenuId}
+          onClose={()=>setImportOpen(false)}
+        />
+      )}
     </div>
   );
 }
@@ -198,13 +351,78 @@ function MenuTab() {
           markBOChange, showToast, modifierGroupDefs } = useStore();
 
   const [selMenuId, setSelMenuId] = useState(menus?.[0]?.id||'menu-1');
+  // v5.5.955 — THE PHANTOM 'menu-1'. If Menu manager mounts before menus finish
+  // loading, selMenuId froze on the hardcoded fallback (an id that exists nowhere)
+  // and NEVER healed — every category created after that carried menuId 'menu-1'
+  // and died on menu_categories_menu_id_fkey (silently pre-v951; the banner caught
+  // it twice tonight). Snap to the first real menu the moment the list arrives, and
+  // whenever the selected menu stops existing (e.g. deleted on another device).
+  useEffect(() => {
+    if (menus?.length && !menus.some(m => m.id === selMenuId)) setSelMenuId(menus[0].id);
+  }, [menus, selMenuId]);
   const [addingMenu, setAddingMenu]   = useState(false);
+  const [editingMenuId, setEditingMenuId] = useState(null); // v4.6.4: which menu's settings panel is open
   const [newMenuName, setNewMenuName] = useState('');
   const [selCatId, setSelCatId]   = useState(null);
   const [selItemId, setSelItemId] = useState(null);
   const [editingCat, setEditingCat] = useState(null);
   const [movingCatId, setMovingCatId] = useState(null);
   const [addingCat, setAddingCat]   = useState(false);
+  // v5.5.815: category find-as-you-type + collapse/expand of parent groups.
+  // Collapsed state is per venue on this device (a view preference, not data).
+  const [catFilter, setCatFilter]   = useState('');
+  const [collapsed, setCollapsed]   = useState(() => {
+    try { const v = JSON.parse(localStorage.getItem(`rpos-cat-collapsed:${getActiveLocationSync() || 'default'}`) || '[]'); return new Set(Array.isArray(v) ? v : []); }
+    catch { return new Set(); }
+  });
+  const toggleCollapsed = (id) => setCollapsed(prev => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    try { localStorage.setItem(`rpos-cat-collapsed:${getActiveLocationSync() || 'default'}`, JSON.stringify([...next])); } catch {}
+    return next;
+  });
+  // v4.7.5: cats↔menus join data, loaded on mount, mutated locally on link/unlink
+  const [categoryLinks, setCategoryLinks] = useState([]);
+  const [showLinkPicker, setShowLinkPicker] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const { data } = await fetchMenuCategoryLinks();
+      if (!alive) return;
+      setCategoryLinks(data || []);
+    })();
+    return () => { alive = false; };
+  }, []);
+  const handleLinkCat = async (catId) => {
+    if (!selMenuId || !catId) return;
+    if ((categoryLinks||[]).some(l => l.menu_id === selMenuId && l.category_id === catId)) {
+      setShowLinkPicker(false); return;
+    }
+    const result = await linkCategoryToMenu(selMenuId, catId, menuCategories.length);
+    reportSave('menu category link', result.ok ? null : (result.error || new Error('Link failed')));
+    if (result.ok) {
+      setCategoryLinks(prev => [...prev, { menu_id: selMenuId, category_id: catId, sort_order: menuCategories.length }]);
+      const cat = menuCategories.find(c => c.id === catId);
+      showToast(`"${cat?.label || 'Category'}" linked to this menu`, 'success');
+      markBOChange();
+    } else {
+      showToast(`Couldn't link: ${result.error?.message || 'unknown error'}`, 'error');
+    }
+    setShowLinkPicker(false);
+  };
+  const handleUnlinkCat = async (catId) => {
+    const cat = menuCategories.find(c => c.id === catId);
+    if (!confirm(`Unlink "${cat?.label || 'category'}" from this menu? Items in this category will stop showing on this menu.`)) return;
+    const result = await unlinkCategoryFromMenu(selMenuId, catId);
+    reportSave('menu category link', result.ok ? null : (result.error || new Error('Unlink failed')));
+    if (result.ok) {
+      setCategoryLinks(prev => prev.filter(l => !(l.menu_id === selMenuId && l.category_id === catId)));
+      showToast(`"${cat?.label || 'Category'}" unlinked`, 'info');
+      markBOChange();
+    } else {
+      showToast(`Couldn't unlink: ${result.error?.message || 'unknown error'}`, 'error');
+    }
+  };
   const [catForm, setCatForm]       = useState({ label:'', icon:'🍽', color:'#3b82f6', parentId:'' });
   const [dragCatId, setDragCatId]   = useState(null);
   const [overCatId, setOverCatId]   = useState(null);
@@ -216,7 +434,13 @@ function MenuTab() {
   const [showAddPanel, setShowAddPanel] = useState(false);
   const [addSearch, setAddSearch]     = useState('');
 
-  const roots     = useMemo(()=>menuCategories.filter(c=>!c.parentId&&!c.isSpecial&&(!c.menuId||c.menuId===selMenuId)).sort((a,b)=>(a.sortOrder||0)-(b.sortOrder||0)),[menuCategories,selMenuId]);
+  // v4.7.5: roots include cats whose menu_id matches selMenuId OR which appear in
+  // categoryLinks for selMenuId. This is what makes "linked categories" work.
+  const linkedCatIdsForMenu = useMemo(() => {
+    return new Set((categoryLinks||[]).filter(l => l.menu_id === selMenuId).map(l => l.category_id));
+  }, [categoryLinks, selMenuId]);
+  // v5.5.950: label tiebreak — sortOrder ties must never shuffle between renders/loads.
+  const roots     = useMemo(()=>menuCategories.filter(c=>!c.parentId&&!c.isSpecial&&(!c.menuId||c.menuId===selMenuId||linkedCatIdsForMenu.has(c.id))).sort((a,b)=>((a.sortOrder||0)-(b.sortOrder||0)) || String(a.label||'').localeCompare(String(b.label||''))),[menuCategories,selMenuId,linkedCatIdsForMenu]);
   const selCat    = menuCategories.find(c=>c.id===selCatId);
   const selItem   = menuItems.find(i=>i.id===selItemId);
 
@@ -301,20 +525,37 @@ function MenuTab() {
   // ── Category drag: same level = reorder, cross level = nest ──────────────
   const onCatDrop = useCallback((e, targetId) => {
     e.preventDefault();
+    e.stopPropagation();   // v5.5.956: a row drop must not ALSO fire the container's catch-all
     if (!dragCatId || dragCatId===targetId) { setDragCatId(null); setOverCatId(null); return; }
     const dragged = menuCategories.find(c=>c.id===dragCatId);
     const target  = menuCategories.find(c=>c.id===targetId);
     if (!dragged) { setDragCatId(null); setOverCatId(null); return; }
     // ONLY reorder within the same parent level — no cross-level nesting via drag
     // (Use the ↕ Move button per category to change parent/nesting)
-    if (targetId==='root' || dragged.parentId===target?.parentId) {
-      const level = targetId==='root' ? null : dragged.parentId;
-      const siblings = menuCategories.filter(c=>c.parentId===level).sort((a,b)=>(a.sortOrder||0)-(b.sortOrder||0));
+    // v5.5.956: 'end' = the container catch-all — send to the END of the dragged
+    // item's OWN level (dropping below the list / in a gap used to just snap back).
+    const isEnd = targetId==='end';
+    if (isEnd || dragged.parentId===target?.parentId) {
+      const level = dragged.parentId ?? null;
+      const siblings = menuCategories.filter(c=>(c.parentId??null)===level)
+        .sort((a,b)=>((a.sortOrder||0)-(b.sortOrder||0)) || String(a.label||'').localeCompare(String(b.label||'')));
       const without  = siblings.filter(c=>c.id!==dragCatId);
-      const ti       = targetId==='root' ? without.length : without.findIndex(c=>c.id===targetId);
+      // v5.5.950: DIRECTION-AWARE drop. Insert-before-target meant dragging DOWN landed
+      // one slot above where you dropped — and moving onto the next-door neighbour did
+      // nothing at all ("keeps not letting them go where I want"). Dragging downward now
+      // lands AFTER the row you drop on; upward stays before it.
+      const fromIdx = siblings.findIndex(c=>c.id===dragCatId);
+      const toIdx   = siblings.findIndex(c=>c.id===targetId);
+      let ti        = isEnd ? without.length : without.findIndex(c=>c.id===targetId);
+      if (!isEnd && fromIdx < toIdx) ti += 1;
       const reordered = [...without.slice(0,ti), dragged, ...without.slice(ti)];
-      reordered.forEach((c,i)=>{ if((c.sortOrder||0)!==i) updateCategory(c.id,{sortOrder:i}); });
-      markBOChange(); showToast('Reordered','success');
+      // Renumber the WHOLE level 0..n — also heals legacy duplicate sortOrders on this
+      // level, which were what let the order shuffle between page loads.
+      reordered.forEach((c,i)=>{ if((c.sortOrder??-1)!==i) updateCategory(c.id,{sortOrder:i}); });
+      markBOChange(); showToast(isEnd ? `${dragged.label} → end of its level` : 'Reordered','success');
+    } else {
+      // v5.5.956: never refuse SILENTLY — the invisible no-op read as "snapped back".
+      showToast('Drag reorders within the same level — use the ↕ Move button to change parent', 'info');
     }
     setDragCatId(null); setOverCatId(null);
   },[dragCatId, menuCategories, updateCategory, markBOChange, showToast]);
@@ -333,17 +574,36 @@ function MenuTab() {
   },[dragItemId, displayItems, updateMenuItem, markBOChange, showToast]);
 
   const addItem = (type='simple')=>{
-    addMenuItem({ name:'New item', menuName:'New item', receiptName:'New item', kitchenName:'New item',
+    // v5.5.949: auto-pick a free name. "+ Item" always minted a literal "New item",
+    // so ONE un-renamed (or later-renamed-back) "New item" anywhere in the menu made
+    // the button dead-end with an alert and no way to type a name — naming happens
+    // AFTER creation in this flow. Now it mints "New item 2", "New item 3", …
+    const freshName = (() => { let n='New item', i=2; while (findDuplicateProductName(menuItems, n)) n=`New item ${i++}`; return n; })();
+    const created = addMenuItem({ name:freshName, menuName:freshName, receiptName:freshName, kitchenName:freshName,
       type, cat:selCatId||undefined, allergens:[],
       pricing:{base:0,dineIn:null,takeaway:null,collection:null,delivery:null},
       assignedModifierGroups:[], assignedInstructionGroups:[], cats:[], });
+    if (!created) { window.alert(`A product called "${freshName}" already exists — rename it before adding another.`); return; }
     markBOChange();
     setTimeout(()=>{ const id=useStore.getState().menuItems.slice(-1)[0]?.id; if(id) setSelItemId(id); },30);
   };
 
   const saveNewCat = ()=>{
     if (!catForm.label.trim()) return;
-    addCategory({ menuId:selMenuId, ...catForm, parentId:catForm.parentId||null, sortOrder:menuCategories.length });
+    // v5.5.950: number within the SIBLING level (max+1), not the global category count —
+    // the global counter minted sortOrders that collided across levels and left ties.
+    const _sibs = menuCategories.filter(c => (c.parentId||null) === (catForm.parentId||null));
+    // v5.5.955: NEVER stamp a menu id that isn't a real menu (the phantom 'menu-1'
+    // race). v5.5.958: and if the venue has NO menu at all, create "Main menu"
+    // loudly rather than minting menu-less categories — the serialised write chain
+    // lands the menu row before the category (FK-safe).
+    let _menuId = (menus||[]).some(m=>m.id===selMenuId) ? selMenuId : ((menus||[])[0]?.id || null);
+    if (!_menuId) {
+      const created = addMenu({ name: 'Main menu', isActive: true, isDefault: true });
+      _menuId = created?.id || null;
+      if (_menuId) { setSelMenuId(_menuId); showToast('This venue had no menu — created "Main menu" for you', 'success'); }
+    }
+    addCategory({ menuId:_menuId, ...catForm, parentId:catForm.parentId||null, sortOrder: _sibs.length ? Math.max(..._sibs.map(c=>c.sortOrder||0)) + 1 : 0 });
     markBOChange(); showToast(`"${catForm.label}" added`,'success');
     setCatForm({label:'',icon:'🍽',color:'#3b82f6',parentId:''}); setAddingCat(false);
   };
@@ -354,7 +614,7 @@ function MenuTab() {
     <div style={{ display:'flex', height:'100%', overflow:'hidden' }}>
 
       {/* ── PANEL 0: Menu selector ─────────────────────────────────────── */}
-      <div style={{ width:200, borderRight:'1px solid var(--bdr)', display:'flex', flexDirection:'column', overflow:'hidden', background:'var(--bg2)', flexShrink:0 }}>
+      <div style={{ width:224, borderRight:'1px solid var(--bdr)', display:'flex', flexDirection:'column', overflow:'hidden', background:'var(--bg2)', flexShrink:0 }}>
         <div style={{ padding:'8px 10px', borderBottom:'1px solid var(--bdr)', display:'flex', alignItems:'center', gap:6, flexShrink:0 }}>
           <span style={{ fontSize:10, fontWeight:700, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.07em', flex:1 }}>Menus</span>
           <button onClick={()=>{setAddingMenu(true);setNewMenuName('');}}
@@ -399,41 +659,132 @@ function MenuTab() {
         )}
 
         <div style={{ flex:1, overflowY:'auto', padding:'6px' }}>
-          {(menus||[]).map(m=>(
-            <div key={m.id}
-              style={{ display:'flex', alignItems:'center', gap:4, marginBottom:3,
-                borderRadius:8, border:`1.5px solid ${selMenuId===m.id?'var(--acc)':'transparent'}`,
-                background:selMenuId===m.id?'var(--acc-d)':'transparent', transition:'all .1s' }}>
-              <button onClick={()=>{setSelMenuId(m.id);setSelCatId(null);setSelItemId(null);}}
-                style={{ flex:1, display:'flex', flexDirection:'column', padding:'8px 9px', cursor:'pointer', fontFamily:'inherit', textAlign:'left', border:'none', background:'transparent' }}>
-                <div style={{ fontSize:12, fontWeight:700, color:selMenuId===m.id?'var(--acc)':'var(--t1)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                  {m.isDefault?'★ ':''}{m.name}
+          {(menus||[]).map(m=>{
+            const sched = m.schedule || null;
+            const days = sched?.days || [1,2,3,4,5,6,7];
+            const from = sched?.from || '09:00';
+            const to   = sched?.to   || '23:59';
+            const isEditing = editingMenuId === m.id;
+            const dayLabels = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+            return (
+              <div key={m.id}>
+                {/* mm-catrow gives the menu card the same hover-reveal behaviour
+                    as the category rows (handoff marker 1). */}
+                <div className="mm-catrow" style={{ position:'relative', display:'flex', alignItems:'center', gap:4, marginBottom:4,
+                  borderRadius:9, border:`1.5px solid ${selMenuId===m.id?'var(--acc)':'var(--bdr)'}`,
+                  background:selMenuId===m.id?'var(--acc-d)':'var(--bg1)', transition:'all .1s' }}>
+                  <button onClick={()=>{ setSelMenuId(m.id); setSelCatId(null); }}
+                    style={{ flex:1, minWidth:0, display:'flex', flexDirection:'column', padding:'9px 10px', cursor:'pointer', fontFamily:'inherit', textAlign:'left', border:'none', background:'transparent' }}>
+                    <div title={m.name} style={{ fontSize:12.5, fontWeight:700, color:selMenuId===m.id?'var(--acc)':'var(--t1)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', paddingRight:44 }}>
+                      {(m.isDefault ?? m.is_default)?'★ ':''}{m.name}
+                      {sched && <span style={{ marginLeft:4, fontSize:9, color:'var(--t4)' }}>⏰</span>}
+                    </div>
+                    <div style={{ fontSize:10, color:'var(--t4)', marginTop:2 }}>
+                      {sched ? `${sched.days?.length||7}d · ${sched.from}–${sched.to}` : 'Always active'}
+                    </div>
+                  </button>
+                  <span className="mm-acts" style={{ position:'absolute', right:7, top:7, display:'flex', gap:4 }}>
+                    <button onClick={()=>{ setEditingMenuId(isEditing ? null : m.id); }}
+                      title="Edit menu settings"
+                      style={{ width:20,height:20,borderRadius:5,border:'1px solid var(--bdr)',background:isEditing?'var(--acc-d)':'var(--bg1)',color:isEditing?'var(--acc)':'var(--t3)',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>✎</button>
+                    {!(m.isDefault ?? m.is_default) && (
+                      <button className="mm-del" onClick={()=>{
+                          if (!confirm(`Delete "${m.name}"? This won't delete its categories or items.`)) return;
+                          if (selMenuId===m.id && menus.length>1) setSelMenuId(menus.find(x=>x.id!==m.id).id);
+                          if (editingMenuId===m.id) setEditingMenuId(null);
+                          removeMenu(m.id); markBOChange(); showToast(`"${m.name}" deleted`,'info');
+                        }}
+                        title="Delete menu"
+                        style={{ width:20,height:20,borderRadius:5,border:'1px solid var(--bdr)',background:'var(--bg1)',color:'var(--t3)',cursor:'pointer',fontSize:12,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>
+                        ×
+                      </button>
+                    )}
+                  </span>
                 </div>
-                <div style={{ fontSize:9, color:'var(--t4)', marginTop:1 }}>
-                  {menuCategories.filter(c=>!c.parentId&&c.menuId===m.id).length} categories
-                </div>
-              </button>
-              {!m.isDefault && (
-                <button onClick={()=>{
-                    if (!confirm(`Delete "${m.name}"? This won't delete its categories or items.`)) return;
-                    const fallback = (menus||[]).find(x=>x.id!==m.id)?.id||'menu-1';
-                    if (selMenuId===m.id) { setSelMenuId(fallback); setSelCatId(null); setSelItemId(null); }
-                    removeMenu(m.id); markBOChange(); showToast(`"${m.name}" deleted`,'info');
-                  }}
-                  style={{ width:20,height:20,borderRadius:5,border:'1px solid var(--red-b)',background:'var(--red-d)',color:'var(--red)',cursor:'pointer',fontSize:12,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0,marginRight:5 }}>
-                  ×
-                </button>
-              )}
-            </div>
-          ))}
+                {isEditing && (
+                  <div style={{ padding:8, marginBottom:4, background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:8, fontSize:11 }}>
+                    <div style={{ fontSize:10, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.06em', marginBottom:6 }}>Schedule</div>
+                    <div style={{ display:'flex', gap:3, flexWrap:'wrap', marginBottom:8 }}>
+                      {dayLabels.map((lab, i) => {
+                        const dayNum = i + 1;
+                        const on = days.includes(dayNum);
+                        return (
+                          <button key={dayNum} onClick={()=>{
+                            const next = on ? days.filter(d=>d!==dayNum) : [...days, dayNum].sort();
+                            updateMenu(m.id, { schedule: { days: next, from, to } });
+                            markBOChange();
+                          }}
+                            style={{ padding:'3px 7px', fontSize:10, fontWeight:600, borderRadius:4,
+                              background: on ? 'var(--acc-d)' : 'var(--bg3)',
+                              color: on ? 'var(--acc)' : 'var(--t3)',
+                              border: '1px solid ' + (on ? 'var(--acc)' : 'var(--bdr)'),
+                              cursor:'pointer' }}>{lab}</button>
+                        );
+                      })}
+                    </div>
+                    <div style={{ display:'flex', gap:5, alignItems:'center', marginBottom:8 }}>
+                      <input type="time" value={from} onChange={e=>{ updateMenu(m.id, { schedule: { days, from: e.target.value, to } }); markBOChange(); }}
+                        style={{ ...inp, fontSize:11, padding:'4px 6px', flex:1 }}/>
+                      <span style={{ color:'var(--t3)' }}>to</span>
+                      <input type="time" value={to} onChange={e=>{ updateMenu(m.id, { schedule: { days, from, to: e.target.value } }); markBOChange(); }}
+                        style={{ ...inp, fontSize:11, padding:'4px 6px', flex:1 }}/>
+                    </div>
+                    {sched && (
+                      <button onClick={()=>{ updateMenu(m.id, { schedule: null }); markBOChange(); showToast('Schedule cleared — always active','info'); }}
+                        style={{ width:'100%', padding:'4px', fontSize:10, fontWeight:600, borderRadius:5, border:'1px dashed var(--bdr)', background:'transparent', color:'var(--t3)', cursor:'pointer', marginBottom:8 }}>
+                        Clear schedule (always active)
+                      </button>
+                    )}
+                    <div style={{ display:'flex', gap:6, alignItems:'center', marginBottom:6 }}>
+                      <span style={{ fontSize:10, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.06em', flex:1 }}>Priority</span>
+                      <input type="number" min={0} max={99} value={m.priority ?? 0}
+                        onChange={e=>{ updateMenu(m.id, { priority: parseInt(e.target.value)||0 }); markBOChange(); }}
+                        style={{ ...inp, fontSize:11, padding:'3px 6px', width:50, textAlign:'right' }}/>
+                    </div>
+                    <div style={{ fontSize:10, color:'var(--t4)', lineHeight:1.4 }}>
+                      Higher priority wins when multiple scheduled menus overlap.
+                    </div>
+                    {!(m.isDefault ?? m.is_default) && (
+                      <button onClick={()=>{
+                          (menus||[]).forEach(other => {
+                            if (other.id !== m.id && (other.isDefault ?? other.is_default)) updateMenu(other.id, { isDefault: false, is_default: false });
+                          });
+                          updateMenu(m.id, { isDefault: true, is_default: true });
+                          markBOChange(); showToast(`"${m.name}" is now the default`,'success');
+                        }}
+                        style={{ width:'100%', padding:'4px 8px', marginTop:6, fontSize:10, fontWeight:600, borderRadius:5, border:'1px solid var(--acc)', background:'var(--acc-d)', color:'var(--acc)', cursor:'pointer' }}>
+                        Set as default
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
 
       {/* ── PANEL 1: Category tree ─────────────────────────────────────── */}
-      <div style={{ width:200, borderRight:'1px solid var(--bdr)', display:'flex', flexDirection:'column', overflow:'hidden', background:'var(--bg1)', flexShrink:0 }}>
-        <div style={{ padding:'8px 10px', borderBottom:'1px solid var(--bdr)', display:'flex', gap:6, alignItems:'center', flexShrink:0 }}>
-          <span style={{ fontSize:11, fontWeight:700, color:'var(--t2)', flex:1 }}>Categories</span>
-          <button onClick={()=>setAddingCat(v=>!v)} style={{ width:24, height:24, borderRadius:6, cursor:'pointer', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:15, fontWeight:700, display:'flex', alignItems:'center', justifyContent:'center' }}>+</button>
+      {/* v5.5.813: widened toward the handoff's 336px so full category names
+          render instead of truncating ("Burgers/Sandwiches", "Hot drinks"). */}
+      <div style={{ width:300, borderRight:'1px solid var(--bdr)', display:'flex', flexDirection:'column', overflow:'hidden', background:'var(--bg1)', flexShrink:0 }}>
+        <div style={{ padding:'8px 10px', borderBottom:'1px solid var(--bdr)', flexShrink:0 }}>
+          <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+            <span style={{ fontSize:12, fontWeight:700, color:'var(--t1)', flex:1 }}>Categories</span>
+            <button onClick={()=>setAddingCat(v=>!v)} style={{ width:24, height:24, borderRadius:6, cursor:'pointer', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:15, fontWeight:700, display:'flex', alignItems:'center', justifyContent:'center' }}>+</button>
+          </div>
+          {/* v5.5.815: find-as-you-type filter over the category tree */}
+          <div style={{ position:'relative', marginTop:7 }}>
+            <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:10, color:'var(--t4)', pointerEvents:'none' }}>🔍</span>
+            <input value={catFilter} onChange={e=>setCatFilter(e.target.value)}
+              onKeyDown={e=>{ if(e.key==='Escape'){ e.stopPropagation(); setCatFilter(''); } }}
+              placeholder="Filter categories…" aria-label="Filter categories"
+              style={{ ...inp, fontSize:11.5, padding:'5px 24px 5px 24px' }}/>
+            {catFilter && (
+              <button onClick={()=>setCatFilter('')} aria-label="Clear category filter" title="Clear"
+                style={{ position:'absolute', right:5, top:'50%', transform:'translateY(-50%)', width:16, height:16, borderRadius:4, border:'none', background:'var(--bg3)', color:'var(--t3)', cursor:'pointer', fontSize:10, lineHeight:1, display:'flex', alignItems:'center', justifyContent:'center' }}>×</button>
+            )}
+          </div>
         </div>
 
         {addingCat && (
@@ -456,12 +807,95 @@ function MenuTab() {
           </div>
         )}
 
+        {/* v4.7.5: Link existing category */}
+        {!addingCat && selMenuId && (
+          <div style={{ padding: '6px 10px', borderBottom: '1px solid var(--bdr)', flexShrink: 0 }}>
+            <button onClick={() => setShowLinkPicker(s => !s)}
+              style={{ width:'100%', padding:'5px 8px', borderRadius:6, border:'1px dashed var(--bdr2,var(--bdr))', background:'transparent', color:'var(--t3)', cursor:'pointer', fontSize:11, fontFamily:'inherit' }}>
+              {showLinkPicker ? '✕ Cancel' : '+ Link existing category'}
+            </button>
+            {showLinkPicker && (
+              <div style={{ marginTop:6, maxHeight:200, overflowY:'auto', background:'var(--bg2)', border:'1px solid var(--bdr)', borderRadius:6, padding:4 }}>
+                {(() => {
+                  const inMenuCatIds = new Set([
+                    ...menuCategories.filter(c => c.menuId === selMenuId).map(c => c.id),
+                    ...(categoryLinks||[]).filter(l => l.menu_id === selMenuId).map(l => l.category_id),
+                  ]);
+                  const available = menuCategories
+                    .filter(c => !c.parentId && !c.isSpecial && !inMenuCatIds.has(c.id))
+                    .sort((a,b) => (a.label||'').localeCompare(b.label||''));
+                  if (available.length === 0) {
+                    return <div style={{ padding:8, fontSize:11, color:'var(--t3)', textAlign:'center' }}>No categories left to link.</div>;
+                  }
+                  return available.map(c => (
+                    <button key={c.id} onClick={() => handleLinkCat(c.id)}
+                      style={{ display:'flex', width:'100%', alignItems:'center', gap:8, padding:'5px 8px', border:'none', background:'transparent', cursor:'pointer', fontFamily:'inherit', fontSize:11.5, color:'var(--t1)', textAlign:'left', borderRadius:4 }}
+                      onMouseEnter={e=>e.currentTarget.style.background='var(--bg3)'}
+                      onMouseLeave={e=>e.currentTarget.style.background='transparent'}>
+                      <span style={{ width:6, height:6, borderRadius:2, background:c.color || 'var(--t3)', flexShrink:0 }} />
+                      <span style={{ flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{c.label}</span>
+                      {c.scope && c.scope !== 'local' && (
+                        <span style={{ fontSize:9, fontFamily:'ui-monospace,monospace', fontWeight:700, letterSpacing:'0.06em', color:c.scope==='shared'?'#80b4ff':'#c89bff', textTransform:'uppercase' }}>{c.scope}</span>
+                      )}
+                    </button>
+                  ));
+                })()}
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Root drop zone */}
 
 
-        <div style={{ flex:1, overflowY:'auto', padding:'4px 6px' }}>
-          {roots.map(cat=>{
-            const children = menuCategories.filter(c=>c.parentId===cat.id).sort((a,b)=>(a.sortOrder||0)-(b.sortOrder||0));
+        {/* v5.5.956: catch-all drop zone. Dropping BELOW the last row (or in any gap)
+            used to hit an element with no drop handler — the browser cancelled the
+            drag and the row "snapped back" (Liqueurs-to-bottom). Anywhere that isn't
+            a category row now means "send to the END of its own level". Row drops
+            stopPropagation, so this never double-fires. */}
+        <div style={{ flex:1, overflowY:'auto', padding:'4px 6px' }}
+          onDragOver={e=>{ if (dragCatId) e.preventDefault(); }}
+          onDrop={e=>{ if (dragCatId) onCatDrop(e,'end'); }}>
+          {/* v5.5.813 (handoff markers 1 + 2): row actions are hidden at rest and
+              fade in on hover. They stay in the DOM and in tab order — revealed on
+              :focus-within for keyboard users, and always shown on touch devices
+              where there is no hover at all. The count cross-fades inside a
+              fixed-width zone so nothing shifts. Delete is neutral until its own
+              hover, keeping red reserved for real meaning. */}
+          <style>{`
+            .mm-catrow .mm-acts { opacity:0; pointer-events:none; transition:opacity .12s; }
+            .mm-catrow:hover .mm-acts, .mm-catrow:focus-within .mm-acts { opacity:1; pointer-events:auto; }
+            .mm-catrow .mm-count { transition:opacity .1s; }
+            .mm-catrow:hover .mm-count, .mm-catrow:focus-within .mm-count { opacity:0; }
+            .mm-catrow .mm-grip { opacity:0; transition:opacity .12s; }
+            .mm-catrow:hover .mm-grip { opacity:.75; }
+            .mm-del:hover { background:var(--red-d) !important; border-color:var(--red-b) !important; color:var(--red) !important; }
+            @media (hover:none) {
+              .mm-catrow .mm-acts { opacity:1; pointer-events:auto; }
+              .mm-catrow:hover .mm-count { opacity:1; }
+              .mm-catrow .mm-grip { opacity:.75; }
+            }
+          `}</style>
+          {(() => {
+            // v5.5.815: find-as-you-type. A root shows if it matches OR any of its
+            // children match (so the hierarchy still reads); when a root matches,
+            // all its children stay visible.
+            const q = catFilter.trim().toLowerCase();
+            const hit = c => (c.label || '').toLowerCase().includes(q);
+            const kidsOf = id => menuCategories.filter(c => c.parentId === id).sort((a,b)=>((a.sortOrder||0)-(b.sortOrder||0)) || String(a.label||'').localeCompare(String(b.label||'')));  // v5.5.950 tiebreak
+            const visibleRoots = q
+              ? roots.filter(r => hit(r) || kidsOf(r.id).some(hit))
+              : roots;
+            if (q && visibleRoots.length === 0) {
+              return <div style={{ textAlign:'center', padding:'20px 8px', color:'var(--t4)', fontSize:11 }}>No categories match “{catFilter.trim()}”</div>;
+            }
+            return visibleRoots.map(cat=>{
+            const allKids  = kidsOf(cat.id);
+            const children = q && !hit(cat) ? allKids.filter(hit) : allKids;
+            // Collapsed is ignored while searching, and a collapsed parent always
+            // opens if the selected category is one of its children — selection is
+            // never hidden behind a closed group.
+            const isCollapsed = !q && collapsed.has(cat.id) && !allKids.some(s=>s.id===selCatId);
             const count    = menuItems.filter(i=>!i.archived&&i.type!=='subitem'&&(i.cat===cat.id||children.some(s=>s.id===i.cat))).length;
             const active   = selCatId===cat.id;
             const over     = overCatId===cat.id;
@@ -472,20 +906,31 @@ function MenuTab() {
             return (
               <div key={cat.id} style={{ opacity:dragging?.3:1 }}>
                 {isReorder && <div style={{ height:3, background:'var(--acc)', borderRadius:2, margin:'1px 4px' }}/>}
-                <div draggable onDragStart={e=>{setDragCatId(cat.id);e.dataTransfer.effectAllowed='move';}} onDragOver={e=>{e.preventDefault();setOverCatId(cat.id);}} onDragEnd={()=>{setDragCatId(null);setOverCatId(null);}} onDrop={e=>onCatDrop(e,cat.id)} onClick={()=>{setSelCatId(cat.id);setSelItemId(null);setSearch('');}}
-                  style={{ display:'flex', alignItems:'center', gap:6, padding:'6px 8px', borderRadius:8, marginBottom:1, cursor:'grab', userSelect:'none', border:`1.5px solid ${!isReorder&&over?'var(--acc)':active?color+'55':'transparent'}`, background:!isReorder&&over?'var(--acc-d)':active?color+'18':'transparent' }}>
-                  <span style={{ fontSize:8, color:'var(--t4)', flexShrink:0 }}>⣿</span>
-                  <div style={{ width:7, height:7, borderRadius:'50%', background:color, flexShrink:0 }}/>
-                  <span style={{ fontSize:14, flexShrink:0 }}>{cat.icon}</span>
-                  <span style={{ fontSize:11, fontWeight:active?700:500, color:active?color:'var(--t2)', flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{cat.label}</span>
-                  <span style={{ fontSize:9, color:'var(--t4)', flexShrink:0 }}>{count}</span>
-                  <button onClick={e=>{e.stopPropagation();setEditingCat(cat);}} title="Rename category" style={{ width:20,height:20,borderRadius:5,border:'1px solid var(--bdr)',background:'var(--bg3)',color:'var(--t3)',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0, opacity:0, transition:'opacity .1s' }}
-                    onMouseEnter={e=>e.currentTarget.style.opacity='1'} onMouseLeave={e=>e.currentTarget.style.opacity='0'}>✎</button>
-                  <button onClick={e=>{e.stopPropagation();setMovingCatId(cat.id);}} title="Move / nest this category" style={{ width:20,height:20,borderRadius:5,border:'1px solid var(--bdr)',background:'var(--bg3)',color:'var(--t4)',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>↕</button>
-                  <button onClick={e=>{e.stopPropagation();if(confirm(`Delete "${cat.label}"? Items in this category will become uncategorised.`)){removeCategory(cat.id);if(selCatId===cat.id)setSelCatId(null);markBOChange();}}} title="Delete category" style={{ width:20,height:20,borderRadius:5,border:'1px solid var(--red-b)',background:'var(--red-d)',color:'var(--red)',cursor:'pointer',fontSize:12,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>×</button>
+                <div className="mm-catrow" draggable onDragStart={e=>{setDragCatId(cat.id);e.dataTransfer.effectAllowed='move';}} onDragOver={e=>{e.preventDefault();setOverCatId(cat.id);}} onDragEnd={()=>{setDragCatId(null);setOverCatId(null);}} onDrop={e=>onCatDrop(e,cat.id)} onClick={()=>{setSelCatId(cat.id);setSelItemId(null);setSearch('');}}
+                  style={{ display:'flex', alignItems:'center', gap:7, height:40, padding:'0 8px', borderRadius:8, marginTop:6, cursor:'grab', userSelect:'none', border:`1.5px solid ${!isReorder&&over?'var(--acc)':active?color+'55':'transparent'}`, background:!isReorder&&over?'var(--acc-d)':active?color+'18':'transparent' }}>
+                  <span className="mm-grip" style={{ fontSize:8, color:'var(--t4)', flexShrink:0 }}>⣿</span>
+                  {/* v5.5.815: collapse/expand — only on groups that have children */}
+                  {allKids.length > 0 ? (
+                    <button onClick={e=>{e.stopPropagation();toggleCollapsed(cat.id);}}
+                      title={isCollapsed ? 'Expand group' : 'Collapse group'}
+                      aria-label={isCollapsed ? 'Expand group' : 'Collapse group'}
+                      style={{ width:15, height:15, flexShrink:0, border:'none', background:'transparent', cursor:'pointer', color:'var(--t4)', fontSize:9, lineHeight:1, padding:0, display:'flex', alignItems:'center', justifyContent:'center', transform:isCollapsed?'rotate(-90deg)':'none', transition:'transform .14s' }}>▼</button>
+                  ) : <span style={{ width:15, flexShrink:0 }}/>}
+                  <div style={{ width:8, height:8, borderRadius:3, background:color, flexShrink:0, boxShadow:'inset 0 0 0 1px rgba(0,0,0,.1)' }}/>
+                  <CatGlyph cat={cat} size={20}/>
+                  <span title={cat.label} style={{ fontSize:13.5, fontWeight:active?700:600, color:active?color:(count===0?'var(--t3)':'var(--t1)'), flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', minWidth:0 }}>{cat.label}</span>
+                  {/* Fixed-width zone: count cross-fades out as actions fade in */}
+                  <span style={{ position:'relative', width:70, height:20, flexShrink:0 }}>
+                    <span className="mm-count" style={{ position:'absolute', right:2, top:'50%', transform:'translateY(-50%)', fontSize:11.5, fontVariantNumeric:'tabular-nums', color:count===0?'var(--t4)':'var(--t3)' }}>{count}</span>
+                    <span className="mm-acts" style={{ position:'absolute', right:0, top:'50%', transform:'translateY(-50%)', display:'flex', gap:4 }}>
+                      <button onClick={e=>{e.stopPropagation();setEditingCat(cat);}} title="Rename category" style={{ width:20,height:20,borderRadius:5,border:'1px solid var(--bdr)',background:'var(--bg1)',color:'var(--t3)',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>✎</button>
+                      <button onClick={e=>{e.stopPropagation();setMovingCatId(cat.id);}} title="Move / nest this category" style={{ width:20,height:20,borderRadius:5,border:'1px solid var(--bdr)',background:'var(--bg1)',color:'var(--t3)',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>↕</button>
+                      <button className="mm-del" onClick={e=>{e.stopPropagation();if(confirm(`Delete "${cat.label}"? Items in this category will become uncategorised.`)){removeCategory(cat.id);if(selCatId===cat.id)setSelCatId(null);markBOChange();}}} title="Delete category" style={{ width:20,height:20,borderRadius:5,border:'1px solid var(--bdr)',background:'var(--bg1)',color:'var(--t3)',cursor:'pointer',fontSize:12,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>×</button>
+                    </span>
+                  </span>
                 </div>
-                {/* Subcats */}
-                {children.map(sub=>{
+                {/* Subcats — hidden while the group is collapsed */}
+                {!isCollapsed && children.map(sub=>{
                   const sa = selCatId===sub.id;
                   const so = overCatId===sub.id;
                   const dc = menuCategories.find(c=>c.id===dragCatId);
@@ -494,22 +939,30 @@ function MenuTab() {
                   return (
                     <div key={sub.id} style={{ opacity:dragCatId===sub.id?.3:1 }}>
                       {sr && <div style={{ height:2, background:'var(--acc)', borderRadius:2, margin:'1px 12px' }}/>}
-                      <div draggable onDragStart={e=>{setDragCatId(sub.id);e.dataTransfer.effectAllowed='move';}} onDragOver={e=>{e.preventDefault();setOverCatId(sub.id);}} onDragEnd={()=>{setDragCatId(null);setOverCatId(null);}} onDrop={e=>onCatDrop(e,sub.id)} onClick={()=>{setSelCatId(sub.id);setSelItemId(null);setSearch('');}}
-                        style={{ display:'flex', alignItems:'center', gap:5, padding:'5px 8px 5px 20px', borderRadius:7, marginBottom:1, cursor:'grab', border:`1.5px solid ${!sr&&so?'var(--acc)':sa?sc+'55':'transparent'}`, background:!sr&&so?'var(--acc-d)':sa?sc+'18':'transparent' }}>
-                        <span style={{ fontSize:13 }}>{sub.icon}</span>
-                        <span style={{ fontSize:10, fontWeight:sa?700:400, color:sa?sc:'var(--t3)', flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{sub.label}</span>
-                        <span style={{ fontSize:9, color:'var(--t4)' }}>{menuItems.filter(i=>!i.archived&&i.type!=='subitem'&&i.cat===sub.id).length}</span>
-                        <button onClick={e=>{e.stopPropagation();setEditingCat(sub);}} title="Rename" style={{ width:18,height:18,borderRadius:4,border:'1px solid var(--bdr)',background:'var(--bg3)',color:'var(--t3)',cursor:'pointer',fontSize:10,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0, opacity:0, transition:'opacity .1s' }}
-                          onMouseEnter={e=>e.currentTarget.style.opacity='1'} onMouseLeave={e=>e.currentTarget.style.opacity='0'}>✎</button>
-                        <button onClick={e=>{e.stopPropagation();setMovingCatId(sub.id);}} title="Move / un-nest" style={{ width:18,height:18,borderRadius:4,border:'1px solid var(--bdr)',background:'var(--bg3)',color:'var(--t4)',cursor:'pointer',fontSize:10,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>↕</button>
-                        <button onClick={e=>{e.stopPropagation();if(confirm(`Delete "${sub.label}"?`)){removeCategory(sub.id);if(selCatId===sub.id)setSelCatId(null);markBOChange();}}} title="Delete" style={{ width:18,height:18,borderRadius:4,border:'1px solid var(--red-b)',background:'var(--red-d)',color:'var(--red)',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>×</button>
-                      </div>
+                      {(() => { const subCount = menuItems.filter(i=>!i.archived&&i.type!=='subitem'&&i.cat===sub.id).length; return (
+                      <div className="mm-catrow" draggable onDragStart={e=>{setDragCatId(sub.id);e.dataTransfer.effectAllowed='move';}} onDragOver={e=>{e.preventDefault();setOverCatId(sub.id);}} onDragEnd={()=>{setDragCatId(null);setOverCatId(null);}} onDrop={e=>onCatDrop(e,sub.id)} onClick={()=>{setSelCatId(sub.id);setSelItemId(null);setSearch('');}}
+                        style={{ display:'flex', alignItems:'center', gap:6, height:36, padding:'0 8px 0 12px', margin:'1px 0 0 26px', borderRadius:'0 7px 7px 0', cursor:'grab',
+                          borderLeft:'2px solid var(--bdr)',
+                          border:`1.5px solid ${!sr&&so?'var(--acc)':sa?sc+'55':'transparent'}`, borderLeftWidth:2, borderLeftColor:!sr&&so?'var(--acc)':sa?sc+'55':'var(--bdr)',
+                          background:!sr&&so?'var(--acc-d)':sa?sc+'18':'transparent' }}>
+                        <CatGlyph cat={sub} size={17}/>
+                        <span title={sub.label} style={{ fontSize:13, fontWeight:sa?700:500, color:sa?sc:(subCount===0?'var(--t3)':'var(--t2)'), flex:1, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', minWidth:0 }}>{sub.label}</span>
+                        <span style={{ position:'relative', width:64, height:18, flexShrink:0 }}>
+                          <span className="mm-count" style={{ position:'absolute', right:2, top:'50%', transform:'translateY(-50%)', fontSize:11, fontVariantNumeric:'tabular-nums', color:subCount===0?'var(--t4)':'var(--t3)' }}>{subCount}</span>
+                          <span className="mm-acts" style={{ position:'absolute', right:0, top:'50%', transform:'translateY(-50%)', display:'flex', gap:4 }}>
+                            <button onClick={e=>{e.stopPropagation();setEditingCat(sub);}} title="Rename" style={{ width:18,height:18,borderRadius:4,border:'1px solid var(--bdr)',background:'var(--bg1)',color:'var(--t3)',cursor:'pointer',fontSize:10,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>✎</button>
+                            <button onClick={e=>{e.stopPropagation();setMovingCatId(sub.id);}} title="Move / un-nest" style={{ width:18,height:18,borderRadius:4,border:'1px solid var(--bdr)',background:'var(--bg1)',color:'var(--t3)',cursor:'pointer',fontSize:10,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>↕</button>
+                            <button className="mm-del" onClick={e=>{e.stopPropagation();if(confirm(`Delete "${sub.label}"?`)){removeCategory(sub.id);if(selCatId===sub.id)setSelCatId(null);markBOChange();}}} title="Delete" style={{ width:18,height:18,borderRadius:4,border:'1px solid var(--bdr)',background:'var(--bg1)',color:'var(--t3)',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>×</button>
+                          </span>
+                        </span>
+                      </div> ); })()}
                     </div>
                   );
                 })}
               </div>
             );
-          })}
+            });
+          })()}
           {roots.length===0 && <div style={{ textAlign:'center', padding:'20px 6px', color:'var(--t4)', fontSize:10 }}>No categories.<br/>Click + to add one.</div>}
         </div>
       </div>
@@ -589,7 +1042,7 @@ function MenuTab() {
                     <div key={item.id} style={{ display:'flex',alignItems:'center',gap:10,padding:'6px 12px',borderBottom:'1px solid var(--acc-b)' }}>
                       <div style={{ flex:1,minWidth:0 }}>
                         <span style={{ fontSize:12,fontWeight:600,color:'var(--t1)' }}>{item.menuName||item.name}</span>
-                        <span style={{ fontSize:10,color:'var(--t4)',marginLeft:8 }}>£{(item.pricing?.base??item.price??0).toFixed(2)}</span>
+                        <span style={{ fontSize:10,color:'var(--t4)',marginLeft:8 }}>{money((item.pricing?.base??item.price??0))}</span>
                       </div>
                       <span style={{ fontSize:10,fontWeight:600,padding:'2px 7px',borderRadius:6,background:'var(--grn-d)',color:'var(--grn)',border:'1px solid var(--grn-b)' }}>✓ In menu</span>
                       <button onClick={()=>removeFromCat(item)} style={{ padding:'3px 8px',borderRadius:6,cursor:'pointer',fontFamily:'inherit',background:'var(--red-d)',border:'1px solid var(--red-b)',color:'var(--red)',fontSize:10,fontWeight:600 }}>Remove</button>
@@ -608,7 +1061,7 @@ function MenuTab() {
                         <div style={{ flex:1,minWidth:0 }}>
                           <span style={{ fontSize:12,fontWeight:600,color:'var(--t1)' }}>{item.menuName||item.name}</span>
                           {itemCat&&<span style={{ fontSize:9,color:'var(--t4)',marginLeft:7 }}>{itemCat.icon} {itemCat.label}</span>}
-                          <span style={{ fontSize:10,color:'var(--t4)',marginLeft:8 }}>£{(item.pricing?.base??item.price??0).toFixed(2)}</span>
+                          <span style={{ fontSize:10,color:'var(--t4)',marginLeft:8 }}>{money((item.pricing?.base??item.price??0))}</span>
                         </div>
                         <button onClick={()=>addToCat(item)} style={{ padding:'4px 10px',borderRadius:7,cursor:'pointer',fontFamily:'inherit',background:'var(--acc)',border:'none',color:'#0b0c10',fontSize:11,fontWeight:700,flexShrink:0 }}>+ Add</button>
                       </div>
@@ -632,7 +1085,7 @@ function MenuTab() {
               updateMenuItem={updateMenuItem} markBOChange={markBOChange} showToast={showToast}
               eightySixIds={eightySixIds} modifierGroupDefs={modifierGroupDefs}/>
           ) : (<>
-          <div style={{ flex:1, overflowY:'auto', padding:'12px' }}
+          <div style={{ flex:1, overflowY:'auto', overflowX:'auto', padding:'12px' }}
             onDragOver={e=>e.preventDefault()}
             onDrop={e=>{ if(dragItemId&&!overItemId){ const max=Math.max(...displayItems.map(i=>i.sortOrder??0),0); updateMenuItem(dragItemId,{sortOrder:max+1}); markBOChange(); setDragItemId(null); } }}>
             {displayItems.length===0 ? (
@@ -642,7 +1095,23 @@ function MenuTab() {
                 <button onClick={()=>setShowAddPanel(true)} style={{ padding:'8px 18px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:13, fontWeight:700 }}>+ Add items to this category</button>
               </div>
             ) : (
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(160px,1fr))', gap:10 }}>
+              // v5.5.817: LOCKED TO THE POS GRID. This is a layout editor, not a
+              // gallery — position N here is position N on the till, which is the
+              // whole point of the Spacer cells. So the column count, row height and
+              // gap are copied from POSSurface's item grid (repeat(6,1fr),
+              // gridAutoRows minmax(110px,auto), gap 8). It must NEVER reflow to a
+              // different column count: that would silently misrepresent the layout
+              // the operator is building. When the pane is too narrow the columns
+              // hold their minimum and the area scrolls sideways instead.
+              <div style={{
+                display:'grid',
+                gridTemplateColumns:'repeat(6, minmax(118px, 1fr))',
+                gridAutoRows:'minmax(110px, auto)',
+                gap:8,
+                alignContent:'start',
+                maxWidth:1180,          // keeps till-like proportions on a big monitor
+                minWidth:6*118 + 5*8,   // 6 columns never collapse below a usable size
+              }}>
                 {gridWithSpacers.map(item=>{
                   // Spacer cell — draggable blank layout cell
                   if (item._spacer) return (
@@ -685,30 +1154,34 @@ function MenuTab() {
                         onDrop={e=>{e.preventDefault();reorderGrid(dragItemId,item.id);}}
                         onClick={()=>setSelItemId(active?null:item.id)}
                         style={{
+                          // v5.5.813 (handoff marker 6): equal-height cards, ink price,
+                          // 2-line clamped description, selection reads as a ring.
                           position:'relative', borderRadius:14, cursor:'pointer', userSelect:'none',
                           border:`2px solid ${active?'var(--acc)':'var(--bdr)'}`,
                           background:active?'var(--acc-d)':'var(--bg2)',
-                          overflow:'hidden', minHeight:90,
+                          // height:100% so the card fills the POS-sized row box above
+                          overflow:'hidden', height:'100%', minHeight:110, display:'flex', flexDirection:'column',
                           boxShadow:active?'0 0 0 3px var(--acc-b)':'none',
                           transition:'border-color .1s, box-shadow .1s',
                         }}>
                         {/* Colour bar — matches POS */}
                         <div style={{ position:'absolute', left:0, top:0, bottom:0, width:4, background:catColor, opacity:.8 }}/>
-                        <div style={{ padding:'10px 10px 9px 14px' }}>
-                          <div style={{ fontSize:13, fontWeight:700, color:active?'var(--acc)':'var(--t1)', lineHeight:1.3, marginBottom:4 }}>
+                        {/* marker 7: stock state is visible while scanning, not only after opening */}
+                        {is86 && <span style={{ position:'absolute', top:9, right:9, zIndex:2, fontSize:9.5, fontWeight:800, padding:'2px 6px', borderRadius:6, background:'var(--red-d)', color:'var(--red)', border:'1px solid var(--red-b)', lineHeight:1.3 }}>86</span>}
+                        <div style={{ padding:'11px 11px 10px 14px', display:'flex', flexDirection:'column', gap:5, flex:1 }}>
+                          <div title={item.menuName||item.name} style={{ fontSize:14, fontWeight:700, color:active?'var(--acc)':'var(--t1)', lineHeight:1.25, paddingRight:is86?30:14 }}>
                             {item.menuName||item.name}
                           </div>
-                          {item.description && <div style={{ fontSize:10, color:'var(--t4)', marginBottom:4, lineHeight:1.3, overflow:'hidden', display:'-webkit-box', WebkitLineClamp:2, WebkitBoxOrient:'vertical' }}>{item.description}</div>}
-                          <div style={{ display:'flex', alignItems:'center', gap:4, flexWrap:'wrap' }}>
+                          {item.description && <div style={{ fontSize:11.5, color:'var(--t4)', lineHeight:1.4, overflow:'hidden', display:'-webkit-box', WebkitLineClamp:2, WebkitBoxOrient:'vertical' }}>{item.description}</div>}
+                          <div style={{ marginTop:'auto', display:'flex', alignItems:'center', gap:5, flexWrap:'wrap' }}>
                             {isParent ? (
-                              <span style={{ fontSize:11, fontWeight:700, color:catColor }}>from £{Math.min(...children.map(c=>c.pricing?.base??c.price??0)).toFixed(2)}</span>
+                              <span style={{ fontSize:13, fontWeight:700, color:'var(--t1)', fontVariantNumeric:'tabular-nums' }}>from {money(Math.min(...children.map(c=>c.pricing?.base??c.price??0)))}</span>
                             ) : (
-                              <span style={{ fontSize:13, fontWeight:800, color:catColor, fontFamily:'var(--font-mono)' }}>{p.base>0?`£${p.base.toFixed(2)}`:'free'}</span>
+                              <span style={{ fontSize:14, fontWeight:700, color:'var(--t1)', fontVariantNumeric:'tabular-nums' }}>{p.base>0?`${money(p.base)}`:'free'}</span>
                             )}
-                            {isParent && <span style={{ fontSize:8, padding:'1px 5px', borderRadius:8, background:catColor+'22', color:catColor, fontWeight:700 }}>sizes</span>}
-                            {(item.assignedModifierGroups||[]).length>0 && <span style={{ fontSize:8, color:'var(--acc)', padding:'1px 4px', borderRadius:6, background:'var(--acc-d)', fontWeight:700 }}>⊕ options</span>}
-                            {(item.allergens||[]).length>0 && <span style={{ fontSize:8, color:'var(--red)', fontWeight:700 }}>⚠{item.allergens.length}</span>}
-                            {is86 && <span style={{ fontSize:8, padding:'1px 5px', borderRadius:8, background:'var(--red-d)', color:'var(--red)', fontWeight:800 }}>86'd</span>}
+                            {isParent && <span style={{ fontSize:9, padding:'1px 5px', borderRadius:8, background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t3)', fontWeight:700 }}>sizes</span>}
+                            {(item.assignedModifierGroups||[]).length>0 && <span style={{ fontSize:9, color:'var(--t3)', padding:'1px 5px', borderRadius:6, background:'var(--bg3)', border:'1px solid var(--bdr)', fontWeight:700 }}>⊕ options</span>}
+                            {(item.allergens||[]).length>0 && <span style={{ fontSize:10, color:'#3B6FD8', fontWeight:700 }}>△{item.allergens.length}</span>}
                           </div>
                         </div>
                         {/* Drag handle — top right */}
@@ -737,7 +1210,7 @@ function MenuTab() {
                                     border:`1.5px solid ${isSelChild?'var(--acc)':catColor+'44'}`, background:isSelChild?'var(--acc-d)':catColor+'11',
                                     minWidth:90, flex:'1 1 90px', maxWidth:140 }}>
                                   <div style={{ fontSize:12, fontWeight:700, color:isSelChild?'var(--acc)':'var(--t1)', marginBottom:4 }}>{child.menuName||child.name}</div>
-                                  <div style={{ fontSize:13, fontWeight:800, color:catColor, fontFamily:'var(--font-mono)' }}>£{cp.toFixed(2)}</div>
+                                  <div style={{ fontSize:13, fontWeight:800, color:catColor, fontFamily:'var(--font-mono)' }}>{money(cp)}</div>
                                   {(child.allergens||[]).length>0 && <div style={{ fontSize:9, color:'var(--red)', marginTop:3 }}>⚠ {child.allergens.length}</div>}
                                 </button>
                               );
@@ -757,8 +1230,12 @@ function MenuTab() {
               </div>
             )}
           </div>
-          <div style={{ padding:'4px 12px', borderTop:'1px solid var(--bdr)', fontSize:9, color:'var(--t4)', background:'var(--bg1)' }}>
-            Drag cards to reorder · order reflects on POS instantly
+          <div style={{ padding:'5px 12px', borderTop:'1px solid var(--bdr)', fontSize:9.5, color:'var(--t4)', background:'var(--bg1)', display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+            <span style={{ display:'inline-flex', alignItems:'center', gap:5, fontWeight:700, color:'var(--t3)' }}>
+              <span style={{ width:5, height:5, borderRadius:'50%', background:'var(--acc)' }}/>
+              This is the POS layout — 6 columns, same as the till
+            </span>
+            <span>Drag cards to reorder · use + Spacer to leave a gap · reflects on POS instantly</span>
           </div>
           </>
           )}
@@ -776,11 +1253,13 @@ function MenuTab() {
       </div>
 
       {/* ── PANEL 3: Item editor ────────────────────────────────────────── */}
+      {/* onArchive: archiveMenuItem is async and toasts its own failure — the
+          "Archived" confirmation must wait for the row to actually flip. */}
       {selItem && (
         <ItemEditor key={selItem.id} item={selItem}
           allCategories={menuCategories.filter(c=>!c.isSpecial)}
           onUpdate={patch=>{updateMenuItem(selItem.id,patch);markBOChange();}}
-          onArchive={()=>{archiveMenuItem(selItem.id);setSelItemId(null);markBOChange();showToast('Archived','info');}}
+          onArchive={async ()=>{const id=selItem.id;setSelItemId(null);markBOChange();if(await archiveMenuItem(id))showToast('Archived','info');}}
           onClone={()=>cloneItem(selItem,menuItems,addMenuItem,updateMenuItem,markBOChange,showToast,setSelItemId)}
           onClose={()=>setSelItemId(null)}
           is86={eightySixIds.includes(selItem.id)} onToggle86={()=>toggle86(selItem.id)}
@@ -909,7 +1388,7 @@ function ListItemView({ items, menuItems, selItemId, setSelItemId, catColor, add
               </div>
               <span style={{ fontSize:10, fontWeight:600, color:typeColor(item.type||'simple') }}>{typeLabel(item.type||'simple')}</span>
               <span style={{ fontSize:12, fontWeight:700, color:catColor, fontFamily:'var(--font-mono)' }}>
-                {hasVars && variants.length>0 ? `from £${fromP.toFixed(2)}` : `£${price.toFixed(2)}`}
+                {hasVars && variants.length>0 ? `from ${money(fromP)}` : `${money(price)}`}
               </span>
               <span style={{ fontSize:11, color:modCount>0?'var(--acc)':'var(--t4)', fontWeight:modCount>0?700:400 }}>{modCount>0?`⊕ ${modCount}`:''}</span>
               <span style={{ fontSize:10, color:allergCount>0?'var(--red)':'var(--t4)' }}>{allergCount>0?allergCount:''}</span>
@@ -940,7 +1419,7 @@ function ListItemView({ items, menuItems, selItemId, setSelItemId, catColor, add
                       <div style={{ display:'flex', alignItems:'center', gap:2 }}>
                         <span style={{ fontSize:11, color:'var(--t4)', fontWeight:700 }}>£</span>
                         <input type="number" step="0.01" min="0"
-                          style={{ fontSize:12, fontWeight:700, color:catColor, fontFamily:'var(--font-mono)', background:'transparent', border:'none', outline:'none', width:55, fontFamily:'inherit', cursor:'text' }}
+                          style={{ fontSize:12, fontWeight:700, color:catColor, background:'transparent', border:'none', outline:'none', width:55, fontFamily:'inherit', cursor:'text' }}
                           value={vp.base!==undefined?vp.base:''}
                           onClick={e=>e.stopPropagation()}
                           onChange={e=>{updateMenuItem(v.id,{pricing:{...vp,base:parseFloat(e.target.value)||0},price:parseFloat(e.target.value)||0});markBOChange();}}
@@ -950,7 +1429,24 @@ function ListItemView({ items, menuItems, selItemId, setSelItemId, catColor, add
                       <span style={{ fontSize:10, color:(v.allergens||[]).length>0?'var(--red)':'var(--t4)' }}>
                         {(v.allergens||[]).length>0?(v.allergens||[]).length:''}
                       </span>
-                      <button onClick={e=>{e.stopPropagation();if(confirm('Remove this size?')){updateMenuItem(v.id,{archived:true,parentId:null});if(!isMock){supabase.from('menu_items').update({archived:true,parent_id:null,updated_at:new Date().toISOString()}).eq('id',v.id).then(({error})=>{if(error)console.error('[MenuManager] size archive failed:',error.message);});}markBOChange();showToast('Size removed','info');}}} style={{ width:18,height:18,borderRadius:4,border:'1px solid var(--red-b)',background:'var(--red-d)',color:'var(--red)',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',justifyContent:'center' }}>×</button>
+                      <button
+                        onClick={async e => {
+                          e.stopPropagation();
+                          if (!confirm('Remove this size?')) return;
+                          const prevParentId = v.parentId;
+                          updateMenuItem(v.id, { archived:true, parentId:null });
+                          markBOChange();
+                          const { error } = await archiveVariantRow(v.id);
+                          if (error) {
+                            // The row is untouched in the DB — it comes straight back on
+                            // the next config load and every other till is still selling it.
+                            updateMenuItem(v.id, { archived:false, parentId:prevParentId });
+                            showToast(`"${v.menuName||v.name||'Size'}" was NOT removed — it is still on sale. Check you're signed in, then try again`, 'error');
+                            return;
+                          }
+                          showToast('Size removed', 'info');
+                        }}
+                        style={{ width:18,height:18,borderRadius:4,border:'1px solid var(--red-b)',background:'var(--red-d)',color:'var(--red)',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',justifyContent:'center' }}>×</button>
                     </div>
                   );
                 })}
@@ -983,9 +1479,71 @@ function ListItemView({ items, menuItems, selItemId, setSelItemId, catColor, add
 // Sub-items (variants) always shown indented under their parent.
 
 // ── Items Library ─────────────────────────────────────────────────────────────
+// ── v5.5.813: recipe-derived cost for the Items list ─────────────────────────
+// Returns { [menuItemId]: plateCost } once recipes + costing context load.
+// `null` while loading so the UI can stay quiet rather than flashing "No recipe"
+// on every row before the data arrives.
+function useRecipeCosts() {
+  const [costs, setCosts] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        if (isMock) { if (alive) setCosts({}); return; }
+        const loc = getActiveLocationSync() || await getLocationId().catch(() => null);
+        if (!loc || loc === 'loc-demo') { if (alive) setCosts({}); return; }
+        const [recRes, ctx] = await Promise.all([fetchRecipes(loc), buildCostingCtx(loc)]);
+        if (!alive) return;
+        const map = {};
+        (recRes?.data || []).forEach(r => {
+          if (r.recipeType !== 'MENU' || !r.menuItemId) return;
+          const c = costRecipeWith(r, ctx);
+          if (c && !c.error && Number.isFinite(c.totalCost)) map[String(r.menuItemId)] = c.totalCost;
+        });
+        setCosts(map);
+      } catch { if (alive) setCosts({}); }
+    })();
+    return () => { alive = false; };
+  }, []);
+  return costs;
+}
+
+// Category glyph — the category's emoji, or a neutral initial tile when it has
+// none (a real placeholder instead of the 🍽 cutlery emoji, which read as a
+// deliberate icon). Handoff marker 3.
+function CatGlyph({ cat, size = 20 }) {
+  if (cat?.icon) return <span style={{ fontSize: size * 0.75, flexShrink: 0, width: size, textAlign: 'center' }}>{cat.icon}</span>;
+  return (
+    <span style={{
+      flexShrink: 0, width: size, height: size, borderRadius: 6, background: 'var(--bg3)',
+      color: 'var(--t3)', fontSize: size * 0.52, fontWeight: 800,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+    }}>{(cat?.label || '?').charAt(0).toUpperCase()}</span>
+  );
+}
+
 function ItemsLibrary() {
   const { menuItems, menuCategories, addMenuItem, updateMenuItem, archiveMenuItem,
-          eightySixIds, toggle86, markBOChange, showToast } = useStore();
+          eightySixIds, toggle86, markBOChange, showToast, taxRates, taxProfiles } = useStore();
+
+  const recipeCosts = useRecipeCosts();          // v5.5.813 — B7 COST + GP%
+  const [hovRow, setHovRow] = useState(null);
+  const [bulkTaxId, setBulkTaxId] = useState(''); // v5.5.961 — bulk tax fix-up strip
+  const [bulkProfileId, setBulkProfileId] = useState(''); // v5.7.34 — bulk tax profile apply
+
+  // Ex-VAT net selling price — the same basis Inventory → Reports → Recipe GP
+  // uses, so GP% can never disagree between the two screens.
+  const netSell = useCallback((mi) => {
+    const gross = mi?.pricing?.base ?? mi?.price ?? null;
+    if (gross == null) return null;
+    let taxRateId = mi.taxRateId ?? null;
+    let taxOverrides = mi.taxOverrides ?? {};
+    if (!taxRateId && mi.parentId) {
+      const p = menuItems.find(x => String(x.id) === String(mi.parentId));
+      if (p) { taxRateId = p.taxRateId ?? null; if (!Object.keys(taxOverrides).length) taxOverrides = p.taxOverrides ?? {}; }
+    }
+    return netOf(gross, resolveTaxRate({ taxRateId, taxOverrides }, taxRates || [], 'dine-in'));
+  }, [menuItems, taxRates]);
 
   const [search,     setSearch]     = useState('');
   const [typeFilter, setTypeFilter] = useState('all');
@@ -1037,10 +1595,18 @@ function ItemsLibrary() {
   const totalVariants = menuItems.filter(i=>!i.archived&&i.parentId).length;
 
   const addNewItem = () => {
-    const defCat = catFilter!=='all' ? catFilter : (allCats.find(c=>!c.parentId)?.id||'');
-    addMenuItem({ name:'New item', menuName:'New item', receiptName:'New item', kitchenName:'New item',
+    // v5.5.915: no arbitrary default category. It used to fall back to whichever root category
+    // happened to be FIRST, so adding a product from the "All" view silently filed it under
+    // something unrelated and nobody noticed until it turned up on the wrong screen. Adding
+    // while a category is selected still lands in that category — that is the context you are
+    // working in, not a guess — but from "All" the primary category is now left empty to choose.
+    const defCat = catFilter!=='all' ? catFilter : '';
+    // v5.5.949: auto-pick a free name — same dead-end fix as the Menus-tab addItem.
+    const freshName = (() => { let n='New item', i=2; while (findDuplicateProductName(menuItems, n)) n=`New item ${i++}`; return n; })();
+    const created = addMenuItem({ name:freshName, menuName:freshName, receiptName:freshName, kitchenName:freshName,
       type:'simple', cat:defCat, allergens:[], pricing:{base:0},
       assignedModifierGroups:[], assignedInstructionGroups:[], cats:[], sortOrder:999 });
+    if (!created) { window.alert(`A product called "${freshName}" already exists — rename it before adding another.`); return; }
     markBOChange();
     setTimeout(()=>{ const last=useStore.getState().menuItems.slice(-1)[0]; if(last) setSelItemId(last.id); }, 30);
   };
@@ -1064,8 +1630,16 @@ function ItemsLibrary() {
 
   const selItem = menuItems.find(i=>i.id===selItemId);
 
-  const hdrSt = { fontSize:9, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.07em' };
-  const COL   = '26px 1fr 90px 80px 50px 44px';
+  // v5.5.813: ITEM · TYPE · PRICE · COST · GP% · MODS · ⚠ (handoff B5/B7 widths).
+  // The handoff's mock had no Back Office sidebar; here the detail panel eats the
+  // width the money columns were meant to fill. So COST + GP% show only while the
+  // panel is closed — the list stays readable instead of scrolling sideways.
+  const hdrSt = { fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.07em' };
+  const showMoney = !selItem;
+  const COL   = showMoney
+    ? '26px minmax(200px,1fr) 100px 92px 84px 72px 88px 46px'
+    : '26px minmax(150px,1fr) 96px 88px 84px 44px';
+  const numSt = { fontVariantNumeric:'tabular-nums' };
 
   return (
     <div style={{ display:'flex', height:'100%', overflow:'hidden' }}>
@@ -1084,7 +1658,6 @@ function ItemsLibrary() {
             <option value="simple">Simple</option>
             <option value="modifiable">Options (modifiable)</option>
             <option value="variants">Has sizes / variants</option>
-            <option value="pizza">Pizza</option>
             <option value="subitem">⊕ Sub items</option>
           </select>
           <select value={catFilter} onChange={e=>setCatFilter(e.target.value)} style={{ ...inp, width:'auto', cursor:'pointer', fontSize:11 }}>
@@ -1097,19 +1670,97 @@ function ItemsLibrary() {
           {!showArchived && <button onClick={addNewItem} style={{ padding:'7px 14px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:12, fontWeight:700, flexShrink:0 }}>+ Item</button>}
         </div>
 
-        {/* Stats */}
-        <div style={{ padding:'5px 12px', borderBottom:'1px solid var(--bdr)', fontSize:10, color:'var(--t4)', flexShrink:0 }}>
-          {parents.length} items · {totalVariants} total sizes/variants
+        {/* Stats + legend (handoff B5) */}
+        <div style={{ padding:'6px 12px', borderBottom:'1px solid var(--bdr)', fontSize:11, color:'var(--t3)', flexShrink:0, display:'flex', alignItems:'center', gap:12, flexWrap:'wrap' }}>
+          <span>{parents.length} items · {totalVariants} total sizes/variants</span>
+          <span style={{ marginLeft:'auto', display:'flex', alignItems:'center', gap:14, fontSize:10.5, color:'var(--t4)' }}>
+            <span style={{ display:'inline-flex', alignItems:'center', gap:5 }}>
+              <span style={{ width:8, height:8, borderRadius:2, background:'var(--acc)' }}/>POS button colour
+            </span>
+            <span style={{ display:'inline-flex', alignItems:'center', gap:5 }}>
+              <span style={{ background:'var(--red-d)', border:'1px solid var(--red-b)', color:'var(--red)', borderRadius:4, fontSize:9, fontWeight:800, padding:'1px 4px' }}>86</span>Out of stock
+            </span>
+          </span>
         </div>
 
+        {/* v5.5.961: bulk tax fix-up. Peter priced the whole menu BEFORE creating tax
+            rates, so every item sat with no rate and fixing them one-by-one through the
+            editor's Tax tab was unworkable. This strip appears only while items are
+            missing a rate: pick one, apply to all the gaps in a click. Items that
+            already have a rate are never touched. */}
+        {!showArchived && (() => {
+          const missingTax = menuItems.filter(i => !i.archived && !i.taxRateId);
+          if (missingTax.length === 0 || !(taxRates || []).length) return null;
+          return (
+            <div style={{ padding:'8px 12px', borderBottom:'1px solid var(--bdr)', background:'color-mix(in srgb, var(--amber, #F5A623) 12%, transparent)', display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', flexShrink:0 }}>
+              <span style={{ fontSize:12, fontWeight:700, color:'var(--amber, #F5A623)' }}>⚠ {missingTax.length} item{missingTax.length===1?' has':'s have'} no tax rate</span>
+              <select value={bulkTaxId} onChange={e=>setBulkTaxId(e.target.value)} style={{ ...inp, width:'auto', fontSize:11, cursor:'pointer' }}>
+                <option value="">— pick the default rate —</option>
+                {(taxRates||[]).map(t=><option key={t.id} value={t.id}>{t.name} ({t.rate}%)</option>)}
+              </select>
+              <button disabled={!bulkTaxId}
+                onClick={()=>{
+                  missingTax.forEach(i=>updateMenuItem(i.id,{ taxRateId: bulkTaxId }));
+                  markBOChange();
+                  const t=(taxRates||[]).find(r=>r.id===bulkTaxId);
+                  showToast(`${t?.name||'Tax rate'} set on ${missingTax.length} item${missingTax.length===1?'':'s'}`,'success');
+                }}
+                style={{ padding:'6px 14px', borderRadius:8, cursor:bulkTaxId?'pointer':'not-allowed', fontFamily:'inherit', background:bulkTaxId?'var(--acc)':'var(--bg3)', border:'none', color:bulkTaxId?'#0b0c10':'var(--t4)', fontSize:12, fontWeight:800 }}>
+                Apply to all {missingTax.length}
+              </button>
+              <span style={{ fontSize:10.5, color:'var(--t4)' }}>Only fills the gaps — items that already have a rate are untouched.</span>
+            </div>
+          );
+        })()}
+
+        {/* v5.7.34: bulk TAX PROFILE apply — the profiles sibling of the rate
+            fix-up above. Two scopes: fill only the items with no profile, or
+            stamp every active item (a US venue pointing its whole menu at one
+            combined profile in a click). Writes item.taxProfileId only. */}
+        {!showArchived && (() => {
+          const profiles = (taxProfiles || []).filter(p => p.active !== false);
+          if (!profiles.length) return null;
+          const activeItems = menuItems.filter(i => !i.archived);
+          const missingProfile = activeItems.filter(i => !i.taxProfileId);
+          if (!activeItems.length) return null;
+          const apply = (targets, label) => {
+            targets.forEach(i => updateMenuItem(i.id, { taxProfileId: bulkProfileId }));
+            markBOChange();
+            const pName = profiles.find(p => p.id === bulkProfileId)?.name || 'Tax profile';
+            showToast(`${pName} set on ${targets.length} item${targets.length===1?'':'s'} (${label})`, 'success');
+          };
+          return (
+            <div style={{ padding:'8px 12px', borderBottom:'1px solid var(--bdr)', background:'color-mix(in srgb, var(--acc) 9%, transparent)', display:'flex', alignItems:'center', gap:10, flexWrap:'wrap', flexShrink:0 }}>
+              <span style={{ fontSize:12, fontWeight:700, color:'var(--t2)' }}>Tax profile quick apply</span>
+              <select value={bulkProfileId} onChange={e=>setBulkProfileId(e.target.value)} style={{ ...inp, width:'auto', fontSize:11, cursor:'pointer' }}>
+                <option value="">— pick a profile —</option>
+                {profiles.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+              <button disabled={!bulkProfileId || !missingProfile.length}
+                onClick={()=>apply(missingProfile, 'items without a profile')}
+                style={{ padding:'6px 14px', borderRadius:8, cursor:(bulkProfileId&&missingProfile.length)?'pointer':'not-allowed', fontFamily:'inherit', background:(bulkProfileId&&missingProfile.length)?'var(--acc)':'var(--bg3)', border:'none', color:(bulkProfileId&&missingProfile.length)?'#0b0c10':'var(--t4)', fontSize:12, fontWeight:800 }}>
+                Fill {missingProfile.length} without one
+              </button>
+              <button disabled={!bulkProfileId}
+                onClick={()=>{ if (window.confirm(`Set this profile on ALL ${activeItems.length} items? Existing item profiles are replaced. Per-item legacy tax settings still take priority where set.`)) apply(activeItems, 'all items'); }}
+                style={{ padding:'6px 14px', borderRadius:8, cursor:bulkProfileId?'pointer':'not-allowed', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr)', color:bulkProfileId?'var(--t1)':'var(--t4)', fontSize:12, fontWeight:800 }}>
+                Apply to all {activeItems.length}
+              </button>
+              <span style={{ fontSize:10.5, color:'var(--t4)' }}>Categories and the venue default cover items with no profile of their own.</span>
+            </div>
+          );
+        })()}
+
         {/* Column headers */}
-        <div style={{ display:'grid', gridTemplateColumns:COL, gap:0, padding:'6px 12px', borderBottom:'2px solid var(--bdr)', background:'var(--bg1)', flexShrink:0 }}>
+        <div style={{ display:'grid', gridTemplateColumns:COL, gap:0, padding:'7px 12px', borderBottom:'2px solid var(--bdr)', background:'var(--bg2)', flexShrink:0, alignItems:'center' }}>
           <div/>
           <div style={hdrSt}>Item</div>
           <div style={hdrSt}>Type</div>
-          <div style={hdrSt}>Price</div>
-          <div style={hdrSt}>Mods</div>
-          <div style={hdrSt}>⚠</div>
+          <div style={{ ...hdrSt, textAlign:'right' }}>Price</div>
+          {showMoney && <div style={{ ...hdrSt, textAlign:'right' }}>Cost</div>}
+          {showMoney && <div style={{ ...hdrSt, textAlign:'right' }} title="Gross profit % — auto-calculated from the linked recipe, on the ex-VAT price">GP %</div>}
+          <div style={{ ...hdrSt, textAlign:'center' }}>Mods</div>
+          <div style={{ ...hdrSt, textAlign:'center' }} title="Allergens">⚠</div>
         </div>
 
         {/* Scrollable list */}
@@ -1181,7 +1832,7 @@ function ItemsLibrary() {
                       </div>
                     </div>
                     <span style={{ fontSize:12, fontWeight:700, color:'var(--acc)', fontFamily:'var(--font-mono)', flexShrink:0 }}>
-                      {price>0?`£${price.toFixed(2)}`:'Free'}
+                      {price>0?`${money(price)}`:'Free'}
                     </span>
                   </div>
                 );
@@ -1208,28 +1859,74 @@ function ItemsLibrary() {
             const color    = cat?.color || 'var(--acc)';
             const modCount = (item.assignedModifierGroups||[]).length + (item.assignedInstructionGroups||[]).length;
             const allergyN = (item.allergens||[]).length;
+            // v5.5.813: recipe-derived plate cost + GP% on the ex-VAT net price.
+            const cost     = recipeCosts ? recipeCosts[String(item.id)] ?? null : null;
+            const netPrice = cost != null ? netSell(item) : null;
+            const gp       = (cost != null && netPrice != null && netPrice > 0)
+              ? Math.round(((netPrice - cost) / netPrice) * 100) : null;
 
             return (
               <div key={item.id}>
                 {/* Parent row */}
                 <div onClick={()=>setSelItemId(isSel?null:item.id)}
-                  style={{ display:'grid', gridTemplateColumns:COL, gap:0, padding:'9px 12px', cursor:'pointer', alignItems:'center',
-                    background:isSel?'var(--acc-d)':is86?'var(--red-d)':'transparent',
+                  onMouseEnter={()=>setHovRow(item.id)} onMouseLeave={()=>setHovRow(null)}
+                  style={{ display:'grid', gridTemplateColumns:COL, gap:0, padding:'9px 12px 9px 9px', cursor:'pointer', alignItems:'center',
+                    // B3: selection always wins over the out-of-stock treatment.
+                    borderLeft:`3px solid ${isSel?'var(--acc)':is86?'var(--red-b)':'transparent'}`,
+                    background:isSel?'var(--acc-d)':is86?'var(--red-d)':(hovRow===item.id?'var(--bg2)':'transparent'),
                     borderBottom:item.type==='subitem'&&item.soldAlone?'none':'1px solid var(--bdr)', transition:'background .1s' }}>
-                  <div style={{ width:8, height:8, borderRadius:'50%', background:color, flexShrink:0 }}/>
-                  <div style={{ minWidth:0 }}>
-                    <div style={{ fontSize:13, fontWeight:700, color:isSel?'var(--acc)':is86?'var(--red)':'var(--t1)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                      {item.menuName||item.name}
-                      {is86 && <span style={{ marginLeft:6, fontSize:8, fontWeight:800, padding:'1px 4px', borderRadius:4, background:'var(--red-d)', color:'var(--red)', border:'1px solid var(--red-b)' }}>86'd</span>}
+                  <div style={{ width:9, height:9, borderRadius:'50%', background:color, flexShrink:0, boxShadow:'inset 0 0 0 1px rgba(0,0,0,.08)' }}/>
+                  {/* B6: two-line identity — name, then category glyph + name */}
+                  <div style={{ minWidth:0, paddingRight:10 }}>
+                    <div style={{ display:'flex', alignItems:'center', gap:7, minWidth:0 }}>
+                      <span title={item.menuName||item.name} style={{ fontSize:13.5, fontWeight:700, color:isSel?'var(--acc)':is86?'var(--red)':'var(--t1)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                        {item.menuName||item.name}
+                      </span>
+                      {is86 && !isSel && <span style={{ flexShrink:0, fontSize:9, fontWeight:800, padding:'1px 5px', borderRadius:5, background:'var(--red-d)', color:'var(--red)', border:'1px solid var(--red-b)' }}>86'd</span>}
                     </div>
-                    <div style={{ fontSize:9, color:'var(--t4)', marginTop:1 }}>{cat?.icon} {cat?.label}</div>
+                    {cat ? (
+                      <div style={{ display:'flex', alignItems:'center', gap:5, marginTop:2, minWidth:0 }}>
+                        <CatGlyph cat={cat} size={14}/>
+                        <span style={{ fontSize:11, color:'var(--t4)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{cat.label}</span>
+                      </div>
+                    ) : item.type === 'subitem' ? (
+                      <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>Modifier option</div>
+                    ) : (
+                      <div style={{ fontSize:11, color:'var(--t4)', marginTop:2, fontStyle:'italic' }}>No category</div>
+                    )}
                   </div>
-                  <span style={{ fontSize:10, fontWeight:600, color:typeColor(item.type||'simple') }}>{typeLabel(item.type||'simple')}</span>
-                  <span style={{ fontSize:12, fontWeight:700, color, fontFamily:'var(--font-mono)' }}>
-                    {hasVars&&variants.length>0 ? `from £${fromP.toFixed(2)}` : `£${price.toFixed(2)}`}
+                  {/* B4: TYPE as a quiet neutral pill */}
+                  <span>
+                    <span style={{ display:'inline-flex', alignItems:'center', gap:4, background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t3)', borderRadius:6, padding:'2px 8px', fontSize:11, fontWeight:600 }}>
+                      {(item.type||'simple')==='modifiable' && <span style={{ fontSize:9 }}>◈</span>}
+                      {typeLabel(item.type||'simple')}
+                    </span>
                   </span>
-                  <span style={{ fontSize:11, color:modCount>0?'var(--acc)':'var(--t4)', fontWeight:modCount>0?700:400 }}>{modCount>0?`⊕ ${modCount}`:''}</span>
-                  <span style={{ fontSize:10, color:allergyN>0?'var(--red)':'var(--t4)' }}>{allergyN>0?allergyN:''}</span>
+                  {/* B1: price is ink, tabular, right-aligned — no category colour */}
+                  <span style={{ ...numSt, fontSize:13, fontWeight:700, color:'var(--t1)', textAlign:'right' }}>
+                    {hasVars&&variants.length>0 ? `from ${money(fromP)}` : `${money(price)}`}
+                  </span>
+                  {/* B7: COST + GP% from the linked recipe (read-only, derived) */}
+                  {showMoney && (
+                    <span style={{ ...numSt, fontSize:12, color:'var(--t3)', textAlign:'right' }}>
+                      {recipeCosts == null ? '' : cost != null ? money(cost)
+                        : <span title="Cost comes from the linked recipe — add one in Produce → Recipes" style={{ fontSize:10.5, fontWeight:600, color:'var(--amber, #F5A623)' }}>No recipe</span>}
+                    </span>
+                  )}
+                  {showMoney && (
+                    <span style={{ ...numSt, fontSize:12.5, fontWeight:700, textAlign:'right', color: gp == null ? 'var(--t4)' : gp >= 62 ? 'var(--grn)' : 'var(--amber, #F5A623)' }}>
+                      {recipeCosts == null ? '' : gp == null ? '—' : `${gp}%`}
+                    </span>
+                  )}
+                  {/* B2: MODS as a neutral chip, hidden at zero */}
+                  <span style={{ textAlign:'center' }}>
+                    {modCount>0 && (
+                      <span style={{ display:'inline-flex', alignItems:'center', gap:4, background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t3)', borderRadius:6, padding:'2px 7px', fontSize:11, fontWeight:600 }}>
+                        ⊕ {modCount}
+                      </span>
+                    )}
+                  </span>
+                  <span style={{ fontSize:10.5, textAlign:'center', color:allergyN>0?'var(--t3)':'var(--t4)' }}>{allergyN>0?allergyN:''}</span>
                 </div>
 
                 {/* soldAlone toggle for sub-items */}
@@ -1267,17 +1964,22 @@ function ItemsLibrary() {
                       const vAll = (v.allergens||[]).length;
                       return (
                         <div key={v.id} onClick={e=>{e.stopPropagation();setSelItemId(vSel?null:v.id);}}
-                          style={{ display:'grid', gridTemplateColumns:COL, gap:0, padding:'6px 12px 6px 28px', cursor:'pointer', alignItems:'center',
+                          style={{ display:'grid', gridTemplateColumns:COL, gap:0, padding:'6px 12px 6px 25px', cursor:'pointer', alignItems:'center',
+                            borderLeft:`3px solid ${vSel?'var(--acc)':'transparent'}`,
                             background:vSel?'var(--acc-d)':'transparent', borderBottom:'1px solid var(--bdr)', transition:'background .1s' }}>
                           <div/>
                           <div style={{ display:'flex', alignItems:'center', gap:6, minWidth:0 }}>
-                            <span style={{ fontSize:10, color:color, flexShrink:0, lineHeight:1 }}>└</span>
-                            <span style={{ fontSize:12, fontWeight:600, color:vSel?'var(--acc)':'var(--t2)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{v.menuName||v.name}</span>
+                            <span style={{ fontSize:10, color:'var(--t4)', flexShrink:0, lineHeight:1 }}>└</span>
+                            <span title={v.menuName||v.name} style={{ fontSize:12.5, fontWeight:600, color:vSel?'var(--acc)':'var(--t2)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{v.menuName||v.name}</span>
                           </div>
-                          <span style={{ fontSize:9, color:'var(--t4)' }}>size</span>
-                          <span style={{ fontSize:12, fontWeight:700, color, fontFamily:'var(--font-mono)' }}>£{(vp.base||0).toFixed(2)}</span>
+                          <span>
+                            <span style={{ display:'inline-flex', alignItems:'center', background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t4)', borderRadius:6, padding:'1px 7px', fontSize:10, fontWeight:600 }}>size</span>
+                          </span>
+                          <span style={{ ...numSt, fontSize:12.5, fontWeight:700, color:'var(--t1)', textAlign:'right' }}>{money((vp.base||0))}</span>
+                          {showMoney && <span/>}
+                          {showMoney && <span/>}
                           <span/>
-                          <span style={{ fontSize:10, color:vAll>0?'var(--red)':'var(--t4)' }}>{vAll>0?vAll:''}</span>
+                          <span style={{ fontSize:10.5, textAlign:'center', color:vAll>0?'var(--t3)':'var(--t4)' }}>{vAll>0?vAll:''}</span>
                         </div>
                       );
                     })}
@@ -1303,7 +2005,7 @@ function ItemsLibrary() {
           item={selItem}
           allCategories={allCats}
           onUpdate={patch=>{ updateMenuItem(selItem.id,patch); markBOChange(); }}
-          onArchive={()=>{ archiveMenuItem(selItem.id); setSelItemId(null); markBOChange(); showToast('Archived','info'); }}
+          onArchive={async ()=>{ const id=selItem.id; setSelItemId(null); markBOChange(); if (await archiveMenuItem(id)) showToast('Archived','info'); }}
           onClone={()=>cloneItem(selItem,menuItems,addMenuItem,updateMenuItem,markBOChange,showToast,setSelItemId)}
           onClose={()=>setSelItemId(null)}
           is86={eightySixIds.includes(selItem.id)}
@@ -1339,9 +2041,11 @@ function ItemImageUpload({ item, onUpdate, markBOChange, showToast }) {
     if (!file.type.startsWith('image/')) return showToast('Please select an image file', 'error');
     if (file.size > 5 * 1024 * 1024) return showToast('Image must be under 5MB', 'error');
 
-    // Re-resolve locId fresh every time — don't rely on stale state
+    // Re-resolve locId fresh every time — don't rely on stale state.
+    // 'loc-demo' is truthy, so it has to be rejected explicitly or the storage
+    // path and the row filter below both get written against a fake location.
     const resolvedLocId = locId || await getLocationId().catch(() => null);
-    if (!resolvedLocId) return showToast('Could not resolve location', 'error');
+    if (!resolvedLocId || resolvedLocId === 'loc-demo') return showToast('Could not resolve location', 'error');
 
     setUploading(true);
     const { url, error } = await uploadProductImage(item.id, resolvedLocId, file);
@@ -1353,20 +2057,28 @@ function ItemImageUpload({ item, onUpdate, markBOChange, showToast }) {
       return;
     }
 
+    const prevImage = item.image ?? null;
     // 1. Update local store state
     onUpdate({ image: url });
 
     // 2. Directly write image to Supabase — targeted UPDATE, no full upsert needed
     // This bypasses any store/locationId timing issues
-    const { supabase } = await import('../../lib/supabase.js');
     if (supabase) {
-      const { error: dbErr } = await supabase
+      const { data, error: dbErr } = await supabase
         .from('menu_items')
         .update({ image: url, updated_at: new Date().toISOString() })
-        .eq('id', item.id);
-      if (dbErr) {
-        console.error('[ItemImageUpload] DB write failed:', dbErr.message);
-        showToast('Image saved locally but not synced — try again', 'warning');
+        .eq('id', item.id)
+        .eq('location_id', resolvedLocId)
+        .select('id');
+      // Same two traps as archiveVariantRow: `id` alone is cross-tenant, and an
+      // update that matched NO rows comes back as a plain success with an empty body.
+      const err = dbErr || (!data?.length
+        ? new Error('Image update matched 0 rows — RLS blocked it or the row is scoped to another location')
+        : null);
+      reportSave('item image', err);
+      if (err) {
+        onUpdate({ image: prevImage });
+        showToast('Image was NOT saved — the tills still show the old one. Check you\'re signed in, then try again', 'error');
         return;
       }
     }
@@ -1378,17 +2090,32 @@ function ItemImageUpload({ item, onUpdate, markBOChange, showToast }) {
   const handleRemove = async () => {
     if (!confirm('Remove this image?')) return;
     const resolvedLocId = locId || await getLocationId().catch(() => null);
-    await deleteProductImage(item.id, resolvedLocId);
+    if (!resolvedLocId || resolvedLocId === 'loc-demo') return showToast('Could not resolve location', 'error');
+
+    const prevImage = item.image ?? null;
     onUpdate({ image: null });
 
-    // Direct DB write for remove too
-    const { supabase } = await import('../../lib/supabase.js');
+    // The row is the record — clear it FIRST. Deleting the storage object before a
+    // failed/blocked UPDATE would leave every surface pointing at a dead URL.
     if (supabase) {
-      await supabase
+      const { data, error } = await supabase
         .from('menu_items')
         .update({ image: null, updated_at: new Date().toISOString() })
-        .eq('id', item.id);
+        .eq('id', item.id)
+        .eq('location_id', resolvedLocId)
+        .select('id');
+      const err = error || (!data?.length
+        ? new Error('Image removal matched 0 rows — RLS blocked it or the row is scoped to another location')
+        : null);
+      reportSave('item image', err);
+      if (err) {
+        onUpdate({ image: prevImage });
+        showToast('Image was NOT removed — it is still live on POS, kiosk and online. Check you\'re signed in, then try again', 'error');
+        return;
+      }
     }
+    // Best-effort: probes four extensions, so most of these 404 by design.
+    await deleteProductImage(item.id, resolvedLocId);
 
     markBOChange();
     showToast('Image removed', 'info');
@@ -1451,14 +2178,36 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
   const rootCats = allCategories.filter(c => !c.parentId);
   const subCats  = allCategories.filter(c =>  c.parentId);
 
-  const [sec, setSec]             = useState(isSub ? 'details' : 'flow');
+  const [sec, setSec]             = useState('details');  // always open on Details (was 'flow' for products)
   const [modSearch, setModSearch] = useState('');
   const [instSearch, setInstSearch] = useState('');
+  const [showAllCats, setShowAllCats] = useState(false);  // v5.5.813 — "Also in" chip cap
   const [dragModIdx, setDragModIdx] = useState(null);
   const [overModIdx, setOverModIdx] = useState(null);
+  const [dragInstIdx, setDragInstIdx] = useState(null);
+  const [overInstIdx, setOverInstIdx] = useState(null);
 
   const f   = (k,v) => onUpdate({ [k]: v });
   const fp  = (k,v) => onUpdate({ pricing: { ...p, [k]: v===''?null:parseFloat(v)||0 }, ...(k==='base'?{price:parseFloat(v)||0}:{}) });
+
+  // ── Duplicate-name guard (v5.5.797) ────────────────────────────────────────
+  // The POS-button-name input is draft-buffered (commit on blur / Enter) so a
+  // rename that collides with another live top-level product can be refused
+  // with an inline error, without blocking keystrokes mid-typing (e.g. typing
+  // "Coke Zero" transiently passes through "Coke"). Variants/sub-items are
+  // exempt — sizes legitimately repeat names across parents. Committing also
+  // means the v5.5.796 modifier-group rename cascade fires once per rename,
+  // not once per keystroke.
+  const [nameDraft, setNameDraft] = useState(null);
+  useEffect(() => { setNameDraft(null); }, [item.id]);
+  const nameGuarded = !item.parentId && !['subitem','spacer'].includes(item.type || 'simple');
+  const nameDup = (nameDraft != null && nameGuarded) ? findDuplicateProductName(menuItems, nameDraft, item.id) : null;
+  const commitName = () => {
+    if (nameDraft == null) return;
+    if (nameGuarded && findDuplicateProductName(menuItems, nameDraft, item.id)) return; // blocked — inline error stays visible
+    f('menuName', nameDraft);
+    setNameDraft(null);
+  };
 
   // ── Variants ───────────────────────────────────────────────────────────────
   const variants = menuItems.filter(c => c.parentId===item.id && !c.archived)
@@ -1474,15 +2223,18 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
     markBOChange();
   };
   const updVariant   = (id, patch) => { updateMenuItem(id, patch); markBOChange(); };
-  const removeVariant = id => {
+  const removeVariant = async id => {
+    const removed = variants.find(v => v.id === id);
     updateMenuItem(id, { archived: true, parentId: null });
-    if (!isMock) {
-      supabase.from('menu_items')
-        .update({ archived: true, parent_id: null, updated_at: new Date().toISOString() })
-        .eq('id', id)
-        .then(({ error }) => { if (error) console.error('[MenuManager] variant archive failed:', error.message); });
-    }
     markBOChange();
+    const { error } = await archiveVariantRow(id);
+    if (error) {
+      // Nothing was archived — the variant returns on the next config load and
+      // every other till carries on selling it. Put it back rather than lie.
+      updateMenuItem(id, { archived: false, parentId: removed?.parentId ?? item.id });
+      showToast(`"${removed?.menuName || removed?.name || 'Variant'}" was NOT removed — it is still on sale. Check you're signed in, then try again`, 'error');
+      return;
+    }
     showToast('Variant removed', 'info');
     if (variants.filter(v => v.id !== id).length === 0) onUpdate({ type: 'simple' });
   };
@@ -1503,9 +2255,34 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
   };
 
   // ── Instruction assignment ─────────────────────────────────────────────────
-  const assignedInst = item.assignedInstructionGroups || [];
-  const addInst    = gid => { if (assignedInst.includes(gid)) return; onUpdate({ assignedInstructionGroups:[...assignedInst,gid] }); markBOChange(); setInstSearch(''); };
-  const removeInst = gid => { onUpdate({ assignedInstructionGroups:assignedInst.filter(g=>g!==gid) }); markBOChange(); };
+  // Shape-tolerant: accepts legacy ['gid', ...] strings OR new [{groupId, min?}] objects.
+  // On any write we normalise to the object shape, so old data auto-upgrades next save.
+  const assignedInst = (item.assignedInstructionGroups || []).map(e => typeof e === 'string' ? { groupId: e } : e);
+  const hasInst     = gid => assignedInst.some(a => a.groupId === gid);
+  const addInst    = gid => { if (hasInst(gid)) return; onUpdate({ assignedInstructionGroups:[...assignedInst, { groupId: gid }] }); markBOChange(); setInstSearch(''); };
+  const removeInst = gid => { onUpdate({ assignedInstructionGroups:assignedInst.filter(a=>a.groupId!==gid) }); markBOChange(); };
+  const updateInst = (gid, patch) => { onUpdate({ assignedInstructionGroups:assignedInst.map(a=>a.groupId===gid?{...a,...patch}:a) }); markBOChange(); };
+  const reorderInst = (from, to) => {
+    const arr = [...assignedInst]; const [moved] = arr.splice(from,1); arr.splice(to,0,moved);
+    onUpdate({ assignedInstructionGroups:arr }); markBOChange();
+  };
+
+  // ── v5.5.948: ONE combined flow — instructions sortable AMONG modifier groups ──
+  // The Flow tab used to render mods then instructions as two fixed blocks, so a
+  // cooking preference could never be dragged above a modifier group. The combined
+  // order lives on item.optionGroupOrder (menu_items.option_group_order) and every
+  // surface renders through the same lib/optionFlow.js rule. Dragging also rewrites
+  // the two per-kind arrays so anything still reading them alone stays consistent.
+  const flowEntries = orderOptionFlow(item.optionGroupOrder, assignedMods, assignedInst, (x) => String(x.groupId));
+  const reorderFlow = (from, to) => {
+    const arr = [...flowEntries]; const [moved] = arr.splice(from, 1); arr.splice(to, 0, moved);
+    onUpdate({
+      optionGroupOrder: arr.map(e => e.id),
+      assignedModifierGroups: arr.filter(e => e.kind === 'mod').map(e => e.g),
+      assignedInstructionGroups: arr.filter(e => e.kind === 'inst').map(e => e.g),
+    });
+    markBOChange();
+  };
 
   // ── Filtered search lists ──────────────────────────────────────────────────
   const filteredMods = (modifierGroupDefs||[]).filter(g =>
@@ -1513,7 +2290,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
     (modSearch==='' || (g.name||'').toLowerCase().includes(modSearch.toLowerCase()))
   );
   const filteredInst = (instructionGroupDefs||[]).filter(g =>
-    !assignedInst.includes(g.id) &&
+    !hasInst(g.id) &&
     (instSearch==='' || (g.name||'').toLowerCase().includes(instSearch.toLowerCase()))
   );
 
@@ -1524,7 +2301,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
     !isSub && { id:'modifiers', label:`Modifiers${assignedMods.length>0?` (${assignedMods.length})`:''}` },
     { id:'pricing',   label:'Pricing' },
     { id:'tax',       label:`Tax${item.taxRateId ? ' ✓' : ''}` },
-    { id:'allergens', label:`Allergens${(item.allergens||[]).length>0?` (${item.allergens.length})`:''}` },
+    { id:'allergens', label:`Allergens & dietary${((item.allergens||[]).length + (item.tags||[]).length)>0?` (${(item.allergens||[]).length + (item.tags||[]).length})`:''}` },
     isPizza && { id:'pizza', label:'Pizza' },
   ].filter(Boolean);
 
@@ -1537,9 +2314,18 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
       <div style={{ padding:'12px 16px 0', borderBottom:'1px solid var(--bdr)', flexShrink:0, background:'var(--bg1)' }}>
         <div style={{ display:'flex', alignItems:'flex-start', gap:8, marginBottom:10 }}>
           <div style={{ flex:1, minWidth:0 }}>
-            <div style={{ fontSize:14, fontWeight:800, color:'var(--t1)', lineHeight:1.3 }}>{item.menuName||item.name}</div>
+            {/* v5.5.813 (handoff marker 7): out-of-stock is labelled, not just a
+                bare red number, so the state is unambiguous at a glance. */}
+            <div style={{ display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+              <div style={{ fontSize:14, fontWeight:800, color:'var(--t1)', lineHeight:1.3, minWidth:0, overflow:'hidden', textOverflow:'ellipsis' }}>{item.menuName||item.name}</div>
+              {is86 && (
+                <span style={{ display:'inline-flex', alignItems:'center', gap:5, background:'var(--red-d)', border:'1px solid var(--red-b)', color:'var(--red)', borderRadius:999, padding:'2px 9px', fontSize:10, fontWeight:800, whiteSpace:'nowrap', flexShrink:0 }}>
+                  <span style={{ width:5, height:5, borderRadius:'50%', background:'var(--red)' }}/>86 · Out of stock
+                </span>
+              )}
+            </div>
             <div style={{ display:'flex', gap:5, marginTop:4, flexWrap:'wrap' }}>
-              {[['simple','Simple'],['modifiable','Modifiable'],['variants','Has sizes'],['pizza','Pizza'],['combo','Combo'],['subitem','Sub item']].map(([v,l]) => {
+              {[['simple','Simple'],['modifiable','Modifiable'],['variants','Has sizes'],['combo','Combo'],['subitem','Sub item']].map(([v,l]) => {
                 const act = (item.type||'simple')===v || (v==='variants'&&isParent&&item.type!=='pizza');
                 return <button key={v} onClick={()=>f('type',v)} style={{ padding:'2px 7px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', fontSize:9, fontWeight:act?700:400, border:`1px solid ${act?'var(--acc)':'var(--bdr)'}`, background:act?'var(--acc-d)':'var(--bg3)', color:act?'var(--acc)':'var(--t4)' }}>{l}</button>;
               })}
@@ -1550,10 +2336,17 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
             <button onClick={onClose} style={{ background:'none', border:'none', color:'var(--t4)', cursor:'pointer', fontSize:18, lineHeight:1 }}>×</button>
           </div>
         </div>
-        <div style={{ display:'flex', gap:0, marginBottom:'-1px', overflowX:'auto' }}>
+        {/* v5.5.813 (handoff marker 8): the tab strip still scrolls, but the
+            scrollbar is hidden and a right edge-fade hints at more tabs. */}
+        <style>{`.mm-tabs::-webkit-scrollbar{display:none}`}</style>
+        <div style={{ position:'relative' }}>
+        <div className="mm-tabs" style={{ display:'flex', gap:0, marginBottom:'-1px', overflowX:'auto', scrollbarWidth:'none', paddingRight:30 }}>
           {SECS.map(s => (
             <button key={s.id} onClick={()=>setSec(s.id)} style={{ padding:'8px 12px', cursor:'pointer', fontFamily:'inherit', border:'none', borderBottom:`2px solid ${sec===s.id?'var(--acc)':'transparent'}`, background:'transparent', color:sec===s.id?'var(--acc)':'var(--t4)', fontSize:11, fontWeight:sec===s.id?700:400, whiteSpace:'nowrap', flexShrink:0, transition:'color .12s' }}>{s.label}</button>
           ))}
+        </div>
+        <div style={{ position:'absolute', right:0, top:0, bottom:1, width:38, pointerEvents:'none',
+          background:'linear-gradient(90deg, transparent, var(--bg1) 72%)' }}/>
         </div>
       </div>
 
@@ -1566,7 +2359,17 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
 
             <div>
               <span style={lbl}>POS button name</span>
-              <input style={inp} value={item.menuName||''} onChange={e=>f('menuName',e.target.value)} placeholder="Name shown on POS button"/>
+              <input style={{ ...inp, ...(nameDup ? { border:'1.5px solid var(--red-b)' } : {}) }}
+                value={nameDraft ?? (item.menuName||'')}
+                onChange={e=>setNameDraft(e.target.value)}
+                onBlur={commitName}
+                onKeyDown={e=>{ if (e.key==='Enter') e.currentTarget.blur(); }}
+                placeholder="Name shown on POS button"/>
+              {nameDup && (
+                <div style={{ fontSize:11, color:'var(--red)', marginTop:4, fontWeight:600 }}>
+                  A product called “{nameDup.menuName || nameDup.name}” already exists
+                </div>
+              )}
             </div>
 
             {!isSub && (
@@ -1576,12 +2379,12 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
               </div>
             )}
 
-            {!isSub && (
-              <div>
-                <span style={lbl}>Description <span style={{ fontWeight:400, textTransform:'none', letterSpacing:0 }}>(kiosk & online)</span></span>
-                <textarea style={{ ...inp, resize:'none', height:56 }} value={item.description||''} onChange={e=>f('description',e.target.value)} placeholder="Brief description shown to customers…"/>
-              </div>
-            )}
+            {/* v5.5.28: description is editable for sub-items too. The text shows on the
+                kiosk modifier picker when the option matches this sub-item by name. */}
+            <div>
+              <span style={lbl}>Description <span style={{ fontWeight:400, textTransform:'none', letterSpacing:0 }}>{isSub ? '(shown in modifier picker on kiosk)' : '(kiosk & online)'}</span></span>
+              <textarea style={{ ...inp, resize:'none', height:56 }} value={item.description||''} onChange={e=>f('description',e.target.value)} placeholder={isSub ? 'Brief description shown when this sub-item appears in a modifier group…' : 'Brief description shown to customers…'}/>
+            </div>
 
             <ItemImageUpload item={item} onUpdate={onUpdate} markBOChange={markBOChange} showToast={showToast} />
 
@@ -1593,25 +2396,122 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
               </select>
             </div>
 
-            <div>
-              <span style={lbl}>Also in</span>
-              <div style={{ display:'flex', flexWrap:'wrap', gap:4 }}>
-                {[...rootCats,...subCats].filter(c=>c.id!==item.cat).map(c=>{
-                  const on=(item.cats||[]).includes(c.id);
-                  return <button key={c.id} onClick={()=>{const cur=item.cats||[];onUpdate({cats:on?cur.filter(id=>id!==c.id):[...cur,c.id]});}} style={{ padding:'2px 7px', borderRadius:10, cursor:'pointer', fontFamily:'inherit', fontSize:10, fontWeight:on?700:400, border:`1px solid ${on?'var(--acc)':'var(--bdr)'}`, background:on?'var(--acc-d)':'var(--bg3)', color:on?'var(--acc)':'var(--t4)' }}>{c.icon} {c.label}</button>;
-                })}
-              </div>
-            </div>
+            {/* v5.5.813 (handoff marker 9): with 26 categories this list ran ~6 rows
+                and pushed Sharing + Lock pricing below the fold. Capped at 9 with a
+                "+ N more" toggle. Unlike the mock these chips are TOGGLES, not a
+                read-only list — so selected chips always sort first and stay
+                visible, and the toggle only hides unselected ones. Nothing becomes
+                unreachable. */}
+            {(() => {
+              const chipCats = [...rootCats, ...subCats].filter(c => c.id !== item.cat);
+              const isOn = c => (item.cats || []).includes(c.id);
+              const ordered = [...chipCats.filter(isOn), ...chipCats.filter(c => !isOn(c))];
+              const shown = showAllCats ? ordered : ordered.slice(0, 9);
+              const hidden = ordered.length - shown.length;
+              return (
+                <div>
+                  <span style={lbl}>Also in</span>
+                  <div style={{ display:'flex', flexWrap:'wrap', gap:4 }}>
+                    {shown.map(c=>{
+                      const on = isOn(c);
+                      return <button key={c.id} onClick={()=>{const cur=item.cats||[];onUpdate({cats:on?cur.filter(id=>id!==c.id):[...cur,c.id]});}} style={{ padding:'2px 7px', borderRadius:10, cursor:'pointer', fontFamily:'inherit', fontSize:10, fontWeight:on?700:400, border:`1px solid ${on?'var(--acc)':'var(--bdr)'}`, background:on?'var(--acc-d)':'var(--bg3)', color:on?'var(--acc)':'var(--t4)' }}>{c.icon} {c.label}</button>;
+                    })}
+                    {(hidden > 0 || showAllCats) && (
+                      <button onClick={()=>setShowAllCats(v=>!v)} style={{ padding:'2px 9px', borderRadius:10, cursor:'pointer', fontFamily:'inherit', fontSize:10, fontWeight:700, border:'1px dashed var(--bdr2)', background:'transparent', color:'var(--acc)' }}>
+                        {showAllCats ? 'Show fewer' : `+ ${hidden} more`}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
 
-            {!isSub && (
+            {/* v4.6.2b: visibility (POS/Kiosk/Online/Delivery) UI removed — surface targeting will move to per-menu assignment in v4.6.3+. Existing visibility data preserved on items. */}
+            {/* v4.6.3: Sharing & ownership scope. Only shown on top-level items (variants inherit). */}
+            {/* v5.5.877 (Bug 1b): also hide on variant children (parentId set) — scope is a
+                product-level property; sharing a child directly used to create a standalone
+                product at peer locations. setMenuItemScope now redirects a child to its parent,
+                but hiding the control keeps the operator on the correct (parent) row. */}
+            {!isSub && !item.parentId && (
               <div>
-                <span style={lbl}>Visible on</span>
-                <div style={{ display:'flex', gap:5, flexWrap:'wrap' }}>
-                  {[['pos','POS'],['kiosk','Kiosk'],['online','Online'],['onlineDelivery','Delivery']].map(([k,l])=>{
-                    const on=(item.visibility||{pos:true,kiosk:true,online:true,onlineDelivery:true})[k]!==false;
-                    return <button key={k} onClick={()=>onUpdate({visibility:{...(item.visibility||{pos:true,kiosk:true,online:true,onlineDelivery:true}),[k]:!on}})} style={{ padding:'4px 10px', borderRadius:10, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:on?700:400, border:`1px solid ${on?'var(--grn-b)':'var(--bdr)'}`, background:on?'var(--grn-d)':'var(--bg3)', color:on?'var(--grn)':'var(--t4)' }}>{on?'✓ ':''}{l}</button>;
+                <span style={lbl}>Sharing</span>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginTop: 4 }}>
+                  {[
+                    { id: 'local',  label: 'Local',  desc: 'This location only.' },
+                    { id: 'shared', label: 'Shared', desc: 'All locations in this org. Each can override price, category, image.' },
+                    { id: 'global', label: 'Global', desc: 'Managed centrally. Edit once, applies everywhere. No overrides.' },
+                  ].map(s => {
+                    const on = (item.scope || 'local') === s.id;
+                    return (
+                      <button key={s.id} onClick={async () => {
+                      // v4.7.0: setMenuItemScope handles the full promote/demote flow:
+                      // - local→shared/global creates copies at peer locations
+                      // - shared↔global rescopes all sibling rows
+                      // - shared/global→local just clears flags on this row
+                      const prev = item.scope || 'local';
+                      // Optimistic UI update first
+                      onUpdate({ scope: s.id });
+                      try {
+                        const result = await setMenuItemScope(item, s.id);
+                        reportSave('item scope', result.ok ? null : (result.error || new Error('Scope change failed')));
+                        if (!result.ok) {
+                          showToast(`Couldn't change scope: ${result.error?.message || result.error || 'unknown'}`, 'error');
+                          onUpdate({ scope: prev }); // revert
+                          return;
+                        }
+                        if (result.action === 'promoted')   showToast(`"${item.name}" promoted to ${s.id} — copied to ${result.createdCount} other location(s)`, 'success');
+                        else if (result.action === 'demoted')  showToast(`"${item.name}" set to local at this site only — siblings unchanged`, 'info');
+                        else if (result.action === 'rescoped') showToast(`"${item.name}" rescoped to ${s.id} across ${result.updatedSiblings + 1} location(s)`, 'success');
+                        markBOChange();
+                      } catch (e) {
+                        reportSave('item scope', e);
+                        console.warn('[MenuManager] scope change failed:', e?.message || e);
+                        showToast('Scope change failed: ' + (e?.message || 'unknown error'), 'error');
+                        onUpdate({ scope: prev });
+                      }
+                    }} style={{
+                        // v5.5.813 (handoff marker 10): equal cards with an explicit
+                        // radio affordance. Selected keeps the existing amber accent —
+                        // mapped to the theme's --amber so it holds up in dark + light.
+                        background: on ? 'color-mix(in srgb, var(--amber, #F5A623) 11%, transparent)' : 'var(--bg2)',
+                        border: '1.5px solid ' + (on ? 'color-mix(in srgb, var(--amber, #F5A623) 45%, transparent)' : 'var(--bdr)'),
+                        borderRadius: 10, padding: 10, cursor: 'pointer', textAlign: 'left',
+                        color: 'inherit', fontFamily: 'inherit', transition: 'background .12s, border-color .12s',
+                      }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                          <span style={{
+                            width: 14, height: 14, borderRadius: '50%', flexShrink: 0, display: 'grid', placeItems: 'center',
+                            border: `1.5px solid ${on ? 'var(--amber, #F5A623)' : 'var(--bdr2)'}`,
+                          }}>
+                            {on && <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--amber, #F5A623)' }}/>}
+                          </span>
+                          <span style={{ fontWeight: 700, fontSize: 13, color: on ? 'var(--amber, #F5A623)' : 'var(--t1)' }}>{s.label}</span>
+                        </div>
+                        <div style={{ fontSize: 11, color: 'var(--t3)', lineHeight: 1.45, marginTop: 5 }}>{s.desc}</div>
+                      </button>
+                    );
                   })}
                 </div>
+
+                {(item.scope || 'local') !== 'local' && (
+                  <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px', background: 'var(--bg2)', border: '1px solid var(--bdr)', borderRadius: 6 }}>
+                    <button onClick={() => onUpdate({ lockPricing: !item.lockPricing })} style={{
+                      width: 32, height: 18, padding: 0, borderRadius: 9, flexShrink: 0,
+                      background: item.lockPricing ? 'var(--acc)' : 'var(--bg3)',
+                      border: 0, cursor: 'pointer', position: 'relative',
+                    }}>
+                      <span style={{
+                        position: 'absolute', top: 2, left: item.lockPricing ? 16 : 2,
+                        width: 14, height: 14, borderRadius: '50%',
+                        background: item.lockPricing ? '#fff' : 'var(--t3)', transition: 'all .15s',
+                      }} />
+                    </button>
+                    <div style={{ display: 'flex', flexDirection: 'column' }}>
+                      <span style={{ fontSize: 12.5, fontWeight: 500, color: 'var(--t1)' }}>Lock pricing</span>
+                      <span style={{ fontSize: 11, color: 'var(--t3)' }}>Other locations can change category &amp; image but not price.</span>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -1670,57 +2570,71 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
               </div>
             )}
 
-            {/* STEPS: Modifier groups in assigned order */}
-            {assignedMods.map((ag, i) => {
-              const def = (modifierGroupDefs||[]).find(g => g.id === ag.groupId);
-              if (!def) return null;
+            {/* STEPS — v5.5.948: ONE combined list. Cooking preferences sit AMONG the
+                modifier groups and drag anywhere; the order saves to optionGroupOrder
+                and every surface (POS/kiosk/online/MPOS) renders it identically. */}
+            {flowEntries.map((entry, i) => {
               const stepNum = isParent ? i+2 : i+1;
-              const isReq = (def.min||0) > 0; // read from group def — single source of truth
-              const modeLabel = def.selectionType==='quantity' ? `qty, up to ${def.max||'∞'}` : def.selectionType==='multiple' ? `up to ${def.max||'∞'}` : 'pick 1';
+              if (entry.kind === 'mod') {
+                const ag = entry.g;
+                const def = (modifierGroupDefs||[]).find(g => g.id === ag.groupId);
+                if (!def) return null;
+                const isReq = (def.min||0) > 0; // read from group def — single source of truth
+                const modeLabel = def.selectionType==='quantity' ? `qty, up to ${def.max||'∞'}` : def.selectionType==='multiple' ? `up to ${def.max||'∞'}` : 'pick 1';
+                return (
+                  <div key={ag.groupId} draggable
+                    onDragStart={()=>setDragModIdx(i)} onDragOver={e=>{e.preventDefault();setOverModIdx(i);}}
+                    onDrop={e=>{e.preventDefault();if(dragModIdx!==null&&dragModIdx!==i)reorderFlow(dragModIdx,i);setDragModIdx(null);setOverModIdx(null);}}
+                    onDragEnd={()=>{setDragModIdx(null);setOverModIdx(null);}}
+                    style={{ marginBottom:14, opacity:dragModIdx===i?.4:1, border:`1.5px solid ${overModIdx===i?'var(--acc)':'transparent'}`, borderRadius:10, padding:overModIdx===i?'4px':0, transition:'all .1s' }}>
+                    <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8 }}>
+                      <div style={{ width:22, height:22, borderRadius:'50%', background:isReq?'var(--red)':'var(--bg4)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:800, color:isReq?'#fff':'var(--t3)', flexShrink:0 }}>{stepNum}</div>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <span style={{ fontSize:12, fontWeight:700, color:'var(--t1)' }}>{def.name}</span>
+                        <span style={{ fontSize:9, color:'var(--t4)', marginLeft:6 }}>{isReq?'required':'optional'} · {modeLabel}</span>
+                      </div>
+                      <span style={{ fontSize:10, color:'var(--t4)', cursor:'grab' }}>⠿</span>
+                      <button onClick={()=>removeMod(ag.groupId)} style={{ width:22,height:22,borderRadius:6,border:'1px solid var(--red-b)',background:'var(--red-d)',color:'var(--red)',cursor:'pointer',fontSize:12,display:'flex',alignItems:'center',justifyContent:'center' }}>×</button>
+                    </div>
+                    <div style={{ paddingLeft:30 }}>
+                      {(def.options||[]).map(opt => (
+                        <span key={opt.id} style={{ display:'inline-block', marginRight:6, marginBottom:4, padding:'3px 9px', borderRadius:12, fontSize:11, background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t2)' }}>
+                          {opt.name}{opt.price>0&&<span style={{ color:'var(--t4)', marginLeft:3 }}>+{money(opt.price)}</span>}
+                          {opt.subGroupId && <span style={{ color:'var(--acc)', marginLeft:3, fontSize:9 }}>↳</span>}
+                        </span>
+                      ))}
+                      {/* Nested modifier indicators */}
+                      {(def.options||[]).filter(o=>o.subGroupId).map(o => {
+                        const sub = (modifierGroupDefs||[]).find(d=>d.id===o.subGroupId);
+                        return sub ? <div key={o.id} style={{ fontSize:9, color:'var(--acc)', marginTop:2 }}>↳ If "{o.name}": also shows <strong>{sub.name}</strong></div> : null;
+                      })}
+                    </div>
+                  </div>
+                );
+              }
+              // Instruction step — same drag index-space as the mods (one list, one order).
+              const ag = entry.g;
+              const def = (instructionGroupDefs||[]).find(g=>g.id===ag.groupId);
+              if (!def) return null;
+              // Per-assignment min overrides group-def min; either being >0 means required
+              const effectiveMin = ag.min ?? def.min ?? 0;
+              const isReq = effectiveMin > 0;
               return (
                 <div key={ag.groupId} draggable
                   onDragStart={()=>setDragModIdx(i)} onDragOver={e=>{e.preventDefault();setOverModIdx(i);}}
-                  onDrop={e=>{e.preventDefault();if(dragModIdx!==null&&dragModIdx!==i)reorderMods(dragModIdx,i);setDragModIdx(null);setOverModIdx(null);}}
+                  onDrop={e=>{e.preventDefault();if(dragModIdx!==null&&dragModIdx!==i)reorderFlow(dragModIdx,i);setDragModIdx(null);setOverModIdx(null);}}
                   onDragEnd={()=>{setDragModIdx(null);setOverModIdx(null);}}
                   style={{ marginBottom:14, opacity:dragModIdx===i?.4:1, border:`1.5px solid ${overModIdx===i?'var(--acc)':'transparent'}`, borderRadius:10, padding:overModIdx===i?'4px':0, transition:'all .1s' }}>
                   <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8 }}>
-                    <div style={{ width:22, height:22, borderRadius:'50%', background:isReq?'var(--red)':'var(--bg4)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:800, color:isReq?'#fff':'var(--t3)', flexShrink:0 }}>{stepNum}</div>
+                    <div style={{ width:22, height:22, borderRadius:'50%', background:isReq?'var(--red)':'var(--grn)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:800, color:'#fff', flexShrink:0 }}>{stepNum}</div>
                     <div style={{ flex:1, minWidth:0 }}>
                       <span style={{ fontSize:12, fontWeight:700, color:'var(--t1)' }}>{def.name}</span>
-                      <span style={{ fontSize:9, color:'var(--t4)', marginLeft:6 }}>{isReq?'required':'optional'} · {modeLabel}</span>
+                      <span style={{ fontSize:9, fontWeight:600, color:isReq?'var(--red)':'var(--grn)', marginLeft:6 }}>{isReq?'required':'optional'} · no charge</span>
                     </div>
-                    <span style={{ fontSize:10, color:'var(--t4)', cursor:'grab' }}>⠿</span>
-                    <button onClick={()=>removeMod(ag.groupId)} style={{ width:22,height:22,borderRadius:6,border:'1px solid var(--red-b)',background:'var(--red-d)',color:'var(--red)',cursor:'pointer',fontSize:12,display:'flex',alignItems:'center',justifyContent:'center' }}>×</button>
-                  </div>
-                  <div style={{ paddingLeft:30 }}>
-                    {(def.options||[]).map(opt => (
-                      <span key={opt.id} style={{ display:'inline-block', marginRight:6, marginBottom:4, padding:'3px 9px', borderRadius:12, fontSize:11, background:'var(--bg3)', border:'1px solid var(--bdr)', color:'var(--t2)' }}>
-                        {opt.name}{opt.price>0&&<span style={{ color:'var(--t4)', marginLeft:3 }}>+£{opt.price.toFixed(2)}</span>}
-                        {opt.subGroupId && <span style={{ color:'var(--acc)', marginLeft:3, fontSize:9 }}>↳</span>}
-                      </span>
-                    ))}
-                    {/* Nested modifier indicators */}
-                    {(def.options||[]).filter(o=>o.subGroupId).map(o => {
-                      const sub = (modifierGroupDefs||[]).find(d=>d.id===o.subGroupId);
-                      return sub ? <div key={o.id} style={{ fontSize:9, color:'var(--acc)', marginTop:2 }}>↳ If "{o.name}": also shows <strong>{sub.name}</strong></div> : null;
-                    })}
-                  </div>
-                </div>
-              );
-            })}
-
-            {/* Instruction groups */}
-            {assignedInst.length > 0 && assignedInst.map((gid, i) => {
-              const def = (instructionGroupDefs||[]).find(g=>g.id===gid);
-              if (!def) return null;
-              const stepNum = (isParent ? 1 : 0) + assignedMods.length + i + 1;
-              return (
-                <div key={gid} style={{ marginBottom:14 }}>
-                  <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8 }}>
-                    <div style={{ width:22, height:22, borderRadius:'50%', background:'var(--grn)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:11, fontWeight:800, color:'#fff', flexShrink:0 }}>{stepNum}</div>
-                    <span style={{ fontSize:12, fontWeight:700, color:'var(--t1)' }}>{def.name}</span>
-                    <span style={{ fontSize:9, fontWeight:600, color:'var(--grn)' }}>no charge</span>
-                    <button onClick={()=>removeInst(gid)} style={{ width:22,height:22,borderRadius:6,border:'1px solid var(--grn-b)',background:'var(--grn-d)',color:'var(--grn)',cursor:'pointer',fontSize:12,display:'flex',alignItems:'center',justifyContent:'center',marginLeft:'auto' }}>×</button>
+                    <button onClick={()=>updateInst(ag.groupId,{min:isReq?0:1})} title={isReq?'Make optional':'Mark as required'}
+                      style={{ padding:'3px 9px', borderRadius:6, border:`1px solid ${isReq?'var(--red-b)':'var(--bdr)'}`, background:isReq?'var(--red-d)':'var(--bg3)', color:isReq?'var(--red)':'var(--t3)', cursor:'pointer', fontSize:10, fontWeight:700 }}>{isReq?'Required':'Optional'}</button>
+                    <span style={{ fontSize:10, color:'var(--t4)', cursor:'grab' }}>⣿</span>
+                    <button onClick={()=>removeInst(ag.groupId)} style={{ width:22,height:22,borderRadius:6,border:'1px solid var(--grn-b)',background:'var(--grn-d)',color:'var(--grn)',cursor:'pointer',fontSize:12,display:'flex',alignItems:'center',justifyContent:'center' }}>×</button>
                   </div>
                   <div style={{ paddingLeft:30 }}>
                     {(def.options||[]).map((opt,oi) => (
@@ -1808,7 +2722,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                       <div key={v.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'6px 10px', borderRadius:8, border:'1.5px solid var(--bdr)', background:'var(--bg3)' }}>
                         <div style={{ width:14,height:14,borderRadius:'50%',border:'2px solid var(--bdr2)',flexShrink:0 }}/>
                         <span style={{ fontSize:12, fontWeight:500, color:'var(--t1)', flex:1 }}>{v.menuName||v.name||'—'}</span>
-                        <span style={{ fontSize:13, fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>£{(vp.base||0).toFixed(2)}</span>
+                        <span style={{ fontSize:13, fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>{money((vp.base||0))}</span>
                       </div>
                     );
                   })}
@@ -1964,6 +2878,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                 </div>
               </div>
             ))}
+          {!isSub && <PerMenuPricingTiers item={item} onUpdate={onUpdate} />}
           </div>
         )}
 
@@ -1972,9 +2887,23 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
           <TaxSection item={item} onUpdate={onUpdate} markBOChange={markBOChange}/>
         )}
 
-        {/* ════ ALLERGENS ══════════════════════════════════════════════════ */}
+        {/* ════ ALLERGENS & DIETARY ════════════════════════════════════════ */}
         {sec==='allergens' && (
           <div>
+            <span style={lbl}>Dietary — shows as a badge on the print menu &amp; menu board</span>
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:5, marginBottom:16 }}>
+              {DIET_TAGS.map(d=>{
+                const on=(item.tags||[]).includes(d.id);
+                return (
+                  <button key={d.id} onClick={()=>onUpdate({tags:on?(item.tags||[]).filter(x=>x!==d.id):[...(item.tags||[]),d.id]})} style={{ display:'flex', alignItems:'center', gap:7, padding:'7px 9px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', textAlign:'left', border:`1.5px solid ${on?'var(--grn,#2f8f4e)':'var(--bdr)'}`, background:on?'var(--grn-d,rgba(47,143,78,.12))':'var(--bg3)', transition:'all .1s' }}>
+                    <div style={{ width:16,height:16,borderRadius:3,border:`2px solid ${on?'var(--grn,#2f8f4e)':'var(--bdr2)'}`,background:on?'var(--grn,#2f8f4e)':'transparent',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>
+                      {on&&<div style={{ width:6,height:6,borderRadius:1,background:'#fff' }}/>}
+                    </div>
+                    <span style={{ fontSize:11, fontWeight:on?700:400, color:on?'var(--grn,#2f8f4e)':'var(--t1)' }}>{d.icon} {d.label} <b style={{ opacity:.7 }}>{d.badge}</b></span>
+                  </button>
+                );
+              })}
+            </div>
             <span style={lbl}>Declared allergens — EU 14 mandatory</span>
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:5 }}>
               {ALLERGENS.map(a=>{
@@ -2116,7 +3045,7 @@ function PizzaBuilder({ item, onUpdate, markBOChange }) {
             return (
               <button key={c.id} onClick={()=>toggleCrust(c.id)} style={{ display:'flex', alignItems:'center', gap:5, padding:'6px 12px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:avail?700:400, border:`1.5px solid ${avail?'var(--acc)':'var(--bdr)'}`, background:avail?'var(--acc-d)':'var(--bg3)', color:avail?'var(--acc)':'var(--t3)' }}>
                 {avail?'✓ ':''}{c.name}
-                {(c.extra||0)>0&&<span style={{ fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>+£{c.extra.toFixed(2)}</span>}
+                {(c.extra||0)>0&&<span style={{ fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>+{money(c.extra)}</span>}
               </button>
             );
           })}
@@ -2136,7 +3065,7 @@ function PizzaBuilder({ item, onUpdate, markBOChange }) {
               <button key={t.id} onClick={()=>toggleTop(t.id)} style={{ display:'flex', alignItems:'center', gap:7, padding:'7px 10px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', textAlign:'left', border:`1.5px solid ${on?t.color||'var(--acc)':'var(--bdr)'}`, background:on?(t.color||'var(--acc)')+'18':'var(--bg3)', transition:'all .1s' }}>
                 <div style={{ width:12,height:12,borderRadius:'50%',background:t.color||'var(--acc)',flexShrink:0,boxShadow:on?`0 0 6px ${t.color}88`:'none' }}/>
                 <span style={{ fontSize:11, fontWeight:on?700:400, color:on?t.color||'var(--acc)':'var(--t1)', flex:1 }}>{t.name}</span>
-                {t.price>0&&<span style={{ fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>+£{t.price.toFixed(2)}</span>}
+                {t.price>0&&<span style={{ fontSize:10, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>+{money(t.price)}</span>}
               </button>
             );
           })}
@@ -2226,7 +3155,7 @@ function ModifiersTab() {
           {(groups||[]).map((g,gi)=>(
             <div key={g.id} draggable
               onDragStart={()=>setDragGIdx(gi)} onDragOver={e=>{e.preventDefault();setOverGIdx(gi);}}
-              onDrop={e=>{e.preventDefault();if(dragGIdx!==null&&dragGIdx!==gi)reorderModifierGroupDefs(dragGIdx,gi);setDragGIdx(null);setOverGIdx(null);}}
+              onDrop={e=>{e.preventDefault();if(dragGIdx!==null&&dragGIdx!==gi){reorderModifierGroupDefs(dragGIdx,gi);markBOChange();/* v5.5.834: was the only modifier-group mutation missing this — add/edit/delete all mark, so a reorder alone never lit the "Push to POS" badge */}setDragGIdx(null);setOverGIdx(null);}}
               onDragEnd={()=>{setDragGIdx(null);setOverGIdx(null);}}
               onClick={()=>setSelId(g.id===selId?null:g.id)}
               style={{ display:'flex', alignItems:'center', gap:7, padding:'8px 10px', marginBottom:3, borderRadius:9, cursor:'pointer',
@@ -2262,11 +3191,19 @@ function ModifiersTab() {
               ].map(mode => {
                 const act = sel.selectionType === mode.id || (!sel.selectionType && mode.id === 'single');
                 return (
-                  <button key={mode.id} onClick={()=>upd({
-                    selectionType: mode.id,
-                    max: mode.id==='single' ? 1 : (sel.max||1)===1 ? 3 : (sel.max||3),
-                    min: sel.min||0,
-                  })} style={{ padding:'8px 8px 7px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', textAlign:'left', border:`2px solid ${act?'var(--acc)':'var(--bdr)'}`, background:act?'var(--acc-d)':'var(--bg3)' }}>
+                  <button key={mode.id} onClick={()=>{
+                    // v5.5.34: when switching to 'quantity' mode (Pick with qty),
+                    // default min to match max. Quantity-mode is for fixed-size
+                    // containers like "Box of 3" / "Box of 6" where the customer
+                    // MUST pick exactly that many. Defaulting min to max means the
+                    // operator only has to set max — the rule "pick exactly N"
+                    // is implied. They can still drop min for "between 1 and N"
+                    // ranges if needed. Single and multiple modes preserve old
+                    // default of min:sel.min||0 (optional).
+                    const newMax = mode.id==='single' ? 1 : (sel.max||1)===1 ? 3 : (sel.max||3);
+                    const newMin = mode.id==='quantity' ? newMax : (sel.min||0);
+                    upd({ selectionType: mode.id, max: newMax, min: newMin });
+                  }} style={{ padding:'8px 8px 7px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', textAlign:'left', border:`2px solid ${act?'var(--acc)':'var(--bdr)'}`, background:act?'var(--acc-d)':'var(--bg3)' }}>
                     <div style={{ fontSize:15, marginBottom:3 }}>{mode.icon}</div>
                     <div style={{ fontSize:11, fontWeight:700, color:act?'var(--acc)':'var(--t2)' }}>{mode.label}</div>
                     <div style={{ fontSize:9, color:'var(--t4)', lineHeight:1.4 }}>{mode.hint}</div>
@@ -2299,9 +3236,9 @@ function ModifiersTab() {
                     if (!valid) return null;
                     return <button key={v} onClick={()=>upd({min:v})} style={{ width:28, height:28, borderRadius:7, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:act?700:400, border:`1px solid ${act?'var(--acc)':'var(--bdr)'}`, background:act?'var(--acc-d)':'var(--bg3)', color:act?'var(--acc)':'var(--t3)', flexShrink:0 }}>{v}</button>;
                   })}
-                  <input type="number" min="1" max={sel.max>=99?50:sel.max||3} style={{ ...inp, width:44, padding:'3px 5px', fontSize:11 }}
-                    value={!([1,2,3,4,5].includes(sel.min||1)) ? (sel.min||1) : ''} placeholder="N"
-                    onChange={e=>upd({min:Math.max(1,parseInt(e.target.value)||1)})}/>
+                  <PickNumBox value={sel.min||1} min={1} max={sel.max>=99?50:sel.max||3}
+                    style={{ ...inp, width:48, padding:'3px 5px', fontSize:11 }}
+                    onCommit={v=>upd({min:v})}/>
                   <span style={{ fontSize:9, color:'var(--t4)', flexShrink:0 }}>of {sel.max>=99?'∞':sel.max||3}</span>
                 </div>
               )}
@@ -2314,8 +3251,9 @@ function ModifiersTab() {
                     const act = v===99 ? (sel.max||0)>=99 : (sel.max||3)===v;
                     return <button key={l} onClick={()=>upd({max:v, min: (sel.min||0)>v&&v<99?v:sel.min||0})} style={{ width:28, height:28, borderRadius:7, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:act?700:400, border:`1px solid ${act?'var(--acc)':'var(--bdr)'}`, background:act?'var(--acc-d)':'var(--bg3)', color:act?'var(--acc)':'var(--t3)', flexShrink:0 }}>{l}</button>;
                   })}
-                  <input type="number" min="2" max="50" style={{ ...inp, width:44, padding:'3px 5px', fontSize:11 }} value={(sel.max||3)<99&&![2,3,4,5].includes(sel.max||3)?sel.max:''} placeholder="N"
-                    onChange={e=>upd({max:parseInt(e.target.value)||2, min:(sel.min||0)>parseInt(e.target.value)?parseInt(e.target.value):sel.min||0})}/>
+                  <PickNumBox value={(sel.max||3)>=99?null:(sel.max||3)} min={2} max={50}
+                    style={{ ...inp, width:48, padding:'3px 5px', fontSize:11 }}
+                    onCommit={v=>upd({max:v, min:(sel.min||0)>v?v:sel.min||0})}/>
                 </div>
               )}
             </div>
@@ -2397,14 +3335,14 @@ function ModifiersTab() {
                       const price = it.pricing?.base ?? it.price ?? 0;
                       return (
                         <button key={it.id} onClick={()=>{
-                          upd({ options:[...(sel.options||[]), { id:`opt-${Date.now()}-${it.id}`, name, price }] });
+                          upd({ options:[...(sel.options||[]), { id:`opt-${Date.now()}-${it.id}`, name, price, itemId: it.id }] });
                           setItemSearch('');
                         }} style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'7px 10px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:'var(--bg2)', border:'1px solid var(--bdr)', fontSize:12, color:'var(--t1)', textAlign:'left' }}
                         onMouseEnter={e=>e.currentTarget.style.borderColor='var(--acc)'}
                         onMouseLeave={e=>e.currentTarget.style.borderColor='var(--bdr)'}>
                           <span style={{ fontWeight:600 }}>{name}</span>
                           <span style={{ color:'var(--acc)', fontFamily:'var(--font-mono)', fontSize:11, flexShrink:0 }}>
-                            {price > 0 ? `£${price.toFixed(2)}` : 'Free'}
+                            {price > 0 ? `${money(price)}` : 'Free'}
                           </span>
                         </button>
                       );
@@ -2535,8 +3473,13 @@ function InstructionsTab() {
 
 // ── Edit Category Modal ───────────────────────────────────────────────────────
 function CatModal({ cat, roots, onSave, onDelete, onClose }) {
-  const [f, setF] = useState({ label:cat.label, icon:cat.icon||'🍽', color:cat.color||'#3b82f6', parentId:cat.parentId||'', accountingGroup:cat.accountingGroup||'', defaultCourse:cat.defaultCourse??1 });
+  // v5.7.33: taxProfileId rides the form — the patch flows through updateCategory
+  // → sbUpsertCategory (store) AND the push path's upsertMenuCategory (db.js),
+  // both of which now write tax_profile_id conditionally.
+  const [f, setF] = useState({ label:cat.label, icon:cat.icon||'🍽', color:cat.color||'#3b82f6', parentId:cat.parentId||'', accountingGroup:cat.accountingGroup||'', defaultCourse:cat.defaultCourse??1, taxProfileId:cat.taxProfileId||'' });
   const set = (k,v) => setF(p=>({...p,[k]:v}));
+  const { taxProfiles } = useStore();
+  const activeProfiles = (taxProfiles || []).filter(p => p.active !== false);
   const COURSES = [{v:0,l:'Immediate',hint:'Drinks, bread — fires instantly with order'},{v:1,l:'Course 1',hint:'Starters / first plates'},{v:2,l:'Course 2',hint:'Mains'},{v:3,l:'Course 3',hint:'Desserts'}];
   return (
     <div className="modal-back" onClick={e=>e.target===e.currentTarget&&onClose()}>
@@ -2567,11 +3510,23 @@ function CatModal({ cat, roots, onSave, onDelete, onClose }) {
               {roots.filter(r=>r.id!==cat.id).map(r=><option key={r.id} value={r.id}>Subcategory of: {r.label}</option>)}
             </select>
           </div>
+          {/* v5.7.33: tax profile assignment — setup only, nothing charges with it yet */}
+          {activeProfiles.length > 0 && (
+            <div><span style={lbl}>Tax profile</span>
+              <select value={f.taxProfileId} onChange={e=>set('taxProfileId',e.target.value)} style={{ ...inp, cursor:'pointer' }}>
+                <option value="">Inherit venue default</option>
+                {activeProfiles.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+              <div style={{ fontSize:10, color:'var(--t4)', marginTop:4, lineHeight:1.5 }}>
+                Items in this category use this profile unless the item has its own override. Tills switch to profile based calculation in an upcoming update.
+              </div>
+            </div>
+          )}
         </div>
         <div style={{ display:'flex', gap:7, marginTop:14 }}>
           <button onClick={()=>{if(confirm('Delete?'))onDelete();}} style={{ padding:'8px 12px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--red-d)', border:'1px solid var(--red-b)', color:'var(--red)', fontSize:12, fontWeight:600 }}>Delete</button>
           <button onClick={onClose} style={{ flex:1, padding:'8px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:12 }}>Cancel</button>
-          <button onClick={()=>onSave({...f,parentId:f.parentId||null})} disabled={!f.label.trim()} style={{ flex:2, padding:'8px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:13, fontWeight:800, opacity:f.label.trim()?1:.4 }}>Save</button>
+          <button onClick={()=>onSave({...f,parentId:f.parentId||null,taxProfileId:f.taxProfileId||null})} disabled={!f.label.trim()} style={{ flex:2, padding:'8px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:13, fontWeight:800, opacity:f.label.trim()?1:.4 }}>Save</button>
         </div>
       </div>
     </div>
@@ -2586,10 +3541,13 @@ function MoveCatModal({ cat, allCats, onSave, onClose }) {
   const [parentId, setParentId] = useState(cat.parentId || '');
   return (
     <div className="modal-back" onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr2)', borderRadius:18, width:'100%', maxWidth:380, padding:'20px', boxShadow:'var(--sh3)' }}>
-        <div style={{ fontSize:15, fontWeight:800, color:'var(--t1)', marginBottom:4 }}>Move "{cat.label}"</div>
-        <div style={{ fontSize:12, color:'var(--t3)', marginBottom:16 }}>Choose where this category sits in the hierarchy.</div>
-        <div style={{ display:'flex', flexDirection:'column', gap:8, marginBottom:20 }}>
+      {/* v5.5.960: maxHeight + scrollable option list. With 20+ root categories the
+          list ran past the viewport, the Move/Cancel buttons went off-page and the
+          modal body had no scroll — the picker was unusable at Wing Fest scale. */}
+      <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr2)', borderRadius:18, width:'100%', maxWidth:380, padding:'20px', boxShadow:'var(--sh3)', maxHeight:'85vh', display:'flex', flexDirection:'column' }}>
+        <div style={{ fontSize:15, fontWeight:800, color:'var(--t1)', marginBottom:4, flexShrink:0 }}>Move "{cat.label}"</div>
+        <div style={{ fontSize:12, color:'var(--t3)', marginBottom:16, flexShrink:0 }}>Choose where this category sits in the hierarchy.</div>
+        <div style={{ display:'flex', flexDirection:'column', gap:8, marginBottom:20, overflowY:'auto', flex:1, minHeight:0, paddingRight:4 }}>
           <div onClick={()=>setParentId('')} style={{ display:'flex', alignItems:'center', gap:10, padding:'10px 12px', borderRadius:10, border:`2px solid ${parentId===''?'var(--acc)':'var(--bdr)'}`, background:parentId===''?'var(--acc-d)':'var(--bg3)', cursor:'pointer' }}>
             <div style={{ width:18,height:18,borderRadius:'50%',border:`2px solid ${parentId===''?'var(--acc)':'var(--bdr2)'}`,background:parentId===''?'var(--acc)':'transparent',flexShrink:0 }}/>
             <div>
@@ -2607,7 +3565,7 @@ function MoveCatModal({ cat, allCats, onSave, onClose }) {
             </div>
           ))}
         </div>
-        <div style={{ display:'flex', gap:8 }}>
+        <div style={{ display:'flex', gap:8, flexShrink:0 }}>
           <button onClick={onClose} style={{ flex:1, padding:'9px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:12 }}>Cancel</button>
           <button onClick={()=>onSave(parentId||null)} style={{ flex:2, padding:'9px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:13, fontWeight:800 }}>Move here</button>
         </div>
@@ -2628,11 +3586,13 @@ function MoveCatModal({ cat, allCats, onSave, onClose }) {
 // QUICK SCREEN MANAGER — single grid, drag or click to add
 // ═══════════════════════════════════════════════════════════════════════════
 function QuickScreenManager() {
-  const { menuItems, menuCategories, quickScreenIds, setQuickScreenIds, showToast, markBOChange } = useStore();
+  const { menuItems, menuCategories, quickScreenIds, setQuickScreenIds, showToast, markBOChange,
+          quickScreenMode, setQuickScreenMode, quickScreenAuto, setQuickScreenAuto } = useStore();
   const [catFilter, setCatFilter] = useState('');
   const [search, setSearch]       = useState('');
   const [dragSrc, setDragSrc]     = useState(null);
   const [overSlot, setOverSlot]   = useState(null);
+  const [ranking, setRanking]     = useState(false);   // v5.5.962 recompute in flight
 
   const COLS  = 4;
   const SLOTS = 16;
@@ -2657,33 +3617,138 @@ function QuickScreenManager() {
 
   const save = async (newIds) => {
     const filtered = newIds.filter(Boolean);
+    const prevIds  = quickScreenIds;
     setQuickScreenIds(filtered);
     markBOChange();
+    if (isMock) return true;
     // Write directly using the supabase client already in scope — same as image uploads
+    let err = null;
     try {
       const locId = await getLocationId();
-      if (locId && supabase) {
-        const { error } = await supabase
-          .from('locations')
-          .update({ quick_screen_ids: filtered })
-          .eq('id', locId);
-        if (error) console.error('[QuickScreen] save error:', error.message);
-      }
-    } catch (e) { console.error('[QuickScreen] save failed:', e.message); }
+      if (!locId || locId === 'loc-demo' || !supabase) throw new Error('Could not resolve location');
+      const { data, error } = await supabase
+        .from('locations')
+        .update({ quick_screen_ids: filtered })
+        .eq('id', locId)
+        .select('id');
+      // 0 rows is a plain success with an empty body — a policy matching nothing
+      // reads exactly like a save. Ask for the id back and treat nothing as failure.
+      err = error || (!data?.length ? new Error('Quick Screen update matched 0 rows') : null);
+    } catch (e) { err = e; }
+    reportSave('quick screen', err);   // v5.5.962: was a silent console.error swallow
+    if (err) {
+      console.error('[QuickScreen] save failed:', err.message);
+      setQuickScreenIds(prevIds);      // the tills keep the grid that is actually stored
+      showToast('Quick Screen was NOT saved — check you\'re signed in, then try again', 'error');
+      return false;
+    }
+    return true;
+  };
+
+  // v5.5.962 Smart Quick Screen — mode switch + best-seller recompute.
+  // Ranking runs HERE (Back Office) and is stored on the location row; the till
+  // only ever reads the small stored lists, so it stays fast and offline-safe.
+  const RANK_DAYS = 28;
+  const saveSmart = async (mode, auto) => {
+    const prevMode = quickScreenMode;
+    const prevAuto = quickScreenAuto;
+    setQuickScreenMode(mode);
+    if (auto !== undefined) setQuickScreenAuto(auto);
+    markBOChange();
+    if (isMock) return true;
+    let err = null;
+    try {
+      const locId = await getLocationId();
+      // Was a bare `return false` — no report, no toast, and the optimistic mode
+      // switch left in place, so an unresolved location looked like a mode change.
+      if (!locId || locId === 'loc-demo' || !supabase) throw new Error('Could not resolve location');
+      const patch = { quick_screen_mode: mode };
+      if (auto !== undefined) patch.quick_screen_auto = auto;
+      const { data, error } = await supabase.from('locations').update(patch).eq('id', locId).select('id');
+      err = error || (!data?.length ? new Error('Quick Screen settings update matched 0 rows') : null);
+    } catch (e) { err = e; }
+    reportSave('quick screen', err);
+    if (err) {
+      setQuickScreenMode(prevMode);
+      if (auto !== undefined) setQuickScreenAuto(prevAuto);
+      showToast('Quick Screen settings NOT saved — check connection', 'error');
+      return false;
+    }
+    return true;
+  };
+
+  const recompute = async (mode = quickScreenMode) => {
+    if (isMock) {
+      await saveSmart(mode);   // still switch the mode locally in demo
+      showToast('Demo mode — no sales history to rank', 'info');
+      return;
+    }
+    setRanking(true);
+    try {
+      const locId = await getLocationId();
+      const since = new Date(Date.now() - RANK_DAYS * 864e5).toISOString();
+      // Same fetch shape the AI shift assistant uses; voided checks are filtered
+      // client-side (a .neq would also drop rows with NULL status).
+      const { data, error } = await supabase
+        .from('closed_checks')
+        .select('items, closed_at, status')
+        .eq('location_id', locId)
+        .gte('closed_at', since)
+        .order('closed_at', { ascending: false })
+        .limit(5000);
+      if (error) throw error;
+      const checks = (data || []).filter(c => c.status !== 'voided');
+      // v5.5.963: checkout lines carry the variant CHILD's id ("Half"/"Large") —
+      // map to the master so a product ranks by all its variants combined.
+      // Sub-items (modifier options) keep their own id.
+      const byId = new Map(menuItems.map(m => [m.id, m]));
+      const parentOf = (id) => {
+        const it = byId.get(id);
+        return (it?.parentId && it.type !== 'subitem') ? it.parentId : null;
+      };
+      // v5.7.22 — dayparts bucket on the VENUE's wall clock. Ranking from a
+      // Back Office session in another timezone was shifting every sale into
+      // the wrong daypart, and the wrong lists then shipped to every till.
+      const venueTz = (await getLocationConfig(locId))?.timezone;
+      const lists = rankQuickPicks(checks, { top: 24, parentOf, timezone: venueTz });
+      const auto = { computed_at: new Date().toISOString(), days: RANK_DAYS, checks: checks.length, lists };
+      // Success toast ONLY once the persist really landed — saveSmart already
+      // toasted the failure (and showToast is single-slot: a success here would
+      // overwrite the error and lie to the operator).
+      const ok = await saveSmart(mode, auto);
+      if (!ok) return;
+      const total = DAYPARTS.reduce((s, d) => s + lists[d].length, 0);
+      showToast(total
+        ? `Ranked ${checks.length} checks from the last ${RANK_DAYS} days`
+        : 'No sales history yet — pins will show until there is', 'success');
+    } catch (e) {
+      reportSave('quick screen', e);
+      showToast('Could not rank sales — check connection', 'error');
+    } finally { setRanking(false); }
+  };
+
+  const pickMode = (mode) => {
+    if (mode === quickScreenMode) return;
+    // Switching into a smart mode with stale/no rankings recomputes on the spot.
+    const stale = !quickScreenAuto?.computed_at
+      || (Date.now() - new Date(quickScreenAuto.computed_at).getTime()) > 24 * 3600e3;
+    if (mode !== 'manual' && stale) recompute(mode);
+    else saveSmart(mode);
   };
 
   const clearSlot = idx => {
     const next = [...slots]; next[idx] = null; save(next);
   };
 
-  const addItem = itemId => {
+  const addItem = async itemId => {
     if (slots.includes(itemId)) { showToast('Already on Quick Screen','warning'); return; }
     const next = [...slots];
     const firstEmpty = next.findIndex(s => !s);
     if (firstEmpty === -1) { showToast('Quick Screen is full — remove an item first','warning'); return; }
     next[firstEmpty] = itemId;
-    save(next);
-    showToast('Added to Quick Screen','success');
+    // Toast only once the write has landed — save() toasts its own failure, and
+    // showToast is single-slot, so a premature success would overwrite it.
+    if (await save(next)) showToast('Added to Quick Screen','success');
   };
 
   const onSlotDrop = (e, idx) => {
@@ -2710,6 +3775,58 @@ function QuickScreenManager() {
             <span style={{ fontSize:11, color:'var(--t4)' }}>{quickScreenIds.filter(Boolean).length}/{SLOTS} slots used</span>
           </div>
           <div style={{ fontSize:11, color:'var(--t3)' }}>Click an item to add it, or drag it onto a slot. Drag within the grid to reorder. ✕ to remove.</div>
+
+          {/* v5.5.962 Smart Quick Screen — mode + best-seller rankings */}
+          <div style={{ marginTop:10, display:'flex', alignItems:'center', gap:8, flexWrap:'wrap' }}>
+            {[['manual','Manual','Only your pinned items'],
+              ['hybrid','Hybrid','Your pins first, best sellers fill the empty slots'],
+              ['auto','Auto','Best sellers for the current daypart']].map(([id,label,desc])=>(
+              <button key={id} onClick={()=>pickMode(id)} title={desc}
+                style={{ padding:'5px 12px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:700,
+                  background:quickScreenMode===id?'var(--acc-d)':'var(--bg3)',
+                  border:`1.5px solid ${quickScreenMode===id?'var(--acc)':'var(--bdr)'}`,
+                  color:quickScreenMode===id?'var(--acc)':'var(--t3)' }}>
+                {label}
+              </button>
+            ))}
+            <span style={{ fontSize:10.5, color:'var(--t4)' }}>
+              {quickScreenMode==='manual' ? 'Pins only — exactly what you set below.'
+               : quickScreenMode==='auto' ? 'Best sellers per daypart from real sales. Pins show only until sales data exists.'
+               : 'Pins keep their slots; best sellers for the daypart fill the rest.'}
+            </span>
+          </div>
+
+          {quickScreenMode!=='manual' && (
+            <div style={{ marginTop:8, padding:'8px 10px', borderRadius:10, background:'var(--bg2)', border:'1px solid var(--bdr)' }}>
+              <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
+                <span style={{ fontSize:10.5, color:'var(--t3)' }}>
+                  {quickScreenAuto?.computed_at
+                    ? `Ranked ${quickScreenAuto.checks ?? '?'} checks · last ${quickScreenAuto.days ?? RANK_DAYS} days · ${new Date(quickScreenAuto.computed_at).toLocaleString('en-GB',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}`
+                    : 'No sales ranking computed yet.'}
+                </span>
+                <button onClick={()=>recompute()} disabled={ranking}
+                  style={{ padding:'4px 10px', borderRadius:7, cursor:ranking?'wait':'pointer', fontFamily:'inherit', fontSize:10.5, fontWeight:700,
+                    background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)' }}>
+                  {ranking?'Ranking…':'↻ Refresh from sales'}
+                </button>
+              </div>
+              {quickScreenAuto?.lists && (
+                <div style={{ marginTop:6, display:'flex', gap:12, flexWrap:'wrap' }}>
+                  {DAYPARTS.map(dp=>{
+                    const names=(quickScreenAuto.lists[dp]||[]).slice(0,3)
+                      .map(id=>{const it=menuItems.find(m=>m.id===id);return it?(it.menuName||it.name):null;})
+                      .filter(Boolean);
+                    return (
+                      <span key={dp} style={{ fontSize:10, color:'var(--t4)' }}>
+                        <span style={{ fontWeight:800, color:'var(--t3)', textTransform:'capitalize' }}>{dp}:</span>{' '}
+                        {names.length?names.join(', '):'—'}
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <div style={{ flex:1, overflowY:'auto', padding:'16px' }}>
@@ -2757,7 +3874,7 @@ function QuickScreenManager() {
                         textShadow:item.image?'0 1px 4px rgba(0,0,0,1)':'none' }}>{item.menuName||item.name}</div>
                       <div style={{ fontSize:12, fontWeight:800, fontFamily:'var(--font-mono)', marginTop:'auto',
                         color:item.image?'#fff':color, textShadow:item.image?'0 1px 6px rgba(0,0,0,1)':'none' }}>
-                        {kids.length>0?`from £${fromP.toFixed(2)}`:`£${price.toFixed(2)}`}
+                        {kids.length>0?`from ${money(fromP)}`:`${money(price)}`}
                       </div>
                     </div>
                   </>) : (
@@ -2772,9 +3889,11 @@ function QuickScreenManager() {
           </div>
 
           <div style={{ marginTop:14, display:'flex', gap:8 }}>
-            <button onClick={()=>{ save([]); showToast('Quick Screen cleared','info'); }}
+            {/* Same rule as addItem: toast only once the write has landed — save() toasts
+                its own failure and showToast is single-slot, so a premature success lies. */}
+            <button onClick={async()=>{ if (await save([])) showToast('Quick Screen cleared','info'); }}
               style={{ padding:'6px 14px',borderRadius:9,cursor:'pointer',fontFamily:'inherit',background:'var(--red-d)',border:'1px solid var(--red-b)',color:'var(--red)',fontSize:12,fontWeight:600 }}>Clear all</button>
-            <button onClick={()=>{ const ids=allItems.slice(0,SLOTS).map(i=>i.id); save(ids); showToast('Auto-filled','success'); }}
+            <button onClick={async()=>{ const ids=allItems.slice(0,SLOTS).map(i=>i.id); if (await save(ids)) showToast('Auto-filled','success'); }}
               style={{ padding:'6px 14px',borderRadius:9,cursor:'pointer',fontFamily:'inherit',background:'var(--bg3)',border:'1px solid var(--bdr2)',color:'var(--t2)',fontSize:12,fontWeight:600 }}>Auto-fill from menu</button>
           </div>
         </div>
@@ -2815,7 +3934,7 @@ function QuickScreenManager() {
                 <div style={{ width:3,height:32,borderRadius:2,background:color,flexShrink:0 }}/>
                 <div style={{ flex:1,minWidth:0 }}>
                   <div style={{ fontSize:11,fontWeight:700,color:'var(--t1)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' }}>{item.menuName||item.name}</div>
-                  <div style={{ fontSize:9,color:'var(--t4)' }}>{cat?.icon} {cat?.label} · £{price.toFixed(2)}</div>
+                  <div style={{ fontSize:9,color:'var(--t4)' }}>{cat?.icon} {cat?.label} · {money(price)}</div>
                 </div>
                 {inScreen
                   ? <span style={{ fontSize:9,fontWeight:700,color:'var(--grn)',flexShrink:0 }}>✓</span>

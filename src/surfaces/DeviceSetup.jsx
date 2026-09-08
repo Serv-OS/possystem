@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { ServOSIcon, ServOSWordmark } from '../components/ServOSBrand';
 
 export default function DeviceSetup({ onSelectMode }) {
   const [hovered, setHovered] = useState(null);
@@ -16,12 +17,8 @@ export default function DeviceSetup({ onSelectMode }) {
     }}>
       {/* Logo */}
       <div style={{ textAlign: 'center', marginBottom: 48 }}>
-        <div style={{
-          width: 64, height: 64, borderRadius: 18, background: 'var(--acc)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 32, fontWeight: 800, color: '#fff', margin: '0 auto 16px',
-        }}>R</div>
-        <div style={{ fontSize: 26, fontWeight: 800, color: 'var(--t1)' }}>Restaurant OS</div>
+        <div style={{ margin: '0 auto 16px', width: 64 }}><ServOSIcon size={64} /></div>
+        <ServOSWordmark fontSize={28} />
         <div style={{ fontSize: 15, color: 'var(--t3)', marginTop: 6 }}>
           What is this device being used for?
         </div>
@@ -80,7 +77,7 @@ export default function DeviceSetup({ onSelectMode }) {
             fontSize: 12, color: 'var(--t3)', background: 'var(--bg3)',
             borderRadius: 8, padding: '8px 12px', lineHeight: 1.5,
           }}>
-            Requires a Restaurant OS account (email + password)
+            Requires a Serv OS account (email + password)
           </div>
         </div>
 

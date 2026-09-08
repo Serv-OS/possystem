@@ -1,4 +1,5 @@
 import { useStore } from '../store';
+import { money } from '../lib/currency';
 
 export default function CheckSelectorModal({ parentTable, onSelect, onClose }) {
   const { tables } = useStore();
@@ -22,7 +23,7 @@ export default function CheckSelectorModal({ parentTable, onSelect, onClose }) {
         <div style={{ padding:'16px 20px 12px', borderBottom:'1px solid var(--bdr)', flexShrink:0 }}>
           <div style={{ fontSize:17, fontWeight:800, color:'var(--t1)' }}>{parentTable.label}</div>
           <div style={{ fontSize:11, color:'var(--t3)', marginTop:2 }}>
-            {allChecks.length} checks open · £{totalRevenue.toFixed(2)} total · {parentTable.session?.covers} covers
+            {allChecks.length} checks open · {money(totalRevenue)} total · {parentTable.session?.covers} covers
           </div>
         </div>
 
@@ -61,7 +62,7 @@ export default function CheckSelectorModal({ parentTable, onSelect, onClose }) {
                     </div>
                     <div style={{ textAlign:'right' }}>
                       <div style={{ fontSize:18, fontWeight:800, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>
-                        £{(session?.subtotal||0).toFixed(2)}
+                        {money((session?.subtotal||0))}
                       </div>
                     </div>
                   </div>

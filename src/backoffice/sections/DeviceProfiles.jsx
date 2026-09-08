@@ -1,12 +1,29 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useStore } from '../../store';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
+import { reportSave } from '../../lib/saveHealth';
 
 const SURFACES = [
   { id:'tables', label:'Floor plan', icon:'⬚', desc:'Opens to the table layout view' },
   { id:'pos',    label:'POS ordering', icon:'⊞', desc:'Opens straight to the menu/ordering screen' },
   { id:'bar',    label:'Bar tabs', icon:'🍸', desc:'Opens to the bar tab management screen' },
   { id:'kds',    label:'Kitchen display', icon:'▣', desc:'Opens to the KDS screen (for kitchen units)' },
+  { id:'mpos',   label:'MPOS (mobile)', icon:'📱', desc:'Phone or Sunmi handheld for servers and runners. Card-only — Stripe Tap to Pay or assigned reader.' },
+];
+
+// MPOS payment mode — only relevant when defaultSurface === 'mpos'
+const MPOS_PAYMENT_MODES = [
+  { id:'tap_to_pay',          label:'Tap to Pay on this device', desc:'Use the phone’s built-in NFC. Requires native shell (Phase 1B).' },
+  { id:'assigned_reader',     label:'Assigned network reader',   desc:'Pair to a fixed BBPOS WisePOS E or S700.' },
+  { id:'pay_at_counter_only', label:'Pay at counter only',       desc:'Server takes orders only — cash/card all routed to the counter POS.' },
+];
+
+// Customer-facing display destination (per terminal — matches the hardware it has)
+const CUSTOMER_DISPLAY_MODES = [
+  { id:'auto',   label:'Auto (recommended)', desc:'Use a dedicated screen if present, otherwise the card reader.' },
+  { id:'screen', label:'Dedicated screen',   desc:'Customer-facing second screen, e.g. Sunmi D3 Pro rear / external monitor.' },
+  { id:'reader', label:'Card reader screen', desc:'Show the order on the WisePOS E reader screen.' },
+  { id:'off',    label:'Off',                desc:'No customer-facing display.' },
 ];
 
 const ORDER_TYPES = [
@@ -15,16 +32,13 @@ const ORDER_TYPES = [
   { id:'collection', label:'Collection', icon:'📦' },
 ];
 
+// v4.5.1: trimmed to only the features actually wired in the codebase.
+// Removed (Apr 26): kds (KDS is now a standalone product), kiosk (own surface, not a flag),
+// reports (cosmetic-only — Back Office is web-accessible anyway), discounts/voids/splitCheck/
+// tableTransfer (all pure stubs — never wired to anything).
 const FEATURES = [
-  { id:'barTabs',      label:'Bar tabs',             desc:'Hide bar tab surface from POS sidebar' },
-  { id:'courses',      label:'Course management',    desc:'Fire course buttons on orders' },
-  { id:'kds',          label:'KDS screen',           desc:'Kitchen display screen in sidebar' },
-  { id:'kiosk',        label:'Kiosk mode',           desc:'Self-service kiosk capability' },
-  { id:'reports',      label:'Reports access',       desc:'Shift reports in back office tab' },
-  { id:'discounts',    label:'Discounts',            desc:'Apply discounts without manager PIN' },
-  { id:'voids',        label:'Voids (no PIN)',        desc:'Void items without manager PIN' },
-  { id:'splitCheck',   label:'Split checks',         desc:'Allow creating split checks' },
-  { id:'tableTransfer',label:'Table transfer',       desc:'Transfer tables to other terminals' },
+  { id:'barTabs', label:'Bar tabs',          desc:'Hide bar tab surface from POS sidebar' },
+  { id:'courses', label:'Course management', desc:'Hide per-course headers + Fire course buttons. Items still carry course assignment internally.' },
 ];
 
 const DEFAULT_PROFILES = [
@@ -33,6 +47,7 @@ const DEFAULT_PROFILES = [
     defaultSurface:'tables', enabledOrderTypes:['dine-in','takeaway','collection'],
     assignedSection:null, hiddenFeatures:[], tableServiceEnabled:true,
     quickScreenEnabled:true, receiptPrinterId:'pr1', deviceCount:1,
+    autoPrintReceiptOnClose:true, orderNotifications:true,
   },
   {
     id:'prof-2', name:'Bar terminal', color:'#e8a020',
@@ -40,6 +55,7 @@ const DEFAULT_PROFILES = [
     assignedSection:'bar', hiddenFeatures:['courses','kiosk','reports'],
     tableServiceEnabled:false, quickScreenEnabled:true,
     receiptPrinterId:'pr3', deviceCount:1,
+    autoPrintReceiptOnClose:true, orderNotifications:true,
   },
   {
     id:'prof-3', name:'Server handheld', color:'#22c55e',
@@ -47,6 +63,7 @@ const DEFAULT_PROFILES = [
     assignedSection:null, hiddenFeatures:['kiosk','reports','discounts','voids'],
     tableServiceEnabled:true, quickScreenEnabled:true,
     receiptPrinterId:'pr1', deviceCount:1,
+    autoPrintReceiptOnClose:true, orderNotifications:true,
   },
 ];
 
@@ -86,10 +103,25 @@ export default function DeviceProfiles() {
         assignedSection: p.assigned_section, hiddenFeatures: p.hidden_features || [],
         tableServiceEnabled: p.table_service_enabled !== false,
         quickScreenEnabled: p.quick_screen_enabled !== false,
+        autoPrintReceiptOnClose: p.auto_print_receipt_on_close !== false,
+        orderNotifications: p.order_notifications !== false,
         menuId: p.menu_id,
+        sortOrder: p.sort_order || 0,
         deviceCount: countMap[p.id] || 0,
         serviceCharge: p.service_charge || null,
         isMaster: p.is_master || false,
+        trainingMode: p.training_mode === true,   // v5.5.645: per-device training
+        // v5.5.731: auto sign-out policy
+        signoutIdleSeconds: p.signout_idle_seconds || 0,
+        signoutOnPay: p.signout_on_pay === true,
+        signoutOnSend: p.signout_on_send === true,
+
+        // v5.5.60 MPOS-only fields
+        runnerMode: p.runner_mode === true,
+        paymentMode: p.payment_mode || 'tap_to_pay',
+        customerDisplayMode: p.customer_display_mode || 'auto',
+        customerDisplayImages: Array.isArray(p.customer_display_images) ? p.customer_display_images : [],
+        assignedReaderId: p.assigned_reader_id || null,
       }));
       setProfiles(mapped);
       try { localStorage.setItem('rpos-device-profiles', JSON.stringify(mapped)); } catch {}
@@ -108,10 +140,24 @@ export default function DeviceProfiles() {
     hidden_features: p.hiddenFeatures || [],
     table_service_enabled: p.tableServiceEnabled !== false,
     quick_screen_enabled: p.quickScreenEnabled !== false,
+    auto_print_receipt_on_close: p.autoPrintReceiptOnClose !== false,
+    order_notifications: p.orderNotifications !== false,
     menu_id: p.menuId || null,
     sort_order: p.sortOrder || 0,
     service_charge: p.serviceCharge || null,
     is_master: p.isMaster || false,
+    training_mode: p.trainingMode === true,   // v5.5.645: per-device training
+    // v5.5.731: auto sign-out policy
+    signout_idle_seconds: Number(p.signoutIdleSeconds) || 0,
+    signout_on_pay: p.signoutOnPay === true,
+    signout_on_send: p.signoutOnSend === true,
+
+    // v5.5.60 MPOS-only fields
+    runner_mode: p.runnerMode === true,
+    payment_mode: p.paymentMode || 'tap_to_pay',
+    customer_display_mode: p.customerDisplayMode || 'auto',
+    customer_display_images: p.customerDisplayImages || [],
+    assigned_reader_id: p.assignedReaderId || null,
   });
 
   // Always resolve a real locationId — never save with null
@@ -123,7 +169,20 @@ export default function DeviceProfiles() {
     return id;
   };
 
-  const save = async (updated) => {
+  // v5.7.9: fields where a stale tab writing its in-memory value silently undoes an
+  // operator's change made elsewhere. The proven victim is menu_id: a BO tab opened
+  // BEFORE a menu was pinned held menuId undefined, so ANY save from that tab (even a
+  // rename) nulled the pin. Same class as the vanishing-categories saga. On update,
+  // these keep the DB value unless THIS editor session actually touched them.
+  const GUARDED_FIELDS = [
+    ['menuId', 'menu_id'],
+    ['serviceCharge', 'service_charge'],
+    ['trainingMode', 'training_mode'],
+  ];
+
+  // `touched` is the Set of form keys the editor session explicitly changed (null =
+  // unknown caller: keep today's full-overwrite behaviour).
+  const save = async (updated, touched = null) => {
     // Close panel immediately so it feels instant
     setEditing(null);
     setShowNew(false);
@@ -147,22 +206,38 @@ export default function DeviceProfiles() {
         if (!locId) throw new Error('Could not resolve location ID');
 
         const row = toDbRow(updated, locId);
-        // Use update for existing profiles, insert for new ones
+        // Use update for existing profiles, insert for new ones. The existence check
+        // doubles as the fresh read for the clobber guard (no extra round trip).
         let error;
-        const existing = await supabase.from('device_profiles').select('id').eq('id', row.id).single();
-        if (existing.data) {
-          // Update all fields explicitly
-          const { error: e } = await supabase.from('device_profiles').update(row).eq('id', row.id);
+        const existing = await supabase.from('device_profiles')
+          .select('id, menu_id, service_charge, training_mode')
+          .eq('id', row.id).maybeSingle();
+        if (existing.data || existing.error) {
+          // Row exists, or the fresh read failed and we cannot tell. Treat both as
+          // an update: a genuinely new row then fails loudly on the 0-row check
+          // below instead of a duplicate-key insert error, never silently.
+          if (touched) {
+            for (const [formKey, col] of GUARDED_FIELDS) {
+              if (touched.has(formKey)) continue;                // session edited it: write the form value
+              if (existing.data) row[col] = existing.data[col];  // untouched: keep the DB value
+              else delete row[col];                              // fresh read failed: omit the column so PostgREST leaves it alone
+            }
+          }
+          const { error: e, data: dataUp } = await supabase.from('device_profiles').update(row).eq('id', row.id).select('id');
+          if (e) throw e;
+          if (!dataUp || dataUp.length === 0) throw new Error(`Profile update matched 0 rows for id=${row.id}. Column may be missing (run migration) or RLS blocked it.`);
           error = e;
         } else {
           const { error: e } = await supabase.from('device_profiles').insert(row);
           error = e;
         }
         if (error) throw error;
+        reportSave('device profile', null);
         showToast(`"${updated.name}" saved`, 'success');
       } catch (err) {
         console.error('Profile save failed:', err);
-        showToast('Save failed — check connection', 'error');
+        reportSave('device profile', err);
+        showToast(`Save failed — "${updated.name}" NOT saved to cloud`, 'error');
       }
     } else {
       showToast(`"${updated.name}" saved`, 'success');
@@ -184,8 +259,12 @@ export default function DeviceProfiles() {
     } catch {}
 
     markBOChange();
-    showToast(`"${profile.name}" profile created`, 'success');
 
+    // v5.5.961: the success toast used to fire HERE, before the DB insert was even
+    // attempted — a failed insert left a phantom profile that lived in state +
+    // localStorage all evening and "vanished on refresh" when loadFromDB replaced
+    // both with DB truth. Now: success only after the row lands; on failure the
+    // card is reverted on the spot and the saveHealth banner goes up.
     if (!isMock) {
       try {
         const locId = await resolveLocId();
@@ -193,16 +272,35 @@ export default function DeviceProfiles() {
         const row = toDbRow(newProfile, locId);
         const { error } = await supabase.from('device_profiles').insert(row);
         if (error) throw error;
+        reportSave('device profile', null);
+        showToast(`"${profile.name}" profile created`, 'success');
       } catch (err) {
         console.error('Profile insert failed:', err);
-        showToast('Could not save to cloud — check connection', 'error');
+        reportSave('device profile', err);
+        setProfiles(ps => ps.filter(x => x.id !== newProfile.id));
+        try {
+          const cur = JSON.parse(localStorage.getItem('rpos-device-profiles') || '[]');
+          localStorage.setItem('rpos-device-profiles', JSON.stringify(cur.filter(x => x.id !== newProfile.id)));
+        } catch {}
+        showToast(`"${profile.name}" was NOT saved — fix the connection and create it again`, 'error');
       }
+    } else {
+      showToast(`"${profile.name}" profile created`, 'success');
     }
   };
 
   const deleteProfile = async (id) => {
+    // v5.5.961: check the delete actually landed — a swallowed failure here made
+    // the profile resurrect on refresh (inverse of the phantom-create bug).
+    if (!isMock) {
+      const { error } = await supabase.from('device_profiles').delete().eq('id', id);
+      reportSave('device profile delete', error);
+      if (error) {
+        showToast('Delete failed — profile kept', 'error');
+        return;
+      }
+    }
     setProfiles(ps => ps.filter(p => p.id !== id));
-    if (!isMock) await supabase.from('device_profiles').delete().eq('id', id);
     try {
       const cur = JSON.parse(localStorage.getItem('rpos-device-profiles') || '[]');
       localStorage.setItem('rpos-device-profiles', JSON.stringify(cur.filter(p => p.id !== id)));
@@ -228,7 +326,9 @@ export default function DeviceProfiles() {
       {/* Profile cards */}
       <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(320px, 1fr))', gap:14 }}>
         {profiles.map(prof => {
-          const devCount = devices.filter(d => d.profileId === prof.id).length || prof.deviceCount;
+          const devCount = (devices || []).filter(d => d.profileId === prof.id).length || prof.deviceCount || 0;
+          const orderTypes = prof.enabledOrderTypes || [];
+          const hiddenFeats = prof.hiddenFeatures || [];
           return (
             <div key={prof.id} style={{
               background:'var(--bg1)', border:'1px solid var(--bdr)',
@@ -255,12 +355,14 @@ export default function DeviceProfiles() {
 
                 {/* Config summary */}
                 <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                  {prof.trainingMode && <ConfigRow label="Training mode" value="🎓 ON — nothing committed" valueColor="#B45309"/>}
                   <ConfigRow label="Default screen" value={SURFACES.find(s => s.id === prof.defaultSurface)?.label}/>
-                  <ConfigRow label="Order types" value={prof.enabledOrderTypes.map(t => ORDER_TYPES.find(o => o.id === t)?.icon + ' ' + ORDER_TYPES.find(o => o.id === t)?.label).join(' · ')}/>
+                  <ConfigRow label="Order types" value={orderTypes.map(t => ORDER_TYPES.find(o => o.id === t)?.icon + ' ' + ORDER_TYPES.find(o => o.id === t)?.label).join(' · ') || 'None'}/>
                   <ConfigRow label="Table service" value={prof.tableServiceEnabled ? '✓ Enabled' : '✕ Disabled'} valueColor={prof.tableServiceEnabled ? 'var(--grn)' : 'var(--red)'}/>
+                  <ConfigRow label="Auto-print receipt" value={prof.autoPrintReceiptOnClose !== false ? '✓ Enabled' : '✕ Disabled'} valueColor={prof.autoPrintReceiptOnClose !== false ? 'var(--grn)' : 'var(--red)'}/>
                   <ConfigRow label="Section" value={prof.assignedSection || 'All sections'}/>
-                  {prof.hiddenFeatures.length > 0 && (
-                    <ConfigRow label="Hidden features" value={prof.hiddenFeatures.join(', ')} truncate/>
+                  {hiddenFeats.length > 0 && (
+                    <ConfigRow label="Hidden features" value={hiddenFeats.join(', ')} truncate/>
                   )}
                 </div>
               </div>
@@ -276,11 +378,12 @@ export default function DeviceProfiles() {
                     profileId: prof.id,
                     profileName: prof.name,
                     defaultSurface: prof.defaultSurface,
-                    enabledOrderTypes: prof.enabledOrderTypes,
+                    enabledOrderTypes: orderTypes,
                     assignedSection: prof.assignedSection,
-                    hiddenFeatures: prof.hiddenFeatures,
+                    hiddenFeatures: hiddenFeats,
                     tableServiceEnabled: prof.tableServiceEnabled,
                     quickScreenEnabled: prof.quickScreenEnabled,
+                    autoPrintReceiptOnClose: prof.autoPrintReceiptOnClose !== false,
                     menuId: prof.menuId,
                     receiptPrinterId: prof.receiptPrinterId,
                   });
@@ -319,11 +422,44 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
     defaultSurface:'tables', enabledOrderTypes:['dine-in'],
     assignedSection:null, hiddenFeatures:[],
     tableServiceEnabled:true, quickScreenEnabled:true, receiptPrinterId:'pr1', menuId:null,
+    autoPrintReceiptOnClose:true, orderNotifications:true,
+    runnerMode:false, paymentMode:'tap_to_pay', assignedReaderId:null, customerDisplayMode:'auto',
+    trainingMode:false,
+    signoutIdleSeconds:0, signoutOnPay:false, signoutOnSend:false,
   });
 
-  const upd = (key, val) => setForm(f => ({ ...f, [key]: val }));
-  const toggleOrderType = id => upd('enabledOrderTypes', form.enabledOrderTypes.includes(id) ? form.enabledOrderTypes.filter(x => x !== id) : [...form.enabledOrderTypes, id]);
-  const toggleFeature = id => upd('hiddenFeatures', form.hiddenFeatures.includes(id) ? form.hiddenFeatures.filter(x => x !== id) : [...form.hiddenFeatures, id]);
+  // v5.7.9: record which fields THIS editor session actually changed. Every control
+  // in this modal funnels through upd() (updSC, toggleOrderType and toggleFeature all
+  // call it), so adding the key here catches them all. save() uses the set to keep
+  // the DB value for clobber-prone fields (menu pin, service charge, training mode)
+  // the operator never pressed, so a tab loaded before a change made elsewhere can
+  // no longer silently undo it.
+  const touchedRef = useRef(new Set());
+  const upd = (key, val) => { touchedRef.current.add(key); setForm(f => ({ ...f, [key]: val })); };
+
+  // Customer-display slideshow image upload (kiosk-assets public bucket).
+  const [uploadingImg, setUploadingImg] = useState(false);
+  const uploadDisplayImage = async (file) => {
+    if (!file || isMock || !supabase) return;
+    setUploadingImg(true);
+    try {
+      const safe = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const path = `customer-display/${Date.now()}-${safe}`;
+      const { error } = await supabase.storage.from('kiosk-assets').upload(path, file, { cacheControl: '3600', upsert: true, contentType: file.type });
+      if (error) throw error;
+      const { data } = supabase.storage.from('kiosk-assets').getPublicUrl(path);
+      if (data?.publicUrl) {
+        touchedRef.current.add('customerDisplayImages'); // only setForm call that bypasses upd()
+        setForm(f => ({ ...f, customerDisplayImages: [ ...(f.customerDisplayImages || []), data.publicUrl ] }));
+      }
+    } catch (e) {
+      alert('Image upload failed: ' + (e.message || e) + '\n(Check the kiosk-assets storage bucket exists and is public.)');
+    } finally {
+      setUploadingImg(false);
+    }
+  };
+  const toggleOrderType = id => { const arr = form.enabledOrderTypes || []; upd('enabledOrderTypes', arr.includes(id) ? arr.filter(x => x !== id) : [...arr, id]); };
+  const toggleFeature = id => { const arr = form.hiddenFeatures || []; upd('hiddenFeatures', arr.includes(id) ? arr.filter(x => x !== id) : [...arr, id]); };
 
   const COLORS = ['#3b82f6','#e8a020','#22c55e','#a855f7','#ef4444','#22d3ee','#f97316'];
   const SECTIONS = [null, 'main', 'bar', 'patio'];
@@ -378,12 +514,50 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
             </div>
           </div>
 
+          {/* MPOS-only options — only shown when default surface is MPOS */}
+          {form.defaultSurface === 'mpos' && (
+            <div style={{ marginBottom:18, padding:14, borderRadius:12, background:'var(--acc-d)', border:'1px solid var(--acc-b)' }}>
+              <div style={{ fontSize:11, fontWeight:800, color:'var(--acc)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:10 }}>📱 MPOS settings</div>
+
+              {/* Runner mode */}
+              <label style={{ display:'flex', alignItems:'center', gap:10, cursor:'pointer', marginBottom:14 }}>
+                <div onClick={() => upd('runnerMode', !form.runnerMode)} style={{
+                  width:42, height:24, borderRadius:14, position:'relative', flexShrink:0,
+                  background: form.runnerMode ? 'var(--grn)' : 'var(--bg4)', transition:'all .2s',
+                }}>
+                  <div style={{ width:18, height:18, borderRadius:'50%', background:'#fff', position:'absolute', top:3, left: form.runnerMode ? 21 : 3, transition:'left .2s' }}/>
+                </div>
+                <div>
+                  <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)' }}>Runner mode</div>
+                  <div style={{ fontSize:11, color:'var(--t3)', marginTop:2 }}>Restricts UI to delivery handoff (no order taking).</div>
+                </div>
+              </label>
+
+              {/* Payment mode */}
+              <div style={{ marginTop:6 }}>
+                <div style={{ fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:8 }}>Payment mode</div>
+                <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                  {MPOS_PAYMENT_MODES.map(m => (
+                    <button key={m.id} onClick={() => upd('paymentMode', m.id)} style={{
+                      textAlign:'left', padding:'10px 12px', borderRadius:10, cursor:'pointer', fontFamily:'inherit',
+                      background: form.paymentMode === m.id ? 'var(--bg2)' : 'transparent',
+                      border:`1.5px solid ${form.paymentMode === m.id ? 'var(--acc)' : 'var(--bdr2)'}`,
+                    }}>
+                      <div style={{ fontSize:13, fontWeight:700, color: form.paymentMode === m.id ? 'var(--acc)' : 'var(--t1)' }}>{m.label}</div>
+                      <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>{m.desc}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Order types */}
           <div style={{ marginBottom:18 }}>
             <label style={{ display:'block', fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:8 }}>Enabled order types</label>
             <div style={{ display:'flex', gap:8 }}>
               {ORDER_TYPES.map(t => {
-                const on = form.enabledOrderTypes.includes(t.id);
+                const on = (form.enabledOrderTypes || []).includes(t.id);
                 return (
                   <button key={t.id} onClick={() => toggleOrderType(t.id)} style={{
                     flex:1, padding:'10px', borderRadius:10, cursor:'pointer', fontFamily:'inherit', textAlign:'center',
@@ -397,6 +571,49 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
                 );
               })}
             </div>
+          </div>
+
+          {/* Customer-facing display */}
+          <div style={{ marginBottom:18 }}>
+            <label style={{ display:'block', fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:8 }}>Customer-facing display</label>
+            <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+              {CUSTOMER_DISPLAY_MODES.map(m => {
+                const on = (form.customerDisplayMode || 'auto') === m.id;
+                return (
+                  <button key={m.id} onClick={() => upd('customerDisplayMode', m.id)} style={{
+                    textAlign:'left', padding:'10px 12px', borderRadius:10, cursor:'pointer', fontFamily:'inherit',
+                    background: on ? 'var(--bg2)' : 'transparent',
+                    border:`1.5px solid ${on ? 'var(--acc)' : 'var(--bdr2)'}`,
+                  }}>
+                    <div style={{ fontSize:13, fontWeight:700, color: on ? 'var(--acc)' : 'var(--t1)' }}>{m.label}</div>
+                    <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>{m.desc}</div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Customer display — idle slideshow images */}
+          <div style={{ marginBottom:18 }}>
+            <label style={{ display:'block', fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:8 }}>Customer display — slideshow images</label>
+            <div style={{ display:'flex', flexWrap:'wrap', gap:8, marginBottom:8 }}>
+              {(form.customerDisplayImages || []).map((url, i) => (
+                <div key={i} style={{ position:'relative', width:88, height:58, borderRadius:8, overflow:'hidden', border:'1px solid var(--bdr2)' }}>
+                  <img src={url} alt="" style={{ width:'100%', height:'100%', objectFit:'cover' }}/>
+                  <button onClick={() => upd('customerDisplayImages', (form.customerDisplayImages || []).filter((_, j) => j !== i))}
+                    style={{ position:'absolute', top:2, right:2, width:18, height:18, borderRadius:'50%', border:'none', background:'rgba(0,0,0,.7)', color:'#fff', cursor:'pointer', fontSize:11, lineHeight:'18px', padding:0 }}>✕</button>
+                </div>
+              ))}
+              {(form.customerDisplayImages || []).length === 0 && (
+                <div style={{ fontSize:12, color:'var(--t4)', alignSelf:'center' }}>No images — falls back to venue branding.</div>
+              )}
+            </div>
+            <label style={{ display:'inline-block', padding:'8px 12px', borderRadius:8, border:'1px dashed var(--bdr2)', cursor:'pointer', fontSize:12, color:'var(--t2)', fontWeight:600 }}>
+              {uploadingImg ? 'Uploading…' : '+ Add image'}
+              <input type="file" accept="image/*" style={{ display:'none' }} disabled={uploadingImg}
+                onChange={e => { const f = e.target.files?.[0]; if (f) uploadDisplayImage(f); e.target.value = ''; }}/>
+            </label>
+            <div style={{ fontSize:11, color:'var(--t4)', marginTop:6 }}>Cycled as a slideshow when idle, and shown on the left half while an order is rung up.</div>
           </div>
 
           {/* Section */}
@@ -426,6 +643,62 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
               background: form.tableServiceEnabled ? 'var(--grn)' : 'var(--bg4)', transition:'all .2s', flexShrink:0, position:'relative',
             }}>
               <div style={{ width:18, height:18, borderRadius:'50%', background:'#fff', position:'absolute', top:3, left: form.tableServiceEnabled ? 22 : 3, transition:'left .2s', boxShadow:'0 1px 3px rgba(0,0,0,.3)' }}/>
+            </button>
+          </div>
+
+          {/* Auto-print receipt on close toggle */}
+          <div style={{ marginBottom:18, display:'flex', justifyContent:'space-between', alignItems:'center', padding:'12px 14px', background:'var(--bg3)', borderRadius:10, border:'1px solid var(--bdr)' }}>
+            <div>
+              <div style={{ fontSize:13, fontWeight:600, color:'var(--t1)' }}>Auto-print receipt on close</div>
+              <div style={{ fontSize:11, color:'var(--t3)', marginTop:2 }}>Print customer receipt automatically when payment completes. Staff can still untick per-transaction on the pay screen.</div>
+            </div>
+            <button onClick={() => upd('autoPrintReceiptOnClose', form.autoPrintReceiptOnClose === false)} style={{
+              width:44, height:24, borderRadius:12, border:'none', cursor:'pointer',
+              background: form.autoPrintReceiptOnClose !== false ? 'var(--grn)' : 'var(--bg4)', transition:'all .2s', flexShrink:0, position:'relative',
+            }}>
+              <div style={{ width:18, height:18, borderRadius:'50%', background:'#fff', position:'absolute', top:3, left: form.autoPrintReceiptOnClose !== false ? 22 : 3, transition:'left .2s', boxShadow:'0 1px 3px rgba(0,0,0,.3)' }}/>
+            </button>
+          </div>
+
+          {/* v5.5.731: Sign-out behaviour — how a logged-in staff member is signed out on this device.
+              Manual (tap another card / user-icon logout) always works; these are the automatic triggers. */}
+          <div style={{ marginBottom:18, padding:'14px', background:'var(--bg3)', borderRadius:10, border:'1px solid var(--bdr)' }}>
+            <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)', marginBottom:2 }}>Sign-out behaviour</div>
+            <div style={{ fontSize:11, color:'var(--t3)', marginBottom:12 }}>How the signed-in staff member is signed out. Tapping another card or the logout icon always works — these add automatic sign-out.</div>
+
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12 }}>
+              <div style={{ fontSize:12.5, fontWeight:600, color:'var(--t1)' }}>After inactivity</div>
+              <select value={form.signoutIdleSeconds || 0} onChange={e => upd('signoutIdleSeconds', Number(e.target.value))}
+                style={{ background:'var(--bg4)', border:'1.5px solid var(--bdr2)', borderRadius:8, padding:'6px 10px', color:'var(--t1)', fontSize:12.5, fontFamily:'inherit', cursor:'pointer' }}>
+                {[[0,'Off'],[15,'15 seconds'],[30,'30 seconds'],[45,'45 seconds'],[60,'1 minute'],[90,'1½ minutes'],[120,'2 minutes'],[180,'3 minutes'],[300,'5 minutes']].map(([v,l]) => <option key={v} value={v}>{l}</option>)}
+              </select>
+            </div>
+
+            {[['signoutOnPay','After taking payment','Sign out once a payment / check is cashed off'],
+              ['signoutOnSend','After sending an order','Sign out once an order is sent to the kitchen']].map(([key,label,desc]) => (
+              <div key={key} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginTop:10 }}>
+                <div>
+                  <div style={{ fontSize:12.5, fontWeight:600, color:'var(--t1)' }}>{label}</div>
+                  <div style={{ fontSize:11, color:'var(--t3)', marginTop:1 }}>{desc}</div>
+                </div>
+                <button onClick={() => upd(key, !form[key])} style={{ width:44, height:24, borderRadius:12, border:'none', cursor:'pointer', background: form[key] ? 'var(--grn)' : 'var(--bg4)', transition:'all .2s', flexShrink:0, position:'relative' }}>
+                  <div style={{ width:18, height:18, borderRadius:'50%', background:'#fff', position:'absolute', top:3, left: form[key] ? 22 : 3, transition:'left .2s', boxShadow:'0 1px 3px rgba(0,0,0,.3)' }}/>
+                </button>
+              </div>
+            ))}
+          </div>
+
+          {/* Order notifications toggle */}
+          <div style={{ marginBottom:18, display:'flex', justifyContent:'space-between', alignItems:'center', padding:'12px 14px', background:'var(--bg3)', borderRadius:10, border:'1px solid var(--bdr)' }}>
+            <div>
+              <div style={{ fontSize:13, fontWeight:600, color:'var(--t1)' }}>Order notifications</div>
+              <div style={{ fontSize:11, color:'var(--t3)', marginTop:2 }}>Show the new-order popup &amp; play the chime on this terminal when online, kiosk, QR or delivery orders arrive. Untick for terminals that shouldn't be alerted (the order still prints &amp; routes as normal).</div>
+            </div>
+            <button onClick={() => upd('orderNotifications', form.orderNotifications === false)} style={{
+              width:44, height:24, borderRadius:12, border:'none', cursor:'pointer',
+              background: form.orderNotifications !== false ? 'var(--grn)' : 'var(--bg4)', transition:'all .2s', flexShrink:0, position:'relative',
+            }}>
+              <div style={{ width:18, height:18, borderRadius:'50%', background:'#fff', position:'absolute', top:3, left: form.orderNotifications !== false ? 22 : 3, transition:'left .2s', boxShadow:'0 1px 3px rgba(0,0,0,.3)' }}/>
             </button>
           </div>
 
@@ -512,7 +785,7 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
             <label style={{ display:'block', fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:8 }}>Hide features from this terminal</label>
             <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
               {FEATURES.map(f => {
-                const hidden = form.hiddenFeatures.includes(f.id);
+                const hidden = (form.hiddenFeatures || []).includes(f.id);
                 return (
                   <div key={f.id} onClick={() => toggleFeature(f.id)} style={{
                     display:'flex', justifyContent:'space-between', alignItems:'center',
@@ -552,10 +825,28 @@ function ProfileEditor({ profile, onSave, onDelete, onClose }) {
           </div>
         </div>
 
+        {/* Training Mode toggle — terminals on this profile commit NOTHING (no orders,
+            payments, stock, receipts or kitchen tickets). For staff onboarding. */}
+        <div style={{ margin:'0 20px 16px', padding:'14px 16px', borderRadius:12,
+          background: form.trainingMode ? 'rgba(180,83,9,0.12)' : 'var(--bg3)',
+          border: `1.5px solid ${form.trainingMode ? '#B45309' : 'var(--bdr)'}`,
+          cursor:'pointer', transition:'all .2s' }}
+          onClick={() => upd('trainingMode', !form.trainingMode)}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+            <div>
+              <div style={{ fontSize:13, fontWeight:700, color: form.trainingMode ? '#B45309' : 'var(--t1)' }}>🎓 Training mode</div>
+              <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>Terminals on this profile work normally but commit NOTHING — no orders, card charges, stock changes, receipts or kitchen tickets. A banner shows on screen. For staff training.</div>
+            </div>
+            <div style={{ width:36, height:20, borderRadius:10, background: form.trainingMode ? '#B45309' : 'var(--bdr2)', position:'relative', flexShrink:0, transition:'background .2s' }}>
+              <div style={{ position:'absolute', top:2, left: form.trainingMode ? 18 : 2, width:16, height:16, borderRadius:'50%', background:'#fff', transition:'left .2s' }}/>
+            </div>
+          </div>
+        </div>
+
         <div style={{ padding:'12px 20px', borderTop:'1px solid var(--bdr)', display:'flex', gap:8, flexShrink:0 }}>
           {!isNew && onDelete && <button onClick={onDelete} style={{ padding:'8px 14px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--red-d)', border:'1px solid var(--red-b)', color:'var(--red)', fontSize:12, fontWeight:700 }}>Delete</button>}
           <button className="btn btn-ghost" style={{ flex:1 }} onClick={onClose}>Cancel</button>
-          <button className="btn btn-acc" style={{ flex:2, height:42 }} disabled={!form.name.trim() || form.enabledOrderTypes.length === 0} onClick={() => onSave(form)}>
+          <button className="btn btn-acc" style={{ flex:2, height:42 }} disabled={!form.name.trim() || (form.enabledOrderTypes || []).length === 0} onClick={() => onSave(form, touchedRef.current)}>
             {isNew ? 'Create profile' : 'Save changes'}
           </button>
         </div>

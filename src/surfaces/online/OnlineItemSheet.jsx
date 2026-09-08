@@ -1,0 +1,959 @@
+// v5.5.112 — Online ordering item detail sheet (UI overhaul).
+// Full-screen on mobile, side-panel on desktop. DoorDash-style: hero image
+// at top, name + description, variant picker if applicable, modifier groups
+// with clear required/optional labels, qty stepper, sticky bottom CTA.
+
+import { useEffect, useMemo, useState, useCallback } from 'react';
+import { supabase } from '../../lib/supabase';
+import { money } from '../../lib/currency';
+import { dietaryBadges, DIET_LABELS } from '../../lib/dietary';
+import { orderOptionFlow, flowOrderedMods } from '../../lib/optionFlow';
+
+// priceFor: the surface's own unit price rule, so the sheet total is the same
+// number the card shows and the cart line charges. Defaults to the plain base
+// price (the rule every caller used before), so a caller that does not pass
+// one (catering) prices exactly as it always has. The sheet never picks a
+// channel or menu itself: only the surface that owns the cart may do that.
+const basePriceOf = (it) => Number(it?.pricing?.base ?? it?.price ?? 0);
+export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs = [], eightySixIds = [], stockLevels = {}, cart = [], priceFor = basePriceOf, onClose, onAdd }) {
+  const [qty, setQty]               = useState(1);
+  const [modGroups, setModGroups]   = useState([]);  // top-level groups assigned to item
+  const [allModGroups, setAllModGroups] = useState([]); // includes nested sub-groups (lookup)
+  const [instGroups, setInstGroups] = useState([]); // cooking prefs etc — no price impact
+  const [selections, setSelections] = useState({});
+  // Sub-picks for nested modifiers. Key: `${parentGroupId}:${parentOptionId}`,
+  // value: option object (single) — sub-groups are single-pick by convention.
+  const [subPicks, setSubPicks]     = useState({});
+
+
+  // Quantity-mode picks. For groups where selection_type='quantity', pick
+  // counts per option are tracked here. Key: groupId, value: { optionId: qty }.
+  const [qtyPicks, setQtyPicks]     = useState({});
+  const [notes, setNotes]           = useState(''); // free-text per-item special request
+  const [instSelections, setInstSelections] = useState({}); // { instGroupId: optionLabel }
+  const [loading, setLoading]       = useState(false);
+  const [errors, setErrors]         = useState([]);
+
+  const variants = useMemo(
+    () => (allItems || []).filter(i => i.parent_id === item.id),
+    [allItems, item.id]
+  );
+  const isParentVariant = variants.length > 0;
+  const [selectedVariant, setSelectedVariant] = useState(null);
+  useEffect(() => {
+    // v5.5.141: auto-pick the first AVAILABLE (not 86'd) variant. If every
+    // size is 86'd, leave selectedVariant null — the add button stays
+    // disabled because effectiveItem will be the parent which is also 86'd
+    // by inheritance (the operator typically 86s the parent, or all kids).
+    if (isParentVariant && variants.length && !selectedVariant) {
+      const firstAvailable = variants.find(v => !eightySixIds.includes(v.id));
+      setSelectedVariant(firstAvailable || variants[0]);
+    }
+  }, [isParentVariant, variants, selectedVariant, eightySixIds]);
+
+  const effectiveItem = selectedVariant || item;
+  // v5.5.141: is the customer's currently-selected variant (or the base
+  // item, if no variants) actually orderable right now?
+  const effectiveIs86 = eightySixIds.includes(effectiveItem.id)
+    || (effectiveItem.parent_id && eightySixIds.includes(effectiveItem.parent_id))
+    || (item.id !== effectiveItem.id && eightySixIds.includes(item.id));
+
+  // v5.5.313: resolve a modifier option to its menu item id (by explicit link
+  // or name-match against sold-alone sub-items) — ported from the kiosk. Needed
+  // so an 86'd item can't be ordered online via a modifier group, and so the
+  // modifier's stock actually decrements (decrementOnlineStock keys on itemId).
+  const subitemByName = useMemo(() => {
+    const map = new Map();
+    for (const it of (allItems || [])) {
+      if (!it || it.archived) continue;
+      if (it.type !== 'subitem') continue;
+      const soldAlone = it.soldAlone ?? it.sold_alone;
+      if (!soldAlone) continue;
+      for (const raw of [it.name, it.menuName, it.menu_name, it.receiptName, it.receipt_name, it.kitchenName, it.kitchen_name]) {
+        if (!raw) continue;
+        const key = String(raw).trim().toLowerCase();
+        if (key && !map.has(key)) map.set(key, it);
+      }
+    }
+    return map;
+  }, [allItems]);
+  // v5.7.81: modifier options inherit the picture of the sold-alone sub-item of
+  // the same name, so "Box of 3" shows the actual donuts. The kiosk has done
+  // this since v5.5.30; online never did, so the same menu looked rich on the
+  // kiosk and like a plain list on a phone.
+  //
+  // It reuses `subitemByName` below, which already indexes exactly the right
+  // rows for the 86 lookup: sold-alone only (pure-modifier sub-items are not
+  // curated for customers and must not leak their media), keyed on every name
+  // alias, in both camelCase and snake_case. Defined after it, so the map is in
+  // scope. An explicit image on the option always wins.
+  const resolveOptMedia = useCallback((opt) => {
+    const key = String(opt?.name || opt?.label || '').trim().toLowerCase();
+    const match = key ? subitemByName.get(key) : null;
+    return { image: opt?.image || match?.image || null };
+  }, [subitemByName]);
+
+  const resolveOptItemId = (opt) => {
+    if (opt?.itemId || opt?.item_id) return opt.itemId || opt.item_id;
+    const key = String(opt?.name || opt?.label || '').trim().toLowerCase();
+    return (key ? subitemByName.get(key)?.id : null) || null;
+  };
+  const optIs86 = (opt) => {
+    const id = resolveOptItemId(opt);
+    return !!id && eightySixIds.includes(id);
+  };
+
+  // assigned_modifier_groups + assigned_instruction_groups can be EITHER
+  // an array of bare ids ['mgd-123', ...] OR an array of objects with
+  // overrides like [{groupId: 'mgd-123', min: 0, max: 1}]. The operator
+  // app stores them as objects (so it can override min/max per item);
+  // `.in('id', ...)` needs flat strings. Normalise here.
+  const extractIds = (arr) => (arr || [])
+    .map(g => typeof g === 'string' ? g : (g?.groupId || g?.id))
+    .filter(Boolean);
+
+  const modGroupIds = useMemo(() => {
+    const own = extractIds(effectiveItem.assigned_modifier_groups);
+    if (own.length === 0 && effectiveItem.parent_id) {
+      const parent = (allItems || []).find(i => i.id === effectiveItem.parent_id);
+      return extractIds(parent?.assigned_modifier_groups);
+    }
+    return own;
+  }, [effectiveItem, allItems]);
+
+  const instGroupIds = useMemo(() => {
+    const own = extractIds(effectiveItem.assigned_instruction_groups);
+    if (own.length === 0 && effectiveItem.parent_id) {
+      const parent = (allItems || []).find(i => i.id === effectiveItem.parent_id);
+      return extractIds(parent?.assigned_instruction_groups);
+    }
+    return own;
+  }, [effectiveItem, allItems]);
+
+  // v5.5.948: the Back Office Flow tab's combined drag order — same parent
+  // fallback as the two assigned lists above.
+  const flowOrder = useMemo(() => {
+    const own = effectiveItem.option_group_order ?? effectiveItem.optionGroupOrder;
+    if ((!Array.isArray(own) || own.length === 0) && effectiveItem.parent_id) {
+      const parent = (allItems || []).find(i => i.id === effectiveItem.parent_id);
+      return parent?.option_group_order ?? parent?.optionGroupOrder ?? null;
+    }
+    return Array.isArray(own) && own.length ? own : null;
+  }, [effectiveItem, allItems]);
+
+  useEffect(() => {
+    let alive = true;
+    // Resolve instruction groups from the config_pushes snapshot the parent
+    // surface fetched at mount time — there's no `instruction_groups` DB
+    // table in this schema; defs live client-side only.
+    const resolvedInst = instGroupIds
+      .map(id => (instGroupDefs || []).find(g => g.id === id))
+      .filter(Boolean);
+    setInstGroups(resolvedInst);
+
+    if (!supabase || modGroupIds.length === 0) {
+      setModGroups([]); setAllModGroups([]); setSelections({}); setInstSelections({}); setSubPicks({}); setQtyPicks({}); setNotes('');
+      return;
+    }
+    setLoading(true);
+    (async () => {
+      try {
+        // Fetch the assigned groups, then scan their options for subGroupIds
+        // and fetch those too. Sub-groups can chain (rare but allowed) so
+        // loop until we've resolved every referenced group.
+        const fetched = new Map();
+        const queue = [...modGroupIds];
+        while (queue.length) {
+          const batch = queue.filter(id => !fetched.has(id));
+          if (!batch.length) break;
+          const { data, error } = await supabase
+            .from('modifier_groups')
+            .select('id, name, min, max, selection_type, options, sort_order')
+            .in('id', batch);
+          if (error) console.warn('[OnlineItemSheet] modifier load error:', error.message);
+          (data || []).forEach(g => fetched.set(g.id, g));
+          queue.length = 0;
+          (data || []).forEach(g => (g.options || []).forEach(o => {
+            if (o?.subGroupId && !fetched.has(o.subGroupId)) queue.push(o.subGroupId);
+          }));
+        }
+        if (!alive) return;
+        const all = [...fetched.values()].sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+        const subGroupIds = new Set();
+        all.forEach(g => (g.options || []).forEach(o => o?.subGroupId && subGroupIds.add(o.subGroupId)));
+        // Top-level groups are the ones in modGroupIds that aren't sub-groups
+        // (we still keep sub-groups in `all` so render can find them).
+        const topMod = all.filter(g => modGroupIds.includes(g.id));
+        console.log('[OnlineItemSheet] groups loaded', {
+          top: topMod.length, totalIncludingSubs: all.length, inst: resolvedInst.length,
+        });
+        setModGroups(topMod);
+        setAllModGroups(all); // includes nested sub-groups for lookup on render
+
+        // Pre-fill required single-pick mod groups with the first option
+        const init = {};
+        topMod.forEach(g => {
+          if ((g.min ?? 0) >= 1 && (g.max ?? 1) === 1 && Array.isArray(g.options) && g.options.length) {
+            init[g.id] = g.options[0];
+          }
+        });
+        setSelections(init);
+        setInstSelections({});
+        setSubPicks({});
+        setQtyPicks({});
+      } catch (e) {
+        console.warn('[OnlineItemSheet] modifier load failed:', e?.message);
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [modGroupIds.join(','), instGroupIds.join(',')]);
+
+  const basePrice = priceFor(effectiveItem);
+
+  // Standard mod totals (single + multi-pick groups)
+  const modsTotal = Object.entries(selections).reduce((sum, [, val]) => {
+    if (!val) return sum;
+    const arr = Array.isArray(val) ? val : [val];
+    return sum + arr.reduce((s, o) => s + (Number(o?.price) || 0), 0);
+  }, 0);
+  // Quantity-mode totals: each picked option × its qty
+  const qtyModsTotal = Object.entries(qtyPicks).reduce((sum, [gid, picks]) => {
+    const grp = (allModGroups || modGroups).find(g => g.id === gid);
+    return sum + Object.entries(picks).reduce((s, [optId, q]) => {
+      const opt = grp?.options?.find(o => (o.id || o.name) === optId);
+      return s + ((Number(opt?.price) || 0) * (Number(q) || 0));
+    }, 0);
+  }, 0);
+  // Sub-pick totals (nested options always single-pick)
+  const subTotal = Object.values(subPicks).reduce((sum, opt) => sum + (Number(opt?.price) || 0), 0);
+
+  const lineTotal = (basePrice + modsTotal + qtyModsTotal + subTotal) * qty;
+
+  // Quantity-mode total picks for a group
+  const qtyTotalForGroup = (gid) => Object.values(qtyPicks[gid] || {}).reduce((s, n) => s + (Number(n) || 0), 0);
+
+  const validationErrors = useMemo(() => {
+    const errs = [];
+    for (const g of modGroups) {
+      const min = g.min ?? 0;
+      const max = g.max ?? 1;
+      if (g.selection_type === 'quantity') {
+        // Quantity-mode: total picks across all options must satisfy min/max
+        const total = qtyTotalForGroup(g.id);
+        if (total < min) errs.push(g.id);
+        // Max enforcement happens at click-time, but flag if exceeded too
+        if (max && total > max) errs.push(g.id);
+        continue;
+      }
+      if (min === 0) continue;
+      const v = selections[g.id];
+      if (!v || (Array.isArray(v) && v.length < min)) errs.push(g.id);
+    }
+    return errs;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modGroups, selections, qtyPicks]);
+  // v5.5.313: block Add when any SELECTED modifier option resolves to an 86'd
+  // item (prevents ordering a sold-out item through a modifier group online).
+  const has86Selection = useMemo(() => {
+    const sel = [];
+    Object.values(selections).forEach(val => {
+      (Array.isArray(val) ? val : (val ? [val] : [])).forEach(o => sel.push(o));
+    });
+    Object.values(subPicks).forEach(o => o && sel.push(o));
+    Object.entries(qtyPicks).forEach(([gid, picks]) => {
+      const grp = (allModGroups || modGroups).find(g => g.id === gid);
+      Object.entries(picks || {}).forEach(([optId, count]) => {
+        if (!count) return;
+        const opt = grp?.options?.find(o => (o.id || o.name) === optId);
+        if (opt) sel.push(opt);
+      });
+    });
+    return sel.some(optIs86);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selections, subPicks, qtyPicks, eightySixIds, subitemByName, modGroups, allModGroups]);
+
+  // v5.5.872: QUANTITY-aware stock cap. 86 only blocks at remaining<=0; without a qty cap a
+  // customer could order MORE than the POS has (e.g. 3 of a donut with 2 in stock), directly OR
+  // via a modifier option. Cap every stock-tracked item this line consumes at (remaining minus
+  // what is already in the cart — counting both line items AND modifier picks).
+  const remainingFor = (id) => {
+    const s = id != null ? stockLevels[id] : null;
+    return (s && typeof s.remaining === 'number') ? s.remaining : Infinity;
+  };
+  const cartQtyFor = (id) => {
+    if (id == null) return 0;
+    let n = 0;
+    for (const line of (cart || [])) {
+      const lq = Number(line.qty) || 1;
+      if (line.itemId === id) n += lq;                                                  // base item line
+      for (const m of (line.mods || [])) if (m?.itemId === id) n += (Number(m.qty) || 1) * lq;  // modifier pick(s)
+    }
+    return n;
+  };
+  // How many of each stock-tracked item THIS sheet's current selection would consume
+  // (main item × qty, plus each picked modifier option × qty — the line qty multiplies mods).
+  const consumedInSheet = useMemo(() => {
+    const m = {};
+    const add = (id, n) => { if (id != null && n) m[id] = (m[id] || 0) + n; };
+    add(effectiveItem.id, qty);
+    Object.entries(selections).forEach(([gid, val]) => {
+      (Array.isArray(val) ? val : (val ? [val] : [])).forEach(o => {
+        add(resolveOptItemId(o), qty);
+        const subPick = subPicks[`${gid}:${o?.id || o?.name}`];
+        if (subPick) add(resolveOptItemId(subPick), qty);
+      });
+    });
+    Object.entries(qtyPicks).forEach(([gid, picks]) => {
+      const grp = (allModGroups || modGroups).find(g => g.id === gid);
+      Object.entries(picks || {}).forEach(([optId, count]) => {
+        const opt = grp?.options?.find(o => (o.id || o.name) === optId);
+        add(resolveOptItemId(opt), qty * (Number(count) || 0));
+      });
+    });
+    return m;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveItem.id, qty, selections, subPicks, qtyPicks, allModGroups, modGroups, subitemByName]);
+  // Stock-tracked items the sheet+cart would oversell. avail = remaining − already-in-cart.
+  const stockShort = useMemo(() => {
+    const bad = [];
+    Object.entries(consumedInSheet).forEach(([id, want]) => {
+      const cap = remainingFor(id);
+      if (cap === Infinity) return;
+      const avail = Math.max(0, cap - cartQtyFor(id));
+      if (want > avail) {
+        const it = (allItems || []).find(x => x.id === id);
+        bad.push({ id, name: it?.menu_name || it?.name || 'item', avail });
+      }
+    });
+    return bad;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [consumedInSheet, cart, stockLevels, allItems]);
+  // Cap for the +/- stepper on the MAIN item (modifier oversell is caught by stockShort → Add block).
+  const mainMax = (() => {
+    const cap = remainingFor(effectiveItem.id);
+    return cap === Infinity ? Infinity : Math.max(0, cap - cartQtyFor(effectiveItem.id));
+  })();
+
+  // v5.5.141: block Add when the resolved item (variant or base) is 86'd.
+  // v5.5.872: also block when it would oversell any stock-tracked item.
+  const canAdd = validationErrors.length === 0 && !effectiveIs86 && !has86Selection && stockShort.length === 0;
+
+  const handleAdd = () => {
+    if (!canAdd) { setErrors(validationErrors); return; }
+    // v5.5.964: mods commit in FLOW order (the order the sheet displays), so the
+    // kitchen ticket / receipts follow the Back Office flow instead of always
+    // printing cooking preferences last. Nested sub-picks stay glued to their
+    // parent option; each group's own emission logic is unchanged.
+    const buildGroupMods = (gid) => {
+      const out = [];
+      const grp = modGroups.find(g => g.id === gid);
+      const val = selections[gid];
+      const arr = Array.isArray(val) ? val : (val ? [val] : []);
+      arr.forEach(o => {
+        out.push({
+          id: o?.id || null,
+          itemId: resolveOptItemId(o),  // v5.5.313: enable online stock decrement + 86
+          name: o?.name || o?.label || '',
+          label: o?.name || o?.label || '',
+          groupLabel: grp?.name || '',
+          price: Number(o?.price) || 0,
+        });
+        // Nested sub-pick (e.g. Peppercorn sauce → Served hot / On the side).
+        const subKey = `${gid}:${o?.id || o?.name}`;
+        const subPick = subPicks[subKey];
+        const subGroup = subPick && allModGroups.find(g => g.id === o?.subGroupId);
+        if (subPick && subGroup) {
+          out.push({
+            id: subPick?.id || null,
+            itemId: resolveOptItemId(subPick),  // v5.5.313
+            name: subPick?.name || subPick?.label || '',
+            label: subPick?.name || subPick?.label || '',
+            groupLabel: subGroup.name || '',
+            price: Number(subPick?.price) || 0,
+          });
+        }
+      });
+      // Quantity-mode picks: emit one entry per pick (so a Box of 3 with 3
+      // Bueno Filled emits three separate Bueno Filled entries — same shape
+      // MItemDetail produces, which the kitchen ticket / reports / receipts
+      // already understand).
+      const picks = qtyPicks[gid];
+      if (picks) {
+        const qgrp = (allModGroups || modGroups).find(g => g.id === gid);
+        Object.entries(picks).forEach(([optId, count]) => {
+          const opt = qgrp?.options?.find(o => (o.id || o.name) === optId);
+          if (!opt || !count) return;
+          for (let i = 0; i < count; i++) {
+            out.push({
+              id: opt.id || null,
+              itemId: resolveOptItemId(opt),  // v5.5.313
+              name: opt.name || opt.label || '',
+              label: opt.name || opt.label || '',
+              groupLabel: qgrp?.name || '',
+              price: Number(opt.price) || 0,
+            });
+          }
+        });
+      }
+      return out;
+    };
+    // Instruction picks — flagged as instruction so kitchen ticket renders
+    // them but no surcharge applies.
+    const buildInst = (gid) => {
+      const val = instSelections[gid];
+      if (!val) return null;
+      const grp = instGroups.find(g => g.id === gid);
+      return { id: `ig-${gid}-${val}`, name: val, label: val, groupLabel: grp?.name || '', price: 0, _instruction: true };
+    };
+    const flatMods = flowOrderedMods({
+      order: flowOrder,
+      modGroups, instGroups,
+      modKeys: [...new Set([...Object.keys(selections), ...Object.keys(qtyPicks)])],
+      instKeys: Object.keys(instSelections),
+      buildModGroup: buildGroupMods, buildInst,
+    });
+    const finalItem = {
+      ...effectiveItem,
+      menu_name: selectedVariant
+        ? `${item.menu_name || item.name} — ${selectedVariant.menu_name || selectedVariant.name}`
+        : (effectiveItem.menu_name || effectiveItem.name),
+    };
+    onAdd(finalItem, flatMods, qty, notes.trim());
+  };
+
+  const muted    = theme.isLight ? '#6b6b70' : '#a0a0a8';
+  const cardBdr  = theme.isLight ? '#ececef' : '#2a2a30';
+  const inputBg  = theme.isLight ? '#f5f5f7' : '#1f1f24';
+  const display  = effectiveItem.menu_name || effectiveItem.name;
+  const heroImg  = item.image || effectiveItem.image;
+  // GF/V/VG/DF from menu_items.tags — variant's own tags, else the base item's.
+  const ownDiet    = dietaryBadges(effectiveItem);
+  const dietBadges = ownDiet.length ? ownDiet : dietaryBadges(item);
+
+  return (
+    <div onClick={onClose} style={{
+      position: 'fixed', inset: 0, zIndex: 30,
+      background: 'rgba(0,0,0,0.6)',
+      display: 'flex', alignItems: 'flex-end', justifyContent: 'center',
+      animation: 'fadeIn .15s ease',
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        width: '100%', maxWidth: 600,
+        maxHeight: '94vh', overflowY: 'auto',
+        background: theme.bg, color: theme.fg,
+        borderRadius: '18px 18px 0 0',
+        display: 'flex', flexDirection: 'column',
+        boxShadow: '0 -10px 40px rgba(0,0,0,0.3)',
+      }}>
+        {/* Drag handle */}
+        <div style={{ padding: '10px 0 6px', display: 'flex', justifyContent: 'center', flexShrink: 0 }}>
+          <div style={{ width: 44, height: 5, borderRadius: 3, background: cardBdr }}/>
+        </div>
+
+        {/* Close (X) — floats over hero on mobile, top-right */}
+        <button onClick={onClose} style={{
+          position: 'absolute', top: 12, right: 16, zIndex: 5,
+          width: 36, height: 36, borderRadius: '50%', border: 'none',
+          background: 'rgba(0,0,0,0.55)', color: '#fff',
+          fontSize: 18, fontWeight: 900, cursor: 'pointer',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }}>×</button>
+
+        {/* Hero image */}
+        {heroImg && (
+          <div style={{
+            width: '100%', height: 240,
+            backgroundImage: `url(${heroImg})`, backgroundSize: 'cover', backgroundPosition: 'center',
+            flexShrink: 0,
+          }}/>
+        )}
+
+        <div style={{ padding: '20px 22px 12px', flex: 1 }}>
+          <div style={{ fontSize: 24, fontWeight: 800, letterSpacing: '-0.02em', marginBottom: 6 }}>
+            {display}
+          </div>
+          {/* Dietary badges — GF/V/VG/DF with full labels. Selected variant's
+              own tags win; falls back to the base item (same own→parent
+              pattern as modifier groups). Untagged items render nothing. */}
+          {dietBadges.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 }}>
+              {dietBadges.map(d => (
+                <span key={d} style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 5,
+                  padding: '3px 10px', borderRadius: 99,
+                  background: '#e3f4e8', color: '#1e6b3a',
+                  fontSize: 12, fontWeight: 700, letterSpacing: '0.02em',
+                }}>
+                  <span style={{ fontWeight: 800, fontSize: 11, letterSpacing: '0.04em' }}>{d}</span>
+                  {DIET_LABELS[d]}
+                </span>
+              ))}
+            </div>
+          )}
+          {item.description && (
+            <div style={{ fontSize: 14, color: muted, lineHeight: 1.55, marginBottom: 18 }}>
+              {item.description}
+            </div>
+          )}
+
+          {/* Variant picker — full rich rows: image, name, description,
+              allergen pill, absolute price. Each variant IS its own product. */}
+          {isParentVariant && (
+            <Section title="Choose size" required>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {variants.map(v => {
+                  const active = v.id === selectedVariant?.id;
+                  const vPrice = priceFor(v);
+                  // v5.5.141: 86'd variants are visible but not selectable
+                  // so the customer can SEE the size exists but knows it's
+                  // out — same pattern as the menu cards.
+                  const v86 = eightySixIds.includes(v.id);
+                  return (
+                    <VariantRow key={v.id}
+                      variant={v} active={active} price={vPrice} is86={v86}
+                      onClick={() => v86 ? null : setSelectedVariant(v)}
+                      theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
+                  );
+                })}
+              </div>
+            </Section>
+          )}
+
+          {/* Allergen warning chips — surfaced upfront so customers can see
+              before they get to the modifier flow. */}
+          {(item.allergens || []).length > 0 && (
+            <div style={{
+              padding: '12px 14px', borderRadius: 12,
+              background: '#fde6e6', border: '1px solid #fcaeae',
+              marginBottom: 18, display: 'flex', alignItems: 'flex-start', gap: 10,
+            }}>
+              <div style={{ fontSize: 18, lineHeight: 1 }}>⚠️</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 800, color: '#991b1b', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 }}>
+                  Contains
+                </div>
+                <div style={{ fontSize: 13, color: '#7f1d1d', textTransform: 'capitalize', lineHeight: 1.5 }}>
+                  {(item.allergens || []).join(' · ')}
+                </div>
+                <div style={{ fontSize: 11, color: '#991b1b', opacity: 0.8, marginTop: 4 }}>
+                  If you have a severe allergy, please confirm with the venue before ordering.
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Modifier groups */}
+          {loading && <div style={{ padding: 12, color: muted, fontSize: 13 }}>Loading options…</div>}
+
+          {/* v5.5.948: ONE ordered flow (lib/optionFlow.js) — the Back Office Flow tab's
+              drag order interleaves instruction + modifier groups; with no saved order,
+              instructions come first. */}
+          {orderOptionFlow(flowOrder, modGroups, instGroups).map(entry => {
+            if (entry.kind === 'inst') {
+              const ig = entry.g;
+              const value = instSelections[ig.id];
+              const required = !!ig.required;
+              return (
+                <Section key={ig.id} title={ig.name} meta={required ? 'Required' : 'Optional'} required={required}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {(ig.options || []).map(opt => {
+                      const label = typeof opt === 'string' ? opt : (opt.label || opt.name);
+                      const checked = value === label;
+                      return (
+                        <OptionRow key={label}
+                          label={label}
+                          priceDelta={0}
+                          checked={checked}
+                          onClick={() => setInstSelections(s => ({
+                            ...s, [ig.id]: checked ? null : label,
+                          }))}
+                          mode="single"
+                          theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
+                      );
+                    })}
+                  </div>
+                </Section>
+              );
+            }
+            const g = entry.g;
+            const min = g.min ?? 0;
+            const max = g.max ?? 1;
+            const isQty = g.selection_type === 'quantity';
+            const isSingle = !isQty && max === 1;
+            const required = min >= 1;
+            const erroring = errors.includes(g.id);
+            const value = selections[g.id];
+
+            // Quantity-mode: render +/- steppers per option, total picks ≤ max
+            if (isQty) {
+              const totalPicked = qtyTotalForGroup(g.id);
+              return (
+                <Section key={g.id}
+                  title={g.name}
+                  meta={`Pick ${min === max ? `${min}` : `${min}-${max}`} · ${totalPicked}/${max} chosen`}
+                  required={required}
+                  erroring={erroring}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {(g.options || []).map(opt => {
+                      const optKey = opt.id || opt.name;
+                      const count = qtyPicks[g.id]?.[optKey] || 0;
+                      const canAdd = totalPicked < max;
+                      return (
+                        <QtyOptionRow key={optKey} media={resolveOptMedia(opt)}
+                          option={opt} count={count} canAdd={canAdd} is86={optIs86(opt)}
+                          onInc={() => { setErrors([]); setQtyPicks(s => ({ ...s, [g.id]: { ...(s[g.id] || {}), [optKey]: count + 1 } })); }}
+                          onDec={() => { setErrors([]); setQtyPicks(s => ({ ...s, [g.id]: { ...(s[g.id] || {}), [optKey]: Math.max(0, count - 1) } })); }}
+                          theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
+                      );
+                    })}
+                  </div>
+                </Section>
+              );
+            }
+
+            return (
+              <Section key={g.id}
+                title={g.name}
+                meta={required ? `Required${max > 1 ? ` · pick up to ${max}` : ''}` : (max > 1 ? `Pick up to ${max}` : 'Optional')}
+                required={required}
+                erroring={erroring}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {(g.options || []).map(opt => {
+                    const checked = isSingle
+                      ? value?.id === opt.id
+                      : Array.isArray(value) && value.some(o => o.id === opt.id);
+                    const onClick = () => {
+                      setErrors([]);
+                      setSelections(s => {
+                        const cur = s[g.id];
+                        if (isSingle) return { ...s, [g.id]: cur?.id === opt.id ? null : opt };
+                        const arr = Array.isArray(cur) ? cur : [];
+                        const has = arr.some(o => o.id === opt.id);
+                        if (has) return { ...s, [g.id]: arr.filter(o => o.id !== opt.id) };
+                        if (arr.length >= max) return s;
+                        return { ...s, [g.id]: [...arr, opt] };
+                      });
+                    };
+                    // Nested sub-group: revealed when this option is the
+                    // currently-picked one in a single-pick group AND has
+                    // a subGroupId. Multi-pick + sub-groups get complex —
+                    // out of scope for now.
+                    const subGroup = checked && isSingle && opt.subGroupId
+                      ? allModGroups.find(sg => sg.id === opt.subGroupId)
+                      : null;
+                    const subKey = `${g.id}:${opt.id || opt.name}`;
+                    const subPick = subPicks[subKey];
+                    return (
+                      <div key={opt.id || opt.name}>
+                        <OptionRow
+                          label={opt.name || opt.label}
+                          media={resolveOptMedia(opt)}
+                          priceDelta={Number(opt.price) || 0}
+                          checked={checked}
+                          onClick={onClick}
+                          mode={isSingle ? 'single' : 'multi'}
+                          is86={optIs86(opt)}
+                          theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
+                        {subGroup && (
+                          <div style={{
+                            marginTop: 8, marginLeft: 18,
+                            paddingLeft: 12, borderLeft: `2px solid ${theme.accent}55`,
+                          }}>
+                            <div style={{ fontSize: 12, fontWeight: 700, color: theme.fg, marginBottom: 6 }}>
+                              {subGroup.name}
+                            </div>
+                            {(subGroup.options || []).map(sopt => {
+                              const sChecked = subPick?.id === sopt.id;
+                              return (
+                                <div key={sopt.id || sopt.name} style={{ marginBottom: 6 }}>
+                                  <OptionRow
+                                    label={sopt.name || sopt.label}
+                                    priceDelta={Number(sopt.price) || 0}
+                                    checked={sChecked}
+                                    onClick={() => setSubPicks(s => ({ ...s, [subKey]: sChecked ? null : sopt }))}
+                                    mode="single"
+                                    is86={optIs86(sopt)}
+                                    theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </Section>
+            );
+          })}
+
+          {/* Add a note — free-text special request for this line; prints on the kitchen ticket */}
+          <Section title="Add a note" meta="Optional">
+            <textarea
+              value={notes}
+              onChange={e => setNotes(e.target.value)}
+              placeholder="Any special requests? e.g. no onions, allergy info…"
+              rows={2}
+              maxLength={200}
+              style={{
+                width: '100%', boxSizing: 'border-box', resize: 'vertical',
+                padding: '12px 14px', borderRadius: 12, border: `1px solid ${cardBdr}`,
+                background: inputBg, color: theme.fg, fontSize: 14, fontFamily: 'inherit',
+                lineHeight: 1.5, outline: 'none',
+              }}
+            />
+          </Section>
+
+          {/* Quantity */}
+          <div style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            padding: '20px 0 8px',
+          }}>
+            <div style={{ fontSize: 15, fontWeight: 700 }}>Quantity</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+              <button onClick={() => setQty(q => Math.max(1, q - 1))} style={{
+                ...stepBtn, background: inputBg, color: theme.fg, opacity: qty <= 1 ? .4 : 1,
+              }}>−</button>
+              <span style={{ fontSize: 18, fontWeight: 800, minWidth: 28, textAlign: 'center' }}>{qty}</span>
+              <button onClick={() => setQty(q => Math.min(q + 1, mainMax))} disabled={qty >= mainMax} style={{
+                ...stepBtn, background: inputBg, color: theme.fg, opacity: qty >= mainMax ? .4 : 1,
+                cursor: qty >= mainMax ? 'not-allowed' : 'pointer',
+              }}>+</button>
+            </div>
+          </div>
+        </div>
+
+        {/* Sticky bottom CTA */}
+        <div style={{
+          position: 'sticky', bottom: 0,
+          padding: '14px 22px calc(14px + env(safe-area-inset-bottom)) 22px',
+          background: theme.bg, borderTop: `1px solid ${cardBdr}`, flexShrink: 0,
+        }}>
+          <button onClick={handleAdd} disabled={!canAdd} style={{
+            width: '100%', padding: '16px 22px', borderRadius: 14,
+            background: canAdd ? theme.accent : `${theme.fg}20`,
+            color: canAdd ? contrastFg(theme.accent) : `${theme.fg}60`,
+            border: 'none', fontSize: 16, fontWeight: 800, cursor: canAdd ? 'pointer' : 'not-allowed',
+            fontFamily: 'inherit',
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+          }}>
+            <span>{effectiveIs86 ? 'Out of stock' : has86Selection ? 'Option out of stock' : stockShort.length ? `Only ${stockShort[0].avail} ${stockShort[0].name} left` : `Add ${qty} to basket`}</span>
+            <span>{money(lineTotal)}</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+function Section({ title, meta, required, erroring, children }) {
+  return (
+    <div style={{ paddingTop: 16, borderTop: '1px solid transparent', marginBottom: 4 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: 8 }}>
+        <div style={{ fontSize: 16, fontWeight: 800 }}>{title}</div>
+        {meta && (
+          <div style={{
+            fontSize: 11, fontWeight: 700,
+            padding: '2px 8px', borderRadius: 99,
+            background: erroring ? 'rgba(239,68,68,0.15)' : (required ? 'rgba(232,160,32,0.15)' : 'transparent'),
+            color: erroring ? '#ef4444' : (required ? '#a16500' : '#9a9aa1'),
+            textTransform: 'uppercase', letterSpacing: '0.04em',
+          }}>{meta}</div>
+        )}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function OptionRow({ label, priceDelta, absolutePrice, checked, onClick, mode, theme, cardBdr, inputBg, is86 = false, media }) {
+  // Two pricing modes:
+  //   • absolutePrice (used for variants): "£2.50" — variants ARE their own price
+  //   • priceDelta (used for modifiers):   "+£0.50" / "−£0.50" — modifies base
+  let priceLabel = null;
+  let priceColor = theme.fg;
+  if (typeof absolutePrice === 'number') {
+    priceLabel = `${money(absolutePrice)}`;
+  } else if (typeof priceDelta === 'number' && priceDelta !== 0) {
+    priceLabel = priceDelta > 0 ? `+${money(priceDelta)}` : `−${money(Math.abs(priceDelta))}`;
+    if (priceDelta < 0) priceColor = '#22c55e';
+  }
+  return (
+    <button onClick={is86 ? undefined : onClick} disabled={is86} className={is86 ? undefined : 'op-btn'} style={{
+      width: '100%', display: 'flex', alignItems: 'center', gap: 12,
+      padding: '12px 14px', borderRadius: 12,
+      background: checked ? `${theme.accent}28` : inputBg,
+      border: `${checked ? 3 : 1.5}px solid ${checked ? theme.accent : cardBdr}`,
+      boxShadow: checked ? `0 4px 14px ${theme.accent}40` : 'none',
+      color: theme.fg, fontFamily: 'inherit',
+      cursor: is86 ? 'not-allowed' : 'pointer', textAlign: 'left',
+      opacity: is86 ? 0.55 : 1, filter: is86 ? 'grayscale(0.6)' : undefined,
+      transition: 'all .12s ease',
+      fontWeight: checked ? 800 : 600,
+    }}>
+      <Indicator checked={checked} mode={mode} accent={theme.accent} cardBdr={cardBdr}/>
+      {media?.image && (
+        <img src={media.image} alt="" loading="lazy" style={{
+          width: 46, height: 46, borderRadius: 9, objectFit: 'cover', flexShrink: 0,
+        }}/>
+      )}
+      <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere', fontSize: 14, fontWeight: 600, textDecoration: is86 ? 'line-through' : 'none' }}>{label}</span>
+      {is86
+        ? <span style={{ fontSize: 11, fontWeight: 800, color: '#dc2626', flexShrink: 0 }}>Sold out</span>
+        : (priceLabel && <span style={{ fontSize: 13, fontWeight: 700, color: priceColor, flexShrink: 0 }}>{priceLabel}</span>)}
+    </button>
+  );
+}
+
+// Rich variant row — image, name, description, allergen pill, absolute price.
+function VariantRow({ variant, active, price, onClick, theme, cardBdr, inputBg, is86 = false }) {
+  const allergens = variant.allergens || [];
+  return (
+    <button onClick={is86 ? undefined : onClick} disabled={is86}
+      className={is86 ? undefined : 'op-btn'}
+      style={{
+      width: '100%', display: 'flex', alignItems: 'stretch', gap: 0,
+      padding: 0, borderRadius: 12, overflow: 'hidden',
+      background: active ? `${theme.accent}28` : inputBg,
+      border: `${active ? 3 : 1.5}px solid ${active ? theme.accent : cardBdr}`,
+      boxShadow: active ? `0 4px 14px ${theme.accent}40` : 'none',
+      color: theme.fg, fontFamily: 'inherit',
+      cursor: is86 ? 'not-allowed' : 'pointer',
+      opacity: is86 ? 0.5 : 1,
+      filter: is86 ? 'grayscale(0.6)' : undefined,
+      textAlign: 'left',
+      transition: 'all .12s ease',
+      position: 'relative',
+    }}>
+      {is86 && (
+        <div style={{
+          position: 'absolute', top: 8, right: 10, zIndex: 2,
+          padding: '3px 8px', borderRadius: 99,
+          background: '#1a1a1ad9', color: '#fff',
+          fontSize: 9, fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase',
+        }}>Out of stock</div>
+      )}
+      <div style={{ display: 'flex', alignItems: 'center', padding: '12px 0 12px 14px' }}>
+        <Indicator checked={active} mode="single" accent={theme.accent} cardBdr={cardBdr}/>
+      </div>
+      <div style={{ flex: 1, minWidth: 0, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 4 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+          <span style={{ fontSize: 14, fontWeight: 700, flex: 1, minWidth: 0 }}>{variant.menu_name || variant.name}</span>
+          <span style={{ fontSize: 14, fontWeight: 800 }}>{money(price)}</span>
+        </div>
+        {variant.description && (
+          <div style={{ fontSize: 12, opacity: 0.7, lineHeight: 1.45,
+            display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+          }}>
+            {variant.description}
+          </div>
+        )}
+        {allergens.length > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 2 }}>
+            <span style={{
+              padding: '1px 7px', borderRadius: 99,
+              background: '#fde6e6', color: '#991b1b',
+              fontSize: 10, fontWeight: 700, textTransform: 'capitalize',
+            }}>⚠ {allergens.length === 1 ? allergens[0] : `${allergens.length} allergens`}</span>
+          </div>
+        )}
+      </div>
+      {variant.image && (
+        <div style={{
+          width: 92, flexShrink: 0,
+          backgroundImage: `url(${variant.image})`,
+          backgroundSize: 'cover', backgroundPosition: 'center',
+        }}/>
+      )}
+    </button>
+  );
+}
+
+// Quantity-mode option row — +/- stepper, current count.
+function QtyOptionRow({ option, count, canAdd, onInc, onDec, theme, cardBdr, inputBg, is86 = false, media }) {
+  const px = Number(option.price) || 0;
+  return (
+    <div style={{
+      width: '100%', display: 'flex', alignItems: 'center', gap: 12,
+      padding: '12px 14px', borderRadius: 12,
+      background: count > 0 ? `${theme.accent}28` : inputBg,
+      border: `${count > 0 ? 3 : 1.5}px solid ${count > 0 ? theme.accent : cardBdr}`,
+      boxShadow: count > 0 ? `0 4px 14px ${theme.accent}40` : 'none',
+      color: theme.fg, fontFamily: 'inherit',
+      opacity: is86 ? 0.55 : 1, filter: is86 ? 'grayscale(0.6)' : undefined,
+    }}>
+      {media?.image && (
+        <img src={media.image} alt="" loading="lazy" style={{
+          width: 46, height: 46, borderRadius: 9, objectFit: 'cover', flexShrink: 0,
+        }}/>
+      )}
+      <span style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere', fontSize: 14, fontWeight: 600, textDecoration: is86 ? 'line-through' : 'none' }}>{option.name || option.label}</span>
+      {is86
+        ? <span style={{ fontSize: 11, fontWeight: 800, color: '#dc2626', flexShrink: 0 }}>Sold out</span>
+        : (px > 0 && (
+          <span style={{ fontSize: 12, fontWeight: 700, opacity: 0.7, flexShrink: 0 }}>+{money(px)}</span>
+        ))}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+        <button onClick={onDec} disabled={count === 0} style={{
+          width: 30, height: 30, borderRadius: '50%', border: 'none',
+          background: count === 0 ? `${theme.fg}10` : theme.fg,
+          color: count === 0 ? `${theme.fg}40` : theme.bg,
+          fontSize: 18, fontWeight: 800, cursor: count === 0 ? 'not-allowed' : 'pointer',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontFamily: 'inherit',
+        }}>−</button>
+        <span style={{ minWidth: 16, textAlign: 'center', fontSize: 14, fontWeight: 800 }}>{count}</span>
+        <button onClick={onInc} disabled={!canAdd || is86} style={{
+          width: 30, height: 30, borderRadius: '50%', border: 'none',
+          background: (canAdd && !is86) ? theme.accent : `${theme.fg}10`,
+          // contrastFg, not a hardcoded near-black: on a dark brand colour the
+          // plus was black on navy and effectively invisible (v5.7.80).
+          color: (canAdd && !is86) ? contrastFg(theme.accent) : `${theme.fg}40`,
+          fontSize: 18, fontWeight: 800, cursor: (canAdd && !is86) ? 'pointer' : 'not-allowed',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontFamily: 'inherit',
+        }}>+</button>
+      </div>
+    </div>
+  );
+}
+
+function Indicator({ checked, mode, accent, cardBdr }) {
+  const isCircle = mode === 'single';
+  return (
+    <div style={{
+      width: 22, height: 22, borderRadius: isCircle ? '50%' : 6,
+      border: `2px solid ${checked ? accent : cardBdr}`,
+      background: checked ? accent : 'transparent',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      flexShrink: 0,
+    }}>
+      {checked && (
+        isCircle
+          ? <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#fff' }}/>
+          : <span style={{ color: '#fff', fontSize: 14, lineHeight: 1, fontWeight: 900 }}>✓</span>
+      )}
+    </div>
+  );
+}
+
+function contrastFg(hex) {
+  if (!hex) return '#fff';
+  const c = hex.replace('#', '');
+  const n = c.length === 3 ? c.split('').map(x => x + x).join('') : c;
+  if (n.length !== 6) return '#fff';
+  const r = parseInt(n.slice(0, 2), 16);
+  const g = parseInt(n.slice(2, 4), 16);
+  const b = parseInt(n.slice(4, 6), 16);
+  return (0.299 * r + 0.587 * g + 0.114 * b) > 128 ? '#0b0c10' : '#ffffff';
+}
+
+const stepBtn = {
+  width: 38, height: 38, borderRadius: '50%',
+  border: 'none', fontSize: 20, fontWeight: 800,
+  cursor: 'pointer', fontFamily: 'inherit',
+  display: 'flex', alignItems: 'center', justifyContent: 'center',
+};

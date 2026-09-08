@@ -1,26 +1,19 @@
 // supabase/functions/stripe-webhook-connect/index.ts
-// CONNECTED-account webhook receiver. Deploy with --no-verify-jwt.
-//
-// In the Stripe dashboard, "Listen to events on Connected accounts" MUST
-// be ticked on this endpoint.
-//
-// Stripe Dashboard endpoint URL:
-//   https://<ops-project-ref>.supabase.co/functions/v1/stripe-webhook-connect
+// Connected-account Stripe webhooks. Deploy to Ops DB project.
+// Stripe URL: https://tbetcegmszzotrwdtqhi.supabase.co/functions/v1/stripe-webhook-connect
+// "Listen to events on Connected accounts" MUST be ticked on this endpoint.
 //
 // Required secrets:
 //   STRIPE_SECRET_KEY
 //   STRIPE_CONNECT_WEBHOOK_SECRET
 //   PLATFORM_SUPABASE_URL
 //   PLATFORM_SUPABASE_SERVICE_ROLE_KEY
-//   SUPABASE_URL                       (auto — Ops DB, used to update closed_checks)
-//   SUPABASE_SERVICE_ROLE_KEY          (auto — Ops DB)
 
-import Stripe from 'https://esm.sh/stripe@17.4.0?target=deno';
+import Stripe from 'https://esm.sh/stripe@14.21.0?target=denonext';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const stripe = new Stripe(Deno.env.get('STRIPE_SECRET_KEY') ?? '', {
-  apiVersion: '2024-11-20.acacia',
-  httpClient: Stripe.createFetchHttpClient(),
+  apiVersion: '2024-06-20',
 });
 
 const platformDb = createClient(
@@ -29,13 +22,9 @@ const platformDb = createClient(
   { auth: { persistSession: false } },
 );
 
-const opsDb = createClient(
-  Deno.env.get('SUPABASE_URL') ?? '',
-  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
-  { auth: { persistSession: false } },
-);
-
 const SECRET = Deno.env.get('STRIPE_CONNECT_WEBHOOK_SECRET');
+const OPS_URL = Deno.env.get('SUPABASE_URL') ?? '';
+const OPS_SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 
 Deno.serve(async (req) => {
   if (req.method !== 'POST') return new Response('method not allowed', { status: 405 });
@@ -49,7 +38,7 @@ Deno.serve(async (req) => {
   try {
     event = await stripe.webhooks.constructEventAsync(body, sig, SECRET);
   } catch (e) {
-    console.error('[stripe-webhook-connect] signature verify failed', e);
+    console.error('[stripe-webhook-connect] sig verify failed', e);
     return new Response(`bad signature: ${(e as Error).message}`, { status: 400 });
   }
 
@@ -81,75 +70,84 @@ async function dispatch(event: Stripe.Event, accountId: string | null) {
   switch (event.type) {
     case 'account.updated': {
       const acct = event.data.object as Stripe.Account;
-      await platformDb.from('subscriptions').update({
+      await platformDb.from('merchant_stripe_accounts').update({
         charges_enabled: acct.charges_enabled,
         payouts_enabled: acct.payouts_enabled,
         details_submitted: acct.details_submitted,
-        stripe_account_country: acct.country ?? null,
-        stripe_default_currency: acct.default_currency ?? null,
-        stripe_capabilities: acct.capabilities ?? {},
-        stripe_requirements: acct.requirements ?? null,
-        stripe_last_webhook_at: new Date().toISOString(),
+        country: acct.country ?? null,
+        default_currency: acct.default_currency ?? null,
+        capabilities: acct.capabilities ?? {},
+        requirements: acct.requirements ?? null,
+        last_webhook_at: new Date().toISOString(),
       }).eq('stripe_account_id', acct.id);
       break;
     }
-
     case 'account.application.deauthorized': {
-      // Merchant revoked access. Mark as needing relink but keep the row for audit.
       if (accountId) {
-        await platformDb.from('subscriptions').update({
+        await platformDb.from('merchant_stripe_accounts').update({
           charges_enabled: false,
           payouts_enabled: false,
-          stripe_last_webhook_at: new Date().toISOString(),
+          last_webhook_at: new Date().toISOString(),
         }).eq('stripe_account_id', accountId);
       }
       break;
     }
-
     case 'capability.updated': {
       const cap = event.data.object as Stripe.Capability;
       if (accountId) {
-        const { data: row } = await platformDb.from('subscriptions')
-          .select('stripe_capabilities').eq('stripe_account_id', accountId).single();
-        const capabilities = (row?.stripe_capabilities ?? {}) as Record<string, string>;
+        const { data: row } = await platformDb.from('merchant_stripe_accounts')
+          .select('capabilities').eq('stripe_account_id', accountId).single();
+        const capabilities = (row?.capabilities ?? {}) as Record<string, string>;
         capabilities[cap.id] = cap.status;
-        await platformDb.from('subscriptions').update({
-          stripe_capabilities: capabilities,
-          stripe_last_webhook_at: new Date().toISOString(),
+        await platformDb.from('merchant_stripe_accounts').update({
+          capabilities, last_webhook_at: new Date().toISOString(),
         }).eq('stripe_account_id', accountId);
       }
       break;
     }
-
-    case 'payment_intent.succeeded': {
-      const pi = event.data.object as Stripe.PaymentIntent;
-      const closedCheckId = pi.metadata?.closed_check_id;
-      // Update Ops DB closed_checks row if metadata carries the ID.
-      // (Not all closed_checks tables have stripe_payment_intent_id — fail soft.)
-      if (closedCheckId) {
-        const { error } = await opsDb.from('closed_checks').update({
-          stripe_payment_intent_id: pi.id,
-          stripe_charge_id: pi.latest_charge as string | null,
-          stripe_paid_at: new Date().toISOString(),
-        }).eq('id', closedCheckId);
-        if (error && error.code !== 'PGRST204') {
-          console.error('[stripe-webhook-connect] closed_check update failed', error);
+    case 'checkout.session.completed': {
+      // v5.5.196: Gift card purchase fulfillment.
+      // When a Checkout Session completes and its metadata has type=gift_card_purchase,
+      // call the gift-fulfill edge function to issue the card and email it.
+      const session = event.data.object as Stripe.Checkout.Session;
+      const meta = session.metadata ?? {};
+      if (meta.type === 'gift_card_purchase' && meta.purchase_id) {
+        console.log('[stripe-webhook-connect] fulfilling gift card purchase:', meta.purchase_id);
+        // Update purchase status to 'paid' first
+        await platformDb.from('gift_card_purchases')
+          .update({ status: 'paid', stripe_payment_intent_id: (session as any).payment_intent })
+          .eq('id', meta.purchase_id);
+        // Call gift-fulfill to issue + email
+        try {
+          const fulfillRes = await fetch(`${OPS_URL}/functions/v1/gift-fulfill`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${OPS_SERVICE_KEY}`,
+            },
+            body: JSON.stringify({ purchase_id: meta.purchase_id }),
+          });
+          const fulfillData = await fulfillRes.json();
+          if (!fulfillRes.ok) {
+            console.error('[stripe-webhook-connect] gift-fulfill failed:', fulfillData);
+          } else {
+            console.log('[stripe-webhook-connect] gift card fulfilled:', fulfillData);
+          }
+        } catch (e) {
+          console.error('[stripe-webhook-connect] gift-fulfill call error:', e);
         }
       }
       break;
     }
-
-    case 'payment_intent.payment_failed': {
-      // Logged via stripe_webhook_events table already. No action.
+    case 'payment_intent.succeeded':
+    case 'payment_intent.payment_failed':
+    case 'charge.refunded':
+      // Logged in stripe_webhook_events. Ops DB closed_check updates require
+      // looking up locations.ops_db_url + ops_location_id and writing to that
+      // tenant's Ops DB — deferred to next sprint. PI metadata.closed_check_id
+      // will carry the link when the kiosk/POS payment flows are wired.
       break;
-    }
-
-    case 'charge.refunded': {
-      // Per spec: GMV is NOT netted of refunds. Log only.
-      break;
-    }
-
     default:
-      console.log('[stripe-webhook-connect] unhandled connect event', event.type);
+      console.log('[stripe-webhook-connect] unhandled event', event.type);
   }
 }

@@ -1,11 +1,53 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef, lazy, Suspense } from 'react';
 import './styles/globals.css';
+// v5.5.3: TENANT FENCE. Run BEFORE any other module that reads location-scoped
+// localStorage. Compares the currently-active location to the last-recorded
+// active-location tag, and if they differ, wipes every stale rpos-* key. This
+// prevents Loc 1's open sessions / closed checks / config snapshot / printer
+// list from bleeding into Loc 2 when the same browser is repurposed.
+//
+// Why this import statement and not a function call: ES modules execute imports
+// top-down at module-init time, so the fence runs at app load BEFORE the store
+// module (./store), SyncBridge, and useSupabaseInit get a chance to read any
+// localStorage keys. The other invocation points (PairingScreen.onPair,
+// LocationSwitcher.switchTo, setResolvedLocationId) are belt-and-suspenders.
+import { enforceTenantFence } from './lib/supabase';
+enforceTenantFence();
+
 import { useStore } from './store';
+import { useCardScan } from './lib/useCardScan';
+import { resolveSignIn } from './lib/staffAuth';
+import { logSignIn } from './lib/signInAudit';
+import { loadStaffRoster } from './lib/staffRoster';
 import PINScreen from './surfaces/PINScreen';
+import ShiftStartPrompt from './components/ShiftStartPrompt';
 import POSSurface from './surfaces/POSSurface';
 import BarSurface from './surfaces/BarSurface';
 import TablesSurface from './surfaces/TablesSurface';
 import { KDSSurface } from './surfaces/OtherSurfaces';
+import MPOSSurface from './surfaces/MPOSSurface';
+import TimeClockSurface from './surfaces/TimeClockSurface';
+import OwnerSurface from './surfaces/OwnerSurface';
+import MenuBoardSurface from './surfaces/MenuBoardSurface';
+import WaitlistSurface from './surfaces/waitlist/WaitlistSurface';
+import BookingsSurface from './surfaces/bookings/BookingsSurface';
+import ManagerSurface from './surfaces/ManagerSurface';
+import StaffSurface from './surfaces/StaffSurface';
+import KioskAutoUpdate from './components/KioskAutoUpdate';
+import ChangeDueOverlay from './components/ChangeDueOverlay';
+import MenuDiag from './components/MenuDiag';
+import OnboardingSignSurface from './surfaces/OnboardingSignSurface';
+import RyftTestSurface from './surfaces/RyftTestSurface';
+import ReaderDemoSurface from './surfaces/ReaderDemoSurface';
+// v5.5.889: customer web routes are LAZY — they were riding in the one 5.1MB bundle every
+// till and kiosk downloaded. Customer sessions are short + fresh-loaded, so a split chunk is
+// safe there; operational surfaces (POS/kiosk/KDS/…) stay static so a mid-shift till never
+// has to fetch a chunk after a deploy.
+const CustomerBoot = lazy(() => import('./surfaces/CustomerBoot'));
+// v5.5.890: What's New modal (carries the 1MB changelog array) loads only when opened.
+const WhatsNewModal = lazy(() => import('./components/WhatsNewModal'));
+import GroupOrderSurface from './surfaces/GroupOrderSurface';
+import { parseCustomerUrl as parseCustomerUrlForBoot } from './lib/customerUrl';
 import AIChat from './components/AIChat';
 
 function AIAssistantSurface() {
@@ -42,1813 +84,35 @@ function AIAssistantSurface() {
     </div>
   );
 }
-import BackOfficeApp from './backoffice/BackOfficeApp';
+// v5.5.889: Back Office is LAZY — it's ~60% of the app (menu manager, 20+ reports, workforce,
+// all admin screens) and tills/kiosks never open it. Splitting it out is the single biggest
+// first-load win for every operational device and customer page.
+const BackOfficeApp = lazy(() => import('./backoffice/BackOfficeApp'));
 import { isMock, supabase } from './lib/supabase';
 import PairingScreen from './surfaces/PairingScreen';
 import ModeSelector from './surfaces/ModeSelector';
 import CompanyAdminApp from './admin/CompanyAdminApp';
+import KioskSurface from './surfaces/KioskSurface';
+import CustomerDisplaySurface from './surfaces/CustomerDisplaySurface';
 import DeviceSetup from './surfaces/DeviceSetup';
 import StatusDrawer from './components/StatusDrawer';
+import SupportChat from './components/SupportChat';
 import SyncBridge from './sync/SyncBridge';
+import { fetchMenuCategoryLinks } from './lib/db';
+import { normaliseMenuRow, assembleTaxProfiles } from './lib/rowMapping';
 import MasterOfflineModal from './components/MasterOfflineModal';
+import ActivityFeed from './components/ActivityFeed';
 import ConfigSyncBanner from './components/ConfigSyncBanner';
-import KioskSurface from './surfaces/KioskSurface';
 import OrdersHub from './surfaces/OrdersHub';
 import useSupabaseInit from './lib/useSupabaseInit';
 import { VERSION } from './lib/version';
+import { money, currencySymbol } from './lib/currency';
+import { ServOSIcon } from './components/ServOSBrand';
+import { Icon } from './components/ServOSIcons';
 
-const CHANGELOG = [
-  {
-    version: '4.1.0', date: 'May 2026', label: 'Stripe Connect platform scaffold — merchant services foundation',
-    changes: [
-      'Schema (Platform DB): extends subscriptions with stripe_account_id, charges_enabled, capabilities, requirements; adds billing_invoices for period close snapshots + Transfer skim records; adds stripe_webhook_events for idempotency.',
-      'RPC get_plan_and_fee_for_gmv: returns tier + fee for a given GMV. Tiers: Free £0/£0–5K, Starter £99/£5K–8K, Growth £149/£8K–10K, Scale £199/£10K–20K, Enterprise £249/£20K+.',
-      'RPC increment_gmv: atomic GMV bump on subscriptions row, auto-promotes plan if a tier boundary is crossed within the period. Tier locks at highest reached for the whole month.',
-      'RPC close_billing_period: snapshots GMV → invoice, resets rolling, rolls period_start forward. For monthly cron (next sprint).',
-      'Edge fns: stripe-webhook (platform events), stripe-webhook-connect (account.updated, capability.updated, payment_intent.*), stripe-link-merchant (admin paste-acct flow), stripe-create-payment-intent (direct charge on connected account), stripe-terminal-connection-token (Stripe M2 / Terminal SDK pairing tokens for Sunmi APK).',
-      'Architecture: DIRECT charges on connected account — merchant is merchant of record, no application_fee per transaction. SaaS fee collected separately via Transfers API skim before payout (Option 2). New accounts start FOC.',
-      'GMV definition: total processed value (cash + card + giftcard + tips), NOT netted of refunds.',
-      'Frontend: src/lib/stripeClient.js (Stripe.js loader cached per connected account, edge fn helpers), src/lib/billing.js (incrementGmv RPC wrapper).',
-      'BO: new Billing section (per-location Stripe status, paste-acct link form, period GMV stats). New Stripe test section (TEST MODE ONLY — fires real PaymentIntent end-to-end with test card 4242 4242 4242 4242, validates platform → fns → Stripe → webhook → DB loop).',
-      'Deps: +@stripe/stripe-js +@stripe/react-stripe-js.',
-      'Deploy guide: STRIPE_SETUP.md in repo root.',
-    ],
-  },
-  {
-    version: '4.0.9', date: 'Apr 2026', label: 'Native Android printer bridge — direct TCP to WiFi printers',
-    changes: [
-      'Android: PrinterBridge.java exposes window.RposPrinter to the React app via JavascriptInterface',
-      'Android: NetworkPrinter.java opens direct TCP socket to printer IP:9100 on background thread',
-      'Android: cash drawer triggered via ESC p command through the same TCP path',
-      'React: PrintService now checks for native bridge first, falls back to Supabase queue for browser testing',
-      'React: isNativeBridgeAvailable() exported so UI can show correct print transport status',
-      'Android: cleartext traffic enabled for local network printer IPs',
-      'No print agent required — printing is fully self-contained in the Android app',
-    ],
-  },
-  {
-    version: '4.0.8', date: 'Apr 2026', label: 'Fix: spacers now persist after refresh',
-    changes: [
-      'Root cause: BackOfficeApp.jsx has its own category mapping from Supabase that did not include spacerSlots. On every back office load it overwrote menuCategories in the store, stripping spacerSlots.',
-      'Fix: added spacerSlots: c.spacer_slots ?? c.spacerSlots ?? [] to BackOfficeApp category mapping.',
-      'Data in Supabase was correct all along (spacer_slots column exists, sbUpsertCategory writes it). Only the read path was broken.',
-    ],
-  },
-  {
-    version: '4.0.7', date: 'Apr 2026', label: 'Spacer: drag works, persists to Supabase; course bug fully fixed',
-    changes: [
-      'SPACER PERSISTENCE: sbUpsertCategory in store was a separate function from upsertMenuCategory in db.js — spacer_slots was only added to db.js. Now added to sbUpsertCategory which is what actually fires when categories are updated.',
-      'SPACER DRAG: unified reorderGrid function handles dragging both items AND spacers in the same grid. Reassigns sequential sortOrders to all items and updates spacerSlots in one atomic operation.',
-      'SPACER REMOVE: x button calls removeSpacer which filters the spacer from the category spacerSlots and saves to Supabase immediately.',
-      'COURSE: sbUpsertCategory now correctly saves default_course — this is the real write path for course settings.',
-    ],
-  },
-  {
-    version: '4.0.6', date: 'Apr 2026', label: 'Course bug fixed properly; spacer drag and remove working',
-    changes: [
-      'COURSE BUG: defaultCourse was never mapped from DB — default_course (snake_case) was not converted to defaultCourse (camelCase) when loading categories from Supabase. Every category defaulted to course 1 regardless of setting.',
-      'Fix: SyncBridge category mapping now includes defaultCourse: cat.default_course ?? cat.defaultCourse ?? 1',
-      'Fix: upsertMenuCategory now writes default_course correctly to Supabase',
-      'SPACER: spacer_slots column added to menu_categories in Supabase',
-      'SPACER: stored as [{id, sortOrder}] objects — fully draggable alongside items by sortOrder',
-      'SPACER: drag a spacer to reposition it between items. Items can also be dropped onto a spacer to swap positions.',
-      'SPACER: × button removes the spacer immediately',
-      'SPACER: shows as transparent empty cell on POS — invisible to customers',
-    ],
-  },
-  {
-    version: '4.0.5', date: 'Apr 2026', label: 'Spacer: pure layout cell, no data model; course bug fixed',
-    changes: [
-      'Spacer is stored as spacerSlots[] on menuCategories — no fake menu items, no new tables, zero data model impact',
-      'Back office Menus tab: + Spacer button adds a dashed placeholder cell to the selected category grid. Click × to remove.',
-      'POS: spacer cells render as transparent empty divs — completely invisible to customers, not tappable, not counted',
-      'Spacers save automatically via updateCategory which already writes to Supabase',
-      'Course bug fixed: fired flag now uses same parent-category fallback as course — variants no longer end up in different courses',
-    ],
-  },
-  {
-    version: '4.0.4', date: 'Apr 2026', label: 'Course bug fix + Spacer items',
-    changes: [
-      'Fix: course fired calculation now uses same full parent-category fallback as course assignment — variants/subitems with no cat set directly now correctly inherit immediate/course from parent category',
-      'Fix: Larger pint and Large half (or any variants) no longer end up in different courses when they share a parent category',
-      'New: Spacer item type — add blank grid cells to arrange products better on POS',
-      'Spacer: shows as dashed placeholder row in back office Items list, draggable and removable',
-      'Spacer: renders as transparent empty cell on POS — invisible to customers, no tap action',
-      'Spacer: excluded from search results and category item counts',
-      '+ Spacer button added to Items toolbar next to + Item',
-    ],
-  },
-  {
-    version: '4.0.3', date: 'Apr 2026', label: 'Fix: Quick Screen saves directly via supabase client',
-    changes: [
-      'QuickScreen save() now calls supabase.from(locations).update() directly using the client already in scope in MenuManager — same pattern that works for image uploads',
-      'SyncBridge boot now queries locations.quick_screen_ids directly via supabase client instead of via db.js loadQuickScreenIds',
-      'Removed all db.js indirection from Quick Screen path — no module bundling issues, no dynamic imports, no intermediate functions',
-      'getLocationId() and supabase are both confirmed working in MenuManager context — image uploads use the same path successfully',
-    ],
-  },
-  {
-    version: '4.0.2', date: 'Apr 2026', label: 'Quick Screen saves to Supabase; 86 button moved to long-press modal',
-    changes: [
-      'Quick Screen: saveQuickScreenIds now uses static import — dynamic import was silently failing in the bundled output, causing zero Supabase writes',
-      '86 button removed from POS product card — was cluttering every button with a tiny tap target',
-      '86 Item button added to long-press ItemInfoModal footer — clear label, full width, turns red when item is 86d with Un-86 action',
-      'ItemInfoModal now accepts is86 and onToggle86 props from POSSurface',
-    ],
-  },
-  {
-    version: '4.0.1', date: 'Apr 2026', label: 'Quick Screen: Supabase-backed, image-aware, matches POS exactly',
-    changes: [
-      'quickScreenIds moved from localStorage to Supabase locations.quick_screen_ids column — persists across devices and reloads with zero localStorage dependency',
-      'save() writes directly to Supabase on every change — no Push to POS required for quick screen',
-      'Boot sequence loads quickScreenIds from Supabase in parallel with all other data',
-      'quickScreenIds removed from SHARED_KEYS — now DB-driven, not localStorage-broadcast',
-      'Quick Screen editor slots now show item background images with the same gradient overlay, white text, and text-shadow as the POS buttons — pixel-identical preview',
-      'Colour bar hidden when item has an image, same as POS',
-    ],
-  },
-  {
-    version: '4.0.0', date: 'Apr 2026', label: 'Fix: Quick Screen saves persist on reload',
-    changes: [
-      'quickScreenIds added to SHARED_KEYS — now persists to localStorage and broadcasts to all tabs instantly',
-      'Quick Screen save() now writes directly to localStorage immediately — no need to Push to POS for it to survive a reload',
-      'Previously quickScreenIds was not in SHARED_KEYS so it was never written to storage and was lost on every page reload',
-    ],
-  },
-  {
-    version: '3.9.9', date: 'Apr 2026', label: 'Fix: table items now sync across devices in real-time',
-    changes: [
-      'SessionReconciler now updates session contents when a table is open on both devices — previously it only handled open/close, not item changes',
-      'SyncBridge now flushes to Supabase on item add/remove, not just on kitchen send — other devices see items immediately',
-      'Reconciler compares item count every 10s and applies if Supabase has more items than local store',
-      'Active table (being edited) never overwritten by reconciler to avoid clobbering current work',
-    ],
-  },
-  {
-    version: '3.9.8', date: 'Apr 2026', label: 'Modifier groups: min picks control',
-    changes: [
-      'Required toggle now reveals a Min picks row — set exactly how many options the customer must pick (e.g. min 3 of 3 for a Box of 3)',
-      'Min picks buttons: 1, 2, 3, 4, 5 or custom N. Only shows values up to current max',
-      'Max picks automatically clamps min if max is reduced below current min',
-      'POS header shows precise requirement: Pick exactly 3, Min 2 max 5, Required, etc.',
-      'Tally shows green check once min is reached, even if not at max',
-    ],
-  },
-  {
-    version: '3.9.7', date: 'Apr 2026', label: 'Fix: image upload now persists to Supabase correctly',
-    changes: [
-      'ItemImageUpload now does a direct targeted UPDATE (image, updated_at) to Supabase immediately after storage upload succeeds',
-      'Bypasses the store upsertMenuItem path entirely — no loc-demo risk, no timing race, no full item reconstruction',
-      'Re-resolves locationId fresh on every upload — never uses stale state',
-      'Same direct write for image remove',
-    ],
-  },
-  {
-    version: '3.9.6', date: 'Apr 2026', label: 'Fix: images and all menu writes now persist correctly to Supabase',
-    changes: [
-      "Root cause: LOCATION_ID defaults to 'loc-demo' (mock sentinel). Every db.js function received loc-demo as locationId — truthy so getLocationId() was never called, and upserts wrote to location_id=loc-demo which matches nothing in Supabase",
-      "Fix: all db.js functions now treat loc-demo the same as null — always resolve the real location ID via getLocationId() before any write",
-      'Affects: upsertMenuItem, upsertMenuCategory, upsertFloorTable, toggle86DB, and all other location-scoped writes',
-      'This is why item images, modifier group changes, and other edits vanished on reload — they were never written to the database',
-    ],
-  },
-  {
-    version: '3.9.5', date: 'Apr 2026', label: 'Fix: item image upload now works for sub-items (modifier options)',
-    changes: [
-      'Product image upload was hidden for sub-item type — !isSub guard removed so Donut 1, Donut 2 etc. now show the image uploader in Details tab',
-      'Sub-item images automatically inherit to the modifier picker on POS via resolveOptImage()',
-      'Set image once on the sub-item, it shows on the modifier option card in the POS flow',
-    ],
-  },
-  {
-    version: '3.9.4', date: 'Apr 2026', label: 'Fix: modifier images inherit from sub-items automatically',
-    changes: [
-      'Modifier option images now inherit automatically from the matching sub-item menu item — set the image once on the item, it shows everywhere',
-      'No more per-option image upload on modifier groups — image is the single source of truth on the item itself',
-      'Modifier editor shows a live preview of the inherited image (or ghost icon if none set)',
-      'Works for all modes: quantity picker, checkbox multi-select, and radio single-select',
-      'resolveOptImage() checks option\'s own image first, then looks up sub-item by name match (case-insensitive)',
-    ],
-  },
-  {
-    version: '3.9.3', date: 'Apr 2026', label: 'Fix: modifier +/− buttons completely broken — root cause fixed',
-    changes: [
-      'ModifierStep is a separate child function component — setSelections, addMulti, removeMulti were defined in the parent InlineItemFlow and NOT in scope inside ModifierStep',
-      'Every +/− click silently threw a ReferenceError that React swallowed — buttons appeared to do nothing',
-      'Fix: added onQtyChange(groupId, optId, delta) prop — parent defines it with full setSelections access, child just calls it',
-      'Fix: multi-select + button now correctly calls onAddMulti (was calling undefined addMulti)',
-      'Fix: multi-select − button now correctly calls onRemoveMulti (was calling undefined removeMulti)',
-      'All three modifier modes now work correctly: quantity picker, multi-select checkboxes, single-select radio',
-    ],
-  },
-  {
-    version: '3.9.2', date: 'Apr 2026', label: 'Modifier overhaul — unified 3-mode picker, single source of truth',
-    changes: [
-      'Modifier Group editor: new unified 3-mode picker — Pick 1 (radio) / Pick many (checkboxes) / Pick with qty (counters, repeats allowed)',
-      'Max picks buttons: 2, 3, 4, 5, ∞ or custom N — single click, no hidden toggle',
-      'Required/Optional moved to compact toggle pair below the mode picker',
-      'Per-item min/max overrides removed from Flow tab and Modifiers tab — group definition is the single source of truth',
-      'Orphaned duplicate rendering block removed from InlineItemFlow (was dead code causing parse confusion)',
-    ],
-  },
-  {
-    version: '3.9.1', date: 'Apr 2026', label: 'Fix: image buttons fully readable, Box of 3 modifiers',
-    changes: [
-      'Image button overlay: much stronger gradient (88% at bottom, 55% mid, 25% top), all text uses heavy text-shadow so name and price stay crisp over any image colour',
-      'Emoji hidden when image shows — no more two things competing for the same space',
-      'Colour bar hidden when image fills the button background',
-      'Badges (86d, allergen, count, rank) adapted for image mode — dark semi-transparent backgrounds with white text',
-      '86 button gets translucent dark background over images so it stays tappable',
-      'Box of 3: menu_items.image column added — future saves now work correctly',
-    ],
-  },
-  {
-    version: '3.9.0', date: 'Apr 2026', label: 'Modifier option images',
-    changes: [
-      'Modifier options now support images — click the image thumbnail (🖼) next to any option in the Modifier Groups editor to upload a photo',
-      'Images show as 40px thumbnails in the POS modifier selection screen when the customer picks options',
-      'Image persistence: re-upload any item image that was uploaded before v3.8.9 to save it to Supabase permanently',
-      'Storage path: modifier images stored as product-images/{location_id}/{option_id}.ext',
-    ],
-  },
-  {
-    version: '3.8.9', date: 'Apr 2026', label: 'Fix: product images now show on POS',
-    changes: [
-      'image field was missing from upsertMenuItem db row — image URL uploaded to storage but never written to menu_items.image column in Supabase. POS loaded items from Supabase with no image field. Fixed.',
-      'showItemImages missing from SHARED_KEYS — setting was in Zustand store but never persisted to localStorage or synced across tabs. POS always saw false. Fixed.',
-    ],
-  },
-  { version: '3.8.8', date: 'Apr 2026', label: 'Fix: image upload getLocationId error', changes: ['getLocationId was missing from the supabase import in MenuManager — added to fix ReferenceError on image upload'] },
-  { version: '3.8.7', date: 'Apr 2026', label: 'Fix: image upload uses correct location ID', changes: ['ItemImageUpload now resolves location ID via getLocationId() async instead of hardcoded fallback'] },
-  {
-    version: '3.8.6', date: 'Apr 2026', label: 'New: Product images on POS and ordering platforms',
-    changes: [
-      'Supabase Storage bucket product-images created — public read CDN, 5MB limit, authenticated upload',
-      'Image upload UI in item editor Details tab — click to upload, shows preview with Replace/Remove controls',
-      'Location Settings: POS Display section with Show images on POS buttons toggle',
-      'POS buttons: when enabled globally, item buttons show product image as full background with dark gradient overlay for text legibility',
-      'Long-press item info sheet always shows product image in hero regardless of global toggle',
-      'showItemImages loaded from Supabase at boot via SyncBridge, stored in Zustand for instant reads',
-      'images stored as {location_id}/{item_id}.ext — deterministic path, re-upload always replaces cleanly',
-    ],
-  },
-  {
-    version: '3.8.5', date: 'Apr 2026', label: 'New: Clone item',
-    changes: [
-      'Clone button added to item editor footer alongside Archive',
-      'Prompts for a new name pre-filled with Item Name (Copy) — accept or rename before creating',
-      'Clones all item properties: price, modifiers, allergens, visibility, category',
-      'If the original has size variants (Small/Medium/Large), all sizes are cloned to the new item too',
-      'New cloned item is immediately selected in the editor so you can make changes straight away',
-    ],
-  },
-  { version: '3.8.4', date: 'Apr 2026', label: 'Fix: variant delete definitively works', changes: ['upsertMenuItem was silently returning when getLocationId() had not yet resolved — no network call ever fired. Replaced all variant/size archive operations with direct supabase.from(menu_items).update({archived:true}).eq(id) calls which use the already-authenticated supabase client directly. No location ID lookup required.'] },
-  {
-    version: '3.8.3', date: 'Apr 2026', label: 'Fix: variants delete, modifiers fixed, Espresso modal gone',
-    changes: [
-      'Variant delete: MenuManager now imports supabase+upsertMenuItem directly and calls upsertMenuItem with archived=true immediately on size/variant removal — no longer relies on store chain',
-      'Espresso modal: needsModal now checks item.type!==simple first — type=simple items never show modifier screen regardless of stale assignedModifierGroups data',
-      'Variant modifiers (Latte Small): InlineItemFlow was looking for variant._childItem which never exists. selectedVariant IS the full child menu item. Fixed activeItem, pickVariant, and targetItem to use selectedVariant directly',
-    ],
-  },
-  { version: '3.8.2', date: 'Apr 2026', label: 'Fix: archived variants now persist to Supabase', changes: ['archiveMenuItem was only updating local Zustand state — no Supabase write. Variants deleted via Archive item button appeared to be gone but reloaded on refresh because the database never changed. Now calls upsertMenuItem with archived:true immediately after updating store.'] },
-  { version: '3.8.1', date: 'Apr 2026', label: 'Fix: variant/size delete now persists to Supabase', changes: ['All db.js calls in store/index.js were dynamic imports — import(...).then(...). In the bundled output these were silently failing, meaning menu item updates (archive, parent_id clear) never reached Supabase. Replaced with static top-level import. Every menu write — variant delete, price update, 86, KDS ticket, closed check — now fires reliably.'] },
-  {
-    version: '3.8.0', date: 'Apr 2026', label: 'AI: menu lookup fixed, always sees current data',
-    changes: [
-      'getStoreState was memoised with useCallback — if menu items loaded from Supabase after the AI panel opened, the snapshot was stale and the AI saw 0 items. Replaced with direct useStore.getState() call at execution time so every tool call reads live data.',
-      'get_menu_items: was filtering on i.categoryId but items from Supabase use i.cat — both fields now checked. Limit raised from 30 to 50 items.',
-      'add_to_order: now filters archived items out before searching, includes fallback matching in both directions, and shows available item names in the error message if not found.',
-      'get_item_detail: category lookup now checks both i.cat and i.categoryId.',
-    ],
-  },
-  { version: '3.7.9', date: 'Apr 2026', label: 'Fix: deleted variants no longer reappear on refresh', changes: ['upsertMenuItem was using || for parent_id mapping — when parentId was set to null (on variant delete), || treated null as falsy and fell through to the old parent_id from the loaded item, writing the original value back to Supabase. Fixed to use explicit undefined check so null is correctly written as null.'] },
-  {
-    version: '3.7.8', date: 'Apr 2026', label: 'Fix: first item no longer vanishes. History syncing.',
-    changes: [
-      'First item vanish: sessionsChannel INSERT echo-back guard added. When a table is opened, flushSessions writes to Supabase — the INSERT echo was arriving after items were added and overwriting them. Guard 1: skip INSERT events for the currently active table. Guard 2: skip if local session is newer than incoming echo.',
-      'History sync: closed_checks added to supabase_realtime publication — INSERT events now broadcast to all devices instantly when any terminal takes payment.',
-    ],
-  },
-  { version: '3.7.7', date: 'Apr 2026', label: 'Session reconciler: grace period + architecture review', changes: ['SessionReconciler: 30s grace period for newly opened tables before Supabase is trusted — prevents premature clearing of sessions not yet flushed', 'History and reports confirmed cross-device: closed_checks realtime broadcasts to all devices, BOReports queries Supabase directly. Scales to 20+ terminals.'] },
-  {
-    version: '3.7.6', date: 'Apr 2026', label: 'Session sync: polling replaces unreliable DELETE events',
-    changes: [
-      'SessionReconciler: polls Supabase active_sessions every 10 seconds and reconciles with local store',
-      'Any table closed on another device will clear within 10s — guaranteed, no dependency on realtime DELETE events',
-      'Any table opened on another device will appear within 10s',
-      'Skips the currently active table (being edited) to prevent overwriting local changes',
-      'Replaces the unreliable Supabase Realtime DELETE event approach that was never working consistently',
-    ],
-  },
-  {
-    version: '3.7.5', date: 'Apr 2026', label: 'Items no longer flicker. Table close syncs.',
-    changes: [
-      'Items flickering/disappearing on add: adding items to an order was writing to Supabase active_sessions. Supabase echoed the write back as an UPDATE event, which overwrote the local store with stale data — items appeared to vanish. Fix: item add/remove no longer triggers a session flush. Only table open/close, covers change, and send-to-kitchen trigger a flush.',
-      'Echo-back blocked: sessionsChannel UPDATE handler now skips updates for the table currently being edited on this device. Cross-device updates still apply to all other tables.',
-      'Table close syncs: closed_checks INSERT already fires correctly. When received on another device, it now clears the matching table from the floor AND adds to history simultaneously.',
-      'VERSION used in master heartbeat.',
-    ],
-  },
-  {
-    version: '3.7.4', date: 'Apr 2026', label: 'Sync fixed, master works, qty lag gone',
-    changes: [
-      'Table close sync: closed_checks INSERT now ALSO clears the table from the other device floor plan — belt and suspenders alongside the DELETE event. Table will clear on any device the moment payment is taken elsewhere',
-      'Master detection: Main profile set is_master=true directly in Supabase. Profile save now uses update() not upsert() — upsert was not persisting is_master correctly',
-      'VERSION constant used in master heartbeat instead of hardcoded string',
-      'Qty +/- lag: BroadcastChannel and localStorage writes now skipped for qty-only changes — only meaningful changes (adds, voids, sends, opens, closes) trigger cross-tab sync',
-    ],
-  },
-  { version: VERSION, date: 'Apr 2026', label: 'Fix: master correctly identifies itself every time', changes: ['Device validation already fetches device_profiles from Supabase on every boot — now reads is_master from that and writes it into rpos-device-config', 'Master boot reads cfg.isMaster from rpos-device-config — always set correctly because validation runs before this fires', 'No more Supabase queries or localStorage guessing in boot path'] },
-  { version: '3.7.2', date: 'Apr 2026', label: 'Fix: master device correctly identifies itself', changes: ['Master detection now queries Supabase devices+device_profiles directly at boot — never relies on stale localStorage cache which was missing isMaster field', 'Fallback to localStorage only if Supabase query fails'] },
-  {
-    version: '3.7.1', date: 'Apr 2026', label: 'Master-child: hard block, fixed false positives, device counts',
-    changes: [
-      'Master offline modal: removed Continue anyway — terminal is now fully locked until master responds. No escape.',
-      'Master device no longer triggers offline modal on itself — isMaster=true devices only run heartbeat, never monitor',
-      'Child monitor delayed 20s on startup — prevents false master-offline on boot before first heartbeat is written',
-      'Device profiles: device count now fetched from Supabase devices table — shows real count of devices assigned to each profile',
-    ],
-  },
-  {
-    version: '3.7.0', date: 'Apr 2026', label: 'Fix: device profiles finally save correctly',
-    changes: [
-      'Root cause: DeviceProfiles.jsx only imported isMock from supabase — supabase client and getLocationId were missing from the top-level import. Dynamic imports inside resolveLocId and loadFromDB did not resolve correctly in the Vite bundle, so supabase.upsert was never called',
-      'Fixed: added supabase and getLocationId to the top-level import. Removed all dynamic imports inside the component. The supabase client used in save/addProfile is now the same authenticated instance used by all other back office operations',
-    ],
-  },
-  {
-    version: '3.6.9', date: 'Apr 2026', label: 'Fix: profiles save, items no longer vanish on qty change',
-    changes: [
-      'Device profiles: raw fetch was returning 401 (anon key rejected for writes). Replaced with supabase client upsert which uses authenticated session — profiles now persist on refresh',
-      'Qty glitch: updateItemQty was removing items when qty hit 0 — rapid tapping would overshoot and silently delete items from the order. Now clamped at minimum 1. Only explicit void removes an item',
-      'Qty lag: unsubSessions now correctly skips Supabase flush for qty-only changes (item count unchanged, no sends, no covers change). Only meaningful cross-device events trigger a flush',
-    ],
-  },
-  { version: '3.6.8', date: 'Apr 2026', label: 'Fix: device profiles now save and persist correctly', changes: ['addProfile had if (!isMock && locationId) guard — if locationId state was null (async getLocationId not yet resolved) the Supabase insert was skipped entirely. Profile appeared locally, disappeared on refresh', 'toDbRow was missing service_charge, is_master, sort_order columns — new profiles lost those fields', 'resolveLocId() helper always gets real locationId before any write — never saves with null location_id', 'Panel now closes immediately on save (optimistic) before the network request completes', 'Both save and addProfile now show correct error toast if Supabase write fails'] },
-  { version: '3.6.7', date: 'Apr 2026', label: 'Fix: device profile dropdown now shows real profiles', changes: ['ProfileSelect in Devices page was calling getProfiles() statically at render time — never updated when Supabase loaded profiles into localStorage', 'Now uses useState + useEffect to fetch profiles from Supabase directly on mount, and listens for localStorage changes', 'The hardcoded DEFAULT_PROFILES fallback (Main counter / Bar terminal / Server handheld) no longer appears once real profiles are loaded'] },
-  {
-    version: '3.6.6', date: 'Apr 2026', label: 'Critical: realtime fixed, lag fixed',
-    changes: [
-      'ROOT CAUSE FIX: startRealtime was catching errors and falling back to loc-demo — every device subscribed sessions/checks channels to the wrong location UUID, so DELETE events and check INSERTs were invisible to other devices. Now retries up to 5x with 2s gap to get real locationId, final fallback from rpos-device localStorage',
-      'Lag fix: scheduleFlush was firing on EVERY store change including every quantity increment. Now only flushes on meaningful events: table open/close, item sent to kitchen, item added/voided, covers changed. Quantity edits no longer trigger a Supabase write',
-    ],
-  },
-  {
-    version: '3.6.5', date: 'Apr 2026', label: 'Master-child architecture: network resilience',
-    changes: [
-      'Device Profiles: Master POS toggle — designate one terminal as the network master',
-      'Master terminal writes a heartbeat to Supabase every 10 seconds',
-      'Child terminals check the heartbeat every 15 seconds — if master not seen in 30s, a blocking error screen appears',
-      'Blocking error: "Master POS not found on network" with instructions, Force Sync from cloud button, and Continue Anyway option',
-      'Back office: new Network & Sync section showing all device heartbeats, online/offline status, open tables per device',
-      'Force Sync button: pulls authoritative sessions and closed checks from Supabase and reconciles with local state — use when devices have drifted',
-    ],
-  },
-  { version: '3.6.4', date: 'Apr 2026', label: 'Fix: modifiers working again on POS', changes: ['SyncBridge item load from Supabase was missing assignedModifierGroups mapping — DB uses assigned_modifier_groups (snake_case), modifier modal reads assignedModifierGroups (camelCase). Items from Supabase never had the camelCase property so modifier modal never opened', 'Also maps assignedInstructionGroups correctly'] },
-  { version: '3.6.3', date: 'Apr 2026', label: 'Fix: table-close now syncs across devices', changes: ['Supabase Realtime does not support row-level filters on DELETE events — removed filter from sessionsChannel DELETE handler, now checks location_id in the handler body instead', 'With REPLICA IDENTITY FULL set, the full row including location_id and table_id is available in the DELETE payload'] },
-  {
-    version: '3.6.2', date: 'Apr 2026', label: 'Fix: modifiers restored, table-close sync fixed',
-    changes: [
-      'REGRESSION FIX: SyncBridge modifier mapping used wrong column names (type/required) — should be selectionType/selection_type. Overwrote correct snapshot data with broken objects, breaking all modifiers on boot',
-      'sessionsChannel DELETE handler now includes location_id filter — with REPLICA IDENTITY FULL this correctly routes table-close events to the right devices',
-      'Removed duplicate active_sessions subscription in SyncBridge — realtime.js sessionsChannel now owns all session sync (INSERT/UPDATE/DELETE)',
-    ],
-  },
-  {
-    version: '3.6.1', date: 'Apr 2026', label: 'Critical sync fix: closed checks and table clears now sync across all devices',
-    changes: [
-      'ROOT CAUSE: insertClosedCheck was writing location_id = loc-demo instead of the real location UUID — every check was invisible to other devices',
-      'insertClosedCheck now always resolves the real locationId via getLocationId(), never falls back to the mock loc-demo value',
-      'active_sessions now has a dedicated realtime subscription in realtime.js for INSERT/UPDATE/DELETE — DELETE events were silently dropped before because default Postgres replica identity only carries PK columns',
-      'REQUIRED: Run ALTER TABLE active_sessions REPLICA IDENTITY FULL and ALTER TABLE closed_checks REPLICA IDENTITY FULL in Supabase SQL editor for DELETE events to carry table_id',
-    ],
-  },
-  {
-    version: '3.6.0', date: 'Apr 2026', label: 'Full system hardening — data integrity milestone',
-    changes: [
-      'Service charge backfill: deviceConfig always gets serviceCharge from profile on every device validation — no more stale sessions missing SC',
-      'DataSafe triple-write: closed checks localStorage → Supabase, reconcile on boot and reconnect, periodic 60s sync',
-      'Open orders report fixed: activeSessions derived from tables[], was always undefined',
-      'Reports revenue: live Supabase fetch with locationId fallback, falls back to store if needed',
-      'Modifier groups load from Supabase on POS boot — no Push to POS needed',
-      'AI assistant: 9 new tools, all reporting queries hit Supabase directly for cross-device accuracy',
-      'Realtime closed_checks subscription: all devices receive new payments instantly',
-      'SQL editor: dedicated Restaurant OS Schema Changes snippet — no more editing wrong saved queries',
-    ],
-  },
-  {
-    version: '3.5.99', date: 'Apr 2026', label: 'Reports: revenue now shows correctly',
-    changes: [
-      'BOReports todayLive fetch: getLocationId() was returning null in back office context — added fallback to rpos-device localStorage and store',
-      'If Supabase fetch unavailable, falls back to store closedChecks filtered to today',
-    ],
-  },
-  {
-    version: '3.5.98', date: 'Apr 2026', label: 'Data resilience: triple-write safety net',
-    changes: [
-      'DataSafe module: closed checks now triple-written — localStorage first (instant), then Supabase. If Supabase fails the check is queued, never lost',
-      'On boot: reconcilePendingChecks() runs — any check in localStorage but not in Supabase is re-inserted automatically',
-      'On reconnect: pending checks replay to Supabase immediately',
-      'Periodic background sync every 60s catches any missed writes',
-      'OfflineBanner now shows amber syncing state when pending checks exist',
-    ],
-  },
-  { version: '3.5.97', date: 'Apr 2026', label: 'AI: updated UI chips and suggestions', changes: ['FOH shortcut chips updated: Shift summary, Item sales, Busiest hour, Open tables, Server stats, Allergens', 'BOH chips updated: Sales, Item lookup, Hourly, Server performance, Open tables, Payment breakdown, Menu', 'Suggestion pills updated for both modes to showcase new capabilities', 'Tool progress badges added for all 9 new tools'] },
-  {
-    version: '3.5.96', date: 'Apr 2026', label: 'AI assistant: massively expanded capabilities',
-    changes: [
-      'New tool: search_item_sales — ask how many lattes, pints, burgers sold today (partial name match)',
-      'New tool: get_hourly_breakdown — busiest hour, revenue per hour, peak time analysis',
-      'New tool: get_payment_breakdown — card vs cash vs split, tips, avg check per method',
-      'New tool: get_server_performance — checks, covers, revenue and avg check per server',
-      'New tool: get_covers_report — covers by hour and by server',
-      'New tool: get_open_tables — all open tables with covers, server, items, subtotal, seated time',
-      'New tool: get_shift_summary — one-call shift overview: revenue, covers, floor status, top item',
-      'New tool: get_item_detail — full item info including modifiers, allergens, price',
-      'New tool: remove_from_order — AI can propose removing items from active order (with confirmation)',
-      'All reporting tools now query Supabase directly — accurate across all devices',
-      'System prompts updated with examples of what the AI can answer',
-    ],
-  },
-  {
-    version: '3.5.95', date: 'Apr 2026', label: 'Data sync: consistent checks and open orders across all devices',
-    changes: [
-      'Open orders report fixed: activeSessions now derived from tables[] — was always undefined so report showed zero',
-      'BOReports: today tab now fetches closed checks fresh from Supabase on mount — no longer device-local',
-      'AI assistant get_sales_summary and get_top_items now query Supabase directly — correct totals on any device including Sunmi',
-      'Realtime subscription added for closed_checks — all devices receive new check immediately when any device takes payment',
-    ],
-  },
-  { version: '3.5.94', date: 'Apr 2026', label: 'Fix: modifier groups load from Supabase on boot', changes: ['SyncBridge now fetches modifier_groups from Supabase on POS boot — no longer requires a Push to POS for modifiers to work after a reload'] },
-  { version: '3.5.93', date: 'Apr 2026', label: 'Service charge: floor plan panel + checkout fixed', changes: ['Floor plan table panel now computes service charge using resolveServiceCharge — respects minCovers threshold and waived flag', 'Checkout modal shows service charge correctly from getPOSTotals', 'Service charge label no longer hardcoded to 12.5%'] },
-  { version: '3.5.92', date: 'Apr 2026', label: 'Fix: serviceCharge guaranteed in deviceConfig', changes: ['setDeviceConfig now auto-merges serviceCharge from rpos-device-profiles if missing — no code path can strip it', 'minConfig path also carries serviceCharge forward from existingConfig', 'Service charge on min covers now works on first load without needing re-pair'] },
-  { version: '3.5.91', date: 'Apr 2026', label: 'Fix: service charge config now reaches deviceConfig', changes: ['serviceCharge was not being written to rpos-device-config or rpos-terminal-config — fixed in all 3 write locations', 'Store init now backfills serviceCharge from rpos-device-profiles if missing from cached device config', 'Service charge on min covers threshold now works correctly on the POS'] },
-  { version: '3.5.90', date: 'Apr 2026', label: 'Save & Send combined into one button', changes: ['Table mode: Save and Send merged into single context-aware button — shows Save (no items), Save & Send (unsent items), or Save (all already sent)'] },
-  { version: '3.5.89', date: 'Apr 2026', label: 'Remove Dev Switch device button from POS', changes: ['Dev: Switch device floating button removed from bottom left of POS — was covering the UI'] },
-  { version: '3.5.88', date: 'Apr 2026', label: 'Remove Switch device mode button', changes: ['Removed Switch device mode button from back office sidebar — was covering UI'] },
-  {
-    version: '3.5.87', date: 'Apr 2026', label: 'Service charge per device profile',
-    changes: [
-      'Service charge now configured per device profile — bar/counter can have it disabled, table service terminals can have different rates',
-      'Device Profile editor: enable/disable toggle, rate %, apply to all or min covers threshold',
-      'Order panel: service charge only shows for dine-in table orders — never walk-in, takeaway, bar, delivery',
-      'Order panel: tap service charge line to remove it for this order, tap Restore to reinstate',
-      'resolveServiceCharge() utility: clean logic for all conditions — profile config, order type, covers, waived flag',
-    ],
-  },
-  {
-    version: '3.5.86', date: 'Apr 2026', label: 'Tax name changes propagate live everywhere',
-    changes: [
-      'TaxManager now syncs updated tax rates to Zustand store immediately after save — name/rate changes show live in item editor and order panel',
-      'Realtime subscription for tax_rates table — POS receives name and rate changes automatically without page refresh',
-    ],
-  },
-  {
-    version: '3.5.85', date: 'Apr 2026', label: 'Data integrity: Supabase as source of truth',
-    changes: [
-      'updateMenuItem now saves the FULL item to Supabase on every edit — not just the changed patch',
-      'SyncBridge now loads taxRates directly from Supabase on boot (not just from snapshot)',
-      'SyncBridge maps price from pricing.base when loading items from Supabase',
-      'Items edited in back office immediately persist all fields to Supabase correctly',
-    ],
-  },
-  {
-    version: '3.5.84', date: 'Apr 2026', label: 'Fix: taxRates now travel with Push to POS',
-    changes: [
-      'taxRates added to Push to POS snapshot — they were never included before so POS always had empty tax rates',
-      'applyConfigUpdate now applies taxRates from snapshot to the store',
-    ],
-  },
-  {
-    version: '3.5.83', date: 'Apr 2026', label: 'Tax: order panel + receipt display fixed',
-    changes: [
-      'Order panel: tax breakdown now shows clearly below service charge, above total',
-      'Receipt modal: on-screen preview now shows tax lines (of which VAT or + Sales Tax)',
-      'Receipt print (HTML): tax lines now appear after total in printed receipt',
-    ],
-  },
-  {
-    version: '3.5.82', date: 'Apr 2026', label: 'Fix: Push to POS now writes menu to Supabase',
-    changes: [
-      'upsertMenuItem schema fixed — was sending price column which does not exist (schema uses pricing jsonb)',
-      'centre_id, tax_rate_id, tax_overrides columns added to menu_items, schema cache reloaded',
-      'Push to POS now writes all menu items and categories to Supabase with correct field mapping',
-    ],
-  },
-  {
-    version: '3.5.81', date: 'Apr 2026', label: 'Push to POS now writes menu to Supabase',
-    changes: [
-      'Root cause: Push to POS only saved a config_pushes snapshot, never wrote menu items to the menu_items table — Supabase DB was always empty',
-      'Push to POS now upserts ALL menu items and categories to Supabase on every push',
-      'upsertMenuItem rewritten to map every field cleanly (not spread full camelCase objects with wrong keys)',
-      'upsertMenuCategory added to db.js',
-      'After pushing: tax assignments, pricing, allergens — all saved properly to Supabase and queryable',
-    ],
-  },
-  {
-    version: '3.5.80', date: 'Apr 2026', label: 'Fix: tax fields now travel from menu item to order item',
-    changes: [
-      'Root cause found: addItem() never copied taxRateId/taxOverrides onto the order item — so calculateOrderTax had nothing to work with on every item',
-      'addItem now carries taxRateId and taxOverrides from menu item into the live order item',
-      'recordClosedCheck now computes and stores taxBreakdown at point of payment',
-      'tax.js imported properly into store (was using require() which does not work in ES modules)',
-    ],
-  },
-  {
-    version: '3.5.79', date: 'Apr 2026', label: 'Fix: tax rates actually load in POS now',
-    changes: [
-      'Critical fix: supabase client was not imported in useSupabaseInit — tax rates fetch was silently skipped every boot',
-      'Menu items now have taxRateId and taxOverrides mapped from snake_case on load in POS context',
-    ],
-  },
-  {
-    version: '3.5.78', date: 'Apr 2026', label: 'Tax: fix loading + order panel + receipt',
-    changes: [
-      'Fix: tax rates now actually load in POS (locId was declared after it was used)',
-      'Order panel: shows live tax summary below total (incl. VAT 20% £X.XX for UK, + Sales Tax for US)',
-      'ESC/POS receipt: UK shows of which VAT lines under total, US shows tax-exclusive breakdown',
-      'Browser/HTML receipt: same tax lines added',
-      'Receipt modal: passes taxBreakdown into printReceipt call',
-    ],
-  },
-  {
-    version: '3.5.77', date: 'Apr 2026', label: 'Fix: tax rates now load in back office',
-    changes: ['Tax rates now load in back office context (were only loading in POS context)', 'Item mapper in back office now includes taxRateId and taxOverrides'],
-  },
-  {
-    version: '3.5.76', date: 'Apr 2026', label: 'Tax system: UK VAT + US Sales Tax',
-    changes: [
-      'Tax rates table in Supabase — UK seeded: Standard 20%, Reduced 5%, Zero 0%',
-      'Back office: Tax & VAT section to create, edit, and delete rates for any location',
-      'Menu Manager: Tax tab per item with per-order-type overrides (e.g. takeaway = Zero Rate)',
-      'Checkout: shows tax breakdown — inclusive shows VAT extracted, exclusive adds tax on top',
-      'Reports: Tax tab with net/tax/gross per rate, period filter, CSV export for accountant',
-      'Tax engine handles UK (price includes tax) and US (tax added on top) correctly',
-    ],
-  },
-  {
-    version: '3.5.75', date: 'Apr 2026', label: 'Location settings + reports crash fix',
-    changes: [
-      'Reports crash fixed: locations variable reference error resolved',
-      'New Location Settings section in back office: set timezone, business day start, and named shifts',
-      'Timezone dropdown with 15 IANA zones — shows live current time in selected zone',
-      'Business day start: choose what time the new reporting day begins (default 06:00)',
-      'Shifts editor: add/edit/remove Breakfast/Lunch/Dinner style periods with start/end times',
-      'Saving clears the location config cache so changes take effect immediately',
-    ],
-  },
-  {
-    version: '3.5.74', date: 'Apr 2026', label: 'Save/Send + timezone + shift architecture',
-    changes: [
-      'Save button: open a table and save it with no items — seats the table and holds it on the floor plan',
-      'Seated state: tables with a session but no orders show in blue (seated) vs amber (occupied with orders)',
-      'Table mode: Save (always) + Send (only when items exist) — walk-in keeps Send as before',
-      'Timezone per location: Platform DB locations table now has timezone, business_day_start, and shifts columns',
-      'locationTime.js: business day start utility — reports use location timezone, not device local time',
-      'Shift config seeded: Breakfast 07:00-11:30, Lunch 11:30-17:00, Dinner 17:00-23:00 as defaults',
-    ],
-  },
-  {
-    version: '3.5.73', date: 'Apr 2026', label: 'Reporting: today only, open orders',
-    changes: [
-      'Overview cards and shift getter now filter to today (since midnight) — no more historical data polluting revenue',
-      'fetchClosedChecks loads only today on boot — week/month fetched fresh from Supabase when selected in reports',
-      'AI assistant sales summary now reports today only, not all-time',
-      'Reports: new Open Orders tab shows active tables with subtotals, excluded from revenue',
-      'Open orders show table label, cover count, item count, and current subtotal with clear not-yet-paid label',
-    ],
-  },
-  {
-    version: '3.5.73', date: 'Apr 2026', label: 'AI: add to order + discounts',
-    changes: [
-      'AI can now view the current order (get_current_order)',
-      'AI can add menu items to the active checkout — requires confirmation',
-      'AI can apply order discounts — requires confirmation and reason',
-      'AI always checks which table is open before adding items',
-    ],
-  },
-  {
-    version: '3.5.72', date: 'Apr 2026', label: 'AI tab added to POS nav',
-    changes: ['AI Shift Assistant now accessible from the ✦ AI tab in the POS sidebar'],
-  },
-  {
-    version: '3.5.71', date: 'Apr 2026', label: 'AI Assistant: FoH + BoH with tool use',
-    changes: [
-      'New BoH AI Assistant section — sales reporting, menu lookup, printer status, add items, update prices',
-      'FoH Shift Assistant upgraded with full tool use — allergens, printer checks, 86 items',
-      'Secure API proxy at /api/ai — Anthropic API key stays server-side, never exposed',
-      'Hard constraint system: read tools execute immediately, write tools require explicit confirmation',
-      'Tool-call visualization shows what the AI is doing in real time',
-    ],
-  },
-  {
-    version: '3.5.70', date: 'Apr 2026', label: 'Quick screen fix: items now push to POS correctly',
-    changes: [
-      'quickScreenIds now included in Push to POS snapshot',
-      'SyncBridge no longer strips quickScreenIds when applying snapshot on POS',
-      'Item grid rows expand to fit content instead of overlapping',
-    ],
-  },
-  {
-    version: '3.5.69', date: 'Apr 2026', label: 'Item grid fix + quick screen fix',
-    changes: [
-      'Item grid: rows now use minmax so long names expand the row instead of overlapping',
-      'Quick screen: only shows items explicitly configured in Back Office — no more padding with random products',
-      'Quick screen: shows a clear setup message when not yet configured',
-    ],
-  },
-  {
-    version: '3.5.68', date: 'Apr 2026', label: 'Print agent v2: heartbeat + health tracking',
-    changes: [
-      'Print agent now writes a heartbeat to Supabase every 30s — dashboard knows agent is alive',
-      'Agent ID and hostname visible per location — know exactly which machine the agent is on',
-      'printer_health updated after every job: online on success, error with message on failure',
-      'Consecutive failure counter increments — after 2+ failures printer marked offline',
-      'Agent marks itself offline on clean shutdown (SIGTERM/SIGINT)',
-      'Drains stale printing jobs on startup in case agent crashed mid-job',
-    ],
-  },
-  {
-    version: '3.5.67', date: 'Apr 2026', label: 'Printer monitoring: proper health tracking',
-    changes: [
-      'print_jobs added to Supabase realtime — watchJob now fires correctly on job completion',
-      'New printer_health table: persistent per-printer status updated on every job outcome',
-      'New printer_agents table: ready for LAN print agent heartbeat (90s timeout detection)',
-      'Status Drawer reads from printer_health first — accurate and persistent across sessions',
-      'Test button: timeout no longer falsely marks printer offline, shows correct agent-vs-printer distinction',
-      'agent-failed vs timeout vs error are now three distinct failure states with clear messages',
-    ],
-  },
-  {
-    version: '3.5.66', date: 'Apr 2026', label: 'Location switcher fix',
-    changes: [
-      'Regular users now correctly see their location in the switcher',
-      'No longer does a failing DB lookup — reads directly from user_profiles',
-      'Super admins still see all companies and locations from Platform DB',
-    ],
-  },
-  {
-    version: '3.5.65', date: 'Apr 2026', label: 'Location switcher: super admin sees all orgs',
-    changes: [
-      'Super admins now see all companies and all locations in the location switcher',
-      'Each company shown as a section header with location count and plan badge',
-      'Switching to any location updates the active context for the whole back office session',
-    ],
-  },
-  {
-    version: '3.5.64', date: 'Apr 2026', label: 'Fix auth: revert getLocationId to user_profiles',
-    changes: ['Reverted getLocationId to direct user_profiles lookup — Platform DB query was breaking auth flow'],
-  },
-  {
-    version: '3.5.63', date: 'Apr 2026', label: 'Back office fully cloud-based',
-    changes: [
-      'Printers: read/write Supabase printers table — survives across machines and incognito',
-      'Print routing: read/write Supabase print_routing table — fully cloud-persisted',
-      'Push to POS: reads routing and printers from Supabase as source of truth',
-      'localStorage only used as POS cache — back office is 100% Supabase',
-    ],
-  },
-  {
-    version: '3.5.62', date: 'Apr 2026', label: 'Platform DB: separate user/company management',
-    changes: [
-      'New RPOS Platform DB (yhzjgyrkyjabvhblqxzu) manages companies, locations, and user access',
-      'Ops DB remains clean — only POS operational data',
-      'getLocationId now queries Platform DB first, falls back to ops DB for existing installs',
-      'Both pwar2804@gmail.com and peter@posup.co.uk seeded in Platform DB with admin access',
-    ],
-  },
-  {
-    version: '3.5.61', date: 'Apr 2026', label: 'Auto-fire to kitchen on payment',
-    changes: [
-      'Walk-in orders paid without sending first now auto-fire to production printing at point of payment',
-      'Same applies to table orders — unsent items fire to kitchen when payment is taken',
-    ],
-  },
-  {
-    version: '3.5.60', date: 'Apr 2026', label: 'KDS: recall, hold, and per-item bump',
-    changes: [
-      'History button: tap to see all bumped tickets — tap Recall on any to bring it back to the queue',
-      'Hold button (⏸): parks a ticket in an On hold section without bumping it',
-      'Held tickets show purple with On Hold badge — tap Back to queue or Bump from held',
-      'Per-item bump: small checkbox on each item row — tap to mark individual items done',
-      'When all items on a ticket are individually bumped, the whole ticket auto-bumps',
-    ],
-  },
-  {
-    version: '3.5.59', date: 'Apr 2026', label: 'Modifiers and instructions on separate lines everywhere',
-    changes: [
-      'POS order panel: each modifier on its own line, instructions italic, notes with pencil icon',
-      'Instructions no longer baked into item name — they live only in the mods list',
-      'KDS: each mod/instruction/allergen on its own red line',
-      'Kitchen printer: each mod on its own red line, no >> prefix',
-    ],
-  },
-  {
-    version: '3.5.58', date: 'Apr 2026', label: 'Modifiers on separate red lines on KDS and printer',
-    changes: [
-      'KDS: each modifier and instruction on its own line in red',
-      'Kitchen printer: each modifier on its own line printed in red ink (ESC/POS ESC r)',
-      'Notes printed in red underline bold on kitchen tickets',
-    ],
-  },
-  {
-    version: '3.5.57', date: 'Apr 2026', label: 'Course badge always visible on order items',
-    changes: [
-      'Course badge now always shows on unsent order items (Course 1, Course 2 etc) — tap to change',
-      'Fire button appears automatically once order has course 2+ items and course 1 has been sent',
-      'Set default course per category in Menu Manager → Menus → edit category',
-    ],
-  },
-  {
-    version: '3.5.56', date: 'Apr 2026', label: 'KDS pending courses no longer greyed out',
-    changes: ['KDS pending courses shown clearly with ⏳ header, same text weight as fired courses'],
-  },
-  {
-    version: '3.5.55', date: 'Apr 2026', label: 'KDS: live fire course updates via realtime',
-    changes: [
-      'KDS now reacts to fire course in real time - ticket re-renders when POS fires next course',
-      'Fired courses move from dimmed pending section to active flame section instantly',
-    ],
-  },
-  {
-    version: '3.5.54', date: 'Apr 2026', label: 'Courses: category assignment + KDS display',
-    changes: [
-      'Categories now have a Default course picker in the edit modal',
-      'Items auto-get the right course when added from a category',
-      'Send to kitchen sends all courses in one ticket',
-      'KDS groups items by course with flame headers for fired, dimmed for pending',
-      'Fire course updates existing KDS ticket via Supabase realtime',
-    ],
-  },
-  {
-    version: '3.5.53', date: 'Apr 2026', label: 'Modifier groups: options must come from Items list',
-    changes: [
-      'Modifier group options can only be added by searching existing sub-items from the Items tab',
-      'Manual text entry removed — create items first in Items tab with type Sub item, then add here',
-      'Clear message shown if search has no match directing user to create the item first',
-    ],
-  },
-  {
-    version: '3.5.52', date: 'Apr 2026', label: 'Modifier groups: options entered manually only',
-    changes: ['Removed Search existing items from modifier group editor — options are entered manually (name + price)'],
-  },
-  {
-    version: '3.5.51', date: 'Apr 2026', label: 'Required nested modifier validation',
-    changes: [
-      'Required validation now checks nested sub-groups (e.g. Coffee Temp shown after picking a milk)',
-      'Nested required sub-groups show red border + Required badge when not selected',
-      'Error message names the nested group: Please choose: Coffee Temp',
-    ],
-  },
-  {
-    version: '3.5.50', date: 'Apr 2026', label: 'Required modifier fix: group min overrides item min',
-    changes: [
-      'Required modifier validation now uses the higher of group-level min vs item-level min',
-      'Previously: item stored min:0 (optional) which silently overrode group min:1 (required)',
-      'Now: if a group is marked Required in Modifier groups tab, it stays required on all items',
-    ],
-  },
-  {
-    version: '3.5.49', date: 'Apr 2026', label: 'Archived items + sub-items simplified + required modifier error',
-    changes: [
-      'Items tab: Archived button shows all archived items with Unarchive button per item',
-      'Sub items filter: simplified flat list with POS visibility toggle on each row',
-      'Required modifier error: Add button turns red with message when required groups not selected',
-      'Missing required groups highlighted with red border',
-    ],
-  },
-  {
-    version: '3.5.48', date: 'Apr 2026', label: 'Sub-items: proper category manager',
-    changes: [
-      'Sub-items view rebuilt as a two-panel category manager',
-      'Left panel: create and select sub-item categories (Milks, Sauces, Proteins…)',
-      'Right panel: shows items in selected category with individual POS visibility toggles',
-      'Assign existing sub-items to any category using the ← Assign existing search picker',
-      'POS visibility toggle on category header toggles soldAlone for all items in the group at once',
-      'Rename categories inline via the ✎ pencil button',
-      'Move items back to ungrouped via the ↩ button',
-    ],
-  },
-  {
-    version: '3.5.47', date: 'Apr 2026', label: 'Sub-items view + required modifier errors',
-    changes: [
-      'Items tab: new ⊕ Sub items filter shows dedicated grouped view for all sub-items',
-      'Sub-items can be tagged with a Group label (Milks, Sauces, Proteins…) to stay organised as the list grows',
-      'Add new sub-items directly within a group using the + Add button on each group header',
-      'Required modifier error: Add button turns red and shows which groups need a selection — no more silently blocked orders',
-      'Missing required groups highlighted with red border when user tries to add without selecting them',
-    ],
-  },
-  {
-    version: '3.5.46', date: 'Apr 2026', label: 'Production routing: subcategory inheritance fixed',
-    changes: [
-      'Root cause found: order line items did not carry cat or parentId — routing looked at empty fields',
-      'Items now look up their category from menuItems store using itemId when routing to production centres',
-      'Variant items (e.g. Small Latte) inherit routing from parent item category chain: Coffee → Hot Drinks → KDS Bar',
-      'cat and parentId now stamped onto order line items at creation time',
-    ],
-  },
-  {
-    version: '3.5.46', date: 'Apr 2026', label: 'Production routing: variant sizes route via parent category',
-    changes: [
-      'Variant sizes (Small/Medium/Large) now route using their parent item category if their own category does not match',
-      'Latte sizes now correctly appear on KDS Bar because Latte is in Coffee → Hot Drinks → assigned to KDS Bar',
-      'Both table and bar tab routing paths updated',
-    ],
-  },
-  {
-    version: '3.5.46', date: 'Apr 2026', label: 'Routing: subcategory inheritance',
-    changes: [
-      'Production routing now includes subcategories — if Hot Drinks is assigned to KDS Bar, items in Coffee (a subcategory) also route there',
-      'Latte (in Coffee, sub of Hot Drinks) now correctly routes to KDS Bar',
-      'Simple product (in Cat 1, not assigned anywhere) correctly goes nowhere',
-    ],
-  },
-  {
-    version: '3.5.45', date: 'Apr 2026', label: 'Production routing fix + category rename/delete',
-    changes: [
-      'Production routing: items not assigned to any centre no longer fall back to KDS Bar — they go nowhere',
-      'Simple product and other unrouted items will only appear on KDS if their category is explicitly assigned there',
-      'Category rename/delete: ✎ and × buttons now appear inline on each category row — no more hidden bottom panel',
-      'Deleting a category warns that items will become uncategorised',
-      'After any category change, Push to POS propagates the update to all terminals',
-    ],
-  },
-  {
-    version: '3.5.44', date: 'Apr 2026', label: 'KDS test fix: routes to correct centre',
-    changes: [
-      'KDS test now sends ticket to the correct production centre — BAR KDS receives its own test ticket',
-      'Fixed: test tickets had centre_id null so KDS filtered them out',
-    ],
-  },
-  {
-    version: '3.5.43', date: 'Apr 2026', label: 'KDS status: use ticket activity as online signal',
-    changes: [
-      'KDS online detection: 15min last_seen threshold (was 3min)',
-      'KDS also shown as online if tickets were bumped within the last 10 minutes',
-      'BAR KDS correctly shows online when in active use',
-    ],
-  },
-  {
-    version: '3.5.42', date: 'Apr 2026', label: 'Status drawer: KDS status + test all hardware',
-    changes: [
-      'KDS screens now shown in Status drawer with online/offline status based on last_seen heartbeat',
-      'Test button on each printer — waits for agent confirmation, shows real outcome',
-      'Test button on each KDS — sends a test ticket visible on the KDS screen',
-      'KDS heartbeat: device updates last_seen every 60s while KDS surface is open',
-      'Print queue shows issue count in section label when there are problems',
-    ],
-  },
-  {
-    version: '3.5.41', date: 'Apr 2026', label: 'Print queue: hide completed jobs',
-    changes: ['Print queue in Status drawer only shows pending and failed jobs — completed prints are hidden'],
-  },
-  {
-    version: '3.5.40', date: 'Apr 2026', label: 'Printer status: real hardware only',
-    changes: [
-      'Status drawer (⊙) now shows only real configured printers — no fake Stripe/KDS hardware',
-      'Printer status derived from actual print_jobs outcomes — online if last job succeeded, offline if failed or agent not responding',
-      'Live print queue in Status drawer shows all recent jobs with status, errors, and retry button',
-      'Back office Test button now waits up to 20s for agent confirmation — shows timeout error if agent not running',
-      'Test result is honest: queued → printed ✓ or timeout/failed with clear message',
-    ],
-  },
-  {
-    version: '3.5.40', date: 'Apr 2026', label: 'Sales data never lost',
-    changes: [
-      'CRITICAL: Closed checks now persist to Supabase on every payment — survive any page reload',
-      'POS loads todays closed checks from Supabase on boot — history always intact',
-      'localStorage used as fast fallback — any local-only checks merged in on load',
-      'closed_checks table schema fixed — inserts now succeed with correct column mapping',
-      'Today 2 checks (GBP21.25) recovered and saved to Supabase',
-    ],
-  },
-  {
-    version: '3.5.39', date: 'Apr 2026', label: 'Modifier groups: full backend wired',
-    changes: [
-      'Modifier groups now persist to Supabase — survive page refreshes and work across devices',
-      'Back office loads modifier groups from Supabase on boot alongside menu items',
-      'Push to POS includes modifier group definitions — POS now receives options, names, prices',
-      'Creating, editing, reordering, deleting modifier groups all write to Supabase instantly',
-      'Modifiers tab on parent items with variants shows a warning — assign to sizes only',
-    ],
-  },
-  {
-    version: '3.5.38', date: 'Apr 2026', label: 'Modifier groups: sub-items only search',
-    changes: [
-      'Search existing items now only shows items with type Sub item — no regular menu items',
-      'Item names now use menuName field correctly — no more showing default New item text',
-      'Clear message shown when no sub-items exist yet, with instructions to create them',
-    ],
-  },
-  {
-    version: '3.5.37', date: 'Apr 2026', label: 'Profile saves fixed + modifier item search',
-    changes: [
-      'Profile saves now use direct fetch — proven reliable, no more silent failures',
-      'Modifier groups: Search existing items tab — click any menu item to add it as an option with its price',
-      'Save error now shows a toast if the network call fails',
-    ],
-  },
-  {
-    version: '3.5.36', date: 'Apr 2026', label: 'Profile changes now reach POS instantly',
-    changes: [
-      'Fixed: profile saves now always reach Supabase — locationId no longer silently blocks saves',
-      'Save errors now surface as a toast instead of failing silently',
-      'device_profiles added to Supabase realtime — POS receives profile changes within 1 second',
-      'Flow: edit profile in back office → save → POS sidebar updates immediately, no Push to POS needed',
-    ],
-  },
-  {
-    version: '3.5.35', date: 'Apr 2026', label: 'Device profiles: properly fixed',
-    changes: [
-      'Profiles load instantly from cache then confirm with Supabase — no blank flash on open',
-      'device_profiles added to Supabase realtime — profile changes now reach POS devices live',
-      'Profile edits save to Supabase and propagate via realtime subscription immediately',
-    ],
-  },
-  {
-    version: '3.5.34', date: 'Apr 2026', label: 'Device profiles: permanently fixed',
-    changes: [
-      'Deleted profiles now stay deleted — Supabase is the only source of truth, no localStorage or hardcoded fallbacks',
-      'prof-1/2/3 ghost profiles permanently removed from database',
-      'receipt_printer_id column added to devices table',
-      'DeviceProfiles loads fresh from Supabase on every open, never from stale cache',
-      'Back office localStorage cleared of stale profile data on next load',
-    ],
-  },
-  {
-    version: '3.5.33', date: 'Apr 2026', label: 'Device profiles fixed + printer status moved',
-    changes: [
-      'Hidden features now correctly hide floor plan, bar, orders nav items',
-      'Deleted profiles no longer come back — hardcoded prof-1/2/3 fallbacks removed',
-      'Printer status moved into Status drawer (sidebar ⊙), not shift bar',
-      'Status drawer polls print bridge live, dot goes amber when offline',
-    ],
-  },
-  {
-    version: '3.5.32', date: 'Apr 2026', label: 'Printer: remove port, Push to POS sync, FOH status',
-    changes: [
-      'Port field removed from printer form — ESC/POS port 9100 always used automatically',
-      'Printers now included in Push to POS snapshot — sync to all POS devices instantly',
-      'FOH shift bar shows live 🖨 Online/Offline printer bridge status indicator',
-      'Status polls bridge every 30s, green glow when online, red when bridge unreachable',
-    ],
-  },
-  {
-    version: '3.5.31', date: 'Apr 2026', label: 'Supabase print queue',
-    changes: [
-      'Print jobs now go via Supabase — no HTTP bridge server, no port forwarding, no CORS',
-      'print-agent.js: lightweight Node script, runs on any LAN machine, outbound connections only',
-      'Agent subscribes to Supabase realtime for instant job pickup, polls as fallback',
-      'Works from iOS, Android, any browser — submit from anywhere, agent prints locally',
-      'Test button queues a job via Supabase rather than calling localhost',
-    ],
-  },
-  {
-    version: '3.5.30', date: 'Apr 2026', label: 'Back office version fix',
-    changes: [
-      'Back office version number now matches POS — both read from a single source (lib/version.js)',
-      'Previously the back office was stuck on v3.5.25 while the POS showed the correct version',
-    ],
-  },
-  {
-    version: '3.5.29', date: 'Apr 2026', label: 'Printer registry',
-    changes: [
-      'Devices → Printers: add and manage physical printers (name, model, IP, connection type, paper width, roles)',
-      'Production printing: printer field is now a dropdown — choose from registered printers',
-      'Devices: each terminal can be assigned a receipt printer',
-      'Test button sends a test print via WiFi bridge to verify connectivity',
-    ],
-  },
-  {
-    version: '3.5.28', date: 'Apr 2026', label: 'Production printing rename',
-    changes: [
-      '"Print routing" renamed to "Production printing" throughout back office',
-      'Sidebar nav, quick-action tiles, and section headers all updated',
-    ],
-  },
-  {
-    version: '3.5.27', date: 'Apr 2026', label: 'Sunmi NT311 printer integration',
-    changes: [
-      'Full ESC/POS print service — works on any device including iOS Safari',
-      'WiFi bridge transport: HTTP POST to local Node server → TCP 9100 to printer (universal)',
-      'Web Bluetooth transport: direct connection on Chrome/Android',
-      'Sunmi native transport: AIDL bridge on Sunmi D3 Pro and other Sunmi devices',
-      'Browser window.print() fallback — always available as last resort',
-      'print-bridge.js: zero-dependency Node server, runs on Pi, Mac, or Sunmi device',
-      'Printer settings panel in back office: transport selector, bridge URL, test connection',
-      'ESC/POS builder: bold, center, double-height, two-column, auto-cut, cash drawer trigger',
-      'Customer receipt template: itemised bill with mods, discounts, totals, footer',
-      'Kitchen ticket template: large table number, double-width items, seat and mod callouts',
-      'NT311 setup guide built into the printer settings panel',
-    ],
-  },
-  {
-    version: '3.5.26', date: 'Apr 2026', label: 'Live device profile sync',
-    changes: [
-      'Realtime subscription on device_profiles — profile changes apply instantly without reload',
-      'Front end updates immediately when order types, features or defaults change in back office',
-    ],
-  },
-  {
-    version: '1.1.1', date: 'Apr 2026', label: 'Store-driven login, kiosk and quick screen fixes',
-    changes: [
-      'PIN login screen now reads from store staffMembers — staff added in Staff Manager appear on the login screen immediately.',
-      'Kiosk surface now reads categories and items from the store, respects quickScreenIds for the Popular tab, filters by visibility.kiosk, and sorts by sortOrder.',
-      'Kiosk Popular tab uses the Quick Screen configuration set in Menu Manager.',
-      'Items hidden from kiosk via visibility settings no longer appear on the kiosk.',
-    ],
-  },
-  {
-    version: '1.1.9', date: 'Apr 2026', label: 'Modifier modal Add button fixed — ReferenceError on selected',
-    changes: [
-      'CRITICAL FIX: Modifier modal (Ribeye, Chicken supreme etc.) Add button silently failed — buildDisplayName referenced selected which only exists in VariantsModal not ModifiersModal, causing ReferenceError. The modal stayed open with no error visible. Fixed by removing the undefined reference — modifier-only items never have a variant selection in this context.',
-    ],
-  },
-  {
-    version: '1.1.9', date: 'Apr 2026', label: 'Modifier modal Add button fixed',
-    changes: [
-      'CRITICAL FIX: clicking "Add to order" on modifiable items (Ribeye, Chicken supreme etc.) did nothing — buildDisplayName in ModifiersModal referenced selected which is only defined in the variant pick step, not the modifier step. ReferenceError was swallowed by React leaving the modal open.',
-      'ModifiersModal buildDisplayName now uses only item name + instruction group selections (cooking preference etc.). Modifier rows (Side choice, Sauce) display on separate lines in the order panel, not in the name.',
-    ],
-  },
-  {
-    version: '2.9.0', date: 'Apr 2026', label: 'Onboarding: Company Admin, Device Pairing, POS First Boot',
-    changes: [
-      'Company Admin panel — create organisations, add locations, invite restaurant owners (back office → Company Admin).',
-      'Device pairing — generate a pairing code in Devices section, enter it on any POS device to register it to your location.',
-      'POS first-boot screen — new unregistered devices show a pairing screen instead of going straight to PIN login.',
-      'Devices section rebuilt with real Supabase integration — pairing codes stored in database, status tracked.',
-    ],
-  },
-  {
-    version: '2.8.2', date: 'Apr 2026', label: 'Fix: back office now loads after login',
-    changes: ['Fixed React hooks violation — useState was declared after conditional early returns, causing the back office to render a blank page after authentication. All hooks are now declared before any conditional returns.'],
-  },
-  {
-    version: '2.8.1', date: 'Apr 2026', label: 'Fix: back office auth gate — login screen now works',
-    changes: ['Fixed ReferenceError: authUser not defined — auth state was referenced in JSX but never declared. Login screen now shows correctly when accessing the back office without a session.'],
-  },
-  {
-    version: '2.8.0', date: 'Apr 2026', label: 'Auth: Back office login with Supabase Auth',
-    changes: [
-      'Back office is now gated behind email + password login via Supabase Auth.',
-      'Super admin account (peter@posup.co.uk) created and linked to Restaurant OS Internal org.',
-      'Multi-tenant schema live: organisations, locations, user_profiles, subscriptions, location_features, devices tables created.',
-      'Sign out button added to back office sidebar.',
-      'GMV-based plan calculator function deployed to Supabase.',
-    ],
-  },
-  {
-    version: '2.7.9', date: 'Apr 2026', label: 'Fix: POS crash — activeCatIds was not defined',
-    changes: ['Fixed ReferenceError: activeCatIds is not defined — this variable was referenced in POSSurface but never declared, crashing the POS ordering screen on every load.'],
-  },
-  {
-    version: '2.7.8', date: 'Apr 2026', label: 'Fix: store init crash resolved',
-    changes: ['Fixed store initialization crash — _savedBO is now computed inside a single IIFE, eliminating the broken two-variable pattern that caused a white screen on load.'],
-  },
-  {
-    version: '2.7.7', date: 'Apr 2026', label: 'Fix: app crash — reverted broken vite.config define block',
-    changes: ['Reverted vite.config.js define block that was overriding import.meta.env and crashing the app at startup.'],
-  },
-  {
-    version: '2.7.6', date: 'Apr 2026', label: 'Fix: POS no longer breaks when Supabase has no categories yet',
-    changes: [
-      'Fixed: store no longer boots with empty categories when localStorage was overwritten by Supabase hydration. Falls back to seed data if saved data has no entries.',
-      'Fixed: Supabase hydration now updates menus and categories independently — never wipes one because the other is empty.',
-    ],
-  },
-  {
-    version: '2.7.5', date: 'Apr 2026', label: 'Supabase: menus load from database on startup',
-    changes: [
-      'Back office now reads menus and categories from Supabase on startup — not from localStorage seed.',
-      'Menus you create persist permanently across all page reloads and devices.',
-    ],
-  },
-  {
-    version: '2.7.4', date: 'Apr 2026', label: 'Fix: Supabase menu writes — column mapping corrected',
-    changes: ['Fixed menu and category upserts to Supabase — only sends columns that exist in the database schema. Previously failing silently because of unknown column names.'],
-  },
-  {
-    version: '2.7.3', date: 'Apr 2026', label: 'Fix: Supabase env vars explicitly baked into bundle',
-    changes: ['Updated vite.config.js to explicitly define all Supabase env vars at build time, bypassing Vercel build cache issues.'],
-  },
-  {
-    version: '2.7.2', date: 'Apr 2026', label: 'Supabase: live connection active',
-    changes: ['Supabase integration fully live — menus, categories persist to database instantly.'],
-  },
-  {
-    version: '2.7.1', date: 'Apr 2026', label: 'Fix: Supabase connection — force fresh build with env vars',
-    changes: [
-      'Triggered fresh Vercel build so VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY and VITE_USE_MOCK env vars are baked into the bundle.',
-      'Fixed menu_items query — removed invalid embedded join that caused 400 errors on startup.',
-    ],
-  },
-  {
-    version: '2.7.0', date: 'Apr 2026', label: 'Supabase integration: menus and categories persist to live database',
-    changes: [
-      'Menus and categories now save to Supabase on every change — create a menu, it is instantly in the database.',
-      'Page reloads, new devices, and multiple terminals all see the same menus without needing Push to POS.',
-      'Falls back to localStorage automatically if Supabase is unreachable.',
-    ],
-  },
-  {
-    version: '2.6.4', date: 'Apr 2026', label: 'Menus persist across page reloads without needing Push to POS',
-    changes: [
-      'Menus and categories are now saved to localStorage instantly on every change. Page reloads no longer reset to the seed menus — your custom menus survive.',
-      'Device Profiles menu selector now shows the menus you have actually built, not the default seed menus.',
-    ],
-  },
-  {
-    version: '2.6.3', date: 'Apr 2026', label: 'Menus: inline add and delete menus',
-    changes: [
-      'Menu Manager → Menus tab: click + to add a new menu with an inline form (type name, press Enter or click Create). No browser prompt.',
-      'Each menu now has a × delete button. The default menu (Main menu ★) cannot be deleted. Deleting a menu does not delete its categories or items.',
-    ],
-  },
-  {
-    version: '2.6.2', date: 'Apr 2026', label: 'Revert: Quick Screen back to single screen',
-    changes: [
-      'Removed multiple Quick Screens. Back to one simple 16-slot grid. Click an item to add it, drag to reorder, × to remove.',
-      'Removed Quick Screen layout selector from Device Profiles.',
-      'Category filter in the picker now includes subcategories.',
-    ],
-  },
-  {
-    version: '2.6.1', date: 'Apr 2026', label: 'Fix: POS white screen crash + duplicate menu selector in device profiles',
-    changes: [
-      'Fixed: POS went white screen after v2.6.0 — a runtime crash caused by accessing menus before the store was ready. deviceMenuId is now safe and defaults to null (show all categories) when no menu is assigned to the device profile.',
-      'Fixed: Device profiles Edit modal showed the Menu selector twice. Duplicate removed.',
-    ],
-  },
-  {
-    version: '2.6.0', date: 'Apr 2026', label: 'Menu-per-device: assign a menu to each terminal',
-    changes: [
-      'Device profiles now have a Menu selector. Go to Device Profiles → Edit any profile → Menu — pick which menu that terminal shows. The Bar terminal defaults to showing only the Bar menu (drinks and bar snacks).',
-      'Both the Bar surface and POS surface now filter their category pills and item grids by the menu assigned to the device. A Bar terminal with the Bar menu only sees bar categories and bar items.',
-      'The Menus tab in Menu Manager is where you build and manage named menus (Main menu, Bar menu, Lunch menu etc). Categories are assigned to menus via menuId.',
-      'Falls back to showing all menus if no specific menu is assigned to the device profile.',
-    ],
-  },
-  {
-    version: '2.7.1', date: 'Apr 2026', label: 'Fix: Supabase connection — force fresh build with env vars',
-    changes: [
-      'Triggered fresh Vercel build so VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY and VITE_USE_MOCK env vars are baked into the bundle.',
-      'Fixed menu_items query — removed invalid embedded join that caused 400 errors on startup.',
-    ],
-  },
-  {
-    version: '2.7.0', date: 'Apr 2026', label: 'Supabase integration: menus and categories persist to live database',
-    changes: [
-      'Menus and categories now save to Supabase on every change — create a menu, it is instantly in the database.',
-      'Page reloads, new devices, and multiple terminals all see the same menus without needing Push to POS.',
-      'Falls back to localStorage automatically if Supabase is unreachable.',
-    ],
-  },
-  {
-    version: '2.6.4', date: 'Apr 2026', label: 'Menus persist across page reloads without needing Push to POS',
-    changes: [
-      'Menus and categories are now saved to localStorage instantly on every change. Page reloads no longer reset to the seed menus — your custom menus survive.',
-      'Device Profiles menu selector now shows the menus you have actually built, not the default seed menus.',
-    ],
-  },
-  {
-    version: '2.6.3', date: 'Apr 2026', label: 'Menus: inline add and delete menus',
-    changes: [
-      'Menu Manager → Menus tab: click + to add a new menu with an inline form (type name, press Enter or click Create). No browser prompt.',
-      'Each menu now has a × delete button. The default menu (Main menu ★) cannot be deleted. Deleting a menu does not delete its categories or items.',
-    ],
-  },
-  {
-    version: '2.6.2', date: 'Apr 2026', label: 'Revert: Quick Screen back to single screen',
-    changes: [
-      'Removed multiple Quick Screens. Back to one simple 16-slot grid. Click an item to add it, drag to reorder, × to remove.',
-      'Removed Quick Screen layout selector from Device Profiles.',
-      'Category filter in the picker now includes subcategories.',
-    ],
-  },
-  {
-    version: '2.6.1', date: 'Apr 2026', label: 'Fix: POS white screen crash + duplicate menu selector in device profiles',
-    changes: [
-      'Fixed: POS went white screen after v2.6.0 — a runtime crash caused by accessing menus before the store was ready. deviceMenuId is now safe and defaults to null (show all categories) when no menu is assigned to the device profile.',
-      'Fixed: Device profiles Edit modal showed the Menu selector twice. Duplicate removed.',
-    ],
-  },
-  {
-    version: '2.6.0', date: 'Apr 2026', label: 'Menus: build multiple menus, assign per device profile',
-    changes: [
-      'Menus tab now shows a menu selector on the left — Main menu, Bar menu, Lunch menu, and a + New menu button. Click a menu to see only its categories. Categories created in a menu belong to that menu.',
-      'Device Profiles → Edit any profile → new Menu section: assign which menu that terminal shows (Main menu, Bar menu, etc). The Bar terminal can now show only Bar menu categories.',
-      'POS reads the device profile menu assignment and filters category pills accordingly. If no menu is assigned the default menu (Main menu) is used.',
-      'Menus are included in Push to POS snapshot so all terminals receive menu assignments automatically.',
-    ],
-  },
-  {
-    version: '2.5.3', date: 'Apr 2026', label: 'Device profiles: assign Quick Screen per terminal',
-    changes: [
-      'Device profiles now have a Quick Screen layout selector. Go to Back Office → Device Profiles → Edit any profile → Quick Screen layout — pick which screen that terminal shows on its ⚡ Quick tab.',
-      'The Bar terminal profile can now show the Bar screen (drinks only) while the main counter shows the Main screen. Each device independently reads its assigned screen.',
-      'POS reads quickScreenId from the active device config, falling back to the global activeQuickScreenId if no profile screen is assigned.',
-    ],
-  },
-  {
-    version: '2.5.2', date: 'Apr 2026', label: 'Fix: quickScreens + menuCategories included in Push to POS snapshot',
-    changes: [
-      'Quick Screen configurations (multiple screens, column counts, item lists) are now included in the Push to POS snapshot and applied on every page load. Previously they were missing from the snapshot entirely.',
-      'menuCategories is now also included in the snapshot so category changes (icons, colours, names, structure) propagate correctly to POS on push.',
-    ],
-  },
-  {
-    version: '2.5.1', date: 'Apr 2026', label: 'Fix: Quick Screen category filter includes subcategories',
-    changes: ['Quick Screen picker category filter now shows items in subcategories. Selecting Drinks shows items from Draught beer, Wine, Soft drinks subcategories — not just direct Drinks items.'],
-  },
-  {
-    version: '2.5.0', date: 'Apr 2026', label: 'Quick Screen: multiple named screens, variable grid, click-to-add',
-    changes: [
-      'Multiple named Quick Screens: click + Screen to add screens (Main screen, Bar screen, Lunch, etc). Each screen has its own independent item list. Double-click a tab to rename it.',
-      'Variable grid columns: choose 3, 4, 5 or 6 columns per screen from the settings bar. Grid expands automatically.',
-      'Click to add: click any item in the right panel to instantly add it to the next empty slot. No drag required. Drag still works for precise placement or reordering.',
-      'Already-on-screen indicator: items that are already on the current screen show a green ✓ in the picker panel and cannot be added twice.',
-      'Screen isolation: each screen saves its own item list. The main screen stays in sync with the POS Quick tab.',
-    ],
-  },
-  {
-    version: '2.4.2', date: 'Apr 2026', label: 'Fix: config snapshot always applied on page load',
-    changes: [
-      'Critical sync fix: when any page reloaded (POS, KDS, etc.), the Zustand store reset to seed data. SyncBridge was checking sessionStorage version — if it matched the snapshot version, it assumed the config was already applied and showed no banner. But the store had already reset to seed. Result: POS running on stale seed data with no way to know.',
-      'Fix: always apply the config snapshot on every mount. The store always starts from seed on reload, so the snapshot must always be re-applied. This means soldAlone items, price changes, menu edits, category changes — all persist correctly across page reloads without needing to click Sync now.',
-    ],
-  },
-  {
-    version: '2.4.1', date: 'Apr 2026', label: 'Fix: soldAlone sub-items now appear correctly on POS and in Menus tab',
-    changes: [
-      'Root cause fixed: 4 separate filter bugs were blocking soldAlone sub-items from appearing on the POS. catItems excluded all sub-items regardless of soldAlone flag. Search results did the same. Tapping a sub-item on POS returned early before processing. Category pill counts did not include them.',
-      'Menus tab grid now shows soldAlone sub-items in their assigned category — the gridItems filter was blocking all type=subitem items even when soldAlone was true.',
-      'Add Items panel in Menus tab now shows soldAlone sub-items in the available-to-add list so they can be assigned to categories from there.',
-      'Full end-to-end flow: Items tab → toggle sold alone on Chips → pick Starters → Push to POS → Chips appears in Starters on POS and is fully tappable and orderable.',
-    ],
-  },
-  {
-    version: '2.4.0', date: 'Apr 2026', label: 'Sold alone toggle on items, not modifier groups',
-    changes: [
-      'Sold alone moved to the correct place — it is now a sliding toggle on each sub-item row in the Items tab, not on modifier group options (which was wrong).',
-      'How it works: go to Items tab → find any Sub item (Chips, Side salad, etc.) → a sliding toggle appears below the row labelled Also sell standalone. Flip it green → a Category dropdown appears inline → pick any category → that item now appears there on the POS exactly like a normal item.',
-      'Removed: Extras category from POS — sold-alone items now appear in whichever real category you assign them to, not in a special Extras screen.',
-      'Removed: soldAlone checkbox from Modifier groups tab (wrong location). The toggle lives on the product itself in the Items tab.',
-      'Backend: POS now includes subitem-type items in the menu when soldAlone is true and a cat is set. The updateMenuItem store action handles soldAlone and cat fields directly.',
-    ],
-  },
-  {
-    version: '2.3.1', date: 'Apr 2026', label: 'Sold alone: backend wired correctly',
-    changes: [
-      'Fixed: menuCategories was missing from ModifiersTab store subscription — the category dropdown in the sold-alone checkbox was calling useStore.getState() (a static one-time snapshot) instead of the reactive hook. Now uses the live menuCategories value so the dropdown always shows current categories.',
-      'Added: updateModifierGroupOption store action — a direct targeted action that patches a single option within a modifier group without rebuilding the entire options array. updOpt now calls this instead of re-mapping the full options array through updateModifierGroupDef.',
-      'The soldAlone and soldAloneCat fields now persist correctly when toggled in the Modifier groups tab. Changes reflect immediately on POS (Extras screen and category items).',
-    ],
-  },
-  {
-    version: '2.3.0', date: 'Apr 2026', label: 'Sold alone: modifier options orderable as standalone POS items',
-    changes: [
-      'NEW: Can be sold alone — in the Modifier groups tab, each option now has a Can be sold alone checkbox. When ticked, you choose which category it appears in on the POS menu. That option then shows as a regular tappable item in that category.',
-      'Example: Chips and Side salad in the Side choice group can now be ticked as sold alone → Starters. They appear directly on the Starters POS screen and can be ordered without being attached to another item.',
-      'NEW: Extras category — when any soldAlone options exist, a purple ⊕ Extras category pill appears on the POS. It shows ALL soldAlone options from all modifier groups in one dedicated quick-access screen.',
-      'Demo: Chips, Side salad, Sweet potato fries from the Side choice group are sold alone in Starters. They appear both in the Starters category and the Extras screen.',
-    ],
-  },
-  {
-    version: '2.2.0', date: 'Apr 2026', label: 'Menus tab: search and add existing items to categories',
-    changes: [
-      'Menus tab redesigned: the + Item button is replaced with + Add items. Clicking it opens a search panel that lets you find any item from the Items library and add it to the selected category.',
-      'Add items panel shows: items already in this category (with Remove button), then all available items below (with + Add button). Search filters both sections live as you type.',
-      'Removing an item from a category moves it to its next assigned category or clears the primary category — the item stays in the Items library, just removed from this menu category.',
-      'Items tab is the right place to create new items. Menus tab is for building the menu by assigning existing items to categories.',
-    ],
-  },
-  {
-    version: '2.1.0', date: 'Apr 2026', label: 'Items tab — full item library with variants always visible',
-    changes: [
-      'NEW: 📋 Items tab — a flat list of every item in the system including all variant sub-items. Shows parent items with variant children always visible and indented below (Lager → └ Pint, └ Half pint). This is the central item library.',
-      'Items tab features: search by name/description, filter by type (Simple / Options / Has sizes / Pizza), filter by category, + Item button creates a new item. Click any row to open the full item editor on the right (Flow / Sizes / Modifiers / Pricing / Allergens tabs).',
-      '+ Add size button at the bottom of each variant group — add a new variant directly from the Items list.',
-      'Menu renamed to Menus — all existing menu editing functionality unchanged.',
-      'Nav order: Menus | Quick Screen | Items | Modifier groups | Instruction groups.',
-    ],
-  },
-  {
-    version: '2.0.2', date: 'Apr 2026', label: 'Category ↕ Move modal, list sub-items fix',
-    changes: [
-      'Category nesting redesigned: drag-to-nest removed (unreliable HTML5 drag events). Every category now has a ↕ button that opens a clean Move modal — choose Root level or any other category to nest under. Works reliably every time.',
-      'Category un-nesting: click ↕ on any subcategory → select Root level → Move here. Done.',
-      'Category reorder via drag still works within the same level (root-to-root or sub-to-sub).',
-      'List view sub-items fix: switched from expandedIds (needed initialising per category switch) to collapsedIds (empty by default = all expanded). Variant children now always show immediately when you navigate to any category.',
-    ],
-  },
-  {
-    version: '2.0.1', date: 'Apr 2026', label: 'Fix: list view variants always visible, category drag reliable',
-    changes: [
-      'List view variants fix: sub-items (sizes) now always show expanded by default regardless of which category you navigate to. Root cause: expandedIds state was initialised once from the first category and never updated when you switched categories. Fixed by inverting the logic to track collapsedIds (empty by default = everything open). Click ▾ to collapse a variant group, click ▸ to expand.',
-      'Category drag fix: removed DragLeave event listeners that were clearing the drop target on every mouse movement between child elements, making drops unreliable. Drop zones now stay highlighted until drag ends.',
-      'Category nesting via drag: when dragging a category over another category, shows nest → badge to make clear it will become a subcategory. Same-level drag still reorders.',
-      'Category un-nesting: the top drop zone is now larger (8px padding vs 3px) with clearer label. The Edit category modal parent selector also works as a reliable backup for nesting/unnesting.',
-      'Root drop fix: un-nest to root now correctly sets parentId to null before looking up the target (previously a guard check was in wrong order).',
-    ],
-  },
-  {
-    version: '2.0.0', date: 'Apr 2026', label: 'Canvas removed · List view with inline variant editing',
-    changes: [
-      'Canvas feature removed completely — it was unreliable and did not correctly reflect changes on the POS. The Grid/Canvas toggle is now Grid/List.',
-      'NEW: List view (☰ List button in category toolbar). Shows every item as a table row: drag handle · name · type badge · price · modifier count · allergen count. Drag rows to reorder — reorder reflects immediately on POS.',
-      'Variants visible in List view: items with sizes show a ▾ expand arrow. Click to reveal all variant children indented below the parent, always visible by default. Each variant row shows its name (editable inline) and price (editable inline) without needing to click into an editor.',
-      '+ Add size button appears at the bottom of each expanded variant group — adds a new size directly from the list without navigating anywhere.',
-      'Clicking any row (parent or variant child) still opens the full item editor panel on the right for detailed editing.',
-    ],
-  },
-  {
-    version: '1.9.2', date: 'Apr 2026', label: 'Fix: canvas sortOrder scoped per category; nested modifiers reactive',
-    changes: [
-      'Canvas sortOrder fix: dragging items in Canvas view now only recalculates sortOrder for items in the SAME category. Previously, dragging a Starter would affect the sortOrder numbering of Mains, Drinks etc because all items were sorted globally — now scoped to the active category.',
-      'InlineItemFlow now uses reactive Zustand subscription for modifierGroupDefs/instructionGroupDefs instead of a one-time getState() snapshot. This ensures nested sub-group definitions are always up-to-date when building modifier flows for variant items.',
-      'Nested modifiers on variant items: after picking a size, modifier options with subGroupId correctly trigger their linked sub-group inline below. The subGroupId is preserved through the option spread when stored in selections state.',
-    ],
-  },
-  {
-    version: '1.9.1', date: 'Apr 2026', label: 'Fix: modifiers on variant items now show after picking a size',
-    changes: [
-      'Critical fix: when an item has sizes (variants), modifier groups assigned to the parent item now correctly appear after the customer picks a size. Root cause: after picking a variant (e.g. Pint), the flow was looking for modifier groups on the child item (Pint) instead of the parent (Stout). Child items never have their own modifier groups — they inherit from the parent. Fixed in InlineItemFlow to check parent modifiers when child has none.',
-      'The hasMods check now also looks at the parent item — so if a variant item has parent modifiers, the flow correctly transitions to the modifiers step instead of immediately adding to the order.',
-    ],
-  },
-  {
-    version: '1.9.0', date: 'Apr 2026', label: 'Fix: variant order + canvas order now reflect on POS',
-    changes: [
-      'Variant order on POS fixed: dragging sizes to reorder in the Sizes tab or Flow tab now correctly reflects on the POS. Root cause was variantChildren were read from the store without sorting by sortOrder — fixed in both POSSurface and InlineItemFlow.',
-      'Canvas drag now updates sortOrder: previously dragging items on the canvas only saved canvasPos (the visual position) but never updated sortOrder. Now when you release a drag, all items in the canvas are re-ranked by their Y position (top to bottom), and that order is what the POS uses.',
-      'Canvas auto-layout also correctly updates sortOrder when items are rearranged.',
-    ],
-  },
-  {
-    version: '1.8.0', date: 'Apr 2026', label: 'Flow tab — complete customer journey in item editor',
-    changes: [
-      'New Flow tab is now the DEFAULT view when clicking any item — shows the complete customer ordering journey in numbered steps: ① Choose size (Pint / Half pint / Third, editable inline with prices), ② Side choice REQUIRED (Chips · Side salad…), ③ Sauce Optional, ④ Cooking preference no charge. This is the exact sequence the customer goes through on POS.',
-      'Sizes are now editable directly in the Flow tab — name and price for each variant, inline. No need to switch to Sizes tab just to update a price.',
-      'Modifier groups in Flow tab show all options as chips and display nested modifier indicators (↳ If "Peppercorn": also shows Sauce preference).',
-      'Drag handles on modifier groups in Flow tab — drag to reorder the customer journey without switching tabs.',
-      'Instruction groups shown in green numbered steps at the end of the flow.',
-      'Search-to-add modifier groups available at the bottom of the Flow tab.',
-      'Visual Builder (swimlane) removed — it did not match the POS and was confusing. Clean nav: Menu | Quick Screen | Modifier groups | Instruction groups.',
-    ],
-  },
-  {
-    version: '1.7.0', date: 'Apr 2026', label: 'Visual Menu Builder — swim-lane drag-and-drop + flow visualizer',
-    changes: [
-      'NEW: ✦ Visual Builder tab in Menu Manager — a full swim-lane canvas showing your entire menu at once. One column per category, drag items between categories to reassign, drag columns to reorder categories.',
-      'Per-item flow visualization: click ▼ flow on any item card to see the complete POS ordering journey — ① Sizes ② Side choice ★ required ③ Sauce (with nested modifiers shown) ④ Cooking preference. Exactly what the customer sees, step by step.',
-      'Channel assignment on each menu: toggle POS / Kiosk / Online / Delivery active state per menu directly in the builder header.',
-      'Local/Shared/Global pricing scope restored in item editor — sets whether pricing is unique to this item, inherited from a shared rule, or identical across all channels.',
-      'Item quick-edit panel slides in from right when clicking any item card — full Details/Pricing/Modifiers/Sizes/Allergens without leaving the visual builder.',
-      'Modifier assignment in the quick-edit panel uses the same search-first pattern — all changes visible immediately on the swim-lane.',
-    ],
-  },
-  {
-    version: '1.6.0', date: 'Apr 2026', label: 'Modifier/instruction groups drag-reorder, subGroupId, canvas as view mode',
-    changes: [
-      'Modifier groups tab: drag handles on both groups (left list) and options (right editor). Drag groups to reorder the order they appear in search/assignment. Drag options within a group to set the order the customer sees them on POS.',
-      'Nested modifiers in editor: each option now has a nested group selector (↳ Nested group dropdown). Pick any other modifier group to make it appear when that option is selected. This is the core of the conditional modifier flow.',
-      'Instruction groups tab: same drag-to-reorder for both groups and individual options within each group.',
-      'Canvas removed as top-level tab — now accessed per-category via the Grid/Canvas toggle button in the category toolbar. The canvas view automatically shows only items in the selected category.',
-      'Reorder store actions added: reorderModifierGroupDefs and reorderInstructionGroupDefs for persistent ordering without sortOrder fields.',
-    ],
-  },
-  {
-    version: '1.5.0', date: 'Apr 2026', label: 'Full pizza builder + pizza items fixed',
-    changes: [
-      'Pizza items (Margherita, Pepperoni, BBQ chicken) now correctly set as type:pizza — previously they were type:modifiable so the pizza builder never appeared.',
-      'Per-item pizza configuration: each pizza can now have its own sizes (with custom names and prices), available bases, available crusts, and default toppings — all independent from the global defaults.',
-      'Pizza builder in Menu Manager shows: sizes list with drag-edit + add-size form; bases toggle (which are available for this pizza); crusts toggle; default toppings grid with colour-coded indicators; order flow preview showing exactly what the customer will see.',
-      'PizzaModal now reads per-item config (pizzaSizes/pizzaBases/pizzaCrusts) and falls back to globals. BBQ chicken correctly defaults to BBQ base only.',
-      'POS routing: pizza items use the full PizzaModal overlay (size + base + crust + half/half + toppings), other items use the new inline flow.',
-      'BBQ base added to PIZZA_BASES global list.',
-    ],
-  },
-  {
-    version: '1.4.0', date: 'Apr 2026', label: 'Menu Manager rebuilt — search modifiers, proper sizes, pizza, grid canvas',
-    changes: [
-      'Item editor rebuilt from scratch: wider panel (420px), underline tab navigation that actually works, no more cramped horizontal buttons.',
-      'Modifiers tab: search-first assignment. Type to filter hundreds of modifier groups, click to assign. Assigned groups shown as a draggable ordered list with Required/Optional toggle and Max selector — drag to reorder the flow the customer sees on POS.',
-      'Sizes tab (renamed from Variants): clean list with drag reorder, inline name and price editing, POS preview showing exactly how sizes will appear.',
-      'Pizza tab: per-item default toppings selector. All 14 toppings shown with colour coding. Global pizza settings (sizes/bases/crusts) still configured in Modifier groups.',
-      'Canvas: grid snapping — items snap to 20px grid positions instead of arbitrary pixels. Auto-layout uses a clean column grid. Cleaner, more organised layout.',
-      'Allergens: 2-column grid layout instead of single column — faster to scan and toggle.',
-    ],
-  },
-  {
-    version: '1.3.0', date: 'Apr 2026', label: 'Major UX redesign — inline flows, canvas layout, nested modifiers',
-    changes: [
-      'POS: Variant and modifier selection now happens inline in the center panel (not a modal overlay). Tap a variant item → large size buttons appear in the menu area. Pick a size → modifier groups flow below sequentially. Back button returns to variant step. Full allergen display throughout.',
-      'Menu Manager: Variant children no longer appear as separate product cards. Tap the parent to expand inline variant buttons grouped below it. Add new variants directly from the parent card.',
-      'Menu Manager: New 🗂 Canvas tab — free-form drag-anywhere layout. Move items to any position. Mouse-wheel zoom (30–200%), alt+drag or middle-click to pan. Auto-layout resets to clean grid. Item positions saved to canvasPos field.',
-      'Nested modifiers: Modifier options can now link to sub-groups via subGroupId. Example: selecting Peppercorn sauce reveals a nested "Sauce preference" group (Served hot / On the side) inline below.',
-      'Store: mgd-sauce-temp sub-group added as demonstration of nested modifier pattern.',
-    ],
-  },
-  {
-    version: '1.2.0', date: 'Apr 2026', label: 'Full audit pass: imports cleaned, Kiosk variants fixed',
-    changes: [
-      'OtherSurfaces: removed unused CATEGORIES import from seed (was replaced by live store menuCategories).',
-      'Kiosk: item.variants.map() crash fixed — same root cause as the Bar fix. Now uses MENU_ITEMS.filter(i => i.parentId === item.id) to find variant children from the store.',
-      'Kiosk: fromPrice now reads pricing.base correctly for variant parents.',
-      'POSSurface CAT_META/CATEGORIES/QUICK_IDS remain as valid legacy fallbacks.',
-    ],
-  },
-  {
-    version: '1.1.9', date: 'Apr 2026', label: 'Modifier modal stays open bug fixed',
-    changes: [
-      'CRITICAL: Modifier modal selections (Side choice, Sauce etc.) were being reset to empty whenever any Zustand state update triggered a POSSurface re-render. Root cause: MENU_ITEMS was recreated via .map() on every render, giving items new object references. ProductModal saw a different prop object and remounted, losing useState selections.',
-      'Fix 1: MENU_ITEMS wrapped in useMemo([rawItems, orderType]) so item references stay stable across renders.',
-      'Fix 2: ProductModal given key={modalItem.id} so it only remounts when a genuinely different item is opened, never on parent re-renders with the same item open.',
-      'Result: Clicking Chips then Peppercorn sauce then Add to order now works correctly — item is added with all modifiers and modal closes.',
-    ],
-  },
-  {
-    version: '1.1.8', date: 'Apr 2026', label: 'Send-to-table auto-fires kitchen, variant names, mod display',
-    changes: [
-      'Seat at table / Add to occupied table now automatically sends to kitchen. Previously items landed on the table but the operator had to reopen the check and click Send again. Now the send modal → choose table flow completes in one step.',
-      'Variant name now shows in order panel: "Stout — Pint" instead of just "Stout". The displayName is built as "ItemName — VariantLabel" so the selected size/serving is always visible on the order line.',
-      'Modifiers no longer appear on the item name line. Previously mods were concatenated into the name ("Ribeye — Chips, Peppercorn") AND also shown as separate rows below — double display. Now the name shows only the variant label, and modifiers show exclusively on their own rows underneath.',
-      'Instruction group selections (e.g. cooking preference) are still included in the name when relevant, since they have no separate display row in the order panel.',
-    ],
-  },
-  {
-    version: '1.1.7', date: 'Apr 2026', label: 'Bar variants fixed, parent-only items in menu',
-    changes: [
-      'Bar menu: variant child items (Stout Pint, Half pint etc.) were appearing alongside the parent Stout item. Fixed ITEMS filter to exclude items with a parentId.',
-      'Bar variants: clicking a variant item (Stout, Lager) crashed because QuickItemBuilder called item.variants.map() — no such array exists. Variants are stored as child items in the store. Fixed to look up children via menuItems.filter(i => i.parentId === item.id).',
-      'Bar modifiers: QuickItemBuilder now resolves modifier groups from modifierGroupDefs store state instead of the defunct item.modifierGroups format.',
-      'Bar fromPrice: item card price calculation now uses variant children from ITEMS instead of item.variants array.',
-    ],
-  },
-  {
-    version: '1.1.6', date: 'Apr 2026', label: 'Bar crash fix: toFixed on undefined total',
-    changes: [
-      'Bar crash fixed: tab.total, activeTab.total, round.subtotal and item prices guarded with ||0 fallback before .toFixed() calls — old localStorage state from previous sessions had tabs without a total field.',
-      'openedAt and all action timestamps (closedAt, timestamp, createdAt) changed from new Date() to Date.now() throughout the store for consistent numeric timestamp storage.',
-      'Bar fromPrice guard: item.variants checked for existence before Math.min spread.',
-    ],
-  },
-  {
-    version: '1.1.5', date: 'Apr 2026', label: 'Bar items fix, seed refs cleaned up across surfaces',
-    changes: [
-      'Bar surface: category default was cocktails (nonexistent) — changed to all so items always show on load.',
-      'Bar surface: CAT_META and QUICK_IDS replaced with live store data (menuCategories, quickScreenIds) so category colours, icons and quick screen reflect Menu Manager edits.',
-      'Bar surface: unused CATEGORIES and QUICK_IDS seed imports removed.',
-      'OtherSurfaces (Status): CATEGORIES replaced with store menuCategories so category filter reflects live menu.',
-      'Inventory: CATEGORIES replaced with store menuCategories, category labels now live.',
-      'All surfaces now read category data from store rather than static seed constants.',
-    ],
-  },
-  {
-    version: '1.1.4', date: 'Apr 2026', label: 'KDS crash fixed, NaN time fixed, variant labels',
-    changes: [
-      'CRITICAL: KDS crashed entire app on click — getLiveMinutes was a const arrow function but was referenced before its declaration in the minified bundle. Changed to a hoisted function declaration.',
-      'KDS tick timer (setInterval/useEffect) was missing — timers now update every 30 seconds.',
-      'Floor plan "Order sent: NaNh NaNm ago" fixed — sentAt was stored as Date object which serialised to string, then Date.now()-string = NaN. All sentAt values now stored as numeric timestamps.',
-      'Variant picker label changed from "Choose option" to "Choose size/serving" — default variantLabel changed from Option to Size.',
-      'Lager/Stout get variantLabel: Size, House white/red get variantLabel: Serving in seed data.',
-      'Demo table sentAt timestamps fixed to plain numbers (no Date objects).',
-    ],
-  },
-  {
-    version: '1.1.3', date: 'Apr 2026', label: 'POS white screen fixed — missing computed values restored',
-    changes: [
-      'CRITICAL FIX: subCategories, catItems and displayItems useMemos were accidentally deleted from POSSurface during a Python string replacement. POS rendered with undefined references causing a white screen.',
-      'All three computed values restored: subCategories (pills strip), catItems (items in selected category), displayItems (search results or category items).',
-    ],
-  },
-  {
-    version: '1.1.2', date: 'Apr 2026', label: 'Login screen fixed — staff cards clickable, demo bypass',
-    changes: [
-      'Staff without a PIN set can now tap their card to log straight in (no PIN required).',
-      'Staff with a PIN set show a 🔐 indicator and open the numpad when tapped.',
-      'If no staff are configured (Back Office not set up yet), a "Enter as Demo" bypass button appears.',
-      'Back button on PIN entry returns to staff selection.',
-      'Staff card colour from store used for selection highlight.',
-    ],
-  },
-  {
-    version: '1.1.1', date: 'Apr 2026', label: 'Black screen fix: QUICK_IDS missing import',
-    changes: [
-      'CRITICAL FIX: store referenced QUICK_IDS but it was never imported from seed — ReferenceError crashed the entire app at module load before React could mount (black screen).',
-      'PINScreen now reads from store.staffMembers — staff added in Staff Manager appear on the login screen.',
-      'Kiosk surface now reads categories and items from store, respects quickScreenIds, filters by visibility.kiosk, sorts by sortOrder.',
-    ],
-  },
-  {
-    version: '1.1.0', date: 'Apr 2026', label: 'Quick Screen manager, Staff manager, EOD Z-read',
-    changes: [
-      'Quick Screen manager (⚡ tab in Menu Manager): 4×4 drag-and-drop grid — drag items from the picker panel onto slots. Reorder by dragging within the grid. Remove with ✕. Auto-fill and Clear all buttons. Changes reflect on POS ⚡ tab instantly.',
-      'Staff Manager rebuilt: list + editor layout. Add staff with role, colour, 4-digit PIN (numpad). Set per-staff permissions (void, discount, refund, cash up, reports, EOD, manage staff). Reset to role defaults button. All data persists to store.',
-      'EOD Z-read rebuilt: cash declaration with denomination counts (+/- buttons per note/coin type), opening float, variance calculation (over/short), banking amount. Z-Read summary with full revenue breakdown, cash reconciliation, and net totals.',
-      'Store: quickScreenIds state + setQuickScreenIds action. staffMembers state with add/update/remove. Reads from seed data as initial state.',
-    ],
-  },
-  {
-    version: '1.0.9', date: 'Apr 2026', label: 'Variants: modifiers work after variant pick, better labels, POS preview',
-    changes: [
-      'Variants tab in item editor now shows modifier groups — assign once to the parent and they appear after every variant is picked (Step 1: size → Step 2: options).',
-      'Instruction groups also assignable from Variants tab.',
-      'variantLabel is now prominent — preset buttons (Size, Type, Cut, Style, Strength, Format, Serving, Portion, Blend, Roast) plus free-text custom label.',
-      'POS variant picker: item name shown prominently, "Choose size/type/cut" heading uses the real label. Step indicator only appears when modifiers follow.',
-      'Step 2 (modifier step) shows selected variant with a green tick badge for clarity.',
-      'POS preview in Variants tab shows how the picker will look, and confirms which modifier groups follow.',
-    ],
-  },
-  {
-    version: '1.0.8', date: 'Apr 2026', label: 'Modifier options no longer show undefined',
-    changes: [
-      'Modifier options store name as opt.name (new format) but POS ordering modal was reading opt.label — all option labels showed as undefined.',
-      'Fix: opt.label||opt.name throughout ProductModal — display, buildDisplayName, handleAdd all updated.',
-      'Options now also have label aliased from name at build-groups time so both old and new format options work.',
-      'selectionType now reads stored value first (single/multiple), falling back to max-based detection.',
-    ],
-  },
-  {
-    version: '1.0.7', date: 'Apr 2026', label: 'Menu Manager — complete rethink matching Toast/Square model',
-    changes: [
-      'Items panel is now a GRID matching the POS — same card style, same colour bars, same proportions. Drag cards to reorder, order reflects on POS instantly.',
-      'Variants managed inside the item editor (Variants tab) — type a name and price, click Add variant. No more dragging items onto each other. Works like Square/Toast.',
-      'Sub items removed from the main menu flow. Modifier group options are now plain name+price pairs typed directly in the Modifier groups tab — no separate sub-item records needed.',
-      'Category drag: same-level drag reorders, cross-level drag nests as subcategory. Drop indicator line shows insert position.',
-      'Search across all items from the item grid toolbar — find anything without leaving the current category view.',
-      'Item editor: Details / Variants / Modifiers / Pricing / Allergens all in one slide-in panel.',
-      'Modifier group option editor: add options with name+price inline — no sub-item picker step required.',
-    ],
-  },
-  {
-    version: '1.0.6', date: 'Apr 2026', label: 'POS now reflects Menu Manager changes instantly',
-    changes: [
-      'POS item grid now sorts by sortOrder on every render — drag-to-reorder in Menu Manager is reflected immediately on the POS without a page reload.',
-      'catItems useMemo adds .sort((a,b) => (a.sortOrder??999)-(b.sortOrder??999)) so new order is picked up as soon as store updates.',
-      'Both POS and Menu Manager share the same Zustand store — changes are reactive with no manual "Push to POS" required for menu edits.',
-    ],
-  },
-  {
-    version: '1.0.5', date: 'Apr 2026', label: 'Menu Manager drag-and-drop actually works',
-    changes: [
-      'Category drag: same-level drag now REORDERS (updates sortOrder) — not just nests. Dragging onto a different-level category nests it. Blue indicator line shows insert position.',
-      'Seed items now get sequential sortOrder (0,1,2…) at store init — previously all had undefined, so reordering never changed display order.',
-      'Item drag indicator: blue line appears between items showing exactly where the item will land.',
-      'POS catItems sort uses sortOrder correctly — changes made in Menu Manager reflect immediately on POS item grid.',
-    ],
-  },
-  {
-    version: '1.0.4', date: 'Apr 2026', label: 'Menu Manager complete redesign — 3-panel contextual layout',
-    changes: [
-      'Menu Manager rebuilt from scratch. Was: 5 disconnected tabs (Categories, Items, Modifiers, Instructions, Builder). Now: 3 tabs — Menu, Modifier groups, Instruction groups.',
-      'Menu tab: 3-panel layout — Category tree (left) | Items in selected category (centre) | Item editor (right). Click a category → see its items. Click an item → edit everything in one place.',
-      'Item editor has 4 sub-sections: Details (names, type, category, visibility), Pricing (per-channel prices), Modifiers (assign modifier+instruction groups with required/max controls), Allergens.',
-      'No more separate Builder tab — modifier and instruction group assignment is in the item editor.',
-      'Category tree: drag ⣿ to reorder, drag onto another to nest as subcategory, drop on root zone to un-nest. Click Edit cat to change icon/colour/name. Inline add category form.',
-      'Items panel: items in the selected category only. Drag ⣿ to reorder (updates sortOrder, reflects on POS). Shows allergen count, modifier group count inline.',
-      'Modifier groups and Instruction groups are now library tabs — create/edit groups there, assign from inside item editor.',
-    ],
-  },
-  {
-    version: '1.0.3', date: 'Apr 2026', label: 'Items tab filters + richer item info',
-    changes: [
-      'Items tab: 5 filter pills — All, Items only, Sub items, Variants, With modifiers. Category filter dropdown. Clear all button. Live item count.',
-      'Search now searches description as well as name.',
-      'Each item row now shows: category icon+name, allergen count (⚠ N), modifier group count (⊕ N mods), instruction group count (📝 N).',
-      'Items in multiple categories show "+N" next to the primary category label.',
-    ],
-  },
-  {
-    version: '1.0.2', date: 'Apr 2026', label: 'Drag-and-drop fixed across Menu Manager',
-    changes: [
-      'Item reorder: drop target moved to full row (was only the 12px handle icon — undroppable). Dragging ⣿ handle now correctly reorders items, re-indexing sortOrder sequentially.',
-      'onDragEnd added to all draggable elements in Categories and Items tabs — prevents stuck drag state when drag is cancelled or dropped on invalid target.',
-      'Category drag-to-subcategory: onDragEnd added so dragId resets properly after every drag operation.',
-      'Variant drag (drag item onto item): still works via row body drag. Handle drag and row drag now cleanly separated.',
-    ],
-  },
-  {
-    version: '1.0.1', date: 'Apr 2026', label: 'Modifier UX, multi-category, drag reorder, bug fixes',
-    changes: [
-      'Modifier groups: single-choice shows radio UI, multi-choice shows +/- qty buttons — allows adding multiple of the same option (e.g. 2× Truffle oil). Unlimited option sets no cap.',
-      'selectionType field (single/multiple) wired to store and respected in POS ordering modal.',
-      'Items can now belong to multiple categories — primary category dropdown + additional category toggles in Item Editor. Items appear in all assigned categories on POS.',
-      'Menu Manager Items tab: ⣿ drag handle reorders items (updates sortOrder, reflects on POS). Body drag still creates variants.',
-      'Checkout modal groups items by course (Course 1 / Course 2 headers) when order spans multiple courses.',
-      'Split check (T1.2) now sends to kitchen immediately on creation — no longer left as pending.',
-      'Split check floor plan icon clears correctly when all checks for a table are settled.',
-      'Duplicate subcategory pill strip removed from POS (was rendering twice).',
-      'Modifier group title fallback: group.label || group.name — titles no longer blank.',
-    ],
-  },
-  {
-    version: '1.0.0', date: 'Apr 2026', label: 'v1.0 — send flow fixed, checkout by course, split check fixes',
-    changes: [
-      'Split check now sends to kitchen immediately after creation.',
-      'Checkout modal now groups items by course.',
-      'Split check icon on floor plan clears properly after settling both checks.',
-      'Duplicate subcategory nav strip removed.',
-      'Modifier group titles fixed — no longer blank.',
-    ],
-  },
-  {
-    version: '0.9.9', date: 'Apr 2026', label: 'POS blank screen root cause fixed',
-    changes: [
-      'useEffect was missing from React import in POSSurface — caused ReferenceError on every render, blank screen.',
-      'One line fix: added useEffect to import { useState, useMemo, useRef, useEffect }.',
-    ],
-  },
-  {
-    version: '0.9.8', date: 'Apr 2026', label: 'Anchor demo data, Reports, variant pricing fix',
-    changes: [
-      'Demo floor plan tables updated to use real Anchor menu items (Ribeye, Salmon, House white).',
-      'Demo bar tabs updated to use real Anchor items (Lager pints, Stout, House wine).',
-      'Variant parent cards now show correct "from £X.XX" using child item lookup — no longer crashes on item.variants.map.',
-      'Reports rebuilt: Overview (KPIs + payment split + order type + top 5), Product mix table with share bars, By server table, Hourly bar chart with peak hour callout.',
-    ],
-  },
-  {
-    version: '0.9.7', date: 'Apr 2026', label: 'POS fixed after blank screen regression',
-    changes: [
-      'Removed stale inline OrdersHub render from POS right panel — was causing crash before anything could render.',
-      'Subcategory pills consolidated to single clean render.',
-      'Dynamic category nav from store confirmed working.',
-    ],
-  },
-  {
-    version: '0.9.6', date: 'Apr 2026', label: 'Menu Manager ↔ POS bridge + The Anchor menu',
-    changes: [
-      'POS category nav now reads from store (Menu Manager) — not static seed data. Categories you create appear on POS immediately.',
-      'Subcategories on POS: tapping Mains reveals Grills / Fish / Vegetarian sub-tabs. Tapping Drinks reveals Draught / Wine / Soft drinks. Pill strip appears above item grid.',
-      'Variants wired end-to-end: dragging an item under another in Items tab auto-sets parent type to "variants". POS detects variant parents via child lookup, not just type field. Lager → Pint/Half pint picker works.',
-      'Modifier groups: options must be sub items only. Three-panel editor: groups list, group editor, sub item picker (search + one-click add). Options show sub item name and price.',
-      'Force/Unforce controls: Optional/Required toggle buttons. Max = 1 (pick one) / Unlimited / Custom number.',
-      'Parent type auto-reverts to "simple" when last variant child is unlinked.',
-      'The Anchor seed menu: 29 orderable items across 6 categories, 5 subcategories, 4 variant parents (Lager, Stout, House White, House Red), 10 modifiable items (steaks, chicken, pizza, coffee), 15 sub items, 4 modifier groups, 4 instruction groups.',
-    ],
-  },
-  {
-    version: '0.9.5', date: 'Apr 2026', label: 'Unified Orders screen',
-    changes: [
-      'Orders tab restored to sidebar: Bar → Floor → POS → Orders → KDS.',
-      'Three clear sections: Tables, Bar tabs, Walk-in/Queue — each collapsible.',
-      'Filter tabs by type + 👤 My orders + search + show completed.',
-    ],
-  },
-  {
-    version: '0.9.4', date: 'Apr 2026', label: 'Send flow fixes & split check restored',
-    changes: [
-      'Send always clears the order — removed async setTimeout, now uses direct store calls so customer/orderType are set before sendToKitchen reads them.',
-      'Occupied table: both "Add to existing check" and "New separate check (T1.2)" options restored.',
-      'Split check creates a child table (T1.2) with its own independent session and bill.',
-      'Full CHANGELOG updated from v0.7.0.',
-    ],
-  },
-  {
-    version: '0.9.3', date: 'Apr 2026', label: 'Modifier & instruction groups end-to-end',
-    changes: [
-      'Modifier groups and instruction groups from the Product Builder are now fully wired into the POS ordering modal.',
-      'Instruction groups (cooking temp, bread, spice level etc.) show with green radio UI, no price shown — printed on kitchen ticket.',
-      'Modifier groups (paid options: sauce, extras) show with radio/checkbox UI enforcing min/max.',
-      'POS openFlow now triggers modal for items with assignedModifierGroups or assignedInstructionGroups.',
-      'All send paths (table, counter, takeaway, collection, delivery, bar) close checkout on send.',
-    ],
-  },
-  {
-    version: '0.9.2', date: 'Apr 2026', label: 'Nav restructure & Orders Hub in shift bar',
-    changes: [
-      'Orders Hub removed from sidebar nav — now lives as 📋 Orders button in the top shift bar, always visible with live active order count badge.',
-      'Bar moved above Floor in sidebar nav: Bar → Floor → POS → KDS.',
-      'Checkout modal closes on send in all paths.',
-    ],
-  },
-  {
-    version: '0.9.1', date: 'Apr 2026', label: 'Menu Manager complete rebuild',
-    changes: [
-      'Five focused screens: Categories, Items, Modifier groups, Instruction groups, Product builder.',
-      'Categories: drag one category onto another to nest it as a subcategory. Items in subcategory also count in the parent.',
-      'Items: all items and sub items in one list. Drag an item onto another to link it as a variant child. The parent becomes a picker button on POS.',
-      'Modifier groups: define reusable paid option groups (options that change price). Set min/max per group.',
-      'Instruction groups: preparation instructions with no price change (cooking temp, bread preference, spice level etc.).',
-      'Product builder: assign modifier groups and instruction groups to any item. Set per-item min/max overrides.',
-      'Store: modifierGroupDefs and instructionGroupDefs state added.',
-    ],
-  },
-  {
-    version: '0.9.0', date: 'Apr 2026', label: 'Multi-location & Stripe Terminal scaffold',
-    changes: [
-      'Multi-location Back Office section: manage locations, switch active location, configure per-location VAT/currency/timezone/service charge.',
-      'Locations store state: currentLocationId, locations[], setCurrentLocation, addLocation, updateLocation.',
-      'Stripe Terminal scaffold (src/lib/stripe.js): initStripeTerminal, discoverReaders, connectReader, collectPayment, cancelPayment — mock mode simulates card tap with 5% decline rate.',
-    ],
-  },
-  {
-    version: '0.8.9', date: 'Apr 2026', label: 'OrderTypeModal — complete send flow redesign',
-    changes: [
-      'Send button with no table assigned now shows OrderTypeModal — six clear paths: Counter/named, Seat at table, Bar tab, Takeaway, Collection, Delivery.',
-      'Counter/named: enter optional name, sends to kitchen immediately, appears in Orders Hub, POS clears.',
-      'Seat at table: picks available table from floor plan, seats items, navigates to floor plan.',
-      'Bar tab: open a new named tab or add to an existing open tab.',
-      'Takeaway/Collection: name + phone + time (or ASAP), sends to kitchen + order queue.',
-      'Delivery: name + phone + address, sends to queue.',
-    ],
-  },
-  {
-    version: '0.8.8', date: 'Apr 2026', label: 'Orders Hub rebuild + live badge',
-    changes: [
-      'Orders Hub rebuilt with live elapsed timers, channel filter tabs (All / Tables / Bar / Dine-in / Takeaway / Collection / Delivery), colour-coded status strips.',
-      'My orders filter: tap "👤 My orders" to see only the current server\'s active orders.',
-      'Orders Hub shows table sessions, bar tabs, and walk-in queue orders unified.',
-      'Active order count badge on Orders button in shift bar.',
-    ],
-  },
-  {
-    version: '0.8.7', date: 'Apr 2026', label: 'Orders Hub + walk-in routing fix + menu type system',
-    changes: [
-      'Orders Hub added as a full-screen surface: unified view of all active orders across tables, bar tabs, and walk-in queue.',
-      'Walk-in order routing fixed: all orders sent without a table (including named dine-in) now always appear in the Orders Hub.',
-      'Sub item type: first-class item type, hidden from POS/kiosk/online, used only as options within modifier groups.',
-      'Modifiable type: auto-set the moment modifier groups are added to an item, reverts to Simple when all groups are removed.',
-      'Variants: parent item with children linked via parentId. Each child is a full item with its own price.',
-      'Combo (renamed from Bundle).',
-    ],
-  },
-  {
-    version: '0.8.6', date: 'Apr 2026', label: 'Menu Manager v2: order-type pricing, modifier library, builder',
-    changes: [
-      'Pricing changed from per-menu to per-order-type: Base, Dine-in, Takeaway, Collection, Delivery.',
-      'Modifier library: create modifiers centrally, add to groups on items.',
-      'Interactive full-page builder: POS/Kiosk/Handheld preview, drag to reorder categories and items.',
-      'Items tab: inline price editing for all order types in table rows.',
-      'Modifiers tab: modifier library with category grouping and global overview.',
-    ],
-  },
-  {
-    version: '0.8.5', date: 'Apr 2026', label: 'Menu Manager fixes & Supabase init',
-    changes: [
-      'Fixed illegal useState inside .map() in CategoryRow — extracted to proper component.',
-      'KDS uses kitchenName, receipts use receiptName, POS buttons use menuName.',
-      'useSupabaseInit hook called from App on mount — loads menu, floor plan, 86 list, KDS, closed checks from DB.',
-    ],
-  },
-  {
-    version: '0.8.3', date: 'Apr 2026', label: 'Menu Manager rebuild: multiple menus, full item model',
-    changes: [
-      'Complete menu manager rebuild: multiple menus, hierarchical category tree with subcategories.',
-      'Triple naming per item: Menu name (POS button), Receipt name, Kitchen name (KDS).',
-      'Per-menu price overrides, modifier groups with min/max, pizza builder, scope (local/shared/global).',
-      'Routing tab: production centre per item or inherited from category, course assignment.',
-      'Visibility tab: toggle per channel (POS, Kiosk, Online, Delivery apps).',
-    ],
-  },
-  {
-    version: '0.8.2', date: 'Apr 2026', label: 'Inventory management + full Supabase write path',
-    changes: [
-      'Inventory section in Back Office: portion tracking, par counts, low/critical/out status bars.',
-      '86 all out-of-stock quick action, bulk count modal.',
-      'All store mutations wired to Supabase: menu items, floor tables, KDS tickets, closed checks, config pushes.',
-    ],
-  },
-  {
-    version: '0.8.0', date: 'Apr 2026', label: 'Supabase Phase 2: schema, DB layer, Realtime',
-    changes: [
-      '293-line Postgres schema: organisations, locations, menus, items, modifiers, floor plan, staff, orders, KDS, 86 list.',
-      'db.js data access layer: fetchMenuItems, upsertMenuItem, fetch86List, fetchKDSTickets, insertClosedCheck, insertConfigPush.',
-      'realtime.js: Postgres change subscriptions for KDS tickets, 86 list, and config pushes.',
-      'toggle86 and bumpTicket wired to Supabase. Mock mode falls back to BroadcastChannel.',
-    ],
-  },
-  {
-    version: '0.7.9', date: 'Apr 2026', label: 'Modifier groups, kiosk surface, EOD close',
-    changes: [
-      'Modifier groups editor on items: name, required/optional, single/multi-select, options with prices.',
-      'Kiosk surface (?t=kiosk): full customer-facing UI with category tabs, search, modifier picker, order confirmation.',
-      'EOD Close: full shift summary, checklist, cash variance, manager notes, two-step confirm.',
-      'Quick screen profile-aware: bar terminal prioritises bar/drinks items.',
-    ],
-  },
-  {
-    version: '0.7.5', date: 'Apr 2026', label: 'Back Office: Push to POS & config snapshot',
-    changes: [
-      '"Push to POS →" button in Back Office header — broadcasts config snapshot to all POS terminals.',
-      'POS sync banner shown when BO pushes an update.',
-      'Config snapshot persisted to localStorage and written to Supabase config_pushes table.',
-    ],
-  },
-  {
-    version: '0.7.0', date: 'Apr 2026', label: '⚙ Back Office Portal launched',
-    changes: [
-      'Full Back Office portal: Menu manager, Floor plan builder, Device profiles, Device registry, Staff & access, Print routing, Reports, EOD close.',
-      'Device profiles: configure surface, order types, sections, features per terminal type.',
-      'URL-based terminal selection (?t=counter/bar/handheld/kds/kiosk).',
-      'BroadcastChannel cross-tab sync for operational data.',
-    ],
-  },
-];
+// v5.5.890: the CHANGELOG array (~1MB of source, 9,300 lines) moved to src/lib/changelog.js
+// and only loads with the lazy What's New modal. Every deploy still adds its entry at the
+// top of that file — see components/WhatsNewModal.jsx.
 
 
 
@@ -1918,15 +182,51 @@ export default function App() {
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
 
+  // ── Customer-facing surfaces ──────────────────────────────────────────
+  // Subdomain-based routing: (slug).serv-os.app → online ordering or QR
+  // table-side. Falls back to ?loc=<slug>&surface=... query for testing
+  // before DNS is wired. Resolved BEFORE the operator mode dispatch so
+  // customers never see the device pairing / mode selector screens.
+  // Operator URLs (?mode=pos / mpos / office / admin / kiosk) take
+  // precedence so an operator on the same hostname still gets their tools.
+  const CUSTOMER_MODES = ['online', 'qr', 'gift', 'gift_balance', 'gift_success', 'account', 'review', 'wifi', 'catering', 'waitlist', 'waitlist_status', 'book'];
+  const urlMode = new URLSearchParams(window.location.search).get('mode');
+  // Public Workforce contract-signing page: /sign/<token>
+  const signMatch = window.location.pathname.match(/^\/sign\/([A-Za-z0-9_-]{8,})/);
+  if (signMatch) return <OnboardingSignSurface token={signMatch[1]} />;
+  // Dev: Ryft sandbox payment harness (?mode=ryft-test) — sandbox only.
+  if (urlMode === 'ryft-test') return <RyftTestSurface />;
+  if (!urlMode) {
+    const customerCtx = parseCustomerUrlForBoot();
+    // Multi-site group landing pages — /order/<groupSlug> (or ?group=) for online
+    // ordering, /cater/<groupSlug> (or ?cater=) for catering. Resolves a COMPANY
+    // (platform companies.slug), not a venue; the customer picks a venue and is
+    // handed to that venue's existing online/catering URL. A single eligible venue
+    // skips the picker and redirects straight in.
+    if ((customerCtx?.mode === 'group' || customerCtx?.mode === 'group_catering') && customerCtx.groupSlug) {
+      return <GroupOrderSurface groupSlug={customerCtx.groupSlug}
+        variant={customerCtx.mode === 'group_catering' ? 'catering' : 'online'} />;
+    }
+    if (customerCtx?.slug && CUSTOMER_MODES.includes(customerCtx.mode)) {
+      return (
+        <Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--t3, #888)', fontSize: 15 }}>Loading…</div>}>
+          <CustomerBoot slug={customerCtx.slug} mode={customerCtx.mode} tableId={customerCtx.tableId} />
+        </Suspense>
+      );
+    }
+  }
+
   // ── Device mode selection ─────────────────────────────────────────────
   // Priority: URL ?mode=X param > localStorage > first-visit selector
   // This lets users bookmark /app?mode=pos, /app?mode=office, /app?mode=admin
-  const urlMode = new URLSearchParams(window.location.search).get('mode');
   const storedMode = localStorage.getItem('rpos-device-mode');
-  const deviceMode = isMock ? 'pos' : (urlMode || storedMode || null);
+  const deviceMode = isMock ? (urlMode || 'pos') : (urlMode || storedMode || null);
 
-  // If URL param set, save to localStorage so it persists
-  if (urlMode && urlMode !== storedMode) {
+  // If URL param set, save to localStorage so it persists.
+  // ?mode=readerdemo is deliberately NOT persisted: it is a sales prop opened ad
+  // hoc on a laptop, and making it the browser's sticky default mode would turn
+  // the owner's next plain visit into a fake card reader.
+  if (urlMode && urlMode !== storedMode && urlMode !== 'readerdemo') {
     localStorage.setItem('rpos-device-mode', urlMode);
   }
 
@@ -1934,6 +234,12 @@ export default function App() {
   if (!deviceMode) return (
     <ModeSelector
       onSelectPOS={() => { localStorage.setItem('rpos-device-mode', 'pos'); window.location.href = '?mode=pos'; }}
+      onSelectMPOS={() => { localStorage.setItem('rpos-device-mode', 'mpos'); window.location.href = '?mode=mpos'; }}
+      onSelectClock={() => { localStorage.setItem('rpos-device-mode', 'clock'); window.location.href = '?mode=clock'; }}
+      onSelectMenuBoard={() => { localStorage.setItem('rpos-device-mode', 'menuboard'); window.location.href = '?mode=menuboard'; }}
+      onSelectWaitlist={() => { localStorage.setItem('rpos-device-mode', 'waitlist'); window.location.href = '?mode=waitlist'; }}
+      onSelectBookings={() => { localStorage.setItem('rpos-device-mode', 'bookings'); window.location.href = '?mode=bookings'; }}
+      onSelectManager={() => { localStorage.setItem('rpos-device-mode', 'manager'); window.location.href = '?mode=manager'; }}
       onSelectBackOffice={() => { localStorage.setItem('rpos-device-mode', 'backoffice'); window.location.href = '?mode=office'; }}
       onSelectAdmin={() => { localStorage.setItem('rpos-device-mode', 'admin'); window.location.href = '?mode=admin'; }}
     />
@@ -1942,23 +248,256 @@ export default function App() {
   // Company Admin — completely separate internal app
   if (deviceMode === 'admin') return <CompanyAdminApp />;
 
-  // Back office mode — go to email login (no pairing needed)
-  if (deviceMode === 'backoffice' || deviceMode === 'office') return <><SyncBridge onSyncPulse={handleSyncPulse}/><BackOfficeApp /></>;
+  // Kiosk — standalone customer-facing self-ordering surface
+  if (deviceMode === 'kiosk') return <KioskSurface />;
 
-  // POS mode — check if paired to a location
+  // Customer-facing display — dedicated second screen (e.g. Sunmi D3 Pro rear).
+  // Read-only mirror of a till (idle ads → live cart → payment status). Resolves
+  // its target via ?till=<deviceId> or this device's own pairing; self-contained
+  // (no SyncBridge — it only subscribes to the display broadcast).
+  if (deviceMode === 'customer-display') return <CustomerDisplaySurface />;
+
+  // Owner snapshot — mobile-first, self-contained (own BO login + owner-snapshot
+  // edge fn). Read-only top-down view across every venue the owner can access.
+  if (deviceMode === 'owner') return <OwnerSurface />;
+
+  // Digital menu board — read-only Android-TV display. Resolves its own location,
+  // renders one menu_boards "screen" with the auto-fit/auto-balance engine, live
+  // over Realtime. No SyncBridge (like customer-display).
+  if (deviceMode === 'menuboard') return <><KioskAutoUpdate /><MenuBoardSurface /></>;
+
+  // Demo card reader — a browser-window replica of an Adyen reader for sales
+  // demos (?mode=readerdemo). A real software terminal: registers, pairs and
+  // takes terminal_jobs like the paxpay app; its sales settle as simulated card
+  // payments marked DEMO. Self-contained (no SyncBridge, like customer-display).
+  if (deviceMode === 'readerdemo') return <ReaderDemoSurface />;
+
+  // Operations — RETIRED as a standalone surface (v5.5.754). Folded into the Manager app
+  // (?mode=manager), which renders the exact same Ops screens (the Ops tab is available to
+  // EVERY role) off the SAME ops_devices pairing — so an already-paired Ops tablet lands
+  // straight on the PIN screen, no re-pair. Redirect ?mode=ops (and migrate a device whose
+  // stored mode is 'ops') to the Manager app.
+  if (deviceMode === 'ops') {
+    if (storedMode === 'ops') localStorage.setItem('rpos-device-mode', 'manager');
+    window.location.replace('?mode=manager');
+    return null;
+  }
+  if (deviceMode === 'waitlist') return <><KioskAutoUpdate /><WaitlistSurface /></>;
+
+  // Table Bookings — host-stand diary/floor/book. SyncBridge-backed: the diary,
+  // the floor canvas and the optimiser all read the SAME tables + sessions the
+  // POS reads (INTEGRATION.md — bookings never keeps its own floor plan copy).
+  if (deviceMode === 'bookings') return <><KioskAutoUpdate /><SyncBridge onSyncPulse={handleSyncPulse}/><BookingsSurface /></>;
+
+  // ServOS Staff — the staff SELF-SERVICE app on their own phone (v5.5.996):
+  // shifts, announcements, timesheets, own details; training joins later.
+  // Email+password login (invited from Onboarding), no device pairing, no
+  // SyncBridge — the staff-portal edge fn serves only that person's data.
+  if (deviceMode === 'staff') return <StaffSurface />;
+
+  // ServOS Manager — owner app + ops tablet merged into one role-adaptive phone app. Pairs itself
+  // (ops_devices claim-code + heartbeat) then staff PIN; role gates the bottom tabs. Read-only-ish
+  // manager console (no SyncBridge); standalone store-distributed build.
+  if (deviceMode === 'manager') return <><KioskAutoUpdate /><ManagerSurface /></>;
+
+  // Back office mode — go to email login (no pairing needed)
+  if (deviceMode === 'backoffice' || deviceMode === 'office') return <><SyncBridge onSyncPulse={handleSyncPulse}/><Suspense fallback={<div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--t3, #888)', fontSize: 15 }}>Loading Back Office…</div>}><BackOfficeApp /></Suspense></>;
+
+  // POS / MPOS modes both need a paired device for locationId resolution
   const pairedDevice = (() => { try { return JSON.parse(localStorage.getItem('rpos-device') || 'null'); } catch { return null; } })();
   if (!pairedDevice) return <PairingScreen onPaired={() => window.location.reload()} />;
 
+  // MPOS — phone-shaped POS for servers/runners. Reuses the same store + sync
+  // layer as ?mode=pos but with a portrait, single-column UI. Phase 1A: walk-in
+  // only, cash + REST card. Phase 1B will add Stripe Tap to Pay native bridges.
+  if (deviceMode === 'mpos') return <><SyncBridge onSyncPulse={handleSyncPulse}/><MposDeviceProfileSync pairedDevice={pairedDevice}/><MPOSSurface /></>;
+
+  // Time Clock — dedicated second-tablet surface for staff to clock in/out + breaks.
+  // Pairs to a location like a POS; punches write server-side via workforce-clock.
+  if (deviceMode === 'clock') return <><KioskAutoUpdate /><TimeClockSurface /></>;
+
   // Validate device against Supabase (checks if admin removed it)
   // Uses a component so hooks work properly
-  return <ValidatedPOSApp pairedDevice={pairedDevice} staff={staff} surface={surface} setSurface={setSurface} toast={toast} shift={shift} theme={theme} setTheme={setTheme} syncPulse={syncPulse} handleSyncPulse={handleSyncPulse} showWhatsNew={showWhatsNew} setShowWhatsNew={setShowWhatsNew} deviceConfig={deviceConfig} />;
+  // v5.7.8 - ?diag=menu mounts the read-only stale-till truth panel over the POS
+  // (PIN screen included: it floats above whatever ValidatedPOSApp renders).
+  const diagMenu = new URLSearchParams(window.location.search).get('diag') === 'menu';
+  return <>
+    {diagMenu && <MenuDiag />}
+    <ValidatedPOSApp pairedDevice={pairedDevice} staff={staff} surface={surface} setSurface={setSurface} toast={toast} shift={shift} theme={theme} setTheme={setTheme} syncPulse={syncPulse} handleSyncPulse={handleSyncPulse} showWhatsNew={showWhatsNew} setShowWhatsNew={setShowWhatsNew} deviceConfig={deviceConfig} />
+  </>;
+}
+
+// v5.5.645: persistent Training Mode banner. Shown on every POS surface whenever
+// this device's profile has training_mode on. Deliberately loud + theme-independent
+// so staff can never mistake a training till for a live one. Reads the store flag
+// kept in lock-step with the module singleton that gates every commit path.
+function TrainingModeBanner() {
+  const on = useStore(s => s.trainingMode);
+  if (!on) return null;
+  return (
+    <div role="status" aria-live="polite" style={{
+      flexShrink: 0,
+      background: 'repeating-linear-gradient(135deg, #B45309 0 18px, #92400E 18px 36px)',
+      color: '#FFF7ED', fontWeight: 800, fontSize: 13, letterSpacing: '.02em',
+      padding: '9px 16px', textAlign: 'center',
+      borderBottom: '2px solid #FCD34D',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
+      textShadow: '0 1px 2px rgba(0,0,0,.35)',
+    }}>
+      <span style={{ width: 9, height: 9, borderRadius: '50%', background: '#FCD34D', boxShadow: '0 0 0 3px rgba(252,211,77,.35)', flexShrink: 0 }} />
+      <span>TRAINING MODE — nothing is saved. No orders, payments, stock, receipts or kitchen tickets are committed.</span>
+    </div>
+  );
+}
+
+// ── v5.7.7: ONE device-profile field mapping ─────────────────────────────────
+// The boot fetch, the device_profiles realtime handler and the silent self-heal
+// refresh all build this till's deviceConfig through these two helpers. They
+// used to be hand-maintained copies and drifted (the realtime copy had lost
+// isMaster and the sign-out policy), so a till could run one config shape at
+// boot and a different one after a live profile edit.
+function profileRowToProfile(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    defaultSurface: row.default_surface || 'tables',
+    enabledOrderTypes: row.enabled_order_types || ['dine-in'],
+    assignedSection: row.assigned_section || null,
+    // v5.8.27: MPOS payment settings. These were never mapped here, so a handset
+    // kept whatever mode it had when it was PAIRED and every profile refresh
+    // (Push to POS, wake, 5-min timer) silently reset it to Tap to Pay. A venue
+    // that switched the MPOS profile to "Assigned network reader" could never
+    // get the handset to use its card reader.
+    paymentMode: row.payment_mode || 'tap_to_pay',
+    assignedReaderId: row.assigned_reader_id || null,
+    runnerMode: row.runner_mode === true,
+    customerDisplayMode: row.customer_display_mode || 'auto',
+    hiddenFeatures: row.hidden_features || [],
+    tableServiceEnabled: row.table_service_enabled !== false,
+    quickScreenEnabled: row.quick_screen_enabled !== false,
+    serviceCharge: row.service_charge || null,
+    isMaster: row.is_master === true,
+    autoPrintReceiptOnClose: row.auto_print_receipt_on_close !== false,
+    orderNotifications: row.order_notifications !== false,
+    menuId: row.menu_id || null,
+    trainingMode: row.training_mode === true,   // v5.5.645: per-device training
+    signoutIdleSeconds: row.signout_idle_seconds || 0,   // v5.5.731 auto sign-out
+    signoutOnPay: row.signout_on_pay === true,
+    signoutOnSend: row.signout_on_send === true,
+  };
+}
+
+function configFromProfile(profile) {
+  return {
+    profileId: profile.id, profileName: profile.name,
+    defaultSurface: profile.defaultSurface || 'tables',
+    enabledOrderTypes: profile.enabledOrderTypes || ['dine-in'],
+    assignedSection: profile.assignedSection || null,
+    paymentMode: profile.paymentMode || 'tap_to_pay',           // v5.8.27, see profileRowToProfile
+    assignedReaderId: profile.assignedReaderId || null,
+    runnerMode: profile.runnerMode === true,
+    customerDisplayMode: profile.customerDisplayMode || 'auto',
+    hiddenFeatures: profile.hiddenFeatures || [],
+    tableServiceEnabled: profile.tableServiceEnabled !== false,
+    quickScreenEnabled: profile.quickScreenEnabled !== false,
+    serviceCharge: profile.serviceCharge || null,
+    isMaster: profile.isMaster === true,
+    autoPrintReceiptOnClose: profile.autoPrintReceiptOnClose !== false,
+    orderNotifications: profile.orderNotifications !== false,
+    menuId: profile.menuId || null,
+    trainingMode: profile.trainingMode === true,   // v5.5.645: per-device training
+    // v5.5.731: auto sign-out policy, how this device signs the operator out
+    signout: {
+      idleSeconds: Number(profile.signoutIdleSeconds) || 0,
+      onPay: profile.signoutOnPay === true,
+      onSend: profile.signoutOnSend === true,
+    },
+    // Keep the terminal name a previous config may have stamped on this till.
+    terminalName: useStore.getState().deviceConfig?.terminalName,
+  };
+}
+
+// v5.8.28: the MPOS route returns before ValidatedPOSApp mounts, so it never ran
+// the device-profile refresh the till gets (Push to POS, wake, 5-min timer). Its
+// deviceConfig was whatever pairing wrote, which never included payment_mode, so
+// a handset was Tap to Pay forever no matter what the profile said. This does
+// for the handset exactly what ValidatedPOSApp does for the till, with the same
+// mapping (profileRowToProfile -> configFromProfile) and the same change gate.
+function MposDeviceProfileSync({ pairedDevice }) {
+  useEffect(() => {
+    if (!pairedDevice?.id || !supabase) return;
+    let inFlight = false;
+    const refresh = async () => {
+      if (inFlight) return; inFlight = true;
+      try {
+        const { data } = await supabase.from('devices').select('id, status, profile_id').eq('id', pairedDevice.id).single();
+        if (!data?.profile_id) return;
+        const { data: row } = await supabase.from('device_profiles').select('*').eq('id', data.profile_id).single();
+        if (!row) return;
+        const next = configFromProfile(profileRowToProfile(row));
+        const prev = useStore.getState().deviceConfig;
+        if (!deviceConfigChanged(prev, next)) return;
+        try { localStorage.setItem('rpos-device-config', JSON.stringify(next)); } catch { /* quota */ }
+        useStore.getState().setDeviceConfig(next);
+      } catch { /* offline: keep the cache */ }
+      finally { inFlight = false; }
+    };
+    refresh();
+    const onVisible = () => { if (document.visibilityState === 'visible') refresh(); };
+    window.addEventListener('rpos-config-push', refresh);
+    window.addEventListener('online', refresh);
+    document.addEventListener('visibilitychange', onVisible);
+    const t = setInterval(refresh, 5 * 60 * 1000);
+    return () => {
+      window.removeEventListener('rpos-config-push', refresh);
+      window.removeEventListener('online', refresh);
+      document.removeEventListener('visibilitychange', onVisible);
+      clearInterval(t);
+    };
+  }, [pairedDevice?.id]);
+  return null;
+}
+
+// v5.7.7: material-change gate. setDeviceConfig snaps the surface back to
+// defaultSurface, so blind re-apply on every silent refresh would yank the
+// operator off whatever screen they were on. Objects and arrays compare by
+// value so a byte-identical refresh is a true no-op.
+const CONFIG_COMPARE_KEYS = [
+  'profileId', 'profileName', 'defaultSurface', 'assignedSection',
+  'tableServiceEnabled', 'quickScreenEnabled', 'isMaster',
+  'autoPrintReceiptOnClose', 'orderNotifications', 'menuId', 'trainingMode',
+  'enabledOrderTypes', 'hiddenFeatures', 'serviceCharge', 'signout',
+  'paymentMode', 'assignedReaderId', 'runnerMode', 'customerDisplayMode',   // v5.8.27
+];
+function deviceConfigChanged(prev, next) {
+  if (!prev) return true;
+  return CONFIG_COMPARE_KEYS.some(k => {
+    const a = prev[k], b = next[k];
+    if ((a && typeof a === 'object') || (b && typeof b === 'object')) {
+      try { return JSON.stringify(a ?? null) !== JSON.stringify(b ?? null); } catch { return true; }
+    }
+    return (a ?? null) !== (b ?? null);
+  });
 }
 
 function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shift, theme, setTheme, syncPulse, handleSyncPulse, showWhatsNew, setShowWhatsNew, deviceConfig }) {
   const [deviceValid, setDeviceValid] = useState(null); // null=checking, true=ok, false=revoked
   const [masterOffline, setMasterOffline] = useState(false);
   const [masterInfo, setMasterInfo] = useState(null);
+  // OrderAlert state lives on the store; ValidatedPOSApp owns the render
+  // for it because that's where the operator UI tree lives.
+  const orderAlert = useStore(s => s.orderAlert);
+  const dismissOrderAlert = useStore(s => s.dismissOrderAlert);
   // No "dismissed" state — master offline is a hard block
+
+  // v5.5.350: ServOS skin flag — the POS family is a staff surface. Set on
+  // <html> so portaled modals inherit it; removed on unmount so customer
+  // surfaces (which never set it) keep their existing look. Presentational only.
+  useEffect(() => {
+    document.documentElement.setAttribute('data-skin', 'servos');
+    return () => document.documentElement.removeAttribute('data-skin');
+  }, []);
 
   // Start master/child sync after device is validated
   useEffect(() => {
@@ -1971,7 +510,7 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
         const locId = await getLocationId().catch(() => null);
         if (!locId || stopped) return;
 
-        const { startMasterHeartbeat, startChildMonitor } = await import('./sync/MasterSync.js');
+        const { startMasterHeartbeat, startChildMonitor, startChildHeartbeat } = await import('./sync/MasterSync.js');
 
         // isMaster is written to rpos-device-config during device validation (refreshDevice)
         // which queries device_profiles from Supabase — always authoritative
@@ -1987,9 +526,39 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
             version: VERSION,
           });
         } else {
-          // Child: wait 20s before first check so master has time to write heartbeat on startup
+          // Child: report our own heartbeat (v5.5.870 — so Network Status sees this till's version
+          // too), then wait 20s before monitoring the master (gives it time to write on startup).
+          startChildHeartbeat({ deviceId: pairedDevice.id, locationId: locId, deviceName: pairedDevice.name, version: VERSION });
           await new Promise(r => setTimeout(r, 20_000));
           if (!stopped) startChildMonitor({ locationId: locId });
+        }
+
+        // v4.3 — Print reliability
+        // PrintOrchestrator: runs on every native-bridge device (master or child) so any
+        //   terminal can dispatch jobs. Pickup is the print_jobs realtime INSERT
+        //   subscription; the poll behind it is only a backstop (v5.6.83: master 20s,
+        //   children 30s, 10s grace so master claims first under normal conditions).
+        //   It is the SINGLE owner of claim state wherever it runs.
+        // PrintRetrier: the fallback scheduler for a master with NO native bridge, where
+        //   the orchestrator refuses to start and the LAN print-agent does the printing.
+        //   Since v5.6.83 it stands down by itself when the orchestrator is running —
+        //   the two used to run together and write conflicting statuses to the same
+        //   print_jobs rows (pending at 30s vs failed at 60s).
+        try {
+          if (stopped) return;
+          const { startPrintOrchestrator } = await import('./sync/PrintOrchestrator.js');
+          startPrintOrchestrator({
+            deviceId: pairedDevice.id,
+            locationId: locId,
+            isMaster: isMasterDevice,
+          });
+
+          if (isMasterDevice) {
+            const { startPrintRetrier } = await import('./sync/PrintRetrier.js');
+            startPrintRetrier();
+          }
+        } catch (e) {
+          console.warn('[PrintReliability] boot error:', e.message);
         }
       } catch (e) {
         console.warn('[MasterSync] boot error:', e.message);
@@ -2026,6 +595,52 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
   const isReclaim = !!sessionStorage.getItem(`rpos-reclaim-${pairedDevice.id}`);
   if (isReclaim) sessionStorage.removeItem(`rpos-reclaim-${pairedDevice.id}`);
 
+  // ── v5.7.7: SINGLE apply path for deviceConfig ─────────────────────────────
+  // Boot, the device_profiles realtime handler and the silent refresh all land
+  // here. Applies only on material change (see deviceConfigChanged) so silent
+  // refreshes never disturb a till whose config is already current. Toasts:
+  // announce=true keeps the realtime handler's existing toast; silent refreshes
+  // only toast when Training Mode actually flips (staff must always know).
+  const applyDeviceConfig = (config, { announce = false } = {}) => {
+    const prev = useStore.getState().deviceConfig;
+    if (!deviceConfigChanged(prev, config)) return;
+    const trainingFlipped = (prev?.trainingMode === true) !== (config.trainingMode === true);
+    localStorage.setItem('rpos-device-config', JSON.stringify(config));
+    useStore.getState().setDeviceConfig(config);
+    if (announce || trainingFlipped) {
+      useStore.getState().showToast(config.trainingMode === true ? 'Training mode ON — nothing will be saved' : 'Device profile updated', 'info');
+    }
+  };
+
+  // ── v5.7.7: profile channel is REWIRABLE ───────────────────────────────────
+  // It used to be wired ONCE at mount with whatever profileId localStorage held,
+  // so a till reassigned to a different profile in Back Office kept listening to
+  // the old profile (or to nothing) until a true cold start, which is the root of the
+  // "Sunmi till stuck on a deleted menu pin" incident. wireProfileChannel is now
+  // called again whenever the devices row reports a different profile_id.
+  let profileChannel = null;
+  let wiredProfileId = null;
+  const wireProfileChannel = (profileId) => {
+    if (!profileId || profileId === wiredProfileId) return;
+    if (profileChannel) supabase.removeChannel(profileChannel);
+    wiredProfileId = profileId;
+    profileChannel = supabase
+      .channel(`profile-${profileId}`)
+      .on('postgres_changes', {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'device_profiles',
+        filter: `id=eq.${profileId}`,
+      }, (payload) => {
+        // Profile settings changed: re-apply immediately through the SAME
+        // mapping + apply path as boot and the silent refresh (v5.7.7: the
+        // handler used to keep its own field-mapping copy, which had drifted).
+        if (!payload.new) return;
+        applyDeviceConfig(configFromProfile(profileRowToProfile(payload.new)), { announce: true });
+      })
+      .subscribe();
+  };
+
   const refreshDevice = async () => {
       // If reclaiming: write our token to Supabase FIRST — this kicks the other session immediately
       if (isReclaim) {
@@ -2051,6 +666,8 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
       if (data.name !== current.name || data.profile_id !== current.profileId) {
         localStorage.setItem('rpos-device', JSON.stringify({ ...current, name: data.name, profileId: data.profile_id }));
       }
+      // v5.7.7: a profile REASSIGNMENT must move the realtime listener too
+      wireProfileChannel(data.profile_id);
       // Apply profile settings — fetch directly from Supabase for accuracy
       if (data.profile_id) {
         try {
@@ -2062,20 +679,7 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
               .select('*')
               .eq('id', data.profile_id)
               .single();
-            if (dbProfile) {
-              profile = {
-                id: dbProfile.id,
-                name: dbProfile.name,
-                defaultSurface: dbProfile.default_surface || 'tables',
-                enabledOrderTypes: dbProfile.enabled_order_types || ['dine-in'],
-                assignedSection: dbProfile.assigned_section || null,
-                hiddenFeatures: dbProfile.hidden_features || [],
-                tableServiceEnabled: dbProfile.table_service_enabled !== false,
-                quickScreenEnabled: dbProfile.quick_screen_enabled !== false,
-                serviceCharge: dbProfile.service_charge || null,
-                isMaster: dbProfile.is_master === true,
-              };
-            }
+            if (dbProfile) profile = profileRowToProfile(dbProfile);   // v5.7.7: unified mapping
           } catch {}
           // Fallback: localStorage > config snapshot only (NO hardcoded defaults — deleted means deleted)
           if (!profile) {
@@ -2085,19 +689,7 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
             profile = allProfiles.find(p => p.id === data.profile_id) || null;
           }
           if (profile) {
-            const config = {
-              profileId: profile.id, profileName: profile.name,
-              defaultSurface: profile.defaultSurface || 'tables',
-              enabledOrderTypes: profile.enabledOrderTypes || ['dine-in'],
-              assignedSection: profile.assignedSection || null,
-              hiddenFeatures: profile.hiddenFeatures || [],
-              tableServiceEnabled: profile.tableServiceEnabled !== false,
-              quickScreenEnabled: profile.quickScreenEnabled !== false,
-              serviceCharge: profile.serviceCharge || null,
-              isMaster: profile.isMaster === true,
-            };
-            localStorage.setItem('rpos-device-config', JSON.stringify(config));
-            useStore.getState().setDeviceConfig(config);
+            applyDeviceConfig(configFromProfile(profile));   // v5.7.7: unified mapping + apply path
           } else {
             // Profile ID not found in hardcoded list — try to find it in config push payload
             const existingConfig = JSON.parse(localStorage.getItem('rpos-device-config') || 'null');
@@ -2131,9 +723,12 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
               tableServiceEnabled: existingConfig?.tableServiceEnabled !== false,
               quickScreenEnabled: existingConfig?.quickScreenEnabled !== false,
               serviceCharge: existingConfig?.serviceCharge || null,
+              autoPrintReceiptOnClose: existingConfig?.autoPrintReceiptOnClose !== false,
+              orderNotifications: existingConfig?.orderNotifications !== false,
+              menuId: existingConfig?.menuId || null,
+              trainingMode: existingConfig?.trainingMode === true,   // v5.5.645: preserve training flag on fallback
             };
-            localStorage.setItem('rpos-device-config', JSON.stringify(minConfig));
-            useStore.getState().setDeviceConfig(minConfig);
+            applyDeviceConfig(minConfig);   // v5.7.7: same apply path (change-gated)
           }
         } catch(e) {}
       }
@@ -2153,6 +748,102 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
 
     // Initial check
     refreshDevice().catch(() => setDeviceValid(true));
+
+    // ── v5.7.7: SELF-HEALING deviceConfig ──────────────────────────────────────
+    // Sunmi WebViews kill websockets on sleep and keep page state on refresh, so
+    // a missed realtime event used to be missed forever and a till could keep
+    // filtering by a menu pin that no longer exists anywhere in the DB. This
+    // refresh re-reads the devices row (the source of truth for profile_id) and
+    // the profile itself from the DB, then re-applies through the same path as
+    // boot and realtime. It NO-OPS silently on any fetch failure so an offline
+    // till keeps its cache (never blank a working till because the wifi
+    // blipped) and it deliberately skips the localStorage profile fallback,
+    // which is exactly the path that used to resurrect stale pins.
+    let refreshInFlight = false;
+    const refreshDeviceProfile = async () => {
+      if (refreshInFlight || !pairedDevice?.id) return;
+      refreshInFlight = true;
+      try {
+        const { data } = await supabase.from('devices').select('id, status, profile_id, name').eq('id', pairedDevice.id).single();
+        if (!data || data.status === 'removed') return;   // removal/kick handling stays refreshDevice's job
+        const current = JSON.parse(localStorage.getItem('rpos-device') || '{}');
+        if (data.name !== current.name || data.profile_id !== current.profileId) {
+          localStorage.setItem('rpos-device', JSON.stringify({ ...current, name: data.name, profileId: data.profile_id }));
+        }
+        wireProfileChannel(data.profile_id);
+        if (!data.profile_id) return;
+        const { data: dbProfile } = await supabase.from('device_profiles').select('*').eq('id', data.profile_id).single();
+        if (!dbProfile) return;   // fetch failed or profile gone: keep the working cache
+        applyDeviceConfig(configFromProfile(profileRowToProfile(dbProfile)));
+      } catch { /* offline: keep the cache */ }
+      finally { refreshInFlight = false; }
+      // v5.7.18 - MENUS + CATEGORY LINKS self-heal on the same cycle. Timed
+      // menus live on the menus rows (schedule/priority/is_default) and on
+      // menu_category_links (a links-only menu with no links loaded counts as
+      // empty and can never win the resolver). Both used to reach a till only
+      // on Push to POS or a lucky boot. Re-read both (tiny tables), normalise,
+      // apply only on change. Items/categories stay push-delivered.
+      try {
+        const st = useStore.getState();
+        const locId = st.location?.id;
+        if (!locId || locId === 'loc-demo') return;
+        const [menusQ, linksQ] = await Promise.all([
+          supabase.from('menus').select('*').eq('location_id', locId).order('sort_order'),
+          fetchMenuCategoryLinks(locId),
+        ]);
+        if (Array.isArray(menusQ.data) && menusQ.data.length) {
+          const mapped = menusQ.data.map(normaliseMenuRow);
+          const key = rows => JSON.stringify(rows.map(m => [m.id, m.isDefault, m.isActive, m.priority ?? 0, m.schedule ?? null]).sort());
+          if (key(mapped) !== key(st.menus || [])) useStore.setState({ menus: mapped });
+        }
+        if (Array.isArray(linksQ.data)) {
+          const lkey = rows => JSON.stringify(rows.map(l => [l.menu_id, l.category_id]).sort());
+          if (lkey(linksQ.data) !== lkey(st.categoryLinks || [])) st.setCategoryLinks(linksQ.data);
+        }
+      } catch { /* best-effort */ }
+      // v5.7.33 - TAX PROFILES self-heal on the same cycle (delivery only -
+      // nothing computes with them yet). Small tables, same pattern as menus
+      // above: re-read, normalise via the one shared assembler, apply only on
+      // change. Its own try + Promise.all so a profiles read failing can never
+      // take the menus/links heal down with it, and vice versa. BOTH reads must
+      // succeed before applying - a half-failed read must not leave line-less
+      // profiles in the store.
+      try {
+        const st = useStore.getState();
+        const locId = st.location?.id;
+        if (!locId || locId === 'loc-demo') return;
+        const [profQ, lineQ, defQ] = await Promise.all([
+          supabase.from('tax_profiles').select('*').eq('location_id', locId).order('sort_order'),
+          supabase.from('tax_profile_lines').select('*').eq('location_id', locId).order('sort_order'),
+          supabase.from('locations').select('default_tax_profile_id').eq('id', locId).maybeSingle(),
+        ]);
+        // v5.7.33 review fix: the venue default heals too, INCLUDING a clear
+        // to null (a successful read always applies; a failed read keeps prior).
+        if (defQ && !defQ.error && defQ.data) {
+          const dv = defQ.data.default_tax_profile_id ?? null;
+          if (dv !== (useStore.getState().venueDefaultTaxProfileId ?? null)) useStore.setState({ venueDefaultTaxProfileId: dv });
+        }
+        if (Array.isArray(profQ.data) && Array.isArray(lineQ.data)) {
+          const mapped = assembleTaxProfiles(profQ.data, lineQ.data);
+          const pkey = rows => JSON.stringify((rows || []).map(p => [
+            p.id, p.name, p.active, p.sortOrder, p.rounding,
+            (p.lines || []).map(l => [l.id, l.name, l.jurisdiction, l.rate, l.flatAmount, l.lineType, l.mode, l.compound, l.taxable, l.taxBasis, l.orderTypes, l.sortOrder, l.active]),
+          ]).sort());
+          if (pkey(mapped) !== pkey(st.taxProfiles || [])) useStore.setState({ taxProfiles: mapped });
+        }
+      } catch { /* best-effort */ }
+    };
+
+    // Refresh triggers: wake from sleep, network back, 5-minute heartbeat, and
+    // every Push to POS (realtime.js dispatches rpos-config-push on arrival so
+    // Push to POS always delivers the CURRENT profile too).
+    const onVisible = () => { if (document.visibilityState === 'visible') refreshDeviceProfile(); };
+    const onOnline = () => refreshDeviceProfile();
+    const onConfigPush = () => refreshDeviceProfile();
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('online', onOnline);
+    window.addEventListener('rpos-config-push', onConfigPush);
+    const refreshInterval = setInterval(refreshDeviceProfile, 5 * 60 * 1000);
 
     // Subscribe to realtime changes on this device row
     const channel = supabase
@@ -2174,50 +865,20 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
       })
       .subscribe();
 
-    // Also subscribe to changes on the device_profiles table for this device's profile.
-    // This means: if someone edits the profile settings (order types, features, etc.),
-    // the front end picks them up immediately without a reload.
-    let profileChannel = null;
-    const wireProfileChannel = (profileId) => {
-      if (!profileId) return;
-      if (profileChannel) supabase.removeChannel(profileChannel);
-      profileChannel = supabase
-        .channel(`profile-${profileId}`)
-        .on('postgres_changes', {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'device_profiles',
-          filter: `id=eq.${profileId}`,
-        }, (payload) => {
-          // Profile settings changed — re-apply immediately
-          const p = payload.new;
-          if (!p) return;
-          const config = {
-            profileId: p.id,
-            profileName: p.name,
-            defaultSurface: p.default_surface || 'tables',
-            enabledOrderTypes: p.enabled_order_types || ['dine-in'],
-            assignedSection: p.assigned_section || null,
-            hiddenFeatures: p.hidden_features || [],
-            tableServiceEnabled: p.table_service_enabled !== false,
-            quickScreenEnabled: p.quick_screen_enabled !== false,
-            serviceCharge: p.service_charge || null,
-            terminalName: useStore.getState().deviceConfig?.terminalName,
-          };
-          localStorage.setItem('rpos-device-config', JSON.stringify(config));
-          useStore.getState().setDeviceConfig(config);
-          useStore.getState().showToast('Device profile updated', 'info');
-        })
-        .subscribe();
-    };
-
-    // Wire up now with current profile_id
+    // Wire the profile channel now with the cached profile_id so live edits land
+    // immediately; refreshDevice / refreshDeviceProfile rewire it if the DB says
+    // this device now points at a different profile (v5.7.7: it was wired once
+    // and never moved, so reassigned tills listened to the wrong profile).
     const currentProfileId = JSON.parse(localStorage.getItem('rpos-device') || '{}')?.profileId;
     wireProfileChannel(currentProfileId);
 
     return () => {
       supabase.removeChannel(channel);
       if (profileChannel) supabase.removeChannel(profileChannel);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('online', onOnline);
+      window.removeEventListener('rpos-config-push', onConfigPush);
+      clearInterval(refreshInterval);
     };
   }, []);
 
@@ -2238,7 +899,7 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
       </div>
       <a href="?mode=pos" onClick={() => {
           sessionStorage.setItem(`rpos-reclaim-${pairedDevice.id}`, '1');
-          sessionStorage.removeItem(SESSION_TOKEN_KEY);
+          sessionStorage.removeItem(`rpos-session-${pairedDevice.id}`);
           localStorage.setItem('rpos-device-mode', 'pos');
         }}
         style={{ padding:'14px 32px', borderRadius:12, background:'#6366f1', color:'#fff', fontWeight:700, fontSize:15, textDecoration:'none', fontFamily:'inherit', display:'inline-block' }}>
@@ -2248,24 +909,43 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
     </div>
   );
 
-  // KDS devices — if device type is kds, ensure mode is set correctly
+  // ── v5.6.83: SyncBridge mounts ONCE, and never moves ────────────────────────
+  // Every branch below used to return SyncBridge inside its own root element — a
+  // Fragment for the PIN screen, a <div> for the signed-in shell. React treats a
+  // change of root element type as a different tree, so it UNMOUNTED everything and
+  // built it again on every sign-in and every sign-out. SyncBridge's cleanup ran and
+  // its ~25-query boot ran again behind it: config push, a nine-leg fetch, tax rates,
+  // discounts, 500 closed checks over 30 days, bookings, order queue, bar tabs, the
+  // lot. On a till configured to sign out after each sale, staff were waiting for a
+  // full application boot between orders.
+  //
+  // So the branches now choose only the BODY. The bridge sits above them in a fixed
+  // slot and stays mounted while the body swaps underneath it. (SyncBridge also holds
+  // a location-keyed boot latch of its own as a second line of defence.)
   const pairedDeviceType = pairedDevice?.type;
-  if (pairedDeviceType === 'kds') {
+  const isKdsDevice = pairedDeviceType === 'kds'
+    // For non-KDS devices, also check deviceConfig (set during pairing)
+    || (deviceConfig?.defaultSurface === 'kds'
+        && !deviceConfig?.profileName?.toLowerCase().includes('counter')
+        && !deviceConfig?.profileName?.toLowerCase().includes('bar')
+        && !deviceConfig?.profileName?.toLowerCase().includes('server'));
+
+  let body;
+  if (isKdsDevice) {
     // KDS devices always show KDS surface regardless of URL mode
-    return <><SyncBridge onSyncPulse={handleSyncPulse}/><KDSSurface /></>;
-  }
-  // For non-KDS devices, also check deviceConfig (set during pairing)
-  if (deviceConfig?.defaultSurface === 'kds' && !deviceConfig?.profileName?.toLowerCase().includes('counter') && !deviceConfig?.profileName?.toLowerCase().includes('bar') && !deviceConfig?.profileName?.toLowerCase().includes('server')) {
-    return <><SyncBridge onSyncPulse={handleSyncPulse}/><KDSSurface /></>;
-  }
-
-  if (!staff) return <><SyncBridge onSyncPulse={handleSyncPulse}/><PINScreen /></>;
-  // Kiosk — full screen, no staff sidebar, no shift bar
-  if (surface === 'kiosk' || deviceConfig?.defaultSurface === 'kiosk') return <><SyncBridge onSyncPulse={handleSyncPulse}/><KioskSurface /></>;
-
-  return (
+    body = <><KioskAutoUpdate /><KDSSurface /></>;
+  } else if (!staff) {
+    body = <PINScreen />;
+  } else if (surface === 'kiosk' || deviceConfig?.defaultSurface === 'kiosk') {
+    // Kiosk — full screen, no staff sidebar, no shift bar
+    body = <KioskSurface />;
+  } else if (deviceConfig?.defaultSurface === 'mpos') {
+    // MPOS — full screen, phone-shaped router. Picked up by defaultSurface in addition
+    // to the URL-based ?mode=mpos path (which is checked earlier in the component).
+    body = <MPOSSurface />;
+  } else {
+    body = (
     <div style={{ display:'flex', flexDirection:'column', height:'100vh', overflow:'hidden' }}>
-      <SyncBridge onSyncPulse={handleSyncPulse}/>
       {masterOffline && (
         <MasterOfflineModal
           masterName={masterInfo?.device_name}
@@ -2273,11 +953,18 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
         />
       )}
       
+      <CardUserSwitch />
+      <AutoSignout />
       <ShiftBar version={VERSION} onWhatsNew={()=>setShowWhatsNew(true)} theme={theme} onToggleTheme={()=>setTheme(theme==='dark'?'light':'dark')} syncPulse={syncPulse}/>
       <ConfigSyncBanner />
-      <div style={{ display:'flex', flex:1, overflow:'hidden' }}>
+      <TrainingModeBanner />
+      {/* v5.5.356 ServOS: floating panels — padding + gap so the rail and
+          surface panels sit as separate rounded glass cards over the scene */}
+      <div style={{ display:'flex', flex:1, overflow:'hidden', gap:14, padding:16 }}>
         <Sidebar surface={surface} setSurface={setSurface} />
-        <div style={{ display:'flex', flex:1, overflow:'hidden', minWidth:0 }}>
+        {/* v5.5.365 ServOS: overflow visible so the floating panels' shadows aren't
+            clipped square by this wrapper — they reach the body's padding instead */}
+        <div style={{ display:'flex', flex:1, overflow:'visible', minWidth:0 }}>
           {surface==='tables'     && <TablesSurface />}
           {surface==='pos'        && <POSSurface />}
           {surface==='bar'        && <BarSurface />}
@@ -2287,19 +974,100 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
         </div>
       </div>
       {toast && <Toast toast={toast} />}
-      {showWhatsNew && <WhatsNewModal onClose={()=>setShowWhatsNew(false)} />}
+      {/* First till sign-in of the day: "Start your shift?" (venue opt-in). */}
+      <ShiftStartPrompt />
+      <ChangeDueOverlay />
+      {orderAlert && surface !== 'kds' && <OrderAlert alert={orderAlert} onDismiss={dismissOrderAlert} setSurface={setSurface} />}
+      {showWhatsNew && <Suspense fallback={null}><WhatsNewModal onClose={()=>setShowWhatsNew(false)} /></Suspense>}
     </div>
+    );
+  }
+
+  // The bridge is ALWAYS child 0 of this Fragment. React keeps a child in a fixed slot
+  // mounted across re-renders, so only {body} is torn down and rebuilt when the
+  // operator signs in or out.
+  return (
+    <>
+      <SyncBridge onSyncPulse={handleSyncPulse}/>
+      {body}
+    </>
   );
 }
 
 const NAV = [
-  { id:'bar',     label:'Bar',    icon:'🍸' },
-  { id:'tables',  label:'Floor',  icon:'⬚' },
-  { id:'pos',     label:'POS',    icon:'⊞' },
-  { id:'orders',  label:'Orders', icon:'📋' },
-  { id:'ai',      label:'AI',     icon:'✦' },
+  { id:'bar',     label:'Bar',    icon:'bar' },
+  { id:'tables',  label:'Floor',  icon:'floor' },
+  { id:'pos',     label:'POS',    icon:'pos' },
+  { id:'orders',  label:'Orders', icon:'orders' },
+  { id:'ai',      label:'AI',     icon:'ai' },
+  // icon = ServOS line-icon name (see components/ServOSIcons.jsx); was emoji.
   // KDS is NOT in the nav — KDS devices are separate terminals that boot straight to KDS surface
 ];
+
+// Fast user-switch: while a staff member is signed in on the till, another can tap their card (native
+// NFC or USB reader) to swap the active operator instantly — no logout. Matches against a FRESH staff
+// roster (the store's list goes stale — cards can be enrolled mid-shift while this till stays logged
+// in — which is why a second card used to "stick to one user"); a miss re-fetches once and retries so
+// a just-enrolled card works immediately. Ignores unknown cards + the current user's own card, and
+// never eats typed input (the hook guards inputs). Renders nothing.
+function CardUserSwitch() {
+  const staff = useStore(s => s.staff);
+  const login = useStore(s => s.login);
+  const showToast = useStore(s => s.showToast);
+  const rosterRef = useRef([]);
+  useEffect(() => {   // warm the roster on mount (also kept current by the miss-retry below)
+    let alive = true;
+    loadStaffRoster().then(r => { if (alive && r.length) rosterRef.current = r; }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  const onCard = async (cardId) => {
+    let r = resolveSignIn(rosterRef.current, { cardId });
+    if (!r.ok) {                                    // maybe a just-enrolled card → re-fetch once + retry
+      const fresh = await loadStaffRoster().catch(() => []);
+      if (fresh.length) rosterRef.current = fresh;
+      r = resolveSignIn(rosterRef.current, { cardId });
+    }
+    if (!r.ok) return;                              // genuinely unknown card → ignore quietly
+    if (staff && String(r.staff.id) === String(staff.id)) return;   // already this operator
+    // v5.5.734: don't switch operator mid-transaction. A checkout / card hold holds _signoutBlock;
+    // swapping now would null the live cart and orphan the in-flight payment (charged, unrecorded).
+    if (useStore.getState()._signoutBlock > 0) { showToast?.('Finish the current payment first', 'info'); return; }
+    login(r.staff);
+    try { logSignIn(r.staff.id, 'card'); } catch { /* best-effort */ }
+    showToast?.(`Switched to ${r.staff.name}`);
+  };
+  useCardScan(onCard, !!staff);
+  return null;
+}
+
+// Idle auto sign-out (per device profile). After N seconds with no activity the operator is signed
+// out so a shared till doesn't sit open on one person. Any tap / key / scroll resets the timer. The
+// pay/send sign-out triggers live in the store (maybeAutoSignout); this handles the idle one.
+function AutoSignout() {
+  const staff = useStore(s => s.staff);
+  const idleSeconds = useStore(s => s.deviceConfig?.signout?.idleSeconds || 0);
+  const logout = useStore(s => s.logout);
+  const showToast = useStore(s => s.showToast);
+  useEffect(() => {
+    if (!staff || !idleSeconds || idleSeconds < 5) return undefined;
+    let timer = null;
+    const arm = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(fire, idleSeconds * 1000);
+    };
+    const fire = () => {
+      // Never sign out mid-transaction — an open payment surface holds _signoutBlock. Re-arm and
+      // re-check next tick so a genuinely-idle till still logs out once the payment finishes.
+      if (useStore.getState()._signoutBlock > 0) { arm(); return; }
+      if (useStore.getState().staff) { logout(); showToast?.('Signed out — inactive', 'info'); }
+    };
+    const evs = ['pointerdown', 'keydown', 'wheel', 'touchstart'];
+    evs.forEach(e => window.addEventListener(e, arm, { passive: true }));
+    arm();   // arm on sign-in
+    return () => { if (timer) clearTimeout(timer); evs.forEach(e => window.removeEventListener(e, arm)); };
+  }, [staff, idleSeconds, logout, showToast]);
+  return null;
+}
 
 function ShiftBar({ version, onWhatsNew, theme, onToggleTheme, syncPulse }) {
   const { deviceConfig, setSurface, orderQueue, tables, tabs, closedChecks, shift } = useStore();
@@ -2351,137 +1119,67 @@ function ShiftBar({ version, onWhatsNew, theme, onToggleTheme, syncPulse }) {
   }, [printers.length]);
 
   return (
-    <div style={{ height:42, display:'flex', alignItems:'center', background:'var(--bg1)', borderBottom:'1px solid var(--bdr)', flexShrink:0 }}>
-      {/* Logo */}
-      <div style={{ width:'var(--nav)', height:'100%', display:'flex', alignItems:'center', justifyContent:'center', borderRight:'1px solid var(--bdr)', flexShrink:0 }}>
-        <div style={{ width:30, height:30, background:'var(--acc)', borderRadius:9, display:'flex', alignItems:'center', justifyContent:'center', fontSize:16, fontWeight:900, color:'#0b0c10', fontFamily:'var(--font-mono)' }}>R</div>
+    <div style={{ height:58, display:'flex', alignItems:'center', gap:14, background:'var(--glass-bg)', backdropFilter:'blur(22px) saturate(150%)', WebkitBackdropFilter:'blur(22px) saturate(150%)', borderBottom:'1px solid var(--glass-border)', flexShrink:0, padding:'0 16px' }}>
+      {/* Logo tile */}
+      <div style={{ width:40, height:40, borderRadius:11, display:'flex', alignItems:'center', justifyContent:'center', background:'var(--glass-bg)', border:'1px solid var(--glass-border)', boxShadow:'var(--glass-hi)', flexShrink:0 }}>
+        <ServOSIcon size={20} />
       </div>
 
-      {/* Terminal identity — LEFT, always visible */}
-      <div style={{ padding:'0 16px 0 14px', borderRight:'1px solid var(--bdr)', display:'flex', flexDirection:'column', justifyContent:'center', height:'100%', flexShrink:0 }}>
-        <div style={{ fontSize:13, fontWeight:800, color:'var(--t1)', letterSpacing:'-.01em', lineHeight:1 }}>{terminalName}</div>
-        <div style={{ fontSize:9, fontWeight:700, color: profileName ? 'var(--acc)' : 'var(--t4)', marginTop:2, letterSpacing:'.04em', textTransform:'uppercase' }}>
-          {profileName || 'No profile'}
-          {urlParam && <span style={{ marginLeft:4, padding:'0 4px', background:'var(--bg3)', borderRadius:3, color:'var(--t4)', fontFamily:'var(--font-mono)', fontSize:8 }}>?t={urlParam}</span>}
+      {/* Terminal identity */}
+      <div style={{ display:'flex', flexDirection:'column', gap:1, flexShrink:0 }}>
+        <div style={{ fontSize:15, fontWeight:600, color:'var(--t1)', letterSpacing:'-.01em', lineHeight:1.1 }}>{terminalName}</div>
+        <div style={{ fontFamily:'var(--font-mono)', fontSize:9.5, fontWeight:500, color: profileName ? 'var(--t2)' : 'var(--t4)', letterSpacing:'.22em', textTransform:'uppercase', whiteSpace:'nowrap' }}>
+          {profileName || 'No profile'}{urlParam && <span style={{ marginLeft:5, padding:'0 4px', background:'var(--inset)', borderRadius:3, color:'var(--t4)', fontSize:8 }}>?t={urlParam}</span>}
         </div>
       </div>
 
-      {/* Shift stats */}
-      <div style={{ display:'flex', alignItems:'center', padding:'0 16px', flex:1, gap:0, overflow:'hidden' }}>
-        <div style={{ display:'flex', alignItems:'center', gap:6, marginRight:20 }}>
-          <div style={{ width:6, height:6, borderRadius:'50%', background:'var(--grn)', boxShadow:'0 0 6px var(--grn)' }}/>
-          <span style={{ fontSize:12, fontWeight:700, color:'var(--t1)' }}>{shift.name}</span>
-          {/* Sync pulse — flashes amber when data syncs from another terminal */}
-          {syncPulse && (
-            <div style={{ width:6, height:6, borderRadius:'50%', background:'var(--acc)', boxShadow:'0 0 8px var(--acc)', animation:'pulse .6s ease-out', opacity:1 }}/>
-          )}
-        </div>
-        {[{label:'Covers',val:shift.covers},{label:'Sales',val:`£${shift.sales.toLocaleString()}`},{label:'Avg',val:`£${shift.avgCheck.toFixed(2)}`}].map(s=>(
-          <div key={s.label} style={{ marginRight:20, display:'flex', alignItems:'baseline', gap:5 }}>
-            <span style={{ fontSize:10, color:'var(--t4)', fontWeight:700, textTransform:'uppercase', letterSpacing:'.06em' }}>{s.label}</span>
-            <span style={{ fontSize:13, fontWeight:700, color:'var(--t2)', fontFamily:typeof s.val==='string'&&s.val.includes('£')?'var(--font-mono)':'inherit' }}>{s.val}</span>
-          </div>
-        ))}
-      </div>
-      <div style={{ display:'flex', alignItems:'center', gap:10, padding:'0 14px', flexShrink:0 }}>
-        <div style={{ fontSize:11, color:'var(--t4)', fontFamily:'var(--font-mono)' }}>
-          {new Date().toLocaleString('en-GB',{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}
-        </div>
-        <button onClick={onToggleTheme} style={{
-          display:'flex', alignItems:'center', justifyContent:'center',
-          width:32, height:28, borderRadius:9, cursor:'pointer',
-          background:'var(--bg3)', border:'1px solid var(--bdr)', fontFamily:'inherit',
-          fontSize:15, color:'var(--t3)', transition:'all .14s',
-        }}
-        onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--bdr3)';e.currentTarget.style.color='var(--t1)';}}
-        onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--bdr)';e.currentTarget.style.color='var(--t3)';}}>
-          {theme==='dark' ? '☀️' : '🌙'}
-        </button>
-        <button onClick={() => setSurface('orders')} style={{
-          display:'flex', alignItems:'center', gap:6, padding:'4px 11px', borderRadius:20, cursor:'pointer',
-          background: activeOrders > 0 ? 'var(--acc-d)' : 'var(--bg3)',
-          border:`1px solid ${activeOrders > 0 ? 'var(--acc-b)' : 'var(--bdr)'}`,
-          fontFamily:'inherit', fontSize:11, fontWeight:700,
-          color: activeOrders > 0 ? 'var(--acc)' : 'var(--t3)',
-          position:'relative', transition:'all .14s',
-        }}>
-          <span>📋 Orders</span>
-          {activeOrders > 0 && (
-            <span style={{ background:'var(--acc)', color:'#0b0c10', borderRadius:10, padding:'0 5px', fontSize:10, fontWeight:800 }}>
-              {activeOrders}
-            </span>
-          )}
-        </button>
-        {/* Printer status moved to Status drawer (sidebar button) */}
-        <button onClick={onWhatsNew} style={{ display:'flex', alignItems:'center', gap:5, padding:'4px 10px', borderRadius:20, cursor:'pointer', background:'var(--bg3)', border:'1px solid var(--bdr)', fontFamily:'inherit', fontSize:11, fontWeight:700, color:'var(--t3)', transition:'all .14s' }}
-          onMouseEnter={e=>{e.currentTarget.style.borderColor='var(--acc-b)';e.currentTarget.style.color='var(--acc)';}}
-          onMouseLeave={e=>{e.currentTarget.style.borderColor='var(--bdr)';e.currentTarget.style.color='var(--t3)';}}>
-          <span style={{ fontFamily:'var(--font-mono)', fontSize:10 }}>v{version}</span>
-          <span style={{ color:'var(--bdr3)' }}>·</span>
-          <span>What's new</span>
-        </button>
-      </div>
-    </div>
-  );
-}
+      <div style={{ width:1, height:30, background:'var(--glass-border)', flexShrink:0 }}/>
 
-function WhatsNewModal({ onClose }) {
-  const [selected, setSelected] = useState(CHANGELOG[0].version);
-  const entry = CHANGELOG.find(c => c.version === selected) || CHANGELOG[0];
-  return (
-    <div className="modal-back" onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div style={{
-        background:'var(--bg2)', border:'1px solid var(--bdr2)', borderRadius:20,
-        width:'100%', maxWidth:560, maxHeight:'80vh',
-        display:'flex', flexDirection:'column', boxShadow:'var(--sh3)', overflow:'hidden',
+      {/* Shift pill */}
+      <div style={{ display:'inline-flex', alignItems:'center', gap:7, padding:'7px 12px', borderRadius:999, background:'var(--inset)', border:'1px solid var(--inset-border)', flexShrink:0 }}>
+        <span style={{ width:8, height:8, borderRadius:'50%', background:'var(--grn)', boxShadow:'0 0 9px var(--grn)' }}/>
+        <span style={{ fontFamily:'var(--font-mono)', fontSize:10.5, fontWeight:600, letterSpacing:'.1em', textTransform:'uppercase', color:'var(--t1)', whiteSpace:'nowrap' }}>{shift.name || 'Current shift'}</span>
+        {syncPulse && <div style={{ width:6, height:6, borderRadius:'50%', background:'var(--acc)', boxShadow:'0 0 8px var(--acc)', animation:'pulse .6s ease-out' }}/>}
+      </div>
+
+      <div style={{ flex:1 }}/>
+
+      {/* clock */}
+      <div style={{ fontFamily:'var(--font-mono)', fontSize:11, letterSpacing:'.04em', color:'var(--t3)', whiteSpace:'nowrap', flexShrink:0 }}>
+        {new Date().toLocaleString('en-GB',{weekday:'short',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}
+      </div>
+
+      {/* theme segmented (sun | moon) */}
+      <div style={{ display:'inline-flex', padding:3, borderRadius:11, background:'var(--inset)', border:'1px solid var(--inset-border)', flexShrink:0 }}>
+        <button onClick={()=>{ if(theme!=='light') onToggleTheme(); }} title="Light" style={{ width:30, height:26, border:'none', borderRadius:8, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', background: theme==='light'?'var(--glass-bg)':'transparent', boxShadow: theme==='light'?'var(--glass-hi)':'none', color: theme==='light'?'var(--signal-glow,#46E08C)':'var(--t3)', fontFamily:'inherit' }}>
+          <Icon name="sun" size={15} />
+        </button>
+        <button onClick={()=>{ if(theme!=='dark') onToggleTheme(); }} title="Dark" style={{ width:30, height:26, border:'none', borderRadius:8, cursor:'pointer', display:'flex', alignItems:'center', justifyContent:'center', background: theme==='dark'?'var(--glass-bg)':'transparent', boxShadow: theme==='dark'?'var(--glass-hi)':'none', color: theme==='dark'?'var(--signal-glow,#46E08C)':'var(--t3)', fontFamily:'inherit' }}>
+          <Icon name="moon" size={15} />
+        </button>
+      </div>
+
+      {/* Activity feed bell — orders / nudges / menu changes / ops, with a slide-over timeline */}
+      <ActivityFeed />
+
+      {/* Orders badge */}
+      <button onClick={() => setSurface('orders')} style={{
+        display:'flex', alignItems:'center', gap:8, padding:'7px 12px', borderRadius:11, cursor:'pointer',
+        background: activeOrders>0 ? 'linear-gradient(180deg, rgba(47,217,132,0.18), rgba(21,194,106,0.08))' : 'var(--inset)',
+        border:`1px solid ${activeOrders>0 ? 'rgba(21,194,106,0.45)' : 'var(--inset-border)'}`,
+        fontFamily:'inherit', fontSize:13, fontWeight:600, color:'var(--t1)', flexShrink:0,
       }}>
-        {/* Header */}
-        <div style={{ padding:'18px 22px 14px', borderBottom:'1px solid var(--bdr)', display:'flex', alignItems:'center', justifyContent:'space-between', flexShrink:0 }}>
-          <div>
-            <div style={{ fontSize:17, fontWeight:700, color:'var(--t1)' }}>What's new</div>
-            <div style={{ fontSize:12, color:'var(--t3)', marginTop:2 }}>Restaurant OS · version history</div>
-          </div>
-          <button onClick={onClose} style={{ background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:22, lineHeight:1 }}>×</button>
-        </div>
+        <Icon name="orders" size={16} style={{ color: activeOrders>0?'var(--acc)':'var(--t3)' }} />
+        <span>Orders</span>
+        {activeOrders>0 && <span style={{ fontFamily:'var(--font-mono)', fontSize:11, background:'var(--signal,#15C26A)', color:'#06130C', padding:'2px 7px', borderRadius:999, fontWeight:700 }}>{activeOrders}</span>}
+      </button>
 
-        <div style={{ display:'flex', flex:1, overflow:'hidden' }}>
-          {/* Version list */}
-          <div style={{ width:160, flexShrink:0, borderRight:'1px solid var(--bdr)', overflowY:'auto', padding:'8px 0' }}>
-            {CHANGELOG.map((c, i) => (
-              <button key={c.version} onClick={()=>setSelected(c.version)} style={{
-                width:'100%', padding:'10px 14px', textAlign:'left', cursor:'pointer',
-                fontFamily:'inherit', border:'none', transition:'background .1s',
-                background: selected===c.version ? 'var(--bg3)' : 'transparent',
-                borderLeft: `2px solid ${selected===c.version ? 'var(--acc)' : 'transparent'}`,
-              }}>
-                <div style={{ display:'flex', alignItems:'center', gap:6, marginBottom:2 }}>
-                  <span style={{ fontSize:12, fontWeight:700, color: selected===c.version?'var(--acc)':'var(--t1)', fontFamily:'DM Mono, monospace' }}>v{c.version}</span>
-                  {i===0 && <span style={{ fontSize:9, fontWeight:700, padding:'1px 5px', borderRadius:20, background:'var(--acc)', color:'#0e0f14' }}>LATEST</span>}
-                </div>
-                <div style={{ fontSize:11, color:'var(--t3)' }}>{c.label}</div>
-                <div style={{ fontSize:10, color:'var(--t4)', marginTop:1 }}>{c.date}</div>
-              </button>
-            ))}
-          </div>
-
-          {/* Changes detail */}
-          <div style={{ flex:1, overflowY:'auto', padding:'18px 20px' }}>
-            <div style={{ display:'flex', alignItems:'baseline', gap:10, marginBottom:4 }}>
-              <span style={{ fontSize:20, fontWeight:800, color:'var(--t1)', fontFamily:'DM Mono, monospace' }}>v{entry.version}</span>
-              <span style={{ fontSize:13, color:'var(--acc)', fontWeight:600 }}>{entry.label}</span>
-            </div>
-            <div style={{ fontSize:11, color:'var(--t4)', marginBottom:16 }}>{entry.date}</div>
-            <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-              {entry.changes.map((change, i) => (
-                <div key={i} style={{ display:'flex', gap:10, padding:'8px 12px', background:'var(--bg3)', borderRadius:8, border:'1px solid var(--bdr)' }}>
-                  <span style={{ color:'var(--acc)', fontWeight:700, flexShrink:0, marginTop:1 }}>✓</span>
-                  <span style={{ fontSize:13, color:'var(--t2)', lineHeight:1.5 }}>{change}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
+      {/* version + What's new */}
+      <button onClick={onWhatsNew} style={{ display:'flex', alignItems:'center', gap:6, background:'none', border:'none', cursor:'pointer', fontFamily:'var(--font-mono)', fontSize:10, letterSpacing:'.04em', color:'var(--t4)', flexShrink:0, whiteSpace:'nowrap' }}>
+        <span>v{version}</span>
+        <span style={{ color:'var(--bdr3)' }}>·</span>
+        <span style={{ color:'var(--uv-glow, #A48BFF)', fontWeight:600 }}>What's new</span>
+      </button>
     </div>
   );
 }
@@ -2489,13 +1187,16 @@ function WhatsNewModal({ onClose }) {
 function Sidebar({ surface, setSurface }) {
   const { setAppMode, syncStatus, deviceConfig } = useStore();
   const [showStatus, setShowStatus] = useState(false);
+  const [showSupport, setShowSupport] = useState(false);
 
   const hidden = deviceConfig?.hiddenFeatures || [];
   const allOk = syncStatus.printerOnline && !syncStatus.pendingChanges;
   const printers = (() => { try { return JSON.parse(localStorage.getItem('rpos-printers') || '[]'); } catch { return []; } })();
   const hasPrinters = printers.length > 0;
 
-  const FEATURE_MAP = { kds:'kds', reports:'backoffice', barTabs:'bar', bar:'bar', floorplan:'tables', tables:'tables', floor:'tables', orders:'orders' };
+  // v4.5.1: trimmed to only the flags exposed in DeviceProfiles.jsx.
+  // Removed: kds, reports, kiosk, floorplan/tables/floor/orders (none were exposed in the profile editor).
+  const FEATURE_MAP = { barTabs:'bar', bar:'bar' };
   const visibleNav = NAV.filter(n => {
     // Table service disabled → hide floor plan
     if (n.id === 'tables' && deviceConfig && deviceConfig.tableServiceEnabled === false) return false;
@@ -2505,11 +1206,11 @@ function Sidebar({ surface, setSurface }) {
 
   return (
     <>
-    <nav style={{ width:'var(--nav)', background:'var(--bg1)', borderRight:'1px solid var(--bdr)', display:'flex', flexDirection:'column', alignItems:'center', padding:'10px 0', gap:2, flexShrink:0 }}>
+    <nav style={{ width:'var(--nav)', background:'var(--glass-bg)', backdropFilter:'blur(22px) saturate(150%)', WebkitBackdropFilter:'blur(22px) saturate(150%)', border:'1px solid var(--glass-border)', borderRadius:20, boxShadow:'var(--glass-shadow), var(--glass-hi), var(--glass-lo)', display:'flex', flexDirection:'column', alignItems:'center', padding:'10px 0', gap:4, flexShrink:0, position:'relative', zIndex:60 }}>
       {visibleNav.map(n=>{
         const active=surface===n.id;
-        return(<button key={n.id} onClick={()=>setSurface(n.id)} style={{ width:46, height:46, borderRadius:10, cursor:'pointer', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:2, background:active?'var(--acc-d)':'transparent', border:`1px solid ${active?'var(--acc-b)':'transparent'}`, color:active?'var(--acc)':'var(--t3)', transition:'all .15s', fontFamily:'inherit', position:'relative' }}>
-          <span style={{ fontSize:18, lineHeight:1 }}>{n.icon}</span>
+        return(<button key={n.id} onClick={()=>setSurface(n.id)} style={{ width:46, height:46, borderRadius:12, cursor:'pointer', display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:3, background:active?'var(--acc-d)':'transparent', border:`1px solid ${active?'var(--acc-b)':'transparent'}`, boxShadow:active?'var(--glass-hi)':'none', color:active?'var(--acc)':'var(--t3)', transition:'all .15s', fontFamily:'inherit', position:'relative' }}>
+          <Icon name={n.icon} size={21} stroke={active?2:1.7} />
           <span style={{ fontSize:9, fontWeight:700, letterSpacing:'.04em', color:active?'var(--acc)':'var(--t3)' }}>{n.label}</span>
         </button>);
       })}
@@ -2527,7 +1228,7 @@ function Sidebar({ surface, setSurface }) {
       }}
       onMouseEnter={e=>{e.currentTarget.style.background='var(--bg3)';}}
       onMouseLeave={e=>{e.currentTarget.style.background='transparent';}}>
-        <span style={{ fontSize:17, lineHeight:1 }}>⊙</span>
+        <Icon name="status" size={20} />
         <span style={{ fontSize:9, fontWeight:700, letterSpacing:'.04em' }}>Status</span>
         {!allOk && hasPrinters && <div style={{ position:'absolute', top:6, right:8, width:7, height:7, borderRadius:'50%', background:'var(--acc)', boxShadow:'0 0 6px var(--acc)' }}/>}
         {!deviceConfig && <div style={{ position:'absolute', top:6, right:8, width:7, height:7, borderRadius:'50%', background:'var(--red)', boxShadow:'0 0 6px var(--red)' }}/>}
@@ -2542,14 +1243,28 @@ function Sidebar({ surface, setSurface }) {
       }}
       onMouseEnter={e=>{e.currentTarget.style.background='var(--bg3)';e.currentTarget.style.color='var(--t1)';}}
       onMouseLeave={e=>{e.currentTarget.style.background='transparent';e.currentTarget.style.color='var(--t3)';}}>
-        <span style={{ fontSize:17, lineHeight:1 }}>⚙</span>
+        <Icon name="office" size={20} />
         <span style={{ fontSize:9, fontWeight:700, letterSpacing:'.04em' }}>Office</span>
+      </button>
+
+      {/* Support chat button */}
+      <button onClick={() => setShowSupport(true)} title="Support" style={{
+        width:46, height:46, borderRadius:10, cursor:'pointer',
+        display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:2,
+        background:'transparent', border:'1px solid transparent',
+        color:'var(--t3)', transition:'all .15s', fontFamily:'inherit',
+      }}
+      onMouseEnter={e=>{e.currentTarget.style.background='var(--bg3)';e.currentTarget.style.color='var(--t1)';}}
+      onMouseLeave={e=>{e.currentTarget.style.background='transparent';e.currentTarget.style.color='var(--t3)';}}>
+        <Icon name="support" size={20} />
+        <span style={{ fontSize:9, fontWeight:700, letterSpacing:'.04em' }}>Support</span>
       </button>
 
       <div style={{ marginTop:'auto' }}><StaffAvatar /></div>
     </nav>
 
     {showStatus && <StatusDrawer onClose={() => setShowStatus(false)} />}
+    <SupportChat open={showSupport} onClose={() => setShowSupport(false)} />
     </>
   );
 }
@@ -2575,4 +1290,142 @@ function Toast({ toast }) {
   const map={success:{bg:'var(--grn-d)',bdr:'var(--grn-b)',color:'var(--grn)'},error:{bg:'var(--red-d)',bdr:'var(--red-b)',color:'var(--red)'},warning:{bg:'var(--acc-d)',bdr:'var(--acc-b)',color:'var(--acc)'},info:{bg:'var(--bg3)',bdr:'var(--bdr2)',color:'var(--t1)'}};
   const c=map[toast.type]||map.info;
   return <div className="toast" key={toast.key} style={{ background:c.bg, border:`1px solid ${c.bdr}`, color:c.color }}>{toast.msg}</div>;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// OrderAlert — center-screen popup for an incoming order (v5.5.561, was a top
+// banner). A dimmed backdrop + a card in the MIDDLE of the screen so staff can
+// act on it without hunting for the Orders Hub:
+//   • Channel order still awaiting a decision (HubRise, auto-accept OFF) → big
+//     Reject / Accept buttons that run the same path as the Orders Hub.
+//   • Online / kiosk / QR (or an already auto-accepted channel order) → View order
+//     (jumps to the Orders Hub) / Dismiss.
+//   • A channel cancellation (kind:'cancel') → red card, Dismiss only.
+// Dismiss just closes the popup — the order stays in the Orders Hub. Rendered for
+// POS / Bar / Tables / Orders (KDS is excluded at the call site; it has tickets).
+function orderAlertBtn(bg) {
+  return { flex: 1, height: 54, borderRadius: 12, border: 'none', cursor: 'pointer',
+    background: bg, color: '#fff', fontSize: 17, fontWeight: 800, fontFamily: 'inherit' };
+}
+function OrderAlert({ alert, onDismiss, setSurface }) {
+  const acceptOrderByRef = useStore(s => s.acceptOrderByRef);
+  const acceptOrderByRefWithDelay = useStore(s => s.acceptOrderByRefWithDelay);
+  const rejectOrderByRef = useStore(s => s.rejectOrderByRef);
+  const order = useStore(s => (s.orderQueue || []).find(o => o.ref === alert.ref));
+  // v5.5.852: ⏱ Delay on the popup too — staff accept from here in practice, so the
+  // accept-with-delay path (v5.5.849, Orders Hub card) must also exist on this card.
+  const [delayOpen, setDelayOpen] = useState(false);
+
+  const SOURCE_META = {
+    kiosk:  { icon: '📟', label: 'Kiosk',    bg: '#0ea5e9' },  // sky-500
+    online: { icon: '🌐', label: 'Online',   bg: '#10b981' },  // emerald-500
+    qr:     { icon: '📱', label: 'QR Code',  bg: '#a855f7' },  // purple-500
+    hubrise:{ icon: '🛵', label: 'Delivery', bg: '#e8a020' },  // amber
+  };
+  const isCancel = alert.kind === 'cancel';
+  const m = isCancel
+    ? { icon: '⚠️', label: alert.who || 'Channel', bg: '#dc2626' }
+    : (SOURCE_META[alert.source] || { icon: '🛎', label: alert.source || 'Order', bg: '#e8a020' });
+  const total = Number(alert.total || 0);
+
+  // A channel order that the operator still has to accept/reject (auto-accept off
+  // → it arrives 'received'/'new', not yet 'prep').
+  const needsDecision = !isCancel && alert.source === 'hubrise'
+    && !['prep', 'ready', 'collected', 'cancelled'].includes(alert.status);
+
+  const accept = () => { acceptOrderByRef?.(alert.ref); onDismiss(); };
+  const acceptDelay = (mins) => { acceptOrderByRefWithDelay?.(alert.ref, mins); onDismiss(); };
+  const reject = () => {
+    if (!confirm(`Reject ${alert.who || 'this'} order ${alert.ref}? The channel will be notified.`)) return;
+    rejectOrderByRef?.(alert.ref); onDismiss();
+  };
+  const view = () => { setSurface?.('orders'); onDismiss(); };
+
+  const items = order?.items || [];
+
+  return (
+    <div
+      onClick={(e) => { if (e.target === e.currentTarget) onDismiss(); }}
+      style={{ position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(0,0,0,0.55)',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
+        animation: 'fadeIn .18s ease', fontFamily: 'inherit' }}>
+      <div key={alert.key} style={{
+        width: 'min(440px, calc(100vw - 32px))', maxHeight: 'calc(100vh - 32px)',
+        background: 'var(--bg2)', color: 'var(--t1)', borderRadius: 18, overflow: 'hidden',
+        boxShadow: '0 24px 70px rgba(0,0,0,0.55)', display: 'flex', flexDirection: 'column',
+        animation: 'slideUp .26s cubic-bezier(0.2, 0.9, 0.3, 1.25)', border: '1px solid var(--bdr)' }}>
+
+        {/* Coloured header */}
+        <div style={{ background: m.bg, color: '#fff', padding: '18px 20px', display: 'flex', alignItems: 'center', gap: 14 }}>
+          <div style={{ width: 52, height: 52, borderRadius: 14, background: 'rgba(255,255,255,0.22)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 28, flexShrink: 0 }}>{m.icon}</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 11, fontWeight: 800, letterSpacing: '0.09em', textTransform: 'uppercase', opacity: 0.9 }}>
+              {isCancel ? 'Order cancelled' : `New ${m.label} order`}
+            </div>
+            <div style={{ fontSize: 21, fontWeight: 900, lineHeight: 1.2, marginTop: 2,
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {alert.who || 'Guest'}
+            </div>
+            <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.92, marginTop: 2 }}>
+              {alert.ref ? <>Ref <span style={{ fontFamily: 'monospace' }}>{alert.ref}</span></> : null}
+              {total > 0 && <> · {money(total)}</>}
+            </div>
+          </div>
+        </div>
+
+        {/* Body */}
+        {!isCancel && items.length > 0 && (
+          <div style={{ padding: '14px 20px', overflowY: 'auto', borderBottom: '1px solid var(--bdr)' }}>
+            {items.slice(0, 12).map((it, i) => (
+              <div key={i} style={{ display: 'flex', gap: 10, fontSize: 13.5, padding: '3px 0', color: 'var(--t2)' }}>
+                <b style={{ color: 'var(--t1)', flexShrink: 0 }}>{it.qty || it.quantity || 1}×</b>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.name || it.menuName || 'Item'}</span>
+              </div>
+            ))}
+            {items.length > 12 && <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 4 }}>+{items.length - 12} more…</div>}
+          </div>
+        )}
+        {isCancel && (
+          <div style={{ padding: '16px 20px', fontSize: 13.5, color: 'var(--t2)', borderBottom: '1px solid var(--bdr)' }}>
+            This order was cancelled on the channel. If the kitchen has started it, stop and reconcile.
+          </div>
+        )}
+
+        {/* Actions */}
+        {needsDecision && delayOpen && (
+          <div style={{ padding: '12px 16px 0', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--t2)' }}>Kitchen running behind — accept for:</span>
+            {[10, 15, 20, 30].map(mins => (
+              <button key={mins} onClick={() => acceptDelay(mins)}
+                style={{ padding: '8px 14px', borderRadius: 999, cursor: 'pointer', fontFamily: 'inherit',
+                  background: 'var(--bg1)', border: '1px solid var(--acc)', color: 'var(--acc)',
+                  fontSize: 13, fontWeight: 800, whiteSpace: 'nowrap' }}>
+                +{mins}m
+              </button>
+            ))}
+          </div>
+        )}
+        <div style={{ padding: 16, display: 'flex', gap: 10 }}>
+          {isCancel ? (
+            <button onClick={onDismiss} style={orderAlertBtn('#475569')}>Dismiss</button>
+          ) : needsDecision ? (
+            <>
+              <button onClick={reject} style={orderAlertBtn('#dc2626')}>Reject</button>
+              <button onClick={() => setDelayOpen(v => !v)}
+                style={{ ...orderAlertBtn(delayOpen ? '#b45309' : '#d97706'), flex: '0 0 auto', padding: '0 16px' }}>
+                ⏱ Delay
+              </button>
+              <button onClick={accept} style={orderAlertBtn('#16a34a')}>Accept</button>
+            </>
+          ) : (
+            <>
+              <button onClick={onDismiss} style={orderAlertBtn('#475569')}>Dismiss</button>
+              <button onClick={view} style={orderAlertBtn('#2563eb')}>View order</button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }

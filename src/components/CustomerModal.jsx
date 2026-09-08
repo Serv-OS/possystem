@@ -1,41 +1,170 @@
 import { useState, useEffect } from 'react';
 import { useStore, getCollectionSlots } from '../store';
+import { kitchenLoadFromStore, prepMinutes, liveOrderCount } from '../lib/prepTime';
+import { supabase, getLocationId } from '../lib/supabase';
+import { getLocationConfig, clearLocationConfigCache } from '../lib/locationTime';
+import AddressAutocomplete from './AddressAutocomplete';
 
-export default function CustomerModal({ orderType, onConfirm, onCancel }) {
-  const { searchCustomers, addToHistory, showToast } = useStore();
-  const [name, setName]       = useState('');
-  const [phone, setPhone]     = useState('');
-  const [email, setEmail]     = useState('');
-  const [notes, setNotes]     = useState('');
-  const [isASAP, setIsASAP]   = useState(true);
-  const [slotIdx, setSlotIdx] = useState(0);
+export default function CustomerModal({ orderType, existing, onConfirm, onCancel }) {
+  const { searchCustomers, searchCustomersLive, addToHistory, showToast, takeawayCustomerDetails } = useStore();
+  // v5.8.6: quote the same wait the kitchen is actually carrying. The slot grid
+  // was hard-coded to now+15 regardless of the venue's lead time, so a caller
+  // was promised a time the website would have refused for the same order.
+  // The count comes from the store the Orders Hub renders, so the number staff
+  // quote and the number they can see cannot drift apart.
+  const tz          = useStore(st => st.locationConfig?.timezone);
+  // The wait we QUOTE, not collectionLeadMinutes (that is when the kitchen
+  // STARTS a pre-order — a different setting answering a different question).
+  // Falling back to the kitchen-start lead is still far better than the old
+  // hard-coded 15, which promised a caller a time the website would refuse.
+  const quoteBase   = useStore(st => st.locationConfig?.quoteLeadMinutes);
+  const kitchenBase = useStore(st => st.locationConfig?.collectionLeadMinutes);
+  const leadBase    = typeof quoteBase === 'number' ? quoteBase : kitchenBase;
+  const busyRule    = useStore(st => st.locationConfig?.busyRule) || {};
+  const liveTables  = useStore(st => st.tables);
+  const liveTabs    = useStore(st => st.tabs);
+  const liveQueue   = useStore(st => st.orderQueue);
+  // v5.8.11: read the SAME two sources the website reads, fresh, when the
+  // modal opens. The store's copy of the venue settings is cached for the
+  // whole session (locationTime._locationConfigCache) and its order count is
+  // the till's own memory, so a rule changed in Back Office never reached an
+  // open till: the website quoted 90 while the counter quoted 45 for the same
+  // kitchen at the same moment. The in-memory figures stay as the offline
+  // fallback only.
+  const [fresh, setFresh] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const locId = await getLocationId();
+        if (!locId || locId === 'loc-demo') return;
+        clearLocationConfigCache();
+        const [cfg, count] = await Promise.all([
+          getLocationConfig(locId),
+          liveOrderCount(supabase, locId),
+        ]);
+        if (alive && cfg) setFresh({ cfg, load: count?.load ?? null });
+      } catch { /* offline: fall back to the store below */ }
+    })();
+    return () => { alive = false; };
+  }, []);
+  const effBase = typeof fresh?.cfg?.quoteLeadMinutes === 'number' ? fresh.cfg.quoteLeadMinutes
+    : (typeof leadBase === 'number' ? leadBase : 30);
+  const effRule = fresh?.cfg?.busyRule || busyRule;
+  const effLoad = typeof fresh?.load === 'number' ? fresh.load
+    : kitchenLoadFromStore({ tables: liveTables, tabs: liveTabs, orderQueue: liveQueue }).load;
+  const quotedLead  = prepMinutes(effBase, effLoad, effRule).minutes;
+  const [name, setName]       = useState(existing?.name || '');
+  const [phone, setPhone]     = useState(existing?.phone || '');
+  const [email, setEmail]     = useState(existing?.email || '');
+  const [notes, setNotes]     = useState(existing?.notes || '');
+  // v5.5.657: delivery address (POS phone-order delivery). Without these the delivery
+  // quote never fires and the order goes out with no address.
+  const [addr1, setAddr1]       = useState(existing?.address?.line1 || '');
+  const [postcode, setPostcode] = useState(existing?.address?.postcode || '');
+  const [addrGeo, setAddrGeo]   = useState(existing?.address?.lat != null ? { lat: existing.address.lat, lng: existing.address.lng } : null);
+  // v4.6.61: when editing, default to non-ASAP if a collectionTime is already set,
+  // so the user sees their existing time pre-selected on the slot grid.
+  const [isASAP, setIsASAP]   = useState(existing ? !!existing.isASAP : true);
+  // v4.6.61: preselect the slot matching existing.collectionTime when editing
+  const [slotIdx, setSlotIdx] = useState(() => {
+    if (!existing?.collectionTime) return 0;
+    try {
+      const all = getCollectionSlots(quotedLead, tz);
+      const futureSlots = all.slice(1);
+      const matchIdx = futureSlots.findIndex(s => s.label === existing.collectionTime);
+      return matchIdx >= 0 ? matchIdx : 0;
+    } catch { return 0; }
+  });
   const [results, setResults] = useState([]);
   const [searched, setSearched] = useState(false);
 
-  const slots = getCollectionSlots();
+  const slots = getCollectionSlots(quotedLead, tz);
   const isCollection = orderType === 'collection';
+  const isDelivery = orderType === 'delivery';
+  // v5.5.799: quick-service venues can relax takeaway/collection to a single name field
+  // ('name' mode — and 'none' mode when this modal is opened explicitly via Add customer).
+  // Dine-in loyalty attach and delivery always keep the full form.
+  const nameOnly = (orderType === 'takeaway' || isCollection) && takeawayCustomerDetails !== 'full' && !!takeawayCustomerDetails;
 
   // Live phone/name search
+  // v5.5.280: phone search starts at 6 digits (was 3) to reduce DB load at scale.
+  // Name/email search stays at 3 chars since those are ilike prefix matches.
   useEffect(() => {
-    const q = phone.length >= 3 ? phone : name.length >= 3 ? name : '';
-    if (q) { setResults(searchCustomers(q)); setSearched(true); }
-    else { setResults([]); setSearched(false); }
+    const phoneDigits = phone.replace(/[^\d+]/g, '');
+    const q = phoneDigits.length >= 6 ? phone : name.length >= 3 ? name : '';
+    if (!q) { setResults([]); setSearched(false); return; }
+    // Show local cache immediately for snappy UI
+    setResults(searchCustomers(q));
+    setSearched(true);
+    // Then hit Supabase for the full list (debounced)
+    const t = setTimeout(async () => {
+      try {
+        const live = typeof searchCustomersLive === 'function' ? await searchCustomersLive(q) : [];
+        if (live && live.length) {
+          // Merge live with whatever local cache had, dedupe by phone
+          const seen = new Set();
+          const merged = [...live, ...searchCustomers(q)].filter(c => {
+            const k = c.phone || c.email || c.id;
+            if (seen.has(k)) return false;
+            seen.add(k);
+            return true;
+          }).slice(0, 8);
+          setResults(merged);
+        }
+      } catch {}
+    }, 250);
+    return () => clearTimeout(t);
   }, [phone, name]);
 
   const selectCustomer = (c) => {
     setName(c.name); setPhone(c.phone); setEmail(c.email || '');
+    if (c.address) { setAddr1(c.address.line1 || ''); setPostcode(c.address.postcode || ''); setAddrGeo(c.address.lat != null ? { lat: c.address.lat, lng: c.address.lng } : null); }
     setResults([]); setSearched(false);
   };
 
-  const handleConfirm = () => {
-    if (!name.trim() || !phone.trim()) {
-      showToast('Name and phone number are required', 'error'); return;
+  const handleConfirm = async () => {
+    if (!name.trim() || (!nameOnly && !phone.trim())) {
+      showToast(nameOnly ? 'Customer name is required' : 'Name and phone number are required', 'error'); return;
     }
+    if (isDelivery && (!addr1.trim() || !postcode.trim())) {
+      showToast('Delivery address and postcode are required', 'error'); return;
+    }
+    // v5.5.248: before creating, check if this phone already exists in the DB.
+    // If it does, auto-populate from the existing profile to prevent duplicates.
+    // v5.5.799: skipped in name-only mode — there's no phone to dedupe on.
+    let finalName = name.trim();
+    let finalEmail = email.trim();
+    let finalNotes = notes.trim();
+    // v5.5.894: allergens must SURVIVE the rebuild — this modal used to construct a fresh
+    // customer object and silently drop them, so a pulled-up profile lost its allergy record.
+    let finalAllergens = Array.isArray(existing?.allergens) ? existing.allergens : [];
+    if (phone.trim()) try {
+      const live = typeof searchCustomersLive === 'function' ? await searchCustomersLive(phone.trim()) : [];
+      const phoneDigits = phone.trim().replace(/[^\d+]/g, '');
+      const match = (live || []).find(c => {
+        const cp = (c.phone || '').replace(/[^\d+]/g, '');
+        const cr = (c.phone_raw || '').replace(/[^\d+]/g, '');
+        return cp === phoneDigits || cr === phoneDigits
+          || (phoneDigits.startsWith('07') && (cp === '+44' + phoneDigits.slice(1) || cr === phoneDigits))
+          || (phoneDigits.startsWith('+44') && (cr === '0' + phoneDigits.slice(3)));
+      });
+      if (match) {
+        // Use existing profile — operator keeps their typed name/email if they entered something new
+        finalName = name.trim() || match.name || 'Customer';
+        finalEmail = email.trim() || match.email || '';
+        finalNotes = notes.trim() || match.notes || '';
+        if (Array.isArray(match.allergens) && match.allergens.length) finalAllergens = match.allergens;
+        showToast(`Matched existing customer: ${match.name}`, 'success');
+      }
+    } catch {}
     const customer = {
-      name: name.trim(), phone: phone.trim(), email: email.trim(), notes: notes.trim(),
+      name: finalName, phone: phone.trim(), email: finalEmail, notes: finalNotes,
+      ...(finalAllergens.length ? { allergens: finalAllergens } : {}),
       isASAP,
       collectionTime: isASAP ? slots[0]?.label : slots[slotIdx]?.label,
       collectionISO:  isASAP ? slots[0]?.value  : slots[slotIdx]?.value,
+      ...(isDelivery ? { address: { line1: addr1.trim(), postcode: postcode.trim().toUpperCase(), ...(addrGeo ? { lat: addrGeo.lat, lng: addrGeo.lng } : {}) } } : {}),
     };
     addToHistory(customer);
     onConfirm(customer);
@@ -59,10 +188,10 @@ export default function CustomerModal({ orderType, onConfirm, onCancel }) {
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom: 20 }}>
           <div>
             <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--t1)' }}>
-              {orderType === 'collection' ? '📦 Collection order' : '🥡 Takeaway order'}
+              {orderType === 'collection' ? '📦 Collection order' : orderType === 'dine-in' ? '👤 Add customer to table' : isDelivery ? '🚗 Delivery order' : '🥡 Takeaway order'}
             </div>
             <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 3 }}>
-              {orderType === 'collection' ? 'Customer collects from the counter' : 'Order to be taken away now'}
+              {existing ? 'Editing customer details — update only what you need' : (orderType === 'collection' ? 'Customer collects from the counter' : orderType === 'dine-in' ? 'Attach a customer so this visit counts toward their loyalty' : isDelivery ? 'Delivery to the customer’s address' : 'Order to be taken away now')}
             </div>
           </div>
           <button onClick={onCancel} style={{ background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:22, lineHeight:1 }}>×</button>
@@ -107,6 +236,8 @@ export default function CustomerModal({ orderType, onConfirm, onCancel }) {
             </label>
             <input style={inputStyle} placeholder="Customer name" value={name} onChange={e => setName(e.target.value)}/>
           </div>
+          {/* v5.5.799: name-only mode — quick service takes just the name */}
+          {!nameOnly && (<>
           <div>
             <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t2)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>
               Phone <span style={{ color: 'var(--red)' }}>*</span>
@@ -119,6 +250,23 @@ export default function CustomerModal({ orderType, onConfirm, onCancel }) {
             </label>
             <input style={inputStyle} type="email" placeholder="email@example.com" value={email} onChange={e => setEmail(e.target.value)}/>
           </div>
+          </>)}
+          {isDelivery && (<>
+          <div>
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t2)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>
+              Delivery address <span style={{ color: 'var(--red)' }}>*</span>
+            </label>
+            <AddressAutocomplete value={addr1} inputStyle={inputStyle} placeholder="Start typing the delivery address…"
+              onChangeText={(t) => { setAddr1(t); setAddrGeo(null); }}
+              onSelect={(a) => { setAddr1(a.line1 || a.label); if (a.postcode) setPostcode(a.postcode); setAddrGeo(a.lat != null ? { lat: a.lat, lng: a.lng } : null); }}/>
+          </div>
+          <div>
+            <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t2)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>
+              Postcode <span style={{ color: 'var(--red)' }}>*</span>
+            </label>
+            <input style={inputStyle} placeholder="e.g. HD4 7PT" value={postcode} onChange={e => setPostcode(e.target.value)}/>
+          </div>
+          </>)}
         </div>
 
         {/* Collection time — only for collection orders */}
@@ -186,7 +334,7 @@ export default function CustomerModal({ orderType, onConfirm, onCancel }) {
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn btn-ghost" style={{ flex: 1 }} onClick={onCancel}>Cancel</button>
           <button className="btn btn-acc" style={{ flex: 2, height: 46, fontSize: 15 }} onClick={handleConfirm}>
-            Confirm {orderType === 'collection' ? 'collection' : 'takeaway'} →
+            {orderType === 'dine-in' ? 'Attach to table' : isDelivery ? 'Confirm delivery →' : ('Confirm ' + (orderType === 'collection' ? 'collection' : 'takeaway') + ' →')}
           </button>
         </div>
       </div>

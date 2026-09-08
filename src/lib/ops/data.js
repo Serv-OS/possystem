@@ -1,0 +1,481 @@
+/**
+ * ops/data.js — Supabase data layer for the Operations module.
+ *
+ * House pattern (mirrors src/lib/stock/data.js): resolve a real locationId, map
+ * camelCase ↔ snake_case, return { data, error }. Safety-critical writes (readings,
+ * breaches) go through the SECURITY DEFINER RPC `ops_submit_reading` so a paired
+ * (anonymous) tablet can submit and the breach→corrective→maintenance→alert chain
+ * is atomic. The Deliveries gate reuses the existing stock receiving flow.
+ */
+
+import { supabase, isMock, getLocationId, getActiveLocationSync } from '../supabase';
+import { fetchPurchaseOrders, receivePurchaseOrder } from '../stock/purchasing.js';
+import { isTrainingMode } from '../trainingMode';
+import { logActivity } from '../activity';
+
+const nowIso = () => new Date().toISOString();
+async function ensureLoc(locationId) {
+  if (!locationId || locationId === 'loc-demo') locationId = getActiveLocationSync();
+  if (!locationId || locationId === 'loc-demo') locationId = await getLocationId().catch(() => null);
+  if (!locationId || locationId === 'loc-demo') return null;
+  return locationId;
+}
+
+/**
+ * A write that matched NO rows comes back from PostgREST as a plain success with an
+ * empty body — an RLS policy that matches nothing is indistinguishable from a save,
+ * so the caller's `if (error)` passes and the UI says "done". Every write below asks
+ * for the id back and treats nothing coming back as the failure it is.
+ * (Same check as src/backoffice/sections/DeviceProfiles.jsx.)
+ */
+const zeroRows = (what, data) => (!data || data.length === 0)
+  ? new Error(`${what} matched 0 rows — RLS blocked it or the row no longer exists`)
+  : null;
+/** Same check for .select().maybeSingle(), which returns data:null with error:null. */
+const noRow = (what, row) => row ? null
+  : new Error(`${what} returned no row — RLS blocked it or it matched nothing`);
+const noLoc = () => new Error('No locationId');
+
+// ── mappers ──────────────────────────────────────────────────────────────────
+const unitFromRow = (r) => ({
+  id: r.id, locationId: r.location_id, name: r.name, type: r.type, area: r.area,
+  targetMinC: r.target_min_c == null ? null : Number(r.target_min_c),
+  targetMaxC: r.target_max_c == null ? null : Number(r.target_max_c),
+  displayUnit: r.display_unit || 'C', guidance: r.guidance, sortOrder: r.sort_order,
+  active: r.active !== false, archivedAt: r.archived_at,
+});
+const unitToRow = (u, locationId) => ({
+  ...(u.id ? { id: u.id } : {}),
+  location_id: locationId, org_id: u.orgId || null, name: (u.name || '').trim(), type: u.type || 'fridge',
+  area: u.area || null, target_min_c: u.targetMinC ?? null, target_max_c: u.targetMaxC ?? null,
+  display_unit: u.displayUnit || 'C', guidance: u.guidance || null, sort_order: u.sortOrder || 0,
+  active: u.active !== false, updated_at: nowIso(),
+});
+const schedFromRow = (r) => ({
+  id: r.id, locationId: r.location_id, tempUnitId: r.temp_unit_id, label: r.label,
+  frequency: r.frequency, daysOfWeek: Array.isArray(r.days_of_week) ? r.days_of_week : [],
+  timeOfDay: r.time_of_day, graceMinutes: r.grace_minutes, active: r.active !== false,
+});
+const schedToRow = (s, locationId) => ({
+  ...(s.id ? { id: s.id } : {}),
+  location_id: locationId, temp_unit_id: s.tempUnitId, label: s.label || null, frequency: s.frequency || 'daily',
+  days_of_week: Array.isArray(s.daysOfWeek) ? s.daysOfWeek : [], time_of_day: s.timeOfDay,
+  grace_minutes: s.graceMinutes ?? 60, active: s.active !== false,
+});
+const readingFromRow = (r) => ({
+  id: r.id, locationId: r.location_id, tempUnitId: r.temp_unit_id, scheduleId: r.schedule_id,
+  readingC: Number(r.reading_c), inRange: r.in_range, severity: r.severity, source: r.source,
+  operatorId: r.operator_id, operatorName: r.operator_name, notes: r.notes, recordedAt: r.recorded_at,
+});
+const correctiveFromRow = (r) => ({
+  id: r.id, locationId: r.location_id, sourceType: r.source_type, sourceId: r.source_id, severity: r.severity,
+  action: r.action, description: r.description, operatorName: r.operator_name,
+  maintenanceRequestId: r.maintenance_request_id, status: r.status, createdAt: r.created_at,
+});
+const maintFromRow = (r) => ({
+  id: r.id, locationId: r.location_id, title: r.title, description: r.description, assetType: r.asset_type,
+  assetId: r.asset_id, priority: r.priority, status: r.status, reporterName: r.reporter_name,
+  assigneeId: r.assignee_id, assigneeName: r.assignee_name, source: r.source, photoUrl: r.photo_url,
+  createdAt: r.created_at, updatedAt: r.updated_at, resolvedAt: r.resolved_at,
+});
+const alertFromRow = (r) => ({
+  id: r.id, locationId: r.location_id, type: r.type, severity: r.severity, title: r.title, body: r.body,
+  sourceType: r.source_type, sourceId: r.source_id, targetRole: r.target_role, status: r.status,
+  escalationStep: r.escalation_step, acknowledgedByName: r.acknowledged_by_name, acknowledgedAt: r.acknowledged_at,
+  actionTaken: r.action_taken, createdAt: r.created_at,
+});
+const deliveryFromRow = (r) => ({
+  id: r.id, locationId: r.location_id, poId: r.po_id, supplierId: r.supplier_id, status: r.status,
+  temperatureC: r.temperature_c == null ? null : Number(r.temperature_c), inRange: r.in_range,
+  checkedByName: r.checked_by_name, checkedAt: r.checked_at, rejectionReason: r.rejection_reason,
+  receivedAt: r.received_at, createdAt: r.created_at,
+});
+
+// ── paired tablet + PIN ──────────────────────────────────────────────────────
+export const opsRegisterDevice = async (name) => {
+  if (isMock || !supabase) return { data: null, error: null };
+  return rpc('register_ops_device', { p_name: name || null });
+};
+export const opsHeartbeat = async () => rpc('ops_device_heartbeat', {});
+export const opsClaimDevice = async (code, locationId) => rpc('claim_ops_device', { p_code: code, p_location_id: locationId });
+export const opsPinLogin = async (locationId, pin) => rpc('ops_pin_login', { p_location_id: locationId, p_pin: String(pin) });
+async function rpc(fn, args) {
+  if (isMock || !supabase) return { data: null, error: null };
+  const { data, error } = await supabase.rpc(fn, args);
+  return { data, error };
+}
+
+// ── Ops devices (Back Office pairing management) ─────────────────────────────
+// Claiming uses the SECURITY DEFINER claim_ops_device RPC (an unclaimed device has no
+// location_id, so it can only be reached by its code). Once claimed, the row is venue-
+// scoped, so rename (update) and unpair (delete) go direct — RLS passes on the existing row.
+const opsDeviceFromRow = (d) => ({ id: d.id, name: d.name, claimCode: d.claim_code, claimedAt: d.claimed_at, lastSeenAt: d.last_seen_at, active: d.active !== false });
+/** Tablets currently paired to this venue. */
+export const fetchOpsDevices = async (locationId = null) => {
+  if (isMock || !supabase) return { data: [], error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: [], error: null };
+  const { data, error } = await supabase.from('ops_devices').select('*').eq('location_id', locationId).order('claimed_at', { ascending: false, nullsFirst: false });
+  return { data: (data || []).map(opsDeviceFromRow), error };
+};
+export const renameOpsDevice = async (id, name, locationId = null) => {
+  if (isMock || !supabase) return { error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { error: noLoc() };
+  const { data, error } = await supabase.from('ops_devices').update({ name })
+    .eq('location_id', locationId).eq('id', id).select('id');
+  return { error: error || zeroRows('Device rename', data) };
+};
+/** Unpair: delete the row (RLS passes on the existing venue-scoped row). The tablet re-registers with a fresh code next time it opens. */
+export const removeOpsDevice = async (id, locationId = null) => {
+  if (isMock || !supabase) return { error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { error: noLoc() };
+  // A blocked DELETE also comes back clean — the tablet just reappears on the next
+  // reload, still paired, after the operator was told it was unpaired.
+  const { data, error } = await supabase.from('ops_devices').delete()
+    .eq('location_id', locationId).eq('id', id).select('id');
+  return { error: error || zeroRows('Unpair', data) };
+};
+
+// ── temperature units (admin config = source of truth) ───────────────────────
+export const fetchTempUnits = async (locationId = null, includeArchived = false) => {
+  if (isMock || !supabase) return { data: [], error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: [], error: null };
+  let q = supabase.from('temp_units').select('*').eq('location_id', locationId).order('sort_order').order('name');
+  if (!includeArchived) q = q.is('archived_at', null);
+  const { data, error } = await q;
+  return { data: (data || []).map(unitFromRow), error };
+};
+export const upsertTempUnit = async (unit, locationId = null) => {
+  if (isMock || !supabase) return { data: null, error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: null, error: new Error('No locationId') };
+  const { data, error } = await supabase.from('temp_units').upsert(unitToRow(unit, locationId)).select().maybeSingle();
+  // maybeSingle() hands back data:null with error:null when the row comes back empty —
+  // the upsert silently touched nothing. Treat that as the failed save it is.
+  return { data: data ? unitFromRow(data) : null, error: error || noRow('Unit save', data) };
+};
+export const archiveTempUnit = async (id, locationId = null) => {
+  if (isMock || !supabase) return { error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { error: noLoc() };
+  const { data, error } = await supabase.from('temp_units').update({ archived_at: nowIso() })
+    .eq('location_id', locationId).eq('id', id).select('id');
+  return { error: error || zeroRows('Archive unit', data) };
+};
+
+// ── schedules ────────────────────────────────────────────────────────────────
+export const fetchSchedules = async (locationId = null) => {
+  if (isMock || !supabase) return { data: [], error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: [], error: null };
+  const { data, error } = await supabase.from('temp_check_schedules').select('*').eq('location_id', locationId).eq('active', true);
+  return { data: (data || []).map(schedFromRow), error };
+};
+export const upsertSchedule = async (sched, locationId = null) => {
+  if (isMock || !supabase) return { data: null, error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: null, error: new Error('No locationId') };
+  const { data, error } = await supabase.from('temp_check_schedules').upsert(schedToRow(sched, locationId)).select().maybeSingle();
+  return { data: data ? schedFromRow(data) : null, error: error || noRow('Schedule save', data) };
+};
+export const deleteSchedule = async (id, locationId = null) => {
+  if (isMock || !supabase) return { error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { error: noLoc() };
+  const { data, error } = await supabase.from('temp_check_schedules').delete()
+    .eq('location_id', locationId).eq('id', id).select('id');
+  return { error: error || zeroRows('Delete schedule', data) };
+};
+
+// ── readings (via the breach-atomic RPC) ─────────────────────────────────────
+/** Submit a temperature reading. Returns { data:{readingId,inRange,severity,...}, error }.
+ *  On a breach the RPC REQUIRES corrective.action or it rejects. */
+export const submitReading = async ({ unitId, readingC, scheduleId, operatorId, operatorName, source, notes, corrective, deliveryId }, locationId = null) => {
+  if (isMock || !supabase) return { data: { inRange: true }, error: null };
+  // TRAINING MODE: never commit a reading. ops_submit_reading is the head of the
+  // breach → corrective → auto-maintenance → alert chain, so a training reading
+  // would raise live maintenance requests and fire real alerts. Hand back the same
+  // in-range no-op the mock path uses so the UI flows.
+  if (isTrainingMode()) return { data: { inRange: true }, error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: null, error: new Error('No locationId') };
+  const { data, error } = await supabase.rpc('ops_submit_reading', {
+    p_location_id: locationId, p_unit_id: unitId, p_reading_c: Number(readingC),
+    p_schedule_id: scheduleId || null, p_operator_id: operatorId || null, p_operator_name: operatorName || null,
+    p_source: source || 'manual', p_notes: notes || null,
+    p_corrective_action: corrective?.action || null, p_corrective_desc: corrective?.description || null,
+    p_delivery_id: deliveryId || null,
+  });
+  if (error) return { data: null, error };
+  if (data && data.in_range === false) {
+    // Surface the breach in the POS activity feed (urgent). The RPC already auto-raised the
+    // corrective/maintenance/alert; this is the visible timeline entry. Best-effort.
+    try { logActivity(locationId, { kind: 'ops', severity: 'urgent', title: 'Temperature breach', body: corrective?.description ? `Corrective: ${corrective.description}` : 'Reading out of safe range', actorName: operatorName, refType: 'temp_unit', refId: unitId }); } catch { /* feed best-effort */ }
+  }
+  return {
+    data: { readingId: data?.reading_id, inRange: data?.in_range, severity: data?.severity,
+      correctiveId: data?.corrective_id, maintenanceId: data?.maintenance_id, alertId: data?.alert_id },
+    error: null,
+  };
+};
+export const fetchReadings = async (fromIso, toIso, locationId = null, limit = 2000) => {
+  if (isMock || !supabase) return { data: [], error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: [], error: null };
+  let q = supabase.from('temp_readings').select('*').eq('location_id', locationId);
+  if (fromIso) q = q.gte('recorded_at', fromIso);
+  if (toIso) q = q.lte('recorded_at', toIso);
+  const { data, error } = await q.order('recorded_at', { ascending: false }).limit(limit);
+  return { data: (data || []).map(readingFromRow), error };
+};
+
+// ── corrective actions / maintenance / alerts ────────────────────────────────
+export const fetchCorrectiveActions = async (fromIso, toIso, locationId = null) => {
+  if (isMock || !supabase) return { data: [], error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: [], error: null };
+  let q = supabase.from('corrective_actions').select('*').eq('location_id', locationId);
+  if (fromIso) q = q.gte('created_at', fromIso);
+  if (toIso) q = q.lte('created_at', toIso);
+  const { data, error } = await q.order('created_at', { ascending: false }).limit(1000);
+  return { data: (data || []).map(correctiveFromRow), error };
+};
+export const fetchMaintenance = async (locationId = null, status = null) => {
+  if (isMock || !supabase) return { data: [], error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: [], error: null };
+  let q = supabase.from('maintenance_requests').select('*').eq('location_id', locationId);
+  if (status) q = q.eq('status', status);
+  const { data, error } = await q.order('created_at', { ascending: false }).limit(500);
+  return { data: (data || []).map(maintFromRow), error };
+};
+export const createMaintenance = async (m, locationId = null) => {
+  if (isMock || !supabase) return { data: null, error: null };
+  // TRAINING MODE: don't raise a real maintenance request.
+  if (isTrainingMode()) return { data: null, error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: null, error: new Error('No locationId') };
+  const { data, error } = await supabase.from('maintenance_requests').insert({
+    location_id: locationId, title: (m.title || '').trim(), description: m.description || null,
+    asset_type: m.assetType || null, asset_id: m.assetId || null, priority: m.priority || 'normal',
+    status: 'open', reporter_id: m.reporterId || null, reporter_name: m.reporterName || null,
+    source: m.source || 'manual', photo_url: m.photoUrl || null,
+  }).select().maybeSingle();
+  if (!error && data) {
+    try { logActivity(locationId, { kind: 'ops', severity: 'action', title: `Maintenance: ${(m.title || 'request').trim()}`, body: `${m.priority || 'normal'} priority${m.source === 'temp_breach' ? ' · auto from temp breach' : ''}`, actorName: m.reporterName, refType: 'maintenance', refId: data.id }); } catch { /* feed best-effort */ }
+  }
+  return { data: data ? maintFromRow(data) : null, error: error || noRow('Maintenance request', data) };
+};
+export const setMaintenanceStatus = async (id, status, who, locationId = null) => {
+  if (isMock || !supabase) return { error: null };
+  // TRAINING MODE: don't mutate a live request, write status history, or fire a resolved alert.
+  if (isTrainingMode()) return { error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { error: noLoc() };
+  const patch = { status, updated_at: nowIso() };
+  if (status === 'resolved') patch.resolved_at = nowIso();
+  const { data: prev } = await supabase.from('maintenance_requests').select('status, title, reporter_id').eq('id', id).maybeSingle();
+  const { data: upd, error } = await supabase.from('maintenance_requests').update(patch)
+    .eq('location_id', locationId).eq('id', id).select('id');
+  const updErr = error || zeroRows('Status change', upd);
+  if (updErr) return { error: updErr };
+  // The history row and the reporter's "resolved" alert used to be awaited with their
+  // errors discarded: the status moved, the HACCP audit trail didn't, and whoever
+  // raised the job was never told it was done. Both are part of the change.
+  const { error: histErr } = await supabase.from('maintenance_status_history').insert({ location_id: locationId, request_id: id, from_status: prev?.status || null, to_status: status, changed_by_name: who || null });
+  // notify the reporter when their request is resolved
+  let alertErr = null;
+  if (status === 'resolved' && prev?.reporter_id) {
+    ({ error: alertErr } = await supabase.from('ops_alerts').insert({ location_id: locationId, type: 'maintenance', severity: 'minor', title: `Resolved: ${prev.title || 'maintenance'}`, body: `Marked resolved${who ? ` by ${who}` : ''}.`, source_type: 'maintenance_request', source_id: id, target_user_id: prev.reporter_id }));
+  }
+  // The status DID change, so these come back as `partial`, not `error`: an error would
+  // have the caller tell the operator to retry, and a retry re-inserts the history row
+  // AND sends the reporter a second "Resolved" alert.
+  if (alertErr) return { error: null, partial: 'alert', message: `Status is now "${status}", but the reporter was NOT told: ${alertErr.message || alertErr}` };
+  if (histErr) return { error: null, partial: 'history', message: `Status is now "${status}", but the audit entry failed: ${histErr.message || histErr}` };
+  return { error: null };
+};
+
+/** Assign a maintenance request to a person → status 'assigned' + alert the assignee. */
+export const assignMaintenance = async (id, assignee, by, locationId = null) => {
+  if (isMock || !supabase) return { error: null };
+  // TRAINING MODE: don't assign a live request, write history, or alert the assignee.
+  if (isTrainingMode()) return { error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { error: noLoc() };
+  const { data: prev } = await supabase.from('maintenance_requests').select('status, title').eq('id', id).maybeSingle();
+  const { data: upd, error } = await supabase.from('maintenance_requests').update({
+    assignee_id: assignee?.id || null, assignee_name: assignee?.name || null,
+    status: (prev?.status === 'open' ? 'assigned' : prev?.status) || 'assigned', updated_at: nowIso(),
+  }).eq('location_id', locationId).eq('id', id).select('id');
+  const updErr = error || zeroRows('Assignment', upd);
+  if (updErr) return { error: updErr };
+  const { error: histErr } = await supabase.from('maintenance_status_history').insert({ location_id: locationId, request_id: id, from_status: prev?.status || null, to_status: 'assigned', changed_by_name: by || null });
+  let alertErr = null;
+  if (assignee?.id) {
+    ({ error: alertErr } = await supabase.from('ops_alerts').insert({ location_id: locationId, type: 'maintenance', severity: 'major', title: `Assigned: ${prev?.title || 'maintenance'}`, body: `Assigned to ${assignee.name}${by ? ` by ${by}` : ''}.`, source_type: 'maintenance_request', source_id: id, target_role: null, target_user_id: assignee.id }));
+  }
+  // This used to return a hardcoded { error: null }: the manager saw "Assigned to X"
+  // while the alert insert had been rejected and X was never told the job existed.
+  // `partial`, not `error` — the assignment itself landed (see setMaintenanceStatus).
+  if (alertErr) return { error: null, partial: 'alert', message: `Assigned to ${assignee?.name || 'them'}, but they were NOT alerted: ${alertErr.message || alertErr}` };
+  if (histErr) return { error: null, partial: 'history', message: `Assigned, but the audit entry failed: ${histErr.message || histErr}` };
+  return { error: null };
+};
+
+/** Staff at this location, for the maintenance assignee picker. */
+export const fetchOpsAssignees = async (locationId = null) => {
+  if (isMock || !supabase) return { data: [], error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: [], error: null };
+  const { data, error } = await supabase.from('staff_members').select('id, name, role').eq('location_id', locationId).order('name');
+  return { data: (data || []).filter(s => s.name), error };
+};
+export const addMaintenanceNote = async (id, note, who, locationId = null) => {
+  if (isMock || !supabase) return { error: null };
+  // TRAINING MODE: don't write a note onto a live maintenance request.
+  if (isTrainingMode()) return { error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { error: noLoc() };
+  const { error } = await supabase.from('maintenance_notes').insert({ location_id: locationId, request_id: id, note, author_name: who || null });
+  return { error };
+};
+export const fetchAlerts = async (locationId = null, openOnly = false) => {
+  if (isMock || !supabase) return { data: [], error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: [], error: null };
+  let q = supabase.from('ops_alerts').select('*').eq('location_id', locationId);
+  if (openOnly) q = q.eq('status', 'sent');
+  const { data, error } = await q.order('created_at', { ascending: false }).limit(200);
+  return { data: (data || []).map(alertFromRow), error };
+};
+export const ackAlert = async (alertId, action, who) => {
+  // TRAINING MODE: don't acknowledge a live alert. Mirror rpc()'s benign no-op.
+  if (isTrainingMode()) return { data: null, error: null };
+  return rpc('ops_ack_alert', { p_alert_id: alertId, p_action: action || null, p_user_name: who || null });
+};
+
+// ── Notification rules — drive the ops-escalate ladder (SMS/email + escalation) ──
+// recipients entries the engine understands: {role}|{phone}|{email}. A person picked
+// in the editor is stored as {userId, name, phone, email} so the engine delivers via
+// the phone/email keys (no edge-fn change needed).
+const ruleFromRow = (r) => ({
+  id: r.id, eventType: r.event_type, severityMin: r.severity_min || 'major',
+  channels: Array.isArray(r.channels) ? r.channels : ['inapp'],
+  recipients: Array.isArray(r.recipients) ? r.recipients : [],
+  escalateAfterMin: r.escalate_after_min ?? 15, active: r.active !== false,
+});
+export const fetchNotificationRules = async (locationId = null) => {
+  if (isMock || !supabase) return { data: [], error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: [], error: null };
+  const { data, error } = await supabase.from('ops_notification_rules').select('*').eq('location_id', locationId).order('event_type');
+  return { data: (data || []).map(ruleFromRow), error };
+};
+export const upsertNotificationRule = async (rule, locationId = null) => {
+  if (isMock || !supabase) return { data: null, error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: null, error: { message: 'No location' } };
+  const row = {
+    location_id: locationId,
+    event_type: rule.eventType,
+    severity_min: rule.severityMin || 'major',
+    channels: rule.channels && rule.channels.length ? rule.channels : ['inapp'],
+    recipients: rule.recipients || [],
+    escalate_after_min: Number(rule.escalateAfterMin) || 15,
+    active: rule.active !== false,
+  };
+  if (rule.id) {
+    const { data: upd, error } = await supabase.from('ops_notification_rules').update(row)
+      .eq('location_id', locationId).eq('id', rule.id).select('id');
+    // These rules ARE the escalation ladder — a silently dropped edit leaves the old
+    // recipients live while the screen shows the new ones.
+    return { data: { ...rule }, error: error || zeroRows('Notification rule', upd) };
+  }
+  const { data, error } = await supabase.from('ops_notification_rules').insert(row).select().maybeSingle();
+  return { data: data ? ruleFromRow(data) : null, error: error || noRow('Notification rule', data) };
+};
+export const deleteNotificationRule = async (id, locationId = null) => {
+  if (isMock || !supabase) return { error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { error: noLoc() };
+  const { data, error } = await supabase.from('ops_notification_rules').delete()
+    .eq('location_id', locationId).eq('id', id).select('id');
+  return { error: error || zeroRows('Delete rule', data) };
+};
+/** Staff at this location WITH contact details, for the rule recipient picker. */
+export const fetchOpsRecipients = async (locationId = null) => {
+  if (isMock || !supabase) return { data: [], error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: [], error: null };
+  const { data, error } = await supabase.from('staff_members').select('id, name, role, phone, email').eq('location_id', locationId).order('name');
+  return { data: (data || []).filter(s => s.name), error };
+};
+
+// ── Deliveries gate (ties into stock ordering) ───────────────────────────────
+/** Open POs awaiting goods-in (SENT/PARTIAL), with any existing delivery record. */
+export const fetchExpectedDeliveries = async (locationId = null) => {
+  if (isMock || !supabase) return { data: [], error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: [], error: null };
+  const [{ data: pos }, { data: dels }] = await Promise.all([
+    fetchPurchaseOrders(locationId),
+    supabase.from('deliveries').select('*').eq('location_id', locationId).order('created_at', { ascending: false }).limit(500),
+  ]);
+  const delByPo = {}; (dels || []).forEach((d) => { if (d.po_id && !delByPo[d.po_id]) delByPo[d.po_id] = deliveryFromRow(d); });
+  const open = (pos || []).filter((p) => ['SENT', 'PARTIAL'].includes(p.status));
+  return { data: open.map((po) => ({ po, delivery: delByPo[po.id] || null })), error: null };
+};
+
+/** Record a delivery temperature, log the reading (breach handled by submitReading),
+ *  and set the delivery to accepted/rejected. On accept, receive the PO into stock. */
+export const checkDelivery = async ({ poId, supplierId, deliveryUnitId, temperatureC, accept, operatorId, operatorName, corrective, rejectionReason }, locationId = null) => {
+  if (isMock || !supabase) return { data: null, error: null };
+  // TRAINING MODE: never record a delivery, log its reading, or receive a PO into
+  // live stock. This path mutates real stock levels and can raise breach alerts.
+  if (isTrainingMode()) return { data: null, error: null };
+  locationId = await ensureLoc(locationId);
+  if (!locationId) return { data: null, error: new Error('No locationId') };
+
+  // delivery record first (so the reading can link to it)
+  const { data: del, error: dErr } = await supabase.from('deliveries').insert({
+    location_id: locationId, po_id: poId || null, supplier_id: supplierId || null,
+    temperature_c: temperatureC == null ? null : Number(temperatureC), checked_by: operatorId || null,
+    checked_by_name: operatorName || null, checked_at: nowIso(), status: 'pending',
+  }).select().maybeSingle();
+  if (dErr || !del) return { data: null, error: dErr || new Error('Could not start delivery') };
+
+  // temperature reading against the delivery probe unit (breach → corrective/alert in the RPC)
+  let readingRes = { data: { inRange: true } };
+  if (deliveryUnitId && temperatureC != null) {
+    readingRes = await submitReading({
+      unitId: deliveryUnitId, readingC: temperatureC, source: 'delivery', operatorId, operatorName,
+      corrective, deliveryId: del.id,
+    }, locationId);
+    if (readingRes.error) return { data: null, error: readingRes.error };
+  }
+
+  // The closing update is the goods-in record itself — a delivery stuck on 'pending'
+  // is a missing HACCP entry, and its error used to be discarded. Retrying is safe:
+  // receivePurchaseOrder dedupes server-side on the `po:<po>:<line>` idempotency key.
+  if (accept) {
+    const { error: rErr } = await receivePurchaseOrder(poId, locationId);   // existing stock receive
+    if (rErr) return { data: null, error: rErr };
+    const { data: acc, error: aErr } = await supabase.from('deliveries')
+      .update({ status: 'accepted', in_range: readingRes.data?.inRange ?? true, received_at: nowIso() })
+      .eq('id', del.id).select('id');
+    const accErr = aErr || zeroRows('Delivery accept', acc);
+    if (accErr) return { data: null, error: new Error(`Stock WAS received, but the delivery was not recorded as accepted: ${accErr.message || accErr}`) };
+    return { data: { deliveryId: del.id, status: 'accepted' }, error: null };
+  }
+  // reject: no stock movement is ever posted
+  const { data: rej, error: jErr } = await supabase.from('deliveries')
+    .update({ status: 'rejected', in_range: readingRes.data?.inRange ?? false, rejection_reason: rejectionReason || 'Out of temperature range' })
+    .eq('id', del.id).select('id');
+  const rejErr = jErr || zeroRows('Delivery reject', rej);
+  if (rejErr) return { data: null, error: rejErr };
+  return { data: { deliveryId: del.id, status: 'rejected' }, error: null };
+};

@@ -1,10 +1,25 @@
 import { useEffect, useRef } from 'react';
-import { useStore } from '../store';
-import { subscribeToSessions, scheduleFlush, teardown as teardownSessions } from './SessionSync';
+import { useStore, capClosedChecks } from '../store';
+import { recoverInFlightJobs } from '../lib/payments/terminalJobs';
+import { subscribeToSessions, scheduleFlush, flushSessions, teardown as teardownSessions } from './SessionSync';
+// v5.6.27: ReservationSync RETIRED — bookings replaced the thin per-table reservation
+// (table_reservations). The Tables screen now derives 'reserved' from the bookings
+// slice; nothing loads, flushes or subscribes to table_reservations any more.
+import { loadQueues, scheduleQueueFlush, teardownQueueSync } from './QueueSync';
+import { loadWaitlistSync, scheduleWaitlistFlush, teardownWaitlistSync } from './WaitlistSync';
 import { initOfflineQueue } from './OfflineQueue';
-import { isMock, supabase } from '../lib/supabase';
+import { isMock, supabase, getActiveLocationSync, ensureAuthToken } from '../lib/supabase';
+import { retryPendingRedemptions } from '../lib/commitRedemptions';
+import { fetchMenuCategoryLinks } from '../lib/db';
 import { startSessionReconciler, stopSessionReconciler } from './SessionReconciler';
+import { startTerminalJobReconciler, stopTerminalJobReconciler } from './TerminalJobReconciler';
+// v4.6.27: static import per ADR-008. Dynamic imports inside callbacks silently
+// fail in production bundles and have caused multiple data-loss bugs.
+import { reconcilePendingChecks, onReconnect, periodicSync } from './DataSafe.js';
 import { getShowItemImages } from '../lib/locationTime';
+import { normaliseMenuRow, assembleTaxProfiles } from '../lib/rowMapping';
+
+const OPS_URL = import.meta.env.VITE_SUPABASE_URL;
 
 export const CHANNEL_NAME = 'rpos-sync';
 export const STORAGE_KEY  = 'rpos-shared-state';
@@ -14,15 +29,105 @@ export const TAB_ID       = Math.random().toString(36).slice(2, 10);
 const OPERATIONAL_KEYS = [
   'kdsTickets', 'eightySixIds', 'dailyCounts',
   'closedChecks', 'orderQueue', 'tabs', 'printJobs',
+  'pettyCashEntries', // v4.6.30
 ];
 
 // Table status/session sync (operational part only — layout comes via CONFIG_PUSH)
 // We sync the whole tables array but the POS only applies non-layout fields from broadcasts
 // Layout (x,y,w,h,label,section,shape) only changes via CONFIG_PUSH
-const SHARED_KEYS = [...OPERATIONAL_KEYS, 'tables', 'showItemImages'];
+const SHARED_KEYS = [...OPERATIONAL_KEYS, 'tables', 'showItemImages', 'takeawayCustomerDetails', 'tipOnReceipt'];
+
+// ── v5.6.83: what gets WRITTEN TO DISK, as opposed to what gets broadcast ────
+// Every key above is still broadcast to the other tabs on this machine, exactly as
+// before. These two are no longer written to localStorage:
+//
+//   closedChecks — up to 500 whole sales (every line, every modifier) covering 30
+//                  days, seeded at boot by db.fetchClosedChecks. That is the blob.
+//                  Because the writer below did read-modify-write on the WHOLE blob,
+//                  adding one item to one order re-serialised the entire sales
+//                  history, synchronously, on the UI thread. It grew all day, which
+//                  is why the till got slower as service went on.
+//   kdsTickets   — refetched at boot by useSupabaseInit (db.fetchKDSTickets) and kept
+//                  live by the kds_tickets realtime channel.
+//
+// Both are re-read from Supabase on every boot and both have their own realtime
+// channel, so nothing is lost by not writing them here. Sales that have NOT reached
+// Supabase yet (taken offline) are rescued at boot from DataSafe's own durable
+// 'rpos-pending-checks' list, which is the record of exactly those — see the closed
+// checks load below. Tickets created offline are queued to IndexedDB by db.js.
+//
+// orderQueue DELIBERATELY STAYS PERSISTED. A walk-in or collection order taken while
+// the till is offline is durably queued for Supabase (OfflineQueue/IndexedDB) but it
+// is not IN Supabase, so a reload before the network returns would leave the operator
+// with no way to see the order. That is the one key here that is genuinely load-
+// bearing offline, and it is bounded by one day of orders rather than 30 days of them.
+const NO_PERSIST_KEYS = new Set(['closedChecks', 'kdsTickets']);
 
 let channelInstance = null;
 export function getChannel() { return channelInstance; }
+
+// In-memory mirror of the persisted blob. The writer below used to JSON.parse the
+// whole of localStorage before every single write; now it parses once per page and
+// keeps the object. Seeded lazily so an unrelated surface importing this module does
+// not touch storage.
+let _persistMirror = null;
+let _quotaReported = false;
+
+function getPersistMirror() {
+  if (_persistMirror) return _persistMirror;
+  let raw = {};
+  try { raw = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}') || {}; } catch { raw = {}; }
+  const mirror = {};
+  let dropped = false;
+  // Keep every key the blob already has EXCEPT the two we have stopped persisting.
+  // (Old builds wrote keys that are no longer in SHARED_KEYS — quickScreenIds among
+  // them — and the mount loader still applies them, so they must survive untouched.)
+  for (const k of Object.keys(raw)) {
+    if (NO_PERSIST_KEYS.has(k)) { dropped = true; continue; }
+    mirror[k] = raw[k];
+  }
+  _persistMirror = mirror;
+  // One-off cleanup: a till upgrading from an older build is carrying megabytes of
+  // history in this key. Write the slimmed blob back once so it stops paying for it.
+  if (dropped) {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(mirror)); }
+    catch (e) { console.warn('[SyncBridge] could not slim the shared-state blob:', e?.message || e); }
+  }
+  return mirror;
+}
+
+// Merge a patch into the mirror and flush it. Replaces the old
+// parse → spread → setItem inside a bare try{}catch{}.
+function persistShared(patch) {
+  const mirror = getPersistMirror();
+  let changed = false;
+  for (const k of Object.keys(patch)) {
+    if (NO_PERSIST_KEYS.has(k)) continue;
+    mirror[k] = patch[k];
+    changed = true;
+  }
+  if (!changed) return;
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(mirror));
+  } catch (e) {
+    // This used to be swallowed by a bare catch. The failure that matters is
+    // QuotaExceededError: once the 5MB origin limit is hit NOTHING is persisted any
+    // more, so open orders stop surviving a refresh, silently.
+    const quota = e && (e.name === 'QuotaExceededError' || e.name === 'NS_ERROR_DOM_QUOTA_REACHED' || e.code === 22);
+    console.error('[SyncBridge] shared-state write FAILED' + (quota ? ' — localStorage is full, nothing is being saved to this device' : ''), e?.message || e);
+    if (quota && !_quotaReported) {
+      _quotaReported = true;
+      try { useStore.getState().showToast?.('This till has run out of storage. Open orders may not survive a refresh. Please restart the till.', 'warn'); } catch {}
+    }
+  }
+}
+
+// v5.6.83: one-time boot latch. SyncBridge's boot is ~25 queries; it must run once
+// per location, not once per mount. App.jsx now keeps the component mounted across
+// sign-in and sign-out (that was the real bug), and this is the belt to that braces —
+// keyed on locationId so a genuine location switch still gets a full boot, and
+// released again if the boot it guards fails so an offline start-up is retried.
+let _bootedFor = null;
 
 function getSharedState() {
   const s = useStore.getState();
@@ -33,6 +138,26 @@ function getSharedState() {
 
 export default function SyncBridge({ onSyncPulse }) {
   const isApplyingRef = useRef(false);
+
+  // v5.7.89 (Adyen NH003): a card payment that was still running when this till
+  // last stopped is picked back up here. Runs once, after a short delay so it
+  // never competes with the boot load for the network. Silent unless something
+  // genuinely still needs a person.
+  useEffect(() => {
+    const t = setTimeout(() => {
+      recoverInFlightJobs()
+        .then((open) => {
+          if (!open?.length) return;
+          useStore.getState().showToast?.(
+            open.length === 1
+              ? 'A card payment was still running when this till last closed. Check the card machine before taking it again.'
+              : `${open.length} card payments were still running when this till last closed. Check the card machine before taking them again.`,
+            'warn');
+        })
+        .catch(() => { /* boot must never fail on this */ });
+    }, 4000);
+    return () => clearTimeout(t);
+  }, []);
 
   useEffect(() => {
     // Load persisted operational state on mount
@@ -46,8 +171,11 @@ export default function SyncBridge({ onSyncPulse }) {
           delete parsed.menus;
           delete parsed.menuCategories;
           delete parsed.menuItems;
-          delete parsed.modifierGroups;
-          delete parsed.modifierOptions;
+          // v5.5.833: there is deliberately no `delete parsed.modifierGroupDefs` here.
+          // Menu data is never persisted to localStorage in real mode — SHARED_KEYS
+          // (see top of file) carries operational state only, so getSharedState() never
+          // writes any menu slice. The deletes above are belt-and-braces for legacy
+          // payloads written by older builds with a wider SHARED_KEYS.
           delete parsed.itemVariants;
           delete parsed.staff;
           delete parsed.tables;
@@ -55,16 +183,33 @@ export default function SyncBridge({ onSyncPulse }) {
           delete parsed.eightySix;
           delete parsed.tabs;          // bar tabs are session-only in real mode
           // NOTE: quickScreenIds is kept — it's config pushed from back office
-          // NOTE: closedChecks are kept from localStorage as fast fallback
+          // NOTE (v5.6.83): closedChecks / kdsTickets are no longer WRITTEN here (see
+          // NO_PERSIST_KEYS above), so on a slimmed blob there is nothing to apply.
+          // Anything an older build left behind is still applied on this one boot and
+          // is then superseded by the Supabase read a moment later.
         }
         useStore.setState(parsed);
         isApplyingRef.current = false;
       }
     } catch {}
 
+    // v5.6.83: has this location already been booted in this page? App.jsx keeps
+    // SyncBridge mounted across sign-in/sign-out now, so in practice this is false
+    // exactly once. It is the guard for any remount we have not thought of — a till
+    // that signs out after every sale must not pay for ~25 queries between orders.
+    const skipBoot = !isMock && !!_bootedFor && _bootedFor === getActiveLocationSync();
+    if (skipBoot) console.log('[SyncBridge] remount — boot already done for this location, skipping the reload');
+
     // Apply config snapshot on mount
     // In mock mode: read from localStorage snapshot
     // In real mode: fetch latest push from Supabase for this location
+    //
+    // v5.5.962: the boot config-push apply is captured as a promise so the
+    // location-settings loader below can run strictly AFTER it. The last push
+    // snapshot goes stale by design (quick-screen saves write locations
+    // directly, no new push), so the fresh locations read must always land
+    // last or a reboot could revert quick screen / mode to last-push values.
+    let bootConfigLoad = Promise.resolve();
     if (isMock) {
       try {
         const snap = localStorage.getItem('rpos-config-snapshot');
@@ -74,14 +219,68 @@ export default function SyncBridge({ onSyncPulse }) {
           useStore.getState().applyConfigUpdate();
         }
       } catch {}
-    } else {
+    } else if (!skipBoot) {
       // Load latest config push from Supabase for this location
-      (async () => {
+      bootConfigLoad = (async () => {
         try {
-          const paired = JSON.parse(localStorage.getItem('rpos-device') || 'null');
-          const locationId = paired?.locationId;
-          if (!locationId) return;
-          const { fetchLatestConfigPush, fetchFloorPlan, fetchMenuItems, fetchMenuCategories, fetchMenus } = await import('../lib/db.js');
+          // v5.5.235: respect rpos-bo-location override BEFORE rpos-device.
+          // Previously this read rpos-device.locationId directly, skipping the BO
+          // override. When the same browser was paired as POS at Loc A then used
+          // as BO for Loc B, SyncBridge loaded Loc A's menus — causing menu bleed.
+          //
+          // v5.5.237: use getActiveLocationSync() instead of async getLocationId().
+          // getLocationId() calls supabase.auth.getUser() which is a network
+          // round-trip that hangs on POS/MPOS devices without an auth session,
+          // causing menus and tables to never load. getActiveLocationSync() is
+          // synchronous (reads localStorage only) and has the same priority chain:
+          // rpos-bo-location first, then rpos-device.locationId.
+          const locationId = getActiveLocationSync();
+          if (!locationId || locationId === 'loc-demo') return;
+          // v5.6.83: claim the boot latch now, BEFORE the first await, so a second
+          // mount landing mid-boot cannot start a parallel copy of these ~25 queries.
+          // Released again in the catch below, so a boot that fell over (offline at
+          // start of day) is retried by the next mount rather than latched out.
+          _bootedFor = locationId;
+
+          // v5.5.238: Location integrity guard — if the store has data from a
+          // DIFFERENT location (e.g. browser was used for Location A then switched
+          // to Location B without a full reload), purge stale menu/table data
+          // BEFORE loading fresh data. This prevents cross-location bleed even if
+          // the tenant fence missed a transition.
+          const prevDataLoc = useStore.getState()._dataLocationId;
+          if (prevDataLoc && prevDataLoc !== locationId) {
+            console.warn('[SyncBridge] v5.5.238: location changed', prevDataLoc, '→', locationId, '— purging stale data');
+            useStore.setState({
+              menuItems: [],
+              menuCategories: [],
+              menus: [],
+              modifierGroupDefs: [],
+              tables: [],
+              sections: [],
+              closedChecks: [],
+              _dataLocationId: null,
+            });
+          }
+
+          // v5.5.893: CACHE-FIRST boot. Real-mode devices had NO local snapshot cache (only mock
+          // did) — every boot blocked the menu on a network fetch, and an offline boot had no menu
+          // at all. Apply the last snapshot for THIS location instantly, then let the network
+          // fetch below re-apply the fresh one when it lands (same idempotent path a live config
+          // push uses). Keyed by location so the v5.5.238 cross-location purge stays honoured —
+          // offline-fallback caching in localStorage is the sanctioned exception (CLAUDE.md).
+          try {
+            const cachedRaw = localStorage.getItem('rpos-config-cache');
+            if (cachedRaw) {
+              const cached = JSON.parse(cachedRaw);
+              if (cached?.locationId === locationId && cached?.snapshot) {
+                useStore.getState().setConfigUpdate(cached.snapshot);
+                useStore.getState().applyConfigUpdate();
+                console.log('[SyncBridge] applied cached config snapshot (instant boot) — network refresh follows');
+              }
+            }
+          } catch { /* cache is best-effort */ }
+
+          const { fetchLatestConfigPush, fetchFloorPlan, fetchMenuItems, fetchMenuCategories, fetchMenus, fetch86List, fetchStockLevels } = await import('../lib/db.js');
           const { supabase: sb2 } = await import('../lib/supabase.js');
 
           // Load config push (menus, layout, sections)
@@ -89,19 +288,88 @@ export default function SyncBridge({ onSyncPulse }) {
           if (data?.snapshot) {
             useStore.getState().setConfigUpdate(data.snapshot);
             useStore.getState().applyConfigUpdate();
+            try { localStorage.setItem('rpos-config-cache', JSON.stringify({ locationId, snapshot: data.snapshot, at: Date.now() })); } catch {}
           }
+
+          // v5.5.734: the pushed config snapshot is the AUTHORITATIVE cache for menu data. Below we
+          // ALSO fetch menu items/categories/menus/modifier-groups straight from the DB — but if the
+          // snapshot already provided them we must NOT re-apply the DB copy, because SyncBridge
+          // remounts on every login (it's rendered in both the PIN-screen and signed-in branches),
+          // so re-writing the menu with a DB-ordered copy made the category bar visibly reflow
+          // ("move then move back") on every sign-in. The snapshot wins; the DB read is a fallback
+          // only when nothing was pushed (fresh install). A new Push to POS refreshes it via realtime.
+          const snap = data?.snapshot || null;
+          const snapHas = (k) => Array.isArray(snap?.[k]) && snap[k].length > 0;
 
           // Load floor plan + active sessions atomically — never set session:null then restore
           const { supabase: sb, getLocationId } = await import('../lib/supabase.js');
-          const [floorRes, itemsRes, catsRes, menusRes, sessionsRes, profilesRes, modGroupsRes] = await Promise.all([
+          // v5.5.834: allSettled, NOT all. Promise.all rejects on the first failing leg,
+          // so one thrown fetch (a dropped connection mid-boot) discarded the ENTIRE boot
+          // patch — no tables, no menu, no modifier groups — instead of just that slice.
+          // unwrap() puts every leg back into the familiar { data, error } shape, so a
+          // rejected leg reads as `data: null` and is skipped by the same guards below
+          // that already skip an empty read. Nothing downstream changes shape.
+          const [floorSt, itemsSt, catsSt, menusSt, sessionsSt, profilesSt, modGroupsSt, e86St, stockSt, linksSt, taxProfilesSt, taxLinesSt, locTaxSt] = await Promise.allSettled([
             fetchFloorPlan(locationId),
             fetchMenuItems(locationId),
             fetchMenuCategories(locationId),
             fetchMenus(locationId),
             sb ? sb.from('active_sessions').select('table_id,session').eq('location_id', locationId) : Promise.resolve({ data: [] }),
             sb2 ? sb2.from('device_profiles').select('*').eq('location_id', locationId) : Promise.resolve({ data: [] }),
-            sb ? sb.from('modifier_groups').select('*').eq('location_id', locationId).order('sort_order') : Promise.resolve({ data: [] }),
+            // v5.5.834: `data: null` (not []) when there's no client — "no read happened",
+            // which the authoritative-empty-read guard below must NOT mistake for "no groups".
+            sb ? sb.from('modifier_groups').select('*').eq('location_id', locationId).order('sort_order') : Promise.resolve({ data: null }),
+            fetch86List(locationId),                                  // v5.5.142: hydrate eightySixIds on boot
+            fetchStockLevels(locationId),                             // v5.5.239: hydrate stock counts on boot,
+            fetchMenuCategoryLinks(locationId),
+            // v5.7.33: tax profiles + their lines + the venue default profile
+            // (delivery only — nothing computes with them yet). `data: null` on
+            // no client = "no read happened" and keeps the store's prior value,
+            // matching the modifier-groups convention above.
+            sb ? sb.from('tax_profiles').select('*').eq('location_id', locationId).order('sort_order') : Promise.resolve({ data: null }),
+            sb ? sb.from('tax_profile_lines').select('*').eq('location_id', locationId).order('sort_order') : Promise.resolve({ data: null }),
+            sb ? sb.from('locations').select('default_tax_profile_id').eq('id', locationId).maybeSingle() : Promise.resolve({ data: null }),
           ]);
+          const unwrap = (r) => (r.status === 'fulfilled' && r.value) ? r.value : { data: null, error: r.reason || new Error('boot fetch failed') };
+          const floorRes    = unwrap(floorSt);
+          const itemsRes    = unwrap(itemsSt);
+          const catsRes     = unwrap(catsSt);
+          const menusRes    = unwrap(menusSt);
+          const linksRes    = unwrap(linksSt);
+          const sessionsRes = unwrap(sessionsSt);
+          const profilesRes = unwrap(profilesSt);
+          const modGroupsRes = unwrap(modGroupsSt);
+          const e86Res      = unwrap(e86St);
+          const stockRes    = unwrap(stockSt);
+          const taxProfilesRes = unwrap(taxProfilesSt);
+          const taxLinesRes    = unwrap(taxLinesSt);
+          const locTaxRes      = unwrap(locTaxSt);
+          [floorSt, itemsSt, catsSt, menusSt, sessionsSt, profilesSt, modGroupsSt, e86St, stockSt, taxProfilesSt, taxLinesSt, locTaxSt]
+            .filter(r => r.status === 'rejected')
+            .forEach(r => console.warn('[SyncBridge] boot fetch leg failed (other slices still applied):', r.reason?.message || r.reason));
+          // v5.5.142: write fetched 86 list into the store immediately so
+          // any items already 86'd at boot show OUT OF STOCK on Kiosk / MPOS
+          // / POS without waiting for a realtime event that won't fire
+          // (realtime only delivers INSERT / DELETE going forward, not
+          // existing rows). Merge with whatever's already in the store so
+          // we don't clobber an in-flight local toggle.
+          if (e86Res?.data?.length) {
+            const remoteIds = e86Res.data.map(r => r.item_id).filter(Boolean);
+            useStore.setState(s => ({
+              eightySixIds: [...new Set([...(s.eightySixIds || []), ...remoteIds])],
+            }));
+          }
+          // v5.5.239: hydrate dailyCounts from stock_levels so every device sees
+          // the current stock on boot — not just the device that set it.
+          if (stockRes?.data?.length) {
+            const dbCounts = {};
+            stockRes.data.forEach(r => {
+              dbCounts[r.item_id] = { par: r.par, remaining: r.remaining };
+            });
+            useStore.setState(s => ({
+              dailyCounts: { ...s.dailyCounts, ...dbCounts },
+            }));
+          }
           // Cache profiles to localStorage so they survive offline
           if (profilesRes?.data?.length) {
             const mapped = profilesRes.data.map(p => ({
@@ -129,14 +397,53 @@ export default function SyncBridge({ onSyncPulse }) {
                 if (!sessionMap[tid]) sessionMap[tid] = sess;
               });
             } catch {}
+            // v4.5.0: ALSO check the synchronous emergency snapshot (written from
+            // SyncBridge's subscribe handler on every meaningful change). This bypasses
+            // the SessionSync write path entirely and survives wake-from-sleep even if
+            // the active_sessions table write was silently failing.
+            try {
+              const snap = JSON.parse(localStorage.getItem('rpos-session-snapshot') || '{}');
+              if (snap?.sessions) {
+                Object.entries(snap.sessions).forEach(([tid, sess]) => {
+                  if (!sessionMap[tid]) {
+                    sessionMap[tid] = sess;
+                    console.log('[SyncBridge] v4.5.0: rescued session for table', tid, 'from emergency snapshot');
+                  }
+                });
+              }
+            } catch {}
+            // v4.5.0: PRESERVE in-memory sessions when DB + backup are silent.
+            // Mac wake / page re-init was wiping live sessions because active_sessions
+            // writes weren't reaching DB and the boot rebuild trusted (DB || backup || null).
+            // Now: also fall back to whatever is already in the live Zustand store before
+            // declaring a table empty. closedChecks already does this kind of additive merge.
+            const existingTablesInStore = useStore.getState().tables || [];
+            const existingById = Object.fromEntries(existingTablesInStore.map(t => [t.id, t]));
             // Build tables with sessions already applied — never flash as empty
             const tables = floorRes.data.tables.map(t => {
-              const session = sessionMap[t.id] || null;
-              return { ...t, status: session ? 'occupied' : 'available', session, firedCourses: session?.firedCourses || [], sentAt: session?.sentAt || null };
+              const inMemory = existingById[t.id];
+              const session = sessionMap[t.id] || inMemory?.session || null;
+              if (!sessionMap[t.id] && inMemory?.session) {
+                console.warn('[SyncBridge] v4.5.0: preserving in-memory session for table', t.label || t.id, '— DB + backup were silent. Items:', inMemory.session.items?.length);
+              }
+              // v4.6.5 Bug 6: floor_tables uses snake_case (max_covers, sort_order) but every
+              // TablesSurface read expects camelCase (maxCovers). Rename on hydration.
+              // v5.5.2: also preserve location_id so the cross-location guard in upsertFloorTable
+              // can refuse silent moves when the read/write paths disagree about location.
+              return {
+                ...t,
+                maxCovers: t.max_covers ?? t.maxCovers ?? 4,
+                sortOrder: t.sort_order ?? t.sortOrder ?? 0,
+                locationId: t.location_id ?? t.locationId ?? locationId,
+                status: session ? 'occupied' : 'available',
+                session,
+                firedCourses: session?.firedCourses || inMemory?.firedCourses || [],
+                sentAt: session?.sentAt || inMemory?.sentAt || null,
+              };
             });
             patch.tables = tables;
           }
-          if (itemsRes.data?.length) patch.menuItems = itemsRes.data.map(item => ({
+          if (itemsRes.data?.length && !snapHas('menuItems')) patch.menuItems = itemsRes.data.map(item => ({
             ...item,
             price: item.pricing?.base ?? item.price ?? 0,
             menuName: item.menu_name ?? item.menuName ?? item.name ?? 'Item',
@@ -148,18 +455,29 @@ export default function SyncBridge({ onSyncPulse }) {
             centreId: item.centre_id ?? item.centreId ?? null,
             taxRateId: item.tax_rate_id ?? item.taxRateId ?? null,
             taxOverrides: item.tax_overrides ?? item.taxOverrides ?? {},
+            taxProfileId: item.tax_profile_id ?? item.taxProfileId ?? null,   // v5.7.33: profile assignment (dark)
             // Must map snake_case → camelCase for modifier and instruction groups
             assignedModifierGroups: item.assigned_modifier_groups ?? item.assignedModifierGroups ?? [],
             assignedInstructionGroups: item.assigned_instruction_groups ?? item.assignedInstructionGroups ?? [],
+            optionGroupOrder: item.option_group_order ?? item.optionGroupOrder ?? null,   // v5.5.948 combined flow order
             image: item.image ?? null,
+            tags: Array.isArray(item.tags) ? item.tags : [],   // dietary tags (V/VG/GF/DF)
           }));
 
           // Sync any local-only items that failed to save previously (e.g. before schema was ready)
-          // This ensures items created offline or before column fixes are never lost
+          // This ensures items created offline or before column fixes are never lost.
+          //
+          // v4.6.12 Bug: the remoteIds set MUST include archived rows as well, not just
+          // what itemsRes.data returns (which is filtered to archived=false). Otherwise an
+          // archived item whose local state briefly shows archived=false — e.g. right after
+          // hydration when a stale config snapshot predates the archive — looks like an
+          // "orphan" and gets re-uploaded with archived=false, resurrecting it in DB.
+          // Fetch a lightweight id-only list without the archived filter for the comparison.
           if (sb && locationId && itemsRes.data?.length) {
             try {
               const { upsertMenuItem } = await import('../lib/db.js');
-              const remoteIds = new Set(itemsRes.data.map(i => i.id));
+              const { data: allRows } = await sb.from('menu_items').select('id').eq('location_id', locationId);
+              const remoteIds = new Set((allRows || []).map(i => i.id));
               const localItems = useStore.getState().menuItems || [];
               const localOnly = localItems.filter(i =>
                 !remoteIds.has(i.id) && !i.archived && i.id && !i.id.startsWith('demo-')
@@ -183,7 +501,37 @@ export default function SyncBridge({ onSyncPulse }) {
               }));
             } catch {}
           }
-          if (catsRes.data?.length) patch.menuCategories = catsRes.data.map(cat => ({
+
+          // Load discount presets + auto-discount rules
+          if (sb && locationId) {
+            try {
+              const [discRes, rulesRes] = await Promise.all([
+                sb.from('discounts').select('*').eq('location_id', locationId).eq('active', true).order('sort_order'),
+                sb.from('discount_rules').select('*').eq('location_id', locationId).eq('active', true).order('priority', { ascending: false }),
+              ]);
+              if (discRes.data?.length) patch.discountPresets = discRes.data.map(d => ({
+                id: d.id, name: d.name, label: d.name,
+                type: d.type, value: parseFloat(d.value),
+                scope: d.scope,
+                categoryIds: d.category_ids || [],
+                requiresManager: d.requires_manager ?? false,
+                active: d.active, sortOrder: d.sort_order ?? 0,
+              }));
+              if (rulesRes.data?.length) patch.discountRules = rulesRes.data.map(r => ({
+                id: r.id, name: r.name, active: r.active,
+                triggerType: r.trigger_type, triggerCategoryIds: r.trigger_category_ids || [],
+                triggerQty: r.trigger_qty,
+                triggerGroups: r.trigger_groups || null,
+                rewardType: r.reward_type, rewardValue: parseFloat(r.reward_value),
+                rewardQty: r.reward_qty,
+                rewardCategoryIds: r.reward_category_ids || [],
+                channels: r.channels || { pos: true, online: true, qr: true, kiosk: true },
+                schedule: r.schedule || null,   // day/time-window/expiry gate (discountEngine.isRuleActiveNow)
+                priority: r.priority ?? 0, sortOrder: r.sort_order ?? 0,
+              }));
+            } catch (e) { console.warn('[SyncBridge] discount load error:', e?.message); }
+          }
+          if (catsRes.data?.length && !snapHas('menuCategories')) patch.menuCategories = catsRes.data.map(cat => ({
             ...cat,
             parentId: cat.parent_id ?? cat.parentId ?? null,
             menuId: cat.menu_id ?? cat.menuId,
@@ -194,9 +542,30 @@ export default function SyncBridge({ onSyncPulse }) {
             color: cat.color ?? '#3b82f6',
             defaultCourse: cat.default_course ?? cat.defaultCourse ?? 1,
             spacerSlots: cat.spacer_slots ?? cat.spacerSlots ?? [],
+            isSpecial: cat.is_special ?? cat.isSpecial ?? false,  // v5.5.316: map so POS/bar/inventory hide special cats
+            taxProfileId: cat.tax_profile_id ?? cat.taxProfileId ?? null,   // v5.7.33: profile assignment (dark)
           }));
-          if (menusRes.data?.length) patch.menus = menusRes.data;
-          if (modGroupsRes.data?.length) patch.modifierGroupDefs = modGroupsRes.data.map(g => ({
+          // v5.7.11: normalise to camelCase WITH the snake originals kept — raw DB rows
+          // carried is_default/is_active only, and MenuManager reads isDefault, so the
+          // default star vanished on every reload (save worked, display lost it).
+          // v5.7.17: the shared normaliser in lib/rowMapping.js is the one copy.
+          if (menusRes.data?.length && !snapHas('menus')) patch.menus = menusRes.data.map(normaliseMenuRow);
+          // v5.7.18 - links: a SUCCESSFUL read wins INCLUDING empty (a venue with
+          // no linked categories is a legitimate state); a failed read keeps the
+          // store's previous value. The App self-heal cycle refreshes them later.
+          if (linksRes.data) patch.categoryLinks = linksRes.data;
+
+          // v5.5.834: a SUCCESSFUL read wins for this slice — INCLUDING an empty array.
+          // Modifier groups are written straight to modifier_groups and are never authored
+          // by the config push, so "snapshot wins" (the v5.5.734 guard) was always wrong
+          // here: a stale snapshot re-hydrated groups the operator had just deleted.
+          // `data: []` with no error is authoritative (there really are no groups);
+          // `data: null` means the read failed, so we leave the store alone.
+          // Pairs with v5.5.833's empty-array skip in applyConfigUpdate — without BOTH,
+          // deleting your LAST group makes it immortal on every till.
+          // Do NOT copy this to menuItems / menus / menuCategories: the snapHas guard
+          // there is the deliberate v5.5.734 anti-reflow fix.
+          if (modGroupsRes.data) patch.modifierGroupDefs = modGroupsRes.data.map(g => ({
             id: g.id, name: g.name,
             min: g.min ?? 0, max: g.max ?? 1,
             selectionType: g.selection_type ?? 'single',
@@ -204,34 +573,112 @@ export default function SyncBridge({ onSyncPulse }) {
             sortOrder: g.sort_order ?? 0,
           }));
 
+          // v5.7.33: tax profiles (delivery only — no calculation reads them yet).
+          // A SUCCESSFUL read wins INCLUDING empty (a venue with no profiles is a
+          // legitimate state); a failed read (`data: null`) keeps the store's
+          // prior value. BOTH tables must have read successfully before applying,
+          // so a half-failed boot can never leave line-less profiles in the store.
+          if (Array.isArray(taxProfilesRes.data) && Array.isArray(taxLinesRes.data)) {
+            patch.taxProfiles = assembleTaxProfiles(taxProfilesRes.data, taxLinesRes.data);
+          }
+          // Venue default profile: the locations row read succeeding is the win
+          // condition (its value may legitimately be null = no default set).
+          if (locTaxRes.data) patch.venueDefaultTaxProfileId = locTaxRes.data.default_tax_profile_id || null;
+
           // Load today's closed checks from Supabase — CRITICAL for sales history
           try {
-            const { fetchClosedChecks } = await import('../lib/db.js');
-            const checksRes = await fetchClosedChecks(locationId, 500);
-            if (checksRes.data?.length) {
-              // Merge with any localStorage checks not yet written to Supabase
-              const supabaseIds = new Set(checksRes.data.map(c => c.id));
+            const { fetchClosedChecks, getPosHistorySince } = await import('../lib/db.js');
+            // v5.5.985: ask the SERVER for the full history window. This used to default to
+            // today only, which is why two tills at one venue disagreed: the server supplied
+            // today, and everything older came from whatever THIS browser had accumulated
+            // locally. Supabase is the record; the device is a cache of it.
+            const historySince = getPosHistorySince();
+            const checksRes = await fetchClosedChecks(locationId, 500, historySince);
+            // supabase-js resolves with { data, error } — it does not reject — so the
+            // error only exists if we look for it.
+            if (checksRes.error) console.warn('[SyncBridge] closed checks read rejected:', checksRes.error.message || checksRes.error);
+            {
+              const remoteChecks = Array.isArray(checksRes.data) ? checksRes.data : [];
+              // Merge with any local checks not yet written to Supabase.
+              // v5.5.279: location filter on local checks — prevents cross-location
+              // bleed when a browser was previously used for a different location.
+              const supabaseIds = new Set(remoteChecks.map(c => c.id));
+              const historyFloor = historySince.getTime();
               const lsChecks = (() => {
                 try {
-                  const s = JSON.parse(localStorage.getItem('rpos-shared-state') || '{}');
-                  return (s.closedChecks || []).filter(c => !supabaseIds.has(c.id));
+                  // v5.6.83: this used to read the whole 'rpos-shared-state' blob. It now
+                  // reads DataSafe's own pending list, which is the durable record of
+                  // every check that has NOT been confirmed into Supabase — precisely the
+                  // set this rescue exists for, and emptied per check as each one lands.
+                  // The old source held the entire 30-day history whether synced or not,
+                  // which is what made it megabytes.
+                  const pending = JSON.parse(localStorage.getItem('rpos-pending-checks') || '[]');
+                  return (Array.isArray(pending) ? pending : []).filter(c =>
+                    !supabaseIds.has(c.id) &&
+                    (!c.locationId || c.locationId === locationId) &&
+                    // v5.5.985: and inside the SAME window we just asked the server for.
+                    //
+                    // A local check that Supabase does not return is one of two things: a sale
+                    // taken offline that has not synced yet, or a leftover from months ago. This
+                    // list is never pruned, so without a floor the second kind accumulates for
+                    // the life of the device and is displayed as history that exists on no other
+                    // till and in no report. That is what made two tills at one venue disagree.
+                    //
+                    // The floor keeps recent unsynced sales (which must never be dropped — they
+                    // are the only copy) and discards anything older than the window the server
+                    // is authoritative for. A check with no timestamp is KEPT: unknown age is not
+                    // evidence of staleness, and losing a real sale is far worse than showing one.
+                    (!c.closedAt || c.closedAt >= historyFloor)
+                  );
                 } catch { return []; }
               })();
-              patch.closedChecks = [...checksRes.data, ...lsChecks]
-                .sort((a, b) => (b.closedAt || 0) - (a.closedAt || 0));
+              // Merge over whatever is already in the store (dedup by id) rather than
+              // replacing it. The v5.5.81 rule stands: NEVER hand closedChecks an empty
+              // array. useSupabaseInit and the closed_checks realtime channel are both
+              // writing this slice at the same moment, and since v5.6.83 the store no
+              // longer starts boot pre-filled from localStorage, so a replace here could
+              // drop a sale that landed a fraction of a second earlier.
+              if (remoteChecks.length || lsChecks.length) {
+                const byId = new Map();
+                for (const c of (useStore.getState().closedChecks || [])) byId.set(c.id, c);
+                for (const c of remoteChecks) byId.set(c.id, c);
+                for (const c of lsChecks) if (!byId.has(c.id)) byId.set(c.id, c);
+                patch.closedChecks = capClosedChecks(Array.from(byId.values())
+                  .sort((a, b) => (b.closedAt || 0) - (a.closedAt || 0)));
+              }
             }
           } catch(e) { console.warn('[SyncBridge] closed checks load error:', e.message); }
 
           if (Object.keys(patch).length) useStore.setState(patch);
 
+          // v5.5.238: Stamp the store with the location this data belongs to,
+          // and validate that no cross-location items snuck in.
+          useStore.setState({ _dataLocationId: locationId });
+          const loadedItems = useStore.getState().menuItems || [];
+          const foreignItems = loadedItems.filter(i => i.location_id && i.location_id !== locationId);
+          if (foreignItems.length > 0) {
+            console.error('[SyncBridge] v5.5.238: CROSS-LOCATION DATA DETECTED —', foreignItems.length, 'items from wrong location. Purging.');
+            useStore.setState({ menuItems: loadedItems.filter(i => !i.location_id || i.location_id === locationId) });
+          }
+
           // Reconcile any pending checks that didn't make it to Supabase
           // (e.g. payment taken while offline, page reloaded before sync)
           try {
-            const { reconcilePendingChecks } = await import('./DataSafe.js');
+            // v4.6.27: static import above (ADR-008)
             await reconcilePendingChecks();
           } catch {}
 
-        } catch(e) { console.warn('[SyncBridge] boot load error:', e.message); }
+
+          // v5.6.25: load today's bookings + rules + packages (Table Bookings module).
+          // After the floor plan for the same reason as reservations; idempotent —
+          // the data layer is table-absent-safe.
+          try { await useStore.getState().loadBookingsFromDB?.(); } catch { /* best-effort */ }
+
+        } catch(e) {
+          // Boot did not complete — drop the latch so a later mount retries it.
+          _bootedFor = null;
+          console.warn('[SyncBridge] boot load error:', e.message);
+        }
       })();
     }
 
@@ -244,50 +691,105 @@ export default function SyncBridge({ onSyncPulse }) {
     // This is the reliable fix for cross-device close sync
     // Realtime DELETE events are unreliable; polling guarantees consistency
     if (!isMock) startSessionReconciler();
+    if (!isMock) startTerminalJobReconciler();   // v5.5.846 — close tables paid on the PAX
+
 
     // Load location-level settings from Supabase on boot
-    if (!isMock) {
+    if (!isMock && !skipBoot) {
       (async () => {
         try {
+          // v5.5.962: wait for the boot config-push apply so the fresh locations
+          // read below deterministically WINS over a stale snapshot (see note at
+          // the bootConfigLoad declaration). The IIFE try/catches, so this always
+          // settles; belt-and-braces catch anyway.
+          await bootConfigLoad.catch(() => {});
           const { getLocationId } = await import('../lib/supabase.js');
           const locId = await getLocationId().catch(() => null);
           if (locId && supabase) {
             // Load image display setting
             const show = await getShowItemImages(supabase, locId);
             useStore.getState().setShowItemImages(show);
-            // Load quick screen IDs directly — single source of truth
+            // Load quick screen directly — single source of truth
             const { data: locData } = await supabase
               .from('locations')
-              .select('quick_screen_ids')
+              .select('quick_screen_ids, quick_screen_mode, quick_screen_auto, pos_settings')
               .eq('id', locId)
               .single();
             if (locData?.quick_screen_ids?.length) {
               useStore.getState().setQuickScreenIds(locData.quick_screen_ids);
             }
+            // v5.5.962 Smart Quick Screen: mode + precomputed best-seller lists
+            if (['manual','auto','hybrid'].includes(locData?.quick_screen_mode)) {
+              useStore.getState().setQuickScreenMode(locData.quick_screen_mode);
+            }
+            if (locData?.quick_screen_auto?.lists) {
+              useStore.getState().setQuickScreenAuto(locData.quick_screen_auto);
+            }
+            // v5.5.799: takeaway customer-details level (setter sanitises to 'full')
+            useStore.getState().setTakeawayCustomerDetails(locData?.pos_settings?.takeaway_customer_details);
+            // v5.7.5: tip on printed receipt (US signature flow) - venue-wide,
+            // drives the merchant-slip print + History countdown. The setter
+            // sanitises (fail closed to disabled, hours clamped 1..72). The
+            // server re-reads the setting on every job create, so this cached
+            // value can never open a capture window on its own.
+            useStore.getState().setTipOnReceipt(locData?.pos_settings?.tip_on_receipt);
           }
         } catch (e) { console.warn('[SyncBridge] settings load failed:', e.message); }
       })();
     }
 
-    // On reconnect — replay pending data
-    if (!isMock) {
-      window.addEventListener('online', async () => {
-        try {
-          const { onReconnect } = await import('./DataSafe.js');
-          await onReconnect();
-        } catch {}
-      });
-    }
+    // Drain loyalty/promo deductions parked by lib/commitRedemptions. OfflineQueue's own replay
+    // engine only speaks Supabase table ops and cannot POST to an edge function, so without this
+    // the ONLY thing that ever retries a lost deduction is the next successful redemption on the
+    // same device. ensureAuthToken() returns null in back-office mode and retryPendingRedemptions
+    // no-ops without a token, so this can't fire un-authenticated.
+    const flushRedemptions = async () => {
+      try {
+        const token = await ensureAuthToken().catch(() => null);
+        if (!token) return;
+        await retryPendingRedemptions({ functionsUrl: `${OPS_URL}/functions/v1`, token });
+      } catch { /* best-effort */ }
+    };
+    if (!isMock) flushRedemptions();
+
+    // On reconnect — replay pending data.
+    // v5.6.83: named + removed in the cleanup below. It never was, so every remount
+    // (i.e. every sign-in, see App.jsx) added ANOTHER copy of this handler to window,
+    // and coming back online then fired N concurrent reconcile+replay passes.
+    const onBackOnline = async () => {
+      try {
+        // v4.6.27: static import above (ADR-008)
+        await onReconnect();
+        await flushRedemptions();
+      } catch {}
+    };
+    if (!isMock) window.addEventListener('online', onBackOnline);
 
     // Periodic background sync every 60s — catch any missed writes
     if (!isMock) {
       const periodicTimer = setInterval(async () => {
         try {
-          const { periodicSync } = await import('./DataSafe.js');
+          // v4.6.27: static import above (ADR-008)
           await periodicSync();
         } catch {}
+        try {
+          // v4.6.29: fire any scheduled collection orders whose fire time
+          // has been reached. Piggy-backs on the existing 60s cadence so we
+          // don't spin up a second timer.
+          useStore.getState().tickScheduledOrders?.();
+        } catch {}
+        try {
+          // Release catering pre-orders whose event-day fire time has arrived
+          // (master-only, throttled inside). They're held in the DB, not the
+          // live queue, so this scales to thousands of future bookings.
+          useStore.getState().releaseDueCateringOrders?.();
+        } catch {}
       }, 60_000);
-      // Store timer for cleanup
+      // v5.6.83: the cleanup below never cleared this, so a till that signs out after
+      // every sale accumulated one more 60s reconcile timer per sale, all of them
+      // running. It is cleared now (and, with SyncBridge mounted once, only ever one
+      // is created in the first place).
+      clearInterval(window._rposPeriodicTimer);
       window._rposPeriodicTimer = periodicTimer;
     }
 
@@ -296,13 +798,79 @@ export default function SyncBridge({ onSyncPulse }) {
 
     channelInstance = new BroadcastChannel(CHANNEL_NAME);
 
+    // v4.6.27: Safe merge for incoming broadcast data. Previously this was a blind
+    // useStore.setState(msg.data), which replaced the whole `tables` array with the
+    // sender's view — wiping items the local operator was actively adding. Now:
+    //   - The currently-edited table (activeTableId) is protected: its session is
+    //     never overwritten from a broadcast. Local edits always win for it.
+    //   - For other tables we merge per-row, keeping the sender's operational state
+    //     (status, session, covers, reservation) but the receiver's layout fields
+    //     (x/y/w/h/label/section/shape). Layout only changes via CONFIG_PUSH.
+    //   - Tables the receiver has but the sender doesn't are preserved (can't shrink
+    //     the floor plan via a stale broadcast).
+    const LAYOUT_FIELDS = ['x','y','w','h','label','section','shape','seats','area'];
+    function mergeTablesSafely(localTables, incomingTables, activeId) {
+      if (!Array.isArray(incomingTables)) return localTables;
+      const byId = new Map(incomingTables.map(t => [t.id, t]));
+      const merged = (localTables || []).map(local => {
+        if (local.id === activeId) return local;
+        const incoming = byId.get(local.id);
+        if (!incoming) return local;
+
+        // v4.5.3 STOP-BLEED: never let incoming overwrite local with FEWER items
+        // OR destroy a session that the local operator is actively building.
+        // Caught 26 Apr 2026 by v4.5.2 forensic logging — cross-tab BroadcastChannel
+        // races were wiping in-progress orders (e.g. T1 with 3 items wiped to 0
+        // while user was actively at the POS).
+        const localItems = local.session?.items?.length || 0;
+        const incomingItems = incoming.session?.items?.length || 0;
+        if (local.session && (!incoming.session || incomingItems < localItems)) {
+          console.warn('[SyncBridge] mergeTablesSafely: refusing incoming for', local.label || local.id, '— would lose data (local=' + localItems + ' items, incoming=' + incomingItems + ' items)');
+          return local;
+        }
+        // v4.5.3 timestamp tiebreaker: if local.session is newer than incoming, keep local.
+        // updatedAt is stamped on every store mutation that touches the session.
+        if (local.session?.updatedAt && incoming.session?.updatedAt
+            && local.session.updatedAt > incoming.session.updatedAt) {
+          return local;
+        }
+
+        const keepLocalLayout = {};
+        for (const f of LAYOUT_FIELDS) if (f in local) keepLocalLayout[f] = local[f];
+        return { ...incoming, ...keepLocalLayout };
+      });
+      const localIds = new Set((localTables || []).map(t => t.id));
+      for (const t of incomingTables) if (!localIds.has(t.id)) merged.push(t);
+      return merged;
+    }
+    function safeApplyIncoming(data) {
+      if (!data || typeof data !== 'object') return;
+      const cur = useStore.getState();
+      const patch = { ...data };
+      if ('tables' in patch) {
+        patch.tables = mergeTablesSafely(cur.tables, patch.tables, cur.activeTableId);
+      }
+      useStore.setState(patch);
+    }
+
     channelInstance.onmessage = ({ data: msg }) => {
       if (msg.from === TAB_ID) return;
+      // v5.5.6: BroadcastChannel cross-tenant guard. Two tabs in the same browser
+      // can be at different locations (e.g., owner with multiple sites monitoring
+      // both). Without this filter, a CONFIG_PUSH or STATE_UPDATE from Loc 1's
+      // tab would be applied to Loc 2's tab, polluting state across locations.
+      // Reject if either side has a known location and they don't match. If
+      // sender is null (legacy/pre-v5.5.6) accept — preserves backwards compat.
+      const myLoc = getActiveLocationSync();
+      if (msg.locationId && myLoc && msg.locationId !== myLoc) {
+        console.warn('[SyncBridge] dropping cross-location broadcast:', msg.type, 'from', msg.locationId, '— this tab is at', myLoc);
+        return;
+      }
 
       if (msg.type === 'STATE_UPDATE') {
         // Real-time operational sync
         isApplyingRef.current = true;
-        useStore.setState(msg.data);
+        safeApplyIncoming(msg.data); // v4.6.27: protects activeTableId + layout
         isApplyingRef.current = false;
         onSyncPulse?.();
       }
@@ -314,16 +882,16 @@ export default function SyncBridge({ onSyncPulse }) {
       }
 
       if (msg.type === 'PING') {
-        channelInstance.postMessage({ from:TAB_ID, type:'PONG', data:getSharedState() });
+        channelInstance.postMessage({ from:TAB_ID, locationId: getActiveLocationSync(), type:'PONG', data:getSharedState() });
       }
       if (msg.type === 'PONG') {
         isApplyingRef.current = true;
-        useStore.setState(msg.data);
+        safeApplyIncoming(msg.data); // v4.6.27: protects activeTableId + layout
         isApplyingRef.current = false;
       }
     };
 
-    channelInstance.postMessage({ from:TAB_ID, type:'PING' });
+    channelInstance.postMessage({ from:TAB_ID, locationId: getActiveLocationSync(), type:'PING' });
 
     let timer = null;
     let pending = {};
@@ -333,6 +901,7 @@ export default function SyncBridge({ onSyncPulse }) {
       if (state.tables === prev.tables) return;
       const meaningful = state.tables.some((t, i) => {
         const p = prev.tables[i];
+        if (t === p) return false; // v5.5.890: untouched table (ref-equal) — skip deep compare
         if (!p) return true;
         if ((t.session == null) !== (p.session == null)) return true; // open/close
         if (t.session?.covers !== p.session?.covers) return true;     // covers
@@ -344,10 +913,123 @@ export default function SyncBridge({ onSyncPulse }) {
         const tSent = (t.session?.items || []).filter(i => i.status === 'sent').length;
         const pSent = (p.session?.items || []).filter(i => i.status === 'sent').length;
         if (tSent !== pSent) return true;
+        // v5.5.283: catch voids, discounts, price edits, and other modifications
+        // that don't change item count. Subtotal is the cheapest single check that
+        // catches virtually all real-world edits without triggering on keystrokes.
+        if (t.session?.subtotal !== p.session?.subtotal) return true;
+        // Void count changed (item voided without removing from array)
+        const tVoid = (t.session?.items || []).filter(x => x.voided).length;
+        const pVoid = (p.session?.items || []).filter(x => x.voided).length;
+        if (tVoid !== pVoid) return true;
+        // Fired courses changed
+        const tFired = (t.session?.firedCourses || []).length;
+        const pFired = (p.session?.firedCourses || []).length;
+        if (tFired !== pFired) return true;
+        // Notes changed
+        if (t.session?.note !== p.session?.note) return true;
+        if (t.session?.orderNote !== p.session?.orderNote) return true;
+        // v5.5.317: per-item note / seat / course edits and service-charge waive
+        // don't change count/subtotal/sent, so without this they only propagated
+        // via the 10s reconciler poll (stale on other terminals, wrong course/
+        // seat/note on a kitchen ticket fired from another device in that window).
+        if (t.session?.serviceChargeWaived !== p.session?.serviceChargeWaived) return true;
+        const itemSig = (s) => (s?.items || []).map(i => `${i.uid||i.id}:${i.notes||''}:${i.seat ?? ''}:${i.course ?? ''}`).join('|');
+        if (itemSig(t.session) !== itemSig(p.session)) return true;
         return false;
       });
-      if (meaningful) scheduleFlush();
+      if (meaningful) {
+        // v4.5.2 INSTRUMENTATION: detect mass-wipe events BEFORE we overwrite the snapshot.
+        // T2 was lost overnight on 25→26 Apr because the previous snapshot logic blindly
+        // mirrored whatever in-memory was — when something else cleared the store,
+        // the snapshot was overwritten with empty and the rescue path had nothing to restore.
+        // This pass logs every shrink with a stack trace so we can find the wipe trigger.
+        try {
+          const newSessionCount = state.tables.filter(t => t.session).length;
+          const prevSessionCount = prev.tables.filter(t => t.session).length;
+          const lostTables = prev.tables.filter(p => p.session && !state.tables.find(t => t.id === p.id && t.session));
+          if (lostTables.length > 0) {
+            const stack = new Error('session-loss-trace').stack;
+            const forensicEntry = {
+              ts: Date.now(),
+              tsISO: new Date().toISOString(),
+              prevCount: prevSessionCount,
+              newCount: newSessionCount,
+              lost: lostTables.map(t => ({
+                id: t.id,
+                label: t.label,
+                items: t.session?.items?.length,
+                seatedAt: t.session?.seatedAt,
+              })),
+              stack: (stack || '').split('\n').slice(0, 12).join('\n'),
+              docVisible: typeof document !== 'undefined' ? document.visibilityState : '?',
+              online: typeof navigator !== 'undefined' ? navigator.onLine : '?',
+            };
+            console.error('[SyncBridge] ⚠️  SESSION LOSS DETECTED — ' + lostTables.length + ' table(s) had session, now do not. Lost:', lostTables.map(t => t.label || t.id).join(', '));
+            console.error('[SyncBridge] Stack trace of wipe:', stack);
+            console.error('[SyncBridge] Full forensic entry:', forensicEntry);
+            try {
+              const log = JSON.parse(localStorage.getItem('rpos-session-loss-log') || '[]');
+              log.push(forensicEntry);
+              // Cap at last 20 entries to bound localStorage size
+              localStorage.setItem('rpos-session-loss-log', JSON.stringify(log.slice(-20)));
+            } catch {}
+          }
+        } catch (e) {
+          console.warn('[SyncBridge] v4.5.2 forensic detector errored:', e?.message || e);
+        }
+        // Snapshot write — UNCHANGED behaviour from v4.5.0 (still mirrors current in-memory).
+        // Will be replaced with non-shrinking variant in v4.5.3 once we know the wipe source.
+        try {
+          const snapshot = {};
+          for (const t of state.tables) {
+            if (t.session) snapshot[t.id] = t.session;
+          }
+          localStorage.setItem('rpos-session-snapshot', JSON.stringify({
+            v: '4.5.2',
+            ts: Date.now(),
+            sessions: snapshot,
+          }));
+        } catch (e) {
+          console.warn('[SyncBridge] v4.5.2 emergency snapshot failed:', e?.message || e);
+        }
+        // v5.5.871: when an item was just SENT to the kitchen (pending→sent), flush IMMEDIATELY
+        // rather than on the 600ms debounce. A single sent item was being lost: the send often
+        // de-activates the table (auto-signout / leaving), and the debounced flush lost the race
+        // to the recency-blind reconciler, which then overwrote the live item with the stale empty
+        // seat-time DB row. An immediate flush lands the sent session in active_sessions before the
+        // table can be handed to any overwrite. Every other change stays on the debounce.
+        const sawSend = state.tables.some((t, i) => {
+          const p = prev.tables[i];
+          if (t === p) return false; // v5.5.890: ref-equal — nothing changed here
+          if (!p || !t.session) return false;
+          const tSent = (t.session.items || []).filter(x => x.status === 'sent').length;
+          const pSent = (p.session?.items || []).filter(x => x.status === 'sent').length;
+          return tSent > pSent;
+        });
+        if (sawSend) flushSessions(); else scheduleFlush();
+      }
     }) : () => {};
+
+    // v4.6.5 Bug 4: Write walk-in orderQueue and bar tabs to Supabase too, so they
+    // sync across devices the same way table sessions already do.
+    const unsubQueues = !isMock ? useStore.subscribe((state, prev) => {
+      if (state.orderQueue !== prev.orderQueue || state.tabs !== prev.tabs) {
+        scheduleQueueFlush();
+      }
+    }) : () => {};
+
+    // Two more select('*') limit 500 reads (order_queue + bar_tabs) — part of the boot,
+    // so they follow the same one-per-location latch. The rows they load are still in
+    // the store on a remount; only the network read is skipped.
+    if (!isMock && !skipBoot) loadQueues();
+
+    // Tables Ready — live waitlist board syncs across devices the same way the order queue does.
+    const unsubWaitlist = !isMock ? useStore.subscribe((state, prev) => {
+      if (state.waitlist !== prev.waitlist) scheduleWaitlistFlush();
+    }) : () => {};
+    if (!isMock && !skipBoot) loadWaitlistSync();
+
+    const unsubReservations = () => {};   // v5.6.27: reservation flush retired (bookings own the diary)
 
     const unsub = useStore.subscribe((state, prev) => {
       if (isApplyingRef.current) return;
@@ -363,6 +1045,7 @@ export default function SyncBridge({ onSyncPulse }) {
       if (onlyTables) {
         const qtyOnly = !state.tables.some((t, i) => {
           const p = prev.tables[i];
+          if (t === p) return false; // v5.5.890: ref-equal — no structural change
           if (!p) return true;
           if ((t.session == null) !== (p.session == null)) return true;
           const tCount = (t.session?.items || []).filter(i => !i.voided).length;
@@ -378,16 +1061,25 @@ export default function SyncBridge({ onSyncPulse }) {
       timer = setTimeout(() => {
         const toSend = pending;
         pending = {};
-        channelInstance?.postMessage({ from:TAB_ID, type:'STATE_UPDATE', data:toSend });
-        try {
-          const cur = JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}');
-          localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...cur, ...toSend }));
-        } catch {}
+        // The broadcast is unchanged: every SHARED_KEY that moved still reaches the
+        // other tabs on this machine. Only the disk write is slimmed — see
+        // NO_PERSIST_KEYS / persistShared at the top of this file.
+        channelInstance?.postMessage({ from:TAB_ID, locationId: getActiveLocationSync(), type:'STATE_UPDATE', data:toSend });
+        persistShared(toSend);
         onSyncPulse?.();
       }, 80);
     });
 
-    return () => { clearTimeout(timer); channelInstance?.close(); channelInstance = null; unsub(); unsubSessions(); stopSessionReconciler(); if (!isMock) teardownSessions(); };
+    return () => {
+      clearTimeout(timer);
+      channelInstance?.close(); channelInstance = null;
+      unsub(); unsubSessions(); unsubQueues(); unsubWaitlist(); unsubReservations();
+      stopSessionReconciler(); stopTerminalJobReconciler();
+      // v5.6.83: these two were leaked on every teardown — see the notes above each.
+      window.removeEventListener('online', onBackOnline);
+      clearInterval(window._rposPeriodicTimer); window._rposPeriodicTimer = null;
+      if (!isMock) { teardownSessions(); teardownQueueSync(); teardownWaitlistSync(); }
+    };
   }, []);
 
   return null;
@@ -396,5 +1088,9 @@ export default function SyncBridge({ onSyncPulse }) {
 // Call this from Back Office to push a config snapshot to all POS terminals
 export function broadcastConfigPush(snapshot) {
   if (!channelInstance) return;
-  channelInstance.postMessage({ from:TAB_ID, type:'CONFIG_PUSH', snapshot });
+  // v5.5.6: tag with locationId so receivers in tabs at OTHER locations drop it
+  // (see the BroadcastChannel onmessage handler). Snapshot.locationId is set
+  // by handlePush in BackOfficeApp; fall back to the current sync resolver.
+  const locId = snapshot?.locationId || getActiveLocationSync();
+  channelInstance.postMessage({ from:TAB_ID, locationId: locId, type:'CONFIG_PUSH', snapshot });
 }

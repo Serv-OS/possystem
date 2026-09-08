@@ -1,5 +1,6 @@
 import { useState, useMemo, useRef, useCallback } from 'react';
 import { useStore } from '../../store';
+import { money } from '../../lib/currency';
 
 // ══════════════════════════════════════════════════════════════════════════════
 // MENU VISUALIZER
@@ -72,9 +73,10 @@ export default function MenuVisualizer() {
       const def = modifierGroupDefs?.find(d=>d.id===ag.groupId);
       if (def) flow.push({ type:'modifier', group:def, required:(ag.min||0)>0 });
     });
-    (item.assignedInstructionGroups||[]).forEach(gid => {
+    (item.assignedInstructionGroups||[]).forEach(e => {
+      const gid = typeof e === 'string' ? e : e?.groupId;
       const def = instructionGroupDefs?.find(d=>d.id===gid);
-      if (def) flow.push({ type:'instruction', group:def });
+      if (def) flow.push({ type:'instruction', group:def, required: (e?.min ?? def.min ?? 0) > 0 });
     });
     return flow;
   };
@@ -266,7 +268,7 @@ export default function MenuVisualizer() {
                               <div style={{ flex:1, minWidth:0 }}>
                                 <div style={{ fontSize:12, fontWeight:700, color:isSel?'var(--acc)':is86?'var(--red)':'var(--t1)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', lineHeight:1.3 }}>{item.menuName||item.name}</div>
                                 <div style={{ fontSize:12, fontWeight:800, color:isSel?'var(--acc)':color, fontFamily:'var(--font-mono)', marginTop:2 }}>
-                                  {kids.length>0?`from £${fromP.toFixed(2)}`:`£${price.toFixed(2)}`}
+                                  {kids.length>0?`from ${money(fromP)}`:`${money(price)}`}
                                 </div>
                               </div>
                               <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', gap:4, flexShrink:0 }}>
@@ -371,7 +373,9 @@ function ItemQuickEdit({ item, onClose, menuItems, menuCategories, modifierGroup
   const fp = (k,v) => updateMenuItem(item.id,{pricing:{...p,[k]:v===''?null:parseFloat(v)||0},...(k==='base'?{price:parseFloat(v)||0}:{})});
 
   const assignedMods = item.assignedModifierGroups||[];
-  const assignedInst = item.assignedInstructionGroups||[];
+  // Shape-tolerant: accept legacy string[] or new [{groupId,min?}] and always write objects
+  const assignedInst = (item.assignedInstructionGroups||[]).map(e => typeof e === 'string' ? { groupId: e } : e);
+  const hasInst = gid => assignedInst.some(a => a.groupId === gid);
 
   const addMod = gid => {
     if (assignedMods.find(ag=>ag.groupId===gid)) return;
@@ -384,11 +388,11 @@ function ItemQuickEdit({ item, onClose, menuItems, menuCategories, modifierGroup
     const arr=[...assignedMods];const[m]=arr.splice(from,1);arr.splice(to,0,m);
     updateMenuItem(item.id,{assignedModifierGroups:arr});
   };
-  const addInst = gid => { if(assignedInst.includes(gid))return; updateMenuItem(item.id,{assignedInstructionGroups:[...assignedInst,gid]}); setInstSearch(''); };
-  const removeInst = gid => updateMenuItem(item.id,{assignedInstructionGroups:assignedInst.filter(g=>g!==gid)});
+  const addInst = gid => { if(hasInst(gid))return; updateMenuItem(item.id,{assignedInstructionGroups:[...assignedInst, { groupId: gid }]}); setInstSearch(''); };
+  const removeInst = gid => updateMenuItem(item.id,{assignedInstructionGroups:assignedInst.filter(a=>a.groupId!==gid)});
 
   const filteredMods = (allMods||[]).filter(g=>!assignedMods.find(ag=>ag.groupId===g.id)&&(modSearch===''||(g.name||'').toLowerCase().includes(modSearch.toLowerCase())));
-  const filteredInst = (allInsts||[]).filter(g=>!assignedInst.includes(g.id)&&(instSearch===''||(g.name||'').toLowerCase().includes(instSearch.toLowerCase())));
+  const filteredInst = (allInsts||[]).filter(g=>!hasInst(g.id)&&(instSearch===''||(g.name||'').toLowerCase().includes(instSearch.toLowerCase())));
 
   const SECS = [
     {id:'details',label:'Details'},
@@ -409,7 +413,7 @@ function ItemQuickEdit({ item, onClose, menuItems, menuCategories, modifierGroup
         <div style={{ display:'flex', alignItems:'flex-start', gap:8, marginBottom:10 }}>
           <div style={{ flex:1, minWidth:0 }}>
             <div style={{ fontSize:14, fontWeight:800, color:'var(--t1)', lineHeight:1.3, overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{item.menuName||item.name}</div>
-            <div style={{ fontSize:10, color:'var(--t4)', marginTop:2 }}>{item.type} · £{(p.base||0).toFixed(2)}{isParent?` · ${variants.length} sizes`:''}</div>
+            <div style={{ fontSize:10, color:'var(--t4)', marginTop:2 }}>{item.type} · {money((p.base||0))}{isParent?` · ${variants.length} sizes`:''}</div>
           </div>
           <button onClick={()=>toggle86(item.id)} style={{ fontSize:9,padding:'2px 7px',borderRadius:8,cursor:'pointer',fontFamily:'inherit',border:`1px solid ${is86?'var(--grn-b)':'var(--red-b)'}`,background:is86?'var(--grn-d)':'var(--red-d)',color:is86?'var(--grn)':'var(--red)',fontWeight:700,flexShrink:0 }}>{is86?'Un-86':'86'}</button>
           <button onClick={onClose} style={{ background:'none',border:'none',color:'var(--t4)',cursor:'pointer',fontSize:18,lineHeight:1 }}>×</button>

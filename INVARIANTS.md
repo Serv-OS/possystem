@@ -12,14 +12,33 @@ If a proposed change would violate any rule here, **stop and ask** before procee
 - `locations.quick_screen_ids` is a jsonb array of item ID strings.
 - `menu_categories.spacer_slots` is a jsonb array of `{id: string, sortOrder: number}` objects.
 - `menu_categories.default_course` is an integer: 0=Immediate, 1=Course 1, 2=Course 2, 3=Course 3.
+- `gift_cards` uses `code_lookup` (HMAC-SHA256 hash) for secure code search. `code_plain` is a fallback only.
+- `gift_card_transactions.idempotency_key` has a unique constraint — prevents double-debit on retries.
+- `stock_levels` uses `(location_id, item_id)` as key. `remaining` must never go below 0 — the `decrement_stock` RPC enforces this.
+- `eighty_six` uses `(location_id, item_id)` — one row per 86'd item per location. INSERT = out of stock, DELETE = back in stock.
+- `locations.currency` exists on BOTH Ops and Platform DBs (GBP/USD/EUR, default GBP). **Platform is authoritative** for the running app; Ops is only the creation seed. `provision-location` copies Ops→Platform on INSERT only. Supported set is exactly the keys of `CURRENCIES` in `lib/currency.js`.
+- `closed_checks.payment_intents` (jsonb `[{id, amountMinor}]`) is the source of truth for auto-refundable card legs (split portions, bar-tab holds). `stripe_payment_intent_id` is kept for back-compat / single-card.
 
 ---
 
 ## Required Ordering / Sequencing
 
 - **Boot sequence in SyncBridge.jsx:** config push snapshot → floor plan + menu + sessions (parallel Promise.all) → settings (quick screen, show images). Never reorder these or sessions will flash as empty.
-- **Version bump sequence on every deploy:** (1) update `src/lib/version.js`, (2) add CHANGELOG entry at top of array in `src/App.jsx`, (3) `npm run build`, (4) `git push`.
+- **Version bump sequence on every deploy:** (1) update `src/lib/version.js`, (2) add CHANGELOG entry at top of array in `src/App.jsx`, (3) `npm run build`, (4) `git push origin develop`.
 - **Category field sync:** When adding a field to `menu_categories`, update ALL of: (a) `sbUpsertCategory` in `store/index.js`, (b) `upsertMenuCategory` in `lib/db.js`, (c) the `catsRes.data.map()` in `SyncBridge.jsx`.
+- **Stock decrement after order only:** Kiosk/online stock decrement must happen AFTER successful order submission (heartbeat confirmed), never before. POS decrements optimistically on `addItem`.
+- **Gift card redeem before order close:** Gift card redemption (edge function call) must succeed before the order is written to `closed_checks`. If redemption fails, the order should not proceed with gift card credit.
+  - v5.5.901 (kiosk + online): "before close" means **at commit, not at apply**. Entering a card only stages `{card_id, applied, commit_key, pending_commit}` in client state (`lib/giftCommit.js`); `gift-redeem` fires inside the submit path, before the `closed_checks` insert, keyed to the check id (`closed_check_id` → server-derived idempotency key) so retries can't double-debit. Where a card leg has ALREADY been charged the order must still be written on a gift failure — record the truth via `giftCardCheckRecord` instead of losing the order. Where the gift card is the ONLY payment, a failed/short redemption must ABORT the order (`allowPartial: false`).
+  - v5.5.902 (POS: CheckoutModal + SplitModal) — **every surface now stages at apply and debits at commit. There is no apply-time `gift-redeem` caller left in `src/`.** Three POS-specific rules:
+    - **The check id is minted CLIENT-SIDE, once per checkout** (`CheckoutModal.getCheckId()`), rides out as `paymentInfo.closedCheckId`, and the store adopts it as `closed_checks.id`. It must be the SAME id the gift debit was keyed to — that is the only reason `refundCheck`'s `gift-reverse-redeem` can find the ledger row. Never re-mint it per payment attempt.
+    - **Split legs key on the PAIR `<checkId>:<portionId>`, never either alone.** The check id alone collapses one card used on two portions of a bill onto a single debit; the portion id alone (`p0`, `s3`, `ip0`, `ca0` — positional, reused by every split at the venue) collides across different checks and gives the next customer a free meal.
+    - **PAX / send-to-terminal debits at DISPATCH, not at `complete()`** — dispatch is that path's point of no return (the terminal charges a due already net of the gift, and `TerminalJobReconciler` can close the check from any till without this modal). It commits with `allowPartial: false` (the frozen due can't be renegotiated) and puts the resulting record in `check_draft.giftCard` so the reconciler-closed check is still reversible.
+  - v5.5.903 — **a debit taken before there is a check must be REVERSED when that payment provably dies.** Only the PAX path debits early, so it is the only path that owes an undo (`lib/giftCommit.reverseGiftCard` — the single `gift-reverse-redeem` request shape, shared with `store.refundCheck`). Three rules, all of them money:
+    - **"Provably dead" is the whole gate.** A server-SETTLED `declined` / `cancelled` / `expired` status, or a cancel the server itself confirmed (`cancelTerminalJob` → `r.ok`). Never on a live job, a refused cancel (`ALREADY_CAPTURED`), `unknown`, or a dispatch whose response was merely lost — any of those may still be paid and closed by the reconciler **with that leg on the check**, and reversing hands the customer the goods AND their balance.
+    - **Never reverse a leg the closing check claims.** `clearTable` cancels a live job for the check it is closing; if that check records the same `idempotency_key` (staff backed out to cash and the idempotent re-commit booked it), it is accounted for. Compare keys via `giftLegs(giftRecordFrom(paymentInfo))`.
+    - **A successful reversal must RETIRE the check id** (`checkIdRef.current = null`). The redeem row survives its own reversal, so re-applying the same card under the same check id derives the same `giftcommit:<check>:<card>` key, returns `already_applied`, and discounts the bill while debiting nothing. On a FAILED reversal the opposite holds: keep the id and put the leg back on the bill (`applyGift(record)`) so the money the customer has already spent is still honoured.
+  - Multiple gift cards on one check live in the EXISTING `gift_card` jsonb as `{...primaryLeg, legs:[...]}` — no new column, so the top-level `card_id` + `idempotency_key` pair every older reader expects is untouched. Build it with `giftRecordFrom()`, read it with `giftLegs()`; never hand-destructure `legs`.
+- **Money formatting (multi-currency):** Never hardcode `£` or `'gbp'` for a money value. Use `money()` / `currencySymbol()` / `stripeCurrency()` from `lib/currency.js` so displays + Stripe charges follow the location's currency. (Genuine GBP-only chrome — cash denomination labels, platform billing tiers — is the documented exception.)
 
 ---
 
@@ -27,7 +46,7 @@ If a proposed change would violate any rule here, **stop and ask** before procee
 
 ### `addItem(item, mods, cfg, opts)` in store
 - `item` — full menu item object from store
-- `mods` — array of `{groupLabel, label, price, qty?}` 
+- `mods` — array of `{groupLabel, label, price, qty?, itemId?}` 
 - `opts` — `{notes, qty, linePrice, displayName}`
 - Returns: new item appended to active table session or walk-in order
 
@@ -42,7 +61,17 @@ If a proposed change would violate any rule here, **stop and ask** before procee
 ```
 
 ### Config push snapshot (what Back Office sends to POS)
-Must include: `menus`, `menuItems`, `menuCategories`, `tables`, `sections`, `quickScreenIds`, `profiles`, `modifierGroupDefs`, `instructionGroupDefs`, `taxRates`
+Must include: `menus`, `menuItems`, `menuCategories`, `tables`, `sections`, `quickScreenIds`, `quickScreenMode`, `quickScreenAuto`, `profiles`, `modifierGroupDefs`, `instructionGroupDefs`, `taxRates`
+
+### Gift card redeem response
+```js
+{ card_id, applied, remaining_balance, status, currency, idempotent? }
+```
+
+### Gift card redeem insufficient balance (400)
+```js
+{ error: 'Insufficient balance', balance: <available_minor>, requested: <requested_minor> }
+```
 
 ---
 
@@ -50,8 +79,48 @@ Must include: `menus`, `menuItems`, `menuCategories`, `tables`, `sections`, `qui
 
 - **`VITE_SUPABASE_ANON_KEY` must never appear in git.** It's in Vercel env vars only. The local `.env.local` has a placeholder.
 - **`loc-demo` must never be written to Supabase.** It's a mock sentinel. Every db write must verify `locationId !== 'loc-demo'` before proceeding.
-- **POS devices authenticate via device pairing** (not user auth). Back office users authenticate via Supabase Auth. Don't mix these flows.
+- **POS devices authenticate via device pairing** (not user auth). Back office users authenticate via Supabase Auth. Kiosk/online use anonymous auth. Don't mix these flows.
 - **RLS policies:** The `locations` table has an UPDATE policy requiring `location_id IN (SELECT location_id FROM user_profiles WHERE id = auth.uid())`. Anonymous/device writes to `locations` will be rejected unless using the back office auth session.
+- **Gift card HMAC secrets** are stored in `gift_brand_config.hmac_secret` per company. Never log or expose these.
+- **Edge functions use `platformAdmin`** (service-role client) for Platform DB access. Never expose the service-role key to the frontend.
+
+---
+
+## Location Isolation (v5.5.238)
+
+Multi-location data bleed is a **critical severity** bug. These rules exist to prevent it at every layer:
+
+### Location Resolution Priority Chain
+`rpos-bo-location` (BO override) → `rpos-device.locationId` (POS pairing) → `user_profiles.location_id` (DB)
+- `getActiveLocationSync()` — **synchronous**, localStorage-only, safe for boot paths. Used by SyncBridge.
+- `getLocationId()` — **async**, calls `supabase.auth.getUser()`. **NEVER use in SyncBridge boot** — it hangs on POS/MPOS devices without auth sessions.
+
+### Sign-Out Must Clear Location State
+Every sign-out path must: (1) `localStorage.removeItem('rpos-bo-location')`, (2) `clearResolvedLocationId()`, (3) full page reload. The `onAuthStateChange(SIGNED_OUT)` handler is a safety net for session expiry and edge cases.
+
+### Sign-In Must Validate Location Override
+On sign-in, if `rpos-bo-location` is set and the user is not `super_admin`, validate the override against `fetchAccessibleLocations()`. Discard if the user can't access that location.
+
+### Runtime Store Guard (`_dataLocationId`)
+SyncBridge stamps `useStore._dataLocationId` after loading data. On subsequent boots, if the active location differs from `_dataLocationId`, all menu/table data is purged BEFORE loading fresh. Post-load validation filters out any `menuItems` whose `location_id` doesn't match.
+
+### Tenant Fence (`enforceTenantFence`)
+Runs at app load (App.jsx) and on every `setResolvedLocationId()` call. Compares active location to `rpos-active-location` tag — if they differ, `purgeStaleLocationData()` wipes all localStorage except the keep-set.
+
+### RLS Policies
+Menu tables (`menu_items`, `menu_categories`, `menus`, `menu_category_links`), `floor_tables`, and `config_pushes` have `_auth_write` policies requiring `auth.role() IN ('authenticated', 'anon')`. No permissive "allow all" policies exist on location-scoped tables.
+
+---
+
+## Table Session Integrity
+
+Tables MUST never be lost between updates. These safeguards exist:
+
+- **SessionSync.js:** Writes to `active_sessions` on meaningful change (item count, subtotal, void count, course fired, notes). 600ms debounce.
+- **SessionReconciler.js:** Polls every 10s. Full session comparison — any difference (voids, mods, discounts, prices, notes) triggers update. Skips `activeTableId`.
+- **Realtime DELETE guard:** Both `realtime.js` and `SessionSync.js` DELETE handlers check `activeTableId` and compare `seatedAt` timestamps before clearing a table.
+- **3-second grace period:** `flushSessions` waits 3 seconds before deleting `active_sessions` rows for empty tables, preventing momentary clears from cascading into permanent deletion.
+- **MasterSync:** `forceSyncFromSupabase` preserves local sessions with items when the Supabase row is missing (unflushed). Newer local sessions always win.
 
 ---
 
@@ -63,3 +132,42 @@ Must include: `menus`, `menuItems`, `menuCategories`, `tables`, `sections`, `qui
 - **Two separate session flush triggers** — `scheduleFlush()` debounces at 600ms. This is intentional to avoid hammering Supabase on rapid item additions.
 - **`supabase.from(...).update(...).eq('id', item.id)` without `location_id` filter in `ItemImageUpload`** — This is intentional. Filtering by primary key `id` is sufficient and avoids the `getLocationId()` async lookup. The RLS policy still enforces location scoping.
 - **`gridWithSpacers` merges spacers and items by `sortOrder`** — spacers have fractional/arbitrary sortOrder values to slot between items. When items are reordered, ALL sortOrders are reassigned as sequential integers via `reorderGrid()`.
+- **Kiosk stock decrement fires-and-forgets** — `decrementStockRPC(...).catch(e => console.warn(...))`. This is intentional — a stock decrement failure should not block order submission. The stock will eventually be corrected by the next stock sync or manual count.
+- **`resolveOptItemId` name-matching in KioskProductModal** — Falls back to matching modifier option names against sold-alone sub-items. This is intentional — many modifier options don't have explicit `itemId` links but represent the same physical product.
+
+---
+
+## Workforce / Payroll (live financials — `wf_*` tables)
+
+- **Never compute pay money on the client for the record.** Tronc, period pay and holiday accrual are computed server-side by the `workforce-compute` edge function; clock punches by `workforce-clock`. The client may *preview* but must not write money rows directly. (RLS blocks it anyway for anonymous devices.)
+- **`wf_*` money is `numeric` with scale, never float**, and carries a currency. The effective pay rate + its source must be **snapshotted** onto `wf_shifts`/`wf_timesheets` at write time so historical pay is reproducible.
+- **Staff are soft-deleted** (`wf_staff.status='leaver'`), never hard-deleted. All FKs onto `wf_staff` are `ON DELETE RESTRICT`. Deleting a staff member that has history must fail, not cascade.
+- **`wf_audit` and `wf_holiday_accrual` are append-only** — UPDATE/DELETE/TRUNCATE are revoked from `authenticated`/`anon`. Corrections are new rows, never edits. `wf_audit` rows form a `prev_hash`/`row_hash` chain — only write them via the edge function's `writeAudit`.
+- **A finalised tronc run is immutable** (status ≠ `draft`) — a trigger blocks deletion; supersede via an audited correction, never edit.
+- **`wf_*` RLS is real, not "allow all."** Every table is location-scoped via `user_accessible_locations()` except `wf_staff` (org-scoped PII via `user_accessible_orgs()`). Those helpers are created by `20260608_workforce.sql` — don't drop them. Anonymous (kiosk/clock/online) sessions MUST never read payroll/PII.
+- **`(location_id, org_id)` must be a real pair from `locations`** — composite FKs enforce it. Resolve `org_id` from the location (or trust `orgCtx.orgId`) so writes don't violate the fence.
+- **Clock PINs are validated server-side only** — `workforce-clock` matches the PIN against `staff_members`; never send the staff PIN list to a clock client.
+
+---
+
+## Reporting / Tax / Reviews
+
+- **Net sales (`closed_checks.subtotal`, ex-VAT) is the P&L revenue basis. VAT is NEVER revenue or profit.** The Daily Trading (P&L) report and Owner app must always show VAT as a separate line ("collected for HMRC"), not fold it into sales or profit.
+- **Daily Trading gross = net + VAT**, computed from `subtotal` + `tax_amount`. Do **not** use `closed_checks.total` as "gross" — it's unreliable in real data (can be less than `subtotal`; may include service/tip). VAT prefers `tax_amount`; fallback `max(0, total − subtotal − service − tip)` only for legacy checks with null `tax_amount`.
+- **COGS % and daily overhead are operator estimates** (in `wf_venue_settings.settings`), not real costs — there is no per-item `cost_price` yet. Don't present estimated COGS as actual cost. When `cost_price` lands, derive real COGS but keep the flat-% as fallback.
+- **Tronc/tips are not sales** — never add `tip` (or `service`, unless modelling service charge explicitly) into the sales/net/gross figures.
+- **Review Manager must never re-introduce review-gating** — happy and unhappy guests get the same public review path (UK DMCC Act 2024 / US FTC Oct-2024). The private feedback option is additive only.
+- **One platform Google OAuth client for reviews, never per-customer.** The Google client secret lives only in Supabase Edge Function env (`GOOGLE_OAUTH_CLIENT_SECRET`) — never in the repo, bundle, or client. Venues connect by signing in; the platform never holds venue Google passwords.
+- **Edge functions enforce their own tenant fence.** `trading-report` / `owner-snapshot` / `review-*` run `verify_jwt=false` and must validate the caller (`user_locations` / super_admin / service-role) before returning a location's data — RLS is not doing it for them.
+
+## Menu board / screen pairing (`menu_board_screens`)
+
+- **A menu-board device never writes its own `location_id`/`board_id`.** Those are set only by the SECURITY DEFINER RPCs (`claim_menu_board_screen` / `set_menu_board_screen`) after validating the caller's location access, and `location_id` is always taken from the chosen board's row (never device-supplied, never a default). The table has **no UPDATE policy** — do not add one; route all mutations through the RPCs. (Same "resolve real locationId" rule as everywhere else.)
+- **A device sees only its own screen row** (`device_uid = auth.uid()`); Back Office sees only its venue's screens. Do not widen the SELECT policy to expose unpaired rows broadly — that would let pairing codes be enumerated across tenants. Claiming is by code (a capability the operator reads off the physical screen).
+- **Pairing codes stay high-entropy + TTL'd.** Codes are ~39-bit (8-char unambiguous alphabet) and `claim` rejects screens not seen in 30 min. Don't drop back to short/low-entropy codes or remove the TTL without an alternative throttle.
+- **Don't break the `?board=<id>` direct-link path** when changing the pairing flow — it's the manual fallback and is used by the Back Office preview/Copy-screen-link.
+
+## PAX terminal payments (Ryft)
+- **`session.seatedAt` is write-once per occupation.** It is stamped only at session creation and carried (never re-stamped) through transfers. The occupation-aware paid-table guard (migration 20260801) uses `check_draft->>'seatedAt' = session->>'seatedAt'` to prove an approved terminal payment belongs to the CURRENT party — anything that rewrites `seatedAt` mid-occupation silently disables a money guard (or re-opens a double-charge / false-block). Do not add code that re-stamps it on an open session.
+- **A terminal assignment is a fence, not a preference.** `terminal_devices.bound_pos_device_id` set → only that till may dispatch to it (client resolver + server 409 `TERMINAL_ASSIGNED_ELSEWHERE`). Unassigned → any till at the venue. Don't re-add "closest/most-recent terminal" fallbacks that ignore foreign bindings.
+- **`terminal_devices.ryft_terminal_id` is stamped by EXPLICIT id only** (`ops_terminal_device_id` through ryft-terminals register/adopt, carried forward on re-pair by `claim_terminal_device`). Never reintroduce serial-string matching — the app's ops serial (`AID-…`) and the hardware serial live in different namespaces and can never match.

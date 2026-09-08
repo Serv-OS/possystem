@@ -1,0 +1,97 @@
+// supabase/functions/hubrise-order-status/index.ts
+//
+// Push a ServOS order status change back to HubRise (and thus the originating
+// channel) via PATCH /locations/:id/orders/:id. The access token stays server-side,
+// so the OrdersHub client calls this on each advance / accept / reject.
+//
+// POST { ops_location_id, ref, action, delay_minutes?, reason? }
+//   action: accept | prep | ready | collected | reject | cancel
+//   accept -> HubRise 'accepted'. NO confirmed_time unless delay_minutes is given
+//   (per HubRise: only send a confirmed_time when the restaurant is DELAYING; it is
+//   then formatted in the store's local offset, not UTC).
+// Monotonic: a status whose rank is below what we last pushed is ignored (unless terminal),
+// so a stale/duplicate advance can't regress the channel's view.
+// Auth: signed-in user with location access, or service role.
+
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { queueToHrStatus, hrStatusRank } from '../_shared/hubrise-map.ts';
+import { patchOrderStatus, toStoreLocalIso } from '../_shared/hubrise-ingest.ts';
+
+const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
+const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
+const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+const sb = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } });
+
+const TERMINAL = new Set(['rejected', 'cancelled', 'delivery_failed']);
+
+async function requireAccess(req: Request, loc: string): Promise<Response | null> {
+  const token = (req.headers.get('Authorization') || '').replace('Bearer ', '').trim();
+  if (!token) return json({ error: 'Unauthorized' }, 401);
+  if (token === SERVICE_ROLE) return null;
+  const { data: { user } } = await sb.auth.getUser(token);
+  if (!user) return json({ error: 'Invalid token' }, 401);
+  // Back-office user with explicit access to this location (or super admin).
+  const [{ data: ul }, { data: prof }] = await Promise.all([
+    sb.from('user_locations').select('location_id').eq('user_id', user.id).eq('location_id', loc).maybeSingle(),
+    sb.from('user_profiles').select('role').eq('id', user.id).maybeSingle(),
+  ]);
+  if (ul || prof?.role === 'super_admin') return null;
+  // OrdersHub runs on a PAIRED DEVICE (anonymous Supabase session) that has no
+  // user_locations row — but it still needs to push status as staff accept/advance
+  // orders. Allow an anonymous session: the HubRise token stays server-side, and the
+  // handler re-fences to the order's own location (link.location_id === loc). This
+  // mirrors how the kiosk/online edge fns trust anonymous device sessions.
+  if (user.is_anonymous) return null;
+  return json({ error: 'No access to this location' }, 403);
+}
+
+Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
+
+  let body: any;
+  try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
+  const loc = String(body?.ops_location_id || body?.location_id || '');
+  const ref = String(body?.ref || '');
+  const action = String(body?.action || '');
+  if (!loc || !ref || !action) return json({ error: 'ops_location_id, ref and action required' }, 400);
+
+  const denied = await requireAccess(req, loc);
+  if (denied) return denied;
+
+  const { data: link } = await sb.from('hubrise_order_links').select('*').eq('ref', ref).maybeSingle();
+  if (!link) return json({ ok: true, skipped: 'not a HubRise order' });
+  // Fence: only act on an order that genuinely belongs to the claimed location.
+  if (link.location_id !== loc) return json({ error: 'order does not belong to this location' }, 403);
+
+  const hrStatus = queueToHrStatus(action, link.service_type);
+  if (!hrStatus) return json({ error: `cannot map action: ${action}` }, 400);
+
+  // Monotonic guard — don't push below what we've already pushed (terminal always allowed).
+  if (link.pushed_status && !TERMINAL.has(hrStatus) && hrStatusRank(hrStatus) < hrStatusRank(link.pushed_status)) {
+    return json({ ok: true, skipped: `not regressing ${link.pushed_status} -> ${hrStatus}` });
+  }
+
+  // Per HubRise's sign-off review (22 Jul 2026): a plain accept sends NO confirmed_time —
+  // accepting is implicit confirmation of the requested/ASAP time. confirmed_time is sent
+  // ONLY when the restaurant is explicitly DELAYING (delay_minutes), and then in the
+  // STORE'S LOCAL time (offset borrowed from HubRise's own timestamps on the order), not
+  // UTC, for readability on their side. prep_minutes no longer implies a confirmed_time.
+  let confirmedTime: string | null = null;
+  if (hrStatus === 'accepted' && Number.isFinite(body?.delay_minutes)) {
+    const delay = Math.max(0, Math.round(body.delay_minutes));
+    const { data: q } = await sb.from('order_queue')
+      .select('created_at, customer').eq('ref', ref).maybeSingle();
+    const refIso = q?.customer?.expectedTime || q?.created_at || null;
+    confirmedTime = toStoreLocalIso(new Date(Date.now() + delay * 60_000), refIso);
+    console.log(`[hubrise-order-status] ${ref} accepted with DELAY — confirmed_time ${confirmedTime} (now +${delay}m, store-local)`);
+  }
+
+  try {
+    await patchOrderStatus(sb, ref, hrStatus, confirmedTime, body?.reason || null);
+    return json({ ok: true, hr_status: hrStatus, confirmed_time: confirmedTime });
+  } catch (e) {
+    return json({ error: e instanceof Error ? e.message : String(e) }, 500);
+  }
+});

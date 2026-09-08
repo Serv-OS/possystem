@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { useStore } from '../store';
 import { ALLERGENS, PIZZA_TOPPINGS, PIZZA_BASES, PIZZA_CRUSTS, PIZZA_SIZES } from '../data/seed';
+import { money, currencySymbol } from '../lib/currency';
+import { orderOptionFlow, flowOrderedMods } from '../lib/optionFlow';
 
 // ── Main product modal dispatcher ─────────────────────────────────────────────
 export default function ProductModal({ item, activeAllergens = [], onConfirm, onCancel }) {
@@ -18,68 +20,6 @@ export default function ProductModal({ item, activeAllergens = [], onConfirm, on
 }
 
 // ── Shared shell ──────────────────────────────────────────────────────────────
-function ModalShell({ item, price, children, onAdd, canAdd, onCancel, addLabel = 'Add to order' }) {
-  const flagged = (item.allergens || []).filter(a => activeAllergens.includes(a));
-
-  return (
-    <div className="modal-back" onClick={e => e.target === e.currentTarget && onCancel()}>
-      <div style={{
-        background:'var(--bg2)', border:'1px solid var(--bdr2)', borderRadius:24,
-        width:'100%', maxWidth:500, maxHeight:'90vh', overflow:'auto',
-        boxShadow:'var(--sh3)', display:'flex', flexDirection:'column',
-      }}>
-        {/* Header */}
-        <div style={{ padding:'20px 24px 16px', borderBottom:'1px solid var(--bdr)', flexShrink:0 }}>
-          <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:12 }}>
-            <div style={{ flex:1 }}>
-              <div style={{ fontSize:19, fontWeight:700, lineHeight:1.2, marginBottom:4 }}>{item.name}</div>
-              {item.description && <div style={{ fontSize:13, color:'var(--t2)', lineHeight:1.5 }}>{item.description}</div>}
-            </div>
-            <button onClick={onCancel} style={{ fontSize:20, color:'var(--t3)', background:'none', border:'none', cursor:'pointer', lineHeight:1, padding:0, flexShrink:0 }}>×</button>
-          </div>
-
-          {/* Allergen flags */}
-          {item.allergens?.length > 0 && (
-            <div style={{ display:'flex', flexWrap:'wrap', gap:4, marginTop:10 }}>
-              {item.allergens.map(a => {
-                const al = ALLERGENS.find(x => x.id === a);
-                const isFlagged = activeAllergens.includes(a);
-                return (
-                  <span key={a} style={{
-                    fontSize:11, padding:'2px 7px', borderRadius:6, fontWeight:500,
-                    background: isFlagged ? 'var(--red-d)' : 'var(--bg3)',
-                    border: `1px solid ${isFlagged ? 'var(--red-b)' : 'var(--bdr)'}`,
-                    color: isFlagged ? 'var(--red)' : 'var(--t3)',
-                  }}>{al?.icon} {al?.label}</span>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        {/* Content */}
-        <div style={{ flex:1, overflowY:'auto', padding:'16px 24px' }}>{children}</div>
-
-        {/* Footer */}
-        <div style={{ padding:'16px 24px', borderTop:'1px solid var(--bdr)', flexShrink:0 }}>
-          <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-            <button className="btn btn-ghost" onClick={onCancel} style={{ minWidth:80 }}>Cancel</button>
-            <button
-              className="btn btn-acc"
-              style={{ flex:1, fontSize:15, height:48, borderRadius:12, opacity: canAdd ? 1 : 0.4 }}
-              disabled={!canAdd}
-              onClick={canAdd ? onAdd : undefined}
-            >
-              {addLabel} · <strong>£{price.toFixed(2)}</strong>
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// Need to pass activeAllergens through to ModalShell
 function ModalShellWrapper({ item, price, children, onAdd, canAdd, onCancel, addLabel, cancelLabel, activeAllergens }) {
   const flagged = (item.allergens || []).filter(a => activeAllergens.includes(a));
 
@@ -130,7 +70,7 @@ function ModalShellWrapper({ item, price, children, onAdd, canAdd, onCancel, add
               disabled={!canAdd}
               onClick={canAdd ? onAdd : undefined}
             >
-              {addLabel || 'Add to order'} · <strong>£{price.toFixed(2)}</strong>
+              {addLabel || 'Add to order'} · <strong>{money(price)}</strong>
             </button>
           </div>
         </div>
@@ -178,14 +118,21 @@ function VariantsModal({ item, activeAllergens, onConfirm, onCancel }) {
       };
     })
     .filter(Boolean);
-  const instGroupIds = [...new Set([...(item.assignedInstructionGroups||[]), ...(childItem?.assignedInstructionGroups||[])])];
-  const instGroups = instGroupIds.map(gid=>instructionGroupDefs?.find(g=>g.id===gid)).filter(Boolean);
+  // Shape-tolerant: accept legacy string[] and new [{groupId,min}][]; preserve per-assignment min
+  const _normInst = arr => (arr||[]).map(e => typeof e === 'string' ? { groupId: e } : e);
+  const _mergedInst = [..._normInst(item.assignedInstructionGroups), ..._normInst(childItem?.assignedInstructionGroups)];
+  const _seenInst = new Set();
+  const _uniqueInst = _mergedInst.filter(a => _seenInst.has(a.groupId) ? false : _seenInst.add(a.groupId));
+  const instGroups = _uniqueInst.map(a => {
+    const def = instructionGroupDefs?.find(g => g.id === a.groupId);
+    return def ? { ...def, min: a.min ?? def.min ?? 0 } : null;
+  }).filter(Boolean);
 
   const hasModifiers = allGroups.length > 0 || instGroups.length > 0;
   const allRequired  = allGroups.filter(g=>(g.min||0)>0).every(g => {
     const cur = selections[g.id];
     return g.selectionType==='single' ? !!cur : (Array.isArray(cur)?cur.length:0) >= (g.min||1);
-  });
+  }) && instGroups.filter(g=>(g.min||0)>0).every(g => !!instSel[g.id]);
 
   const extraCost = Object.values(selections).flat().filter(Boolean).reduce((s,m)=>s+(m?.price||0),0);
   const basePrice = selected ? selected.price : 0;
@@ -204,13 +151,24 @@ function VariantsModal({ item, activeAllergens, onConfirm, onCancel }) {
 
   const handleAdd = () => {
     const target = childItem || item;
-    const mods = Object.entries(selections).flatMap(([gid,val])=>{
-      if(!val) return [];
-      const group = allGroups.find(g=>g.id===gid);
-      const arr   = Array.isArray(val)?val:[val];
-      return arr.filter(Boolean).map(m=>({groupLabel:group?.label, label:m.label||m.name||'', price:m.price||0}));
+    // v5.5.964: commit mods in FLOW order so tickets/receipts follow the BO flow
+    const mods = flowOrderedMods({
+      order: item?.optionGroupOrder || item?.option_group_order || null,
+      modGroups: allGroups, instGroups,
+      modKeys: Object.keys(selections), instKeys: instGroups.map(g=>g.id),
+      buildModGroup: (gid) => {
+        const val = selections[gid];
+        if(!val) return [];
+        const group = allGroups.find(g=>g.id===gid);
+        const arr   = Array.isArray(val)?val:[val];
+        return arr.filter(Boolean).map(m=>({groupLabel:group?.label, label:m.label||m.name||'', price:m.price||0}));
+      },
+      buildInst: (gid) => {
+        if(!instSel[gid]) return null;
+        const g = instGroups.find(ig=>ig.id===gid);
+        return {groupLabel:g?.name, label:instSel[gid], price:0, _instruction:true};
+      },
     });
-    instGroups.forEach(g=>{ if(instSel[g.id]) mods.push({groupLabel:g.name, label:instSel[g.id], price:0, _instruction:true}); });
 
     // Build display name: "Lager — Pint" or "Ribeye — Large — Chips, Peppercorn"
     const modParts = mods.filter(m=>!m._instruction).map(m=>m.label);
@@ -269,7 +227,7 @@ function VariantsModal({ item, activeAllergens, onConfirm, onCancel }) {
                   </div>
                   <span style={{ fontSize:15, fontWeight:isSel?700:500, color:isSel?'var(--acc)':'var(--t1)' }}>{v.label}</span>
                 </div>
-                <span style={{ fontSize:16, fontWeight:800, color:isSel?'var(--acc)':'var(--t2)', fontFamily:'var(--font-mono)' }}>£{v.price.toFixed(2)}</span>
+                <span style={{ fontSize:16, fontWeight:800, color:isSel?'var(--acc)':'var(--t2)', fontFamily:'var(--font-mono)' }}>{money(v.price)}</span>
               </button>
             );
           })}
@@ -306,7 +264,34 @@ function VariantsModal({ item, activeAllergens, onConfirm, onCancel }) {
           </div>
         </div>
 
-        {allGroups.map(group=>{
+        {/* v5.5.948 — ONE ordered flow (lib/optionFlow.js): the Back Office Flow tab's
+            drag order interleaves instruction + modifier groups; with no saved order,
+            instructions come first (the v5.5.915 rule). */}
+        {orderOptionFlow(item?.optionGroupOrder || item?.option_group_order, allGroups, instGroups).map(entry => {
+          if (entry.kind === 'inst') {
+            const g = entry.g;
+            return (
+              <div key={g.id} style={{ marginBottom:16 }}>
+                <div style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:8 }}>{g.name}</div>
+                <div style={{ display:'flex', flexDirection:'column', gap:5 }}>
+                  {(g.options||[]).map(opt=>{
+                    const isSel=instSel[g.id]===opt;
+                    return (
+                      <button key={opt} onClick={()=>toggleInst(g.id,opt)}
+                        style={{ display:'flex', alignItems:'center', gap:9, padding:'9px 12px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', border:`1.5px solid ${isSel?'var(--grn)':'var(--bdr)'}`, background:isSel?'var(--grn-d)':'var(--bg3)', justifyContent:'space-between' }}>
+                        <div style={{ display:'flex', alignItems:'center', gap:9 }}>
+                          <div style={{ width:16,height:16,borderRadius:'50%',border:`2px solid ${isSel?'var(--grn)':'var(--bdr2)'}`,background:isSel?'var(--grn)':'transparent',flexShrink:0 }}/>
+                          <span style={{ fontSize:13, color:isSel?'var(--grn)':'var(--t1)', fontWeight:isSel?700:400 }}>{opt}</span>
+                        </div>
+                        {isSel&&<span style={{ fontSize:11, color:'var(--grn)' }}>✓</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          }
+          const group = entry.g;
           const required   = (group.min||0)>0;
           const selType    = group.selectionType||'single';
           const cur        = selections[group.id];
@@ -328,13 +313,13 @@ function VariantsModal({ item, activeAllergens, onConfirm, onCancel }) {
                     return (
                       <button key={opt.id} onClick={()=>toggleSingle(group.id,opt)}
                         style={{ display:'flex', alignItems:'center', gap:9, padding:'9px 12px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', border:`1.5px solid ${isSel?'var(--acc)':'var(--bdr)'}`, background:isSel?'var(--acc-d)':'var(--bg3)', justifyContent:'space-between' }}>
-                        <div style={{ display:'flex', alignItems:'center', gap:9 }}>
+                        <div style={{ display:'flex', alignItems:'center', gap:9, flex:1, minWidth:0 }}>
                           <div style={{ width:16,height:16,borderRadius:'50%',border:`2px solid ${isSel?'var(--acc)':'var(--bdr2)'}`,background:isSel?'var(--acc)':'transparent',display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>
                             {isSel&&<div style={{ width:5,height:5,borderRadius:'50%',background:'#0b0c10' }}/>}
                           </div>
-                          <span style={{ fontSize:13, fontWeight:isSel?700:400, color:isSel?'var(--acc)':'var(--t1)' }}>{opt.label||opt.name}</span>
+                          <span style={{ fontSize:13, fontWeight:isSel?700:400, minWidth:0, overflowWrap:'anywhere', color:isSel?'var(--acc)':'var(--t1)' }}>{opt.label||opt.name}</span>
                         </div>
-                        <span style={{ fontSize:12, color:isSel?'var(--acc)':'var(--t3)' }}>{opt.price>0?`+£${opt.price.toFixed(2)}`:isSel?'✓':''}</span>
+                        <span style={{ fontSize:12, flexShrink:0, color:isSel?'var(--acc)':'var(--t3)' }}>{opt.price>0?`+${money(opt.price)}`:isSel?'✓':''}</span>
                       </button>
                     );
                   } else {
@@ -343,8 +328,8 @@ function VariantsModal({ item, activeAllergens, onConfirm, onCancel }) {
                     const atMax=selCount>=maxSel;
                     return (
                       <div key={opt.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'9px 12px', borderRadius:9, border:`1.5px solid ${qtyOpt>0?'var(--acc)':'var(--bdr)'}`, background:qtyOpt>0?'var(--acc-d)':'var(--bg3)' }}>
-                        <span style={{ flex:1, fontSize:13, fontWeight:qtyOpt>0?700:400, color:qtyOpt>0?'var(--acc)':'var(--t1)' }}>{opt.label||opt.name}</span>
-                        <span style={{ fontSize:12, color:qtyOpt>0?'var(--acc)':'var(--t3)', marginRight:6 }}>{opt.price>0?`+£${opt.price.toFixed(2)}`:'free'}</span>
+                        <span style={{ flex:1, minWidth:0, overflowWrap:'anywhere', fontSize:13, fontWeight:qtyOpt>0?700:400, color:qtyOpt>0?'var(--acc)':'var(--t1)' }}>{opt.label||opt.name}</span>
+                        <span style={{ fontSize:12, flexShrink:0, color:qtyOpt>0?'var(--acc)':'var(--t3)', marginRight:6 }}>{opt.price>0?`+${money(opt.price)}`:'free'}</span>
                         {qtyOpt>0&&<button onClick={()=>removeMulti(group.id,instances[instances.length-1]._uid)} style={{ width:26,height:26,borderRadius:6,border:'1.5px solid var(--acc-b)',background:'var(--bg1)',color:'var(--acc)',cursor:'pointer',fontSize:14,display:'flex',alignItems:'center',justifyContent:'center' }}>−</button>}
                         {qtyOpt>0&&<span style={{ fontSize:12, fontWeight:800, color:'var(--acc)', minWidth:14, textAlign:'center' }}>{qtyOpt}</span>}
                         <button onClick={()=>!atMax&&addMulti(group.id,opt)} disabled={atMax} style={{ width:26,height:26,borderRadius:6,border:`1.5px solid ${atMax?'var(--bdr)':'var(--acc)'}`,background:atMax?'var(--bg2)':'var(--acc)',color:atMax?'var(--t4)':'#0b0c10',cursor:atMax?'not-allowed':'pointer',fontSize:14,display:'flex',alignItems:'center',justifyContent:'center',opacity:atMax?.4:1 }}>+</button>
@@ -357,26 +342,6 @@ function VariantsModal({ item, activeAllergens, onConfirm, onCancel }) {
           );
         })}
 
-        {instGroups.map(g=>(
-          <div key={g.id} style={{ marginBottom:16 }}>
-            <div style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:8 }}>{g.name}</div>
-            <div style={{ display:'flex', flexDirection:'column', gap:5 }}>
-              {(g.options||[]).map(opt=>{
-                const isSel=instSel[g.id]===opt;
-                return (
-                  <button key={opt} onClick={()=>toggleInst(g.id,opt)}
-                    style={{ display:'flex', alignItems:'center', gap:9, padding:'9px 12px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', border:`1.5px solid ${isSel?'var(--grn)':'var(--bdr)'}`, background:isSel?'var(--grn-d)':'var(--bg3)', justifyContent:'space-between' }}>
-                    <div style={{ display:'flex', alignItems:'center', gap:9 }}>
-                      <div style={{ width:16,height:16,borderRadius:'50%',border:`2px solid ${isSel?'var(--grn)':'var(--bdr2)'}`,background:isSel?'var(--grn)':'transparent',flexShrink:0 }}/>
-                      <span style={{ fontSize:13, color:isSel?'var(--grn)':'var(--t1)', fontWeight:isSel?700:400 }}>{opt}</span>
-                    </div>
-                    {isSel&&<span style={{ fontSize:11, color:'var(--grn)' }}>✓</span>}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        ))}
       </>)}
     </ModalShellWrapper>
   );
@@ -430,9 +395,13 @@ function ModifiersModal({ item, activeAllergens, onConfirm, onCancel }) {
     return all;
   };
 
-  // Instruction groups (no price, separate state)
+  // Instruction groups (no price, separate state) — shape-tolerant + preserve per-assignment min
   const instrGroups = (item.assignedInstructionGroups || [])
-    .map(gid => instructionGroupDefs?.find(g => g.id === gid))
+    .map(e => typeof e === 'string' ? { groupId: e } : e)
+    .map(a => {
+      const def = instructionGroupDefs?.find(g => g.id === a.groupId);
+      return def ? { ...def, min: a.min ?? def.min ?? 0 } : null;
+    })
     .filter(Boolean);
 
   const allModGroups = buildGroups();
@@ -471,7 +440,7 @@ function ModifiersModal({ item, activeAllergens, onConfirm, onCancel }) {
       const selType = getSelType(g);
       if (selType === 'single') return !!selections[g.id];
       return (selections[g.id]?.length || 0) >= (g.min || 1);
-    });
+    }) && instrGroups.filter(g => isRequired(g)).every(g => !!instSelections[g.id]);
 
   const extraCost = Object.values(selections).flat().filter(Boolean).reduce((s, m) => s + (m?.price || 0), 0);
   const basePrice = item.pricing?.base ?? item.price ?? 0;
@@ -492,18 +461,24 @@ function ModifiersModal({ item, activeAllergens, onConfirm, onCancel }) {
   };
 
   const handleAdd = () => {
-    const mods = Object.entries(selections).flatMap(([gid, val]) => {
-      if (!val) return [];
-      const group = allModGroups.find(g => g.id === gid);
-      const arr = Array.isArray(val) ? val : [val];
-      return arr.filter(Boolean).map(m => ({ groupLabel: group?.label||group?.name, label: m.label||m.name||'', price: m.price || 0 }));
-    });
-    // Add instructions as zero-price mods for kitchen printing
-    Object.entries(instSelections).forEach(([gid, val]) => {
-      if (val) {
+    // v5.5.964: commit mods in FLOW order so tickets/receipts follow the BO flow
+    const mods = flowOrderedMods({
+      order: item?.optionGroupOrder || item?.option_group_order || null,
+      modGroups: allModGroups, instGroups: instrGroups,
+      modKeys: Object.keys(selections), instKeys: Object.keys(instSelections),
+      buildModGroup: (gid) => {
+        const val = selections[gid];
+        if (!val) return [];
+        const group = allModGroups.find(g => g.id === gid);
+        const arr = Array.isArray(val) ? val : [val];
+        return arr.filter(Boolean).map(m => ({ groupLabel: group?.label||group?.name, label: m.label||m.name||'', price: m.price || 0 }));
+      },
+      buildInst: (gid) => {
+        const val = instSelections[gid];
+        if (!val) return null;
         const g = instrGroups.find(ig => ig.id === gid);
-        mods.push({ groupLabel: g?.name, label: val, price: 0, _instruction: true });
-      }
+        return { groupLabel: g?.name, label: val, price: 0, _instruction: true };
+      },
     });
     onConfirm(item, mods, null, {
       notes: notes.trim(), qty, linePrice: price,
@@ -540,14 +515,14 @@ function ModifiersModal({ item, activeAllergens, onConfirm, onCancel }) {
                   return (
                     <button key={opt.id} onClick={() => toggleSingle(group.id, opt)}
                       style={{ padding:'11px 14px', borderRadius:10, cursor:'pointer', border:`1.5px solid ${isSelected?'var(--acc)':'var(--bdr)'}`, background:isSelected?'var(--acc-d)':'var(--bg3)', display:'flex', alignItems:'center', justifyContent:'space-between', transition:'all .12s', fontFamily:'inherit' }}>
-                      <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:8, flex:1, minWidth:0 }}>
                         <div style={{ width:18, height:18, borderRadius:'50%', border:`2px solid ${isSelected?'var(--acc)':'var(--bdr2)'}`, background:isSelected?'var(--acc)':'transparent', display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0 }}>
                           {isSelected && <div style={{ width:6, height:6, borderRadius:'50%', background:'#0e0f14' }}/>}
                         </div>
-                        <span style={{ fontSize:14, fontWeight:500, color:isSelected?'var(--acc)':'var(--t1)' }}>{opt.label||opt.name}</span>
+                        <span style={{ fontSize:14, fontWeight:500, minWidth:0, overflowWrap:'anywhere', color:isSelected?'var(--acc)':'var(--t1)' }}>{opt.label||opt.name}</span>
                       </div>
-                      <span style={{ fontSize:13, fontWeight:600, color:isSelected?'var(--acc)':'var(--t3)' }}>
-                        {opt.price > 0 ? `+£${opt.price.toFixed(2)}` : isSelected ? '✓' : ''}
+                      <span style={{ fontSize:13, fontWeight:600, flexShrink:0, color:isSelected?'var(--acc)':'var(--t3)' }}>
+                        {opt.price > 0 ? `+${money(opt.price)}` : isSelected ? '✓' : ''}
                       </span>
                     </button>
                   );
@@ -558,9 +533,9 @@ function ModifiersModal({ item, activeAllergens, onConfirm, onCancel }) {
                   const atMax = selectedCount >= maxSel;
                   return (
                     <div key={opt.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'10px 14px', borderRadius:10, border:`1.5px solid ${qty>0?'var(--acc)':'var(--bdr)'}`, background:qty>0?'var(--acc-d)':'var(--bg3)', transition:'all .12s' }}>
-                      <span style={{ fontSize:14, fontWeight:500, color:qty>0?'var(--acc)':'var(--t1)', flex:1 }}>{opt.label||opt.name}</span>
-                      <span style={{ fontSize:13, color:qty>0?'var(--acc)':'var(--t3)', marginRight:8 }}>
-                        {opt.price > 0 ? `+£${opt.price.toFixed(2)}` : 'free'}
+                      <span style={{ fontSize:14, fontWeight:500, color:qty>0?'var(--acc)':'var(--t1)', flex:1, minWidth:0, overflowWrap:'anywhere' }}>{opt.label||opt.name}</span>
+                      <span style={{ fontSize:13, flexShrink:0, color:qty>0?'var(--acc)':'var(--t3)', marginRight:8 }}>
+                        {opt.price > 0 ? `+${money(opt.price)}` : 'free'}
                       </span>
                       <div style={{ display:'flex', alignItems:'center', gap:6 }}>
                         {qty > 0 && (
@@ -719,7 +694,7 @@ function PizzaModal({ item, activeAllergens, onConfirm, onCancel }) {
                     background:size.id===s.id?'var(--acc-d)':'var(--bg3)', transition:'all .12s', fontFamily:'inherit',
                   }}>
                     <div style={{ fontSize:12, fontWeight:500, color:size.id===s.id?'var(--acc)':'var(--t1)' }}>{s.name}</div>
-                    <div style={{ fontSize:11, color:'var(--t3)' }}>£{s.basePrice}</div>
+                    <div style={{ fontSize:11, color:'var(--t3)' }}>{currencySymbol()}{s.basePrice}</div>
                   </button>
                 ))}
               </div>
@@ -750,7 +725,7 @@ function PizzaModal({ item, activeAllergens, onConfirm, onCancel }) {
                     border:`1.5px solid ${crust.id===c.id?'var(--acc)':'var(--bdr)'}`,
                     background:crust.id===c.id?'var(--acc-d)':'var(--bg3)',
                     color:crust.id===c.id?'var(--acc)':'var(--t2)', fontFamily:'inherit',
-                  }}>{c.name}{c.extra?` +£${c.extra}`:''}</button>
+                  }}>{c.name}{c.extra?` +${currencySymbol()}${c.extra}`:''}</button>
                 ))}
               </div>
             </div>
@@ -811,7 +786,7 @@ function PizzaModal({ item, activeAllergens, onConfirm, onCancel }) {
                   }}>
                     <div style={{ width:9, height:9, borderRadius:'50%', background:top.color, margin:'0 auto 4px' }}/>
                     <div style={{ fontSize:10, fontWeight:500, color:active?col:'var(--t2)', lineHeight:1.2 }}>{top.name}</div>
-                    {top.price>0&&<div style={{ fontSize:9, color:'var(--t3)' }}>+£{top.price}</div>}
+                    {top.price>0&&<div style={{ fontSize:9, color:'var(--t3)' }}>+{currencySymbol()}{top.price}</div>}
                     {active&&st!=='both'&&st!=='whole'&&<div style={{ fontSize:9, fontWeight:700, color:col, textTransform:'uppercase' }}>{st}</div>}
                     {st==='both'&&<div style={{ fontSize:9, fontWeight:700, color:col }}>both</div>}
                   </button>
@@ -851,10 +826,10 @@ function PizzaModal({ item, activeAllergens, onConfirm, onCancel }) {
             )}
 
             <div style={{ borderTop:'1px solid var(--bdr)', paddingTop:10, marginTop:'auto' }}>
-              <div style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--t3)', marginBottom:2 }}><span>Base</span><span>£{size.basePrice.toFixed(2)}</span></div>
-              {crust.extra>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--t3)', marginBottom:2 }}><span>Crust</span><span>+£{crust.extra.toFixed(2)}</span></div>}
-              {toppingCost>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--t3)', marginBottom:2 }}><span>Toppings</span><span>+£{toppingCost.toFixed(2)}</span></div>}
-              <div style={{ display:'flex', justifyContent:'space-between', fontSize:16, fontWeight:700, marginTop:6, color:'var(--acc)' }}><span>Total</span><span>£{total.toFixed(2)}</span></div>
+              <div style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--t3)', marginBottom:2 }}><span>Base</span><span>{money(size.basePrice)}</span></div>
+              {crust.extra>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--t3)', marginBottom:2 }}><span>Crust</span><span>+{money(crust.extra)}</span></div>}
+              {toppingCost>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--t3)', marginBottom:2 }}><span>Toppings</span><span>+{money(toppingCost)}</span></div>}
+              <div style={{ display:'flex', justifyContent:'space-between', fontSize:16, fontWeight:700, marginTop:6, color:'var(--acc)' }}><span>Total</span><span>{money(total)}</span></div>
             </div>
           </div>
         </div>
@@ -864,7 +839,7 @@ function PizzaModal({ item, activeAllergens, onConfirm, onCancel }) {
           <div style={{ display:'flex', gap:8 }}>
             <button className="btn btn-ghost" onClick={onCancel} style={{ minWidth:80 }}>Cancel</button>
             <button className="btn btn-acc" onClick={handleAdd} style={{ flex:1, height:46, fontSize:15, borderRadius:12 }}>
-              Add pizza · <strong>£{total.toFixed(2)}</strong>
+              Add pizza · <strong>{money(total)}</strong>
             </button>
           </div>
         </div>

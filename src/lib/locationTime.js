@@ -8,40 +8,105 @@
  * Checks closed between midnight and 6am belong to the PREVIOUS business day.
  */
 
-import { platformSupabase } from './supabase';
+import { platformSupabase, getLocationId } from './supabase';
+import { setActiveCurrency } from './currency';
+import { resolveLocalDateTime } from './openingHours';
 
-// Cached location config — refreshed on boot
-let _locationConfig = null;
+// v5.5.11: per-location cache. The previous module-level cache returned the
+// SAME config for every caller regardless of which location they were at.
+// In a multi-location setup that's wrong — each location has its own
+// timezone, business_day_start, and shifts schedule. We now key the cache
+// by location id so each location gets its own config.
+const _locationConfigCache = new Map();
 
-export async function getLocationConfig() {
-  if (_locationConfig) return _locationConfig;
+export async function getLocationConfig(explicitLocationId = null) {
+  // Resolve location id. The previous version did .from('locations').limit(1)
+  // with no filter — it just pulled whichever location the DB happened to
+  // return first. In multi-location, that's an unpredictable bug source for
+  // shift boundaries (causes shifts to open/close at the wrong location's
+  // business_day_start time).
+  let locationId = explicitLocationId;
+  if (!locationId) {
+    try { locationId = await getLocationId(); } catch (e) { void e; }
+  }
+  if (!locationId || locationId === 'loc-demo') {
+    // No real location — return fallback defaults so callers don't crash.
+    return { timezone: 'Europe/London', businessDayStart: '06:00', shifts: [], collectionLeadMinutes: 30 };
+  }
 
-  // Try Platform DB
+  if (_locationConfigCache.has(locationId)) {
+    return _locationConfigCache.get(locationId);
+  }
+
+  // Cross-DB join — platform.locations.id ≠ ops.locations.id in general.
+  // We must resolve via platform.locations.ops_location_id, NOT id, and we
+  // must NOT fall back to .limit(1) which would return another tenant's
+  // row when no match exists (active wrong-row-targeting bug).
+  // Also include opening_hours in the select so kiosk + online surfaces
+  // and any future hour-aware report can read the location's schedule
+  // through the same cached config.
   if (platformSupabase) {
     try {
-      const { data } = await platformSupabase
-        .from('locations')
-        .select('timezone, business_day_start, shifts')
-        .limit(1)
-        .single();
-      if (data) {
-        _locationConfig = {
-          timezone: data.timezone || 'Europe/London',
-          businessDayStart: data.business_day_start || '06:00',
-          shifts: data.shifts || [],
-        };
-        return _locationConfig;
+      const select = 'id, timezone, business_day_start, shifts, collection_lead_minutes, opening_hours, currency';
+      // First try the right join key.
+      const r1 = await platformSupabase.from('locations').select(select).eq('ops_location_id', locationId).maybeSingle();
+      let row = r1.data;
+      // Legacy rows may have id == ops_location_id (created before the join
+      // column existed). Try matching on id ONLY when ops_location_id missed,
+      // and ALWAYS scoped to one specific value (never .limit(1)).
+      if (!row) {
+        const r2 = await platformSupabase.from('locations').select(select).eq('id', locationId).maybeSingle();
+        row = r2.data;
       }
-    } catch {}
+      if (row) {
+        // v5.5.326: resolve the location's currency at boot so money() formats
+        // in the right symbol/code everywhere. Persisted to localStorage so it
+        // survives reloads and resolves from the first render (no £→$ flash on
+        // a configured device).
+        setActiveCurrency(row.currency || 'GBP');
+        const cfg = {
+          timezone: row.timezone || 'Europe/London',
+          businessDayStart: row.business_day_start || '06:00',
+          shifts: row.shifts || [],
+          opening_hours: row.opening_hours || null,
+          // KITCHEN START: how far ahead of a promised collection the kitchen
+          // begins. Set in Location Settings. Drives sent_at on a pre-order.
+          collectionLeadMinutes: typeof row.collection_lead_minutes === 'number' ? row.collection_lead_minutes : 30,
+          // COLLECTION WAIT: what a customer is told. Filled by the defensive
+          // read below, because these columns are newer than this select and
+          // joining them here would empty the whole row on an unmigrated venue
+          // — which would take the timezone and currency down with them.
+          quoteLeadMinutes: null,
+          busyRule: {},
+          currency: row.currency || 'GBP',
+        };
+        try {
+          const { data: q } = await platformSupabase.from('locations')
+            .select('online_collection_lead_min, online_busy_step_orders, online_busy_step_minutes, online_busy_max_minutes')
+            .eq('id', row.id ?? locationId).maybeSingle();
+          if (q) {
+            if (typeof q.online_collection_lead_min === 'number') cfg.quoteLeadMinutes = q.online_collection_lead_min;
+            cfg.busyRule = {
+              stepOrders: q.online_busy_step_orders,
+              stepMinutes: q.online_busy_step_minutes,
+              maxMinutes: q.online_busy_max_minutes,
+            };
+          }
+        } catch { /* not migrated — staff fall back to the kitchen-start lead */ }
+        _locationConfigCache.set(locationId, cfg);
+        return cfg;
+      }
+    } catch (e) { console.warn('[locationTime] platform DB read failed:', e?.message); }
   }
 
   // Fallback defaults
-  _locationConfig = { timezone: 'Europe/London', businessDayStart: '06:00', shifts: [] };
-  return _locationConfig;
+  const fallback = { timezone: 'Europe/London', businessDayStart: '06:00', shifts: [], collectionLeadMinutes: 30 };
+  _locationConfigCache.set(locationId, fallback);
+  return fallback;
 }
 
 export function clearLocationConfigCache() {
-  _locationConfig = null;
+  _locationConfigCache.clear();
 }
 
 /**
@@ -108,6 +173,76 @@ export function getCurrentShift(config) {
     const end   = eh * 60 + em;
     return currentMinutes >= start && currentMinutes < end;
   }) || null;
+}
+
+// v5.7.31: buildScheduleCtx moved VERBATIM to scheduleCtx.js (pure, no
+// supabase import) so checkTotals.js can load under Node's test runner.
+// Re-exported here so all 25+ existing `from './locationTime'` imports are
+// untouched. Behaviour identical.
+export { buildScheduleCtx } from './scheduleCtx.js';
+
+// ── venue-local bucketing of historical timestamps (v5.7.24) ─────────────────
+// Formatters are cached per timezone — constructing Intl.DateTimeFormat inside
+// a readings loop is expensive (same pattern as rankQuickPicks in quickRank.js).
+
+const _minuteFmtCache = new Map();
+/**
+ * Minutes since midnight of a timestamp on the VENUE's wall clock. For comparing
+ * historical readings against schedule windows (due/missed) — device-local
+ * getHours() puts a reading in the wrong window on a wrong-tz machine.
+ * Unknown tz id falls back to device-local minutes.
+ */
+export function minutesInTz(ts, timezone) {
+  const d = ts instanceof Date ? ts : new Date(ts);
+  if (isNaN(d.getTime())) return null;
+  const tz = timezone || 'Europe/London';
+  try {
+    let fmt = _minuteFmtCache.get(tz);
+    if (!fmt) {
+      fmt = new Intl.DateTimeFormat('en-GB', { timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false });
+      _minuteFmtCache.set(tz, fmt);
+    }
+    const [h, m] = fmt.format(d).split(':').map(Number);
+    return ((h === 24 ? 0 : h) * 60) + m; // some runtimes emit "24" at midnight
+  } catch {
+    return d.getHours() * 60 + d.getMinutes();
+  }
+}
+
+const _ymdFmtCache = new Map();
+/**
+ * The VENUE-local calendar day (YYYY-MM-DD) a timestamp falls on — which
+ * business day a reading belongs to, never the device's date.
+ */
+export function ymdInTz(ts, timezone) {
+  const d = ts instanceof Date ? ts : new Date(ts);
+  if (isNaN(d.getTime())) return null;
+  const tz = timezone || 'Europe/London';
+  try {
+    let fmt = _ymdFmtCache.get(tz);
+    if (!fmt) {
+      fmt = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
+      _ymdFmtCache.set(tz, fmt);
+    }
+    return fmt.format(d);
+  } catch {
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+}
+
+/**
+ * The venue calendar day `ymd` as real instants: [fromIso, toIso) = venue
+ * midnight to next venue midnight, DST-correct via resolveLocalDateTime.
+ * Replaces the device-midnight todayBounds() in the ops due/missed views.
+ */
+export function venueDayBoundsIso(ymd, timezone) {
+  const tz = timezone || 'Europe/London';
+  const [y, m, d] = ymd.split('-').map(Number);
+  const nextYmd = new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
+  return {
+    fromIso: resolveLocalDateTime(ymd, 0, tz).toISOString(),
+    toIso: resolveLocalDateTime(nextYmd, 0, tz).toISOString(),
+  };
 }
 
 /**

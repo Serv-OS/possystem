@@ -4,13 +4,25 @@ import android.app.Activity;
 import android.os.Bundle;
 import android.view.View;
 import android.view.WindowManager;
+import android.content.Context;
+import android.hardware.display.DisplayManager;
+import android.view.Display;
 import android.webkit.*;
 import co.posup.rpos.printer.PrinterBridge;
+import co.posup.rpos.biometric.BiometricBridge;
+import co.posup.rpos.nfc.NfcBridge;
 
 public class MainActivity extends Activity {
     private static final String POS_URL = "https://possystem-liard.vercel.app/?mode=pos";
     private WebView webView;
     private PrinterBridge printerBridge;
+    private BiometricBridge biometricBridge;
+    private NfcBridge nfcBridge;
+    private UpdateChecker updateChecker;
+    private DisplayManager displayManager;
+    private CustomerDisplayPresentation customerPresentation;
+    private DisplayManager.DisplayListener displayListener;
+    private boolean displayDiagShown = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -30,9 +42,21 @@ public class MainActivity extends Activity {
         webView = new WebView(this);
         setContentView(webView);
 
-        // Wire native printer bridge — exposes window.RposPrinter to React app
+        // Wire native bridges — exposes to React app on window.RposPrinter
+        // (Stripe Terminal SDK removed in v5.5.58 — payments are pure REST against the WisePOS E.)
         printerBridge = new PrinterBridge(webView);
         webView.addJavascriptInterface(printerBridge, "RposPrinter");
+
+        // Fingerprint (Sunmi D3 Pro) — exposes window.RposBiometric. verify() works now via the
+        // framework BiometricPrompt; 1:N enroll/identify light up once the Sunmi SDK is wired
+        // (see docs/FINGERPRINT-INTEGRATION.md). Absent on non-Sunmi → web falls back to PIN.
+        biometricBridge = new BiometricBridge(webView, this);
+        webView.addJavascriptInterface(biometricBridge, "RposBiometric");
+
+        // NFC staff cards — exposes window.RposNfc. Reads card/fob UIDs via standard NfcAdapter
+        // reader mode (no vendor SDK). Absent on non-NFC devices → web falls back to PIN.
+        nfcBridge = new NfcBridge(webView, this);
+        webView.addJavascriptInterface(nfcBridge, "RposNfc");
 
         WebSettings s = webView.getSettings();
         s.setJavaScriptEnabled(true);
@@ -81,6 +105,99 @@ public class MainActivity extends Activity {
         });
 
         webView.loadUrl(POS_URL);
+
+        // v1.3: self-update for the sideloaded APK. Check shortly after boot so the
+        // POS UI loads first; UpdateChecker throttles itself and is a no-op when current.
+        updateChecker = new UpdateChecker(this);
+        webView.postDelayed(() -> updateChecker.check(false), 8000);
+
+        // v1.4: mirror the customer-facing display onto the Sunmi rear/second screen.
+        setupCustomerDisplay();
+    }
+
+    // ── Customer-facing second screen (Sunmi rear display) ──────────────────
+    private void setupCustomerDisplay() {
+        displayManager = (DisplayManager) getSystemService(Context.DISPLAY_SERVICE);
+        if (displayManager == null) return;
+        showCustomerPresentation();
+        webView.postDelayed(this::showDisplayDiagnostic, 2500); // v1.6 diagnostic
+        displayListener = new DisplayManager.DisplayListener() {
+            @Override public void onDisplayAdded(int displayId)   { showCustomerPresentation(); }
+            @Override public void onDisplayRemoved(int displayId) { dismissCustomerPresentation(); }
+            @Override public void onDisplayChanged(int displayId) {}
+        };
+        displayManager.registerDisplayListener(displayListener, null);
+    }
+
+    /** Find the customer-facing screen: prefer the PRESENTATION category, else any non-default display. */
+    private Display findSecondaryDisplay() {
+        Display[] pres = displayManager.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION);
+        if (pres != null && pres.length > 0) return pres[0];
+        Display[] all = displayManager.getDisplays();
+        if (all != null) {
+            for (Display d : all) {
+                if (d.getDisplayId() != Display.DEFAULT_DISPLAY) return d;
+            }
+        }
+        return null;
+    }
+
+    private void showCustomerPresentation() {
+        if (displayManager == null) return;
+        if (customerPresentation != null && customerPresentation.isShowing()) return;
+        Display target = findSecondaryDisplay();
+        if (target == null) {
+            if (!displayDiagShown) {
+                displayDiagShown = true;
+                Display[] all = displayManager.getDisplays();
+                toast("Customer display: NO 2nd screen found (" + (all == null ? 0 : all.length) + " display(s) total)");
+            }
+            return;
+        }
+        try {
+            customerPresentation = new CustomerDisplayPresentation(this, target);
+            customerPresentation.show();
+            toast("Customer display: showing on screen #" + target.getDisplayId());
+        } catch (Exception e) {
+            customerPresentation = null;
+            toast("Customer display error: " + e.getMessage());
+        }
+    }
+
+    private void toast(String m) {
+        try { android.widget.Toast.makeText(this, m, android.widget.Toast.LENGTH_LONG).show(); } catch (Exception ignored) {}
+    }
+
+    /** v1.6: unmissable diagnostic — lists every display the device exposes. */
+    private void showDisplayDiagnostic() {
+        try {
+            StringBuilder sb = new StringBuilder();
+            sb.append("Device: ").append(android.os.Build.MODEL).append("\n\n");
+            Display[] all = displayManager.getDisplays();
+            sb.append("Total displays: ").append(all == null ? 0 : all.length).append("\n");
+            if (all != null) {
+                for (Display d : all) {
+                    sb.append("  #").append(d.getDisplayId()).append("  ").append(d.getName())
+                      .append(d.getDisplayId() == Display.DEFAULT_DISPLAY ? "  [MAIN]" : "  [2nd]").append("\n");
+                }
+            }
+            Display[] pres = displayManager.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION);
+            sb.append("\nPresentation-capable: ").append(pres == null ? 0 : pres.length).append("\n");
+            sb.append("Our display showing: ")
+              .append(customerPresentation != null && customerPresentation.isShowing() ? "YES" : "no");
+            new android.app.AlertDialog.Builder(this)
+                .setTitle("Serv OS · display check (v1.6)")
+                .setMessage(sb.toString())
+                .setPositiveButton("OK", null)
+                .show();
+        } catch (Exception ignored) {}
+    }
+
+    private void dismissCustomerPresentation() {
+        if (customerPresentation != null) {
+            try { customerPresentation.destroyWeb(); customerPresentation.dismiss(); } catch (Exception ignored) {}
+            customerPresentation = null;
+        }
     }
 
     @Override
@@ -95,6 +212,10 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         webView.onResume();
+        // Catch updates on long-running devices too (throttled to every few hours).
+        if (updateChecker != null) updateChecker.check(false);
+        // Re-attach the customer display if it was dismissed / the screen reconnected.
+        showCustomerPresentation();
         // Re-apply immersive mode on resume (system UI may have re-appeared)
         getWindow().getDecorView().setSystemUiVisibility(
             View.SYSTEM_UI_FLAG_FULLSCREEN |
@@ -113,6 +234,11 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        if (displayManager != null && displayListener != null) {
+            try { displayManager.unregisterDisplayListener(displayListener); } catch (Exception ignored) {}
+        }
+        dismissCustomerPresentation();
+        if (updateChecker != null) updateChecker.destroy();
         if (printerBridge != null) printerBridge.destroy();
         if (webView != null) webView.destroy();
     }

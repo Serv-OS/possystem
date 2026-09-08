@@ -1,13 +1,25 @@
 import { useState, useEffect } from 'react';
 import { useStore } from '../../store';
 import { supabase, isMock } from '../../lib/supabase';
+import { reportSave } from '../../lib/saveHealth';
+import { nfcAvailable, scanCardOnce, normalizeCardId } from '../../lib/nfc';
 
-const ROLES = ['Manager','Server','Bartender','Cashier','Kitchen'];
-const ROLE_COLORS = { Manager:'#e8a020', Server:'#3b82f6', Bartender:'#22c55e', Cashier:'#a855f7', Kitchen:'#ef4444' };
+const ROLES = ['Manager','Server','Bartender','Cashier','Kitchen','Host'];
+const ROLE_COLORS = { Manager:'#e8a020', Server:'#3b82f6', Bartender:'#22c55e', Cashier:'#a855f7', Kitchen:'#ef4444', Host:'#7C5CFF' };
 const PERM_GROUPS = [
   { group:'Orders',     perms:[{id:'void',label:'Void items'},{id:'discount',label:'Apply discounts'},{id:'priceOverride',label:'Override price'}] },
   { group:'Payments',   perms:[{id:'refund',label:'Process refunds'},{id:'cashup',label:'Cash up drawer'},{id:'openDrawer',label:'Open cash drawer'}] },
   { group:'Management', perms:[{id:'reports',label:'View reports'},{id:'eod',label:'End of day close'},{id:'menu86',label:'86 menu items'},{id:'staff',label:'Manage staff'}] },
+  // Manager phone app (?mode=manager) — these WIDEN which tabs this person sees on top of their role
+  // preset (owner/manager already see everything; tick a box to give a supervisor/server more). Keys
+  // must match PERM_TO_FLAG in src/lib/manager/access.js.
+  { group:'Manager app', perms:[
+    {id:'manager_reports',   label:'Reports & takings'},
+    {id:'manager_team',      label:'Team — who’s on'},
+    {id:'manager_approvals', label:'Approvals (timesheets & time off)'},
+    {id:'manager_ops',       label:'Operations checks'},
+    {id:'manager_kitchen',   label:'Kitchen — stock & prep'},
+  ] },
 ];
 const ROLE_DEFAULTS = {
   Manager:   ['void','discount','priceOverride','refund','cashup','openDrawer','reports','eod','menu86','staff'],
@@ -15,6 +27,7 @@ const ROLE_DEFAULTS = {
   Bartender: ['void','openDrawer'],
   Cashier:   ['cashup','openDrawer'],
   Kitchen:   [],
+  Host:      ['waitlist'],
 };
 
 const inp = { background:'var(--bg3)', border:'1.5px solid var(--bdr2)', borderRadius:9, padding:'8px 11px', color:'var(--t1)', fontSize:13, fontFamily:'inherit', outline:'none', width:'100%', boxSizing:'border-box' };
@@ -29,6 +42,17 @@ function randomColor() {
 
 export default function StaffManager() {
   const { staffMembers, addStaffMember, updateStaffMember, removeStaffMember, markBOChange, showToast } = useStore();
+
+  // v5.5.17: BO-access state. Each staff member can optionally be linked to
+  // an auth user (user_profiles.id stored in staff_members.auth_user_id).
+  // The map below caches the auth user's profile so the detail panel can
+  // show email + bo_access flag without re-querying on every render.
+  // Keyed by staff_member.id; value is { authUserId, email, boAccess } | null.
+  const [authLinks, setAuthLinks] = useState({});
+  const [showGrantBO, setShowGrantBO] = useState(null); // staff_member.id | null
+  const [grantForm, setGrantForm] = useState({ email:'', password:'', confirmPassword:'' });
+  const [grantBusy, setGrantBusy] = useState(false);
+  const [grantError, setGrantError] = useState('');
 
   // Load staff from Supabase on mount (real mode only)
   useEffect(() => {
@@ -45,13 +69,53 @@ export default function StaffManager() {
         if (locationId) await supabase.from('user_profiles').update({ location_id: locationId }).eq('id', user.id);
       }
       if (!locationId) return;
-      const { data: rows } = await supabase.from('staff_members').select('*').eq('location_id', locationId).eq('active', true);
+      // v5.5.17: also SELECT auth_user_id so we can show / toggle BO access.
+      // Defensive: if column missing (pre-migration), drop it from the SELECT.
+      let { data: rows, error } = await supabase
+        .from('staff_members')
+        .select('id, name, role, pin, color, initials, permissions, active, auth_user_id, nfc_card_id, auth_method')
+        .eq('location_id', locationId).eq('active', true);
+      if (error && /auth_user_id|column.*not.*exist|PGRST204/i.test(error.message || '')) {
+        console.warn('[StaffManager] auth_user_id column missing — falling back. Run supabase/migrations/20260430_staff_auth_link.sql to enable BO access linking.');
+        // v5.5.730: keep nfc_card_id + auth_method in the fallback — dropping them made every staff
+        // show as PIN with no card in the BO (only auth_user_id is the actually-missing column).
+        ({ data: rows } = await supabase
+          .from('staff_members')
+          .select('id, name, role, pin, color, initials, permissions, active, nfc_card_id, auth_method')
+          .eq('location_id', locationId).eq('active', true));
+      }
       if (rows?.length) {
         useStore.setState({ staffMembers: rows.map(r => ({
           id: r.id, name: r.name, role: r.role, pin: r.pin,
           color: r.color || '#3b82f6', initials: r.initials || r.name.slice(0,2).toUpperCase(),
-          permissions: [], active: r.active,
+          permissions: Array.isArray(r.permissions) ? r.permissions : (ROLE_DEFAULTS[r.role] || []),
+          active: r.active,
+          authUserId: r.auth_user_id || null,
+          nfcCardId: r.nfc_card_id || null,
+          authMethod: r.auth_method || 'pin',
         })) });
+        // Bulk-fetch profiles for any linked auth users
+        const linkedIds = rows.map(r => r.auth_user_id).filter(Boolean);
+        if (linkedIds.length > 0) {
+          let { data: profiles, error: profErr } = await supabase
+            .from('user_profiles')
+            .select('id, email, bo_access')
+            .in('id', linkedIds);
+          // Defensive — fall back without bo_access if column missing
+          if (profErr && /bo_access|column.*not.*exist|PGRST204/i.test(profErr.message || '')) {
+            ({ data: profiles } = await supabase
+              .from('user_profiles')
+              .select('id, email')
+              .in('id', linkedIds));
+          }
+          const linkMap = {};
+          rows.forEach(r => {
+            if (!r.auth_user_id) return;
+            const p = (profiles || []).find(x => x.id === r.auth_user_id);
+            if (p) linkMap[r.id] = { authUserId: p.id, email: p.email, boAccess: p.bo_access !== false };
+          });
+          setAuthLinks(linkMap);
+        }
       }
     })();
   }, []);
@@ -71,60 +135,187 @@ export default function StaffManager() {
     }
   };
   const [selId, setSelId]     = useState(null);
+  const [scanningCard, setScanningCard] = useState(false);
+  const [cardEntry, setCardEntry] = useState(''); // Back-Office USB-reader capture box
   const [showAdd, setShowAdd] = useState(false);
   const [showPin, setShowPin] = useState(null);
   const [pinInput, setPinInput] = useState('');
+  const [pinError, setPinError] = useState(''); // v5.5.292: duplicate PIN warning
   const [newForm, setNewForm] = useState({ name:'', role:'Server', color:'#3b82f6', pin:'', permissions:[] });
+
+  // v5.5.292: Check if a PIN is already used by another active staff member at this location
+  const isPinTaken = (pin, excludeId) => {
+    if (!pin || pin.length !== 4) return false;
+    return staffMembers.some(s => s.active !== false && s.id !== excludeId && s.pin === pin);
+  };
+  const getPinOwner = (pin, excludeId) => {
+    if (!pin || pin.length !== 4) return null;
+    return staffMembers.find(s => s.active !== false && s.id !== excludeId && s.pin === pin);
+  };
 
   const sel = staffMembers.find(s => s.id === selId);
 
-  const save = (id, patch) => {
-    updateStaffMember(id, patch);
-    markBOChange();
+  // The name box commits on blur, not per keystroke. save() now rolls the panel back
+  // when the database refuses a write, and a per-keystroke save fires one request per
+  // character — each closing over its own already-stale snapshot, so a single refusal
+  // mid-word would rewind the field to whatever it held several letters ago. Every
+  // other control here writes one discrete value, so only this field needs a draft.
+  const [nameDraft, setNameDraft] = useState(null);
+  useEffect(() => { setNameDraft(null); }, [selId]);
+  const commitName = () => {
+    const next = (nameDraft ?? '').trim();
+    setNameDraft(null);
+    if (!sel || !next || next === sel.name) return;
+    save(sel.id, { name: next, initials: initials(next) });
   };
 
-  const addMember = () => {
+  // Resolves true only when the change is actually persisted (or we're in mock mode) —
+  // callers must not claim success before awaiting it.
+  const save = async (id, patch) => {
+    // The store keeps some fields camelCase but the DB columns are snake_case. Mirror the snake-case
+    // patch onto the camelCase the UI reads, so the change shows immediately (toggle moves, card
+    // status updates). The DB still receives the snake-case `patch` below.
+    const localPatch = { ...patch };
+    if ('auth_method' in patch) localPatch.authMethod = patch.auth_method;
+    if ('nfc_card_id' in patch) localPatch.nfcCardId = patch.nfc_card_id;
+    // Snapshot the fields we're about to overwrite so a rejected write can be undone —
+    // the panel must never keep showing a PIN/role/card the database refused.
+    const before = staffMembers.find(s => s.id === id);
+    const undo = () => {
+      if (!before) return;
+      const revert = {};
+      for (const k of Object.keys(localPatch)) if (k in before) revert[k] = before[k];
+      if (Object.keys(revert).length) updateStaffMember(id, revert);
+    };
+    updateStaffMember(id, localPatch);
+    markBOChange();
+
+    // Persist patch to Supabase (real mode only), surfacing silent 0-row
+    // updates (v4.4.1 lesson) via a toast + the saveHealth banner.
+    if (isMock) return true;
+    if (String(id).startsWith('s-')) {
+      // In-memory row whose UUID hasn't come back from Supabase yet (the store stamps
+      // a local `s-…` id on add). There is nothing to update server-side, so undo the
+      // optimistic change and say so instead of letting the edit look saved.
+      undo();
+      showToast('Not saved on the server yet — refresh the page, then edit this staff member', 'error');
+      return false;
+    }
+    try {
+      const { data, error } = await supabase
+        .from('staff_members')
+        .update(patch)
+        .eq('id', id)
+        .select('id');
+      if (error) throw error;
+      if (!data || data.length === 0) {
+        console.warn('[StaffManager] save: 0 rows updated for id', id, 'patch', patch);
+        reportSave('staff member', new Error(`Update matched 0 rows for id=${id}`));
+        undo();
+        showToast('Save did not land — row not found on server', 'error');
+        return false;
+      }
+      reportSave('staff member', null);
+      return true;
+    } catch (e) {
+      console.error('[StaffManager] save failed:', e.message, 'patch', patch);
+      reportSave('staff member', e);
+      undo();
+      showToast(`Save failed: ${e.message}`, 'error');
+      return false;
+    }
+  };
+
+  // Assign an NFC card by tapping it on a reader (works when BO runs on a till). Card UIDs are
+  // global, so the assigned card works on any till. Persists via the generic save() path.
+  const scanCard = async (id) => {
+    if (scanningCard) return;
+    setScanningCard(true);
+    const r = await scanCardOnce();
+    setScanningCard(false);
+    if (!r.ok) { showToast(r.error === 'timeout' ? 'No card detected — try again' : 'Card scanning isn’t available on this device', 'error'); return; }
+    const taken = staffMembers.find(s => s.id !== id && s.nfcCardId && s.nfcCardId === r.cardId);
+    if (taken) { showToast(`That card is already assigned to ${taken.name}`, 'error'); return; }
+    if (await save(id, { nfc_card_id: r.cardId })) showToast('Card assigned', 'success');
+  };
+
+  // Back-Office enrolment: a USB NFC reader (keyboard-wedge) types the card UID into the box; save it.
+  const saveCardEntry = async (id) => {
+    const cid = normalizeCardId(cardEntry);
+    if (!cid) { showToast('Tap a card on the reader, or type its ID first', 'error'); return; }
+    const taken = staffMembers.find(s => s.id !== id && s.nfcCardId && s.nfcCardId === cid);
+    if (taken) { showToast(`That card is already assigned to ${taken.name}`, 'error'); return; }
+    // Keep the typed card ID in the box if the write failed, so it can be retried.
+    if (await save(id, { nfc_card_id: cid })) { setCardEntry(''); showToast('Card assigned', 'success'); }
+  };
+
+  const addMember = async () => {
     if (!newForm.name.trim()) return;
+    // v5.5.292: Block duplicate PINs
+    if (newForm.pin && newForm.pin.length === 4 && isPinTaken(newForm.pin, null)) {
+      showToast(`PIN already used by ${getPinOwner(newForm.pin, null)?.name || 'another staff member'}`, 'error');
+      return;
+    }
     const perms = newForm.permissions.length ? newForm.permissions : ROLE_DEFAULTS[newForm.role] || [];
     const member = { ...newForm, name:newForm.name.trim(), permissions:perms, initials:initials(newForm.name) };
     addStaffMember(member);
-    // Save to Supabase
-    if (!isMock) {
-      (async () => {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (!user) return;
-        const { data: profile } = await supabase.from('user_profiles').select('org_id, location_id').eq('id', user.id).single();
-        // Get location_id — from profile, or find first location in their org
-        let locationId = profile?.location_id;
-        if (!locationId && profile?.org_id) {
-          const { data: locs } = await supabase.from('locations').select('id').eq('org_id', profile.org_id).limit(1);
-          locationId = locs?.[0]?.id;
-          // Also update user profile so we don't have to look this up again
-          if (locationId) await supabase.from('user_profiles').update({ location_id: locationId }).eq('id', user.id);
-        }
-        if (locationId) {
-          const { error } = await supabase.from('staff_members').insert({
-            location_id: locationId, org_id: profile?.org_id,
-            name: member.name, role: member.role, pin: member.pin,
-            color: member.color || '#3b82f6', initials: member.initials, active: true,
-          });
-          if (error) console.error('Staff save failed:', error.message);
-        } else {
-          console.warn('Cannot save staff — no location_id found for this user');
-        }
-      })();
-    }
+    // The store stamps its own local `s-…` id; grab it so a rejected insert can be
+    // rolled straight back off the screen instead of leaving a phantom staff member.
+    const st = useStore.getState().staffMembers;
+    const localId = st[st.length - 1]?.id;
     markBOChange();
-    showToast(`${newForm.name} added`, 'success');
     setShowAdd(false);
     setNewForm({ name:'', role:'Server', color:'#3b82f6', pin:'', permissions:[] });
+
+    if (isMock) { showToast(`${member.name} added`, 'success'); return; }
+
+    // Save to Supabase — the success toast fires only once the row has landed.
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error('Not signed in');
+      const { data: profile } = await supabase.from('user_profiles').select('org_id, location_id').eq('id', user.id).single();
+      // Get location_id — from profile, or find first location in their org
+      let locationId = profile?.location_id;
+      if (!locationId && profile?.org_id) {
+        const { data: locs } = await supabase.from('locations').select('id').eq('org_id', profile.org_id).limit(1);
+        locationId = locs?.[0]?.id;
+        // Also update user profile so we don't have to look this up again
+        if (locationId) await supabase.from('user_profiles').update({ location_id: locationId }).eq('id', user.id);
+      }
+      if (!locationId) throw new Error('No location found for this user');
+      const { error } = await supabase.from('staff_members').insert({
+        location_id: locationId, org_id: profile?.org_id,
+        name: member.name, role: member.role, pin: member.pin,
+        color: member.color || '#3b82f6', initials: member.initials,
+        permissions: member.permissions || [],
+        active: true,
+      });
+      if (error) throw error;
+      reportSave('staff member', null);
+      showToast(`${member.name} added`, 'success');
+    } catch (e) {
+      console.error('Staff save failed:', e.message);
+      reportSave('staff member', e);
+      if (localId) removeStaffMember(localId);
+      showToast(`"${member.name}" was NOT saved — fix the problem and add them again`, 'error');
+    }
   };
 
-  const deleteMember = (id) => {
-    removeStaffMember(id);
+  const deleteMember = async (id) => {
+    // Remove from the DB FIRST: if the soft-delete is rejected the person can still
+    // sign in on the till, so the list must keep showing them.
     if (!isMock && !String(id).startsWith('s-')) {
-      supabase.from('staff_members').update({ active: false }).eq('id', id);
+      const { data, error } = await supabase.from('staff_members').update({ active: false }).eq('id', id).select('id');
+      const failure = error || (!data || data.length === 0
+        ? new Error(`Remove matched 0 rows for id=${id} — RLS may have blocked it`)
+        : null);
+      reportSave('staff member remove', failure);
+      if (failure) {
+        showToast('Remove failed — this person can still sign in on the till', 'error');
+        return;
+      }
     }
+    removeStaffMember(id);
     markBOChange();
     if (selId === id) setSelId(null);
     showToast('Staff member removed', 'info');
@@ -135,6 +326,117 @@ export default function StaffManager() {
     if (!member) return;
     const cur = member.permissions || [];
     save(id, { permissions: cur.includes(perm) ? cur.filter(p=>p!==perm) : [...cur,perm] });
+  };
+
+  // v5.5.17: BO access lifecycle
+  //
+  // grantBOAccess: creates an auth user via the create-user edge function
+  // (same one CompanyAdminApp uses), then links the new user_profiles.id
+  // back onto staff_members.auth_user_id. The user can sign in to the BO
+  // immediately afterwards. bo_access defaults true on the new user.
+  const grantBOAccess = async (staffId) => {
+    setGrantError('');
+    if (!grantForm.email.trim()) { setGrantError('Email required'); return; }
+    if (grantForm.password.length < 8) { setGrantError('Password must be at least 8 characters'); return; }
+    if (grantForm.password !== grantForm.confirmPassword) { setGrantError('Passwords do not match'); return; }
+    if (isMock) { setGrantError('Mock mode — auth user creation not available'); return; }
+
+    setGrantBusy(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      const { data: meProfile } = await supabase.from('user_profiles').select('org_id, location_id').eq('id', user.id).single();
+      const orgId = meProfile?.org_id;
+      const locId = meProfile?.location_id;
+      if (!orgId) { setGrantError('Your account is not linked to an org — cannot create users'); setGrantBusy(false); return; }
+
+      const auth = JSON.parse(localStorage.getItem('rpos-auth') || 'null');
+      const member = staffMembers.find(s => s.id === staffId);
+      const resp = await fetch('https://tbetcegmszzotrwdtqhi.supabase.co/functions/v1/create-user', {
+        method:'POST',
+        headers:{ 'Content-Type':'application/json', 'Authorization':`Bearer ${auth?.access_token}` },
+        body: JSON.stringify({
+          email: grantForm.email.trim(),
+          password: grantForm.password,
+          fullName: member?.name || '',
+          orgId,
+          locationId: locId || null,
+          role: 'manager',
+        }),
+      });
+      const result = await resp.json();
+      if (result.error) { setGrantError(result.error); setGrantBusy(false); return; }
+      const newUserId = result.userId || result.id;   // fn returns userId; result.id kept for compat
+      if (!newUserId) { setGrantError('Edge function did not return a user id'); setGrantBusy(false); return; }
+
+      // Link the new auth user to this staff_member.
+      const { error: linkErr } = await supabase
+        .from('staff_members')
+        .update({ auth_user_id: newUserId })
+        .eq('id', staffId);
+      if (linkErr) {
+        console.warn('[grantBOAccess] link update failed:', linkErr.message);
+        setGrantError('User created but linking to staff member failed: ' + linkErr.message);
+        setGrantBusy(false);
+        return;
+      }
+
+      // Update local state
+      setAuthLinks(prev => ({ ...prev, [staffId]: { authUserId: newUserId, email: grantForm.email.trim(), boAccess: true } }));
+      useStore.setState({
+        staffMembers: useStore.getState().staffMembers.map(s =>
+          s.id === staffId ? { ...s, authUserId: newUserId } : s
+        ),
+      });
+
+      setShowGrantBO(null);
+      setGrantForm({ email:'', password:'', confirmPassword:'' });
+      setGrantBusy(false);
+      showToast(`✓ Back-office access granted — ${grantForm.email.trim()} can now sign in`, 'success');
+    } catch (e) {
+      setGrantError(e.message);
+      setGrantBusy(false);
+    }
+  };
+
+  // toggleBOAccess: flips user_profiles.bo_access without touching the auth
+  // record. Lets you temporarily revoke without losing the credential.
+  const toggleBOAccess = async (staffId) => {
+    const link = authLinks[staffId];
+    if (!link) return;
+    const next = !link.boAccess;
+    const { error } = await supabase
+      .from('user_profiles')
+      .update({ bo_access: next })
+      .eq('id', link.authUserId);
+    if (error) {
+      if (/bo_access|column.*not.*exist|PGRST204/i.test(error.message || '')) {
+        showToast('Run supabase/migrations/20260430_staff_auth_link.sql first — bo_access column missing', 'error');
+        return;
+      }
+      showToast('Failed to update access: ' + error.message, 'error');
+      return;
+    }
+    setAuthLinks(prev => ({ ...prev, [staffId]: { ...link, boAccess: next } }));
+    showToast(next ? '✓ Back-office access enabled' : 'Back-office access disabled', 'success');
+  };
+
+  // unlinkBOAccess: clears auth_user_id from staff_members. Does NOT delete
+  // the auth user — they can still exist in user_profiles, just unlinked
+  // from this staff member. Useful when a person leaves the business.
+  const unlinkBOAccess = async (staffId) => {
+    if (!confirm('Unlink back-office access? The user account is preserved but no longer linked to this staff member.')) return;
+    const { error } = await supabase
+      .from('staff_members')
+      .update({ auth_user_id: null })
+      .eq('id', staffId);
+    if (error) { showToast('Failed to unlink: ' + error.message, 'error'); return; }
+    setAuthLinks(prev => { const next = { ...prev }; delete next[staffId]; return next; });
+    useStore.setState({
+      staffMembers: useStore.getState().staffMembers.map(s =>
+        s.id === staffId ? { ...s, authUserId: null } : s
+      ),
+    });
+    showToast('Unlinked', 'info');
   };
 
   return (
@@ -187,7 +489,8 @@ export default function StaffManager() {
             </div>
             <div style={{ flex:1 }}>
               <input style={{ ...inp, fontSize:16, fontWeight:800, border:'none', background:'transparent', padding:'0 0 3px', width:'auto', maxWidth:260 }}
-                value={sel.name} onChange={e=>save(sel.id,{name:e.target.value,initials:initials(e.target.value)})}/>
+                value={nameDraft ?? sel.name} onChange={e=>setNameDraft(e.target.value)}
+                onBlur={commitName} onKeyDown={e=>{ if (e.key==='Enter') e.currentTarget.blur(); }}/>
               <div style={{ display:'flex', gap:6, alignItems:'center' }}>
                 {ROLES.map(r=>(
                   <button key={r} onClick={()=>save(sel.id,{role:r})} style={{ padding:'2px 8px', borderRadius:12, cursor:'pointer', fontFamily:'inherit', fontSize:10, fontWeight:sel.role===r?700:400, border:`1px solid ${sel.role===r?ROLE_COLORS[r]:'var(--bdr)'}`, background:sel.role===r?ROLE_COLORS[r]+'22':'transparent', color:sel.role===r?ROLE_COLORS[r]:'var(--t4)' }}>{r}</button>
@@ -222,6 +525,91 @@ export default function StaffManager() {
                 )}
               </div>
               {sel.pin && <div style={{ display:'flex', gap:6 }}>{Array(4).fill(null).map((_,i)=><div key={i} style={{ width:16, height:16, borderRadius:'50%', background:'var(--t3)' }}/>)}</div>}
+            </div>
+
+            {/* Sign-in method — PIN or Card (enforced at the till). A 'Card' staff is refused a PIN
+                (manager override aside) — that's the security win. Assign cards here with a USB NFC
+                reader: tap a card and its ID fills the box, then Save. Card works on any till. */}
+            <div style={{ marginBottom:20, padding:'12px 14px', background:'var(--bg2)', borderRadius:12, border:'1px solid var(--bdr)' }}>
+              <div style={{ fontSize:12, fontWeight:700, color:'var(--t1)', marginBottom:2 }}>Sign-in method</div>
+              <div style={{ fontSize:10, color:'var(--t3)', marginBottom:10 }}>How this person signs in at the till. Card = more secure (a shared PIN won’t sign them in).</div>
+              <div style={{ display:'flex', gap:8, marginBottom: (sel.authMethod==='card') ? 12 : 0 }}>
+                {['pin','card'].map(m => (
+                  <button key={m} onClick={()=>save(sel.id,{auth_method:m})} style={{
+                    flex:1, padding:'8px 0', borderRadius:9, cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:700,
+                    border:`1.5px solid ${(sel.authMethod||'pin')===m ? 'var(--acc)' : 'var(--bdr)'}`,
+                    background:(sel.authMethod||'pin')===m ? 'var(--acc-d, rgba(232,160,32,.10))' : 'transparent',
+                    color:(sel.authMethod||'pin')===m ? 'var(--acc)' : 'var(--t3)',
+                  }}>{m==='pin' ? '🔢 PIN' : '💳 Card'}</button>
+                ))}
+              </div>
+              {sel.authMethod==='card' && (
+                <div>
+                  <div style={{ fontSize:11, marginBottom:8, color: sel.nfcCardId ? 'var(--grn)' : 'var(--red)', fontWeight:700 }}>
+                    {sel.nfcCardId ? '✓ Card assigned' : '⚠ No card yet — assign one below, or they can’t sign in'}
+                  </div>
+                  <div style={{ display:'flex', gap:6 }}>
+                    <input value={cardEntry} onChange={e=>setCardEntry(e.target.value)} onKeyDown={e=>{ if(e.key==='Enter') saveCardEntry(sel.id); }}
+                      placeholder="Tap card on the USB reader, or type the ID"
+                      style={{ flex:1, padding:'8px 10px', borderRadius:8, border:'1px solid var(--bdr2)', background:'var(--bg3)', color:'var(--t1)', fontSize:12, fontFamily:'inherit' }}/>
+                    <button onClick={()=>saveCardEntry(sel.id)} style={{ padding:'8px 12px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:12, fontWeight:700 }}>Save card</button>
+                    {nfcAvailable() && <button onClick={()=>scanCard(sel.id)} disabled={scanningCard} style={{ padding:'8px 10px', borderRadius:8, cursor:scanningCard?'wait':'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:11, fontWeight:600 }}>{scanningCard?'Tap…':'Scan'}</button>}
+                    {sel.nfcCardId && <button onClick={()=>save(sel.id,{nfc_card_id:null})} style={{ padding:'8px 10px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:'var(--red-d)', border:'1px solid var(--red-b)', color:'var(--red)', fontSize:11, fontWeight:600 }}>Remove</button>}
+                  </div>
+                  <div style={{ fontSize:10, color:'var(--t4)', marginTop:6 }}>Use a 13.56MHz USB NFC reader on this computer — tap a card, its ID fills the box, then Save.</div>
+                </div>
+              )}
+            </div>
+
+            {/* v5.5.17: Back-office access card. Lets the operator give a
+                staff member email + password to sign in to the BO, separate
+                from their POS PIN. Shown for all staff but most stay
+                POS-PIN-only. */}
+            <div style={{ marginBottom:20, padding:'12px 14px', background:'var(--bg2)', borderRadius:12, border:'1px solid var(--bdr)' }}>
+              {(() => {
+                const link = authLinks[sel.id];
+                if (!link) {
+                  return (
+                    <div style={{ display:'flex', alignItems:'center', gap:10 }}>
+                      <div style={{ flex:1 }}>
+                        <div style={{ fontSize:12, fontWeight:700, color:'var(--t1)', marginBottom:2 }}>Back-office access</div>
+                        <div style={{ fontSize:10, color:'var(--t3)' }}>Give this staff member email + password to sign in to the back office for reports, menu, settings, etc.</div>
+                      </div>
+                      <button
+                        onClick={()=>{ setShowGrantBO(sel.id); setGrantForm({ email:'', password:'', confirmPassword:'' }); setGrantError(''); }}
+                        style={{ padding:'6px 14px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:12, fontWeight:700 }}
+                      >Grant access</button>
+                    </div>
+                  );
+                }
+                return (
+                  <>
+                    <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:8 }}>
+                      <div style={{ flex:1 }}>
+                        <div style={{ fontSize:12, fontWeight:700, color:'var(--t1)', marginBottom:2 }}>Back-office access</div>
+                        <div style={{ fontSize:10, color:'var(--t3)', fontFamily:'monospace' }}>{link.email}</div>
+                      </div>
+                      <button
+                        onClick={()=>toggleBOAccess(sel.id)}
+                        style={{
+                          padding:'6px 14px', borderRadius:8, cursor:'pointer', fontFamily:'inherit',
+                          background: link.boAccess ? 'rgba(34,197,94,0.18)' : 'rgba(239,68,68,0.16)',
+                          border: link.boAccess ? '1px solid rgba(34,197,94,0.4)' : '1px solid rgba(239,68,68,0.4)',
+                          color: link.boAccess ? '#86efac' : '#fca5a5',
+                          fontSize:11, fontWeight:700,
+                        }}
+                      >{link.boAccess ? '✓ Enabled — click to disable' : '✗ Disabled — click to enable'}</button>
+                    </div>
+                    <div style={{ display:'flex', gap:6, justifyContent:'flex-end' }}>
+                      <button
+                        onClick={()=>unlinkBOAccess(sel.id)}
+                        style={{ padding:'4px 10px', borderRadius:7, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t3)', fontSize:10, fontWeight:600 }}
+                        title="Disconnect this auth user from the staff record. The user account is preserved."
+                      >Unlink</button>
+                    </div>
+                  </>
+                );
+              })()}
             </div>
 
             {/* Permissions */}
@@ -283,7 +671,10 @@ export default function StaffManager() {
               </div>
               <div>
                 <label style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:5, display:'block' }}>PIN (4 digits)</label>
-                <input style={inp} type="password" maxLength={4} inputMode="numeric" value={newForm.pin} onChange={e=>setNewForm(f=>({...f,pin:e.target.value.replace(/\D/g,'').slice(0,4)}))} placeholder="0000"/>
+                <input style={{...inp, borderColor:newForm.pin.length===4&&isPinTaken(newForm.pin,null)?'var(--red)':undefined}} type="password" maxLength={4} inputMode="numeric" value={newForm.pin} onChange={e=>setNewForm(f=>({...f,pin:e.target.value.replace(/\D/g,'').slice(0,4)}))} placeholder="0000"/>
+                {newForm.pin.length===4 && isPinTaken(newForm.pin, null) && (
+                  <div style={{ fontSize:10, color:'var(--red)', fontWeight:600, marginTop:3 }}>PIN already used by {getPinOwner(newForm.pin, null)?.name || 'another staff member'}</div>
+                )}
               </div>
               <div>
                 <label style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:5, display:'block' }}>Colour</label>
@@ -296,7 +687,46 @@ export default function StaffManager() {
             </div>
             <div style={{ display:'flex', gap:8, marginTop:16 }}>
               <button onClick={()=>setShowAdd(false)} style={{ flex:1, padding:'9px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:13 }}>Cancel</button>
-              <button onClick={addMember} disabled={!newForm.name.trim()} style={{ flex:2, padding:'9px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:14, fontWeight:800, opacity:newForm.name.trim()?1:.4 }}>Add staff member</button>
+              <button onClick={addMember} disabled={!newForm.name.trim()||(newForm.pin.length===4&&isPinTaken(newForm.pin,null))} style={{ flex:2, padding:'9px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:14, fontWeight:800, opacity:(newForm.name.trim()&&!(newForm.pin.length===4&&isPinTaken(newForm.pin,null)))?1:.4 }}>Add staff member</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* v5.5.17: Grant back-office access modal */}
+      {showGrantBO && (
+        <div className="modal-back" onClick={e=>e.target===e.currentTarget&&setShowGrantBO(null)}>
+          <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr2)', borderRadius:18, width:'100%', maxWidth:420, padding:22, boxShadow:'var(--sh3)' }}>
+            <div style={{ fontSize:15, fontWeight:800, color:'var(--t1)', marginBottom:6 }}>Grant back-office access</div>
+            <div style={{ fontSize:11, color:'var(--t3)', marginBottom:14 }}>
+              Create sign-in credentials for {staffMembers.find(s=>s.id===showGrantBO)?.name}.
+              They'll be able to sign in to the back office to view reports, edit the menu, etc.
+            </div>
+            <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
+              <div>
+                <label style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:5, display:'block' }}>Email *</label>
+                <input style={inp} type="email" value={grantForm.email} onChange={e=>setGrantForm(f=>({...f,email:e.target.value}))} placeholder="staff@example.com" autoFocus/>
+              </div>
+              <div>
+                <label style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:5, display:'block' }}>Password *</label>
+                <input style={inp} type="password" value={grantForm.password} onChange={e=>setGrantForm(f=>({...f,password:e.target.value}))} placeholder="Min 8 characters"/>
+              </div>
+              <div>
+                <label style={{ fontSize:10, fontWeight:800, color:'var(--t4)', textTransform:'uppercase', letterSpacing:'.08em', marginBottom:5, display:'block' }}>Confirm password *</label>
+                <input style={inp} type="password" value={grantForm.confirmPassword} onChange={e=>setGrantForm(f=>({...f,confirmPassword:e.target.value}))} placeholder="Repeat password"/>
+              </div>
+              {grantError && (
+                <div style={{ padding:'8px 12px', background:'rgba(239,68,68,0.1)', border:'1px solid rgba(239,68,68,0.3)', borderRadius:8, color:'#fca5a5', fontSize:12 }}>
+                  {grantError}
+                </div>
+              )}
+              <div style={{ fontSize:10, color:'var(--t4)', lineHeight:1.5, padding:'8px 0' }}>
+                The staff member can change this password later. They'll sign in at the same back-office URL you're using now.
+              </div>
+            </div>
+            <div style={{ display:'flex', gap:8, marginTop:16 }}>
+              <button onClick={()=>setShowGrantBO(null)} disabled={grantBusy} style={{ flex:1, padding:'9px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:13 }}>Cancel</button>
+              <button onClick={()=>grantBOAccess(showGrantBO)} disabled={grantBusy} style={{ flex:2, padding:'9px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:14, fontWeight:800, opacity:grantBusy?.6:1 }}>{grantBusy?'Creating…':'Grant access →'}</button>
             </div>
           </div>
         </div>
@@ -307,26 +737,32 @@ export default function StaffManager() {
         <div className="modal-back" onClick={e=>e.target===e.currentTarget&&setShowPin(null)}>
           <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr2)', borderRadius:18, width:'100%', maxWidth:320, padding:22, boxShadow:'var(--sh3)' }}>
             <div style={{ fontSize:15, fontWeight:800, color:'var(--t1)', marginBottom:6 }}>Set PIN</div>
-            <div style={{ fontSize:11, color:'var(--t3)', marginBottom:14 }}>Enter a 4-digit PIN for {staffMembers.find(s=>s.id===showPin)?.name}.</div>
+            <div style={{ fontSize:11, color:'var(--t3)', marginBottom:14 }}>Enter a 4-digit PIN for {staffMembers.find(s=>s.id===showPin)?.name}. Each staff member must have a unique PIN.</div>
             <div style={{ display:'flex', gap:8, justifyContent:'center', marginBottom:16 }}>
               {Array(4).fill(null).map((_,i)=>(
-                <div key={i} style={{ width:44, height:54, borderRadius:10, border:`2px solid ${i<pinInput.length?'var(--acc)':'var(--bdr2)'}`, background:i<pinInput.length?'var(--acc-d)':'var(--bg3)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, fontWeight:800, color:'var(--acc)' }}>
+                <div key={i} style={{ width:44, height:54, borderRadius:10, border:`2px solid ${i<pinInput.length?(isPinTaken(pinInput,showPin)?'var(--red)':'var(--acc)'):'var(--bdr2)'}`, background:i<pinInput.length?(isPinTaken(pinInput,showPin)?'var(--red-d)':'var(--acc-d)'):'var(--bg3)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, fontWeight:800, color:isPinTaken(pinInput,showPin)?'var(--red)':'var(--acc)' }}>
                   {i<pinInput.length?'●':''}
                 </div>
               ))}
             </div>
+            {/* Duplicate PIN warning */}
+            {pinInput.length===4 && isPinTaken(pinInput,showPin) && (
+              <div style={{ padding:'6px 12px', background:'var(--red-d)', border:'1px solid var(--red-b)', borderRadius:8, marginBottom:10, fontSize:11, color:'var(--red)', fontWeight:600, textAlign:'center' }}>
+                This PIN is already used by {getPinOwner(pinInput,showPin)?.name || 'another staff member'}
+              </div>
+            )}
             {/* Numpad */}
             <div style={{ display:'grid', gridTemplateColumns:'repeat(3,1fr)', gap:8, marginBottom:12 }}>
               {[1,2,3,4,5,6,7,8,9,'',0,'⌫'].map((k,i)=>(
                 <button key={i} onClick={()=>{
-                  if (k==='⌫') setPinInput(p=>p.slice(0,-1));
+                  if (k==='⌫') { setPinInput(p=>p.slice(0,-1)); setPinError(''); }
                   else if (k!=='' && pinInput.length<4) setPinInput(p=>p+k);
                 }} style={{ height:48, borderRadius:11, cursor:k===''?'default':'pointer', fontFamily:'inherit', background:k===''?'transparent':'var(--bg3)', border:k===''?'none':'1px solid var(--bdr2)', color:k==='⌫'?'var(--red)':'var(--t1)', fontSize:18, fontWeight:700, opacity:k===''?.3:1 }}>{k}</button>
               ))}
             </div>
             <div style={{ display:'flex', gap:8 }}>
-              <button onClick={()=>{setShowPin(null);setPinInput('');}} style={{ flex:1, padding:'9px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:13 }}>Cancel</button>
-              <button onClick={()=>{ if(pinInput.length===4){ save(showPin,{pin:pinInput}); showToast('PIN updated','success'); setShowPin(null); setPinInput(''); } }} disabled={pinInput.length!==4} style={{ flex:2, padding:'9px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:14, fontWeight:800, opacity:pinInput.length===4?1:.4 }}>Save PIN</button>
+              <button onClick={()=>{setShowPin(null);setPinInput('');setPinError('');}} style={{ flex:1, padding:'9px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:13 }}>Cancel</button>
+              <button onClick={async ()=>{ if(pinInput.length===4 && !isPinTaken(pinInput,showPin)){ const id=showPin, pin=pinInput; setShowPin(null); setPinInput(''); setPinError(''); if (await save(id,{pin})) showToast('PIN updated','success'); } }} disabled={pinInput.length!==4||isPinTaken(pinInput,showPin)} style={{ flex:2, padding:'9px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:isPinTaken(pinInput,showPin)?'var(--red)':'var(--acc)', border:'none', color:'#0b0c10', fontSize:14, fontWeight:800, opacity:(pinInput.length===4&&!isPinTaken(pinInput,showPin))?1:.4 }}>Save PIN</button>
             </div>
           </div>
         </div>

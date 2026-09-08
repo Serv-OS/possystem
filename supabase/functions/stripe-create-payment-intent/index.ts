@@ -1,40 +1,28 @@
 // supabase/functions/stripe-create-payment-intent/index.ts
-// Creates a DIRECT-charge PaymentIntent on a merchant's connected account.
-// Used for both online (Stripe.js confirm) and card-present (Terminal SDK).
-//
-// Direct charges = merchant is merchant of record. Platform takes NO
-// application_fee per transaction. SaaS fees are collected separately via
-// Transfer skim before payout.
-//
-// Body:
-//   {
-//     location_id: "uuid",
-//     amount_minor: 1234,          // total in pence/cents
-//     currency: "gbp" | "usd",
-//     payment_method_types: ["card"] | ["card_present"],
-//     capture_method: "automatic" | "manual",   default automatic
-//     closed_check_id?: "uuid",                  // POSUP order id (echoed in metadata)
-//     description?: "Order R42",
-//     statement_descriptor_suffix?: "POSUP",     // max 22 chars
-//     metadata?: {...}
-//   }
-//
-// Returns: { client_secret, payment_intent_id, status, stripe_account }
+// Direct charge on a merchant's connected account, with platform
+// application_fee_amount applied based on the channel-specific markup %
+// resolved from merchant_stripe_accounts (per-merchant override) or
+// platform_settings (global default).
 
-import Stripe from 'https://esm.sh/stripe@17.4.0?target=deno';
+import Stripe from 'https://esm.sh/stripe@14.21.0?target=denonext';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-const corsHeaders = {
+const cors = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
+const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
 
 const stripe = new Stripe(Deno.env.get('STRIPE_SECRET_KEY') ?? '', {
-  apiVersion: '2024-11-20.acacia',
-  httpClient: Stripe.createFetchHttpClient(),
+  apiVersion: '2024-06-20',
 });
 
-const platformDb = createClient(
+const opsAdmin = createClient(
+  Deno.env.get('SUPABASE_URL') ?? '',
+  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+  { auth: { autoRefreshToken: false, persistSession: false } },
+);
+const platformAdmin = createClient(
   Deno.env.get('PLATFORM_SUPABASE_URL') ?? '',
   Deno.env.get('PLATFORM_SUPABASE_SERVICE_ROLE_KEY') ?? '',
   { auth: { autoRefreshToken: false, persistSession: false } },
@@ -43,9 +31,11 @@ const platformDb = createClient(
 interface Body {
   location_id?: string;
   amount_minor?: number;
-  currency?: 'gbp' | 'usd';
+  currency?: 'gbp' | 'usd' | 'eur';
+  channel?: 'card_present' | 'online';
   payment_method_types?: string[];
   capture_method?: 'automatic' | 'manual';
+  setup_future_usage?: 'on_session' | 'off_session';
   closed_check_id?: string;
   description?: string;
   statement_descriptor_suffix?: string;
@@ -53,87 +43,83 @@ interface Body {
 }
 
 Deno.serve(async (req) => {
-  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
 
-  // Auth — any authenticated org member of the location
   const authHeader = req.headers.get('Authorization');
   if (!authHeader) return json({ error: 'Unauthorized' }, 401);
 
-  const { data: { user: caller } } = await platformDb.auth.getUser(authHeader.replace('Bearer ', ''));
+  const { data: { user: caller } } = await opsAdmin.auth.getUser(authHeader.replace('Bearer ', ''));
   if (!caller) return json({ error: 'Invalid token' }, 401);
 
   let body: Body;
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
 
   const {
-    location_id,
-    amount_minor,
-    currency,
-    payment_method_types,
-    capture_method = 'automatic',
-    closed_check_id,
-    description,
-    statement_descriptor_suffix,
+    location_id, amount_minor, currency,
+    channel = 'online',
+    payment_method_types, capture_method = 'automatic',
+    setup_future_usage,
+    closed_check_id, description, statement_descriptor_suffix,
     metadata = {},
   } = body;
 
   if (!location_id) return json({ error: 'location_id required' }, 400);
   if (!amount_minor || amount_minor <= 0) return json({ error: 'amount_minor must be > 0' }, 400);
-  if (currency !== 'gbp' && currency !== 'usd') return json({ error: 'currency must be gbp or usd' }, 400);
+  if (!['gbp', 'usd', 'eur'].includes(currency as string)) return json({ error: 'currency must be gbp, usd or eur' }, 400);
   if (!payment_method_types?.length) return json({ error: 'payment_method_types required' }, 400);
-
-  // Verify caller is in the location's org (super_admin bypasses)
-  const { data: profile } = await platformDb.from('user_profiles')
-    .select('role, org_id').eq('id', caller.id).single();
-
-  const { data: loc, error: locErr } = await platformDb.from('locations')
-    .select('id, org_id').eq('id', location_id).single();
-  if (locErr || !loc) return json({ error: 'location not found' }, 404);
-
-  if (profile?.role !== 'super_admin' && profile?.org_id !== loc.org_id) {
-    return json({ error: 'not a member of this location\'s org' }, 403);
+  if (channel !== 'card_present' && channel !== 'online') {
+    return json({ error: "channel must be 'card_present' or 'online'" }, 400);
   }
 
-  // Lookup connected account from subscriptions row
-  const { data: sub, error: subErr } = await platformDb.from('subscriptions')
+  const { data: msa, error: msaErr } = await platformAdmin.from('merchant_stripe_accounts')
     .select('stripe_account_id, charges_enabled')
     .eq('location_id', location_id).single();
+  if (msaErr || !msa) return json({ error: 'location has no connected Stripe account' }, 400);
+  if (!msa.charges_enabled) return json({ error: 'connected account cannot accept charges yet' }, 400);
 
-  if (subErr || !sub?.stripe_account_id) {
-    return json({ error: 'location has no connected Stripe account' }, 400);
-  }
-  if (!sub.charges_enabled) {
-    return json({ error: 'connected account cannot accept charges yet (onboarding incomplete)' }, 400);
+  let markupPercent = 0;
+  try {
+    const { data: m } = await platformAdmin.rpc('get_effective_markup', {
+      p_location_id: location_id, p_channel: channel,
+    });
+    markupPercent = Number(m ?? 0);
+  } catch (e) {
+    console.warn('[create-pi] get_effective_markup failed, defaulting to 0', e);
   }
 
-  // Create the PaymentIntent on the connected account (direct charge)
+  const applicationFeeMinor = Math.max(0, Math.round((amount_minor * markupPercent) / 100));
+
   let pi: Stripe.PaymentIntent;
   try {
-    pi = await stripe.paymentIntents.create(
-      {
-        amount: amount_minor,
-        currency,
-        payment_method_types: payment_method_types as Stripe.PaymentIntentCreateParams.PaymentMethodType[],
-        capture_method,
-        description,
-        statement_descriptor_suffix,
-        metadata: {
-          ...metadata,
-          location_id,
-          ...(closed_check_id ? { closed_check_id } : {}),
-          posup_user_id: caller.id,
-        },
+    const piParams: Stripe.PaymentIntentCreateParams = {
+      amount: amount_minor,
+      currency,
+      payment_method_types: payment_method_types as Stripe.PaymentIntentCreateParams.PaymentMethodType[],
+      capture_method,
+      description,
+      statement_descriptor_suffix,
+      metadata: {
+        ...metadata,
+        location_id,
+        channel,
+        markup_percent: String(markupPercent),
+        application_fee_minor: String(applicationFeeMinor),
+        ...(closed_check_id ? { closed_check_id } : {}),
+        posup_user_id: caller.id,
       },
-      { stripeAccount: sub.stripe_account_id },
-    );
+    };
+    if (applicationFeeMinor > 0) piParams.application_fee_amount = applicationFeeMinor;
+    // v5.5.160: when set, Stripe saves the payment method to the connected
+    // account's customer (or attaches it for future off_session re-use).
+    // Used by QR open-tab pre-auth so we can charge an overage on the
+    // saved card if the final bill > pre-auth.
+    if (setup_future_usage) piParams.setup_future_usage = setup_future_usage;
+
+    pi = await stripe.paymentIntents.create(piParams, { stripeAccount: msa.stripe_account_id });
   } catch (e) {
     const err = e as Stripe.errors.StripeError;
-    return json({
-      error: `stripe error: ${err.message}`,
-      code: err.code,
-      type: err.type,
-    }, 400);
+    return json({ error: `stripe error: ${err.message}`, code: err.code, type: err.type }, 400);
   }
 
   return json({
@@ -141,13 +127,9 @@ Deno.serve(async (req) => {
     client_secret: pi.client_secret,
     payment_intent_id: pi.id,
     status: pi.status,
-    stripe_account: sub.stripe_account_id,
+    stripe_account: msa.stripe_account_id,
+    channel,
+    markup_percent: markupPercent,
+    application_fee_minor: applicationFeeMinor,
   });
 });
-
-function json(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-  });
-}

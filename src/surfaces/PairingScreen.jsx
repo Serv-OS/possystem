@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { supabase, isMock, LOCATION_ID } from '../lib/supabase';
+import { supabase, isMock, LOCATION_ID, enforceTenantFence, ensureAuthToken } from '../lib/supabase';
 import { VERSION } from '../lib/version';
+import { ServOSIcon, ServOSWordmark } from '../components/ServOSBrand';
 
 export default function PairingScreen({ onPaired }) {
   const [code, setCode] = useState('');
@@ -33,6 +34,26 @@ export default function PairingScreen({ onPaired }) {
       session_token: null,  // clear session token so old session gets kicked on next check
     }).eq('id', data.id);
 
+    // v5.5.757 — POS-core RLS cutover, Stage 1: securely bind this device's anonymous
+    // session to the paired location server-side (devices.device_uid = auth.uid()), so a
+    // future RLS pass can scope it via pos_can_access(). The RPC takes device_uid from the
+    // JWT, never client input. Best-effort — pairing must NEVER fail on it.
+    try {
+      await ensureAuthToken();
+      await supabase.rpc('claim_device', { p_code: clean });
+    } catch (e) {
+      console.warn('[pair] claim_device failed (non-fatal):', e?.message);
+    }
+
+    // v5.5.3: TENANT FENCE at pair-time. If this terminal was previously paired to a
+    // different location, every location-scoped localStorage key (rpos-session-backup,
+    // rpos-shared-state, rpos-config-snapshot, etc.) holds the OLD location's data.
+    // The fence wipes those stale keys BEFORE we write the new pairing, so the next
+    // boot reads a clean slate scoped to the new location. Without this, re-pairing a
+    // browser that was previously at Loc 1 to Loc 2 would surface Loc 1's open
+    // orders / printers / device profiles on the Loc 2 POS.
+    enforceTenantFence(data.location_id);
+
     // Store device identity in localStorage
     const deviceEntry = {
       id: data.id,
@@ -42,6 +63,7 @@ export default function PairingScreen({ onPaired }) {
       locationName: data.locations?.name || 'Unknown',
       orgId: data.locations?.org_id,
       profileId: data.profile_id || null,
+      pairingCode: clean,   // v5.5.758: persisted so boot can re-establish the RLS device link
       pairedAt: new Date().toISOString(),
     };
     localStorage.setItem('rpos-device', JSON.stringify(deviceEntry));
@@ -59,6 +81,7 @@ export default function PairingScreen({ onPaired }) {
         hiddenFeatures: ['reports','discounts','voids','courses'],
         tableServiceEnabled: false,
         quickScreenEnabled: false,
+        autoPrintReceiptOnClose: false,
       }));
     }
 
@@ -83,6 +106,8 @@ export default function PairingScreen({ onPaired }) {
             hiddenFeatures: profile.hiddenFeatures || [],
             tableServiceEnabled: profile.tableServiceEnabled !== false,
             quickScreenEnabled: profile.quickScreenEnabled !== false,
+            autoPrintReceiptOnClose: true,
+            orderNotifications: profile.orderNotifications !== false,
           }));
         }
       } catch(e) { console.warn('Profile apply failed:', e); }
@@ -103,14 +128,10 @@ export default function PairingScreen({ onPaired }) {
         boxShadow: '0 8px 40px rgba(0,0,0,0.12)',
       }}>
         {/* Logo */}
-        <div style={{
-          width: 56, height: 56, borderRadius: 16, background: 'var(--acc)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: 28, fontWeight: 800, color: '#fff', margin: '0 auto 16px',
-        }}>R</div>
+        <div style={{ margin: '0 auto 16px', width: 56 }}><ServOSIcon size={56} /></div>
 
         <div style={{ fontSize: 22, fontWeight: 800, color: 'var(--t1)', marginBottom: 6 }}>
-          Welcome to Restaurant OS
+          Welcome to <ServOSWordmark fontSize={22} />
         </div>
         <div style={{ fontSize: 14, color: 'var(--t3)', marginBottom: 40, lineHeight: 1.5 }}>
           This device hasn't been set up yet.<br />
@@ -161,7 +182,7 @@ export default function PairingScreen({ onPaired }) {
         <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 16, fontFamily: 'monospace' }}>v{VERSION}</div>
         <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 8, lineHeight: 1.6 }}>
           Generate a pairing code in your back office:<br />
-          <strong>Back Office → Devices → Add terminal</strong>
+          <strong>Back Office → Hardware → Terminals</strong>
         </div>
 
         {/* Admin bypass link */}

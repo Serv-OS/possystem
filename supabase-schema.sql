@@ -88,7 +88,8 @@ create table if not exists closed_checks (
   covers integer default 0,
   closed_at timestamptz default now(),
   voided boolean default false,
-  refunded boolean default false
+  refunded boolean default false,
+  gift_card jsonb default null          -- v5.5.217: gift card payment data for auto-reversal on refund
 );
 
 -- ── KDS Tickets ────────────────────────────────────────────────────────────

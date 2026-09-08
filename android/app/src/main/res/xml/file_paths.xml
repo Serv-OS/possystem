@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Lets the FileProvider share the downloaded APK with the system installer.
+     Matches getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) in UpdateChecker. -->
+<paths>
+    <external-files-path name="downloads" path="Download/"/>
+</paths>

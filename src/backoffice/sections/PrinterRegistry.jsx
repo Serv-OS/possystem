@@ -1,20 +1,44 @@
 import { useState, useEffect } from 'react';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
+import { useStore } from '../../store';
+import { reportSave } from '../../lib/saveHealth';
 import { printService } from '../../lib/printer';
 
 const MODELS = [
-  { id:'sunmi-nt311', label:'Sunmi NT311', icon:'🖨', desc:'80mm cloud printer — WiFi/LAN/BT/USB' },
-  { id:'sunmi-nt310', label:'Sunmi NT310', icon:'🖨', desc:'58mm cloud printer — WiFi/LAN/BT' },
-  { id:'epson-tm88',  label:'Epson TM-T88', icon:'🖨', desc:'80mm receipt printer — USB/LAN/BT' },
-  { id:'epson-tm20',  label:'Epson TM-T20', icon:'🖨', desc:'80mm receipt printer — USB/LAN' },
-  { id:'star-tsp100', label:'Star TSP100', icon:'🖨', desc:'80mm receipt printer — USB/LAN/BT' },
-  { id:'generic',     label:'Generic ESC/POS', icon:'🖨', desc:'Any ESC/POS compatible printer' },
+  // ── Sunmi ──────────────────────────────────────────────────────────────────
+  { id:'sunmi-nt311',     label:'Sunmi NT311',              icon:'🖨', desc:'80mm cloud printer — WiFi/LAN', brand:'Sunmi' },
+  { id:'sunmi-nt310',     label:'Sunmi NT310',              icon:'🖨', desc:'58mm cloud printer — WiFi/LAN', brand:'Sunmi' },
+  // ── Epson TM series ────────────────────────────────────────────────────────
+  { id:'epson-tm-t88',    label:'Epson TM-T88V / VI / VII', icon:'🖨', desc:'80mm LAN — industry standard',   brand:'Epson' },
+  { id:'epson-tm-t20',    label:'Epson TM-T20 II / III',    icon:'🖨', desc:'80mm LAN — budget option',       brand:'Epson' },
+  { id:'epson-tm-m30',    label:'Epson TM-m30 / m30II',     icon:'🖨', desc:'80mm LAN — compact/tablet',      brand:'Epson' },
+  { id:'epson-tm-t82',    label:'Epson TM-T82 III',         icon:'🖨', desc:'80mm LAN — entry level',          brand:'Epson' },
+  { id:'epson-tm-t70',    label:'Epson TM-T70 II',          icon:'🖨', desc:'80mm LAN — under-counter',        brand:'Epson' },
+  // ── Star TSP / mC-Print ────────────────────────────────────────────────────
+  { id:'star-tsp143',     label:'Star TSP143III LAN',       icon:'🖨', desc:'80mm LAN — popular modern',       brand:'Star' },
+  { id:'star-tsp100',     label:'Star TSP100 ECO / futurePRNT', icon:'🖨', desc:'80mm LAN — very common',      brand:'Star' },
+  { id:'star-tsp654',     label:'Star TSP654II LAN',        icon:'🖨', desc:'80mm LAN — kitchen workhorse',    brand:'Star' },
+  { id:'star-tsp700',     label:'Star TSP700II LAN',        icon:'🖨', desc:'80mm LAN — two-colour capable',   brand:'Star' },
+  { id:'star-tsp800',     label:'Star TSP800II LAN',        icon:'🖨', desc:'112mm LAN — wider labels',        brand:'Star' },
+  { id:'star-mcprint3',   label:'Star mC-Print3',           icon:'🖨', desc:'80mm LAN — newest Star',          brand:'Star' },
+  { id:'star-mcprint2',   label:'Star mC-Print2',           icon:'🖨', desc:'58mm LAN',                         brand:'Star' },
+  // ── Bixolon ────────────────────────────────────────────────────────────────
+  { id:'bixolon-srp350',  label:'Bixolon SRP-350III',       icon:'🖨', desc:'80mm LAN',                         brand:'Bixolon' },
+  { id:'bixolon-srpq300', label:'Bixolon SRP-Q300',         icon:'🖨', desc:'80mm LAN — compact',               brand:'Bixolon' },
+  // ── Citizen ────────────────────────────────────────────────────────────────
+  { id:'citizen-cts310',  label:'Citizen CT-S310II',        icon:'🖨', desc:'80mm LAN',                         brand:'Citizen' },
+  { id:'citizen-cte351',  label:'Citizen CT-E351',          icon:'🖨', desc:'80mm LAN',                         brand:'Citizen' },
+  // ── Budget / generic ──────────────────────────────────────────────────────
+  { id:'xprinter-xp80',   label:'Xprinter XP-T80 / N160II', icon:'🖨', desc:'80mm LAN — budget ESC/POS',        brand:'Xprinter' },
+  { id:'generic',         label:'Other / Generic ESC/POS',  icon:'🖨', desc:'Any ESC/POS printer on TCP 9100',  brand:'Generic' },
 ];
 
+// Only network is currently supported end-to-end (Android NetworkPrinter.java + iOS NetworkPrinter.swift).
+// Bluetooth and USB require additional native bridges — mark as disabled until built.
 const CONN_TYPES = [
-  { id:'network', label:'WiFi / Ethernet', icon:'🌐', placeholder:'192.168.1.100' },
-  { id:'bluetooth', label:'Bluetooth', icon:'🔵', placeholder:'e.g. AA:BB:CC:DD:EE:FF' },
-  { id:'usb', label:'USB', icon:'🔌', placeholder:'Auto-detected' },
+  { id:'network',   label:'WiFi / Ethernet', icon:'🌐', placeholder:'192.168.1.100',              enabled:true,  note:'Recommended — works on all supported printers' },
+  { id:'bluetooth', label:'Bluetooth',       icon:'🔵', placeholder:'e.g. AA:BB:CC:DD:EE:FF',     enabled:false, note:'Coming soon — native BT bridge not yet built' },
+  { id:'usb',       label:'USB',             icon:'🔌', placeholder:'Auto-detected',              enabled:false, note:'Coming soon — requires device-specific driver' },
 ];
 
 const ROLES = [
@@ -30,7 +54,7 @@ const PAPER = [
   { id:58, label:'58mm' },
 ];
 
-const EMPTY = { name:'', model:'sunmi-nt311', connectionType:'network', address:'', paperWidth:80, roles:['receipt'], location:'' };
+const EMPTY = { name:'', model:'sunmi-nt311', connectionType:'network', address:'', paperWidth:80, roles:['receipt'], location:'', cashDrawerAttached:false };
 
 function loadPrinters() {
   try { return JSON.parse(localStorage.getItem('rpos-printers') || '[]'); } catch { return []; }
@@ -42,24 +66,36 @@ async function loadPrintersFromDB() {
     if (!locationId) return loadPrinters();
     const { data } = await supabase.from('printers').select('*').eq('location_id', locationId).order('created_at');
     if (data) {
-      const list = data.map(r => ({ id:r.id, name:r.name, model:r.meta?.model||'generic', connectionType:r.connection, address:r.ip, port:r.port||9100, paperWidth:r.paper_width||80, roles:r.meta?.roles||['receipt'], location:r.meta?.location||'', status:r.meta?.status||'unknown', addedAt:r.meta?.addedAt||Date.now() }));
+      const list = data.map(r => ({ id:r.id, name:r.name, model:r.meta?.model||'generic', connectionType:r.connection, address:r.ip, port:r.port||9100, paperWidth:r.paper_width||80, roles:r.meta?.roles||['receipt'], location:r.meta?.location||'', status:r.meta?.status||'unknown', addedAt:r.meta?.addedAt||Date.now(), cashDrawerAttached:!!r.meta?.cashDrawerAttached }));
       localStorage.setItem('rpos-printers', JSON.stringify(list)); // keep local cache for POS
       return list;
     }
   } catch(e) { console.warn('printers load failed', e); }
   return loadPrinters();
 }
+// Both DB helpers return { error } so the caller can revert the list + its localStorage
+// mirror. They used to console.warn and carry on, so a printer could live in this browser's
+// cache all week and be missing from every other terminal.
 async function savePrinterToDB(printer) {
-  if (isMock || !supabase) return;
-  try {
-    const locationId = await getLocationId();
-    if (!locationId) return;
-    await supabase.from('printers').upsert({ id:printer.id, location_id:locationId, name:printer.name, type:'escpos', connection:printer.connectionType, ip:printer.address||null, port:printer.port||9100, paper_width:printer.paperWidth||80, meta:{ model:printer.model, roles:printer.roles, location:printer.location, status:printer.status, addedAt:printer.addedAt }, updated_at:new Date().toISOString() });
-  } catch(e) { console.warn('printer save failed', e); }
+  if (isMock || !supabase) return { error: null };
+  const locationId = await getLocationId().catch(() => null);
+  if (!locationId) return { error: new Error('Could not resolve the location for this venue') };
+  const { data, error } = await supabase.from('printers').upsert({ id:printer.id, location_id:locationId, name:printer.name, type:'escpos', connection:printer.connectionType, ip:printer.address||null, port:printer.port||9100, paper_width:printer.paperWidth||80, meta:{ model:printer.model, roles:printer.roles, location:printer.location, status:printer.status, addedAt:printer.addedAt, cashDrawerAttached:!!printer.cashDrawerAttached }, updated_at:new Date().toISOString() }).select('id');
+  if (error) return { error };
+  if (!data || data.length === 0) return { error: new Error('Printer write matched 0 rows — RLS blocked it') };
+  return { error: null };
 }
 async function deletePrinterFromDB(id) {
-  if (isMock || !supabase) return;
-  try { await supabase.from('printers').delete().eq('id', id); } catch(e) { console.warn('printer delete failed', e); }
+  if (isMock || !supabase) return { error: null };
+  const { data, error } = await supabase.from('printers').delete().eq('id', id).select('id');
+  if (error) return { error };
+  // A DELETE that RLS filters out reports success with zero rows — which is also what a
+  // printer that never reached the DB looks like. Probe before calling it a failure.
+  if (!data || data.length === 0) {
+    const { data: still } = await supabase.from('printers').select('id').eq('id', id).maybeSingle();
+    if (still) return { error: new Error('Printer delete matched 0 rows — RLS blocked it') };
+  }
+  return { error: null };
 }
 function savePrinters(list) {
   localStorage.setItem('rpos-printers', JSON.stringify(list));
@@ -109,38 +145,66 @@ function PrinterForm({ initial, onSave, onCancel }) {
         </div>
       </div>
 
-      {/* Model picker */}
+      {/* Model picker — brand then model dropdown (replaces 20-button wall) */}
       <div style={{ marginBottom:14 }}>
         <label style={S.label}>Printer model</label>
-        <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
-          {MODELS.map(m => (
-            <button key={m.id} onClick={() => f('model', m.id)} style={{
-              padding:'7px 14px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:600,
-              background: form.model === m.id ? 'var(--acc-d)' : 'var(--bg3)',
-              border: `1.5px solid ${form.model === m.id ? 'var(--acc)' : 'var(--bdr)'}`,
-              color: form.model === m.id ? 'var(--acc)' : 'var(--t2)',
-            }}>
-              {m.label}
-            </button>
-          ))}
-        </div>
-        <div style={{ fontSize:11, color:'var(--t3)', marginTop:5 }}>{model.desc}</div>
+        {(() => {
+          const brands = [...new Set(MODELS.map(m => m.brand))];
+          const currentBrand = model.brand;
+          const modelsForBrand = MODELS.filter(m => m.brand === currentBrand);
+          const onBrandChange = (newBrand) => {
+            // Pick first model in the new brand
+            const firstInBrand = MODELS.find(m => m.brand === newBrand);
+            if (firstInBrand) f('model', firstInBrand.id);
+          };
+          const selectStyle = { ...S.input, cursor:'pointer', appearance:'none', WebkitAppearance:'none',
+            backgroundImage:`url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%23888' d='M6 8L0 0h12z'/%3E%3C/svg%3E")`,
+            backgroundRepeat:'no-repeat', backgroundPosition:'right 12px center', paddingRight:32 };
+          return (
+            <div style={{ display:'grid', gridTemplateColumns:'minmax(140px, 1fr) 2fr', gap:8 }}>
+              <select value={currentBrand} onChange={e => onBrandChange(e.target.value)} style={selectStyle}>
+                {brands.map(b => <option key={b} value={b}>{b}</option>)}
+              </select>
+              <select value={form.model} onChange={e => f('model', e.target.value)} style={selectStyle}>
+                {modelsForBrand.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+              </select>
+            </div>
+          );
+        })()}
+        <div style={{ fontSize:11, color:'var(--t3)', marginTop:8 }}>{model.desc}</div>
       </div>
 
       {/* Connection type */}
       <div style={{ marginBottom:14 }}>
         <label style={S.label}>Connection</label>
         <div style={{ display:'flex', gap:6, marginBottom:10 }}>
-          {CONN_TYPES.map(c => (
-            <button key={c.id} onClick={() => f('connectionType', c.id)} style={{
-              padding:'7px 14px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:600,
-              background: form.connectionType === c.id ? 'var(--acc-d)' : 'var(--bg3)',
-              border: `1.5px solid ${form.connectionType === c.id ? 'var(--acc)' : 'var(--bdr)'}`,
-              color: form.connectionType === c.id ? 'var(--acc)' : 'var(--t2)',
-            }}>
-              {c.icon} {c.label}
-            </button>
-          ))}
+          {CONN_TYPES.map(c => {
+            const isSelected = form.connectionType === c.id;
+            const isDisabled = !c.enabled;
+            return (
+              <button
+                key={c.id}
+                onClick={() => !isDisabled && f('connectionType', c.id)}
+                disabled={isDisabled}
+                title={c.note}
+                style={{
+                  padding:'7px 14px', borderRadius:8,
+                  cursor: isDisabled ? 'not-allowed' : 'pointer',
+                  fontFamily:'inherit', fontSize:12, fontWeight:600,
+                  background: isDisabled ? 'var(--bg2)' : (isSelected ? 'var(--acc-d)' : 'var(--bg3)'),
+                  border: `1.5px solid ${isSelected ? 'var(--acc)' : 'var(--bdr)'}`,
+                  color: isDisabled ? 'var(--t5)' : (isSelected ? 'var(--acc)' : 'var(--t2)'),
+                  opacity: isDisabled ? 0.55 : 1,
+                  position:'relative',
+                }}>
+                {c.icon} {c.label}
+                {isDisabled && <span style={{ marginLeft:6, fontSize:9, fontWeight:700, color:'var(--t5)', textTransform:'uppercase', letterSpacing:0.5 }}>Soon</span>}
+              </button>
+            );
+          })}
+        </div>
+        <div style={{ fontSize:11, color:'var(--t4)', marginBottom:6 }}>
+          {conn.note}
         </div>
 
         {form.connectionType !== 'usb' && (
@@ -187,6 +251,21 @@ function PrinterForm({ initial, onSave, onCancel }) {
         </div>
       </div>
 
+      {/* v4.6.30: Cash drawer. When ticked, cash payments that route through
+          a printer with this flag will automatically pulse the drawer open. */}
+      <div style={{ marginBottom:20 }}>
+        <label style={S.label}>Cash drawer</label>
+        <label style={{ display:'flex', alignItems:'center', gap:10, cursor:'pointer', padding:'10px 12px', borderRadius:8, background:'var(--bg3)', border:`1.5px solid ${form.cashDrawerAttached?'var(--acc)':'var(--bdr)'}` }}>
+          <input type="checkbox" checked={!!form.cashDrawerAttached} onChange={e => f('cashDrawerAttached', e.target.checked)} style={{ width:18, height:18, accentColor:'var(--acc)', cursor:'pointer' }}/>
+          <div>
+            <div style={{ fontSize:13, fontWeight:700, color: form.cashDrawerAttached ? 'var(--acc)' : 'var(--t2)' }}>Cash drawer is wired to this printer</div>
+            <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>
+              Ejects the drawer on every cash payment (ESC p pulse). You can also pulse it manually from the POS.
+            </div>
+          </div>
+        </label>
+      </div>
+
       <div style={{ display:'flex', gap:8 }}>
         <button onClick={onCancel} style={{ ...S.btn, background:'var(--bg3)', color:'var(--t2)', border:'1px solid var(--bdr)' }}>Cancel</button>
         <button onClick={() => onSave(form)} disabled={!form.name.trim()} style={{ ...S.btn, background: form.name.trim() ? 'var(--acc)' : 'var(--bg4)', color: form.name.trim() ? '#fff' : 'var(--t4)', opacity: form.name.trim() ? 1 : .5 }}>
@@ -198,6 +277,7 @@ function PrinterForm({ initial, onSave, onCancel }) {
 }
 
 export default function PrinterRegistry() {
+  const showToast = useStore(s => s.showToast);
   const [printers, setPrinters] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -215,24 +295,41 @@ export default function PrinterRegistry() {
   };
 
   const handleSave = async (form) => {
-    let updated;
-    if (form.id) {
-      updated = printers.map(p => p.id === form.id ? { ...form, port:9100 } : p);
-    } else {
-      const newPrinter = { ...form, port:9100, id:`prn-${Date.now()}`, status:'unknown', addedAt:Date.now() };
-      updated = [...printers, newPrinter];
-      await savePrinterToDB(newPrinter);
-    }
-    if (form.id) await savePrinterToDB({ ...form, port:9100 });
+    const printer = form.id
+      ? { ...form, port:9100 }
+      : { ...form, port:9100, id:`prn-${Date.now()}`, status:'unknown', addedAt:Date.now() };
+    const previous = printers;
+    const updated = form.id
+      ? printers.map(p => p.id === printer.id ? printer : p)
+      : [...printers, printer];
+
+    // Applied first so the list feels instant — and rolled back below if the row never
+    // landed, because persist() also rewrites the localStorage cache the POS prints from.
     persist(updated);
     setShowForm(false);
     setEditId(null);
+
+    const { error } = await savePrinterToDB(printer);
+    reportSave('printer', error);
+    if (error) {
+      persist(previous);
+      showToast?.(`"${printer.name}" was NOT saved — fix the connection and try again`, 'error');
+      return;
+    }
+    showToast?.(`"${printer.name}" saved`, 'success');
   };
 
   const handleDelete = async (id) => {
     if (!confirm('Remove this printer?')) return;
-    await deletePrinterFromDB(id);
+    const printer = printers.find(p => p.id === id);
+    const { error } = await deletePrinterFromDB(id);
+    reportSave('printer delete', error);
+    if (error) {
+      showToast?.(`"${printer?.name || 'Printer'}" was NOT removed — it is still registered`, 'error');
+      return;
+    }
     persist(printers.filter(p => p.id !== id));
+    showToast?.(`"${printer?.name || 'Printer'}" removed`, 'info');
   };
 
   const handleTest = async (printer) => {

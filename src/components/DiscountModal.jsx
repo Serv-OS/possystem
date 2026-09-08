@@ -1,7 +1,8 @@
 import { useState } from 'react';
-import { STAFF } from '../data/seed';
+import { useStore } from '../store';
+import { money, currencySymbol } from '../lib/currency';
 
-const PRESETS = [
+const FALLBACK_PRESETS = [
   { id:'staff50',  label:'Staff meal',       type:'percent', value:50,  requiresManager:false },
   { id:'staff_d',  label:'Staff drinks',      type:'percent', value:50,  requiresManager:false },
   { id:'loyalty',  label:'Loyalty 10%',       type:'percent', value:10,  requiresManager:false },
@@ -10,9 +11,27 @@ const PRESETS = [
   { id:'comp',     label:'Comp (100%)',        type:'percent', value:100, requiresManager:true  },
 ];
 
-const mgrs = STAFF.filter(s=>s.role==='Manager').map(s=>({pin:s.pin,name:s.name,id:s.id}));
+const managersFrom = (staffMembers) =>
+  (staffMembers || [])
+    .filter(s => s.role === 'Manager' && s.active !== false)
+    .map(s => ({ pin: s.pin, name: s.name, id: s.id }));
 
 export default function DiscountModal({ items, subtotal, onConfirm, onCancel }) {
+  const { staffMembers, staff: currentUser, discountPresets } = useStore();
+  // Use DB-driven presets if available, otherwise fall back to hardcoded defaults
+  const PRESETS = discountPresets?.length
+    ? discountPresets.map(d => ({
+        id: d.id, label: d.label || d.name, type: d.type, value: d.value,
+        requiresManager: d.requiresManager ?? false,
+        // v5.5.641: carry scope + categoryIds so a category-scoped preset auto-targets
+        // the matching items instead of asking the operator to pick them by hand.
+        scope: d.scope || 'global',
+        categoryIds: d.categoryIds || d.category_ids || [],
+      }))
+    : FALLBACK_PRESETS;
+  const mgrs = managersFrom(staffMembers);
+  const managerLoggedIn = currentUser?.role === 'Manager';
+
   const [step, setStep]         = useState('amount');  // amount | apply | pin
   const [selected, setSelected] = useState(null);       // preset id or 'custom'
   const [customType, setCT]     = useState('percent');
@@ -21,7 +40,7 @@ export default function DiscountModal({ items, subtotal, onConfirm, onCancel }) 
   const [itemSel, setItemSel]   = useState([]);         // selected item uids
   const [pin, setPin]           = useState('');
   const [pinErr, setPinErr]     = useState('');
-  const [manager, setManager]   = useState(null);
+  const [manager, setManager]   = useState(managerLoggedIn ? currentUser : null);
 
   const preset  = PRESETS.find(p=>p.id===selected);
   const needPin = preset?.requiresManager && !manager;
@@ -31,39 +50,54 @@ export default function DiscountModal({ items, subtotal, onConfirm, onCancel }) 
       const v = parseFloat(customVal)||0;
       return customType==='percent' ? base*v/100 : Math.min(v, base);
     }
-    if (preset) return base * preset.value / 100;
+    if (preset) return preset.type === 'amount' ? Math.min(preset.value, base) : base * preset.value / 100;
     return 0;
   };
 
   const canAdvance = selected && (selected!=='custom' || (parseFloat(customVal)>0));
 
-  const handleAdvance = () => {
-    if (needPin) { setStep('pin'); return; }
+  // Items that belong to the selected preset's category scope (auto-target — Bug fix:
+  // a category-scoped preset should know its own items, not ask the operator to pick).
+  const itemInCats = (item, cats) => !!cats?.length && (cats.includes(item.cat) || (Array.isArray(item.cats) && item.cats.some(c => cats.includes(c))));
+  const categoryUids = (preset?.scope === 'category' && preset.categoryIds?.length)
+    ? items.filter(i => !i.voided && itemInCats(i, preset.categoryIds)).map(i => i.uid)
+    : null;
+
+  // Build + emit the discount. Manager is passed explicitly so the auto-apply-after-PIN
+  // path doesn't read the not-yet-committed manager state.
+  const buildDiscount = (scopeVal, uids, mgr) => {
+    const activeItems = scopeVal==='check'
+      ? items.filter(i=>!i.voided)
+      : items.filter(i=>uids.includes(i.uid)&&!i.voided);
+    const base = scopeVal==='check' ? subtotal : activeItems.reduce((s,i)=>s+i.price*i.qty, 0);
+    const amount = calcAmount(base);
+    const label  = selected==='custom'
+      ? `Custom ${customType==='percent'?customVal+'%':money(parseFloat(customVal))}`
+      : preset.label;
+    const type   = selected==='custom' ? customType : preset.type;
+    const value  = selected==='custom' ? parseFloat(customVal)||0 : preset.value;
+    onConfirm({
+      id:`disc-${Date.now()}`, label, type, value, scope: scopeVal,
+      itemUids: scopeVal==='items' ? activeItems.map(i=>i.uid) : null,
+      amount, manager: mgr,
+    });
+  };
+
+  // After the amount (+ any manager auth) is chosen: a category-scoped preset AUTO-APPLIES
+  // to its matching items with no manual picking; everything else goes to the apply step.
+  const proceedAfterAuth = (mgr) => {
+    if (categoryUids && categoryUids.length) { buildDiscount('items', categoryUids, mgr); return; }
+    // Category preset but nothing in the basket matches → show step 2 (don't silently apply £0).
+    if (preset?.scope === 'category') { setScope('items'); setItemSel([]); }
     setStep('apply');
   };
 
-  const handleApply = () => {
-    const activeItems = scope==='check'
-      ? items.filter(i=>!i.voided)
-      : items.filter(i=>itemSel.includes(i.uid)&&!i.voided);
-
-    const base = scope==='check'
-      ? subtotal
-      : activeItems.reduce((s,i)=>s+i.price*i.qty, 0);
-
-    const amount  = calcAmount(base);
-    const label   = selected==='custom'
-      ? `Custom ${customType==='percent'?customVal+'%':'£'+parseFloat(customVal).toFixed(2)}`
-      : preset.label;
-    const type    = selected==='custom' ? customType : preset.type;
-    const value   = selected==='custom' ? parseFloat(customVal)||0 : preset.value;
-
-    onConfirm({
-      id:`disc-${Date.now()}`, label, type, value, scope,
-      itemUids: scope==='items' ? activeItems.map(i=>i.uid) : null,
-      amount, manager,
-    });
+  const handleAdvance = () => {
+    if (needPin) { setStep('pin'); return; }
+    proceedAfterAuth(manager);
   };
+
+  const handleApply = () => buildDiscount(scope, itemSel, manager);
 
   const toggleItem = (uid) =>
     setItemSel(s => s.includes(uid) ? s.filter(x=>x!==uid) : [...s, uid]);
@@ -74,7 +108,7 @@ export default function DiscountModal({ items, subtotal, onConfirm, onCancel }) 
     setPin(next);
     if (next.length===4) {
       const m = mgrs.find(x=>x.pin===next);
-      if (m) { setManager(m); setPinErr(''); setTimeout(()=>setStep('apply'),200); }
+      if (m) { setManager(m); setPinErr(''); setTimeout(()=>proceedAfterAuth(m),200); }
       else   { setPinErr('Incorrect manager PIN'); setTimeout(()=>setPin(''),600); }
     }
   };
@@ -107,7 +141,7 @@ export default function DiscountModal({ items, subtotal, onConfirm, onCancel }) 
                   <button key={p.id} onClick={()=>setSelected(p.id)} style={{padding:'10px 6px',borderRadius:10,cursor:'pointer',textAlign:'center',fontFamily:'inherit',border:`1.5px solid ${selected===p.id?'var(--acc)':'var(--bdr)'}`,background:selected===p.id?'var(--acc-d)':'var(--bg3)',position:'relative'}}>
                     {p.requiresManager&&<div style={{position:'absolute',top:4,right:4,width:6,height:6,borderRadius:'50%',background:'var(--acc)'}}/>}
                     <div style={{fontSize:11,fontWeight:700,color:selected===p.id?'var(--acc)':'var(--t1)',lineHeight:1.3}}>{p.label}</div>
-                    <div style={{fontSize:14,fontWeight:800,color:selected===p.id?'var(--acc)':'var(--t2)',marginTop:3,fontFamily:'DM Mono,monospace'}}>{p.value}%</div>
+                    <div style={{fontSize:14,fontWeight:800,color:selected===p.id?'var(--acc)':'var(--t2)',marginTop:3,fontFamily:'DM Mono,monospace'}}>{p.type==='amount'?`${currencySymbol()}${p.value}`:`${p.value}%`}</div>
                   </button>
                 ))}
               </div>
@@ -129,7 +163,7 @@ export default function DiscountModal({ items, subtotal, onConfirm, onCancel }) 
               <div style={{display:'flex',gap:8}}>
                 <button className="btn btn-ghost" style={{flex:1}} onClick={onCancel}>Cancel</button>
                 <button className="btn btn-acc" style={{flex:2,height:44}} disabled={!canAdvance} onClick={handleAdvance}>
-                  Next — choose items →
+                  {categoryUids?.length ? `Apply to ${categoryUids.length} item${categoryUids.length!==1?'s':''} →` : 'Next — choose items →'}
                 </button>
               </div>
             </>
@@ -147,7 +181,7 @@ export default function DiscountModal({ items, subtotal, onConfirm, onCancel }) 
                   <div style={{fontSize:11,color:'var(--t3)',marginTop:1}}>Apply to all {visibleItems.length} items</div>
                 </div>
                 <div style={{fontSize:15,fontWeight:800,color:scope==='check'?'var(--acc)':'var(--t2)',fontFamily:'DM Mono,monospace'}}>
-                  −£{calcAmount(subtotal).toFixed(2)}
+                  −{money(calcAmount(subtotal))}
                 </div>
               </button>
 
@@ -171,8 +205,8 @@ export default function DiscountModal({ items, subtotal, onConfirm, onCancel }) 
                           {item.mods?.length>0&&<div style={{fontSize:10,color:'var(--t3)'}}>{item.mods.map(m=>m.label).join(', ')}</div>}
                         </div>
                         <div style={{textAlign:'right',flexShrink:0}}>
-                          <div style={{fontSize:12,fontWeight:700,color:on?'var(--acc)':'var(--t2)',fontFamily:'DM Mono,monospace'}}>£{base.toFixed(2)}</div>
-                          {on&&<div style={{fontSize:10,color:'var(--grn)'}}>−£{calcAmount(base).toFixed(2)}</div>}
+                          <div style={{fontSize:12,fontWeight:700,color:on?'var(--acc)':'var(--t2)',fontFamily:'DM Mono,monospace'}}>{money(base)}</div>
+                          {on&&<div style={{fontSize:10,color:'var(--grn)'}}>−{money(calcAmount(base))}</div>}
                         </div>
                       </div>
                     );
@@ -185,7 +219,7 @@ export default function DiscountModal({ items, subtotal, onConfirm, onCancel }) 
                 <button className="btn btn-acc" style={{flex:2,height:44}}
                   disabled={scope==='items'&&itemSel.length===0}
                   onClick={handleApply}>
-                  Apply {selected&&`— −£${calcAmount(scope==='check'?subtotal:items.filter(i=>itemSel.includes(i.uid)).reduce((s,i)=>s+i.price*i.qty,0)).toFixed(2)}`}
+                  Apply {selected&&`— −${money(calcAmount(scope==='check'?subtotal:items.filter(i=>itemSel.includes(i.uid)).reduce((s,i)=>s+i.price*i.qty,0)))}`}
                 </button>
               </div>
             </>

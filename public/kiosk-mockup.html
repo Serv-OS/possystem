@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>RPOS Kiosk — Mockup</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; background: #1a1a1a; color: #f5f5f5; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; padding: 20px; gap: 30px; flex-wrap: wrap; }
+
+  /* Each kiosk frame is 480x854 (aspect-correct portrait at scale) */
+  .kiosk { position: relative; width: 480px; height: 854px; background: linear-gradient(180deg, #0e0e10 0%, #1a1a1f 100%); border-radius: 28px; overflow: hidden; box-shadow: 0 20px 80px rgba(0,0,0,0.6), 0 0 0 8px #2a2a30, 0 0 0 12px #0a0a0a; flex-shrink: 0; }
+  .kiosk-screen { position: absolute; inset: 0; transition: opacity 0.3s; display: flex; flex-direction: column; }
+  .kiosk-screen[hidden] { display: none; }
+  .kiosk-label { position: absolute; top: -36px; left: 50%; transform: translateX(-50%); font-size: 13px; font-weight: 600; color: #888; letter-spacing: 0.05em; text-transform: uppercase; white-space: nowrap; }
+
+  /* Status bar at top — fake for realism */
+  .statbar { display: flex; justify-content: space-between; padding: 12px 22px 6px; font-size: 12px; color: #888; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+
+  /* ─── SCREEN 1: ATTRACT (screensaver) ─── */
+  .attract { background: linear-gradient(135deg, #f97316 0%, #ea580c 50%, #c2410c 100%); position: relative; overflow: hidden; cursor: pointer; }
+  .attract::before { content: ""; position: absolute; inset: 0; background: radial-gradient(circle at 70% 30%, rgba(255,255,255,0.2), transparent 60%); pointer-events: none; }
+  .attract-video-area { flex: 1; display: flex; align-items: center; justify-content: center; flex-direction: column; padding: 40px; position: relative; z-index: 1; }
+  .attract-logo { font-size: 72px; font-weight: 800; letter-spacing: -0.04em; color: #fff; margin-bottom: 12px; line-height: 1; text-align: center; }
+  .attract-tagline { font-size: 18px; color: rgba(255,255,255,0.9); margin-bottom: 60px; text-align: center; font-weight: 500; }
+  .attract-poster { width: 280px; height: 280px; border-radius: 30px; background: rgba(255,255,255,0.15); backdrop-filter: blur(20px); border: 2px solid rgba(255,255,255,0.2); display: grid; place-items: center; font-size: 120px; box-shadow: 0 30px 60px rgba(0,0,0,0.3); margin-bottom: 60px; }
+  .attract-cta { background: #fff; color: #c2410c; padding: 22px 80px; border-radius: 100px; font-size: 22px; font-weight: 800; box-shadow: 0 10px 30px rgba(0,0,0,0.2); animation: pulse 2s infinite; letter-spacing: -0.02em; }
+  @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.04); } }
+  .attract-bottom { padding: 0 30px 30px; font-size: 13px; color: rgba(255,255,255,0.7); text-align: center; line-height: 1.4; position: relative; z-index: 1; }
+
+  /* ─── SCREEN 2: ORDER TYPE ─── */
+  .order-type { background: #0e0e10; padding: 0; }
+  .ot-hero { padding: 30px 28px 20px; }
+  .ot-title { font-size: 36px; font-weight: 800; letter-spacing: -0.03em; line-height: 1.1; margin-bottom: 8px; }
+  .ot-subtitle { font-size: 15px; color: #888; }
+  .ot-options { display: flex; flex-direction: column; gap: 16px; padding: 20px 28px; flex: 1; }
+  .ot-card { background: linear-gradient(135deg, #2a2a30 0%, #1f1f24 100%); border: 2px solid transparent; border-radius: 20px; padding: 28px; display: flex; align-items: center; gap: 20px; cursor: pointer; transition: all 0.15s; }
+  .ot-card:hover, .ot-card:active { border-color: #f97316; transform: translateY(-2px); }
+  .ot-icon { width: 70px; height: 70px; border-radius: 18px; background: rgba(249,115,22,0.15); display: grid; place-items: center; font-size: 38px; flex-shrink: 0; }
+  .ot-text-label { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+  .ot-text-desc { font-size: 13px; color: #888; }
+
+  /* ─── SCREEN 3: MENU ─── */
+  .menu-screen { background: #0e0e10; }
+  .menu-top { padding: 20px 22px 8px; flex-shrink: 0; border-bottom: 1px solid #222; }
+  .menu-top-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .menu-back { width: 38px; height: 38px; border-radius: 12px; background: #2a2a30; display: grid; place-items: center; font-size: 18px; cursor: pointer; }
+  .menu-cart-btn { display: flex; align-items: center; gap: 8px; background: #f97316; color: white; padding: 9px 16px; border-radius: 100px; font-weight: 700; font-size: 14px; cursor: pointer; }
+  .menu-cart-btn-zero { background: #2a2a30; color: #888; }
+  .menu-cart-count { background: rgba(255,255,255,0.25); width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; }
+  .menu-allergen-bar { background: rgba(234,179,8,0.1); border: 1px solid rgba(234,179,8,0.3); border-radius: 12px; padding: 10px 14px; margin-bottom: 12px; display: flex; align-items: center; gap: 10px; cursor: pointer; }
+  .menu-allergen-icon { font-size: 18px; }
+  .menu-allergen-text { flex: 1; font-size: 12.5px; color: #ddc270; font-weight: 500; }
+  .menu-allergen-chevron { color: #ddc270; font-size: 14px; }
+  .menu-cats { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 12px; scrollbar-width: none; }
+  .menu-cats::-webkit-scrollbar { display: none; }
+  .menu-cat-pill { padding: 8px 16px; background: #2a2a30; border-radius: 100px; font-size: 13px; font-weight: 600; white-space: nowrap; cursor: pointer; flex-shrink: 0; color: #aaa; }
+  .menu-cat-pill.active { background: #f97316; color: white; }
+  .menu-items { padding: 16px; flex: 1; overflow-y: auto; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-content: start; }
+  .menu-item { background: #1a1a1f; border: 1px solid #2a2a30; border-radius: 16px; overflow: hidden; cursor: pointer; transition: transform 0.1s; }
+  .menu-item:active { transform: scale(0.97); }
+  .menu-item-img { width: 100%; height: 130px; background: linear-gradient(135deg, #2a2a30, #1f1f24); display: grid; place-items: center; font-size: 50px; }
+  .menu-item-body { padding: 10px 12px 12px; }
+  .menu-item-name { font-size: 14px; font-weight: 700; margin-bottom: 3px; line-height: 1.2; }
+  .menu-item-desc { font-size: 11px; color: #888; line-height: 1.3; margin-bottom: 8px; min-height: 28px; }
+  .menu-item-row { display: flex; align-items: center; justify-content: space-between; }
+  .menu-item-price { font-size: 14px; font-weight: 700; color: #f97316; font-variant-numeric: tabular-nums; }
+  .menu-item-allergen-flag { font-size: 9px; padding: 2px 6px; border-radius: 4px; background: rgba(234,179,8,0.15); color: #ddc270; font-weight: 700; letter-spacing: 0.05em; }
+
+  /* ─── SCREEN 4: ITEM DETAIL ─── */
+  .item-screen { background: #0e0e10; }
+  .item-img-large { width: 100%; height: 320px; background: linear-gradient(135deg, #f97316, #ea580c); display: grid; place-items: center; font-size: 140px; position: relative; flex-shrink: 0; }
+  .item-back { position: absolute; top: 18px; left: 18px; width: 42px; height: 42px; border-radius: 14px; background: rgba(0,0,0,0.5); backdrop-filter: blur(10px); display: grid; place-items: center; font-size: 20px; cursor: pointer; }
+  .item-body { flex: 1; overflow-y: auto; padding: 22px 24px 16px; }
+  .item-name { font-size: 28px; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 6px; }
+  .item-desc { font-size: 14px; color: #aaa; line-height: 1.5; margin-bottom: 16px; }
+  .item-allergens { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 22px; }
+  .item-allergen-tag { padding: 5px 10px; background: rgba(234,179,8,0.12); border: 1px solid rgba(234,179,8,0.3); border-radius: 8px; font-size: 11px; color: #ddc270; font-weight: 600; }
+  .item-mod-group { margin-bottom: 22px; }
+  .item-mod-title { font-size: 14px; font-weight: 700; color: #ddd; margin-bottom: 4px; display: flex; align-items: baseline; justify-content: space-between; }
+  .item-mod-required { font-size: 10px; color: #f97316; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; }
+  .item-mod-hint { font-size: 11px; color: #777; margin-bottom: 10px; }
+  .item-mod-options { display: flex; flex-direction: column; gap: 8px; }
+  .item-mod-option { background: #1a1a1f; border: 2px solid #2a2a30; border-radius: 12px; padding: 14px 16px; display: flex; align-items: center; justify-content: space-between; cursor: pointer; transition: all 0.1s; }
+  .item-mod-option.selected { border-color: #f97316; background: rgba(249,115,22,0.06); }
+  .item-mod-radio { width: 20px; height: 20px; border-radius: 50%; border: 2px solid #444; display: grid; place-items: center; flex-shrink: 0; }
+  .item-mod-radio.selected { border-color: #f97316; }
+  .item-mod-radio.selected::after { content: ""; width: 10px; height: 10px; border-radius: 50%; background: #f97316; }
+  .item-mod-name { flex: 1; padding: 0 12px; font-size: 14px; font-weight: 500; }
+  .item-mod-price { font-size: 13px; color: #888; font-variant-numeric: tabular-nums; }
+  .item-cta-bar { padding: 14px 22px 22px; border-top: 1px solid #222; flex-shrink: 0; display: flex; align-items: center; gap: 12px; }
+  .item-qty { display: flex; align-items: center; gap: 14px; background: #1a1a1f; border-radius: 100px; padding: 4px; }
+  .item-qty-btn { width: 40px; height: 40px; border-radius: 50%; background: #2a2a30; display: grid; place-items: center; font-size: 18px; font-weight: 600; cursor: pointer; }
+  .item-qty-num { font-size: 18px; font-weight: 700; min-width: 16px; text-align: center; }
+  .item-add-btn { flex: 1; background: #f97316; color: white; padding: 14px 20px; border-radius: 100px; font-size: 16px; font-weight: 800; display: flex; align-items: center; justify-content: space-between; cursor: pointer; box-shadow: 0 8px 20px rgba(249,115,22,0.3); }
+
+  /* ─── SCREEN 5: CART ─── */
+  .cart-screen { background: #0e0e10; }
+  .cart-top { padding: 20px 22px 16px; flex-shrink: 0; border-bottom: 1px solid #222; display: flex; align-items: center; gap: 12px; }
+  .cart-title { font-size: 24px; font-weight: 800; letter-spacing: -0.02em; flex: 1; }
+  .cart-list { flex: 1; overflow-y: auto; padding: 8px 22px; }
+  .cart-row { padding: 14px 0; border-bottom: 1px solid #1a1a1f; }
+  .cart-row-top { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 6px; }
+  .cart-row-name { flex: 1; font-size: 15px; font-weight: 600; }
+  .cart-row-price { font-size: 15px; font-weight: 700; color: #f97316; font-variant-numeric: tabular-nums; }
+  .cart-row-mods { font-size: 12px; color: #888; margin-bottom: 8px; padding-left: 0; }
+  .cart-row-controls { display: flex; align-items: center; gap: 10px; }
+  .cart-row-qty { display: flex; align-items: center; gap: 10px; background: #1a1a1f; border-radius: 100px; padding: 3px; }
+  .cart-row-qty-btn { width: 30px; height: 30px; border-radius: 50%; background: #2a2a30; display: grid; place-items: center; font-size: 14px; cursor: pointer; }
+  .cart-row-qty-num { font-size: 14px; font-weight: 600; min-width: 14px; text-align: center; }
+  .cart-row-edit { font-size: 13px; color: #888; padding: 6px 12px; border-radius: 8px; cursor: pointer; }
+  .cart-totals { padding: 16px 22px; border-top: 1px solid #222; flex-shrink: 0; }
+  .cart-totals-row { display: flex; justify-content: space-between; font-size: 14px; color: #aaa; margin-bottom: 6px; }
+  .cart-totals-row.grand { font-size: 22px; color: #fff; font-weight: 800; padding-top: 10px; border-top: 1px solid #222; margin-top: 10px; margin-bottom: 0; }
+  .cart-totals-row .price { font-variant-numeric: tabular-nums; }
+  .cart-pay-bar { padding: 14px 22px 22px; flex-shrink: 0; }
+  .cart-pay-btn { width: 100%; background: #f97316; color: white; padding: 18px; border-radius: 16px; font-size: 18px; font-weight: 800; display: flex; align-items: center; justify-content: center; gap: 10px; cursor: pointer; box-shadow: 0 8px 20px rgba(249,115,22,0.3); }
+  .cart-add-more { display: block; text-align: center; padding: 12px; font-size: 13px; color: #888; cursor: pointer; }
+
+  /* ─── SCREEN 6: PAY ─── */
+  .pay-screen { background: #0e0e10; padding: 30px 28px; align-items: center; justify-content: center; text-align: center; }
+  .pay-amount-label { font-size: 14px; color: #888; margin-bottom: 8px; }
+  .pay-amount { font-size: 64px; font-weight: 900; letter-spacing: -0.03em; margin-bottom: 60px; font-variant-numeric: tabular-nums; }
+  .pay-device-area { width: 280px; height: 340px; border: 3px dashed #444; border-radius: 24px; display: grid; place-items: center; margin-bottom: 30px; position: relative; }
+  .pay-device-icon { font-size: 90px; opacity: 0.4; }
+  .pay-device-label { position: absolute; top: 20px; left: 50%; transform: translateX(-50%); font-size: 11px; color: #666; letter-spacing: 0.1em; text-transform: uppercase; }
+  .pay-arrow { font-size: 40px; color: #f97316; margin-bottom: 14px; animation: bounce 1.5s infinite; }
+  @keyframes bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(8px); } }
+  .pay-instruction { font-size: 22px; font-weight: 700; margin-bottom: 8px; }
+  .pay-substruction { font-size: 14px; color: #888; }
+  .pay-cancel { position: absolute; bottom: 30px; left: 50%; transform: translateX(-50%); font-size: 13px; color: #666; padding: 10px 20px; cursor: pointer; }
+
+  /* ─── SCREEN 7: LOYALTY (phone for receipt) ─── */
+  .loy-screen { background: #0e0e10; padding: 36px 28px; align-items: center; justify-content: flex-start; text-align: center; }
+  .loy-title { font-size: 30px; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 8px; }
+  .loy-sub { font-size: 14px; color: #888; margin-bottom: 30px; }
+  .loy-input { width: 100%; background: #1a1a1f; border: 2px solid #2a2a30; border-radius: 16px; padding: 18px 22px; font-size: 22px; color: #fff; font-family: inherit; outline: none; text-align: center; font-variant-numeric: tabular-nums; letter-spacing: 0.04em; margin-bottom: 16px; }
+  .loy-keypad { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; width: 100%; max-width: 320px; margin-bottom: 22px; }
+  .loy-key { background: #1a1a1f; border-radius: 14px; padding: 18px; font-size: 24px; font-weight: 600; cursor: pointer; }
+  .loy-key:active { background: #2a2a30; }
+  .loy-cta { width: 100%; background: #f97316; color: white; padding: 16px; border-radius: 14px; font-size: 16px; font-weight: 800; cursor: pointer; }
+  .loy-skip { background: transparent; color: #888; padding: 12px; border-radius: 14px; font-size: 14px; cursor: pointer; margin-top: 12px; }
+
+  /* ─── SCREEN 8: ORDER NUMBER ─── */
+  .ord-screen { background: linear-gradient(180deg, #1a4d2e 0%, #0d3520 100%); padding: 40px 28px; align-items: center; justify-content: center; text-align: center; }
+  .ord-tick { width: 100px; height: 100px; border-radius: 50%; background: #22c55e; display: grid; place-items: center; font-size: 50px; margin-bottom: 30px; box-shadow: 0 0 60px rgba(34,197,94,0.5); }
+  .ord-thanks { font-size: 24px; font-weight: 700; margin-bottom: 60px; }
+  .ord-num-label { font-size: 14px; color: rgba(255,255,255,0.7); letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 14px; }
+  .ord-num { font-size: 140px; font-weight: 900; letter-spacing: -0.05em; line-height: 1; margin-bottom: 14px; font-variant-numeric: tabular-nums; }
+  .ord-msg { font-size: 16px; color: rgba(255,255,255,0.85); margin-bottom: 60px; }
+  .ord-receipt { font-size: 13px; color: rgba(255,255,255,0.7); }
+
+  /* design notes panel */
+  .notes { width: 380px; flex-shrink: 0; }
+  .notes h2 { font-size: 18px; margin-bottom: 12px; color: #f97316; }
+  .notes h3 { font-size: 13px; margin: 18px 0 6px; color: #ddd; text-transform: uppercase; letter-spacing: 0.06em; }
+  .notes p, .notes li { font-size: 13px; color: #aaa; line-height: 1.6; }
+  .notes ul { padding-left: 18px; }
+  .notes .key { color: #f97316; font-weight: 600; }
+  .frame-wrap { display: flex; flex-direction: column; align-items: center; gap: 50px; padding-top: 50px; }
+
+  /* nav between screens */
+  .scrn-nav { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; background: #2a2a30; padding: 8px; border-radius: 100px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); z-index: 100; }
+  .scrn-btn { background: transparent; border: none; color: #aaa; padding: 8px 14px; font-size: 12px; font-weight: 600; border-radius: 100px; cursor: pointer; font-family: inherit; }
+  .scrn-btn.active { background: #f97316; color: #fff; }
+</style>
+</head>
+<body>
+<div class="frame-wrap">
+  <div class="kiosk" id="kiosk">
+
+    <!-- SCREEN 1: ATTRACT -->
+    <div class="kiosk-screen attract" id="s1" onclick="show(2)">
+      <div class="statbar"><span>12:34</span><span>📶 100%</span></div>
+      <div class="attract-video-area">
+        <div class="attract-poster">🍕</div>
+        <div class="attract-logo">FOOD HALL</div>
+        <div class="attract-tagline">Sourdough · Sandwiches · Bowls · More</div>
+        <div class="attract-cta">TAP TO ORDER</div>
+      </div>
+      <div class="attract-bottom">Tap anywhere to begin · Powered by Restaurant OS</div>
+    </div>
+
+    <!-- SCREEN 2: ORDER TYPE -->
+    <div class="kiosk-screen order-type" id="s2" hidden>
+      <div class="statbar"><span>12:34</span><span>🛒 0</span></div>
+      <div class="ot-hero">
+        <div class="ot-title">How would you<br>like your order?</div>
+        <div class="ot-subtitle">This affects pricing — eat in includes service</div>
+      </div>
+      <div class="ot-options">
+        <div class="ot-card" onclick="show(3)">
+          <div class="ot-icon">🍽️</div>
+          <div><div class="ot-text-label">Eat in</div><div class="ot-text-desc">Dine-in pricing · Table service</div></div>
+        </div>
+        <div class="ot-card" onclick="show(3)">
+          <div class="ot-icon">🥡</div>
+          <div><div class="ot-text-label">Takeaway</div><div class="ot-text-desc">Take-out pricing · Pickup at counter</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SCREEN 3: MENU -->
+    <div class="kiosk-screen menu-screen" id="s3" hidden>
+      <div class="statbar"><span>12:35</span><span>🛒 0 · £0.00</span></div>
+      <div class="menu-top">
+        <div class="menu-top-row">
+          <div class="menu-back" onclick="show(2)">←</div>
+          <div class="menu-cart-btn menu-cart-btn-zero">Cart <span class="menu-cart-count">0</span></div>
+        </div>
+        <div class="menu-allergen-bar">
+          <div class="menu-allergen-icon">⚠️</div>
+          <div class="menu-allergen-text">Have allergies? Tap to filter the menu</div>
+          <div class="menu-allergen-chevron">›</div>
+        </div>
+        <div class="menu-cats">
+          <div class="menu-cat-pill active">Sourdough Pizza</div>
+          <div class="menu-cat-pill">Sandwiches</div>
+          <div class="menu-cat-pill">Bowls</div>
+          <div class="menu-cat-pill">Sides</div>
+          <div class="menu-cat-pill">Drinks</div>
+          <div class="menu-cat-pill">Desserts</div>
+        </div>
+      </div>
+      <div class="menu-items">
+        <div class="menu-item" onclick="show(4)">
+          <div class="menu-item-img">🍕</div>
+          <div class="menu-item-body">
+            <div class="menu-item-name">Margherita</div>
+            <div class="menu-item-desc">Tomato, mozzarella, basil</div>
+            <div class="menu-item-row"><div class="menu-item-price">£12.50</div><div class="menu-item-allergen-flag">G·D</div></div>
+          </div>
+        </div>
+        <div class="menu-item" onclick="show(4)">
+          <div class="menu-item-img">🍕</div>
+          <div class="menu-item-body">
+            <div class="menu-item-name">Pepperoni</div>
+            <div class="menu-item-desc">Spicy pepperoni, mozzarella</div>
+            <div class="menu-item-row"><div class="menu-item-price">£14.00</div><div class="menu-item-allergen-flag">G·D</div></div>
+          </div>
+        </div>
+        <div class="menu-item">
+          <div class="menu-item-img">🥗</div>
+          <div class="menu-item-body">
+            <div class="menu-item-name">Truffle Mushroom</div>
+            <div class="menu-item-desc">Mixed mushrooms, truffle, fior di latte</div>
+            <div class="menu-item-row"><div class="menu-item-price">£15.50</div><div class="menu-item-allergen-flag">G·D</div></div>
+          </div>
+        </div>
+        <div class="menu-item">
+          <div class="menu-item-img">🌶️</div>
+          <div class="menu-item-body">
+            <div class="menu-item-name">Diavola</div>
+            <div class="menu-item-desc">Spicy salami, chilli, garlic</div>
+            <div class="menu-item-row"><div class="menu-item-price">£14.50</div><div class="menu-item-allergen-flag">G·D</div></div>
+          </div>
+        </div>
+        <div class="menu-item">
+          <div class="menu-item-img">🍕</div>
+          <div class="menu-item-body">
+            <div class="menu-item-name">Quattro Stagioni</div>
+            <div class="menu-item-desc">Ham, mushroom, artichoke, olives</div>
+            <div class="menu-item-row"><div class="menu-item-price">£15.00</div><div class="menu-item-allergen-flag">G·D</div></div>
+          </div>
+        </div>
+        <div class="menu-item">
+          <div class="menu-item-img">🌿</div>
+          <div class="menu-item-body">
+            <div class="menu-item-name">Vegan Garden</div>
+            <div class="menu-item-desc">Roast veg, vegan mozzarella, basil</div>
+            <div class="menu-item-row"><div class="menu-item-price">£13.50</div><div class="menu-item-allergen-flag">G</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SCREEN 4: ITEM DETAIL -->
+    <div class="kiosk-screen item-screen" id="s4" hidden>
+      <div class="item-img-large">🍕<div class="item-back" onclick="show(3)">←</div></div>
+      <div class="item-body">
+        <div class="item-name">Margherita</div>
+        <div class="item-desc">Sourdough base, San Marzano tomato, fior di latte mozzarella, fresh basil, extra virgin olive oil</div>
+        <div class="item-allergens">
+          <div class="item-allergen-tag">⚠ Gluten</div>
+          <div class="item-allergen-tag">⚠ Dairy</div>
+        </div>
+        <div class="item-mod-group">
+          <div class="item-mod-title"><span>Size</span><span class="item-mod-required">Required</span></div>
+          <div class="item-mod-hint">Pick one</div>
+          <div class="item-mod-options">
+            <div class="item-mod-option"><div class="item-mod-radio"></div><div class="item-mod-name">10 inch</div><div class="item-mod-price">£10.50</div></div>
+            <div class="item-mod-option selected"><div class="item-mod-radio selected"></div><div class="item-mod-name">12 inch</div><div class="item-mod-price">£12.50</div></div>
+            <div class="item-mod-option"><div class="item-mod-radio"></div><div class="item-mod-name">14 inch</div><div class="item-mod-price">£14.50</div></div>
+          </div>
+        </div>
+        <div class="item-mod-group">
+          <div class="item-mod-title"><span>Extra toppings</span><span class="item-mod-required" style="color:#888">Optional</span></div>
+          <div class="item-mod-hint">Up to 4 extras · £1.50 each</div>
+          <div class="item-mod-options">
+            <div class="item-mod-option"><div class="item-mod-radio"></div><div class="item-mod-name">Extra cheese</div><div class="item-mod-price">+£1.50</div></div>
+            <div class="item-mod-option"><div class="item-mod-radio"></div><div class="item-mod-name">Mushrooms</div><div class="item-mod-price">+£1.50</div></div>
+            <div class="item-mod-option"><div class="item-mod-radio"></div><div class="item-mod-name">Olives</div><div class="item-mod-price">+£1.50</div></div>
+          </div>
+        </div>
+      </div>
+      <div class="item-cta-bar">
+        <div class="item-qty"><div class="item-qty-btn">−</div><div class="item-qty-num">1</div><div class="item-qty-btn">+</div></div>
+        <div class="item-add-btn" onclick="show(5)"><span>Add to order</span><span>£12.50</span></div>
+      </div>
+    </div>
+
+    <!-- SCREEN 5: CART -->
+    <div class="kiosk-screen cart-screen" id="s5" hidden>
+      <div class="statbar"><span>12:38</span><span>🛒 3 · £39.00</span></div>
+      <div class="cart-top">
+        <div class="menu-back" onclick="show(3)">←</div>
+        <div class="cart-title">Your order</div>
+      </div>
+      <div class="cart-list">
+        <div class="cart-row">
+          <div class="cart-row-top"><div class="cart-row-name">Margherita · 12&quot;</div><div class="cart-row-price">£12.50</div></div>
+          <div class="cart-row-controls">
+            <div class="cart-row-qty"><div class="cart-row-qty-btn">−</div><div class="cart-row-qty-num">1</div><div class="cart-row-qty-btn">+</div></div>
+            <div class="cart-row-edit">Edit</div>
+          </div>
+        </div>
+        <div class="cart-row">
+          <div class="cart-row-top"><div class="cart-row-name">Pepperoni · 14&quot;</div><div class="cart-row-price">£16.00</div></div>
+          <div class="cart-row-mods">+ Extra cheese, + Mushrooms</div>
+          <div class="cart-row-controls">
+            <div class="cart-row-qty"><div class="cart-row-qty-btn">−</div><div class="cart-row-qty-num">1</div><div class="cart-row-qty-btn">+</div></div>
+            <div class="cart-row-edit">Edit</div>
+          </div>
+        </div>
+        <div class="cart-row">
+          <div class="cart-row-top"><div class="cart-row-name">Coke</div><div class="cart-row-price">£3.50</div></div>
+          <div class="cart-row-controls">
+            <div class="cart-row-qty"><div class="cart-row-qty-btn">−</div><div class="cart-row-qty-num">3</div><div class="cart-row-qty-btn">+</div></div>
+            <div class="cart-row-edit">Edit</div>
+          </div>
+        </div>
+        <div class="cart-add-more" onclick="show(3)">+ Add more items</div>
+      </div>
+      <div class="cart-totals">
+        <div class="cart-totals-row"><span>Subtotal</span><span class="price">£32.50</span></div>
+        <div class="cart-totals-row"><span>Service (10%)</span><span class="price">£3.25</span></div>
+        <div class="cart-totals-row grand"><span>Total</span><span class="price">£35.75</span></div>
+      </div>
+      <div class="cart-pay-bar">
+        <div class="cart-pay-btn" onclick="show(6)">Pay £35.75 →</div>
+      </div>
+    </div>
+
+    <!-- SCREEN 6: PAY -->
+    <div class="kiosk-screen pay-screen" id="s6" hidden>
+      <div class="pay-amount-label">Amount due</div>
+      <div class="pay-amount">£35.75</div>
+      <div class="pay-arrow">↓</div>
+      <div class="pay-instruction">Tap or insert card</div>
+      <div class="pay-substruction">on the device below</div>
+      <div class="pay-device-area" style="margin-top:30px">
+        <div class="pay-device-label">PAYMENT TERMINAL</div>
+        <div class="pay-device-icon">💳</div>
+      </div>
+      <div class="pay-cancel" onclick="show(5)">Cancel</div>
+      <div class="pay-cancel" style="bottom:60px;color:#f97316;cursor:pointer" onclick="show(7)">[demo: simulate paid →]</div>
+    </div>
+
+    <!-- SCREEN 7: LOYALTY -->
+    <div class="kiosk-screen loy-screen" id="s7" hidden>
+      <div class="loy-title">Receipt by text?</div>
+      <div class="loy-sub">Enter your mobile number — we will text your receipt and a £5 voucher off your next visit</div>
+      <div class="loy-input">07&nbsp;&nbsp;___ ___ ___</div>
+      <div class="loy-keypad">
+        <div class="loy-key">1</div><div class="loy-key">2</div><div class="loy-key">3</div>
+        <div class="loy-key">4</div><div class="loy-key">5</div><div class="loy-key">6</div>
+        <div class="loy-key">7</div><div class="loy-key">8</div><div class="loy-key">9</div>
+        <div class="loy-key" style="visibility:hidden"></div><div class="loy-key">0</div><div class="loy-key">⌫</div>
+      </div>
+      <div class="loy-cta" onclick="show(8)">Send receipt</div>
+      <div class="loy-skip" onclick="show(8)">No thanks, skip</div>
+    </div>
+
+    <!-- SCREEN 8: ORDER NUMBER -->
+    <div class="kiosk-screen ord-screen" id="s8" hidden>
+      <div class="ord-tick">✓</div>
+      <div class="ord-thanks">Thank you!</div>
+      <div class="ord-num-label">YOUR ORDER NUMBER</div>
+      <div class="ord-num">42</div>
+      <div class="ord-msg">We will call your number when ready.<br>Average wait: 8 mins</div>
+      <div class="ord-receipt">📱 Receipt sent to 07*** *** 893</div>
+      <div class="pay-cancel" style="bottom:30px;color:rgba(255,255,255,0.6)" onclick="show(1)">Reset to attract</div>
+    </div>
+
+  </div>
+
+  <div class="scrn-nav">
+    <button class="scrn-btn active" data-s="1">1·Attract</button>
+    <button class="scrn-btn" data-s="2">2·Type</button>
+    <button class="scrn-btn" data-s="3">3·Menu</button>
+    <button class="scrn-btn" data-s="4">4·Item</button>
+    <button class="scrn-btn" data-s="5">5·Cart</button>
+    <button class="scrn-btn" data-s="6">6·Pay</button>
+    <button class="scrn-btn" data-s="7">7·Loyalty</button>
+    <button class="scrn-btn" data-s="8">8·Done</button>
+  </div>
+</div>
+
+<script>
+  function show(n) {
+    for (let i = 1; i <= 8; i++) document.getElementById("s" + i).hidden = (i !== n);
+    document.querySelectorAll(".scrn-btn").forEach(b => b.classList.toggle("active", +b.dataset.s === n));
+    if (window.scrollY > 0) window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+  document.querySelectorAll(".scrn-btn").forEach(b => b.addEventListener("click", () => show(+b.dataset.s)));
+</script>
+</body>
+</html>

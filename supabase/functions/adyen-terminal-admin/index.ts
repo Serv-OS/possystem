@@ -1,0 +1,791 @@
+// supabase/functions/adyen-terminal-admin
+//
+// The Back Office's Adyen FLEET door — the Lightspeed-style "register the
+// terminal on the location" flow (Peter, 14 Aug: "I want this setup properly
+// with a proper flow"). AMS1-class terminals run Adyen's own software, so
+// there is no on-device claim code: registration = Management API reassign to
+// the venue's STORE + a linked ops terminal_devices row the charge path and
+// till-binding already understand.
+//
+// Actions (all BO-fenced):
+//   status       → processor, merchant, store mapping, Management-API scope probe
+//   ensure_store → create the venue's Adyen store + merchant_adyen_accounts row
+//   list         → Adyen fleet for the merchant, split store vs inventory,
+//                  joined to our terminal_devices links
+//   assign       → reassign terminal to the venue store + payment_devices row
+//                  + ops terminal_devices row (paired, ready to bind to a till)
+//   unlink       → retire the ops row (terminal stays boarded at Adyen)
+//
+// Auth: BO JWT → user_locations membership (or super_admin) — the ryft-terminals
+// fence, verbatim in spirit. All writes service-role.
+//
+// Scope: needs an API key with Management API "Terminals read/write" roles.
+// If ADYEN_MANAGEMENT_KEY (ADYEN_LIVE_MANAGEMENT_KEY for a live venue) is set
+// it is used for management calls; otherwise that set's API key. A 401/403
+// from Adyen surfaces as scope_missing so the BO can say exactly what to fix
+// instead of a dead button.
+//
+// PER VENUE ENVIRONMENT (7 Sep 2026): the venue's merchant_adyen_accounts
+// .environment ('test' | 'live') picks the secret set for every Management
+// and Terminal API call here. Two more actions manage it:
+//   environment     → { environment, liveConfigured, testConfigured, liveMissing, canSetEnvironment }
+//   set_environment → { environment: 'test' | 'live', reprovision?: true }
+//                     owner / super_admin only. Flips the venue's row (created
+//                     with environment only when it does not exist). Refused
+//                     with 409 + needs_reprovision while the row or its readers
+//                     were provisioned on the current environment, unless
+//                     reprovision is true (then the ids are cleared).
+
+import { createClient } from 'npm:@supabase/supabase-js@2';
+import {
+  managementBase, buildMenuInputRequest, buildAmountInputRequest, parseAmountInputResponse, buildDisplayImageRequest,
+  buildDisplayIdleRequest, newServiceId, adyenFetch, terminalEndpoint,
+  adyenConfig, adyenEnvForLocation, adyenSecretName, normalizeAdyenEnv, assertAdyenConfigured, type AdyenConfig,
+} from '../_shared/adyen.ts';
+
+const opsAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+const platformAdmin = createClient(
+  Deno.env.get('PLATFORM_SUPABASE_URL') ?? '',
+  Deno.env.get('PLATFORM_SUPABASE_SERVICE_ROLE_KEY') ?? Deno.env.get('PLATFORM_SERVICE_KEY') ?? '',
+);
+
+const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
+const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
+
+// Management API call with the VENUE'S config: its host and its management
+// key. A live venue without live keys throws the fail closed error before
+// any request leaves (caught by the handler's outer try).
+async function mgmt<T = Record<string, unknown>>(cfg: AdyenConfig, method: string, path: string, body?: unknown): Promise<{ ok: boolean; status: number; data: T }> {
+  assertAdyenConfigured(cfg);
+  const res = await fetch(`${managementBase(cfg)}${path}`, {
+    method,
+    headers: { 'X-API-Key': cfg.managementKey, 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  let data: T;
+  try { data = await res.json(); } catch { data = {} as T; }
+  return { ok: res.ok, status: res.status, data };
+}
+
+const scopeMissing = (status: number) => status === 401 || status === 403;
+
+// A store with no payment methods bricks its terminals ("no payment method
+// configured" on the reader). Request the card schemes for the store; test
+// auto-approves, live goes to Adyen review. Idempotent — "already exists"
+// style refusals are fine.
+async function ensurePaymentMethods(cfg: AdyenConfig, merchant: string, storeId: string): Promise<{ requested: string[]; errors: string[] }> {
+  const requested: string[] = [];
+  const errors: string[] = [];
+  for (const type of ['visa', 'mc', 'amex', 'maestro']) {
+    const r = await mgmt(cfg, 'POST', `/merchants/${merchant}/paymentMethodSettings`, {
+      type, storeIds: [storeId], currencies: ['GBP'], countries: ['GB'],
+    });
+    if (r.ok) requested.push(type);
+    else {
+      const msg = String((r.data as Record<string, unknown>)?.detail || (r.data as Record<string, unknown>)?.title || r.status);
+      if (/exist|already|duplicate/i.test(msg)) requested.push(type);
+      else errors.push(`${type}: ${msg}`);
+    }
+  }
+  return { requested, errors };
+}
+
+Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
+  try {
+    const body = await req.json().catch(() => ({}));
+    const action = String(body.action || 'status');
+    // `locationId` is accepted as an alias (the environment actions use it);
+    // it is fenced exactly like ops_location_id.
+    const opsLocationId = String(body.ops_location_id || body.locationId || body.location_id || '');
+    if (!opsLocationId || opsLocationId === 'loc-demo') return json({ error: 'ops_location_id required' }, 400);
+
+    // ── BO fence (the ryft-terminals pattern) ────────────────────────────────
+    const authHeader = req.headers.get('Authorization') || '';
+    const { data: { user: caller } } = await opsAdmin.auth.getUser(authHeader.replace('Bearer ', ''));
+    if (!caller) return json({ error: 'not authenticated' }, 401);
+    const [{ data: ul }, { data: prof }] = await Promise.all([
+      opsAdmin.from('user_locations').select('location_id').eq('user_id', caller.id).eq('location_id', opsLocationId).maybeSingle(),
+      opsAdmin.from('user_profiles').select('role').eq('id', caller.id).maybeSingle(),
+    ]);
+    if (!ul && prof?.role !== 'super_admin') return json({ error: 'No access to this location' }, 403);
+
+    // ── venue resolution: ops → platform → merchant mapping ──────────────────
+    const select = 'id, name, payment_processor';
+    let { data: loc } = await platformAdmin.from('locations').select(select).eq('ops_location_id', opsLocationId).maybeSingle();
+    if (!loc) ({ data: loc } = await platformAdmin.from('locations').select(select).eq('id', opsLocationId).maybeSingle());
+    if (!loc) return json({ error: 'location not found in platform DB' }, 404);
+
+    // Account row + the venue's environment in one wait. The environment
+    // picks the secret set for EVERY Adyen call below. The provisioning ids
+    // are read too: set_environment must know whether the row was set up on
+    // the OTHER environment (Adyen store, legal entity, balance account and
+    // reader ids are environment specific).
+    const [{ data: maa }, env] = await Promise.all([
+      platformAdmin.from('merchant_adyen_accounts')
+        .select('merchant_account, store_id, region, receive_payments_ok, legal_entity_id, account_holder_id, balance_account_id, split_profile_id, transfer_instrument_id, business_line_id')
+        .eq('location_id', loc.id).maybeSingle(),
+      adyenEnvForLocation(platformAdmin, loc.id),
+    ]);
+    const cfg = adyenConfig(env);
+    const liveCfg = adyenConfig('live');
+    const testCfg = adyenConfig('test');
+
+    // Can the venue actually WORK live? The api key and prefix make the set
+    // `configured`, but the online paths (adyen-checkout status, the Drop-in,
+    // booking_pay) also need the live client key and a merchant account. The
+    // switch must not unlock on a half set.
+    const liveMissing = [...liveCfg.missing];
+    if (!liveCfg.clientKey) liveMissing.push(adyenSecretName('live', 'clientKey'));
+    if (!maa?.merchant_account && !liveCfg.merchantAccount) liveMissing.push(adyenSecretName('live', 'merchantAccount'));
+    const liveReady = liveMissing.length === 0;
+    // Only the owner (or ServOS super admin) may move a venue between test
+    // cards and real money. Every other Back Office role can read the state.
+    const canSetEnvironment = prof?.role === 'owner' || prof?.role === 'super_admin';
+
+    // ── environment: read the venue's Adyen environment (never the values) ──
+    if (action === 'environment') {
+      return json({
+        ok: true,
+        environment: env,
+        liveConfigured: liveReady,             // api key, prefix, client key AND a merchant account
+        testConfigured: testCfg.configured,
+        liveMissing,                           // secret NAMES only
+        canSetEnvironment,
+      });
+    }
+
+    // ── set_environment: flip the venue between test and live ────────────────
+    // Owner or super_admin only. The upsert writes environment (plus
+    // updated_at) on an existing row and creates a row with environment only
+    // when none exists.
+    //
+    // PROVISIONING IS PER ENVIRONMENT. Adyen store ids, legal entity ids,
+    // account holder and balance account ids all belong to the environment
+    // that created them, and readers are boarded to one environment at a
+    // time. A row that still carries ids from the current environment cannot
+    // simply be flipped: every live call would carry test ids (store not
+    // found, terminalSettings 404, balances for the wrong account). So the
+    // flip is REFUSED with 409 while such ids are present, unless the caller
+    // sends reprovision: true, in which case the same upsert clears them and
+    // the venue starts store setup and reader registration again on the new
+    // environment. merchant_account stays (Adyen mirrors the name across
+    // environments); the panel says so.
+    //
+    // Flipping to live without the live keys is allowed but warned: that venue
+    // fails closed on every card call until the keys are set.
+    if (action === 'set_environment') {
+      if (!canSetEnvironment) return json({ error: 'Only the owner can change the payments environment' }, 403);
+      const raw = String(body.environment ?? '').trim().toLowerCase();
+      if (raw !== 'test' && raw !== 'live') return json({ error: "environment must be 'test' or 'live'" }, 400);
+      const next = normalizeAdyenEnv(raw);
+      const provisioned = ['store_id', 'legal_entity_id', 'account_holder_id', 'balance_account_id', 'split_profile_id', 'transfer_instrument_id', 'business_line_id']
+        .filter((k) => !!(maa as Record<string, unknown> | null)?.[k]);
+      const { count: readerCount } = await platformAdmin.from('payment_devices')
+        .select('id', { count: 'exact', head: true }).eq('location_id', loc.id).eq('processor', 'adyen').neq('status', 'retired');
+      const readers = Number(readerCount) || 0;
+      const provisionedOnCurrent = next !== env && (provisioned.length > 0 || readers > 0);
+      if (provisionedOnCurrent && body.reprovision !== true) {
+        const parts = [
+          provisioned.length ? 'payments store' : '',
+          readers ? `${readers} card reader${readers === 1 ? '' : 's'}` : '',
+        ].filter(Boolean);
+        const verb = parts.length > 1 || readers > 1 ? 'were' : 'was';
+        return json({
+          ok: false,
+          needs_reprovision: true,
+          error: `This venue's ${parts.join(' and ')} ${verb} set up on the ${env} system. Switching to ${next} clears that setup: run store setup and register the readers again afterwards.`,
+          provisioned,
+          readers,
+        }, 409);
+      }
+      const patch: Record<string, unknown> = { location_id: loc.id, environment: next, updated_at: new Date().toISOString() };
+      if (provisionedOnCurrent) {
+        Object.assign(patch, {
+          store_id: null, split_profile_id: null, legal_entity_id: null, account_holder_id: null, balance_account_id: null,
+          transfer_instrument_id: null, business_line_id: null, onboarding_link_url: null, onboarding_link_expires_at: null,
+          receive_payments_ok: false, payouts_ok: false, verification_status: null,
+        });
+      }
+      const { error: envErr } = await platformAdmin.from('merchant_adyen_accounts')
+        .upsert(patch, { onConflict: 'location_id' })
+        .select('location_id, environment').maybeSingle();
+      if (envErr) {
+        const hint = /environment|42703|does not exist/i.test(envErr.message)
+          ? ' (apply supabase/migrations/20260907_PLATFORM_adyen_environment.sql to the platform DB first)' : '';
+        return json({ ok: false, error: `environment write failed: ${envErr.message}${hint}` }, 500);
+      }
+      if (provisionedOnCurrent && readers > 0) {
+        // The platform registry rows point at readers boarded to the old
+        // environment. Retire them here (location_id is NOT NULL, so the row
+        // keeps its venue); the ops terminal_devices link rows stay until
+        // `assign` re-registers each reader on the new environment, which
+        // updates both rows in place.
+        const { error: pdErr } = await platformAdmin.from('payment_devices')
+          .update({ status: 'retired' })
+          .eq('location_id', loc.id).eq('processor', 'adyen');
+        if (pdErr) console.error('[adyen-terminal-admin] reader registry clear failed:', pdErr.message);
+      }
+      const warnings: string[] = [];
+      if (next === 'live' && !liveReady) {
+        warnings.push(`Live keys are not fully configured (${liveMissing.join(', ')}): this venue will refuse every card call until they are set.`);
+      }
+      if (provisionedOnCurrent) {
+        warnings.push(`Store and reader setup from the ${env} system was cleared. Run store setup and register the readers again on ${next}.${maa?.merchant_account ? ` The merchant account name (${maa.merchant_account}) was kept; check it exists on ${next}.` : ''}`);
+      }
+      console.log(`[adyen-terminal-admin] ${caller.id} set environment=${next} for ${loc.id} (was ${env}${provisionedOnCurrent ? ', reprovision' : ''})`);
+      return json({ ok: true, environment: next, previous: env, liveConfigured: liveReady, reprovisioned: provisionedOnCurrent, warning: warnings.join(' ') || null });
+    }
+
+    const merchant = maa?.merchant_account || cfg.merchantAccount;
+    if (!merchant) return json({ error: `no merchant account configured for card payments (${adyenSecretName(cfg.env, 'merchantAccount')})` }, 500);
+
+    // ── status: everything the panel needs to decide what to show ────────────
+    if (action === 'status') {
+      const probe = await mgmt(cfg, 'GET', `/merchants/${merchant}/stores?pageSize=1`);
+      // v5.6.96 — THE structural probe for per-venue balances (Financial services
+      // build): does this venue's STORE carry a splitConfiguration, and does that
+      // point at a PER-VENUE balance account or the platform's liable account?
+      // Research: balances/payouts per venue exist ONLY if a per-venue balance
+      // account exists; a store alone routes payments and nothing else. Fired
+      // from the panel's normal status load and logged durably so no extra
+      // clicks are needed to answer it.
+      if (maa?.store_id) {
+        mgmt(cfg, 'GET', `/stores/${encodeURIComponent(maa.store_id)}`).then((sr) => {
+          void platformAdmin.from('adyen_webhook_events').insert({
+            event_key: `probe:store:${maa.store_id}:${Date.now()}`,
+            raw: { httpStatus: sr.status, store: sr.data ?? null },
+          }).then(() => {}, () => {});
+        }).catch(() => {});
+      }
+      return json({
+        ok: true,
+        venue: loc.name,
+        processor: loc.payment_processor || 'stripe',
+        merchant,
+        environment: cfg.env,
+        liveConfigured: liveReady,
+        storeId: maa?.store_id || null,
+        receivePaymentsOk: maa?.receive_payments_ok ?? null,
+        scopeOk: !scopeMissing(probe.status),
+        scopeError: scopeMissing(probe.status)
+          ? `The payments API key has no Management (Terminals) role. Contact ServOS support (technical: add the role to the API credential, or set ${adyenSecretName(cfg.env, 'managementKey')}).`
+          : null,
+      });
+    }
+
+    // ── ensure_store: the venue's physical store at Adyen + our mapping row ──
+    if (action === 'ensure_store') {
+      if (maa?.store_id) return json({ ok: true, storeId: maa.store_id, existing: true });
+      const a = (body.address || {}) as Record<string, string>;
+      const payload = {
+        description: String(body.description || loc.name || 'ServOS venue').slice(0, 100),
+        shopperStatement: String(body.shopper_statement || loc.name || 'ServOS').replace(/[^a-zA-Z0-9 .,'-]/g, '').slice(0, 22) || 'ServOS',
+        phoneNumber: String(body.phone || '+441234567890'),
+        address: {
+          country: String(a.country || 'GB'),
+          line1: String(a.line1 || '1 High Street'),
+          city: String(a.city || 'London'),
+          postalCode: String(a.postal_code || 'EC1A 1AA'),
+        },
+      };
+      const r = await mgmt(cfg, 'POST', `/merchants/${merchant}/stores`, payload);
+      if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
+      if (!r.ok) return json({ ok: false, error: (r.data as Record<string, unknown>)?.detail || (r.data as Record<string, unknown>)?.title || `store create failed (${r.status})` }, 200);
+      const storeId = String((r.data as Record<string, unknown>).id || '');
+      const { error: upErr } = await platformAdmin.from('merchant_adyen_accounts').upsert({
+        location_id: loc.id, merchant_account: merchant, store_id: storeId,
+        region: 'EU', receive_payments_ok: true,
+      }, { onConflict: 'location_id' });
+      if (upErr) return json({ ok: false, error: `store created (${storeId}) but mapping write failed: ${upErr.message}` }, 500);
+      const pm = await ensurePaymentMethods(cfg, merchant, storeId);
+      return json({ ok: true, storeId, existing: false, paymentMethods: pm });
+    }
+
+    // Everything below needs the store mapping.
+    if (!maa?.store_id) return json({ ok: false, error: 'no_store', hint: 'Run ensure_store first — the venue has no payments store yet.' }, 200);
+
+    // ── ensure_payment_methods: repair a store missing its card schemes ──────
+    if (action === 'ensure_payment_methods') {
+      const pm = await ensurePaymentMethods(cfg, merchant, maa.store_id as string);
+      return json({ ok: pm.errors.length === 0, ...pm });
+    }
+
+    // ── list: merchant fleet split store vs inventory, joined to our links ───
+    if (action === 'list') {
+      const r = await mgmt<{ data?: Record<string, unknown>[] }>(cfg, 'GET', `/terminals?merchantIds=${encodeURIComponent(merchant)}&pageSize=100`);
+      if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
+      if (!r.ok) return json({ ok: false, error: `terminal list failed (${r.status})` }, 200);
+      const { data: links } = await opsAdmin.from('terminal_devices')
+        .select('id, label, adyen_terminal_id, bound_pos_device_id, status, last_seen_at, tip_config, modes, idle_screen')
+        .eq('location_id', opsLocationId).not('adyen_terminal_id', 'is', null).neq('status', 'retired');
+      const linkBy = new Map((links || []).map((l) => [String(l.adyen_terminal_id), l]));
+      const rows = (r.data.data || []).map((t) => {
+        const asn = (t.assignment || {}) as Record<string, unknown>;
+        return {
+          id: t.id, model: t.model, serialNumber: t.serialNumber,
+          firmwareVersion: t.firmwareVersion || null,
+          lastActivityAt: t.lastActivityAt || null,
+          onStore: asn.storeId === maa.store_id,
+          assignmentStatus: asn.status || null,
+          link: linkBy.get(String(t.id)) || null,
+        };
+      });
+      // v5.6.81 — app terminals waiting for a POIID: a paired terminal_devices row
+      // at this venue that a DEVICE owns (self-registered by our MPOS wrapper on an
+      // Adyen Android terminal, then claimed by code) and that no POIID is on yet.
+      // The panel offers these when registering, so the link lands on the row the
+      // physical device can actually authenticate as. See 'assign' → adopt.
+      const { data: appTerms } = await opsAdmin.from('terminal_devices')
+        .select('id, label, serial_number, last_seen_at, app_version')
+        .eq('location_id', opsLocationId).eq('status', 'paired').eq('active', true)
+        .is('adyen_terminal_id', null).is('ryft_terminal_id', null)
+        .order('last_seen_at', { ascending: false }).limit(20);
+
+      return json({
+        ok: true,
+        store: rows.filter((x) => x.onStore),
+        inventory: rows.filter((x) => !x.onStore),
+        appTerminals: appTerms ?? [],
+      });
+    }
+
+    // ── find_by_serial: locate a boxed reader anywhere the credential sees ───
+    // A fresh reader boards to COMPANY inventory, which the merchant-filtered
+    // list can't show. The operator types the serial off the box label; this
+    // searches credential-wide and returns candidates for assign.
+    if (action === 'find_by_serial') {
+      const serial = String(body.serial || '').replace(/[^a-zA-Z0-9]/g, '');
+      if (serial.length < 6) return json({ ok: false, error: 'Type the full serial number from the label on the reader (or its box).' }, 200);
+      const r = await mgmt<{ data?: Record<string, unknown>[] }>(cfg, 'GET', `/terminals?searchQuery=${encodeURIComponent(serial)}&pageSize=20`);
+      if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
+      if (!r.ok) return json({ ok: false, error: `search failed (${r.status})` }, 200);
+      const matches = (r.data.data || []).map((t) => {
+        const asn = (t.assignment || {}) as Record<string, unknown>;
+        return {
+          id: t.id, model: t.model, serialNumber: t.serialNumber,
+          firmwareVersion: t.firmwareVersion || null, lastActivityAt: t.lastActivityAt || null,
+          onStore: asn.storeId === maa.store_id,
+          assignmentStatus: asn.status || null,
+        };
+      });
+      return json({ ok: true, matches });
+    }
+
+    // ── assign: board onto the venue store + both link rows ──────────────────
+    if (action === 'assign') {
+      const terminalId = String(body.terminal_id || '');
+      if (!terminalId) return json({ error: 'terminal_id required' }, 400);
+      const label = String(body.label || '').slice(0, 60) || terminalId;
+
+      // 1. Adyen-side: put the terminal on the venue's store (no-op if already there).
+      const re = await mgmt(cfg, 'POST', `/terminals/${encodeURIComponent(terminalId)}/reassign`, { storeId: maa.store_id });
+      if (scopeMissing(re.status)) return json({ ok: false, error: 'scope_missing' }, 200);
+      // 409/422 "already assigned" is fine — anything else refuses loudly.
+      if (!re.ok && re.status !== 409 && re.status !== 422) {
+        return json({ ok: false, error: (re.data as Record<string, unknown>)?.detail || `reassign failed (${re.status})` }, 200);
+      }
+
+      const serial = terminalId.includes('-') ? terminalId.split('-').slice(1).join('-') : terminalId;
+
+      // 2. Platform registry row (billing/fleet visibility) — keyed on the POIID.
+      const { data: pdExisting } = await platformAdmin.from('payment_devices')
+        .select('id').eq('adyen_terminal_id', terminalId).maybeSingle();
+      if (pdExisting) {
+        await platformAdmin.from('payment_devices')
+          .update({ location_id: loc.id, label, status: 'online', processor: 'adyen' })
+          .eq('id', pdExisting.id);
+      } else {
+        const { error: pdErr } = await platformAdmin.from('payment_devices').insert({
+          location_id: loc.id, processor: 'adyen', adyen_terminal_id: terminalId,
+          serial_number: serial, label, connection_kind: 'network', device_type: String(terminalId.split('-')[0] || 'AMS1'), status: 'online',
+        });
+        if (pdErr) return json({ ok: false, error: `platform registry write failed: ${pdErr.message}` }, 500);
+      }
+
+      // 3. Ops link row — what the charge path, till binding and the POS status
+      // drawer all read. AMS1 has no on-device app, so no claim code: the row
+      // is born 'paired'. device_uid is NOT NULL default auth.uid(), which is
+      // NULL under service-role — synthesize one.
+      //
+      // ── v5.6.81: ADOPT AN APP TERMINAL'S OWN ROW RATHER THAN MINTING A RIVAL ──
+      //
+      // An S1F2L (or S1E2L / S1E4 Pro) running our MPOS wrapper is not an AMS1: it
+      // DOES have an on-device app, it self-registers via register_terminal_device,
+      // and a manager claims it by code in Back Office → Card readers. That row
+      // carries the DEVICE'S OWN device_uid, which is the identity every on-device
+      // path depends on — _terminal_for_caller, terminal_jobs' SELECT policy and
+      // adyen-terminal-charge's target-terminal fence all resolve through it.
+      //
+      // The synthesized-device_uid row below can never serve that device: keyed on
+      // the POIID with a random uid, it would leave the physical terminal holding a
+      // paired row with NO POIID (so prepare_local answers 'terminal_not_linked')
+      // beside a POIID row it cannot authenticate as. Two rows, one machine, and no
+      // working payment. So: if this venue already has a claimed app-terminal row
+      // waiting for a POIID, put the POIID on THAT row.
+      //
+      // Matched either explicitly (`terminal_device_id`, chosen by the operator from
+      // the picker in AdyenTerminals) or automatically by hardware serial — which
+      // only lines up when Build.getSerial() returned the real one, hence the picker.
+      const adoptId = String(body.terminal_device_id || '');
+      let adopt: { id: string } | null = null;
+      if (adoptId) {
+        const { data: cand } = await opsAdmin.from('terminal_devices')
+          .select('id, location_id, status, active')
+          .eq('id', adoptId).maybeSingle();
+        // Venue-fenced: an id from the client can only ever name a row at the venue
+        // this caller already proved access to.
+        if (!cand || cand.location_id !== opsLocationId || cand.status !== 'paired' || cand.active !== true) {
+          return json({ ok: false, error: 'That paired terminal is not at this venue (or is no longer active).' }, 200);
+        }
+        adopt = { id: cand.id };
+      } else {
+        const { data: bySerial } = await opsAdmin.from('terminal_devices')
+          .select('id').eq('location_id', opsLocationId).eq('serial_number', serial)
+          .eq('status', 'paired').eq('active', true).is('adyen_terminal_id', null).maybeSingle();
+        if (bySerial) adopt = { id: bySerial.id };
+      }
+
+      if (adopt) {
+        // Free idx_td_adyen (unique POIID among paired rows) before writing it here.
+        // Scoped to this venue: a serial/POIID collision must never let one tenant
+        // retire another's terminal.
+        await opsAdmin.from('terminal_devices')
+          .update({ status: 'retired', active: false })
+          .eq('adyen_terminal_id', terminalId).eq('location_id', opsLocationId).neq('id', adopt.id);
+        const { error: adErr } = await opsAdmin.from('terminal_devices')
+          .update({
+            adyen_terminal_id: terminalId, label, location_id: opsLocationId,
+            status: 'paired', active: true, claimed_at: new Date().toISOString(),
+          })
+          .eq('id', adopt.id);
+        if (adErr) return json({ ok: false, error: `terminal link write failed: ${adErr.message}` }, 500);
+        console.log(`[adyen-terminal-admin] adopted app-terminal row ${adopt.id} for POIID ${terminalId} (${adoptId ? 'operator-chosen' : 'serial match'})`);
+        return json({ ok: true, terminalDeviceId: adopt.id, poiid: terminalId, adopted: true });
+      }
+
+      const { data: tdExisting } = await opsAdmin.from('terminal_devices')
+        .select('id, status').eq('adyen_terminal_id', terminalId).maybeSingle();
+      let terminalDeviceId: string;
+      if (tdExisting) {
+        await opsAdmin.from('terminal_devices')
+          .update({ location_id: opsLocationId, label, status: 'paired', active: true, claimed_at: new Date().toISOString() })
+          .eq('id', tdExisting.id);
+        terminalDeviceId = tdExisting.id;
+      } else {
+        const { data: td, error: tdErr } = await opsAdmin.from('terminal_devices').insert({
+          device_uid: crypto.randomUUID(),
+          serial_number: serial,
+          location_id: opsLocationId,
+          label,
+          status: 'paired',
+          active: true,
+          claimed_at: new Date().toISOString(),
+          adyen_terminal_id: terminalId,
+        }).select('id').maybeSingle();
+        if (tdErr || !td) return json({ ok: false, error: `terminal link write failed: ${tdErr?.message || 'no row'}` }, 500);
+        terminalDeviceId = td.id;
+      }
+      return json({ ok: true, terminalDeviceId, poiid: terminalId });
+    }
+
+    // ── sync_gratuities: BO tipping percentages → the reader's tip screen ────
+    if (action === 'sync_gratuities') {
+      // Adyen's gratuity presets take WHOLE percentages only — "12.5%" is
+      // rejected as an invalid JSON value (hit live 14 Aug). Round + dedupe.
+      const pcts = [...new Set((Array.isArray(body.percentages) ? body.percentages : [5, 10, 15])
+        .map((n: unknown) => Math.round(Number(n)))
+        .filter((n: number) => Number.isFinite(n) && n > 0 && n <= 100))].slice(0, 4);
+      const gratuities = [{
+        currency: 'GBP',
+        usePredefinedTipEntries: true,
+        predefinedTipEntries: pcts.map((n: number) => `${n}%`),
+        allowCustomAmount: body.allow_custom !== false,
+      }];
+      const r = await mgmt(cfg, 'PATCH', `/stores/${maa.store_id}/terminalSettings`, { gratuities });
+      if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
+      if (!r.ok) return json({ ok: false, error: (r.data as Record<string, unknown>)?.detail || `gratuities update failed (${r.status})` }, 200);
+      return json({ ok: true, presets: pcts });
+    }
+
+    // ── standalone (manual payments ON the reader): per-terminal setting ─────
+    // Staff type the amount on the reader itself — Adyen books it against the
+    // store and it arrives via the webhook; it does NOT attach to a POS check.
+    if (action === 'standalone_get') {
+      const tid = String(body.terminal_id || '');
+      if (!tid) return json({ error: 'terminal_id required' }, 400);
+      const r = await mgmt<Record<string, unknown>>(cfg, 'GET', `/terminals/${encodeURIComponent(tid)}/terminalSettings`);
+      if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
+      const st = (r.data?.standalone || {}) as Record<string, unknown>;
+      return json({ ok: true, enabled: st.enableStandalone === true });
+    }
+    if (action === 'standalone_set') {
+      const tid = String(body.terminal_id || '');
+      if (!tid) return json({ error: 'terminal_id required' }, 400);
+      const r = await mgmt(cfg, 'PATCH', `/terminals/${encodeURIComponent(tid)}/terminalSettings`, {
+        standalone: { enableStandalone: body.enabled === true, currencyCode: 'GBP' },
+      });
+      if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
+      if (!r.ok) return json({ ok: false, error: (r.data as Record<string, unknown>)?.detail || `standalone update failed (${r.status})` }, 200);
+      return json({ ok: true, enabled: body.enabled === true });
+    }
+
+    // ── settings_probe: raw store terminalSettings groups (shape discovery) ──
+    if (action === 'settings_probe') {
+      const r = await mgmt<Record<string, unknown>>(cfg, 'GET', `/stores/${maa.store_id}/terminalSettings`);
+      if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
+      const d = r.data || {};
+      return json({ ok: true, keys: Object.keys(d), nexo: d.nexo ?? null, payAtTable: d.payAtTable ?? null, standalone: d.standalone ?? null, gratuities: d.gratuities ?? null });
+    }
+
+    // ── set_pay_at_table: enable the reader's own Pay-at-table journey ───────
+    if (action === 'set_pay_at_table') {
+      const r = await mgmt(cfg, 'PATCH', `/stores/${maa.store_id}/terminalSettings`, {
+        payAtTable: { enablePayAtTable: body.enabled !== false, paymentInstrument: 'Card' },
+      });
+      if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
+      if (!r.ok) return json({ ok: false, error: (r.data as Record<string, unknown>)?.detail || `payAtTable update failed (${r.status})` }, 200);
+      return json({ ok: true });
+    }
+
+    // ── set_event_url_terminal: same, but at TERMINAL level (firmware quirk) ─
+    if (action === 'set_event_url_terminal') {
+      const tid = String(body.terminal_id || '');
+      const url = String(body.url || '');
+      if (!tid || !/^https:\/\//.test(url)) return json({ error: 'terminal_id + https url required' }, 400);
+      const r = await mgmt(cfg, 'PATCH', `/terminals/${encodeURIComponent(tid)}/terminalSettings`, {
+        nexo: { eventUrls: { eventLocalUrls: [], eventPublicUrls: [{ url }] } },
+      });
+      if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
+      if (!r.ok) return json({ ok: false, error: JSON.stringify(r.data).slice(0, 300) }, 200);
+      return json({ ok: true });
+    }
+
+    // ── set_event_url: point terminal event notifications at our endpoint ────
+    // Docs: eventPublicUrls objects carry EXPLICIT username/password fields
+    // (basic auth) — never credentials inside the url string.
+    if (action === 'set_event_url') {
+      const url = String(body.url || '');
+      if (!/^https:\/\//.test(url)) return json({ error: 'https url required' }, 400);
+      const entry: Record<string, unknown> = { url };
+      if (body.username) entry.username = String(body.username);
+      if (body.password) entry.password = String(body.password);
+      const r = await mgmt(cfg, 'PATCH', `/stores/${maa.store_id}/terminalSettings`, {
+        nexo: { eventUrls: { eventLocalUrls: [], eventPublicUrls: [entry] } },
+      });
+      if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
+      if (!r.ok) return json({ ok: false, error: JSON.stringify(r.data).slice(0, 300) }, 200);
+      return json({ ok: true });
+    }
+
+    // ── test_menu: render the pay-at-table MENU on a reader right now ────────
+    // Drives the exact nexo Input message the responder sends, with the venue's
+    // real open tables — the hardware shape-test without a button press.
+    if (action === 'test_menu') {
+      const tid = String(body.terminal_id || '');
+      if (!tid) return json({ error: 'terminal_id required' }, 400);
+      const { data: term } = await opsAdmin.from('terminal_devices')
+        .select('id, location_id').eq('adyen_terminal_id', tid).eq('status', 'paired').maybeSingle();
+      if (!term) return json({ error: 'terminal not linked' }, 404);
+      const [{ data: sess }, { data: floor }] = await Promise.all([
+        opsAdmin.from('active_sessions').select('table_id, total_minor').eq('location_id', term.location_id),
+        opsAdmin.from('floor_tables').select('id, label').eq('location_id', term.location_id),
+      ]);
+      const billBy = new Map((sess || []).map((r) => [String(r.table_id), Number(r.total_minor) || 0]));
+      const entries = (floor || [])
+        .filter((f) => billBy.has(String(f.id)))
+        .sort((a, b) => String(a.label).localeCompare(String(b.label), undefined, { numeric: true }))
+        .slice(0, 20)
+        .map((f) => `${f.label}  ·  £${((billBy.get(String(f.id)) || 0) / 100).toFixed(2)}`);
+      if (!entries.length) entries.push('No open tables');
+      const menu = buildMenuInputRequest({
+        poiid: tid, saleId: 'servos-menutest', serviceId: newServiceId(),
+        title: 'Pay at table — choose the table', entries,
+      });
+      const r = await adyenFetch('POST', terminalEndpoint(merchant, tid, 'sync', (maa?.region === 'US') ? 'us' : 'eu', cfg), menu, { cfg, timeoutMs: 75_000 });
+      return json({ ok: r.ok, status: r.status, entries, response: r.data }, 200);
+    }
+
+    // ── test_amount: render the split AMOUNT-ENTRY screen on a reader now ────
+    // Hardware shape-test for the DecimalString Input (split payments, task
+    // #103) — returns the raw response so the parsed amount can be verified
+    // without running the whole pay-at-table flow.
+    if (action === 'test_amount') {
+      const tid = String(body.terminal_id || '');
+      if (!tid) return json({ error: 'terminal_id required' }, 400);
+      const msg = buildAmountInputRequest({
+        poiid: tid, saleId: 'servos-amttest', serviceId: newServiceId(),
+        title: 'Split — enter amount to pay',
+      });
+      const r = await adyenFetch('POST', terminalEndpoint(merchant, tid, 'sync', (maa?.region === 'US') ? 'us' : 'eu', cfg), msg, { cfg, timeoutMs: 75_000 });
+      return json({ ok: r.ok, status: r.status, parsed: parseAmountInputResponse(r.data), response: r.data }, 200);
+    }
+
+    // ── logos_get: does Adyen even acknowledge a standby logo for this model? ─
+    // The /terminalLogos model enum in the docs lists S1F2 but neither AMS1 nor
+    // S1F2L. Ground truth per terminal, not per docs.
+    if (action === 'logos_get') {
+      const tid = String(body.terminal_id || '');
+      if (!tid) return json({ error: 'terminal_id required' }, 400);
+      const r = await mgmt<Record<string, unknown>>(cfg, 'GET', `/terminals/${encodeURIComponent(tid)}/terminalLogos`);
+      const d = r.data as Record<string, unknown>;
+      return json({
+        ok: r.ok, status: r.status,
+        // never echo half a megabyte of base64 back to the browser
+        hasLogo: !!d?.data, logoChars: d?.data ? String(d.data).length : 0,
+        raw: d?.data ? { ...d, data: undefined } : d,
+      });
+    }
+
+    // ── test_image: push the ServOS logo as a FULL-SCREEN held display ───────
+    // Docs: MessageRef + ReferenceID 'Image', base64 in OutputText, no
+    // MinimumDisplayTime => the image holds until the next request. The
+    // screensaver-by-push experiment: if this lands and holds, idle branding on
+    // Adyen-software readers is a solved problem.
+    if (action === 'test_image') {
+      const tid = String(body.terminal_id || '');
+      if (!tid) return json({ error: 'terminal_id required' }, 400);
+      const imgUrl = String(body.image_url || 'https://tbetcegmszzotrwdtqhi.supabase.co/storage/v1/object/public/receipt-assets/branding/servos-logo-primary-dark.png');
+      const imgRes = await fetch(imgUrl);
+      if (!imgRes.ok) return json({ error: `image fetch failed: ${imgRes.status}` }, 502);
+      const buf = new Uint8Array(await imgRes.arrayBuffer());
+      if (buf.length > 400_000) return json({ error: `image too large (${buf.length} bytes; docs cap ~512KB, stay under 400KB)` }, 400);
+      let bin = '';
+      const CHUNK = 0x8000;
+      for (let i = 0; i < buf.length; i += CHUNK) bin += String.fromCharCode(...buf.subarray(i, i + CHUNK));
+      const b64img = btoa(bin);
+      // First press (19 Aug, S1F2L fw 1.133.3): object-form DisplayOutput came
+      // back HTTP 200 with an EMPTY DisplayResponse — acknowledged, rendered
+      // nothing. The nexo spec makes DisplayRequest.DisplayOutput an ARRAY;
+      // Adyen's docs sample shows an object. Try both in one press and record
+      // both answers, so one tap settles the shape question per model.
+      const rendered = (d: unknown) =>
+        !!(d as Record<string, any>)?.SaleToPOIResponse?.DisplayResponse?.OutputResult;
+      const ep = terminalEndpoint(merchant, tid, 'sync', (maa?.region === 'US') ? 'us' : 'eu', cfg);
+      const objMsg = buildDisplayImageRequest({ poiid: tid, saleId: 'servos-brand', serviceId: newServiceId(), imageB64: b64img });
+      const arrMsg = buildDisplayImageRequest({ poiid: tid, saleId: 'servos-brand', serviceId: newServiceId(), imageB64: b64img });
+      (arrMsg.SaleToPOIRequest.DisplayRequest as Record<string, unknown>).DisplayOutput =
+        [ (arrMsg.SaleToPOIRequest.DisplayRequest as Record<string, any>).DisplayOutput ];
+      const rArr = await adyenFetch('POST', ep, arrMsg, { cfg, timeoutMs: 30_000 });
+      let rObj: { ok: boolean; status: number; data: unknown } | null = null;
+      if (!rendered(rArr.data)) {
+        rObj = await adyenFetch('POST', ep, objMsg, { cfg, timeoutMs: 30_000 });
+      }
+      const winner = rendered(rArr.data) ? 'array' : rendered(rObj?.data) ? 'object' : 'neither';
+      void platformAdmin.from('adyen_webhook_events').insert({
+        event_key: `brand:${tid}:${Date.now()}`,
+        raw: { action: 'test_image', winner, imageBytes: buf.length,
+               arrayForm: { httpStatus: rArr.status, response: rArr.data ?? null },
+               objectForm: rObj ? { httpStatus: rObj.status, response: rObj.data ?? null } : 'skipped (array rendered)' },
+      }).then(() => {}, () => {});
+      return json({ ok: winner !== 'neither', status: rArr.status, imageBytes: buf.length, winner,
+                    response: winner === 'neither' ? { arrayForm: rArr.data, objectForm: rObj?.data } : undefined });
+    }
+
+    // ── test_idle: force the terminal back to its own standby screen ─────────
+    if (action === 'test_idle') {
+      const tid = String(body.terminal_id || '');
+      if (!tid) return json({ error: 'terminal_id required' }, 400);
+      const msg = buildDisplayIdleRequest({ poiid: tid, saleId: 'servos-brand', serviceId: newServiceId() });
+      // Hardware truth (19 Aug): this fleet renders Display messages only in the
+      // nexo ARRAY form — object-form (the docs sample) is acknowledged with an
+      // empty DisplayResponse and ignored, which left the reader stuck on the
+      // pushed image with 'Back to idle' doing nothing.
+      (msg.SaleToPOIRequest.DisplayRequest as Record<string, unknown>).DisplayOutput =
+        [ (msg.SaleToPOIRequest.DisplayRequest as Record<string, any>).DisplayOutput ];
+      const r = await adyenFetch('POST', terminalEndpoint(merchant, tid, 'sync', (maa?.region === 'US') ? 'us' : 'eu', cfg), msg, { cfg, timeoutMs: 30_000 });
+      void platformAdmin.from('adyen_webhook_events').insert({
+        event_key: `brand:${tid}:${Date.now()}`,
+        raw: { action: 'test_idle', httpStatus: r.status, response: r.data ?? null },
+      }).then(() => {}, () => {});
+      return json({ ok: r.ok, status: r.status, response: r.data });
+    }
+
+    // ── test_async: prove the event-URL delivery pipe WITHOUT a button press ─
+    // An /async TransactionStatusRequest's response is delivered by Adyen's
+    // BACKEND to the configured event URLs — if it arrives, the pipe works and
+    // only the notification button is in question; if not, the pipe itself is
+    // the problem (support territory).
+    if (action === 'test_async') {
+      const tid = String(body.terminal_id || '');
+      if (!tid) return json({ error: 'terminal_id required' }, 400);
+      const msg = {
+        SaleToPOIRequest: {
+          MessageHeader: {
+            ProtocolVersion: '3.0', MessageClass: 'Service', MessageCategory: 'TransactionStatus', MessageType: 'Request',
+            ServiceID: crypto.randomUUID().replace(/-/g, '').slice(0, 10), SaleID: 'servos-pipe-test', POIID: tid,
+          },
+          TransactionStatusRequest: {
+            MessageReference: { MessageCategory: 'Payment', SaleID: 'servos-pipe-test', ServiceID: 'pipetest001' },
+          },
+        },
+      };
+      // The venue's device host (cfg.deviceBase: test default device-api-test,
+      // live default terminal-api-live, or the explicit *_DEVICE_BASE override)
+      // and its key. Never the test host for a live venue.
+      const res = await adyenFetch('POST', terminalEndpoint(merchant, tid, 'async', (maa?.region === 'US') ? 'us' : 'eu', cfg), msg, { cfg, timeoutMs: 30_000 });
+      return json({ ok: res.ok, status: res.status, body: JSON.stringify(res.data ?? null).slice(0, 300) });
+    }
+
+    // ── set_wakeup_button: the reader's own "Pay at table" menu button ───────
+    // nexo.notification puts a button in the reader's menu; pressing it fires
+    // an EventNotification (category rides in the payload) at our event URL —
+    // the responder answers with an input prompt + the table's bill.
+    if (action === 'set_wakeup_button') {
+      const r = await mgmt(cfg, 'PATCH', `/stores/${maa.store_id}/terminalSettings`, {
+        nexo: { notification: {
+          enabled: body.enabled !== false,
+          showButton: true,
+          title: String(body.title || 'Pay at table').slice(0, 40),
+          category: 'SaleWakeUp',
+          // EMPTY details = no reference pin pad — the button fires straight
+          // away and the responder answers with the open-tables MENU (list-first,
+          // the Lightspeed flow Peter wants). Pass details explicitly to bring
+          // the number pad back as a fast path.
+          details: String(body.details ?? '').slice(0, 60),
+        } },
+      });
+      if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
+      if (!r.ok) return json({ ok: false, error: JSON.stringify(r.data).slice(0, 300) }, 200);
+      return json({ ok: true });
+    }
+
+    // ── passcodes: the reader's on-device admin menu PIN (store-level) ───────
+    if (action === 'passcodes') {
+      const r = await mgmt<Record<string, unknown>>(cfg, 'GET', `/merchants/${merchant}/terminalSettings`);
+      if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
+      const sr = await mgmt<Record<string, unknown>>(cfg, 'GET', `/stores/${maa.store_id}/terminalSettings`);
+      const merchantPass = (r.data?.passcodes || {}) as Record<string, unknown>;
+      const storePass = (sr.data?.passcodes || {}) as Record<string, unknown>;
+      // Set a known admin PIN at store level if none exists anywhere.
+      if (!storePass.adminMenuPin && !merchantPass.adminMenuPin && body.set_default) {
+        const pin = String(body.pin || '1111');
+        const up = await mgmt(cfg, 'PATCH', `/stores/${maa.store_id}/terminalSettings`, { passcodes: { adminMenuPin: pin } });
+        if (up.ok) return json({ ok: true, adminMenuPin: pin, source: 'set_now' });
+        return json({ ok: false, error: (up.data as Record<string, unknown>)?.detail || `passcode set failed (${up.status})` }, 200);
+      }
+      return json({
+        ok: true,
+        adminMenuPin: storePass.adminMenuPin || merchantPass.adminMenuPin || null,
+        refundPin: storePass.refundPin || merchantPass.refundPin || null,
+        source: storePass.adminMenuPin ? 'store' : merchantPass.adminMenuPin ? 'merchant' : 'unset',
+      });
+    }
+
+    // ── unlink: retire our link; the terminal stays boarded at Adyen ─────────
+    if (action === 'unlink') {
+      const tdId = String(body.terminal_device_id || '');
+      if (!tdId) return json({ error: 'terminal_device_id required' }, 400);
+      const { error } = await opsAdmin.from('terminal_devices')
+        .update({ status: 'retired', active: false })
+        .eq('id', tdId).eq('location_id', opsLocationId);
+      if (error) return json({ ok: false, error: error.message }, 500);
+      return json({ ok: true });
+    }
+
+    return json({ error: `unknown action: ${action}` }, 400);
+  } catch (e) {
+    console.error('[adyen-terminal-admin]', e);
+    return json({ error: (e as Error).message || 'server error' }, 500);
+  }
+});

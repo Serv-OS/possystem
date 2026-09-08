@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { useStore } from '../store';
+import { money } from '../lib/currency';
+import { shortOrderRef } from '../lib/db';
 
 const STATUS_FLOW = ['received', 'prep', 'ready', 'collected'];
 const STATUS_META = {
@@ -48,14 +50,17 @@ export default function CollectionQueue({ onClose }) {
     const idx = STATUS_FLOW.indexOf(order.status);
     if (idx < STATUS_FLOW.length - 1) {
       const next = STATUS_FLOW[idx + 1];
+      // order.ref stays the full identity for the status write; the toast quotes the
+      // short number staff called out.
       updateQueueStatus(order.ref, next);
+      const shortRef = shortOrderRef(order.ref);
       if (next === 'ready') {
-        showToast(`${order.ref} ready — notifying ${order.customer.name}`, 'success');
+        showToast(`${shortRef} ready — notifying ${order.customer.name}`, 'success');
       } else if (next === 'collected') {
-        showToast(`${order.ref} collected — ${order.customer.name}`, 'info');
+        showToast(`${shortRef} collected — ${order.customer.name}`, 'info');
         setTimeout(() => removeFromQueue(order.ref), 5000);
       } else {
-        showToast(`${order.ref} moved to ${STATUS_META[next].label}`, 'info');
+        showToast(`${shortRef} moved to ${STATUS_META[next].label}`, 'info');
       }
     }
   };
@@ -144,7 +149,7 @@ export default function CollectionQueue({ onClose }) {
                   <div style={{ fontSize: 22 }}>{typeIcon}</div>
                   <div style={{ flex: 1 }}>
                     <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
-                      <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--t1)' }}>{order.ref}</span>
+                      <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--t1)' }}>{shortOrderRef(order.ref)}</span>
                       <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--t2)' }}>{order.customer.name}</span>
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2, display: 'flex', gap: 10 }}>
@@ -154,7 +159,7 @@ export default function CollectionQueue({ onClose }) {
                   </div>
                   <div style={{ textAlign: 'right' }}>
                     <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--acc)', fontFamily: 'DM Mono, monospace' }}>
-                      £{order.total.toFixed(2)}
+                      {money(order.total)}
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 1 }}>
                       {order.type === 'collection' ? 'Collection' : 'Takeaway'}

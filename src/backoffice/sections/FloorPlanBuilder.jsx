@@ -1,5 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useStore } from '../../store';
+import { supabase, isMock, getLocationId } from '../../lib/supabase';
+import { upsertFloorTable } from '../../lib/db';
+import { reportSave } from '../../lib/saveHealth';
 
 const SHAPES = [{ id:'sq', label:'Square/Rect' }, { id:'rd', label:'Round' }];
 const SECTION_PALETTE = ['#3b82f6','#e8a020','#22c55e','#a855f7','#ef4444','#22d3ee','#f97316','#ec4899'];
@@ -7,9 +10,20 @@ const SECTION_PALETTE = ['#3b82f6','#e8a020','#22c55e','#a855f7','#ef4444','#22d
 export default function FloorPlanBuilder() {
   const {
     tables, updateTableLayout, addTableToLayout, removeTableFromLayout,
-    locationSections, addSection, updateSection, removeSection,
-    showToast,
+    locationSections, addSection, updateSection, removeSection, moveSection,
+    showToast, bookingRules, updateBookingRules,
   } = useStore();
+
+  // v5.5.2: resolve the active location once on mount and use it as a render-time filter so
+  // any stale cross-location data leaked into store.tables (e.g., from a previous location's
+  // CONFIG_PUSH still cached in localStorage) doesn't appear on Loc 2's canvas where dragging
+  // it would silently rewrite its location_id.
+  const [activeLocationId, setActiveLocationId] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    getLocationId().then(id => { if (alive) setActiveLocationId(id); }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
 
   const [selected, setSelected]   = useState(null);
   const [dragging, setDragging]   = useState(null);
@@ -18,9 +32,10 @@ export default function FloorPlanBuilder() {
   const [showAddTable, setShowAddTable] = useState(false);
   const [showAddSection, setShowAddSection] = useState(false);
   const [editingSection, setEditingSection] = useState(null);
-  const [saveStatus, setSaveStatus] = useState('saved'); // 'saved' | 'saving' | 'pushed'
+  const [saveStatus, setSaveStatus] = useState('saved'); // 'saved' | 'saving' | 'pushed' | 'failed'
   const saveTimer = useRef(null);
   const canvasRef  = useRef(null);
+  const dragStart  = useRef(null);   // pre-drag position, for reverting a rejected move
 
   const { markBOChange } = useStore();
 
@@ -35,10 +50,41 @@ export default function FloorPlanBuilder() {
     }, 300);
   }, [markBOChange]);
 
-  const displayTables = tables.filter(t =>
+  // Table mutations are applied to the store first (the canvas has to feel instant) and the
+  // store's own write is fire-and-forget — it reported nothing, so a rejected save still
+  // showed "✓ Staged" and the table was simply gone at the next boot. Re-issue the SAME row
+  // as an awaited, checked upsert and UNDO the canvas when it fails: what is on screen must
+  // be what the database accepted (INVARIANTS.md — tables must never be lost).
+  const confirmTable = useCallback(async (id, undo) => {
+    setSaveStatus('saving');
+    markBOChange();
+    clearTimeout(saveTimer.current);
+    const table = useStore.getState().tables.find(t => t.id === id);
+    if (!table) { setSaveStatus('saved'); return false; }
+    const { error } = await upsertFloorTable(table);
+    reportSave('floor plan table', error);
+    if (error) {
+      undo?.();
+      setSaveStatus('failed');
+      showToast(`“${table.label}” was NOT saved — the floor plan has been put back`, 'error');
+      return false;
+    }
+    setSaveStatus('pushed');
+    saveTimer.current = setTimeout(() => setSaveStatus('saved'), 2500);
+    return true;
+  }, [markBOChange, showToast]);
+
+  // v5.5.2: only show tables that belong to the active location. A table without a locationId
+  // is a freshly-added one (stamped on save) and is OK to show. Pre-v5.5.2 data lacks
+  // locationId entirely — those will appear at every location, but the cross-location guard
+  // in upsertFloorTable still prevents corruption.
+  const tablesForThisLocation = tables.filter(t =>
+    !t.locationId || !activeLocationId || t.locationId === activeLocationId
+  );
+  const displayTables = tablesForThisLocation.filter(t =>
     !t.parentId && (viewSection === 'all' || t.section === viewSection)
   );
-  const selectedTable = tables.find(t => t.id === selected);
+  const selectedTable = tablesForThisLocation.find(t => t.id === selected);
 
   // Drag handlers
   const handleMouseDown = useCallback((e, tableId) => {
@@ -48,6 +94,7 @@ export default function FloorPlanBuilder() {
     if (!table) return;
     setDragging(tableId);
     setSelected(tableId);
+    dragStart.current = { id: tableId, x: table.x, y: table.y };
     setDragOffset({ x: e.clientX - rect.left - table.x, y: e.clientY - rect.top - table.y });
   }, [tables]);
 
@@ -60,17 +107,137 @@ export default function FloorPlanBuilder() {
   }, [dragging, dragOffset, updateTableLayout]);
 
   const handleMouseUp = useCallback(() => {
-    if (dragging) { markChanged(); setDragging(null); }
-  }, [dragging, markChanged]);
+    if (!dragging) return;
+    const id = dragging;
+    const from = dragStart.current;
+    setDragging(null);
+    dragStart.current = null;
+    const now = useStore.getState().tables.find(t => t.id === id);
+    // A plain click to select isn't a change — don't write, and don't claim a save either.
+    if (!now || (from && from.id === id && from.x === now.x && from.y === now.y)) return;
+    confirmTable(id, from && from.id === id ? () => updateTableLayout(id, { x: from.x, y: from.y }) : undefined);
+  }, [dragging, confirmTable, updateTableLayout]);
 
   const upd = (key, val) => {
     if (!selected) return;
+    const before = useStore.getState().tables.find(t => t.id === selected)?.[key];
     updateTableLayout(selected, { [key]: val });
+    confirmTable(selected, () => updateTableLayout(selected, { [key]: before }));
+  };
+
+  // v5.5.739: table labels must be unique per location (a duplicate "number" breaks seating,
+  // session sync and reports). Compare case-insensitively against this location's non-child tables.
+  const labelTaken = (label, exceptId) => {
+    const n = String(label || '').trim().toLowerCase();
+    if (!n) return false;
+    return tablesForThisLocation.some(t => t.id !== exceptId && !t.parentId
+      && String(t.label || '').trim().toLowerCase() === n);
+  };
+  // The Label edit is a draft committed on blur — blocking per-keystroke would stop you typing
+  // "T10" just because "T1" exists. Duplicates are rejected only on commit.
+  const [labelDraft, setLabelDraft] = useState('');
+  useEffect(() => { setLabelDraft(selectedTable?.label || ''); }, [selected, selectedTable?.label]);
+  // Width/height commit on blur, like the label above. upd() reverts to a snapshot when
+  // the write is refused, and firing it per keystroke means one request per digit — each
+  // holding its own stale "before", so a single refusal mid-type would snap the table back
+  // to a size from several keystrokes ago.
+  const [sizeDraft, setSizeDraft] = useState({});
+  useEffect(() => { setSizeDraft({}); }, [selected]);
+  const commitSize = (key) => {
+    const raw = sizeDraft[key];
+    setSizeDraft(d => { const n = { ...d }; delete n[key]; return n; });
+    if (raw == null || !selectedTable) return;
+    const v = Math.min(200, Math.max(40, parseInt(raw, 10) || 64));
+    if (v !== selectedTable[key]) upd(key, v);
+  };
+
+  const commitLabel = () => {
+    if (!selectedTable) return;
+    const v = labelDraft.trim();
+    if (!v || v === selectedTable.label) { setLabelDraft(selectedTable.label); return; }
+    if (labelTaken(v, selectedTable.id)) {
+      showToast(`Table “${v}” already exists`, 'error');
+      setLabelDraft(selectedTable.label);
+      return;
+    }
+    upd('label', v);
+  };
+
+  // Delete DB-first: the store's remover drops the table from state and fires a delete whose
+  // .catch() can never run (PostgREST resolves with { error }, it never rejects), so a blocked
+  // delete looked done and the table walked back in on the next boot.
+  const removeSelectedTable = async () => {
+    const table = tablesForThisLocation.find(t => t.id === selected);
+    if (!table) return;
+    if (!isMock && supabase) {
+      setSaveStatus('saving');
+      const locId = table.locationId || activeLocationId || null;
+      let q = supabase.from('floor_tables').delete().eq('id', table.id);
+      if (locId) q = q.eq('location_id', locId);   // same tenant scoping as db.deleteFloorTable
+      const { data, error } = await q.select('id');
+      // Zero rows is what an RLS-filtered delete looks like — and also what a table that never
+      // reached the DB looks like. Probe before refusing, or a phantom becomes undeletable.
+      let blocked = null;
+      if (error) blocked = error;
+      else if (!data || data.length === 0) {
+        const { data: still } = await supabase.from('floor_tables').select('id').eq('id', table.id).maybeSingle();
+        if (still) blocked = new Error('Table delete matched 0 rows — RLS blocked it');
+      }
+      reportSave('floor plan table delete', blocked);
+      if (blocked) {
+        setSaveStatus('failed');
+        showToast(`“${table.label}” was NOT deleted — it is still on the floor plan`, 'error');
+        return;
+      }
+    }
+    removeTableFromLayout(table.id);
+    setSelected(null);
     markChanged();
+    showToast(`Table “${table.label}” removed`, 'info');
   };
 
   const sectionColor = (id) => locationSections.find(s => s.id === id)?.color || '#888780';
   const sectionLabel = (id) => locationSections.find(s => s.id === id)?.label || id;
+
+  // ── Booking join groups (Table Bookings, v5.6.25) ────────────────────────────
+  // An ORDERED run of adjacent tables the optimiser may combine. Order IS
+  // adjacency: only consecutive members join, so ordering two tables apart is
+  // how a manager says "these can never be pushed together". Lives on
+  // booking_rules.join_groups (per location), NOT on floor_tables — no new
+  // column, no upsert-whitelist/SyncBridge-mapping landmine.
+  const joinGroups = bookingRules?.joinGroups || [];
+  const groupOf = (tableId) => joinGroups.find(g => (g.tableIds || []).includes(tableId));
+  const setJoinGroups = (groups) => {
+    updateBookingRules?.({ joinGroups: groups.filter(g => (g.tableIds || []).length) });
+    markChanged();
+  };
+  const assignToGroup = (tableId, groupId) => {
+    let groups = joinGroups.map(g => ({ ...g, tableIds: (g.tableIds || []).filter(id => id !== tableId) }));
+    if (groupId === '__new__') {
+      const sec = selectedTable?.section || 'run';
+      groups.push({
+        id: `jg-${Date.now().toString(36)}`,
+        label: `${sectionLabel(sec)} run`,
+        tableIds: [tableId],
+        kind: sec === 'bar' ? 'bar' : 'tables',
+      });
+    } else if (groupId) {
+      groups = groups.map(g => (g.id === groupId ? { ...g, tableIds: [...g.tableIds, tableId] } : g));
+    }
+    setJoinGroups(groups);
+  };
+  const nudgeInGroup = (tableId, dir) => {
+    setJoinGroups(joinGroups.map(g => {
+      const i = (g.tableIds || []).indexOf(tableId);
+      if (i < 0) return g;
+      const j = i + dir;
+      if (j < 0 || j >= g.tableIds.length) return g;
+      const ids = [...g.tableIds];
+      [ids[i], ids[j]] = [ids[j], ids[i]];
+      return { ...g, tableIds: ids };
+    }));
+  };
+  const tableLabel = (id) => tablesForThisLocation.find(t => t.id === id)?.label || id;
 
   return (
     <div style={{ display:'flex', height:'100%', overflow:'hidden' }}>
@@ -96,7 +263,7 @@ export default function FloorPlanBuilder() {
 
           {locationSections.map(sec => {
             const active = viewSection === sec.id;
-            const count = tables.filter(t => t.section === sec.id && !t.parentId).length;
+            const count = tablesForThisLocation.filter(t => t.section === sec.id && !t.parentId).length;
             return (
               <div key={sec.id} style={{ display:'flex', alignItems:'center', marginBottom:2 }}>
                 <button onClick={() => setViewSection(sec.id)} style={{
@@ -108,8 +275,23 @@ export default function FloorPlanBuilder() {
                   display:'flex', alignItems:'center', justifyContent:'space-between',
                 }}>
                   <span>{sec.icon} {sec.label}</span>
-                  <span style={{ fontSize:10, color:'var(--t4)' }}>{count}</span>
+                  {sec.hidden ? (
+                    <span style={{ fontSize:9, color:'var(--amb,#e8a020)', background:'rgba(232,160,32,.12)', padding:'2px 6px', borderRadius:4, fontWeight:700, textTransform:'uppercase', letterSpacing:'.05em' }}>hidden</span>
+                  ) : (
+                    <span style={{ fontSize:10, color:'var(--t4)' }}>{count}</span>
+                  )}
                 </button>
+                {/* v4.6.56: reorder buttons */}
+                <button onClick={(e) => { e.stopPropagation(); moveSection(sec.id, 'up'); }} style={{
+                  width:18, height:22, borderRadius:5, border:'none', background:'transparent',
+                  color:'var(--t4)', cursor:'pointer', fontFamily:'inherit', fontSize:11, padding:0,
+                  display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0,
+                }} title="Move up">▲</button>
+                <button onClick={(e) => { e.stopPropagation(); moveSection(sec.id, 'down'); }} style={{
+                  width:18, height:22, borderRadius:5, border:'none', background:'transparent',
+                  color:'var(--t4)', cursor:'pointer', fontFamily:'inherit', fontSize:11, padding:0,
+                  display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0,
+                }} title="Move down">▼</button>
                 <button onClick={() => setEditingSection(sec)} style={{
                   width:22, height:22, borderRadius:6, border:'none', background:'transparent',
                   color:'var(--t4)', cursor:'pointer', fontFamily:'inherit', fontSize:13,
@@ -140,8 +322,12 @@ export default function FloorPlanBuilder() {
 
               <div style={{ marginBottom:9 }}>
                 <label style={{ display:'block', fontSize:10, color:'var(--t4)', marginBottom:4 }}>Label</label>
-                <input style={{ width:'100%', background:'var(--bg3)', border:'1px solid var(--bdr2)', borderRadius:8, padding:'6px 9px', color:'var(--t1)', fontSize:12, fontFamily:'inherit', outline:'none', boxSizing:'border-box' }}
-                  value={selectedTable.label} onChange={e => upd('label', e.target.value)}/>
+                <input style={{ width:'100%', background:'var(--bg3)', border:`1px solid ${labelDraft.trim() && labelTaken(labelDraft, selectedTable.id) ? 'var(--red)' : 'var(--bdr2)'}`, borderRadius:8, padding:'6px 9px', color:'var(--t1)', fontSize:12, fontFamily:'inherit', outline:'none', boxSizing:'border-box' }}
+                  value={labelDraft} onChange={e => setLabelDraft(e.target.value)} onBlur={commitLabel}
+                  onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}/>
+                {labelDraft.trim() && labelTaken(labelDraft, selectedTable.id) && (
+                  <div style={{ fontSize:10, color:'var(--red)', marginTop:3 }}>⚠ “{labelDraft.trim()}” is already used</div>
+                )}
               </div>
 
               <div style={{ marginBottom:9 }}>
@@ -179,18 +365,65 @@ export default function FloorPlanBuilder() {
                 </select>
               </div>
 
+              {(() => {
+                const grp = groupOf(selectedTable.id);
+                return (
+                  <div style={{ marginBottom:9, padding:'8px 9px', background:'var(--bg2)', border:'1px solid var(--bdr)', borderRadius:8 }}>
+                    <label style={{ display:'block', fontSize:10, color:'var(--t4)', marginBottom:4 }}>Booking join group</label>
+                    <select value={grp?.id || ''} onChange={e => assignToGroup(selectedTable.id, e.target.value)} style={{
+                      width:'100%', background:'var(--bg3)', border:'1px solid var(--bdr2)',
+                      borderRadius:8, padding:'6px 9px', color:'var(--t1)', fontSize:12,
+                      fontFamily:'inherit', outline:'none', cursor:'pointer', boxSizing:'border-box',
+                    }}>
+                      <option value="">None — never combined</option>
+                      {joinGroups.map(g => <option key={g.id} value={g.id}>{g.label} ({g.tableIds.length})</option>)}
+                      <option value="__new__">+ New run…</option>
+                    </select>
+                    {grp && (
+                      <>
+                        <div style={{ display:'flex', flexWrap:'wrap', gap:4, marginTop:7 }}>
+                          {grp.tableIds.map(id => (
+                            <span key={id} style={{
+                              display:'inline-flex', alignItems:'center', gap:3, padding:'2px 6px', borderRadius:6,
+                              fontSize:10, fontWeight:700,
+                              background: id === selectedTable.id ? 'var(--acc-d)' : 'var(--bg3)',
+                              border:`1px solid ${id === selectedTable.id ? 'var(--acc-b)' : 'var(--bdr)'}`,
+                              color: id === selectedTable.id ? 'var(--acc)' : 'var(--t2)',
+                            }}>{tableLabel(id)}</span>
+                          ))}
+                        </div>
+                        <div style={{ display:'flex', alignItems:'center', gap:6, marginTop:7 }}>
+                          <button onClick={() => nudgeInGroup(selectedTable.id, -1)} title="Move earlier in the run" style={{ width:26, height:24, borderRadius:6, border:'1px solid var(--bdr2)', background:'var(--bg3)', color:'var(--t1)', cursor:'pointer', fontFamily:'inherit', fontSize:11 }}>◀</button>
+                          <button onClick={() => nudgeInGroup(selectedTable.id, 1)} title="Move later in the run" style={{ width:26, height:24, borderRadius:6, border:'1px solid var(--bdr2)', background:'var(--bg3)', color:'var(--t1)', cursor:'pointer', fontFamily:'inherit', fontSize:11 }}>▶</button>
+                          <label style={{ display:'flex', alignItems:'center', gap:5, fontSize:10, color:'var(--t3)', marginLeft:'auto', cursor:'pointer' }}>
+                            <input type="checkbox" checked={grp.kind === 'bar'} onChange={e => setJoinGroups(joinGroups.map(g => g.id === grp.id ? { ...g, kind: e.target.checked ? 'bar' : 'tables' } : g))} />
+                            Bar stools
+                          </label>
+                        </div>
+                        <div style={{ fontSize:9.5, color:'var(--t4)', marginTop:6, lineHeight:1.4 }}>
+                          Only tables NEXT TO each other in the run can be pushed together. Order = physical adjacency.
+                        </div>
+                      </>
+                    )}
+                  </div>
+                );
+              })()}
+
               <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:6, marginBottom:12 }}>
                 {[['Width','w'],['Height','h']].map(([label, key]) => (
                   <div key={key}>
                     <label style={{ display:'block', fontSize:10, color:'var(--t4)', marginBottom:4 }}>{label}px</label>
                     <input type="number" min="40" max="200" step="8"
                       style={{ width:'100%', background:'var(--bg3)', border:'1px solid var(--bdr2)', borderRadius:8, padding:'6px 9px', color:'var(--t1)', fontSize:12, fontFamily:'inherit', outline:'none', boxSizing:'border-box' }}
-                      value={selectedTable[key]} onChange={e => upd(key, parseInt(e.target.value)||64)}/>
+                      value={sizeDraft[key] ?? selectedTable[key]}
+                      onChange={e => setSizeDraft(d => ({ ...d, [key]: e.target.value }))}
+                      onBlur={() => commitSize(key)}
+                      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}/>
                   </div>
                 ))}
               </div>
 
-              <button onClick={() => { removeTableFromLayout(selected); setSelected(null); markChanged(); }} style={{
+              <button onClick={removeSelectedTable} style={{
                 width:'100%', padding:'7px', borderRadius:8, cursor:'pointer', fontFamily:'inherit',
                 background:'var(--red-d)', border:'1px solid var(--red-b)', color:'var(--red)', fontSize:12, fontWeight:700,
               }}>Remove table</button>
@@ -220,6 +453,12 @@ export default function FloorPlanBuilder() {
               <span style={{ display:'flex', alignItems:'center', gap:5, color:'var(--acc)', fontWeight:700 }}>
                 <div style={{ width:6, height:6, borderRadius:'50%', background:'var(--acc)' }}/>
                 ✓ Staged — hit "Push to POS" to go live
+              </span>
+            )}
+            {saveStatus === 'failed' && (
+              <span style={{ display:'flex', alignItems:'center', gap:5, color:'var(--red)', fontWeight:700 }}>
+                <div style={{ width:6, height:6, borderRadius:'50%', background:'var(--red)' }}/>
+                ✕ Not saved — the change was undone
               </span>
             )}
             {saveStatus === 'saved' && (
@@ -295,11 +534,24 @@ export default function FloorPlanBuilder() {
         <AddTableModal
           sections={locationSections}
           defaultSection={viewSection === 'all' ? locationSections[0]?.id : viewSection}
+          labelTaken={labelTaken}
           onClose={() => setShowAddTable(false)}
-          onAdd={table => {
-            addTableToLayout(table);
-            markChanged();
+          onAdd={async table => {
+            if (labelTaken(table.label)) { showToast(`Table “${String(table.label).trim()}” already exists`, 'error'); return; }
+            const before = new Set(useStore.getState().tables.map(t => t.id));
+            await addTableToLayout(table);
             setShowAddTable(false);
+            // The store may have refused it (duplicate label) — then there is nothing to confirm.
+            const created = useStore.getState().tables.find(t => !before.has(t.id));
+            if (!created) return;
+            // Revert on failure so a table the DB rejected can't sit on the canvas all evening
+            // and "vanish" on refresh — same phantom-create bug as DeviceProfiles v5.5.961.
+            // The rollback drops the row from local state ONLY. It must not call
+            // removeTableFromLayout: that is now a checked DB writer which would fire a
+            // delete for a row that was never inserted, put the table back when that delete
+            // found nothing, and clear the red banner confirmTable had just raised.
+            await confirmTable(created.id, () =>
+              useStore.setState(s => ({ tables: s.tables.filter(t => t.id !== created.id) })));
           }}
         />
       )}
@@ -333,13 +585,14 @@ export default function FloorPlanBuilder() {
 }
 
 // ── Add table modal ───────────────────────────────────────────────────────────
-function AddTableModal({ sections, defaultSection, onAdd, onClose }) {
+function AddTableModal({ sections, defaultSection, labelTaken, onAdd, onClose }) {
   const [label, setLabel]       = useState('');
   const [maxCovers, setMaxCovers] = useState(4);
   const [shape, setShape]       = useState('sq');
   const [section, setSection]   = useState(defaultSection || sections[0]?.id);
 
-  const inp = { width:'100%', background:'var(--bg3)', border:'1.5px solid var(--bdr2)', borderRadius:10, padding:'9px 12px', color:'var(--t1)', fontSize:13, fontFamily:'inherit', outline:'none', display:'block', boxSizing:'border-box' };
+  const dup = !!label.trim() && typeof labelTaken === 'function' && labelTaken(label);
+  const inp = { width:'100%', background:'var(--bg3)', border:`1.5px solid ${dup ? 'var(--red)' : 'var(--bdr2)'}`, borderRadius:10, padding:'9px 12px', color:'var(--t1)', fontSize:13, fontFamily:'inherit', outline:'none', display:'block', boxSizing:'border-box' };
 
   return (
     <div className="modal-back" onClick={e => e.target === e.currentTarget && onClose()}>
@@ -352,6 +605,7 @@ function AddTableModal({ sections, defaultSection, onAdd, onClose }) {
           <div style={{ marginBottom:14 }}>
             <label style={{ display:'block', fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:6 }}>Label</label>
             <input style={inp} placeholder="T11, Bar stool 1, Banquette…" value={label} onChange={e => setLabel(e.target.value)} autoFocus/>
+            {dup && <div style={{ fontSize:11, color:'var(--red)', marginTop:5 }}>⚠ A table called “{label.trim()}” already exists at this location</div>}
           </div>
           <div style={{ marginBottom:14 }}>
             <label style={{ display:'block', fontSize:11, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:8 }}>Max covers</label>
@@ -375,7 +629,7 @@ function AddTableModal({ sections, defaultSection, onAdd, onClose }) {
           </div>
           <div style={{ display:'flex', gap:8 }}>
             <button className="btn btn-ghost" style={{ flex:1 }} onClick={onClose}>Cancel</button>
-            <button className="btn btn-acc" style={{ flex:2, height:42 }} disabled={!label.trim()} onClick={() => onAdd({ label, maxCovers, shape, section, x:40, y:40, w:shape==='rd'?72:80, h:shape==='rd'?72:64 })}>Add to floor plan</button>
+            <button className="btn btn-acc" style={{ flex:2, height:42 }} disabled={!label.trim() || dup} onClick={() => onAdd({ label: label.trim(), maxCovers, shape, section, x:40, y:40, w:shape==='rd'?72:80, h:shape==='rd'?72:64 })}>Add to floor plan</button>
           </div>
         </div>
       </div>
@@ -388,6 +642,7 @@ function SectionModal({ section, onSave, onDelete, onClose }) {
   const [label, setLabel] = useState(section?.label || '');
   const [color, setColor] = useState(section?.color || '#3b82f6');
   const [icon, setIcon]   = useState(section?.icon  || '🍽');
+  const [hidden, setHidden] = useState(!!section?.hidden);  // v4.6.56
   const ICONS = ['🍽','🍸','🌿','☕','🍕','🎭','🌅','🏖','🏠','⬚'];
 
   return (
@@ -414,10 +669,22 @@ function SectionModal({ section, onSave, onDelete, onClose }) {
               {ICONS.map(ic => <button key={ic} onClick={() => setIcon(ic)} style={{ width:36, height:36, borderRadius:9, border:`1.5px solid ${icon===ic?'var(--acc)':'var(--bdr)'}`, background:icon===ic?'var(--acc-d)':'var(--bg3)', cursor:'pointer', fontSize:18 }}>{ic}</button>)}
             </div>
           </div>
+          {/* v4.6.56: Hide on POS toggle (only on Edit) */}
+          {section && (
+            <div style={{ marginBottom:14, padding:'10px 12px', borderRadius:10, background:'var(--bg3)', border:'1px solid var(--bdr)' }}>
+              <label style={{ display:'flex', alignItems:'center', gap:10, cursor:'pointer' }}>
+                <input type="checkbox" checked={hidden} onChange={e => setHidden(e.target.checked)} style={{ width:16, height:16, cursor:'pointer', accentColor:'var(--acc)' }}/>
+                <div style={{ flex:1 }}>
+                  <div style={{ fontSize:13, fontWeight:700, color: hidden ? 'var(--amb,#e8a020)' : 'var(--t1)' }}>Hide on POS</div>
+                  <div style={{ fontSize:11, color:'var(--t3)', marginTop:2, lineHeight:1.4 }}>Section disappears from POS tabs and the All view. Tables stay in place; you can unhide anytime.</div>
+                </div>
+              </label>
+            </div>
+          )}
           <div style={{ display:'flex', gap:8 }}>
             {section && onDelete && <button onClick={onDelete} style={{ padding:'8px 12px', borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--red-d)', border:'1px solid var(--red-b)', color:'var(--red)', fontSize:12, fontWeight:700 }}>Remove</button>}
             <button className="btn btn-ghost" style={{ flex:1 }} onClick={onClose}>Cancel</button>
-            <button className="btn btn-acc" style={{ flex:2, height:40 }} disabled={!label.trim()} onClick={() => onSave({ label, color, icon })}>
+            <button className="btn btn-acc" style={{ flex:2, height:40 }} disabled={!label.trim()} onClick={() => onSave({ label, color, icon, hidden })}>
               {section ? 'Save' : 'Add section'}
             </button>
           </div>

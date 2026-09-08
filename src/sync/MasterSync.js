@@ -19,6 +19,10 @@ import { supabase, isMock, getLocationId } from '../lib/supabase';
 import { useStore } from '../store';
 
 const HEARTBEAT_INTERVAL  = 10_000; // master writes every 10s
+// Jitter every poller ±20% so a fleet of devices doesn't hit the API in
+// lock-step (synchronized intervals = periodic thundering herds).
+const jittered = ms => ms + Math.round((Math.random() - 0.5) * 0.4 * ms);
+const _ipCache = { value: null, at: 0 };
 const CHECK_INTERVAL      = 15_000; // children check every 15s
 const STALE_THRESHOLD     = 30_000; // master considered offline after 30s
 
@@ -35,19 +39,25 @@ export async function startMasterHeartbeat({ deviceId, locationId, deviceName, v
     try {
       const tables = useStore.getState().tables || [];
       const openTables = tables.filter(t => t.session?.items?.length > 0).length;
-      // Get local IP hint (best effort — works in some browsers)
-      let ip = null;
-      try {
-        const pc = new RTCPeerConnection({ iceServers: [] });
-        pc.createDataChannel('');
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        await new Promise(r => setTimeout(r, 200));
-        const sdp = pc.localDescription?.sdp || '';
-        const m = sdp.match(/a=candidate:[^\r\n]+IN IP4 (\d+\.\d+\.\d+\.\d+)/);
-        if (m && !m[1].startsWith('0.')) ip = m[1];
-        pc.close();
-      } catch {}
+      // Get local IP hint (best effort) — CACHED: spinning up an
+      // RTCPeerConnection on every 10s beat is wasteful; the LAN IP barely
+      // changes, so detect once and refresh every 10 minutes.
+      let ip = _ipCache.value;
+      if (Date.now() - _ipCache.at > 600_000) {
+        _ipCache.at = Date.now();
+        try {
+          const pc = new RTCPeerConnection({ iceServers: [] });
+          pc.createDataChannel('');
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          await new Promise(r => setTimeout(r, 200));
+          const sdp = pc.localDescription?.sdp || '';
+          const m = sdp.match(/a=candidate:[^\r\n]+IN IP4 (\d+\.\d+\.\d+\.\d+)/);
+          if (m && !m[1].startsWith('0.')) ip = m[1];
+          pc.close();
+        } catch {}
+        _ipCache.value = ip;
+      }
 
       await supabase.from('device_heartbeats').upsert({
         device_id:   deviceId,
@@ -63,8 +73,32 @@ export async function startMasterHeartbeat({ deviceId, locationId, deviceName, v
   };
 
   await beat(); // immediate first beat
-  _heartbeatTimer = setInterval(beat, HEARTBEAT_INTERVAL);
+  _heartbeatTimer = setInterval(beat, jittered(HEARTBEAT_INTERVAL));
   console.log('[MasterSync] Heartbeat started — this device is MASTER');
+}
+
+// ── Child: report own heartbeat (v5.5.870 — fleet version visibility) ──────────
+// Children never used to write a heartbeat, so Back Office → Network Status could only see the
+// master. Now every child reports its version too (role:'child', every ~30s), so a till running
+// stale code is visible venue-wide — the exact blind spot behind today's silent-stale-master bug.
+let _childBeatTimer = null;
+export async function startChildHeartbeat({ deviceId, locationId, deviceName, version }) {
+  if (isMock || !supabase || !deviceId) return;
+  const beat = async () => {
+    try {
+      await supabase.from('device_heartbeats').upsert({
+        device_id:   deviceId,
+        location_id: locationId,
+        device_name: deviceName,
+        role:        'child',
+        last_seen:   new Date().toISOString(),
+        version,
+        open_tables: 0,
+      }, { onConflict: 'device_id' });
+    } catch {}
+  };
+  await beat();
+  _childBeatTimer = setInterval(beat, jittered(30_000));
 }
 
 // ── Child: monitor master heartbeat ───────────────────────────────────────────
@@ -103,7 +137,7 @@ export async function startChildMonitor({ locationId }) {
   };
 
   await check(); // immediate first check
-  _checkTimer = setInterval(check, CHECK_INTERVAL);
+  _checkTimer = setInterval(check, jittered(CHECK_INTERVAL));
 }
 
 export function getMasterStatus() {
@@ -113,8 +147,10 @@ export function getMasterStatus() {
 export function stopMasterSync() {
   clearInterval(_heartbeatTimer);
   clearInterval(_checkTimer);
+  clearInterval(_childBeatTimer);
   _heartbeatTimer = null;
   _checkTimer = null;
+  _childBeatTimer = null;
 }
 
 // ── Force sync: pull authoritative state from Supabase ────────────────────────
@@ -136,13 +172,45 @@ export async function forceSyncFromSupabase() {
     const store = useStore.getState();
     const patch = {};
 
-    // Reconcile sessions — Supabase is authoritative
+    // Set of occupations (table_id + seatedAt) already cashed off, built from the checks
+    // we JUST fetched — NOT from the store, whose closedChecks are updated further down.
+    // Used so the keep-local branch below never preserves a ghost of a paid table.
+    const closedOcc = new Set();
+    (checksRes.data || []).forEach(c => {
+      const tid = c.table_id ?? c.tableId;
+      const s = c.seated_at ?? c.seatedAt;
+      if (tid && s != null) closedOcc.add(`${tid}:${new Date(s).getTime()}`);
+    });
+    const occClosed = (tableId, sess) => {
+      const s = sess?.seatedAt;
+      return !!(tableId && s && closedOcc.has(`${tableId}:${s}`));
+    };
+
+    // Reconcile sessions — merge Supabase with local, preserving newer local data
     if (sessionsRes.data) {
       const sessionMap = {};
       sessionsRes.data.forEach(r => { if (r.table_id && r.session) sessionMap[r.table_id] = r.session; });
 
       patch.tables = store.tables.map(t => {
-        const session = sessionMap[t.id] || null;
+        const remote = sessionMap[t.id] || null;
+        const local = t.session || null;
+        // v5.5.283: Don't destroy local sessions that are newer or have unflushed data.
+        // Previous behavior treated Supabase as fully authoritative, which wiped
+        // local sessions that hadn't been synced yet.
+        // ...UNLESS this occupation was already cashed off — then the local copy is a
+        // ghost and preserving it is exactly the "table won't die" bug. Let it fall
+        // through to clear (remote is null → session null → available).
+        if (!remote && local?.items?.length > 0 && !occClosed(t.id, local)) {
+          // Local has an active order but Supabase row is missing — keep local.
+          // It will be flushed to Supabase on the next scheduleFlush() cycle.
+          return t;
+        }
+        if (remote && local) {
+          const remoteSeated = remote.seatedAt || 0;
+          const localSeated = local.seatedAt || 0;
+          if (localSeated > remoteSeated) return t; // local is newer
+        }
+        const session = remote;
         const status = session?.items?.length > 0 ? 'occupied' : session ? 'seated' : 'available';
         return { ...t, session, status };
       });
@@ -153,6 +221,9 @@ export async function forceSyncFromSupabase() {
       const supabaseChecks = checksRes.data.map(c => ({
         ...c,
         closedAt: c.closed_at ? new Date(c.closed_at).getTime() : null,
+        // seatedAt (epoch ms) lets isSessionClosed tombstone the paid occupation on
+        // every device that boots or force-syncs, not just the one that took payment.
+        seatedAt: c.seated_at ? new Date(c.seated_at).getTime() : (c.seatedAt || null),
         method: c.payment_method || c.method,
         orderType: c.order_type,
         tableLabel: c.table_label,

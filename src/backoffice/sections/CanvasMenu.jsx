@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import { useStore } from '../../store';
+import { money } from '../../lib/currency';
 
 // ══════════════════════════════════════════════════════════════════════════════
 // CANVAS MENU MANAGER
@@ -269,7 +270,7 @@ export default function CanvasMenu({ catId }) {
                     {item.menuName||item.name}
                   </div>
                   <div style={{ fontSize:13, fontWeight:800, color:color, fontFamily:'var(--font-mono)', marginBottom:4 }}>
-                    {hasVars ? `from £${fromP.toFixed(2)}` : price > 0 ? `£${price.toFixed(2)}` : 'free'}
+                    {hasVars ? `from ${money(fromP)}` : price > 0 ? `${money(price)}` : 'free'}
                   </div>
                   <div style={{ display:'flex', gap:3, flexWrap:'wrap' }}>
                     {hasVars && <span style={{ fontSize:8, padding:'1px 5px', borderRadius:5, background:color+'22', color, fontWeight:700 }}>▼ {variantKids.length} sizes</span>}
@@ -289,12 +290,12 @@ export default function CanvasMenu({ catId }) {
             <div style={{ width:8, height:8, borderRadius:'50%', background:selCat?.color||'var(--acc)', flexShrink:0 }}/>
             <div style={{ flex:1, minWidth:0 }}>
               <div style={{ fontSize:13, fontWeight:700, color:'var(--t1)', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{selItem.menuName||selItem.name}</div>
-              <div style={{ fontSize:10, color:'var(--t3)' }}>{selCat?.label} · £{(selItem.pricing?.base??selItem.price??0).toFixed(2)} · drag to reposition</div>
+              <div style={{ fontSize:10, color:'var(--t3)' }}>{selCat?.label} · {money((selItem.pricing?.base??selItem.price??0))} · drag to reposition</div>
             </div>
             <div style={{ display:'flex', gap:6 }}>
               {menuItems.filter(c=>c.parentId===selId&&!c.archived).map(v=>(
                 <span key={v.id} style={{ fontSize:11, fontWeight:600, padding:'3px 9px', borderRadius:8, background:(selCat?.color||'var(--acc)')+'22', color:selCat?.color||'var(--acc)', border:`1px solid ${(selCat?.color||'var(--acc)')}44` }}>
-                  {v.menuName||v.name} £{(v.pricing?.base??v.price??0).toFixed(2)}
+                  {v.menuName||v.name} {money((v.pricing?.base??v.price??0))}
                 </span>
               ))}
               {(selItem.assignedModifierGroups||[]).map(ag=>{

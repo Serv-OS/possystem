@@ -1,0 +1,61 @@
+// Serv OS MPOS — mobile point-of-sale for a phone (tableside ordering, self-updating).
+//
+// A standalone WebView app (own applicationId, own CI, own update channel) following the
+// same "one module per device app" pattern as :app (POS) and :menuboard (Fire TV). It loads
+// the existing web POS surface at ?mode=mpos and self-updates from Supabase Storage
+// (UpdateChecker.java → app-releases/latest-mpos.json).
+//
+// SIGNING: in-app auto-update only installs in place when every build is signed with the SAME
+// key. CI signs RELEASE builds with one fixed keystore from GitHub secrets (ANDROID_KEYSTORE_*).
+// If those secrets aren't present (e.g. a local build), it falls back to the debug key so the
+// build still succeeds — but such a build won't auto-update an install made with the real key.
+plugins {
+    id 'com.android.application'
+}
+
+def ksPath = System.getenv('ANDROID_KEYSTORE_FILE')
+def hasKeystore = ksPath != null && new File(ksPath).exists()
+
+android {
+    namespace 'co.posup.rpos.mpos'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "co.posup.rpos.mpos"
+        minSdk 26
+        targetSdk 34
+        versionCode 4          // bump every release; UpdateChecker compares this to latest-mpos.json
+        versionName "1.4"
+    }
+
+    signingConfigs {
+        release {
+            if (hasKeystore) {
+                storeFile file(ksPath)
+                storePassword System.getenv('ANDROID_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('ANDROID_KEY_ALIAS')
+                keyPassword System.getenv('ANDROID_KEY_PASSWORD')
+                storeType 'PKCS12'
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            debuggable false
+            // Fixed release key when CI provides the keystore; debug key otherwise (so the
+            // build never fails — but only the keystore-signed build supports auto-update).
+            signingConfig hasKeystore ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+}

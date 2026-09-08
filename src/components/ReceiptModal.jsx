@@ -2,31 +2,51 @@ import { useState } from 'react';
 import { PRODUCTION_CENTRES } from '../data/seed';
 import { printService } from '../lib/printer';
 import { useStore } from '../store';
-import { calculateOrderTax } from '../lib/tax';
+import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
+import { money } from '../lib/currency';
+// v5.7.34 rate-null guards: per-unit entries book rate: null in the breakdown —
+// breakdownLabel prints name + amount with no percent, breakdownIsExclusive
+// treats them as added-on. Byte-identical strings for every rate-backed entry.
+import { breakdownLabel, breakdownIsExclusive } from '../lib/receiptTax';
 
 // ── Receipt display & print ───────────────────────────────────────────────────
 export function ReceiptModal({ items, subtotal, service, total, checkDiscount, orderType, tableLabel, server, covers, customer, ref: checkRef, method, tip, onClose }) {
-  const { location, taxRates } = useStore();
+  const { location, showToast } = useStore();
   const now = new Date();
   const nonVoided = items.filter(i => !i.voided);
   const [printing, setPrinting] = useState(false);
 
-  // Calculate tax breakdown for receipt
+  // Calculate tax breakdown for receipt — v5.7.34: through the unified seam
+  // (byte-identical on legacy-equivalent venues; profiles cascade otherwise).
+  const taxCtx = useStore.getState().getTaxContext();
   const taxBreakdown = (() => {
-    if (!taxRates?.length) return null;
-    try { return calculateOrderTax(nonVoided, taxRates, orderType || 'dine-in'); }
+    if (!taxCtxHasConfig(taxCtx)) return null;
+    try { return computeOrderTaxUnified(nonVoided, taxCtx, orderType || 'dine-in'); }
     catch { return null; }
   })();
 
   const handlePrint = async () => {
     setPrinting(true);
     try {
-      await printService.printReceipt({
+      const result = await printService.printReceipt({
         location,
         check: { ref: checkRef, server, tableLabel, orderType, covers, method },
         items: nonVoided,
         totals: { subtotal, service, tip: tip || 0, grand: total + (tip || 0), taxBreakdown },
+      }, null, {
+        // v5.5.835: user pressed Print in the receipt dialog. Receipts now fail closed
+        // when no printer is mapped, but this button is exactly how someone prints or
+        // saves a PDF from a back-office laptop with no thermal printer — so it keeps
+        // the browser-print fallback.
+        allowBrowserFallback: true,
       });
+      // v5.5.835: printReceipt returns { ok:false, error } rather than throwing when the
+      // job is rejected, so the catch below never saw it. This button used to report
+      // nothing at all in that case — the same silent-failure class as the modifier-group
+      // saves. The browser fallback above means ok:false here is a real submit failure.
+      if (!result?.ok) {
+        showToast?.(`Receipt print failed: ${result?.error || 'printer rejected the job'}`, 'error');
+      }
     } catch (err) {
       // Fallback to browser print on failure
       const win = window.open('', '_blank', 'width=380,height=700');
@@ -46,7 +66,7 @@ export function ReceiptModal({ items, subtotal, service, total, checkDiscount, o
         .void { text-decoration:line-through; color:#999; }
       </style>
       </head><body>
-      <div class="center bold big">Restaurant OS</div>
+      <div class="center bold big">Serv OS</div>
       <div class="center muted" style="margin:4px 0 8px">
         ${tableLabel ? tableLabel : customer?.name ? customer.name : orderType}<br>
         ${server ? `Server: ${server}` : ''}${covers>1 ? ` · ${covers} covers` : ''}<br>
@@ -61,23 +81,22 @@ export function ReceiptModal({ items, subtotal, service, total, checkDiscount, o
         return `
           <div class="row">
             <span>${item.qty > 1 ? item.qty+"× " : ""}${item.receiptName||item.name}</span>
-            <span>£${(price*item.qty).toFixed(2)}</span>
+            <span>${money((price*item.qty))}</span>
           </div>
           ${item.mods?.length ? `<div class="muted" style="padding-left:12px">${item.mods.map(m=>m.label).join(', ')}</div>` : ''}
           ${item.notes ? `<div class="muted" style="padding-left:12px">📝 ${item.notes}</div>` : ''}
-          ${disc ? `<div class="muted" style="padding-left:12px">🏷 ${disc.label} (−£${(item.price*item.qty - price*item.qty).toFixed(2)})</div>` : ''}
+          ${disc ? `<div class="muted" style="padding-left:12px">🏷 ${disc.label} (−${money((item.price*item.qty - price*item.qty))})</div>` : ''}
           ${item.allergens?.length ? `<div class="allergen">⚠ ALLERGENS: ${item.allergens.map(a=>a.toUpperCase()).join(', ')}</div>` : ''}
         `;
       }).join('')}
       <div class="line"></div>
-      <div class="row muted"><span>Subtotal</span><span>£${subtotal.toFixed(2)}</span></div>
-      ${checkDiscount > 0 ? `<div class="row" style="color:#1a7a3a"><span>Discount</span><span>−£${checkDiscount.toFixed(2)}</span></div>` : ''}
-      ${service > 0 ? `<div class="row muted"><span>Service charge (12.5%)</span><span>£${service.toFixed(2)}</span></div>` : ''}
-      <div class="row total-row"><span>TOTAL</span><span>£${total.toFixed(2)}</span></div>
+      <div class="row muted"><span>Subtotal</span><span>${money(subtotal)}</span></div>
+      ${checkDiscount > 0 ? `<div class="row" style="color:#1a7a3a"><span>Discount</span><span>−${money(checkDiscount)}</span></div>` : ''}
+      ${service > 0 ? `<div class="row muted"><span>Service charge (12.5%)</span><span>${money(service)}</span></div>` : ''}
+      <div class="row total-row"><span>TOTAL</span><span>${money(total)}</span></div>
       ${(taxBreakdown?.breakdown||[]).filter(b=>b.tax>0).map(b => {
-        const pct = (b.rate.rate*100).toFixed(1).replace('.0','');
-        const label = b.rate.type==='exclusive' ? `${b.rate.name} (${pct}%)` : `of which ${b.rate.name} (${pct}%)`;
-        return `<div class="row muted" style="font-size:10px"><span>${label}</span><span>£${b.tax.toFixed(2)}</span></div>`;
+        const label = breakdownIsExclusive(b) ? breakdownLabel(b, 1) : `of which ${breakdownLabel(b, 1)}`;
+        return `<div class="row muted" style="font-size:10px"><span>${label}</span><span>${money(b.tax)}</span></div>`;
       }).join('')}
       <div class="line"></div>
       <div class="center muted" style="margin-top:8px">Thank you for dining with us</div>
@@ -106,7 +125,7 @@ export function ReceiptModal({ items, subtotal, service, total, checkDiscount, o
         {/* Receipt preview */}
         <div style={{padding:'16px 20px',fontFamily:'DM Mono, monospace'}}>
           <div style={{textAlign:'center',marginBottom:12}}>
-            <div style={{fontSize:14,fontWeight:700,color:'var(--t1)'}}>Restaurant OS</div>
+            <div style={{fontSize:14,fontWeight:700,color:'var(--t1)'}}>Serv OS</div>
             <div style={{fontSize:11,color:'var(--t3)',marginTop:3}}>
               {tableLabel || orderType}{server?` · ${server}`:''}{covers>1?` · ${covers} covers`:''}
             </div>
@@ -124,11 +143,11 @@ export function ReceiptModal({ items, subtotal, service, total, checkDiscount, o
               <div key={item.uid} style={{marginBottom:6}}>
                 <div style={{display:'flex',justifyContent:'space-between',fontSize:12,color:'var(--t1)'}}>
                   <span>{item.qty>1?`${item.qty}× `:''}{item.receiptName||item.name}</span>
-                  <span>£{(price*item.qty).toFixed(2)}</span>
+                  <span>{money((price*item.qty))}</span>
                 </div>
                 {item.mods?.length>0&&<div style={{fontSize:10,color:'var(--t3)',paddingLeft:12}}>{item.mods.map(m=>m.label).join(', ')}</div>}
                 {item.notes&&<div style={{fontSize:10,color:'#f97316',paddingLeft:12}}>📝 {item.notes}</div>}
-                {disc&&<div style={{fontSize:10,color:'var(--grn)',paddingLeft:12}}>🏷 {disc.label} −£{(item.price*item.qty-price*item.qty).toFixed(2)}</div>}
+                {disc&&<div style={{fontSize:10,color:'var(--grn)',paddingLeft:12}}>🏷 {disc.label} −{money((item.price*item.qty-price*item.qty))}</div>}
                 {item.allergens?.length>0&&<div style={{fontSize:10,color:'var(--red)',paddingLeft:12,fontWeight:600}}>⚠ {item.allergens.map(a=>a.toUpperCase()).join(' · ')}</div>}
               </div>
             );
@@ -136,20 +155,19 @@ export function ReceiptModal({ items, subtotal, service, total, checkDiscount, o
 
           <div style={{borderTop:'1px dashed var(--bdr2)',margin:'10px 0'}}/>
 
-          <div style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'var(--t3)',marginBottom:3}}><span>Subtotal</span><span>£{subtotal.toFixed(2)}</span></div>
-          {checkDiscount>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'var(--grn)',marginBottom:3}}><span>Discount</span><span>−£{checkDiscount.toFixed(2)}</span></div>}
-          {service>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'var(--t3)',marginBottom:3}}><span>Service (12.5%)</span><span>£{service.toFixed(2)}</span></div>}
+          <div style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'var(--t3)',marginBottom:3}}><span>Subtotal</span><span>{money(subtotal)}</span></div>
+          {checkDiscount>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'var(--grn)',marginBottom:3}}><span>Discount</span><span>−{money(checkDiscount)}</span></div>}
+          {service>0&&<div style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'var(--t3)',marginBottom:3}}><span>Service (12.5%)</span><span>{money(service)}</span></div>}
 
-          {/* Tax breakdown */}
-          {taxBreakdown?.breakdown?.filter(b=>b.tax>0).map(b => {
-            const pct = (b.rate.rate*100).toFixed(1).replace('.0','');
-            const label = b.rate.type==='exclusive' ? `${b.rate.name} (${pct}%)` : `of which ${b.rate.name} (${pct}%)`;
-            return <div key={b.rate.id} style={{display:'flex',justifyContent:'space-between',fontSize:10,color:'var(--t4)',marginBottom:2}}><span>{label}</span><span>£{b.tax.toFixed(2)}</span></div>;
+          {/* Tax breakdown (rate-null guarded: per-unit lines print name + amount) */}
+          {taxBreakdown?.breakdown?.filter(b=>b.tax>0).map((b, i) => {
+            const label = breakdownIsExclusive(b) ? breakdownLabel(b, 1) : `of which ${breakdownLabel(b, 1)}`;
+            return <div key={b.rate?.id ?? `pu-${i}`} style={{display:'flex',justifyContent:'space-between',fontSize:10,color:'var(--t4)',marginBottom:2}}><span>{label}</span><span>{money(b.tax)}</span></div>;
           })}
 
           <div style={{display:'flex',justifyContent:'space-between',fontSize:16,fontWeight:700,borderTop:'1px solid var(--bdr3)',paddingTop:8,marginTop:6}}>
             <span style={{color:'var(--t1)'}}>Total</span>
-            <span style={{color:'var(--acc)'}}>£{total.toFixed(2)}</span>
+            <span style={{color:'var(--acc)'}}>{money(total)}</span>
           </div>
 
           <div style={{borderTop:'1px dashed var(--bdr2)',margin:'12px 0 4px'}}/>

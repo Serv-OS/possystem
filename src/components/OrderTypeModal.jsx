@@ -9,6 +9,8 @@
  */
 import { useState, useRef } from 'react';
 import { useStore } from '../store';
+import { sortTables } from '../lib/sortTables';
+import { money } from '../lib/currency';
 
 const TYPES = [
   {
@@ -76,7 +78,7 @@ const inp = {
 };
 
 export default function OrderTypeModal({ items, onClose, onComplete }) {
-  const { tables, tabs, seatTableWithItems, mergeItemsToTable, splitTableCheck, openTab, showToast, staff } = useStore();
+  const { tables, tabs, seatTableWithItems, mergeItemsToTable, splitTableCheck, openTab, showToast, staff, takeawayCustomerDetails } = useStore();
   const [step, setStep] = useState('type');       // type | details | table_pick | tab_pick
   const [selectedType, setSelectedType] = useState(null);
   const [form, setForm] = useState({ name: '', phone: '', time: '', address: '', isASAP: false, tabName: '' });
@@ -85,16 +87,27 @@ export default function OrderTypeModal({ items, onClose, onComplete }) {
   const itemCount = items?.length || 0;
   const subtotal  = items?.reduce((s, i) => s + i.price * i.qty, 0) || 0;
 
-  const availableTables = tables.filter(t => t.status === 'available');
-  const occupiedTables  = tables.filter(t => t.status !== 'available' && t.session);
+  // v5.5.13: natural-sorted by section + label so the picker shows T1, T2,
+  // T9, T10 in expected order rather than store-order.
+  const availableTables = sortTables(tables.filter(t => t.status === 'available'));
+  const occupiedTables  = sortTables(tables.filter(t => t.status !== 'available' && t.session));
   const openTabs        = tabs?.filter(t => t.status !== 'closed') || [];
 
   const setField = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  // v5.5.799: venue setting — how much customer detail takeaway/collection asks for.
+  // 'none' skips the details step entirely; 'name' shows only the name field below.
+  const takeawayMode = takeawayCustomerDetails || 'full';
 
   const handleTypeSelect = (type) => {
     setSelectedType(type);
     if (type.id === 'dine-in') { setStep('table_pick'); return; }
     if (type.id === 'bar')     { setStep('tab_pick');   return; }
+    if ((type.id === 'takeaway' || type.id === 'collection') && takeawayMode === 'none') {
+      // Straight to kitchen — the order carries its short ref like an unnamed walk-in.
+      onComplete({ type: type.id, name: '', phone: '', time: '', isASAP: true, orderType: type.id, channel: type.id });
+      return;
+    }
     setStep('details');
     setTimeout(() => nameRef.current?.focus(), 80);
   };
@@ -153,7 +166,7 @@ export default function OrderTypeModal({ items, onClose, onComplete }) {
               {step === 'tab_pick'   && 'Bar tab'}
             </div>
             <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 2 }}>
-              {itemCount} item{itemCount !== 1 ? 's' : ''} · £{subtotal.toFixed(2)}
+              {itemCount} item{itemCount !== 1 ? 's' : ''} · {money(subtotal)}
             </div>
           </div>
           <button onClick={onClose} style={{ background: 'none', border: 'none', color: 'var(--t4)', cursor: 'pointer', fontSize: 22, lineHeight: 1 }}>×</button>
@@ -214,10 +227,13 @@ export default function OrderTypeModal({ items, onClose, onComplete }) {
                   onKeyDown={e => e.key === 'Enter' && confirmTakeaway()}
                   placeholder="Customer name" autoFocus />
               </div>
+              {/* v5.5.799: 'Name only' mode — just the name, no phone */}
+              {takeawayMode !== 'name' && (
               <div>
                 <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.1em', marginBottom: 6 }}>Phone (optional)</div>
                 <input style={inp} type="tel" value={form.phone} onChange={e => setField('phone', e.target.value)} placeholder="+44 7700 000000" />
               </div>
+              )}
               <div>
                 <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.1em', marginBottom: 6 }}>Collection time</div>
                 <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginBottom: 8 }}>
@@ -285,7 +301,7 @@ export default function OrderTypeModal({ items, onClose, onComplete }) {
                         <div style={{ marginBottom: 8 }}>
                           <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>{t.label}</div>
                           <div style={{ fontSize: 10, color: 'var(--t4)', marginTop: 2 }}>
-                            {t.session?.items?.filter(i => !i.voided).length || 0} items · £{(t.session?.subtotal || 0).toFixed(2)} · {t.session?.server || 'no server'}
+                            {t.session?.items?.filter(i => !i.voided).length || 0} items · {money((t.session?.subtotal || 0))} · {t.session?.server || 'no server'}
                           </div>
                         </div>
                         <div style={{ display: 'flex', gap: 6 }}>
@@ -318,10 +334,10 @@ export default function OrderTypeModal({ items, onClose, onComplete }) {
               <div>
                 <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', marginBottom: 8 }}>Open new bar tab</div>
                 <div style={{ display: 'flex', gap: 8 }}>
-                  <input ref={nameRef} style={{ ...inp, flex: 1 }} value={form.tabName} onChange={e => setField('tabName', e.target.value)}
+                  <input ref={nameRef} style={{ ...inp, flex: 1, width: 'auto', minWidth: 0 }} value={form.tabName} onChange={e => setField('tabName', e.target.value)}
                     onKeyDown={e => e.key === 'Enter' && form.tabName.trim() && confirmNewTab()}
                     placeholder="Tab name (e.g. John, Table 5 bar)" autoFocus />
-                  <button onClick={confirmNewTab} disabled={!form.tabName.trim()} style={{ ...sendBtn('#a855f7'), padding: '10px 16px', opacity: form.tabName.trim() ? 1 : .4 }}>
+                  <button onClick={confirmNewTab} disabled={!form.tabName.trim()} style={{ ...sendBtn('#a855f7'), padding: '10px 16px', width: 'auto', flexShrink: 0, opacity: form.tabName.trim() ? 1 : .4 }}>
                     Open →
                   </button>
                 </div>
@@ -345,7 +361,7 @@ export default function OrderTypeModal({ items, onClose, onComplete }) {
                         <div style={{ flex: 1 }}>
                           <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>{tab.name || tab.id}</div>
                           <div style={{ fontSize: 10, color: 'var(--t4)' }}>
-                            £{(tab.total || 0).toFixed(2)} · {tab.rounds?.length || 0} round{tab.rounds?.length !== 1 ? 's' : ''}
+                            {money((tab.total || 0))} · {tab.rounds?.length || 0} round{tab.rounds?.length !== 1 ? 's' : ''}
                           </div>
                         </div>
                         <span style={{ color: 'var(--t3)', fontSize: 16 }}>›</span>

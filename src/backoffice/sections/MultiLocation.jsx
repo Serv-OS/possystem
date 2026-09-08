@@ -6,6 +6,9 @@
  */
 import { useState } from 'react';
 import { useStore } from '../../store';
+import { supabase, isMock } from '../../lib/supabase';
+import { saveLocation } from '../../lib/locationAdmin';
+import { reportSave } from '../../lib/saveHealth';
 
 const TIMEZONES = [
   'Europe/London', 'Europe/Dublin', 'Europe/Paris', 'Europe/Berlin',
@@ -39,10 +42,42 @@ export default function MultiLocation() {
     setView('add');
   };
 
-  const save = () => {
+  const save = async () => {
     if (!form.name?.trim()) { showToast('Location name required', 'error'); return; }
     if (editId) {
+      const before = locations?.find(l => l.id === editId);
       updateLocation(editId, form);
+      // Persist the venue name to BOTH databases: ops (tills, back office, receipts)
+      // and platform (online ordering / gift / loyalty read the name from the platform
+      // row, matched by ops_location_id) — otherwise a rename never reaches the
+      // customer-facing ordering pages.
+      if (!isMock && supabase) {
+        const name = form.name.trim();
+        const { data, error: oErr } = await supabase.from('locations').update({ name }).eq('id', editId).select('id');
+        const opsFail = oErr || (!data || data.length === 0
+          ? new Error(`Rename matched 0 rows for location ${editId} — RLS may have blocked it`)
+          : null);
+        reportSave('location', opsFail);
+        if (opsFail) {
+          // Revert: the tills and receipts still carry the old name, so this screen must too.
+          if (before) updateLocation(editId, before);
+          showToast(`Location NOT saved — ${opsFail.message}`, 'error');
+          return;
+        }
+        try {
+          // Via the location-admin edge fn (service_role) — the browser no longer
+          // holds UPDATE on platform.locations. It resolves the platform row from
+          // the ops id (ops_location_id first, then legacy id).
+          const { data: pRow, error: pErr } = await saveLocation(editId, { name });
+          if (pErr) throw pErr;
+          if (!pRow) throw new Error('the platform DB returned no row');
+        } catch (e) {
+          reportSave('location (online ordering name)', e);
+          showToast('Saved, but the online-ordering name didn’t sync — try again', 'error');
+          setView('overview');
+          return;
+        }
+      }
       showToast('Location updated', 'success');
     } else {
       addLocation({ id:`loc-${Date.now()}`, ...form, isActive:true, createdAt:new Date() });

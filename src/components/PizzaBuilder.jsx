@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { PIZZA_TOPPINGS, PIZZA_BASES, PIZZA_CRUSTS, PIZZA_SIZES } from '../data/seed';
+import { money, currencySymbol } from '../lib/currency';
 
 export default function PizzaBuilder({ item, onConfirm, onCancel }) {
   const [size,   setSize]   = useState(PIZZA_SIZES[1]);       // Large
@@ -134,7 +135,7 @@ export default function PizzaBuilder({ item, onConfirm, onCancel }) {
                     transition:'all .12s',
                   }}>
                     <div style={{ fontSize:12, fontWeight:500, color: size.id===s.id?'var(--acc)':'var(--t1)' }}>{s.name}</div>
-                    <div style={{ fontSize:11, color:'var(--t3)', marginTop:2 }}>£{s.basePrice.toFixed(2)}</div>
+                    <div style={{ fontSize:11, color:'var(--t3)', marginTop:2 }}>{money(s.basePrice)}</div>
                   </button>
                 ))}
               </div>
@@ -168,7 +169,7 @@ export default function PizzaBuilder({ item, onConfirm, onCancel }) {
                     color: crust.id===c.id?'var(--acc)':'var(--t2)',
                     transition:'all .12s',
                   }}>
-                    {c.name}{c.extra?<span style={{fontSize:10,opacity:.7}}> +£{c.extra.toFixed(2)}</span>:null}
+                    {c.name}{c.extra?<span style={{fontSize:10,opacity:.7}}> +{money(c.extra)}</span>:null}
                   </button>
                 ))}
               </div>
@@ -249,7 +250,7 @@ export default function PizzaBuilder({ item, onConfirm, onCancel }) {
                     }}>
                       <div style={{ width:10,height:10,borderRadius:'50%',background:top.color,margin:'0 auto 4px' }}/>
                       <div style={{ fontSize:10, fontWeight:500, color: active?stColor:'var(--t2)', lineHeight:1.2 }}>{top.name}</div>
-                      {top.price>0&&<div style={{ fontSize:9, color:'var(--t3)', marginTop:2 }}>+£{top.price}</div>}
+                      {top.price>0&&<div style={{ fontSize:9, color:'var(--t3)', marginTop:2 }}>+{currencySymbol()}{top.price}</div>}
                       {st!=='off'&&st!=='whole'&&<div style={{ fontSize:9, fontWeight:600, color:stColor, marginTop:2 }}>{st}</div>}
                     </button>
                   );
@@ -290,16 +291,16 @@ export default function PizzaBuilder({ item, onConfirm, onCancel }) {
             <div style={{ marginTop:'auto' }}>
               <div style={{ borderTop:'1px solid var(--bdr)', paddingTop:12, marginBottom:12 }}>
                 <div style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--t3)', marginBottom:3 }}>
-                  <span>Base</span><span>£{size.basePrice.toFixed(2)}</span>
+                  <span>Base</span><span>{money(size.basePrice)}</span>
                 </div>
                 {crust.extra>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--t3)', marginBottom:3 }}>
-                  <span>{crust.name}</span><span>+£{crust.extra.toFixed(2)}</span>
+                  <span>{crust.name}</span><span>+{money(crust.extra)}</span>
                 </div>}
                 {toppingCost>0&&<div style={{ display:'flex', justifyContent:'space-between', fontSize:11, color:'var(--t3)', marginBottom:3 }}>
-                  <span>Toppings</span><span>+£{toppingCost.toFixed(2)}</span>
+                  <span>Toppings</span><span>+{money(toppingCost)}</span>
                 </div>}
                 <div style={{ display:'flex', justifyContent:'space-between', fontSize:16, fontWeight:600, marginTop:8, color:'var(--acc)' }}>
-                  <span>Total</span><span>£{total.toFixed(2)}</span>
+                  <span>Total</span><span>{money(total)}</span>
                 </div>
               </div>
               <button className="btn btn-acc btn-full" onClick={handleAdd}>

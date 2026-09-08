@@ -12,8 +12,9 @@ const STATUS_LEVELS = [
 
 function getStatus(count) {
   if (!count) return STATUS_LEVELS[0];
-  const ratio = count.remaining / count.par;
   if (count.remaining <= 0) return STATUS_LEVELS[3];
+  // v5.5.316: guard par=0 → ratio would be Infinity/NaN and break the status bar
+  const ratio = count.par > 0 ? count.remaining / count.par : 1;
   if (ratio <= 0.15) return STATUS_LEVELS[2];
   if (ratio <= 0.4)  return STATUS_LEVELS[1];
   return STATUS_LEVELS[0];
@@ -24,6 +25,23 @@ export default function Inventory() {
   const MENU_ITEMS = (isMock && (!storeItems || storeItems.length === 0)) ? SEED_ITEMS : (storeItems || []);
   const cats = (menuCategories||[]).filter(c => !c.isSpecial && !c.parentId).sort((a,b)=>(a.sortOrder||0)-(b.sortOrder||0));
 
+  // v5.5.569: variant rows like "Half" are meaningless on their own. Build a
+  // parent-qualified label ("Heineken Half") and know which items are variant
+  // PARENT containers (they have children) so we can hide them — you count the
+  // variants, not the empty container.
+  const meta = useMemo(() => {
+    const byId = {}; MENU_ITEMS.forEach(i => { byId[String(i.id)] = i; });
+    const parents = new Set(MENU_ITEMS.filter(i => i.parentId).map(i => String(i.parentId)));
+    const label = (i) => {
+      if (!i?.parentId) return i?.name || '';
+      const p = byId[String(i.parentId)];
+      if (!p) return i.name || '';
+      const n = (i.name || '').trim();
+      return n.toLowerCase().startsWith((p.name || '').toLowerCase()) ? n : `${p.name} ${n}`.trim();
+    };
+    return { parents, label };
+  }, [MENU_ITEMS]);
+
   const [catFilter, setCatFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
   const [search, setSearch] = useState('');
@@ -32,9 +50,12 @@ export default function Inventory() {
 
   const itemsWithStatus = useMemo(() => {
     return MENU_ITEMS
-      .filter(i => !i.archived)
+      // Hide modifier sub-items (e.g. "half and half") and variant PARENT containers;
+      // show the sellable variants themselves with a parent-qualified name.
+      .filter(i => !i.archived && i.type !== 'subitem' && !meta.parents.has(String(i.id)))
       .map(i => ({
         ...i,
+        displayName: meta.label(i),
         count: dailyCounts[i.id] || null,
         status: getStatus(dailyCounts[i.id]),
         is86: eightySixIds.includes(i.id),
@@ -44,10 +65,11 @@ export default function Inventory() {
         if (statusFilter === 'tracked' && !i.count) return false;
         if (statusFilter === 'low' && i.status.id !== 'low' && i.status.id !== 'critical') return false;
         if (statusFilter === '86d' && !i.is86) return false;
-        if (search && !i.name.toLowerCase().includes(search.toLowerCase())) return false;
+        if (search && !i.displayName.toLowerCase().includes(search.toLowerCase())) return false;
         return true;
-      });
-  }, [MENU_ITEMS, dailyCounts, eightySixIds, catFilter, statusFilter, search]);
+      })
+      .sort((a, b) => a.displayName.localeCompare(b.displayName));
+  }, [MENU_ITEMS, dailyCounts, eightySixIds, catFilter, statusFilter, search, meta]);
 
   const summary = useMemo(() => {
     const all = MENU_ITEMS.filter(i => !i.archived);
@@ -133,9 +155,11 @@ export default function Inventory() {
 
                 return (
                   <tr key={item.id} style={{ borderBottom:'1px solid var(--bdr)', background:idx%2===0?'var(--bg)':'var(--bg1)', opacity:item.is86?.6:1 }}>
+                    {/* v5.5.960: price line removed — it read the legacy scalar `price` (most
+                        items price via pricing.base, so it showed a false £0.00), and a count
+                        screen is about QUANTITIES, not prices (owner call, 30 Jul). */}
                     <td style={{ padding:'10px 14px', maxWidth:200 }}>
-                      <div style={{ fontSize:13, fontWeight:600, color:'var(--t1)' }}>{item.name}</div>
-                      <div style={{ fontSize:11, color:'var(--t4)', marginTop:1 }}>£{(item.price||0).toFixed(2)}</div>
+                      <div style={{ fontSize:13, fontWeight:600, color:'var(--t1)' }}>{item.displayName || item.name}</div>
                     </td>
                     <td style={{ padding:'10px 14px', fontSize:11, color:'var(--t3)', textTransform:'capitalize' }}>
                       {(menuCategories||[]).find(c => c.id === item.cat)?.label || item.cat}
@@ -165,7 +189,7 @@ export default function Inventory() {
                       )}
                     </td>
                     <td style={{ padding:'10px 14px' }}>
-                      <button onClick={() => { toggle86(item.id); markBOChange(); showToast(item.is86 ? `${item.name} reinstated` : `${item.name} 86'd`, 'warning'); }} style={{
+                      <button onClick={() => { toggle86(item.id); markBOChange(); showToast(item.is86 ? `${item.displayName || item.name} reinstated` : `${item.displayName || item.name} 86'd`, 'warning'); }} style={{
                         padding:'3px 10px', borderRadius:7, cursor:'pointer', fontFamily:'inherit',
                         background: item.is86 ? 'var(--grn-d)' : 'var(--red-d)',
                         border:`1px solid ${item.is86 ? 'var(--grn-b)' : 'var(--red-b)'}`,
@@ -204,7 +228,7 @@ export default function Inventory() {
         <CountModal item={editing} onClose={() => setEditing(null)}/>
       )}
       {editing === 'new' && (
-        <BulkCountModal items={MENU_ITEMS.filter(i => !i.archived)} onClose={() => setEditing(null)}/>
+        <BulkCountModal items={MENU_ITEMS.filter(i => !i.archived && i.type !== 'subitem' && !meta.parents.has(String(i.id))).map(i => ({ ...i, displayName: meta.label(i) }))} onClose={() => setEditing(null)}/>
       )}
     </div>
   );
@@ -224,7 +248,7 @@ function CountModal({ item, onClose }) {
           <button onClick={onClose} style={{ background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:20 }}>×</button>
         </div>
         <div style={{ padding:'18px 20px' }}>
-          <div style={{ fontSize:14, fontWeight:600, color:'var(--t1)', marginBottom:4 }}>{item.name}</div>
+          <div style={{ fontSize:14, fontWeight:600, color:'var(--t1)', marginBottom:4 }}>{item.displayName || item.name}</div>
           {current && (
             <div style={{ fontSize:12, color:'var(--t4)', marginBottom:12 }}>Current: {current.remaining}/{current.par} remaining</div>
           )}
@@ -243,7 +267,7 @@ function CountModal({ item, onClose }) {
           </div>
           <div style={{ display:'flex', gap:6 }}>
             {current && <button onClick={()=>{clearDailyCount(item.id);showToast('Count cleared','info');onClose();}} style={{ flex:1, height:38, borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:'var(--red-d)', border:'1px solid var(--red-b)', color:'var(--red)', fontSize:12, fontWeight:700 }}>Clear</button>}
-            <button onClick={()=>{if(val){setDailyCount(item.id,parseInt(val));showToast(`${item.name}: ${val} portions set`,'success');onClose();}}} disabled={!val} style={{ flex:2, height:38, borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:val?'var(--acc)':'var(--bg3)', border:'none', color:val?'#0b0c10':'var(--t4)', fontSize:13, fontWeight:800 }}>
+            <button onClick={()=>{if(val){setDailyCount(item.id,parseInt(val));showToast(`${item.displayName || item.name}: ${val} portions set`,'success');onClose();}}} disabled={!val} style={{ flex:2, height:38, borderRadius:9, cursor:'pointer', fontFamily:'inherit', background:val?'var(--acc)':'var(--bg3)', border:'none', color:val?'#0b0c10':'var(--t4)', fontSize:13, fontWeight:800 }}>
               {val?`Set ${val} portions`:'Enter a number'}
             </button>
           </div>
@@ -278,7 +302,7 @@ function BulkCountModal({ items, onClose }) {
         <div style={{ flex:1, overflowY:'auto', padding:'16px 20px' }}>
           {untracked.slice(0,30).map(item => (
             <div key={item.id} style={{ display:'flex', alignItems:'center', gap:10, marginBottom:8 }}>
-              <span style={{ flex:1, fontSize:13, color:'var(--t1)' }}>{item.name}</span>
+              <span style={{ flex:1, fontSize:13, color:'var(--t1)' }}>{item.displayName || item.name}</span>
               <input type="number" min="0" max="999" placeholder="par" style={{ width:70, background:'var(--bg3)', border:'1px solid var(--bdr2)', borderRadius:8, padding:'6px 8px', color:'var(--t1)', fontSize:13, fontFamily:'inherit', outline:'none', textAlign:'center' }}
                 value={counts[item.id]||''} onChange={e=>setCounts(c=>({...c,[item.id]:e.target.value}))}/>
             </div>

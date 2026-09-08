@@ -1,24 +1,18 @@
 // supabase/functions/stripe-webhook/index.ts
-// PLATFORM-account webhook receiver. Deploy with --no-verify-jwt.
+// Platform-account Stripe webhooks. Deploy to Ops DB project (tbetcegmszzotrwdtqhi).
+// Stripe URL: https://tbetcegmszzotrwdtqhi.supabase.co/functions/v1/stripe-webhook
 //
-// Stripe Dashboard endpoint URL:
-//   https://<ops-project-ref>.supabase.co/functions/v1/stripe-webhook
-//
-// Required secrets (supabase secrets set):
+// Required secrets:
 //   STRIPE_SECRET_KEY
 //   STRIPE_WEBHOOK_SECRET
-//   PLATFORM_SUPABASE_URL
+//   PLATFORM_SUPABASE_URL              (yhzjgyrkyjabvhblqxzu's https URL)
 //   PLATFORM_SUPABASE_SERVICE_ROLE_KEY
-//
-// Billing data lives in the Platform DB. This function is deployed to Ops
-// (alongside create-user) but writes to Platform DB via service_role client.
 
-import Stripe from 'https://esm.sh/stripe@17.4.0?target=deno';
+import Stripe from 'https://esm.sh/stripe@14.21.0?target=denonext';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const stripe = new Stripe(Deno.env.get('STRIPE_SECRET_KEY') ?? '', {
-  apiVersion: '2024-11-20.acacia',
-  httpClient: Stripe.createFetchHttpClient(),
+  apiVersion: '2024-06-20',
 });
 
 const platformDb = createClient(
@@ -41,11 +35,10 @@ Deno.serve(async (req) => {
   try {
     event = await stripe.webhooks.constructEventAsync(body, sig, SECRET);
   } catch (e) {
-    console.error('[stripe-webhook] signature verify failed', e);
+    console.error('[stripe-webhook] sig verify failed', e);
     return new Response(`bad signature: ${(e as Error).message}`, { status: 400 });
   }
 
-  // Idempotency
   const { error: insertErr } = await platformDb.from('stripe_webhook_events').insert({
     id: event.id, type: event.type, livemode: event.livemode, account_id: null, payload: event,
   });
@@ -55,28 +48,9 @@ Deno.serve(async (req) => {
     return new Response('db error', { status: 500 });
   }
 
-  try {
-    await dispatch(event);
-    await platformDb.from('stripe_webhook_events')
-      .update({ processed_at: new Date().toISOString() }).eq('id', event.id);
-  } catch (e) {
-    console.error('[stripe-webhook] handler error', event.type, e);
-    await platformDb.from('stripe_webhook_events')
-      .update({ processing_error: String(e) }).eq('id', event.id);
-    // Return 200 anyway — we have the row, can replay manually
-  }
+  // Platform-level events (payout/balance/etc.) — log only for now
+  await platformDb.from('stripe_webhook_events')
+    .update({ processed_at: new Date().toISOString() }).eq('id', event.id);
 
   return new Response('ok', { status: 200 });
 });
-
-async function dispatch(event: Stripe.Event) {
-  switch (event.type) {
-    case 'payout.paid':
-    case 'payout.failed':
-    case 'balance.available':
-      // Platform-level events. Log only for now.
-      break;
-    default:
-      console.log('[stripe-webhook] unhandled platform event', event.type);
-  }
-}

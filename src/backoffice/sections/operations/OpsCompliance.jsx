@@ -1,0 +1,410 @@
+// OpsCompliance — the EHO-ready compliance history: a month coloured by status on the
+// left, a day-detail event TIMELINE on the right (every temperature round, checklist
+// sign-off, breach/corrective action + maintenance raised), and a CSV export of the
+// audit trail. (Back Office → Operations → Compliance.)
+
+import { useEffect, useMemo, useState, useCallback } from 'react';
+import { getActiveLocationSync, getLocationId, getAvailableLocations } from '../../../lib/supabase';
+import { fetchTempUnits, fetchSchedules, fetchReadings, fetchCorrectiveActions, fetchMaintenance } from '../../../lib/ops/data';
+import { fetchRunsRange, fetchChecklists, fetchRunCompletions } from '../../../lib/ops/checklists';
+import { hhmmToMin, runsOnDay, windowStatus, summarize, displayTemp } from '../../../lib/ops/temp';
+import { getLocationConfig, buildScheduleCtx, minutesInTz, ymdInTz } from '../../../lib/locationTime';
+const mono = { fontFamily: 'var(--font-mono)' };
+const ymd = (d) => { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
+const DAY_COL = { green: 'var(--grn)', amber: 'var(--orn)', coral: 'var(--red)', idle: 'transparent' };
+const hhmm = (t) => new Date(t).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+
+export default function OpsCompliance() {
+  const [locId, setLocId] = useState(getActiveLocationSync());
+  const [siteName, setSiteName] = useState('');
+  const [month, setMonth] = useState(() => { const d = new Date(); return { y: d.getFullYear(), m: d.getMonth() }; });
+  const [data, setData] = useState({ units: [], scheds: [], readings: [], corr: [], runs: [], maint: [], checklists: [], tz: null, loading: true });
+  const [selDay, setSelDay] = useState(null);
+
+  const monthStart = useMemo(() => new Date(month.y, month.m, 1), [month]);
+  const monthEnd = useMemo(() => new Date(month.y, month.m + 1, 1), [month]);
+
+  const reload = useCallback(async () => {
+    const loc = locId || getActiveLocationSync() || await getLocationId().catch(() => null);
+    if (loc && loc !== locId) setLocId(loc);
+    const mFrom = ymd(monthStart), mTo = ymd(new Date(month.y, month.m + 1, 0));
+    // v5.7.24 — the venue tz rides along so readings bucket to the VENUE's
+    // calendar day and wall clock (project invariant), not this machine's.
+    const tz = (await getLocationConfig(loc))?.timezone || null;
+    const [{ data: units }, { data: scheds }, { data: readings }, { data: corr }, { data: runs }, { data: maint }, { data: checklists }] = await Promise.all([
+      fetchTempUnits(loc, true), fetchSchedules(loc),
+      fetchReadings(monthStart.toISOString(), monthEnd.toISOString(), loc, 5000),
+      fetchCorrectiveActions(monthStart.toISOString(), monthEnd.toISOString(), loc),
+      fetchRunsRange(mFrom, mTo, loc),
+      fetchMaintenance(loc),
+      fetchChecklists(loc),
+    ]);
+    setData({ units: units || [], scheds: scheds || [], readings: readings || [], corr: corr || [], runs: runs || [], maint: maint || [], checklists: checklists || [], tz, loading: false });
+  }, [locId, monthStart, monthEnd, month]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { reload(); }, [month]);
+
+  // resolve the site name for the subtitle
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const loc = locId || getActiveLocationSync();
+      if (!loc) return;
+      try {
+        const locs = await getAvailableLocations();
+        const hit = (locs || []).find(l => l.id === loc);
+        if (alive && hit?.name) setSiteName(hit.name);
+      } catch { /* fall back gracefully to no site name */ }
+    })();
+    return () => { alive = false; };
+  }, [locId]);
+
+  // per-day status
+  const dayStatus = useMemo(() => {
+    const byDay = {};
+    // v5.7.24 — a reading belongs to the VENUE's calendar day, and the satisfied
+    // check compares venue-local minutes; a BO machine on another timezone was
+    // colouring the wrong day and mis-crediting windows near midnight.
+    const readByDay = {}; data.readings.forEach(r => { (readByDay[ymdInTz(r.recordedAt, data.tz)] ??= []).push(r); });
+    const schedByUnit = {}; data.scheds.forEach(s => { (schedByUnit[s.tempUnitId] ??= []).push(s); });
+    const today = buildScheduleCtx(data.tz).ymd;
+    const days = new Date(month.y, month.m + 1, 0).getDate();
+    for (let d = 1; d <= days; d++) {
+      const date = new Date(month.y, month.m, d);
+      const key = ymd(date);
+      const isToday = key === today;
+      if (key > today) { byDay[key] = 'idle'; continue; }
+      const reads = readByDay[key] || [];
+      // No readings that day → the venue wasn't monitored (or pre-dates setup). Don't flag it
+      // as a failure — show it neutral. Only days with actual activity get a status.
+      if (reads.length === 0) { byDay[key] = 'idle'; continue; }
+      if (reads.some(r => !r.inRange)) { byDay[key] = 'coral'; continue; }   // a breach was logged
+      if (isToday) { byDay[key] = 'green'; continue; }                       // today still in progress, no breach yet
+      // a completed past day with readings but no breach: green if every scheduled window was covered, else minor (amber)
+      const statuses = [];
+      data.units.filter(u => !u.archivedAt).forEach(u => {
+        (schedByUnit[u.id] || []).filter(s => runsOnDay(s.daysOfWeek, date)).forEach(s => {
+          const wMin = hhmmToMin(s.timeOfDay) ?? 0;
+          const satisfied = reads.some(r => r.tempUnitId === u.id && (minutesInTz(r.recordedAt, data.tz) ?? -1) >= wMin - 5);
+          statuses.push(windowStatus({ windowMin: wMin, graceMin: s.graceMinutes, nowMin: 24 * 60, satisfied }));
+        });
+      });
+      byDay[key] = summarize(statuses).missed > 0 ? 'amber' : 'green';
+    }
+    return byDay;
+  }, [data, month]);
+
+  // pick a default selected day so the right panel is populated on load: today if it's
+  // in the visible month, else the most recent past day in this month.
+  useEffect(() => {
+    if (selDay && selDay.startsWith(`${month.y}-${String(month.m + 1).padStart(2, '0')}`)) return;
+    const today = new Date();
+    const inThisMonth = today.getFullYear() === month.y && today.getMonth() === month.m;
+    if (inThisMonth) { setSelDay(ymd(today)); return; }
+    const days = new Date(month.y, month.m + 1, 0).getDate();
+    setSelDay(ymd(new Date(month.y, month.m, days)));
+  }, [month, selDay]);
+
+  const exportCsv = () => {
+    const rows = [['Date', 'Time', 'Unit', 'Reading°C', 'In range', 'Severity', 'By', 'Source']];
+    data.readings.slice().reverse().forEach(r => {
+      const u = data.units.find(x => x.id === r.tempUnitId);
+      rows.push([ymd(r.recordedAt), new Date(r.recordedAt).toLocaleTimeString('en-GB'), u?.name || r.tempUnitId, r.readingC, r.inRange ? 'yes' : 'NO', r.severity, r.operatorName || '', r.source]);
+    });
+    const csv = rows.map(r => r.map(c => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+    a.download = `compliance-${month.y}-${String(month.m + 1).padStart(2, '0')}.csv`; a.click();
+  };
+
+  // EHO-ready PDF: opens a self-contained branded report window → user saves as PDF.
+  const exportPdf = () => {
+    const html = buildEhoHtml({
+      siteName, monthLabel, generatedAt: new Date(),
+      units: data.units, readings: data.readings, corr: data.corr,
+      runs: data.runs, maint: data.maint, checklists: data.checklists, dayStatus,
+    });
+    const w = window.open('', '_blank', 'width=920,height=1000');
+    if (!w) { alert('Allow pop-ups for this site to export the PDF.'); return; }
+    w.document.open(); w.document.write(html); w.document.close();
+  };
+
+  const firstDow = (new Date(month.y, month.m, 1).getDay() + 6) % 7; // Mon-first
+  const daysInMonth = new Date(month.y, month.m + 1, 0).getDate();
+  const cells = [...Array(firstDow).fill(null), ...Array.from({ length: daysInMonth }, (_, i) => i + 1)];
+  const monthLabel = monthStart.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+  const today = ymd(new Date());
+
+  return (
+    <div style={{ height: '100%', overflowY: 'auto', background: 'var(--bg0)', padding: '22px 26px' }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, marginBottom: 18 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <h1 style={{ fontSize: 22, fontWeight: 700, margin: 0, color: 'var(--t1)' }}>Compliance history</h1>
+          <div style={{ fontSize: 12.5, color: 'var(--t3)', marginTop: 3 }}>{[siteName, monthLabel].filter(Boolean).join(' · ')}</div>
+        </div>
+        {/* month nav grouped into a rounded pill */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 2, padding: 3, borderRadius: 999, border: '1px solid var(--bdr)', background: 'var(--bg2)' }}>
+          <button onClick={() => setMonth(m => ({ y: m.m === 0 ? m.y - 1 : m.y, m: (m.m + 11) % 12 }))} style={pillBtn} aria-label="Previous month">‹</button>
+          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)', minWidth: 110, textAlign: 'center', ...mono }}>{monthLabel}</span>
+          <button onClick={() => setMonth(m => ({ y: m.m === 11 ? m.y + 1 : m.y, m: (m.m + 1) % 12 }))} style={pillBtn} aria-label="Next month">›</button>
+        </div>
+        {/* exports */}
+        <button onClick={exportPdf} style={{ ...ghostBtn, borderColor: 'var(--acc-b)', color: 'var(--acc)' }}>Export PDF</button>
+        <button onClick={exportCsv} style={ghostBtn}>Export CSV</button>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 360px', gap: 18, alignItems: 'start' }}>
+        {/* LEFT — calendar grid */}
+        <div style={{ background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 12, padding: 16 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7,1fr)', gap: 6 }}>
+            {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((d, i) => <div key={i} style={{ textAlign: 'center', fontSize: 11, color: 'var(--t3)', fontWeight: 700, ...mono }}>{d}</div>)}
+            {cells.map((d, i) => {
+              if (d == null) return <div key={i} />;
+              const key = ymd(new Date(month.y, month.m, d));
+              const status = dayStatus[key] || 'idle';
+              const sel = selDay === key;
+              const future = key > today;
+              return (
+                <button key={i} onClick={() => setSelDay(key)} style={{ aspectRatio: '1', borderRadius: 10, border: `1px solid ${sel ? 'var(--acc)' : 'var(--bdr)'}`, background: sel ? 'var(--acc-d)' : 'var(--bg2)', color: 'var(--t1)', cursor: 'pointer', fontFamily: 'inherit', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 4, padding: 4 }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: future ? 'var(--t4)' : 'var(--t1)', ...mono }}>{d}</span>
+                  {!future && status !== 'idle' && <span style={{ width: 7, height: 7, borderRadius: 999, background: DAY_COL[status] }} />}
+                </button>
+              );
+            })}
+          </div>
+          <div style={{ display: 'flex', gap: 16, marginTop: 14, fontSize: 11.5, color: 'var(--t3)' }}>
+            {[['green', 'Fully compliant'], ['amber', 'Minor exception'], ['coral', 'Failure / breach']].map(([c, l]) => <span key={c} style={{ display: 'flex', alignItems: 'center', gap: 6 }}><span style={{ width: 9, height: 9, borderRadius: 999, background: DAY_COL[c] }} />{l}</span>)}
+          </div>
+        </div>
+
+        {/* RIGHT — day detail timeline */}
+        {selDay && (
+          <DayDetail
+            day={selDay}
+            units={data.units}
+            readings={data.readings.filter(r => ymdInTz(r.recordedAt, data.tz) === selDay)}
+            corr={data.corr.filter(c => ymdInTz(c.createdAt, data.tz) === selDay)}
+            runs={data.runs.filter(r => r.runDate === selDay)}
+            maint={data.maint.filter(m => ymdInTz(m.createdAt, data.tz) === selDay)}
+            checklists={data.checklists}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── EHO PDF report (self-contained branded print document) ─────────────────────
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function buildEhoHtml({ siteName, monthLabel, generatedAt, units, readings, corr, runs, maint, checklists, dayStatus }) {
+  const uName = (id) => (units.find(u => u.id === id)?.name) || '—';
+  const clName = (id) => (checklists.find(c => c.id === id)?.name) || 'Checklist';
+  const clTotal = (id) => (checklists.find(c => c.id === id)?.tasks?.length) || 0;
+  const dDate = (iso) => new Date(iso).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+  const dTime = (iso) => new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+
+  const dv = Object.values(dayStatus || {});
+  const compliantDays = dv.filter(v => v === 'green').length;
+  const minorDays = dv.filter(v => v === 'amber').length;
+  const breachDays = dv.filter(v => v === 'coral').length;
+  const totalReads = readings.length;
+  const inRangeN = readings.filter(r => r.inRange).length;
+  const inRangePct = totalReads ? Math.round((inRangeN / totalReads) * 100) : 100;
+  const breaches = totalReads - inRangeN;
+  const openMaint = maint.filter(m => !['resolved', 'cancelled'].includes(m.status)).length;
+
+  const kpi = (v, l, warn) => `<div class="kpi"><div class="kv" style="${warn ? 'color:#c0392b' : ''}">${v}</div><div class="kl">${l}</div></div>`;
+
+  const tempRows = [...readings].sort((a, b) => new Date(a.recordedAt) - new Date(b.recordedAt))
+    .map(r => `<tr class="${r.inRange ? '' : 'br'}"><td>${dDate(r.recordedAt)}</td><td>${dTime(r.recordedAt)}</td><td>${esc(uName(r.tempUnitId))}</td><td class="n">${esc(r.readingC)}&deg;C</td><td>${r.inRange ? 'In range' : 'BREACH'}</td><td>${esc(r.operatorName || '')}</td></tr>`).join('');
+  const corrRows = [...corr].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
+    .map(c => `<tr><td>${dDate(c.createdAt)} ${dTime(c.createdAt)}</td><td>${esc((c.action || '').replace(/_/g, ' '))}</td><td>${esc(c.severity || '')}</td><td>${esc(c.operatorName || '')}</td><td>${c.maintenanceRequestId ? 'Yes' : '—'}</td></tr>`).join('');
+  const runRows = [...runs].sort((a, b) => String(a.runDate).localeCompare(String(b.runDate)))
+    .map(r => `<tr><td>${esc(r.runDate || '')}</td><td>${esc(clName(r.checklistId))}</td><td>${clTotal(r.checklistId)}/${clTotal(r.checklistId)}</td><td>${esc(r.completedByName || '—')}</td></tr>`).join('');
+  const maintRows = [...maint].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+    .map(m => `<tr><td>${dDate(m.createdAt)}</td><td>${esc(m.title || '')}</td><td>${esc(m.priority || '')}</td><td>${esc((m.status || '').replace(/_/g, ' '))}</td></tr>`).join('');
+
+  const section = (title, head, rows, empty) => `<h2>${title}</h2>${rows ? `<table><thead><tr>${head.map(h => `<th>${h}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table>` : `<p class="empty">${empty}</p>`}`;
+
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Compliance report — ${esc(siteName || '')} ${esc(monthLabel)}</title>
+<style>
+  @page { size: A4; margin: 15mm; }
+  * { box-sizing: border-box; }
+  body { font: 12px/1.5 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; color:#16201b; margin:0; }
+  .head { border-bottom:3px solid #15C26A; padding-bottom:12px; margin-bottom:16px; display:flex; justify-content:space-between; align-items:flex-end; }
+  .brand { font-size:13px; font-weight:800; letter-spacing:.02em; color:#0b2c1c; }
+  .brand b { color:#15C26A; }
+  h1 { font-size:19px; margin:6px 0 2px; }
+  .sub { color:#5b6660; font-size:12px; }
+  .gen { text-align:right; color:#7a847e; font-size:10.5px; }
+  .summary { display:flex; gap:10px; margin:0 0 18px; }
+  .kpi { flex:1; border:1px solid #e2e6e3; border-radius:8px; padding:10px 12px; }
+  .kv { font-size:20px; font-weight:800; }
+  .kl { font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:#7a847e; margin-top:2px; }
+  h2 { font-size:13px; margin:20px 0 8px; padding-bottom:4px; border-bottom:1px solid #d7ddd9; }
+  table { width:100%; border-collapse:collapse; font-size:11px; }
+  th,td { border:1px solid #e2e6e3; padding:4px 7px; text-align:left; }
+  th { background:#f3f6f4; font-size:10px; text-transform:uppercase; letter-spacing:.04em; color:#5b6660; }
+  td.n { text-align:right; font-variant-numeric:tabular-nums; }
+  tr.br td { background:#fdecea; color:#c0392b; font-weight:600; }
+  .empty { color:#7a847e; font-style:italic; font-size:11px; }
+  .foot { margin-top:24px; padding-top:10px; border-top:1px solid #d7ddd9; color:#7a847e; font-size:10px; }
+  thead { display:table-header-group; }
+  tr { page-break-inside:avoid; }
+</style></head>
+<body onload="window.focus();window.print();">
+  <div class="head">
+    <div>
+      <div class="brand">S<b>.</b>ervOS Operations</div>
+      <h1>Food Safety Compliance Report</h1>
+      <div class="sub">${esc(siteName || 'Site')} &middot; ${esc(monthLabel)}</div>
+    </div>
+    <div class="gen">Generated<br>${generatedAt.toLocaleString('en-GB')}</div>
+  </div>
+  <div class="summary">
+    ${kpi(`${inRangePct}%`, 'Temps in range', inRangePct < 90)}
+    ${kpi(totalReads, 'Checks logged')}
+    ${kpi(breaches, 'Breaches', breaches > 0)}
+    ${kpi(corr.length, 'Corrective actions')}
+    ${kpi(`${compliantDays}/${compliantDays + minorDays + breachDays}`, 'Compliant days', breachDays > 0)}
+  </div>
+  ${section('Temperature log', ['Date', 'Time', 'Unit', 'Reading', 'Status', 'By'], tempRows, 'No temperature readings recorded this period.')}
+  ${section('Corrective actions', ['When', 'Action', 'Severity', 'By', 'Maint. raised'], corrRows, 'No corrective actions recorded — all readings in range.')}
+  ${section('Checklist sign-offs', ['Date', 'Checklist', 'Tasks', 'Signed by'], runRows, 'No checklist sign-offs recorded this period.')}
+  ${section('Maintenance', ['Raised', 'Asset / issue', 'Priority', 'Status'], maintRows, 'No maintenance raised this period.')}
+  <div class="foot">This report was generated automatically from the ServOS Operations log. Temperature readings are recorded at the point of check with server-side range validation; out-of-range readings are flagged and require a corrective action before the check can close.</div>
+</body></html>`;
+}
+
+const pillBtn = { width: 30, height: 30, borderRadius: 999, border: 0, background: 'transparent', color: 'var(--t1)', cursor: 'pointer', fontSize: 16, fontFamily: 'inherit', display: 'flex', alignItems: 'center', justifyContent: 'center' };
+const ghostBtn = { padding: '9px 14px', borderRadius: 8, background: 'transparent', color: 'var(--t2)', border: '1px solid var(--bdr)', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', whiteSpace: 'nowrap' };
+
+// ── the day timeline ──────────────────────────────────────────────────────────
+// Builds one time-sorted list of event cards from temperature rounds (rolled up per
+// AM/PM round), checklist sign-offs, corrective actions and maintenance raised.
+function DayDetail({ day, units, readings, corr, runs, maint, checklists }) {
+  const uName = (id) => units.find(u => u.id === id)?.name || '—';
+  const clName = (id) => checklists.find(c => c.id === id)?.name || 'Checklist';
+  const clTotal = (id) => (checklists.find(c => c.id === id)?.tasks?.length) || 0;
+
+  // Photo evidence captured against this day's checklist tasks (run_id → [{photoUrl,…}]).
+  const [evidence, setEvidence] = useState({});
+  useEffect(() => {
+    const ids = (runs || []).map(r => r.id).filter(Boolean);
+    if (ids.length === 0) { setEvidence({}); return; }
+    let alive = true;
+    fetchRunCompletions(ids).then(({ data }) => {
+      if (!alive) return;
+      const m = {};
+      (data || []).forEach(c => { if (c.photoUrl) (m[c.runId] = m[c.runId] || []).push(c); });
+      setEvidence(m);
+    });
+    return () => { alive = false; };
+  }, [runs]);
+
+  const events = useMemo(() => {
+    const out = [];
+
+    // (a) temperature rounds rolled up per AM/PM round
+    const rounds = {}; // 'AM' | 'PM' → { reads:[] }
+    readings.forEach(r => {
+      const h = new Date(r.recordedAt).getHours();
+      const round = h < 12 ? 'AM' : 'PM';
+      (rounds[round] ??= []).push(r);
+    });
+    Object.entries(rounds).forEach(([round, reads]) => {
+      const inRangeN = reads.filter(r => r.inRange).length;
+      const total = reads.length;
+      const last = reads.reduce((a, b) => new Date(a.recordedAt) > new Date(b.recordedAt) ? a : b);
+      const firstAt = reads.reduce((a, b) => new Date(a.recordedAt) < new Date(b.recordedAt) ? a : b).recordedAt;
+      out.push({
+        at: firstAt,
+        tone: inRangeN === total ? 'green' : 'coral',
+        title: `${round} temperature round`,
+        sub: `${inRangeN}/${total} in range · ${hhmm(last.recordedAt)}`,
+      });
+    });
+
+    // (b) checklist runs signed off
+    runs.forEach(r => {
+      const total = clTotal(r.checklistId);
+      const cl = checklists.find(c => c.id === r.checklistId);
+      const taskLabel = (tid) => (cl?.tasks?.find(t => t.id === tid)?.label) || 'Task';
+      const photos = (evidence[r.id] || []).map(c => ({ url: c.photoUrl, label: taskLabel(c.taskId), by: c.completedByName }));
+      out.push({
+        at: r.completedAt || (day + 'T12:00:00'),
+        tone: 'green',
+        title: clName(r.checklistId),
+        sub: `${total}/${total} · signed ${r.completedByName || '—'}`,
+        photos,
+      });
+    });
+
+    // (c) corrective actions
+    corr.forEach(c => {
+      const reading = readings.find(r => r.id === c.sourceId);
+      const unit = reading ? uName(reading.tempUnitId) : (c.sourceType === 'reading' ? 'Reading' : (c.sourceType || 'Unit'));
+      const temp = reading ? displayTemp(reading.readingC, 'C').label : '';
+      out.push({
+        at: c.createdAt,
+        tone: 'coral',
+        title: [unit, temp].filter(Boolean).join(' '),
+        sub: `corrective: ${(c.action || '').replace(/_/g, ' ') || '—'}`,
+      });
+    });
+
+    // (d) maintenance raised
+    maint.forEach(m => {
+      out.push({
+        at: m.createdAt,
+        tone: 'maint',
+        title: 'Maintenance raised',
+        sub: `${m.assetType || m.title || 'asset'} · assigned ${hhmm(m.createdAt)}`,
+      });
+    });
+
+    return out.sort((a, b) => new Date(a.at) - new Date(b.at));
+  }, [readings, runs, corr, maint, day, evidence]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // day summary: exceptions = breach readings + corrective actions + maintenance raised
+  const breachReads = readings.filter(r => !r.inRange).length;
+  const exceptions = corr.length || breachReads;
+  const allCorrected = exceptions > 0 && corr.length > 0 && corr.every(c => c.status === 'closed' || c.status === 'resolved' || !!c.maintenanceRequestId);
+  const plural = exceptions === 1 ? '' : 'S';
+
+  const TONE_BORDER = { green: 'var(--grn)', coral: 'var(--red)', maint: 'var(--orn)' };
+
+  return (
+    <div style={{ background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 12, padding: 18 }}>
+      <div style={{ fontSize: 16, fontWeight: 800, color: 'var(--t1)' }}>{new Date(day + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' })}</div>
+      {exceptions > 0 && (
+        <div style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', marginTop: 4, marginBottom: 14, color: allCorrected ? 'var(--orn)' : 'var(--red)', ...mono }}>
+          {`${exceptions} EXCEPTION${plural} · ${allCorrected ? 'CORRECTED' : 'OPEN'}`}
+        </div>
+      )}
+      {exceptions === 0 && <div style={{ height: 14 }} />}
+
+      {events.length === 0 ? (
+        <div style={{ fontSize: 13, color: 'var(--t3)' }}>No activity logged.</div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {events.map((e, i) => (
+            <div key={i} style={{ background: 'var(--bg2)', borderRadius: 10, borderLeft: `4px solid ${TONE_BORDER[e.tone] || 'var(--bdr2)'}`, padding: 12 }}>
+              <div style={{ fontSize: 13.5, fontWeight: 700, color: 'var(--t1)' }}>{e.title}</div>
+              <div style={{ fontSize: 11.5, color: 'var(--t3)', marginTop: 3, ...mono }}>{e.sub}</div>
+              {e.photos && e.photos.length > 0 && (
+                <div style={{ display: 'flex', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+                  {e.photos.map((p, j) => (
+                    <a key={j} href={p.url} target="_blank" rel="noreferrer" title={`${p.label}${p.by ? ' · ' + p.by : ''}`} style={{ display: 'block' }}>
+                      <img src={p.url} alt={p.label} loading="lazy" style={{ width: 54, height: 54, borderRadius: 8, objectFit: 'cover', border: '1px solid var(--bdr)' }} />
+                    </a>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}

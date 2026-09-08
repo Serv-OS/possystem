@@ -1,10 +1,11 @@
 /**
- * Restaurant OS — AI Tool Executor
+ * Serv OS — AI Tool Executor
  * Runs tool calls returned by the AI, reading data from Supabase.
  * Write tools return a "pending" action — the user must confirm before execution.
  */
 
 import { supabase, getLocationId } from './supabase';
+import { money } from './currency.js';
 
 // Tools that require user confirmation before executing
 export const WRITE_TOOLS = new Set(['add_menu_item', 'update_item_price', 'eighty_six_item', 'add_to_order', 'remove_from_order', 'apply_order_discount']);
@@ -44,12 +45,12 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
         result: {
           period: 'today',
           checks: norm.length,
-          revenue: `£${revenue.toFixed(2)}`,
+          revenue: `${money(revenue)}`,
           covers,
-          average_check: `£${avg.toFixed(2)}`,
-          tips: `£${tips.toFixed(2)}`,
-          card: `£${card.toFixed(2)}`,
-          cash: `£${cash.toFixed(2)}`,
+          average_check: `${money(avg)}`,
+          tips: `${money(tips)}`,
+          card: `${money(card)}`,
+          cash: `${money(cash)}`,
         },
       };
     }
@@ -76,8 +77,123 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
       const top = Object.entries(itemMap)
         .sort((a, b) => b[1].qty - a[1].qty)
         .slice(0, limit)
-        .map(([name, data]) => ({ name, qty: data.qty, revenue: `£${data.revenue.toFixed(2)}` }));
+        .map(([name, data]) => ({ name, qty: data.qty, revenue: `${money(data.revenue)}` }));
       return { result: { period: 'today', items: top } };
+    }
+
+    // "What is broken right now, and what do I do about it?"
+    //
+    // There is no error log in the POS, so this does not pretend to be one. It
+    // reads the signals that genuinely mean something is wrong — a printer that
+    // cannot be reached, an unacknowledged ops alert, an order that has sat in
+    // the queue too long, items 86'd — and returns the CONCRETE detail needed
+    // to act: which printer, which IP, how long, what the device actually said.
+    //
+    // The fix hints are deliberately mechanical (a EHOSTUNREACH is a network
+    // route problem, not a paper problem). The model does the judging; this
+    // tool must not guess, because a confident wrong diagnosis during service
+    // is worse than none.
+    case 'get_pos_health': {
+      if (!supabase || !locationId) return { result: { error: 'Not connected' } };
+      const now = Date.now();
+      const mins = (t) => t ? Math.round((now - new Date(t).getTime()) / 60000) : null;
+      // Minutes stop being readable within the hour. A printer that last worked
+      // in April is "since 22 Apr", not "190784 min ago" — and the difference
+      // decides whether this is a live service problem or decommissioned kit.
+      const ago = (t) => {
+        const m = mins(t);
+        if (m == null) return null;
+        if (m < 90) return `${m} min ago`;
+        if (m < 60 * 36) return `${Math.round(m / 60)} hours ago`;
+        const d = Math.round(m / 1440);
+        return d < 14 ? `${d} days ago`
+          : `${d} days ago (${new Date(t).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })})`;
+      };
+
+      const [{ data: health }, { data: agents }, { data: alerts }, { data: queue }] = await Promise.all([
+        supabase.from('printer_health').select('*').eq('location_id', locationId),
+        supabase.from('printer_agents').select('*').eq('location_id', locationId),
+        supabase.from('ops_alerts').select('id, type, severity, title, body, status, created_at')
+          .eq('location_id', locationId).neq('status', 'acknowledged')
+          .order('created_at', { ascending: false }).limit(25),
+        supabase.from('order_queue').select('id, status, created_at, channel')
+          .eq('location_id', locationId).in('status', ['received', 'prep'])
+          .order('created_at', { ascending: true }).limit(100),
+      ]);
+
+      const problems = [];
+
+      for (const h of health || []) {
+        if (h.status === 'online' && !(h.consecutive_failures > 0)) continue;
+        const err = h.last_error || '';
+        // Read the device's own words rather than inventing a cause.
+        const hint = /EHOSTUNREACH|No route to host/i.test(err) ? 'The printer is not reachable on the network. Check it is powered on and on the same network, and that its IP has not changed.'
+          : /ECONNREFUSED/i.test(err) ? 'The printer answered but refused the connection. Check it is in the right mode and nothing else holds port 9100.'
+          : /ETIMEDOUT|after \d+ms/i.test(err) ? 'The printer did not answer in time — usually Wi-Fi drop-out or the printer asleep.'
+          : /paper|cover|drawer/i.test(err) ? 'The printer reported a physical fault. Check paper and that the cover is shut.'
+          : null;
+        const downMins = mins(h.last_success_at);
+        const longDead = downMins != null && downMins > 60 * 24 * 7;   // over a week
+        problems.push({
+          area: 'printer',
+          // Down for a week or more is almost certainly kit that was removed or
+          // never reconfigured, not a fault to chase mid-service. Saying so
+          // stops the assistant sending someone to check a printer that has not
+          // existed since April.
+          severity: longDead ? 'low' : h.status === 'offline' ? 'high' : 'medium',
+          stale: longDead || undefined,
+          what: `Printer ${h.printer_id} is ${h.status}`,
+          detail: err || null,
+          since: h.last_success_at ? `last printed ${ago(h.last_success_at)}` : 'has never printed',
+          failures: h.consecutive_failures || 0,
+          suggested_fix: longDead
+            ? 'This has been down long enough that it is probably no longer installed. Confirm whether it still exists before chasing it.'
+            : hint,
+        });
+      }
+
+      const agent = (agents || [])[0];
+      const agentAge = agent ? Math.round((now - new Date(agent.last_seen).getTime()) / 1000) : null;
+      if (!agent) {
+        problems.push({ area: 'print agent', severity: 'high', what: 'No print agent detected',
+          detail: 'Nothing is listening to send jobs to the printers.',
+          suggested_fix: 'Check the print agent is running on the till or back-office machine.' });
+      } else if (agentAge > 120) {
+        problems.push({ area: 'print agent', severity: 'high',
+          what: `Print agent "${agent.hostname}" last checked in ${Math.round(agentAge / 60)} min ago`,
+          detail: 'It should check in every few seconds, so it has probably stopped or lost the network.',
+          suggested_fix: 'Restart the print agent on ' + agent.hostname + '.' });
+      }
+
+      for (const a of alerts || []) {
+        problems.push({
+          area: 'ops alert', severity: a.severity === 'critical' ? 'high' : a.severity === 'major' ? 'medium' : 'low',
+          what: a.title, detail: a.body || null,
+          since: `raised ${ago(a.created_at)}`, alert_type: a.type,
+          suggested_fix: a.type === 'temp_breach' ? 'Check the unit and record the reading again. If it is still out, move the stock and log the corrective action.' : null,
+        });
+      }
+
+      // A queue is not an error, but an order sitting far too long is.
+      const stale = (queue || []).filter(o => mins(o.created_at) > 45);
+      if (stale.length) {
+        problems.push({
+          area: 'orders', severity: 'medium',
+          what: `${stale.length} order${stale.length === 1 ? '' : 's'} still open after 45+ minutes`,
+          detail: stale.slice(0, 5).map(o => `${o.channel || 'order'} ${String(o.id).slice(0, 8)} — ${mins(o.created_at)} min in ${o.status}`).join('; '),
+          suggested_fix: 'Check whether these were served and never bumped, or genuinely missed.',
+        });
+      }
+
+      const order = { high: 0, medium: 1, low: 2 };
+      problems.sort((a, b) => order[a.severity] - order[b.severity]);
+      return { result: {
+        healthy: problems.length === 0,
+        checked: ['printers', 'print agent', 'ops alerts', 'order queue'],
+        problem_count: problems.length,
+        problems,
+        note: 'These are live operational signals. The POS does not keep a crash log, so a fault that leaves no trace here will not appear.',
+      } };
     }
 
     case 'get_printer_status': {
@@ -139,7 +255,7 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
             covers: s.covers || 0,
             server: s.server || 'unassigned',
             items: (s.items || []).filter(i => !i.voided).length,
-            subtotal: `£${subtotal.toFixed(2)}`,
+            subtotal: `${money(subtotal)}`,
             seated_mins: seatedMins,
             seated_for: seatedMins != null ? `${Math.floor(seatedMins / 60) > 0 ? Math.floor(seatedMins / 60) + 'h ' : ''}${seatedMins % 60}m` : 'unknown',
           };
@@ -171,11 +287,11 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
       }));
       const results = Object.entries(matches)
         .sort((a, b) => b[1].qty - a[1].qty)
-        .map(([name, d]) => ({ name, qty_sold: d.qty, revenue: `£${d.revenue.toFixed(2)}` }));
+        .map(([name, d]) => ({ name, qty_sold: d.qty, revenue: `${money(d.revenue)}` }));
       const totalQty = results.reduce((s, r) => s + r.qty_sold, 0);
       const totalRev = results.reduce((s, r) => s + parseFloat(r.revenue.slice(1)), 0);
       if (!results.length) return { result: { found: false, query, message: `No sales found for "${toolInput.query}" today` } };
-      return { result: { query: toolInput.query, found: true, total_sold: totalQty, total_revenue: `£${totalRev.toFixed(2)}`, breakdown: results } };
+      return { result: { query: toolInput.query, found: true, total_sold: totalQty, total_revenue: `${money(totalRev)}`, breakdown: results } };
     }
 
     case 'get_hourly_breakdown': {
@@ -202,7 +318,7 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
       });
       const hours = Object.entries(hourMap)
         .sort((a, b) => a[0].localeCompare(b[0]))
-        .map(([hour, d]) => ({ hour, checks: d.checks, covers: d.covers, revenue: `£${d.revenue.toFixed(2)}` }));
+        .map(([hour, d]) => ({ hour, checks: d.checks, covers: d.covers, revenue: `${money(d.revenue)}` }));
       const peak = hours.length ? hours.reduce((a, b) => parseFloat(b.revenue.slice(1)) > parseFloat(a.revenue.slice(1)) ? b : a) : null;
       return { result: { hours, peak_hour: peak?.hour || 'n/a', peak_revenue: peak?.revenue || '£0.00' } };
     }
@@ -228,12 +344,12 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
       });
       const breakdown = Object.entries(byMethod).map(([method, d]) => ({
         method, checks: d.count,
-        revenue: `£${d.total.toFixed(2)}`,
-        tips: d.tips > 0 ? `£${d.tips.toFixed(2)}` : null,
-        avg_check: `£${(d.total / d.count).toFixed(2)}`,
+        revenue: `${money(d.total)}`,
+        tips: d.tips > 0 ? `${money(d.tips)}` : null,
+        avg_check: `${money((d.total / d.count))}`,
       }));
       const totalTips = checks.reduce((s, c) => s + (c.tip || 0), 0);
-      return { result: { breakdown, total_tips: `£${totalTips.toFixed(2)}` } };
+      return { result: { breakdown, total_tips: `${money(totalTips)}` } };
     }
 
     case 'get_server_performance': {
@@ -259,8 +375,8 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
         .sort((a, b) => b[1].revenue - a[1].revenue)
         .map(([name, d]) => ({
           server: name, checks: d.checks, covers: d.covers,
-          revenue: `£${d.revenue.toFixed(2)}`,
-          avg_check: `£${(d.revenue / d.checks).toFixed(2)}`,
+          revenue: `${money(d.revenue)}`,
+          avg_check: `${money((d.revenue / d.checks))}`,
         }));
       return { result: { servers } };
     }
@@ -322,11 +438,11 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
       return {
         result: {
           closed_checks: checks.length,
-          revenue: `£${revenue.toFixed(2)}`,
+          revenue: `${money(revenue)}`,
           covers_done: covers,
-          avg_check: checks.length ? `£${(revenue/checks.length).toFixed(2)}` : '£0.00',
+          avg_check: checks.length ? `${money((revenue/checks.length))}` : '£0.00',
           open_tables: occupied,
-          revenue_on_floor: `£${onFloor.toFixed(2)}`,
+          revenue_on_floor: `${money(onFloor)}`,
           top_item_today: topItem ? `${topItem[0]} (${topItem[1]} sold)` : 'none',
         },
       };
@@ -348,7 +464,7 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
             });
             return {
               name: i.name,
-              price: `£${(i.price || 0).toFixed(2)}`,
+              price: `${money((i.price || 0))}`,
               category: cat?.label || cat?.name || 'Unknown',
               description: i.description || null,
               allergens: i.allergens?.length ? i.allergens.join(', ') : 'None declared',
@@ -378,7 +494,7 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
             return {
               id:       i.id,
               name:     i.name,
-              price:    `£${(i.price || 0).toFixed(2)}`,
+              price:    `${money((i.price || 0))}`,
               category: cat?.name || cat?.label || 'Unknown',
             };
           }),
@@ -397,13 +513,186 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
         .limit(limit);
       const orders = (data || []).map(o => ({
         id:     o.id?.slice(0, 8),
-        total:  `£${(o.total || 0).toFixed(2)}`,
+        total:  `${money((o.total || 0))}`,
         covers: o.covers,
         method: o.method,
-        tip:    o.tip ? `£${o.tip.toFixed(2)}` : null,
+        tip:    o.tip ? `${money(o.tip)}` : null,
         time:   o.closed_at ? new Date(o.closed_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '?',
       }));
       return { result: { orders } };
+    }
+
+    // ── v5.5.735: broad read tools — 86 / stock / kitchen queue / activity / waitlist / menu ──
+
+    case 'get_86_status': {
+      const { eightySixIds = [], menuItems = [], dailyCounts = {} } = storeState;
+      const byId = new Map(menuItems.map(i => [i.id, i]));
+      const whenMap = {};   // id -> created_at (when it went 86)
+      const nameMap = {};   // id -> name, for 86'd ids missing from the loaded menu (e.g. archived)
+      if (supabase && locationId) {
+        const { data } = await supabase.from('eighty_six').select('item_id, created_at').eq('location_id', locationId);
+        (data || []).forEach(r => { whenMap[r.item_id] = r.created_at; });
+        // An item can be 86'd then archived — it stays in eighty_six but drops out of menuItems
+        // (fetchMenuItems filters archived=false). Resolve those names so we never misreport it.
+        const missing = eightySixIds.filter(id => !byId.has(id));
+        if (missing.length) {
+          const { data: mi } = await supabase.from('menu_items').select('id, name').in('id', missing);
+          (mi || []).forEach(r => { nameMap[r.id] = r.name; });
+        }
+      }
+      const nameOf = (id) => byId.get(id)?.name || nameMap[id] || null;
+      // Build the FULL 86 list first — a genuinely-86'd id is never dropped, even if unnamed.
+      const full = eightySixIds.map(id => ({
+        item: nameOf(id) || `Item ${String(id).slice(0, 8)}`,
+        since: whenMap[id] ? new Date(whenMap[id]).toLocaleString('en-GB', { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' }) : null,
+        stock_remaining: dailyCounts[id] ? dailyCounts[id].remaining : null,
+      }));
+      const q = (toolInput.item_name || '').toLowerCase();
+      if (q) {
+        const matched = full.filter(x => (x.item || '').toLowerCase().includes(q));
+        if (matched.length) return { result: { count: matched.length, eighty_sixed: matched } };
+        // No 86'd item matches the name. Only claim "available" if a KNOWN item by that name exists.
+        const known = menuItems.find(i => (i.name || '').toLowerCase().includes(q));
+        if (known) return { result: { count: 0, eighty_sixed: [], note: `"${known.name}" is NOT currently 86'd (it's available).` } };
+        return {
+          result: {
+            count: 0, eighty_sixed: [],
+            note: full.length
+              ? `No 86'd item matches "${toolInput.item_name}", but ${full.length} item(s) are 86'd — try search_activity (kind:'stock') for the history.`
+              : `No item matching "${toolInput.item_name}", and nothing is currently 86'd.`,
+          },
+        };
+      }
+      return { result: { count: full.length, eighty_sixed: full } };
+    }
+
+    case 'get_stock_status': {
+      const { dailyCounts = {}, menuItems = [], eightySixIds = [] } = storeState;
+      const byId = new Map(menuItems.map(i => [i.id, i]));
+      const q = (toolInput.item_name || '').toLowerCase();
+      let entries = Object.entries(dailyCounts);
+      if (q) entries = entries.filter(([id]) => (byId.get(id)?.name || '').toLowerCase().includes(q));
+      const rows = entries.map(([id, c]) => {
+        const par = c?.par || 0, rem = c?.remaining ?? 0;
+        const status = eightySixIds.includes(id) ? '86 (turned off)' : (rem <= 0 ? 'out' : (rem <= Math.max(1, par * 0.2) ? 'low' : 'ok'));
+        return { item: byId.get(id)?.name || String(id), remaining: rem, par, status };
+      });
+      const flagged = rows.filter(r => r.status !== 'ok');
+      return { result: { tracked_items: rows.length, low_or_out: q ? rows : flagged, note: rows.length ? undefined : 'No items have daily stock counts set.' } };
+    }
+
+    case 'lookup_item': {
+      const { menuItems = [], menuCategories = [], modifierGroupDefs = [], eightySixIds = [], dailyCounts = {} } = storeState;
+      const q = (toolInput.item_name || '').toLowerCase();
+      const matches = menuItems.filter(i => !i.archived && i.type !== 'spacer' && (i.name || '').toLowerCase().includes(q));
+      if (!matches.length) return { result: { found: false, message: `No item matching "${toolInput.item_name}"` } };
+      return {
+        result: {
+          found: true,
+          items: matches.slice(0, 5).map(i => {
+            const cat = menuCategories.find(c => c.id === (i.cat || i.categoryId));
+            const variants = menuItems.filter(v => v.parentId === i.id && !v.archived)
+              .map(v => ({ name: v.name, price: money(v.price || 0), sold_out: eightySixIds.includes(v.id) }));
+            const mods = (i.assignedModifierGroups || [])
+              .map(mg => modifierGroupDefs.find(g => g.id === (mg.groupId || mg))?.name).filter(Boolean);
+            const dc = dailyCounts[i.id];
+            return {
+              name: i.name,
+              price: money(i.price || 0),
+              category: cat?.label || cat?.name || 'Unknown',
+              allergens: i.allergens?.length ? i.allergens.join(', ') : 'None declared',
+              sold_out_86: eightySixIds.includes(i.id),
+              stock_remaining: dc ? dc.remaining : null,
+              ...(variants.length ? { variants } : {}),
+              ...(mods.length ? { modifiers: mods.join(', ') } : {}),
+            };
+          }),
+        },
+      };
+    }
+
+    case 'get_order_queue': {
+      let rows = [];
+      if (supabase && locationId) {
+        const since = new Date(Date.now() - 12 * 3600 * 1000).toISOString();
+        const { data } = await supabase.from('order_queue')
+          .select('ref, source, status, total, customer, created_at')
+          .eq('location_id', locationId).gte('created_at', since)
+          .order('created_at', { ascending: false }).limit(60);
+        rows = data || [];
+      } else {
+        rows = (storeState.orderQueue || []).map(o => ({ ref: o.ref, source: o.source, status: o.status, total: o.total, customer: o.customer, created_at: o.createdAt || o.sentAt }));
+      }
+      const done = new Set(['collected', 'completed', 'cancelled', 'delivered', 'refunded']);
+      const active = rows.filter(o => !done.has((o.status || '').toLowerCase()));
+      const byStatus = {};
+      active.forEach(o => { const k = o.status || 'pending'; byStatus[k] = (byStatus[k] || 0) + 1; });
+      return {
+        result: {
+          active: active.length,
+          by_status: byStatus,
+          orders: active.slice(0, 30).map(o => ({
+            ref: o.ref, source: o.source, status: o.status,
+            total: o.total != null ? money(o.total) : null,
+            customer: o.customer?.name || o.customer?.firstName || null,
+            time: o.created_at ? new Date(o.created_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : null,
+          })),
+        },
+      };
+    }
+
+    case 'search_activity': {
+      if (!supabase || !locationId) return { result: { error: 'Not connected' } };
+      const hours = Math.min(Math.max(toolInput.hours_back || 24, 1), 168);
+      const since = new Date(Date.now() - hours * 3600 * 1000).toISOString();
+      let qb = supabase.from('activity_events')
+        .select('kind, severity, title, body, actor_name, created_at')
+        .eq('location_id', locationId).gte('created_at', since)
+        .order('created_at', { ascending: false }).limit(80);
+      if (toolInput.kind) qb = qb.eq('kind', toolInput.kind);
+      const { data } = await qb;
+      let rows = data || [];
+      const q = (toolInput.query || '').toLowerCase();
+      if (q) rows = rows.filter(r => (r.title || '').toLowerCase().includes(q) || (r.body || '').toLowerCase().includes(q));
+      return {
+        result: {
+          count: rows.length,
+          events: rows.slice(0, 40).map(r => ({
+            kind: r.kind, what: r.title,
+            ...(r.body ? { detail: r.body } : {}),
+            ...(r.actor_name ? { by: r.actor_name } : {}),
+            when: r.created_at ? new Date(r.created_at).toLocaleString('en-GB', { hour: '2-digit', minute: '2-digit', day: 'numeric', month: 'short' }) : null,
+          })),
+        },
+      };
+    }
+
+    case 'get_waitlist': {
+      const done = new Set(['seated', 'completed', 'cancelled', 'left', 'no_show']);
+      const wl = (storeState.waitlist || []).filter(w => !done.has((w.status || '').toLowerCase()));
+      return {
+        result: {
+          waiting: wl.length,
+          parties: wl.slice(0, 30).map(w => ({
+            name: w.name, size: w.size ?? w.partySize,
+            quoted_min: w.quoted ?? w.quotedMinutes,
+            status: w.status,
+            since: w.addedAt ? new Date(w.addedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : undefined,
+          })),
+        },
+      };
+    }
+
+    case 'get_menu_overview': {
+      const { menuCategories = [], menuItems = [], eightySixIds = [] } = storeState;
+      const live = menuItems.filter(i => !i.archived && i.type !== 'spacer');
+      const cats = menuCategories.filter(c => !c.parentId && !c.isSpecial)
+        .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0))
+        .map(c => {
+          const items = live.filter(i => i.cat === c.id || i.categoryId === c.id);
+          return { category: c.label || c.name, items: items.length, sold_out: items.filter(i => eightySixIds.includes(i.id)).length };
+        });
+      return { result: { categories: cats, total_items: live.length, total_86: eightySixIds.length } };
     }
 
     // ── Write tools — return pendingAction, don't execute yet ──────────────────
@@ -417,13 +706,13 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
           message: `Proposed new item — awaiting your confirmation`,
           item: {
             name:     toolInput.name,
-            price:    `£${Number(toolInput.price).toFixed(2)}`,
+            price:    `${money(Number(toolInput.price))}`,
             category: cat?.name || toolInput.category_id,
           },
         },
         pendingAction: {
           type:    'add_menu_item',
-          label:   `Add "${toolInput.name}" at £${Number(toolInput.price).toFixed(2)} to ${cat?.name || 'menu'}`,
+          label:   `Add "${toolInput.name}" at ${money(Number(toolInput.price))} to ${cat?.name || 'menu'}`,
           payload: toolInput,
         },
       };
@@ -432,7 +721,7 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
     case 'update_item_price': {
       const { menuItems = [] } = storeState;
       const item = menuItems.find(i => i.id === toolInput.item_id);
-      const oldPrice = item ? `£${(item.price || 0).toFixed(2)}` : 'unknown';
+      const oldPrice = item ? `${money((item.price || 0))}` : 'unknown';
       return {
         result: {
           preview: true,
@@ -440,12 +729,12 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
           change: {
             item:      toolInput.item_name || item?.name || toolInput.item_id,
             old_price: oldPrice,
-            new_price: `£${Number(toolInput.new_price).toFixed(2)}`,
+            new_price: `${money(Number(toolInput.new_price))}`,
           },
         },
         pendingAction: {
           type:    'update_item_price',
-          label:   `Change ${item?.name || toolInput.item_id} from ${oldPrice} to £${Number(toolInput.new_price).toFixed(2)}`,
+          label:   `Change ${item?.name || toolInput.item_id} from ${oldPrice} to ${money(Number(toolInput.new_price))}`,
           payload: toolInput,
         },
       };
@@ -481,8 +770,8 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
           table: activeTable?.label || (activeTableId ? activeTableId : 'Walk-in'),
           covers: session?.covers || 0,
           item_count: items.length,
-          items: items.map(i => ({ uid: i.uid, name: i.name, qty: i.qty, price: `£${(i.price||0).toFixed(2)}`, notes: i.notes || null })),
-          subtotal: `£${subtotal.toFixed(2)}`,
+          items: items.map(i => ({ uid: i.uid, name: i.name, qty: i.qty, price: `${money((i.price||0))}`, notes: i.notes || null })),
+          subtotal: `${money(subtotal)}`,
         },
       };
     }
@@ -530,13 +819,13 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
         result: {
           preview: true,
           message: 'Proposed order addition — awaiting confirmation',
-          item: { name: item.name, price: `£${item.price.toFixed(2)}`, qty, notes: toolInput.notes || null },
+          item: { name: item.name, price: `${money(item.price)}`, qty, notes: toolInput.notes || null },
           table: activeTable?.label || activeTableId,
-          total: `£${(item.price * qty).toFixed(2)}`,
+          total: `${money((item.price * qty))}`,
         },
         pendingAction: {
           type:  'add_to_order',
-          label: `Add ${qty}× ${item.name} (£${item.price.toFixed(2)}) to ${activeTable?.label || 'current order'}${toolInput.notes ? ` — note: "${toolInput.notes}"` : ''}`,
+          label: `Add ${qty}× ${item.name} (${money(item.price)}) to ${activeTable?.label || 'current order'}${toolInput.notes ? ` — note: "${toolInput.notes}"` : ''}`,
           payload: { item, qty, notes: toolInput.notes || '' },
         },
       };
@@ -550,7 +839,7 @@ export async function executeTool(toolName, toolInput, storeState = {}) {
       }
       const display = toolInput.type === 'percent'
         ? `${toolInput.value}% off`
-        : `£${Number(toolInput.value).toFixed(2)} off`;
+        : `${money(Number(toolInput.value))} off`;
       return {
         result: {
           preview: true,
@@ -592,15 +881,18 @@ export async function executeConfirmedAction(action, storeActions = {}) {
         allergens:  [],
         archived:   false,
       };
-      await addMenuItem(newItem);
-      return { ok: true, message: `"${payload.name}" added to the menu at £${Number(payload.price).toFixed(2)}` };
+      const created = await addMenuItem(newItem);
+      // v5.5.797: duplicate-name guard — the store refuses a live top-level
+      // product whose name matches an existing one (returns null).
+      if (!created) return { ok: false, error: `A product called "${payload.name}" already exists` };
+      return { ok: true, message: `"${payload.name}" added to the menu at ${money(Number(payload.price))}` };
     }
 
     case 'update_item_price': {
       const { updateMenuItem } = storeActions;
       if (!updateMenuItem) return { ok: false, error: 'Not available' };
       await updateMenuItem(payload.item_id, { price: Number(payload.new_price) });
-      return { ok: true, message: `Price updated to £${Number(payload.new_price).toFixed(2)}` };
+      return { ok: true, message: `Price updated to ${money(Number(payload.new_price))}` };
     }
 
     case 'eighty_six_item': {
@@ -628,7 +920,7 @@ export async function executeConfirmedAction(action, storeActions = {}) {
       const { applyDiscount } = storeActions;
       if (!applyDiscount) return { ok: false, error: 'Discount not available' };
       applyDiscount({ type: payload.type, value: payload.value, reason: payload.reason, tableId: payload.tableId });
-      const display = payload.type === 'percent' ? `${payload.value}%` : `£${Number(payload.value).toFixed(2)}`;
+      const display = payload.type === 'percent' ? `${payload.value}%` : `${money(Number(payload.value))}`;
       return { ok: true, message: `${display} discount applied — ${payload.reason}` };
     }
 

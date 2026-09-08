@@ -1,3 +1,4 @@
+import { money } from './currency.js';
 /**
  * Tax calculation engine — handles UK VAT (inclusive) and US sales tax (exclusive)
  *
@@ -21,7 +22,14 @@ export function resolveTaxRate(item, taxRates = [], orderType = 'dine-in') {
   // Check for order-type specific override (e.g. takeaway = zero-rated)
   const overrideId = item.taxOverrides?.[orderType];
   const rateId = overrideId !== undefined ? overrideId : item.taxRateId;
-  if (!rateId) return null;
+  // v5.5.857: no rate set = the item editor's "Use default" — which the engine NEVER
+  // honoured: it returned null and the line booked £0 VAT (live repro: a £36 ribeye on
+  // "Use default" booked zero on a real check). Now it resolves the venue's default
+  // rate, as the UI has always promised. Deliberate zero-tax stays the explicit Zero
+  // Rate. A rate id that matches nothing still returns null (that's how channel lines
+  // whose ref isn't in our menu opt OUT of the default — never guess someone else's
+  // tax), and a venue with no default rate configured behaves exactly as before.
+  if (!rateId) return taxRates.find(r => (r.isDefault || r.is_default) && r.active !== false) || null;
   return taxRates.find(r => r.id === rateId && r.active !== false) || null;
 }
 
@@ -61,6 +69,7 @@ export function calculateOrderTax(items = [], taxRates = [], orderType = 'dine-i
   let totalGross = 0;
   let totalTax = 0;
   let totalNet = 0;
+  let exclusiveTaxRaw = 0;
 
   items
     .filter(i => !i.voided)
@@ -71,6 +80,11 @@ export function calculateOrderTax(items = [], taxRates = [], orderType = 'dine-i
       totalGross += gross;
       totalTax += tax;
       totalNet += net;
+      // v5.7.31: the ADDED-ON portion of the bill. Only EXCLUSIVE-mode lines
+      // contribute — inclusive VAT is already inside the shelf price, so a check
+      // mixing both modes must charge only the exclusive share on top. An
+      // inclusive-only check yields exactly 0 here (never a rounding artefact).
+      if (rate && rate.type === 'exclusive') exclusiveTaxRaw += tax;
 
       if (rate) {
         const key = rate.id;
@@ -88,9 +102,45 @@ export function calculateOrderTax(items = [], taxRates = [], orderType = 'dine-i
     subtotal:  totalNet,
     totalTax,
     total:     totalGross,
+    // v5.7.31: what a surface must ADD to the payable. Rounded half-up to cents
+    // at ORDER level (8.875% on 47.20 → 4.189 → 4.19) so every channel charges
+    // the same penny. Inclusive-only checks: 0 exactly. Never use totalTax for
+    // the charge — on a mixed check that would re-charge the inclusive VAT.
+    exclusiveTax: Math.round(exclusiveTaxRaw * 100) / 100,
     breakdown: Object.values(breakdownMap).sort((a, b) => b.rate.rate - a.rate.rate),
     hasExclusiveTax: Object.values(breakdownMap).some(b => b.rate.type === 'exclusive'),
   };
+}
+
+/**
+ * Net (ex-tax) value of a price, given the resolved tax rate.
+ * UK inclusive VAT: the price contains the tax, so net = price ÷ (1 + rate).
+ * US exclusive tax / no rate: the price already IS the net, so return it unchanged.
+ * Used for gross-profit maths, which must always be on the ex-VAT selling price.
+ */
+export function netOf(grossPrice, taxRate) {
+  if (grossPrice == null || grossPrice === '') return null;   // no price → no net (Number(null) is 0, guard it)
+  const g = Number(grossPrice);
+  if (!Number.isFinite(g)) return null;
+  if (!taxRate || !taxRate.rate || taxRate.type !== 'inclusive') return g;
+  return g / (1 + parseFloat(taxRate.rate));
+}
+
+/**
+ * NET (ex-VAT) purchase price used for costing/COGS.
+ * If the entered price already excludes VAT (the default) it IS the net cost.
+ * If the operator flagged the price as VAT-inclusive (e.g. typed straight off a
+ * gross invoice), strip the rate: net = price ÷ (1 + rate). A null/zero rate or a
+ * non-numeric price returns the input unchanged (null for non-numeric).
+ * `rateDecimal` is the bare fraction (0.2 for 20%), not a rate object.
+ */
+export function purchaseNet(price, includesTax, rateDecimal) {
+  if (price == null || price === '') return null;
+  const p = Number(price);
+  if (!Number.isFinite(p)) return null;
+  if (!includesTax) return p;
+  const r = Number(rateDecimal) || 0;
+  return r > 0 ? p / (1 + r) : p;
 }
 
 /**
@@ -105,7 +155,7 @@ export function formatRateLabel(rate) {
 /**
  * Format tax amount for display
  */
-export const fmtTax = n => `£${Math.abs(n || 0).toFixed(2)}`;
+export const fmtTax = n => `${money(Math.abs(n || 0))}`;
 
 /**
  * Seed rates for a new UK location

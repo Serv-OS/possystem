@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <!-- In-app self-update: download + launch the system installer for a new APK. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+
+    <!--
+      PACKAGE VISIBILITY (Android 11 / API 30+, enforced because targetSdk = 34).
+
+      Without this block, PackageManager.getLaunchIntentForPackage("com.stspayments.pax.v2")
+      returns NULL even when the STS controller IS installed, and the app would report
+      "payment app not installed" on a perfectly good terminal.
+
+      BOTH package names are declared on purpose:
+        com.stspayments.pax.v2      — the LIVE build (the name in Ryft's "G8-Hybrid Intents
+                                      and Cloud" doc)
+        com.stspayments.pax.v2.test — the SANDBOX build, which is what is actually installed
+                                      on our test A920 Pro
+      ControllerResolver tries them in that order at runtime.
+    -->
+    <queries>
+        <package android:name="com.stspayments.pax.v2"/>
+        <package android:name="com.stspayments.pax.v2.test"/>
+    </queries>
+
+    <application
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:theme="@android:style/Theme.NoTitleBar"
+        android:hardwareAccelerated="true"
+        android:usesCleartextTraffic="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:screenOrientation="portrait"
+            android:configChanges="orientation|screenSize|keyboard|keyboardHidden|smallestScreenSize|screenLayout"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+
+        <!-- Shares the downloaded update APK with the system installer via a content:// URI -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths"/>
+        </provider>
+    </application>
+</manifest>

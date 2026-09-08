@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '../../lib/supabase';
+import { CURRENCIES } from '../../lib/currency';
 
 const S = {
   page: { padding: '32px 40px', maxWidth: 860 },
@@ -64,8 +65,24 @@ export default function CompanyAdmin() {
     const { data, error: err } = await supabase.from('organisations').insert({
       name: form.name.trim(), slug: form.slug?.trim() || slug, status: 'active',
     }).select().single();
+    if (err) { setWorking(false); return setError(err.message); }
+
+    // v5.5.305: link the creating user to this org if they have none yet.
+    // Without this, an owner who creates their company is never associated
+    // with it (user_profiles.org_id stays null) → "no company assigned"
+    // after sign-out. Only set it when empty so we never relocate an
+    // existing multi-org user.
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        const { data: profile } = await supabase.from('user_profiles').select('org_id').eq('id', user.id).single();
+        if (!profile?.org_id) {
+          await supabase.from('user_profiles').update({ org_id: data.id }).eq('id', user.id);
+        }
+      }
+    } catch (e) { console.warn('[CompanyAdmin] link user to org failed:', e?.message); }
+
     setWorking(false);
-    if (err) return setError(err.message);
     setSuccess(`✓ "${data.name}" created`);
     setForm({});
     await loadOrgs();
@@ -85,13 +102,36 @@ export default function CompanyAdmin() {
     }).select().single();
     if (err) { setWorking(false); return setError(err.message); }
 
-    // If the current user has no location assigned yet, assign them to this new location
+    // v5.5.310: mirror the new location into the Platform DB (company + location)
+    // so loyalty, gift cards, online ordering, QR, Challenge 21, message
+    // templates and location settings can resolve its company. Without this the
+    // location errors with "No platform row found for ops location ...".
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const resp = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/provision-location`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` },
+        body: JSON.stringify({ ops_location_id: loc.id }),
+      });
+      const pr = await resp.json().catch(() => ({}));
+      if (!resp.ok) console.warn('[CompanyAdmin] provision-location failed:', pr?.error);
+    } catch (pe) { console.warn('[CompanyAdmin] provision-location threw:', pe?.message); }
+
+    // If the current user has no location/org assigned yet, assign them to this
+    // new location + its org. v5.5.305: also backfill org_id (was previously
+    // only setting location_id, leaving the user with "no company assigned")
+    // and create a user_locations row so access resolves via the junction.
     const { data: { user } } = await supabase.auth.getUser();
     if (user) {
-      const { data: profile } = await supabase.from('user_profiles').select('location_id').eq('id', user.id).single();
-      if (!profile?.location_id) {
-        await supabase.from('user_profiles').update({ location_id: loc.id }).eq('id', user.id);
+      const { data: profile } = await supabase.from('user_profiles').select('location_id, org_id').eq('id', user.id).single();
+      const patch = {};
+      if (!profile?.location_id) patch.location_id = loc.id;
+      if (!profile?.org_id) patch.org_id = selectedOrg.id;
+      if (Object.keys(patch).length) {
+        await supabase.from('user_profiles').update(patch).eq('id', user.id);
       }
+      await supabase.from('user_locations')
+        .upsert({ user_id: user.id, location_id: loc.id, role: 'owner' }, { onConflict: 'user_id,location_id' });
     }
 
     // Create a subscription row for this location
@@ -287,10 +327,7 @@ export default function CompanyAdmin() {
             <div>
               <label style={S.label}>Currency</label>
               <select style={S.input} value={form.locCurrency || 'GBP'} onChange={e => f('locCurrency', e.target.value)}>
-                <option value="GBP">GBP — British Pound £</option>
-                <option value="EUR">EUR — Euro €</option>
-                <option value="USD">USD — US Dollar $</option>
-                <option value="AED">AED — UAE Dirham</option>
+                {Object.values(CURRENCIES).map(c => <option key={c.code} value={c.code}>{c.code} — {c.label}</option>)}
               </select>
             </div>
           </div>

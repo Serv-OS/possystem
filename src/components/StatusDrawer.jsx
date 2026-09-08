@@ -3,6 +3,7 @@ import { useStore } from '../store';
 import { supabase, getLocationId } from '../lib/supabase';
 import { printService } from '../lib/printer';
 import { VERSION } from '../lib/version';
+import StatusDrawerCardReaders from './StatusDrawerCardReaders';
 
 const ONLINE_THRESHOLD_MS = 15 * 60 * 1000; // 15 min last_seen threshold
 
@@ -119,7 +120,7 @@ export default function StatusDrawer({ onClose }) {
     return () => clearInterval(id);
   }, [loadKDS, checkPrinterStatuses]);
 
-  // Load print queue (pending/failed only)
+  // Load print queue (pending/failed/failed_permanent — skip done & dismissed)
   const loadJobs = useCallback(async () => {
     if (!supabase) { setJobsLoading(false); return; }
     setJobsLoading(true);
@@ -128,11 +129,12 @@ export default function StatusDrawer({ onClose }) {
       if (!locId) { setJobsLoading(false); return; }
       const { data } = await supabase
         .from('print_jobs')
-        .select('id,printer_id,printer_ip,job_type,status,error,created_at')
+        .select('id,printer_id,printer_ip,job_type,status,error,error_message,created_at,attempts,max_attempts,next_retry_at')
         .eq('location_id', locId)
-        .neq('status', 'done')
+        .in('status', ['pending','claimed','sending','failed','failed_permanent'])
+        .is('dismissed_at', null)
         .order('created_at', { ascending: false })
-        .limit(20);
+        .limit(30);
       setPrintJobs(data || []);
     } catch {}
     setJobsLoading(false);
@@ -219,7 +221,25 @@ export default function StatusDrawer({ onClose }) {
 
   const retryJob = async (job) => {
     if (!supabase) return;
-    await supabase.from('print_jobs').update({ status: 'pending', error: null }).eq('id', job.id);
+    // Use orchestrator helper — resets attempts, next_retry_at, dismissed_at, claim fields
+    try {
+      const { operatorRetryJob } = await import('../sync/PrintOrchestrator.js');
+      await operatorRetryJob(job.id);
+    } catch {
+      // Fallback to legacy path if orchestrator module unavailable for any reason
+      await supabase.from('print_jobs').update({ status: 'pending', error: null, error_message: null }).eq('id', job.id);
+    }
+    loadJobs();
+  };
+
+  const dismissJob = async (job) => {
+    if (!supabase) return;
+    try {
+      const { operatorDismissJob } = await import('../sync/PrintOrchestrator.js');
+      await operatorDismissJob(job.id);
+    } catch {
+      await supabase.from('print_jobs').update({ status: 'dismissed', dismissed_at: new Date().toISOString() }).eq('id', job.id);
+    }
     loadJobs();
   };
 
@@ -363,6 +383,11 @@ export default function StatusDrawer({ onClose }) {
             )}
           </Section>
 
+          {/* Card readers — bluetooth (this POS) + network (location) */}
+          <Section label="Card readers">
+            <StatusDrawerCardReaders/>
+          </Section>
+
           {/* Print queue — pending/failed only */}
           <Section label={`Print queue${printJobs.length > 0 ? ` · ${printJobs.length} issue${printJobs.length!==1?'s':''}` : ''}`}>
             {jobsLoading ? (
@@ -375,23 +400,34 @@ export default function StatusDrawer({ onClose }) {
                   const printer = printerForId(job.printer_id);
                   const isStale = job.status === 'pending' && Date.now() - new Date(job.created_at).getTime() > 30000;
                   const effectiveStatus = isStale ? 'failed' : job.status;
-                  const jsc = { done:'var(--grn)', failed:'var(--red)', pending:'var(--acc)', printing:'var(--acc)' }[effectiveStatus] || 'var(--t4)';
+                  const permanent = effectiveStatus === 'failed_permanent';
+                  const jsc = permanent ? 'var(--red)' : { done:'var(--grn)', failed:'var(--red)', pending:'var(--acc)', claimed:'var(--acc)', sending:'var(--acc)', printing:'var(--acc)' }[effectiveStatus] || 'var(--t4)';
+                  const borderColor = permanent ? 'var(--red)' : effectiveStatus === 'failed' ? 'var(--red-b)' : 'var(--bdr)';
+                  const errMsg = job.error_message || job.error;
+                  const attemptsText = job.attempts ? `attempt ${job.attempts}${job.max_attempts ? `/${job.max_attempts}` : ''}` : null;
                   return (
-                    <div key={job.id} style={{ padding:'9px 12px', borderRadius:10, background:'var(--bg3)', border:`1px solid ${effectiveStatus==='failed'?'var(--red-b)':'var(--bdr)'}` }}>
+                    <div key={job.id} style={{ padding:'9px 12px', borderRadius:10, background: permanent ? 'rgba(239,68,68,0.08)' : 'var(--bg3)', border:`1px solid ${borderColor}` }}>
                       <div style={{ display:'flex', alignItems:'center', gap:8 }}>
                         <div style={{ width:7, height:7, borderRadius:'50%', background:jsc, flexShrink:0 }}/>
                         <div style={{ flex:1, minWidth:0 }}>
                           <div style={{ fontSize:11, fontWeight:700, color:'var(--t1)' }}>
+                            {permanent && <span style={{ color:'var(--red)', marginRight:6 }}>⚠ Action required:</span>}
                             {job.job_type?.replace('_',' ').replace(/\b\w/g,c=>c.toUpperCase())} — {printer?.name || job.printer_ip}
                           </div>
                           <div style={{ fontSize:10, color:'var(--t4)', marginTop:1 }}>
                             {timeSince(job.created_at)}
-                            {(job.error || isStale) && <span style={{ color:'var(--red)', marginLeft:6 }}>· {job.error || 'Agent not responding'}</span>}
+                            {attemptsText && <span style={{ marginLeft:6, color:'var(--t3)' }}>· {attemptsText}</span>}
+                            {(errMsg || isStale) && <span style={{ color:'var(--red)', marginLeft:6 }}>· {errMsg || 'Agent not responding'}</span>}
                           </div>
                         </div>
-                        <span style={{ fontSize:10, fontWeight:700, color:jsc, textTransform:'uppercase', flexShrink:0 }}>{effectiveStatus}</span>
-                        {effectiveStatus === 'failed' && (
-                          <button onClick={() => retryJob(job)} style={{ padding:'2px 8px', borderRadius:6, cursor:'pointer', fontFamily:'inherit', fontSize:10, fontWeight:700, background:'var(--acc)', border:'none', color:'#0b0c10', flexShrink:0 }}>Retry</button>
+                        <span style={{ fontSize:10, fontWeight:700, color:jsc, textTransform:'uppercase', flexShrink:0 }}>{permanent ? 'FAILED' : effectiveStatus}</span>
+                        {(effectiveStatus === 'failed' || permanent) && (
+                          <>
+                            <button onClick={() => retryJob(job)} style={{ padding:'2px 8px', borderRadius:6, cursor:'pointer', fontFamily:'inherit', fontSize:10, fontWeight:700, background:'var(--acc)', border:'none', color:'#0b0c10', flexShrink:0 }}>Retry</button>
+                            {permanent && (
+                              <button onClick={() => dismissJob(job)} style={{ padding:'2px 8px', borderRadius:6, cursor:'pointer', fontFamily:'inherit', fontSize:10, fontWeight:700, background:'var(--bg4)', border:'1px solid var(--bdr)', color:'var(--t2)', flexShrink:0 }}>Dismiss</button>
+                            )}
+                          </>
                         )}
                       </div>
                     </div>

@@ -1,0 +1,127 @@
+/**
+ * mapbox.js — address autocomplete via the Mapbox Geocoding v6 API, behind a tiny provider
+ * seam so we can swap to getAddress.io / OS later without touching the UI.
+ *
+ * Returns precise, geocodable addresses WITH coordinates so couriers (Stuart / Uber Direct)
+ * get an exact dropoff instead of a fuzzy free-text string. The token is a PUBLIC Mapbox token
+ * (pk.…) — frontend-safe and URL-restrictable. Set it as VITE_MAPBOX_TOKEN; with no token the
+ * callers fall back to plain address fields (no regression).
+ */
+
+// Platform Mapbox PUBLIC token (pk.*). A VITE_MAPBOX_TOKEN env var overrides this built-in default,
+// so you can rotate / move it to Vercel later without a code change. NOTE: a pk.* token is exposed
+// in the client bundle by design — protect it with URL restrictions in the Mapbox dashboard.
+const BUILTIN_MAPBOX_TOKEN = '__MAPBOX_PUBLIC_TOKEN__';
+export function mapboxToken() {
+  try { const env = import.meta && import.meta.env && import.meta.env.VITE_MAPBOX_TOKEN; if (env) return env; } catch { /* not Vite */ }
+  return BUILTIN_MAPBOX_TOKEN.startsWith('pk.') ? BUILTIN_MAPBOX_TOKEN : '';
+}
+
+/** Normalise one Mapbox v6 feature → { id, label, line1, city, postcode, lat, lng }. Pure. */
+export function normalizeMapboxFeature(f) {
+  const p = (f && f.properties) || {};
+  const c = p.context || {};
+  const coords = (f && f.geometry && f.geometry.coordinates) || [];
+  const lng = Number(coords[0]);
+  const lat = Number(coords[1]);
+  const line1 =
+    (c.address && c.address.name) ||
+    [c.address && c.address.address_number, c.address && c.address.street_name].filter(Boolean).join(' ') ||
+    p.name || '';
+  const city = (c.place && c.place.name) || (c.locality && c.locality.name) || (c.district && c.district.name) || '';
+  const postcode = (c.postcode && c.postcode.name) || '';
+  return {
+    id: (f && (f.id || p.mapbox_id)) || `${lat},${lng}`,
+    label: p.full_address || p.place_formatted || [line1, city, postcode].filter(Boolean).join(', '),
+    line1, city, postcode,
+    lat: Number.isFinite(lat) ? lat : null,
+    lng: Number.isFinite(lng) ? lng : null,
+  };
+}
+
+/**
+ * Autocomplete addresses for a typed query. Returns [] when there's no token, the query is too
+ * short, or on any error — callers degrade to manual entry. `proximity` ({lat,lng}) biases
+ * results toward the venue.
+ */
+export async function searchAddresses(query, { token, country = 'gb', limit = 6, proximity } = {}) {
+  const t = token || mapboxToken();
+  const q = String(query || '').trim();
+  if (!t || q.length < 3) return [];
+  const params = new URLSearchParams({
+    q, access_token: t, country, autocomplete: 'true', types: 'address', limit: String(limit), language: 'en',
+  });
+  if (proximity && Number.isFinite(proximity.lat) && Number.isFinite(proximity.lng)) {
+    params.set('proximity', `${proximity.lng},${proximity.lat}`);
+  }
+  try {
+    const res = await fetch(`https://api.mapbox.com/search/geocode/v6/forward?${params.toString()}`);
+    if (!res.ok) return [];
+    const j = await res.json();
+    return (j.features || []).map(normalizeMapboxFeature).filter((a) => a.line1 || a.postcode);
+  } catch { return []; }
+}
+
+// ── Search Box API — POI / business search (geocoding v6 returns addresses only) ───────────────
+// Two-step: suggest() → a list incl. businesses; retrieve(mapbox_id) → coords + structured address.
+// A session_token ties the two together (Mapbox billing). Falls back to [] on any error so callers
+// can degrade to searchAddresses (geocoding) with no regression.
+export function newSessionToken() {
+  try { if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID(); } catch { /* older browser */ }
+  return 'sess-' + Math.random().toString(36).slice(2) + '-' + (typeof performance !== 'undefined' ? Math.floor(performance.now()) : 0);
+}
+
+/** Autocomplete suggestions incl. businesses/POIs. Returns [{ id, label, name, isPoi, needsRetrieve }]. */
+export async function searchPlaces(query, { token, country = 'gb', limit = 7, proximity, sessionToken } = {}) {
+  const t = token || mapboxToken();
+  const q = String(query || '').trim();
+  if (!t || q.length < 3 || !sessionToken) return [];
+  const params = new URLSearchParams({
+    q, access_token: t, session_token: sessionToken, country,
+    types: 'poi,address,street', limit: String(limit), language: 'en',
+  });
+  if (proximity && Number.isFinite(proximity.lat) && Number.isFinite(proximity.lng)) params.set('proximity', `${proximity.lng},${proximity.lat}`);
+  try {
+    const res = await fetch(`https://api.mapbox.com/search/searchbox/v1/suggest?${params.toString()}`);
+    if (!res.ok) return [];
+    const j = await res.json();
+    return (j.suggestions || []).map((s) => {
+      const place = s.place_formatted || s.full_address || s.address || '';
+      const isPoi = s.feature_type === 'poi';
+      return { id: s.mapbox_id, name: s.name || '', isPoi, needsRetrieve: true,
+        label: isPoi && place ? `${s.name} — ${place}` : (s.name || place) };
+    }).filter((s) => s.id);
+  } catch { return []; }
+}
+
+/** Resolve a Search Box suggestion to a full address WITH coordinates. Tolerant of the v1 shape. */
+export async function retrievePlace(mapboxId, { token, sessionToken } = {}) {
+  const t = token || mapboxToken();
+  if (!t || !mapboxId || !sessionToken) return null;
+  const params = new URLSearchParams({ access_token: t, session_token: sessionToken });
+  try {
+    const res = await fetch(`https://api.mapbox.com/search/searchbox/v1/retrieve/${encodeURIComponent(mapboxId)}?${params.toString()}`);
+    if (!res.ok) return null;
+    const j = await res.json();
+    const f = (j.features || [])[0];
+    if (!f) return null;
+    const p = f.properties || {};
+    const ctx = p.context || {};
+    const coords = (f.geometry && f.geometry.coordinates) || (Array.isArray(p.coordinates) ? p.coordinates : []);
+    const lng = Number(coords[0] ?? p.coordinates?.longitude);
+    const lat = Number(coords[1] ?? p.coordinates?.latitude);
+    const isPoi = p.feature_type === 'poi';
+    const street = ctx.address?.name || [ctx.address?.address_number, ctx.street?.name].filter(Boolean).join(' ') || p.address || '';
+    const line1 = street || (!isPoi ? (p.name || '') : '') || '';
+    return {
+      id: mapboxId,
+      name: p.name || '',
+      company: isPoi ? (p.name || '') : '',
+      line1, full: p.full_address || p.place_formatted || '',
+      city: ctx.place?.name || ctx.locality?.name || ctx.district?.name || '',
+      postcode: ctx.postcode?.name || '',
+      lat: Number.isFinite(lat) ? lat : null,
+      lng: Number.isFinite(lng) ? lng : null,
+    };
+  } catch { return null; }
+}

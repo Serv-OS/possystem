@@ -15,11 +15,11 @@
   --t3:  #7a7880;
   --t4:  #4e4c56;
 
-  /* ── Accent ── */
-  --acc:   #e8a020;
-  --acc2:  #f0b830;
-  --acc-d: rgba(232,160,32,.13);
-  --acc-b: rgba(232,160,32,.32);
+  /* ── Accent (Ember) ── */
+  --acc:   #E8743C;
+  --acc2:  #F08850;
+  --acc-d: rgba(232,116,60,.13);
+  --acc-b: rgba(232,116,60,.32);
 
   /* ── Status ── */
   --grn:   #22c55e;
@@ -48,7 +48,7 @@
   --sh:  0 2px 10px rgba(0,0,0,.45);
   --sh2: 0 6px 24px rgba(0,0,0,.6);
   --sh3: 0 12px 48px rgba(0,0,0,.75);
-  --sh-acc: 0 0 20px rgba(232,160,32,.2);
+  --sh-acc: 0 0 20px rgba(232,116,60,.2);
 
   /* ── Card payment button colours (dark) ── */
   --card-bg: linear-gradient(145deg,#1c2954,#111d3a);
@@ -87,7 +87,7 @@
   --sh:  0 2px 10px rgba(0,0,0,.10);
   --sh2: 0 6px 24px rgba(0,0,0,.14);
   --sh3: 0 12px 48px rgba(0,0,0,.20);
-  --sh-acc: 0 0 20px rgba(232,160,32,.15);
+  --sh-acc: 0 0 20px rgba(232,116,60,.15);
 
   --grn-d: rgba(34,197,94,.10);
   --grn-b: rgba(34,197,94,.30);
@@ -95,8 +95,8 @@
   --red-b: rgba(239,68,68,.28);
   --blu-d: rgba(59,130,246,.08);
   --blu-b: rgba(59,130,246,.25);
-  --acc-d: rgba(232,160,32,.10);
-  --acc-b: rgba(232,160,32,.35);
+  --acc-d: rgba(232,116,60,.10);
+  --acc-b: rgba(232,116,60,.35);
 
   --card-bg: linear-gradient(145deg,#e8edff,#dce6ff);
   --card-border: rgba(80,120,255,.25);
@@ -192,7 +192,11 @@ button { font-family: inherit; }
   padding: 11px 22px; border-radius: 22px;
   font-size: 13px; font-weight: 700;
   display: flex; align-items: center; gap: 9px;
-  z-index: 300; white-space: nowrap;
+  z-index: 300;
+  /* A long message used to run off both edges of the screen and be unreadable,
+     which is exactly when a toast matters most: it is usually an error. */
+  max-width: min(560px, calc(100vw - 32px));
+  white-space: normal; text-align: center; line-height: 1.45;
   box-shadow: var(--sh2);
   animation: toastIn .2s cubic-bezier(.2,.8,.3,1);
   letter-spacing: .01em;
@@ -208,6 +212,12 @@ button { font-family: inherit; }
 @keyframes shimmer { 0%{background-position:-200% 0} 100%{background-position:200% 0} }
 
 .add-pulse { animation: itemAdd .25s cubic-bezier(.2,.8,.3,1); }
+
+/* v5.5.791: order-panel line flash — the just-added/updated order line glows
+   accent briefly then fades back to its normal (inline) colours. Keyframe
+   animations win over inline styles for the duration, so no !important. */
+@keyframes lineFlash { 0%, 30% { background: var(--acc-d); border-color: var(--acc-b); } }
+.line-flash { animation: lineFlash 1s ease-out; }
 
 .divider { height: 1px; background: var(--bdr); margin: 12px 0; }
 
@@ -228,11 +238,46 @@ button { font-family: inherit; }
 .prod-card:active:not(.prod-card--disabled) { transform: scale(.98); }
 .prod-card--disabled { opacity: .42; cursor: not-allowed; }
 
+/* v5.7.38: responsive product grid. Six columns on tills and desktops; an
+   11" iPad in landscape is 1194 CSS px wide and six columns there clip the
+   tile name and the price/opts row. Viewports ≤1260px get five columns;
+   1280+ keeps the exact six-column layout it always had. */
+.prod-grid { display: grid; grid-template-columns: repeat(6, 1fr); }
+@media (max-width: 1260px) {
+  .prod-grid { grid-template-columns: repeat(5, 1fr); }
+}
+
+/* v5.7.38: tile name at iPad widths — two-line clamp ending in an ellipsis
+   instead of the old hard horizontal clip ("Cheeseburge"). break-word is a
+   LAST resort for a single word wider than the tile; hyphens off so nothing
+   invents "Cheese-burger". Scoped to ≤1260px so 1280+ tills render the name
+   exactly as they always have. */
+@media (max-width: 1260px) {
+  .prod-card-name {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    overflow-wrap: break-word;
+    hyphens: none;
+  }
+}
+
+/* v5.7.38: floor-plan header at iPad widths — the status legend drops its
+   words (dot + count only) so it no longer collides with the section filter
+   chips on the right, and the chips may wrap to a second line instead of
+   clipping at the pane edge. Full labels + the single nowrap chip row return
+   at 1280+ (tills, desktops), pixel-identical to before. */
+@media (max-width: 1260px) {
+  .floor-legend-word { display: none; }
+  .floor-chips { flex-wrap: wrap; justify-content: flex-end; min-width: 0; padding: 6px 0; }
+}
+
 /* ── Category nav button ── */
 .cat-btn {
   width: 100%; border-radius: 12px; cursor: pointer;
   display: flex; align-items: center; gap: 10px;
-  padding: 0 12px; height: 60px;
+  padding: 8px 12px; min-height: 60px;
   background: transparent; border: 1.5px solid transparent;
   transition: all .14s; font-family: inherit; text-align: left;
   -webkit-tap-highlight-color: transparent;
@@ -264,3 +309,411 @@ button { font-family: inherit; }
 @keyframes slideRight { from { transform:translateX(-100%); opacity:0; } to { transform:translateX(0); opacity:1; } }
 @keyframes slideDown { from { transform:translateY(-100%); opacity:0; } to { transform:translateY(0); opacity:1; } }
 @keyframes spin { from { transform:rotate(0deg); } to { transform:rotate(360deg); } }
+
+/* ============================================================
+   KIOSK THEME SYSTEM (v5.5.0)
+   ============================================================
+   The kiosk runs as a separate surface with its own theme that's
+   independent of the operator's POS theme. Operators set kiosk theme
+   per-device in BO Kiosks Settings.
+
+   KioskShell sets data-kiosk-theme="light"|"dark" on its root div.
+   All kiosk styles use these vars so the whole surface flips
+   atomically on theme change. Mirrors the [data-theme] pattern POS uses.
+
+   USING THESE VARS in kiosk components:
+   - color: var(--kFg)              ── primary text
+   - color: var(--kFgMuted)         ── secondary text
+   - color: var(--kFgFaint)         ── tertiary / placeholder
+   - background: var(--kSurface1)   ── card / chip
+   - background: var(--kSurface2)   ── button / hover
+   - background: var(--kSurface3)   ── selected / pressed
+   - border: 1px solid var(--kBorder1)  ── default divider
+   - border: 2px solid var(--kBorder2)  ── stronger
+   - background: var(--kImageBg)    ── placeholder behind item images
+   - background: var(--kOverlay)    ── modal backdrop
+*/
+[data-kiosk-theme="dark"] {
+  --kFg: #ffffff;
+  --kFgMuted: rgba(255,255,255,0.70);
+  --kFgFaint: rgba(255,255,255,0.40);
+  --kSurface1: rgba(255,255,255,0.04);
+  --kSurface2: rgba(255,255,255,0.08);
+  --kSurface3: rgba(255,255,255,0.14);
+  --kBorder1: rgba(255,255,255,0.10);
+  --kBorder2: rgba(255,255,255,0.18);
+  --kBorder3: rgba(255,255,255,0.28);
+  --kSurfaceShell: #0e0e10;
+  --kSurfaceRaised: #1a1a1f;
+  --kImageBg: linear-gradient(135deg, rgba(255,255,255,0.05), rgba(0,0,0,0.20));
+  --kOverlay: rgba(0,0,0,0.65);
+  --kAllergen-bg: rgba(234,179,8,0.12);
+  --kAllergen-border: rgba(234,179,8,0.32);
+  --kAllergen-fg: #ddc270;
+  --kError-bg: rgba(239,68,68,0.12);
+  --kError-border: rgba(239,68,68,0.40);
+  --kError-fg: #fca5a5;
+  /* v5.5.25: Floating checkout bar — solid dark in both themes to match
+     the reference and give the bar visual weight as a fixed-position CTA. */
+  --kSurfaceCheckoutBar: #18181c;
+}
+[data-kiosk-theme="light"] {
+  --kFg: #111111;
+  --kFgMuted: rgba(0,0,0,0.65);
+  --kFgFaint: rgba(0,0,0,0.40);
+  --kSurface1: rgba(0,0,0,0.035);
+  --kSurface2: rgba(0,0,0,0.07);
+  --kSurface3: rgba(0,0,0,0.11);
+  --kBorder1: rgba(0,0,0,0.10);
+  --kBorder2: rgba(0,0,0,0.16);
+  --kBorder3: rgba(0,0,0,0.24);
+  --kSurfaceShell: #fafafa;
+  --kSurfaceRaised: #ffffff;
+  --kImageBg: linear-gradient(135deg, rgba(0,0,0,0.04), rgba(0,0,0,0.10));
+  --kOverlay: rgba(0,0,0,0.45);
+  --kAllergen-bg: rgba(180,120,0,0.10);
+  --kAllergen-border: rgba(180,120,0,0.32);
+  --kAllergen-fg: #8a5a00;
+  --kError-bg: rgba(220,38,38,0.08);
+  --kError-border: rgba(220,38,38,0.32);
+  --kError-fg: #b91c1c;
+  --kSurfaceCheckoutBar: #18181c;
+}
+
+/* Kiosk inputs/textareas pick up theme — keeps things readable in light mode */
+[data-kiosk-theme] input,
+[data-kiosk-theme] textarea {
+  background: var(--kSurface1);
+  color: var(--kFg);
+  border-color: var(--kBorder1);
+  caret-color: var(--kFg);
+}
+[data-kiosk-theme] input::placeholder,
+[data-kiosk-theme] textarea::placeholder {
+  color: var(--kFgFaint);
+}
+
+/* v4.6.21 — Print styles for Z-report and any other printable report
+   When window.print() is triggered from the Z-report, only #zreport-print-area
+   is visible. Sunmi 80mm thermal paper is 80x297mm; the @page rule below sets
+   that so the receipt prints without margins when the user picks the Sunmi
+   printer. If the user picks a normal printer ("Save as PDF", A4), the same
+   narrow column centres in the middle of the page.
+*/
+@media print {
+  @page {
+    size: 80mm 297mm;
+    margin: 3mm;
+  }
+  /* Hide the entire app shell */
+  body > *:not(#root),
+  .z-no-print,
+  header, nav, aside,
+  [class*="topbar"], [class*="sidebar"], [class*="filter"] {
+    display: none !important;
+  }
+  /* Hide everything inside root except the ancestor chain of the print area */
+  #root *:not(#zreport-print-area *):not(:has(#zreport-print-area)) {
+    visibility: hidden;
+  }
+  #zreport-print-area, #zreport-print-area * {
+    visibility: visible !important;
+  }
+  #zreport-print-area {
+    position: absolute !important;
+    left: 0; top: 0;
+    max-width: 74mm !important;
+    width: 74mm !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #fff !important;
+    color: #000 !important;
+    border: none !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    font-size: 10pt !important;
+    line-height: 1.35 !important;
+    page-break-inside: avoid;
+  }
+  #zreport-print-area * {
+    background: transparent !important;
+    color: #000 !important;
+    border-color: #000 !important;
+  }
+}
+
+/* v5.5.119 — online ordering surface: visible press feedback */
+.op-btn { transition: transform .08s ease, filter .08s ease, box-shadow .12s ease; }
+.op-btn:active { transform: scale(0.96); filter: brightness(0.9); }
+.op-btn-primary { transition: transform .08s ease, filter .08s ease, box-shadow .12s ease; }
+.op-btn-primary:active { transform: scale(0.98); filter: brightness(0.85); box-shadow: 0 2px 8px rgba(0,0,0,0.18) !important; }
+
+/* v5.5.122 — new-order alert banner */
+@keyframes orderAlertIn {
+  from { opacity: 0; transform: translate(-50%, -110%); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
+@keyframes orderAlertCountdown {
+  from { transform: scaleX(1); }
+  to   { transform: scaleX(0); }
+}
+
+/* v5.5.158 — responsive full-width BO pages.
+   Single shared spec so every BO section follows the same layout:
+   - Full-width up to 1600px (then centered)
+   - Consistent fluid padding (16px tight on mobile, 48px breathing on desktop)
+   - Overrides per-section maxWidth/padding via direct-child !important so
+     individual sections don't need editing one by one. */
+.bo-page-shell {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.bo-page-shell > * {
+  max-width: 1600px !important;
+  width: 100% !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+  padding: clamp(16px, 2.5vw, 28px) clamp(20px, 4vw, 48px) !important;
+  box-sizing: border-box !important;
+}
+/* v5.5.816: WORKSPACE screens opt out of the reading cap.
+   The rule above is right for document-style pages (settings, forms) but wrong
+   for multi-column tools like the Menu manager: capping at 1600px and adding
+   48px page padding steals the width its item grid needs, leaving a dead margin
+   on wide monitors. These screens own their own column spacing, so they run
+   edge-to-edge and fill the viewport. */
+.bo-page-shell > .bo-workspace {
+  max-width: none !important;
+  padding: 0 !important;
+}
+
+/* ============================================================
+   SERVOS — "liquid glass" visual system (v5.5.350)
+   ============================================================
+   A SCOPED skin for STAFF surfaces only (POS family + Back Office),
+   activated by `data-skin="servos"` on <html> (set by those surfaces'
+   mount effects). Because the flag lives on <html>, portaled modals
+   (rendered to <body>) inherit it too. Customer-facing surfaces
+   (online / QR / loyalty portal / gift / kiosk / customer-display)
+   NEVER set the flag, so every rule below is inert for them — they
+   render exactly as before.
+
+   Two jobs:
+     1) Remap the legacy POS/BO tokens (--bg/--t1/--acc/…) to the
+        ServOS palette so existing markup reskins for free.
+     2) Add the brand tokens + glass material + scene utilities the
+        per-surface component passes build on.
+   Values mirror ServOS POS.html / ServOS Back Office.html.
+   Source of truth: "Claude Code — ServOS UI / Back Office Prompt.md".
+   VISUAL ONLY — no behaviour, routing, data, or logic changes.
+*/
+[data-skin="servos"]{
+  /* ---- brand ---- */
+  --signal:#15C26A; --signal-glow:#46E08C; --signal-deep:#0E9E55;
+  --uv:#7C5CFF; --uv-glow:#A48BFF; --uv-deep:#5B3FE0;
+  --amber:#F5A623; --coral:#FF5A4A;
+  --ink:#0F1211; --coal:#161A18; --graphite:#232826;
+  --ash:#8C938C; --mist:#E9ECEA; --paper:#F5F7F4; --white:#fff;
+
+  /* ---- glass material (dark default) ---- */
+  --glass-bg:linear-gradient(160deg, rgba(255,255,255,0.085), rgba(255,255,255,0.025));
+  --glass-border:rgba(255,255,255,0.12);
+  --glass-hi:inset 0 1px 0 rgba(255,255,255,0.30);
+  --glass-lo:inset 0 0 0 rgba(0,0,0,0);
+  --glass-shadow:0 3px 12px rgba(0,0,0,0.30);
+  --sheen:linear-gradient(150deg, rgba(255,255,255,0.16), transparent 42%);
+  --tile-bg:linear-gradient(160deg, rgba(255,255,255,0.055), rgba(255,255,255,0.018));
+  --tile-border:rgba(255,255,255,0.09);
+  --inset:rgba(255,255,255,0.05);
+  --inset-border:rgba(255,255,255,0.10);
+  --hair:rgba(255,255,255,0.09);
+
+  /* ---- colour-coding scale (shared L & C; only --h varies per item) ---- */
+  --cat-l:0.82; --cat-c:0.135;
+
+  /* ---- legacy token remap → ServOS (dark) ---- */
+  --bg:#0F1211; --bg1:#161A18; --bg2:#1b201d; --bg3:#232826; --bg4:#2b322e; --bg5:#363d38;
+  --t1:#E9ECEA; --t2:#8C938C; --t3:#6B746D; --t4:#525a53;
+  --acc:#15C26A; --acc2:#2FD984; --acc-d:rgba(21,194,106,0.14); --acc-b:rgba(21,194,106,0.34);
+  --grn:#15C26A; --grn-d:rgba(21,194,106,0.13); --grn-b:rgba(21,194,106,0.30);
+  --red:#FF5A4A; --red-d:rgba(255,90,74,0.12); --red-b:rgba(255,90,74,0.32);
+  --blu:#7C5CFF; --blu-d:rgba(124,92,255,0.13); --blu-b:rgba(124,92,255,0.30);
+  --orn:#F5A623; --pur:#7C5CFF;
+  --bdr:rgba(255,255,255,0.10); --bdr2:rgba(255,255,255,0.14); --bdr3:rgba(255,255,255,0.22);
+  --sh:0 2px 10px rgba(0,0,0,0.45); --sh2:0 12px 30px rgba(0,0,0,0.50); --sh3:0 18px 50px rgba(0,0,0,0.62);
+  --sh-acc:0 0 20px rgba(21,194,106,0.25);
+
+  --font-mono:'JetBrains Mono','SF Mono',Menlo,Consolas,monospace;
+  --font-display:'Syne','Space Grotesk',sans-serif;
+  font-family:'Space Grotesk', system-ui, -apple-system, sans-serif;
+}
+
+/* ---- ServOS LIGHT (binds to the existing [data-theme="light"] toggle) ---- */
+[data-skin="servos"][data-theme="light"]{
+  --glass-bg:linear-gradient(160deg, rgba(255,255,255,0.82), rgba(255,255,255,0.64));
+  --glass-border:rgba(255,255,255,0.9);
+  --glass-hi:inset 0 1px 0 rgba(255,255,255,0.95);
+  --glass-lo:inset 0 0 0 rgba(0,0,0,0);
+  --glass-shadow:0 3px 12px rgba(20,40,28,0.10);
+  --sheen:linear-gradient(150deg, rgba(255,255,255,0.55), transparent 46%);
+  --tile-bg:linear-gradient(160deg, rgba(255,255,255,0.62), rgba(255,255,255,0.32));
+  --tile-border:rgba(15,18,17,0.07);
+  --inset:rgba(15,18,17,0.04);
+  --inset-border:rgba(15,18,17,0.08);
+  --hair:rgba(15,18,17,0.08);
+  --cat-l:0.54; --cat-c:0.145;
+
+  --bg:#F5F7F4; --bg1:#ffffff; --bg2:#fafcf9; --bg3:#eef1ec; --bg4:#e4e8e2; --bg5:#d6dbd4;
+  --t1:#0F1211; --t2:#5E665E; --t3:#8C938C; --t4:#a7ada6;
+  --acc:#0E9E55; --acc2:#15C26A; --acc-d:rgba(21,194,106,0.12); --acc-b:rgba(21,194,106,0.40);
+  --grn:#0E9E55; --grn-d:rgba(21,194,106,0.12); --grn-b:rgba(21,194,106,0.34);
+  --red:#E5483A; --red-d:rgba(255,90,74,0.10); --red-b:rgba(255,90,74,0.34);
+  --blu:#5B3FE0; --blu-d:rgba(124,92,255,0.10); --blu-b:rgba(124,92,255,0.34);
+  --orn:#B9791A; --pur:#5B3FE0;
+  --bdr:rgba(15,18,17,0.10); --bdr2:rgba(15,18,17,0.16); --bdr3:rgba(15,18,17,0.24);
+  --sh:0 2px 10px rgba(20,40,28,0.10); --sh2:0 12px 30px rgba(20,40,28,0.14); --sh3:0 18px 48px rgba(20,40,28,0.20);
+  --sh-acc:0 0 20px rgba(21,194,106,0.18);
+}
+
+/* ---- Scene behind the glass (staff #root) ---- */
+[data-skin="servos"] #root{
+  background:
+    radial-gradient(58% 48% at 82% -4%, rgba(21,194,106,0.22), transparent 58%),
+    radial-gradient(42% 40% at 6% 16%, rgba(38,210,200,0.15), transparent 60%),
+    radial-gradient(48% 46% at 96% 92%, rgba(120,92,255,0.16), transparent 60%),
+    radial-gradient(40% 38% at 24% 104%, rgba(245,166,35,0.09), transparent 60%),
+    var(--bg);
+}
+[data-skin="servos"][data-theme="light"] #root{
+  background:
+    radial-gradient(60% 55% at 88% -10%, rgba(21,194,106,0.24), transparent 60%),
+    radial-gradient(52% 52% at -6% 8%, rgba(38,210,200,0.20), transparent 62%),
+    radial-gradient(56% 56% at 106% 102%, rgba(120,92,255,0.22), transparent 62%),
+    radial-gradient(50% 50% at 12% 112%, rgba(245,166,35,0.16), transparent 62%),
+    var(--bg);
+}
+
+/* ---- Glass material utilities (used by the per-surface passes) ---- */
+[data-skin="servos"] .sv-glass{
+  position:relative;
+  background:var(--glass-bg);
+  -webkit-backdrop-filter:blur(22px) saturate(150%);
+  backdrop-filter:blur(22px) saturate(150%);
+  border:1px solid var(--glass-border);
+  box-shadow:var(--glass-shadow), var(--glass-hi), var(--glass-lo);
+  border-radius:22px;            /* 22 panels · 16 cards · 13–14 controls · 999 pills */
+}
+[data-skin="servos"] .sv-glass::before{
+  content:""; position:absolute; inset:0; border-radius:inherit; pointer-events:none;
+  background:var(--sheen); mix-blend-mode:screen; opacity:.8;
+}
+[data-skin="servos"][data-theme="light"] .sv-glass::before{ mix-blend-mode:normal; opacity:.6; }
+[data-skin="servos"] .sv-glass > *{ position:relative; z-index:1; }
+
+/* lighter "tile" treatment (inner cards — never stack full glass >2 deep) */
+[data-skin="servos"] .sv-tile{
+  --col:oklch(var(--cat-l) var(--cat-c) var(--h,200));
+  background:linear-gradient(160deg, color-mix(in oklch, var(--col) 13%, transparent), color-mix(in oklch, var(--col) 3%, transparent));
+  border:1px solid color-mix(in oklch, var(--col) 20%, transparent);
+  box-shadow:var(--glass-hi), inset 3px 0 0 color-mix(in oklch, var(--col) 60%, transparent);
+}
+
+/* radii helpers */
+[data-skin="servos"] .sv-r-panel{ border-radius:22px; }
+[data-skin="servos"] .sv-r-card{ border-radius:16px; }
+[data-skin="servos"] .sv-r-ctrl{ border-radius:13px; }
+[data-skin="servos"] .sv-pill{ border-radius:999px; }
+
+@media (prefers-reduced-motion: reduce){
+  [data-skin="servos"] *{ transition:none !important; animation:none !important; }
+}
+
+/* ============================================================
+   SERVOS — shared component library (v5.5.351)
+   ============================================================
+   Scoped restyle of the shared global classes (.btn, .input,
+   .modal-box, .toast, .prod-card, .cat-btn, .nav-btn, .badge,
+   .divider). All under [data-skin="servos"], so the unscoped
+   originals — used by online/QR — are completely unaffected.
+   Presentational only: colour/border/radius/shadow, no layout
+   geometry (padding/size/display) changes.
+*/
+
+/* ---- Buttons ---- */
+[data-skin="servos"] .btn{ border-radius:13px; }
+[data-skin="servos"] .btn-lg{ border-radius:14px; }
+[data-skin="servos"] .btn-sm{ border-radius:11px; }
+[data-skin="servos"] .btn-xs{ border-radius:9px; }
+
+/* primary = Signal-green gradient + dark text + green glow (the ServOS "Pay") */
+[data-skin="servos"] .btn-acc{
+  background:linear-gradient(180deg,#2FD984,#15C26A);
+  color:#06130C; border-color:transparent;
+  box-shadow:0 8px 22px rgba(21,194,106,0.30), inset 0 1px 0 rgba(255,255,255,0.5);
+}
+[data-skin="servos"] .btn-acc:hover:not(:disabled){
+  filter:brightness(1.05); background:linear-gradient(180deg,#2FD984,#15C26A);
+  box-shadow:0 10px 26px rgba(21,194,106,0.40), inset 0 1px 0 rgba(255,255,255,0.5);
+}
+
+/* secondary = glass (recessed fill + clear edge so it reads against glass panels) */
+[data-skin="servos"] .btn-ghost{
+  background:var(--inset); border-color:var(--bdr2); color:var(--t1);
+  box-shadow:var(--glass-hi);
+}
+[data-skin="servos"] .btn-ghost:hover:not(:disabled){ background:var(--bg4); border-color:var(--bdr3); color:var(--t1); }
+
+[data-skin="servos"] .btn-grn{ background:var(--grn-d); border-color:var(--grn-b); color:var(--grn); }
+[data-skin="servos"] .btn-grn:hover:not(:disabled){ background:var(--grn); color:#06130C; }
+[data-skin="servos"] .btn-red{ background:var(--red-d); border-color:var(--red-b); color:var(--red); }
+[data-skin="servos"] .btn-red:hover:not(:disabled){ background:var(--red); color:#fff; }
+
+/* ---- Inputs ---- */
+[data-skin="servos"] .input{
+  background:var(--inset); border:1px solid var(--inset-border); border-radius:13px; color:var(--t1);
+}
+[data-skin="servos"] .input:focus{ border-color:var(--acc-b); background:var(--inset); box-shadow:0 0 0 3px var(--acc-d); }
+[data-skin="servos"] .input::placeholder{ color:var(--t3); }
+
+/* ---- Modals ---- (solid base + glass sheen + glass framing for readability) */
+[data-skin="servos"] .modal-box{
+  background-color:var(--bg2); background-image:var(--glass-bg);
+  border:1px solid var(--glass-border);
+  box-shadow:var(--glass-shadow), var(--glass-hi), var(--glass-lo);
+  border-radius:22px;
+}
+
+/* ---- Toast ---- */
+[data-skin="servos"] .toast{
+  background-color:var(--bg2); background-image:var(--glass-bg);
+  border:1px solid var(--glass-border); color:var(--t1);
+  box-shadow:var(--glass-shadow), var(--glass-hi);
+}
+
+/* ---- Product card (neutral glass tile; per-category hue applied in the POS pass) ---- */
+[data-skin="servos"] .prod-card{
+  background:var(--tile-bg); border:1px solid var(--tile-border); border-radius:16px;
+  box-shadow:var(--glass-hi);
+}
+[data-skin="servos"] .prod-card:hover:not(.prod-card--disabled){
+  transform:translateY(-2px); box-shadow:var(--sh2), var(--glass-hi); border-color:var(--bdr2);
+}
+
+/* ---- Category nav row ---- */
+[data-skin="servos"] .cat-btn:hover{ background:var(--inset); }
+[data-skin="servos"] .cat-btn--active{ background:var(--inset); border-color:var(--bdr2); box-shadow:var(--glass-hi); }
+
+/* ---- Sidebar nav button ---- */
+[data-skin="servos"] .nav-btn--active{ background:var(--acc-d); border-color:var(--acc-b); }
+
+/* ---- Misc ---- */
+[data-skin="servos"] .badge{ font-family:var(--font-mono); }
+[data-skin="servos"] .divider{ background:var(--hair); }
+
+/* ---- Customer menu (storefront) themeable header animations ---- */
+@keyframes mh-flicker { 0%,100% { opacity:.5; } 45% { opacity:.72; } 70% { opacity:.58; } }
+@keyframes mh-dotpulse { 0%,100% { box-shadow:0 0 0 0 rgba(34,197,94,.55); } 60% { box-shadow:0 0 0 6px rgba(34,197,94,0); } }

@@ -9,12 +9,21 @@
 
 import { useEffect } from 'react';
 import { useStore } from '../store';
-import { supabase, isMock, getLocationId } from './supabase';
+import { supabase, isMock, getLocationId, ensureAuthToken, claimPairedDeviceOnBoot } from './supabase';
 import {
   fetchMenuItems, fetchFloorPlan, fetch86List,
-  fetchKDSTickets, fetchClosedChecks, fetchLatestConfigPush,
+  fetchKDSTickets, fetchClosedChecks, fetchLatestConfigPush, getPosHistorySince,
+  primeOrderRefLease,
 } from './db';
 import { getLocationConfig, getBusinessDayStart } from './locationTime';
+
+// v5.5.890: run-once guard. On MPOS this hook is mounted TWICE in the same render pass
+// (App() calls it unconditionally AND MPOSSurface kept its own v5.5.79-era call), so the
+// entire ~14-query init sequence ran twice concurrently on every MPOS boot — including
+// reconcileShiftOnMount, which has no concurrency guard and could double-open a shift.
+// The flag flips synchronously before any await, so the second mount is a clean no-op.
+// Neither call site is removed (each is load-bearing for a different device mode).
+let _initRan = false;
 
 export default function useSupabaseInit() {
   const { menuItems, setMenuItems } = useStore.getState?.() || {};
@@ -23,7 +32,21 @@ export default function useSupabaseInit() {
     if (isMock) return;
 
     async function init() {
+      if (_initRan) return;
+      _initRan = true;
       const store = useStore.getState();
+
+      // v5.5.184: POS devices (paired via pairing code) have no Supabase Auth
+      // session. With RLS enabled on tables like cash_drawers, cash_movements,
+      // closed_checks, etc., the anon key (role='anon') gets blocked. Ensure we
+      // have an authenticated session BEFORE any data fetching — uses existing
+      // BO session if present, otherwise falls back to signInAnonymously().
+      try { await ensureAuthToken(); } catch (e) {
+        console.warn('[useSupabaseInit] ensureAuthToken failed:', e.message);
+      }
+      // v5.5.758: (re)bind an already-paired POS-family device to its location server-side
+      // so the RLS cutover link survives without a manual re-pair. Best-effort, non-blocking.
+      claimPairedDeviceOnBoot();
 
       // Load location config first — needed for timezone-correct reporting
       const locConfig = await getLocationConfig();
@@ -32,13 +55,39 @@ export default function useSupabaseInit() {
       // Store config in Zustand so components can access it
       useStore.setState({ locationConfig: locConfig });
 
-      // Menu items
+      // CRITICAL: resolve locationId up-front. fetchClosedChecks (and other
+      // location-scoped fetches below) MUST receive a real location id —
+      // calling them with undefined falls through the `.eq('location_id', null)`
+      // filter which returns 0 rows. If we then setState({ closedChecks: [] })
+      // we wipe live data that the realtime channel had already populated.
+      const locId = await getLocationId().catch(() => null);
+
+      // Menu items — REGRESSION FIX (v5.5.86): the previous mapping here
+      // dropped most snake_case→camelCase aliases (parent_id, sort_order,
+      // kitchen_name, etc), so once this hook fired on MPOS it overwrote
+      // SyncBridge's correctly-mapped menuItems with rows where parentId
+      // was undefined. Effect: variant parents (Latte) lost their children
+      // and variant children (Half / Pint) lost their parent — children
+      // were no longer hidden in the menu list and parents no longer
+      // opened a size picker. Mapping below mirrors SyncBridge.jsx exactly.
       const { data: items } = await fetchMenuItems();
       if (items?.length) {
         useStore.setState({ menuItems: items.map(item => ({
           ...item,
-          taxRateId:   item.tax_rate_id   ?? item.taxRateId   ?? null,
+          price:        item.pricing?.base ?? item.price ?? 0,
+          menuName:     item.menu_name    ?? item.menuName    ?? item.name ?? 'Item',
+          receiptName:  item.receipt_name ?? item.receiptName ?? item.name,
+          kitchenName:  item.kitchen_name ?? item.kitchenName ?? item.name,
+          sortOrder:    item.sort_order   ?? item.sortOrder   ?? 0,
+          parentId:     item.parent_id    ?? item.parentId    ?? null,
+          soldAlone:    item.sold_alone   ?? item.soldAlone,
+          centreId:     item.centre_id    ?? item.centreId    ?? null,
+          taxRateId:    item.tax_rate_id  ?? item.taxRateId   ?? null,
           taxOverrides: item.tax_overrides ?? item.taxOverrides ?? {},
+          taxProfileId: item.tax_profile_id ?? item.taxProfileId ?? null,   // v5.7.33: profile assignment (dark)
+          assignedModifierGroups:    item.assigned_modifier_groups    ?? item.assignedModifierGroups    ?? [],
+          assignedInstructionGroups: item.assigned_instruction_groups ?? item.assignedInstructionGroups ?? [],
+          image: item.image ?? null,
         })) });
       }
 
@@ -48,9 +97,11 @@ export default function useSupabaseInit() {
         const current = useStore.getState().tables;
         const merged = fp.tables.map(dbT => {
           const live = current.find(t => t.id === dbT.id);
+          // v5.5.2: preserve location_id on every hydrated table so upsertFloorTable's
+          // cross-location guard can refuse silent moves between locations.
           return live
-            ? { ...live, label:dbT.label, x:dbT.x, y:dbT.y, w:dbT.w, h:dbT.h, shape:dbT.shape, maxCovers:dbT.max_covers, section:dbT.section_id }
-            : { id:dbT.id, label:dbT.label, x:dbT.x, y:dbT.y, w:dbT.w, h:dbT.h, shape:dbT.shape, maxCovers:dbT.max_covers, section:dbT.section_id, status:'available', session:null };
+            ? { ...live, label:dbT.label, x:dbT.x, y:dbT.y, w:dbT.w, h:dbT.h, shape:dbT.shape, maxCovers:dbT.max_covers, section:dbT.section_id, locationId:dbT.location_id }
+            : { id:dbT.id, label:dbT.label, x:dbT.x, y:dbT.y, w:dbT.w, h:dbT.h, shape:dbT.shape, maxCovers:dbT.max_covers, section:dbT.section_id, locationId:dbT.location_id, status:'available', session:null };
         });
         useStore.setState({ tables: merged });
       }
@@ -66,20 +117,156 @@ export default function useSupabaseInit() {
         useStore.setState({ eightySixIds: e86.map(r => r.item_id) });
       }
 
-      // Active KDS tickets
-      const { data: tickets } = await fetchKDSTickets();
+      // Active KDS tickets — pass locId explicitly (fetchKDSTickets also
+      // self-resolves, but we already have the value; avoids a wasted round trip).
+      const { data: tickets } = await fetchKDSTickets(locId);
       if (tickets) {
         useStore.setState({ kdsTickets: tickets });
       }
 
-      // Today's closed checks — scoped to business day start in location timezone
-      const { data: checks } = await fetchClosedChecks(undefined, 500, todayStart);
-      if (checks) {
-        useStore.setState({ closedChecks: checks });
+      // Today's closed checks — scoped to business day start in location timezone.
+      // Pass locId explicitly. NEVER overwrite local state with an empty array —
+      // realtime may have already prepended fresh checks, and a wiped-then-empty
+      // fetch (RLS denial, transient network glitch, locId still resolving) would
+      // erase them. Merge with existing instead, dedup by id.
+      // v5.5.986: lease a block of order numbers up front. The synchronous mint paths
+      // (closed checks, walk-ins, MPOS, bar tabs) cannot await, so without a warm block the
+      // first sale of the day falls back to the per-device counter — which is exactly how two
+      // tills came to mint the same number. Not awaited: a slow lease must not delay boot.
+      if (locId) { void primeOrderRefLease(locId); }
+
+      if (locId) {
+        // v5.5.985: the FULL history window, not just today. todayStart is still used for
+        // the business-day figures above; history has to reach back as far as the POS
+        // history panel can filter, or a till that was not open yesterday shows nothing
+        // while the one next to it shows weeks. getPosHistorySince() is the single
+        // definition of that window.
+        const { data: checks } = await fetchClosedChecks(locId, 500, getPosHistorySince());
+        if (Array.isArray(checks) && checks.length) {
+          const existing = useStore.getState().closedChecks || [];
+          const byId = new Map();
+          for (const c of existing) byId.set(c.id, c);
+          for (const c of checks) byId.set(c.id, c);
+          const merged = Array.from(byId.values()).sort((a, b) => (b.closedAt || 0) - (a.closedAt || 0));
+          useStore.setState({ closedChecks: merged });
+        }
       }
 
-      // Resolve location ID (needed for tax rates + config push)
-      const locId = await getLocationId().catch(() => null);
+      // v4.6.33: hydrate printers from Supabase so POS devices see back-office
+      // changes (including the cashDrawerAttached flag) on app load. Previously
+      // the POS only ever saw printers if it was the same browser as the back
+      // office — a cross-device install (Sunmi terminal + separate laptop for
+      // back office) would never hydrate its own rpos-printers cache.
+      if (locId && supabase) {
+        try {
+          // v5.5.835: deterministic order. Without it Postgres may return the
+          // venue's printers in any order, so two tills resolving a printer by
+          // role could pick different ones from the same list.
+          const { data: prows } = await supabase
+            .from('printers')
+            .select('*')
+            .eq('location_id', locId)
+            .order('created_at');
+          if (Array.isArray(prows)) {
+            const shaped = prows.map(r => ({
+              id: r.id,
+              name: r.name,
+              model: r.meta?.model || 'sunmi-nt311',
+              connectionType: r.connection || 'network',
+              address: r.ip || '',
+              port: r.port ?? 9100,
+              paperWidth: r.paper_width ?? 80,
+              roles: Array.isArray(r.meta?.roles) ? r.meta.roles : ['receipt'],
+              location: r.meta?.location || '',
+              status: r.meta?.status || 'unknown',
+              addedAt: r.meta?.addedAt || Date.now(),
+              cashDrawerAttached: !!r.meta?.cashDrawerAttached,
+            }));
+            localStorage.setItem('rpos-printers', JSON.stringify(shaped));
+            // Fire the same event the back-office PrinterRegistry dispatches so
+            // any subscribed code picks up the new list.
+            window.dispatchEvent(new Event('rpos-printers-updated'));
+          }
+        } catch (err) {
+          console.warn('[useSupabaseInit] printers hydration failed:', err?.message || err);
+        }
+      }
+
+      // v5.5.835: hydrate THIS device's receipt-printer assignment. devices.receipt_printer_id
+      // has been writable in Back Office → Devices since it was added, but nothing ever READ it
+      // at print time — printer.js picked the first printer carrying the 'receipt' role from the
+      // whole venue list. That is why an MPOS handheld with no printer set still printed to the
+      // counter. Cached to localStorage because printer.js resolves synchronously.
+      // Lives here (not App.jsx) deliberately: MPOS returns before ValidatedPOSApp mounts, so
+      // useSupabaseInit is the only hook that runs on BOTH the desktop POS and MPOS.
+      if (locId && supabase) {
+        try {
+          const dev = JSON.parse(localStorage.getItem('rpos-device') || 'null');
+          if (dev?.id && dev.id !== 'admin' && !dev.adminMode) {
+            const { data: drow } = await supabase
+              .from('devices')
+              .select('receipt_printer_id')
+              .eq('id', dev.id)
+              .maybeSingle();
+            localStorage.setItem('rpos-receipt-target', JSON.stringify({
+              deviceId: dev.id,
+              printerId: drow?.receipt_printer_id || null,
+            }));
+            window.dispatchEvent(new Event('rpos-receipt-target-updated'));
+          }
+        } catch (err) {
+          console.warn('[useSupabaseInit] receipt target hydration failed:', err?.message || err);
+        }
+      }
+
+      // v5.5.835: venue default receipt printer — used ONLY for receipts with no
+      // originating device (online / delivery / HubRise, fired from the Orders Hub).
+      // Set in Back office → Production printing. Cached to localStorage so printer.js
+      // can resolve it synchronously.
+      if (locId && supabase) {
+        try {
+          const { data: locRow } = await supabase
+            .from('locations')
+            .select('pos_settings')
+            .eq('id', locId)
+            .maybeSingle();
+          const venuePrinterId = locRow?.pos_settings?.default_receipt_printer_id || null;
+          if (venuePrinterId) localStorage.setItem('rpos-venue-receipt-printer', venuePrinterId);
+          else localStorage.removeItem('rpos-venue-receipt-printer');
+        } catch (err) {
+          console.warn('[useSupabaseInit] venue receipt printer hydration failed:', err?.message || err);
+        }
+      }
+
+      // v4.6.35: hydrate cash drawers from Supabase
+      try {
+        await useStore.getState().loadCashDrawers?.();
+      } catch (err) {
+        console.warn('[useSupabaseInit] cashDrawers hydration failed:', err?.message || err);
+      }
+
+      // v4.6.37: reconcile shift lifecycle. Creates/auto-closes as needed
+      // so every subsequent cash sale + movement carries a shift_id.
+      // v5.7.57: this hook runs on EVERY surface, host stands included, and a
+      // host stand can neither read nor write shifts (see canRunShiftLifecycle
+      // in the store). Skipping the whole block keeps currentShift honestly
+      // null there instead of "null because RLS hid the open shift".
+      if (useStore.getState().canRunShiftLifecycle?.() !== false) {
+        try {
+          await useStore.getState().reconcileShiftOnMount?.();
+          await useStore.getState().loadShiftHistory?.();
+        } catch (err) {
+          console.warn('[useSupabaseInit] shift reconcile failed:', err?.message || err);
+        }
+      }
+
+      // v4.6.40: load the currently open drawer session (if any) for this POS.
+      // Used by needsCashIn() and the sign-in gate in POSSurface.
+      try {
+        await useStore.getState().loadCurrentDrawerSession?.();
+      } catch (err) {
+        console.warn('[useSupabaseInit] drawer session load failed:', err?.message || err);
+      }
 
       // Tax rates for this location
       if (locId && supabase) {

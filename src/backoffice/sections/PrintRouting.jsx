@@ -1,6 +1,8 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useStore } from '../../store';
 import { isMock, supabase, getLocationId } from '../../lib/supabase';
+import { reportSave } from '../../lib/saveHealth';
+import { money } from '../../lib/currency';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const uid = () => `pc-${Date.now()}-${Math.random().toString(36).slice(2,6)}`;
@@ -35,14 +37,68 @@ async function loadRoutingFromDB() {
   return load();
 }
 
-async function saveRoutingToDB(data) {
-  if (isMock || !supabase) return;
-  save(data); // update local cache immediately
+// Returns { error } — the caller reverts the screen (and this localStorage mirror, which
+// the POS reads at print time) when the row never landed. A swallowed failure here routed
+// tickets by a rule set that only ever existed on one browser.
+async function saveRoutingToDB(data, previous) {
+  const mirror = (cfg) => { if (cfg) { try { save(cfg); } catch {} } };
+  mirror(data); // update local cache immediately — printing must feel instant
+  if (isMock || !supabase) return { error: null };
+  const rollback = (err) => { mirror(previous); return { error: err }; };
+  const locationId = await getLocationId().catch(() => null);
+  if (!locationId) return rollback(new Error('Could not resolve the location for this venue'));
+  const { data: rows, error } = await supabase
+    .from('print_routing')
+    .upsert({ location_id:locationId, centres:data.centres, routing:data.routing, updated_at:new Date().toISOString() }, { onConflict:'location_id' })
+    .select('location_id');
+  if (error) return rollback(error);
+  if (!rows || rows.length === 0) return rollback(new Error('Print routing write matched 0 rows — RLS blocked it'));
+  return { error: null };
+}
+
+// v5.5.835: VENUE DEFAULT RECEIPT PRINTER.
+// Receipts now route to the printer set on the originating DEVICE (Back office →
+// Devices), with no venue-wide fallback — that fallback is exactly what made an
+// unconfigured MPOS print to the counter. But receipts from online / delivery /
+// HubRise orders have no originating device: they belong to the venue. This setting
+// is where those go. Still an explicit operator choice — unset means they don't print.
+//
+// Persisted on the OPS locations.pos_settings jsonb (same key space as
+// printers.location_id and print_routing.location_id — no cross-DB join needed), and
+// mirrored to localStorage so printer.js can resolve it synchronously at print time.
+const VENUE_PRINTER_KEY = 'rpos-venue-receipt-printer';
+
+async function loadVenueReceiptPrinter() {
+  if (isMock || !supabase) { try { return localStorage.getItem(VENUE_PRINTER_KEY) || ''; } catch { return ''; } }
   try {
     const locationId = await getLocationId();
-    if (!locationId) return;
-    await supabase.from('print_routing').upsert({ location_id:locationId, centres:data.centres, routing:data.routing, updated_at:new Date().toISOString() }, { onConflict:'location_id' });
-  } catch(e) { console.warn('routing save failed', e); }
+    if (!locationId) return '';
+    const { data } = await supabase.from('locations').select('pos_settings').eq('id', locationId).maybeSingle();
+    const id = data?.pos_settings?.default_receipt_printer_id || '';
+    try { id ? localStorage.setItem(VENUE_PRINTER_KEY, id) : localStorage.removeItem(VENUE_PRINTER_KEY); } catch {}
+    return id;
+  } catch (e) { console.warn('venue receipt printer load failed', e); return ''; }
+}
+
+async function saveVenueReceiptPrinter(printerId, previousId) {
+  const mirror = (id) => { try { id ? localStorage.setItem(VENUE_PRINTER_KEY, id) : localStorage.removeItem(VENUE_PRINTER_KEY); } catch {} };
+  // Mirror locally first so the setting is live on this browser immediately.
+  mirror(printerId);
+  if (isMock || !supabase) return { error: null };
+  const rollback = (err) => { mirror(previousId); return { error: err }; };
+  const locationId = await getLocationId().catch(() => null);
+  if (!locationId) return rollback(new Error('Could not resolve the location for this venue'));
+  // Read-modify-merge so we never clobber other pos_settings keys (the pattern
+  // LocationSettings.jsx uses for takeaway_customer_details). The READ must be checked
+  // too — merging onto {} after a failed read would wipe every other pos_settings key.
+  const { data, error: readErr } = await supabase.from('locations').select('pos_settings').eq('id', locationId).maybeSingle();
+  if (readErr) return rollback(readErr);
+  const { data: rows, error } = await supabase.from('locations').update({
+    pos_settings: { ...(data?.pos_settings || {}), default_receipt_printer_id: printerId || null },
+  }).eq('id', locationId).select('id');
+  if (error) return rollback(error);
+  if (!rows || rows.length === 0) return rollback(new Error('Location update matched 0 rows — RLS blocked it'));
+  return { error: null };
 }
 
 // Default routing entry for a centre
@@ -174,7 +230,7 @@ function CategoryRouter({ centreId, routing, setRouting, menuCategories, menuIte
                       <span style={{ flex:1, fontSize:13, color: isExcluded ? 'var(--t4)' : 'var(--t1)', textDecoration: isExcluded ? 'line-through' : 'none' }}>
                         {name}
                       </span>
-                      <span style={{ fontSize:12, color:'var(--t3)', fontFamily:'monospace' }}>£{price.toFixed(2)}</span>
+                      <span style={{ fontSize:12, color:'var(--t3)', fontFamily:'monospace' }}>{money(price)}</span>
                     </div>
                   );
                 })}
@@ -190,21 +246,41 @@ function CategoryRouter({ centreId, routing, setRouting, menuCategories, menuIte
 // ─── Main component ────────────────────────────────────────────────────────────
 export default function PrintRouting() {
   const { menuCategories, menuItems, markBOChange } = useStore();
+  const showToast = useStore(s => s.showToast);
   const [data, setData] = useState(() => ({ centres:[], routing:{} }));
   const [routing, setRouting] = useState({});
   const [selected, setSelected] = useState(null);
   const [showAdd, setShowAdd] = useState(false);
   const [editCentre, setEditCentre] = useState(null);
   const [kdsDevices, setKdsDevices] = useState([]);
-  const [form, setForm] = useState({ name:'', icon:'🔥', type:'kitchen', printerId:'', kdsDeviceId:'' });
+  const [form, setForm] = useState({ name:'', icon:'🔥', type:'kitchen', printerId:'', kdsDeviceId:'', printAllergens:false });
   const [printers, setPrinters] = useState(() => { try { return JSON.parse(localStorage.getItem('rpos-printers')||'[]'); } catch { return []; } });
   const [_loaded, setLoaded] = useState(false);
+  // v5.5.835: venue default receipt printer (online / delivery / HubRise receipts)
+  const [venuePrinterId, setVenuePrinterId] = useState('');
+  useEffect(() => { loadVenueReceiptPrinter().then(setVenuePrinterId); }, []);
+  const changeVenuePrinter = async (id) => {
+    const previous = venuePrinterId;
+    setVenuePrinterId(id);
+    const { error } = await saveVenueReceiptPrinter(id, previous);
+    reportSave('default receipt printer', error);
+    if (error) {
+      setVenuePrinterId(previous); // never leave a destination on screen the DB rejected
+      showToast?.('Default receipt printer NOT saved — the old setting is still in force', 'error');
+      return;
+    }
+    markBOChange?.();
+  };
+
+  // Last config the database accepted — what we roll the screen back to on a failed save.
+  const lastGoodRouting = useRef(null);
 
   // Load routing from Supabase on mount
   useEffect(() => {
     loadRoutingFromDB().then(config => {
       setData(config);
       setRouting(config.routing || {});
+      lastGoodRouting.current = { centres: config.centres || [], routing: config.routing || {} };
       setLoaded(true);
     });
   }, []);
@@ -232,8 +308,24 @@ export default function PrintRouting() {
   useEffect(() => {
     if (!_loaded) return; // don't save on initial load
     const saved = { centres: data.centres, routing };
-    saveRoutingToDB(saved);
-    markBOChange?.();
+    const previous = lastGoodRouting.current;
+    // The revert below puts the last accepted objects straight back into state, which re-runs
+    // this effect — skip that pass (same references) or a rejected write would loop forever.
+    if (previous && previous.centres === saved.centres && previous.routing === saved.routing) return;
+    (async () => {
+      const { error } = await saveRoutingToDB(saved, previous);
+      reportSave('print routing', error);
+      if (error) {
+        if (previous) {
+          setData(d => ({ ...d, centres: previous.centres }));
+          setRouting(previous.routing);
+        }
+        showToast?.('Print routing NOT saved — reverted to the last saved version', 'error');
+        return;
+      }
+      lastGoodRouting.current = saved;
+      markBOChange?.();
+    })();
   }, [data.centres, routing]);
 
   const f = (k,v) => setForm(p => ({ ...p, [k]:v }));
@@ -248,12 +340,14 @@ export default function PrintRouting() {
       printerId: form.printerId || null,
       printer: form.printerId ? printers.find(p => p.id === form.printerId) || null : null,
       kdsDeviceId: form.kdsDeviceId || null,
+      printAllergens: form.printAllergens === true,
+      splitPerItem: form.splitPerItem === true,
     };
     setData(d => ({ ...d, centres:[...d.centres, centre] }));
     setRouting(r => ({ ...r, [centre.id]: emptyRouting() }));
     setSelected(centre.id);
     setShowAdd(false);
-    setForm({ name:'', icon:'🔥', type:'kitchen', printerId:'', kdsDeviceId:'' });
+    setForm({ name:'', icon:'🔥', type:'kitchen', printerId:'', kdsDeviceId:'', printAllergens:false, splitPerItem:false });
   };
 
   const saveCentre = () => {
@@ -262,6 +356,8 @@ export default function PrintRouting() {
       printerId: form.printerId || null,
       printer: form.printerId ? printers.find(p => p.id === form.printerId) || null : null,
       kdsDeviceId: form.kdsDeviceId || null,
+      printAllergens: form.printAllergens === true,
+      splitPerItem: form.splitPerItem === true,
     } : c) }));
     setEditCentre(null);
   };
@@ -277,7 +373,9 @@ export default function PrintRouting() {
     setEditCentre(c);
     setForm({ name:c.name, icon:c.icon, type:c.type,
       printerId: c.printerId || '',
-      kdsDeviceId: c.kdsDeviceId||'' });
+      kdsDeviceId: c.kdsDeviceId||'',
+      printAllergens: c.printAllergens === true,
+      splitPerItem: c.splitPerItem === true });
     setShowAdd(false);
   };
 
@@ -343,6 +441,53 @@ export default function PrintRouting() {
         </>
       )}
 
+      <div style={{ fontSize:13, fontWeight:700, color:'var(--t2)', marginBottom:10 }}>🎟 Docket options</div>
+      <div style={{ marginBottom:14, padding:'10px 12px', background:'var(--bg3)', border:'1px solid var(--bdr)', borderRadius:8, display:'flex', alignItems:'center', justifyContent:'space-between', gap:12 }}>
+        <div style={{ minWidth:0 }}>
+          <div style={{ fontSize:13, fontWeight:600, color:'var(--t1)' }}>Print allergens on docket</div>
+          <div style={{ fontSize:11, color:'var(--t3)', marginTop:2 }}>
+            Off by default. KDS screen always shows allergens regardless of this setting.
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={()=>f('printAllergens', !form.printAllergens)}
+          style={{
+            width:42, height:24, borderRadius:12, cursor:'pointer', border:'none',
+            background: form.printAllergens ? 'var(--acc)' : 'var(--bg5)',
+            position:'relative', transition:'background .15s', flexShrink:0,
+          }}>
+          <div style={{
+            width:18, height:18, borderRadius:'50%', background:'#fff',
+            position:'absolute', top:3, left: form.printAllergens ? 21 : 3,
+            transition:'left .15s',
+          }}/>
+        </button>
+      </div>
+
+      <div style={{ marginBottom:14, padding:'10px 12px', background:'var(--bg3)', border:'1px solid var(--bdr)', borderRadius:8, display:'flex', alignItems:'center', justifyContent:'space-between', gap:12 }}>
+        <div style={{ minWidth:0 }}>
+          <div style={{ fontSize:13, fontWeight:600, color:'var(--t1)' }}>One ticket per item ☕ (sticker mode)</div>
+          <div style={{ fontSize:11, color:'var(--t3)', marginTop:2 }}>
+            Coffee-shop style — prints a separate docket for every item (e.g. one sticker per cup), each numbered “ITEM 1 OF 3”. Off by default.
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={()=>f('splitPerItem', !form.splitPerItem)}
+          style={{
+            width:42, height:24, borderRadius:12, cursor:'pointer', border:'none',
+            background: form.splitPerItem ? 'var(--acc)' : 'var(--bg5)',
+            position:'relative', transition:'background .15s', flexShrink:0,
+          }}>
+          <div style={{
+            width:18, height:18, borderRadius:'50%', background:'#fff',
+            position:'absolute', top:3, left: form.splitPerItem ? 21 : 3,
+            transition:'left .15s',
+          }}/>
+        </button>
+      </div>
+
       <div style={{ display:'flex', gap:8 }}>
         <button onClick={onSave} style={{ ...S.btn, ...S.btnPrimary }}>{editCentre ? 'Save changes' : 'Add center →'}</button>
         <button onClick={onCancel} style={{ ...S.btn, ...S.btnGhost }}>Cancel</button>
@@ -360,6 +505,35 @@ export default function PrintRouting() {
         </div>
 
         <div style={{ flex:1, overflowY:'auto' }}>
+          {/* v5.5.835: venue-level receipt destination. Till + handheld receipts follow
+              the printer set on the device itself (Devices → edit terminal); this covers
+              the receipts that have no device — online, delivery and HubRise orders. */}
+          <div style={S.h2}>Customer receipts</div>
+          <div style={{ padding:'0 14px 14px' }}>
+            <label style={S.label}>Default receipt printer</label>
+            {printers.length === 0 ? (
+              <div style={{ fontSize:12, color:'var(--t3)', lineHeight:1.5 }}>
+                No printers added yet — go to <strong>Devices → Printers</strong> to add one first.
+              </div>
+            ) : (
+              <>
+                <select style={S.input} value={venuePrinterId} onChange={e=>changeVenuePrinter(e.target.value)}>
+                  <option value="">No default — these receipts won't print</option>
+                  {printers.map(p => (
+                    <option key={p.id} value={p.id}>
+                      🖨 {p.name}{p.location ? ` — ${p.location}` : ''}{p.address ? ` (${p.address})` : ''}
+                    </option>
+                  ))}
+                </select>
+                <div style={{ fontSize:11, color: venuePrinterId ? 'var(--t3)' : 'var(--red)', marginTop:6, lineHeight:1.5 }}>
+                  {venuePrinterId
+                    ? 'Used for online, delivery and HubRise receipts. Till and handheld receipts use the printer set on each device.'
+                    : 'Online, delivery and HubRise receipts have nowhere to print. Pick a printer above.'}
+                </div>
+              </>
+            )}
+          </div>
+
           <div style={S.h2}>Production centers</div>
           {data.centres.length === 0 && (
             <div style={{ padding:'12px 14px', fontSize:12, color:'var(--t3)' }}>No centers yet — add one below</div>
@@ -386,7 +560,7 @@ export default function PrintRouting() {
         </div>
 
         <div style={{ padding:12, borderTop:'1px solid var(--bdr)', flexShrink:0 }}>
-          <button onClick={()=>{ setShowAdd(true); setSelected(null); setEditCentre(null); setForm({name:'',icon:'🔥',type:'kitchen',printerId:'',kdsDeviceId:''}); }}
+          <button onClick={()=>{ setShowAdd(true); setSelected(null); setEditCentre(null); setForm({name:'',icon:'🔥',type:'kitchen',printerId:'',kdsDeviceId:'',printAllergens:false}); }}
             style={{ ...S.btn, ...S.btnPrimary, width:'100%' }}>
             + Add production center
           </button>

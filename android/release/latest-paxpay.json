@@ -1,0 +1,7 @@
+{
+  "versionCode": 18,
+  "versionName": "2.0-rc12",
+  "apkUrl": "https://tbetcegmszzotrwdtqhi.supabase.co/storage/v1/object/public/app-releases/paxpay.apk",
+  "mandatory": false,
+  "notes": "rc12 \u2014 the terminal now STANDS DOWN when the till cancels. The POS cancel worked server-side all along (job flips to cancelled in ~9s) but nothing on the terminal was watching, so the card prompt stayed up in front of the customer. paxpay now polls its own job while a payment is live and, on cancel, pulls itself back in front of the merchant app with 'Payment cancelled \u2014 do not take a card'."
+}
