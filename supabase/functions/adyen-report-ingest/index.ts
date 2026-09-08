@@ -42,16 +42,27 @@
 //   npx supabase functions deploy adyen-report-ingest --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { adyenConfig, adyenFallbackEnv, adyenSecretName, type AdyenConfig, type AdyenEnv } from '../_shared/adyen.ts';
 
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
-const REPORT_USER = Deno.env.get('ADYEN_REPORT_USER') ?? '';
-const REPORT_PASS = Deno.env.get('ADYEN_REPORT_PASS') ?? '';
 // Preferred: the Report user's API key (docs: the download URL accepts an API
 // key as well as basic auth). One company-level key covers every merchant
 // account — set 19 Aug.
-const REPORT_API_KEY = Deno.env.get('ADYEN_REPORT_API_KEY') ?? '';
-const CREDS_MISSING_MSG =
-  'report credentials not configured yet — create a Report user in the Customer Area and set ADYEN_REPORT_API_KEY (or ADYEN_REPORT_USER / ADYEN_REPORT_PASS)';
+// PER VENUE ENVIRONMENT (7 Sep 2026): a report belongs to ONE Adyen
+// environment and the venue is only known after the CSV is parsed, so the
+// environment comes from the download host Adyen put in the REPORT_AVAILABLE
+// notification: ca-live.adyen.com is live, ca-test.adyen.com is test. Any
+// other host falls back to ADYEN_ENV. That picks the report credentials
+// (ADYEN_REPORT_* or ADYEN_LIVE_REPORT_*) and stamps adyen_payouts.live.
+function reportEnvFromUrl(url: string | null | undefined): AdyenEnv {
+  const u = String(url ?? '');
+  if (/^https:\/\/ca-live\.adyen\.com\//i.test(u)) return 'live';
+  if (/^https:\/\/ca-test\.adyen\.com\//i.test(u)) return 'test';
+  return adyenFallbackEnv();
+}
+const hasReportCreds = (cfg: AdyenConfig) => !!cfg.reportApiKey || !!(cfg.reportUser && cfg.reportPass);
+const credsMissingMsg = (cfg: AdyenConfig) =>
+  `report credentials not configured yet for the ${cfg.env} environment. Create a Report user in the Customer Area and set ${adyenSecretName(cfg.env, 'reportApiKey')} (or ${adyenSecretName(cfg.env, 'reportUser')} / ${adyenSecretName(cfg.env, 'reportPass')})`;
 
 const json = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), { status: s, headers: { 'Content-Type': 'application/json' } });
@@ -192,7 +203,9 @@ async function ingestReport(name: string, urlOverride: string | null): Promise<R
     await stampReport(name, { report_type: reportType, status: 'failed', error: 'no download URL recorded for this report' });
     return { ok: false, report_name: name, error: 'no download URL recorded for this report' };
   }
-  if (!REPORT_API_KEY && (!REPORT_USER || !REPORT_PASS)) {
+  const cfg = adyenConfig(reportEnvFromUrl(url));
+  const CREDS_MISSING_MSG = credsMissingMsg(cfg);
+  if (!hasReportCreds(cfg)) {
     // Stays PENDING — this is a setup gap, not a report failure. The error text
     // is recorded so `list` shows exactly what is blocking ingestion.
     await stampReport(name, { url, report_type: reportType, status: queueRow?.status === 'ingested' ? 'ingested' : 'pending', error: CREDS_MISSING_MSG });
@@ -208,9 +221,9 @@ async function ingestReport(name: string, urlOverride: string | null): Promise<R
   let text = '';
   try {
     const res = await fetch(url, {
-      headers: REPORT_API_KEY
-        ? { 'X-API-Key': REPORT_API_KEY }
-        : { Authorization: 'Basic ' + btoa(`${REPORT_USER}:${REPORT_PASS}`) },
+      headers: cfg.reportApiKey
+        ? { 'X-API-Key': cfg.reportApiKey }
+        : { Authorization: 'Basic ' + btoa(`${cfg.reportUser}:${cfg.reportPass}`) },
     });
     if (!res.ok) return await fail(`report download failed: HTTP ${res.status} ${(await res.text()).slice(0, 200)}`);
     text = await res.text();
@@ -328,7 +341,7 @@ async function ingestReport(name: string, urlOverride: string | null): Promise<R
       ?? gl.map((l) => l.creationDate).filter(Boolean).sort().pop()
       ?? new Date().toISOString();
 
-    const { data: payoutRow, error: poErr } = await platformAdmin.from('adyen_payouts').upsert({
+    const payoutPatch: Record<string, unknown> = {
       reference,
       merchant_account: merchantAccount,
       batch_number: batch,
@@ -340,9 +353,16 @@ async function ingestReport(name: string, urlOverride: string | null): Promise<R
       amount_minor: netTotal,                    // NET — what lands in the bank
       status: 'settled',
       report_name: name,
+      live: cfg.live,                            // the report's environment (20260907 migration)
       raw: { report_name: name, line_count: gl.length, merchant_payout_rows: payoutRows.length, computed_net_minor: computedNet },
       updated_at: new Date().toISOString(),
-    }, { onConflict: 'reference' }).select('id').single();
+    };
+    let { data: payoutRow, error: poErr } = await platformAdmin.from('adyen_payouts').upsert(payoutPatch, { onConflict: 'reference' }).select('id').single();
+    if (poErr && /live|42703|does not exist/i.test(String(poErr.message)) && 'live' in payoutPatch) {
+      // 20260907 not applied yet: the payout row must still land.
+      delete payoutPatch.live;
+      ({ data: payoutRow, error: poErr } = await platformAdmin.from('adyen_payouts').upsert(payoutPatch, { onConflict: 'reference' }).select('id').single());
+    }
     if (poErr || !payoutRow?.id) {
       errors.push(`payout upsert failed for ${reference}: ${poErr?.message ?? 'no row returned'}`);
       continue;
@@ -462,7 +482,8 @@ Deno.serve(async (req) => {
       .select('report_name, report_type, status, error, rows_parsed, payments_updated, payouts_upserted, payments_missing, ingested_at, created_at')
       .order('created_at', { ascending: false }).limit(100);
     if (error) return json({ error: `report list failed: ${error.message} (is migration 20260820_adyen_fees.sql applied?)` }, 500);
-    return json({ ok: true, creds_configured: !!(REPORT_USER && REPORT_PASS), reports: data ?? [] });
+    // creds_configured keeps its old meaning (the test set); live is reported beside it.
+    return json({ ok: true, creds_configured: hasReportCreds(adyenConfig('test')), creds_configured_live: hasReportCreds(adyenConfig('live')), reports: data ?? [] });
   }
 
   // ── ingest: one report, by queued name or by explicit URL (backfill) ──────
@@ -477,7 +498,9 @@ Deno.serve(async (req) => {
 
   // ── process_pending: sweep the queue (backfill once credentials exist) ────
   if (action === 'process_pending') {
-    if (!REPORT_API_KEY && (!REPORT_USER || !REPORT_PASS)) return json({ ok: false, error: CREDS_MISSING_MSG }, 503);
+    // The queue can hold reports from either environment; each ingest checks
+    // its own set. Refuse the sweep only when NEITHER set has credentials.
+    if (!hasReportCreds(adyenConfig('test')) && !hasReportCreds(adyenConfig('live'))) return json({ ok: false, error: credsMissingMsg(adyenConfig('test')) }, 503);
     const statuses = body?.retry_failed === true ? ['pending', 'failed'] : ['pending'];
     const { data: pending, error } = await platformAdmin.from('adyen_reports')
       .select('report_name').eq('report_type', 'settlement_details').in('status', statuses)

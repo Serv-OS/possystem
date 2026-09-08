@@ -695,17 +695,20 @@ function AdyenBlock({ location, defaults, onError }) {
     (async () => {
       try {
         const { data: session } = await supabase.auth.getSession();
+        // location_id (platform id) makes the fn answer for THIS venue: its
+        // environment ('test' | 'live', per venue since 7 Sep 2026), its keys,
+        // its store. Without it the fn falls back to the global default.
         const res = await fetch(`${FUNCTIONS_URL}/adyen-checkout`, {
           method: 'POST',
           headers: { 'content-type': 'application/json', authorization: `Bearer ${session?.session?.access_token || ''}` },
-          body: JSON.stringify({ action: 'status' }),
+          body: JSON.stringify({ action: 'status', location_id: location.id }),
         });
         const j = await res.json();
         if (live) setSt(j.error ? { error: j.error } : j);
       } catch (e) { if (live) setSt({ error: e.message }); }
     })();
     return () => { live = false; };
-  }, []);
+  }, [location.id]);
 
   // Per-venue TIERED rate card (v5.7.3). merchant_adyen_accounts is
   // service-role-only, so reads AND writes go through payments-admin
@@ -773,10 +776,18 @@ function AdyenBlock({ location, defaults, onError }) {
         {st.error || 'Keys are not configured on this environment.'} Card payments will refuse safely at this venue until it is.
       </div>
     : <div style={{ padding: '14px 16px', borderRadius: 12, background: 'var(--bg2)', border: '1px solid var(--bdr2)', display: 'flex', flexDirection: 'column', gap: 7 }}>
-        <div style={{ fontSize: 13, fontWeight: 700 }}>
-          Adyen — connected <span style={{ fontWeight: 400, color: 'var(--t3)' }}>· {st.merchantAccount} · {String(st.environment).toUpperCase()}</span>
+        <div style={{ fontSize: 13, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+          <span>Adyen — connected <span style={{ fontWeight: 400, color: 'var(--t3)' }}>· {st.merchantAccount}</span></span>
+          {/* This VENUE's environment (merchant_adyen_accounts.environment),
+              not the global default. Switched by the venue in Back Office,
+              Card readers, Environment. */}
+          <span
+            title={st.environment === 'live' ? 'Live, real money at this venue' : 'Test cards only at this venue'}
+            style={{ ...S.pill, ...(st.environment === 'live' ? { background: 'var(--red)', color: '#fff', borderColor: 'var(--red)' } : {}) }}>
+            {st.environment === 'live' ? 'LIVE' : 'TEST'}
+          </span>
         </div>
-        <AdyenRow ok={st.online}>Online payments live — this venue's online shop charges through Adyen{st.environment === 'test' ? ' (test cards only)' : ''}</AdyenRow>
+        <AdyenRow ok={st.online}>Online payments live — this venue's online shop charges through Adyen{st.environment === 'test' ? ' (test cards only)' : ' (real money)'}</AdyenRow>
         <AdyenRow ok={st.inPerson}>In-person on the tills — waiting for the test terminals, then the terminal flow ships</AdyenRow>
         <AdyenRow ok={false}>Per-venue onboarding and payouts — run from the Payout onboarding panel below (switches on per venue as Adyen enables the balance platform)</AdyenRow>
       </div>;

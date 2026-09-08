@@ -1,55 +1,128 @@
 // supabase/functions/adyen-checkout/index.ts
 //
-// Adyen ONLINE payments (programme slice 1a) — Checkout API v72 sessions.
-// The online checkout (OnlineCheckout.jsx → AdyenPaymentForm) asks for a
+// Adyen ONLINE payments (programme slice 1a), Checkout API v72 sessions.
+// The online checkout (OnlineCheckout.jsx, then AdyenPaymentForm) asks for a
 // session; Adyen's Drop-in completes the payment client-side; AUTHORISATION
 // lands on adyen-webhook (stored raw, HMAC-verified) for reconciliation.
 //
 // Pattern-matched to the existing stripe-create-payment-intent contract:
 // anonymous-auth'd customers call it, amounts arrive from the client (same
-// trust model as Stripe/Ryft online today — the webhook records what was
+// trust model as Stripe/Ryft online today; the webhook records what was
 // ACTUALLY paid, and orders reconcile on merchantReference = our order ref).
 //
-// Raw REST from Deno (X-API-Key) per the plan — the Adyen Node SDK has no
-// Deno support. Secrets: ADYEN_API_KEY / ADYEN_MERCHANT_ACCOUNT / ADYEN_ENV /
-// ADYEN_CLIENT_KEY (served to the client — it is a publishable key).
+// Raw REST from Deno (X-API-Key) per the plan; the Adyen Node SDK has no
+// Deno support.
+//
+// PER VENUE ENVIRONMENT (7 Sep 2026): every request resolves the venue from
+// location_id (either id space) and reads merchant_adyen_accounts.environment
+// for it; the matching secret set (ADYEN_* for test, ADYEN_LIVE_* for live)
+// supplies the key, the client key, the merchant account and the Checkout
+// host. A live venue without live keys fails closed. A request that names no
+// venue (the admin portal's global status call) uses the ADYEN_ENV fallback.
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
+import {
+  adyenConfig, adyenAccountForLocation, adyenFallbackEnv, platformLocationIdFor, isUnknownColumnError,
+  checkoutBase, adyenFetch, adyenNotConfiguredMessage, maskMerchantAccount, paymentIdempotencyKey,
+  type AdyenConfig,
+} from '../_shared/adyen.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
 
-const API_KEY = Deno.env.get('ADYEN_API_KEY') ?? '';
-const MERCHANT = Deno.env.get('ADYEN_MERCHANT_ACCOUNT') ?? '';
-const CLIENT_KEY = Deno.env.get('ADYEN_CLIENT_KEY') ?? '';
-const ENV = (Deno.env.get('ADYEN_ENV') ?? 'test').toLowerCase();
-const CHECKOUT_BASE = ENV === 'live' ? 'https://checkout-live.adyen.com' : 'https://checkout-test.adyen.com';
+// Live host for the shopper's return leg. The caller's own return_url always
+// wins; this is only the default when it sends none.
+const DEFAULT_RETURN_URL = 'https://app.serv-os.app/';
+
+const platformAdmin = createClient(
+  Deno.env.get('PLATFORM_SUPABASE_URL') ?? '',
+  Deno.env.get('PLATFORM_SUPABASE_SERVICE_ROLE_KEY') ?? '',
+  { auth: { autoRefreshToken: false, persistSession: false } },
+);
+
+// ── Venue resolution (7 Sep 2026) ────────────────────────────────────────────
+// location_id arrives as the PLATFORM id from AdyenPaymentForm and as the OPS
+// id from the QR tab close (adyenTab.js), so both are accepted.
+//
+// What is cached and what is not: ONLY the id mapping (ops or platform id ->
+// platform id), which never changes. The venue's environment, merchant
+// account and store are read from merchant_adyen_accounts on EVERY request
+// (one indexed maybeSingle), so a Back Office flip between test and live takes
+// effect on the very next card call. A cached environment would have kept
+// charging real cards for up to a minute after an operator switched to test.
+//
+// A supplied id the platform DB does not know is `known: false`, never the
+// ADYEN_ENV fallback: the handler answers 404 for every money action. A DB
+// error THROWS (platformLocationIdFor and adyenAccountForLocation both do)
+// and the outer catch turns it into a 500. Neither is cached.
+interface VenueAccountRow extends Record<string, unknown> {
+  merchant_account?: string | null;
+  store_id?: string | null;
+  receive_payments_ok?: boolean | null;
+}
+interface Venue {
+  known: boolean;                       // false = an id was supplied but no platform location matches it
+  platformLocationId: string | null;
+  cfg: AdyenConfig;
+  merchantAccount: string;              // the venue row's account, else the set's ADYEN[_LIVE]_MERCHANT_ACCOUNT
+  store: string | null;                 // the venue's own store when it can receive payments
+}
+const idCache = new Map<string, string>();   // supplied id -> platform location id (non null only)
+async function resolveVenue(id?: string): Promise<Venue> {
+  const key = String(id ?? '').trim();
+  if (!key) {
+    const cfg = adyenConfig(adyenFallbackEnv());
+    return { known: true, platformLocationId: null, cfg, merchantAccount: cfg.merchantAccount, store: await fallbackStore(cfg) };
+  }
+  let platformLocationId = idCache.get(key) ?? null;
+  if (!platformLocationId) {
+    platformLocationId = await platformLocationIdFor(platformAdmin, key);
+    if (platformLocationId) idCache.set(key, platformLocationId);
+  }
+  if (!platformLocationId) {
+    // Unknown venue: only `status` may answer (with the fallback set's
+    // publishable facts); every money action is refused by the handler.
+    const cfg = adyenConfig(adyenFallbackEnv());
+    return { known: false, platformLocationId: null, cfg, merchantAccount: cfg.merchantAccount, store: null };
+  }
+  const { env, row } = await adyenAccountForLocation<VenueAccountRow>(platformAdmin, platformLocationId,
+    ['merchant_account', 'store_id', 'receive_payments_ok']);
+  const cfg = adyenConfig(env);
+  // The venue's own merchant account and store travel together (a store only
+  // exists under its merchant account), the way adyen-create-session and the
+  // terminal path already send them. The secret set's account is the fallback
+  // for a venue with no row.
+  const merchantAccount = String(row?.merchant_account || cfg.merchantAccount || '');
+  const store = row?.receive_payments_ok && row?.store_id ? String(row.store_id) : null;
+  return { known: true, platformLocationId, cfg, merchantAccount, store };
+}
 
 // ── Store routing (26 Aug 2026) ─────────────────────────────────────────────
 // FranPOS's Adyen account moved onto the Balance Platform, where card routing
 // hangs off the STORE, not the merchant account. Terminals name their store
 // implicitly, so POS kept working while every ECOM request (no store) started
 // refusing with 905_1 "could not find an acquirer account". The venue's store
-// id already lives in merchant_adyen_accounts (terminal provisioning wrote it)
-// so resolve it from there: by location when the caller sends one, else the
-// single receive_payments_ok row for this merchant. Never fails the payment —
-// no store resolved just means the request goes out exactly as before.
-const platformAdmin = createClient(
-  Deno.env.get('PLATFORM_SUPABASE_URL') ?? '',
-  Deno.env.get('PLATFORM_SUPABASE_SERVICE_ROLE_KEY') ?? '',
-  { auth: { autoRefreshToken: false, persistSession: false } },
-);
-let storeCache: { at: number; key: string; store: string | null } | null = null;
-async function resolveStore(locationId?: string): Promise<string | null> {
-  const key = locationId || '*';
-  if (storeCache && storeCache.key === key && Date.now() - storeCache.at < 60_000) return storeCache.store;
+// id already lives in merchant_adyen_accounts (terminal provisioning wrote it).
+// With a venue named, resolveVenue reads it off the venue's OWN row above.
+// This is the no venue fallback only: the single receive_payments_ok row on
+// this environment's merchant account, scoped to the environment (the same
+// merchant account name exists in test and live). Never fails the payment; no
+// store resolved just means the request goes out exactly as before.
+const storeCache = new Map<string, { at: number; store: string | null }>();
+async function fallbackStore(cfg: AdyenConfig): Promise<string | null> {
+  const key = `${cfg.env}:*`;
+  const hit = storeCache.get(key);
+  if (hit && Date.now() - hit.at < 60_000) return hit.store;
   let store: string | null = null;
   try {
-    let q = platformAdmin.from('merchant_adyen_accounts')
-      .select('location_id, store_id, receive_payments_ok')
-      .eq('merchant_account', MERCHANT);
-    if (locationId) q = q.eq('location_id', locationId);
-    const { data, error } = await q;
+    const q = (scoped: boolean) => {
+      let b = platformAdmin.from('merchant_adyen_accounts')
+        .select('location_id, store_id, receive_payments_ok').eq('merchant_account', cfg.merchantAccount);
+      if (scoped) b = b.eq('environment', cfg.env);
+      return b;
+    };
+    let { data, error } = await q(true);
+    if (error && isUnknownColumnError(error)) ({ data, error } = await q(false));
     if (error) console.error('[adyen-checkout] store lookup failed:', error.message);
     const rows = (data ?? []).filter((r) => r.receive_payments_ok && r.store_id);
     if (rows.length === 1) store = rows[0].store_id as string;
@@ -57,29 +130,69 @@ async function resolveStore(locationId?: string): Promise<string | null> {
   } catch (e) {
     console.error('[adyen-checkout] store lookup threw:', (e as Error).message);
   }
-  storeCache = { at: Date.now(), key, store };
+  storeCache.set(key, { at: Date.now(), store });
   return store;
 }
+
+// Idempotency-Key for /payments. The card form mints a UUID per submit
+// (attempt_id), so a retransmit of that submit replays Adyen's answer and a
+// fresh submit (a retry after a refusal) gets a fresh decision. It is NEVER
+// derived from the order ref alone: refs are five random base36 chars minted
+// client side, Adyen scopes keys to the whole company for at least a week,
+// and a colliding ref would have replayed a stranger's Authorised response
+// onto a new order. A caller without attempt_id gets a one off key.
+const ATTEMPT_ID_RE = /^[A-Za-z0-9._-]{8,60}$/;
+async function paymentKeyFor(body: Record<string, unknown>, platformLocationId: string | null, reference: string): Promise<string> {
+  const attemptId = String(body.attempt_id ?? '').trim();
+  if (ATTEMPT_ID_RE.test(attemptId)) return `pay:${attemptId}`;
+  return await paymentIdempotencyKey(`${platformLocationId || 'x'}:${reference}:${crypto.randomUUID()}`, 1);
+}
+
+// Does the venue have a registered card reader? payment_devices is the
+// platform registry adyen-terminal-admin writes on assign.
+async function hasTerminal(platformLocationId: string | null): Promise<boolean> {
+  if (!platformLocationId) return false;
+  try {
+    const { data } = await platformAdmin.from('payment_devices')
+      .select('id').eq('location_id', platformLocationId).eq('processor', 'adyen').neq('status', 'retired').limit(1);
+    return Array.isArray(data) && data.length > 0;
+  } catch { return false; }
+}
+
+// Checkout base + path. cfg.checkoutBase already carries the version segment
+// for BOTH shapes (test .../v72, live .../checkout/v72), so paths join without
+// a version of their own. checkoutBase(cfg) fails closed on live without keys.
+const checkoutUrl = (cfg: AdyenConfig, path: string) => `${checkoutBase(cfg)}${path}`;
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   try {
-    if (!API_KEY || !MERCHANT || !CLIENT_KEY) return json({ error: 'Adyen is not configured on this environment' }, 500);
     const body = await req.json().catch(() => ({}));
     const action = body.action || 'create_session';
+    const venue = await resolveVenue(body.location_id ? String(body.location_id) : undefined);
+    const { platformLocationId, cfg, merchantAccount, store } = venue;
+    // A named venue the platform DB does not know: nothing that moves money
+    // may run against the fallback environment. status still answers (the
+    // admin portal probes venues by id) but says the venue is unknown.
+    if (!venue.known && action !== 'status') return json({ error: 'location not found' }, 404);
+    if (!cfg.configured || !merchantAccount || !cfg.clientKey) {
+      return json({ error: cfg.live ? adyenNotConfiguredMessage(cfg) : 'Adyen is not configured on this environment' }, 500);
+    }
 
-    // Live connection status for the admin portal — replaces a hardcoded
-    // "coming soon" sign that outlived its truth within a week (v5.6.20).
-    // No secrets in the response; merchant account NAME is admin-visible info.
+    // Live connection status for the admin portal and the card form. No
+    // secrets in the response: the client key is publishable, the merchant
+    // account name is masked.
     if (action === 'status') {
       return json({
         ok: true,
         configured: true,
-        environment: ENV,
-        merchantAccount: MERCHANT,
-        clientKey: CLIENT_KEY,            // publishable — the card form needs it to render
-        online: true,                     // slice 1a shipped — advanced flow + Drop-in
-        inPerson: false,                  // awaits test terminals (slice 1b)
+        environment: cfg.env,
+        merchantAccount: maskMerchantAccount(merchantAccount),
+        clientKey: cfg.clientKey,            // publishable, the card form needs it to render
+        online: true,                        // slice 1a shipped, advanced flow + Drop-in
+        inPerson: await hasTerminal(platformLocationId),
+        locationId: platformLocationId,
+        ...(venue.known ? {} : { warning: 'location not found in platform DB; payments for it will be refused' }),
       });
     }
 
@@ -91,23 +204,18 @@ Deno.serve(async (req) => {
       if (!reference) return json({ error: 'reference required (the order ref)' }, 400);
 
       const session: Record<string, unknown> = {
-        merchantAccount: MERCHANT,
+        merchantAccount,
         amount: { value: amount, currency },
         reference,
-        returnUrl: String(body.return_url || 'https://dev.serv-os.app/'),
+        returnUrl: String(body.return_url || DEFAULT_RETURN_URL),
         countryCode: String(body.country || 'GB').toUpperCase(),
         channel: 'Web',
       };
       if (body.shopper_email) session.shopperEmail = String(body.shopper_email);
-      const sessionStore = await resolveStore(body.location_id ? String(body.location_id) : undefined);
-      if (sessionStore) session.store = sessionStore;
+      if (store) session.store = store;
 
-      const res = await fetch(`${CHECKOUT_BASE}/v72/sessions`, {
-        method: 'POST',
-        headers: { 'X-API-Key': API_KEY, 'Content-Type': 'application/json' },
-        body: JSON.stringify(session),
-      });
-      const j = await res.json().catch(() => ({}));
+      const res = await adyenFetch('POST', checkoutUrl(cfg, '/sessions'), session, { cfg });
+      const j = res.data ?? {};
       if (!res.ok) {
         console.error('[adyen-checkout] sessions failed:', res.status, JSON.stringify(j).slice(0, 400));
         return json({ error: j.message || `Adyen refused the session (${res.status})` }, 502);
@@ -116,8 +224,8 @@ Deno.serve(async (req) => {
         ok: true,
         id: j.id,
         sessionData: j.sessionData,
-        clientKey: CLIENT_KEY,
-        environment: ENV,
+        clientKey: cfg.clientKey,
+        environment: cfg.env,
         reference,
         amount: j.amount,
       });
@@ -127,10 +235,10 @@ Deno.serve(async (req) => {
     //    browser and hands us the blob; WE make the payment server-side with
     //    the API key. Adopted 11 Aug after the sessions flow's checkoutshopper
     //    /payments returned an unexplainable 403 (origin+key+role all verified
-    //    good — a probe with invalid sessionData got 422, the real payment
+    //    good; a probe with invalid sessionData got 422, the real payment
     //    403, so the refusal sits deeper in Adyen's hosted stack). Server-side
     //    we see EVERY error in full, and this is the same path the terminal
-    //    work needs anyway. ──────────────────────────────────────────────────
+    //    work needs anyway. ───────────────────────────────────────────────────
     if (action === 'make_payment') {
       const amount = Math.round(Number(body.amount_minor));
       if (!Number.isFinite(amount) || amount < 1) return json({ error: 'amount_minor must be a positive integer (pence)' }, 400);
@@ -140,13 +248,13 @@ Deno.serve(async (req) => {
         return json({ error: 'payment_method (the encrypted card from the form) required' }, 400);
       }
       const payment: Record<string, unknown> = {
-        merchantAccount: MERCHANT,
+        merchantAccount,
         amount: { value: amount, currency: String(body.currency || 'GBP').toUpperCase() },
         reference,
         paymentMethod: body.payment_method,
         channel: 'Web',
         origin: String(body.origin || ''),
-        returnUrl: String(body.return_url || 'https://dev.serv-os.app/'),
+        returnUrl: String(body.return_url || DEFAULT_RETURN_URL),
         shopperInteraction: 'Ecommerce',
       };
       // v5.8.17 QR OPEN TAB: a pre-authorisation that is captured LATER for the
@@ -165,15 +273,12 @@ Deno.serve(async (req) => {
       }
       if (body.browser_info) payment.browserInfo = body.browser_info;
       if (body.shopper_email) payment.shopperEmail = String(body.shopper_email);
-      const store = await resolveStore(body.location_id ? String(body.location_id) : undefined);
       if (store) payment.store = store;
 
-      const res = await fetch(`${CHECKOUT_BASE}/v72/payments`, {
-        method: 'POST',
-        headers: { 'X-API-Key': API_KEY, 'Content-Type': 'application/json' },
-        body: JSON.stringify(payment),
-      });
-      const j = await res.json().catch(() => ({}));
+      // Idempotency-Key from the form's per submit attempt_id (see paymentKeyFor).
+      const idempotencyKey = await paymentKeyFor(body, platformLocationId, reference);
+      const res = await adyenFetch('POST', checkoutUrl(cfg, '/payments'), payment, { cfg, idempotencyKey });
+      const j = res.data ?? {};
       if (!res.ok) {
         console.error('[adyen-checkout] payments failed:', res.status, JSON.stringify(j).slice(0, 500));
         return json({ error: j.message || `Adyen refused the payment (${res.status})`, errorCode: j.errorCode || null }, 502);
@@ -190,20 +295,16 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── payment_details: completes a 3DS/redirect flow started above ─────────
+    // ── payment_details: completes a 3DS/redirect flow started above ──────────
     if (action === 'payment_details') {
       if (!body.details) return json({ error: 'details required' }, 400);
-      const res = await fetch(`${CHECKOUT_BASE}/v72/payments/details`, {
-        method: 'POST',
-        headers: { 'X-API-Key': API_KEY, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ details: body.details }),
-      });
-      const j = await res.json().catch(() => ({}));
+      const res = await adyenFetch('POST', checkoutUrl(cfg, '/payments/details'), { details: body.details }, { cfg });
+      const j = res.data ?? {};
       if (!res.ok) return json({ error: j.message || `Adyen refused (${res.status})` }, 502);
       return json({ ok: true, resultCode: j.resultCode || null, pspReference: j.pspReference || null, refusalReason: j.refusalReason || null, action: j.action || null });
     }
 
-    // ── v5.8.17 QR open tab close: customer-callable, like ryft-tab ──────────
+    // ── v5.8.17 QR open tab close: customer-callable, like ryft-tab ───────────
     // The psp reference is the secret (only the tab holder's phone and the
     // venue know it), exactly as the Ryft session id is on ryft-tab. Capture can
     // only move money TO the venue, never out.
@@ -214,13 +315,11 @@ Deno.serve(async (req) => {
       const psp = String(body.psp_reference || '').trim();
       if (!psp) return json({ error: 'psp_reference required' }, 400);
       const currency = String(body.currency || 'GBP').toUpperCase();
-      const hdr = (key: string) => ({ 'X-API-Key': API_KEY, 'Content-Type': 'application/json', 'Idempotency-Key': key.slice(0, 64) });
       if (action === 'tab_cancel') {
-        const res = await fetch(`${CHECKOUT_BASE}/v72/payments/${encodeURIComponent(psp)}/cancels`, {
-          method: 'POST', headers: hdr(`tabcan:${psp}`),
-          body: JSON.stringify({ merchantAccount: MERCHANT, reference: String(body.reference || `tab-cancel:${psp}`).slice(0, 80) }),
-        });
-        const j = await res.json().catch(() => ({}));
+        const res = await adyenFetch('POST', checkoutUrl(cfg, `/payments/${encodeURIComponent(psp)}/cancels`),
+          { merchantAccount, reference: String(body.reference || `tab-cancel:${psp}`).slice(0, 80) },
+          { cfg, idempotencyKey: `tabcan:${psp}`.slice(0, 64) });
+        const j = res.data ?? {};
         if (!res.ok) return json({ ok: false, error: j.message || `Adyen refused the cancel (${res.status})` }, 200);
         return json({ ok: true, status: j.status || 'received' });
       }
@@ -228,12 +327,10 @@ Deno.serve(async (req) => {
       if (!Number.isFinite(wanted) || wanted < 1) return json({ error: 'amount_minor must be a positive integer' }, 400);
       const hold = Number.isFinite(Number(body.hold_minor)) && Number(body.hold_minor) > 0 ? Math.round(Number(body.hold_minor)) : null;
       const tryCapture = async (value: number, salt: string) => {
-        const res = await fetch(`${CHECKOUT_BASE}/v72/payments/${encodeURIComponent(psp)}/captures`, {
-          method: 'POST', headers: hdr(`tabcap:${psp}:${value}:${salt}`),
-          body: JSON.stringify({ merchantAccount: MERCHANT, amount: { value, currency }, reference: String(body.reference || `tab-capture:${psp}`).slice(0, 80) }),
-        });
-        const j = await res.json().catch(() => ({}));
-        return { ok: res.ok, j, status: res.status };
+        const res = await adyenFetch('POST', checkoutUrl(cfg, `/payments/${encodeURIComponent(psp)}/captures`),
+          { merchantAccount, amount: { value, currency }, reference: String(body.reference || `tab-capture:${psp}`).slice(0, 80) },
+          { cfg, idempotencyKey: `tabcap:${psp}:${value}:${salt}`.slice(0, 64) });
+        return { ok: res.ok, j: res.data ?? {}, status: res.status };
       };
       // Bill above the hold: try the real bill first (some schemes allow an
       // overcapture), then fall back to the hold and report the shortfall so

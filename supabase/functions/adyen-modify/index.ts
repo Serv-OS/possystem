@@ -22,7 +22,7 @@
 //   npx supabase functions deploy adyen-modify --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { adyenConfigured, checkoutBase, adyenFetch } from '../_shared/adyen.ts';
+import { adyenConfig, adyenEnvForLocation, checkoutBase, adyenFetch, adyenNotConfiguredMessage } from '../_shared/adyen.ts';
 import { applyTipToClosedCheck, isOvercaptureRefusal } from '../_shared/tip_capture.ts';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -42,7 +42,6 @@ const platformAdmin = createClient(Deno.env.get('PLATFORM_SUPABASE_URL') ?? '', 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
-  if (!adyenConfigured()) return json({ error: 'Adyen not configured — set ADYEN_API_KEY' }, 503);
 
   const token = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim();
   if (!token) return json({ error: 'unauthorized' }, 401);
@@ -115,6 +114,16 @@ Deno.serve(async (req) => {
     if (qErr) return json({ error: qErr.message }, 500);
     return json({ ok: true, captures: rows ?? [] });
   }
+
+  // PER VENUE ENVIRONMENT (7 Sep 2026): the venue's row picks the secret set
+  // for every modification below. A live venue without live keys fails closed.
+  // Resolved AFTER the auth fence and the read only action above, so an
+  // unauthorised caller learns nothing about a venue's environment or key
+  // state from the 503 / 500 text.
+  let cfg;
+  try { cfg = adyenConfig(await adyenEnvForLocation(platformAdmin, ploc.id)); }
+  catch (e) { return json({ error: (e as Error).message }, 500); }
+  if (!cfg.configured) return json({ error: adyenNotConfiguredMessage(cfg) }, 503);
 
   // ── v5.7.5 TIP ON PRINTED RECEIPT: action 'tip_capture' ────────────────────
   // Applies the tip a guest wrote on the merchant slip to an uncaptured
@@ -205,7 +214,7 @@ Deno.serve(async (req) => {
       merchant = maa0?.merchant_account ?? null;
     }
     if (!merchant) return json({ error: 'venue has no Adyen account' }, 409);
-    const base = checkoutBase();
+    const base = checkoutBase(cfg);
 
     // tip > 20 percent of auth => the schemes call it a fresh risk decision -
     // amountUpdates first, capture only after the webhook confirms.
@@ -241,7 +250,7 @@ Deno.serve(async (req) => {
       // Direct capture at auth + tip (tip 0 = plain capture at auth).
       const res = await adyenFetch('POST', `${base}/payments/${encodeURIComponent(cap.psp_reference)}/captures`,
         { merchantAccount: merchant, amount: { value: finalMinor, currency: capCurrency }, reference: `tipcap:${cap.id}`.slice(0, 80) },
-        { idempotencyKey: `tipcap:${cap.id}:${finalMinor}:${attempt}` });
+        { cfg, idempotencyKey: `tipcap:${cap.id}:${finalMinor}:${attempt}` });
       if (res.ok) {
         if (tipMinor > 0) {
           await applyTipToClosedCheck(opsAdmin, {
@@ -269,7 +278,7 @@ Deno.serve(async (req) => {
           // amountUpdates keys must be unique per attempt (Adyen replays the
           // first response for a reused key - the hold_increase lesson). The
           // attempts salt gives exactly that, deterministically.
-          { idempotencyKey: `tipadj:${cap.id}:${finalMinor}:${attempt}` });
+          { cfg, idempotencyKey: `tipadj:${cap.id}:${finalMinor}:${attempt}` });
         if (adj.ok) {
           await opsAdmin.from('terminal_captures')
             .update({ status: 'adjusting', error: note, updated_at: new Date().toISOString() })
@@ -291,7 +300,7 @@ Deno.serve(async (req) => {
     // AUTHORISATION_ADJUSTMENT webhook kicks the capture on success.
     const adj = await adyenFetch('POST', `${base}/payments/${encodeURIComponent(cap.psp_reference)}/amountUpdates`,
       { merchantAccount: merchant, amount: { value: finalMinor, currency: capCurrency }, industryUsage: 'delayedCharge', reference: `tipadj:${cap.id}`.slice(0, 80) },
-      { idempotencyKey: `tipadj:${cap.id}:${finalMinor}:${attempt}` });
+      { cfg, idempotencyKey: `tipadj:${cap.id}:${finalMinor}:${attempt}` });
     if (!adj.ok) {
       await revert(`adjust refused (adyen ${adj.status}): ${JSON.stringify(adj.data).slice(0, 300)}`);
       return json({ ok: false, error: `adyen ${adj.status}`, detail: adj.data }, adj.status >= 500 ? 502 : 200);
@@ -412,7 +421,7 @@ Deno.serve(async (req) => {
     return json({ error: 'reference must be 60 characters or fewer (Adyen Idempotency-Key limit)' }, 400);
   }
   const idempotencyKey = body.reference ? `mod:${reference}` : `mod:${action}:${psp}:${crypto.randomUUID()}`;
-  const base = checkoutBase();
+  const base = checkoutBase(cfg);
 
   let path: string; let payload: any;
   if (action === 'capture') {
@@ -432,7 +441,7 @@ Deno.serve(async (req) => {
     payload = { merchantAccount: maa.merchant_account, amount: { value: amountMinor, currency }, industryUsage: 'delayedCharge', reference };
   }
 
-  const res = await adyenFetch('POST', `${base}${path}`, payload, { idempotencyKey });
+  const res = await adyenFetch('POST', `${base}${path}`, payload, { cfg, idempotencyKey });
   if (!res.ok) {
     // Graceful-fallback contract (mirrors stripe-increment-authorization): the
     // caller decides what a refusal means — never a thrown 5xx for a scheme

@@ -12,11 +12,18 @@
 //      adyen_webhook_events; Phase 3 wires the POS to answer with the bill.
 //
 // Auth: Basic auth credentials configured on the CA endpoint —
-// ADYEN_EVENTS_USER / ADYEN_EVENTS_PASS. Fail closed until set.
-// Deployed with verify_jwt=false (Adyen calls this).
+// ADYEN_EVENTS_USER / ADYEN_EVENTS_PASS for the test set, ADYEN_LIVE_EVENTS_USER
+// / ADYEN_LIVE_EVENTS_PASS for live (falling back to the test pair when unset).
+// Either set authenticates: test and live terminals post to this ONE URL.
+// Fail closed until set. Deployed with verify_jwt=false (Adyen calls this).
+//
+// PER VENUE ENVIRONMENT (7 Sep 2026): once the terminal's venue is known its
+// merchant_adyen_accounts.environment picks the config for every reader
+// message sent from here (menus, amount entry, display text). The charge
+// itself is kicked through adyen-terminal-charge, which resolves the venue again.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { parsePaymentResponse, buildMenuInputRequest, parseMenuInputResponse, buildAmountInputRequest, parseAmountInputResponse, buildDisplayRequest, newServiceId, adyenFetch, terminalEndpoint } from '../_shared/adyen.ts';
+import { parsePaymentResponse, buildMenuInputRequest, parseMenuInputResponse, buildAmountInputRequest, parseAmountInputResponse, buildDisplayRequest, newServiceId, adyenFetch, terminalEndpoint, adyenConfig, adyenEnvForLocation, adyenNotConfiguredMessage } from '../_shared/adyen.ts';
 
 const opsAdmin = createClient(
   Deno.env.get('SUPABASE_URL') ?? '',
@@ -29,24 +36,39 @@ const platformAdmin = createClient(
   { auth: { autoRefreshToken: false, persistSession: false } },
 );
 
-const USER = Deno.env.get('ADYEN_EVENTS_USER') ?? '';
-const PASS = Deno.env.get('ADYEN_EVENTS_PASS') ?? '';
+// The credential pairs that may post here: the test set and the live set
+// (the live pair falls back to the test pair inside adyenConfig). Read at
+// call time, so a secret change needs no redeploy.
+function eventCredentialSets(): { user: string; pass: string }[] {
+  const seen = new Set<string>();
+  const out: { user: string; pass: string }[] = [];
+  for (const env of ['test', 'live'] as const) {
+    const c = adyenConfig(env);
+    if (!c.eventsUser || !c.eventsPass) continue;
+    const key = `${c.eventsUser}:${c.eventsPass}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ user: c.eventsUser, pass: c.eventsPass });
+  }
+  return out;
+}
 
 function authorized(req: Request): boolean {
-  if (!USER || !PASS) return false; // fail closed pre-keys
+  const sets = eventCredentialSets();
+  if (!sets.length) return false; // fail closed pre-keys
   // Accept EITHER Basic auth OR the shared key as a query param — Adyen
   // terminals post event notifications THEMSELVES and some firmware drops
   // userinfo (user:pass@) from URLs silently (14 Aug: zero arrivals at the
   // gateway with credentials-in-URL config verified stored at Adyen).
   try {
     const k = new URL(req.url).searchParams.get('k');
-    if (k && k === PASS) return true;
+    if (k && sets.some((c) => k === c.pass)) return true;
   } catch { /* fall through to Basic */ }
   const h = req.headers.get('Authorization') ?? '';
   if (!h.startsWith('Basic ')) return false;
   try {
     const [u, p] = atob(h.slice(6)).split(':');
-    return u === USER && p === PASS;
+    return sets.some((c) => u === c.user && p === c.pass);
   } catch { return false; }
 }
 
@@ -228,13 +250,21 @@ Deno.serve(async (req) => {
           // Merchant + sync-Input plumbing, needed on EVERY path now (the
           // pay-all/split menu and amount entry ride the same pipe as the
           // table list).
-          const { data: maa } = await platformAdmin.from('merchant_adyen_accounts')
-            .select('merchant_account, region').eq('location_id', maaRow?.id ?? term.location_id).maybeSingle();
+          // Account row + the venue's environment in ONE wait (7 Sep 2026):
+          // the config below is what every reader message goes out with.
+          const platformLocId = maaRow?.id ?? term.location_id;
+          const [{ data: maa }, env] = await Promise.all([
+            platformAdmin.from('merchant_adyen_accounts')
+              .select('merchant_account, region').eq('location_id', platformLocId).maybeSingle(),
+            adyenEnvForLocation(platformAdmin, platformLocId),
+          ]);
+          const cfg = adyenConfig(env);
           mark('merchant');
           if (!maa?.merchant_account) { console.log('[pay-at-table] no merchant account'); return; }
+          if (!cfg.configured) { console.error(`[pay-at-table] ${adyenNotConfiguredMessage(cfg)} (${cfg.env})`); return; }
           const saleId = `servos-${String(term.location_id).slice(0, 8)}`;
           const askInput = (msg: unknown) =>
-            adyenFetch('POST', terminalEndpoint(maa.merchant_account, poiid, 'sync', maa.region === 'US' ? 'us' : 'eu'), msg, { timeoutMs: 90_000 });
+            adyenFetch('POST', terminalEndpoint(maa.merchant_account, poiid, 'sync', maa.region === 'US' ? 'us' : 'eu', cfg), msg, { cfg, timeoutMs: 90_000 });
 
           // v5.6.70 — SAY IT ON THE READER. Every refusal below used to `return`
           // silently, so the screen simply fell back to the home menu and staff
@@ -245,8 +275,8 @@ Deno.serve(async (req) => {
           // up. Shape is unproven on this fleet, hence never awaited: worst case is
           // the same dead air we already had.
           const status = (text: string) => {
-            adyenFetch('POST', terminalEndpoint(maa.merchant_account, poiid, 'sync', maa.region === 'US' ? 'us' : 'eu'),
-              buildDisplayRequest({ poiid, saleId, serviceId: newServiceId(), text }), { timeoutMs: 8_000 })
+            adyenFetch('POST', terminalEndpoint(maa.merchant_account, poiid, 'sync', maa.region === 'US' ? 'us' : 'eu', cfg),
+              buildDisplayRequest({ poiid, saleId, serviceId: newServiceId(), text }), { cfg, timeoutMs: 8_000 })
               .then((r) => { marks[`display_${text.slice(0, 12)}`] = r.status; },
                     (e) => { marks[`display_${text.slice(0, 12)}`] = -1; console.log(`[pay-at-table] display rejected: ${(e as Error)?.message}`); });
           };

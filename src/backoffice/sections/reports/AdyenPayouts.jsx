@@ -46,7 +46,7 @@ const lineTypeLabel = (t) => ({
 // reports (and therefore payouts, fees and statements) start flowing.
 export function SettlementSetupSteps() {
   const steps = [
-    'Log in to your payments provider dashboard (ca-test.adyen.com) with an admin account.',
+    'Log in to your payments provider dashboard, the Adyen Customer Area (test: ca-test.adyen.com, live: ca-live.adyen.com), with an admin account.',
     'Create a Report user: go to Developers, then API credentials, choose Create credential and pick Report user. Note the username and password it generates.',
     'Switch on the Settlement details report: go to Reports, find Settlement details and turn on automatic generation.',
     'In that report’s column settings, add two extra columns: Store and Gratuity amount.',

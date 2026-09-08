@@ -1,77 +1,461 @@
 // supabase/functions/_shared/adyen.ts
 //
-// Minimal Adyen REST client + protocol helpers for edge functions (raw REST —
+// Minimal Adyen REST client + protocol helpers for edge functions (raw REST,
 // the official SDK targets Node 18/node-https and does not run on Deno).
 // Built per ADYEN_INTEGRATION_PLAN.md Phase 0; API facts from docs/adyen/research/*.
 //
 // Auth: X-API-Key header. Amounts: Checkout + webhooks use MINOR units
 // ({value, currency}); Terminal API (nexo 3.0) uses DECIMAL MAJOR units.
 //
-// Env (Supabase secrets — set when the test keys arrive):
-//   ADYEN_API_KEY            ws user API key (Checkout/Terminal/Management roles as needed)
-//   ADYEN_HMAC_KEY           standard-webhook HMAC key (hex, from CA webhook config)
-//   ADYEN_BP_HMAC_KEY        balance-platform webhook HMAC key (raw-body flavour)
-//   ADYEN_ENV                'test' (default) | 'live'
-//   ADYEN_LIVE_PREFIX        e.g. 1797a841fbb37ca7-ServOS — REQUIRED live for Checkout/LEM
-//   ADYEN_MERCHANT_ACCOUNT   default merchant account (per-venue override via merchant_adyen_accounts)
-//   ADYEN_CHECKOUT_BASE / ADYEN_LEM_BASE / ADYEN_BP_BASE / ADYEN_MGMT_BASE / ADYEN_DEVICE_BASE
-//                            optional explicit overrides (else derived below)
+// ── PER VENUE ENVIRONMENT (owner decision 7 Sep 2026) ────────────────────────
+// Dev and live share ONE Supabase project pair, so the Adyen environment is a
+// PER VENUE setting: merchant_adyen_accounts.environment ('test' | 'live',
+// default 'test', migration 20260907_PLATFORM_adyen_environment.sql). Every
+// request resolves the venue's env and picks the matching secret set. Secrets
+// are read at CALL time, never at module load, so a secret change needs no
+// redeploy.
+//
+//   test set  ADYEN_<SUFFIX>       the names in use today, unchanged
+//   live set  ADYEN_LIVE_<SUFFIX>  same suffixes
+//   plus      ADYEN_LIVE_PREFIX    company URL prefix, REQUIRED for live
+//   ADYEN_ENV is ONLY the fallback when a request cannot be tied to a venue
+//   row (default 'test'). It never picks the secret set for a known venue.
+//
+// Suffixes: API_KEY, CLIENT_KEY, HMAC_KEY, MERCHANT_ACCOUNT, DEVICE_BASE,
+// MANAGEMENT_KEY, LEM_KEY, BP_KEY, BP_HMAC_KEY, EVENTS_USER, EVENTS_PASS,
+// WEBHOOK_USER, WEBHOOK_PASS, REPORT_API_KEY, REPORT_USER, REPORT_PASS,
+// CHECKOUT_BASE, MGMT_BASE, LEM_BASE, BP_BASE (the last five plus DEVICE_BASE
+// are optional explicit host overrides, else derived from the defaults table).
+//
+// Fallbacks: managementKey / lemKey / bpKey fall back to the SAME set's apiKey;
+// events + webhook basic auth fall back live -> test (Adyen posts both
+// environments to the one URL). Nothing else crosses sets. A live venue with
+// no ADYEN_LIVE_API_KEY or no ADYEN_LIVE_PREFIX FAILS CLOSED with
+// 'Adyen live keys not configured for this venue'. It never gets test keys.
+//
+// MIRROR: src/lib/payments/adyenEnv.js carries the same suffix table, the same
+// defaults and the same resolveAdyenConfig body, with the contract tests in
+// adyenEnv.test.js. Deno cannot import from src/, so change both or neither.
+//
+// HOW TO USE (new code)
+//   const cfg = await adyenConfigForLocation(platformAdmin, locationId);
+//   // or, when the merchant_adyen_accounts row is already in hand:
+//   const cfg = adyenConfig(adyenEnvFromRow(maa));
+//   await adyenFetch('POST', `${checkoutBase(cfg)}/payments`, body, { cfg, idempotencyKey });
+//   terminalEndpoint(maa.merchant_account, poiid, 'sync', region, cfg)
+//   adyenFetch('GET', `${managementBase(cfg)}/...`, undefined, { cfg, apiKey: cfg.managementKey })
+//   platformLocationIdFor(platformAdmin, opsOrPlatformId)   either id space -> platform id
+//                                    (null when unknown, THROWS on a DB error)
+//   adyenAccountForLocation(platformAdmin, platformId, cols)   { env, row } in one read
+//   adyenNotConfiguredMessage(cfg)   the 503 text (exact fail closed wording on live)
+//   paymentIdempotencyKey(reference, attempt)   'pay:<ref>:a<N>', hashed when over 64 chars
+//   maskMerchantAccount(name)   for status responses reachable by customers
+//   webhookHmacPolicy(cfg, hasSignature)   'reject' | 'unverifiable' | 'verify'
+//
+// Every Adyen function resolves its venue first (adyen-checkout,
+// adyen-create-session, adyen-modify, adyen-terminal-admin, adyen-terminal-charge,
+// adyen-terminal-events, adyen-capture-sweep, adyen-onboard, adyen-financial,
+// booking-widget). adyen-webhook and adyen-bp-webhook pick the set by the
+// notification (top level live flag, or whichever BP HMAC key verifies);
+// adyen-report-ingest by the report download host (ca-live vs ca-test).
+//
+// Every host and fetch helper takes the venue's config. There is no zero
+// argument form any more: a call with no config is a type error, never a
+// silent read of the test secrets. resolveAdyenConfig keeps the secretEnv
+// option for the mirror tests only.
 
-const ENV = (Deno.env.get('ADYEN_ENV') ?? 'test').toLowerCase();
-const LIVE = ENV === 'live';
-const PREFIX = Deno.env.get('ADYEN_LIVE_PREFIX') ?? '';
-const API_KEY = Deno.env.get('ADYEN_API_KEY') ?? '';
+export type AdyenEnv = 'test' | 'live';
 
-export const ADYEN_MERCHANT_ACCOUNT = Deno.env.get('ADYEN_MERCHANT_ACCOUNT') ?? '';
-export const adyenConfigured = () => !!API_KEY;
+export const ADYEN_LIVE_PREFIX_NAME = 'ADYEN_LIVE_PREFIX';
+export const ADYEN_LIVE_FAIL_CLOSED = 'Adyen live keys not configured for this venue';
 
-// ── Endpoint bases (docs/adyen/research/adyen-setup-golive.md §4) ────────────
-// Checkout v72: live REQUIRES the per-company URL prefix.
-export function checkoutBase(): string {
-  const o = Deno.env.get('ADYEN_CHECKOUT_BASE'); if (o) return o.replace(/\/+$/, '');
-  if (!LIVE) return 'https://checkout-test.adyen.com/v72';
-  if (!PREFIX) throw new Error('ADYEN_LIVE_PREFIX required for live Checkout API');
-  return `https://${PREFIX}-checkout-live.adyenpayments.com/checkout/v72`;
+// Config field -> secret name suffix. KEEP IN SYNC with src/lib/payments/adyenEnv.js.
+export const ADYEN_SECRET_SUFFIXES = {
+  apiKey: 'API_KEY',
+  clientKey: 'CLIENT_KEY',
+  hmacKey: 'HMAC_KEY',
+  merchantAccount: 'MERCHANT_ACCOUNT',
+  deviceBase: 'DEVICE_BASE',
+  managementKey: 'MANAGEMENT_KEY',
+  lemKey: 'LEM_KEY',
+  bpKey: 'BP_KEY',
+  bpHmacKey: 'BP_HMAC_KEY',
+  eventsUser: 'EVENTS_USER',
+  eventsPass: 'EVENTS_PASS',
+  webhookUser: 'WEBHOOK_USER',
+  webhookPass: 'WEBHOOK_PASS',
+  reportApiKey: 'REPORT_API_KEY',
+  reportUser: 'REPORT_USER',
+  reportPass: 'REPORT_PASS',
+  checkoutBase: 'CHECKOUT_BASE',
+  managementBase: 'MGMT_BASE',
+  lemBase: 'LEM_BASE',
+  balancePlatformBase: 'BP_BASE',
+} as const;
+export type AdyenSecretField = keyof typeof ADYEN_SECRET_SUFFIXES;
+
+// Default hosts per environment (docs/adyen/research/adyen-setup-golive.md §4).
+// Live Checkout has no default: it is built from the prefix (liveCheckoutBase).
+// Live deviceBase is the CLASSIC terminal-api host for the EU region; the
+// other regions are derived per venue in terminalEndpoint (liveTerminalApiBase)
+// unless ADYEN_LIVE_DEVICE_BASE overrides the host outright.
+// KEEP IN SYNC with src/lib/payments/adyenEnv.js.
+export const ADYEN_DEFAULT_BASES: Record<AdyenEnv, { checkoutBase: string; managementBase: string; lemBase: string; balancePlatformBase: string; deviceBase: string }> = {
+  test: {
+    checkoutBase: 'https://checkout-test.adyen.com/v72',
+    managementBase: 'https://management-test.adyen.com/v3',
+    lemBase: 'https://kyc-test.adyen.com/lem/v4',
+    balancePlatformBase: 'https://balanceplatform-api-test.adyen.com/bcl/v2',
+    deviceBase: 'https://device-api-test.adyen.com',
+  },
+  live: {
+    checkoutBase: '',
+    managementBase: 'https://management-live.adyen.com/v3',
+    lemBase: 'https://kyc-live.adyen.com/lem/v4',
+    balancePlatformBase: 'https://balanceplatform-api-live.adyen.com/bcl/v2',
+    deviceBase: 'https://terminal-api-live.adyen.com',
+  },
+};
+
+export interface AdyenConfig {
+  env: AdyenEnv;
+  live: boolean;
+  configured: boolean;     // test: apiKey set. live: apiKey AND prefix set.
+  missing: string[];       // secret NAMES that block `configured`, never values
+  apiKey: string;
+  clientKey: string;
+  hmacKey: string;
+  merchantAccount: string;
+  prefix: string;          // ADYEN_LIVE_PREFIX, '' on test
+  checkoutBase: string;    // '' when live and the prefix is missing (no half built URL)
+  managementBase: string;
+  lemBase: string;
+  balancePlatformBase: string;
+  deviceBase: string;
+  deviceBaseOverride: boolean;   // true when <SET>_DEVICE_BASE set the host explicitly (then region is ignored)
+  managementKey: string;
+  lemKey: string;
+  bpKey: string;
+  bpHmacKey: string;
+  eventsUser: string;
+  eventsPass: string;
+  webhookUser: string;
+  webhookPass: string;
+  reportApiKey: string;
+  reportUser: string;
+  reportPass: string;
+}
+
+// Anything that is not exactly 'live' (case and whitespace tolerant) is 'test'.
+export function normalizeAdyenEnv(v: unknown): AdyenEnv {
+  return String(v ?? '').trim().toLowerCase() === 'live' ? 'live' : 'test';
+}
+
+// The environment stamped on a merchant_adyen_accounts row. Missing row,
+// missing column (migration pending) or any other value all mean 'test'.
+// Callers that already hold the row (store id, POIID, merchantAccountCode
+// lookups) select `environment` alongside the rest and use this.
+export function adyenEnvFromRow(row: { environment?: unknown } | null | undefined): AdyenEnv {
+  return normalizeAdyenEnv(row?.environment);
+}
+
+export function adyenSecretName(env: AdyenEnv, field: AdyenSecretField): string {
+  const suffix = ADYEN_SECRET_SUFFIXES[field];
+  if (!suffix) throw new Error(`adyenSecretName: unknown field ${String(field)}`);
+  return normalizeAdyenEnv(env) === 'live' ? `ADYEN_LIVE_${suffix}` : `ADYEN_${suffix}`;
+}
+
+// Checkout v72 live host carries the per company prefix. The bare
+// https://checkout-live.adyen.com host is WRONG for live and must not be used.
+export function liveCheckoutBase(prefix: string): string {
+  return `https://${prefix}-checkout-live.adyenpayments.com/checkout/v72`;
+}
+
+const trimSlash = (s: string): string => String(s).replace(/\/+$/, '');
+
+// resolveAdyenConfig(env, get, opts): the PURE resolver, identical to the JS
+// mirror. `get` is the secret reader (Deno.env.get in production, a map in
+// tests). opts.secretEnv picks which SECRET SET to read (default = env); only
+// the mirror tests use it. Never throws.
+export function resolveAdyenConfig(
+  env: AdyenEnv | string | null | undefined,
+  get: (name: string) => string | undefined | null,
+  opts: { secretEnv?: AdyenEnv } = {},
+): AdyenConfig {
+  const e = normalizeAdyenEnv(env);
+  const live = e === 'live';
+  const secretEnv = normalizeAdyenEnv(opts.secretEnv ?? e);
+  const read = (field: AdyenSecretField, set: AdyenEnv = secretEnv): string => {
+    const v = get(adyenSecretName(set, field));
+    return v == null ? '' : String(v).trim();
+  };
+  const prefix = live ? String(get(ADYEN_LIVE_PREFIX_NAME) ?? '').trim() : '';
+  const apiKey = read('apiKey');
+  const orApiKey = (field: AdyenSecretField): string => read(field) || apiKey;
+  const orTest = (field: AdyenSecretField): string => read(field) || read(field, 'test');
+  const override = (field: AdyenSecretField): string => { const v = read(field); return v ? trimSlash(v) : ''; };
+  const defaults = ADYEN_DEFAULT_BASES[e];
+
+  const missing: string[] = [];
+  if (!apiKey) missing.push(adyenSecretName(secretEnv, 'apiKey'));
+  if (live && !prefix) missing.push(ADYEN_LIVE_PREFIX_NAME);
+
+  return {
+    env: e,
+    live,
+    configured: missing.length === 0,
+    missing,
+    apiKey,
+    clientKey: read('clientKey'),
+    hmacKey: read('hmacKey'),
+    merchantAccount: read('merchantAccount'),
+    prefix,
+    checkoutBase: override('checkoutBase') || (live ? (prefix ? liveCheckoutBase(prefix) : '') : defaults.checkoutBase),
+    managementBase: override('managementBase') || defaults.managementBase,
+    lemBase: override('lemBase') || defaults.lemBase,
+    balancePlatformBase: override('balancePlatformBase') || defaults.balancePlatformBase,
+    deviceBase: override('deviceBase') || defaults.deviceBase,
+    deviceBaseOverride: !!override('deviceBase'),
+    managementKey: orApiKey('managementKey'),
+    lemKey: orApiKey('lemKey'),
+    bpKey: orApiKey('bpKey'),
+    bpHmacKey: read('bpHmacKey'),
+    eventsUser: orTest('eventsUser'),
+    eventsPass: orTest('eventsPass'),
+    webhookUser: orTest('webhookUser'),
+    webhookPass: orTest('webhookPass'),
+    reportApiKey: read('reportApiKey'),
+    reportUser: read('reportUser'),
+    reportPass: read('reportPass'),
+  };
+}
+
+const envGet = (name: string): string | undefined => Deno.env.get(name);
+
+// The per venue config for one environment, read from Deno.env NOW.
+export function adyenConfig(env: AdyenEnv): AdyenConfig {
+  return resolveAdyenConfig(env, envGet);
+}
+
+// Fail closed for LIVE only. A test config with no key keeps today's soft
+// behaviour (callers check cfg.configured and Adyen 401s).
+export function assertAdyenConfigured(cfg: AdyenConfig): AdyenConfig {
+  if (cfg && cfg.live && !cfg.configured) {
+    const err: any = new Error(ADYEN_LIVE_FAIL_CLOSED);
+    err.code = 'ADYEN_LIVE_NOT_CONFIGURED';
+    err.missing = Array.isArray(cfg.missing) ? cfg.missing.slice() : [];
+    throw err;
+  }
+  return cfg;
+}
+
+// ADYEN_ENV: the fallback ONLY when a request cannot be tied to a venue row.
+export function adyenFallbackEnv(): AdyenEnv {
+  return normalizeAdyenEnv(Deno.env.get('ADYEN_ENV'));
+}
+
+// ── Environment resolution by venue ──────────────────────────────────────────
+// environment lives on the venue's merchant_adyen_accounts row (PLATFORM DB).
+// While the migration is pending the column does not exist: that select error
+// is swallowed ONCE with a warning and the ADYEN_ENV fallback is returned, so
+// nothing changes for existing venues. Any OTHER error is thrown: guessing
+// 'test' for a live venue would push a real customer's card through the test
+// keys and call it paid.
+let warnedNoEnvironmentColumn = false;
+export function isUnknownColumnError(err: any, column = 'environment'): boolean {
+  const code = String(err?.code ?? '');
+  const msg = String(err?.message ?? '');
+  if (code === '42703' || code === 'PGRST204') return true;
+  const col = column.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`column\\b.*\\b${col}\\b.*\\bdoes not exist`, 'i').test(msg)
+      || new RegExp(`\\b${col}\\b.*\\bcolumn\\b`, 'i').test(msg);
+}
+
+function warnNoEnvironmentColumn(): void {
+  if (warnedNoEnvironmentColumn) return;
+  warnedNoEnvironmentColumn = true;
+  console.warn('[adyen] merchant_adyen_accounts.environment is missing (run 20260907_PLATFORM_adyen_environment.sql); using ADYEN_ENV fallback', adyenFallbackEnv());
+}
+
+// The venue's account row AND its environment in ONE read. `columns` names
+// the extra merchant_adyen_accounts columns the caller wants alongside
+// `environment` (merchant_account, store_id, receive_payments_ok, ...). The
+// row is null when the venue has none (env = ADYEN_ENV fallback). While the
+// environment column is missing the read retries without it so callers still
+// get their other columns. THROWS on any other DB error: never guess.
+export async function adyenAccountForLocation<T extends Record<string, unknown> = Record<string, unknown>>(
+  platformAdmin: any,
+  locationId: string | null | undefined,
+  columns: string[] = [],
+): Promise<{ env: AdyenEnv; row: (T & { environment?: unknown }) | null }> {
+  if (!locationId) return { env: adyenFallbackEnv(), row: null };
+  const extra = columns.filter((c) => c && c !== 'environment');
+  const select = (withEnv: boolean) => [...(withEnv ? ['environment'] : []), ...extra].join(', ');
+  let { data, error } = await platformAdmin
+    .from('merchant_adyen_accounts').select(select(true)).eq('location_id', locationId).maybeSingle();
+  if (error && isUnknownColumnError(error)) {
+    warnNoEnvironmentColumn();
+    if (!extra.length) return { env: adyenFallbackEnv(), row: null };
+    ({ data, error } = await platformAdmin
+      .from('merchant_adyen_accounts').select(select(false)).eq('location_id', locationId).maybeSingle());
+    if (error) throw new Error(`adyenAccountForLocation: ${error.message ?? String(error)}`);
+    return { env: adyenFallbackEnv(), row: (data ?? null) as (T & { environment?: unknown }) | null };
+  }
+  if (error) throw new Error(`adyenAccountForLocation: ${error.message ?? String(error)}`);
+  if (!data) return { env: adyenFallbackEnv(), row: null };   // no row: the request cannot be tied to a venue row
+  return { env: adyenEnvFromRow(data), row: data as T & { environment?: unknown } };
+}
+
+export async function adyenEnvForLocation(platformAdmin: any, locationId: string | null | undefined): Promise<AdyenEnv> {
+  return (await adyenAccountForLocation(platformAdmin, locationId)).env;
+}
+
+export async function adyenConfigForLocation(platformAdmin: any, locationId: string | null | undefined): Promise<AdyenConfig> {
+  return adyenConfig(await adyenEnvForLocation(platformAdmin, locationId));
+}
+
+// Callers arrive with EITHER id space (the ops location id the till and the
+// public widgets carry, or the platform id). merchant_adyen_accounts is keyed
+// on the PLATFORM id, so resolve that first: by ops_location_id, then by id.
+// Null ONLY when the platform DB genuinely knows neither id. A DB error
+// THROWS: a swallowed error here used to read as "unknown venue", which sent
+// a live venue to the ADYEN_ENV fallback (test keys, test host) for as long as
+// the caller cached the answer.
+export async function platformLocationIdFor(platformAdmin: any, id: string | null | undefined): Promise<string | null> {
+  const key = String(id ?? '').trim();
+  if (!key) return null;
+  const byOps = await platformAdmin.from('locations').select('id').eq('ops_location_id', key).maybeSingle();
+  if (byOps?.error) throw new Error(`platformLocationIdFor: ${byOps.error.message ?? String(byOps.error)}`);
+  if (byOps?.data?.id) return String(byOps.data.id);
+  const byId = await platformAdmin.from('locations').select('id').eq('id', key).maybeSingle();
+  if (byId?.error) throw new Error(`platformLocationIdFor: ${byId.error.message ?? String(byId.error)}`);
+  if (byId?.data?.id) return String(byId.data.id);
+  return null;
+}
+
+// The message a caller returns when a venue's config cannot be used: the
+// exact fail closed text for live, today's soft wording for test.
+export function adyenNotConfiguredMessage(cfg: AdyenConfig): string {
+  return cfg.live ? ADYEN_LIVE_FAIL_CLOSED : `Adyen not configured, set ${adyenSecretName('test', 'apiKey')}`;
+}
+
+// Merchant account NAME for admin screens: enough to recognise, never the
+// whole identifier (per venue status calls are reachable by anonymous
+// customers of the online checkout).
+export function maskMerchantAccount(name: string | null | undefined): string | null {
+  const s = String(name ?? '').trim();
+  if (!s) return null;
+  if (s.length <= 6) return `${s.slice(0, 1)}${'*'.repeat(Math.max(0, s.length - 1))}`;
+  return `${s.slice(0, 4)}${'*'.repeat(Math.max(3, s.length - 7))}${s.slice(-3)}`;
+}
+
+// Idempotency-Key for a /payments call: the order reference plus the attempt
+// number, so a retransmit of the same attempt replays and a fresh attempt
+// gets a fresh key. Adyen caps the header at 64 chars; a reference too long
+// to fit is replaced by its SHA-256 hex so two different references can never
+// collapse into one key.
+export async function paymentIdempotencyKey(reference: string, attempt: number | string | null | undefined): Promise<string> {
+  const ref = String(reference ?? '').trim();
+  const n = Math.max(1, Math.floor(Number(attempt) || 1));
+  const plain = `pay:${ref}:a${n}`;
+  if (plain.length <= 64) return plain;
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ref));
+  const hex = Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+  const suffix = `:a${n}`;
+  return `pay:${hex.slice(0, 64 - 4 - suffix.length)}${suffix}`;   // the attempt suffix always survives
+}
+
+// ── Webhook HMAC policy ──────────────────────────────────────────────────────
+// What the standard webhook receiver does with one item, given the config the
+// notification's own live flag selected. PURE, mirrored in adyenEnv.js.
+//   'reject'        live notification and the live HMAC key is not set. The
+//                   test key must never verify a live item and a live item
+//                   must never be applied unverified, so the receiver answers
+//                   503 and Adyen retries once the key exists.
+//   'unverifiable'  test with no key, or an item with no signature: recorded
+//                   with hmac_valid null (today's soft test behaviour).
+//   'verify'        run verifyNotificationItem with cfg.hmacKey.
+export type WebhookHmacVerdict = 'reject' | 'unverifiable' | 'verify';
+export function webhookHmacPolicy(cfg: Pick<AdyenConfig, 'live' | 'hmacKey'>, hasSignature: boolean): WebhookHmacVerdict {
+  if (cfg.live && !cfg.hmacKey) return 'reject';
+  if (!cfg.hmacKey || !hasSignature) return 'unverifiable';
+  return 'verify';
+}
+
+// ── Endpoint bases ───────────────────────────────────────────────────────────
+// Always the VENUE'S hosts. Live checkout fails closed without the prefix or
+// key. Checkout v72: live REQUIRES the per-company URL prefix.
+export function checkoutBase(cfg: AdyenConfig): string {
+  assertAdyenConfigured(cfg);
+  return cfg.checkoutBase;
 }
 // Management v3: NO prefix.
-export function managementBase(): string {
-  const o = Deno.env.get('ADYEN_MGMT_BASE'); if (o) return o.replace(/\/+$/, '');
-  return LIVE ? 'https://management-live.adyen.com/v3' : 'https://management-test.adyen.com/v3';
+export function managementBase(cfg: AdyenConfig): string {
+  return cfg.managementBase;
 }
 // Legal Entity Management v4 (KYC host). Verify base on first key-holding call.
-export function lemBase(): string {
-  const o = Deno.env.get('ADYEN_LEM_BASE'); if (o) return o.replace(/\/+$/, '');
-  return LIVE ? 'https://kyc-live.adyen.com/lem/v4' : 'https://kyc-test.adyen.com/lem/v4';
+export function lemBase(cfg: AdyenConfig): string {
+  return cfg.lemBase;
 }
 // Balance Platform Configuration v2. Verify base on first key-holding call.
-export function balancePlatformBase(): string {
-  const o = Deno.env.get('ADYEN_BP_BASE'); if (o) return o.replace(/\/+$/, '');
-  return LIVE ? 'https://balanceplatform-api-live.adyen.com/bcl/v2' : 'https://balanceplatform-api-test.adyen.com/bcl/v2';
+export function balancePlatformBase(cfg: AdyenConfig): string {
+  return cfg.balancePlatformBase;
 }
-// Cloud Terminal API (device-api hosts — NOT the legacy terminal-api ones).
-// Live is REGIONAL, not prefixed. region: 'eu' | 'us' | 'au' | 'apse' | 'nea'.
-export function terminalEndpoint(merchantAccount: string, poiid: string, mode: 'sync' | 'async', region = 'eu'): string {
-  const o = Deno.env.get('ADYEN_DEVICE_BASE');
-  const base = o ? o.replace(/\/+$/, '')
-    : !LIVE ? 'https://device-api-test.adyen.com'
-    : region === 'eu' ? 'https://device-api-live.adyen.com'
-    : `https://device-api-live-${region}.adyen.com`;
-  // CLASSIC cloud Terminal API hosts (terminal-api-*) take the bare /sync
-  // path — the POIID rides in the nexo MessageHeader, not the URL. The newer
-  // device-api hosts are account-gated (14 Aug: 00_403 with every role ticked),
-  // so ADYEN_DEVICE_BASE=https://terminal-api-test.adyen.com is the reliable
-  // default until Adyen enables device-api on the account.
+
+// Cloud Terminal API endpoint for one reader.
+// CLASSIC cloud Terminal API hosts (terminal-api-*) take the bare /sync
+// path, the POIID rides in the nexo MessageHeader, not the URL. The newer
+// device-api hosts take the per merchant, per device path and are
+// account-gated (14 Aug: 00_403 with every role ticked), so
+// ADYEN_DEVICE_BASE=https://terminal-api-test.adyen.com is the reliable
+// default until Adyen enables device-api on the account.
+export function terminalEndpointFor(deviceBase: string, merchantAccount: string, poiid: string, mode: 'sync' | 'async'): string {
+  const base = trimSlash(deviceBase);
   if (/terminal-api/.test(base)) return `${base}/${mode}`;
   return `${base}/v1/merchants/${encodeURIComponent(merchantAccount)}/devices/${encodeURIComponent(poiid)}/${mode}`;
 }
 
+// The classic live Terminal API host for a region. Live hosts are REGIONAL
+// (docs/adyen/research/adyen-in-person.md: terminal-api-live for EU, then
+// terminal-api-live-us, -au, -apse, -nea). region: 'eu' | 'us' | 'au' | 'apse' | 'nea'.
+// KEEP IN SYNC with src/lib/payments/adyenEnv.js.
+export function liveTerminalApiBase(region = 'eu'): string {
+  const r = String(region ?? '').trim().toLowerCase() || 'eu';
+  return r === 'eu' ? 'https://terminal-api-live.adyen.com' : `https://terminal-api-live-${r}.adyen.com`;
+}
+
+// The reader endpoint for one venue config. An explicit <SET>_DEVICE_BASE is
+// authoritative (region ignored). Otherwise live derives the REGIONAL classic
+// host from the venue's region, and test keeps the test default.
+// KEEP IN SYNC with src/lib/payments/adyenEnv.js.
+export function terminalEndpointForConfig(cfg: Pick<AdyenConfig, 'live' | 'deviceBase' | 'deviceBaseOverride'>, merchantAccount: string, poiid: string, mode: 'sync' | 'async', region = 'eu'): string {
+  const base = (cfg.live && !cfg.deviceBaseOverride) ? liveTerminalApiBase(region) : cfg.deviceBase;
+  return terminalEndpointFor(base, merchantAccount, poiid, mode);
+}
+
+// Every reader call site passes the venue's config and its region
+// (merchant_adyen_accounts.region 'US' -> 'us', else 'eu').
+export function terminalEndpoint(merchantAccount: string, poiid: string, mode: 'sync' | 'async', region = 'eu', cfg: AdyenConfig): string {
+  return terminalEndpointForConfig(cfg, merchantAccount, poiid, mode, region);
+}
+
 export interface AdyenResult<T = any> { ok: boolean; status: number; data: T; }
 
-export async function adyenFetch<T = any>(method: string, url: string, body?: unknown, opts: { idempotencyKey?: string; timeoutMs?: number } = {}): Promise<AdyenResult<T>> {
-  const headers: Record<string, string> = { 'X-API-Key': API_KEY, 'Content-Type': 'application/json' };
+export interface AdyenFetchOpts {
+  idempotencyKey?: string;
+  timeoutMs?: number;
+  cfg: AdyenConfig;    // the venue's config: its api key, fail closed on live. REQUIRED.
+  apiKey?: string;     // explicit key override, e.g. cfg.managementKey or cfg.lemKey
+}
+
+export async function adyenFetch<T = any>(method: string, url: string, body: unknown, opts: AdyenFetchOpts): Promise<AdyenResult<T>> {
+  if (!opts?.cfg) throw new Error('adyenFetch: a venue config is required');
+  assertAdyenConfigured(opts.cfg);              // live without keys: throw, never test keys
+  const apiKey = opts.apiKey || opts.cfg.apiKey;
+  const headers: Record<string, string> = { 'X-API-Key': apiKey, 'Content-Type': 'application/json' };
   if (opts.idempotencyKey) headers['Idempotency-Key'] = opts.idempotencyKey;
   const ctrl = new AbortController();
-  // Terminal API /sync holds the connection for the whole cardholder interaction —
+  // Terminal API /sync holds the connection for the whole cardholder interaction,
   // callers pass ~165s there; everything else defaults to 30s.
   const t = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 30_000);
   try {

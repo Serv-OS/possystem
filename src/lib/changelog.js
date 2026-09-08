@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.33',
+    date: '7 Sep 2026',
+    items: [
+      'Adyen environment is now a venue setting. Each venue is on test cards or on live, real money. Back Office, Card readers, Environment block: the switch to live needs the live keys on the server and the word LIVE typed to confirm, and a red banner shows while a venue is live. Everything else stays on test cards until it is switched, so dev and live share one backend safely.',
+      'Live and test keys are separate sets on the server. Live keys use the same names with ADYEN_LIVE in front. A venue switched to live with no live keys refuses to take cards rather than falling back to test keys.',
+      'Two bugs that would have broken live online payments on day one are fixed: online checkout and booking deposits built the wrong live address (no company prefix). Both now use the shared rule.',
+      'Every online card payment now carries an idempotency key, so a network blip and retry cannot charge twice, and a refused card followed by a retry gets a fresh decision.',
+      'Webhooks from Adyen are checked against the key for their own environment. A live notification arriving before the live key is set is held, not accepted unverified. Payments, payouts and disputes in the ledger carry a live flag once the platform migration runs, so test history never counts on the reseller invoice.',
+      'Switching a venue between test and live is refused while it still holds readers or Adyen ids from the other environment, unless you choose to reprovision. Readers are then registered again from the panel.',
+    ],
+  },
+  {
     v: '5.8.32',
     date: '7 Sep 2026',
     items: [

@@ -70,8 +70,14 @@ export default function AdyenPaymentForm({
           onSubmit: async (state, _component, actions) => {
             try {
               lastFailure.current = null;
+              // One UUID per submit: the fn uses it as Adyen's Idempotency-Key,
+              // so a retry after a refused card is a fresh decision, and the
+              // key can never collide with another order's (order refs are
+              // five random chars and Adyen scopes keys company wide).
+              const attemptId = crypto.randomUUID();
               const r = await payViaServer({
                 action: 'make_payment',
+                attempt_id: attemptId,
                 ...(locationId ? { location_id: locationId } : {}),
                 ...(captureMethod === 'manual' ? { capture_method: 'manual' } : {}),
                 ...(storeCard && shopperReference ? { store_card: true, shopper_reference: shopperReference } : {}),
@@ -94,7 +100,9 @@ export default function AdyenPaymentForm({
           onAdditionalDetails: async (state, _component, actions) => {
             // Completes 3DS / redirect steps.
             try {
-              const r = await payViaServer({ action: 'payment_details', details: state.data.details });
+              // location_id rides along so the fn resolves the SAME venue
+              // (and so the same Adyen environment) as the payment it completes.
+              const r = await payViaServer({ action: 'payment_details', ...(locationId ? { location_id: locationId } : {}), details: state.data.details });
               if (!r.resultCode) { actions.reject(); return; }
               actions.resolve({ resultCode: r.resultCode, action: r.action || undefined });
             } catch (e) {

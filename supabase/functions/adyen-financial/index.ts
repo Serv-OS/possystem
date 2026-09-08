@@ -52,7 +52,7 @@
 //   npx supabase functions deploy adyen-financial --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { lemBase, balancePlatformBase, RATE_TIERS, resolveAdyenRateCard } from '../_shared/adyen.ts';
+import { lemBase, balancePlatformBase, RATE_TIERS, resolveAdyenRateCard, adyenConfig, adyenEnvForLocation, adyenNotConfiguredMessage } from '../_shared/adyen.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -75,8 +75,8 @@ const isMissingColumn = (msg: unknown) => /does not exist|42703/i.test(String(ms
 // ── Phase 4: minimal Adyen REST for the two venue-facing calls ──────────────
 // Key fallbacks match adyen-onboard: dedicated LEM/BP keys when the live setup
 // splits roles across ws users, else the main key (test setup).
-const LEM_KEY = Deno.env.get('ADYEN_LEM_KEY') || Deno.env.get('ADYEN_BP_KEY') || Deno.env.get('ADYEN_API_KEY') || '';
-const BP_KEY = Deno.env.get('ADYEN_BP_KEY') || Deno.env.get('ADYEN_API_KEY') || '';
+// Keys and hosts come from the VENUE'S config (7 Sep 2026, per venue
+// environment): cfg.lemKey / cfg.bpKey fall back to that set's API key.
 async function adyenCall(key: string, method: string, url: string, body?: unknown): Promise<{ ok: boolean; status: number; data: any }> {
   const res = await fetch(url, {
     method,
@@ -118,6 +118,12 @@ Deno.serve(async (req) => {
     .select('id, name').eq('ops_location_id', opsLocationId).maybeSingle();
   if (locErr) return json({ error: `location lookup failed: ${locErr.message}` }, 500);
   if (!loc) return json({ error: 'location not found in platform DB' }, 404);
+
+  // The venue's Adyen environment picks the secret set for the two Adyen
+  // calls below (balances, payout setup link). Read-only actions never need it.
+  let cfg;
+  try { cfg = adyenConfig(await adyenEnvForLocation(platformAdmin, loc.id)); }
+  catch (e) { return json({ error: (e as Error).message }, 500); }
 
   // ── payments: summary tiles + paged list ─────────────────────────────────
   if (action === 'payments') {
@@ -470,7 +476,8 @@ Deno.serve(async (req) => {
     if (!acct.balance_account_id) {
       return json({ ...base, state: 'in_progress', balances: null });
     }
-    const r = await adyenCall(BP_KEY, 'GET', `${balancePlatformBase()}/balanceAccounts/${encodeURIComponent(acct.balance_account_id)}`);
+    if (cfg.live && !cfg.configured) return json({ ...base, state: 'in_progress', balances: null, detail: adyenNotConfiguredMessage(cfg) });
+    const r = await adyenCall(cfg.bpKey, 'GET', `${balancePlatformBase(cfg)}/balanceAccounts/${encodeURIComponent(acct.balance_account_id)}`);
     if (r.ok) {
       const balances = (Array.isArray(r.data?.balances) ? r.data.balances : []).map((b: any) => ({
         currency: b?.currency ?? 'GBP',
@@ -501,8 +508,10 @@ Deno.serve(async (req) => {
     if (!acct?.legal_entity_id) {
       return json({ error: 'Payout setup has not been started for this venue yet. ServOS starts it from the admin side.' }, 400);
     }
-    const payload: Record<string, unknown> = { redirectUrl: String(body.return_url || 'https://dev.serv-os.app/') };
-    const r = await adyenCall(LEM_KEY, 'POST', `${lemBase()}/legalEntities/${encodeURIComponent(acct.legal_entity_id)}/onboardingLinks`, payload);
+    if (cfg.live && !cfg.configured) return json({ error: adyenNotConfiguredMessage(cfg) }, 503);
+    // The caller's return_url wins; the default is the live app host.
+    const payload: Record<string, unknown> = { redirectUrl: String(body.return_url || 'https://app.serv-os.app/') };
+    const r = await adyenCall(cfg.lemKey, 'POST', `${lemBase(cfg)}/legalEntities/${encodeURIComponent(acct.legal_entity_id)}/onboardingLinks`, payload);
     if (!r.ok || !r.data?.url) {
       if (isAwaitingEnablement(r.status)) {
         return json({ error: 'Payout setup is awaiting enablement from the payment partner. Nothing is needed from you yet.' }, 503);

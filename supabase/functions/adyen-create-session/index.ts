@@ -13,7 +13,7 @@
 // and the AUTHORISATION webhook verify what was actually charged.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { adyenConfigured, checkoutBase, adyenFetch } from '../_shared/adyen.ts';
+import { adyenConfig, adyenEnvForLocation, checkoutBase, adyenFetch, adyenNotConfiguredMessage } from '../_shared/adyen.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -26,12 +26,12 @@ const json = (b: unknown, s = 200) =>
 const opsAdmin = createClient(Deno.env.get('SUPABASE_URL') ?? '', Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '', { auth: { autoRefreshToken: false, persistSession: false } });
 const platformAdmin = createClient(Deno.env.get('PLATFORM_SUPABASE_URL') ?? '', Deno.env.get('PLATFORM_SUPABASE_SERVICE_ROLE_KEY') ?? '', { auth: { autoRefreshToken: false, persistSession: false } });
 
-const CLIENT_KEY = Deno.env.get('ADYEN_CLIENT_KEY') ?? '';
+// Live host for the shopper's return leg; the caller's return_url wins.
+const DEFAULT_RETURN_URL = 'https://app.serv-os.app/';
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
-  if (!adyenConfigured()) return json({ error: 'Adyen not configured — set ADYEN_API_KEY' }, 503);
 
   const token = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim();
   if (!token) return json({ error: 'unauthorized' }, 401);
@@ -60,8 +60,15 @@ Deno.serve(async (req) => {
   if (!ploc) return json({ error: 'location not found' }, 404);
   if (ploc.payment_processor !== 'adyen') return json({ error: 'location is not on Adyen' }, 409);
 
-  const { data: maa } = await platformAdmin.from('merchant_adyen_accounts')
-    .select('merchant_account, store_id, receive_payments_ok').eq('location_id', ploc.id).maybeSingle();
+  // PER VENUE ENVIRONMENT (7 Sep 2026): the venue's row says test or live and
+  // that picks the secret set. Read alongside the account row, one round trip.
+  const [{ data: maa }, env] = await Promise.all([
+    platformAdmin.from('merchant_adyen_accounts')
+      .select('merchant_account, store_id, receive_payments_ok').eq('location_id', ploc.id).maybeSingle(),
+    adyenEnvForLocation(platformAdmin, ploc.id),
+  ]);
+  const cfg = adyenConfig(env);
+  if (!cfg.configured) return json({ error: adyenNotConfiguredMessage(cfg) }, 503);
   if (!maa?.merchant_account) return json({ error: 'venue has no Adyen account — onboarding incomplete' }, 409);
   if (!maa.receive_payments_ok) return json({ error: 'venue cannot receive payments yet — verification pending' }, 409);
 
@@ -70,7 +77,7 @@ Deno.serve(async (req) => {
     merchantAccount: maa.merchant_account,
     amount: { value: amountMinor, currency },
     reference,
-    returnUrl: String(body.return_url || 'https://possystem-liard.vercel.app/'),
+    returnUrl: String(body.return_url || DEFAULT_RETURN_URL),
     countryCode: String(body.country || ploc.country || (currency === 'USD' ? 'US' : 'GB')),
     channel: 'Web',
     ...(maa.store_id ? { store: maa.store_id } : {}),
@@ -94,15 +101,15 @@ Deno.serve(async (req) => {
     },
   };
 
-  const res = await adyenFetch('POST', `${checkoutBase()}/sessions`, payload, { idempotencyKey: `sess:${reference}` });
+  const res = await adyenFetch('POST', `${checkoutBase(cfg)}/sessions`, payload, { cfg, idempotencyKey: `sess:${reference}` });
   if (!res.ok) return json({ error: `adyen ${res.status}`, detail: res.data }, 502);
 
   return json({
     processor: 'adyen',
     session_id: res.data?.id,
     session_data: res.data?.sessionData,
-    client_key: CLIENT_KEY || null,   // Drop-in needs it; configured with the other secrets
-    environment: (Deno.env.get('ADYEN_ENV') ?? 'test') === 'live' ? 'live' : 'test',
+    client_key: cfg.clientKey || null,   // Drop-in needs it; the venue's environment's publishable key
+    environment: cfg.env,
     reference,
     amount_minor: amountMinor,
     currency,

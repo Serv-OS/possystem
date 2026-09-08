@@ -42,7 +42,7 @@
 //   npx supabase functions deploy adyen-bp-webhook --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { verifyRawBodyHmac } from '../_shared/adyen.ts';
+import { verifyRawBodyHmac, adyenConfig, normalizeAdyenEnv, type AdyenEnv } from '../_shared/adyen.ts';
 
 const admin = createClient(
   Deno.env.get('SUPABASE_URL') ?? '',
@@ -55,7 +55,25 @@ const platformAdmin = createClient(
   { auth: { autoRefreshToken: false, persistSession: false } },
 );
 
-const BP_HMAC_KEY = Deno.env.get('ADYEN_BP_HMAC_KEY') ?? '';
+// PER VENUE ENVIRONMENT (7 Sep 2026): Adyen posts test and live balance
+// platform notifications to this ONE URL, each signed with its own HMAC key
+// (ADYEN_BP_HMAC_KEY for test, ADYEN_LIVE_BP_HMAC_KEY for live). The payload's
+// own `environment` field only orders the attempts (it is unverified until a
+// key matches); whichever key verifies the raw body is the environment of
+// record, stamped on adyen_payouts.live and logged.
+async function verifyBpSignature(rawBody: string, headerSig: string, declared: unknown): Promise<{ valid: boolean; env: AdyenEnv | null; anyKey: boolean }> {
+  if (!headerSig) return { valid: false, env: null, anyKey: false };
+  const first = normalizeAdyenEnv(declared);
+  const order: AdyenEnv[] = first === 'live' ? ['live', 'test'] : ['test', 'live'];
+  let anyKey = false;
+  for (const env of order) {
+    const key = adyenConfig(env).bpHmacKey;
+    if (!key) continue;
+    anyKey = true;
+    if (await verifyRawBodyHmac(rawBody, headerSig, key)) return { valid: true, env, anyKey };
+  }
+  return { valid: false, env: null, anyKey };
+}
 
 // Same capability→flags mapping adyen-onboard uses on its status sync. Under
 // AfP: receiveFromPlatformPayments = split funds may land in the balance
@@ -92,12 +110,18 @@ Deno.serve(async (req) => {
   const rawBody = await req.text();
   const headerSig = req.headers.get('HmacSignature') ?? req.headers.get('hmacsignature') ?? '';
   const hmacPresent = !!headerSig;
-  const hmacValid = BP_HMAC_KEY ? await verifyRawBodyHmac(rawBody, headerSig, BP_HMAC_KEY) : false;
 
   let payload: any = null;
   try { payload = JSON.parse(rawBody); } catch { payload = { unparseable: rawBody.slice(0, 8000) }; }
   const type = typeof payload?.type === 'string' ? payload.type : null;
   const data = payload?.data ?? {};
+
+  // Try the declared environment's key first, then the other; the key that
+  // verifies IS the environment (payload.environment alone is not trusted).
+  const sig = await verifyBpSignature(rawBody, headerSig, payload?.environment);
+  const hmacValid = sig.valid;
+  const matchedEnv: AdyenEnv | null = sig.env;
+  if (hmacValid) console.log(`[adyen-bp-webhook] HMAC verified with the ${matchedEnv} key (payload says ${payload?.environment ?? 'nothing'})`);
 
   // ── 1. Land it durably (ops adyen_bp_events, migration 20260821) ──────────
   const { data: landed, error: landErr } = await admin.from('adyen_bp_events').insert({
@@ -118,7 +142,7 @@ Deno.serve(async (req) => {
 
   // ── 2. Fail closed on signature ──────────────────────────────────────────
   if (!hmacValid) {
-    console.error(`[adyen-bp-webhook] HMAC ${BP_HMAC_KEY ? 'INVALID' : 'unverifiable (ADYEN_BP_HMAC_KEY not set)'} — stored raw (${landed?.id}), refusing`);
+    console.error(`[adyen-bp-webhook] HMAC ${sig.anyKey ? 'INVALID on both keys' : 'unverifiable (ADYEN_BP_HMAC_KEY / ADYEN_LIVE_BP_HMAC_KEY not set)'}, stored raw (${landed?.id}), refusing`);
     return new Response('invalid hmac', { status: 401 });
   }
 
@@ -167,7 +191,7 @@ Deno.serve(async (req) => {
           locationId = m?.location_id ?? null;
         }
         const when = data?.executionDate ?? data?.createdAt ?? payload?.timestamp ?? new Date().toISOString();
-        const { error } = await platformAdmin.from('adyen_payouts').upsert({
+        const payout: Record<string, unknown> = {
           reference: data.id,                              // transfer id — its own reference space vs report batches
           location_id: locationId,
           balance_account_id: baId,
@@ -177,7 +201,13 @@ Deno.serve(async (req) => {
           status: payoutStatus(String(data?.status ?? '')),
           raw: { transfer: { id: data.id, status: data?.status ?? null, type: data?.type ?? null, reason: data?.reason ?? null } },
           updated_at: new Date().toISOString(),
-        }, { onConflict: 'reference' });
+        };
+        if (matchedEnv) payout.live = matchedEnv === 'live';   // the key that verified (20260907 migration)
+        let { error } = await platformAdmin.from('adyen_payouts').upsert(payout, { onConflict: 'reference' });
+        if (error && /live|42703|does not exist/i.test(String(error.message)) && 'live' in payout) {
+          delete payout.live;                                // 20260907 not applied yet
+          ({ error } = await platformAdmin.from('adyen_payouts').upsert(payout, { onConflict: 'reference' }));
+        }
         if (error) console.error('[adyen-bp-webhook] payout upsert failed:', error.message);
         else processed = true;
       } else {

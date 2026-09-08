@@ -33,20 +33,54 @@ import {
   suggestTables, paceAt, turnFor, toMin, sessionsToBlocks,
   DEFAULT_TURN_BANDS, DEFAULT_RULES,
 } from '../_shared/bookingOptimiser.js';
+import {
+  adyenConfig, adyenAccountForLocation, platformLocationIdFor, checkoutBase, adyenFetch,
+  adyenNotConfiguredMessage, paymentIdempotencyKey, type AdyenConfig,
+} from '../_shared/adyen.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
 
 const db = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+// The venue's Adyen environment lives on the PLATFORM DB (merchant_adyen_accounts).
+const platformAdmin = createClient(
+  Deno.env.get('PLATFORM_SUPABASE_URL') ?? '',
+  Deno.env.get('PLATFORM_SUPABASE_SERVICE_ROLE_KEY') ?? '',
+  { auth: { autoRefreshToken: false, persistSession: false } },
+);
 
 // ── Adyen (bookings card capture — Phase 5) ──────────────────────────────────
-// Same secrets and ADVANCED flow as the proven adyen-checkout fn: the card
-// encrypts in the guest's browser, WE make the payment server-side.
-const ADYEN_KEY = Deno.env.get('ADYEN_API_KEY') ?? '';
-const ADYEN_MERCHANT = Deno.env.get('ADYEN_MERCHANT_ACCOUNT') ?? '';
-const ADYEN_CLIENT_KEY = Deno.env.get('ADYEN_CLIENT_KEY') ?? '';
-const ADYEN_ENV = (Deno.env.get('ADYEN_ENV') ?? 'test').toLowerCase();
-const ADYEN_BASE = ADYEN_ENV === 'live' ? 'https://checkout-live.adyen.com' : 'https://checkout-test.adyen.com';
+// Same ADVANCED flow as the proven adyen-checkout fn: the card encrypts in the
+// guest's browser, WE make the payment server-side.
+// PER VENUE ENVIRONMENT (7 Sep 2026): the widget carries the OPS location id;
+// map it to the platform id, read the venue's environment, and pick that
+// secret set (key, client key, merchant account, Checkout host). A live venue
+// without live keys fails closed.
+//
+// ONLY the ops -> platform id mapping is cached (it never changes). The
+// environment and the merchant account are read on EVERY call, so a Back
+// Office flip between test and live applies to the next guest immediately. A
+// venue the platform DB does not know is a 404 (thrown, caught by the
+// handler), never the ADYEN_ENV fallback; a DB error throws as well.
+const DEFAULT_RETURN_URL = 'https://app.serv-os.app/';
+const platformIdCache = new Map<string, string>();
+class VenueNotFound extends Error { status = 404; constructor() { super('location not found'); } }
+async function adyenCfgForOps(opsLocationId: string): Promise<{ cfg: AdyenConfig; merchantAccount: string; platformId: string }> {
+  let platformId = platformIdCache.get(opsLocationId) ?? null;
+  if (!platformId) {
+    platformId = await platformLocationIdFor(platformAdmin, opsLocationId);   // throws on a DB error: never guess
+    if (platformId) platformIdCache.set(opsLocationId, platformId);
+  }
+  if (!platformId) throw new VenueNotFound();
+  const { env, row } = await adyenAccountForLocation<{ merchant_account?: string | null }>(platformAdmin, platformId, ['merchant_account']);
+  const cfg = adyenConfig(env);
+  return { cfg, merchantAccount: String(row?.merchant_account || cfg.merchantAccount || ''), platformId };
+}
+// Is this config usable for taking a card in the widget? The Drop-in needs
+// the client key, the payment needs a merchant account, and live needs the
+// live key and prefix. Checked BEFORE a pending_payment booking is created.
+const adyenUsable = (v: { cfg: AdyenConfig; merchantAccount: string }): boolean =>
+  v.cfg.configured && !!v.cfg.clientKey && !!v.merchantAccount;
 
 // What a booking owes at capture time. hold = zero-value auth that stores the
 // card (no charge today; no-show capture comes later, off-session).
@@ -532,6 +566,19 @@ Deno.serve(async (req) => {
       const createStatus = paymentDue
         ? 'pending_payment'
         : (pkg && pkg.payment_model === 'prepay' ? 'prepaid' : 'confirmed');
+      // Resolve the venue's Adyen config BEFORE the booking exists, and refuse
+      // here when it cannot take a card (live without live keys, no client
+      // key, no merchant account): the guest gets a clear error and no
+      // orphaned pending_payment row sits on the table for 20 minutes. The
+      // page needs the client key and environment to take the card next.
+      let guestAdyen: { clientKey: string; environment: 'test' | 'live' } | null = null;
+      if (paymentDue) {
+        const v = await adyenCfgForOps(locationId);
+        if (!adyenUsable(v)) {
+          return json({ ok: false, error: v.cfg.live ? adyenNotConfiguredMessage(v.cfg) : 'card capture not configured' }, 503);
+        }
+        guestAdyen = { clientKey: v.cfg.clientKey, environment: v.cfg.env };
+      }
 
       const candidates = quote(time);
       let bookedId: string | null = null;
@@ -618,7 +665,7 @@ Deno.serve(async (req) => {
         preorderToken, preorderDeadline,
         preordersTaken: validRows.length > 0,
         paymentDue,
-        ...(paymentDue ? { adyen: { clientKey: ADYEN_CLIENT_KEY, environment: ADYEN_ENV } } : {}) });
+        ...(guestAdyen ? { adyen: guestAdyen } : {}) });
     }
 
     // ── booking_pay: charge/hold the card for a just-made booking ───────────
@@ -628,7 +675,12 @@ Deno.serve(async (req) => {
     // no-show capture later. Idempotent-ish: refuses when a successful row of
     // that kind already exists for the booking.
     if (action === 'booking_pay') {
-      if (!ADYEN_KEY || !ADYEN_MERCHANT) return json({ ok: false, error: 'card capture not configured' }, 500);
+      const venueAdyen = await adyenCfgForOps(locationId);
+      const cfg = venueAdyen.cfg;
+      if (!adyenUsable(venueAdyen)) {
+        return json({ ok: false, error: cfg.live ? adyenNotConfiguredMessage(cfg) : 'card capture not configured' }, 503);
+      }
+      const merchantAccount = venueAdyen.merchantAccount;
       const bookingId = String(body.booking_id || '');
       const { data: bk } = await db.from('bookings')
         .select('id, location_id, covers, status, customer_id, customer, package_id, booking_date, start_time')
@@ -713,15 +765,16 @@ Deno.serve(async (req) => {
       const { count: priorAttempts } = await db.from('booking_payments')
         .select('id', { count: 'exact', head: true })
         .eq('booking_id', bookingId).eq('kind', due.kind);
-      const reference = `bkpay-${bookingId}-${due.kind}-a${(priorAttempts || 0) + 1}`;
+      const attempt = (priorAttempts || 0) + 1;
+      const reference = `bkpay-${bookingId}-${due.kind}-a${attempt}`;
       const payment: Record<string, unknown> = {
-        merchantAccount: ADYEN_MERCHANT,
+        merchantAccount,
         amount: { value: isHold ? 0 : due.amountMinor, currency: 'GBP' },
         reference,
         paymentMethod: body.payment_method,
         channel: 'Web',
         origin: String(body.origin || ''),
-        returnUrl: String(body.return_url || 'https://dev.serv-os.app/'),
+        returnUrl: String(body.return_url || DEFAULT_RETURN_URL),
         shopperInteraction: 'Ecommerce',
         ...(bk.customer_id ? { shopperReference: bk.customer_id } : {}),
         // Store the card for holds (no-show capture is a later merchant-
@@ -730,12 +783,12 @@ Deno.serve(async (req) => {
       };
       if (body.browser_info) payment.browserInfo = body.browser_info;
 
-      const res = await fetch(`${ADYEN_BASE}/v72/payments`, {
-        method: 'POST',
-        headers: { 'X-API-Key': ADYEN_KEY, 'Content-Type': 'application/json' },
-        body: JSON.stringify(payment),
-      });
-      const j = await res.json().catch(() => ({}));
+      // Idempotency-Key = reference + attempt: a retransmit of this attempt
+      // replays Adyen's first answer instead of charging the guest twice.
+      // cfg.checkoutBase carries the version segment for both host shapes.
+      const res = await adyenFetch('POST', `${checkoutBase(cfg)}/payments`, payment,
+        { cfg, idempotencyKey: await paymentIdempotencyKey(reference, attempt) });
+      const j = res.data ?? {};
       if (!res.ok) {
         console.error('[booking-widget] booking_pay failed:', res.status, JSON.stringify(j).slice(0, 300));
         return json({ ok: false, error: j.message || `payment refused (${res.status})` }, 502);
@@ -750,7 +803,7 @@ Deno.serve(async (req) => {
         status: authorised ? (isHold ? 'authorised' : 'captured') : (j.resultCode === 'Refused' ? 'failed' : 'pending'),
         psp_reference: j.pspReference || null,
         merchant_reference: reference,
-        merchant_account: ADYEN_MERCHANT,
+        merchant_account: merchantAccount,
         stored_payment_method_id: j.additionalData?.['recurring.recurringDetailReference'] || null,
         card_last4: j.additionalData?.cardSummary || null,
         refusal_reason: j.refusalReason || null,
@@ -792,6 +845,7 @@ Deno.serve(async (req) => {
     return json({ error: `unknown action: ${action}` }, 400);
   } catch (e) {
     console.error('[booking-widget]', e);
-    return json({ error: (e as Error).message || 'server error' }, 500);
+    const status = (e as { status?: number })?.status === 404 ? 404 : 500;
+    return json({ error: (e as Error).message || 'server error' }, status);
   }
 });

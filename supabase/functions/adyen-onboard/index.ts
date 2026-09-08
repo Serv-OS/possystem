@@ -47,7 +47,7 @@
 //   npx supabase functions deploy adyen-onboard --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { lemBase, balancePlatformBase, managementBase, ADYEN_MERCHANT_ACCOUNT, RATE_TIERS, resolveAdyenRateCard } from '../_shared/adyen.ts';
+import { lemBase, balancePlatformBase, managementBase, RATE_TIERS, resolveAdyenRateCard, adyenConfig, adyenEnvForLocation, adyenSecretName, assertAdyenConfigured, type AdyenConfig } from '../_shared/adyen.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -68,12 +68,14 @@ const platformAdmin = createClient(
 
 // LEM + Balance Platform may sit behind their own ws user; fall back to the
 // main key so nothing breaks when one key carries every role (test setup).
-const LEM_KEY = Deno.env.get('ADYEN_LEM_KEY') || Deno.env.get('ADYEN_BP_KEY') || Deno.env.get('ADYEN_API_KEY') || '';
-const BP_KEY = Deno.env.get('ADYEN_BP_KEY') || Deno.env.get('ADYEN_API_KEY') || '';
-const MGMT_KEY = Deno.env.get('ADYEN_MANAGEMENT_KEY') || Deno.env.get('ADYEN_API_KEY') || '';
-
+// PER VENUE ENVIRONMENT (7 Sep 2026): keys and hosts come from the VENUE'S
+// config (its merchant_adyen_accounts.environment picks ADYEN_* or
+// ADYEN_LIVE_*). cfg.lemKey / bpKey / managementKey fall back to that set's
+// API key. A live venue without live keys throws the fail closed error before
+// any request leaves (the handler's outer catch answers 500 with the reason).
 interface R<T = any> { ok: boolean; status: number; data: T; }
-async function call<T = any>(key: string, method: string, url: string, body?: unknown, idem?: string): Promise<R<T>> {
+async function call<T = any>(cfg: AdyenConfig, key: string, method: string, url: string, body?: unknown, idem?: string): Promise<R<T>> {
+  assertAdyenConfigured(cfg);
   const headers: Record<string, string> = { 'X-API-Key': key, 'Content-Type': 'application/json' };
   if (idem) headers['Idempotency-Key'] = idem;
   const res = await fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -81,9 +83,13 @@ async function call<T = any>(key: string, method: string, url: string, body?: un
   try { const t = await res.text(); data = t ? JSON.parse(t) : null; } catch { data = null; }
   return { ok: res.ok, status: res.status, data };
 }
-const lem = (m: string, p: string, b?: unknown, idem?: string) => call(LEM_KEY, m, `${lemBase()}${p}`, b, idem);
-const bcl = (m: string, p: string, b?: unknown, idem?: string) => call(BP_KEY, m, `${balancePlatformBase()}${p}`, b, idem);
-const mgmt = (m: string, p: string, b?: unknown) => call(MGMT_KEY, m, `${managementBase()}${p}`, b);
+function adyenApi(cfg: AdyenConfig) {
+  return {
+    lem: (m: string, p: string, b?: unknown, idem?: string) => call(cfg, cfg.lemKey, m, `${lemBase(cfg)}${p}`, b, idem),
+    bcl: (m: string, p: string, b?: unknown, idem?: string) => call(cfg, cfg.bpKey, m, `${balancePlatformBase(cfg)}${p}`, b, idem),
+    mgmt: (m: string, p: string, b?: unknown) => call(cfg, cfg.managementKey, m, `${managementBase(cfg)}${p}`, b),
+  };
+}
 
 // ── Failure classification — every Adyen refusal becomes one of three kinds ──
 // 401/403 while the balance platform is not enabled on the account is the
@@ -232,8 +238,13 @@ Deno.serve(async (req) => {
     if (!loc) ({ data: loc } = await platformAdmin.from('locations').select(select).eq('ops_location_id', locKey).maybeSingle());
     if (!loc) return json({ error: 'location not found in platform DB' }, 404);
 
-    const { data: maa } = await platformAdmin.from('merchant_adyen_accounts').select('*').eq('location_id', loc.id).maybeSingle();
-    const merchant = maa?.merchant_account || ADYEN_MERCHANT_ACCOUNT;
+    const [{ data: maa }, env] = await Promise.all([
+      platformAdmin.from('merchant_adyen_accounts').select('*').eq('location_id', loc.id).maybeSingle(),
+      adyenEnvForLocation(platformAdmin, loc.id),
+    ]);
+    const cfg = adyenConfig(env);
+    const { lem, bcl, mgmt } = adyenApi(cfg);
+    const merchant = maa?.merchant_account || cfg.merchantAccount;
 
     // ── list_merchants: the real merchant accounts, so nobody types one ──────
     // v5.7.94. Typing the merchant account by hand is the one field in manual
@@ -527,7 +538,7 @@ Deno.serve(async (req) => {
 
       // 4. Hosted onboarding link — SINGLE-USE, expires in 4 minutes, so it is
       //    minted fresh on every start/refresh and the caller uses it NOW.
-      const linkPayload: Record<string, unknown> = { redirectUrl: String(body.redirect_url || 'https://dev.serv-os.app/') };
+      const linkPayload: Record<string, unknown> = { redirectUrl: String(body.redirect_url || 'https://app.serv-os.app/') };
       if (body.locale) linkPayload.locale = String(body.locale);
       const lr = await lem('POST', `/legalEntities/${encodeURIComponent(legalEntityId!)}/onboardingLinks`, linkPayload);
       logStep('onboarding_link', loc.id, { httpStatus: lr.status, response: lr.ok ? { url: 'minted' } : (lr.data ?? null) });
@@ -555,7 +566,7 @@ Deno.serve(async (req) => {
     // ── refresh_link: a fresh hosted onboarding link (single-use, 4 minutes) ─
     if (action === 'refresh_link') {
       if (!maa?.legal_entity_id) return json({ ok: false, kind: 'missing_prerequisite', message: 'No legal entity yet — run Start onboarding first.' }, 400);
-      const payload: Record<string, unknown> = { redirectUrl: String(body.redirect_url || 'https://dev.serv-os.app/') };
+      const payload: Record<string, unknown> = { redirectUrl: String(body.redirect_url || 'https://app.serv-os.app/') };
       if (body.locale) payload.locale = String(body.locale);
       const r = await lem('POST', `/legalEntities/${encodeURIComponent(maa.legal_entity_id)}/onboardingLinks`, payload);
       logStep('refresh_link', loc.id, { httpStatus: r.status, response: r.ok ? { url: 'minted' } : (r.data ?? null) });
@@ -595,7 +606,7 @@ Deno.serve(async (req) => {
       const missing: string[] = [];
       if (!maa?.store_id) missing.push('store — register the venue store first (Card terminals → ensure store)');
       if (!maa?.balance_account_id) missing.push('balance account — run Start onboarding first');
-      if (!merchant) missing.push('merchant account (ADYEN_MERCHANT_ACCOUNT)');
+      if (!merchant) missing.push(`merchant account (${adyenSecretName(cfg.env, 'merchantAccount')})`);
       const { cards } = await effectiveRates(maa);
       const lacking = tiersLackingRates(cards);
       if (lacking.length) {

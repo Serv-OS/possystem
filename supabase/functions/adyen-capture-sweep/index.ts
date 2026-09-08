@@ -49,7 +49,7 @@
 //   npx supabase secrets set ADYEN_SWEEP_TOKEN=<token> --project-ref tbetcegmszzotrwdtqhi
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { adyenConfigured, checkoutBase, adyenFetch } from '../_shared/adyen.ts';
+import { adyenConfig, adyenEnvForLocation, checkoutBase, adyenFetch, adyenNotConfiguredMessage, type AdyenConfig } from '../_shared/adyen.ts';
 import { applyTipToClosedCheck } from '../_shared/tip_capture.ts';
 
 const json = (b: unknown, s = 200) =>
@@ -78,15 +78,32 @@ const isAlreadyCaptured = (bodyText: string) =>
 const isDeadAuth = (bodyText: string) =>
   /expire|no longer|too old|cannot be captured/i.test(bodyText);
 
-// Resolve the venue's merchant account when the row does not carry one.
-async function merchantFor(opsLocationId: string): Promise<string | null> {
-  try {
-    const { data: ploc } = await platformAdmin.from('locations')
-      .select('id').eq('ops_location_id', opsLocationId).maybeSingle();
-    const { data: maa } = await platformAdmin.from('merchant_adyen_accounts')
-      .select('merchant_account').eq('location_id', ploc?.id ?? opsLocationId).maybeSingle();
-    return maa?.merchant_account ?? null;
-  } catch { return null; }
+// Resolve the venue's merchant account and its Adyen ENVIRONMENT (7 Sep
+// 2026: per venue, on merchant_adyen_accounts.environment). Resolved per row
+// and memoised for the run: one sweep can touch several venues, each on its
+// own secret set. A DB error on the environment read is thrown, never guessed.
+type Venue = { merchant: string | null; cfg: AdyenConfig };
+type VenueMemo = Map<string, Promise<Venue>>;
+// The memo is PER RUN (created inside the handler): a warm isolate must see a
+// set_environment flip on its next sweep, never a cached environment.
+function venueFor(venueMemo: VenueMemo, opsLocationId: string): Promise<Venue> {
+  const key = String(opsLocationId);
+  let p = venueMemo.get(key);
+  if (!p) {
+    p = (async () => {
+      const { data: ploc } = await platformAdmin.from('locations')
+        .select('id').eq('ops_location_id', key).maybeSingle();
+      const platformId = ploc?.id ?? key;
+      const [{ data: maa }, env] = await Promise.all([
+        platformAdmin.from('merchant_adyen_accounts').select('merchant_account').eq('location_id', platformId).maybeSingle(),
+        adyenEnvForLocation(platformAdmin, platformId),
+      ]);
+      return { merchant: maa?.merchant_account ?? null, cfg: adyenConfig(env) };
+    })();
+    venueMemo.set(key, p);
+    p.catch(() => venueMemo.delete(key));   // a failed resolve is retried next row / next run
+  }
+  return p;
 }
 
 Deno.serve(async (req) => {
@@ -110,6 +127,7 @@ Deno.serve(async (req) => {
   };
   const errors: { id: string; error: string }[] = [];
 
+  const venueMemo: VenueMemo = new Map();
   const sweepStart = new Date();
   const staleIso = new Date(sweepStart.getTime() - STALE_CAPTURING_MS).toISOString();
   let q = opsAdmin.from('terminal_captures')
@@ -149,11 +167,13 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      if (!adyenConfigured()) {
-        counts.errors++; errors.push({ id: row.id, error: 'Adyen not configured' });
+      const venue = await venueFor(venueMemo, row.location_id);
+      const cfg = venue.cfg;
+      if (!cfg.configured) {
+        counts.errors++; errors.push({ id: row.id, error: adyenNotConfiguredMessage(cfg) });
         continue;
       }
-      const merchant = (row.merchant_account as string | null) ?? await merchantFor(row.location_id);
+      const merchant = (row.merchant_account as string | null) ?? venue.merchant;
       if (!merchant) {
         counts.errors++; errors.push({ id: row.id, error: 'no merchant account' });
         await opsAdmin.from('terminal_captures')
@@ -197,9 +217,9 @@ Deno.serve(async (req) => {
       let res;
       try {
         res = await adyenFetch('POST',
-          `${checkoutBase()}/payments/${encodeURIComponent(row.psp_reference)}/captures`,
+          `${checkoutBase(cfg)}/payments/${encodeURIComponent(row.psp_reference)}/captures`,
           { merchantAccount: merchant, amount: { value: amount, currency: cur }, reference: `sweep:${row.id}`.slice(0, 80) },
-          { idempotencyKey: `sweep:${row.id}:${amount}:${attempt}` });
+          { cfg, idempotencyKey: `sweep:${row.id}:${amount}:${attempt}` });
       } catch (fe) {
         const msg = (fe as Error).message;
         counts.errors++; errors.push({ id: row.id, error: msg });
@@ -252,9 +272,9 @@ Deno.serve(async (req) => {
         let res2;
         try {
           res2 = await adyenFetch('POST',
-            `${checkoutBase()}/payments/${encodeURIComponent(row.psp_reference)}/captures`,
+            `${checkoutBase(cfg)}/payments/${encodeURIComponent(row.psp_reference)}/captures`,
             { merchantAccount: merchant, amount: { value: authMinor, currency: cur }, reference: `sweep:${row.id}`.slice(0, 80) },
-            { idempotencyKey: `sweep:${row.id}:${authMinor}:${attempt}` });
+            { cfg, idempotencyKey: `sweep:${row.id}:${authMinor}:${attempt}` });
         } catch (fe) {
           const msg = `${detail}; auth retry threw: ${(fe as Error).message}`;
           counts.errors++; errors.push({ id: row.id, error: msg });

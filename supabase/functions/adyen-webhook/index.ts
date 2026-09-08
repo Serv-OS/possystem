@@ -33,11 +33,23 @@
 // re-stamps commission on every payment. Add &dry=1 to only count
 // what it would process.
 //
+// PER VENUE ENVIRONMENT (7 Sep 2026): Adyen posts BOTH environments to this
+// one URL. The notification's top level `live` flag ('true' | 'false') picks
+// the secret set: HMAC key, basic auth (the live pair falls back to the test
+// pair when unset), and the Checkout host + key for the money modifications
+// this receiver makes (tip captures, amount updates). adyen_payments.live and
+// merchant_adyen_disputes.live are stamped from the same flag.
+//
 // SECURITY, staged deliberately:
-//   - Basic auth: if ADYEN_WEBHOOK_USER/_PASS secrets are set, requests must
-//     match (Adyen sends the credentials you configure on the webhook).
-//   - HMAC (ADYEN_HMAC_KEY): verified per-item via _shared/adyen.ts
-//     verifyNotificationItem (same signing recipe this file used to inline).
+//   - Basic auth: if ADYEN_WEBHOOK_USER/_PASS (or ADYEN_LIVE_WEBHOOK_USER/_PASS
+//     for live notifications) are set, requests must match (Adyen sends the
+//     credentials you configure on the webhook).
+//   - HMAC (ADYEN_HMAC_KEY / ADYEN_LIVE_HMAC_KEY): verified per-item via
+//     _shared/adyen.ts verifyNotificationItem (same signing recipe this file
+//     used to inline). A LIVE notification while ADYEN_LIVE_HMAC_KEY is unset
+//     is refused with 503 before anything is stored (webhookHmacPolicy): the
+//     test key never verifies a live item and a live item is never accepted
+//     unverified.
 //     We VERIFY AND RECORD hmac_valid on every item but do NOT reject yet —
 //     ⚠ GO-LIVE TASK: flip REJECT_INVALID_HMAC to true once real test events
 //     verify green. Until then an invalid signature is logged LOUDLY below.
@@ -45,14 +57,16 @@
 //     drop every payment notification.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { verifyNotificationItem, cardFromWebhookAdditionalData, resolveAdyenRateCard, commissionForAmount, adyenFetch, checkoutBase } from '../_shared/adyen.ts';
+import {
+  verifyNotificationItem, cardFromWebhookAdditionalData, resolveAdyenRateCard, commissionForAmount, adyenFetch, checkoutBase,
+  adyenConfig, webhookHmacPolicy, isUnknownColumnError, ADYEN_LIVE_FAIL_CLOSED, type AdyenConfig,
+} from '../_shared/adyen.ts';
 import { insertCaptureRow, applyTipToClosedCheck } from '../_shared/tip_capture.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
-const HMAC_KEY = Deno.env.get('ADYEN_HMAC_KEY') ?? '';
-const BASIC_USER = Deno.env.get('ADYEN_WEBHOOK_USER') ?? '';
-const BASIC_PASS = Deno.env.get('ADYEN_WEBHOOK_PASS') ?? '';
+// The secret set for one notification: its top level live flag decides.
+const cfgForLive = (live: boolean | null | undefined): AdyenConfig => adyenConfig(live ? 'live' : 'test');
 // ARMED 19 Aug (was the go-live task): 51/51 signed events in adyen_events
 // verified hmac_valid=true with the shared recipe, so a bad signature is now an
 // attack or a key rotation, not a setup doubt — and either must bounce.
@@ -67,12 +81,18 @@ const platformAdmin = createClient(
   { auth: { autoRefreshToken: false, persistSession: false } },
 );
 
-// null = unverifiable (no key configured / item carries no signature) — kept
-// distinct from false so adyen_events.hmac_valid preserves the old semantics.
-async function hmacOk(item: any): Promise<boolean | null> {
-  if (!HMAC_KEY) return null;
-  if (!item?.additionalData?.hmacSignature) return null;
-  try { return await verifyNotificationItem(item, HMAC_KEY); }
+// null = unverifiable (no key configured on TEST / item carries no signature),
+// kept distinct from false so adyen_events.hmac_valid preserves the old
+// semantics. The key is the one for the notification's environment
+// (cfg.hmacKey). A LIVE notification with no live key is FALSE, never null:
+// the handler refuses the whole notification before this runs (503, Adyen
+// retries), and this is the belt to that brace. The test key never verifies
+// a live item (webhookHmacPolicy).
+async function hmacOk(item: any, cfg: AdyenConfig): Promise<boolean | null> {
+  const verdict = webhookHmacPolicy(cfg, !!item?.additionalData?.hmacSignature);
+  if (verdict === 'reject') return false;
+  if (verdict === 'unverifiable') return null;
+  try { return await verifyNotificationItem(item, cfg.hmacKey); }
   catch (e) { console.error('[adyen-webhook] hmac check failed:', (e as Error).message); return false; }
 }
 
@@ -123,10 +143,14 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 //   2. merchantAccountCode → merchant_adyen_accounts.merchant_account, but ONLY
 //      when exactly one venue uses that account (under AfP every venue shares
 //      the regional merchant account, so a multi-venue match is ambiguous).
+//      Scoped to the notification's ENVIRONMENT (7 Sep 2026): Adyen mirrors
+//      merchant account names across test and live, so a test venue and a
+//      live venue on the same name must not make each other ambiguous.
+//      While the environment column is missing the lookup retries unscoped.
 //   3. a matched terminal_jobs row's OPS location → platform locations.ops_location_id.
 // Unresolvable → location_id stays null: the payment still exists in the ledger
 // and a later backfill replay re-resolves it (the upsert recomputes every time).
-async function resolveLocation(item: any, jobOpsLocationId: string | null): Promise<string | null> {
+async function resolveLocation(item: any, jobOpsLocationId: string | null, live: boolean | null = null): Promise<string | null> {
   try {
     const store = item?.additionalData?.store ? String(item.additionalData.store) : '';
     if (store) {
@@ -137,8 +161,13 @@ async function resolveLocation(item: any, jobOpsLocationId: string | null): Prom
     }
     const merchant = item?.merchantAccountCode ? String(item.merchantAccountCode) : '';
     if (merchant) {
-      const { data, error } = await platformAdmin.from('merchant_adyen_accounts')
-        .select('location_id').eq('merchant_account', merchant).limit(2);
+      const byMerchant = (scoped: boolean) => {
+        let q = platformAdmin.from('merchant_adyen_accounts').select('location_id').eq('merchant_account', merchant);
+        if (scoped) q = q.eq('environment', live ? 'live' : 'test');
+        return q.limit(2);
+      };
+      let { data, error } = await byMerchant(typeof live === 'boolean');
+      if (error && typeof live === 'boolean' && isUnknownColumnError(error)) ({ data, error } = await byMerchant(false));
       if (error) console.error('[adyen-webhook] merchant lookup failed:', error.message);
       if (Array.isArray(data) && data.length === 1 && data[0]?.location_id) return data[0].location_id;
     }
@@ -323,7 +352,10 @@ async function resolveVenueTiers(locationId: string): Promise<any | null> {
 // Replay-safe: callers reach this only on non-duplicate events (modKey), the
 // row updates are status-guarded, and the capture kick keys are deterministic.
 // Best-effort by construction - never throws, never blocks the ack.
-async function applyTipOnReceiptEvent(item: any, code: string, rowKey: string, okEvent: boolean, jobId: string | null): Promise<void> {
+// cfg = the notification's environment: every capture / amountUpdates below
+// goes to THAT environment's Checkout host with THAT key (a live payment is
+// never touched with test keys, and the other way round).
+async function applyTipOnReceiptEvent(item: any, code: string, rowKey: string, okEvent: boolean, jobId: string | null, cfg: AdyenConfig): Promise<void> {
   try {
     if (code === 'AUTHORISATION') {
       if (!okEvent || !jobId) return;
@@ -384,9 +416,9 @@ async function applyTipOnReceiptEvent(item: any, code: string, rowKey: string, o
         // salt makes every RETRY a fresh key too.
         let res;
         try {
-          res = await adyenFetch('POST', `${checkoutBase()}/payments/${encodeURIComponent(rowKey)}/captures`,
+          res = await adyenFetch('POST', `${checkoutBase(cfg)}/payments/${encodeURIComponent(rowKey)}/captures`,
             { merchantAccount: merchant, amount: { value: amount, currency: cur }, reference: `tipcapw:${cap.id}`.slice(0, 80) },
-            { idempotencyKey: `tipcapw:${cap.id}:${amount}:${attempt}` });
+            { cfg, idempotencyKey: `tipcapw:${cap.id}:${amount}:${attempt}` });
         } catch (fe) {
           // Network abort must not strand the row at 'capturing' - put it back
           // to 'adjusting' so the deadline sweep retries at the final amount.
@@ -433,9 +465,9 @@ async function applyTipOnReceiptEvent(item: any, code: string, rowKey: string, o
         let captured = false;
         if (merchant) {
           try {
-            const res = await adyenFetch('POST', `${checkoutBase()}/payments/${encodeURIComponent(rowKey)}/captures`,
+            const res = await adyenFetch('POST', `${checkoutBase(cfg)}/payments/${encodeURIComponent(rowKey)}/captures`,
               { merchantAccount: merchant, amount: { value: authAmount, currency: cur }, reference: `tipcapw:${cap.id}`.slice(0, 80) },
-              { idempotencyKey: `tipcapw:${cap.id}:${authAmount}:${attempt}` });
+              { cfg, idempotencyKey: `tipcapw:${cap.id}:${authAmount}:${attempt}` });
             captured = res.ok;
             if (!res.ok) console.error('[adyen-webhook] fallback capture at auth refused:', res.status, JSON.stringify(res.data).slice(0, 200));
           } catch (fe) {
@@ -520,9 +552,9 @@ async function applyTipOnReceiptEvent(item: any, code: string, rowKey: string, o
           if (!claimed) return;   // someone else owns the row - stop silently
           let adj;
           try {
-            adj = await adyenFetch('POST', `${checkoutBase()}/payments/${encodeURIComponent(rowKey)}/amountUpdates`,
+            adj = await adyenFetch('POST', `${checkoutBase(cfg)}/payments/${encodeURIComponent(rowKey)}/amountUpdates`,
               { merchantAccount: merchant, amount: { value: finalM, currency: cur }, industryUsage: 'delayedCharge', reference: `tipadjw:${cap.id}`.slice(0, 80) },
-              { idempotencyKey: `tipadjw:${cap.id}:${finalM}:${attempt}` });
+              { cfg, idempotencyKey: `tipadjw:${cap.id}:${finalM}:${attempt}` });
           } catch (fe) {
             adj = { ok: false, status: 0, data: { message: (fe as Error).message } };
           }
@@ -562,8 +594,12 @@ async function applyTipOnReceiptEvent(item: any, code: string, rowKey: string, o
 // Apply ONE money event to the ledger (and, for the chargeback family, the
 // dispute queue). NEVER throws — the raw event is already durable; a bug here
 // costs a log line and a later replay, not an event.
-async function applyMoneyEvent(item: any): Promise<'applied' | 'duplicate' | 'skipped' | 'failed'> {
+// `live` is the notification's top level flag (null when a stored event has
+// no record of it); it stamps adyen_payments.live / merchant_adyen_disputes.live
+// and picks the config every outbound modification uses.
+async function applyMoneyEvent(item: any, live: boolean | null = null): Promise<'applied' | 'duplicate' | 'skipped' | 'failed'> {
   try {
+    const cfg = cfgForLive(live);
     const code = String(item?.eventCode || '');
     if (!LEDGER_EVENTS.has(code)) return 'skipped';
     const isModification = MODIFICATION_EVENTS.has(code);
@@ -620,7 +656,7 @@ async function applyMoneyEvent(item: any): Promise<'applied' | 'duplicate' | 'sk
       ? String(existing?.merchant_reference ?? '')
       : String(item?.merchantReference ?? '');
     const job = await matchTerminalJob(merchantReference, rowKey);
-    const location_id = existing?.location_id ?? await resolveLocation(item, job?.location_id ?? null);
+    const location_id = existing?.location_id ?? await resolveLocation(item, job?.location_id ?? null, live);
 
     const amountMinor = Number(item?.amount?.value);
     const currency = item?.amount?.currency ? String(item.amount.currency) : null;
@@ -639,6 +675,10 @@ async function applyMoneyEvent(item: any): Promise<'applied' | 'duplicate' | 'sk
       raw,
       updated_at: new Date().toISOString(),
     };
+    // Environment stamp (migration 20260907_PLATFORM_adyen_environment.sql).
+    // Only when the flag is KNOWN: omitting the key preserves the DB value on
+    // a replay of an event whose flag was not recorded.
+    if (typeof live === 'boolean') row.live = live;
 
     if (!isModification) {
       // AUTHORISATION — the payment itself. Sets the money + card facts.
@@ -738,14 +778,15 @@ async function applyMoneyEvent(item: any): Promise<'applied' | 'duplicate' | 'sk
       .upsert(row, { onConflict: 'psp_reference' });
     if (upErr && isMissingColumn(upErr.message)
         && ('rate_category' in row || 'commission_minor' in row
-          || 'authorised_at' in row || 'capture_required' in row || 'captured_at' in row)) {
-      // Migrations 20260821b / 20260826 not applied yet — the ledger write must
-      // never break while a deploy precedes its hand-applied DDL.
+          || 'authorised_at' in row || 'capture_required' in row || 'captured_at' in row || 'live' in row)) {
+      // Migrations 20260821b / 20260826 / 20260907 not applied yet. The ledger
+      // write must never break while a deploy precedes its hand-applied DDL.
       delete row.rate_category;
       delete row.commission_minor;
       delete row.authorised_at;
       delete row.capture_required;
       delete row.captured_at;
+      delete row.live;
       ({ error: upErr } = await platformAdmin.from('adyen_payments').upsert(row, { onConflict: 'psp_reference' }));
     }
     if (upErr) { console.error('[adyen-webhook] ledger upsert failed:', upErr.message, rowKey); return 'failed'; }
@@ -753,7 +794,7 @@ async function applyMoneyEvent(item: any): Promise<'applied' | 'duplicate' | 'sk
     // ── v5.7.5 tip-on-receipt capture window (best-effort, never blocks) ─────
     // Runs only on NON-duplicate events (the modKey guard above already
     // returned for replays), so the capture kick can never double-fire.
-    await applyTipOnReceiptEvent(item, code, rowKey, okEvent, job?.id ?? existing?.matched_terminal_job ?? null);
+    await applyTipOnReceiptEvent(item, code, rowKey, okEvent, job?.id ?? existing?.matched_terminal_job ?? null, cfg);
 
     // ── Chargeback family → dispute queue (model: ryft-webhook Dispute.*) ────
     if (CHARGEBACK_EVENTS.has(code)) {
@@ -767,7 +808,7 @@ async function applyMoneyEvent(item: any): Promise<'applied' | 'duplicate' | 'sk
         : code === 'SECOND_CHARGEBACK' ? 'lost'
         : code === 'REQUEST_FOR_INFORMATION' ? 'info_requested'
         : 'open'; // CHARGEBACK / NOTIFICATION_OF_CHARGEBACK
-      const { error: dErr } = await platformAdmin.from('merchant_adyen_disputes').upsert({
+      const dispute: Record<string, unknown> = {
         dispute_psp_reference: itemPsp || rowKey,
         payment_psp_reference: rowKey,
         location_id,
@@ -779,7 +820,14 @@ async function applyMoneyEvent(item: any): Promise<'applied' | 'duplicate' | 'sk
         respond_by,
         raw: item,
         updated_at: new Date().toISOString(),
-      }, { onConflict: 'dispute_psp_reference' });
+      };
+      if (typeof live === 'boolean') dispute.live = live;
+      let { error: dErr } = await platformAdmin.from('merchant_adyen_disputes').upsert(dispute, { onConflict: 'dispute_psp_reference' });
+      if (dErr && isMissingColumn(dErr.message) && 'live' in dispute) {
+        // 20260907 not applied yet: the dispute must still land.
+        delete dispute.live;
+        ({ error: dErr } = await platformAdmin.from('merchant_adyen_disputes').upsert(dispute, { onConflict: 'dispute_psp_reference' }));
+      }
       if (dErr) console.error('[adyen-webhook] dispute upsert failed:', dErr.message, itemPsp);
     }
 
@@ -855,7 +903,7 @@ async function runBackfill(dry: boolean): Promise<Response> {
   let from = 0;
   for (;;) {
     const { data: rows, error } = await admin.from('adyen_events')
-      .select('id, event_code, raw')
+      .select('id, event_code, raw, live')
       .order('received_at', { ascending: true }).order('id', { ascending: true })
       .range(from, from + BATCH - 1);
     if (error) {
@@ -877,7 +925,9 @@ async function runBackfill(dry: boolean): Promise<Response> {
       if (!LEDGER_EVENTS.has(code)) continue;
       counts.money_events++;
       if (dry) continue;
-      const res = await applyMoneyEvent(row.raw);
+      // The stored row remembers the notification's live flag; replays use it
+      // for the stamp and for any modification they kick.
+      const res = await applyMoneyEvent(row.raw, typeof row.live === 'boolean' ? row.live : null);
       if (res === 'applied') {
         counts.applied++;
         const { error: pErr } = await admin.from('adyen_events')
@@ -906,21 +956,37 @@ Deno.serve(async (req) => {
     return await runBackfill(url.searchParams.get('dry') === '1');
   }
 
-  // Basic auth, when configured on the webhook in the Customer Area.
-  if (BASIC_USER) {
+  let body: any;
+  try { body = await req.json(); } catch { return new Response('bad json', { status: 400 }); }
+
+  // The notification's environment: top level live 'true' | 'false'. It picks
+  // the secret set for basic auth, the HMAC key, the ledger stamp and the
+  // Checkout config of any modification made from here.
+  const live = String(body?.live) === 'true';
+  const cfg = cfgForLive(live);
+
+  // Basic auth, when configured on the webhook in the Customer Area. The live
+  // pair falls back to the test pair when unset (Adyen posts both here).
+  if (cfg.webhookUser) {
     const got = req.headers.get('authorization') || '';
-    const want = 'Basic ' + btoa(`${BASIC_USER}:${BASIC_PASS}`);
+    const want = 'Basic ' + btoa(`${cfg.webhookUser}:${cfg.webhookPass}`);
     if (got !== want) return new Response('unauthorized', { status: 401 });
   }
 
-  let body: any;
-  try { body = await req.json(); } catch { return new Response('bad json', { status: 400 }); }
+  // FAIL CLOSED on live: a live flagged notification with no ADYEN_LIVE_HMAC_KEY
+  // is refused outright, BEFORE anything is stored or applied. Setting one JSON
+  // field must never turn the armed HMAC check into "unverifiable, accepted".
+  // 503 so Adyen keeps retrying and the notification lands once the key is set.
+  if (webhookHmacPolicy(cfg, true) === 'reject') {
+    console.error('[adyen-webhook] live notification refused:', ADYEN_LIVE_FAIL_CLOSED, '(set ADYEN_LIVE_HMAC_KEY)');
+    return new Response(ADYEN_LIVE_FAIL_CLOSED, { status: 503 });
+  }
 
   const items = Array.isArray(body?.notificationItems) ? body.notificationItems : [];
   for (const wrap of items) {
     const item = wrap?.NotificationRequestItem ?? wrap;
     if (!item) continue;
-    const valid = await hmacOk(item);
+    const valid = await hmacOk(item, cfg);
     if (valid === false) {
       // LOUD either way — this line is what proves the recipe against real
       // events so REJECT_INVALID_HMAC can be armed for go-live.
@@ -931,7 +997,7 @@ Deno.serve(async (req) => {
       return new Response('invalid hmac', { status: 401 });
     }
     const { data: stored, error } = await admin.from('adyen_events').insert({
-      live: String(body.live) === 'true',
+      live,
       event_code: item.eventCode ?? null,
       psp_reference: item.pspReference ?? null,
       merchant_account: item.merchantAccountCode ?? null,
@@ -950,7 +1016,7 @@ Deno.serve(async (req) => {
     // ── money events → platform ledger (+ disputes). Best-effort on top of the
     // stored raw row: parse failures log and NEVER block the ack.
     if (LEDGER_EVENTS.has(String(item.eventCode || ''))) {
-      const res = await applyMoneyEvent(item);
+      const res = await applyMoneyEvent(item, live);
       if ((res === 'applied' || res === 'duplicate') && stored?.id) {
         const { error: pErr } = await admin.from('adyen_events')
           .update({ processed_at: new Date().toISOString() }).eq('id', stored.id);
