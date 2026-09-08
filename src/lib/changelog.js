@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.36',
+    date: '8 Sep 2026',
+    items: [
+      'Apple Pay: every shop address now serves Adyen\'s Apple domain verification file, so Apple Pay can be switched on for a venue without hosting anything by hand.',
+    ],
+  },
+  {
     v: '5.8.35',
     date: '8 Sep 2026',
     items: [
