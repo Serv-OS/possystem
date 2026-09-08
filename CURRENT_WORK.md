@@ -15,6 +15,11 @@
 - v5.8.34 (03f63c80): go live rehearsal fixes (see project_adyen_migration memory). 14 functions redeployed.
 - v5.8.35 (c714e56a): Adyen environment switch, ensure_store and ensure_payment_methods are super_admin only; controls moved to the admin portal (src/admin/components/AdyenEnvironmentControls.jsx inside AdminBillingManager's venue card); venue Back Office shows state only. adyen-terminal-admin redeployed. Verified: platform locations has NO country column (reviewer blocker was real).
 
+- v5.8.36 (5134a16c): Adyen Apple Pay domain association file served at public/.well-known on every host (text/plain header in vercel.json).
+- v5.8.37 (96ec2ecd): live secrets PER REGION (UK|US): ADYEN_LIVE_UK_* set by Peter (5 names); region on the venue row (migration 20260908_PLATFORM_adyen_region_uk.sql, EU -> UK, PENDING Peter); admin Region select; webhooks try each region key. 14 fns deployed.
+- v5.8.38 (9a21d117): admin button + set_environment hook register wildcard allowed origins (/v3/me/allowedOrigins) and per venue Apple Pay domains (addApplePayDomains) on the region credential. adyen-terminal-admin deployed. PRs #3, #4, #5 merged to main.
+- Live CA facts (8 Sep): merchant FranPOS_QSR_UK; live credential has ALL roles; standard webhook created to adyen-webhook; cards + Apple Pay + Google Pay requested; payout schedule needs FranPOS (Peter's user lacks Finance roles); a live reader is already ordered.
+
 ## Parked, needs Peter
 - Android repoint to app.serv-os.app (POS 12/2.1, MPOS 5/1.5, menuboard 3/1.2) is a patch in the session scratchpad (android_live_repoint.patch), NOT committed: .github/workflows/build-*.yml auto publish APKs to the live app-releases bucket on any push to develop or main. Apply only after PR #1 is merged and app.serv-os.app verified. Local gradle was blocked by the classifier.
 - Security migrations 20260907b_* (5 files) plus docs/PRE_LIVE_SECURITY_MIGRATIONS.md are DRAFTS marked DO NOT RUN: 12 breaks and 25 gaps from the adversarial pass are recorded in the runbook and not applied (the fix agent hit the session limit).

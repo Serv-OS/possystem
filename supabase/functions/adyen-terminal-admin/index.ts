@@ -20,6 +20,20 @@
 //                  API credential's allowed origins (WEB ORIGINS below)
 //   register_apple_pay_domains → ADMIN. the venue's storefront hosts on the
 //                  merchant's Apple Pay payment method (APPLE PAY below)
+//   adyen_lookup → ADMIN. { reference?, storeId?, accountHolderId?, environment? }
+//                  PULL the venue's Adyen ids BY REFERENCE (the venue code,
+//                  SV-1007, as the store reference): store, balance account,
+//                  account holder, legal entity. Read only, never throws on a
+//                  missing piece (PULL BY REFERENCE below)
+//   adyen_link   → ADMIN. the same lookup, then ONE write of every id onto
+//                  merchant_adyen_accounts (through the set_environment rules
+//                  when the venue moves to live), then origins and Apple Pay
+//                  best effort. Idempotent; relink: true to replace ids
+//   adyen_create_store_by_reference → ADMIN. ensure_store with the venue
+//                  code as the reference (finds an existing store by
+//                  reference before creating one), on the account
+//                  adyen_lookup looks on (live by default); across
+//                  environments the row is not written, adyen_link maps it
 //
 // Auth: BO JWT → user_locations membership (or super_admin), the ryft-terminals
 // fence, verbatim in spirit. All writes service-role.
@@ -80,16 +94,21 @@
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import {
-  managementBase, buildMenuInputRequest, buildAmountInputRequest, parseAmountInputResponse, buildDisplayImageRequest,
+  managementBase, balancePlatformBase, lemBase, buildMenuInputRequest, buildAmountInputRequest, parseAmountInputResponse, buildDisplayImageRequest,
   buildDisplayIdleRequest, newServiceId, adyenFetch, terminalEndpoint,
   adyenConfig, adyenEnvForLocation, adyenSecretName, normalizeAdyenEnv, assertAdyenConfigured, effectiveMerchantAccount,
   parseAdyenRegion, liveRegionsConfigured, isAdyenRegionCheckError, adyenRegionMigrationMessage, ADYEN_REGION_MIGRATION,
-  type AdyenConfig,
+  type AdyenConfig, type AdyenEnv,
 } from '../_shared/adyen.ts';
 import {
   buildWebOrigins, buildStorefrontDomains, originsPlan, applePayDomainsPlan, pickApplePayMethod, hasApplePayEntries,
   applePayStatusNote, adyenRefusalMessage, isDuplicateRefusal,
 } from '../_shared/adyenOrigins.ts';
+import {
+  referenceKey, storeRows, matchStoreByReference, storeSummary, storeCandidates, accountHolderSummary, balanceAccountSummary,
+  legalEntitySummary, pickBalanceAccount, resolveLinkEnvironment, buildLinkPatch, planLink, replacementClear, lookupSummary,
+  type StoreSummary, type BalanceAccountSummary, type AccountHolderSummary, type LookupResult,
+} from '../_shared/adyenLink.ts';
 
 const opsAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
 const platformAdmin = createClient(
@@ -111,11 +130,16 @@ const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: 
 // timed out call throws; attempt() turns that into the error line of that
 // half, the outer try into a 500 for every other action.
 const MGMT_TIMEOUT_MS = 15_000;
-async function mgmt<T = Record<string, unknown>>(cfg: AdyenConfig, method: string, path: string, body?: unknown, apiKey: string = cfg.managementKey): Promise<{ ok: boolean; status: number; data: T }> {
+interface HostAnswer<T> { ok: boolean; status: number; data: T }
+// One call on one of the venue's Adyen hosts with one of its keys: the
+// Management host (mgmt), the Balance Platform host (bcl) and the Legal
+// Entity Management host (lem) share this body, the timeout and the fail
+// closed check. A 204 or a non JSON body reads as {}.
+async function adyenHostCall<T = Record<string, unknown>>(cfg: AdyenConfig, base: string, apiKey: string, method: string, path: string, body?: unknown): Promise<HostAnswer<T>> {
   assertAdyenConfigured(cfg);
   let res: Response;
   try {
-    res = await fetch(`${managementBase(cfg)}${path}`, {
+    res = await fetch(`${base}${path}`, {
       method,
       headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -130,8 +154,233 @@ async function mgmt<T = Record<string, unknown>>(cfg: AdyenConfig, method: strin
   try { data = await res.json(); } catch { data = {} as T; }
   return { ok: res.ok, status: res.status, data };
 }
+async function mgmt<T = Record<string, unknown>>(cfg: AdyenConfig, method: string, path: string, body?: unknown, apiKey: string = cfg.managementKey): Promise<HostAnswer<T>> {
+  return adyenHostCall<T>(cfg, managementBase(cfg), apiKey, method, path, body);
+}
+// Balance Platform Configuration API v2 (cfg.bpKey, the set's API key when
+// no separate ADYEN[_LIVE_<REGION>]_BP_KEY is set) and Legal Entity
+// Management API v4 (cfg.lemKey): the two further hosts of PULL BY
+// REFERENCE below. Same hosts for both regions, different key sets.
+const bcl = <T = Record<string, unknown>>(cfg: AdyenConfig, method: string, path: string, body?: unknown) => adyenHostCall<T>(cfg, balancePlatformBase(cfg), cfg.bpKey, method, path, body);
+const lem = <T = Record<string, unknown>>(cfg: AdyenConfig, method: string, path: string, body?: unknown) => adyenHostCall<T>(cfg, lemBase(cfg), cfg.lemKey, method, path, body);
 
 const scopeMissing = (status: number) => status === 401 || status === 403;
+
+// The text of an Adyen refusal for the admin: a 401/403 names the secret the
+// key came from (never its value) and the role it lacks; anything else is
+// the RFC 7807 detail.
+function refusalText(cfg: AdyenConfig, r: { status: number; data: unknown }, keyField: 'managementKey' | 'bpKey' | 'lemKey', role: string): string {
+  if (scopeMissing(r.status)) {
+    return `refused (${r.status}): the credential behind ${adyenSecretName(cfg.env, keyField, cfg.region)} (the set's API key when that is unset) needs ${role}`;
+  }
+  return adyenRefusalMessage(r.status, r.data);
+}
+
+// The venue's short code (ops locations.venue_code, for example SV-1007):
+// the store REFERENCE at Adyen, the key PULL BY REFERENCE and ensure_store
+// share. Null when the venue has none.
+async function venueCodeFor(opsLocationId: string): Promise<string | null> {
+  try {
+    const { data } = await opsAdmin.from('locations').select('venue_code').eq('id', opsLocationId).maybeSingle();
+    const code = String((data as Record<string, unknown> | null)?.venue_code ?? '').trim();
+    return code || null;
+  } catch { return null; }
+}
+
+// ── PULL BY REFERENCE (8 Sep 2026, OWNER RULE 1) ─────────────────────────────
+// Adyen already holds the venue's store, balance account and account holder,
+// created by FranPOS or Adyen with the venue code (SV-1007) as the STORE
+// REFERENCE. The admin pulls every id from Adyen by that reference and never
+// types one. Four reads on three hosts, three keys, all on the venue's
+// REGION set (docs.adyen.com, verified 8 Sep 2026):
+//   1. Management v3   GET /merchants/{m}/stores?reference=SV-1007&pageSize=100
+//        role "Stores read". data[] { id (ST...), reference, status,
+//        businessLineIds[], splitConfiguration { balanceAccountId,
+//        splitConfigurationId }, address }. The reference is unique per
+//        merchant; the docs do not say whether the filter is exact, so the
+//        rows are matched again here (exact, case insensitive) and the whole
+//        list is paged when the filtered call finds nothing (candidates).
+//   2. Balance Platform v2  GET /balanceAccounts/{id}   { accountHolderId (AH...), status, defaultCurrencyCode }
+//   3. Balance Platform v2  GET /accountHolders/{id}    { legalEntityId (LE...), status, capabilities, primaryBalanceAccount, balancePlatform }
+//        Fallback when the store carries no split configuration and a holder
+//        id is known: GET /accountHolders/{id}/balanceAccounts?limit=100 and
+//        pick the primary (or the one open account in the region's currency).
+//        There is NO account holder lookup by reference.
+//   4. LEM v4               GET /legalEntities/{id}     { organization.legalName, type, capabilities, transferInstruments[] (SI...), problems }
+// The shape work (matching, summaries, the row patch, the plan) is in
+// _shared/adyenLink.ts, mirror of src/lib/payments/adyenLink.js, tests in
+// adyenLink.test.js. Nothing here throws on a missing piece: every refusal
+// is a line in `errors`, every gap a line in `notes`, and the answer says
+// what WAS found.
+const STORE_PAGE_SIZE = 100;
+const STORE_PAGES = 20;   // 2000 stores per merchant, plenty for one reseller merchant
+type Dict = Record<string, unknown>;
+interface StoreListAnswer { rows: Dict[]; errors: string[]; scopeMissing: boolean }
+interface StoreSearch { store: Dict | null; matches: Dict[]; ambiguous: boolean; rows: Dict[]; errors: string[]; scopeMissing: boolean }
+
+// Page the merchant's stores, optionally filtered by reference (query is
+// 'reference=...&' or ''). Stops at the last page (pagesTotal, or no
+// _links.next), at an empty page, or at STORE_PAGES.
+async function listStores(cfg: AdyenConfig, merchant: string, query: string): Promise<StoreListAnswer> {
+  const m = encodeURIComponent(merchant);
+  const rows: Dict[] = [];
+  const errors: string[] = [];
+  for (let page = 1; page <= STORE_PAGES; page++) {
+    const r = await mgmt<{ data?: unknown[]; pagesTotal?: unknown; _links?: { next?: unknown } }>(cfg, 'GET', `/merchants/${m}/stores?${query}pageSize=${STORE_PAGE_SIZE}&pageNumber=${page}`);
+    if (!r.ok) {
+      errors.push(`store list${query ? ' by reference' : ''} on ${merchant}: ${refusalText(cfg, r, 'managementKey', 'the Management API role "Stores read"')}`);
+      return { rows, errors, scopeMissing: scopeMissing(r.status) };
+    }
+    const pageRows = storeRows(r.data);
+    rows.push(...pageRows);
+    const pagesTotal = Number(r.data?.pagesTotal);
+    const more = pageRows.length > 0 && ((Number.isFinite(pagesTotal) && pagesTotal > page) || !!r.data?._links?.next);
+    if (!more) break;
+  }
+  return { rows, errors, scopeMissing: false };
+}
+
+// Hop 1: the venue's store by reference on ONE merchant account. The
+// filtered call first; when it matches nothing the whole list is paged so
+// the admin gets candidates (and a reference Adyen filters differently
+// still matches). A refused filtered call is forgotten when the full list
+// answers; a 401/403 anywhere stops the search.
+async function findStoreByReference(cfg: AdyenConfig, merchant: string, reference: string): Promise<StoreSearch> {
+  const byRef = await listStores(cfg, merchant, `reference=${encodeURIComponent(reference)}&`);
+  if (byRef.scopeMissing) return { store: null, matches: [], ambiguous: false, rows: [], errors: byRef.errors, scopeMissing: true };
+  let found = matchStoreByReference(byRef.rows, reference);
+  if (found.matches.length) return { ...found, rows: byRef.rows, errors: byRef.errors, scopeMissing: false };
+  const all = await listStores(cfg, merchant, '');
+  if (all.scopeMissing) return { store: null, matches: [], ambiguous: false, rows: [], errors: [...byRef.errors, ...all.errors], scopeMissing: true };
+  found = matchStoreByReference(all.rows, reference);
+  return { ...found, rows: all.rows, errors: all.errors.length ? [...byRef.errors, ...all.errors] : [], scopeMissing: false };
+}
+
+interface LookupOpts { storeId?: string | null; accountHolderId?: string | null; currency: string }
+
+// The whole chain for one venue on one config. `reference` is the venue
+// code (or the admin's override); `storeId` skips the search (the admin
+// picked a candidate); `accountHolderId` is the fallback holder when the
+// store names no balance account (the owner supplied Provo id).
+async function lookupByReference(cfg: AdyenConfig, merchant: string, reference: string | null, opts: LookupOpts): Promise<LookupResult> {
+  const errors: string[] = [];
+  const notes: string[] = [];
+  const out: LookupResult = {
+    found: false, reference, merchantAccount: merchant, environment: cfg.env, region: cfg.region,
+    store: null, balanceAccount: null, accountHolder: null, legalEntity: null,
+    splitConfigurationId: null, businessLineIds: [], candidates: [], errors, notes, scopeMissing: false,
+  };
+
+  // 1. the store: by id when the admin picked one, else by reference
+  let store: StoreSummary | null = null;
+  const storeId = String(opts.storeId ?? '').trim();
+  if (storeId) {
+    const r = await mgmt<Dict>(cfg, 'GET', `/stores/${encodeURIComponent(storeId)}`);
+    if (!r.ok) {
+      errors.push(`store ${storeId}: ${refusalText(cfg, r, 'managementKey', 'the Management API role "Stores read"')}`);
+      out.scopeMissing = scopeMissing(r.status);
+    } else {
+      store = storeSummary(r.data);
+      if (store?.merchantId && store.merchantId.toLowerCase() !== merchant.toLowerCase()) {
+        errors.push(`store ${storeId} belongs to merchant account ${store.merchantId}, not ${merchant}; it cannot be linked to a ${cfg.region} venue on this account.`);
+        store = null;
+      } else if (store && reference && referenceKey(store.reference) !== referenceKey(reference)) {
+        notes.push(`Store ${storeId} carries the reference ${store.reference ?? '(none)'}, not the venue code ${reference}. It was chosen by id.`);
+      }
+    }
+  } else if (reference) {
+    const s = await findStoreByReference(cfg, merchant, reference);
+    errors.push(...s.errors);
+    out.scopeMissing = s.scopeMissing;
+    if (s.store) store = storeSummary(s.store);
+    else {
+      out.candidates = storeCandidates(s.rows, reference, 50);
+      if (s.ambiguous) {
+        errors.push(`${s.matches.length} stores on ${merchant} carry the reference ${reference} (${s.matches.map((x) => String(x.id ?? '?')).join(', ')}). Pass storeId to pick one.`);
+      } else if (!s.scopeMissing) {
+        notes.push(`No store on ${merchant} has the reference ${reference}. Pick one of the ${out.candidates.length} stores listed (storeId), or create it with adyen_create_store_by_reference.`);
+      }
+    }
+  } else {
+    errors.push('This venue has no venue code, so there is no store reference to look up. Set one in the Back Office (Venue settings) or pass reference.');
+  }
+  if (!store) return out;
+  out.found = true;
+  out.store = store;
+  out.splitConfigurationId = store.splitConfigurationId;
+  out.businessLineIds = store.businessLineIds;
+  if (store.status && store.status !== 'active') notes.push(`The store is ${store.status} at Adyen; payments naming it are refused until it is active.`);
+
+  // 2. the balance account the store's split configuration names
+  let ba: BalanceAccountSummary | null = null;
+  if (store.balanceAccountId) {
+    const r = await bcl<Dict>(cfg, 'GET', `/balanceAccounts/${encodeURIComponent(store.balanceAccountId)}`);
+    if (r.ok) ba = balanceAccountSummary(r.data, 'store');
+    else errors.push(`balance account ${store.balanceAccountId}: ${refusalText(cfg, r, 'bpKey', 'the Balance Platform BCL role')}`);
+  } else {
+    notes.push('The store carries no split configuration, so Adyen names no balance account for it.');
+  }
+
+  // 3. the account holder: the balance account's, else the id the admin passed
+  let ah: AccountHolderSummary | null = null;
+  const holderId = ba?.accountHolderId || String(opts.accountHolderId ?? '').trim() || null;
+  if (holderId) {
+    const r = await bcl<Dict>(cfg, 'GET', `/accountHolders/${encodeURIComponent(holderId)}`);
+    if (r.ok) {
+      ah = accountHolderSummary(r.data);
+      if (!ba?.accountHolderId) notes.push(`Account holder ${holderId} was read from the id given, not from the store.`);
+    } else errors.push(`account holder ${holderId}: ${refusalText(cfg, r, 'bpKey', 'the Balance Platform BCL role')}`);
+  } else if (ba) {
+    errors.push(`balance account ${ba.id} names no account holder.`);
+  } else {
+    notes.push('No account holder is reachable: the store names no balance account and no accountHolderId was given.');
+  }
+
+  // 3b. the store names no balance account but the holder is known: pick
+  //     one of the holder's (primary, else the one open account in the
+  //     region's currency, else the only one)
+  if (!ba && ah?.id) {
+    const r = await bcl<Dict>(cfg, 'GET', `/accountHolders/${encodeURIComponent(ah.id)}/balanceAccounts?limit=100`);
+    if (r.ok) {
+      const pick = pickBalanceAccount(r.data, { primaryId: ah.primaryBalanceAccount, currency: opts.currency });
+      if (pick) {
+        ba = balanceAccountSummary(pick, 'account_holder');
+        notes.push(`Balance account ${ba?.id} was taken from the account holder (its primary, or the one open account in ${opts.currency}); the store's split configuration at Adyen does not name it yet, so payments do not split into it until that is configured.`);
+      } else {
+        const n = Array.isArray((r.data as Dict)?.balanceAccounts) ? ((r.data as Dict).balanceAccounts as unknown[]).length : 0;
+        errors.push(`account holder ${ah.id} has ${n} balance account${n === 1 ? '' : 's'} and none could be chosen for ${opts.currency}.`);
+      }
+    } else errors.push(`balance accounts of ${ah.id}: ${refusalText(cfg, r, 'bpKey', 'the Balance Platform BCL role')}`);
+  }
+
+  // 4. the legal entity (KYC truth, legal name, bank accounts)
+  if (ah?.legalEntityId) {
+    const r = await lem<Dict>(cfg, 'GET', `/legalEntities/${encodeURIComponent(ah.legalEntityId)}`);
+    if (r.ok) out.legalEntity = legalEntitySummary(r.data);
+    else errors.push(`legal entity ${ah.legalEntityId}: ${refusalText(cfg, r, 'lemKey', 'the roles "Manage LegalEntities via API" and "Balance Platform BCL Legal Entity role"')}`);
+  } else if (ah) {
+    errors.push(`account holder ${ah.id} names no legal entity.`);
+  }
+
+  out.balanceAccount = ba;
+  out.accountHolder = ah;
+  return out;
+}
+
+// Durable audit trail for the link actions, the ledger adyen-onboard and the
+// probes use (platform adyen_webhook_events, event_key is the pk). Fire and
+// forget: a logging failure never fails the step it records.
+function logLink(step: string, locationId: string, raw: unknown) {
+  void platformAdmin.from('adyen_webhook_events').insert({
+    event_key: `link:${step}:${locationId}:${Date.now()}`,
+    raw,
+  }).then(() => {}, () => {});
+}
+
+// Run a registration half, turning a throw into its error line.
+async function attemptRegistration(label: string, run: () => Promise<RegistrationAnswer>): Promise<RegistrationAnswer> {
+  try { return await run(); } catch (e) { return { ok: false, error: `${label}: ${(e as Error)?.message || String(e)}` }; }
+}
 
 // Write a merchant_adyen_accounts row that names its region. Before
 // 20260908_PLATFORM_adyen_region_uk.sql runs, the OLD check constraint
@@ -572,28 +821,59 @@ Deno.serve(async (req) => {
     // live without the REGION'S live merchant account
     // (ADYEN_LIVE_UK_MERCHANT_ACCOUNT or ADYEN_LIVE_US_MERCHANT_ACCOUNT) is
     // refused outright: nothing sensible could be written into merchant_account.
-    if (action === 'set_environment') {
-      if (!isServosAdmin) return adminOnly();
-      const raw = String(body.environment ?? '').trim().toLowerCase();
-      if (raw !== 'test' && raw !== 'live') return json({ error: "environment must be 'test' or 'live'" }, 400);
-      const next = normalizeAdyenEnv(raw);
+    //
+    // The flip lives in flipEnvironment (8 Sep 2026) so adyen_link, which
+    // moves a venue to live with the ids it just pulled from Adyen, runs the
+    // SAME rules, the same reader registry and ops link clearing and the
+    // same merchant account rewrite, in one write.
+
+    // Web origins and Apple Pay domains for one config, best effort: both
+    // halves always answer, a storefront lookup failure answers both with
+    // its error, a throw becomes that half's error line. Shared by the go
+    // live tail of set_environment and by adyen_link.
+    const runRegistrations = async (regCfg: AdyenConfig, regMerchant: string, regStoreId: string | null): Promise<{ webOrigins: RegistrationAnswer; applePayDomains: RegistrationAnswer }> => {
+      let storefront: Storefront;
+      try { storefront = await storefrontFor(loc.id); } catch (e) {
+        const error = `storefront lookup: ${(e as Error)?.message || String(e)}`;
+        return { webOrigins: { ok: false, error }, applePayDomains: { ok: false, error } };
+      }
+      const sf = storefront;
+      const webOrigins = await attemptRegistration('web origins', () => registerWebOrigins(regCfg, sf.customDomain));
+      const applePayDomains = await attemptRegistration('Apple Pay domains', () => registerApplePayDomains(regCfg, regMerchant, regStoreId, sf));
+      return { webOrigins, applePayDomains };
+    };
+
+    // The flip. `reprovision` is the caller's yes to clearing setup made on
+    // the current environment. `extraPatch` rides on the SAME upsert, merged
+    // AFTER the reprovision clear (adyen_link's freshly pulled ids replace
+    // the cleared ones in one write). `registrations` runs the go live
+    // origins and Apple Pay tail; adyen_link passes false and runs its own
+    // with the store id it now holds. Answers { ok: false, status, body }
+    // for a refusal (returned as is) or the flip's outcome.
+    type FlipOutcome =
+      | { ok: false; status: number; body: Record<string, unknown> }
+      | { ok: true; reprovisioned: boolean; merchantNext: string | null; warnings: string[]; webOrigins: RegistrationAnswer | null; applePayDomains: RegistrationAnswer | null };
+    const flipEnvironment = async (next: AdyenEnv, opts: { reprovision: boolean; extraPatch?: Record<string, unknown>; registrations: boolean }): Promise<FlipOutcome> => {
       if (next === 'live' && next !== env && !liveCfg.merchantAccount) {
-        return json({ ok: false, error: `Set ${adyenSecretName('live', 'merchantAccount', region)} on the server first: the venue's ${region} live merchant account name comes from it.` }, 400);
+        return { ok: false, status: 400, body: { ok: false, error: `Set ${adyenSecretName('live', 'merchantAccount', region)} on the server first: the venue's ${region} live merchant account name comes from it.` } };
       }
       const provisionedOnCurrent = next !== env && (provisioned.length > 0 || readers > 0);
-      if (provisionedOnCurrent && body.reprovision !== true) {
+      if (provisionedOnCurrent && !opts.reprovision) {
         const parts = [
           provisioned.length ? 'payments store' : '',
           readers ? `${readers} card reader${readers === 1 ? '' : 's'}` : '',
         ].filter(Boolean);
         const verb = parts.length > 1 || readers > 1 ? 'were' : 'was';
-        return json({
-          ok: false,
-          needs_reprovision: true,
-          error: `This venue's ${parts.join(' and ')} ${verb} set up on the ${env} system. Switching to ${next} clears that setup: run store setup and register the readers again afterwards.`,
-          provisioned,
-          readers,
-        }, 409);
+        return {
+          ok: false, status: 409,
+          body: {
+            ok: false,
+            needs_reprovision: true,
+            error: `This venue's ${parts.join(' and ')} ${verb} set up on the ${env} system. Switching to ${next} clears that setup: run store setup and register the readers again afterwards.`,
+            provisioned,
+            readers,
+          },
+        };
       }
       // The row carries its region explicitly from here on (a new row would
       // otherwise take the database default; a legacy 'EU' row is rewritten
@@ -612,11 +892,13 @@ Deno.serve(async (req) => {
           receive_payments_ok: false, payouts_ok: false, verification_status: null,
         });
       }
+      if (opts.extraPatch) Object.assign(patch, opts.extraPatch);
+      const merchantWritten = next !== env ? (String(patch.merchant_account ?? '').trim() || null) : merchantWas;
       const { error: envErr, warning: regionWarning } = await upsertAccountRow(patch, 'location_id, environment');
       if (envErr) {
         const hint = /environment|42703|does not exist/i.test(envErr.message)
           ? ' (apply supabase/migrations/20260907_PLATFORM_adyen_environment.sql to the platform DB first)' : '';
-        return json({ ok: false, error: `environment write failed: ${envErr.message}${hint}` }, 500);
+        return { ok: false, status: 500, body: { ok: false, error: `environment write failed: ${envErr.message}${hint}` } };
       }
       if (provisionedOnCurrent && readers > 0) {
         // The platform registry rows point at readers boarded to the old
@@ -647,14 +929,16 @@ Deno.serve(async (req) => {
         warnings.push(`Live keys for the ${region} account are not fully configured (${liveMissing.join(', ')}): this venue will refuse every card call until they are set.`);
       }
       if (provisionedOnCurrent) {
-        warnings.push(`Store and reader setup from the ${env} system was cleared. Run store setup and register the readers again on ${next}.`);
+        warnings.push(opts.extraPatch
+          ? `Store and reader setup from the ${env} system was cleared and replaced with the ids pulled from Adyen. Register the readers again on ${next}.`
+          : `Store and reader setup from the ${env} system was cleared. Run store setup and register the readers again on ${next}.`);
       }
-      if (next !== env && merchantNext !== merchantWas) {
-        warnings.push(merchantNext
-          ? `The merchant account was switched to the ${region} ${next} account (${merchantNext})${merchantWas ? `, replacing ${merchantWas}` : ''}.`
+      if (next !== env && merchantWritten !== merchantWas) {
+        warnings.push(merchantWritten
+          ? `The merchant account was switched to the ${region} ${next} account (${merchantWritten})${merchantWas ? `, replacing ${merchantWas}` : ''}.`
           : `No ${region} ${next} merchant account is configured on the server; the venue's merchant account was cleared.`);
       }
-      console.log(`[adyen-terminal-admin] ${caller.id} set environment=${next} for ${loc.id} (${region}, was ${env}${provisionedOnCurrent ? ', reprovision' : ''})`);
+      console.log(`[adyen-terminal-admin] ${caller.id} set environment=${next} for ${loc.id} (${region}, was ${env}${provisionedOnCurrent ? ', reprovision' : ''}${opts.extraPatch ? ', via adyen_link' : ''})`);
       // Going live: the ServOS hosts go on the live credential's allowed
       // origins and the venue's storefront on the merchant's Apple Pay
       // domains, so the Drop-in and Apple Pay work on the new account
@@ -663,40 +947,37 @@ Deno.serve(async (req) => {
       // fails the flip (the admin portal's button runs both again).
       let webOrigins: RegistrationAnswer | null = null;
       let applePayDomains: RegistrationAnswer | null = null;
-      if (next === 'live' && next !== env) {
+      if (opts.registrations && next === 'live' && next !== env) {
         if (!liveReady) {
           const error = `Skipped: live keys for the ${region} account are not fully configured (${liveMissing.join(', ')}).`;
           webOrigins = { ok: false, skipped: true, error };
           applePayDomains = { ok: false, skipped: true, error };
         } else {
-          const attempt = async (label: string, run: () => Promise<RegistrationAnswer>): Promise<RegistrationAnswer> => {
-            try { return await run(); } catch (e) { return { ok: false, error: `${label}: ${(e as Error)?.message || String(e)}` }; }
-          };
-          let storefront: Storefront | null = null;
-          try { storefront = await storefrontFor(loc.id); } catch (e) {
-            const error = `storefront lookup: ${(e as Error)?.message || String(e)}`;
-            webOrigins = { ok: false, error };
-            applePayDomains = { ok: false, error };
-          }
-          if (storefront) {
-            const sf = storefront;
-            const liveMerchant = merchantNext || liveCfg.merchantAccount;
-            // A venue arriving on live never has a live store yet (a store id
-            // on the row belonged to the test account and was cleared above),
-            // so the merchant level Apple Pay entry is the only sensible
-            // target here. The admin portal's button, which passes the row's
-            // store id, covers the store scoped case once the live store exists.
-            const liveStoreId: string | null = null;
-            webOrigins = await attempt('web origins', () => registerWebOrigins(liveCfg, sf.customDomain));
-            applePayDomains = await attempt('Apple Pay domains', () => registerApplePayDomains(liveCfg, liveMerchant, liveStoreId, sf));
-          }
+          const liveMerchant = merchantWritten || liveCfg.merchantAccount;
+          // A venue arriving on live never has a live store yet (a store id
+          // on the row belonged to the test account and was cleared above),
+          // so the merchant level Apple Pay entry is the only sensible
+          // target here. The admin portal's button, which passes the row's
+          // store id, covers the store scoped case once the live store exists.
+          const liveStoreId: string | null = null;
+          ({ webOrigins, applePayDomains } = await runRegistrations(liveCfg, liveMerchant, liveStoreId));
         }
         console.log(`[adyen-terminal-admin] ${caller.id} go live registrations for ${loc.id}: origins ${webOrigins?.ok ? 'ok' : 'refused'}, apple pay ${applePayDomains?.ok ? 'ok' : 'refused'}`);
       }
+      return { ok: true, reprovisioned: provisionedOnCurrent, merchantNext: merchantWritten, warnings, webOrigins, applePayDomains };
+    };
+
+    if (action === 'set_environment') {
+      if (!isServosAdmin) return adminOnly();
+      const raw = String(body.environment ?? '').trim().toLowerCase();
+      if (raw !== 'test' && raw !== 'live') return json({ error: "environment must be 'test' or 'live'" }, 400);
+      const next = normalizeAdyenEnv(raw);
+      const flip = await flipEnvironment(next, { reprovision: body.reprovision === true, registrations: true });
+      if (!flip.ok) return json(flip.body, flip.status);
       return json({
         ok: true, environment: next, region, previous: env, liveConfigured: liveReady, liveRegionsConfigured: liveRegions,
-        reprovisioned: provisionedOnCurrent, warning: warnings.join(' ') || null,
-        web_origins: webOrigins, apple_pay_domains: applePayDomains,
+        reprovisioned: flip.reprovisioned, warning: flip.warnings.join(' ') || null,
+        web_origins: flip.webOrigins, apple_pay_domains: flip.applePayDomains,
       });
     }
 
@@ -718,6 +999,130 @@ Deno.serve(async (req) => {
       const r = await registerWebOrigins(originCfg, storefront.customDomain);
       console.log(`[adyen-terminal-admin] ${caller.id} register_origins for ${loc.id} on ${originCfg.region} ${originCfg.env}: added ${(r.added as string[] | undefined)?.length ?? 0}, existing ${(r.existing as string[] | undefined)?.length ?? 0}, failed ${(r.failed as unknown[] | undefined)?.length ?? 0}${r.error ? ` (${r.error})` : ''}`);
       return json({ action, ...r });
+    }
+
+    // ── adyen_lookup and adyen_link: PULL BY REFERENCE (OWNER RULES, 8 Sep 2026) ──
+    // super_admin only. The venue's REGION set on the target environment:
+    // LIVE by default (the owner links live venues), the test set only when
+    // the venue is still on test and asks for it (resolveLinkEnvironment).
+    // The merchant account is that set's; the row's name wins on the same
+    // environment, as everywhere else. Refused outright when the set is not
+    // configured: nothing could be pulled.
+    //   adyen_lookup { reference?, storeId?, accountHolderId?, environment? }
+    //     read only. { found, store, balanceAccount, accountHolder,
+    //     legalEntity, splitConfigurationId, businessLineIds, candidates,
+    //     errors, notes, patch, plan }: patch and plan say what a link would
+    //     write and do against the row as it is now.
+    //   adyen_link { reference?, storeId?, accountHolderId?, environment?, relink? }
+    //     the lookup, then ONE write: through flipEnvironment when the venue
+    //     moves environments (its rules, its clearing, its merchant rewrite,
+    //     the pulled ids on the same upsert), a plain upsert otherwise; then
+    //     origins and Apple Pay best effort with the store id it now holds.
+    //     Idempotent: the same ids again is a no op. 409 needs_relink when a
+    //     stored id would be replaced, or setup on the current environment
+    //     would be cleared, until relink: true.
+    if (action === 'adyen_lookup' || action === 'adyen_link') {
+      if (!isServosAdmin) return adminOnly();
+      const linkEnv = resolveLinkEnvironment(env, body.environment);
+      const linkCfg = linkEnv === 'live' ? liveCfg : testCfg;
+      const linkMissing = [...linkCfg.missing];
+      const merchantSecret = adyenSecretName(linkEnv, 'merchantAccount', region);
+      if (!linkCfg.merchantAccount && !linkMissing.includes(merchantSecret)) linkMissing.push(merchantSecret);
+      if (linkMissing.length) {
+        return json({
+          ok: false, environment: linkEnv, region, missing: linkMissing,
+          error: `The ${region} ${linkEnv} Adyen set is not configured on the server (missing ${linkMissing.join(', ')}), so nothing can be pulled from Adyen for this venue.`,
+        }, 400);
+      }
+      const merchant = effectiveMerchantAccount(linkCfg, linkEnv === env ? maa?.merchant_account : null);
+      const storeId = String(body.storeId ?? body.store_id ?? '').trim() || null;
+      const accountHolderId = String(body.accountHolderId ?? body.account_holder_id ?? '').trim() || null;
+      if (storeId && !/^ST[0-9A-Z]{10,}$/i.test(storeId)) return json({ error: 'storeId does not look like an Adyen store id (ST...)' }, 400);
+      if (accountHolderId && !/^AH[0-9A-Z]{10,}$/i.test(accountHolderId)) return json({ error: 'accountHolderId does not look like an Adyen account holder id (AH...)' }, 400);
+      const venueCode = await venueCodeFor(opsLocationId);
+      const reference = String(body.reference ?? '').trim().slice(0, 50) || venueCode;
+      const linkCurrency = region === 'US' ? 'USD' : 'GBP';
+      const lookup = await lookupByReference(linkCfg, merchant, reference, { storeId, accountHolderId, currency: linkCurrency });
+      const patch = lookup.found ? buildLinkPatch(lookup, { merchantAccount: merchant, region, environment: linkEnv }) : null;
+      const confirm = body.relink === true || body.reprovision === true;
+      // storeStatus feeds the refusal wording for a store that is not
+      // active (the decision itself reads patch.receive_payments_ok).
+      const plan = patch ? planLink({ row: maa, currentEnv: env, targetEnv: linkEnv, patch, provisioned, readers, relink: confirm, storeStatus: lookup.store?.status ?? null }) : null;
+      const summary = lookupSummary(lookup);
+      const errors = Array.isArray(lookup.errors) ? lookup.errors : [];
+      // provisioned and readers ride along so the admin portal's confirm can
+      // say exactly what a flip clears (the store ids, N card readers).
+      const base = { action, environment: linkEnv, previous: env, region, merchantAccount: merchant, venueCode, reference, summary, lookup, patch, plan, provisioned, readers };
+
+      if (action === 'adyen_lookup') {
+        logLink('lookup', loc.id, { environment: linkEnv, region, merchant, reference, storeId, found: lookup.found, summary, errors, candidates: Array.isArray(lookup.candidates) ? lookup.candidates.length : 0, plan: plan?.kind ?? null });
+        console.log(`[adyen-terminal-admin] ${caller.id} adyen_lookup ${reference ?? '(no reference)'} for ${loc.id} on ${merchant} (${region} ${linkEnv}): ${lookup.found ? 'found' : 'not found'}${errors.length ? ` (${errors.length} error${errors.length === 1 ? '' : 's'})` : ''}`);
+        return json({ ok: true, ...base });
+      }
+
+      // adyen_link
+      if (!lookup.found || !patch || !plan) {
+        logLink('link_not_found', loc.id, { environment: linkEnv, region, merchant, reference, storeId, summary, errors });
+        return json({ ok: false, error: summary, ...base }, 200);
+      }
+      if (plan.kind === 'noop') {
+        return json({ ok: true, unchanged: true, message: plan.reason, ...base, row: maa ?? null, reprovisioned: false, web_origins: null, apple_pay_domains: null, warnings: [], warning: null });
+      }
+      if (plan.kind === 'refuse') {
+        return json({ ok: false, needs_relink: true, error: plan.reason, ...base }, 409);
+      }
+      const warnings: string[] = [];
+      let reprovisioned = false;
+      if (plan.kind === 'flip') {
+        // The environment changes: set_environment's rules, clearing and
+        // merchant rewrite, with the pulled ids on the same upsert. The
+        // plan already required relink for setup on the current
+        // environment, so reprovision is given here.
+        const flip = await flipEnvironment(linkEnv, { reprovision: true, extraPatch: patch, registrations: false });
+        if (!flip.ok) return json({ ...flip.body, ...base }, flip.status);
+        reprovisioned = flip.reprovisioned;
+        warnings.push(...flip.warnings);
+      } else {
+        // Same environment. A CONFIRMED replacement (conflicts, relink
+        // given) clears every id the chain did not reach, the payout flag,
+        // the snapshot and the hosted onboarding link, so the OLD account
+        // holder's bank account never survives under the NEW balance
+        // account (8 Sep 2026). Filling blanks on a first link clears nothing.
+        const clear = plan.diff.conflicts.length ? replacementClear(patch) : {};
+        const { error: linkErr, warning: regionWarning } = await upsertAccountRow({ location_id: loc.id, ...clear, ...patch, updated_at: new Date().toISOString() }, 'location_id');
+        if (linkErr) return json({ ok: false, error: `link write failed: ${linkErr.message}`, ...base }, 500);
+        if (regionWarning) warnings.push(regionWarning);
+        if (plan.diff.conflicts.length) {
+          const cleared = Object.keys(clear).filter((k) => k !== 'onboarding_link_url' && k !== 'onboarding_link_expires_at');
+          if (cleared.length) warnings.push(`The previous ids were replaced; the pieces the lookup did not reach were cleared (${cleared.join(', ')}).`);
+        }
+      }
+      if (errors.length) warnings.push(`Linked with gaps, ${errors.length === 1 ? 'this piece' : 'these pieces'} could not be read: ${errors.join(' ')}`);
+      // Origins and Apple Pay on the linked set, best effort, with the store
+      // id the row now holds (a store scoped Apple Pay entry is preferred).
+      let webOrigins: RegistrationAnswer | null = null;
+      let applePayDomains: RegistrationAnswer | null = null;
+      if (linkEnv === 'live' && !liveReady) {
+        const error = `Skipped: live keys for the ${region} account are not fully configured (${liveMissing.join(', ')}).`;
+        webOrigins = { ok: false, skipped: true, error };
+        applePayDomains = { ok: false, skipped: true, error };
+      } else {
+        ({ webOrigins, applePayDomains } = await runRegistrations(linkCfg, merchant, String(patch.store_id ?? '').trim() || null));
+      }
+      // The same whitelist payments-admin adyen_accounts answers: never the
+      // hosted onboarding link (a bearer style URL) or a future secret column.
+      const { data: after, error: afterErr } = await platformAdmin.from('merchant_adyen_accounts')
+        .select('location_id, region, environment, merchant_account, store_id, account_holder_id, balance_account_id, legal_entity_id, split_profile_id, transfer_instrument_id, business_line_id, receive_payments_ok, payouts_ok, verification_status, updated_at')
+        .eq('location_id', loc.id).maybeSingle();
+      if (afterErr) warnings.push(`The row was written but could not be read back: ${afterErr.message}`);
+      const ids = Object.fromEntries(Object.entries(patch).filter(([k]) => k !== 'verification_status'));
+      logLink('link', loc.id, { environment: linkEnv, previous: env, region, merchant, reference, storeId, plan: plan.kind, diff: plan.diff, ids, reprovisioned, errors, warnings, origins: webOrigins?.ok ?? null, applePay: applePayDomains?.ok ?? null });
+      console.log(`[adyen-terminal-admin] ${caller.id} adyen_link ${reference ?? '(by id)'} for ${loc.id} on ${merchant} (${region} ${linkEnv}, was ${env}): ${plan.kind}, changed ${plan.diff.changed.join(', ') || 'nothing'}; origins ${webOrigins?.ok ? 'ok' : 'refused'}, apple pay ${applePayDomains?.ok ? 'ok' : 'refused'}`);
+      return json({
+        ok: true, ...base, reprovisioned, row: after ?? null,
+        web_origins: webOrigins, apple_pay_domains: applePayDomains,
+        warnings, warning: warnings.join(' ') || null,
+      });
     }
 
     // The row's name wins, unless it names the OTHER environment's secret
@@ -799,9 +1204,88 @@ Deno.serve(async (req) => {
 
     // ── ensure_store: the venue's physical store at Adyen + our mapping row ──
     // ADMIN (OWNER RULE): the store is created by ServOS, never by the venue.
-    if (action === 'ensure_store') {
+    // REFERENCE FIRST (8 Sep 2026): the venue code (or body.reference) is
+    // the store reference, and a store that already carries it on the
+    // merchant (created by FranPOS, by Adyen, or by an earlier run whose
+    // mapping write failed) is MAPPED, never created twice. Only when none
+    // exists is one created, with that reference.
+    // adyen_create_store_by_reference is the same action with the reference
+    // required: it refuses when the venue has no venue code.
+    if (action === 'ensure_store' || action === 'adyen_create_store_by_reference') {
       if (!isServosAdmin) return adminOnly();
-      if (maa?.store_id) return json({ ok: true, storeId: maa.store_id, existing: true });
+      // The TARGET account (8 Sep 2026): adyen_create_store_by_reference
+      // creates on the account adyen_lookup looked on (resolveLinkEnvironment:
+      // live by default, test only while the venue is on test and asks),
+      // never on the venue's current environment by accident. Before this a
+      // test venue whose LIVE lookup found nothing was offered "Create store
+      // with reference SV-1007" and the store landed on the TEST merchant
+      // (or, worse, its test store id came back as "existing"). Plain
+      // ensure_store keeps the venue's own environment and merchant.
+      const byReference = action === 'adyen_create_store_by_reference';
+      const storeEnv = byReference ? resolveLinkEnvironment(env, body.environment) : env;
+      const crossEnv = storeEnv !== env;
+      const storeCfg = crossEnv ? (storeEnv === 'live' ? liveCfg : testCfg) : cfg;
+      if (crossEnv) {
+        const storeMissing = [...storeCfg.missing];
+        const storeMerchantSecret = adyenSecretName(storeEnv, 'merchantAccount', region);
+        if (!storeCfg.merchantAccount && !storeMissing.includes(storeMerchantSecret)) storeMissing.push(storeMerchantSecret);
+        if (storeMissing.length) {
+          return json({
+            ok: false, environment: storeEnv, region, missing: storeMissing,
+            error: `The ${region} ${storeEnv} Adyen set is not configured on the server (missing ${storeMissing.join(', ')}), so no store can be created there.`,
+          }, 200);
+        }
+      }
+      const storeMerchant = crossEnv ? effectiveMerchantAccount(storeCfg, null) : merchant;
+      // The mapped store belongs to the venue's CURRENT environment, so it
+      // only answers "existing" on that environment: a test venue asking
+      // for its live store is never handed its test store id.
+      if (maa?.store_id && !crossEnv) return json({ ok: true, storeId: maa.store_id, existing: true, foundByReference: false, mapped: true, environment: env, region });
+      // Across environments the row is NOT written: a live store id on a
+      // test row would be a mixed identity (and would count as test setup
+      // for the next flip). The store is found or created on the target
+      // account and adyen_link, whose lookup now finds it, maps it while it
+      // moves the venue there.
+      const crossHint = `The store is on the ${region} ${storeEnv} account; the venue stays on ${env}. Link to Adyen now: the ${storeEnv} lookup finds it and the link moves the venue with its ids.`;
+      const venueCode = await venueCodeFor(opsLocationId);
+      const reference = String(body.reference ?? '').trim().slice(0, 50) || venueCode;
+      if (byReference && !reference) {
+        return json({ ok: false, error: 'This venue has no venue code, so there is no store reference to create with. Set one in the Back Office (Venue settings) or pass reference.' }, 200);
+      }
+      if (reference) {
+        const found = await findStoreByReference(storeCfg, storeMerchant, reference);
+        if (found.scopeMissing) return json({ ok: false, error: 'scope_missing', detail: found.errors.join(' ') }, 200);
+        if (found.ambiguous) {
+          return json({
+            ok: false,
+            error: `${found.matches.length} stores on ${storeMerchant} carry the reference ${reference}. Link one of them with adyen_link and its storeId instead of creating another.`,
+            candidates: storeCandidates(found.matches, reference),
+          }, 200);
+        }
+        if (found.store) {
+          const s = storeSummary(found.store)!;
+          let mapWarning: string | null = null;
+          if (!crossEnv) {
+            // The mapping names what Adyen holds for the store: its id, and
+            // its split configuration and balance account when it carries
+            // them. adyen_link pulls the account holder and legal entity too.
+            const mapping: Record<string, unknown> = { location_id: loc.id, merchant_account: storeMerchant, store_id: s.id, receive_payments_ok: s.status === 'active', region };
+            if (s.splitConfigurationId) mapping.split_profile_id = s.splitConfigurationId;
+            if (s.balanceAccountId) mapping.balance_account_id = s.balanceAccountId;
+            const { error: mapErr, warning } = await upsertAccountRow(mapping);
+            if (mapErr) return json({ ok: false, error: `store ${s.id} found by reference but mapping write failed: ${mapErr.message}` }, 500);
+            mapWarning = warning;
+          }
+          logLink('store_found_by_reference', loc.id, { environment: storeCfg.env, region, merchant: storeMerchant, reference, storeId: s.id, status: s.status, mapped: !crossEnv });
+          console.log(`[adyen-terminal-admin] ${caller.id} ${action} ${crossEnv ? 'found' : 'mapped existing'} store ${s.id} (reference ${reference}) for ${loc.id} on ${storeMerchant} (${region} ${storeCfg.env})`);
+          return json({
+            ok: true, storeId: s.id, existing: true, foundByReference: true, mapped: !crossEnv, reference: s.reference, store: s,
+            environment: storeCfg.env, region, warning: mapWarning,
+            hint: crossEnv ? crossHint : s.status === 'active' ? 'Run adyen_link to pull the balance account, account holder and legal entity too.' : `The store is ${s.status ?? 'not active'} at Adyen.`,
+          });
+        }
+        if (found.errors.length) return json({ ok: false, error: found.errors.join(' ') }, 200);
+      }
       const a = (body.address || {}) as Record<string, string>;
       const phone = String(body.phone || '').replace(/[^\d+]/g, '');
       // The store is the record Adyen keeps for the venue (compliance,
@@ -809,16 +1293,9 @@ Deno.serve(async (req) => {
       // on LIVE the real address and phone are required (8 Sep 2026: the
       // panel used to create live stores at "1 High Street, London" with a
       // made up phone number).
-      if (cfg.live && (!a.line1 || !a.city || !a.postal_code || !phone)) {
+      if (storeCfg.live && (!a.line1 || !a.city || !a.postal_code || !phone)) {
         return json({ ok: false, error: 'A live store needs the venue address (street, town, postcode) and a phone number.' }, 200);
       }
-      // The venue's short code as the store reference: adyen-onboard
-      // list_stores matches a store to its venue on it.
-      let venueCode: string | null = null;
-      try {
-        const { data: opsLoc } = await opsAdmin.from('locations').select('venue_code').eq('id', opsLocationId).maybeSingle();
-        venueCode = opsLoc?.venue_code ? String(opsLoc.venue_code) : null;
-      } catch { /* the reference is a convenience */ }
       const payload: Record<string, unknown> = {
         description: String(body.description || loc.name || 'ServOS venue').slice(0, 100),
         shopperStatement: String(body.shopper_statement || loc.name || 'ServOS').replace(/[^a-zA-Z0-9 .,'-]/g, '').slice(0, 22) || 'ServOS',
@@ -830,20 +1307,32 @@ Deno.serve(async (req) => {
           postalCode: String(a.postal_code || 'EC1A 1AA'),
         },
       };
-      if (venueCode) payload.reference = venueCode.slice(0, 50);
-      const r = await mgmt(cfg, 'POST', `/merchants/${merchant}/stores`, payload);
+      // The venue's short code as the store reference: the pull by
+      // reference actions and adyen-onboard list_stores match a store to
+      // its venue on it.
+      if (reference) payload.reference = reference;
+      const r = await mgmt(storeCfg, 'POST', `/merchants/${storeMerchant}/stores`, payload);
       if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
       if (!r.ok) return json({ ok: false, error: (r.data as Record<string, unknown>)?.detail || (r.data as Record<string, unknown>)?.title || `store create failed (${r.status})` }, 200);
       const storeId = String((r.data as Record<string, unknown>).id || '');
-      // The row names the region the store was created on ('UK' | 'US'; a
-      // legacy 'EU' row is rewritten to 'UK'). upsertAccountRow retries a
-      // 'UK' the old check refuses and reports the migration as a warning:
-      // the store exists at Adyen, so the mapping must land either way.
-      const mapping: Record<string, unknown> = { location_id: loc.id, merchant_account: merchant, store_id: storeId, receive_payments_ok: true, region };
-      const { error: upErr, warning: regionWarning } = await upsertAccountRow(mapping);
-      if (upErr) return json({ ok: false, error: `store created (${storeId}) but mapping write failed: ${upErr.message}` }, 500);
-      const pm = await ensurePaymentMethods(cfg, merchant, storeId, market);
-      return json({ ok: true, storeId, existing: false, paymentMethods: pm, environment: cfg.env, region, reference: venueCode, warning: regionWarning });
+      let regionWarning: string | null = null;
+      if (!crossEnv) {
+        // The row names the region the store was created on ('UK' | 'US'; a
+        // legacy 'EU' row is rewritten to 'UK'). upsertAccountRow retries a
+        // 'UK' the old check refuses and reports the migration as a warning:
+        // the store exists at Adyen, so the mapping must land either way.
+        const mapping: Record<string, unknown> = { location_id: loc.id, merchant_account: storeMerchant, store_id: storeId, receive_payments_ok: true, region };
+        const { error: upErr, warning } = await upsertAccountRow(mapping);
+        if (upErr) return json({ ok: false, error: `store created (${storeId}) but mapping write failed: ${upErr.message}` }, 500);
+        regionWarning = warning;
+      }
+      const pm = await ensurePaymentMethods(storeCfg, storeMerchant, storeId, market);
+      logLink('store_created', loc.id, { environment: storeCfg.env, region, merchant: storeMerchant, reference, storeId, mapped: !crossEnv });
+      console.log(`[adyen-terminal-admin] ${caller.id} ${action} created store ${storeId} (reference ${reference ?? '(none)'}) for ${loc.id} on ${storeMerchant} (${region} ${storeCfg.env}${crossEnv ? ', not mapped' : ''})`);
+      return json({
+        ok: true, storeId, existing: false, foundByReference: false, mapped: !crossEnv, paymentMethods: pm,
+        environment: storeCfg.env, region, reference, warning: regionWarning, hint: crossEnv ? crossHint : null,
+      });
     }
 
     // Everything below needs the store mapping.
