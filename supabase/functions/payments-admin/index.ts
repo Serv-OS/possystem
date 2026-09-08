@@ -183,6 +183,76 @@ Deno.serve(async (req) => {
     return json({ accounts: data ?? [] });
   }
 
+  // ── adyen_accounts: the Adyen link state of MANY venues in one read ─────
+  //    (8 Sep 2026, the admin Processing list). merchant_adyen_accounts is
+  //    RLS service-role-only, so the compact rows (region, environment,
+  //    Linked, Store, KYC, Payouts) are read here, the ryft_status pattern,
+  //    once for the whole list instead of one Adyen probe per venue. The
+  //    fields are WHITELISTED: never the onboarding link or anything secret.
+  //    The venue codes (ops locations.venue_code, the Adyen store reference)
+  //    ride along keyed by the PLATFORM location id, through
+  //    locations.ops_location_id (THE ops mapping), so the admin needs no
+  //    ops RLS of its own. Multi-location, so handled BEFORE the
+  //    single-location_id requirement below.
+  if (action === 'adyen_accounts') {
+    const ids: string[] = Array.isArray(body?.location_ids)
+      ? body.location_ids.filter((x: unknown) => typeof x === 'string' && x.trim()).map((x: string) => x.trim()).slice(0, 500)
+      : [];
+    if (!ids.length) return json({ ok: true, accounts: [], venue_codes: {} });
+    const FIELDS = [
+      'location_id', 'region', 'environment', 'merchant_account', 'store_id', 'account_holder_id',
+      'balance_account_id', 'legal_entity_id', 'split_profile_id', 'transfer_instrument_id', 'business_line_id',
+      'receive_payments_ok', 'payouts_ok', 'verification_status', 'updated_at',
+    ];
+    // .in() serialises the ids into the query string (about 40 bytes each):
+    // 500 in one GET is about 20 KB, past the request line limit of the
+    // gateway in front of PostgREST, so every read below runs in chunks of
+    // IN_CHUNK ids and the pages are concatenated (8 Sep 2026).
+    const IN_CHUNK = 100;
+    const chunked = (xs: string[]): string[][] => {
+      const out: string[][] = [];
+      for (let i = 0; i < xs.length; i += IN_CHUNK) out.push(xs.slice(i, i + IN_CHUNK));
+      return out;
+    };
+    const data: Array<Record<string, unknown>> = [];
+    for (const part of chunked(ids)) {
+      const { data: page, error } = await platformAdmin.from('merchant_adyen_accounts').select('*').in('location_id', part);
+      if (error) return json({ error: `accounts read failed: ${error.message}` }, 500);
+      data.push(...((page ?? []) as Array<Record<string, unknown>>));
+    }
+    const accounts = data.map((r: Record<string, unknown>) => Object.fromEntries(FIELDS.filter((k) => k in r).map((k) => [k, r[k]])));
+    const venue_codes: Record<string, string> = {};
+    const notes: string[] = [];
+    try {
+      const plocs: Array<Record<string, unknown>> = [];
+      for (const part of chunked(ids)) {
+        const { data: page, error: plErr } = await platformAdmin.from('locations').select('id, ops_location_id').in('id', part);
+        if (plErr) throw plErr;
+        plocs.push(...((page ?? []) as Array<Record<string, unknown>>));
+      }
+      const opsIdFor: Record<string, string> = {};
+      for (const l of plocs) opsIdFor[String(l.id)] = String(l.ops_location_id || l.id);
+      const opsIds = Array.from(new Set(Object.values(opsIdFor)));
+      if (opsIds.length) {
+        const olocs: Array<Record<string, unknown>> = [];
+        for (const part of chunked(opsIds)) {
+          const { data: page, error: olErr } = await opsAdmin.from('locations').select('id, venue_code').in('id', part);
+          if (olErr) throw olErr;
+          olocs.push(...((page ?? []) as Array<Record<string, unknown>>));
+        }
+        const codeByOps: Record<string, string> = {};
+        for (const o of olocs) {
+          const code = String(o.venue_code ?? '').trim();
+          if (code) codeByOps[String(o.id)] = code;
+        }
+        for (const [pid, oid] of Object.entries(opsIdFor)) if (codeByOps[oid]) venue_codes[pid] = codeByOps[oid];
+      }
+    } catch (e) {
+      notes.push(`venue codes could not be read: ${(e as Error)?.message || String(e)}`);
+    }
+    return json({ ok: true, accounts, venue_codes, notes });
+  }
+
   // ── adyen_pricing v2: get/set the ServOS Payments TIERED RATE CARD ──────
   //    Four tiers (v5.7.3, the model every competitor uses):
   //      card_present      in-person credit AND debit — one fee

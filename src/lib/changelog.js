@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.39',
+    date: '8 Sep 2026',
+    items: [
+      'Admin portal, Processing: Link to Adyen. Look up a venue on Adyen by its reference (the venue code, for example SV-1007) and pull the store, balance account, account holder and legal entity in one go. Link and go live writes them, moves the venue to live, and registers web origins and Apple Pay domains. One confirm box states exactly what changes. Nothing is typed by hand.',
+      'Processing list is now compact: one row per venue with region, environment, Linked, Holder, KYC and Payouts chips, a search box, and one expanded venue at a time. The four payout onboarding buttons are gone. The manual id form sits under Advanced as a fallback.',
+      'Store registration finds an existing Adyen store by the venue reference before ever creating one.',
+    ],
+  },
+  {
     v: '5.8.38',
     date: '8 Sep 2026',
     items: [
