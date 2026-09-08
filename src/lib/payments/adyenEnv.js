@@ -179,6 +179,21 @@ export function assertAdyenConfigured(cfg) {
   return cfg;
 }
 
+// The merchant account a venue's Adyen calls go out with. MIRROR of
+// _shared/adyen.ts effectiveMerchantAccount (8 Sep 2026). The venue row's
+// merchant_account wins over the secret set's, EXCEPT when the row names the
+// OTHER environment's secret account (a venue flipped to live while its row
+// still said FranPOS_ServOS_TEST): then this environment's secret account is
+// used. `get` reads the secrets (the other set's merchant account name).
+export function effectiveMerchantAccount(cfg, rowMerchant, get) {
+  const row = String(rowMerchant ?? '').trim();
+  const mine = String(cfg?.merchantAccount ?? '').trim();
+  if (!row) return mine;
+  const other = String(get(adyenSecretName(cfg?.live ? 'test' : 'live', 'merchantAccount')) ?? '').trim();
+  if (mine && other && row.toLowerCase() === other.toLowerCase() && row.toLowerCase() !== mine.toLowerCase()) return mine;
+  return row;
+}
+
 // What the standard webhook receiver does with one item, given the config the
 // notification's own live flag selected. MIRROR of _shared/adyen.ts.
 //   'reject'        live notification, live HMAC key not set: the test key must

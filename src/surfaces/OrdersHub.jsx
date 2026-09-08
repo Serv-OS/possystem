@@ -397,6 +397,45 @@ export default function OrdersHub() {
   // (capped at the held amount — Stripe rejects over-capture), marks
   // every round on this PI as collected, writes ONE closed_check covering
   // the full bill.
+  // 8 Sep 2026: release an Adyen tab's hold WITHOUT charging (a walked out or
+  // abandoned tab, or a zero bill). tab_cancel voids the pre-authorisation at
+  // Adyen so the guest's bank releases it now instead of at expiry (up to 28
+  // days). The rounds are marked collected with customer.tab_cancelled so the
+  // tab leaves the hub and history shows why nothing was charged.
+  const releaseAdyenHold = async ({ pspReference, locationId, rows, label }) => {
+    if (closingTabRef) return false;
+    if (isTrainingMode()) { showToast('Training mode — live tabs are not charged or closed here', 'info'); return false; }
+    if (!pspReference) { showToast('This tab has no card hold to release', 'error'); return false; }
+    if (!confirm(`Release the card hold on ${label} without charging?\n\nThe held amount goes back to the customer's bank and NOTHING is charged. Any items ordered are written off.`)) return false;
+    setClosingTabRef(pspReference);
+    try {
+      const r = await adyenTab('tab_cancel', {
+        location_id: locationId,
+        psp_reference: pspReference,
+        reference: `tabcancel:${rows?.[0]?.ref || pspReference}`.slice(0, 60),
+      });
+      if (!r?.ok) throw new Error(r?.error || 'Adyen refused the release');
+      const now = new Date().toISOString();
+      for (const r0 of rows || []) {
+        if (!r0?.id) continue;
+        try {
+          await supabase.from('order_queue')
+            .update({ status: 'collected', customer: { ...(r0.customer || {}), tab_closed: true, tab_cancelled: true, tab_cancelled_at: now } })
+            .eq('id', r0.id).eq('location_id', getActiveLocationSync());
+          if (r0.ref) updateQueueStatus(r0.ref, 'collected');
+        } catch (e) { console.warn('[releaseAdyenHold] mark-collected:', e?.message); }
+      }
+      showToast(`${label}: hold released, nothing charged`, 'success');
+      return true;
+    } catch (e) {
+      console.error('[releaseAdyenHold] failed:', e);
+      showToast(`Release failed: ${e?.message || 'unknown'}`, 'error');
+      return false;
+    } finally {
+      setClosingTabRef(null);
+    }
+  };
+
   const forceCloseQrTab = async (tab) => {
     if (closingTabRef) return;
     // TRAINING MODE: these are REAL customer tabs (synced in). Never capture a card
@@ -425,6 +464,12 @@ export default function OrdersHub() {
       }
     }
     const finalTotal = +(tab.total + surcharge).toFixed(2);
+    // An Adyen tab with nothing to charge: Adyen refuses a zero capture, so
+    // release the hold instead (8 Sep 2026).
+    if (tab.processor === 'adyen' && finalTotal <= 0) {
+      await releaseAdyenHold({ pspReference: tab.payment_intent_id, locationId: tab.firstRow?.location_id, rows: tab.rows, label: `Table ${tab.tableLabel}` });
+      return;
+    }
     // v5.5.160: ALWAYS request the full bill. The capture endpoint clamps
     // to the actual amount_capturable on the PI and reports any shortfall;
     // we then charge the difference off_session on the saved payment_method
@@ -678,8 +723,14 @@ export default function OrdersHub() {
     if (isTrainingMode()) { showToast('Training mode — live tabs are not charged or closed here', 'info'); return; }
     const pi = o.customer?.payment_intent_id;
     const acct = o.customer?.stripe_account;
-    if (!pi || !acct) {
+    const isAdyenTab = o.customer?.processor === 'adyen';
+    // An Adyen tab has no Stripe account; its psp reference is enough.
+    if (!pi || (!acct && !isAdyenTab)) {
       showToast(`${shortOrderRef(o.ref)}: no payment intent on this tab — can't capture`, 'error');
+      return;
+    }
+    if (isAdyenTab && Number(o.total || 0) <= 0) {
+      await releaseAdyenHold({ pspReference: pi, locationId: o.location_id, rows: [o], label: shortOrderRef(o.ref) });
       return;
     }
 
@@ -1010,6 +1061,9 @@ export default function OrdersHub() {
                     <QrTabCard key={t.key}
                       tab={t}
                       onForceClose={() => forceCloseQrTab(t)}
+                      onRelease={t.processor === 'adyen' && t.isOpenTab
+                        ? () => releaseAdyenHold({ pspReference: t.payment_intent_id, locationId: t.firstRow?.location_id, rows: t.rows, label: `Table ${t.tableLabel}` })
+                        : null}
                       onAdvance={() => t.firstRow && advance(t.firstRow)}
                       closingTab={closingTabRef === (t.payment_intent_id || t.key)}/>
                   ))}
@@ -1197,7 +1251,7 @@ export default function OrdersHub() {
 // v5.5.157: pooled QR-tab card. One per payment_intent_id, even when the
 // customer has added multiple rounds. Shows running total, rounds count,
 // time open, single Force-close button that captures the lot.
-function QrTabCard({ tab, onForceClose, onAdvance, closingTab }) {
+function QrTabCard({ tab, onForceClose, onRelease, onAdvance, closingTab }) {
   const ageMin = tab.tabOpenedAt ? Math.round((Date.now() - new Date(tab.tabOpenedAt).getTime()) / 60_000) : 0;
   const headerColor = tab.isOpenTab ? '#10b981' : '#22d3ee'; // emerald for tabs, cyan for paid
   return (
@@ -1248,14 +1302,26 @@ function QrTabCard({ tab, onForceClose, onAdvance, closingTab }) {
         <span style={{ fontSize:18, fontWeight:900, color:'var(--acc)', fontFamily:'var(--font-mono)' }}>{money(tab.total)}</span>
         <span style={{ fontSize:10, color:'var(--t4)' }}>{tab.isOpenTab ? 'running total' : 'paid'}</span>
         {tab.isOpenTab ? (
-          <button onClick={onForceClose} disabled={!!closingTab} style={{
-            marginLeft:'auto', padding:'6px 14px', borderRadius:8,
-            cursor: closingTab ? 'wait' : 'pointer', fontFamily:'inherit',
-            background:'#f59e0b', border:'none', color:'#0b0c10',
-            fontSize:12, fontWeight:800, opacity: closingTab ? 0.6 : 1,
-          }}>
-            {closingTab ? 'Capturing…' : '🔒 Close & charge'}
-          </button>
+          <>
+            {onRelease && (
+              <button onClick={onRelease} disabled={!!closingTab} title="Void the card hold without charging (walked out, abandoned, nothing to pay)" style={{
+                marginLeft:'auto', padding:'6px 10px', borderRadius:8,
+                cursor: closingTab ? 'wait' : 'pointer', fontFamily:'inherit',
+                background:'transparent', border:'1px solid var(--bdr2)', color:'var(--t2)',
+                fontSize:12, fontWeight:700, opacity: closingTab ? 0.6 : 1,
+              }}>
+                Release hold
+              </button>
+            )}
+            <button onClick={onForceClose} disabled={!!closingTab} style={{
+              marginLeft: onRelease ? 0 : 'auto', padding:'6px 14px', borderRadius:8,
+              cursor: closingTab ? 'wait' : 'pointer', fontFamily:'inherit',
+              background:'#f59e0b', border:'none', color:'#0b0c10',
+              fontSize:12, fontWeight:800, opacity: closingTab ? 0.6 : 1,
+            }}>
+              {closingTab ? 'Capturing…' : '🔒 Close & charge'}
+            </button>
+          </>
         ) : (
           <button onClick={onAdvance} style={{
             marginLeft:'auto', padding:'6px 14px', borderRadius:8,

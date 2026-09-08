@@ -35,7 +35,7 @@ import {
 } from '../_shared/bookingOptimiser.js';
 import {
   adyenConfig, adyenAccountForLocation, platformLocationIdFor, checkoutBase, adyenFetch,
-  adyenNotConfiguredMessage, paymentIdempotencyKey, type AdyenConfig,
+  adyenNotConfiguredMessage, paymentIdempotencyKey, effectiveMerchantAccount, type AdyenConfig,
 } from '../_shared/adyen.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
@@ -74,7 +74,8 @@ async function adyenCfgForOps(opsLocationId: string): Promise<{ cfg: AdyenConfig
   if (!platformId) throw new VenueNotFound();
   const { env, row } = await adyenAccountForLocation<{ merchant_account?: string | null }>(platformAdmin, platformId, ['merchant_account']);
   const cfg = adyenConfig(env);
-  return { cfg, merchantAccount: String(row?.merchant_account || cfg.merchantAccount || ''), platformId };
+  // Never the OTHER environment's merchant name on this host (8 Sep 2026).
+  return { cfg, merchantAccount: effectiveMerchantAccount(cfg, row?.merchant_account), platformId };
 }
 // Is this config usable for taking a card in the widget? The Drop-in needs
 // the client key, the payment needs a merchant account, and live needs the

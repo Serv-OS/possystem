@@ -1,4 +1,7 @@
--- 20260821_adyen_bp_events.sql — BALANCE PLATFORM webhook landing table (OPS DB tbetcegmszzotrwdtqhi)
+-- 20260821_adyen_bp_events.sql — BALANCE PLATFORM webhook landing table (PLATFORM DB yhzjgyrkyjabvhblqxzu)
+-- (8 Sep 2026: the header used to say OPS; the table was applied to the PLATFORM
+-- project, beside merchant_adyen_accounts and adyen_payouts, and adyen-bp-webhook
+-- now writes it through its platform client.)
 -- ⚠ HAND-APPLY (production DDL is blocked for tooling): pbcopy < this file → SQL editor.
 --
 -- Phase 4 of ServOS Payments: per-venue payout onboarding. Adyen's BALANCE

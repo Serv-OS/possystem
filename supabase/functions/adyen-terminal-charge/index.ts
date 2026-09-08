@@ -42,7 +42,7 @@ import {
   terminalEndpoint, adyenFetch, checkoutBase,
   buildPaymentRequest, buildTransactionStatusRequest, buildAbortRequest,
   parsePaymentResponse, newServiceId,
-  adyenConfig, adyenEnvForLocation, adyenNotConfiguredMessage, type AdyenConfig,
+  adyenConfig, adyenEnvForLocation, adyenNotConfiguredMessage, effectiveMerchantAccount, type AdyenConfig,
 } from '../_shared/adyen.ts';
 import { insertCaptureRow } from '../_shared/tip_capture.ts';
 
@@ -339,7 +339,11 @@ Deno.serve(async (req) => {
           .select('merchant_account, store_id, region').eq('location_id', platformLocId).maybeSingle(),
         adyenEnvForLocation(platformAdmin, platformLocId),
       ]);
-      return { maa, cfg: adyenConfig(env) };
+      const cfg = adyenConfig(env);
+      // A row still naming the OTHER environment's merchant account (flipped
+      // before set_environment rewrote it) must not reach the live host.
+      if (maa) maa.merchant_account = effectiveMerchantAccount(cfg, maa.merchant_account) || null;
+      return { maa, cfg };
     };
 
     if (action === 'hold_start') {
@@ -656,13 +660,18 @@ Deno.serve(async (req) => {
       adyenEnvForLocation(platformAdmin, platformLocId),
     ]);
     const cfg = adyenConfig(env);
+    // A row still naming the OTHER environment's merchant account (flipped
+    // before set_environment rewrote it) must not reach the live host.
+    if (maa) maa.merchant_account = effectiveMerchantAccount(cfg, maa.merchant_account) || null;
 
     // Drift-reconcile the POIID against platform payment_devices — the exact
     // guard that saved the Ryft path (ops column can go stale on re-pair).
+    // Retired rows (readers from a previous environment, cleared by
+    // set_environment reprovision) are not authoritative for anything.
     let poiid = term?.adyen_terminal_id as string | null;
     const { data: pds } = await platformAdmin.from('payment_devices')
       .select('adyen_terminal_id').eq('location_id', platformLocId)
-      .eq('processor', 'adyen').not('adyen_terminal_id', 'is', null);
+      .eq('processor', 'adyen').not('adyen_terminal_id', 'is', null).neq('status', 'retired');
     const ids = Array.isArray(pds) ? pds.map((r) => r.adyen_terminal_id as string).filter(Boolean) : [];
     if (poiid && ids.length && !ids.includes(poiid) && ids.length === 1) {
       console.log(`adyen-terminal-charge: ops POIID ${poiid} absent from payment_devices; using authoritative ${ids[0]} (job ${job.id})`);

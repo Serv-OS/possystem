@@ -22,7 +22,7 @@
 //   npx supabase functions deploy adyen-modify --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { adyenConfig, adyenEnvForLocation, checkoutBase, adyenFetch, adyenNotConfiguredMessage } from '../_shared/adyen.ts';
+import { adyenConfig, adyenEnvForLocation, checkoutBase, adyenFetch, adyenNotConfiguredMessage, effectiveMerchantAccount } from '../_shared/adyen.ts';
 import { applyTipToClosedCheck, isOvercaptureRefusal } from '../_shared/tip_capture.ts';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -211,7 +211,8 @@ Deno.serve(async (req) => {
     if (!merchant) {
       const { data: maa0 } = await platformAdmin.from('merchant_adyen_accounts')
         .select('merchant_account').eq('location_id', ploc.id).maybeSingle();
-      merchant = maa0?.merchant_account ?? null;
+      // Never the OTHER environment's merchant name on this host (8 Sep 2026).
+      merchant = effectiveMerchantAccount(cfg, maa0?.merchant_account) || null;
     }
     if (!merchant) return json({ error: 'venue has no Adyen account' }, 409);
     const base = checkoutBase(cfg);
@@ -314,6 +315,9 @@ Deno.serve(async (req) => {
 
   const { data: maa } = await platformAdmin.from('merchant_adyen_accounts')
     .select('merchant_account').eq('location_id', ploc.id).maybeSingle();
+  // A row still naming the OTHER environment's merchant account (flipped
+  // before set_environment rewrote it) must not reach the live host.
+  if (maa) maa.merchant_account = effectiveMerchantAccount(cfg, maa.merchant_account) || null;
   if (!maa?.merchant_account) return json({ error: 'venue has no Adyen account' }, 409);
 
   // ── VENUE BINDING + PSP RESOLUTION ────────────────────────────────────────

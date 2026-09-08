@@ -23,7 +23,7 @@
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import {
   adyenConfig, adyenAccountForLocation, adyenFallbackEnv, platformLocationIdFor, isUnknownColumnError,
-  checkoutBase, adyenFetch, adyenNotConfiguredMessage, maskMerchantAccount, paymentIdempotencyKey,
+  checkoutBase, adyenFetch, adyenNotConfiguredMessage, maskMerchantAccount, paymentIdempotencyKey, effectiveMerchantAccount,
   type AdyenConfig,
 } from '../_shared/adyen.ts';
 
@@ -92,7 +92,10 @@ async function resolveVenue(id?: string): Promise<Venue> {
   // exists under its merchant account), the way adyen-create-session and the
   // terminal path already send them. The secret set's account is the fallback
   // for a venue with no row.
-  const merchantAccount = String(row?.merchant_account || cfg.merchantAccount || '');
+  // 8 Sep 2026: a row still naming the OTHER environment's secret account
+  // (a venue flipped to live before set_environment rewrote merchant_account)
+  // falls back to this environment's secret account.
+  const merchantAccount = effectiveMerchantAccount(cfg, row?.merchant_account);
   const store = row?.receive_payments_ok && row?.store_id ? String(row.store_id) : null;
   return { known: true, platformLocationId, cfg, merchantAccount, store };
 }
@@ -175,6 +178,11 @@ Deno.serve(async (req) => {
     // may run against the fallback environment. status still answers (the
     // admin portal probes venues by id) but says the venue is unknown.
     if (!venue.known && action !== 'status') return json({ error: 'location not found' }, 404);
+    // No venue named = the ADYEN_ENV fallback set. That is fine for the admin
+    // portal's status probe and for nothing else: a money action without a
+    // venue would run a live venue's card, hold or capture on the test host
+    // (8 Sep 2026).
+    if (!String(body.location_id ?? '').trim() && action !== 'status') return json({ error: 'location_id required' }, 400);
     if (!cfg.configured || !merchantAccount || !cfg.clientKey) {
       return json({ error: cfg.live ? adyenNotConfiguredMessage(cfg) : 'Adyen is not configured on this environment' }, 500);
     }
@@ -213,6 +221,7 @@ Deno.serve(async (req) => {
       };
       if (body.shopper_email) session.shopperEmail = String(body.shopper_email);
       if (store) session.store = store;
+      if (platformLocationId) session.metadata = { location_id: platformLocationId };
 
       const res = await adyenFetch('POST', checkoutUrl(cfg, '/sessions'), session, { cfg });
       const j = res.data ?? {};
@@ -256,6 +265,16 @@ Deno.serve(async (req) => {
         origin: String(body.origin || ''),
         returnUrl: String(body.return_url || DEFAULT_RETURN_URL),
         shopperInteraction: 'Ecommerce',
+        // Native 3DS2 (the challenge runs inside the Drop-in, completed by
+        // onAdditionalDetails -> payment_details). Without this Adyen may
+        // answer RedirectShopper, and nothing on the storefront handles the
+        // redirect return, so the order would be lost (8 Sep 2026).
+        authenticationData: { threeDSRequestData: { nativeThreeDS: 'preferred' } },
+        // Echoed back on the webhook as additionalData['metadata.location_id']
+        // (with "Include Metadata" on in the Customer Area) so an online
+        // payment resolves its venue directly, not by merchant account name,
+        // which stops working at the second venue on the same account.
+        ...(platformLocationId ? { metadata: { location_id: platformLocationId, ops_location_id: String(body.location_id || '') } } : {}),
       };
       // v5.8.17 QR OPEN TAB: a pre-authorisation that is captured LATER for the
       // real bill (or cancelled). Both additional-data keys are the ones our
@@ -329,7 +348,9 @@ Deno.serve(async (req) => {
       const tryCapture = async (value: number, salt: string) => {
         const res = await adyenFetch('POST', checkoutUrl(cfg, `/payments/${encodeURIComponent(psp)}/captures`),
           { merchantAccount, amount: { value, currency }, reference: String(body.reference || `tab-capture:${psp}`).slice(0, 80) },
-          { cfg, idempotencyKey: `tabcap:${psp}:${value}:${salt}`.slice(0, 64) });
+          // Salted with the caller's reference tail: a capture Adyen refused
+          // at this amount must not replay the refusal on the retry.
+          { cfg, idempotencyKey: `tabcap:${psp}:${value}:${salt}:${String(body.reference || '').slice(-8)}`.slice(0, 64) });
         return { ok: res.ok, j: res.data ?? {}, status: res.status };
       };
       // Bill above the hold: try the real bill first (some schemes allow an

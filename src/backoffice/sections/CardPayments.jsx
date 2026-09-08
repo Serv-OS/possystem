@@ -379,7 +379,9 @@ export default function CardPayments() {
       const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/adyen-financial`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
-        body: JSON.stringify({ action: 'payout_setup_link', ops_location_id: locId, return_url: window.location.origin }),
+        // No return_url: the fn's default is the live operator host, so the
+        // hosted onboarding never returns the venue to dev.serv-os.app.
+        body: JSON.stringify({ action: 'payout_setup_link', ops_location_id: locId }),
       });
       const j = await res.json();
       if (res.ok && j?.ok && j.url) {

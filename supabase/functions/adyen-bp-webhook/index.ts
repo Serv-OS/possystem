@@ -14,11 +14,16 @@
 // page in the Balance Platform Customer Area.
 //
 // PHILOSOPHY (same as adyen-webhook): durability first, semantics second.
-// Every event lands RAW in ops adyen_bp_events (migration 20260821) before
-// anything interprets it. HMAC is FAIL-CLOSED from day one — this stream is
-// new, so there is no legacy observe-only period:
+// Every event lands RAW in PLATFORM adyen_bp_events (migration 20260821, which
+// was applied to the platform project yhzjgyrkyjabvhblqxzu, beside
+// merchant_adyen_accounts and adyen_payouts that this fn updates; 8 Sep 2026:
+// the insert used to go to the ops project, which has no such table, so every
+// delivery answered 500) before anything interprets it. HMAC is FAIL-CLOSED
+// from day one — this stream is new, so there is no legacy observe-only period:
 //   - key unset      → store raw with hmac_valid=false, answer 401 (Adyen
-//                       retries; nothing is lost, nothing is trusted)
+//                       retries; nothing is lost, nothing is trusted); a LIVE
+//                       payload with no live key answers 503 (same verdict as
+//                       the standard webhook's fail closed reject)
 //   - bad signature  → store raw with hmac_valid=false, answer 401
 //   - good signature → store, process, answer 200
 //   - landing table missing / insert fails → 500 so Adyen retries; deploying
@@ -44,11 +49,8 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { verifyRawBodyHmac, adyenConfig, normalizeAdyenEnv, type AdyenEnv } from '../_shared/adyen.ts';
 
-const admin = createClient(
-  Deno.env.get('SUPABASE_URL') ?? '',
-  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
-  { auth: { autoRefreshToken: false, persistSession: false } },
-);
+// Everything this fn reads and writes lives in the PLATFORM project: the
+// landing table, merchant_adyen_accounts and adyen_payouts.
 const platformAdmin = createClient(
   Deno.env.get('PLATFORM_SUPABASE_URL') ?? '',
   Deno.env.get('PLATFORM_SUPABASE_SERVICE_ROLE_KEY') ?? '',
@@ -61,18 +63,18 @@ const platformAdmin = createClient(
 // own `environment` field only orders the attempts (it is unverified until a
 // key matches); whichever key verifies the raw body is the environment of
 // record, stamped on adyen_payouts.live and logged.
-async function verifyBpSignature(rawBody: string, headerSig: string, declared: unknown): Promise<{ valid: boolean; env: AdyenEnv | null; anyKey: boolean }> {
-  if (!headerSig) return { valid: false, env: null, anyKey: false };
+async function verifyBpSignature(rawBody: string, headerSig: string, declared: unknown): Promise<{ valid: boolean; env: AdyenEnv | null; anyKey: boolean; tried: AdyenEnv[] }> {
+  const tried: AdyenEnv[] = [];
+  if (!headerSig) return { valid: false, env: null, anyKey: false, tried };
   const first = normalizeAdyenEnv(declared);
   const order: AdyenEnv[] = first === 'live' ? ['live', 'test'] : ['test', 'live'];
-  let anyKey = false;
   for (const env of order) {
     const key = adyenConfig(env).bpHmacKey;
     if (!key) continue;
-    anyKey = true;
-    if (await verifyRawBodyHmac(rawBody, headerSig, key)) return { valid: true, env, anyKey };
+    tried.push(env);
+    if (await verifyRawBodyHmac(rawBody, headerSig, key)) return { valid: true, env, anyKey: true, tried };
   }
-  return { valid: false, env: null, anyKey };
+  return { valid: false, env: null, anyKey: tried.length > 0, tried };
 }
 
 // Same capability→flags mapping adyen-onboard uses on its status sync. Under
@@ -123,8 +125,8 @@ Deno.serve(async (req) => {
   const matchedEnv: AdyenEnv | null = sig.env;
   if (hmacValid) console.log(`[adyen-bp-webhook] HMAC verified with the ${matchedEnv} key (payload says ${payload?.environment ?? 'nothing'})`);
 
-  // ── 1. Land it durably (ops adyen_bp_events, migration 20260821) ──────────
-  const { data: landed, error: landErr } = await admin.from('adyen_bp_events').insert({
+  // ── 1. Land it durably (PLATFORM adyen_bp_events, migration 20260821) ─────
+  const { data: landed, error: landErr } = await platformAdmin.from('adyen_bp_events').insert({
     event_type: type,
     environment: payload?.environment ?? null,
     account_holder_id: data?.accountHolder?.id ?? null,
@@ -142,7 +144,13 @@ Deno.serve(async (req) => {
 
   // ── 2. Fail closed on signature ──────────────────────────────────────────
   if (!hmacValid) {
-    console.error(`[adyen-bp-webhook] HMAC ${sig.anyKey ? 'INVALID on both keys' : 'unverifiable (ADYEN_BP_HMAC_KEY / ADYEN_LIVE_BP_HMAC_KEY not set)'}, stored raw (${landed?.id}), refusing`);
+    const declaredLive = normalizeAdyenEnv(payload?.environment) === 'live';
+    const liveKeyMissing = declaredLive && !sig.tried.includes('live');
+    console.error(`[adyen-bp-webhook] HMAC ${sig.anyKey ? `INVALID with the ${sig.tried.join(' and ')} key${sig.tried.length > 1 ? 's' : ''}` : 'unverifiable (ADYEN_BP_HMAC_KEY / ADYEN_LIVE_BP_HMAC_KEY not set)'}${liveKeyMissing ? ' (payload says live and ADYEN_LIVE_BP_HMAC_KEY is not set)' : ''}, stored raw (${landed?.id}), refusing`);
+    // A live event that could not even be tried against a live key is a
+    // configuration gap, not a forgery: 503 so Adyen keeps retrying and the
+    // event is applied once the key exists (the standard webhook's verdict).
+    if (liveKeyMissing) return new Response('live balance platform HMAC key not configured', { status: 503 });
     return new Response('invalid hmac', { status: 401 });
   }
 
@@ -153,21 +161,33 @@ Deno.serve(async (req) => {
       const ah = data?.accountHolder ?? {};
       if (ah?.id) {
         const flags = capabilityFlags(ah.capabilities);
-        const { data: updated, error } = await platformAdmin.from('merchant_adyen_accounts').update({
-          verification_status: {
-            source: 'bp_webhook',
-            at: payload?.timestamp ?? new Date().toISOString(),
-            accountHolderStatus: ah.status ?? null,
-            capabilities: capabilitySnapshot(ah.capabilities),
-          },
-          receive_payments_ok: flags.receive_ok,
-          payouts_ok: flags.payouts_ok,
-          last_webhook_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        }).eq('account_holder_id', ah.id).select('location_id');
-        if (error) console.error('[adyen-bp-webhook] accountHolder update failed:', error.message);
-        else if (!updated?.length) console.warn(`[adyen-bp-webhook] accountHolder ${ah.id} matches no venue (yet) — raw kept for replay`);
-        else processed = true;
+        // receive_payments_ok is "the venue's payments may name its store",
+        // which a STORE grants on its own (ensure_store writes true). The
+        // account holder's capability is false until KYC completes and must
+        // not take the store away from every online payment (8 Sep 2026).
+        // payouts_ok stays capability driven: it is THE payout gate.
+        const { data: rows, error: readErr } = await platformAdmin.from('merchant_adyen_accounts')
+          .select('location_id, store_id').eq('account_holder_id', ah.id);
+        if (readErr) console.error('[adyen-bp-webhook] accountHolder venue read failed:', readErr.message);
+        else if (!rows?.length) console.warn(`[adyen-bp-webhook] accountHolder ${ah.id} matches no venue (yet) — raw kept for replay`);
+        else {
+          for (const row of rows) {
+            const { error } = await platformAdmin.from('merchant_adyen_accounts').update({
+              verification_status: {
+                source: 'bp_webhook',
+                at: payload?.timestamp ?? new Date().toISOString(),
+                accountHolderStatus: ah.status ?? null,
+                capabilities: capabilitySnapshot(ah.capabilities),
+              },
+              receive_payments_ok: flags.receive_ok || !!row.store_id,
+              payouts_ok: flags.payouts_ok,
+              last_webhook_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            }).eq('location_id', row.location_id);
+            if (error) console.error('[adyen-bp-webhook] accountHolder update failed:', error.message);
+            else processed = true;
+          }
+        }
       }
     } else if (type?.startsWith('balancePlatform.balanceAccount.')) {
       // Minimal: freshness stamp on the owning venue; the raw row is the record.
@@ -220,7 +240,7 @@ Deno.serve(async (req) => {
   }
 
   if (processed && landed?.id) {
-    await admin.from('adyen_bp_events').update({ processed_at: new Date().toISOString() }).eq('id', landed.id);
+    await platformAdmin.from('adyen_bp_events').update({ processed_at: new Date().toISOString() }).eq('id', landed.id);
   }
 
   // Any 2xx accepts the webhook (BalancePlatformNotificationResponse).

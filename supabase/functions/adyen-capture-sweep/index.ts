@@ -49,7 +49,7 @@
 //   npx supabase secrets set ADYEN_SWEEP_TOKEN=<token> --project-ref tbetcegmszzotrwdtqhi
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { adyenConfig, adyenEnvForLocation, checkoutBase, adyenFetch, adyenNotConfiguredMessage, type AdyenConfig } from '../_shared/adyen.ts';
+import { adyenConfig, adyenEnvForLocation, checkoutBase, adyenFetch, adyenNotConfiguredMessage, effectiveMerchantAccount, type AdyenConfig } from '../_shared/adyen.ts';
 import { applyTipToClosedCheck } from '../_shared/tip_capture.ts';
 
 const json = (b: unknown, s = 200) =>
@@ -98,7 +98,9 @@ function venueFor(venueMemo: VenueMemo, opsLocationId: string): Promise<Venue> {
         platformAdmin.from('merchant_adyen_accounts').select('merchant_account').eq('location_id', platformId).maybeSingle(),
         adyenEnvForLocation(platformAdmin, platformId),
       ]);
-      return { merchant: maa?.merchant_account ?? null, cfg: adyenConfig(env) };
+      const cfg = adyenConfig(env);
+      // Never the OTHER environment's merchant name on this host (8 Sep 2026).
+      return { merchant: effectiveMerchantAccount(cfg, maa?.merchant_account) || null, cfg };
     })();
     venueMemo.set(key, p);
     p.catch(() => venueMemo.delete(key));   // a failed resolve is retried next row / next run

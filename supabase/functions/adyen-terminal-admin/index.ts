@@ -40,7 +40,7 @@ import { createClient } from 'npm:@supabase/supabase-js@2';
 import {
   managementBase, buildMenuInputRequest, buildAmountInputRequest, parseAmountInputResponse, buildDisplayImageRequest,
   buildDisplayIdleRequest, newServiceId, adyenFetch, terminalEndpoint,
-  adyenConfig, adyenEnvForLocation, adyenSecretName, normalizeAdyenEnv, assertAdyenConfigured, type AdyenConfig,
+  adyenConfig, adyenEnvForLocation, adyenSecretName, normalizeAdyenEnv, assertAdyenConfigured, effectiveMerchantAccount, type AdyenConfig,
 } from '../_shared/adyen.ts';
 
 const opsAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
@@ -72,13 +72,15 @@ const scopeMissing = (status: number) => status === 401 || status === 403;
 // A store with no payment methods bricks its terminals ("no payment method
 // configured" on the reader). Request the card schemes for the store; test
 // auto-approves, live goes to Adyen review. Idempotent — "already exists"
-// style refusals are fine.
-async function ensurePaymentMethods(cfg: AdyenConfig, merchant: string, storeId: string): Promise<{ requested: string[]; errors: string[] }> {
+// style refusals are fine. Currency and country come from the VENUE (8 Sep
+// 2026: they were hardcoded GBP/GB, wrong for a US venue).
+async function ensurePaymentMethods(cfg: AdyenConfig, merchant: string, storeId: string, market: { currency: string; country: string }): Promise<{ requested: string[]; errors: string[] }> {
   const requested: string[] = [];
   const errors: string[] = [];
-  for (const type of ['visa', 'mc', 'amex', 'maestro']) {
+  const schemes = market.country === 'US' ? ['visa', 'mc', 'amex', 'discover'] : ['visa', 'mc', 'amex', 'maestro'];
+  for (const type of schemes) {
     const r = await mgmt(cfg, 'POST', `/merchants/${merchant}/paymentMethodSettings`, {
-      type, storeIds: [storeId], currencies: ['GBP'], countries: ['GB'],
+      type, storeIds: [storeId], currencies: [market.currency], countries: [market.country],
     });
     if (r.ok) requested.push(type);
     else {
@@ -111,7 +113,7 @@ Deno.serve(async (req) => {
     if (!ul && prof?.role !== 'super_admin') return json({ error: 'No access to this location' }, 403);
 
     // ── venue resolution: ops → platform → merchant mapping ──────────────────
-    const select = 'id, name, payment_processor';
+    const select = 'id, name, payment_processor, currency, country';
     let { data: loc } = await platformAdmin.from('locations').select(select).eq('ops_location_id', opsLocationId).maybeSingle();
     if (!loc) ({ data: loc } = await platformAdmin.from('locations').select(select).eq('id', opsLocationId).maybeSingle());
     if (!loc) return json({ error: 'location not found in platform DB' }, 404);
@@ -134,10 +136,13 @@ Deno.serve(async (req) => {
     // Can the venue actually WORK live? The api key and prefix make the set
     // `configured`, but the online paths (adyen-checkout status, the Drop-in,
     // booking_pay) also need the live client key and a merchant account. The
-    // switch must not unlock on a half set.
+    // switch must not unlock on a half set. The merchant account must be the
+    // LIVE secret: the row's own name was written on the current (test)
+    // environment and used to satisfy this rule, which let a venue go live
+    // carrying FranPOS_ServOS_TEST (8 Sep 2026).
     const liveMissing = [...liveCfg.missing];
     if (!liveCfg.clientKey) liveMissing.push(adyenSecretName('live', 'clientKey'));
-    if (!maa?.merchant_account && !liveCfg.merchantAccount) liveMissing.push(adyenSecretName('live', 'merchantAccount'));
+    if (!liveCfg.merchantAccount) liveMissing.push(adyenSecretName('live', 'merchantAccount'));
     const liveReady = liveMissing.length === 0;
     // Only the owner (or ServOS super admin) may move a venue between test
     // cards and real money. Every other Back Office role can read the state.
@@ -169,16 +174,24 @@ Deno.serve(async (req) => {
     // flip is REFUSED with 409 while such ids are present, unless the caller
     // sends reprovision: true, in which case the same upsert clears them and
     // the venue starts store setup and reader registration again on the new
-    // environment. merchant_account stays (Adyen mirrors the name across
-    // environments); the panel says so.
+    // environment. merchant_account is REPLACED with the target environment's
+    // secret account on every change of environment (8 Sep 2026: it used to
+    // be kept on the theory that Adyen mirrors the name, but the test account
+    // is FranPOS_ServOS_TEST and every function prefers the row over the
+    // secret, so a live venue named the test merchant on the live host).
     //
     // Flipping to live without the live keys is allowed but warned: that venue
-    // fails closed on every card call until the keys are set.
+    // fails closed on every card call until the keys are set. Flipping to
+    // live without ADYEN_LIVE_MERCHANT_ACCOUNT is refused outright: nothing
+    // sensible could be written into merchant_account.
     if (action === 'set_environment') {
       if (!canSetEnvironment) return json({ error: 'Only the owner can change the payments environment' }, 403);
       const raw = String(body.environment ?? '').trim().toLowerCase();
       if (raw !== 'test' && raw !== 'live') return json({ error: "environment must be 'test' or 'live'" }, 400);
       const next = normalizeAdyenEnv(raw);
+      if (next === 'live' && next !== env && !liveCfg.merchantAccount) {
+        return json({ ok: false, error: `Set ${adyenSecretName('live', 'merchantAccount')} on the server first: the venue's live merchant account name comes from it.` }, 400);
+      }
       const provisioned = ['store_id', 'legal_entity_id', 'account_holder_id', 'balance_account_id', 'split_profile_id', 'transfer_instrument_id', 'business_line_id']
         .filter((k) => !!(maa as Record<string, unknown> | null)?.[k]);
       const { count: readerCount } = await platformAdmin.from('payment_devices')
@@ -200,6 +213,12 @@ Deno.serve(async (req) => {
         }, 409);
       }
       const patch: Record<string, unknown> = { location_id: loc.id, environment: next, updated_at: new Date().toISOString() };
+      // The merchant account belongs to the environment: on a change it is
+      // the TARGET set's secret (null only when that secret is unset, which
+      // the live guard above already refused).
+      const merchantWas = maa?.merchant_account ?? null;
+      const merchantNext = next !== env ? ((next === 'live' ? liveCfg : testCfg).merchantAccount || null) : merchantWas;
+      if (next !== env) patch.merchant_account = merchantNext;
       if (provisionedOnCurrent) {
         Object.assign(patch, {
           store_id: null, split_profile_id: null, legal_entity_id: null, account_holder_id: null, balance_account_id: null,
@@ -226,18 +245,37 @@ Deno.serve(async (req) => {
           .eq('location_id', loc.id).eq('processor', 'adyen');
         if (pdErr) console.error('[adyen-terminal-admin] reader registry clear failed:', pdErr.message);
       }
+      if (provisionedOnCurrent) {
+        // The OPS link rows carried the old environment's POIIDs too, and
+        // adyen-terminal-charge dispatches to whatever POIID a paired row
+        // holds. Clear the POIID (keep the row, its till binding and its
+        // device identity) so a till answers terminal_not_linked until
+        // `assign` re-adopts the reader on the new environment, instead of
+        // sending a live payment to a test POIID (8 Sep 2026).
+        const { error: tdErr } = await opsAdmin.from('terminal_devices')
+          .update({ adyen_terminal_id: null })
+          .eq('location_id', opsLocationId).eq('status', 'paired').not('adyen_terminal_id', 'is', null);
+        if (tdErr) console.error('[adyen-terminal-admin] ops terminal link clear failed:', tdErr.message);
+      }
       const warnings: string[] = [];
       if (next === 'live' && !liveReady) {
         warnings.push(`Live keys are not fully configured (${liveMissing.join(', ')}): this venue will refuse every card call until they are set.`);
       }
       if (provisionedOnCurrent) {
-        warnings.push(`Store and reader setup from the ${env} system was cleared. Run store setup and register the readers again on ${next}.${maa?.merchant_account ? ` The merchant account name (${maa.merchant_account}) was kept; check it exists on ${next}.` : ''}`);
+        warnings.push(`Store and reader setup from the ${env} system was cleared. Run store setup and register the readers again on ${next}.`);
+      }
+      if (next !== env && merchantNext !== merchantWas) {
+        warnings.push(merchantNext
+          ? `The merchant account was switched to the ${next} account (${merchantNext})${merchantWas ? `, replacing ${merchantWas}` : ''}.`
+          : `No ${next} merchant account is configured on the server; the venue's merchant account was cleared.`);
       }
       console.log(`[adyen-terminal-admin] ${caller.id} set environment=${next} for ${loc.id} (was ${env}${provisionedOnCurrent ? ', reprovision' : ''})`);
       return json({ ok: true, environment: next, previous: env, liveConfigured: liveReady, reprovisioned: provisionedOnCurrent, warning: warnings.join(' ') || null });
     }
 
-    const merchant = maa?.merchant_account || cfg.merchantAccount;
+    // The row's name wins, unless it names the OTHER environment's secret
+    // account (a row flipped before set_environment rewrote it).
+    const merchant = effectiveMerchantAccount(cfg, maa?.merchant_account);
     if (!merchant) return json({ error: `no merchant account configured for card payments (${adyenSecretName(cfg.env, 'merchantAccount')})` }, 500);
 
     // ── status: everything the panel needs to decide what to show ────────────
@@ -269,37 +307,61 @@ Deno.serve(async (req) => {
         receivePaymentsOk: maa?.receive_payments_ok ?? null,
         scopeOk: !scopeMissing(probe.status),
         scopeError: scopeMissing(probe.status)
-          ? `The payments API key has no Management (Terminals) role. Contact ServOS support (technical: add the role to the API credential, or set ${adyenSecretName(cfg.env, 'managementKey')}).`
+          ? `Adyen refused the Management API call (${probe.status}) for merchant ${merchant} on ${cfg.env}. Either the API credential behind ${adyenSecretName(cfg.env, 'apiKey')} lacks the Management roles (Stores, Terminals, Terminal settings, Payment methods; set ${adyenSecretName(cfg.env, 'managementKey')} to a credential that has them) or that merchant account does not exist on ${cfg.env}.`
           : null,
       });
     }
+
+    // The venue's market for payment methods and the store: the platform
+    // row's currency, and its country (US venues) else GB.
+    const venueCountry = String((loc as Record<string, unknown>).country || '').toUpperCase() === 'US' ? 'US' : 'GB';
+    const venueCurrency = String((loc as Record<string, unknown>).currency || (venueCountry === 'US' ? 'USD' : 'GBP')).toUpperCase();
+    const market = { currency: venueCurrency, country: venueCountry };
 
     // ── ensure_store: the venue's physical store at Adyen + our mapping row ──
     if (action === 'ensure_store') {
       if (maa?.store_id) return json({ ok: true, storeId: maa.store_id, existing: true });
       const a = (body.address || {}) as Record<string, string>;
-      const payload = {
+      const phone = String(body.phone || '').replace(/[^\d+]/g, '');
+      // The store is the record Adyen keeps for the venue (compliance,
+      // receipts, terminal settings). On TEST a placeholder address is fine;
+      // on LIVE the real address and phone are required (8 Sep 2026: the
+      // panel used to create live stores at "1 High Street, London" with a
+      // made up phone number).
+      if (cfg.live && (!a.line1 || !a.city || !a.postal_code || !phone)) {
+        return json({ ok: false, error: 'A live store needs the venue address (street, town, postcode) and a phone number.' }, 200);
+      }
+      // The venue's short code as the store reference: adyen-onboard
+      // list_stores matches a store to its venue on it.
+      let venueCode: string | null = null;
+      try {
+        const { data: opsLoc } = await opsAdmin.from('locations').select('venue_code').eq('id', opsLocationId).maybeSingle();
+        venueCode = opsLoc?.venue_code ? String(opsLoc.venue_code) : null;
+      } catch { /* the reference is a convenience */ }
+      const payload: Record<string, unknown> = {
         description: String(body.description || loc.name || 'ServOS venue').slice(0, 100),
         shopperStatement: String(body.shopper_statement || loc.name || 'ServOS').replace(/[^a-zA-Z0-9 .,'-]/g, '').slice(0, 22) || 'ServOS',
-        phoneNumber: String(body.phone || '+441234567890'),
+        phoneNumber: phone || '+441234567890',
         address: {
-          country: String(a.country || 'GB'),
+          country: String(a.country || venueCountry),
           line1: String(a.line1 || '1 High Street'),
           city: String(a.city || 'London'),
           postalCode: String(a.postal_code || 'EC1A 1AA'),
         },
       };
+      if (venueCode) payload.reference = venueCode.slice(0, 50);
       const r = await mgmt(cfg, 'POST', `/merchants/${merchant}/stores`, payload);
       if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
       if (!r.ok) return json({ ok: false, error: (r.data as Record<string, unknown>)?.detail || (r.data as Record<string, unknown>)?.title || `store create failed (${r.status})` }, 200);
       const storeId = String((r.data as Record<string, unknown>).id || '');
-      const { error: upErr } = await platformAdmin.from('merchant_adyen_accounts').upsert({
-        location_id: loc.id, merchant_account: merchant, store_id: storeId,
-        region: 'EU', receive_payments_ok: true,
-      }, { onConflict: 'location_id' });
+      // region: keep the row's own value; only a brand new row gets one,
+      // derived from the venue's country (it used to be forced to 'EU').
+      const mapping: Record<string, unknown> = { location_id: loc.id, merchant_account: merchant, store_id: storeId, receive_payments_ok: true };
+      if (!maa?.region) mapping.region = venueCountry === 'US' ? 'US' : 'EU';
+      const { error: upErr } = await platformAdmin.from('merchant_adyen_accounts').upsert(mapping, { onConflict: 'location_id' });
       if (upErr) return json({ ok: false, error: `store created (${storeId}) but mapping write failed: ${upErr.message}` }, 500);
-      const pm = await ensurePaymentMethods(cfg, merchant, storeId);
-      return json({ ok: true, storeId, existing: false, paymentMethods: pm });
+      const pm = await ensurePaymentMethods(cfg, merchant, storeId, market);
+      return json({ ok: true, storeId, existing: false, paymentMethods: pm, environment: cfg.env, reference: venueCode });
     }
 
     // Everything below needs the store mapping.
@@ -307,7 +369,7 @@ Deno.serve(async (req) => {
 
     // ── ensure_payment_methods: repair a store missing its card schemes ──────
     if (action === 'ensure_payment_methods') {
-      const pm = await ensurePaymentMethods(cfg, merchant, maa.store_id as string);
+      const pm = await ensurePaymentMethods(cfg, merchant, maa.store_id as string, market);
       return json({ ok: pm.errors.length === 0, ...pm });
     }
 
@@ -757,7 +819,9 @@ Deno.serve(async (req) => {
       const sr = await mgmt<Record<string, unknown>>(cfg, 'GET', `/stores/${maa.store_id}/terminalSettings`);
       const merchantPass = (r.data?.passcodes || {}) as Record<string, unknown>;
       const storePass = (sr.data?.passcodes || {}) as Record<string, unknown>;
-      // Set a known admin PIN at store level if none exists anywhere.
+      // Set a known admin PIN at store level if none exists anywhere. On a
+      // LIVE store the PIN must be chosen, never the 1111 default.
+      if (cfg.live && body.set_default && !body.pin) return json({ ok: false, error: 'On live choose the admin PIN yourself (pass pin); 1111 is not set on a live store.' }, 200);
       if (!storePass.adminMenuPin && !merchantPass.adminMenuPin && body.set_default) {
         const pin = String(body.pin || '1111');
         const up = await mgmt(cfg, 'PATCH', `/stores/${maa.store_id}/terminalSettings`, { passcodes: { adminMenuPin: pin } });

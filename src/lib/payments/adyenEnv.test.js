@@ -14,7 +14,7 @@ import {
   ADYEN_SECRET_SUFFIXES, ADYEN_DEFAULT_BASES, ADYEN_LIVE_FAIL_CLOSED, ADYEN_LIVE_PREFIX_NAME,
   normalizeAdyenEnv, adyenEnvFromRow, adyenSecretName, liveCheckoutBase,
   resolveAdyenConfig, assertAdyenConfigured, terminalEndpointFor,
-  liveTerminalApiBase, terminalEndpointForConfig, webhookHmacPolicy,
+  liveTerminalApiBase, terminalEndpointForConfig, webhookHmacPolicy, effectiveMerchantAccount,
 } from './adyenEnv.js';
 
 const FIELDS = Object.keys(ADYEN_SECRET_SUFFIXES);
@@ -341,4 +341,28 @@ test('webhookHmacPolicy: live with the live key verifies, test without a key is 
   const testSigned = resolveAdyenConfig('test', reader(TEST_SET));
   assert.equal(webhookHmacPolicy(testSigned, true), 'verify');
   assert.equal(webhookHmacPolicy(testSigned, false), 'unverifiable');
+});
+
+test('effectiveMerchantAccount: a live venue whose row still names the TEST merchant account uses ADYEN_LIVE_MERCHANT_ACCOUNT', () => {
+  const secrets = { ...BOTH, ADYEN_MERCHANT_ACCOUNT: 'FranPOS_ServOS_TEST', ADYEN_LIVE_MERCHANT_ACCOUNT: 'FranPOS_ServOS_LIVE' };
+  const live = resolveAdyenConfig('live', reader(secrets));
+  const testCfg = resolveAdyenConfig('test', reader(secrets));
+  // The stale row (flipped before set_environment rewrote merchant_account).
+  assert.equal(effectiveMerchantAccount(live, 'FranPOS_ServOS_TEST', reader(secrets)), 'FranPOS_ServOS_LIVE');
+  assert.equal(effectiveMerchantAccount(live, 'franpos_servos_test', reader(secrets)), 'FranPOS_ServOS_LIVE');
+  // The mirror image: a row naming the live account on a test venue.
+  assert.equal(effectiveMerchantAccount(testCfg, 'FranPOS_ServOS_LIVE', reader(secrets)), 'FranPOS_ServOS_TEST');
+  // A hand entered name that is neither secret is kept verbatim.
+  assert.equal(effectiveMerchantAccount(live, 'FranposUK_Provo', reader(secrets)), 'FranposUK_Provo');
+  // The row naming this environment's own account is kept.
+  assert.equal(effectiveMerchantAccount(live, 'FranPOS_ServOS_LIVE', reader(secrets)), 'FranPOS_ServOS_LIVE');
+  // No row value: the secret set's account.
+  assert.equal(effectiveMerchantAccount(live, null, reader(secrets)), 'FranPOS_ServOS_LIVE');
+  assert.equal(effectiveMerchantAccount(live, '', reader(secrets)), 'FranPOS_ServOS_LIVE');
+  // Both secrets the same name (Adyen mirrored it): the row is kept, nothing to swap.
+  const same = { ...secrets, ADYEN_LIVE_MERCHANT_ACCOUNT: 'FranPOS_ServOS_TEST' };
+  assert.equal(effectiveMerchantAccount(resolveAdyenConfig('live', reader(same)), 'FranPOS_ServOS_TEST', reader(same)), 'FranPOS_ServOS_TEST');
+  // No live secret at all: the row stands (the set_environment guard refuses the flip in that case).
+  const noLive = { ...secrets, ADYEN_LIVE_MERCHANT_ACCOUNT: '' };
+  assert.equal(effectiveMerchantAccount(resolveAdyenConfig('live', reader(noLive)), 'FranPOS_ServOS_TEST', reader(noLive)), 'FranPOS_ServOS_TEST');
 });
