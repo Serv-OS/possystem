@@ -157,3 +157,37 @@ test('candidateLabel: reference, description, status and id', () => {
   assert.equal(candidateLabel({ id: 'ST9', reference: 'SV-1008', description: 'Leeds', status: 'inactive' }), 'SV-1008 · "Leeds" · (inactive) · ST9');
   assert.equal(candidateLabel({ id: 'ST9', status: 'active' }), '(no reference) · ST9');
 });
+
+// ── the kept setup (env_stash, 8 Sep 2026) ───────────────────────────────────
+
+import { stashLine, restoredLine } from './adyenAdminRows.js';
+
+test('stashLine: store, readers and the kept date, with or without the environment prefix', () => {
+  assert.equal(stashLine('test', { store_id: 'ST_TEST_1', ids: 6, readers: 2, stashed_at: '2026-09-08T12:00:00.000Z' }), 'test: store ST_TEST_1, 2 card readers (kept 2026-09-08)');
+  assert.equal(stashLine('', { store_id: null, ids: 3, readers: 1, stashed_at: null }), '3 account ids, 1 card reader');
+  assert.equal(stashLine('live', null), 'live: nothing');
+});
+
+test('restoredLine: what came back, empty when nothing did', () => {
+  assert.equal(restoredLine({ store_id: 'ST_TEST_1', ids: ['store_id', 'split_profile_id'], readers: { platform: 2, ops: 1 } }), 'store ST_TEST_1, 2 card readers');
+  assert.equal(restoredLine({ store_id: null, ids: ['payouts_ok'], readers: { platform: 0, ops: 0 } }), '1 account field');
+  assert.equal(restoredLine({ store_id: null, ids: [], readers: { platform: 0, ops: 0 } }), '');
+  assert.equal(restoredLine(null), '');
+});
+
+test('linkResultLines: a kept setup says so instead of "register again", and a restore is reported', () => {
+  const lines = linkResultLines({
+    reference: 'SV-1007', environment: 'live', previous: 'test', region: 'UK', reprovisioned: true,
+    patch: { store_id: 'ST_LIVE_1' },
+    stash_saved: { store_id: 'ST_TEST_1', ids: 6, readers: 2, stashed_at: '2026-09-08T12:00:00.000Z' },
+    restored: { environment: 'live', store_id: null, ids: ['split_profile_id'], readers: { platform: 1, ops: 1 }, skipped: [] },
+    warnings: [],
+  }, 'Provo');
+  const texts = lines.map((l) => l.text);
+  assert.ok(texts.some((t) => /set aside and kept \(store ST_TEST_1, 2 card readers \(kept 2026-09-08\)\)/.test(t)), texts.join(' | '));
+  assert.ok(!texts.some((t) => /Register the card readers again/.test(t)));
+  assert.ok(texts.some((t) => t === 'The live setup kept earlier came back: 1 account field, 1 card reader.'), texts.join(' | '));
+  // Without a stash (older fn build, or the column missing) the old line stays.
+  const old = linkResultLines({ environment: 'live', previous: 'test', reprovisioned: true, patch: {} }).map((l) => l.text);
+  assert.ok(old.some((t) => /was cleared\. Register the card readers again\./.test(t)));
+});

@@ -83,7 +83,16 @@
 //                     it. Refused with 409 + needs_reprovision while the row
 //                     or its readers were provisioned on the current
 //                     environment, unless reprovision is true (then the ids
-//                     are cleared).
+//                     are cleared). STASH AND RESTORE (8 Sep 2026): before
+//                     the clear, the outgoing environment's setup (store and
+//                     account ids, flags, snapshot, merchant account, the
+//                     readers) is kept under merchant_adyen_accounts
+//                     .env_stash[<env>], and a flip INTO an environment that
+//                     has a stash puts it back (row ids, un-retired
+//                     payment_devices, POIIDs back on the paired ops rows).
+//                     Answers stash_saved, restored and keeps_setup; until
+//                     20260908b_PLATFORM_adyen_env_stash.sql runs, the flip
+//                     works as before and the answer names the migration.
 //   set_region      → ADMIN. { region: 'UK' | 'US' }. super_admin only.
 //                     Refused while the venue is live or holds a store or
 //                     readers (provisioning is per account). Writes
@@ -107,7 +116,8 @@ import {
 import {
   referenceKey, storeRows, matchStoreByReference, storeSummary, storeCandidates, accountHolderSummary, balanceAccountSummary,
   legalEntitySummary, pickBalanceAccount, resolveLinkEnvironment, buildLinkPatch, planLink, replacementClear, lookupSummary,
-  type StoreSummary, type BalanceAccountSummary, type AccountHolderSummary, type LookupResult,
+  stashReaders, buildEnvStashEntry, stashHasSetup, stashSummary, stashRestorePlan,
+  type StoreSummary, type BalanceAccountSummary, type AccountHolderSummary, type LookupResult, type StashReader, type StashRestorePlan,
 } from '../_shared/adyenLink.ts';
 
 const opsAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
@@ -401,6 +411,44 @@ async function upsertAccountRow(patch: Record<string, unknown>, select?: string)
     if (!error) return { error: null, warning: adyenRegionMigrationMessage() };
   }
   return { error: error ?? null, warning: null };
+}
+
+// ── the kept setup: merchant_adyen_accounts.env_stash (8 Sep 2026) ──────────
+// A flip clears the setup made on the environment the venue leaves; the
+// stash keeps it (see ENVIRONMENT STASH in _shared/adyenLink.ts). The column
+// arrives with 20260908b_PLATFORM_adyen_env_stash.sql: until it runs, the
+// read below answers `available: false` and a warning naming the file, and
+// the flip runs exactly as before (nothing kept, nothing restored). The
+// column is read ON ITS OWN, never in the venue select: PostgREST answers 400
+// for a select naming an unknown column, which would kill every action.
+const ENV_STASH_MIGRATION = 'supabase/migrations/20260908b_PLATFORM_adyen_env_stash.sql';
+type EnvStashState = { stash: Record<string, unknown>; available: boolean; warning: string | null };
+
+// PostgREST's two shapes for a column that is not there: 42703 "column ...
+// does not exist" on a select, PGRST204 "Could not find the '...' column of
+// '...' in the schema cache" on a write. The column name must be in the text.
+function isUnknownColumnError(err: { code?: unknown; message?: unknown; details?: unknown; hint?: unknown } | null | undefined, column: string): boolean {
+  if (!err) return false;
+  const code = String(err.code ?? '');
+  const text = [err.message, err.details, err.hint].map((v) => String(v ?? '')).join(' ');
+  if (!text.includes(column)) return false;
+  return code === '42703' || code === 'PGRST204' || /does not exist|schema cache|could not find/i.test(text);
+}
+
+function envStashMissingMessage(): string {
+  return `The setup of the environment the venue leaves was NOT kept: merchant_adyen_accounts has no env_stash column yet. Run ${ENV_STASH_MIGRATION} on the platform project. Register the readers and link the store again if the venue switches back.`;
+}
+
+async function readEnvStash(locationId: string): Promise<EnvStashState> {
+  const { data, error } = await platformAdmin.from('merchant_adyen_accounts').select('env_stash').eq('location_id', locationId).maybeSingle();
+  if (error) {
+    if (isUnknownColumnError(error, 'env_stash')) return { stash: {}, available: false, warning: envStashMissingMessage() };
+    // Any other refusal: never write a stash blind (it would replace what is kept).
+    return { stash: {}, available: false, warning: `The kept setup could not be read (${error.message}), so nothing was kept or put back on this switch.` };
+  }
+  const raw = (data as Record<string, unknown> | null)?.env_stash;
+  const stash = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+  return { stash, available: true, warning: null };
 }
 
 // Currency symbol for text shown ON a reader (the pay at table menu).
@@ -709,6 +757,60 @@ Deno.serve(async (req) => {
     const { count: readerCount } = await platformAdmin.from('payment_devices')
       .select('id', { count: 'exact', head: true }).eq('location_id', loc.id).eq('processor', 'adyen').neq('status', 'retired');
     const readers = Number(readerCount) || 0;
+
+    // ── the kept setup (env_stash, 8 Sep 2026) ───────────────────────────────
+    // Read on its own and only when an action asks, once per request.
+    let envStashMemo: Promise<EnvStashState> | null = null;
+    const getEnvStash = (): Promise<EnvStashState> => (envStashMemo ??= readEnvStash(loc.id));
+    const stashSummaries = (state: EnvStashState) => ({ test: stashSummary(state.stash.test), live: stashSummary(state.stash.live) });
+
+    // The venue's readers as the stash keeps them: the platform registry rows
+    // (processor adyen, not retired) joined on the POIID to the ops link rows
+    // (paired, with a POIID). A failed read is an error, never an empty list:
+    // a stash without its readers is the incident this exists to prevent.
+    const readReaderRows = async (): Promise<{ rows: StashReader[]; error: string | null }> => {
+      const [pd, td] = await Promise.all([
+        platformAdmin.from('payment_devices').select('id, label, adyen_terminal_id, serial_number')
+          .eq('location_id', loc.id).eq('processor', 'adyen').neq('status', 'retired'),
+        opsAdmin.from('terminal_devices').select('id, label, adyen_terminal_id, serial_number')
+          .eq('location_id', opsLocationId).eq('status', 'paired').not('adyen_terminal_id', 'is', null),
+      ]);
+      if (pd.error) return { rows: [], error: `reader registry read failed: ${pd.error.message}` };
+      if (td.error) return { rows: [], error: `ops terminal read failed: ${td.error.message}` };
+      return { rows: stashReaders(pd.data || [], td.data || []), error: null };
+    };
+
+    // Put the readers of a kept setup back: the platform registry rows are
+    // un-retired (status registered) and the POIID goes back on the ops link
+    // row, only where that row is still paired and holds no POIID (a row
+    // that was linked again meanwhile keeps what it has; idx_td_adyen also
+    // refuses a POIID another paired row holds). Each reader answers for
+    // itself: a refusal is a line in the answer, never a failed flip.
+    const restoreReaders = async (list: StashReader[]): Promise<{ platform: number; ops: number; skipped: string[] }> => {
+      const answer = { platform: 0, ops: 0, skipped: [] as string[] };
+      const pdIds = list.map((r) => r.payment_device_id).filter((id): id is string => !!id);
+      if (pdIds.length) {
+        const { data, error } = await platformAdmin.from('payment_devices')
+          .update({ status: 'registered' })
+          .in('id', pdIds).eq('location_id', loc.id).eq('processor', 'adyen').eq('status', 'retired')
+          .select('id');
+        if (error) answer.skipped.push(`The reader registry could not be restored: ${error.message}`);
+        else answer.platform = (data || []).length;
+      }
+      for (const r of list) {
+        if (!r.terminal_device_id) continue;
+        const name = r.label || r.adyen_terminal_id;
+        const { data, error } = await opsAdmin.from('terminal_devices')
+          .update({ adyen_terminal_id: r.adyen_terminal_id })
+          .eq('id', r.terminal_device_id).eq('location_id', opsLocationId).eq('status', 'paired').is('adyen_terminal_id', null)
+          .select('id');
+        if (error) answer.skipped.push(`${name} could not be relinked: ${error.message}`);
+        else if ((data || []).length) answer.ops += 1;
+        else answer.skipped.push(`${name} was not relinked: its terminal row is no longer paired or already holds a reader.`);
+      }
+      return answer;
+    };
+
     // The region may only change while nothing at Adyen belongs to it yet.
     const setupParts = [provisioned.length ? 'payments store' : '', readers ? `${readers} card reader${readers === 1 ? '' : 's'}` : ''].filter(Boolean);
     const regionLockReason: string | null = env === 'live'
@@ -730,6 +832,7 @@ Deno.serve(async (req) => {
 
     // ── environment: read the venue's Adyen environment and region (never the values) ──
     if (action === 'environment') {
+      const envStash = await getEnvStash();
       return json({
         ok: true,
         environment: env,
@@ -745,6 +848,11 @@ Deno.serve(async (req) => {
         regionLockReason,
         provisioned,
         readers,
+        // The kept setup per environment (8 Sep 2026): null where nothing is
+        // kept; stashAvailable is false until the platform migration ran.
+        stashAvailable: envStash.available,
+        stashes: stashSummaries(envStash),
+        stashWarning: envStash.warning,
       });
     }
 
@@ -850,28 +958,48 @@ Deno.serve(async (req) => {
     // origins and Apple Pay tail; adyen_link passes false and runs its own
     // with the store id it now holds. Answers { ok: false, status, body }
     // for a refusal (returned as is) or the flip's outcome.
+    type StashSummary = ReturnType<typeof stashSummary>;
+    type RestoreAnswer = { environment: AdyenEnv; stashed_at: string | null; store_id: string | null; ids: string[]; readers: { platform: number; ops: number }; skipped: string[] };
     type FlipOutcome =
       | { ok: false; status: number; body: Record<string, unknown> }
-      | { ok: true; reprovisioned: boolean; merchantNext: string | null; warnings: string[]; webOrigins: RegistrationAnswer | null; applePayDomains: RegistrationAnswer | null };
+      | {
+        ok: true; reprovisioned: boolean; merchantNext: string | null; warnings: string[];
+        webOrigins: RegistrationAnswer | null; applePayDomains: RegistrationAnswer | null;
+        stashSaved: StashSummary; restored: RestoreAnswer | null; keepsSetup: boolean;
+      };
     const flipEnvironment = async (next: AdyenEnv, opts: { reprovision: boolean; extraPatch?: Record<string, unknown>; registrations: boolean }): Promise<FlipOutcome> => {
       if (next === 'live' && next !== env && !liveCfg.merchantAccount) {
         return { ok: false, status: 400, body: { ok: false, error: `Set ${adyenSecretName('live', 'merchantAccount', region)} on the server first: the venue's ${region} live merchant account name comes from it.` } };
       }
       const provisionedOnCurrent = next !== env && (provisioned.length > 0 || readers > 0);
+      // The kept setup (8 Sep 2026), read only when the environment changes.
+      // `available` is false until the platform migration adds the column:
+      // the flip then runs as before and the answer names the file.
+      const envStash: EnvStashState = next !== env ? await getEnvStash() : { stash: {}, available: false, warning: null };
+      const restores = envStash.available ? stashSummary(envStash.stash[next]) : null;
       if (provisionedOnCurrent && !opts.reprovision) {
         const parts = [
           provisioned.length ? 'payments store' : '',
           readers ? `${readers} card reader${readers === 1 ? '' : 's'}` : '',
         ].filter(Boolean);
         const verb = parts.length > 1 || readers > 1 ? 'were' : 'was';
+        const tail = envStash.available
+          ? `Switching to ${next} sets that setup aside.`
+          : `Switching to ${next} clears that setup: run store setup and register the readers again afterwards.`;
         return {
           ok: false, status: 409,
           body: {
             ok: false,
             needs_reprovision: true,
-            error: `This venue's ${parts.join(' and ')} ${verb} set up on the ${env} system. Switching to ${next} clears that setup: run store setup and register the readers again afterwards.`,
+            error: `This venue's ${parts.join(' and ')} ${verb} set up on the ${env} system. ${tail}`,
             provisioned,
             readers,
+            // keeps_setup: the admin portal's confirm adds "Your test setup
+            // is kept and comes back if you switch back". restores: what a
+            // flip puts back on the target environment (null: nothing kept).
+            keeps_setup: envStash.available,
+            restores,
+            stash_warning: envStash.warning,
           },
         };
       }
@@ -892,9 +1020,47 @@ Deno.serve(async (req) => {
           receive_payments_ok: false, payouts_ok: false, verification_status: null,
         });
       }
+      // STASH AND RESTORE (8 Sep 2026). The outgoing environment's setup
+      // goes under env_stash[env] on the SAME upsert as the clear above (one
+      // write: the clear can never land without the stash; moving Provo live
+      // and back wiped its test store id and both reader links). A stash for
+      // the environment the venue ARRIVES on is put back onto the row here:
+      // over the clear, under anything the caller pulled (adyen_link's ids
+      // for that environment win field by field, stashRestorePlan). The
+      // readers follow after the row write. A stash that holds nothing never
+      // replaces one that does, and the stash for the environment just left
+      // stays where it is.
+      let stashSaved: StashSummary = null;
+      let restorePlan: StashRestorePlan | null = null;
+      let restoreEntry: Record<string, unknown> | null = null;
+      if (next !== env && envStash.available) {
+        const { rows: readerRows, error: readerErr } = await readReaderRows();
+        if (readerErr) return { ok: false, status: 500, body: { ok: false, error: `The ${env} setup could not be read to keep it (${readerErr}), so the venue was not switched.` } };
+        const entry = buildEnvStashEntry(maa, readerRows, { region });
+        const previous = envStash.stash[env];
+        const keepPrevious = !stashHasSetup(entry) && stashHasSetup(previous);
+        const kept = keepPrevious ? previous : entry;
+        patch.env_stash = { ...envStash.stash, [env]: kept };
+        stashSaved = stashSummary(kept);
+        const target = envStash.stash[next];
+        if (stashHasSetup(target)) {
+          restoreEntry = target as Record<string, unknown>;
+          restorePlan = stashRestorePlan(target, { region, pulled: opts.extraPatch });
+          Object.assign(patch, restorePlan.ids);
+        }
+      }
       if (opts.extraPatch) Object.assign(patch, opts.extraPatch);
       const merchantWritten = next !== env ? (String(patch.merchant_account ?? '').trim() || null) : merchantWas;
-      const { error: envErr, warning: regionWarning } = await upsertAccountRow(patch, 'location_id, environment');
+      let { error: envErr, warning: regionWarning } = await upsertAccountRow(patch, 'location_id, environment');
+      let stashWarning = envStash.warning;
+      if (envErr && 'env_stash' in patch && isUnknownColumnError(envErr, 'env_stash')) {
+        // The column went between the read and the write: flip without the
+        // stash, as before the migration, and say so.
+        delete patch.env_stash;
+        stashSaved = null;
+        ({ error: envErr, warning: regionWarning } = await upsertAccountRow(patch, 'location_id, environment'));
+        stashWarning = envStashMissingMessage();
+      }
       if (envErr) {
         const hint = /environment|42703|does not exist/i.test(envErr.message)
           ? ' (apply supabase/migrations/20260907_PLATFORM_adyen_environment.sql to the platform DB first)' : '';
@@ -905,7 +1071,8 @@ Deno.serve(async (req) => {
         // environment. Retire them here (location_id is NOT NULL, so the row
         // keeps its venue); the ops terminal_devices link rows stay until
         // `assign` re-registers each reader on the new environment, which
-        // updates both rows in place.
+        // updates both rows in place, or the stash puts them back on a
+        // switch back.
         const { error: pdErr } = await platformAdmin.from('payment_devices')
           .update({ status: 'retired' })
           .eq('location_id', loc.id).eq('processor', 'adyen');
@@ -923,22 +1090,47 @@ Deno.serve(async (req) => {
           .eq('location_id', opsLocationId).eq('status', 'paired').not('adyen_terminal_id', 'is', null);
         if (tdErr) console.error('[adyen-terminal-admin] ops terminal link clear failed:', tdErr.message);
       }
+      // The readers the venue had on the environment it arrives on come
+      // back AFTER the clear above (the two sets are different POIIDs, or
+      // the same physical reader re-boarded, and the clear must not undo
+      // the restore).
+      let restored: RestoreAnswer | null = null;
+      if (restorePlan && restoreEntry) {
+        const readerAnswer = restorePlan.skipped ? { platform: 0, ops: 0, skipped: [] as string[] } : await restoreReaders(restorePlan.readers);
+        const skipped = [restorePlan.skipped, restorePlan.idsSkipped, ...readerAnswer.skipped].filter((t): t is string => !!t);
+        restored = {
+          environment: next,
+          stashed_at: String(restoreEntry.stashed_at ?? '').trim() || null,
+          store_id: typeof restorePlan.ids.store_id === 'string' ? restorePlan.ids.store_id : null,
+          ids: Object.keys(restorePlan.ids),
+          readers: { platform: readerAnswer.platform, ops: readerAnswer.ops },
+          skipped,
+        };
+      }
       const warnings: string[] = [];
       if (regionWarning) warnings.push(regionWarning);
+      if (stashWarning) warnings.push(stashWarning);
       if (next === 'live' && !liveReady) {
         warnings.push(`Live keys for the ${region} account are not fully configured (${liveMissing.join(', ')}): this venue will refuse every card call until they are set.`);
       }
       if (provisionedOnCurrent) {
-        warnings.push(opts.extraPatch
-          ? `Store and reader setup from the ${env} system was cleared and replaced with the ids pulled from Adyen. Register the readers again on ${next}.`
-          : `Store and reader setup from the ${env} system was cleared. Run store setup and register the readers again on ${next}.`);
+        if (stashSaved) {
+          warnings.push(opts.extraPatch
+            ? `Store and reader setup from the ${env} system was set aside and replaced with the ids pulled from Adyen. It is kept and comes back if the venue switches back to ${env}.`
+            : `Store and reader setup from the ${env} system was set aside. It is kept and comes back if the venue switches back to ${env}.`);
+        } else {
+          warnings.push(opts.extraPatch
+            ? `Store and reader setup from the ${env} system was cleared and replaced with the ids pulled from Adyen. Register the readers again on ${next}.`
+            : `Store and reader setup from the ${env} system was cleared. Run store setup and register the readers again on ${next}.`);
+        }
       }
+      if (restored?.skipped.length) warnings.push(...restored.skipped);
       if (next !== env && merchantWritten !== merchantWas) {
         warnings.push(merchantWritten
           ? `The merchant account was switched to the ${region} ${next} account (${merchantWritten})${merchantWas ? `, replacing ${merchantWas}` : ''}.`
           : `No ${region} ${next} merchant account is configured on the server; the venue's merchant account was cleared.`);
       }
-      console.log(`[adyen-terminal-admin] ${caller.id} set environment=${next} for ${loc.id} (${region}, was ${env}${provisionedOnCurrent ? ', reprovision' : ''}${opts.extraPatch ? ', via adyen_link' : ''})`);
+      console.log(`[adyen-terminal-admin] ${caller.id} set environment=${next} for ${loc.id} (${region}, was ${env}${provisionedOnCurrent ? ', reprovision' : ''}${opts.extraPatch ? ', via adyen_link' : ''}${stashSaved ? `, kept ${env} setup` : ''}${restored ? `, restored ${next} setup (${restored.ids.length} ids, ${restored.readers.ops} ops readers, ${restored.readers.platform} registry rows)` : ''})`);
       // Going live: the ServOS hosts go on the live credential's allowed
       // origins and the venue's storefront on the merchant's Apple Pay
       // domains, so the Drop-in and Apple Pay work on the new account
@@ -954,17 +1146,18 @@ Deno.serve(async (req) => {
           applePayDomains = { ok: false, skipped: true, error };
         } else {
           const liveMerchant = merchantWritten || liveCfg.merchantAccount;
-          // A venue arriving on live never has a live store yet (a store id
-          // on the row belonged to the test account and was cleared above),
-          // so the merchant level Apple Pay entry is the only sensible
-          // target here. The admin portal's button, which passes the row's
-          // store id, covers the store scoped case once the live store exists.
-          const liveStoreId: string | null = null;
+          // A venue arriving on live has a live store only when the stash
+          // just put one back (a store id on the row belonged to the test
+          // account and was cleared above); with none the merchant level
+          // Apple Pay entry is the only sensible target. The admin portal's
+          // button, which passes the row's store id, covers the store
+          // scoped case once the live store exists.
+          const liveStoreId: string | null = restored?.store_id ?? null;
           ({ webOrigins, applePayDomains } = await runRegistrations(liveCfg, liveMerchant, liveStoreId));
         }
         console.log(`[adyen-terminal-admin] ${caller.id} go live registrations for ${loc.id}: origins ${webOrigins?.ok ? 'ok' : 'refused'}, apple pay ${applePayDomains?.ok ? 'ok' : 'refused'}`);
       }
-      return { ok: true, reprovisioned: provisionedOnCurrent, merchantNext: merchantWritten, warnings, webOrigins, applePayDomains };
+      return { ok: true, reprovisioned: provisionedOnCurrent, merchantNext: merchantWritten, warnings, webOrigins, applePayDomains, stashSaved, restored, keepsSetup: envStash.available };
     };
 
     if (action === 'set_environment') {
@@ -978,6 +1171,9 @@ Deno.serve(async (req) => {
         ok: true, environment: next, region, previous: env, liveConfigured: liveReady, liveRegionsConfigured: liveRegions,
         reprovisioned: flip.reprovisioned, warning: flip.warnings.join(' ') || null,
         web_origins: flip.webOrigins, apple_pay_domains: flip.applePayDomains,
+        // The kept setup (8 Sep 2026): what this switch put aside, what it
+        // put back, and whether keeping works at all (the platform column).
+        stash_saved: flip.stashSaved, restored: flip.restored, keeps_setup: flip.keepsSetup,
       });
     }
 
@@ -1051,8 +1247,14 @@ Deno.serve(async (req) => {
       const summary = lookupSummary(lookup);
       const errors = Array.isArray(lookup.errors) ? lookup.errors : [];
       // provisioned and readers ride along so the admin portal's confirm can
-      // say exactly what a flip clears (the store ids, N card readers).
-      const base = { action, environment: linkEnv, previous: env, region, merchantAccount: merchant, venueCode, reference, summary, lookup, patch, plan, provisioned, readers };
+      // say exactly what a flip sets aside (the store ids, N card readers);
+      // keepsSetup and stashes say whether it is kept and what a flip puts
+      // back (the env_stash column, 8 Sep 2026).
+      const envStash = await getEnvStash();
+      const base = {
+        action, environment: linkEnv, previous: env, region, merchantAccount: merchant, venueCode, reference, summary, lookup, patch, plan, provisioned, readers,
+        keepsSetup: envStash.available, stashes: stashSummaries(envStash), stashWarning: envStash.warning,
+      };
 
       if (action === 'adyen_lookup') {
         logLink('lookup', loc.id, { environment: linkEnv, region, merchant, reference, storeId, found: lookup.found, summary, errors, candidates: Array.isArray(lookup.candidates) ? lookup.candidates.length : 0, plan: plan?.kind ?? null });
@@ -1066,21 +1268,27 @@ Deno.serve(async (req) => {
         return json({ ok: false, error: summary, ...base }, 200);
       }
       if (plan.kind === 'noop') {
-        return json({ ok: true, unchanged: true, message: plan.reason, ...base, row: maa ?? null, reprovisioned: false, web_origins: null, apple_pay_domains: null, warnings: [], warning: null });
+        return json({ ok: true, unchanged: true, message: plan.reason, ...base, row: maa ?? null, reprovisioned: false, web_origins: null, apple_pay_domains: null, warnings: [], warning: null, stash_saved: null, restored: null });
       }
       if (plan.kind === 'refuse') {
         return json({ ok: false, needs_relink: true, error: plan.reason, ...base }, 409);
       }
       const warnings: string[] = [];
       let reprovisioned = false;
+      let stashSaved: ReturnType<typeof stashSummary> = null;
+      let restored: Record<string, unknown> | null = null;
       if (plan.kind === 'flip') {
         // The environment changes: set_environment's rules, clearing and
         // merchant rewrite, with the pulled ids on the same upsert. The
         // plan already required relink for setup on the current
-        // environment, so reprovision is given here.
+        // environment, so reprovision is given here. The outgoing setup is
+        // kept and the target environment's stash comes back under the
+        // pulled ids (flipEnvironment).
         const flip = await flipEnvironment(linkEnv, { reprovision: true, extraPatch: patch, registrations: false });
         if (!flip.ok) return json({ ...flip.body, ...base }, flip.status);
         reprovisioned = flip.reprovisioned;
+        stashSaved = flip.stashSaved;
+        restored = flip.restored;
         warnings.push(...flip.warnings);
       } else {
         // Same environment. A CONFIRMED replacement (conflicts, relink
@@ -1116,12 +1324,13 @@ Deno.serve(async (req) => {
         .eq('location_id', loc.id).maybeSingle();
       if (afterErr) warnings.push(`The row was written but could not be read back: ${afterErr.message}`);
       const ids = Object.fromEntries(Object.entries(patch).filter(([k]) => k !== 'verification_status'));
-      logLink('link', loc.id, { environment: linkEnv, previous: env, region, merchant, reference, storeId, plan: plan.kind, diff: plan.diff, ids, reprovisioned, errors, warnings, origins: webOrigins?.ok ?? null, applePay: applePayDomains?.ok ?? null });
+      logLink('link', loc.id, { environment: linkEnv, previous: env, region, merchant, reference, storeId, plan: plan.kind, diff: plan.diff, ids, reprovisioned, stashSaved, restored, errors, warnings, origins: webOrigins?.ok ?? null, applePay: applePayDomains?.ok ?? null });
       console.log(`[adyen-terminal-admin] ${caller.id} adyen_link ${reference ?? '(by id)'} for ${loc.id} on ${merchant} (${region} ${linkEnv}, was ${env}): ${plan.kind}, changed ${plan.diff.changed.join(', ') || 'nothing'}; origins ${webOrigins?.ok ? 'ok' : 'refused'}, apple pay ${applePayDomains?.ok ? 'ok' : 'refused'}`);
       return json({
         ok: true, ...base, reprovisioned, row: after ?? null,
         web_origins: webOrigins, apple_pay_domains: applePayDomains,
         warnings, warning: warnings.join(' ') || null,
+        stash_saved: stashSaved, restored,
       });
     }
 

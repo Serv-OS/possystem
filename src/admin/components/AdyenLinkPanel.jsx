@@ -32,7 +32,7 @@
 //   onChanged    fired after a link or a store create changed the venue
 
 import { useState } from 'react';
-import { lookupRows, planLine, linkResultLines, candidateLabel, LINK_FIELD_LABELS } from '../../lib/payments/adyenAdminRows';
+import { lookupRows, planLine, linkResultLines, candidateLabel, stashLine, LINK_FIELD_LABELS } from '../../lib/payments/adyenAdminRows';
 import { referenceKey } from '../../lib/payments/adyenLink';
 
 const S = {
@@ -187,8 +187,17 @@ export default function AdyenLinkPanel({ location, venueCode, environment, callA
       const provisioned = Array.isArray(lookup.provisioned) ? lookup.provisioned : [];
       const readers = Number(lookup.readers) || 0;
       const bits = [provisioned.length ? 'store ids' : '', readers ? `${readers} card reader${readers === 1 ? '' : 's'}` : ''].filter(Boolean);
-      if (bits.length) lines.push(`This CLEARS the venue's ${lookup.previous} setup (${bits.join(' and ')}). Register the readers again afterwards.`);
-      else if (plan.kind === 'refuse' && plan.reason && !inactive) lines.push(plan.reason);   // an older fn build without provisioned/readers
+      // keepsSetup (8 Sep 2026): the fn keeps what the flip sets aside
+      // (env_stash) and puts it back on a switch back. An older fn build
+      // sends nothing and the setup is cleared for good.
+      if (bits.length) {
+        lines.push(lookup.keepsSetup
+          ? `This sets aside the venue's ${lookup.previous} setup (${bits.join(' and ')}). Your ${lookup.previous} setup is kept and comes back if you switch back.`
+          : `This CLEARS the venue's ${lookup.previous} setup (${bits.join(' and ')}). Register the readers again afterwards.`);
+      } else if (plan.kind === 'refuse' && plan.reason && !inactive) lines.push(plan.reason);   // an older fn build without provisioned/readers
+      const back = lookup.stashes && lookup.stashes[lookup.environment];
+      if (back) lines.push(`The venue's ${lookup.environment} setup kept earlier comes back too, under the ids pulled here: ${stashLine('', back)}.`);
+      if (lookup.stashWarning) lines.push(lookup.stashWarning);
     }
     return `${lines.join('\n\n')}\n\nContinue?`;
   };
@@ -213,7 +222,9 @@ export default function AdyenLinkPanel({ location, venueCode, environment, callA
     } catch (e) {
       if (e?.data?.needs_relink && !relink) {
         setBusy('');
-        if (window.confirm(`${e.data.error || e.message}\n\nGo ahead and relink ${name}?`)) {
+        const kept = e.data.keepsSetup === true && e.data.previous && e.data.environment && e.data.previous !== e.data.environment
+          ? `\n\nYour ${e.data.previous} setup is kept and comes back if you switch back.` : '';
+        if (window.confirm(`${e.data.error || e.message}${kept}\n\nGo ahead and relink ${name}?`)) {
           await runLink({ relink: true, confirmed: true });
         }
         return;
@@ -388,7 +399,7 @@ export default function AdyenLinkPanel({ location, venueCode, environment, callA
               {(refuse || (targetLive && flips)) && (
                 <span style={{ fontSize: 12, color: 'var(--t3)' }}>
                   {flips
-                    ? `Moves ${name} to live${clears ? ` and clears its ${lookup.previous} setup` : ''}.`
+                    ? `Moves ${name} to live${clears ? (lookup.keepsSetup ? ` and sets aside its ${lookup.previous} setup (kept, it comes back if you switch back)` : ` and clears its ${lookup.previous} setup`) : ''}.`
                     : 'Replaces the stored ids named above.'} You will be asked to confirm.
                 </span>
               )}
