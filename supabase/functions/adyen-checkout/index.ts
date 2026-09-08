@@ -15,15 +15,23 @@
 //
 // PER VENUE ENVIRONMENT (7 Sep 2026): every request resolves the venue from
 // location_id (either id space) and reads merchant_adyen_accounts.environment
-// for it; the matching secret set (ADYEN_* for test, ADYEN_LIVE_* for live)
-// supplies the key, the client key, the merchant account and the Checkout
-// host. A live venue without live keys fails closed. A request that names no
-// venue (the admin portal's global status call) uses the ADYEN_ENV fallback.
+// for it; the matching secret set (ADYEN_* for test, ADYEN_LIVE_<REGION>_*
+// for live) supplies the key, the client key, the merchant account and the
+// Checkout host. A live venue without live keys fails closed. A request that
+// names no venue (the admin portal's global status call) uses the ADYEN_ENV
+// fallback.
+//
+// PER VENUE REGION (8 Sep 2026): merchant_adyen_accounts.region ('UK' | 'US',
+// a legacy 'EU' reads as UK, no row = by the location's currency) picks the
+// live secret set, the Checkout host (the region's own prefix) and the
+// Drop-in environment ('live' for UK, 'live-us' for US). status returns
+// { environment, region, dropinEnvironment, clientKey } so the card form
+// mounts the Drop-in against the right data centre.
 
 import { createClient } from 'npm:@supabase/supabase-js@2';
 import {
   adyenConfig, adyenAccountForLocation, adyenFallbackEnv, platformLocationIdFor, isUnknownColumnError,
-  checkoutBase, adyenFetch, adyenNotConfiguredMessage, maskMerchantAccount, paymentIdempotencyKey, effectiveMerchantAccount,
+  checkoutBase, adyenFetch, adyenNotConfiguredMessage, maskMerchantAccount, paymentIdempotencyKey, effectiveMerchantAccount, adyenSecretName,
   type AdyenConfig,
 } from '../_shared/adyen.ts';
 
@@ -85,9 +93,9 @@ async function resolveVenue(id?: string): Promise<Venue> {
     const cfg = adyenConfig(adyenFallbackEnv());
     return { known: false, platformLocationId: null, cfg, merchantAccount: cfg.merchantAccount, store: null };
   }
-  const { env, row } = await adyenAccountForLocation<VenueAccountRow>(platformAdmin, platformLocationId,
+  const { env, region, row } = await adyenAccountForLocation<VenueAccountRow>(platformAdmin, platformLocationId,
     ['merchant_account', 'store_id', 'receive_payments_ok']);
-  const cfg = adyenConfig(env);
+  const cfg = adyenConfig(env, region);   // the venue's environment AND region set
   // The venue's own merchant account and store travel together (a store only
   // exists under its merchant account), the way adyen-create-session and the
   // terminal path already send them. The secret set's account is the fallback
@@ -167,6 +175,12 @@ async function hasTerminal(platformLocationId: string | null): Promise<boolean> 
 // a version of their own. checkoutBase(cfg) fails closed on live without keys.
 const checkoutUrl = (cfg: AdyenConfig, path: string) => `${checkoutBase(cfg)}${path}`;
 
+// Defaults when the caller sends no currency or country: the venue's region
+// (8 Sep 2026; they were hardcoded GBP and GB). Callers always send the
+// currency, so this only ever decides the country code.
+const defaultCurrency = (cfg: AdyenConfig) => (cfg.region === 'US' ? 'USD' : 'GBP');
+const defaultCountry = (cfg: AdyenConfig) => (cfg.region === 'US' ? 'US' : 'GB');
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   try {
@@ -184,7 +198,14 @@ Deno.serve(async (req) => {
     // (8 Sep 2026).
     if (!String(body.location_id ?? '').trim() && action !== 'status') return json({ error: 'location_id required' }, 400);
     if (!cfg.configured || !merchantAccount || !cfg.clientKey) {
-      return json({ error: cfg.live ? adyenNotConfiguredMessage(cfg) : 'Adyen is not configured on this environment' }, 500);
+      // Name EVERY missing secret for the venue's region, the client key and
+      // the merchant account included (8 Sep 2026: cfg.missing only covers
+      // the api key, the prefix and the merchant account secret, so a live
+      // venue with no client key was told nothing to set).
+      const missing = new Set<string>(cfg.missing);
+      if (!cfg.clientKey) missing.add(adyenSecretName(cfg.env, 'clientKey', cfg.region));
+      if (!merchantAccount) missing.add(adyenSecretName(cfg.env, 'merchantAccount', cfg.region));
+      return json({ error: cfg.live ? adyenNotConfiguredMessage({ ...cfg, missing: [...missing] }) : 'Adyen is not configured on this environment' }, 500);
     }
 
     // Live connection status for the admin portal and the card form. No
@@ -195,6 +216,8 @@ Deno.serve(async (req) => {
         ok: true,
         configured: true,
         environment: cfg.env,
+        region: cfg.region,                  // 'UK' | 'US', the secret set and hosts in use
+        dropinEnvironment: cfg.dropinEnvironment,   // 'test' | 'live' | 'live-us' for the Drop-in
         merchantAccount: maskMerchantAccount(merchantAccount),
         clientKey: cfg.clientKey,            // publishable, the card form needs it to render
         online: true,                        // slice 1a shipped, advanced flow + Drop-in
@@ -207,7 +230,7 @@ Deno.serve(async (req) => {
     if (action === 'create_session') {
       const amount = Math.round(Number(body.amount_minor));
       if (!Number.isFinite(amount) || amount < 1) return json({ error: 'amount_minor must be a positive integer (pence)' }, 400);
-      const currency = String(body.currency || 'GBP').toUpperCase();
+      const currency = String(body.currency || defaultCurrency(cfg)).toUpperCase();
       const reference = String(body.reference || '').slice(0, 80);
       if (!reference) return json({ error: 'reference required (the order ref)' }, 400);
 
@@ -216,7 +239,7 @@ Deno.serve(async (req) => {
         amount: { value: amount, currency },
         reference,
         returnUrl: String(body.return_url || DEFAULT_RETURN_URL),
-        countryCode: String(body.country || 'GB').toUpperCase(),
+        countryCode: String(body.country || defaultCountry(cfg)).toUpperCase(),
         channel: 'Web',
       };
       if (body.shopper_email) session.shopperEmail = String(body.shopper_email);
@@ -235,6 +258,8 @@ Deno.serve(async (req) => {
         sessionData: j.sessionData,
         clientKey: cfg.clientKey,
         environment: cfg.env,
+        region: cfg.region,
+        dropinEnvironment: cfg.dropinEnvironment,
         reference,
         amount: j.amount,
       });
@@ -258,7 +283,7 @@ Deno.serve(async (req) => {
       }
       const payment: Record<string, unknown> = {
         merchantAccount,
-        amount: { value: amount, currency: String(body.currency || 'GBP').toUpperCase() },
+        amount: { value: amount, currency: String(body.currency || defaultCurrency(cfg)).toUpperCase() },
         reference,
         paymentMethod: body.payment_method,
         channel: 'Web',
@@ -333,7 +358,7 @@ Deno.serve(async (req) => {
     if (action === 'tab_capture' || action === 'tab_cancel') {
       const psp = String(body.psp_reference || '').trim();
       if (!psp) return json({ error: 'psp_reference required' }, 400);
-      const currency = String(body.currency || 'GBP').toUpperCase();
+      const currency = String(body.currency || defaultCurrency(cfg)).toUpperCase();
       if (action === 'tab_cancel') {
         const res = await adyenFetch('POST', checkoutUrl(cfg, `/payments/${encodeURIComponent(psp)}/cancels`),
           { merchantAccount, reference: String(body.reference || `tab-cancel:${psp}`).slice(0, 80) },

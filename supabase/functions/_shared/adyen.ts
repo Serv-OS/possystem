@@ -15,11 +15,27 @@
 // are read at CALL time, never at module load, so a secret change needs no
 // redeploy.
 //
-//   test set  ADYEN_<SUFFIX>       the names in use today, unchanged
-//   live set  ADYEN_LIVE_<SUFFIX>  same suffixes
-//   plus      ADYEN_LIVE_PREFIX    company URL prefix, REQUIRED for live
+// ── PER VENUE REGION (owner facts 8 Sep 2026) ────────────────────────────────
+// The UK live account and the US live account are DIFFERENT Adyen accounts:
+// different api key, client key, URL prefix, merchant account, webhook HMAC
+// key and hosts. So the LIVE secret set is per region, and the region code
+// the owner sees everywhere (secret names, admin select, database value) is
+// 'UK', never 'EU'. merchant_adyen_accounts.region holds 'UK' | 'US' after
+// 20260908_PLATFORM_adyen_region_uk.sql; a legacy 'EU' row reads as 'UK'.
+//
+//   test set, UK   ADYEN_<SUFFIX>            the names in use today, unchanged
+//   test set, US   ADYEN_TEST_US_<SUFFIX>    optional override, else ADYEN_<SUFFIX>
+//   live set, UK   ADYEN_LIVE_UK_<SUFFIX>    then ADYEN_LIVE_<SUFFIX> (UK fallback ONLY)
+//   live set, US   ADYEN_LIVE_US_<SUFFIX>    never UK, never the unsuffixed names
+//   prefix         ADYEN_LIVE_UK_PREFIX (then ADYEN_LIVE_PREFIX), ADYEN_LIVE_US_PREFIX
 //   ADYEN_ENV is ONLY the fallback when a request cannot be tied to a venue
 //   row (default 'test'). It never picks the secret set for a known venue.
+//
+// Hosting per region: UK uses Adyen's EU data centre (Drop-in 'live',
+// terminal-api-live.adyen.com); US uses 'live-us' and
+// terminal-api-live-us.adyen.com. Checkout live is
+// https://<REGION PREFIX>-checkout-live.adyenpayments.com/checkout/v72.
+// Management, LEM and BCL live hosts are the same for both regions.
 //
 // Suffixes: API_KEY, CLIENT_KEY, HMAC_KEY, MERCHANT_ACCOUNT, DEVICE_BASE,
 // MANAGEMENT_KEY, LEM_KEY, BP_KEY, BP_HMAC_KEY, EVENTS_USER, EVENTS_PASS,
@@ -29,9 +45,10 @@
 //
 // Fallbacks: managementKey / lemKey / bpKey fall back to the SAME set's apiKey;
 // events + webhook basic auth fall back live -> test (Adyen posts both
-// environments to the one URL). Nothing else crosses sets. A live venue with
-// no ADYEN_LIVE_API_KEY or no ADYEN_LIVE_PREFIX FAILS CLOSED with
-// 'Adyen live keys not configured for this venue'. It never gets test keys.
+// environments to the one URL). Nothing else crosses sets. A live venue whose
+// REGION set has no api key, no prefix or no merchant account FAILS CLOSED
+// with 'Adyen live keys not configured for this venue' naming the missing
+// secret names. It never gets test keys, and a US venue never gets UK keys.
 //
 // MIRROR: src/lib/payments/adyenEnv.js carries the same suffix table, the same
 // defaults and the same resolveAdyenConfig body, with the contract tests in
@@ -40,23 +57,37 @@
 // HOW TO USE (new code)
 //   const cfg = await adyenConfigForLocation(platformAdmin, locationId);
 //   // or, when the merchant_adyen_accounts row is already in hand:
-//   const cfg = adyenConfig(adyenEnvFromRow(maa));
+//   const cfg = adyenConfig(adyenEnvFromRow(maa), adyenRegionFromRow(maa, loc));
+//   // adyenEnvForLocation returns { env, region }; adyenConfig takes that
+//   // object as is, or (env, region) as two arguments. adyenConfig(env) alone
+//   // is the UK set.
 //   await adyenFetch('POST', `${checkoutBase(cfg)}/payments`, body, { cfg, idempotencyKey });
-//   terminalEndpoint(maa.merchant_account, poiid, 'sync', region, cfg)
+//   terminalEndpoint(maa.merchant_account, poiid, 'sync', cfg.region, cfg)
 //   adyenFetch('GET', `${managementBase(cfg)}/...`, undefined, { cfg, apiKey: cfg.managementKey })
 //   platformLocationIdFor(platformAdmin, opsOrPlatformId)   either id space -> platform id
 //                                    (null when unknown, THROWS on a DB error)
-//   adyenAccountForLocation(platformAdmin, platformId, cols)   { env, row } in one read
-//   adyenNotConfiguredMessage(cfg)   the 503 text (exact fail closed wording on live)
+//   adyenAccountForLocation(platformAdmin, platformId, cols)   { env, region, row } in one read
+//   adyenNotConfiguredMessage(cfg)   the 503 text (exact fail closed wording on live, plus the names)
+//   liveRegionsConfigured()          ['UK', 'US'] filtered to the usable live sets
+//   webhookKeysFor(live)             [{ region, hmacKey }] to try in order, UK then US
+//   webhookAuthPairsFor(live, kind)  [{ region, user, pass }] basic auth pairs accepted
 //   paymentIdempotencyKey(reference, attempt)   'pay:<ref>:a<N>', hashed when over 64 chars
 //   maskMerchantAccount(name)   for status responses reachable by customers
 //   webhookHmacPolicy(cfg, hasSignature)   'reject' | 'unverifiable' | 'verify'
+//   isAdyenRegionCheckError(err) + adyenRegionMigrationMessage()   a 'UK' write
+//                                    refused by the OLD check constraint
+//   upsertAdyenAccountRow(platformAdmin, patch, { region? })   the region aware
+//                                    merchant_adyen_accounts upsert: a CREATE stamps the
+//                                    venue's resolved region, a 'UK' the old check refuses
+//                                    is retried without the column and named in `warning`
+//   adyenRegionForMerchantAccount(platformAdmin, code, live)   which account a merchant
+//                                    account NAME belongs to (the secret sets, then rows)
 //
 // Every Adyen function resolves its venue first (adyen-checkout,
 // adyen-create-session, adyen-modify, adyen-terminal-admin, adyen-terminal-charge,
 // adyen-terminal-events, adyen-capture-sweep, adyen-onboard, adyen-financial,
 // booking-widget). adyen-webhook and adyen-bp-webhook pick the set by the
-// notification (top level live flag, or whichever BP HMAC key verifies);
+// notification (top level live flag, then whichever region key verifies);
 // adyen-report-ingest by the report download host (ca-live vs ca-test).
 //
 // Every host and fetch helper takes the venue's config. There is no zero
@@ -65,9 +96,14 @@
 // option for the mirror tests only.
 
 export type AdyenEnv = 'test' | 'live';
+export type AdyenRegion = 'UK' | 'US';
+export type AdyenDropinEnvironment = 'test' | 'live' | 'live-us';
+export interface AdyenTarget { env: AdyenEnv; region: AdyenRegion }
 
-export const ADYEN_LIVE_PREFIX_NAME = 'ADYEN_LIVE_PREFIX';
+export const ADYEN_REGIONS: readonly AdyenRegion[] = ['UK', 'US'] as const;
+export const ADYEN_LIVE_PREFIX_NAME = 'ADYEN_LIVE_PREFIX';   // the UK fallback name
 export const ADYEN_LIVE_FAIL_CLOSED = 'Adyen live keys not configured for this venue';
+export const ADYEN_REGION_MIGRATION = '20260908_PLATFORM_adyen_region_uk.sql';
 
 // Config field -> secret name suffix. KEEP IN SYNC with src/lib/payments/adyenEnv.js.
 export const ADYEN_SECRET_SUFFIXES = {
@@ -95,10 +131,10 @@ export const ADYEN_SECRET_SUFFIXES = {
 export type AdyenSecretField = keyof typeof ADYEN_SECRET_SUFFIXES;
 
 // Default hosts per environment (docs/adyen/research/adyen-setup-golive.md §4).
-// Live Checkout has no default: it is built from the prefix (liveCheckoutBase).
-// Live deviceBase is the CLASSIC terminal-api host for the EU region; the
-// other regions are derived per venue in terminalEndpoint (liveTerminalApiBase)
-// unless ADYEN_LIVE_DEVICE_BASE overrides the host outright.
+// Live Checkout has no default: it is built from the region's prefix
+// (liveCheckoutBase). Live deviceBase here is the UK (EU data centre) classic
+// host; resolveAdyenConfig derives the regional host with liveTerminalApiBase
+// unless <SET>_DEVICE_BASE overrides the host outright.
 // KEEP IN SYNC with src/lib/payments/adyenEnv.js.
 export const ADYEN_DEFAULT_BASES: Record<AdyenEnv, { checkoutBase: string; managementBase: string; lemBase: string; balancePlatformBase: string; deviceBase: string }> = {
   test: {
@@ -120,18 +156,20 @@ export const ADYEN_DEFAULT_BASES: Record<AdyenEnv, { checkoutBase: string; manag
 export interface AdyenConfig {
   env: AdyenEnv;
   live: boolean;
-  configured: boolean;     // test: apiKey set. live: apiKey AND prefix set.
+  region: AdyenRegion;                        // 'UK' | 'US', the secret set and hosts this config was built for
+  dropinEnvironment: AdyenDropinEnvironment;  // Drop-in / Components `environment`: 'test' | 'live' | 'live-us'
+  configured: boolean;     // test: apiKey set. live: apiKey AND prefix AND merchant account set (region set).
   missing: string[];       // secret NAMES that block `configured`, never values
   apiKey: string;
   clientKey: string;
   hmacKey: string;
   merchantAccount: string;
-  prefix: string;          // ADYEN_LIVE_PREFIX, '' on test
+  prefix: string;          // ADYEN_LIVE_<REGION>_PREFIX (UK falls back to ADYEN_LIVE_PREFIX), '' on test
   checkoutBase: string;    // '' when live and the prefix is missing (no half built URL)
   managementBase: string;
   lemBase: string;
   balancePlatformBase: string;
-  deviceBase: string;
+  deviceBase: string;      // live: the region's classic terminal host unless overridden
   deviceBaseOverride: boolean;   // true when <SET>_DEVICE_BASE set the host explicitly (then region is ignored)
   managementKey: string;
   lemKey: string;
@@ -159,62 +197,154 @@ export function adyenEnvFromRow(row: { environment?: unknown } | null | undefine
   return normalizeAdyenEnv(row?.environment);
 }
 
-export function adyenSecretName(env: AdyenEnv, field: AdyenSecretField): string {
-  const suffix = ADYEN_SECRET_SUFFIXES[field];
-  if (!suffix) throw new Error(`adyenSecretName: unknown field ${String(field)}`);
-  return normalizeAdyenEnv(env) === 'live' ? `ADYEN_LIVE_${suffix}` : `ADYEN_${suffix}`;
+// ── Region ───────────────────────────────────────────────────────────────────
+// Region codes are 'UK' and 'US'. Legacy rows say 'EU' (the foundation
+// migration's default) and read as 'UK'; country and currency style inputs
+// are accepted too so a row, a location or a currency can all feed this.
+// KEEP IN SYNC with src/lib/payments/adyenEnv.js.
+const US_CODES = new Set(['US', 'USA', 'USD']);
+const UK_CODES = new Set(['UK', 'GB', 'GBR', 'GBP', 'EU']);
+
+// A region from ONE value, or null when the value says nothing.
+export function parseAdyenRegion(value: unknown): AdyenRegion | null {
+  const v = String(value ?? '').trim().toUpperCase();
+  if (!v) return null;
+  if (US_CODES.has(v)) return 'US';
+  if (UK_CODES.has(v)) return 'UK';
+  return null;
 }
 
-// Checkout v72 live host carries the per company prefix. The bare
-// https://checkout-live.adyen.com host is WRONG for live and must not be used.
+// normaliseAdyenRegion(value, currency): the stored region first ('EU', 'GB'
+// and 'GBP' style inputs read as 'UK'; 'US' and 'USD' as 'US'); anything
+// unknown falls back by currency (USD => US); else UK.
+export function normaliseAdyenRegion(value: unknown, currency?: unknown): AdyenRegion {
+  return parseAdyenRegion(value) ?? parseAdyenRegion(currency) ?? 'UK';
+}
+export const normalizeAdyenRegion = normaliseAdyenRegion;
+
+// The region for a merchant_adyen_accounts row, with the platform location
+// (its currency) as the fallback when the row is missing or says nothing.
+export function adyenRegionFromRow(row: { region?: unknown } | null | undefined, location?: { currency?: unknown } | null): AdyenRegion {
+  return normaliseAdyenRegion(row?.region, location?.currency);
+}
+
+// The Adyen Drop-in / Components `environment` option for a venue.
+export function dropinEnvironmentFor(env: unknown, region: unknown): AdyenDropinEnvironment {
+  if (normalizeAdyenEnv(env) !== 'live') return 'test';
+  return normaliseAdyenRegion(region) === 'US' ? 'live-us' : 'live';
+}
+
+// ── Secret names ─────────────────────────────────────────────────────────────
+// adyenSecretName: the CANONICAL name for a field, the one shown in messages
+// and in `missing`. Live names carry the region (ADYEN_LIVE_UK_API_KEY); the
+// test set is the unprefixed names in use today whatever the region.
+export function adyenSecretName(env: AdyenEnv | string, field: AdyenSecretField, region: AdyenRegion | string = 'UK'): string {
+  const suffix = ADYEN_SECRET_SUFFIXES[field];
+  if (!suffix) throw new Error(`adyenSecretName: unknown field ${String(field)}`);
+  if (normalizeAdyenEnv(env) !== 'live') return `ADYEN_${suffix}`;
+  return `ADYEN_LIVE_${normaliseAdyenRegion(region)}_${suffix}`;
+}
+
+// adyenSecretNames: every name read for a field, in read order (the first
+// non blank value wins).
+//   test UK   [ADYEN_X]
+//   test US   [ADYEN_TEST_US_X, ADYEN_X]
+//   live UK   [ADYEN_LIVE_UK_X, ADYEN_LIVE_X]
+//   live US   [ADYEN_LIVE_US_X]
+export function adyenSecretNames(env: AdyenEnv | string, field: AdyenSecretField, region: AdyenRegion | string = 'UK'): string[] {
+  const suffix = ADYEN_SECRET_SUFFIXES[field];
+  if (!suffix) throw new Error(`adyenSecretNames: unknown field ${String(field)}`);
+  const r = normaliseAdyenRegion(region);
+  if (normalizeAdyenEnv(env) !== 'live') {
+    return r === 'US' ? [`ADYEN_TEST_US_${suffix}`, `ADYEN_${suffix}`] : [`ADYEN_${suffix}`];
+  }
+  return r === 'UK' ? [`ADYEN_LIVE_UK_${suffix}`, `ADYEN_LIVE_${suffix}`] : [`ADYEN_LIVE_US_${suffix}`];
+}
+
+// The live Checkout URL prefix: canonical name and read order per region.
+export function adyenLivePrefixName(region: AdyenRegion | string = 'UK'): string {
+  return `ADYEN_LIVE_${normaliseAdyenRegion(region)}_PREFIX`;
+}
+export function adyenLivePrefixNames(region: AdyenRegion | string = 'UK'): string[] {
+  return normaliseAdyenRegion(region) === 'UK'
+    ? [adyenLivePrefixName('UK'), ADYEN_LIVE_PREFIX_NAME]
+    : [adyenLivePrefixName('US')];
+}
+
+// Checkout v72 live host carries the per company (per region) prefix. The
+// bare https://checkout-live.adyen.com host is WRONG for live and must not be used.
 export function liveCheckoutBase(prefix: string): string {
   return `https://${prefix}-checkout-live.adyenpayments.com/checkout/v72`;
 }
 
 const trimSlash = (s: string): string => String(s).replace(/\/+$/, '');
 
+// The classic live Terminal API host for a region. Live hosts are REGIONAL
+// (docs/adyen/research/adyen-in-person.md: terminal-api-live for the EU data
+// centre, which is where UK venues live, then terminal-api-live-us, -au,
+// -apse, -nea). Accepts 'UK' | 'US' as well as the lower case Adyen suffixes.
+// KEEP IN SYNC with src/lib/payments/adyenEnv.js.
+export function liveTerminalApiBase(region: AdyenRegion | string = 'UK'): string {
+  const r = String(region ?? '').trim().toLowerCase();
+  if (!r || r === 'uk' || r === 'eu' || r === 'gb') return 'https://terminal-api-live.adyen.com';
+  return `https://terminal-api-live-${r}.adyen.com`;
+}
+
+type SecretReader = (name: string) => string | undefined | null;
+
 // resolveAdyenConfig(env, get, opts): the PURE resolver, identical to the JS
 // mirror. `get` is the secret reader (Deno.env.get in production, a map in
-// tests). opts.secretEnv picks which SECRET SET to read (default = env); only
-// the mirror tests use it. Never throws.
+// tests). opts.region picks the region set (default 'UK', 'EU' reads as UK);
+// opts.secretEnv picks which SECRET SET to read (default = env); only the
+// mirror tests use it. Never throws.
 export function resolveAdyenConfig(
   env: AdyenEnv | string | null | undefined,
-  get: (name: string) => string | undefined | null,
-  opts: { secretEnv?: AdyenEnv } = {},
+  get: SecretReader,
+  opts: { region?: AdyenRegion | string | null; secretEnv?: AdyenEnv } = {},
 ): AdyenConfig {
   const e = normalizeAdyenEnv(env);
   const live = e === 'live';
+  const region = normaliseAdyenRegion(opts.region);
   const secretEnv = normalizeAdyenEnv(opts.secretEnv ?? e);
-  const read = (field: AdyenSecretField, set: AdyenEnv = secretEnv): string => {
-    const v = get(adyenSecretName(set, field));
-    return v == null ? '' : String(v).trim();
+  const first = (names: string[]): string => {
+    for (const n of names) {
+      const v = get(n);
+      const s = v == null ? '' : String(v).trim();
+      if (s) return s;
+    }
+    return '';
   };
-  const prefix = live ? String(get(ADYEN_LIVE_PREFIX_NAME) ?? '').trim() : '';
+  const read = (field: AdyenSecretField, set: AdyenEnv = secretEnv): string => first(adyenSecretNames(set, field, region));
+  const prefix = live ? first(adyenLivePrefixNames(region)) : '';
   const apiKey = read('apiKey');
+  const merchantAccount = read('merchantAccount');
   const orApiKey = (field: AdyenSecretField): string => read(field) || apiKey;
   const orTest = (field: AdyenSecretField): string => read(field) || read(field, 'test');
   const override = (field: AdyenSecretField): string => { const v = read(field); return v ? trimSlash(v) : ''; };
   const defaults = ADYEN_DEFAULT_BASES[e];
 
   const missing: string[] = [];
-  if (!apiKey) missing.push(adyenSecretName(secretEnv, 'apiKey'));
-  if (live && !prefix) missing.push(ADYEN_LIVE_PREFIX_NAME);
+  if (!apiKey) missing.push(adyenSecretName(secretEnv, 'apiKey', region));
+  if (live && !prefix) missing.push(adyenLivePrefixName(region));
+  if (live && !merchantAccount) missing.push(adyenSecretName(secretEnv, 'merchantAccount', region));
 
   return {
     env: e,
     live,
+    region,
+    dropinEnvironment: dropinEnvironmentFor(e, region),
     configured: missing.length === 0,
     missing,
     apiKey,
     clientKey: read('clientKey'),
     hmacKey: read('hmacKey'),
-    merchantAccount: read('merchantAccount'),
+    merchantAccount,
     prefix,
     checkoutBase: override('checkoutBase') || (live ? (prefix ? liveCheckoutBase(prefix) : '') : defaults.checkoutBase),
     managementBase: override('managementBase') || defaults.managementBase,
     lemBase: override('lemBase') || defaults.lemBase,
     balancePlatformBase: override('balancePlatformBase') || defaults.balancePlatformBase,
-    deviceBase: override('deviceBase') || defaults.deviceBase,
+    deviceBase: override('deviceBase') || (live ? liveTerminalApiBase(region) : defaults.deviceBase),
     deviceBaseOverride: !!override('deviceBase'),
     managementKey: orApiKey('managementKey'),
     lemKey: orApiKey('lemKey'),
@@ -230,28 +360,172 @@ export function resolveAdyenConfig(
   };
 }
 
-const envGet = (name: string): string | undefined => Deno.env.get(name);
+const envGet: SecretReader = (name: string): string | undefined => Deno.env.get(name);
 
-// The per venue config for one environment, read from Deno.env NOW.
-export function adyenConfig(env: AdyenEnv): AdyenConfig {
-  return resolveAdyenConfig(env, envGet);
+// The per venue config for one environment AND region, read from Deno.env
+// NOW. Takes the { env, region } object adyenEnvForLocation returns, or
+// (env, region) as two arguments. adyenConfig(env) alone is the UK set, so
+// every existing call keeps its meaning.
+export function adyenConfig(env: AdyenEnv | AdyenTarget | string, region?: AdyenRegion | string | null): AdyenConfig {
+  if (env && typeof env === 'object') {
+    return resolveAdyenConfig(env.env, envGet, { region: normaliseAdyenRegion(region ?? env.region) });
+  }
+  return resolveAdyenConfig(env, envGet, { region: normaliseAdyenRegion(region) });
+}
+
+// The message a caller returns when a venue's config cannot be used: the
+// exact fail closed text for live, naming the missing secret NAMES for the
+// venue's region (never values); today's soft wording for test.
+// KEEP IN SYNC with src/lib/payments/adyenEnv.js.
+export function adyenNotConfiguredMessage(cfg: Pick<AdyenConfig, 'live' | 'missing' | 'region'> | null | undefined): string {
+  if (!cfg || !cfg.live) return `Adyen not configured, set ${adyenSecretName('test', 'apiKey')}`;
+  const names = Array.isArray(cfg.missing) ? cfg.missing.filter(Boolean) : [];
+  const region = cfg.region ? ` (${cfg.region})` : '';
+  return names.length ? `${ADYEN_LIVE_FAIL_CLOSED}${region}: set ${names.join(', ')}` : `${ADYEN_LIVE_FAIL_CLOSED}${region}`;
 }
 
 // Fail closed for LIVE only. A test config with no key keeps today's soft
-// behaviour (callers check cfg.configured and Adyen 401s).
+// behaviour (callers check cfg.configured and Adyen 401s). The message starts
+// with ADYEN_LIVE_FAIL_CLOSED and names the missing secrets for the region.
 export function assertAdyenConfigured(cfg: AdyenConfig): AdyenConfig {
   if (cfg && cfg.live && !cfg.configured) {
-    const err: any = new Error(ADYEN_LIVE_FAIL_CLOSED);
+    const err: any = new Error(adyenNotConfiguredMessage(cfg));
     err.code = 'ADYEN_LIVE_NOT_CONFIGURED';
+    err.region = cfg.region;
     err.missing = Array.isArray(cfg.missing) ? cfg.missing.slice() : [];
     throw err;
   }
   return cfg;
 }
 
+// The live regions whose set is usable (api key, prefix and merchant
+// account all present), UK then US. PURE form plus the Deno.env reader.
+export function resolveLiveRegionsConfigured(get: SecretReader): AdyenRegion[] {
+  return ADYEN_REGIONS.filter((region) => resolveAdyenConfig('live', get, { region }).configured);
+}
+export function liveRegionsConfigured(): AdyenRegion[] {
+  return resolveLiveRegionsConfigured(envGet);
+}
+
+// Webhook HMAC key candidates for one notification, UK then US. A live
+// notification cannot say which account signed it before it is verified, so
+// the receiver tries every configured live region key and records the one
+// that matched; a test notification uses the test key (plus the optional US
+// test override when it differs). `field` picks the standard key ('hmacKey',
+// adyen-webhook and adyen-terminal-events) or the balance platform key
+// ('bpHmacKey', adyen-bp-webhook). Blank keys are left out.
+export interface WebhookKeyCandidate { region: AdyenRegion; hmacKey: string }
+export function resolveWebhookKeys(live: boolean, get: SecretReader, field: 'hmacKey' | 'bpHmacKey' = 'hmacKey'): WebhookKeyCandidate[] {
+  const out: WebhookKeyCandidate[] = [];
+  const env: AdyenEnv = live ? 'live' : 'test';
+  for (const region of ADYEN_REGIONS) {
+    const key = resolveAdyenConfig(env, get, { region })[field] || '';
+    if (!key) continue;
+    if (!live && out.some((c) => c.hmacKey === key)) continue;   // the one test account, no US override
+    out.push({ region, hmacKey: key });
+  }
+  return out;
+}
+export function webhookKeysFor(live: boolean, field: 'hmacKey' | 'bpHmacKey' = 'hmacKey'): WebhookKeyCandidate[] {
+  return resolveWebhookKeys(live, envGet, field);
+}
+
+// Basic auth pairs a webhook or terminal events receiver accepts: on live,
+// any configured region pair (UK then US), then the test pair as the
+// fallback; on test, the test pair. `kind` is 'webhook' | 'events'.
+export interface WebhookAuthPair { region: AdyenRegion; user: string; pass: string }
+export function resolveWebhookAuthPairs(live: boolean, get: SecretReader, kind: 'webhook' | 'events' = 'webhook'): WebhookAuthPair[] {
+  const userField: AdyenSecretField = kind === 'events' ? 'eventsUser' : 'webhookUser';
+  const passField: AdyenSecretField = kind === 'events' ? 'eventsPass' : 'webhookPass';
+  const out: WebhookAuthPair[] = [];
+  const push = (region: AdyenRegion, cfg: AdyenConfig) => {
+    const user = cfg[userField] || '';
+    const pass = cfg[passField] || '';
+    if (!user || !pass) return;
+    if (out.some((c) => c.user === user && c.pass === pass)) return;
+    out.push({ region, user, pass });
+  };
+  if (live) for (const region of ADYEN_REGIONS) push(region, resolveAdyenConfig('live', get, { region }));
+  push('UK', resolveAdyenConfig('test', get, { region: 'UK' }));
+  return out;
+}
+export function webhookAuthPairsFor(live: boolean, kind: 'webhook' | 'events' = 'webhook'): WebhookAuthPair[] {
+  return resolveWebhookAuthPairs(live, envGet, kind);
+}
+
 // ADYEN_ENV: the fallback ONLY when a request cannot be tied to a venue row.
 export function adyenFallbackEnv(): AdyenEnv {
   return normalizeAdyenEnv(Deno.env.get('ADYEN_ENV'));
+}
+// The region when a request cannot be tied to a venue row: UK.
+export function adyenFallbackRegion(): AdyenRegion {
+  return 'UK';
+}
+
+// Postgres refuses a region the OLD check constraint does not know ('UK'
+// before ADYEN_REGION_MIGRATION is run). set_region and every row create
+// catch this and answer with the migration's name instead of a bare
+// constraint error. KEEP IN SYNC with src/lib/payments/adyenEnv.js.
+export function isAdyenRegionCheckError(err: any): boolean {
+  const code = String(err?.code ?? '');
+  const msg = String(err?.message ?? '') + ' ' + String(err?.details ?? '');
+  return /merchant_adyen_accounts_region_check/i.test(msg) || (code === '23514' && /region/i.test(msg));
+}
+export function adyenRegionMigrationMessage(): string {
+  return `The database still only accepts the old region codes. Run ${ADYEN_REGION_MIGRATION} on the platform project, then try again.`;
+}
+
+// ── Row writes that may CREATE the venue's account row ───────────────────────
+// A merchant_adyen_accounts upsert that only carries the columns it changes
+// CREATES a missing row with the database DEFAULT region ('EU' today, 'UK'
+// after ADYEN_REGION_MIGRATION). For a US venue, whose region was resolved by
+// currency while it had no row, that silently flipped every later request to
+// the UK set (8 Sep 2026: onboarding's first stamp, the rate card save). So a
+// create stamps the RESOLVED region; an existing row keeps its own unless the
+// caller names one; a named region is normalised ('EU' reads as UK) and an
+// unknown one is dropped. Never mutates the input.
+// KEEP IN SYNC with src/lib/payments/adyenEnv.js.
+export function adyenAccountRowPatch<T extends Record<string, unknown>>(
+  patch: T,
+  existingRow: { region?: unknown } | null | undefined,
+  region: AdyenRegion | string | null | undefined,
+): T & { region?: AdyenRegion } {
+  const out: Record<string, unknown> = { ...patch };
+  const named = parseAdyenRegion(out.region);
+  if (named) { out.region = named; return out as T & { region?: AdyenRegion }; }
+  delete out.region;
+  if (!existingRow) out.region = normaliseAdyenRegion(region);
+  return out as T & { region?: AdyenRegion };
+}
+
+// May a write the OLD check constraint refused be retried WITHOUT the region
+// column? Only a 'UK' write (the old default 'EU' reads as UK everywhere)
+// onto a row that already reads as UK, or no row at all. 'US' passes either
+// check, so a refused US write is some other problem; and a UK write onto a
+// row that says US must not silently keep US, that caller answers with the
+// migration instead. KEEP IN SYNC with src/lib/payments/adyenEnv.js.
+export function adyenRegionRetryWithoutColumn(
+  err: unknown,
+  patch: { region?: unknown } | null | undefined,
+  existingRow: { region?: unknown } | null | undefined,
+): boolean {
+  if (!isAdyenRegionCheckError(err)) return false;
+  if (parseAdyenRegion(patch?.region) !== 'UK') return false;
+  if (existingRow && normaliseAdyenRegion(existingRow.region) !== 'UK') return false;
+  return true;
+}
+
+// The region whose secret set names this merchant account (case insensitive),
+// null when neither does. PURE; adyenRegionForMerchantAccount below adds the
+// venue rows. KEEP IN SYNC with src/lib/payments/adyenEnv.js.
+export function resolveRegionByMerchantAccount(merchantAccount: unknown, live: boolean, get: SecretReader): AdyenRegion | null {
+  const code = String(merchantAccount ?? '').trim().toLowerCase();
+  if (!code) return null;
+  for (const region of ADYEN_REGIONS) {
+    const mine = resolveAdyenConfig(live ? 'live' : 'test', get, { region }).merchantAccount;
+    if (mine && mine.toLowerCase() === code) return region;
+  }
+  return null;
 }
 
 // ── Environment resolution by venue ──────────────────────────────────────────
@@ -277,41 +551,124 @@ function warnNoEnvironmentColumn(): void {
   console.warn('[adyen] merchant_adyen_accounts.environment is missing (run 20260907_PLATFORM_adyen_environment.sql); using ADYEN_ENV fallback', adyenFallbackEnv());
 }
 
-// The venue's account row AND its environment in ONE read. `columns` names
-// the extra merchant_adyen_accounts columns the caller wants alongside
-// `environment` (merchant_account, store_id, receive_payments_ok, ...). The
-// row is null when the venue has none (env = ADYEN_ENV fallback). While the
+// The region for a venue: the row's own region when it says something
+// ('UK', 'US', or a legacy 'EU'), else the platform location's currency
+// (USD => US, else UK). The currency read only happens when the row is
+// missing or silent. THROWS on a DB error: never guess.
+async function adyenRegionForLocationRow(platformAdmin: any, locationId: string, row: { region?: unknown } | null): Promise<AdyenRegion> {
+  const fromRow = parseAdyenRegion(row?.region);
+  if (fromRow) return fromRow;
+  const { data, error } = await platformAdmin.from('locations').select('currency').eq('id', locationId).maybeSingle();
+  if (error) throw new Error(`adyenRegionForLocation: ${error.message ?? String(error)}`);
+  return normaliseAdyenRegion(null, data?.currency);
+}
+
+// The venue's account row AND its environment AND its region in ONE read.
+// `columns` names the extra merchant_adyen_accounts columns the caller wants
+// alongside `environment` and `region` (merchant_account, store_id,
+// receive_payments_ok, ...). The row is null when the venue has none (env =
+// ADYEN_ENV fallback, region by the location's currency). While the
 // environment column is missing the read retries without it so callers still
 // get their other columns. THROWS on any other DB error: never guess.
 export async function adyenAccountForLocation<T extends Record<string, unknown> = Record<string, unknown>>(
   platformAdmin: any,
   locationId: string | null | undefined,
   columns: string[] = [],
-): Promise<{ env: AdyenEnv; row: (T & { environment?: unknown }) | null }> {
-  if (!locationId) return { env: adyenFallbackEnv(), row: null };
-  const extra = columns.filter((c) => c && c !== 'environment');
-  const select = (withEnv: boolean) => [...(withEnv ? ['environment'] : []), ...extra].join(', ');
+): Promise<{ env: AdyenEnv; region: AdyenRegion; row: (T & { environment?: unknown; region?: unknown }) | null }> {
+  type Row = T & { environment?: unknown; region?: unknown };
+  if (!locationId) return { env: adyenFallbackEnv(), region: adyenFallbackRegion(), row: null };
+  const extra = columns.filter((c) => c && c !== 'environment' && c !== 'region');
+  const select = (withEnv: boolean) => [...(withEnv ? ['environment'] : []), 'region', ...extra].join(', ');
   let { data, error } = await platformAdmin
     .from('merchant_adyen_accounts').select(select(true)).eq('location_id', locationId).maybeSingle();
   if (error && isUnknownColumnError(error)) {
     warnNoEnvironmentColumn();
-    if (!extra.length) return { env: adyenFallbackEnv(), row: null };
     ({ data, error } = await platformAdmin
       .from('merchant_adyen_accounts').select(select(false)).eq('location_id', locationId).maybeSingle());
     if (error) throw new Error(`adyenAccountForLocation: ${error.message ?? String(error)}`);
-    return { env: adyenFallbackEnv(), row: (data ?? null) as (T & { environment?: unknown }) | null };
+    const row = (data ?? null) as Row | null;
+    return { env: adyenFallbackEnv(), region: await adyenRegionForLocationRow(platformAdmin, locationId, row), row };
   }
   if (error) throw new Error(`adyenAccountForLocation: ${error.message ?? String(error)}`);
-  if (!data) return { env: adyenFallbackEnv(), row: null };   // no row: the request cannot be tied to a venue row
-  return { env: adyenEnvFromRow(data), row: data as T & { environment?: unknown } };
+  if (!data) {   // no row: the request cannot be tied to a venue row
+    return { env: adyenFallbackEnv(), region: await adyenRegionForLocationRow(platformAdmin, locationId, null), row: null };
+  }
+  const row = data as Row;
+  return { env: adyenEnvFromRow(row), region: await adyenRegionForLocationRow(platformAdmin, locationId, row), row };
 }
 
-export async function adyenEnvForLocation(platformAdmin: any, locationId: string | null | undefined): Promise<AdyenEnv> {
-  return (await adyenAccountForLocation(platformAdmin, locationId)).env;
+// { env, region } for a venue. Pass the object straight to adyenConfig.
+export async function adyenEnvForLocation(platformAdmin: any, locationId: string | null | undefined): Promise<AdyenTarget> {
+  const { env, region } = await adyenAccountForLocation(platformAdmin, locationId);
+  return { env, region };
 }
 
 export async function adyenConfigForLocation(platformAdmin: any, locationId: string | null | undefined): Promise<AdyenConfig> {
   return adyenConfig(await adyenEnvForLocation(platformAdmin, locationId));
+}
+
+// upsertAdyenAccountRow: the region aware merchant_adyen_accounts upsert
+// (keyed on location_id), for EVERY writer that may create the row
+// (adyen-onboard's stamps and save_manual, payments-admin's rate card save).
+// Reads the venue's row and resolved region first (one adyenAccountForLocation
+// read), stamps the region on a CREATE (adyenAccountRowPatch), and retries a
+// 'UK' the OLD check constraint refuses without the column
+// (adyenRegionRetryWithoutColumn) with the migration named in `warning`. Any
+// other error is returned as is; a read error THROWS. opts.region overrides
+// the resolved region for a create (a caller already holding cfg.region
+// passes it); opts.select returns those columns in `data`.
+export interface AdyenAccountRowWrite {
+  data: any;
+  error: { message: string; code?: string; details?: string } | null;
+  warning: string | null;   // adyenRegionMigrationMessage() when the write had to drop the region
+  region: AdyenRegion;      // the region the row reads as after this write
+  created: boolean;         // the venue had no row before this write
+}
+export async function upsertAdyenAccountRow(
+  platformAdmin: any,
+  patch: Record<string, unknown>,
+  opts: { region?: AdyenRegion | string | null; select?: string } = {},
+): Promise<AdyenAccountRowWrite> {
+  const locationId = String(patch?.location_id ?? '').trim();
+  if (!locationId) return { data: null, error: { message: 'upsertAdyenAccountRow: location_id required' }, warning: null, region: 'UK', created: false };
+  const { region: resolved, row } = await adyenAccountForLocation(platformAdmin, locationId);
+  const p = adyenAccountRowPatch({ ...patch, location_id: locationId }, row, opts.region ?? resolved);
+  const region: AdyenRegion = p.region ?? resolved;
+  const run = async (x: Record<string, unknown>) => {
+    const q = platformAdmin.from('merchant_adyen_accounts').upsert(x, { onConflict: 'location_id' });
+    return opts.select ? await q.select(opts.select).maybeSingle() : await q;
+  };
+  let res = await run(p);
+  if (res?.error && adyenRegionRetryWithoutColumn(res.error, p, row)) {
+    const { region: _region, ...rest } = p;
+    res = await run(rest);
+    if (!res?.error) return { data: res?.data ?? null, error: null, warning: adyenRegionMigrationMessage(), region, created: !row };
+  }
+  return { data: res?.data ?? null, error: res?.error ?? null, warning: null, region, created: !row };
+}
+
+// Which account a merchant account NAME belongs to: the region whose secret
+// set (live or test) names it, else the one region of the venue rows on that
+// environment carrying it (an ambiguous name says nothing). The webhooks use
+// this BEFORE verification, only to tell a missing region key from a forgery
+// and to name the secret, and AFTER it for a live item with no verified
+// region and no venue; nothing is trusted from it. THROWS on a DB error.
+export async function adyenRegionForMerchantAccount(platformAdmin: any, merchantAccount: unknown, live = true): Promise<AdyenRegion | null> {
+  const bySecrets = resolveRegionByMerchantAccount(merchantAccount, live, envGet);
+  if (bySecrets) return bySecrets;
+  const code = String(merchantAccount ?? '').trim();
+  if (!code || !platformAdmin) return null;
+  const env: AdyenEnv = live ? 'live' : 'test';
+  const query = (scoped: boolean) => {
+    let q = platformAdmin.from('merchant_adyen_accounts').select('region').eq('merchant_account', code);
+    if (scoped) q = q.eq('environment', env);
+    return q.limit(5);
+  };
+  let { data, error } = await query(true);
+  if (error && isUnknownColumnError(error)) ({ data, error } = await query(false));
+  if (error) throw new Error(`adyenRegionForMerchantAccount: ${error.message ?? String(error)}`);
+  const regions = new Set<AdyenRegion>((Array.isArray(data) ? data : []).map((r: any) => normaliseAdyenRegion(r?.region)));
+  return regions.size === 1 ? [...regions][0] : null;
 }
 
 // Callers arrive with EITHER id space (the ops location id the till and the
@@ -335,29 +692,28 @@ export async function platformLocationIdFor(platformAdmin: any, id: string | nul
 
 // The merchant account a venue's Adyen calls go out with (8 Sep 2026).
 // merchant_adyen_accounts.merchant_account is preferred over the secret set's
-// ADYEN[_LIVE]_MERCHANT_ACCOUNT, because a hand onboarded venue may sit under
-// a merchant account the secrets do not name. But the row's name was written
-// on ONE environment: a venue flipped to live still carried its TEST merchant
-// name (FranPOS_ServOS_TEST) and every live call named it on the live host.
-// set_environment now rewrites the column on a flip; this is the guard for
-// rows that predate that: a row naming the OTHER environment's secret account
-// falls back to this environment's secret account. Anything else on the row
-// is kept verbatim (a real, hand entered live merchant name).
+// ADYEN[_LIVE_<REGION>]_MERCHANT_ACCOUNT, because a hand onboarded venue may
+// sit under a merchant account the secrets do not name. But the row's name
+// was written on ONE environment: a venue flipped to live still carried its
+// TEST merchant name (FranPOS_ServOS_TEST) and every live call named it on
+// the live host. set_environment now rewrites the column on a flip; this is
+// the guard for rows that predate that: a row naming the OTHER environment's
+// secret account (same region) falls back to this environment's secret
+// account. Anything else on the row is kept verbatim (a real, hand entered
+// live merchant name).
 // KEEP IN SYNC with src/lib/payments/adyenEnv.js (effectiveMerchantAccount).
-export function effectiveMerchantAccount(cfg: AdyenConfig, rowMerchant: unknown, get: (name: string) => string | undefined | null = envGet): string {
+export function effectiveMerchantAccount(cfg: AdyenConfig, rowMerchant: unknown, get: SecretReader = envGet): string {
   const row = String(rowMerchant ?? '').trim();
   const mine = String(cfg?.merchantAccount ?? '').trim();
   if (!row) return mine;
   const otherEnv: AdyenEnv = cfg?.live ? 'test' : 'live';
-  const other = String(get(adyenSecretName(otherEnv, 'merchantAccount')) ?? '').trim();
+  let other = '';
+  for (const name of adyenSecretNames(otherEnv, 'merchantAccount', cfg?.region)) {
+    other = String(get(name) ?? '').trim();
+    if (other) break;
+  }
   if (mine && other && row.toLowerCase() === other.toLowerCase() && row.toLowerCase() !== mine.toLowerCase()) return mine;
   return row;
-}
-
-// The message a caller returns when a venue's config cannot be used: the
-// exact fail closed text for live, today's soft wording for test.
-export function adyenNotConfiguredMessage(cfg: AdyenConfig): string {
-  return cfg.live ? ADYEN_LIVE_FAIL_CLOSED : `Adyen not configured, set ${adyenSecretName('test', 'apiKey')}`;
 }
 
 // Merchant account NAME for admin screens: enough to recognise, never the
@@ -436,27 +792,20 @@ export function terminalEndpointFor(deviceBase: string, merchantAccount: string,
   return `${base}/v1/merchants/${encodeURIComponent(merchantAccount)}/devices/${encodeURIComponent(poiid)}/${mode}`;
 }
 
-// The classic live Terminal API host for a region. Live hosts are REGIONAL
-// (docs/adyen/research/adyen-in-person.md: terminal-api-live for EU, then
-// terminal-api-live-us, -au, -apse, -nea). region: 'eu' | 'us' | 'au' | 'apse' | 'nea'.
-// KEEP IN SYNC with src/lib/payments/adyenEnv.js.
-export function liveTerminalApiBase(region = 'eu'): string {
-  const r = String(region ?? '').trim().toLowerCase() || 'eu';
-  return r === 'eu' ? 'https://terminal-api-live.adyen.com' : `https://terminal-api-live-${r}.adyen.com`;
-}
-
 // The reader endpoint for one venue config. An explicit <SET>_DEVICE_BASE is
 // authoritative (region ignored). Otherwise live derives the REGIONAL classic
-// host from the venue's region, and test keeps the test default.
-// KEEP IN SYNC with src/lib/payments/adyenEnv.js.
-export function terminalEndpointForConfig(cfg: Pick<AdyenConfig, 'live' | 'deviceBase' | 'deviceBaseOverride'>, merchantAccount: string, poiid: string, mode: 'sync' | 'async', region = 'eu'): string {
-  const base = (cfg.live && !cfg.deviceBaseOverride) ? liveTerminalApiBase(region) : cfg.deviceBase;
+// host from the region (an explicit argument wins, else the config's own
+// region), and test keeps the test default. liveTerminalApiBase sits with the
+// resolver above. KEEP IN SYNC with src/lib/payments/adyenEnv.js.
+export function terminalEndpointForConfig(cfg: Pick<AdyenConfig, 'live' | 'deviceBase' | 'deviceBaseOverride'> & { region?: AdyenRegion | string }, merchantAccount: string, poiid: string, mode: 'sync' | 'async', region?: AdyenRegion | string | null): string {
+  const r = region ?? cfg.region ?? 'UK';
+  const base = (cfg.live && !cfg.deviceBaseOverride) ? liveTerminalApiBase(r) : cfg.deviceBase;
   return terminalEndpointFor(base, merchantAccount, poiid, mode);
 }
 
-// Every reader call site passes the venue's config and its region
-// (merchant_adyen_accounts.region 'US' -> 'us', else 'eu').
-export function terminalEndpoint(merchantAccount: string, poiid: string, mode: 'sync' | 'async', region = 'eu', cfg: AdyenConfig): string {
+// Every reader call site passes the venue's config and its region ('UK' |
+// 'US', or the older 'eu' | 'us' spellings; null means the config's region).
+export function terminalEndpoint(merchantAccount: string, poiid: string, mode: 'sync' | 'async', region: AdyenRegion | string | null | undefined, cfg: AdyenConfig): string {
   return terminalEndpointForConfig(cfg, merchantAccount, poiid, mode, region);
 }
 

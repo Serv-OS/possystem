@@ -43,31 +43,41 @@ Deno.serve(async (req) => {
   let body: any;
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
   const amountMinor = Math.round(Number(body.amount_minor));
-  const currency = String(body.currency || 'GBP').toUpperCase();
   const locationId = String(body.location_id || '');
   if (!locationId || !Number.isFinite(amountMinor) || amountMinor < 30) {
     return json({ error: 'location_id and amount_minor (≥30) required' }, 400);
   }
 
   // Resolve either id space (ops or platform), same dual idiom as the Ryft fns.
-  let { data: ploc } = await platformAdmin.from('locations')
-    .select('id, payment_processor, currency, country').eq('ops_location_id', locationId).maybeSingle();
+  // No `country` in the select: platform locations has no such column (8 Sep
+  // 2026, and a bad column makes PostgREST answer 400, which read here as
+  // "location not found"). The country follows the venue's region below.
+  const select = 'id, payment_processor, currency';
+  let { data: ploc, error: plocErr } = await platformAdmin.from('locations')
+    .select(select).eq('ops_location_id', locationId).maybeSingle();
+  if (plocErr) return json({ error: `location lookup failed: ${plocErr.message}` }, 500);
   if (!ploc) {
-    const fb = await platformAdmin.from('locations')
-      .select('id, payment_processor, currency, country').eq('id', locationId).maybeSingle();
+    const fb = await platformAdmin.from('locations').select(select).eq('id', locationId).maybeSingle();
+    if (fb.error) return json({ error: `location lookup failed: ${fb.error.message}` }, 500);
     ploc = fb.data ?? null;
   }
   if (!ploc) return json({ error: 'location not found' }, 404);
   if (ploc.payment_processor !== 'adyen') return json({ error: 'location is not on Adyen' }, 409);
 
-  // PER VENUE ENVIRONMENT (7 Sep 2026): the venue's row says test or live and
-  // that picks the secret set. Read alongside the account row, one round trip.
-  const [{ data: maa }, env] = await Promise.all([
+  // PER VENUE ENVIRONMENT AND REGION (7 and 8 Sep 2026): the venue's row says
+  // test or live and UK or US; together they pick the secret set, the
+  // Checkout host and the Drop-in environment. Read alongside the account
+  // row, one round trip.
+  const [{ data: maa }, target] = await Promise.all([
     platformAdmin.from('merchant_adyen_accounts')
       .select('merchant_account, store_id, receive_payments_ok').eq('location_id', ploc.id).maybeSingle(),
     adyenEnvForLocation(platformAdmin, ploc.id),
   ]);
-  const cfg = adyenConfig(env);
+  const cfg = adyenConfig(target);
+  // The currency when the caller sends none: the venue's platform currency,
+  // else its region (8 Sep 2026; it was a literal GBP read before cfg
+  // existed, so a US venue's session was minted in pounds).
+  const currency = String(body.currency || ploc.currency || (cfg.region === 'US' ? 'USD' : 'GBP')).toUpperCase();
   if (!cfg.configured) return json({ error: adyenNotConfiguredMessage(cfg) }, 503);
   // A row still naming the OTHER environment's merchant account (flipped
   // before set_environment rewrote it) must not reach the live host.
@@ -81,7 +91,7 @@ Deno.serve(async (req) => {
     amount: { value: amountMinor, currency },
     reference,
     returnUrl: String(body.return_url || DEFAULT_RETURN_URL),
-    countryCode: String(body.country || ploc.country || (currency === 'USD' ? 'US' : 'GB')),
+    countryCode: String(body.country || (cfg.region === 'US' ? 'US' : 'GB')).toUpperCase(),
     channel: 'Web',
     ...(maa.store_id ? { store: maa.store_id } : {}),
     ...(body.shopper_email ? { shopperEmail: String(body.shopper_email) } : {}),
@@ -113,6 +123,8 @@ Deno.serve(async (req) => {
     session_data: res.data?.sessionData,
     client_key: cfg.clientKey || null,   // Drop-in needs it; the venue's environment's publishable key
     environment: cfg.env,
+    region: cfg.region,
+    dropin_environment: cfg.dropinEnvironment,   // 'test' | 'live' | 'live-us'
     reference,
     amount_minor: amountMinor,
     currency,

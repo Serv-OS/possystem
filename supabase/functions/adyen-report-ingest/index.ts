@@ -42,7 +42,7 @@
 //   npx supabase functions deploy adyen-report-ingest --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { adyenConfig, adyenFallbackEnv, adyenSecretName, type AdyenConfig, type AdyenEnv } from '../_shared/adyen.ts';
+import { adyenConfig, adyenFallbackEnv, adyenSecretName, normaliseAdyenRegion, parseAdyenRegion, ADYEN_REGIONS, type AdyenConfig, type AdyenEnv, type AdyenRegion } from '../_shared/adyen.ts';
 
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 // Preferred: the Report user's API key (docs: the download URL accepts an API
@@ -53,16 +53,53 @@ const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 // environment comes from the download host Adyen put in the REPORT_AVAILABLE
 // notification: ca-live.adyen.com is live, ca-test.adyen.com is test. Any
 // other host falls back to ADYEN_ENV. That picks the report credentials
-// (ADYEN_REPORT_* or ADYEN_LIVE_REPORT_*) and stamps adyen_payouts.live.
+// (ADYEN_REPORT_* or ADYEN_LIVE_<REGION>_REPORT_*) and stamps adyen_payouts.live.
 function reportEnvFromUrl(url: string | null | undefined): AdyenEnv {
   const u = String(url ?? '');
-  if (/^https:\/\/ca-live\.adyen\.com\//i.test(u)) return 'live';
-  if (/^https:\/\/ca-test\.adyen\.com\//i.test(u)) return 'test';
+  if (/^https:\/\/ca-live(-[a-z]+)?\.adyen\.com\//i.test(u)) return 'live';
+  if (/^https:\/\/ca-test(-[a-z]+)?\.adyen\.com\//i.test(u)) return 'test';
   return adyenFallbackEnv();
+}
+// PER REGION (8 Sep 2026): the UK and US live accounts are different Adyen
+// accounts with their own Report users. The region comes from the host first
+// (a regional Customer Area host such as ca-live-us.adyen.com), then from the
+// merchant account named in the download path
+// (/reports/download/MerchantAccount/<MERCHANT>/<file>): the venue row that
+// carries that merchant account on this environment says which region it is,
+// else the region whose live secrets name that merchant account. Nothing
+// matches = UK (the only account before 8 Sep 2026).
+function reportMerchantFromUrl(url: string | null | undefined): string {
+  const m = /\/MerchantAccount\/([^/?#]+)/i.exec(String(url ?? ''));
+  return m ? decodeURIComponent(m[1]) : '';
+}
+async function reportTargetFromUrl(url: string | null | undefined): Promise<{ env: AdyenEnv; region: AdyenRegion; regionSource: string }> {
+  const env = reportEnvFromUrl(url);
+  const host = /^https:\/\/ca-(?:live|test)-([a-z]+)\.adyen\.com\//i.exec(String(url ?? ''))?.[1] ?? '';
+  const byHost = host ? parseAdyenRegion(host) : null;
+  if (byHost) return { env, region: byHost, regionSource: 'host' };
+  const merchant = reportMerchantFromUrl(url);
+  if (merchant) {
+    try {
+      const { data, error } = await platformAdmin.from('merchant_adyen_accounts')
+        .select('region').eq('merchant_account', merchant).eq('environment', env).limit(1);
+      if (error) console.error('[adyen-report-ingest] merchant region lookup failed:', error.message);
+      const row = Array.isArray(data) ? data[0] : null;
+      const fromRow = row ? parseAdyenRegion(row.region) : null;
+      if (fromRow) return { env, region: fromRow, regionSource: 'merchant row' };
+    } catch (e) { console.error('[adyen-report-ingest] merchant region lookup threw:', (e as Error).message); }
+    for (const region of ADYEN_REGIONS) {
+      const named = adyenConfig(env, region).merchantAccount;
+      if (named && named.toLowerCase() === merchant.toLowerCase()) return { env, region, regionSource: 'secret set' };
+    }
+  }
+  return { env, region: normaliseAdyenRegion(null), regionSource: 'default' };
 }
 const hasReportCreds = (cfg: AdyenConfig) => !!cfg.reportApiKey || !!(cfg.reportUser && cfg.reportPass);
 const credsMissingMsg = (cfg: AdyenConfig) =>
-  `report credentials not configured yet for the ${cfg.env} environment. Create a Report user in the Customer Area and set ${adyenSecretName(cfg.env, 'reportApiKey')} (or ${adyenSecretName(cfg.env, 'reportUser')} / ${adyenSecretName(cfg.env, 'reportPass')})`;
+  `report credentials not configured yet for the ${cfg.env} environment${cfg.live ? ` (${cfg.region})` : ''}. Create a Report user in the Customer Area and set ${adyenSecretName(cfg.env, 'reportApiKey', cfg.region)} (or ${adyenSecretName(cfg.env, 'reportUser', cfg.region)} / ${adyenSecretName(cfg.env, 'reportPass', cfg.region)})`;
+// The live regions whose Report credentials are set (the `list` answer and
+// the process_pending gate).
+const liveReportRegions = (): AdyenRegion[] => ADYEN_REGIONS.filter((r) => hasReportCreds(adyenConfig('live', r)));
 
 const json = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), { status: s, headers: { 'Content-Type': 'application/json' } });
@@ -203,7 +240,9 @@ async function ingestReport(name: string, urlOverride: string | null): Promise<R
     await stampReport(name, { report_type: reportType, status: 'failed', error: 'no download URL recorded for this report' });
     return { ok: false, report_name: name, error: 'no download URL recorded for this report' };
   }
-  const cfg = adyenConfig(reportEnvFromUrl(url));
+  const target = await reportTargetFromUrl(url);
+  const cfg = adyenConfig(target);   // { env, region }: the account's Report credentials
+  if (cfg.live) console.log(`[adyen-report-ingest] ${name}: live ${cfg.region} report (region by ${target.regionSource})`);
   const CREDS_MISSING_MSG = credsMissingMsg(cfg);
   if (!hasReportCreds(cfg)) {
     // Stays PENDING — this is a setup gap, not a report failure. The error text
@@ -482,8 +521,11 @@ Deno.serve(async (req) => {
       .select('report_name, report_type, status, error, rows_parsed, payments_updated, payouts_upserted, payments_missing, ingested_at, created_at')
       .order('created_at', { ascending: false }).limit(100);
     if (error) return json({ error: `report list failed: ${error.message} (is migration 20260820_adyen_fees.sql applied?)` }, 500);
-    // creds_configured keeps its old meaning (the test set); live is reported beside it.
-    return json({ ok: true, creds_configured: hasReportCreds(adyenConfig('test')), creds_configured_live: hasReportCreds(adyenConfig('live')), reports: data ?? [] });
+    // creds_configured keeps its old meaning (the test set); live is reported
+    // beside it: true when ANY live region has Report credentials, with the
+    // regions listed.
+    const liveRegions = liveReportRegions();
+    return json({ ok: true, creds_configured: hasReportCreds(adyenConfig('test')), creds_configured_live: liveRegions.length > 0, creds_configured_live_regions: liveRegions, reports: data ?? [] });
   }
 
   // ── ingest: one report, by queued name or by explicit URL (backfill) ──────
@@ -498,9 +540,10 @@ Deno.serve(async (req) => {
 
   // ── process_pending: sweep the queue (backfill once credentials exist) ────
   if (action === 'process_pending') {
-    // The queue can hold reports from either environment; each ingest checks
-    // its own set. Refuse the sweep only when NEITHER set has credentials.
-    if (!hasReportCreds(adyenConfig('test')) && !hasReportCreds(adyenConfig('live'))) return json({ ok: false, error: credsMissingMsg(adyenConfig('test')) }, 503);
+    // The queue can hold reports from either environment and either live
+    // region; each ingest checks its own set. Refuse the sweep only when NO
+    // set (test, live UK, live US) has credentials.
+    if (!hasReportCreds(adyenConfig('test')) && liveReportRegions().length === 0) return json({ ok: false, error: credsMissingMsg(adyenConfig('test')) }, 503);
     const statuses = body?.retry_failed === true ? ['pending', 'failed'] : ['pending'];
     const { data: pending, error } = await platformAdmin.from('adyen_reports')
       .select('report_name').eq('report_type', 'settlement_details').in('status', statuses)

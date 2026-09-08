@@ -55,6 +55,10 @@ export default function AdyenPaymentForm({
         if (!locationId) throw new Error('This venue is not set up for card payments yet (no location id for the checkout)');
         // Client key + environment come from the fn so live/test stays a
         // server-side switch (the venue's environment) the bundle never hardcodes.
+        // 8 Sep 2026: the fn also answers region ('UK' | 'US') and
+        // dropinEnvironment ('test' | 'live' | 'live-us'): a US venue's live
+        // Drop-in must mount against Adyen's US data centre. An older fn build
+        // without dropinEnvironment falls back to the environment mapping.
         const { data: cfg, error: cfgErr } = await supabase.functions.invoke('adyen-checkout', { body: { action: 'status', location_id: locationId } });
         if (cfgErr || cfg?.error || !cfg?.ok) throw new Error(cfg?.error || cfgErr?.message || 'Could not start the payment');
         if (!live) return;
@@ -68,8 +72,8 @@ export default function AdyenPaymentForm({
 
         const checkout = await AdyenCheckout({
           clientKey: cfg.clientKey || undefined,
-          environment: cfg.environment === 'live' ? 'live' : 'test',
-          countryCode: 'GB',
+          environment: cfg.dropinEnvironment || (cfg.environment === 'live' ? 'live' : 'test'),
+          countryCode: cfg.region === 'US' ? 'US' : 'GB',
           amount: { value: amountMinor, currency: String(currency).toUpperCase() },
           paymentMethodsResponse: CARD_ONLY,
           onSubmit: async (state, _component, actions) => {

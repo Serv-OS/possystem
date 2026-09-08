@@ -47,7 +47,11 @@
 //   npx supabase functions deploy adyen-onboard --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { lemBase, balancePlatformBase, managementBase, RATE_TIERS, resolveAdyenRateCard, adyenConfig, adyenEnvForLocation, adyenSecretName, assertAdyenConfigured, effectiveMerchantAccount, type AdyenConfig } from '../_shared/adyen.ts';
+import {
+  lemBase, balancePlatformBase, managementBase, RATE_TIERS, resolveAdyenRateCard, adyenConfig, adyenEnvForLocation, adyenSecretName,
+  assertAdyenConfigured, effectiveMerchantAccount, parseAdyenRegion, isAdyenRegionCheckError, adyenRegionMigrationMessage, upsertAdyenAccountRow,
+  type AdyenConfig,
+} from '../_shared/adyen.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -68,10 +72,12 @@ const platformAdmin = createClient(
 
 // LEM + Balance Platform may sit behind their own ws user; fall back to the
 // main key so nothing breaks when one key carries every role (test setup).
-// PER VENUE ENVIRONMENT (7 Sep 2026): keys and hosts come from the VENUE'S
-// config (its merchant_adyen_accounts.environment picks ADYEN_* or
-// ADYEN_LIVE_*). cfg.lemKey / bpKey / managementKey fall back to that set's
-// API key. A live venue without live keys throws the fail closed error before
+// PER VENUE ENVIRONMENT AND REGION (7 and 8 Sep 2026): keys and hosts come
+// from the VENUE'S config (its merchant_adyen_accounts.environment picks
+// ADYEN_* or the live set, and its region picks ADYEN_LIVE_UK_* or
+// ADYEN_LIVE_US_*; the LEM and BCL hosts are the same for both regions).
+// cfg.lemKey / bpKey / managementKey fall back to that set's API key. A live
+// venue without its region's live keys throws the fail closed error before
 // any request leaves (the handler's outer catch answers 500 with the reason).
 interface R<T = any> { ok: boolean; status: number; data: T; }
 async function call<T = any>(cfg: AdyenConfig, key: string, method: string, url: string, body?: unknown, idem?: string): Promise<R<T>> {
@@ -124,13 +130,8 @@ function logStep(step: string, locationId: string, raw: unknown) {
   }).then(() => {}, () => {});
 }
 
-async function stamp(locationId: string, patch: Record<string, unknown>) {
-  return await platformAdmin.from('merchant_adyen_accounts').upsert({
-    location_id: locationId,
-    ...patch,
-    updated_at: new Date().toISOString(),
-  }, { onConflict: 'location_id' });
-}
+// stamp() lives inside the handler (it needs the venue's resolved region and
+// collects the region migration warning per request): see `const stamp` below.
 
 // Platform locations carry ONE free-text address line. LEM only REQUIRES
 // country on registeredAddress — parse what we can (UK-shaped) and let hosted
@@ -238,15 +239,34 @@ Deno.serve(async (req) => {
     if (!loc) ({ data: loc } = await platformAdmin.from('locations').select(select).eq('ops_location_id', locKey).maybeSingle());
     if (!loc) return json({ error: 'location not found in platform DB' }, 404);
 
-    const [{ data: maa }, env] = await Promise.all([
+    const [{ data: maa }, target] = await Promise.all([
       platformAdmin.from('merchant_adyen_accounts').select('*').eq('location_id', loc.id).maybeSingle(),
       adyenEnvForLocation(platformAdmin, loc.id),
     ]);
-    const cfg = adyenConfig(env);
+    const cfg = adyenConfig(target);   // { env, region }: the venue's secret set and hosts
     const { lem, bcl, mgmt } = adyenApi(cfg);
+    // The venue's country for Adyen objects follows its REGION (8 Sep 2026;
+    // it was a hardcoded 'GB'). A body.country still wins where accepted.
+    const regionCountry = cfg.region === 'US' ? 'US' : 'GB';
     // The row's name wins unless it names the OTHER environment's secret
     // account (a venue flipped to live before set_environment rewrote it).
     const merchant = effectiveMerchantAccount(cfg, maa?.merchant_account);
+    // stamp: the region aware row write (8 Sep 2026). A venue with NO row used
+    // to get one with the database DEFAULT region ('EU' today, 'UK' after the
+    // migration) from the first stamp of `start` or the status sync, which
+    // silently turned a US venue (region resolved by currency) into a UK one
+    // for every later request: store, merchant account, keys, hosts. The
+    // create now carries cfg.region; a 'UK' the old check constraint refuses
+    // is retried without the column and the migration is named in `warnings`,
+    // which the responses below carry as `warning`.
+    const warnings: string[] = [];
+    const stamp = async (locationId: string, patch: Record<string, unknown>) => {
+      const r = await upsertAdyenAccountRow(platformAdmin, { location_id: locationId, ...patch, updated_at: new Date().toISOString() }, { region: cfg.region });
+      if (r.warning && !warnings.includes(r.warning)) warnings.push(r.warning);
+      if (r.created && !r.error) logStep('row_created', locationId, { region: r.region, fields: Object.keys(patch) });
+      return r;
+    };
+    const warning = () => warnings.join(' ') || null;
 
     // ── list_merchants: the real merchant accounts, so nobody types one ──────
     // v5.7.94. Typing the merchant account by hand is the one field in manual
@@ -343,8 +363,11 @@ Deno.serve(async (req) => {
         balance_account_id: clean(body.balance_account_id),
         legal_entity_id:    clean(body.legal_entity_id),
         split_profile_id:   clean(body.split_profile_id),
-        region:             clean(body.region).toUpperCase() === 'US' ? 'US' : 'EU',
+        // Region codes are 'UK' and 'US' (8 Sep 2026; 'EU' and GB style
+        // inputs read as UK). Empty means "leave alone", like every other field.
+        region:             clean(body.region) ? (parseAdyenRegion(body.region) ?? '') : '',
       };
+      if (clean(body.region) && !fields.region) return json({ error: "region must be 'UK' or 'US'" }, 400);
       const shape: Record<string, RegExp> = {
         store_id: /^ST[0-9A-Z]{10,}$/i,
         account_holder_id: /^AH[0-9A-Z]{10,}$/i,
@@ -368,15 +391,29 @@ Deno.serve(async (req) => {
       // A venue with a store CAN take card payments; that is what the store is.
       if (fields.store_id) patch.receive_payments_ok = true;
       if (fields.balance_account_id) patch.payouts_ok = true;
+      // The region only rides when it CHANGES what is stored (8 Sep 2026). The
+      // admin form used to send its prefilled value on every save, and before
+      // 20260908_PLATFORM_adyen_region_uk.sql runs the old check refuses 'UK',
+      // so a save that only changed the store id was refused outright. A row
+      // that already reads as the requested region (a legacy 'EU' reads as
+      // UK) keeps its column untouched.
+      if (fields.region && maa && parseAdyenRegion(maa.region) === fields.region) delete patch.region;
 
-      const { error } = await platformAdmin.from('merchant_adyen_accounts')
-        .upsert(patch, { onConflict: 'location_id' });
+      // Region aware write: a venue with NO row is created with the requested
+      // region, else its resolved one; a 'UK' the old check refuses is retried
+      // without the column and the migration comes back as `warning` (the ids
+      // are saved either way). A UK write onto a row that says US cannot be
+      // retried that way (it would silently keep US): that is the 409 below,
+      // named as a setup gap, never a bare constraint error.
+      const { error, warning: regionWarning } = await upsertAdyenAccountRow(platformAdmin, patch, { region: fields.region || cfg.region });
+      if (error && isAdyenRegionCheckError(error)) return json({ error: adyenRegionMigrationMessage() }, 409);
       if (error) return json({ error: error.message }, 500);
+      if (regionWarning) warnings.push(regionWarning);
 
-      logStep('save_manual', loc.id, { fields: Object.keys(patch), region: fields.region });
+      logStep('save_manual', loc.id, { fields: Object.keys(patch), region: fields.region || null, warning: regionWarning });
       const { data: after } = await platformAdmin.from('merchant_adyen_accounts')
         .select('*').eq('location_id', loc.id).maybeSingle();
-      return json({ ok: true, saved: after });
+      return json({ ok: true, saved: after, warning: warning() });
     }
 
     // ── status: everything known + a live enablement probe ───────────────────
@@ -446,6 +483,12 @@ Deno.serve(async (req) => {
         processor: loc.payment_processor || 'stripe',
         merchant,
         environment: cfg.env,
+        region: cfg.region,
+        // Does the venue have a merchant_adyen_accounts row at all? The admin
+        // form sends the region on a save only when it chose one or there is
+        // no row yet (8 Sep 2026).
+        account_row: !!m,
+        warning: warning(),
         enablement,
         enablement_message: enablementMessage,
         ids: {
@@ -492,7 +535,7 @@ Deno.serve(async (req) => {
       if (legalEntityId) steps.push({ step: 'legal_entity', status: 'exists', id: legalEntityId });
       else {
         const parsed = parseAddress(loc.address);
-        const country = String(body.country || 'GB').toUpperCase();
+        const country = String(body.country || regionCountry).toUpperCase();
         const registeredAddress: Record<string, unknown> = { country };
         const street = body.street ?? parsed.street; if (street) registeredAddress.street = String(street);
         const city = body.city ?? parsed.city; if (city) registeredAddress.city = String(city);
@@ -577,6 +620,7 @@ Deno.serve(async (req) => {
       return json({
         ok: true,
         steps,
+        warning: warning(),
         ids: { legal_entity_id: legalEntityId, account_holder_id: accountHolderId, balance_account_id: balanceAccountId },
         onboarding_link: link,
         next: link
@@ -628,7 +672,7 @@ Deno.serve(async (req) => {
       const missing: string[] = [];
       if (!maa?.store_id) missing.push('store — register the venue store first (Card terminals → ensure store)');
       if (!maa?.balance_account_id) missing.push('balance account — run Start onboarding first');
-      if (!merchant) missing.push(`merchant account (${adyenSecretName(cfg.env, 'merchantAccount')})`);
+      if (!merchant) missing.push(`merchant account (${adyenSecretName(cfg.env, 'merchantAccount', cfg.region)})`);
       const { cards } = await effectiveRates(maa);
       const lacking = tiersLackingRates(cards);
       if (lacking.length) {
@@ -705,6 +749,7 @@ Deno.serve(async (req) => {
         rate_card: cards,
         tier_summary: tierSummary,
         applied: { rules: profile.rules.length, currency, store_id: maa.store_id, balance_account_id: maa.balance_account_id },
+        warning: warning(),
         notes: [
           'Business cards on Visa/Mastercard cannot be keyed at Adyen (no commercial fundingSource) — they ride their channel rule; the internal ledger still reports them under the Amex & business tier.',
           'Stored-card (ContAuth) payments ride the card-present catch-all rule.',

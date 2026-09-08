@@ -72,6 +72,16 @@ function fmtGBP(n) {
   const v = Math.round((Number(n) || 0) * 100) / 100;
   return Number.isInteger(v) ? `£${v}` : `£${v.toFixed(2)}`;
 }
+// The card amount in the venue's currency (8 Sep 2026: a US venue's deposit
+// is USD). GBP keeps the exact £ shape used everywhere else on the page.
+function fmtMoney(n, currency = 'GBP') {
+  const cur = String(currency || 'GBP').toUpperCase();
+  if (cur === 'GBP') return fmtGBP(n);
+  const v = Math.round((Number(n) || 0) * 100) / 100;
+  try {
+    return new Intl.NumberFormat(undefined, { style: 'currency', currency: cur, minimumFractionDigits: Number.isInteger(v) ? 0 : 2 }).format(v);
+  } catch { return `${cur} ${v.toFixed(2)}`; }
+}
 // "£240 · £60 per person" for per-cover offers; plain total otherwise.
 function pkgTotalLabel(p) {
   return p.priceUnit === 'per_cover' ? `${fmtGBP(p.total)} · ${fmtGBP(p.price)} per person` : fmtGBP(p.total);
@@ -303,17 +313,25 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, required = fa
   const [paidInfo, setPaidInfo] = useState(null); // { pspReference }
 
   const kind = paymentDue?.kind;
-  const amt = fmtGBP((Number(paymentDue?.amountMinor) || 0) / 100);
+  // 8 Sep 2026: the currency comes from the booking-widget fn (the venue's
+  // platform currency), so a US venue's deposit is a USD payment on its US
+  // merchant account. An older fn build without it is a GBP venue.
+  const currency = String(adyen?.currency || 'GBP').toUpperCase();
+  const amt = fmtMoney((Number(paymentDue?.amountMinor) || 0) / 100, currency);
 
   useEffect(() => {
     let live = true;
     (async () => {
       try {
+        // 8 Sep 2026: the book response carries region ('UK' | 'US') and
+        // dropinEnvironment ('test' | 'live' | 'live-us') beside the client
+        // key, so a US venue's live Drop-in mounts against Adyen's US data
+        // centre. An older fn build without it falls back to the environment.
         const checkout = await AdyenCheckout({
           clientKey: adyen?.clientKey || undefined,
-          environment: adyen?.environment === 'live' ? 'live' : 'test',
-          countryCode: 'GB',
-          amount: { value: Number(paymentDue?.amountMinor) || 0, currency: 'GBP' },
+          environment: adyen?.dropinEnvironment || (adyen?.environment === 'live' ? 'live' : 'test'),
+          countryCode: adyen?.region === 'US' ? 'US' : 'GB',
+          amount: { value: Number(paymentDue?.amountMinor) || 0, currency },
           paymentMethodsResponse: CARD_ONLY,
           onSubmit: async (state, _component, actions) => {
             submittedRef.current = true;

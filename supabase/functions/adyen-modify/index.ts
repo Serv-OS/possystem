@@ -115,14 +115,17 @@ Deno.serve(async (req) => {
     return json({ ok: true, captures: rows ?? [] });
   }
 
-  // PER VENUE ENVIRONMENT (7 Sep 2026): the venue's row picks the secret set
-  // for every modification below. A live venue without live keys fails closed.
-  // Resolved AFTER the auth fence and the read only action above, so an
-  // unauthorised caller learns nothing about a venue's environment or key
-  // state from the 503 / 500 text.
+  // PER VENUE ENVIRONMENT AND REGION (7 and 8 Sep 2026): the venue's row
+  // (environment + region) picks the secret set and the Checkout host for
+  // every modification below. A live venue without its region's live keys
+  // fails closed. Resolved AFTER the auth fence and the read only action
+  // above, so an unauthorised caller learns nothing about a venue's
+  // environment or key state from the 503 / 500 text.
   let cfg;
-  try { cfg = adyenConfig(await adyenEnvForLocation(platformAdmin, ploc.id)); }
-  catch (e) { return json({ error: (e as Error).message }, 500); }
+  try {
+    const target = await adyenEnvForLocation(platformAdmin, ploc.id);   // { env, region }
+    cfg = adyenConfig(target);
+  } catch (e) { return json({ error: (e as Error).message }, 500); }
   if (!cfg.configured) return json({ error: adyenNotConfiguredMessage(cfg) }, 503);
 
   // ── v5.7.5 TIP ON PRINTED RECEIPT: action 'tip_capture' ────────────────────

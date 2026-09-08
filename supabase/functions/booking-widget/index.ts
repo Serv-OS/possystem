@@ -56,6 +56,11 @@ const platformAdmin = createClient(
 // map it to the platform id, read the venue's environment, and pick that
 // secret set (key, client key, merchant account, Checkout host). A live venue
 // without live keys fails closed.
+// PER VENUE REGION (8 Sep 2026): the venue's region ('UK' | 'US') picks the
+// live secret set and the Checkout host; the guest page gets
+// { clientKey, environment, region, dropinEnvironment, currency } so the
+// Drop-in mounts against the right data centre ('live' for UK, 'live-us' for
+// US) and the payment is made in the venue's currency (GBP or USD).
 //
 // ONLY the ops -> platform id mapping is cached (it never changes). The
 // environment and the merchant account are read on EVERY call, so a Back
@@ -65,17 +70,28 @@ const platformAdmin = createClient(
 const DEFAULT_RETURN_URL = 'https://app.serv-os.app/';
 const platformIdCache = new Map<string, string>();
 class VenueNotFound extends Error { status = 404; constructor() { super('location not found'); } }
-async function adyenCfgForOps(opsLocationId: string): Promise<{ cfg: AdyenConfig; merchantAccount: string; platformId: string }> {
+// The venue's charging currency (8 Sep 2026): platform locations.currency
+// (GBP or USD), else by region. booking_pay used to charge GBP on every
+// venue, which posted a GBP payment to a US venue's US merchant account.
+const venueCurrency = (value: unknown, region: string): string => {
+  const c = String(value ?? '').trim().toUpperCase();
+  return /^[A-Z]{3}$/.test(c) ? c : (region === 'US' ? 'USD' : 'GBP');
+};
+async function adyenCfgForOps(opsLocationId: string): Promise<{ cfg: AdyenConfig; merchantAccount: string; platformId: string; currency: string }> {
   let platformId = platformIdCache.get(opsLocationId) ?? null;
   if (!platformId) {
     platformId = await platformLocationIdFor(platformAdmin, opsLocationId);   // throws on a DB error: never guess
     if (platformId) platformIdCache.set(opsLocationId, platformId);
   }
   if (!platformId) throw new VenueNotFound();
-  const { env, row } = await adyenAccountForLocation<{ merchant_account?: string | null }>(platformAdmin, platformId, ['merchant_account']);
-  const cfg = adyenConfig(env);
+  const [{ env, region, row }, ploc] = await Promise.all([
+    adyenAccountForLocation<{ merchant_account?: string | null }>(platformAdmin, platformId, ['merchant_account']),
+    platformAdmin.from('locations').select('currency').eq('id', platformId).maybeSingle(),
+  ]);
+  if (ploc?.error) throw new Error(`currency lookup failed: ${ploc.error.message ?? String(ploc.error)}`);
+  const cfg = adyenConfig(env, region);   // the venue's environment AND region set (8 Sep 2026)
   // Never the OTHER environment's merchant name on this host (8 Sep 2026).
-  return { cfg, merchantAccount: effectiveMerchantAccount(cfg, row?.merchant_account), platformId };
+  return { cfg, merchantAccount: effectiveMerchantAccount(cfg, row?.merchant_account), platformId, currency: venueCurrency(ploc?.data?.currency, cfg.region) };
 }
 // Is this config usable for taking a card in the widget? The Drop-in needs
 // the client key, the payment needs a merchant account, and live needs the
@@ -572,13 +588,13 @@ Deno.serve(async (req) => {
       // key, no merchant account): the guest gets a clear error and no
       // orphaned pending_payment row sits on the table for 20 minutes. The
       // page needs the client key and environment to take the card next.
-      let guestAdyen: { clientKey: string; environment: 'test' | 'live' } | null = null;
+      let guestAdyen: { clientKey: string; environment: 'test' | 'live'; region: string; dropinEnvironment: string; currency: string } | null = null;
       if (paymentDue) {
         const v = await adyenCfgForOps(locationId);
         if (!adyenUsable(v)) {
           return json({ ok: false, error: v.cfg.live ? adyenNotConfiguredMessage(v.cfg) : 'card capture not configured' }, 503);
         }
-        guestAdyen = { clientKey: v.cfg.clientKey, environment: v.cfg.env };
+        guestAdyen = { clientKey: v.cfg.clientKey, environment: v.cfg.env, region: v.cfg.region, dropinEnvironment: v.cfg.dropinEnvironment, currency: v.currency };
       }
 
       const candidates = quote(time);
@@ -770,7 +786,7 @@ Deno.serve(async (req) => {
       const reference = `bkpay-${bookingId}-${due.kind}-a${attempt}`;
       const payment: Record<string, unknown> = {
         merchantAccount,
-        amount: { value: isHold ? 0 : due.amountMinor, currency: 'GBP' },
+        amount: { value: isHold ? 0 : due.amountMinor, currency: venueAdyen.currency },   // the venue's currency, never a literal GBP (8 Sep 2026)
         reference,
         paymentMethod: body.payment_method,
         channel: 'Web',
@@ -800,7 +816,7 @@ Deno.serve(async (req) => {
         booking_id: bookingId,
         kind: due.kind,
         amount: due.amountMinor / 100,
-        currency: 'gbp',
+        currency: venueAdyen.currency.toLowerCase(),
         status: authorised ? (isHold ? 'authorised' : 'captured') : (j.resultCode === 'Refused' ? 'failed' : 'pending'),
         psp_reference: j.pspReference || null,
         merchant_reference: reference,
