@@ -549,3 +549,165 @@ export function lookupSummary(lookup: unknown): string {
   parts.push(isObj(l.legalEntity) && l.legalEntity.id ? `legal entity ${l.legalEntity.name || l.legalEntity.id}` : 'no legal entity');
   return `Found ${ref}: ${parts.join(', ')}.`;
 }
+
+// ── ENVIRONMENT STASH (8 Sep 2026) ───────────────────────────────────────────
+// A flip between test and live clears the setup made on the environment the
+// venue leaves (the Adyen store, split configuration, legal entity, account
+// holder, balance account, bank account and business line ids, plus the
+// boarded readers), because those ids belong to ONE Adyen environment. That
+// clear used to be final: moving Provo live and back to test wiped its test
+// store id and both test reader links, and they were put back by hand with
+// SQL. So the outgoing environment's setup is KEPT on
+// merchant_adyen_accounts.env_stash under its environment name, and a flip
+// INTO an environment that has a stash puts it back:
+//   { test: { store_id, split_profile_id, legal_entity_id, account_holder_id,
+//             balance_account_id, transfer_instrument_id, business_line_id,
+//             receive_payments_ok, payouts_ok, verification_status,
+//             merchant_account, region,
+//             readers: [{ payment_device_id, label, adyen_terminal_id,
+//                         terminal_device_id, serial_number }],
+//             stashed_at },
+//     live: { ... } }
+// Everything here is shape work: adyen-terminal-admin's flipEnvironment does
+// the reads and writes. KEEP IN SYNC with src/lib/payments/adyenLink.js.
+
+export const STASH_ID_FIELDS: readonly string[] = Object.freeze([
+  'store_id', 'split_profile_id', 'legal_entity_id', 'account_holder_id', 'balance_account_id',
+  'transfer_instrument_id', 'business_line_id',
+]);
+
+export interface StashReader {
+  payment_device_id: string | null;
+  label: string | null;
+  adyen_terminal_id: string;
+  terminal_device_id: string | null;
+  serial_number: string | null;
+}
+
+export interface StashRestorePlan {
+  ids: Record<string, unknown>;
+  idsSkipped: string | null;
+  readers: StashReader[];
+  skipped: string | null;
+}
+
+// A venue's readers as ONE list keyed on the POIID: the platform registry
+// rows (payment_devices, processor adyen, not retired) and the ops link rows
+// (terminal_devices, paired, carrying a POIID). A reader known to one side
+// only is kept with the other side's id null, so the restore can put back
+// whatever existed. Order: platform rows first, then ops only ones.
+export function stashReaders(platformRows: unknown, opsRows: unknown): StashReader[] {
+  const out: StashReader[] = [];
+  const byPoiid = new Map<string, StashReader>();
+  for (const r of Array.isArray(platformRows) ? platformRows : []) {
+    if (!isObj(r)) continue;
+    const poiid = str(r.adyen_terminal_id);
+    if (!poiid || byPoiid.has(poiid)) continue;
+    const entry: StashReader = { payment_device_id: orNull(r.id), label: orNull(r.label), adyen_terminal_id: poiid, terminal_device_id: null, serial_number: orNull(r.serial_number) };
+    byPoiid.set(poiid, entry);
+    out.push(entry);
+  }
+  for (const r of Array.isArray(opsRows) ? opsRows : []) {
+    if (!isObj(r)) continue;
+    const poiid = str(r.adyen_terminal_id);
+    if (!poiid) continue;
+    const have = byPoiid.get(poiid);
+    if (have) {
+      if (!have.terminal_device_id) have.terminal_device_id = orNull(r.id);
+      if (!have.label) have.label = orNull(r.label);
+      if (!have.serial_number) have.serial_number = orNull(r.serial_number);
+      continue;
+    }
+    const entry: StashReader = { payment_device_id: null, label: orNull(r.label), adyen_terminal_id: poiid, terminal_device_id: orNull(r.id), serial_number: orNull(r.serial_number) };
+    byPoiid.set(poiid, entry);
+    out.push(entry);
+  }
+  return out;
+}
+
+// The stash entry for the environment a venue leaves, from its row as it is
+// NOW (before the clear) and its readers (stashReaders). Empty ids are null;
+// the flags are booleans; the snapshot rides as is.
+export function buildEnvStashEntry(row: unknown, readers: unknown, { at, region }: { at?: unknown; region?: unknown } = {}): Record<string, unknown> {
+  const r: Dict = isObj(row) ? row : {};
+  const entry: Record<string, unknown> = {};
+  for (const k of STASH_ID_FIELDS) entry[k] = orNull(r[k]);
+  entry.receive_payments_ok = r.receive_payments_ok === true;
+  entry.payouts_ok = r.payouts_ok === true;
+  entry.verification_status = isObj(r.verification_status) ? r.verification_status : null;
+  entry.merchant_account = orNull(r.merchant_account);
+  entry.region = orNull(region) || orNull(r.region);
+  entry.readers = (Array.isArray(readers) ? readers : []).filter((x) => isObj(x) && str(x.adyen_terminal_id)).map((x) => ({
+    payment_device_id: orNull((x as Dict).payment_device_id),
+    label: orNull((x as Dict).label),
+    adyen_terminal_id: str((x as Dict).adyen_terminal_id),
+    terminal_device_id: orNull((x as Dict).terminal_device_id),
+    serial_number: orNull((x as Dict).serial_number),
+  }));
+  entry.stashed_at = str(at) || new Date().toISOString();
+  return entry;
+}
+
+// Does a stash entry hold anything worth putting back (an id or a reader)?
+export function stashHasSetup(entry: unknown): boolean {
+  if (!isObj(entry)) return false;
+  if (STASH_ID_FIELDS.some((k) => str(entry[k]))) return true;
+  return Array.isArray(entry.readers) && entry.readers.some((x) => isObj(x) && str(x.adyen_terminal_id));
+}
+
+// The one line summary the admin portal shows for a kept setup, null when
+// the entry holds nothing.
+export function stashSummary(entry: unknown): { store_id: string | null; ids: number; readers: number; stashed_at: string | null; region: string | null } | null {
+  if (!stashHasSetup(entry)) return null;
+  const e = entry as Dict;
+  return {
+    store_id: orNull(e.store_id),
+    ids: STASH_ID_FIELDS.filter((k) => str(e[k])).length,
+    readers: Array.isArray(e.readers) ? e.readers.filter((x: unknown) => isObj(x) && str(x.adyen_terminal_id)).length : 0,
+    stashed_at: orNull(e.stashed_at),
+    region: orNull(e.region),
+  };
+}
+
+// What a flip INTO an environment puts back from that environment's stash.
+//   ids       the row columns to write (STASH_ID_FIELDS, the two flags, the
+//             snapshot and the merchant account), minus anything `pulled`
+//             carries: ids the caller pulled from Adyen for that environment
+//             win, field by field
+//   readers   the readers to un-retire and relink
+//   skipped   set (and nothing restored) when the stash was made on another
+//             region's account: its ids belong to that account
+//   idsSkipped set (row ids left alone, readers still restored) when the
+//             pulled ids name a DIFFERENT store from the kept one: mixing the
+//             kept split configuration or balance account under a new store
+//             is the exact wrong row replacementClear exists to prevent
+export function stashRestorePlan(entry: unknown, { region, pulled }: { region?: unknown; pulled?: unknown } = {}): StashRestorePlan {
+  const none: StashRestorePlan = { ids: {}, idsSkipped: null, readers: [], skipped: null };
+  if (!stashHasSetup(entry)) return none;
+  const e = entry as Dict;
+  const p: Dict = isObj(pulled) ? pulled : {};
+  const want = str(region).toUpperCase();
+  const was = str(e.region).toUpperCase();
+  if (want && was && want !== was) {
+    return { ...none, skipped: `The kept setup was made on the ${was} account and the venue is on ${want} now, so it was left alone.` };
+  }
+  const readers: StashReader[] = (Array.isArray(e.readers) ? e.readers : []).filter((x: unknown) => isObj(x) && str(x.adyen_terminal_id)).map((x: Dict) => ({
+    payment_device_id: orNull(x.payment_device_id),
+    label: orNull(x.label),
+    adyen_terminal_id: str(x.adyen_terminal_id),
+    terminal_device_id: orNull(x.terminal_device_id),
+    serial_number: orNull(x.serial_number),
+  }));
+  const pulledStore = str(p.store_id);
+  const keptStore = str(e.store_id);
+  if (pulledStore && keptStore && pulledStore !== keptStore) {
+    return { ids: {}, idsSkipped: `The ids pulled from Adyen name store ${pulledStore}; the kept setup was for store ${keptStore}, so its ids were left alone.`, readers, skipped: null };
+  }
+  const ids: Record<string, unknown> = {};
+  for (const k of STASH_ID_FIELDS) if (str(e[k]) && !(k in p)) ids[k] = str(e[k]);
+  if (typeof e.receive_payments_ok === 'boolean' && !('receive_payments_ok' in p)) ids.receive_payments_ok = e.receive_payments_ok;
+  if (typeof e.payouts_ok === 'boolean' && !('payouts_ok' in p)) ids.payouts_ok = e.payouts_ok;
+  if (isObj(e.verification_status) && !('verification_status' in p)) ids.verification_status = e.verification_status;
+  if (str(e.merchant_account) && !('merchant_account' in p)) ids.merchant_account = str(e.merchant_account);
+  return { ids, idsSkipped: null, readers, skipped: null };
+}

@@ -229,12 +229,47 @@ export function linkResultLines(answer, venueName = 'The venue') {
           : `${venueName} is on test cards on the ${a.region || ''} account. Nobody is charged.`.replace('the  account', 'the account'),
       });
     }
-    if (a.reprovisioned) lines.push({ tone: 'missing', text: `The store and reader setup from ${a.previous || 'the previous environment'} was cleared. Register the card readers again.` });
+    if (a.reprovisioned) {
+      lines.push(a.stash_saved
+        ? { tone: 'info', text: `The store and reader setup from ${a.previous || 'the previous environment'} was set aside and kept (${stashLine('', a.stash_saved)}). It comes back if the venue switches back.` }
+        : { tone: 'missing', text: `The store and reader setup from ${a.previous || 'the previous environment'} was cleared. Register the card readers again.` });
+    }
+    const back = restoredLine(a.restored);
+    if (back) lines.push({ tone: 'ok', text: `The ${a.environment || ''} setup kept earlier came back: ${back}.`.replace('The  setup', 'The setup') });
   }
   if (a.web_origins) lines.push({ tone: 'title', text: 'Web origins', items: registrationLines(a.web_origins) });
   if (a.apple_pay_domains) lines.push({ tone: 'title', text: 'Apple Pay domains', items: registrationLines(a.apple_pay_domains) });
   for (const w of Array.isArray(a.warnings) ? a.warnings : []) lines.push({ tone: 'missing', text: String(w) });
   return lines;
+}
+
+// One line for a kept setup (the fn's stash summary { store_id, ids,
+// readers, stashed_at, region }, from env_stash, 8 Sep 2026): "test: store
+// ST..., 2 card readers (kept 2026-09-08)". `env` may be '' for no prefix.
+export function stashLine(env, summary) {
+  const s = isObj(summary) ? summary : {};
+  const bits = [];
+  const ids = Number(s.ids) || 0;
+  if (str(s.store_id)) bits.push(`store ${str(s.store_id)}`);
+  else if (ids) bits.push(`${ids} account id${ids === 1 ? '' : 's'}`);
+  const n = Number(s.readers) || 0;
+  if (n) bits.push(`${n} card reader${n === 1 ? '' : 's'}`);
+  const when = str(s.stashed_at).slice(0, 10);
+  return `${str(env) ? `${str(env)}: ` : ''}${bits.length ? bits.join(', ') : 'nothing'}${when ? ` (kept ${when})` : ''}`;
+}
+
+// What a switch put back (the fn's restored answer { store_id, ids, readers:
+// { platform, ops }, skipped }), '' when nothing came back.
+export function restoredLine(restored) {
+  const r = isObj(restored) ? restored : {};
+  const bits = [];
+  const ids = Array.isArray(r.ids) ? r.ids.length : 0;
+  if (str(r.store_id)) bits.push(`store ${str(r.store_id)}`);
+  else if (ids) bits.push(`${ids} account field${ids === 1 ? '' : 's'}`);
+  const readers = isObj(r.readers) ? r.readers : {};
+  const n = Math.max(Number(readers.ops) || 0, Number(readers.platform) || 0);
+  if (n) bits.push(`${n} card reader${n === 1 ? '' : 's'}`);
+  return bits.join(', ');
 }
 
 // A candidate store as one option label.

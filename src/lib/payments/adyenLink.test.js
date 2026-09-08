@@ -434,3 +434,114 @@ test('lookupSummary: found and not found, with the pieces that are missing named
   assert.equal(lookupSummary({ found: false, candidates: [{ id: 'a' }] }), 'No store with reference no reference on the merchant account (1 store listed to pick from).');
   assert.equal(lookupSummary(null), 'No store with reference no reference on the merchant account.');
 });
+
+// ── environment stash (8 Sep 2026): keep the setup a flip clears, put it back ──
+
+import {
+  STASH_ID_FIELDS, stashReaders, buildEnvStashEntry, stashHasSetup, stashSummary, stashRestorePlan,
+} from './adyenLink.js';
+
+const TEST_ROW = {
+  merchant_account: 'FranPOS_ServOS_TEST', store_id: 'ST_TEST_1', split_profile_id: 'SC_TEST_1', balance_account_id: 'BA_TEST_1',
+  account_holder_id: 'AH_TEST_1', legal_entity_id: 'LE_TEST_1', business_line_id: null, transfer_instrument_id: 'SI_TEST_1',
+  receive_payments_ok: true, payouts_ok: false, verification_status: { source: 'adyen_link', at: '2026-09-01T10:00:00.000Z' }, region: 'UK',
+};
+const PD_ROWS = [
+  { id: 'pd-1', label: 'Bar reader', adyen_terminal_id: 'AMS1-000168243358252', serial_number: '000168243358252' },
+  { id: 'pd-2', label: 'Till 2', adyen_terminal_id: 'S1F2L-000150000000002', serial_number: '000150000000002' },
+  { id: 'pd-stripe', label: 'Stripe one', adyen_terminal_id: null, serial_number: 'tmr_1' },
+];
+const TD_ROWS = [
+  { id: 'td-1', label: 'Bar reader', adyen_terminal_id: 'AMS1-000168243358252', serial_number: '000168243358252' },
+  { id: 'td-3', label: 'Handheld', adyen_terminal_id: 'S1E2L-000150000000003', serial_number: '000150000000003' },
+];
+
+test('stashReaders: platform and ops rows merge on the POIID, one side only readers are kept', () => {
+  const readers = stashReaders(PD_ROWS, TD_ROWS);
+  assert.deepEqual(readers, [
+    { payment_device_id: 'pd-1', label: 'Bar reader', adyen_terminal_id: 'AMS1-000168243358252', terminal_device_id: 'td-1', serial_number: '000168243358252' },
+    { payment_device_id: 'pd-2', label: 'Till 2', adyen_terminal_id: 'S1F2L-000150000000002', terminal_device_id: null, serial_number: '000150000000002' },
+    { payment_device_id: null, label: 'Handheld', adyen_terminal_id: 'S1E2L-000150000000003', terminal_device_id: 'td-3', serial_number: '000150000000003' },
+  ]);
+  assert.deepEqual(stashReaders(null, undefined), []);
+});
+
+test('buildEnvStashEntry: every id (null when empty), the flags, the snapshot, the readers and a stamp', () => {
+  const entry = buildEnvStashEntry(TEST_ROW, stashReaders(PD_ROWS, TD_ROWS), { at: '2026-09-08T12:00:00.000Z', region: 'UK' });
+  for (const k of STASH_ID_FIELDS) assert.ok(k in entry, `${k} present`);
+  assert.equal(entry.store_id, 'ST_TEST_1');
+  assert.equal(entry.business_line_id, null);
+  assert.equal(entry.receive_payments_ok, true);
+  assert.equal(entry.payouts_ok, false);
+  assert.deepEqual(entry.verification_status, TEST_ROW.verification_status);
+  assert.equal(entry.merchant_account, 'FranPOS_ServOS_TEST');
+  assert.equal(entry.region, 'UK');
+  assert.equal(entry.readers.length, 3);
+  assert.equal(entry.stashed_at, '2026-09-08T12:00:00.000Z');
+  // No row at all still answers a complete, empty entry with a stamp.
+  const empty = buildEnvStashEntry(null, null);
+  assert.equal(empty.store_id, null);
+  assert.equal(empty.receive_payments_ok, false);
+  assert.deepEqual(empty.readers, []);
+  assert.ok(empty.stashed_at);
+});
+
+test('stashHasSetup and stashSummary: an id or a reader counts, nothing else does', () => {
+  assert.equal(stashHasSetup(null), false);
+  assert.equal(stashHasSetup(buildEnvStashEntry({}, [])), false);
+  assert.equal(stashHasSetup({ readers: [{ adyen_terminal_id: 'AMS1-1' }] }), true);
+  assert.equal(stashHasSetup({ store_id: 'ST1' }), true);
+  assert.equal(stashSummary(buildEnvStashEntry({}, [])), null);
+  const s = stashSummary(buildEnvStashEntry(TEST_ROW, stashReaders(PD_ROWS, TD_ROWS), { at: '2026-09-08T12:00:00.000Z' }));
+  assert.deepEqual(s, { store_id: 'ST_TEST_1', ids: 6, readers: 3, stashed_at: '2026-09-08T12:00:00.000Z', region: 'UK' });
+});
+
+test('stashRestorePlan: a plain flip back puts every kept id, flag, snapshot and reader back', () => {
+  const entry = buildEnvStashEntry(TEST_ROW, stashReaders(PD_ROWS, TD_ROWS), { region: 'UK' });
+  const plan = stashRestorePlan(entry, { region: 'UK' });
+  assert.equal(plan.skipped, null);
+  assert.equal(plan.idsSkipped, null);
+  assert.deepEqual(plan.ids, {
+    store_id: 'ST_TEST_1', split_profile_id: 'SC_TEST_1', legal_entity_id: 'LE_TEST_1', account_holder_id: 'AH_TEST_1',
+    balance_account_id: 'BA_TEST_1', transfer_instrument_id: 'SI_TEST_1',
+    receive_payments_ok: true, payouts_ok: false, verification_status: TEST_ROW.verification_status, merchant_account: 'FranPOS_ServOS_TEST',
+  });
+  assert.equal('business_line_id' in plan.ids, false, 'a null id is not written back');
+  assert.equal(plan.readers.length, 3);
+  // Nothing kept: nothing planned.
+  assert.deepEqual(stashRestorePlan(null, { region: 'UK' }), { ids: {}, idsSkipped: null, readers: [], skipped: null });
+});
+
+test('stashRestorePlan: pulled ids win field by field on the same store', () => {
+  const entry = buildEnvStashEntry(TEST_ROW, [], { region: 'UK' });
+  const plan = stashRestorePlan(entry, { region: 'UK', pulled: { store_id: 'ST_TEST_1', balance_account_id: 'BA_NEW', receive_payments_ok: false, merchant_account: 'FranPOS_QSR_UK' } });
+  assert.equal(plan.idsSkipped, null);
+  assert.equal('store_id' in plan.ids, false);
+  assert.equal('balance_account_id' in plan.ids, false);
+  assert.equal('receive_payments_ok' in plan.ids, false);
+  assert.equal('merchant_account' in plan.ids, false);
+  assert.equal(plan.ids.split_profile_id, 'SC_TEST_1');
+  assert.equal(plan.ids.legal_entity_id, 'LE_TEST_1');
+  assert.equal(plan.ids.payouts_ok, false);
+});
+
+test('stashRestorePlan: pulled ids for a DIFFERENT store leave the kept row ids alone, readers still come back', () => {
+  const entry = buildEnvStashEntry(TEST_ROW, stashReaders(PD_ROWS, TD_ROWS), { region: 'UK' });
+  const plan = stashRestorePlan(entry, { region: 'UK', pulled: { store_id: 'ST_OTHER' } });
+  assert.deepEqual(plan.ids, {});
+  assert.match(plan.idsSkipped, /ST_OTHER/);
+  assert.match(plan.idsSkipped, /ST_TEST_1/);
+  assert.equal(plan.readers.length, 3);
+  assert.equal(plan.skipped, null);
+});
+
+test('stashRestorePlan: a stash made on another region account is left alone entirely', () => {
+  const entry = buildEnvStashEntry(TEST_ROW, stashReaders(PD_ROWS, TD_ROWS), { region: 'UK' });
+  const plan = stashRestorePlan(entry, { region: 'US' });
+  assert.deepEqual(plan.ids, {});
+  assert.deepEqual(plan.readers, []);
+  assert.match(plan.skipped, /UK account/);
+  assert.match(plan.skipped, /US now/);
+  // No region on either side: restored as normal (older stash entries).
+  assert.equal(stashRestorePlan({ ...entry, region: null }, { region: 'US' }).skipped, null);
+});

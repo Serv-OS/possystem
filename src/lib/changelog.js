@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.40',
+    date: '8 Sep 2026',
+    items: [
+      'Switching a venue between test cards and live no longer loses its setup. The store and the card reader links of the environment it leaves are kept, and they come back automatically if it switches back. The confirm box says what is kept and what comes back.',
+      'Back Office, Card readers: Register a new reader never disappears. When a venue has no Adyen store yet the box stays on screen and explains that ServOS registers the store first. The reader list is always shown.',
+      'A demo or test terminal that was left registered weeks ago no longer blocks a new one from pairing. Old pending registrations are ignored after a day and cleared after a week.',
+    ],
+  },
+  {
     v: '5.8.39',
     date: '8 Sep 2026',
     items: [

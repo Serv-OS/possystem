@@ -27,7 +27,11 @@
 //      to test, and the reprovision flow: the fn answers 409 +
 //      needs_reprovision while the venue's store or readers were set up on
 //      the current environment, and the flip is retried with reprovision:
-//      true after a confirm.
+//      true after a confirm. KEPT SETUP (8 Sep 2026): the fn keeps the
+//      setup a flip sets aside (env_stash) and puts it back on a switch
+//      back; the confirms say so ("Your test setup is kept and comes back
+//      if you switch back") whenever the fn answers keeps_setup, and the
+//      block lists what is kept per environment (envInfo.stashes).
 //   3. Readers: how many card readers the venue has on this account (the
 //      fn's cheap `environment` answer, no Adyen call) and what is set up.
 //   4. Web origins and Apple Pay: one button that runs register_origins and
@@ -54,6 +58,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { registrationLines } from '../../lib/payments/adyenOrigins';
+import { stashLine, restoredLine } from '../../lib/payments/adyenAdminRows';
 
 const S = {
   block: { marginTop: 14, padding: '12px 16px', borderRadius: 12, background: 'var(--bg2)', border: '1px solid var(--bdr2)' },
@@ -181,6 +186,13 @@ export default function AdyenEnvironmentControls({ opsLocationId, platformLocati
   const regionLockReason = envInfo?.regionLockReason || (isLive ? 'The venue is live. Switch it back to test cards before changing its region.' : '');
   const readers = Number(envInfo?.readers) || 0;
   const provisioned = Array.isArray(envInfo?.provisioned) ? envInfo.provisioned : [];
+  // The kept setup (env_stash, 8 Sep 2026): keepsSetup says the platform
+  // column exists (the fn keeps what a switch sets aside), stashes what is
+  // kept per environment. An older fn build sends neither.
+  const keepsSetup = envInfo?.stashAvailable === true;
+  const hasSetup = readers > 0 || provisioned.length > 0;
+  const stashes = envInfo?.stashes && typeof envInfo.stashes === 'object' ? envInfo.stashes : {};
+  const keptLines = ['test', 'live'].filter((k) => stashes[k]).map((k) => stashLine(k, stashes[k]));
 
   // Move the venue between the UK and US Adyen accounts. Only while nothing
   // at Adyen belongs to it yet (the fn refuses otherwise, 409). The fn also
@@ -224,16 +236,29 @@ export default function AdyenEnvironmentControls({ opsLocationId, platformLocati
       // A move to live registers the web origins and Apple Pay domains by
       // itself; show what happened in the same list the button fills.
       if (r.web_origins || r.apple_pay_domains) setDomainsResult({ origins: r.web_origins || null, applePay: r.apple_pay_domains || null });
-      setNotice(r.environment === 'live'
+      // What the switch put back from the kept setup (env_stash), if anything.
+      const back = restoredLine(r.restored);
+      setNotice((r.environment === 'live'
         ? `${name} now takes LIVE payments on the ${r.region || region} account. Real cards are charged from now on.`
-        : `${name} is back on test cards. Nobody is charged.`);
+        : `${name} is back on test cards. Nobody is charged.`)
+        + (back ? ` Its ${r.environment} setup kept earlier came back: ${back}.` : ''));
       if (r.warning) setErr(r.warning);
       await load();
       onChanged?.();
     } catch (e) {
       if (e?.data?.needs_reprovision && !reprovision) {
         setEnvBusy(false);
-        if (window.confirm(`${e.data.error || e.message}\n\nSwitch ${name} to ${next} anyway and set up again afterwards?`)) {
+        // keeps_setup: the fn keeps what the switch sets aside (env_stash)
+        // and puts it back on a switch back; restores: what comes back on
+        // the target environment now. An older fn build sends neither.
+        const kept = e.data.keeps_setup === true;
+        const from = envInfo?.environment || (next === 'live' ? 'test' : 'live');
+        const back = e.data.restores ? ` The ${next} setup kept earlier comes back too: ${stashLine('', e.data.restores)}.` : '';
+        const text = `${e.data.error || e.message}\n\n`
+          + (kept ? `Your ${from} setup is kept and comes back if you switch back.${back}\n\n` : '')
+          + (e.data.stash_warning ? `${e.data.stash_warning}\n\n` : '')
+          + `Switch ${name} to ${next} anyway${kept ? '' : ' and set up again afterwards'}?`;
+        if (window.confirm(text)) {
           await setEnvironment(next, true);
         }
         return;
@@ -249,7 +274,8 @@ export default function AdyenEnvironmentControls({ opsLocationId, platformLocati
       if (!window.confirm(
         `Switch ${name} back to test cards?\n\n`
         + 'Real cards stop working at this venue until you switch live back on. '
-        + 'Payments already taken are not affected, but refunding a live payment needs live switched back on first.',
+        + 'Payments already taken are not affected, but refunding a live payment needs live switched back on first.'
+        + (keepsSetup && hasSetup ? '\n\nYour live setup is kept and comes back if you switch back.' : ''),
       )) return;
       setEnvironment('test');
       return;
@@ -368,6 +394,14 @@ export default function AdyenEnvironmentControls({ opsLocationId, platformLocati
         {canSetRegion && regionLocked && !isLive && (
           <div style={{ ...S.desc, marginTop: 6 }}>{regionLockReason}</div>
         )}
+        {keptLines.length > 0 && (
+          <div style={{ ...S.desc, marginTop: 6 }} title="Setup a switch set aside, kept on the venue and put back when it switches to that environment again">
+            <b style={{ color: 'var(--t2)' }}>Kept:</b> {keptLines.join('; ')}. It comes back when the venue switches to that environment.
+          </div>
+        )}
+        {envInfo.stashWarning && (
+          <div style={{ ...S.desc, marginTop: 6, color: 'var(--orn, #e8a020)' }}>{envInfo.stashWarning}</div>
+        )}
         {envInfo.storedRegion && envInfo.storedRegion !== region && (
           <div style={{ ...S.desc, marginTop: 6, color: 'var(--orn, #e8a020)' }}>
             The database still stores the old code <span style={S.mono}>{envInfo.storedRegion}</span> for this venue (read as {region}).
@@ -390,7 +424,9 @@ export default function AdyenEnvironmentControls({ opsLocationId, platformLocati
           <div style={{ marginTop: 12, padding: 12, borderRadius: 8, background: 'var(--red-d, rgba(255,90,74,.1))', border: '1px solid var(--red-b, var(--red))' }}>
             <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--red)' }}>Switch {name} to live payments on the {region} account?</div>
             <div style={{ ...S.desc, marginTop: 4, color: 'var(--t2)' }}>
-              From the moment you confirm, every card taken there charges the customer for real. Type <b>LIVE</b> to confirm.
+              From the moment you confirm, every card taken there charges the customer for real.
+              {keepsSetup && hasSetup ? ' Your test setup is kept and comes back if you switch back.' : ''}
+              {' '}Type <b>LIVE</b> to confirm.
             </div>
             <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap', alignItems: 'center' }}>
               <input

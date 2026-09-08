@@ -27,7 +27,10 @@
 // super_admin. The environment probe never talks to Adyen, so it still
 // answers when a live venue's status probe fails closed (live keys missing);
 // the panel then shows the state, the error and "Contact ServOS support".
-// With no store yet it shows one line: ServOS registers it at go live.
+// With no store yet the Register a new reader box stays on screen, disabled,
+// and says the venue needs its Adyen store first (8 Sep 2026: it used to
+// vanish with the store id, so a venue whose test store was set aside by a
+// switch saw no way to register a reader at all).
 
 import { useEffect, useState, useCallback } from 'react';
 import { supabase, getActiveLocationSync } from '../../lib/supabase';
@@ -141,6 +144,10 @@ export default function AdyenTerminals() {
         const fl = await callAdmin('list');
         if (fl.ok) setFleet(fl);
         else if (fl.error && fl.error !== 'no_store') setErr(fl.error === 'scope_missing' ? st.scopeError || 'API key missing Management role' : fl.error);
+      } else {
+        // No store: nothing can be listed, and a list from an earlier store
+        // must not linger with Link buttons that would fail.
+        setFleet(null);
       }
       const locId = getActiveLocationSync();
       const { data: devs } = await supabase.from('devices')
@@ -353,6 +360,18 @@ export default function AdyenTerminals() {
     setBusy('');
   };
 
+  // Register a new reader: the box is ALWAYS on screen while the status probe
+  // answers (8 Sep 2026: it used to vanish with the store id, so a venue whose
+  // test store was set aside by an environment switch saw no way to register
+  // a reader at all). With no store, or without the Management scope, it is
+  // disabled and the line says why. The scope error stays above it too.
+  const canRegister = !!(status.scopeOk && status.storeId);
+  const registerBlocked = !status.scopeOk
+    ? (status.scopeError || 'The Adyen credential lacks the Management roles, so readers cannot be registered.')
+    : !status.storeId
+      ? "A reader needs the venue's Adyen store first. ServOS registers it from the admin portal."
+      : '';
+
   return (
     <div style={S.card}>
       {liveBanner}
@@ -368,30 +387,29 @@ export default function AdyenTerminals() {
 
       {!status.scopeOk && <div style={S.err}>{status.scopeError}</div>}
 
-      {/* no store yet: ServOS registers it from the admin portal */}
-      {!status.storeId && (
-        <div style={{ ...S.desc, marginTop: 14 }}>Store not registered yet. ServOS will register it when the venue goes live.</div>
-      )}
-
-      {/* register by serial: the onboarding motion */}
-      {status.scopeOk && status.storeId && (
-        <div style={{ marginTop: 14, padding: 14, borderRadius: 10, background: 'var(--bg2)', border: '1px solid var(--bdr)' }}>
-          <div style={{ fontSize: 13, fontWeight: 700 }}>Register a new reader</div>
-          <div style={{ ...S.desc, marginTop: 4 }}>
-            Plug the reader in, connect it to WiFi, then type the serial number from the label on
-            the reader (or its box). It registers to this venue in one step.
-          </div>
-          <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
-            <input style={{ ...S.input, ...S.mono, flex: '1 1 220px', minWidth: 0 }} value={serial}
-              onChange={(e) => setSerial(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter' && serial.trim()) registerBySerial(); }}
-              placeholder="Serial number, e.g. 000168254080216" />
-            <button style={{ ...S.btn, ...S.btnPrim }} disabled={!!busy || !serial.trim()} onClick={registerBySerial}>
-              {busy === 'serial' ? 'Registering…' : 'Register'}
-            </button>
-          </div>
+      {/* register by serial: the onboarding motion. ALWAYS on screen while the
+          status probe answers (8 Sep 2026): with no store, or without the
+          Management scope, it is disabled and says why. */}
+      <div style={{ marginTop: 14, padding: 14, borderRadius: 10, background: 'var(--bg2)', border: '1px solid var(--bdr)', opacity: canRegister ? 1 : 0.75 }}>
+        <div style={{ fontSize: 13, fontWeight: 700 }}>Register a new reader</div>
+        <div style={{ ...S.desc, marginTop: 4 }}>
+          Plug the reader in, connect it to WiFi, then type the serial number from the label on
+          the reader (or its box). It registers to this venue in one step.
         </div>
-      )}
+        {registerBlocked && (
+          <div style={{ ...S.desc, marginTop: 6, color: status.scopeOk ? 'var(--orn, #e8a020)' : 'var(--red)' }}>{registerBlocked}</div>
+        )}
+        <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
+          <input style={{ ...S.input, ...S.mono, flex: '1 1 220px', minWidth: 0, opacity: canRegister ? 1 : 0.6 }} value={serial}
+            disabled={!canRegister}
+            onChange={(e) => setSerial(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && canRegister && serial.trim()) registerBySerial(); }}
+            placeholder="Serial number, e.g. 000168254080216" />
+          <button style={{ ...S.btn, ...S.btnPrim, opacity: canRegister ? 1 : 0.6 }} disabled={!canRegister || !!busy || !serial.trim()} onClick={registerBySerial}>
+            {busy === 'serial' ? 'Registering…' : 'Register'}
+          </button>
+        </div>
+      </div>
 
       {/* ── app terminals waiting for a POIID (v5.6.81) ── */}
       {fleet?.appTerminals?.length > 0 && (
@@ -429,10 +447,18 @@ export default function AdyenTerminals() {
         </div>
       )}
 
-      {/* ── fleet ── */}
+      {/* ── fleet: the readers list is never hidden (8 Sep 2026); with nothing
+          to list it says why instead of rows ── */}
+      <div style={{ ...S.label, marginTop: 18 }}>Registered to this venue</div>
+      {!fleet && (
+        <div style={{ ...S.desc, marginTop: 6 }}>
+          {status.storeId
+            ? 'The readers are not listed yet. Refresh to try again.'
+            : 'No readers can be listed until the venue has its Adyen store.'}
+        </div>
+      )}
       {fleet && (
         <>
-          <div style={{ ...S.label, marginTop: 18 }}>Registered to this venue</div>
           {fleet.store.length === 0 && <div style={{ ...S.desc, marginTop: 6 }}>None yet — register one from the list below.</div>}
           {fleet.store.map((t) => (
             <div key={t.id}>
@@ -564,9 +590,11 @@ export default function AdyenTerminals() {
             </div>
           ))}
 
-          <button style={{ ...S.btn, marginTop: 14 }} disabled={!!busy} onClick={() => { setErr(''); setNotice(''); load(); }}>Refresh</button>
         </>
       )}
+      <div>
+        <button style={{ ...S.btn, marginTop: 14 }} disabled={!!busy} onClick={() => { setErr(''); setNotice(''); load(); }}>Refresh</button>
+      </div>
 
       {/* ── v5.7.5 venue-level: tip on printed receipt (United States) ── */}
       {torLoaded && (
