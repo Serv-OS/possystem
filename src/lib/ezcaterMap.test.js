@@ -605,7 +605,9 @@ test('SIGNATURE: the digest is compared case insensitively but exactly', async (
   const ts = String(Math.floor(Date.now() / 1000));
   const digest = await hmacHex(secret, `${ts}.${rawBody}`);
   assert.equal(await verifyEzcaterSignature(rawBody, `${ts}.${digest.toUpperCase()}`, secret), true);
-  assert.equal(await verifyEzcaterSignature(rawBody, `${ts}.${digest.slice(0, -1)}0`, secret), false);
+  // A tamper byte that cannot equal the original: one digest in sixteen
+  // already ends in '0', which made this pass one time in sixteen.
+  assert.equal(await verifyEzcaterSignature(rawBody, `${ts}.${digest.slice(0, -1)}${digest.endsWith('0') ? '1' : '0'}`, secret), false);
 });
 
 // ── GraphQL operation shapes ────────────────────────────────────────────────

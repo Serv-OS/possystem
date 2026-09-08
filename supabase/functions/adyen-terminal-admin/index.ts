@@ -16,6 +16,10 @@
 //   assign       → reassign terminal to the venue store + payment_devices row
 //                  + ops terminal_devices row (paired, ready to bind to a till)
 //   unlink       → retire the ops row (terminal stays boarded at Adyen)
+//   register_origins → ADMIN. the ServOS hosts and wildcards on the venue's
+//                  API credential's allowed origins (WEB ORIGINS below)
+//   register_apple_pay_domains → ADMIN. the venue's storefront hosts on the
+//                  merchant's Apple Pay payment method (APPLE PAY below)
 //
 // Auth: BO JWT → user_locations membership (or super_admin), the ryft-terminals
 // fence, verbatim in spirit. All writes service-role.
@@ -35,6 +39,14 @@
 // venue) is set it is used for management calls; otherwise that set's API
 // key. A 401/403 from Adyen surfaces as scope_missing so the BO can say
 // exactly what to fix instead of a dead button.
+// The /me calls behind register_origins are the one exception: allowed
+// origins live on the credential the Drop-in CLIENT KEY was generated on, so
+// they sign with the set's API key (ADYEN_API_KEY, ADYEN_LIVE_<REGION>_API_KEY)
+// and GET /me proves that credential's clientKey is the set's client key
+// before anything is posted (WEB ORIGINS below).
+// Every Management call is bounded by MGMT_TIMEOUT_MS: a hang answers as an
+// error instead of leaving the admin portal waiting on a flip that has
+// already been written.
 //
 // PER VENUE ENVIRONMENT (7 Sep 2026): the venue's merchant_adyen_accounts
 // .environment ('test' | 'live') picks the secret set for every Management
@@ -74,6 +86,10 @@ import {
   parseAdyenRegion, liveRegionsConfigured, isAdyenRegionCheckError, adyenRegionMigrationMessage, ADYEN_REGION_MIGRATION,
   type AdyenConfig,
 } from '../_shared/adyen.ts';
+import {
+  buildWebOrigins, buildStorefrontDomains, originsPlan, applePayDomainsPlan, pickApplePayMethod, hasApplePayEntries,
+  applePayStatusNote, adyenRefusalMessage, isDuplicateRefusal,
+} from '../_shared/adyenOrigins.ts';
 
 const opsAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
 const platformAdmin = createClient(
@@ -84,16 +100,32 @@ const platformAdmin = createClient(
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
 
-// Management API call with the VENUE'S config: its host and its management
-// key. A live venue without live keys throws the fail closed error before
-// any request leaves (caught by the handler's outer try).
-async function mgmt<T = Record<string, unknown>>(cfg: AdyenConfig, method: string, path: string, body?: unknown): Promise<{ ok: boolean; status: number; data: T }> {
+// Management API call with the VENUE'S config: its host and, by default, its
+// management key. `apiKey` overrides the key for the credential scoped /me
+// calls (registerWebOrigins signs with cfg.apiKey, the credential the Drop-in
+// client key belongs to). A live venue without live keys throws the fail
+// closed error before any request leaves (caught by the handler's outer
+// try). Bounded by MGMT_TIMEOUT_MS (8 Sep 2026): set_environment runs up to
+// about fourteen of these AFTER the row is written, and a hang there left
+// the switch reading test while live cards were already being charged. A
+// timed out call throws; attempt() turns that into the error line of that
+// half, the outer try into a 500 for every other action.
+const MGMT_TIMEOUT_MS = 15_000;
+async function mgmt<T = Record<string, unknown>>(cfg: AdyenConfig, method: string, path: string, body?: unknown, apiKey: string = cfg.managementKey): Promise<{ ok: boolean; status: number; data: T }> {
   assertAdyenConfigured(cfg);
-  const res = await fetch(`${managementBase(cfg)}${path}`, {
-    method,
-    headers: { 'X-API-Key': cfg.managementKey, 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${managementBase(cfg)}${path}`, {
+      method,
+      headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(MGMT_TIMEOUT_MS),
+    });
+  } catch (e) {
+    const name = (e as Error)?.name;
+    if (name === 'TimeoutError' || name === 'AbortError') throw new Error(`Adyen did not answer ${method} ${path.split('?')[0]} within ${MGMT_TIMEOUT_MS / 1000}s`);
+    throw e;
+  }
   let data: T;
   try { data = await res.json(); } catch { data = {} as T; }
   return { ok: res.ok, status: res.status, data };
@@ -146,6 +178,195 @@ async function ensurePaymentMethods(cfg: AdyenConfig, merchant: string, storeId:
     }
   }
   return { requested, errors };
+}
+
+// ── WEB ORIGINS and APPLE PAY domains (8 Sep 2026) ───────────────────────────
+// The Drop-in and Components run on the operator hosts (app.serv-os.app,
+// dev.serv-os.app) and on every venue storefront (<slug>.serv-os.app,
+// <slug>.dev.serv-os.app), so the API credential the client key belongs to
+// must list those as ALLOWED ORIGINS. The live Customer Area refuses a
+// wildcard in its screen while Adyen's docs allow https://*.example.org, so
+// the wildcards go in through the Management API (docs.adyen.com, Management
+// API v3, host = managementBase(cfg)):
+//   GET  /v3/me                     { username, clientKey, allowedOrigins, roles }   any Management role
+//   GET  /v3/me/allowedOrigins      { data: [{ id, domain }] }   any Management role
+//   POST /v3/me/allowedOrigins      { domain }                   200 { id, domain }
+// /me is CREDENTIAL scoped: the key that makes the call is the key whose
+// origins change, and the Drop-in only honours origins on the credential its
+// CLIENT KEY was generated on. So these calls sign with cfg.apiKey (the
+// set's API key, never cfg.managementKey, which may be a separate credential
+// holding the management roles) and GET /me proves it first: when that
+// credential's clientKey is not cfg.clientKey the answer is wrong_credential
+// and nothing is posted (8 Sep 2026: with a management key set every origin
+// landed on the management credential, the answer said ok, and the Drop-in
+// still refused every host). The VENUE's config (its environment and its
+// region set) picks the credential: a test venue registers on the test
+// credential, a UK live venue on the UK live credential, a US one on the US
+// credential. The answer names it (credential: the /me username).
+//
+// APPLE PAY with Adyen's certificate needs every storefront host registered
+// on the merchant's Apple Pay payment method. The app serves the association
+// file at /.well-known/apple-developer-merchantid-domain-association on
+// every host (public/.well-known, v5.8.36), so the hosts verify on the spot:
+//   GET  /v3/merchants/{m}/paymentMethodSettings?pageSize=100
+//        { data: [{ id, type, enabled, verificationStatus, storeIds, applePay: { domains } }] }
+//   GET  /v3/merchants/{m}/paymentMethodSettings/{id}/getApplePayDomains   { domains }
+//   POST /v3/merchants/{m}/paymentMethodSettings/{id}/addApplePayDomains   { domains }   204
+//        role "Management API, Payment methods read and write"
+// Neither action REQUESTS Apple Pay on the merchant: that is done in the
+// Customer Area, and the answer says so (verificationStatus valid | pending |
+// invalid | rejected) when it has not happened yet.
+//
+// Both are idempotent: whatever Adyen already lists is reported as existing
+// and never posted twice; an "already exists" refusal counts as existing.
+// Both run by themselves at the end of set_environment when a venue MOVES TO
+// LIVE, best effort, and again from the admin portal's button at any time.
+// The list builders and the dedupe live in _shared/adyenOrigins.ts (mirror
+// of src/lib/payments/adyenOrigins.js, tests in adyenOrigins.test.js).
+type RegistrationAnswer = Record<string, unknown> & { ok: boolean };
+interface Storefront { slug: string | null; customDomain: string | null }
+
+// The venue's storefront: platform locations.online_slug becomes
+// <slug>.serv-os.app and <slug>.dev.serv-os.app (src/lib/customerUrl.js,
+// src/lib/env.js). Read on its own, never in the venue select above, so a
+// venue with no slug still reaches every other action. There is no custom
+// storefront domain column yet (org_sending_domains is email only), so
+// customDomain is always null here; the builders already take one.
+async function storefrontFor(locationId: string): Promise<Storefront> {
+  const { data, error } = await platformAdmin.from('locations').select('online_slug').eq('id', locationId).maybeSingle();
+  if (error) throw new Error(`storefront lookup failed: ${error.message}`);
+  const slug = String((data as Record<string, unknown> | null)?.online_slug ?? '').trim().toLowerCase() || null;
+  return { slug, customDomain: null };
+}
+
+// GET /me with the set's API KEY (cfg.apiKey: the credential the Drop-in
+// client key belongs to, never the management key), prove its clientKey is
+// the set's client key, then GET that credential's allowed origins and POST
+// each missing ServOS origin with the same key. Answers { ok, environment,
+// region, credential, wanted, added, existing, failed: [{ origin, status,
+// message }], note } or, when the credential or its list cannot be read
+// ({ ok: false, status, error }) or it is not the client key's credential
+// ({ ok: false, code: 'wrong_credential', credential, error }), with the
+// lists empty.
+async function registerWebOrigins(cfg: AdyenConfig, customDomain: string | null): Promise<RegistrationAnswer> {
+  const label = `${cfg.region} ${cfg.env} API credential`;
+  const apiKeyName = adyenSecretName(cfg.env, 'apiKey', cfg.region);
+  const base = {
+    environment: cfg.env, region: cfg.region, credential: null as string | null, wanted: buildWebOrigins({ customDomain }),
+    added: [] as string[], existing: [] as string[], failed: [] as Array<{ origin: string; status: number; message: string }>,
+  };
+  const apiKey = cfg.apiKey;
+  const me = await mgmt<{ username?: unknown; clientKey?: unknown }>(cfg, 'GET', '/me', undefined, apiKey);
+  if (!me.ok) {
+    return {
+      ...base, ok: false, status: me.status,
+      error: scopeMissing(me.status)
+        ? `The ${label} (${apiKeyName}) cannot read itself (${me.status}). Any Management API role should do; check the key in the Customer Area.`
+        : `Could not read the ${label} (${apiKeyName}): ${adyenRefusalMessage(me.status, me.data)}`,
+    };
+  }
+  const username = String(me.data?.username ?? '').trim() || null;
+  const credential = username ? `${label} (${username})` : label;
+  const meClientKey = String(me.data?.clientKey ?? '').trim();
+  if (cfg.clientKey && meClientKey !== cfg.clientKey) {
+    return {
+      ...base, ok: false, code: 'wrong_credential', credential: username,
+      error: `The ${credential}, behind ${apiKeyName}, is not the credential the Drop-in client key (${adyenSecretName(cfg.env, 'clientKey', cfg.region)}) belongs to. Add the origins on that credential: set ${apiKeyName} to an API key generated on it, or move the client key.`,
+    };
+  }
+  const list = await mgmt(cfg, 'GET', '/me/allowedOrigins', undefined, apiKey);
+  if (!list.ok) {
+    return {
+      ...base, ok: false, status: list.status, credential: username,
+      error: scopeMissing(list.status)
+        ? `The ${credential} cannot read its own allowed origins (${list.status}). Any Management API role should do; check the key in the Customer Area.`
+        : `Could not read the allowed origins of the ${credential}: ${adyenRefusalMessage(list.status, list.data)}`,
+    };
+  }
+  const plan = originsPlan(list.data, { customDomain });
+  const added: string[] = [];
+  const existing = [...plan.existing];
+  const failed: Array<{ origin: string; status: number; message: string }> = [];
+  for (const origin of plan.missing) {
+    const r = await mgmt(cfg, 'POST', '/me/allowedOrigins', { domain: origin }, apiKey);
+    if (r.ok) added.push(origin);
+    else if (isDuplicateRefusal(r.status, r.data)) existing.push(origin);
+    else failed.push({ origin, status: r.status, message: adyenRefusalMessage(r.status, r.data) });
+  }
+  return { ...base, ok: failed.length === 0, credential: username, added, existing, failed, note: `Registered on ${username ?? `the ${label}`}.` };
+}
+
+// Find the merchant's Apple Pay payment method, read the domains it holds,
+// POST each missing storefront host. Answers { ok, environment, region,
+// merchant, paymentMethodId, verificationStatus, domains, added, existing,
+// failed: [{ domain, status, message }], note } or { ok: false, code, error }
+// when there is no storefront, the list cannot be read or Apple Pay was
+// never requested on the merchant.
+async function registerApplePayDomains(cfg: AdyenConfig, merchant: string, storeId: string | null, storefront: Storefront): Promise<RegistrationAnswer> {
+  const domains = buildStorefrontDomains(storefront);
+  const base = {
+    environment: cfg.env, region: cfg.region, merchant, domains,
+    added: [] as string[], existing: [] as string[], failed: [] as Array<{ domain: string; status: number; message: string }>,
+    paymentMethodId: null as string | null, verificationStatus: null as string | null, note: null as string | null,
+  };
+  if (!domains.length) {
+    return { ...base, ok: false, code: 'no_storefront', error: 'This venue has no online slug yet, so it has no storefront address to register for Apple Pay. Set the slug in the Back Office (Channels) first.' };
+  }
+  const m = encodeURIComponent(merchant);
+  const rows: unknown[] = [];
+  for (let page = 1; page <= 5; page++) {
+    const r = await mgmt<{ data?: unknown[]; _links?: { next?: unknown } }>(cfg, 'GET', `/merchants/${m}/paymentMethodSettings?pageSize=100&pageNumber=${page}`);
+    if (!r.ok) {
+      return {
+        ...base, ok: false, status: r.status,
+        error: scopeMissing(r.status)
+          ? `The ${cfg.region} ${cfg.env} API key cannot read the payment methods on ${merchant} (${r.status}). It needs the Management API role "Payment methods read and write".`
+          : `Could not read the payment methods on ${merchant}: ${adyenRefusalMessage(r.status, r.data)}`,
+      };
+    }
+    const pageRows: unknown = r.data?.data;
+    rows.push(...(Array.isArray(pageRows) ? pageRows : []));
+    if (!r.data?._links?.next) break;
+  }
+  const pm = pickApplePayMethod(rows, storeId);
+  // Null WITH Apple Pay entries present means every entry is scoped to some
+  // OTHER venue's store (the picker never falls back to rows[0]: that wrote
+  // this venue's hosts onto another venue's entry and reported it as this
+  // venue's registration).
+  const storeScoped = !pm && hasApplePayEntries(rows);
+  const note = applePayStatusNote(pm, merchant, { storeScoped });
+  if (!pm) return { ...base, ok: false, code: storeScoped ? 'apple_pay_store_scoped' : 'apple_pay_not_requested', error: note, note };
+  const pmId = String(pm.id ?? '');
+  const verificationStatus = pm.verificationStatus === undefined || pm.verificationStatus === null ? null : String(pm.verificationStatus);
+  // What is registered already. The GET is the source of truth: 200 with
+  // { domains }, or 204 with no body when nothing is registered yet (the
+  // normal first run of every venue), which is an EMPTY list, not a failed
+  // read. The method's own applePay.domains is the fallback for a refused
+  // GET; with neither every host is sent and an "already exists" answer
+  // counts as existing.
+  let known: string[] | null = null;
+  const cur = await mgmt<{ domains?: unknown }>(cfg, 'GET', `/merchants/${m}/paymentMethodSettings/${encodeURIComponent(pmId)}/getApplePayDomains`);
+  const got: unknown = cur.ok ? cur.data?.domains : null;
+  const own: unknown = pm.applePay?.domains;
+  if (cur.ok && (cur.status === 204 || cur.data == null || got === undefined)) known = [];
+  else if (Array.isArray(got)) known = got.filter((d): d is string => typeof d === 'string');
+  else if (Array.isArray(own)) known = own.filter((d): d is string => typeof d === 'string');
+  const plan = applePayDomainsPlan(known ?? [], storefront);
+  const added: string[] = [];
+  const existing = [...plan.existing];
+  const failed: Array<{ domain: string; status: number; message: string }> = [];
+  for (const domain of plan.missing) {
+    // One host per call so a host that does not serve the association file
+    // fails on its own line instead of taking the batch down with it.
+    const r = await mgmt(cfg, 'POST', `/merchants/${m}/paymentMethodSettings/${encodeURIComponent(pmId)}/addApplePayDomains`, { domains: [domain] });
+    if (r.ok) added.push(domain);
+    else if (isDuplicateRefusal(r.status, r.data)) existing.push(domain);
+    else failed.push({ domain, status: r.status, message: adyenRefusalMessage(r.status, r.data) });
+  }
+  const notes = [note];
+  if (known === null) notes.push('Adyen did not list the domains registered already, so every host was sent; "already exists" answers count as existing.');
+  if (failed.length) notes.push('A host is refused when it does not serve /.well-known/apple-developer-merchantid-domain-association over https. The app serves it on every ServOS host, so check that the host resolves.');
+  return { ...base, ok: failed.length === 0, paymentMethodId: pmId, verificationStatus, added, existing, failed, note: notes.join(' ') };
 }
 
 Deno.serve(async (req) => {
@@ -434,13 +655,89 @@ Deno.serve(async (req) => {
           : `No ${region} ${next} merchant account is configured on the server; the venue's merchant account was cleared.`);
       }
       console.log(`[adyen-terminal-admin] ${caller.id} set environment=${next} for ${loc.id} (${region}, was ${env}${provisionedOnCurrent ? ', reprovision' : ''})`);
-      return json({ ok: true, environment: next, region, previous: env, liveConfigured: liveReady, liveRegionsConfigured: liveRegions, reprovisioned: provisionedOnCurrent, warning: warnings.join(' ') || null });
+      // Going live: the ServOS hosts go on the live credential's allowed
+      // origins and the venue's storefront on the merchant's Apple Pay
+      // domains, so the Drop-in and Apple Pay work on the new account
+      // without a Customer Area visit (8 Sep 2026). BEST EFFORT: a refusal
+      // rides in the answer as web_origins / apple_pay_domains, it never
+      // fails the flip (the admin portal's button runs both again).
+      let webOrigins: RegistrationAnswer | null = null;
+      let applePayDomains: RegistrationAnswer | null = null;
+      if (next === 'live' && next !== env) {
+        if (!liveReady) {
+          const error = `Skipped: live keys for the ${region} account are not fully configured (${liveMissing.join(', ')}).`;
+          webOrigins = { ok: false, skipped: true, error };
+          applePayDomains = { ok: false, skipped: true, error };
+        } else {
+          const attempt = async (label: string, run: () => Promise<RegistrationAnswer>): Promise<RegistrationAnswer> => {
+            try { return await run(); } catch (e) { return { ok: false, error: `${label}: ${(e as Error)?.message || String(e)}` }; }
+          };
+          let storefront: Storefront | null = null;
+          try { storefront = await storefrontFor(loc.id); } catch (e) {
+            const error = `storefront lookup: ${(e as Error)?.message || String(e)}`;
+            webOrigins = { ok: false, error };
+            applePayDomains = { ok: false, error };
+          }
+          if (storefront) {
+            const sf = storefront;
+            const liveMerchant = merchantNext || liveCfg.merchantAccount;
+            // A venue arriving on live never has a live store yet (a store id
+            // on the row belonged to the test account and was cleared above),
+            // so the merchant level Apple Pay entry is the only sensible
+            // target here. The admin portal's button, which passes the row's
+            // store id, covers the store scoped case once the live store exists.
+            const liveStoreId: string | null = null;
+            webOrigins = await attempt('web origins', () => registerWebOrigins(liveCfg, sf.customDomain));
+            applePayDomains = await attempt('Apple Pay domains', () => registerApplePayDomains(liveCfg, liveMerchant, liveStoreId, sf));
+          }
+        }
+        console.log(`[adyen-terminal-admin] ${caller.id} go live registrations for ${loc.id}: origins ${webOrigins?.ok ? 'ok' : 'refused'}, apple pay ${applePayDomains?.ok ? 'ok' : 'refused'}`);
+      }
+      return json({
+        ok: true, environment: next, region, previous: env, liveConfigured: liveReady, liveRegionsConfigured: liveRegions,
+        reprovisioned: provisionedOnCurrent, warning: warnings.join(' ') || null,
+        web_origins: webOrigins, apple_pay_domains: applePayDomains,
+      });
+    }
+
+    // ── register_origins: the ServOS hosts and wildcards on the credential ──
+    // super_admin only. /me is credential scoped, so the VENUE's config (its
+    // environment and its region set) picks the key whose origins change: a
+    // test venue registers on the test credential. body.region overrides the
+    // region set only (register on the US credential before a venue moves).
+    // Answers 200 with ok false and the detail when Adyen refuses, so the
+    // admin portal lists every line; the outer catch answers 500 only for a
+    // live venue without live keys (fail closed) or a thrown DB error.
+    if (action === 'register_origins') {
+      if (!isServosAdmin) return adminOnly();
+      const rawRegion = String(body.region ?? '').trim();
+      const wantRegion = rawRegion ? parseAdyenRegion(rawRegion) : null;
+      if (rawRegion && !wantRegion) return json({ error: "region must be 'UK' or 'US'" }, 400);
+      const originCfg = wantRegion && wantRegion !== region ? adyenConfig(env, wantRegion) : cfg;
+      const storefront = await storefrontFor(loc.id);
+      const r = await registerWebOrigins(originCfg, storefront.customDomain);
+      console.log(`[adyen-terminal-admin] ${caller.id} register_origins for ${loc.id} on ${originCfg.region} ${originCfg.env}: added ${(r.added as string[] | undefined)?.length ?? 0}, existing ${(r.existing as string[] | undefined)?.length ?? 0}, failed ${(r.failed as unknown[] | undefined)?.length ?? 0}${r.error ? ` (${r.error})` : ''}`);
+      return json({ action, ...r });
     }
 
     // The row's name wins, unless it names the OTHER environment's secret
     // account (a row flipped before set_environment rewrote it).
     const merchant = effectiveMerchantAccount(cfg, maa?.merchant_account);
     if (!merchant) return json({ error: `no merchant account configured for card payments (${adyenSecretName(cfg.env, 'merchantAccount', cfg.region)})` }, 500);
+
+    // ── register_apple_pay_domains: the venue's storefront hosts on the merchant ──
+    // super_admin only. The venue's config and merchant account (the row's
+    // name, or the region set's) pick the Apple Pay payment method; the
+    // venue's store id prefers a store scoped entry when the merchant has
+    // one. Answers 200 with ok false and a plain message when Apple Pay is
+    // not requested or approved yet, or the venue has no slug.
+    if (action === 'register_apple_pay_domains') {
+      if (!isServosAdmin) return adminOnly();
+      const storefront = await storefrontFor(loc.id);
+      const r = await registerApplePayDomains(cfg, merchant, (maa?.store_id as string | undefined) ?? null, storefront);
+      console.log(`[adyen-terminal-admin] ${caller.id} register_apple_pay_domains for ${loc.id} on ${merchant} (${cfg.region} ${cfg.env}): added ${(r.added as string[] | undefined)?.length ?? 0}, existing ${(r.existing as string[] | undefined)?.length ?? 0}, failed ${(r.failed as unknown[] | undefined)?.length ?? 0}${r.error ? ` (${r.error})` : ''}`);
+      return json({ action, ...r });
+    }
 
     // ── status: everything the panel needs to decide what to show ────────────
     if (action === 'status') {
