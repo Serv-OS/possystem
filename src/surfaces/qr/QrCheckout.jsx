@@ -682,13 +682,17 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
 
         {step === 'pay' && processor === 'adyen' ? (
           <div style={{ padding: '0 24px 16px' }}>
+            {/* 8 Sep 2026: storeCard is OFF for an Adyen tab. The Adyen close
+                path never charges an overage off session (it captures the
+                hold, clamped), so storePaymentMethod bought nothing, and on a
+                live account without tokenisation it is refused outright. */}
             <AdyenPaymentForm
               locationId={platformLocationId}
               amountMinor={Math.round((isOpenTab ? tabPreAuthAmount : total) * 100)}
               currency={stripeCurrency()}
               reference={orderShape?.ref}
               captureMethod={isOpenTab ? 'manual' : 'automatic'}
-              storeCard={isOpenTab}
+              storeCard={false}
               shopperReference={orderShape?.ref}
               customerEmail={orderShape?.customer?.email}
               onSuccess={onPaymentSuccess}

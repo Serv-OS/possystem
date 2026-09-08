@@ -333,6 +333,27 @@ export async function platformLocationIdFor(platformAdmin: any, id: string | nul
   return null;
 }
 
+// The merchant account a venue's Adyen calls go out with (8 Sep 2026).
+// merchant_adyen_accounts.merchant_account is preferred over the secret set's
+// ADYEN[_LIVE]_MERCHANT_ACCOUNT, because a hand onboarded venue may sit under
+// a merchant account the secrets do not name. But the row's name was written
+// on ONE environment: a venue flipped to live still carried its TEST merchant
+// name (FranPOS_ServOS_TEST) and every live call named it on the live host.
+// set_environment now rewrites the column on a flip; this is the guard for
+// rows that predate that: a row naming the OTHER environment's secret account
+// falls back to this environment's secret account. Anything else on the row
+// is kept verbatim (a real, hand entered live merchant name).
+// KEEP IN SYNC with src/lib/payments/adyenEnv.js (effectiveMerchantAccount).
+export function effectiveMerchantAccount(cfg: AdyenConfig, rowMerchant: unknown, get: (name: string) => string | undefined | null = envGet): string {
+  const row = String(rowMerchant ?? '').trim();
+  const mine = String(cfg?.merchantAccount ?? '').trim();
+  if (!row) return mine;
+  const otherEnv: AdyenEnv = cfg?.live ? 'test' : 'live';
+  const other = String(get(adyenSecretName(otherEnv, 'merchantAccount')) ?? '').trim();
+  if (mine && other && row.toLowerCase() === other.toLowerCase() && row.toLowerCase() !== mine.toLowerCase()) return mine;
+  return row;
+}
+
 // The message a caller returns when a venue's config cannot be used: the
 // exact fail closed text for live, today's soft wording for test.
 export function adyenNotConfiguredMessage(cfg: AdyenConfig): string {
@@ -518,14 +539,29 @@ export async function verifyNotificationItem(item: any, hmacHexKey: string): Pro
 }
 
 // (2) BALANCE PLATFORM webhooks: classic raw-body HMAC-SHA256 (base64) in the
-//     HmacSignature header, key used as raw text.
+//     HmacSignature header.
+//
+// KEY ENCODING (8 Sep 2026): the Customer Area issues the key as a HEX string
+// and Adyen signs with the key DECODED from hex (adyen-node-api-library
+// hmacValidator.validateHMACSignature: createHmac('sha256', Buffer.from(key,
+// 'hex'))). This used to import the hex text as the raw key bytes, so no real
+// Balance Platform signature could ever verify. A hex shaped key is now tried
+// decoded first, and as raw text second (belt and braces: the docs have been
+// wrong before); a key that is not hex shaped is used as text.
 export async function verifyRawBodyHmac(rawBody: string, headerSig: string, key: string): Promise<boolean> {
   if (!key || !headerSig) return false;
-  try {
-    const k = await crypto.subtle.importKey('raw', new TextEncoder().encode(key), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-    const sig = b64(await crypto.subtle.sign('HMAC', k, new TextEncoder().encode(rawBody)));
-    return constantTimeEq(sig, headerSig);
-  } catch { return false; }
+  const k = key.trim();
+  const candidates: Uint8Array[] = [];
+  if (/^[0-9a-f]+$/i.test(k) && k.length % 2 === 0) candidates.push(hexToBytes(k));
+  candidates.push(new TextEncoder().encode(k));
+  for (const bytes of candidates) {
+    try {
+      const ck = await crypto.subtle.importKey('raw', bytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+      const sig = b64(await crypto.subtle.sign('HMAC', ck, new TextEncoder().encode(rawBody)));
+      if (constantTimeEq(sig, headerSig)) return true;
+    } catch { /* try the next encoding */ }
+  }
+  return false;
 }
 
 // ── Terminal API (nexo 3.0) message builders ─────────────────────────────────

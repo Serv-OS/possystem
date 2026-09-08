@@ -47,7 +47,7 @@
 //   npx supabase functions deploy adyen-onboard --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { lemBase, balancePlatformBase, managementBase, RATE_TIERS, resolveAdyenRateCard, adyenConfig, adyenEnvForLocation, adyenSecretName, assertAdyenConfigured, type AdyenConfig } from '../_shared/adyen.ts';
+import { lemBase, balancePlatformBase, managementBase, RATE_TIERS, resolveAdyenRateCard, adyenConfig, adyenEnvForLocation, adyenSecretName, assertAdyenConfigured, effectiveMerchantAccount, type AdyenConfig } from '../_shared/adyen.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -103,7 +103,7 @@ function classify(r: R): { kind: Kind; message: string } {
       // IS on; what is refused is our credential, which has not been granted the
       // account-creation roles. Saying the wrong cause sent people to ask Adyen
       // the wrong question, and made a venue look broken when it was not.
-      message: 'Automatic onboarding is unavailable: Adyen has not granted our API credential the account-creation permissions. Connect the venue by hand with Enter Adyen details, which works normally.',
+      message: 'Adyen refused this call (401/403): the API credential lacks the roles it needs (Legal Entity Management for legal entities and onboarding links, Balance Platform for account holders, balance accounts and sweeps, Management "Split configuration" for splits), or the company has no balance platform on this environment. Ask FranPOS for those roles (or separate ADYEN_LEM_KEY / ADYEN_BP_KEY credentials). Until then connect the venue by hand with Enter Adyen details, which stores ids but cannot write splits or sweeps.',
     };
   }
   const d: any = r.data ?? {};
@@ -244,7 +244,9 @@ Deno.serve(async (req) => {
     ]);
     const cfg = adyenConfig(env);
     const { lem, bcl, mgmt } = adyenApi(cfg);
-    const merchant = maa?.merchant_account || cfg.merchantAccount;
+    // The row's name wins unless it names the OTHER environment's secret
+    // account (a venue flipped to live before set_environment rewrote it).
+    const merchant = effectiveMerchantAccount(cfg, maa?.merchant_account);
 
     // ── list_merchants: the real merchant accounts, so nobody types one ──────
     // v5.7.94. Typing the merchant account by hand is the one field in manual
@@ -402,8 +404,13 @@ Deno.serve(async (req) => {
           if (enablement === 'unknown') enablement = 'enabled';
           capabilities = capabilitySnapshot(r.data?.capabilities);
           // Keep the DB truthy on every status load (webhooks also maintain this).
+          // receive_payments_ok is "this venue's online and terminal payments
+          // may name its store", which a STORE grants on its own (ensure_store
+          // writes true); the account holder's capability, false until KYC
+          // completes, must not take that away (8 Sep 2026: it did, and every
+          // online payment lost its store and was refused 905_1).
           const flags = capabilityFlags(r.data?.capabilities);
-          await stamp(loc.id, { verification_status: { source: 'status_sync', at: new Date().toISOString(), accountHolderStatus: r.data?.status ?? null, capabilities }, receive_payments_ok: flags.receive_ok, payouts_ok: flags.payouts_ok });
+          await stamp(loc.id, { verification_status: { source: 'status_sync', at: new Date().toISOString(), accountHolderStatus: r.data?.status ?? null, capabilities }, receive_payments_ok: flags.receive_ok || !!maa?.store_id, payouts_ok: flags.payouts_ok });
         } else if (enablement === 'unknown') {
           const c = classify(r);
           enablement = c.kind === 'awaiting_enablement' ? 'awaiting_enablement' : 'enabled';
@@ -438,6 +445,7 @@ Deno.serve(async (req) => {
         venue: loc.name,
         processor: loc.payment_processor || 'stripe',
         merchant,
+        environment: cfg.env,
         enablement,
         enablement_message: enablementMessage,
         ids: {
@@ -494,7 +502,10 @@ Deno.serve(async (req) => {
           reference: `servos:${loc.id}`,
           organization: { legalName: String(body.legal_name || loc.name).slice(0, 300), registeredAddress },
         };
-        const r = await lem('POST', '/legalEntities', payload, `le:${loc.id}`);
+        // Idempotency keys carry the environment: test and live are different
+        // key stores, and a live to test to live round trip must not replay
+        // the earlier live object onto a reprovisioned row.
+        const r = await lem('POST', '/legalEntities', payload, `le:${cfg.env}:${loc.id}`);
         logStep('legal_entity', loc.id, { httpStatus: r.status, request: payload, response: r.data ?? null });
         if (!r.ok || !r.data?.id) return fail('legal_entity', r);
         legalEntityId = r.data.id as string;
@@ -507,8 +518,19 @@ Deno.serve(async (req) => {
       let accountHolderId: string | null = maa?.account_holder_id ?? null;
       if (accountHolderId) steps.push({ step: 'account_holder', status: 'exists', id: accountHolderId });
       else {
-        const payload = { legalEntityId, description: `${loc.name} (ServOS)`.slice(0, 300), reference: loc.id };
-        const r = await bcl('POST', '/accountHolders', payload, `ah:${loc.id}`);
+        // Capabilities drive the hosted onboarding form, the verification
+        // deadlines and the payouts_ok gate (sendToTransferInstrument): an
+        // account holder created with none may collect nothing and can never
+        // be paid out. The standard sub merchant set under Adyen for
+        // Platforms; body.capabilities (an array of names) overrides it and
+        // body.capabilities === false omits the field, so a platform that
+        // refuses one of them (422) can be worked around without a redeploy.
+        const defaultCaps = ['receiveFromPlatformPayments', 'sendToTransferInstrument', 'sendToBalanceAccount', 'receiveFromBalanceAccount'];
+        const capNames: string[] | null = body.capabilities === false ? null
+          : Array.isArray(body.capabilities) && body.capabilities.length ? body.capabilities.map((c: unknown) => String(c)) : defaultCaps;
+        const payload: Record<string, unknown> = { legalEntityId, description: `${loc.name} (ServOS)`.slice(0, 300), reference: loc.id };
+        if (capNames) payload.capabilities = Object.fromEntries(capNames.map((c) => [c, { requested: true }]));
+        const r = await bcl('POST', '/accountHolders', payload, `ah:${cfg.env}:${loc.id}`);
         logStep('account_holder', loc.id, { httpStatus: r.status, request: payload, response: r.data ?? null });
         if (!r.ok || !r.data?.id) return fail('account_holder', r);
         accountHolderId = r.data.id as string;
@@ -527,7 +549,7 @@ Deno.serve(async (req) => {
           description: `${loc.name} payouts (ServOS)`.slice(0, 300),
           reference: loc.id,
         };
-        const r = await bcl('POST', '/balanceAccounts', payload, `ba:${loc.id}`);
+        const r = await bcl('POST', '/balanceAccounts', payload, `ba:${cfg.env}:${loc.id}`);
         logStep('balance_account', loc.id, { httpStatus: r.status, request: payload, response: r.data ?? null });
         if (!r.ok || !r.data?.id) return fail('balance_account', r);
         balanceAccountId = r.data.id as string;
@@ -743,7 +765,7 @@ Deno.serve(async (req) => {
         type: 'push',
         description: `ServOS ${scheduleType} payout — ${loc.name}`.slice(0, 140),
       };
-      const r = await bcl('POST', `/balanceAccounts/${encodeURIComponent(maa.balance_account_id)}/sweeps`, payload, `sweep:${loc.id}`);
+      const r = await bcl('POST', `/balanceAccounts/${encodeURIComponent(maa.balance_account_id)}/sweeps`, payload, `sweep:${cfg.env}:${loc.id}`);
       logStep('sweep_create', loc.id, { httpStatus: r.status, request: payload, response: r.data ?? null });
       if (!r.ok || !r.data?.id) { const c = classify(r); return json({ ok: false, kind: c.kind, message: c.message }, 502); }
       return json({ ok: true, sweep: { id: r.data.id, schedule: scheduleType, status: r.data.status ?? 'active' }, created: true });

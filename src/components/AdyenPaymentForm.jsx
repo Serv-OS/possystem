@@ -48,9 +48,14 @@ export default function AdyenPaymentForm({
     let live = true;
     (async () => {
       try {
+        // The venue is the payment's environment (test or live), its merchant
+        // account and its store. Without it the fn would fall back to the
+        // ADYEN_ENV set (test keys), so it is required here, not optional
+        // (8 Sep 2026; the fn refuses money actions without it too).
+        if (!locationId) throw new Error('This venue is not set up for card payments yet (no location id for the checkout)');
         // Client key + environment come from the fn so live/test stays a
-        // server-side switch (ADYEN_ENV) the bundle never hardcodes.
-        const { data: cfg, error: cfgErr } = await supabase.functions.invoke('adyen-checkout', { body: { action: 'status', ...(locationId ? { location_id: locationId } : {}) } });
+        // server-side switch (the venue's environment) the bundle never hardcodes.
+        const { data: cfg, error: cfgErr } = await supabase.functions.invoke('adyen-checkout', { body: { action: 'status', location_id: locationId } });
         if (cfgErr || cfg?.error || !cfg?.ok) throw new Error(cfg?.error || cfgErr?.message || 'Could not start the payment');
         if (!live) return;
 
@@ -78,7 +83,7 @@ export default function AdyenPaymentForm({
               const r = await payViaServer({
                 action: 'make_payment',
                 attempt_id: attemptId,
-                ...(locationId ? { location_id: locationId } : {}),
+                location_id: locationId,
                 ...(captureMethod === 'manual' ? { capture_method: 'manual' } : {}),
                 ...(storeCard && shopperReference ? { store_card: true, shopper_reference: shopperReference } : {}),
                 amount_minor: amountMinor,
@@ -91,6 +96,18 @@ export default function AdyenPaymentForm({
                 shopper_email: customerEmail || undefined,
               });
               if (!r.resultCode) { actions.reject(); return; }
+              // A redirect (the issuer wants a full page hop) cannot be
+              // completed: the storefront keeps the cart in memory and
+              // nothing handles the return, so the shopper would land back
+              // cold with no order and the payment would expire. The fn asks
+              // for native 3DS2 (handled in the Drop-in below), so this is
+              // rare; when it happens, fail clearly with no money moved
+              // rather than silently losing the order (8 Sep 2026).
+              if (r.action?.type === 'redirect') {
+                lastFailure.current = new Error('Your bank asked for a redirect this checkout cannot complete yet. Nothing was charged; please try another card or pay at the venue.');
+                actions.reject();
+                return;
+              }
               actions.resolve({ resultCode: r.resultCode, action: r.action || undefined });
             } catch (e) {
               lastFailure.current = e;
@@ -102,8 +119,13 @@ export default function AdyenPaymentForm({
             try {
               // location_id rides along so the fn resolves the SAME venue
               // (and so the same Adyen environment) as the payment it completes.
-              const r = await payViaServer({ action: 'payment_details', ...(locationId ? { location_id: locationId } : {}), details: state.data.details });
+              const r = await payViaServer({ action: 'payment_details', location_id: locationId, details: state.data.details });
               if (!r.resultCode) { actions.reject(); return; }
+              if (r.action?.type === 'redirect') {
+                lastFailure.current = new Error('Your bank asked for a redirect this checkout cannot complete yet. Nothing was charged; please try another card or pay at the venue.');
+                actions.reject();
+                return;
+              }
               actions.resolve({ resultCode: r.resultCode, action: r.action || undefined });
             } catch (e) {
               lastFailure.current = e;
@@ -111,7 +133,9 @@ export default function AdyenPaymentForm({
             }
           },
           onPaymentCompleted: (result) => {
-            if (['Authorised', 'Received', 'Pending'].includes(result?.resultCode)) {
+            // Only Authorised is paid. Received / Pending (never seen for a
+            // card) would have written a paid order on an unconfirmed outcome.
+            if (result?.resultCode === 'Authorised') {
               onSuccess?.({
                 id: lastServer.current?.pspReference || reference,
                 pspReference: lastServer.current?.pspReference || null,

@@ -152,6 +152,17 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 // and a later backfill replay re-resolves it (the upsert recomputes every time).
 async function resolveLocation(item: any, jobOpsLocationId: string | null, live: boolean | null = null): Promise<string | null> {
   try {
+    // 0. metadata.location_id: adyen-checkout sends the PLATFORM location id
+    //    as payment metadata and Adyen echoes it back (with "Include
+    //    Metadata" enabled on the webhook). Ecommerce items never carry
+    //    additionalData.store, and the merchant account lookup below stops
+    //    resolving at the second venue on the same account (8 Sep 2026).
+    const metaLoc = String(item?.additionalData?.['metadata.location_id'] ?? '').trim();
+    if (UUID_RE.test(metaLoc)) {
+      const { data, error } = await platformAdmin.from('locations').select('id').eq('id', metaLoc).maybeSingle();
+      if (error) console.error('[adyen-webhook] metadata location lookup failed:', error.message);
+      if (data?.id) return data.id;
+    }
     const store = item?.additionalData?.store ? String(item.additionalData.store) : '';
     if (store) {
       const { data, error } = await platformAdmin.from('merchant_adyen_accounts')
@@ -707,7 +718,9 @@ async function applyMoneyEvent(item: any, live: boolean | null = null): Promise<
       // Manual-capture flow (US tip on receipt): money only moves at CAPTURE,
       // so the reseller statement must not invoice an auth that never captured.
       // Only stamped when known true; omitting the key preserves the DB value.
-      if ((job as any)?.capture_mode === 'manual') row.capture_required = true;
+      // A QR open tab hold (Checkout path, authorisationType PreAuth) is a
+      // manual capture too: an uncaptured hold must not be invoiced.
+      if ((job as any)?.capture_mode === 'manual' || String(item?.additionalData?.authorisationType ?? '') === 'PreAuth') row.capture_required = true;
       const card = cardFromWebhookAdditionalData(item?.additionalData);
       row.card = card ?? existing?.card ?? null;
       // v5.7.3 — classify the payment into its pricing tier and stamp what we

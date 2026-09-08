@@ -7,6 +7,27 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.35',
+    date: '8 Sep 2026',
+    items: [
+      'Moving a venue between test cards and live, creating its Adyen store, and requesting card schemes are now ServOS admin actions. They live in the admin portal, Processing, on each venue card, and the server refuses any venue user, owners included.',
+      'Venue Back Office, Card readers, now shows the state only: Test cards or LIVE, real money, the red banner while live, and a note that ServOS moves venues between the two. Readers, tips and terminal settings stay with the venue.',
+      'Admin portal store form asks for the venue street, town, postcode and phone, prefilled from the venue record, and shows the card scheme review result after a live store is created.',
+    ],
+  },
+  {
+    v: '5.8.34',
+    date: '8 Sep 2026',
+    items: [
+      'Go live rehearsal fixes. Switching a venue to live now requires the live merchant account name on the server and writes it onto the venue, so no call can go out under the test merchant name. Reprovision also clears the test reader links on the tills.',
+      'Creating a live store needs the real venue address and phone number, entered in the Create store box, never a placeholder.',
+      'Admin portal: the payout onboarding buttons are back (Start onboarding with a legal details form, Refresh link, Configure splits, Set up payouts), with a Live or Test pill per venue and a confirm on every live action.',
+      'Balance Platform webhook now lands in the right database and verifies its signature the way Adyen signs it. A venue keeps taking payments while its KYC is still pending.',
+      'Online card payments ask for the in page 3D Secure challenge. If the bank insists on a redirect the payment is refused with a clear message and nothing is charged, rather than the order being lost.',
+      'Card readers panel: a failed live status check now shows the environment block and the error instead of a stale test view. Payment method review status is shown for a new store.',
+    ],
+  },
+  {
     v: '5.8.33',
     date: '7 Sep 2026',
     items: [

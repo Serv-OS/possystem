@@ -9,7 +9,8 @@
 - v5.8.33 (a41884f9): Adyen environment per venue. _shared/adyen.ts adyenConfig(env) from ADYEN_* (test) or ADYEN_LIVE_* (live), fail closed on live without key or prefix. All 13 Adyen functions and booking-widget resolve the venue first. Live Checkout host fixed (company prefix). Idempotency-Key on /payments. Webhook HMAC by the notification live flag. adyen-terminal-admin environment and set_environment (reprovision guard). Back Office Card readers Environment block, LIVE typed confirm, red banner. 647 tests green, build exit 0.
 - Platform migration supabase/migrations/20260907_PLATFORM_adyen_environment.sql: SAFE TO RUN (environment column plus live flags). Peter runs it on yhzjgyrkyjabvhblqxzu.
 - PR #1 develop -> main: https://github.com/Serv-OS/possystem/pull/1 (the git merge to main was blocked by the auto mode classifier). Merging makes app.serv-os.app and *.serv-os.app serve the current build.
-- Edge function deploys: first attempt 401 (expired token). Redeployed 8 Sep after Peter refreshed the token; see the deploy log line in the next entry or the chat.
+- Edge function deploys: first attempt 401 (expired token). All 13 REDEPLOYED 8 Sep after Peter refreshed the token; status action verified for Provo (environment test, inPerson true).
+- 8 Sep 16:09Z: platform migration APPLIED by Peter (verified); PR #1 MERGED (main 41493330); app.serv-os.app verified serving 5.8.33. CI rebuilt the four APKs from main (same version codes).
 
 ## Parked, needs Peter
 - Android repoint to app.serv-os.app (POS 12/2.1, MPOS 5/1.5, menuboard 3/1.2) is a patch in the session scratchpad (android_live_repoint.patch), NOT committed: .github/workflows/build-*.yml auto publish APKs to the live app-releases bucket on any push to develop or main. Apply only after PR #1 is merged and app.serv-os.app verified. Local gradle was blocked by the classifier.

@@ -13,7 +13,7 @@
 // and the AUTHORISATION webhook verify what was actually charged.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { adyenConfig, adyenEnvForLocation, checkoutBase, adyenFetch, adyenNotConfiguredMessage } from '../_shared/adyen.ts';
+import { adyenConfig, adyenEnvForLocation, checkoutBase, adyenFetch, adyenNotConfiguredMessage, effectiveMerchantAccount } from '../_shared/adyen.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -69,6 +69,9 @@ Deno.serve(async (req) => {
   ]);
   const cfg = adyenConfig(env);
   if (!cfg.configured) return json({ error: adyenNotConfiguredMessage(cfg) }, 503);
+  // A row still naming the OTHER environment's merchant account (flipped
+  // before set_environment rewrote it) must not reach the live host.
+  if (maa) maa.merchant_account = effectiveMerchantAccount(cfg, maa.merchant_account) || null;
   if (!maa?.merchant_account) return json({ error: 'venue has no Adyen account — onboarding incomplete' }, 409);
   if (!maa.receive_payments_ok) return json({ error: 'venue cannot receive payments yet — verification pending' }, 409);
 

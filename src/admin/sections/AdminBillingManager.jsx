@@ -17,10 +17,17 @@
 // client-side writes silently no-op — reads stay direct where allowed, writes
 // go through the edge fn.
 //
+// OWNER RULE (8 Sep 2026): the per venue Adyen ENVIRONMENT switch (test
+// cards or live, real money) and the one time STORE setup are ServOS internal
+// actions. They render here, inside each Adyen venue card, through
+// AdyenEnvironmentControls; the venue's Back Office shows the state only and
+// the adyen-terminal-admin fn refuses them for anyone but a super_admin.
+//
 // Themed with the same CSS variables as the customer back office.
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { supabase, platformSupabase } from '../../lib/supabase';
+import AdyenEnvironmentControls from '../components/AdyenEnvironmentControls';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
@@ -55,6 +62,35 @@ async function callAdyenOnboard(action, payload) {
   const j = await res.json().catch(() => ({}));
   if (j.error && j.ok === undefined) throw new Error(j.error);
   return j;
+}
+
+// Call adyen-terminal-admin for ONE venue with the signed-in (Ops) super_admin
+// token, the same session callAdyenOnboard uses. The fn fences on
+// user_locations membership OR super_admin, so the admin needs no
+// user_locations row at the venue. It resolves the venue from either id: the
+// ops id is sent when the platform row knows it, else the platform id, which
+// the fn maps onto the ops id itself. Non-2xx answers THROW with .status and
+// .data so AdyenEnvironmentControls can act on structured refusals
+// (set_environment answers 409 + needs_reprovision).
+function terminalAdminFor(location) {
+  return async (action, payload = {}) => {
+    const { data: session } = await supabase.auth.getSession();
+    const token = session?.session?.access_token;
+    if (!token) throw new Error('not authenticated');
+    const res = await fetch(`${FUNCTIONS_URL}/adyen-terminal-admin`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify({ action, ops_location_id: location.ops_location_id || location.id, location_id: location.id, ...payload }),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error(j?.error || `HTTP ${res.status}`);
+      err.status = res.status;
+      err.data = j;
+      throw err;
+    }
+    return j;
+  };
 }
 
 // The four pricing tiers (migration 20260821b) — order matches the venue's
@@ -157,7 +193,10 @@ export default function AdminBillingManager({ authUser }) {
       }
       if (Object.keys(merged).length) setPlatformDefaults(prev => ({ ...prev, ...merged }));
 
-      let q = platformSupabase.from('locations').select('id, name, company_id, timezone, payment_processor').order('name');
+      // No `country` here: platform locations has no such column, and a bad
+      // column fails the whole query (no venue cards at all). The payout
+      // form's default country is derived from currency instead.
+      let q = platformSupabase.from('locations').select('id, name, company_id, timezone, payment_processor, ops_location_id, address, currency').order('name');
       if (filterCompanyId) q = q.eq('company_id', filterCompanyId);
       const { data: locs, error: locErr } = await q;
       if (locErr) throw locErr;
@@ -690,6 +729,10 @@ const AdyenRow = ({ ok, children }) => (
 
 function AdyenBlock({ location, defaults, onError }) {
   const [st, setSt] = useState(null);   // null=loading, {error} or status payload
+  // Bumped by AdyenEnvironmentControls after a flip or a store create, so the
+  // connection pill here and the payout panel below re-read the venue.
+  const [envRev, setEnvRev] = useState(0);
+  const callTerminalAdmin = useMemo(() => terminalAdminFor(location), [location.id, location.ops_location_id]);   // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     let live = true;
     (async () => {
@@ -708,7 +751,7 @@ function AdyenBlock({ location, defaults, onError }) {
       } catch (e) { if (live) setSt({ error: e.message }); }
     })();
     return () => { live = false; };
-  }, [location.id]);
+  }, [location.id, envRev]);
 
   // Per-venue TIERED rate card (v5.7.3). merchant_adyen_accounts is
   // service-role-only, so reads AND writes go through payments-admin
@@ -779,8 +822,8 @@ function AdyenBlock({ location, defaults, onError }) {
         <div style={{ fontSize: 13, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
           <span>Adyen — connected <span style={{ fontWeight: 400, color: 'var(--t3)' }}>· {st.merchantAccount}</span></span>
           {/* This VENUE's environment (merchant_adyen_accounts.environment),
-              not the global default. Switched by the venue in Back Office,
-              Card readers, Environment. */}
+              not the global default. Switched below, in the Environment
+              controls (ServOS admin only since 8 Sep 2026). */}
           <span
             title={st.environment === 'live' ? 'Live, real money at this venue' : 'Test cards only at this venue'}
             style={{ ...S.pill, ...(st.environment === 'live' ? { background: 'var(--red)', color: '#fff', borderColor: 'var(--red)' } : {}) }}>
@@ -827,7 +870,17 @@ function AdyenBlock({ location, defaults, onError }) {
           </>
         )}
       </div>
-      <AdyenPayoutPanel location={location} />
+      {/* Environment switch + store setup: ServOS internal (OWNER RULE),
+          above the payout onboarding so a venue is put live, given its
+          store, then onboarded for payouts, in that order. */}
+      <AdyenEnvironmentControls
+        opsLocationId={location.ops_location_id || null}
+        platformLocationId={location.id}
+        venueName={location.name}
+        callAdmin={callTerminalAdmin}
+        onChanged={() => setEnvRev((n) => n + 1)}
+      />
+      <AdyenPayoutPanel key={envRev} location={location} />
     </>
   );
 }
@@ -854,6 +907,17 @@ function OnbStep({ done, label, detail }) {
 function AdyenPayoutPanel({ location }) {
   const [st, setSt] = useState(null);        // null = loading, {error} or adyen-onboard status payload
   const [msg, setMsg] = useState(null);      // { kind, text } from the last action
+  // 8 Sep 2026: the API onboarding actions are BACK (they were removed in
+  // v5.7.97 while the credential was refused). start / refresh_link /
+  // configure_splits / setup_sweep run through run(); the hosted link box
+  // shows the single use link start and refresh_link mint.
+  const [busy, setBusy] = useState(null);    // action name while one runs
+  const [link, setLink] = useState(null);    // { url, expires_at } freshly minted
+  const [copied, setCopied] = useState(false);
+  // The legal details start sends (legal name and registered address). The
+  // platform row's address is often empty, and LEM does not honour the
+  // idempotency key, so the FIRST start on live must carry the real details.
+  const [startForm, setStartForm] = useState(null);   // null = closed
   // v5.7.93: venues are onboarded BY HAND in the Adyen Customer Area (the API
   // credential is refused by Legal Entity Management), so the ids it creates are
   // typed in here. Same columns the API path writes, so everything downstream
@@ -874,6 +938,28 @@ function AdyenPayoutPanel({ location }) {
 
   useEffect(() => { setSt(null); load(); }, [load]);
 
+  const run = async (action, payload = {}) => {
+    setBusy(action); setMsg(null);
+    try {
+      const r = await callAdyenOnboard(action, { location_id: location.id, ...payload });
+      if (r.ok) {
+        if (r.onboarding_link?.url) { setLink(r.onboarding_link); setCopied(false); }
+        if (action === 'configure_splits') setMsg({ kind: 'ok', text: `Split profile live (${r.split_profile_id}) — one commission rule per payment type: ${(r.tier_summary || []).join(' · ')}. Remainder to the venue.` });
+        if (action === 'setup_sweep') setMsg({ kind: 'ok', text: `${r.existed ? 'Sweep already in place' : r.updated ? 'Sweep updated' : 'Sweep created'} (${r.sweep?.id}) — ${r.sweep?.schedule} push of the full balance to the venue bank.` });
+        if (action === 'start') {
+          setStartForm(null);
+          const failed = (r.steps || []).filter((s) => s.status === 'failed');
+          setMsg(failed.length
+            ? { kind: failed[0].kind || 'error', text: `${failed.map((s) => `${s.step}: ${s.message}`).join('; ')}` }
+            : { kind: 'ok', text: r.next || 'Accounts created.' });
+        }
+        await load();
+      } else {
+        setMsg({ kind: r.kind || 'error', text: r.message || r.error || 'failed' });
+      }
+    } catch (e) { setMsg({ kind: 'error', text: e.message }); }
+    finally { setBusy(null); }
+  };
 
   const box = { marginTop: 14, padding: '14px 16px', borderRadius: 12, background: 'var(--bg2)', border: '1px solid var(--bdr2)' };
 
@@ -889,9 +975,30 @@ function AdyenPayoutPanel({ location }) {
   }
 
   const ids = st.ids || {};
+  const started = !!(ids.legal_entity_id || ids.account_holder_id || ids.balance_account_id);
   const awaiting = st.enablement === 'awaiting_enablement';
   const hasSweep = Array.isArray(st.sweeps) && st.sweeps.length > 0;
+  const splitsReady = !!st.prerequisites?.configure_splits?.ok;
+  const splitsWhy = (st.prerequisites?.configure_splits?.missing || []).join('; ');
   const bal = Array.isArray(st.balances) && st.balances.length ? st.balances[0] : null;
+  // This VENUE's Adyen environment (older fn builds send none: treat as test).
+  const liveVenue = st.environment === 'live';
+  // On live every one of these creates a real object at Adyen (a legal
+  // entity, a split configuration, a bank sweep): confirm first.
+  const confirmLive = (what) => !liveVenue || window.confirm(`${location.name} is on LIVE Adyen. ${what}\n\nContinue?`);
+  const openStart = () => {
+    // Prefill from the platform row; the operator corrects it before sending.
+    const parts = String(location.address || '').split(',').map((p) => p.trim()).filter(Boolean);
+    setStartForm({
+      legal_name: location.legal_name || location.name || '',
+      // Platform locations has no country column: a USD venue is US, else GB.
+      country: String(location.currency || '').toUpperCase() === 'USD' ? 'US' : 'GB',
+      street: parts.length >= 3 ? parts.slice(0, -2).join(', ') : (parts[0] || ''),
+      city: parts.length >= 3 ? parts[parts.length - 2] : (parts[1] || ''),
+      postal_code: parts.length >= 2 ? parts[parts.length - 1] : '',
+    });
+    setMsg(null);
+  };
 
   const kindStyle = (kind) => kind === 'ok'
     ? { background: 'var(--grn-d)', color: 'var(--grn)', border: '1px solid var(--grn-b)' }
@@ -906,6 +1013,12 @@ function AdyenPayoutPanel({ location }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
         <div style={{ ...S.label, color: 'var(--t2)', marginBottom: 0 }}>Payout onboarding</div>
         <span style={S.pill}>{awaiting ? 'Awaiting enablement' : st.enablement === 'enabled' ? 'Balance platform live' : 'Not started'}</span>
+        {st.environment && (
+          <span title={liveVenue ? 'Live, real money at this venue' : 'Test only at this venue'}
+            style={{ ...S.pill, ...(liveVenue ? { background: 'var(--red)', color: '#fff', borderColor: 'var(--red)' } : {}) }}>
+            {liveVenue ? 'LIVE money' : 'Test'}
+          </span>
+        )}
         {st.payouts_ok && <span style={{ ...S.pill, color: 'var(--grn)', borderColor: 'var(--grn-b)' }}>Payouts allowed</span>}
       </div>
 
@@ -938,8 +1051,64 @@ function AdyenPayoutPanel({ location }) {
         </div>
       )}
 
+      {link?.url && (
+        <div style={{ padding: 10, borderRadius: 8, background: 'var(--bg1)', border: '1px solid var(--bdr)', marginBottom: 12 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t2)', marginBottom: 6 }}>
+            Hosted onboarding link — single use, expires in 4 minutes. Send or open it NOW; mint a new one any time.
+          </div>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <input readOnly value={link.url} style={{ ...S.input, ...S.inputMono, fontSize: 11 }} onFocus={(e) => e.target.select()} />
+            <button style={{ ...S.btn, ...S.btnGhost }} onClick={async () => {
+              try { await navigator.clipboard.writeText(link.url); setCopied(true); setTimeout(() => setCopied(false), 2000); }
+              catch { setMsg({ kind: 'error', text: 'Copy failed — select the link and copy it manually.' }); }
+            }}>{copied ? 'Copied' : 'Copy'}</button>
+            <button style={{ ...S.btn, ...S.btnPrim }} onClick={() => window.open(link.url, '_blank', 'noopener')}>Open</button>
+          </div>
+        </div>
+      )}
+
       {msg && (
         <div style={{ padding: 10, borderRadius: 8, fontSize: 12, lineHeight: 1.5, marginBottom: 12, ...kindStyle(msg.kind) }}>{msg.text}</div>
+      )}
+
+      {startForm && (
+        <div style={{ ...box, marginTop: 0, marginBottom: 12 }}>
+          <div style={{ ...S.label, color: 'var(--t2)', marginBottom: 4 }}>{started ? 'Continue onboarding' : 'Start onboarding'}{liveVenue ? ' (LIVE)' : ''}</div>
+          <div style={{ fontSize: 12, color: 'var(--t3)', lineHeight: 1.55, marginBottom: 12 }}>
+            This creates the venue's legal entity, account holder and balance account at Adyen and mints the hosted
+            onboarding link. The registered name and address go on the legal entity exactly as typed
+            {liveVenue ? ', and on live a wrong legal entity cannot be undone from here' : ''}.
+          </div>
+          {[
+            ['legal_name', 'Registered legal name', 'Provo Restaurants Ltd'],
+            ['street', 'Registered street address', '9a New Street'],
+            ['city', 'Town or city', 'Huddersfield'],
+            ['postal_code', 'Postcode', 'HD3 4LN'],
+            ['country', 'Country (2 letters)', 'GB'],
+          ].map(([key, label, ph]) => (
+            <div key={key} style={{ marginBottom: 10 }}>
+              <div style={{ ...S.label, color: 'var(--t3)', marginBottom: 4 }}>{label}</div>
+              <input style={{ ...S.input, fontSize: 12.5 }} value={startForm[key] || ''} placeholder={ph}
+                onChange={(e) => setStartForm((f) => ({ ...f, [key]: e.target.value }))} />
+            </div>
+          ))}
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button style={{ ...S.btn, ...S.btnPrim, opacity: busy ? 0.6 : 1 }} disabled={!!busy || !String(startForm.legal_name || '').trim()}
+              onClick={() => {
+                if (!confirmLive('This creates a real legal entity, account holder and balance account for the venue.')) return;
+                run('start', {
+                  legal_name: String(startForm.legal_name || '').trim(),
+                  country: String(startForm.country || 'GB').trim().toUpperCase().slice(0, 2),
+                  street: String(startForm.street || '').trim() || undefined,
+                  city: String(startForm.city || '').trim() || undefined,
+                  postal_code: String(startForm.postal_code || '').trim() || undefined,
+                });
+              }}>
+              {busy === 'start' ? 'Working…' : started ? 'Continue' : 'Create accounts and mint the link'}
+            </button>
+            <button style={{ ...S.btn, ...S.btnGhost }} disabled={!!busy} onClick={() => setStartForm(null)}>Cancel</button>
+          </div>
+        </div>
       )}
 
       {manual && (
@@ -1086,7 +1255,7 @@ function AdyenPayoutPanel({ location }) {
       )}
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <button style={{ ...S.btn, ...S.btnPrim, opacity: manual ? 0.6 : 1 }} disabled={!!manual}
+        <button style={{ ...S.btn, ...S.btnPrim, opacity: manual || busy ? 0.6 : 1 }} disabled={!!manual || !!busy}
           onClick={() => {
             if (merchants === null) {
               callAdyenOnboard('list_merchants', { location_id: location.id })
@@ -1101,16 +1270,36 @@ function AdyenPayoutPanel({ location }) {
           }); }}>
           Enter Adyen details
         </button>
-        {/* v5.7.97: Start onboarding / New onboarding link / Configure splits /
-            Set up daily payout are GONE from the UI. Every one of them calls an
-            Adyen API our credential is refused on, so all four could ever do was
-            fail in a way that looked like our fault. Venues are onboarded by hand
-            in the Customer Area instead, and splits and payouts are set there too.
-
-            The server actions are deliberately still there and still work. If
-            Adyen ever grants the permissions, putting these buttons back is a few
-            lines, and nothing else has to change. */}
-        <button style={{ ...S.btn, ...S.btnGhost }} disabled={manualBusy} onClick={() => { setSt(null); setMsg(null); load(); }}>Refresh</button>
+        {/* 8 Sep 2026: the four API onboarding actions are back (v5.7.97 had
+            removed them while the credential was refused). They still fail
+            cleanly, pre classified, when the credential lacks the roles; on a
+            LIVE venue each one confirms first. */}
+        <button style={{ ...S.btn, ...S.btnGhost, opacity: busy || manual || startForm ? 0.6 : 1 }} disabled={!!busy || !!manual || !!startForm}
+          title="Create the legal entity, account holder and balance account at Adyen, then mint the hosted onboarding link"
+          onClick={openStart}>
+          {busy === 'start' ? 'Working…' : started ? 'Continue onboarding' : 'Start onboarding'}
+        </button>
+        <button style={{ ...S.btn, ...S.btnGhost, opacity: !ids.legal_entity_id || busy ? 0.5 : 1 }}
+          disabled={!ids.legal_entity_id || !!busy}
+          title={ids.legal_entity_id ? 'Mint a fresh hosted onboarding link (single use, 4 minutes)' : 'Needs the legal entity — run Start onboarding first'}
+          onClick={() => run('refresh_link')}>
+          {busy === 'refresh_link' ? 'Working…' : 'New onboarding link'}
+        </button>
+        <button style={{ ...S.btn, ...S.btnGhost, opacity: !splitsReady || busy ? 0.5 : 1 }}
+          disabled={!splitsReady || !!busy}
+          title={splitsReady ? 'Write one commission rule per payment type from the venue\'s resolved rate card onto the venue store' : `Not ready: ${splitsWhy}`}
+          onClick={() => { if (confirmLive('This writes the commission split rules onto the venue\'s live store.')) run('configure_splits'); }}>
+          {busy === 'configure_splits' ? 'Working…' : 'Configure splits'}
+        </button>
+        <button style={{ ...S.btn, ...S.btnGhost, opacity: !ids.balance_account_id || busy ? 0.5 : 1 }}
+          disabled={!ids.balance_account_id || !!busy}
+          title={ids.balance_account_id
+            ? 'Create the daily push sweep — full available balance to the venue bank (re-checks for the bank account automatically)'
+            : 'Needs the balance account — run Start onboarding first'}
+          onClick={() => { if (confirmLive('This sets up a daily sweep that pays the venue\'s real balance to its bank account.')) run('setup_sweep'); }}>
+          {busy === 'setup_sweep' ? 'Working…' : 'Set up daily payout'}
+        </button>
+        <button style={{ ...S.btn, ...S.btnGhost }} disabled={!!busy || manualBusy} onClick={() => { setSt(null); setMsg(null); load(); }}>Refresh</button>
       </div>
     </div>
   );
