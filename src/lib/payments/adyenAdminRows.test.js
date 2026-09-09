@@ -305,7 +305,7 @@ test('merchantPicker: the accounts the credential sees, the secret’s one marke
 // ── THE GUIDED FLOW (8 Sep 2026, OWNER FEEDBACK) ─────────────────────────────
 import {
   GOLIVE_STEP_TITLES, goliveFlowView, capabilityNotices, mismatchView,
-  plainFailure, goLiveConfirmText, relinkConfirmText,
+  plainFailure, goLiveConfirmText, relinkConfirmText, goLiveConfirmLines, relinkConfirmLines,
 } from './adyenAdminRows.js';
 import { buildGoliveSteps, capabilityList } from './adyenLink.js';
 
@@ -366,6 +366,58 @@ test('goliveFlowView: opening a done row keeps exactly one open', () => {
   assert.equal(v.progressLabel, 'Step 1 of 5');
   // a row id nobody answered falls back to the first that is not done
   assert.equal(goliveFlowView({ steps: FIVE }, 'not_a_step').openId, 'payments_location');
+});
+
+test('goliveFlowView: a blocked step always opens, a note only step never parks the owner', () => {
+  // "Cards work. Payouts wait for Adyen." is amber with nothing to press, so
+  // the flow opens the next step that actually has work on it (8 Sep 2026: a
+  // blocked payout held the flow at step 2 forever).
+  const payout = goliveFlowView({ steps: [
+    { id: 'find_venue', state: 'done', detail: 'x' },
+    { id: 'business_account', state: 'attention', detail: 'Cards work. Payouts wait for Adyen.' },
+    { id: 'payments_location', state: 'todo', detail: 'y', action: 'create_store' },
+    { id: 'go_live', state: 'todo', detail: 'Finish the steps above first.' },
+    { id: 'readers', state: 'todo', detail: 'z', action: 'add_reader' },
+  ] });
+  assert.equal(payout.openId, 'payments_location');
+  assert.equal(payout.steps[1].chip.label, 'Needs attention');
+
+  // Blocked always wins, wherever it sits and whether or not it has a button.
+  const blocked = goliveFlowView({ steps: [
+    { id: 'find_venue', state: 'todo', detail: 'x', action: 'find_venue' },
+    { id: 'business_account', state: 'blocked', detail: 'Adyen blocks receivePayments.' },
+    { id: 'payments_location', state: 'todo', detail: 'y', action: 'create_store' },
+  ] });
+  assert.equal(blocked.openId, 'business_account');
+
+  // An attention step WITH work on it still opens.
+  const inactive = goliveFlowView({ steps: [
+    { id: 'find_venue', state: 'done', detail: 'x' },
+    { id: 'business_account', state: 'done', detail: 'y' },
+    { id: 'payments_location', state: 'attention', detail: 'The store is inactive at Adyen.', action: 'open_adyen' },
+  ] });
+  assert.equal(inactive.openId, 'payments_location');
+});
+
+test('goliveFlowView: the live shape reaches step 3, blocked payout and all', () => {
+  const steps = buildGoliveSteps({
+    venue: { name: 'Provo', code: 'SV-1007', region: 'UK', environment: 'test' },
+    keys: { configured: true, missing: [] },
+    liveKeys: { configured: true, missing: [] },
+    holder: { id: 'AH32BZP22322CJ5PXF2BD5FTR', status: 'active' },
+    balanceAccount: { id: 'BA3224Z223226M5KMQ5RBAL01', currency: 'GBP' },
+    legalEntity: { id: 'LE32BZP22322CJ5PXF2BDLEG1', name: 'POINT OF SALE UNIFIED PARTNERS LIMITED', transferInstrumentId: 'SE123' },
+    capabilities: capabilityList({
+      receivePayments: { allowed: true, requested: true, verificationStatus: 'valid' },
+      sendToTransferInstrument: { allowed: false, requested: true, verificationStatus: 'rejected' },
+    }),
+    store: null,
+  });
+  const v = goliveFlowView({ steps });
+  assert.equal(v.steps[1].state, 'attention');
+  assert.equal(v.steps[1].detail, 'Cards work. Payouts wait for Adyen.');
+  assert.equal(v.openId, 'payments_location');
+  assert.equal(v.steps[2].action, 'create_store');
 });
 
 test('goliveFlowView: the server’s own steps drive it, ids and order match', () => {
@@ -459,6 +511,27 @@ test('goLiveConfirmText: no payments location says so, and a replacement names t
   assert.match(replace, /is INACTIVE at Adyen/);
 });
 
+test('goLiveConfirmLines: one line per consequence, so the in page panel can lay them out', () => {
+  const answer = {
+    environment: 'live', previous: 'test', region: 'UK',
+    lookup: { accountHolder: { id: 'AH1' } }, plan: { kind: 'flip', diff: { conflicts: [] } },
+    provisioned: ['store_id'], readers: 2, keepsSetup: true,
+  };
+  const lines = goLiveConfirmLines(answer, 'Provo');
+  assert.ok(Array.isArray(lines));
+  assert.ok(lines.length >= 3);
+  assert.match(lines[0], /^Turn on live payments for Provo/);
+  assert.match(lines[1], /no payments location/);
+  for (const l of lines) assert.doesNotMatch(l, /\n/, 'every line stands on its own');
+  // the joined string is the same content, so anything still wanting one works
+  assert.equal(goLiveConfirmText(answer, 'Provo'), `${lines.join('\n\n')}\n\nContinue?`);
+
+  const relink = relinkConfirmLines({ error: 'the venue already holds different ids', keepsSetup: true, previous: 'test', environment: 'live' });
+  assert.deepEqual(relink.length, 2);
+  assert.match(relink[0], /already holds different ids/);
+  assert.match(relink[1], /test setup is kept/);
+});
+
 test('relinkConfirmText: the fn’s own reason, and the kept setup', () => {
   const t = relinkConfirmText({ error: 'the venue already holds different ids', keepsSetup: true, previous: 'test', environment: 'live' }, 'Provo');
   assert.match(t, /already holds different ids/);
@@ -476,6 +549,46 @@ test('the flow’s wording never uses a dash as punctuation', () => {
     plainFailure(new Error('nope'), 'It did not work').text,
     goLiveConfirmText({ environment: 'live', previous: 'test', region: 'UK', lookup: { store: { id: 'ST1', status: 'active' } }, plan: { kind: 'flip', diff: { conflicts: [] } }, provisioned: ['store_id'], readers: 1, keepsSetup: true }, 'Provo'),
     relinkConfirmText({ error: 'no' }, 'Provo'),
+  ];
+  for (const w of words) assert.doesNotMatch(String(w), /[–—]/, `dash in: ${w}`);
+});
+
+// ── FINDING A VENUE BY ITS REFERENCE (8 Sep 2026) ───────────────────────────
+import { referenceSearchView } from './adyenAdminRows.js';
+
+test('referenceSearchView: the FIRST venue pastes its id, and the line says it is a one off', () => {
+  const v = referenceSearchView({ reference: 'SV-1007', balancePlatformKnown: false });
+  assert.equal(v.known, false);
+  assert.equal(v.pastePrimary, true);
+  assert.equal(v.firstVenueLine, 'The first venue needs its Adyen id pasted once. After that we find venues by their reference on their own.');
+  assert.equal(v.foundLine, null);
+  // no state at all reads the same way: nothing is known, so nothing is claimed
+  assert.equal(referenceSearchView(null).pastePrimary, true);
+});
+
+test('referenceSearchView: once the id is known the paste box is not the main path', () => {
+  const v = referenceSearchView({ reference: 'SV-1008', balancePlatformKnown: true });
+  assert.equal(v.known, true);
+  assert.equal(v.pastePrimary, false);
+  assert.equal(v.firstVenueLine, null);
+});
+
+test('referenceSearchView: a venue found by its reference says so in one line', () => {
+  const v = referenceSearchView({ reference: 'SV-1008', balancePlatformKnown: true, holderFoundBy: 'reference' });
+  assert.equal(v.foundLine, 'SV-1008 was found on Adyen by its reference. Nothing was pasted.');
+  // a pasted id, or the store's own balance account, is NOT the automatic route
+  assert.equal(referenceSearchView({ reference: 'SV-1008', balancePlatformKnown: true, holderFoundBy: 'pasted' }).foundLine, null);
+  assert.equal(referenceSearchView({ reference: 'SV-1008', balancePlatformKnown: true, holderFoundBy: 'store' }).foundLine, null);
+  // no reference to name: the line still reads
+  assert.equal(referenceSearchView({ balancePlatformKnown: true, holderFoundBy: 'reference' }).foundLine, 'This venue was found on Adyen by its reference. Nothing was pasted.');
+  // the venue code is the fallback when the answer carries no reference
+  assert.match(referenceSearchView({ venue: { code: 'SV-1009' }, holderFoundBy: 'reference' }).foundLine, /^SV-1009 was found/);
+});
+
+test('referenceSearchView: its wording never uses a dash as punctuation', () => {
+  const words = [
+    referenceSearchView({}).firstVenueLine,
+    referenceSearchView({ reference: 'SV-1007', balancePlatformKnown: true, holderFoundBy: 'reference' }).foundLine,
   ];
   for (const w of words) assert.doesNotMatch(String(w), /[–—]/, `dash in: ${w}`);
 });

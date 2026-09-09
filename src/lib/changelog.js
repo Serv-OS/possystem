@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.42',
+    date: '8 Sep 2026',
+    items: [
+      'The go live flow now says why a venue was not found instead of showing the same screen again. Adyen\'s own words are on the step, and every read is written to the audit trail so support can answer a question without asking anyone to click again.',
+      'A venue can be linked when Adyen holds it as a business account with no payments location yet, and the screen says a location is still needed before cards run.',
+      'Card scheme approval, web addresses and Apple Pay domains are read back and shown per venue.',
+    ],
+  },
+  {
     v: '5.8.41',
     date: '8 Sep 2026',
     items: [

@@ -24,7 +24,10 @@
 //   2. Environment: the state and the switch on the same line. Going LIVE
 //      is NOT here since 8 Sep 2026: it is step 4 of the guided flow
 //      (AdyenGoLiveFlow), which links the venue's Adyen ids and flips it in
-//      one write, so there is exactly ONE way to do it. The switch here only
+//      one write, so there is exactly ONE way to do it. THE TYPED "LIVE" BOX
+//      MOVED WITH IT: it is the in page panel in step 4, so the strongest
+//      gate on the most irreversible action in the system still stands, at
+//      the flow's own size and wording. The switch here only
 //      brings a live venue BACK to test cards, with its confirm, and the
 //      reprovision flow: the fn answers 409 +
 //      needs_reprovision while the venue's store or readers were set up on
