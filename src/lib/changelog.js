@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.45',
+    date: '9 Sep 2026',
+    items: [
+      'Card payments on Adyen readers: the server now sends the payment to the reader itself the moment the till creates it, and sweeps up any payment that did not reach the reader within twenty seconds. A slow or stale till can no longer leave a card payment stuck. Nothing changes on screen.',
+    ],
+  },
+  {
     v: '5.8.44',
     date: '9 Sep 2026',
     items: [

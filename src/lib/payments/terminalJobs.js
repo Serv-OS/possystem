@@ -423,6 +423,16 @@ export async function dispatchTerminalJob(p) {
       // a main-POS create: under that scope the server treats a MISSING flag
       // as false (normal capture), so a stale till degrades safely.
       ...(p.surface === 'pos' ? { surface: 'pos', table_check: p.tableCheck === true } : {}),
+      // 9 Sep 2026 - THE SERVER KICKS TOO. terminal-job-create now fires the
+      // Adyen 'start' itself (service role, waitUntil, after its response is
+      // committed) so a till on a stale bundle can never strand a card payment
+      // in charging_unsent again (live Provo incident: job minted, kick never
+      // sent, reader never asked). local_bridge tells it NOT to: on an MPOS
+      // running ON an Adyen terminal this device drives the reader over the
+      // local nexo bridge, and a cloud kick would race that for the same CAS.
+      // Same flag as the client-side suppression below, so the two can never
+      // disagree.
+      local_bridge: !!p.localBridge,
     });
 
     rememberJob({ checkKey: p.checkKey, jobId: useJobId, closedCheckId: useClosedCheckId, locationId, at: Date.now() });
@@ -461,17 +471,39 @@ export async function dispatchTerminalJob(p) {
     // fn's CAS (charging_unsent→charging) makes a duplicate kick harmless, so
     // re-kicking an unsent job is free; a job already 'charging' is untouched.
     const needsKick = !j.existing || j.job?.status === 'charging_unsent';
+    // 9 Sep 2026 - the fn ANSWERED our kick with a refusal (503 not configured,
+    // 409 not paired / terminal_not_linked). Those are pre-CAS walls the
+    // server's own kick hits identically 1.5s later, so "the server is sending
+    // it instead" would be false comfort. Only a transport-level failure (no
+    // HTTP status at all: the till could not reach the fn) leaves the server's
+    // kick as the one that can still succeed.
+    let kickAnswered = false;
     if (j.job?.processor === 'adyen' && needsKick && !p.localBridge) {
       kickError = await callFn('adyen-terminal-charge', { action: 'start', job_id: useJobId })
         .then(() => null)
         .catch((e) => {
+          // Lost the CAS to the server's kick (or another till's): the reader
+          // IS being asked, just not by us. Not an error - the poller watches
+          // the job exactly as it would had our kick won. Matched on the fn's
+          // code, with the raw message as the fallback for a fn not yet
+          // redeployed with the code.
+          if (e?.code === 'IN_FLIGHT' || e?.message === 'in_flight') {
+            console.log('[terminalJobs] adyen start already in flight (kicked elsewhere) - fine');
+            return null;
+          }
+          kickAnswered = !!e?.status;
           const msg = e?.message || String(e);
           console.warn('[terminalJobs] adyen start kick failed:', msg);
           return msg;
         });
     }
+    // The server scheduled its own kick for this job (see local_bridge above)
+    // AND this till's failure was transport-level, so that kick is the one
+    // still able to reach the reader. The till KEEPS its kick regardless: the
+    // fn's CAS makes the pair a harmless duplicate.
+    const serverKick = j.kick_scheduled === true && !kickAnswered;
 
-    return { job: j.job, existing: !!j.existing, kickError };
+    return { job: j.job, existing: !!j.existing, kickError, serverKick };
   }
 }
 

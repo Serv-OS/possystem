@@ -43,6 +43,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { readTipOnReceipt } from '../_shared/tip_capture.ts';
+import { shouldServerKick, clientOwnsCreateKick } from '../_shared/terminalKick.js';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -58,6 +59,82 @@ const opsAdmin = createClient(Deno.env.get('SUPABASE_URL') ?? '', SERVICE_ROLE, 
 });
 
 const LIVE = ['pending', 'claimed', 'tipping', 'charging_unsent', 'charging', 'unknown'];
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// THE SERVER KICKS TOO (9 Sep 2026 incident, live venue, first in-person live card)
+//
+// An Adyen cloud job is born charging_unsent with charge_minor stamped, and until
+// now ONLY the till followed it up with adyen-terminal-charge 'start'. The till
+// never did (a Sunmi WebView on a stale bundle: the documented trap), so the
+// reader was never asked and the job sat charging_unsent, nexo_service_id null,
+// until the sweeper cancelled it. Same class as 19 Aug (v5.6.86 / v5.6.88).
+//
+// So the kick is now the SERVER'S responsibility as well. After the response
+// below is committed, this function fires the same 'start' request that
+// adyen-terminal-events uses for pay-at-table wake-ups (service-role bearer,
+// {action:'start', job_id}) under EdgeRuntime.waitUntil. The fn's CAS
+// (charging_unsent -> charging) makes the till's own kick and this one
+// harmless duplicates: exactly one initiator ever reaches the reader.
+//
+// TIMING. The kick waits SERVER_KICK_GRACE_MS first. Two reasons:
+//   1. the response to the till must be on the wire before anything else
+//      happens (the till's UI keys off it), and
+//   2. a fresh till kicks within a few hundred ms of that response. Letting it
+//      win keeps today's behaviour for every up-to-date till, and keeps a
+//      HALF-stale till (one that surfaces kickError but does not yet know the
+//      IN_FLIGHT code) from seeing its own kick lose the CAS and printing
+//      "could not reach the card machine" over a reader that is showing the
+//      card prompt. A fully stale till never kicks at all, and for it 1.5s of
+//      extra latency is the difference between a sale and a stranded job.
+//
+// NEVER for a job the device drives itself over the local nexo bridge (MPOS on
+// an Adyen Android terminal, v5.6.81): there the cloud 'start' is a RACE for the
+// same CAS, not a duplicate. shouldServerKick() refuses on the request's
+// local_bridge flag, on the draft source only that flow writes, and on the
+// terminal row and POS device row sharing one auth uid, so a stale MPOS bundle
+// that never learned the flag is still recognised.
+//
+// NOR for the MPOS CLOUD flow (draft source 'mpos_cloud_terminal', v5.8.23).
+// That client kicks 'start' itself within a few hundred ms of this response,
+// and the bundles in the field (v5.8.23 to v5.8.44) treat a lost CAS as a
+// failure: forgetJob + throw while the reader shows the prompt the server's
+// kick put up. The customer taps, the job settles approved with no handle on
+// the device, a retry mints a fresh id (the approved job is not LIVE, so
+// idx_tj_one_live_per_check does not fire) and a SECOND prompt goes up for the
+// same bill: the v5.5.844 class. clientOwnsCreateKick() refuses the create-time
+// kick for that source. The sweep still covers it, because the sweep only
+// fires when the client's own kick never landed (still charging_unsent 20s
+// on), so there is nothing left to race.
+//
+// RECORDING THE ATTEMPT. terminal_jobs has no free jsonb/text column (last_error
+// is the failure narrative, check_draft is the client's bill, verified_source
+// belongs to settle) and a new column is DDL, which is blocked. So the attempt
+// is a console line here, a `kick_scheduled` flag in the response, and a
+// `kicked_by` marker on the start request that adyen-terminal-charge logs.
+// ═══════════════════════════════════════════════════════════════════════════════
+const SERVER_KICK_GRACE_MS = 1500;
+
+function scheduleServerKick(jobId: string, why: string) {
+  const run = async () => {
+    await new Promise((r) => setTimeout(r, SERVER_KICK_GRACE_MS));
+    try {
+      const res = await fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/adyen-terminal-charge`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SERVICE_ROLE}` },
+        body: JSON.stringify({ action: 'start', job_id: jobId, kicked_by: 'terminal-job-create' }),
+      });
+      const out = await res.text();
+      console.log(`[terminal-job-create] server kick for job ${jobId} (${why}): ${res.status} ${out.slice(0, 200)}`);
+    } catch (e) {
+      console.error(`[terminal-job-create] server kick for job ${jobId} failed to send: ${(e as Error)?.message || e}`);
+    }
+  };
+  // deno-lint-ignore no-explicit-any
+  const rt = (globalThis as any).EdgeRuntime;
+  if (rt?.waitUntil) rt.waitUntil(run());
+  else run();
+  console.log(`[terminal-job-create] server kick scheduled for job ${jobId} in ${SERVER_KICK_GRACE_MS}ms (${why})`);
+}
 
 /** Whole non-negative integer, or null. Rejects floats, NaN, strings, Infinity. */
 function minor(v: unknown): number | null {
@@ -80,6 +157,10 @@ interface Body {
   closed_check_id?: string;
   check_draft?: Record<string, unknown>;
   training?: boolean;
+  local_bridge?: boolean;       // 9 Sep 2026: THIS device drives the reader over the local nexo
+                                // bridge (MPOS on an Adyen terminal) - the server must NOT cloud-kick.
+                                // Mirrors terminalJobs.js p.localBridge; a stale bundle omits it and
+                                // is still caught by the draft source / shared-uid checks.
   surface?: string;             // v5.7.5: 'pos' = main POS checkout; gates tip-on-receipt manual capture
   table_check?: boolean;        // v5.7.6: rides with surface:'pos' - true when the check is attached
                                 // to a table/session, false for a counter/walk-in sale. Under scope
@@ -241,7 +322,7 @@ Deno.serve(async (req) => {
   // ── 1. The terminal row IS the location authority ──────────────────────────
   const { data: term, error: termErr } = await opsAdmin
     .from('terminal_devices')
-    .select('id, location_id, status, active, label, tip_config, bound_pos_device_id, adyen_terminal_id, serial_number')
+    .select('id, location_id, status, active, label, tip_config, bound_pos_device_id, adyen_terminal_id, serial_number, device_uid')
     .eq('id', target_terminal_id)
     .maybeSingle();
   if (termErr) return json({ error: termErr.message }, 500);
@@ -275,12 +356,16 @@ Deno.serve(async (req) => {
   // training_mode lives on device_profiles (20260628_device_training_mode.sql);
   // devices.profile_id is the link.
   let training = body.training === true;
+  // The POS device's auth uid rides along for the server-kick decision below:
+  // when it equals the target terminal row's device_uid, the till IS the reader.
+  let posDeviceUid: string | null = null;
   if (pos_device_id) {
     const { data: posDev } = await opsAdmin
-      .from('devices').select('id, device_profiles(training_mode)').eq('id', pos_device_id).maybeSingle();
+      .from('devices').select('id, device_uid, device_profiles(training_mode)').eq('id', pos_device_id).maybeSingle();
     const prof = (posDev as any)?.device_profiles;
     const flag = Array.isArray(prof) ? prof[0]?.training_mode : prof?.training_mode;
     if (flag === true) training = true;
+    posDeviceUid = ((posDev as any)?.device_uid as string | null) ?? null;
   }
   if (training) {
     return json({
@@ -456,7 +541,25 @@ Deno.serve(async (req) => {
       .from('terminal_jobs').insert(rowNoCapture).select().maybeSingle());
   }
 
-  if (!insErr && inserted) return json({ ok: true, job: inserted, existing: false });
+  // The server-side kick decision, shared by the fresh-insert and re-attach
+  // paths. Same inputs the till's own rule uses, plus the three local-bridge
+  // signals and the client-owns-the-kick source (see the block above
+  // scheduleServerKick).
+  const kickPlan = (job: Record<string, unknown>) => {
+    if (clientOwnsCreateKick(job)) return { kick: false, reason: 'mpos cloud flow kicks itself; sweep covers a lost kick' };
+    return shouldServerKick(job, {
+      localBridge: body.local_bridge === true,
+      terminalDeviceUid: ((term as any).device_uid as string | null) ?? null,
+      posDeviceUid,
+    });
+  };
+
+  if (!insErr && inserted) {
+    const plan = kickPlan(inserted as Record<string, unknown>);
+    if (plan.kick) scheduleServerKick(inserted.id, `fresh insert: ${plan.reason}`);
+    else console.log(`[terminal-job-create] no server kick for job ${inserted.id}: ${plan.reason}`);
+    return json({ ok: true, job: inserted, existing: false, kick_scheduled: plan.kick, kick_reason: plan.reason });
+  }
 
   // ONLY a unique violation means "already recorded". Anything else is a real
   // failure and must surface — collapsing the two is how a caller comes to
@@ -482,7 +585,26 @@ Deno.serve(async (req) => {
       .in('status', LIVE)
       .order('created_at', { ascending: false })
       .limit(1).maybeSingle();
-    if (sameCheck) return json({ ok: true, job: sameCheck, existing: true });
+    if (sameCheck) {
+      // v5.6.88's re-attach re-kick, now server-side too: a job whose first
+      // kick was lost is still charging_unsent here, and every retry lands on
+      // this branch. shouldServerKick refuses anything already 'charging'.
+      //
+      // kickPlan closes over THIS request's terminal row and POS device uid.
+      // The existing job may be addressed elsewhere (a second device retrying
+      // the same table check, matched by check_key): its target terminal and
+      // pos_device_id can differ, and the shared-uid local-bridge signal would
+      // then be judged on the wrong rows. Refuse the server kick in that case;
+      // the retrying till kicks it itself and the sweep covers a lost kick.
+      const addressedElsewhere = sameCheck.target_terminal_id !== target_terminal_id
+        || (sameCheck.pos_device_id ?? null) !== (pos_device_id ?? null);
+      const plan = addressedElsewhere
+        ? { kick: false, reason: 're-attach to a job addressed elsewhere; till kicks' }
+        : kickPlan(sameCheck as Record<string, unknown>);
+      if (plan.kick) scheduleServerKick(sameCheck.id, `re-attach: ${plan.reason}`);
+      else console.log(`[terminal-job-create] no server kick on re-attach to job ${sameCheck.id}: ${plan.reason}`);
+      return json({ ok: true, job: sameCheck, existing: true, kick_scheduled: plan.kick, kick_reason: plan.reason });
+    }
 
     // 2. Terminal busy with another bill. Note the narrower status set: this index
     //    deliberately excludes 'unknown' (20260725) — an unverified payment parks in

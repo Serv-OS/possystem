@@ -18,6 +18,9 @@
 //                   nexo PaymentRequest that prepare_local returns.)
 //   'result'        recovery: job settled → say so; else TransactionStatusRequest
 //                   over cloud using the PERSISTED nexo_service_id.
+//   'sweep_unsent'  (9 Sep 2026) re-kick 'start' for cloud jobs stranded in
+//                   charging_unsent. SERVICE ROLE ONLY (pg_cron, every minute,
+//                   every venue). See the action block for the exact rule.
 //
 // MONEY-SAFETY (inherited verbatim from terminal-job-charge):
 //   • CAS write-ahead: UPDATE … SET status='charging' WHERE status='charging_unsent'
@@ -45,6 +48,9 @@ import {
   adyenConfig, adyenEnvForLocation, adyenNotConfiguredMessage, effectiveMerchantAccount, type AdyenConfig,
 } from '../_shared/adyen.ts';
 import { insertCaptureRow } from '../_shared/tip_capture.ts';
+import {
+  selectUnsentSweepCandidates, UNSENT_SWEEP_MIN_AGE_MS, UNSENT_SWEEP_MAX_AGE_MS, UNSENT_SWEEP_LIMIT,
+} from '../_shared/terminalKick.js';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -297,7 +303,12 @@ Deno.serve(async (req) => {
     if (!callerUid) return json({ error: 'unauthorized' }, 401);
   }
 
-  let body: { action?: string; job_id?: string; response?: unknown };
+  let body: {
+    action?: string; job_id?: string; response?: unknown;
+    location_id?: string;   // sweep_unsent: optional venue scope (the action itself is service role only)
+    kicked_by?: string;     // start: who fired this kick (terminal-job-create | sweep_unsent), for the log only
+    [k: string]: unknown;
+  };
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
   const action = String(body.action ?? '');
 
@@ -572,6 +583,118 @@ Deno.serve(async (req) => {
     return json({ ok: true, ...(started as Record<string, unknown>) });
   }
 
+  // ── sweep_unsent (9 Sep 2026): re-kick STRANDED cloud jobs ────────────────
+  // The backstop for the incident class where an Adyen job is minted in
+  // charging_unsent and nobody ever sends 'start' (stale till bundle, till
+  // network blip, till closed mid-create). terminal-job-create now kicks
+  // server-side at create time; this action catches whatever that missed.
+  //
+  // WHO MAY CALL IT. THE SERVICE ROLE ONLY: pg_cron via call_edge_fn, every
+  // minute, every venue (migration 20260909_edge_cron_adyen_unsent_sweep.sql).
+  // location_id is an optional narrowing for that caller, nothing more.
+  //
+  // DECISION (9 Sep 2026 review): the first cut also let a caller who passed
+  // the 'start' venue fence (a paired device's anonymous JWT, a user_locations
+  // member, super_admin) sweep its own venue, so the till's reconciler could
+  // ping it every 20s. That granted no new capability (such a caller can list
+  // the venue's jobs via terminal-job-status and 'start' each one), but it
+  // contradicted the stated requirement that this action cannot be reached
+  // with a device JWT, and a payments backstop should be reachable from as few
+  // places as possible. The till-side ping was removed with it; the create-time
+  // server kick covers the stale till at 1.5s and this cron covers a lost kick
+  // within the minute. Do not re-open the fence without re-deciding this.
+  //
+  // WHAT QUALIFIES (selectUnsentSweepCandidates, unit-tested): an adyen job in
+  // charging_unsent with charge_minor stamped, not simulated/training, created
+  // between 20s and 100s ago, not touched in the last 20s (backoff after a CAS
+  // revert), whose terminal row is a paired CLOUD reader (adyen_terminal_id
+  // set), and which is NOT driven by the device itself over the local nexo
+  // bridge. Ten per run, oldest first. The 100s ceiling is set by 'result'
+  // recovery below: it aborts an InProgress tender dispatched more than 120s
+  // ago, and every till polls 'result' from 8s after the job goes 'charging',
+  // so a later re-kick would put a prompt up that the next poll tears down
+  // under the customer (or, with nobody polling, strand the row in 'charging'
+  // for needs_human instead of the quiet cancel terminal_jobs_sweep gives an
+  // unsent job at 15 minutes). Older rows belong to terminal_jobs_sweep. The
+  // local-bridge tell has no persisted flag (no free column, DDL blocked), so
+  // it is read from the job's draft source and from the terminal row and POS
+  // device row sharing one auth uid (MPOS on an Adyen terminal registers BOTH
+  // rows from the same session; a cloud AMS1 row is minted by
+  // adyen-terminal-admin with a random device_uid).
+  //
+  // Each kick is this function's own 'start' (service-role bearer, same shape
+  // adyen-terminal-events uses), fired under waitUntil so the sweep answers
+  // in milliseconds: pg_net gives call_edge_fn 25s and a 'start' is one long
+  // /sync call. The CAS makes a kick that races the till or another sweeper
+  // harmless.
+  if (action === 'sweep_unsent') {
+    if (!isServiceRole) {
+      await logRefusal('sweep_unsent: service role only', { action, callerUid });
+      return json({ error: 'sweep_unsent: service role only' }, 403);
+    }
+    const locationId = body.location_id ? String(body.location_id) : null;
+
+    const now = Date.now();
+    let q = opsAdmin.from('terminal_jobs')
+      .select('id, location_id, target_terminal_id, pos_device_id, processor, status, charge_minor, simulated, training, check_draft, created_at, updated_at')
+      .eq('processor', 'adyen').eq('status', 'charging_unsent')
+      .eq('simulated', false).eq('training', false)
+      .not('charge_minor', 'is', null)
+      .gte('created_at', new Date(now - UNSENT_SWEEP_MAX_AGE_MS).toISOString())
+      .lte('created_at', new Date(now - UNSENT_SWEEP_MIN_AGE_MS).toISOString())
+      .order('created_at', { ascending: true })
+      .limit(50);
+    if (locationId) q = q.eq('location_id', locationId);
+    const { data: rows, error: qErr } = await q;
+    if (qErr) return json({ error: qErr.message }, 500);
+    const jobs = rows ?? [];
+    if (!jobs.length) return json({ ok: true, scanned: 0, kicked: [], skipped: [] });
+
+    const termIds = [...new Set(jobs.map((j) => j.target_terminal_id).filter(Boolean))];
+    const devIds = [...new Set(jobs.map((j) => j.pos_device_id).filter(Boolean))];
+    const [{ data: terms }, { data: devs }] = await Promise.all([
+      opsAdmin.from('terminal_devices')
+        .select('id, device_uid, adyen_terminal_id, status, active').in('id', termIds),
+      devIds.length
+        ? opsAdmin.from('devices').select('id, device_uid').in('id', devIds)
+        : Promise.resolve({ data: [] as { id: string; device_uid: string | null }[] }),
+    ]);
+    const terminalsById = new Map((terms ?? []).map((t) => [t.id, t]));
+    const devicesById = new Map((devs ?? []).map((d) => [d.id, d]));
+    const { kick, skipped } = selectUnsentSweepCandidates(jobs, {
+      terminalsById, devicesById, now,
+      minAgeMs: UNSENT_SWEEP_MIN_AGE_MS, maxAgeMs: UNSENT_SWEEP_MAX_AGE_MS, limit: UNSENT_SWEEP_LIMIT,
+    });
+
+    const kickOne = async (id: string) => {
+      try {
+        const res = await fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/adyen-terminal-charge`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${SERVICE_ROLE}` },
+          body: JSON.stringify({ action: 'start', job_id: id, kicked_by: 'sweep_unsent' }),
+        });
+        const out = await res.text();
+        console.log(`adyen-terminal-charge sweep_unsent: kick for job ${id}: ${res.status} ${out.slice(0, 200)}`);
+      } catch (e) {
+        console.error(`adyen-terminal-charge sweep_unsent: kick for job ${id} failed to send: ${(e as Error)?.message || e}`);
+      }
+    };
+    if (kick.length) {
+      const all = Promise.all(kick.map(kickOne));
+      // deno-lint-ignore no-explicit-any
+      const rt = (globalThis as any).EdgeRuntime;
+      if (rt?.waitUntil) rt.waitUntil(all);
+      // Durable trace (same trick as logRefusal): "was anything ever re-kicked"
+      // must be answerable without console access. Only when something was.
+      void platformAdmin.from('adyen_webhook_events').insert({
+        event_key: `unsent-sweep:${now}:${Math.random().toString(36).slice(2, 8)}`,
+        raw: { by: 'service_role', location_id: locationId, scanned: jobs.length, kicked: kick, skipped },
+      }).then(() => {}, () => {});
+    }
+    console.log(`adyen-terminal-charge sweep_unsent: scanned ${jobs.length}, kicked ${kick.length}${locationId ? ` (venue ${locationId})` : ''}`);
+    return json({ ok: true, scanned: jobs.length, kicked: kick, skipped });
+  }
+
   const jobId = String(body.job_id ?? '');
   if (!jobId || !['start', 'prepare_local', 'report_local', 'result', 'abort'].includes(action)) {
     return json({ error: "action ('start'|'prepare_local'|'report_local'|'result'|'abort') and job_id required" }, 400);
@@ -707,10 +830,19 @@ Deno.serve(async (req) => {
     const nc = notConfigured(cfg);
     if (nc) return nc;
 
-    // Idempotent replay: already in flight.
+    // Who fired this kick (9 Sep 2026): the till, terminal-job-create's server
+    // kick, or the stranded sweep. Log only; the CAS below decides.
+    if (action === 'start') {
+      const by = typeof body.kicked_by === 'string' ? body.kicked_by.slice(0, 40) : (isServiceRole ? 'service_role' : 'till');
+      console.log(`adyen-terminal-charge: start requested for job ${job.id} by ${by} (status ${job.status})`);
+    }
+
+    // Idempotent replay: already in flight. code IN_FLIGHT (9 Sep 2026) lets a
+    // till whose own kick lost the CAS to the server's kick treat this as
+    // "someone else is already asking the reader", not as a failure.
     if (job.status === 'charging') {
       if (job.payment_session_id) return json({ ok: true, payment_session_id: job.payment_session_id, idempotent: true });
-      return json({ ok: false, error: 'in_flight', service_id: job.nexo_service_id ?? null }, 409);
+      return json({ ok: false, error: 'in_flight', code: 'IN_FLIGHT', service_id: job.nexo_service_id ?? null }, 409);
     }
     if (job.status !== 'charging_unsent') return json({ ok: false, error: `job is ${job.status} — not ready to charge` }, 409);
 
@@ -729,7 +861,7 @@ Deno.serve(async (req) => {
       const { data: fresh } = await opsAdmin.from('terminal_jobs')
         .select('status, payment_session_id, nexo_service_id').eq('id', job.id).maybeSingle();
       if (fresh?.payment_session_id) return json({ ok: true, payment_session_id: fresh.payment_session_id, idempotent: true });
-      if (fresh?.status === 'charging') return json({ ok: false, error: 'in_flight' }, 409);
+      if (fresh?.status === 'charging') return json({ ok: false, error: 'in_flight', code: 'IN_FLIGHT' }, 409);
       return json({ ok: false, error: `job is ${fresh?.status ?? 'gone'} — not ready to charge` }, 409);
     }
 
@@ -930,7 +1062,13 @@ Deno.serve(async (req) => {
       // waiting for, then re-read the ledger before deciding anything. The
       // ledger re-read is what keeps this safe. If the abort raced a real
       // authorisation, the row is there and we settle from it instead.
-      const stalled = Date.now() - new Date(job.created_at).getTime() > 120_000;
+      //
+      // 9 Sep 2026: measured from DISPATCH, not from create. The 'start' CAS
+      // re-stamps dispatched_at on every winning kick, so a job the unsent
+      // sweep legitimately re-kicked late gets its own two minutes at the
+      // reader instead of being aborted because the row is old. created_at is
+      // the fallback for a row that never carried dispatched_at.
+      const stalled = Date.now() - new Date(job.dispatched_at ?? job.created_at).getTime() > 120_000;
       const led = stalled ? await askAdyenLedger(job).catch(() => ({ verdict: 'too_soon' as const })) : { verdict: 'too_soon' as const };
       if (stalled && led.verdict === 'nothing') {
         const ab = buildAbortRequest({
