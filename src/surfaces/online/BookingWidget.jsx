@@ -25,12 +25,16 @@
 // the same fn (booking_pay). Only the card ENCRYPTION talks to Adyen directly.
 
 import { useEffect, useRef, useState } from 'react';
-import { AdyenCheckout, Dropin, Card } from '@adyen/adyen-web';
+import { AdyenCheckout, Dropin, Card, ApplePay, GooglePay } from '@adyen/adyen-web';
 import '@adyen/adyen-web/styles/adyen.css';
 import { supabase, ensureAuthToken, isMock } from '../../lib/supabase';
 import { normalisePhone } from '../../lib/customerLookup';
 import { readTheme, deriveVars, readableOn, DISPLAY_FONT, BODY_FONT } from '../menu/menuTheme';
 import MenuHeader from '../menu/MenuHeader';
+import {
+  CARD_ONLY_PAYMENT_METHODS, buildPaymentMethodsRequest, resolvePaymentMethods,
+  offeredWalletTypes, walletConfiguration, missingWalletNote, droppedWalletNote,
+} from '../../lib/payments/adyenWallets';
 
 const MONO = 'var(--font-mono, ui-monospace, monospace)';
 
@@ -185,7 +189,13 @@ function IncludesList({ includes, compact = false }) {
 //                    money lands (onPaid fires with the promoted status).
 //   required=false — legacy screen (deploy skew: an old fn that confirmed
 //                    before money); the soft "either way" copy stays there.
-const CARD_ONLY = { paymentMethods: [{ type: 'scheme', name: 'Credit or debit card', brands: ['visa', 'mc', 'amex'] }] };
+// 8 Sep 2026: the hardcoded card only list this file used to hand Drop-in is
+// now the shared FALLBACK in src/lib/payments/adyenWallets.js. This card mounts
+// the venue's REAL /paymentMethods response (same adyen-checkout
+// `payment_methods` action the online and QR checkouts use), so Apple Pay and
+// Google Pay appear here too. The money still runs through booking-widget's
+// booking_pay, which knows the amount server-side, so only the METHOD LIST and
+// the wallet configuration are shared, not the payment call.
 const PAY_TITLE = {
   prepay: (amt) => `Pay ${amt} now — it comes off your bill`,
   deposit: (amt) => `Pay your ${amt} deposit`,
@@ -301,15 +311,17 @@ function GuestChoiceCards({ party, groups, getSel, onPick, getName, onName, bran
 // required mode the booking is pending_payment (failure = retry, then the
 // 20-minute expiry); in legacy mode it was already confirmed, so every
 // failure path stays soft — the guest can sort payment with the venue.
-function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, required = false, onPaid = null }) {
+function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '', required = false, onPaid = null }) {
   const holder = useRef(null);
   const dropinRef = useRef(null);
   const submittedRef = useRef(false); // pre-submit onError = setup failure → fallback copy
+  const offeredWallets = useRef([]);  // wallet types the venue's Adyen config offers
   const [attempt, setAttempt] = useState(0); // bump to remount the form after a refusal
   // phase: init | ready | failed | refused | paid
   const [phase, setPhase] = useState('init');
   const [refusal, setRefusal] = useState('');
   const [payErr, setPayErr] = useState('');
+  const [walletNote, setWalletNote] = useState(''); // one line when a wallet cannot render here
   const [paidInfo, setPaidInfo] = useState(null); // { pspReference }
 
   const kind = paymentDue?.kind;
@@ -323,6 +335,83 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, required = fa
     let live = true;
     (async () => {
       try {
+        // What can this venue actually offer at THIS amount? Same
+        // adyen-checkout `payment_methods` action as the online and QR
+        // checkouts (see src/lib/payments/adyenWallets.js). A failure is card
+        // only with a console warning, never a dead booking payment.
+        const amountMinor = Number(paymentDue?.amountMinor) || 0;
+        const countryCode = adyen?.region === 'US' ? 'US' : 'GB';
+        // WALLETS ARE FOR MONEY, NOT FOR HOLDS. A 'hold' booking is a ZERO
+        // value authorisation whose whole purpose is storePaymentMethod, so
+        // the no-show charge can be taken later off session (booking_pay sends
+        // amount 0 + UnscheduledCardOnFile). A wallet token is device bound and
+        // cannot be stored and re-charged that way, and the sheet would have
+        // shown the guest the hold figure while a £0 request went to Adyen.
+        // Holds stay card only, deliberately.
+        const walletsAllowed = kind !== 'hold';
+        let resolvedPm = { response: CARD_ONLY_PAYMENT_METHODS, fallback: false, reason: null };
+        if (walletsAllowed) {
+          let pmRes;
+          try {
+            pmRes = await supabase.functions.invoke('adyen-checkout', {
+              body: buildPaymentMethodsRequest({
+                locationId: opsId,
+                amountMinor,
+                currency,
+                shopperLocale: typeof navigator !== 'undefined' ? navigator.language : undefined,
+              }),
+            });
+          } catch (e) {
+            pmRes = { data: null, error: e };
+          }
+          if (!live) return;
+          resolvedPm = resolvePaymentMethods(pmRes);
+          if (resolvedPm.fallback) console.warn('[adyen] booking payment methods lookup fell back to card only:', resolvedPm.reason);
+          // An entry Drop-in would have THROWN on (a googlepay with no Google
+          // merchant ID is the common one) was filtered out before it could
+          // take the booking's card form down with it.
+          if (resolvedPm.dropped?.length) {
+            console.warn('[adyen] wallet dropped before Drop-in could throw on it:', droppedWalletNote(resolvedPm.dropped));
+          }
+        }
+        const paymentMethodsResponse = resolvedPm.response || CARD_ONLY_PAYMENT_METHODS;
+        offeredWallets.current = offeredWalletTypes(paymentMethodsResponse);
+
+        // onAuthorized fires BEFORE onSubmit and the payment waits on it, so
+        // resolving is not optional once we supply it. A dismissed wallet
+        // sheet arrives as name === 'CANCEL' and is not a failure.
+        // A WALLET COMPONENT'S ERROR NEVER TAKES THE CARD FORM DOWN. phase
+        // 'failed' hides the Drop-in holder entirely, so the guest cannot pay
+        // and the held table expires after 20 minutes. ApplePayElement's
+        // constructor loads apple-pay-sdk.js from Apple's CDN and, on failure,
+        // calls handleError(SCRIPT_ERROR). And because
+        // paymentMethodsConfiguration spreads last in buildElementProps, THIS
+        // is that element's onError. A blocked CDN or an extension is a
+        // wallet-availability non-event on a browser where the card works.
+        // A dismissed sheet arrives as name === 'CANCEL', likewise nothing.
+        const walletCallbacks = {
+          onAuthorized: (_data, actions) => { setPayErr(''); actions.resolve(); },
+          onError: (e) => {
+            if (!live) return;
+            if (!submittedRef.current || e?.name === 'CANCEL' || e?.name === 'SCRIPT_ERROR' || e?.name === 'IMPLEMENTATION_ERROR') {
+              console.warn('[adyen] wallet unavailable:', e?.name, e?.message);
+              return;
+            }
+            setPayErr('Something went wrong, please try again.');
+          },
+        };
+        const wallets = walletConfiguration({
+          response: paymentMethodsResponse,
+          amountMinor,
+          currency,
+          countryCode,
+          merchantName: venueName,
+        });
+        const paymentMethodsConfiguration = {};
+        for (const [type, conf] of Object.entries(wallets)) {
+          paymentMethodsConfiguration[type] = { ...conf, ...walletCallbacks };
+        }
+
         // 8 Sep 2026: the book response carries region ('UK' | 'US') and
         // dropinEnvironment ('test' | 'live' | 'live-us') beside the client
         // key, so a US venue's live Drop-in mounts against Adyen's US data
@@ -330,9 +419,9 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, required = fa
         const checkout = await AdyenCheckout({
           clientKey: adyen?.clientKey || undefined,
           environment: adyen?.dropinEnvironment || (adyen?.environment === 'live' ? 'live' : 'test'),
-          countryCode: adyen?.region === 'US' ? 'US' : 'GB',
-          amount: { value: Number(paymentDue?.amountMinor) || 0, currency },
-          paymentMethodsResponse: CARD_ONLY,
+          countryCode,
+          amount: { value: amountMinor, currency },
+          paymentMethodsResponse,
           onSubmit: async (state, _component, actions) => {
             submittedRef.current = true;
             setPayErr('');
@@ -367,17 +456,35 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, required = fa
           },
           onPaymentCompleted: () => {}, // success already handled on the server reply
           onPaymentFailed: () => {},    // refusal already handled on the server reply
-          onError: () => {
+          onError: (e) => {
             if (!live) return;
-            // Before any submit this is a setup failure (bad origin, network) —
+            // A dismissed Apple Pay / Google Pay sheet arrives as
+            // name === 'CANCEL'. Nothing was charged and the form still works,
+            // so it must not read as a failed payment (8 Sep 2026).
+            if (e?.name === 'CANCEL') return;
+            // Before any submit this is a setup failure (bad origin, network):
             // swap the form for the soft fallback. After a submit the server
             // reply has already driven the state; keep the form usable.
             if (!submittedRef.current) setPhase('failed');
-            else setPayErr('Something went wrong — please try again.');
+            else setPayErr('Something went wrong, please try again.');
           },
         });
         if (!live) return;
-        dropinRef.current = new Dropin(checkout, { paymentMethodComponents: [Card] }).mount(holder.current);
+        // `let` and not `const`: onReady closes over this, and a null read is
+        // the quiet path (say nothing) rather than a wrong "wallet missing".
+        let dropin = null;
+        dropin = new Dropin(checkout, {
+          paymentMethodComponents: [Card, ApplePay, GooglePay],
+          paymentMethodsConfiguration,
+          onReady: () => {
+            if (!live || !dropin) return;
+            // Availability checks are done, so this IS what the guest sees.
+            const rendered = (dropin.paymentMethodElements || []).map((el) => el?.type).filter(Boolean);
+            setWalletNote(missingWalletNote(offeredWallets.current, rendered) || '');
+          },
+        });
+        dropinRef.current = dropin;
+        dropin.mount(holder.current);
         setPhase('ready');
       } catch {
         if (!live) return;
@@ -446,6 +553,9 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, required = fa
             </>
           )}
           <div ref={holder} style={{ display: showForm ? 'block' : 'none' }} />
+          {walletNote && showForm && (
+            <div style={{ marginTop: 8, fontSize: 12, color: 'var(--muted)', lineHeight: 1.5 }}>{walletNote}</div>
+          )}
           {payErr && showForm && (
             <div style={{ marginTop: 8, fontSize: 12.5, fontWeight: 600, color: '#b91c1c' }}>{payErr}</div>
           )}
@@ -966,6 +1076,7 @@ export default function BookingWidget({ location }) {
             adyen={result.adyen}
             bookingId={result.bookingId}
             opsId={opsId}
+            venueName={cfg?.name || venueName}
             required
             onPaid={(status) => setResult((prev) => ({ ...(prev || {}), status: status || 'confirmed', paid: true }))}
           />
@@ -1051,6 +1162,7 @@ export default function BookingWidget({ location }) {
             adyen={result.adyen}
             bookingId={result.bookingId}
             opsId={opsId}
+            venueName={cfg?.name || venueName}
           />
         )}
         {result.preorderToken && !result.preordersTaken && (

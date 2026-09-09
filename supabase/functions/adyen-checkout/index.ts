@@ -181,6 +181,73 @@ const checkoutUrl = (cfg: AdyenConfig, path: string) => `${checkoutBase(cfg)}${p
 const defaultCurrency = (cfg: AdyenConfig) => (cfg.region === 'US' ? 'USD' : 'GBP');
 const defaultCountry = (cfg: AdyenConfig) => (cfg.region === 'US' ? 'US' : 'GB');
 
+// The ONLY payment method types this checkout mounts (Card, ApplePay,
+// GooglePay; 'paywithgoogle' is the legacy Google name the GooglePay class
+// also registers). It is BOTH the allowlist for a caller's allowed_types and
+// the filter on what is echoed back, so a caller cannot ask for a method this
+// checkout never renders and get its configuration block in return.
+const CHECKOUT_PAYMENT_TYPES = ['scheme', 'applepay', 'googlepay', 'paywithgoogle'];
+const isCheckoutType = (t: unknown) => CHECKOUT_PAYMENT_TYPES.includes(String(t ?? '').toLowerCase());
+
+// KEEP IN SYNC with NO_NATIVE_3DS_TYPES in src/lib/payments/adyenWallets.js
+// (Deno cannot import from src/); adyenWallets.test.js is the contract for
+// both copies. See the comment at make_payment for why it is Apple Pay ALONE
+// and not every wallet.
+const NO_NATIVE_3DS_TYPES = ['applepay'];
+
+// Wallet readiness for the ADMIN portal, answered on `status` when the caller
+// asks for it (`wallets: true`). It is one extra Adyen call, so it is never
+// on the shopper's path: the checkout gets the real list from
+// payment_methods, and this exists so "why did Apple Pay not load?" is
+// answerable from the venue's own Adyen screen instead of a browser console.
+//
+// A wallet counts as ON only when Adyen both OFFERS it and sends the
+// identifiers the browser cannot render it without (see usableWalletMethods
+// in src/lib/payments/adyenWallets.js, which drops the rest before Drop-in
+// can throw on them). Never throws: a failed probe is { error }.
+interface WalletProbe { applepay: boolean; googlepay: boolean; offered: string[]; error: string | null }
+async function probeWallets(cfg: AdyenConfig, merchantAccount: string, store: string | null): Promise<WalletProbe> {
+  const out: WalletProbe = { applepay: false, googlepay: false, offered: [], error: null };
+  try {
+    const res = await adyenFetch('POST', checkoutUrl(cfg, '/paymentMethods'), {
+      merchantAccount,
+      // A nominal amount: Adyen decides what to offer from the amount and the
+      // country, and a real basket is not available on a status call.
+      amount: { value: 1000, currency: defaultCurrency(cfg) },
+      countryCode: defaultCountry(cfg),
+      channel: 'Web',
+      allowedPaymentMethods: CHECKOUT_PAYMENT_TYPES,
+      ...(store ? { store } : {}),
+    }, { cfg });
+    const j = res.data ?? {};
+    if (!res.ok) {
+      out.error = String(j.message || `Adyen refused the payment methods lookup (${res.status})`);
+      return out;
+    }
+    const list = Array.isArray(j.paymentMethods) ? j.paymentMethods as Record<string, unknown>[] : [];
+    const unusable: string[] = [];
+    for (const pm of list) {
+      const type = String(pm?.type ?? '').toLowerCase();
+      if (type !== 'applepay' && type !== 'googlepay' && type !== 'paywithgoogle') continue;
+      out.offered.push(type);
+      const conf = (pm?.configuration && typeof pm.configuration === 'object' ? pm.configuration : {}) as Record<string, unknown>;
+      const has = (k: string) => String(conf[k] ?? '').trim() !== '';
+      if (type === 'applepay') {
+        if (has('merchantId')) out.applepay = true;
+        else unusable.push('Apple Pay is offered but carries no merchant identifier');
+      } else if (has('merchantId') && has('gatewayMerchantId')) {
+        out.googlepay = true;
+      } else {
+        unusable.push('Google Pay is offered but carries no Google merchant ID');
+      }
+    }
+    if (unusable.length) out.error = unusable.join('; ');
+  } catch (e) {
+    out.error = (e as Error).message || String(e);
+  }
+  return out;
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   try {
@@ -211,7 +278,17 @@ Deno.serve(async (req) => {
     // Live connection status for the admin portal and the card form. No
     // secrets in the response: the client key is publishable, the merchant
     // account name is masked.
+    //
+    // MASKING IS A STATUS-ONLY POLICY, BY DESIGN (8 Sep 2026): Google Pay
+    // cannot render without configuration.gatewayMerchantId, and on Adyen
+    // that IS the merchant account code, so payment_methods below hands the
+    // browser the same value in clear. The mask here is tidiness on an admin
+    // screen, not a secret.
     if (action === 'status') {
+      // One extra Adyen call, so only when the caller asks (the admin portal
+      // does; the checkout never does). This is where "why did Apple Pay not
+      // load?" gets an answer an operator can read.
+      const wallets = body.wallets === true ? await probeWallets(cfg, merchantAccount, store) : null;
       return json({
         ok: true,
         configured: true,
@@ -222,9 +299,98 @@ Deno.serve(async (req) => {
         clientKey: cfg.clientKey,            // publishable, the card form needs it to render
         online: true,                        // slice 1a shipped, advanced flow + Drop-in
         inPerson: await hasTerminal(platformLocationId),
+        ...(wallets ? { wallets } : {}),
         locationId: platformLocationId,
         ...(venue.known ? {} : { warning: 'location not found in platform DB; payments for it will be refused' }),
       });
+    }
+
+    // ── payment_methods: what this venue can actually offer (8 Sep 2026) ──────
+    // The card form used to hand Drop-in a HARDCODED card only list, so Apple
+    // Pay and Google Pay could never appear however the merchant account was
+    // set up. That was the whole reason Apple Pay did not load in checkout.
+    //
+    //   POST {checkoutBase}/paymentMethods
+    //     required: merchantAccount, amount { currency, value }
+    //     optional: countryCode, channel, shopperLocale, store,
+    //               allowedPaymentMethods, blockedPaymentMethods
+    //   https://docs.adyen.com/api-explorer/Checkout/72/post/paymentMethods
+    //   https://docs.adyen.com/online-payments/build-your-integration/advanced-flow
+    //
+    // NOTHING IS CACHED here. Adyen decides what to offer from the amount, the
+    // currency and the country, so a cache keyed on the venue would hand a
+    // £4.50 coffee the method list of a £450 function booking.
+    //
+    // The store travels exactly as it does on /payments: on the Balance
+    // Platform, card routing hangs off the store, and a paymentMethods lookup
+    // without it can answer for a different acquirer than the payment will.
+    //
+    // A refusal is answered 200 with { ok: false, cardOnly: true } and the
+    // publishable config, NOT a 5xx: the checkout must still mount the card
+    // form. Losing the wallets is a degraded checkout; losing the card form is
+    // a dead one.
+    if (action === 'payment_methods') {
+      const amountIn = (body.amount && typeof body.amount === 'object') ? body.amount as Record<string, unknown> : null;
+      const amount = Math.round(Number(amountIn?.value ?? body.amount_minor));
+      if (!Number.isFinite(amount) || amount < 1) return json({ error: 'amount.value must be a positive integer (minor units)' }, 400);
+      const currency = String(amountIn?.currency || body.currency || defaultCurrency(cfg)).toUpperCase();
+      const countryCode = String(body.countryCode || body.country || defaultCountry(cfg)).toUpperCase();
+      // The publishable facts the caller needs whether or not Adyen answers,
+      // so a cardOnly fallback still knows which data centre to mount against.
+      const publishable = {
+        clientKey: cfg.clientKey,
+        environment: cfg.env,
+        dropinEnvironment: cfg.dropinEnvironment,
+        region: cfg.region,
+      };
+
+      const request: Record<string, unknown> = {
+        merchantAccount,
+        amount: { value: amount, currency },
+        countryCode,
+        channel: 'Web',
+      };
+      if (body.shopperLocale || body.shopper_locale) request.shopperLocale = String(body.shopperLocale || body.shopper_locale).slice(0, 16);
+      // The caller names the types it can actually mount (scheme, applepay,
+      // googlepay, the legacy paywithgoogle). Without it Adyen answers with
+      // every method enabled on the account and Drop-in drops the ones we
+      // never imported, with a console warning each. Documented
+      // /paymentMethods request field.
+      //
+      // INTERSECTED WITH THE SERVER'S OWN ALLOWLIST: allowed_types is caller
+      // controlled, and a method this checkout never mounts must not have its
+      // configuration block handed back on request.
+      const allowed = Array.isArray(body.allowed_types)
+        ? [...new Set((body.allowed_types as unknown[]).map((t) => String(t || '').trim().toLowerCase()).filter(isCheckoutType))]
+        : [];
+      request.allowedPaymentMethods = allowed.length ? allowed : CHECKOUT_PAYMENT_TYPES;
+      if (store) request.store = store;
+
+      const res = await adyenFetch('POST', checkoutUrl(cfg, '/paymentMethods'), request, { cfg });
+      const j = res.data ?? {};
+      if (!res.ok) {
+        console.error('[adyen-checkout] paymentMethods failed:', res.status, JSON.stringify(j).slice(0, 400));
+        return json({
+          ok: false,
+          cardOnly: true,
+          error: j.message || `Adyen refused the payment methods lookup (${res.status})`,
+          errorCode: j.errorCode || null,
+          ...publishable,
+        });
+      }
+      // Each ENTRY is returned as is (the shape Drop-in wants for
+      // paymentMethodsResponse is Adyen's own, and re-mapping would silently
+      // drop a wallet's `configuration` block, the merchantId and the
+      // gatewayMerchantId that Apple Pay and Google Pay cannot render
+      // without), but the LIST
+      // is filtered to what this checkout mounts and nothing else of Adyen's
+      // answer is echoed. In particular storedPaymentMethods is not: no
+      // caller sends a shopperReference, so there are none today, and shopper
+      // data must not become a passthrough the day one does.
+      const methods = Array.isArray(j.paymentMethods)
+        ? (j.paymentMethods as Record<string, unknown>[]).filter((pm) => isCheckoutType(pm?.type))
+        : [];
+      return json({ paymentMethods: methods, ...publishable, ok: true });
     }
 
     if (action === 'create_session') {
@@ -279,8 +445,32 @@ Deno.serve(async (req) => {
       const reference = String(body.reference || '').slice(0, 80);
       if (!reference) return json({ error: 'reference required' }, 400);
       if (!body.payment_method || typeof body.payment_method !== 'object') {
-        return json({ error: 'payment_method (the encrypted card from the form) required' }, 400);
+        return json({ error: 'payment_method (the encrypted card or wallet token from the form) required' }, 400);
       }
+      // 8 Sep 2026 WALLETS: paymentMethod arrives verbatim from Drop-in, so a
+      // wallet ({ type: 'applepay', applePayToken } or { type: 'googlepay',
+      // googlePayToken, googlePayCardNetwork }) needs nothing translated here.
+      // Everything else (origin, returnUrl, browserInfo when the component
+      // sends one, shopperInteraction Ecommerce, the store, the metadata) is
+      // identical for a card and a wallet. Apple Pay's state.data carries no
+      // browserInfo at all, which is expected and fine: the
+      // `if (body.browser_info)` guard below already omits it.
+      //
+      // NATIVE 3DS2 IS SKIPPED FOR APPLE PAY ALONE, not for every wallet.
+      // The premise (the device already authenticated the shopper and the
+      // token carries the scheme cryptogram) holds for Apple Pay and for a
+      // Google Pay CRYPTOGRAM_3DS (DPAN) token. It does NOT hold for a Google
+      // Pay PAN_ONLY (FPAN) token: adyen-web's GooglePay defaults to
+      // allowedAuthMethods ['PAN_ONLY','CRYPTOGRAM_3DS'] and we do not narrow
+      // it, so an FPAN token can arrive with no cryptogram, is processed as
+      // raw card data and is expected to go through 3D Secure. Without the
+      // flag Adyen answers RedirectShopper on a challenge, and the storefront
+      // cannot complete a redirect (see below), an unexplained dead end for
+      // a shopper paying with a Google-account card. GooglePay.formatData()
+      // does send browserInfo, so the flag is the only missing half.
+      // KEEP IN SYNC with NO_NATIVE_3DS_TYPES in src/lib/payments/adyenWallets.js.
+      const pmType = String((body.payment_method as Record<string, unknown>).type || '').toLowerCase();
+      const skipNativeThreeDS = NO_NATIVE_3DS_TYPES.includes(pmType);
       const payment: Record<string, unknown> = {
         merchantAccount,
         amount: { value: amount, currency: String(body.currency || defaultCurrency(cfg)).toUpperCase() },
@@ -294,7 +484,8 @@ Deno.serve(async (req) => {
         // onAdditionalDetails -> payment_details). Without this Adyen may
         // answer RedirectShopper, and nothing on the storefront handles the
         // redirect return, so the order would be lost (8 Sep 2026).
-        authenticationData: { threeDSRequestData: { nativeThreeDS: 'preferred' } },
+        // Everything but Apple Pay: see the wallet note above.
+        ...(skipNativeThreeDS ? {} : { authenticationData: { threeDSRequestData: { nativeThreeDS: 'preferred' } } }),
         // Echoed back on the webhook as additionalData['metadata.location_id']
         // (with "Include Metadata" on in the Customer Area) so an online
         // payment resolves its venue directly, not by merchant account name,

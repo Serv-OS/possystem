@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.43',
+    date: '9 Sep 2026',
+    items: [
+      'Apple Pay and Google Pay can now appear at checkout. The page asks Adyen what the shopper can pay with instead of always saying card only, which is why Apple Pay never showed before. It appears once Adyen approves it for the venue and the shopper is on a device that supports it, and there is one plain line when a wallet is set up but the browser cannot show it.',
+      'A paid online order is now marked paid on the order itself, not only on the receipt. Found on the first real card payment: the money was booked correctly but the order still read as unpaid.',
+      'Finding a venue on Adyen gets easier as you go. The first venue on an account is matched by pasting its id once, and from then on venues are found by their own code with nothing pasted.',
+      'Booking card holds stay card only on purpose. A wallet cannot be charged later for a no show.',
+    ],
+  },
+  {
     v: '5.8.42',
     date: '8 Sep 2026',
     items: [

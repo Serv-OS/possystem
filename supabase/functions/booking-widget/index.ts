@@ -77,7 +77,7 @@ const venueCurrency = (value: unknown, region: string): string => {
   const c = String(value ?? '').trim().toUpperCase();
   return /^[A-Z]{3}$/.test(c) ? c : (region === 'US' ? 'USD' : 'GBP');
 };
-async function adyenCfgForOps(opsLocationId: string): Promise<{ cfg: AdyenConfig; merchantAccount: string; platformId: string; currency: string }> {
+async function adyenCfgForOps(opsLocationId: string): Promise<{ cfg: AdyenConfig; merchantAccount: string; store: string | null; platformId: string; currency: string }> {
   let platformId = platformIdCache.get(opsLocationId) ?? null;
   if (!platformId) {
     platformId = await platformLocationIdFor(platformAdmin, opsLocationId);   // throws on a DB error: never guess
@@ -85,13 +85,24 @@ async function adyenCfgForOps(opsLocationId: string): Promise<{ cfg: AdyenConfig
   }
   if (!platformId) throw new VenueNotFound();
   const [{ env, region, row }, ploc] = await Promise.all([
-    adyenAccountForLocation<{ merchant_account?: string | null }>(platformAdmin, platformId, ['merchant_account']),
+    adyenAccountForLocation<{ merchant_account?: string | null; store_id?: string | null; receive_payments_ok?: boolean | null }>(
+      platformAdmin, platformId, ['merchant_account', 'store_id', 'receive_payments_ok']),
     platformAdmin.from('locations').select('currency').eq('id', platformId).maybeSingle(),
   ]);
   if (ploc?.error) throw new Error(`currency lookup failed: ${ploc.error.message ?? String(ploc.error)}`);
   const cfg = adyenConfig(env, region);   // the venue's environment AND region set (8 Sep 2026)
+  // THE STORE TRAVELS WITH THE MERCHANT ACCOUNT (8 Sep 2026). On the Balance
+  // Platform card routing hangs off the store, not the merchant account, and
+  // adyen-checkout has sent it on every /payments and /paymentMethods since
+  // 26 Aug. booking_pay never did, so the browser was told which wallets and
+  // which gatewayMerchantId apply under the store's acquirer routing (the
+  // wallet lookup goes through adyen-checkout `payment_methods`, which DOES
+  // send the store) and the authorisation was then made storeless. Same guard
+  // as adyen-checkout's resolveVenue: only a store the venue can receive
+  // payments on.
+  const store = row?.receive_payments_ok && row?.store_id ? String(row.store_id) : null;
   // Never the OTHER environment's merchant name on this host (8 Sep 2026).
-  return { cfg, merchantAccount: effectiveMerchantAccount(cfg, row?.merchant_account), platformId, currency: venueCurrency(ploc?.data?.currency, cfg.region) };
+  return { cfg, merchantAccount: effectiveMerchantAccount(cfg, row?.merchant_account), store, platformId, currency: venueCurrency(ploc?.data?.currency, cfg.region) };
 }
 // Is this config usable for taking a card in the widget? The Drop-in needs
 // the client key, the payment needs a merchant account, and live needs the
@@ -799,6 +810,8 @@ Deno.serve(async (req) => {
         ...(isHold && bk.customer_id ? { storePaymentMethod: true, recurringProcessingModel: 'UnscheduledCardOnFile' } : {}),
       };
       if (body.browser_info) payment.browserInfo = body.browser_info;
+      // The same store the wallet lookup was scoped to (see adyenCfgForOps).
+      if (venueAdyen.store) payment.store = venueAdyen.store;
 
       // Idempotency-Key = reference + attempt: a retransmit of this attempt
       // replays Adyen's first answer instead of charging the guest twice.
