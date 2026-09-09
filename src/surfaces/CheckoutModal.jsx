@@ -1848,7 +1848,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
         paxGiftRef.current = paxGiftRecord;
       }
 
-      const { job, kickError } = await dispatchTerminalJob({
+      const { job, kickError, serverKick } = await dispatchTerminalJob({
         checkKey,
         targetTerminalId: paxTarget.id,
         posDeviceId: getPosDeviceId(),
@@ -1951,7 +1951,14 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
       // a swallowed console.warn, so the till happily showed "present the card"
       // over a terminal that had been told nothing (live 19 Aug: two jobs stuck
       // in charging_unsent, no clue why, and the reader looked simply broken).
-      if (kickError) setPaxError(`Could not reach the card machine: ${kickError}`);
+      // 9 Sep 2026 - when this till could not reach the fn at all (transport
+      // failure, no HTTP answer) and the server has scheduled its own kick, the
+      // failure is not the reader's: say which, so staff wait instead of
+      // retrying. A refusal the fn ANSWERED (not configured, not paired) is the
+      // plain message: the server's kick hits the same wall.
+      if (kickError) setPaxError(serverKick
+        ? `This till could not reach the card machine (${kickError}). The server is sending the payment to it instead, give it a moment.`
+        : `Could not reach the card machine: ${kickError}`);
       setScreen('pax_terminal');
     } catch (e) {
       setPaxError(e?.message || 'Could not send the payment to the card machine.');
