@@ -25,8 +25,13 @@
 //      in a sentence.
 //   6. An error is one plain sentence: what happened and what to do next. The
 //      raw answer hides behind a small "Show detail". That includes the ones
-//      golive_state answers 200 with (errors, notes, readers_error): a refusal
-//      Adyen gave us must never look like "nothing found".
+//      golive_state answers 200 with (`problems`, one plain line each with the
+//      raw answer in rawDetail): a refusal Adyen gave us must never look like
+//      "nothing found". The box under the steps shows at most three lines,
+//      and NEVER the Balance Platform refusal (step 2 says that once) or the
+//      merchant mismatch (its own block). 9 Sep 2026: the live screen showed
+//      four long code lines for one fact and the owner read "errors all over
+//      the place, I dont know whats happening".
 //   7. A capability Adyen has not allowed reads "Adyen has not approved this
 //      yet" with its name in grey, never the word Blocked on its own.
 //   8. No native dialog decides anything. Going live is an IN PAGE panel with
@@ -42,7 +47,12 @@
 //   golive_state                     read the venue (every load, every reload)
 //   adyen_merchants                  the accounts the credential can see
 //   adyen_lookup                     read again, to build the go live panel
-//   adyen_link                       ONE write of the ids + the flip to live
+//   adyen_link                       ONE write of the ids + the flip to live;
+//                                    ALSO "Save it on the venue" (link_store,
+//                                    9 Sep 2026): the same call on the venue's
+//                                    own environment with the store id the
+//                                    read found, so a store Adyen holds lands
+//                                    on the row without touching anything else
 //   adyen_create_store_by_reference  make the payments location
 //   register_origins                 the ServOS web addresses
 //   register_apple_pay_domains       the venue's storefront for Apple Pay
@@ -87,8 +97,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   goliveFlowView, capabilityNotices, mismatchView, plainFailure, referenceSearchView,
-  goLiveConfirmLines, relinkConfirmLines, merchantPicker, candidateLabel,
+  goLiveConfirmLines, relinkConfirmLines, relinkStoreConfirmView, merchantPicker, candidateLabel,
+  goliveProblemBox, PLATFORM_SETTINGS_WAITING_LINE,
 } from '../../lib/payments/adyenAdminRows';
+import { isPlatformSettingsMissingWarning } from '../../lib/payments/adyenLink';
 
 const CHIP = {
   ok: { bg: 'var(--grn-d, rgba(21,194,106,.14))', fg: 'var(--grn, #15C26A)', bd: 'var(--grn-b, var(--grn))' },
@@ -224,7 +236,9 @@ function Secondary({ busy, disabled, onClick, children }) {
 }
 
 // An id: small, monospace, grey, with a copy button. Never inside a sentence.
-function IdLine({ label, value }) {
+// `big` draws it at 15px, for the one row that IS the thing to do rather than
+// a reference id (the server setting the Balance Platform key goes in).
+function IdLine({ label, value, big = false }) {
   const [copied, setCopied] = useState(false);
   if (!value) return null;
   const copy = async () => {
@@ -233,21 +247,25 @@ function IdLine({ label, value }) {
   };
   return (
     <div style={S.idRow}>
-      <span style={S.idLabel}>{label}</span>
-      <span style={S.idValue}>{value}</span>
+      <span style={big ? { ...S.idLabel, fontSize: 15, color: 'var(--t2)' } : S.idLabel}>{label}</span>
+      <span style={big ? { ...S.idValue, fontSize: 15, color: 'var(--t1)' } : S.idValue}>{value}</span>
       <button type="button" style={S.copy} onClick={copy}>{copied ? 'Copied' : 'Copy'}</button>
     </div>
   );
 }
 
-// One plain sentence, with the raw answer behind a small toggle.
+// One plain sentence, with the raw answer behind a small toggle. `lines` (at
+// most three, goliveProblemBox) are the plain lines under it, one each.
 function Problem({ problem, tone = 'bad' }) {
   const [open, setOpen] = useState(false);
   if (!problem?.text) return null;
   const c = CHIP[tone] || CHIP.bad;
+  const extra = Array.isArray(problem.lines) ? problem.lines.map((l) => (typeof l === 'string' ? l : l?.text)).filter(Boolean) : [];
   return (
     <div style={{ ...S.note, background: c.bg, border: `1px solid ${c.bd}`, color: c.fg }}>
       <div>{problem.text}</div>
+      {extra.map((l) => <div key={l} style={{ marginTop: 6 }}>{l}</div>)}
+      {Number(problem.more) > 0 && <div style={{ marginTop: 6 }}>And {problem.more} more, under Show detail.</div>}
       {problem.detail && (
         <>
           <button type="button" style={{ ...S.link, color: c.fg, marginTop: 8 }} onClick={() => setOpen((v) => !v)}>
@@ -277,6 +295,7 @@ const lines = (v) => (Array.isArray(v) ? v.map(str).filter(Boolean) : []);
 // What was being done, for the one plain error sentence.
 function whatFailed(key) {
   if (key === 'create') return 'The payments location could not be made';
+  if (key === 'save_store') return 'The payments location could not be saved on the venue';
   if (key === 'golive') return 'Live payments could not be turned on';
   if (key === 'origins') return 'The web addresses could not be added';
   if (key === 'merchant') return 'That Adyen account could not be read';
@@ -402,9 +421,11 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, wallet
   const readers = Array.isArray(state?.readers) ? state.readers : [];
   const candidates = Array.isArray(state?.candidates) ? state.candidates : [];
   const holderCandidates = Array.isArray(state?.holderCandidates) ? state.holderCandidates : [];
-  const stateErrors = lines(state?.errors);
-  const stateNotes = lines(state?.notes);
-  const readersError = str(state?.readers_error);
+  // ONE amber box for what Adyen did not answer: at most three plain lines,
+  // the raw answers behind Show detail, and nothing the steps already say
+  // (the Balance Platform refusal sits at step 2, the mismatch in its block).
+  // The reader list failing is one of those lines now, not its own box.
+  const problemBox = view.allDone ? null : goliveProblemBox(state?.problems);
   const merchantNow = str(state?.merchantConfigured);
   // Apple Pay and Google Pay, read from adyen-checkout `status` by the panel
   // above and passed in. Nothing here decides: it says what Adyen answered.
@@ -579,10 +600,80 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, wallet
       : str(r.environment) !== 'live' ? `${name} is linked on test.`
       : r.patch?.receive_payments_ok === true ? `${name} takes real cards now.`
       : `${name} is live. Finish the steps below before taking a card.`;
-    const warned = lines(r.warnings).filter((w) => w !== str(r.storeNeeded));
+    // What else the write said, in plain lines (the lookup's problems minus
+    // the two the screen says elsewhere), with the raw warnings behind Show
+    // detail. Never the "linked with gaps" line: its pieces are the same
+    // problems, already plain above.
+    // Never the settings table migration sentence: it is our own table, not
+    // Adyen, and the top line of the flow already says it in short words.
+    const box = goliveProblemBox(r.problems);
+    const warned = lines(r.warnings).filter((w) => !/^Linked with gaps/i.test(w) && w !== str(r.storeNeeded) && !isPlatformSettingsMissingWarning(w));
+    const detail = [box?.detail, ...warned].filter(Boolean).join('\n\n');
     return {
       notice: { text, ids: [{ label: 'Payments location', value: str(r.patch?.store_id) }] },
-      problem: warned.length ? { text: 'It went through. Adyen said something else as well.', detail: warned.join('\n\n') } : null,
+      // It went through, so the note is amber, never the red of a failure.
+      problem: box || warned.length
+        ? { text: 'It went through. Adyen said something else as well.', tone: 'warn', lines: box ? box.lines : [], more: box ? box.more : 0, detail: detail || null }
+        : null,
+      changed: true,
+    };
+  });
+
+  // A FOUND STORE GETS SAVED (9 Sep 2026, live screen: the read found the
+  // store at Adyen, the venue row still held store_id NULL and the list chip
+  // read NOT LINKED). This is adyen_link on the venue's OWN environment with
+  // the store id the read found: store_id, the split configuration and
+  // balance account the store carries, the merchant account and
+  // receive_payments_ok land on the row, the environment is not touched, and
+  // the web addresses and Apple Pay domains follow best effort. It works with
+  // the Balance Platform read refused: the business account pieces are simply
+  // not written, and step 2 says why. A row that already names ANOTHER store
+  // answers 409 needs_relink, which becomes the in page ask below.
+  const saveStore = (relink) => act('save_store', async () => {
+    const storeId = str(state?.store?.id);
+    if (!storeId) return { stop: true };
+    let r;
+    try {
+      // The venue's OWN environment, named out loud: link_store is only ever
+      // offered when the flow looks at the environment the venue is on, and
+      // resolveLinkEnvironment keeps a live venue on live whatever is passed,
+      // so this write can never ride a flip.
+      r = await callAdmin('adyen_link', { ...pickRef.current, storeId, environment: venueEnv, ...(relink ? { relink: true } : {}) });
+    } catch (e) {
+      if (e?.data?.needs_relink && !relink) {
+        // Plain lines and the ids as grey rows, from plan.diff.conflicts: the
+        // fn's own reason is a 150 to 200 character sentence with column
+        // names and ids inside it, and it stays in the audit log only. The
+        // "cleared" line appears only when the replacement moves the money
+        // side, the one case the server clears anything (relinkClear).
+        setAsk({ kind: 'relink_store', ...relinkStoreConfirmView(e.data) });
+        setLiveTyped('');
+        return { stop: true };
+      }
+      throw e;
+    }
+    if (r?.ok === false) throw new Error(r.error || 'the payments location was not saved');
+    setAsk(null); setLiveTyped('');
+    // What else the write said, in plain lines: the lookup's problems minus
+    // the two the screen says elsewhere, plus any warning about the write
+    // itself (a region migration, the kept ids). Never the "linked with gaps"
+    // line: its pieces are the same problems, already plain above.
+    // Never the settings table migration sentence (9 Sep 2026): it is our own
+    // table, not something Adyen said, and the top line of the flow already
+    // carries it in short words. It came back here as a red box on the very
+    // next click after the flow was made plain.
+    const box = goliveProblemBox(r.problems);
+    const said = lines(r.warnings).filter((w) => !/^Linked with gaps/i.test(w) && w !== str(r.storeNeeded) && !isPlatformSettingsMissingWarning(w));
+    const detail = [box?.detail, ...said].filter(Boolean).join('\n\n');
+    return {
+      notice: {
+        text: r.unchanged ? 'The payments location was already on the venue.' : 'The payments location is saved on the venue.',
+        ids: [{ label: 'Payments location', value: storeId }],
+      },
+      // It is saved, so the note is amber, never the red of a failure.
+      problem: box || said.length
+        ? { text: 'It is saved. Adyen said something else as well.', tone: 'warn', lines: box ? box.lines : [], more: box ? box.more : 0, detail: detail || null }
+        : null,
       changed: true,
     };
   });
@@ -686,6 +777,9 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, wallet
           <p style={{ ...S.lede, marginTop: 4 }}>
             {reference ? <>Looking for <span style={S.mono}>{reference}</span> on the {region} {target} account.</> : <>Looking on the {region} {target} account.</>}
           </p>
+          {/* The settings table waiting on its migration is ONE short line
+              here, not a long sentence inside the error box (9 Sep 2026). */}
+          {state.platformSettingsMissing === true && <p style={{ ...S.lede, marginTop: 4 }}>{PLATFORM_SETTINGS_WAITING_LINE}</p>}
           <div style={S.progress}>{view.progressLabel}</div>
           <div style={S.bar}><div style={{ height: '100%', width: `${view.progressPct}%`, background: 'var(--grn, #15C26A)', transition: 'width .2s' }} /></div>
         </div>
@@ -913,7 +1007,11 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, wallet
                   {/* ── 2. the Adyen business account ── */}
                   {step.id === 'business_account' && (
                     <>
-                      {(step.action === 'open_adyen' || step.action === 'send_onboarding' || caps.length > 0) && (
+                      {/* add_bp_key (9 Sep 2026): the Balance Platform refused
+                          our key. The detail and hint above say the one thing;
+                          Open Adyen is where the second credential is made, and
+                          the secret it goes in rides as its own grey row. */}
+                      {(step.action === 'open_adyen' || step.action === 'send_onboarding' || step.action === 'add_bp_key' || caps.length > 0) && (
                         <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
                           <Primary disabled={anyBusy} onClick={openAdyen}>Open Adyen</Primary>
                           <Secondary busy={anyBusy} onClick={() => act('look2', async () => ({}))}>{busy === 'look2' ? 'Checking' : 'Check again'}</Secondary>
@@ -923,6 +1021,10 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, wallet
                         <Primary busy={busy === 'look'} disabled={anyBusy} onClick={() => act('look', async () => ({}))}>Look again</Primary>
                       )}
                       <div style={{ marginTop: 16 }}>
+                        {/* The one value ServOS acts on, so it is body size,
+                            not the 13px of a reference id. The hint above
+                            points at it ("the setting below"). */}
+                        {step.action === 'add_bp_key' && <IdLine big label="Server setting" value={str(state.balancePlatformKey?.secret)} />}
                         <IdLine label={<>{term('holder')}</>} value={state.holder?.id} />
                         <IdLine label={<>{term('money')}</>} value={state.balanceAccount?.id} />
                         <IdLine label={<>{term('legal')}</>} value={state.legalEntity?.id} />
@@ -1008,6 +1110,12 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, wallet
                         </div>
                       )}
 
+                      {/* link_store (9 Sep 2026): Adyen holds the store, the
+                          venue row does not name it yet. ONE button. */}
+                      {!mismatch && step.action === 'link_store' && !ask && (
+                        <Primary busy={busy === 'save_store'} disabled={anyBusy || !str(state.store?.id)} onClick={() => saveStore(false)}>Save it on the venue</Primary>
+                      )}
+
                       {!mismatch && (
                         <div style={{ marginTop: 16 }}>
                           <IdLine label={<>{term('store')}</>} value={state.store?.id} />
@@ -1084,9 +1192,18 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, wallet
         {ask && (
           <div style={S.panel}>
             <h4 style={S.panelH}>
-              {ask.kind === 'relink' ? `Link ${name} again?` : `Turn on live payments for ${name}?`}
+              {ask.kind === 'relink' ? `Link ${name} again?`
+                : ask.kind === 'relink_store' ? `Replace the payments location on ${name}?`
+                : `Turn on live payments for ${name}?`}
             </h4>
             {ask.lines.map((l, i) => <p key={i} style={S.panelLine}>{l}</p>)}
+            {/* The ids a replacement touches, now and after, as grey rows
+                (relinkStoreConfirmView): never inside the lines above. */}
+            {Array.isArray(ask.ids) && ask.ids.length > 0 && (
+              <div style={{ marginTop: 10 }}>
+                {ask.ids.map((x) => <IdLine key={x.label} label={x.label} value={x.value} />)}
+              </div>
+            )}
             {needsTyped && (
               <div style={{ marginTop: 16, maxWidth: 320 }}>
                 <label style={S.field}>
@@ -1106,8 +1223,13 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, wallet
               </div>
             )}
             <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap', marginTop: 18 }}>
-              <Primary busy={busy === 'golive'} disabled={!typedOk || anyBusy} live onClick={() => doGoLive(ask.kind === 'relink')}>
-                {ask.kind === 'relink' ? 'Link it again' : 'Turn on live payments'}
+              <Primary
+                busy={busy === 'golive' || busy === 'save_store'}
+                disabled={!typedOk || anyBusy}
+                live
+                onClick={() => (ask.kind === 'relink_store' ? saveStore(true) : doGoLive(ask.kind === 'relink'))}
+              >
+                {ask.kind === 'relink' ? 'Link it again' : ask.kind === 'relink_store' ? 'Replace it' : 'Turn on live payments'}
               </Primary>
               <Secondary busy={anyBusy} onClick={() => { setAsk(null); setLiveTyped(''); }}>Not now</Secondary>
             </div>
@@ -1117,7 +1239,7 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, wallet
         {/* WHAT HAPPENED, in one place under the steps so it never vanishes
             with the step that caused it, and so an Adyen refusal the read
             answered 200 with can never look like "nothing found". */}
-        {(notice || problem || loadProblem || (!view.allDone && stateErrors.length) || readersError) && (
+        {(notice || problem || loadProblem || problemBox) && (
           <div style={S.foot}>
             {notice && (
               <div style={{ ...S.note, background: CHIP.ok.bg, border: `1px solid ${CHIP.ok.bd}`, color: CHIP.ok.fg }}>
@@ -1130,20 +1252,13 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, wallet
                 {notice.ids.filter((x) => str(x.value)).map((x) => <IdLine key={x.label} label={x.label} value={x.value} />)}
               </div>
             )}
-            <Problem problem={problem} />
+            {/* A note on a write that WENT THROUGH carries tone 'warn'; a
+                failure stays red. */}
+            <Problem problem={problem} tone={problem?.tone || 'bad'} />
             {loadProblem && <Problem problem={loadProblem} tone="warn" />}
-            {!view.allDone && stateErrors.length > 0 && (
-              <Problem
-                tone="warn"
-                problem={{
-                  text: 'Adyen did not answer everything, so what is on screen may not be the whole picture.',
-                  detail: [...stateErrors, ...stateNotes].join('\n\n'),
-                }}
-              />
-            )}
-            {readersError && (
-              <Problem tone="warn" problem={{ text: 'The card reader list could not be read, so step 5 may be wrong.', detail: readersError }} />
-            )}
+            {/* At most three plain lines, the raw answers behind Show detail,
+                and nothing the steps already say (9 Sep 2026). */}
+            {problemBox && <Problem tone="warn" problem={problemBox} />}
           </div>
         )}
       </div>

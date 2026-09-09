@@ -16,7 +16,7 @@
  */
 
 import { adyenEnvFromRow, adyenRegionFromRow } from './adyenEnv.js';
-import { worstVerificationStatus, LINK_ID_FIELDS, storeStillNeeded } from './adyenLink.js';
+import { worstVerificationStatus, LINK_ID_FIELDS, storeStillNeeded, conflictsMoveMoney } from './adyenLink.js';
 import { registrationLines } from './adyenOrigins.js';
 
 const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -522,8 +522,16 @@ export function goliveFlowView(state, openId = null) {
   // ("Cards work. Payouts wait for Adyen.") is amber and the flow moves on
   // instead of parking them on work they cannot do today (8 Sep 2026: a
   // blocked payout held the whole flow at step 2 forever).
-  const next = steps.find((x) => x.state === 'blocked')
-    || steps.find((x) => !x.done && x.action)
+  // ONE EXCEPTION (9 Sep 2026, live screen): a step blocked on a SERVER SECRET
+  // (add_bp_key, the Balance Platform key only ServOS can add) is work the
+  // owner cannot do from this screen either, so a step with a click the owner
+  // CAN make wins over it. The live screen parked the owner on step 2 with
+  // "Open Adyen" while the one button that turns the list chip to Linked
+  // ("Save it on the venue", step 3) sat behind a collapsed row.
+  const serverOnly = (x) => x.action === 'add_bp_key';
+  const next = steps.find((x) => x.state === 'blocked' && !serverOnly(x))
+    || steps.find((x) => !x.done && x.action && !serverOnly(x))
+    || steps.find((x) => x.state === 'blocked')
     || steps.find((x) => !x.done)
     || null;
   const open = picked || next;
@@ -540,6 +548,49 @@ export function goliveFlowView(state, openId = null) {
     progressPct: Math.round((doneCount / steps.length) * 100),
   };
 }
+
+// ── WHAT THE SCREEN SAYS ABOUT PROBLEMS (9 Sep 2026, OWNER FEEDBACK) ────────
+// "just errors all over the place, I dont know whats happening". golive_state
+// now answers `problems`: one plain line per distinct problem, with the raw
+// Adyen answer in rawDetail (goliveProblems in adyenLink.js). The screen draws
+// them in ONE amber box under the steps, at most PROBLEM_BOX_MAX_LINES lines,
+// and never the two facts that have their own place on the screen:
+//   bp_refused   the business account step says the one reason, once
+//   mismatch     the mismatch block draws the two account names and a picker
+//   no_code      step 1 says it word for word (set_venue_code), and Adyen was
+//                never asked, so "Adyen did not answer everything" is untrue
+// Null when nothing is left to say, so the box does not appear at all.
+export const PROBLEM_BOX_MAX_LINES = 3;
+export const PROBLEM_BOX_TEXT = 'Adyen did not answer everything, so what is on screen may not be the whole picture.';
+export const PROBLEM_BOX_SKIP = Object.freeze(['bp_refused', 'mismatch', 'no_code']);
+
+export function goliveProblemBox(problems, { exclude = PROBLEM_BOX_SKIP } = {}) {
+  const skip = new Set(Array.isArray(exclude) ? exclude.map(str) : []);
+  const seen = new Set();
+  const rows = [];
+  for (const p of Array.isArray(problems) ? problems : []) {
+    if (!isObj(p)) continue;
+    const text = str(p.text);
+    if (!text || skip.has(str(p.kind)) || seen.has(text)) continue;
+    seen.add(text);
+    rows.push({ kind: str(p.kind) || 'other', text, rawDetail: str(p.rawDetail) || null });
+  }
+  if (!rows.length) return null;
+  const lines = rows.slice(0, PROBLEM_BOX_MAX_LINES);
+  return {
+    text: PROBLEM_BOX_TEXT,
+    lines,
+    more: rows.length - lines.length,
+    // EVERY raw answer, including the ones past the third line, so nothing
+    // Adyen said is lost: it just sits behind Show detail.
+    detail: rows.map((r) => r.rawDetail).filter(Boolean).join('\n\n') || null,
+  };
+}
+
+// The ONE short line at the top of the flow while the platform settings table
+// waits on its migration (platformSettingsMissing). It used to be a long
+// sentence naming the table and the migration file inside the error box.
+export const PLATFORM_SETTINGS_WAITING_LINE = 'One database step is waiting on ServOS. Venues need their id pasted until it runs.';
 
 // A capability Adyen has not allowed, in plain words: never the word Blocked
 // on its own. Takes golive_state's capabilities (capabilityList's wire shape).
@@ -697,4 +748,47 @@ export function relinkConfirmLines(data) {
 export function relinkConfirmText(data, venueName = 'this venue') {
   const name = str(venueName) || 'this venue';
   return `${relinkConfirmLines(data).join('\n\n')}\n\nGo ahead and link ${name} again?`;
+}
+
+// THE "REPLACE IT" ASK for a found store the venue row already names
+// differently (link_store answered 409 needs_relink, 9 Sep 2026). The fn's
+// own reason is planLink's sentence with two to four ids and the database
+// column names inside it (151 to 207 characters), exactly the "long code
+// lines" the owner cannot read. So the panel gets plain lines under 120
+// characters with NO id in them, and every id as its own grey row: the value
+// on the venue now and the one after, per conflicting field, from
+// plan.diff.conflicts. d.error stays in the audit log.
+// The third line only when the replacement MOVES THE MONEY SIDE (a conflict
+// on balance_account_id or account_holder_id): that is the only case the
+// server clears the ids the read did not reach (relinkClear).
+const RELINK_FIELD_LABELS = Object.freeze({
+  store_id: 'Payments location',
+  balance_account_id: 'Where the money lands',
+  merchant_account: 'Adyen account',
+  account_holder_id: 'Adyen business account',
+  legal_entity_id: 'Registered company',
+  split_profile_id: 'Split configuration',
+  business_line_id: 'Business line',
+  transfer_instrument_id: 'Bank account',
+});
+
+export function relinkStoreConfirmView(data) {
+  const d = isObj(data) ? data : {};
+  const plan = isObj(d.plan) ? d.plan : {};
+  const conflicts = (isObj(plan.diff) && Array.isArray(plan.diff.conflicts) ? plan.diff.conflicts : []).filter(isObj);
+  const fields = new Set(conflicts.map((c) => str(c.field)));
+  const lines = [
+    fields.has('store_id') || !fields.size ? 'The venue already names a different payments location.'
+      : fields.has('merchant_account') ? 'The venue already names a different Adyen account.'
+      : 'The venue already names different Adyen ids.',
+    'Replacing it changes where card payments go.',
+  ];
+  if (conflictsMoveMoney(conflicts)) lines.push('Ids on the venue that this read did not reach are cleared.');
+  const ids = [];
+  for (const c of conflicts) {
+    const label = RELINK_FIELD_LABELS[str(c.field)] || str(c.field) || 'Id';
+    if (str(c.current)) ids.push({ label: `${label} now`, value: str(c.current) });
+    if (str(c.next)) ids.push({ label: `${label} after`, value: str(c.next) });
+  }
+  return { lines, ids };
 }

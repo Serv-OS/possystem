@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.44',
+    date: '9 Sep 2026',
+    items: [
+      'Go live flow: when Adyen already holds the venue\'s payments location, one button saves it on the venue. It works even when the business account side cannot be read.',
+      'When our payments key cannot see the business account side, the flow says so in one plain line and names the second key Adyen needs, instead of a box of code. The step with the one click fix opens first.',
+      'Errors on the flow are plain sentences with the raw Adyen text behind Show detail. The database reminder is one line at the top.',
+    ],
+  },
+  {
     v: '5.8.43',
     date: '9 Sep 2026',
     items: [

@@ -15,7 +15,7 @@ import {
   referenceKey, storeRows, matchStoreByReference, storeSummary, storeCandidates,
   worstVerificationStatus, summariseCapabilities, legalEntityName, legalEntitySummary,
   accountHolderSummary, balanceAccountSummary, pickBalanceAccount, resolveLinkEnvironment,
-  buildLinkPatch, linkDiff, planLink, replacementClear, lookupSummary,
+  buildLinkPatch, linkDiff, planLink, replacementClear, relinkClear, conflictsMoveMoney, MONEY_CONFLICT_FIELDS, lookupSummary,
 } from './adyenLink.js';
 
 // ── fixtures: the shapes Adyen answers with (docs.adyen.com, 8 Sep 2026) ────
@@ -418,6 +418,36 @@ test('replacementClear: a relink with a partial chain clears the ids the chain d
   const empty = replacementClear(null);
   for (const k of LINK_ID_FIELDS) assert.equal(empty[k], null, k);
   assert.equal(empty.receive_payments_ok, false);
+});
+
+test('relinkClear: a store swap with the holder read refused keeps the holder, legal entity and bank account', () => {
+  // 9 Sep 2026: the row names an old store AND an account holder, the store
+  // at Adyen is now another one, and the Balance Platform refused the key so
+  // the patch carries no holder side at all. A failed READ is not a new
+  // holder: nothing is cleared.
+  const patch = { merchant_account: 'FranPOS_QSR_UK', store_id: PROVO.id, receive_payments_ok: true };
+  const row = { store_id: 'ST_OLD', merchant_account: 'FranPOS_QSR_UK', account_holder_id: 'AH_OLD', legal_entity_id: 'LE_OLD', transfer_instrument_id: 'SI_OLD', payouts_ok: true };
+  const plan = planLink({ row, currentEnv: 'live', targetEnv: 'live', patch, relink: true });
+  assert.equal(plan.kind, 'update');
+  assert.deepEqual(plan.diff.conflicts.map((c) => c.field), ['store_id']);
+  assert.deepEqual(relinkClear(plan.diff, patch), {});
+  const write = { ...relinkClear(plan.diff, patch), ...patch };
+  for (const k of ['account_holder_id', 'legal_entity_id', 'transfer_instrument_id', 'payouts_ok', 'verification_status', 'onboarding_link_url']) assert.equal(k in write, false, k);
+  // the money side MOVING is the case the clear exists for: the old bank account never survives
+  const moved = { ...patch, balance_account_id: 'BA_NEW' };
+  const plan2 = planLink({ row: { ...row, balance_account_id: 'BA_OLD' }, currentEnv: 'live', targetEnv: 'live', patch: moved, relink: true });
+  assert.deepEqual([...plan2.diff.conflicts.map((c) => c.field)].sort(), ['balance_account_id', 'store_id']);
+  assert.deepEqual(relinkClear(plan2.diff, moved), replacementClear(moved));
+  assert.equal(relinkClear(plan2.diff, moved).transfer_instrument_id, null);
+  assert.equal(relinkClear(plan2.diff, moved).account_holder_id, null);
+  // a new account holder alone moves it too; a merchant account swap does not
+  assert.equal(conflictsMoveMoney([{ field: 'account_holder_id', current: 'AH_OLD', next: 'AH_NEW' }]), true);
+  assert.equal(conflictsMoveMoney([{ field: 'merchant_account', current: 'A', next: 'B' }, { field: 'store_id', current: 'S', next: 'T' }]), false);
+  assert.equal(conflictsMoveMoney(null), false);
+  // blanks filled on a first link never clear, and junk never throws
+  assert.deepEqual(relinkClear({ conflicts: [] }, patch), {});
+  assert.deepEqual(relinkClear(null, patch), {});
+  assert.deepEqual([...MONEY_CONFLICT_FIELDS], ['balance_account_id', 'account_holder_id']);
 });
 
 test('planLink: a test venue linking test ids stays an update, undefined env reads as test', () => {
@@ -1061,4 +1091,291 @@ test('platformSettingsMissingMessage: names the file, and never a dash', () => {
   assert.match(m, /20260908c_PLATFORM_adyen_platform_settings\.sql/);
   assert.match(m, /pasted/);
   assert.doesNotMatch(m, /[–—]/);
+});
+
+// ── A FOUND STORE IS NOT A LINKED STORE, and THE ONE PLAIN REASON (9 Sep 2026) ─
+// Live screen, venue Provo (SV-1007): golive_state found the store on
+// FranPOS_QSR_UK and said step 3 was done, while the venue row still held
+// store_id NULL and the list chip read NOT LINKED. The pasted account holder
+// was refused (401) by the Balance Platform, twice word for word, and the
+// owner saw "a box of four long code lines". These are the contracts for both
+// copies (adyenLink.js here, _shared/adyenLink.ts on the function).
+import {
+  STORE_NOT_SAVED_DETAIL, BP_KEY_BLOCKED_DETAIL, bpKeyBlockedHint, PROBLEM_TEXT_MAX,
+  plainAdyenProblem, goliveProblems, isPlatformSettingsMissingWarning,
+} from './adyenLink.js';
+
+const BP_REFUSED = (what) => `${what}: refused (401): the credential behind ADYEN_LIVE_UK_BP_KEY (the set's API key when that is unset) needs the Balance Platform BCL role`;
+
+test('buildGoliveSteps: a store Adyen holds that the venue row does not name is attention with link_store', () => {
+  // the live shape: found at Adyen, store_id NULL on the row
+  const empty = buildGoliveSteps({ ...READY, row: { store_id: null } }, { target: 'live' });
+  assert.equal(byId(empty, 'find_venue').state, 'done');
+  assert.equal(byId(empty, 'payments_location').state, 'attention');
+  assert.equal(byId(empty, 'payments_location').detail, STORE_NOT_SAVED_DETAIL);
+  assert.equal(byId(empty, 'payments_location').detail, 'Adyen holds the payments location, it is not saved on the venue yet.');
+  assert.equal(byId(empty, 'payments_location').action, 'link_store');
+  // live, so real cards are on, but the row does not name the store: never "takes real cards"
+  assert.equal(byId(empty, 'go_live').state, 'attention');
+  assert.match(byId(empty, 'go_live').detail, /not saved on the venue/);
+  assert.equal(byId(empty, 'go_live').action, null);
+  // another store on the row is the same thing to the owner: save the one Adyen holds
+  const other = buildGoliveSteps({ ...READY, row: { store_id: 'ST_SOMETHING_ELSE' } }, { target: 'live' });
+  assert.equal(byId(other, 'payments_location').action, 'link_store');
+  // the row names it: done, as before
+  const saved = buildGoliveSteps({ ...READY, row: { store_id: PROVO.id } }, { target: 'live' });
+  assert.equal(byId(saved, 'payments_location').state, 'done');
+  assert.equal(byId(saved, 'go_live').state, 'done');
+  // no row in hand (an old caller, or the flow looking at the OTHER environment,
+  // where the go live flip writes the ids): the old reading stands
+  assert.equal(byId(buildGoliveSteps(READY), 'payments_location').state, 'done');
+  assert.equal(byId(buildGoliveSteps({ ...READY, row: null }), 'payments_location').state, 'done');
+  const flipping = buildGoliveSteps({ ...READY, venue: { ...READY.venue, environment: 'test' }, row: null }, { target: 'live' });
+  assert.equal(byId(flipping, 'payments_location').state, 'done');
+  assert.equal(byId(flipping, 'go_live').action, 'go_live');
+  // on test, looking at test, with no row at all: the same offer, and go live waits
+  const onTest = buildGoliveSteps({ ...READY, venue: { ...READY.venue, environment: 'test' }, row: {} }, { target: 'test' });
+  assert.equal(byId(onTest, 'payments_location').action, 'link_store');
+  assert.equal(byId(onTest, 'go_live').detail, 'Finish the steps above first.');
+  // an inactive store is still the inactive store line: cards are refused either way
+  const inactive = buildGoliveSteps({ ...READY, store: storeSummary({ ...PROVO, status: 'inactive' }), row: { store_id: null } }, { target: 'live' });
+  assert.equal(byId(inactive, 'payments_location').action, 'open_adyen');
+  // a mismatch still wins: the store is on another account, nothing to save
+  const mismatched = buildGoliveSteps({
+    ...READY, row: { store_id: null },
+    merchantMismatch: merchantMismatch({ configured: 'FranPOS_QSR_UK', found: 'FranPOS_UK', secret: 'ADYEN_LIVE_UK_MERCHANT_ACCOUNT', storeId: 'ST_ELSEWHERE', reference: 'SV-1007' }),
+  }, { target: 'live' });
+  assert.equal(byId(mismatched, 'payments_location').action, 'choose_merchant');
+});
+
+test('buildGoliveSteps: the Balance Platform refusing our key is ONE blocked step naming the secret', () => {
+  const refused = {
+    ...READY,
+    holder: null, balanceAccount: null, legalEntity: null, capabilities: [],
+    row: { store_id: null },
+    balancePlatformKey: { refused: true, secret: 'ADYEN_LIVE_UK_BP_KEY' },
+  };
+  const steps = buildGoliveSteps(refused, { target: 'live' });
+  // the store side still reads: found, and offered for saving
+  assert.equal(byId(steps, 'find_venue').state, 'done');
+  assert.equal(byId(steps, 'find_venue').detail, 'Adyen holds SV-1007 as a store.');
+  assert.equal(byId(steps, 'payments_location').action, 'link_store');
+  // the ONE plain reason, at the business account step
+  const ba = byId(steps, 'business_account');
+  assert.equal(ba.state, 'blocked');
+  assert.equal(ba.detail, BP_KEY_BLOCKED_DETAIL);
+  assert.equal(ba.detail, 'Our payments key cannot see the business account side.');
+  assert.equal(ba.action, 'add_bp_key');
+  assert.equal(ba.hint, 'A second key is made in the live Customer Area: Developers, API credentials, Platforms. It goes in the setting below.');
+  // no id inside the sentence (rule 5): the secret is its own grey row on the
+  // screen, and the hint keeps the 120 character rule of every plain line
+  assert.doesNotMatch(ba.hint, /BP_KEY/);
+  assert.ok(ba.hint.length < PROBLEM_TEXT_MAX, `${ba.hint.length} chars`);
+  // ...and NOWHERE else: no other step names the secret or repeats the reason
+  const others = steps.filter((s) => s.id !== 'business_account').map((s) => `${s.detail} ${s.hint ?? ''}`).join('\n');
+  assert.doesNotMatch(others, /BP_KEY|business account side|Platforms tab/);
+  // the test set names the test Customer Area and the unprefixed secret
+  const onTest = buildGoliveSteps({ ...refused, venue: { ...READY.venue, environment: 'test' }, balancePlatformKey: { refused: true, secret: 'ADYEN_BP_KEY' } }, { target: 'test' });
+  assert.match(byId(onTest, 'business_account').hint, /test Customer Area/);
+  assert.doesNotMatch(byId(onTest, 'business_account').hint, /ADYEN_BP_KEY/);
+  assert.equal(bpKeyBlockedHint('ADYEN_LIVE_US_BP_KEY', 'live').includes('ADYEN_LIVE_US_BP_KEY'), false);
+  assert.ok(bpKeyBlockedHint('ADYEN_LIVE_US_BP_KEY', 'live').length < PROBLEM_TEXT_MAX);
+  assert.ok(bpKeyBlockedHint(null, 'test').length < PROBLEM_TEXT_MAX);
+  // no store either: step 1 does not guess "nothing carries the code", it points at step 2
+  const nothing = buildGoliveSteps({ ...refused, store: null }, { target: 'live' });
+  assert.equal(byId(nothing, 'find_venue').state, 'todo');
+  assert.equal(byId(nothing, 'find_venue').detail, 'No payments location carries the code SV-1007 yet.');
+  assert.match(byId(nothing, 'find_venue').hint, /See step 2/);
+  assert.equal(byId(nothing, 'business_account').state, 'blocked');
+  // the refusal beats every other reading of the business account, holder or not
+  assert.equal(byId(buildGoliveSteps({ ...READY, balancePlatformKey: { refused: true, secret: 'ADYEN_LIVE_UK_BP_KEY' } }), 'business_account').state, 'blocked');
+  // not refused, nothing known: the old todo
+  assert.equal(byId(buildGoliveSteps({ ...refused, balancePlatformKey: { refused: false, secret: 'ADYEN_LIVE_UK_BP_KEY' } }), 'business_account').state, 'todo');
+  // missing keys still come first
+  assert.equal(byId(buildGoliveSteps({ ...refused, keys: { configured: false, missing: ['ADYEN_LIVE_UK_API_KEY'] } }), 'business_account').detail, 'The Adyen keys are not on the server, so nothing can be read.');
+});
+
+test('buildGoliveSteps: a refused or ambiguous store search never reads as "nothing carries the code"', () => {
+  // rule 6: a refusal Adyen gave us must never look like nothing found, and
+  // step 1 must not contradict the box under the steps.
+  const base = { ...READY, holder: null, balanceAccount: null, legalEntity: null, capabilities: [], store: null, row: {} };
+  const two = buildGoliveSteps({ ...base, storeRead: { refused: false, ambiguous: true } }, { target: 'live' });
+  assert.equal(byId(two, 'find_venue').state, 'attention');
+  assert.equal(byId(two, 'find_venue').detail, 'More than one payments location carries the code SV-1007.');
+  assert.equal(byId(two, 'find_venue').action, 'find_venue');
+  assert.equal(byId(two, 'find_venue').hint, 'Pick the right one from the list below.');
+  const refused = buildGoliveSteps({ ...base, storeRead: { refused: true, ambiguous: false } }, { target: 'live' });
+  assert.equal(byId(refused, 'find_venue').state, 'blocked');
+  assert.equal(byId(refused, 'find_venue').detail, 'Our payments key was refused, so the search could not run.');
+  assert.equal(byId(refused, 'find_venue').action, null);
+  assert.equal(byId(refused, 'find_venue').hint, 'The key needs the Stores read role at Adyen.');
+  // with the Balance Platform refused as well, the store side still speaks first and step 2 keeps its own reason
+  const both = buildGoliveSteps({ ...base, storeRead: { refused: true }, balancePlatformKey: { refused: true, secret: 'ADYEN_LIVE_UK_BP_KEY' } }, { target: 'live' });
+  assert.equal(byId(both, 'find_venue').state, 'blocked');
+  assert.equal(byId(both, 'business_account').action, 'add_bp_key');
+  // a found store wins over either flag, and no storeRead at all is the old reading
+  assert.equal(byId(buildGoliveSteps({ ...READY, row: { store_id: PROVO.id }, storeRead: { ambiguous: true } }, { target: 'live' }), 'find_venue').state, 'done');
+  assert.equal(byId(buildGoliveSteps(base, { target: 'live' }), 'find_venue').detail, 'Nothing at Adyen carries the code SV-1007 yet.');
+  assert.equal(byId(buildGoliveSteps({ ...base, storeRead: { refused: false, ambiguous: false } }, { target: 'live' }), 'find_venue').detail, 'Nothing at Adyen carries the code SV-1007 yet.');
+  // no code still comes first: there is nothing to have searched for
+  assert.equal(byId(buildGoliveSteps({ ...base, venue: { ...READY.venue, code: '' }, storeRead: { refused: true } }, { target: 'live' }), 'find_venue').action, 'set_venue_code');
+  for (const s of [...two, ...refused]) {
+    assert.ok(s.detail.length < PROBLEM_TEXT_MAX, `${s.id} detail`);
+    assert.doesNotMatch(`${s.detail} ${s.hint ?? ''}`, /[\u2013\u2014]/, `dash in ${s.id}`);
+  }
+});
+
+test('goliveProblems: the live screen’s four lines become ONE plain line, deduped by text', () => {
+  const errors = [
+    BP_REFUSED('account holder AH32BZP22322CJ5PXF2BD5FTR'),
+    BP_REFUSED('account holder AH32BZP22322CJ5PXF2BD5FTR'),   // the same line twice, word for word
+    BP_REFUSED('balance account BA3224Z223226M5KMQ5RBAL01'),
+    'account holders on balance platform BP1234: refused (403): the credential behind ADYEN_LIVE_UK_BP_KEY (the set\'s API key when that is unset) needs the Balance Platform BCL role',
+  ];
+  const r = goliveProblems(errors);
+  assert.equal(r.raw.length, 3, 'exact repeats dropped');
+  assert.equal(r.problems.length, 1, 'one plain line');
+  assert.equal(r.problems[0].kind, 'bp_refused');
+  assert.equal(r.problems[0].text, BP_KEY_BLOCKED_DETAIL);
+  assert.equal(r.problems[0].rawDetail.split('\n').length, 3, 'every raw line kept behind it');
+  assert.equal(r.bpRefused, true);
+  assert.equal(r.platformSettingsMissing, false);
+  // nothing in: nothing out
+  assert.deepEqual(goliveProblems(null), { raw: [], problems: [], bpRefused: false, platformSettingsMissing: false });
+  assert.deepEqual(goliveProblems(['', null, '  ']).problems, []);
+});
+
+test('plainAdyenProblem: every kind is plain, under 120 characters, free of ids and dashes', () => {
+  const cases = [
+    [BP_REFUSED('account holder AH32BZP22322CJ5PXF2BD5FTR'), 'bp_refused'],
+    ['legal entity LE32BZP22322CJ5PXF2BDLEG1: refused (403): the credential behind ADYEN_LIVE_UK_LEM_KEY (the set\'s API key when that is unset) needs the roles "Manage LegalEntities via API" and "Balance Platform BCL Legal Entity role"', 'lem_refused'],
+    ['store list by reference on FranPOS_QSR_UK: refused (401): the credential behind ADYEN_LIVE_UK_MANAGEMENT_KEY (the set\'s API key when that is unset) needs the Management API role "Stores read"', 'management_refused'],
+    ['account holder AH1: refused (401): the credential behind SOMETHING needs a role', 'refused'],
+    ['Adyen did not answer GET /merchants/FranPOS_QSR_UK/stores within 20s', 'timeout'],
+    ['Store ST_ELSEWHERE with the reference SV-1007 sits on merchant account FranPOS_UK, but ADYEN_LIVE_UK_MERCHANT_ACCOUNT names FranPOS_QSR_UK. Nothing was linked to it.', 'mismatch'],
+    ['2 stores carry the reference SV-1007 (ST1 on A, ST2 on B). Pass storeId to pick one.', 'ambiguous_store'],
+    ['2 account holders on balance platform BP1 carry the reference SV-1007 (AH1, AH2). They cannot be told apart by reference, so paste the account holder id of the right one.', 'ambiguous_holder'],
+    ['balance account BA1 names no account holder.', 'gap'],
+    ['account holder AH1 names no legal entity.', 'gap'],
+    ['account holder AH1 has 3 balance accounts and none could be chosen for GBP.', 'gap'],
+    ['This venue has no venue code, so there is no store reference to look up. Set one in the Back Office (Venue settings) or pass reference.', 'no_code'],
+    ['The reader list could not be read: permission denied', 'readers'],
+    ['The till links could not be read: fetch failed', 'readers'],
+    // our own Postgres timing out is the reader list, never "Adyen took too long"
+    ['The reader list could not be read: connection timed out', 'readers'],
+    ['The till links could not be read: Adyen did not answer within 20s', 'readers'],
+    ['The venue\'s online address could not be read: timed out', 'storefront'],
+    ['The venue\'s online address could not be read: boom', 'storefront'],
+    ['store ST1: Adyen answered 404: store not found', 'read_failed'],
+    ['balance accounts of AH1: Adyen answered 500', 'read_failed'],
+    ['business lines of LE1: Adyen answered 500', 'read_failed'],
+    ['web origins: Adyen answered 500', 'read_failed'],
+    ['Apple Pay: Adyen answered 500', 'read_failed'],
+    ['merchant list: Adyen answered 500', 'read_failed'],
+    ['something nobody wrote a line for', 'other'],
+  ];
+  for (const [raw, kind] of cases) {
+    const p = plainAdyenProblem(raw);
+    assert.equal(p.kind, kind, `kind of: ${raw}`);
+    assert.ok(p.text.length < PROBLEM_TEXT_MAX, `${p.text.length} chars: ${p.text}`);
+    assert.doesNotMatch(p.text, /\b(AH|ST|BA|LE|BP)[0-9A-Z_]{2,}\b/, `id in a sentence: ${p.text}`);
+    assert.doesNotMatch(p.text, /[\u2013\u2014]/, `dash in: ${p.text}`);
+    assert.doesNotMatch(p.text, /\(\d{3}\)|refused \(/, `raw status in: ${p.text}`);
+    assert.equal(p.rawDetail, raw, 'the raw line rides apart from the plain one');
+  }
+  assert.equal(plainAdyenProblem(''), null);
+  assert.equal(plainAdyenProblem(null), null);
+  // the subject words are the screen's plain words, never Adyen's
+  assert.equal(plainAdyenProblem('balance account BA1: Adyen answered 500').text, 'Adyen would not answer about where the money lands.');
+  assert.equal(plainAdyenProblem('account holder AH1: Adyen answered 500').text, 'Adyen would not answer about the business account.');
+  assert.equal(plainAdyenProblem('legal entity LE1: Adyen answered 500').text, 'Adyen would not answer about the registered company.');
+});
+
+test('goliveProblems: two different raw lines with the same plain text are one line, others stay apart', () => {
+  const r = goliveProblems([
+    'The reader list could not be read: permission denied',
+    'The till links could not be read: fetch failed',
+    'Adyen did not answer GET /merchants within 20s',
+    'balance account BA1: Adyen answered 500',
+  ]);
+  assert.deepEqual(r.problems.map((p) => p.kind), ['readers', 'timeout', 'read_failed']);
+  assert.equal(r.problems[0].rawDetail, 'The reader list could not be read: permission denied\nThe till links could not be read: fetch failed');
+  assert.equal(r.bpRefused, false);
+});
+
+test('goliveProblems and isPlatformSettingsMissingWarning: the migration reminder is a flag, not a line', () => {
+  const missing = goliveProblems([], { settingsWarning: platformSettingsMissingMessage() });
+  assert.equal(missing.platformSettingsMissing, true);
+  assert.deepEqual(missing.problems, [], 'never inside the box');
+  assert.equal(isPlatformSettingsMissingWarning(platformSettingsMissingMessage()), true);
+  assert.equal(isPlatformSettingsMissingWarning('Our own Adyen ids could not be read (timeout), so this venue needs its Adyen id pasted.'), false);
+  assert.equal(isPlatformSettingsMissingWarning(''), false);
+  assert.equal(isPlatformSettingsMissingWarning(null), false);
+  // a read or write failure on the table is a plain line with the raw text behind it
+  const failed = goliveProblems([], { settingsWarning: 'Our own Adyen ids could not be kept (permission denied). Run x.sql on the platform project if the table is missing.' });
+  assert.equal(failed.platformSettingsMissing, false);
+  assert.equal(failed.problems.length, 1);
+  assert.equal(failed.problems[0].kind, 'settings');
+  assert.equal(failed.problems[0].text, 'Our own Adyen ids could not be kept this time.');
+  // a clash between the venue's balance platform and the kept one says so
+  const clash = goliveProblems([], { settingsWarning: 'This venue is on balance platform BP2, but the UK live account we search is BP1. Nothing was changed.' });
+  assert.equal(clash.problems[0].text, 'This venue sits on a different Adyen platform than the one we search.');
+  for (const p of [...failed.problems, ...clash.problems]) assert.ok(p.text.length < PROBLEM_TEXT_MAX);
+});
+
+test('buildGoliveSteps: the new lines never use a dash as punctuation and stay short', () => {
+  const steps = [
+    ...buildGoliveSteps({ ...READY, row: { store_id: null } }, { target: 'live' }),
+    ...buildGoliveSteps({ ...READY, holder: null, balanceAccount: null, legalEntity: null, capabilities: [], store: null, row: {}, balancePlatformKey: { refused: true, secret: 'ADYEN_LIVE_UK_BP_KEY' } }, { target: 'live' }),
+  ];
+  for (const s of steps) {
+    assert.doesNotMatch(`${s.detail} ${s.hint ?? ''}`, /[\u2013\u2014]/, `dash in ${s.id}`);
+    assert.ok(s.detail.length < PROBLEM_TEXT_MAX, `${s.id} detail is ${s.detail.length} chars`);
+    if (s.hint) assert.ok(s.hint.length < PROBLEM_TEXT_MAX, `${s.id} hint is ${s.hint.length} chars`);
+  }
+});
+
+// ── THE TWO COPIES AGREE (9 Sep 2026) ────────────────────────────────────────
+// The function (Deno) runs _shared/adyenLink.ts and the screen reads its
+// answer, so the step builder and the plain problem lines are checked on THAT
+// copy too. Node strips types natively from 23.6; anything older skips this
+// one test instead of failing the run.
+const TS_MIRROR = '../../../supabase/functions/_shared/adyenLink.ts';
+test('TS mirror: buildGoliveSteps, goliveProblems and plainAdyenProblem answer exactly as the JS copy', async (t) => {
+  let ts;
+  try { ts = await import(TS_MIRROR); }
+  catch (e) { t.skip(`this node cannot import the .ts mirror here (${e?.code || e?.message})`); return; }
+  const shapes = [
+    [{ ...READY, row: { store_id: null } }, { target: 'live' }],
+    [{ ...READY, row: { store_id: 'ST_SOMETHING_ELSE' } }, { target: 'live' }],
+    [{ ...READY, row: { store_id: PROVO.id } }, { target: 'live' }],
+    [{ ...READY, holder: null, balanceAccount: null, legalEntity: null, capabilities: [], row: { store_id: null }, balancePlatformKey: { refused: true, secret: 'ADYEN_LIVE_UK_BP_KEY' } }, { target: 'live' }],
+    [{ ...READY, holder: null, balanceAccount: null, legalEntity: null, capabilities: [], store: null, row: {}, balancePlatformKey: { refused: true, secret: 'ADYEN_BP_KEY' }, venue: { ...READY.venue, environment: 'test' } }, { target: 'test' }],
+    [{ ...READY, venue: { ...READY.venue, environment: 'test' }, row: null }, { target: 'live' }],
+    [{ ...READY, holder: null, balanceAccount: null, legalEntity: null, capabilities: [], store: null, row: {}, storeRead: { refused: true, ambiguous: false } }, { target: 'live' }],
+    [{ ...READY, holder: null, balanceAccount: null, legalEntity: null, capabilities: [], store: null, row: {}, storeRead: { refused: false, ambiguous: true } }, { target: 'live' }],
+    [{ ...READY, holder: null, balanceAccount: null, legalEntity: null, capabilities: [], store: null, row: {}, storeRead: { refused: true }, balancePlatformKey: { refused: true, secret: 'ADYEN_LIVE_UK_BP_KEY' } }, { target: 'live' }],
+  ];
+  for (const [state, opts] of shapes) assert.deepEqual(ts.buildGoliveSteps(state, opts), buildGoliveSteps(state, opts));
+  // the relink clear rule is the same on both sides of the wire
+  const swap = { merchant_account: 'FranPOS_QSR_UK', store_id: PROVO.id, receive_payments_ok: true };
+  const swapPlan = planLink({ row: { store_id: 'ST_OLD', account_holder_id: 'AH_OLD' }, currentEnv: 'live', targetEnv: 'live', patch: swap, relink: true });
+  assert.deepEqual(ts.relinkClear(swapPlan.diff, swap), relinkClear(swapPlan.diff, swap));
+  const moved = { ...swap, balance_account_id: 'BA_NEW' };
+  const movedPlan = planLink({ row: { store_id: 'ST_OLD', balance_account_id: 'BA_OLD' }, currentEnv: 'live', targetEnv: 'live', patch: moved, relink: true });
+  assert.deepEqual(ts.relinkClear(movedPlan.diff, moved), relinkClear(movedPlan.diff, moved));
+  const errors = [
+    BP_REFUSED('account holder AH32BZP22322CJ5PXF2BD5FTR'),
+    BP_REFUSED('account holder AH32BZP22322CJ5PXF2BD5FTR'),
+    BP_REFUSED('balance account BA3224Z223226M5KMQ5RBAL01'),
+    'The reader list could not be read: permission denied',
+    'The reader list could not be read: connection timed out',
+    'Adyen did not answer GET /merchants within 20s',
+    'balance account BA1: Adyen answered 500',
+  ];
+  assert.deepEqual(ts.goliveProblems(errors, { settingsWarning: platformSettingsMissingMessage() }), goliveProblems(errors, { settingsWarning: platformSettingsMissingMessage() }));
+  for (const raw of errors) assert.deepEqual(ts.plainAdyenProblem(raw), plainAdyenProblem(raw));
+  assert.equal(ts.BP_KEY_BLOCKED_DETAIL, BP_KEY_BLOCKED_DETAIL);
+  assert.equal(ts.STORE_NOT_SAVED_DETAIL, STORE_NOT_SAVED_DETAIL);
+  assert.equal(ts.bpKeyBlockedHint('ADYEN_LIVE_UK_BP_KEY', 'live'), bpKeyBlockedHint('ADYEN_LIVE_UK_BP_KEY', 'live'));
 });

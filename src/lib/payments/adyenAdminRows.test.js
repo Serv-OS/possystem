@@ -305,7 +305,7 @@ test('merchantPicker: the accounts the credential sees, the secret’s one marke
 // ── THE GUIDED FLOW (8 Sep 2026, OWNER FEEDBACK) ─────────────────────────────
 import {
   GOLIVE_STEP_TITLES, goliveFlowView, capabilityNotices, mismatchView,
-  plainFailure, goLiveConfirmText, relinkConfirmText, goLiveConfirmLines, relinkConfirmLines,
+  plainFailure, goLiveConfirmText, relinkConfirmText, goLiveConfirmLines, relinkConfirmLines, relinkStoreConfirmView,
 } from './adyenAdminRows.js';
 import { buildGoliveSteps, capabilityList } from './adyenLink.js';
 
@@ -418,6 +418,53 @@ test('goliveFlowView: the live shape reaches step 3, blocked payout and all', ()
   assert.equal(v.steps[1].detail, 'Cards work. Payouts wait for Adyen.');
   assert.equal(v.openId, 'payments_location');
   assert.equal(v.steps[2].action, 'create_store');
+});
+
+test('goliveFlowView: a step blocked on a server secret never hides the one click the owner can make', () => {
+  // The live screen, 9 Sep 2026: step 2 blocked on the Balance Platform key
+  // (only ServOS can add it, action add_bp_key) and step 3 offering to save
+  // the found store. The flow opens step 3, where the button is, so the list
+  // chip can turn from Not linked to Linked.
+  const live = [
+    { id: 'find_venue', state: 'done', detail: 'Adyen holds SV-1007 as a store.' },
+    { id: 'business_account', state: 'blocked', detail: 'Our payments key cannot see the business account side.', action: 'add_bp_key' },
+    { id: 'payments_location', state: 'attention', detail: 'Adyen holds the payments location, it is not saved on the venue yet.', action: 'link_store' },
+    { id: 'go_live', state: 'attention', detail: 'Real cards are on, but the payments location is not saved on the venue.' },
+    { id: 'readers', state: 'todo', detail: 'No card readers on this venue yet.', action: 'add_reader' },
+  ];
+  const v = goliveFlowView({ steps: live });
+  assert.equal(v.openId, 'payments_location');
+  assert.equal(v.progressLabel, 'Step 3 of 5');
+  assert.equal(v.steps[1].chip.label, 'Blocked', 'step 2 still reads Blocked');
+  assert.equal(v.steps.filter((x) => x.open).length, 1);
+  // after the save: step 3 and 4 done, the next click is on step 5, step 2 still not parking the flow
+  const after = goliveFlowView({ steps: [
+    live[0],
+    live[1],
+    { id: 'payments_location', state: 'done', detail: 'Card payments go to SV-1007.' },
+    { id: 'go_live', state: 'done', detail: 'Provo takes real cards.' },
+    live[4],
+  ] });
+  assert.equal(after.openId, 'readers');
+  assert.equal(after.progressLabel, 'Step 5 of 5');
+  // nothing else left to press: the server secret step opens after all, so its reason is on screen
+  const only = goliveFlowView({ steps: [
+    live[0], live[1],
+    { id: 'payments_location', state: 'done', detail: 'z' },
+    { id: 'go_live', state: 'done', detail: 'w' },
+    { id: 'readers', state: 'done', detail: 'v' },
+  ] });
+  assert.equal(only.openId, 'business_account');
+  assert.equal(only.allDone, false);
+  // a step ADYEN blocked (open_adyen, not a server secret) still wins over everything
+  const adyen = goliveFlowView({ steps: [
+    live[0],
+    { id: 'business_account', state: 'blocked', detail: 'Adyen blocks receivePayments.', action: 'open_adyen' },
+    live[2],
+  ] });
+  assert.equal(adyen.openId, 'business_account');
+  // the reader can still open step 2 by hand
+  assert.equal(goliveFlowView({ steps: live }, 'business_account').openId, 'business_account');
 });
 
 test('goliveFlowView: the server’s own steps drive it, ids and order match', () => {
@@ -539,6 +586,42 @@ test('relinkConfirmText: the fn’s own reason, and the kept setup', () => {
   assert.match(t, /link Provo again\?$/);
 });
 
+test('relinkStoreConfirmView: plain lines under 120 characters, the ids as their own rows, never in a sentence', () => {
+  // link_store answered 409 needs_relink: the fn's reason carries two ids and
+  // a column name in one 151 character sentence. The panel never shows it.
+  const data = {
+    needs_relink: true,
+    error: 'This venue is already linked on live to different Adyen ids (store_id ST3224Z223226M5KMQ5RLXV2W to ST32DDL22322BQ5PXJVN95JSM). Confirm to replace them.',
+    plan: { kind: 'refuse', diff: { conflicts: [{ field: 'store_id', current: 'ST3224Z223226M5KMQ5RLXV2W', next: 'ST32DDL22322BQ5PXJVN95JSM' }] } },
+  };
+  const v = relinkStoreConfirmView(data);
+  assert.deepEqual(v.lines, ['The venue already names a different payments location.', 'Replacing it changes where card payments go.']);
+  assert.deepEqual(v.ids, [
+    { label: 'Payments location now', value: 'ST3224Z223226M5KMQ5RLXV2W' },
+    { label: 'Payments location after', value: 'ST32DDL22322BQ5PXJVN95JSM' },
+  ]);
+  // the money side moving is the one case the server clears the unreached ids, so only then is it said
+  const money = relinkStoreConfirmView({ plan: { diff: { conflicts: [
+    { field: 'store_id', current: 'ST_OLD', next: 'ST_NEW' },
+    { field: 'balance_account_id', current: 'BA3224Z223226M5KMQ5RBAL01', next: 'BA32DDL22322BQ5PXJVN95BAL' },
+  ] } } });
+  assert.equal(money.lines.length, 3);
+  assert.equal(money.lines[2], 'Ids on the venue that this read did not reach are cleared.');
+  assert.deepEqual(money.ids.map((x) => x.label), ['Payments location now', 'Payments location after', 'Where the money lands now', 'Where the money lands after']);
+  // a merchant account conflict names the account, not the location
+  const merchant = relinkStoreConfirmView({ plan: { diff: { conflicts: [{ field: 'merchant_account', current: 'FranPOS_UK', next: 'FranPOS_QSR_UK' }] } } });
+  assert.equal(merchant.lines[0], 'The venue already names a different Adyen account.');
+  assert.deepEqual(merchant.ids.map((x) => x.label), ['Adyen account now', 'Adyen account after']);
+  for (const l of [...v.lines, ...money.lines, ...merchant.lines]) {
+    assert.ok(l.length < 120, l);
+    assert.doesNotMatch(l, /\b(ST|BA|AH)[0-9A-Z]{6,}/, l);
+    assert.doesNotMatch(l, /store_id|balance_account_id|merchant_account|[\u2013\u2014]/, l);
+  }
+  // nothing known: the store line, no rows, never a throw
+  assert.deepEqual(relinkStoreConfirmView(null), { lines: ['The venue already names a different payments location.', 'Replacing it changes where card payments go.'], ids: [] });
+  assert.deepEqual(relinkStoreConfirmView({ error: 'x', plan: { diff: {} } }).ids, []);
+});
+
 test('the flow’s wording never uses a dash as punctuation', () => {
   const words = [
     ...Object.values(GOLIVE_STEP_TITLES),
@@ -591,4 +674,66 @@ test('referenceSearchView: its wording never uses a dash as punctuation', () => 
     referenceSearchView({ reference: 'SV-1007', balancePlatformKnown: true, holderFoundBy: 'reference' }).foundLine,
   ];
   for (const w of words) assert.doesNotMatch(String(w), /[–—]/, `dash in: ${w}`);
+});
+
+// ── THE PROBLEM BOX AND THE TOP LINE (9 Sep 2026, OWNER FEEDBACK) ───────────
+// "just errors all over the place". golive_state answers `problems` (one plain
+// line each, raw answer in rawDetail); the screen draws at most three of them
+// in one box, and never the two that have their own place on the screen.
+import { goliveProblemBox, PROBLEM_BOX_MAX_LINES, PROBLEM_BOX_TEXT, PROBLEM_BOX_SKIP, PLATFORM_SETTINGS_WAITING_LINE } from './adyenAdminRows.js';
+import { goliveProblems, BP_KEY_BLOCKED_DETAIL } from './adyenLink.js';
+
+test('goliveProblemBox: nothing to say is no box at all, and the Balance Platform refusal is never in it', () => {
+  assert.equal(goliveProblemBox(null), null);
+  assert.equal(goliveProblemBox([]), null);
+  const onlyBp = goliveProblems([
+    'account holder AH1: refused (401): the credential behind ADYEN_LIVE_UK_BP_KEY (the set\'s API key when that is unset) needs the Balance Platform BCL role',
+    'balance account BA1: refused (401): the credential behind ADYEN_LIVE_UK_BP_KEY (the set\'s API key when that is unset) needs the Balance Platform BCL role',
+  ]).problems;
+  assert.equal(onlyBp.length, 1);
+  assert.equal(onlyBp[0].text, BP_KEY_BLOCKED_DETAIL);
+  assert.equal(goliveProblemBox(onlyBp), null, 'step 2 says it, the box does not');
+  // the mismatch has its own block on the screen
+  assert.equal(goliveProblemBox([{ kind: 'mismatch', text: 'This venue is on a different Adyen account than the one we are set to use.', rawDetail: 'x' }]), null);
+  // no venue code: step 1 says it word for word (set_venue_code), and Adyen
+  // was never asked, so "Adyen did not answer everything" would be untrue
+  const noCode = goliveProblems(['This venue has no venue code, so there is no store reference to look up. Set one in the Back Office (Venue settings) or pass reference.']).problems;
+  assert.equal(noCode[0].kind, 'no_code');
+  assert.equal(goliveProblemBox(noCode), null, 'step 1 says it, the box does not');
+  assert.deepEqual([...PROBLEM_BOX_SKIP], ['bp_refused', 'mismatch', 'no_code']);
+});
+
+test('goliveProblemBox: at most three plain lines, every raw answer behind Show detail', () => {
+  const problems = [
+    { kind: 'bp_refused', text: BP_KEY_BLOCKED_DETAIL, rawDetail: 'raw bp' },
+    { kind: 'timeout', text: 'Adyen took too long to answer. Try again in a moment.', rawDetail: 'raw 1' },
+    { kind: 'readers', text: 'The card reader list could not be read, so step 5 may be wrong.', rawDetail: 'raw 2' },
+    { kind: 'readers', text: 'The card reader list could not be read, so step 5 may be wrong.', rawDetail: 'raw 2 again' },
+    { kind: 'read_failed', text: 'Adyen would not answer about the registered company.', rawDetail: 'raw 3' },
+    { kind: 'other', text: 'Adyen said something we did not expect.', rawDetail: 'raw 4' },
+  ];
+  const box = goliveProblemBox(problems);
+  assert.equal(box.text, PROBLEM_BOX_TEXT);
+  assert.equal(box.text, 'Adyen did not answer everything, so what is on screen may not be the whole picture.');
+  assert.equal(PROBLEM_BOX_MAX_LINES, 3);
+  assert.equal(box.lines.length, 3);
+  assert.deepEqual(box.lines.map((l) => l.kind), ['timeout', 'readers', 'read_failed']);
+  assert.equal(box.more, 1, 'the fourth is counted, not dropped');
+  assert.equal(box.detail, 'raw 1\n\nraw 2\n\nraw 3\n\nraw 4', 'every raw answer, past the third line too');
+  for (const l of box.lines) {
+    assert.ok(l.text.length < 120);
+    assert.doesNotMatch(l.text, /[\u2013\u2014]/);
+  }
+  // junk rows are skipped, a missing rawDetail is null
+  const thin = goliveProblemBox([null, 7, { kind: 'other', text: 'Adyen said something we did not expect.' }]);
+  assert.equal(thin.lines.length, 1);
+  assert.equal(thin.lines[0].rawDetail, null);
+  assert.equal(thin.detail, null);
+  assert.equal(thin.more, 0);
+});
+
+test('PLATFORM_SETTINGS_WAITING_LINE: one short plain line, no table names, no dashes', () => {
+  assert.equal(PLATFORM_SETTINGS_WAITING_LINE, 'One database step is waiting on ServOS. Venues need their id pasted until it runs.');
+  assert.ok(PLATFORM_SETTINGS_WAITING_LINE.length < 120);
+  assert.doesNotMatch(PLATFORM_SETTINGS_WAITING_LINE, /adyen_platform_settings|\.sql|[\u2013\u2014]/);
 });

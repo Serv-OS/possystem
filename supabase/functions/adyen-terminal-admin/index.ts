@@ -158,11 +158,11 @@ import {
 } from '../_shared/adyenOrigins.ts';
 import {
   referenceKey, storeRows, matchStoreByReference, storeSummary, storeCandidates, accountHolderSummary, balanceAccountSummary,
-  legalEntitySummary, pickBalanceAccount, resolveLinkEnvironment, buildLinkPatch, planLink, replacementClear, lookupSummary,
+  legalEntitySummary, pickBalanceAccount, resolveLinkEnvironment, buildLinkPatch, planLink, relinkClear, lookupSummary,
   stashReaders, buildEnvStashEntry, stashHasSetup, stashSummary, stashRestorePlan,
   merchantRows, merchantSummary, accountHolderRows, matchAccountHolderByReference, accountHolderCandidates,
   pickBusinessLine, merchantMismatch, storeStillNeeded, balancePlatformSecretName, balancePlatformSecretNames,
-  capabilityList, blockedCapabilityNames, buildGoliveSteps,
+  capabilityList, blockedCapabilityNames, buildGoliveSteps, goliveProblems,
   ADYEN_PLATFORM_SETTINGS_TABLE, ADYEN_ROW_BALANCE_PLATFORM_COLUMN,
   platformSettingsKey, platformSettingsPatch, platformSettingsMissingMessage,
   learnedBalancePlatform, isUnknownRelationError, merchantAccountsSeen,
@@ -837,6 +837,9 @@ async function lookupByReference(cfg: AdyenConfig, merchant: string, reference: 
   errors.push(...storeSide.errors, ...holderSide.errors);
   notes.push(...storeSide.notes, ...holderSide.notes);
   out.scopeMissing = storeSide.scopeMissing || holderSide.scopeMissing;
+  // The store route on its own, for the go live flow's step 1: the merged
+  // flag above is also true when the Balance Platform refuses the key.
+  out.storeScopeMissing = storeSide.scopeMissing;
   out.merchantMismatch = storeSide.mismatch;
   out.merchantsSearched = storeSide.sweep?.merchantsSearched ?? [merchant];
   // WHICH MERCHANT EACH HIT SITS ON, as rows the picker renders: id, reference,
@@ -2003,7 +2006,11 @@ Deno.serve(async (req) => {
       // active (the decision itself reads patch.receive_payments_ok).
       const plan = patch ? planLink({ row: maa, currentEnv: env, targetEnv: linkEnv, patch, provisioned, readers, relink: confirm, storeStatus: lookup.store?.status ?? null }) : null;
       const summary = lookupSummary(lookup);
-      const errors = Array.isArray(lookup.errors) ? lookup.errors : [];
+      // Exact repeats dropped, and ONE plain line per problem for the screen
+      // (9 Sep 2026: a pasted account holder the Balance Platform refused was
+      // in the list twice, word for word, and the owner saw "errors all over").
+      const screen = goliveProblems(lookup.errors, { settingsWarning: kept.warning ?? linkSettings.warning ?? null });
+      const errors = screen.raw;
       // provisioned and readers ride along so the admin portal's confirm can
       // say exactly what a flip sets aside (the store ids, N card readers);
       // keepsSetup and stashes say whether it is kept and what a flip puts
@@ -2011,6 +2018,7 @@ Deno.serve(async (req) => {
       const envStash = await getEnvStash();
       const base = {
         action, environment: linkEnv, previous: env, region, merchantAccount: merchant, venueCode, reference, summary, lookup, patch, plan, provisioned, readers,
+        problems: screen.problems, bpRefused: screen.bpRefused, platformSettingsMissing: screen.platformSettingsMissing,
         keepsSetup: envStash.available, stashes: stashSummaries(envStash), stashWarning: envStash.warning,
         // 8 Sep 2026: what the two route lookup found out about WHERE the venue
         // lives. merchantMismatch is a warning with a way forward, never a
@@ -2067,11 +2075,15 @@ Deno.serve(async (req) => {
         warnings.push(...flip.warnings);
       } else {
         // Same environment. A CONFIRMED replacement (conflicts, relink
-        // given) clears every id the chain did not reach, the payout flag,
-        // the snapshot and the hosted onboarding link, so the OLD account
-        // holder's bank account never survives under the NEW balance
-        // account (8 Sep 2026). Filling blanks on a first link clears nothing.
-        const clear = plan.diff.conflicts.length ? replacementClear(patch) : {};
+        // given) that MOVES THE MONEY SIDE (balance_account_id or
+        // account_holder_id) clears every id the chain did not reach, the
+        // payout flag, the snapshot and the hosted onboarding link, so the
+        // OLD account holder's bank account never survives under the NEW
+        // balance account (8 Sep 2026). A store swap alone with the holder
+        // side unreadable this time (the Balance Platform refused the key)
+        // clears NOTHING: a failed read is not a new holder (9 Sep 2026).
+        // Filling blanks on a first link clears nothing either (relinkClear).
+        const clear = relinkClear(plan.diff, patch);
         const { error: linkErr, warning: regionWarning } = await upsertAccountRow({ location_id: loc.id, ...clear, ...patch, updated_at: new Date().toISOString() }, 'location_id');
         if (linkErr) return json({ ok: false, error: `link write failed: ${linkErr.message}`, ...base }, 500);
         if (regionWarning) warnings.push(regionWarning);
@@ -2309,6 +2321,21 @@ Deno.serve(async (req) => {
         notes.push(`Nothing was read from Adyen: no merchant account is known for the ${region} ${targetEnv} account (${merchantSecret}).`);
       }
 
+      // Keep the balance platform id this read learned, so the NEXT venue on
+      // this account is found by its reference with nothing pasted.
+      const learnedBp = learnedBalancePlatform(lookup);
+      const kept = await savePlatformSettings(targetEnv, region, settings, { balancePlatformId: learnedBp });
+      const settingsWarning = kept.warning ?? settings.warning ?? null;
+      if (settingsWarning) notes.push(settingsWarning);
+      const balancePlatformKnown = !!(learnedBp || storedBp || balancePlatformFromSecret(targetEnv, region));
+      // ONE PLAIN LINE PER PROBLEM (9 Sep 2026). Exact repeats are dropped, the
+      // Balance Platform refusal is ONE fact the business account step says
+      // (bpRefused), the settings table waiting on its migration is ONE short
+      // line at the top of the flow (platformSettingsMissing), and everything
+      // else is a plain line under 120 characters with the raw Adyen answer
+      // behind it in rawDetail.
+      const screen = goliveProblems(errors, { settingsWarning });
+      const bpSecret = adyenSecretName(targetEnv, 'bpKey', region);
       const state = {
         venue: { name: loc.name ?? null, code: lookupReference, region, environment: env },
         keys: { configured: keysOk, missing: keysMissing },
@@ -2325,17 +2352,31 @@ Deno.serve(async (req) => {
         readers: readerAnswer.readers,
         origins,
         applePay,
+        // A FOUND STORE IS NOT A LINKED STORE (9 Sep 2026, live screen: the
+        // store was found at Adyen, step 3 said done, and the venue row still
+        // held store_id NULL). The row's ids on the environment the flow looks
+        // at ride in, so the step builder can tell the two apart and offer to
+        // save the store (link_store). Null when the flow looks at the OTHER
+        // environment: those ids belong to the one the venue is on, and the go
+        // live flip writes the new ones.
+        row: targetEnv === env
+          ? { store_id: maa?.store_id ?? null, merchant_account: maa?.merchant_account ?? null, account_holder_id: maa?.account_holder_id ?? null }
+          : null,
+        // THE ONE PLAIN REASON: the Balance Platform refused our key, and the
+        // secret the separate credential goes in (the name, never a value).
+        balancePlatformKey: { refused: screen.bpRefused, secret: bpSecret },
+        // What the STORE search came back with when no store was resolved,
+        // so step 1 never says "nothing carries the code" while the box says
+        // the list was refused or that two stores carry it (rule 6).
+        storeRead: {
+          refused: lookup?.storeScopeMissing === true && !lookup?.store,
+          ambiguous: (lookup?.storeHits ?? []).length > 1,
+        },
       };
-      // Keep the balance platform id this read learned, so the NEXT venue on
-      // this account is found by its reference with nothing pasted.
-      const learnedBp = learnedBalancePlatform(lookup);
-      const kept = await savePlatformSettings(targetEnv, region, settings, { balancePlatformId: learnedBp });
-      const settingsWarning = kept.warning ?? settings.warning ?? null;
-      if (settingsWarning) notes.push(settingsWarning);
-      const balancePlatformKnown = !!(learnedBp || storedBp || balancePlatformFromSecret(targetEnv, region));
       // The VENUE row is not touched here. golive_state stays read only for
       // the venue: adyen_link writes the id onto the row, on the one call that
-      // already writes it (rememberBalancePlatformOnVenue).
+      // already writes it (rememberBalancePlatformOnVenue), and link_store on
+      // the screen is that same call with the store id this read found.
 
       // The target rides in: the venue's readers belong to the environment it
       // is on now, so they are never "done" for a flow looking at the other.
@@ -2354,7 +2395,7 @@ Deno.serve(async (req) => {
         merchantsSearched: lookup?.merchantsSearched ?? [],
         found: lookup?.found ?? null, holderFoundBy: lookup?.holderFoundBy ?? null,
         steps: steps.map((x) => `${x.id}=${x.state}`).join(' '),
-        errors, notes,
+        errors: screen.raw, notes,
       });
       return json({
         ok: true, action, ...state, steps,
@@ -2386,9 +2427,18 @@ Deno.serve(async (req) => {
         // last adyen_merchants, so the picker can draw with no live call.
         merchantAccountsKnown: merchantAccountsSeen(settings.row?.merchant_accounts),
         platformSettingsWarning: settingsWarning,
+        // THE SCREEN READS THESE, not errors and notes (9 Sep 2026): one plain
+        // line per problem with the raw answer in rawDetail, and the two
+        // facts said in their own place (the business account step, the top
+        // line of the flow) so the box under the steps never repeats them.
+        problems: screen.problems,
+        bpRefused: screen.bpRefused,
+        platformSettingsMissing: screen.platformSettingsMissing,
         blockedCapabilities: blockedCapabilityNames(state.capabilities),
         readers_error: readerAnswer.error,
-        errors, notes,
+        // The raw lines, exact repeats dropped, for the audit trail and Show
+        // detail; never drawn as they are.
+        errors: screen.raw, notes,
       });
     }
 
