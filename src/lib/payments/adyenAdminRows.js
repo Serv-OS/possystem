@@ -516,7 +516,16 @@ export function goliveFlowView(state, openId = null) {
     };
   });
   const picked = steps.find((x) => x.id === str(openId)) || null;
-  const next = steps.find((x) => !x.done) || null;
+  // WHICH STEP OPENS BY ITSELF. Anything Adyen has BLOCKED comes first: the
+  // flow cannot go past it. Otherwise the first step that is not done AND has
+  // something to press, so a step that is only telling the owner something
+  // ("Cards work. Payouts wait for Adyen.") is amber and the flow moves on
+  // instead of parking them on work they cannot do today (8 Sep 2026: a
+  // blocked payout held the whole flow at step 2 forever).
+  const next = steps.find((x) => x.state === 'blocked')
+    || steps.find((x) => !x.done && x.action)
+    || steps.find((x) => !x.done)
+    || null;
   const open = picked || next;
   if (open) open.open = true;
   const doneCount = steps.filter((x) => x.done).length;
@@ -547,6 +556,34 @@ export function capabilityNotices(list) {
         tone: pending ? 'missing' : 'bad',
       };
     });
+}
+
+// ── FINDING A VENUE BY ITS REFERENCE (8 Sep 2026) ───────────────────────────
+// Adyen has no lookup by reference on the money side: account holders can only
+// be listed under a balance platform id. So the FIRST venue on an account has
+// to have its Adyen id pasted once, that read hands us the balance platform
+// id, we keep it (adyen_platform_settings), and every venue after it is found
+// by its reference on its own.
+//
+// The screen says which of those two it is in ONE line, and the paste box
+// stops being the main path the moment the id is known:
+//   known === false   the paste box IS the way in, with firstVenueLine above it
+//   known === true    "Look again" is the primary and the paste box is a small
+//                     secondary underneath
+//   foundLine         set when THIS read found the venue by its reference with
+//                     nothing pasted, so the admin sees it working
+export function referenceSearchView(state) {
+  const s = isObj(state) ? state : {};
+  const known = s.balancePlatformKnown === true;
+  const ref = str(s.reference) || str(isObj(s.venue) ? s.venue.code : '');
+  return {
+    known,
+    pastePrimary: !known,
+    firstVenueLine: known ? null : 'The first venue needs its Adyen id pasted once. After that we find venues by their reference on their own.',
+    foundLine: lower(s.holderFoundBy) === 'reference'
+      ? `${ref || 'This venue'} was found on Adyen by its reference. Nothing was pasted.`
+      : null,
+  };
 }
 
 // The merchant mismatch in plain words, with the two account names apart from
@@ -596,7 +633,12 @@ export function plainFailure(err, what = 'That did not work') {
 // stored ids it replaces, and what a move between test and live sets aside,
 // keeps and puts back. Kept word for word from the dense panel it replaces
 // (8 Sep 2026), because going live must always ask.
-export function goLiveConfirmText(lookup, venueName = 'this venue') {
+// The same content as ONE LINE PER CONSEQUENCE, for the in page panel that
+// replaced window.confirm (8 Sep 2026: a native dialog rendered up to six
+// paragraphs at the OS default size, on the one screen that decides whether
+// real cards are charged). goLiveConfirmText joins them for anything that
+// still wants a string.
+export function goLiveConfirmLines(lookup, venueName = 'this venue') {
   const a = isObj(lookup) ? lookup : {};
   const l = isObj(a.lookup) ? a.lookup : {};
   const plan = isObj(a.plan) ? a.plan : {};
@@ -634,15 +676,25 @@ export function goLiveConfirmText(lookup, venueName = 'this venue') {
     if (back) lines.push(`The ${a.environment} setup kept earlier comes back too: ${stashLine('', back)}.`);
     if (a.stashWarning) lines.push(str(a.stashWarning));
   }
-  return `${lines.join('\n\n')}\n\nContinue?`;
+  return lines;
+}
+
+export function goLiveConfirmText(lookup, venueName = 'this venue') {
+  return `${goLiveConfirmLines(lookup, venueName).join('\n\n')}\n\nContinue?`;
 }
 
 // The second confirm: the fn answered 409 needs_relink (the venue changed
 // between the read and the click), with its own reason.
-export function relinkConfirmText(data, venueName = 'this venue') {
+export function relinkConfirmLines(data) {
   const d = isObj(data) ? data : {};
+  const lines = [str(d.error) || 'Adyen holds different ids for this venue now.'];
+  if (d.keepsSetup === true && str(d.previous) && str(d.environment) && str(d.previous) !== str(d.environment)) {
+    lines.push(`The venue’s ${d.previous} setup is kept, and it comes back if you switch back.`);
+  }
+  return lines;
+}
+
+export function relinkConfirmText(data, venueName = 'this venue') {
   const name = str(venueName) || 'this venue';
-  const kept = d.keepsSetup === true && str(d.previous) && str(d.environment) && str(d.previous) !== str(d.environment)
-    ? `\n\nThe venue’s ${d.previous} setup is kept, and it comes back if you switch back.` : '';
-  return `${str(d.error) || 'Adyen holds different ids for this venue now.'}${kept}\n\nGo ahead and link ${name} again?`;
+  return `${relinkConfirmLines(data).join('\n\n')}\n\nGo ahead and link ${name} again?`;
 }

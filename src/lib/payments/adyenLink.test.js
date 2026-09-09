@@ -736,11 +736,24 @@ test('buildGoliveSteps: always the same five steps in the same order', () => {
   assert.deepEqual(ids(buildGoliveSteps({})), ['find_venue', 'business_account', 'payments_location', 'go_live', 'readers']);
   assert.deepEqual(ids(buildGoliveSteps()), ['find_venue', 'business_account', 'payments_location', 'go_live', 'readers']);
   for (const s of buildGoliveSteps(READY)) {
-    assert.ok(s.title && s.title.length < 24, `${s.id} title is short`);
+    // The titles live in ONE place, GOLIVE_STEP_TITLES on the screen's side,
+    // so the fn answers none and the two can never drift.
+    assert.equal('title' in s, false, `${s.id} carries no title`);
     assert.ok(['done', 'todo', 'attention', 'blocked'].includes(s.state));
     assert.equal(typeof s.detail, 'string');
-    assert.ok(!/[—–]/.test(`${s.title} ${s.detail} ${s.hint ?? ''}`), 'no dashes as punctuation');
+    assert.ok(!/[—–]/.test(`${s.detail} ${s.hint ?? ''}`), 'no dashes as punctuation');
   }
+});
+
+test('buildGoliveSteps: no step detail ever carries an Adyen id', () => {
+  const every = [
+    ...buildGoliveSteps(READY),
+    ...buildGoliveSteps({ ...READY, legalEntity: null }),
+    ...buildGoliveSteps({ ...READY, legalEntity: legalEntitySummary({ ...LEGAL, name: '', transferInstruments: [] }) }),
+    ...buildGoliveSteps({ ...READY, store: null }),
+    ...buildGoliveSteps({ ...READY, capabilities: capabilityList(summariseCapabilities(LIVE_CAPS)) }),
+  ];
+  for (const s of every) assert.doesNotMatch(s.detail, /\b(AH|ST|BA|LE)[0-9A-Z]{10,}\b/, `id in a sentence: ${s.detail}`);
 });
 
 test('buildGoliveSteps: a venue that is fully live reads done all the way down', () => {
@@ -774,16 +787,50 @@ test('buildGoliveSteps: the LIVE case, an account holder with NO store', () => {
   assert.equal(byId(steps, 'find_venue').state, 'done');
   assert.match(byId(steps, 'find_venue').detail, /holds SV-1007 as a business account/);
   assert.match(byId(steps, 'find_venue').hint, /no store yet/);
-  // a settled refusal is BLOCKED and named, never hidden behind "pending"
-  assert.equal(byId(steps, 'business_account').state, 'blocked');
-  assert.match(byId(steps, 'business_account').detail, /sendToTransferInstrument/);
-  assert.equal(byId(steps, 'business_account').action, 'open_adyen');
+  // The ONE refusal on the live account is sendToTransferInstrument, a PAY
+  // OUT. It holds the settlement to the venue's bank, not a card payment, so
+  // it must never stop the flow (8 Sep 2026: it parked the owner on step 2).
+  assert.equal(byId(steps, 'business_account').state, 'attention');
+  assert.equal(byId(steps, 'business_account').detail, 'Cards work. Payouts wait for Adyen.');
+  assert.equal(byId(steps, 'business_account').action, null);
   // the store is the next thing someone does
   assert.equal(byId(steps, 'payments_location').state, 'todo');
   assert.equal(byId(steps, 'payments_location').action, 'create_store');
   assert.match(byId(steps, 'payments_location').hint, /SV-1007/);
   assert.equal(byId(steps, 'go_live').state, 'todo');
   assert.equal(byId(steps, 'readers').state, 'todo');
+});
+
+test('buildGoliveSteps: a blocked PAY IN stops the flow, a blocked PAY OUT does not', () => {
+  const payout = buildGoliveSteps({ ...READY, capabilities: capabilityList(summariseCapabilities(LIVE_CAPS)) });
+  assert.equal(byId(payout, 'business_account').state, 'attention');
+  assert.equal(byId(payout, 'payments_location').state, 'done');
+  assert.equal(byId(payout, 'go_live').state, 'done');
+
+  const payin = buildGoliveSteps({
+    ...READY,
+    capabilities: capabilityList(summariseCapabilities({
+      receivePayments: { allowed: false, requested: true, verificationStatus: 'rejected' },
+      sendToTransferInstrument: { allowed: true, requested: true, verificationStatus: 'valid' },
+    })),
+  });
+  assert.equal(byId(payin, 'business_account').state, 'blocked');
+  assert.match(byId(payin, 'business_account').detail, /Adyen blocks receivePayments/);
+  assert.equal(byId(payin, 'business_account').action, 'open_adyen');
+});
+
+test('buildGoliveSteps: readers on the environment the venue is LEAVING are never done', () => {
+  const onTest = { ...READY, venue: { ...READY.venue, environment: 'test' } };
+  // looking at live while the venue is on test: going live retires them all
+  const looking = buildGoliveSteps(onTest, { target: 'live' });
+  assert.equal(byId(looking, 'readers').state, 'todo');
+  assert.match(byId(looking, 'readers').detail, /on the test account/);
+  assert.match(byId(looking, 'readers').hint, /added again after/);
+  // the venue's own environment reads as before
+  assert.equal(byId(buildGoliveSteps(onTest, { target: 'test' }), 'readers').state, 'done');
+  assert.equal(byId(buildGoliveSteps(READY, { target: 'live' }), 'readers').state, 'done');
+  // no readers at all still asks for one, whatever the target
+  assert.equal(byId(buildGoliveSteps({ ...onTest, readers: [] }, { target: 'live' }), 'readers').detail, 'No card readers on this venue yet.');
 });
 
 test('buildGoliveSteps: nothing found at all asks for the id, no code asks for the code', () => {
@@ -896,4 +943,107 @@ test('buildGoliveSteps: the go live step reads the LIVE keys, not the ones the r
   assert.equal(byId(ready, 'go_live').action, 'go_live');
   // no liveKeys given at all falls back to keys, as before
   assert.equal(byId(buildGoliveSteps({ ...READY }), 'go_live').state, 'done');
+});
+
+// ── OUR OWN ADYEN IDS, KEPT PER ENVIRONMENT AND REGION (8 Sep 2026) ─────────
+// The Balance Platform Configuration API has NO filter by reference, so the
+// FIRST venue on an Adyen account is linked by pasting its account holder id
+// once; the balancePlatform that read answers is kept, and every venue after
+// it is found by its reference on its own. These are the pure pieces of that.
+import {
+  ADYEN_PLATFORM_SETTINGS_TABLE, MERCHANT_ACCOUNTS_KEPT,
+  platformSettingsKey, merchantAccountsSeen, mergeMerchantAccounts,
+  platformSettingsPatch, learnedBalancePlatform, isUnknownRelationError,
+  platformSettingsMissingMessage,
+} from './adyenLink.js';
+
+const BP = 'BP32BZP22322CJ5PXF2BDPLAT';
+
+test('platformSettingsKey: the two words the database holds, legacy EU reads as UK', () => {
+  assert.deepEqual(platformSettingsKey('live', 'UK'), { environment: 'live', region: 'UK' });
+  assert.deepEqual(platformSettingsKey('LIVE', 'us'), { environment: 'live', region: 'US' });
+  assert.deepEqual(platformSettingsKey('test', 'EU'), { environment: 'test', region: 'UK' });
+  // anything unknown is test and UK, the safe pair
+  assert.deepEqual(platformSettingsKey(null, null), { environment: 'test', region: 'UK' });
+  assert.deepEqual(platformSettingsKey('sandbox', 'FR'), { environment: 'test', region: 'UK' });
+});
+
+test('merchantAccountsSeen: { id, name, status }, deduped the way Adyen compares codes', () => {
+  const rows = merchantAccountsSeen([
+    { id: 'FranPOS_UK', name: 'FranPOS UK', status: 'Active', storeCount: 12 },
+    { id: 'franpos_uk', name: 'a second answer for the same account' },
+    { id: 'FranPOS_QSR_UK', name: 'FranPOS QSR UK', status: 'Active' },
+    { id: '   ' },
+    'PlainCode',
+    null,
+  ]);
+  assert.deepEqual(rows, [
+    { id: 'FranPOS_UK', name: 'FranPOS UK', status: 'Active' },
+    { id: 'FranPOS_QSR_UK', name: 'FranPOS QSR UK', status: 'Active' },
+    { id: 'PlainCode', name: null, status: null },
+  ]);
+  assert.deepEqual(merchantAccountsSeen(null), []);
+  // the count is decoration on the answer, never kept
+  assert.equal('storeCount' in rows[0], false);
+});
+
+test('mergeMerchantAccounts: kept ones stay, seen ones refresh, new ones follow', () => {
+  const kept = [{ id: 'FranPOS_UK', name: 'old name', status: 'Active' }, { id: 'Gone_UK', name: 'not visible today', status: 'Active' }];
+  const merged = mergeMerchantAccounts(kept, [
+    { id: 'franpos_uk', name: 'FranPOS UK', status: 'Active' },
+    { id: 'FranPOS_QSR_UK', name: 'FranPOS QSR UK', status: 'Active' },
+  ]);
+  // a credential scoped down between reads must NOT lose the account a venue
+  // is already charging on, so Gone_UK survives
+  assert.deepEqual(merged.map((m) => m.id), ['FranPOS_UK', 'Gone_UK', 'FranPOS_QSR_UK']);
+  assert.equal(merged[0].name, 'FranPOS UK');
+  const capped = mergeMerchantAccounts([], Array.from({ length: MERCHANT_ACCOUNTS_KEPT + 5 }, (_, i) => ({ id: `M${i}` })));
+  assert.equal(capped.length, MERCHANT_ACCOUNTS_KEPT);
+});
+
+test('platformSettingsPatch: nothing new writes nothing', () => {
+  assert.equal(platformSettingsPatch(null, {}), null);
+  assert.equal(platformSettingsPatch(null, { balancePlatformId: '' }), null);
+  assert.equal(platformSettingsPatch({ balance_platform_id: BP }, { balancePlatformId: BP }), null);
+  const same = { balance_platform_id: BP, merchant_accounts: [{ id: 'FranPOS_UK', name: null, status: null }] };
+  assert.equal(platformSettingsPatch(same, { balancePlatformId: BP, merchantAccounts: ['FranPOS_UK'] }), null);
+});
+
+test('platformSettingsPatch: the first venue teaches us the balance platform', () => {
+  assert.deepEqual(platformSettingsPatch(null, { balancePlatformId: BP }), { balance_platform_id: BP });
+  // a DIFFERENT id replaces (the account was re-pointed), the merchant list merges
+  const p = platformSettingsPatch(
+    { balance_platform_id: 'BPOLD', merchant_accounts: [{ id: 'FranPOS_UK' }] },
+    { balancePlatformId: BP, merchantAccounts: [{ id: 'FranPOS_QSR_UK', name: 'QSR' }] },
+  );
+  assert.equal(p.balance_platform_id, BP);
+  assert.deepEqual(p.merchant_accounts.map((m) => m.id), ['FranPOS_UK', 'FranPOS_QSR_UK']);
+  // and it never clears: a read that learned nothing leaves the kept id alone
+  assert.equal(platformSettingsPatch({ balance_platform_id: BP }, { balancePlatformId: null }), null);
+});
+
+test('learnedBalancePlatform: from the listing, from a pasted holder, from the store route', () => {
+  assert.equal(learnedBalancePlatform({ balancePlatform: BP }), BP);
+  // the store's balance account named the holder, so the id rides on the summary
+  assert.equal(learnedBalancePlatform({ accountHolder: accountHolderSummary({ ...HOLDER, balancePlatform: BP }) }), BP);
+  assert.equal(learnedBalancePlatform({ balancePlatform: null, accountHolder: null }), null);
+  assert.equal(learnedBalancePlatform(null), null);
+});
+
+test('isUnknownRelationError: the table is not there yet, and nothing else', () => {
+  assert.equal(isUnknownRelationError({ code: '42P01', message: 'relation "public.adyen_platform_settings" does not exist' }, ADYEN_PLATFORM_SETTINGS_TABLE), true);
+  assert.equal(isUnknownRelationError({ code: 'PGRST205', message: "Could not find the table 'public.adyen_platform_settings' in the schema cache" }, ADYEN_PLATFORM_SETTINGS_TABLE), true);
+  // a DIFFERENT missing table must not read as ours
+  assert.equal(isUnknownRelationError({ code: '42P01', message: 'relation "public.something_else" does not exist' }, ADYEN_PLATFORM_SETTINGS_TABLE), false);
+  // a refusal is not an absence: RLS, a timeout and a plain 500 all keep going
+  assert.equal(isUnknownRelationError({ code: '42501', message: 'permission denied for table adyen_platform_settings' }, ADYEN_PLATFORM_SETTINGS_TABLE), false);
+  assert.equal(isUnknownRelationError({ message: 'fetch failed' }, ADYEN_PLATFORM_SETTINGS_TABLE), false);
+  assert.equal(isUnknownRelationError(null, ADYEN_PLATFORM_SETTINGS_TABLE), false);
+});
+
+test('platformSettingsMissingMessage: names the file, and never a dash', () => {
+  const m = platformSettingsMissingMessage();
+  assert.match(m, /20260908c_PLATFORM_adyen_platform_settings\.sql/);
+  assert.match(m, /pasted/);
+  assert.doesNotMatch(m, /[–—]/);
 });

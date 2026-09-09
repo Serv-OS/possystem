@@ -618,6 +618,130 @@ export function accountHolderCandidates(rows, reference, limit = 50) {
     .map((x) => x.c);
 }
 
+// ── OUR OWN ADYEN IDS, KEPT PER ENVIRONMENT AND REGION (8 Sep 2026) ─────────
+// The Balance Platform Configuration API has NO filter by reference, and the
+// ONLY account holder listing is under a balance platform id:
+//   GET /balancePlatforms/{id}/accountHolders?limit=100&offset=N   max 100 a page
+//     https://docs.adyen.com/api-explorer/balanceplatform/2/get/balancePlatforms/_id_/accountHolders
+//   GET /accountHolders/{id}   answers the holder INCLUDING its balancePlatform
+//     https://docs.adyen.com/api-explorer/balanceplatform/2/get/accountHolders/_id_
+// So the FIRST venue on an Adyen account is linked by pasting its account
+// holder id once. That one read hands us the balance platform id; we keep it
+// in the platform table adyen_platform_settings (the migration named below),
+// and EVERY VENUE AFTER IT IS FOUND BY ITS REFERENCE on its own.
+//
+// The same row keeps the merchant account codes a credential can see, so the
+// admin portal can draw its account picker with no live call. Both are IDS,
+// not secrets, which is why they live in a table and not in a secret.
+export const ADYEN_PLATFORM_SETTINGS_TABLE = 'adyen_platform_settings';
+export const ADYEN_PLATFORM_SETTINGS_MIGRATION = 'supabase/migrations/20260908c_PLATFORM_adyen_platform_settings.sql';
+// The venue row's own copy of the same id (the column the migration adds).
+export const ADYEN_ROW_BALANCE_PLATFORM_COLUMN = 'balance_platform_id';
+// A guard on the kept list, never a limit anybody would meet: a credential
+// with more merchant accounts than this keeps the first ones it saw.
+export const MERCHANT_ACCOUNTS_KEPT = 200;
+
+// The primary key of the settings row for an environment and a region, in the
+// exact words the database holds ('test' | 'live', 'UK' | 'US'). A legacy 'EU'
+// reads as UK, as it does everywhere else.
+export function platformSettingsKey(env, region) {
+  return { environment: lower(env) === 'live' ? 'live' : 'test', region: isUsRegion(region) ? 'US' : 'UK' };
+}
+
+// Merchant accounts as the settings row keeps them: { id, name, status }, in
+// the order given, deduped case insensitively (Adyen compares codes that way).
+// A bare string is taken as an id, so a list of codes works too.
+export function merchantAccountsSeen(list) {
+  const out = [];
+  const seen = new Set();
+  for (const m of Array.isArray(list) ? list : []) {
+    const row = isObj(m) ? m : { id: m };
+    const id = str(row.id) || str(row.code) || str(row.merchantAccount) || str(row.merchant_account);
+    if (!id) continue;
+    const key = id.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ id, name: orNull(row.name), status: orNull(row.status) });
+  }
+  return out.slice(0, MERCHANT_ACCOUNTS_KEPT);
+}
+
+// The kept list plus what was just seen: kept ones first in the order they
+// were kept (a row seen again refreshes its name and status), anything new
+// after. Never drops a kept account, because a credential can be scoped down
+// between reads and the picker must not lose the account a venue is on.
+export function mergeMerchantAccounts(stored, seen) {
+  const kept = merchantAccountsSeen(stored);
+  const fresh = merchantAccountsSeen(seen);
+  const byKey = new Map(fresh.map((m) => [m.id.toLowerCase(), m]));
+  const done = new Set();
+  const out = [];
+  for (const m of kept) {
+    const key = m.id.toLowerCase();
+    done.add(key);
+    const fresh_ = byKey.get(key);
+    // The id we kept FIRST is the one the picker keeps offering, so a
+    // different casing back from Adyen refreshes the name and the status
+    // without changing the value under the option.
+    out.push(fresh_ ? { ...fresh_, id: m.id } : m);
+  }
+  for (const m of fresh) if (!done.has(m.id.toLowerCase())) out.push(m);
+  return out.slice(0, MERCHANT_ACCOUNTS_KEPT);
+}
+
+// What to WRITE onto the settings row, or null when nothing is new. Called on
+// every read that saw an account holder or a merchant list, so "nothing new"
+// is the normal answer and no write leaves.
+//   `row`     the settings row as it is now (null when there is none yet)
+//   `learned` { balancePlatformId, merchantAccounts } from this read
+// Never clears: a learned id fills a blank or replaces a DIFFERENT id, and
+// the merchant accounts merge.
+export function platformSettingsPatch(row, learned) {
+  const r = isObj(row) ? row : {};
+  const l = isObj(learned) ? learned : {};
+  const patch = {};
+  const bp = str(l.balancePlatformId);
+  if (bp && bp !== str(r.balance_platform_id)) patch.balance_platform_id = bp;
+  const fresh = merchantAccountsSeen(l.merchantAccounts);
+  if (fresh.length) {
+    const kept = merchantAccountsSeen(r.merchant_accounts);
+    const merged = mergeMerchantAccounts(kept, fresh);
+    if (JSON.stringify(merged) !== JSON.stringify(kept)) patch.merchant_accounts = merged;
+  }
+  return Object.keys(patch).length ? patch : null;
+}
+
+// The balance platform id THIS lookup learned, wherever it came from: the
+// holder listing, a pasted holder, or the holder the store's balance account
+// named (accountHolderSummary carries balancePlatform). Null when no account
+// holder was read at all.
+export function learnedBalancePlatform(lookup) {
+  const l = isObj(lookup) ? lookup : {};
+  const holder = isObj(l.accountHolder) ? l.accountHolder : {};
+  return str(l.balancePlatform) || str(holder.balancePlatform) || null;
+}
+
+// PostgREST's two shapes for a table that is not there: 42P01 "relation
+// public.x does not exist" from Postgres, PGRST205 "Could not find the table
+// 'public.x' in the schema cache" from PostgREST itself. The table name must
+// be in the text, so one missing table never reads as another.
+export function isUnknownRelationError(err, table) {
+  if (!isObj(err)) return false;
+  const code = str(err.code);
+  const text = [err.message, err.details, err.hint].map(str).join(' ').toLowerCase();
+  const name = lower(table);
+  if (name && !text.includes(name)) return false;
+  if (code === '42P01' || code === 'PGRST205') return true;
+  return /does not exist|schema cache|could not find the table/.test(text);
+}
+
+// The one line for a settings table that has not been created yet. Named so
+// the admin can act on it: nothing is broken, every venue just needs its id
+// pasted until the migration runs.
+export function platformSettingsMissingMessage() {
+  return `Our own Adyen ids were not kept: the platform table ${ADYEN_PLATFORM_SETTINGS_TABLE} is not there yet, so every venue needs its Adyen id pasted. Run ${ADYEN_PLATFORM_SETTINGS_MIGRATION} on the platform project.`;
+}
+
 // The business line a store must name, from GET /legalEntities/{id}/businessLines
 // ({ businessLines: [{ id, service, industryCode, ... }] }) or a bare array:
 // the one whose service is paymentProcessing, else the only line there is.
@@ -716,13 +840,20 @@ export function blockedCapabilityNames(list) {
   return (Array.isArray(list) ? list : []).filter((c) => isObj(c) && c.blocked === true && c.verification !== 'pending').map((c) => str(c.name)).filter(Boolean);
 }
 
-const GOLIVE_TITLES = Object.freeze({
-  find_venue: 'Find the venue',
-  business_account: 'Business account',
-  payments_location: 'Payments location',
-  go_live: 'Take real cards',
-  readers: 'Card readers',
-});
+// TAKING money and PAYING it out are different jobs, and Adyen blocks them
+// separately (live, 8 Sep 2026: an ACTIVE account holder with
+// sendToTransferInstrument rejected). A refused pay in capability stops cards
+// dead; a refused pay out only holds the settlement to the venue's bank, so it
+// must never halt the go live flow.
+const PAY_IN_CAPABILITIES = Object.freeze(['receivepayments', 'receivefromplatformpayments']);
+const isPayInCapability = (name) => PAY_IN_CAPABILITIES.includes(lower(name));
+
+// The one line for a refused pay out capability, in plain words.
+const PAYOUT_BLOCKED_HINT = 'Sort it out with Adyen when you can. It does not stop a card being taken.';
+
+// The step titles the screen draws live in ONE place,
+// src/lib/payments/adyenAdminRows.js (GOLIVE_STEP_TITLES). The steps answered
+// here carry no title of their own, so the two can never drift.
 
 // The five steps, always all five, always in this order. Nothing is decided on
 // the screen: `state` is the colour, `detail` is the one line under the title,
@@ -734,8 +865,14 @@ const GOLIVE_TITLES = Object.freeze({
 //                     the merchant account the secret names
 //   go_live           real cards on or off
 //   readers           the card machines, and whether they are on a till
-export function buildGoliveSteps(state = {}) {
+//
+// `opts.target` is the environment the flow is LOOKING at (the screen only
+// ever looks at live today). When it is not the environment the venue is on,
+// the readers step cannot be "done": those readers belong to the account the
+// venue is leaving, and going live retires every one of them.
+export function buildGoliveSteps(state = {}, opts = {}) {
   const s = isObj(state) ? state : {};
+  const o = isObj(opts) ? opts : {};
   const venue = isObj(s.venue) ? s.venue : {};
   const keys = isObj(s.keys) ? s.keys : {};
   const holder = isObj(s.holder) && str(s.holder.id) ? s.holder : null;
@@ -749,6 +886,7 @@ export function buildGoliveSteps(state = {}) {
   const applePay = isObj(s.applePay) ? s.applePay : {};
   const code = str(venue.code) || null;
   const env = lower(venue.environment) === 'live' ? 'live' : 'test';
+  const target = lower(o.target) === 'live' ? 'live' : lower(o.target) === 'test' ? 'test' : null;
   const missing = (Array.isArray(keys.missing) ? keys.missing : []).map(str).filter(Boolean);
   const keysOk = keys.configured === true && missing.length === 0;
   // `keys` is the set the reads above were made with; `liveKeys` is the LIVE
@@ -764,14 +902,25 @@ export function buildGoliveSteps(state = {}) {
     action: null,
     hint: missing.length ? `Add ${missing.join(', ')}.` : 'Add the Adyen keys for this region.',
   };
-  const step = (id, x) => ({ id, title: GOLIVE_TITLES[id], state: x.state, detail: x.detail, action: x.action ?? null, hint: x.hint ?? null });
+  const step = (id, x) => ({ id, state: x.state, detail: x.detail, action: x.action ?? null, hint: x.hint ?? null });
   const out = [];
 
   // 1. find the venue
   if (!keysOk) out.push(step('find_venue', keysBlocked));
   else if (store && holder) out.push(step('find_venue', { state: 'done', detail: `Adyen holds ${code || 'this venue'} as a business account and a store.` }));
-  else if (holder) out.push(step('find_venue', { state: 'done', detail: `Adyen holds ${code || 'this venue'} as a business account.`, hint: 'It has no store yet. That is the third step.' }));
   else if (store) out.push(step('find_venue', { state: 'done', detail: `Adyen holds ${code || 'this venue'} as a store.` }));
+  // A payments location was found on ANOTHER Adyen account, so nothing was
+  // resolved. The explanation belongs on the step the flow opens, not one row
+  // down behind a click (8 Sep 2026: pasting an ST id redrew the screen
+  // byte for byte and said nothing).
+  else if (mismatch && str(mismatch.found)) {
+    out.push(step('find_venue', {
+      state: 'attention',
+      detail: `This venue sits on ${str(mismatch.found)}, not on ${str(mismatch.configured) || 'the account we are set to use'}.`,
+      action: 'choose_merchant',
+      hint: 'Pick the right Adyen account below, then the search runs again.',
+    }));
+  } else if (holder) out.push(step('find_venue', { state: 'done', detail: `Adyen holds ${code || 'this venue'} as a business account.`, hint: 'It has no store yet. That is the third step.' }));
   else if (!code) {
     out.push(step('find_venue', { state: 'todo', detail: 'This venue has no code, so there is nothing to search for.', action: 'set_venue_code', hint: 'Set the venue code in the Back Office, then look again.' }));
   } else {
@@ -783,12 +932,18 @@ export function buildGoliveSteps(state = {}) {
   else if (!holder) out.push(step('business_account', { state: 'todo', detail: 'No business account at Adyen yet.', action: 'find_venue', hint: 'Adyen makes one when the venue is onboarded. Paste its id if you have it.' }));
   else {
     const blocked = blockedCapabilityNames(caps);
+    // Taking cards and paying out are separate refusals. Only a refused PAY IN
+    // stops the venue taking a card, so only that one blocks the flow.
+    const blockedIn = blocked.filter(isPayInCapability);
+    const blockedOut = blocked.filter((n) => !isPayInCapability(n));
     const pending = caps.filter((c) => c.blocked === true && c.verification === 'pending').map((c) => str(c.name)).filter(Boolean);
-    const who = str(le?.name) || str(holder.id);
-    if (blocked.length) {
+    // Never the account holder id inside a sentence: the screen carries every
+    // id as its own small grey row with a copy button (rule 5, 8 Sep 2026).
+    const who = str(le?.name) || 'This venue';
+    if (blockedIn.length) {
       out.push(step('business_account', {
         state: 'blocked',
-        detail: `Adyen blocks ${blocked.join(' and ')}.`,
+        detail: `Adyen blocks ${blockedIn.join(' and ')}.`,
         action: 'open_adyen',
         hint: 'Clear the checks in the Adyen Customer Area, then look again. Waiting will not fix it.',
       }));
@@ -796,6 +951,10 @@ export function buildGoliveSteps(state = {}) {
       out.push(step('business_account', { state: 'attention', detail: `The business account is ${lower(holder.status)} at Adyen.`, action: 'open_adyen', hint: 'Nothing settles until Adyen makes it active.' }));
     } else if (!ba) {
       out.push(step('business_account', { state: 'attention', detail: 'The money has nowhere to land: no account was found.', action: 'open_adyen', hint: 'Check the business account in the Adyen Customer Area.' }));
+    } else if (blockedOut.length) {
+      // The live case: an ACTIVE account holder Adyen will not pay out from
+      // yet. Cards work, so the flow says so and moves on.
+      out.push(step('business_account', { state: 'attention', detail: 'Cards work. Payouts wait for Adyen.', action: null, hint: PAYOUT_BLOCKED_HINT }));
     } else if (pending.length) {
       out.push(step('business_account', { state: 'attention', detail: `Adyen is still checking ${pending.join(' and ')}.`, action: null, hint: 'Cards can still work. Payouts wait for the check.' }));
     } else if (le && !str(le.transferInstrumentId)) {
@@ -817,7 +976,9 @@ export function buildGoliveSteps(state = {}) {
       hint: str(mismatch.message) || null,
     }));
   } else if (store && lower(store.status) === 'active') {
-    out.push(step('payments_location', { state: 'done', detail: `Card payments go to ${str(store.reference) || 'this venue'} on ${str(store.merchantId) || str(s.merchantConfigured) || 'the Adyen account'}.` }));
+    // The Adyen account name is an id, so it rides as its own grey row on the
+    // screen, never inside this sentence (rule 5, 8 Sep 2026).
+    out.push(step('payments_location', { state: 'done', detail: `Card payments go to ${str(store.reference) || 'this venue'}.` }));
   } else if (store) {
     out.push(step('payments_location', { state: 'attention', detail: `The store is ${lower(store.status) || 'not active'} at Adyen.`, action: 'open_adyen', hint: 'Cards are refused until Adyen makes it active.' }));
   } else if (holder) {
@@ -856,7 +1017,18 @@ export function buildGoliveSteps(state = {}) {
 
   // 5. the card readers
   const bound = readers.filter((r) => r.bound === true).length;
-  if (!readers.length) out.push(step('readers', { state: 'todo', detail: 'No card readers on this venue yet.', action: 'add_reader', hint: 'Assign a reader, then bind it to a till.' }));
+  // The readers on the row belong to the environment the venue is on NOW. When
+  // the flow is looking at the OTHER one, they are not this flow's readers:
+  // going live retires every one of them, so the step can never read "done".
+  if (readers.length && target && target !== env) {
+    out.push(step('readers', {
+      state: 'todo',
+      detail: `These ${readers.length} reader${readers.length === 1 ? ' is' : 's are'} on the ${env} account.`,
+      action: 'add_reader',
+      hint: `They come off when the venue moves to ${target}, and each one is added again after.`,
+    }));
+  }
+  else if (!readers.length) out.push(step('readers', { state: 'todo', detail: 'No card readers on this venue yet.', action: 'add_reader', hint: 'Assign a reader, then bind it to a till.' }));
   else if (!bound) out.push(step('readers', { state: 'attention', detail: `${readers.length} reader${readers.length === 1 ? '' : 's'} boarded, none on a till.`, action: 'bind_reader', hint: 'Bind each reader to the till it sits next to.' }));
   else if (bound < readers.length) out.push(step('readers', { state: 'attention', detail: `${bound} of ${readers.length} readers are on a till.`, action: 'bind_reader' }));
   else out.push(step('readers', { state: 'done', detail: `${readers.length} reader${readers.length === 1 ? '' : 's'} ready.` }));

@@ -53,7 +53,30 @@
 //                  SERVER so the screen assembles nothing and decides
 //                  nothing (OWNER FEEDBACK, 8 Sep 2026: "far too many words
 //                  and too small ... a flow that supports someone doing
-//                  this"). Read only
+//                  this"). Also answers balancePlatformKnown (is the
+//                  reference search automatic on this account yet) and
+//                  holderFoundBy ('pasted' | 'reference' | 'store'). Read
+//                  only for the VENUE; it does keep what it learns about OUR
+//                  Adyen account (FINDING A VENUE BY ITS REFERENCE below)
+//
+// FINDING A VENUE BY ITS REFERENCE, BY ITSELF (8 Sep 2026, docs checked that
+// day): the Balance Platform Configuration API has NO filter by reference, and
+// the only account holder listing is under a balance platform id,
+//   GET /balancePlatforms/{id}/accountHolders?limit=100&offset=N   max 100 a page
+//   https://docs.adyen.com/api-explorer/balanceplatform/2/get/balancePlatforms/_id_/accountHolders
+// while GET /accountHolders/{id} answers the holder INCLUDING its
+// balancePlatform. So the FIRST venue on an Adyen account is linked by pasting
+// its account holder id once; every action that reads an account holder
+// (adyen_lookup, adyen_link, golive_state) keeps the balancePlatform it saw in
+// the platform table adyen_platform_settings, keyed by environment and region,
+// and from then on EVERY VENUE IS FOUND BY ITS REFERENCE with nothing typed.
+// adyen_merchants keeps the merchant account codes it lists on the same row, so
+// the account picker draws with no live call. Those are ids, not secrets, which
+// is why they live in a table. The table (and the venue row's own
+// balance_platform_id) arrive with
+// supabase/migrations/20260908c_PLATFORM_adyen_platform_settings.sql: until it
+// runs, every read skips it with a warning naming the file and the flow works
+// as before, one paste per venue.
 //
 // Auth: BO JWT → user_locations membership (or super_admin), the ryft-terminals
 // fence, verbatim in spirit. All writes service-role.
@@ -140,8 +163,12 @@ import {
   merchantRows, merchantSummary, accountHolderRows, matchAccountHolderByReference, accountHolderCandidates,
   pickBusinessLine, merchantMismatch, storeStillNeeded, balancePlatformSecretName, balancePlatformSecretNames,
   capabilityList, blockedCapabilityNames, buildGoliveSteps,
+  ADYEN_PLATFORM_SETTINGS_TABLE, ADYEN_ROW_BALANCE_PLATFORM_COLUMN,
+  platformSettingsKey, platformSettingsPatch, platformSettingsMissingMessage,
+  learnedBalancePlatform, isUnknownRelationError, merchantAccountsSeen,
   type StoreSummary, type BalanceAccountSummary, type AccountHolderSummary, type LookupResult, type StashReader, type StashRestorePlan,
   type MerchantSummary, type MerchantMismatch, type AccountHolderCandidate, type CapabilityRow, type GoliveStep, type GoliveReader,
+  type PlatformSettingsLearned,
 } from '../_shared/adyenLink.ts';
 
 const opsAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
@@ -327,10 +354,16 @@ async function findStoreByReference(cfg: AdyenConfig, merchant: string, referenc
 //        https://docs.adyen.com/api-explorer/legalentity/4/get/legalEntities/_id_/businessLines
 // There is NO GET /accountHolders list and NO reference filter anywhere on the
 // Balance Platform API, so the balance platform id is the only way into the
-// holder listing. It is taken from the venue's own row (its account holder, or
-// its balance account's account holder), from a pasted balancePlatform, or
-// from the secret balancePlatformSecretName names; with none of those the
-// answer says the secret is needed instead of guessing.
+// holder listing. It is taken, in this order, from a pasted balancePlatform,
+// from the secret balancePlatformSecretName names, from OUR OWN KEPT SETTINGS
+// (adyen_platform_settings for this environment and region, learned the first
+// time any account holder on this account was read), then from the venue's own
+// row (its account holder, or its balance account's account holder). Only the
+// last two cost an Adyen call, and the kept settings are why they almost never
+// run: the FIRST venue is linked by pasting its account holder id, that read
+// hands us the balance platform id, and EVERY VENUE AFTER IT IS FOUND BY ITS
+// REFERENCE on its own (8 Sep 2026). With none of those, the answer says the
+// id is needed instead of guessing.
 // An account holder names NO merchant account and NO store (the Adyen schema
 // carries balancePlatform, reference, status, capabilities, legalEntityId and
 // primaryBalanceAccount, nothing else), so the merchant a venue charges on can
@@ -339,7 +372,7 @@ const MERCHANT_PAGE_SIZE = 100;
 const MERCHANT_PAGES = 5;         // 500 merchant accounts on one credential
 const MERCHANT_SWEEP_MAX = 25;    // store searches one lookup will run
 const HOLDER_PAGE_SIZE = 100;     // the Balance Platform maximum
-const HOLDER_PAGES = 20;          // 2000 account holders on one balance platform
+const HOLDER_PAGES = 50;          // 5000 account holders on one balance platform
 
 interface MerchantListAnswer { merchants: Dict[]; errors: string[]; scopeMissing: boolean; capped: boolean }
 
@@ -465,25 +498,42 @@ interface HolderSearch {
   balancePlatform: string | null;
   balancePlatformSource: string | null;
   needsBalancePlatform: boolean;
+  // HOW the holder we ended up with was reached: 'pasted' (an AH id was
+  // given), 'reference' (the listing matched the venue code with nothing
+  // pasted, which is the automatic route every venue after the first takes),
+  // or null (no holder on this route).
+  foundBy: 'pasted' | 'reference' | null;
   errors: string[];
   notes: string[];
   scopeMissing: boolean;
 }
 
+// The balance platform id from a secret, if one is set. The secret is optional
+// and normally unset: the id is learned from Adyen and kept in
+// adyen_platform_settings instead (OUR OWN ADYEN IDS below). Never the value in
+// an answer, only whether one exists.
+function balancePlatformFromSecret(env: AdyenEnv, region: string): string | null {
+  return balancePlatformSecretNames(env, region)
+    .map((name) => String(Deno.env.get(name) ?? '').trim())
+    .find((v) => !!v) ?? null;
+}
+
 // The balance platform id a holder listing needs, without asking the admin to
-// type one: a pasted id, the venue's own account holder, its balance account's
-// account holder, or the secret. Reads only.
+// type one: a pasted id, the secret, OUR OWN KEPT SETTINGS for this
+// environment and region, the venue's own account holder, or its balance
+// account's account holder. Reads only, and only the last two cost an Adyen
+// call, so a kept id makes the whole listing free.
 async function resolveBalancePlatform(
   cfg: AdyenConfig,
-  { given, holderId, balanceAccountId }: { given?: string | null; holderId?: string | null; balanceAccountId?: string | null },
+  { given, stored, holderId, balanceAccountId }: { given?: string | null; stored?: string | null; holderId?: string | null; balanceAccountId?: string | null },
 ): Promise<{ id: string | null; source: string | null; errors: string[] }> {
   const errors: string[] = [];
   const pasted = String(given ?? '').trim();
   if (pasted) return { id: pasted, source: 'the id given', errors };
-  const fromEnv = balancePlatformSecretNames(cfg.env, cfg.region)
-    .map((name) => String(Deno.env.get(name) ?? '').trim())
-    .find((v) => !!v);
+  const fromEnv = balancePlatformFromSecret(cfg.env, cfg.region);
   if (fromEnv) return { id: fromEnv, source: `the secret ${balancePlatformSecretName(cfg.env, cfg.region)}`, errors };
+  const kept = String(stored ?? '').trim();
+  if (kept) return { id: kept, source: `the id kept for the ${cfg.region} ${cfg.env} account`, errors };
   const known = String(holderId ?? '').trim();
   if (known) {
     const r = await bcl<Dict>(cfg, 'GET', `/accountHolders/${encodeURIComponent(known)}`);
@@ -515,20 +565,21 @@ async function resolveBalancePlatform(
 async function findAccountHolder(
   cfg: AdyenConfig,
   reference: string | null,
-  opts: { accountHolderId?: string | null; balancePlatform?: string | null; rowHolderId?: string | null; rowBalanceAccountId?: string | null },
+  opts: { accountHolderId?: string | null; balancePlatform?: string | null; storedBalancePlatform?: string | null; rowHolderId?: string | null; rowBalanceAccountId?: string | null },
 ): Promise<HolderSearch> {
   const out: HolderSearch = {
     holder: null, candidates: [], balancePlatform: null, balancePlatformSource: null,
-    needsBalancePlatform: false, errors: [], notes: [], scopeMissing: false,
+    needsBalancePlatform: false, foundBy: null, errors: [], notes: [], scopeMissing: false,
   };
   const pasted = String(opts.accountHolderId ?? '').trim();
   if (pasted) {
     const r = await bcl<Dict>(cfg, 'GET', `/accountHolders/${encodeURIComponent(pasted)}`);
     if (r.ok) {
       out.holder = r.data as Dict;
+      out.foundBy = 'pasted';
       out.balancePlatform = String((r.data as Dict)?.balancePlatform ?? '').trim() || null;
       out.balancePlatformSource = 'the account holder given';
-      out.notes.push(`Account holder ${pasted} was read from the id given, not found by reference.`);
+      out.notes.push(`Account holder ${pasted} was read from the id given, not found by reference. Its balance platform is kept, so the next venue on this account is found by its reference on its own.`);
     } else {
       out.errors.push(`account holder ${pasted}: ${refusalText(cfg, r, 'bpKey', 'the Balance Platform BCL role')}`);
       out.scopeMissing = scopeMissing(r.status);
@@ -537,17 +588,28 @@ async function findAccountHolder(
   }
   if (!reference) return out;
 
-  const bp = await resolveBalancePlatform(cfg, { given: opts.balancePlatform, holderId: opts.rowHolderId, balanceAccountId: opts.rowBalanceAccountId });
+  const bp = await resolveBalancePlatform(cfg, {
+    given: opts.balancePlatform, stored: opts.storedBalancePlatform,
+    holderId: opts.rowHolderId, balanceAccountId: opts.rowBalanceAccountId,
+  });
   out.errors.push(...bp.errors);
   if (!bp.id) {
     out.needsBalancePlatform = true;
-    out.notes.push(`Adyen has no account holder lookup by reference, so the venue's account holder can only be found by listing the balance platform. Set ${balancePlatformSecretName(cfg.env, cfg.region)} to the balance platform id (BP...), or paste the venue's account holder id (AH...).`);
+    out.notes.push(`Adyen has no account holder lookup by reference, so the venue's account holder can only be found by listing the balance platform. Paste this venue's account holder id (AH...) once: the balance platform is kept from that read and every venue after it is found by its reference on its own. Setting ${balancePlatformSecretName(cfg.env, cfg.region)} to the balance platform id (BP...) does the same thing.`);
     return out;
   }
   out.balancePlatform = bp.id;
   out.balancePlatformSource = bp.source;
 
+  // THE AUTOMATIC ROUTE. Page the balance platform's account holders and match
+  // the reference exactly, case insensitively, after each page: 100 a page is
+  // the documented maximum, the paging stops at a SHORT page (Adyen's own
+  // offset/limit end of list), at hasNext false, or at HOLDER_PAGES, and it
+  // stops the moment the reference matches so a venue near the front costs one
+  // call. `matches` therefore covers everything read up to and including the
+  // page that matched, which is what the several matches line reports on.
   const rows: Dict[] = [];
+  let match = matchAccountHolderByReference(rows, reference);
   for (let page = 0; page < HOLDER_PAGES; page++) {
     const r = await bcl<Dict>(cfg, 'GET', `/balancePlatforms/${encodeURIComponent(bp.id)}/accountHolders?limit=${HOLDER_PAGE_SIZE}&offset=${page * HOLDER_PAGE_SIZE}`);
     if (!r.ok) {
@@ -557,16 +619,18 @@ async function findAccountHolder(
     }
     const pageRows = accountHolderRows(r.data);
     rows.push(...pageRows);
-    if (!pageRows.length || (r.data as Dict)?.hasNext !== true) break;
+    match = matchAccountHolderByReference(rows, reference);
+    if (match.matches.length) break;
+    if (pageRows.length < HOLDER_PAGE_SIZE || (r.data as Dict)?.hasNext === false) break;
   }
-  const match = matchAccountHolderByReference(rows, reference);
   if (match.holder) {
     out.holder = match.holder;
-    out.notes.push(`Account holder ${String(match.holder.id ?? '')} carries the reference ${reference} on balance platform ${bp.id} (found from ${bp.source}).`);
+    out.foundBy = 'reference';
+    out.notes.push(`Account holder ${String(match.holder.id ?? '')} carries the reference ${reference} on balance platform ${bp.id} (found from ${bp.source}). Nothing was pasted.`);
     return out;
   }
   if (match.ambiguous) {
-    out.errors.push(`${match.matches.length} account holders on balance platform ${bp.id} carry the reference ${reference} (${match.matches.map((x) => String(x.id ?? '?')).join(', ')}). Paste the accountHolderId to pick one.`);
+    out.errors.push(`${match.matches.length} account holders on balance platform ${bp.id} carry the reference ${reference} (${match.matches.map((x) => String(x.id ?? '?')).join(', ')}). They cannot be told apart by reference, so paste the account holder id of the right one.`);
     out.candidates = accountHolderCandidates(match.matches, reference, 50);
     return out;
   }
@@ -633,7 +697,17 @@ interface LookupOpts {
   merchantSecret?: string;            // the secret that names `merchant`, for the mismatch line
   merchantOverride?: boolean;         // the admin named the merchant account explicitly
   balancePlatform?: string | null;    // a pasted balance platform id (BP...)
+  // The balance platform id we ALREADY KEPT for this environment and region
+  // (adyen_platform_settings). This is what makes the reference search work by
+  // itself after the first venue: with it the holder listing needs no pasted
+  // id, no secret and no extra Adyen read.
+  storedBalancePlatform?: string | null;
   row?: Dict | null;                  // merchant_adyen_accounts as it is NOW: its ids bootstrap the holder listing
+  // Search EVERY merchant account this credential can see when the configured
+  // one has no match. That sweep is 70+ Adyen calls (findStoreAnywhere), so it
+  // is opt in: the guided flow's automatic read passes false and offers it as
+  // a button instead (8 Sep 2026, expanding a venue row must not hang).
+  sweep?: boolean;
 }
 
 // The whole chain for one venue on one config, BOTH ROUTES AT ONCE (8 Sep
@@ -695,8 +769,17 @@ async function lookupByReference(cfg: AdyenConfig, merchant: string, reference: 
           }
         }
       } else if (reference) {
-        // 1b. the store by reference: this merchant, then anywhere
-        sweep = await findStoreAnywhere(cfg, merchant, reference);
+        // 1b. the store by reference: this merchant, and (only when asked)
+        // every merchant account the credential can see.
+        if (opts.sweep === false) {
+          const own = await findStoreByReference(cfg, merchant, reference);
+          sweep = { ...own, merchantsSearched: [merchant], notes: [] };
+          if (!own.store && !own.ambiguous && !own.scopeMissing) {
+            sweep.notes.push(`No store on ${merchant} carries the reference ${reference}. Search every Adyen account to look wider.`);
+          }
+        } else {
+          sweep = await findStoreAnywhere(cfg, merchant, reference);
+        }
         e.push(...sweep.errors);
         n.push(...sweep.notes);
         scope = sweep.scopeMissing;
@@ -719,6 +802,7 @@ async function lookupByReference(cfg: AdyenConfig, merchant: string, reference: 
     findAccountHolder(cfg, reference, {
       accountHolderId: opts.accountHolderId,
       balancePlatform: opts.balancePlatform,
+      storedBalancePlatform: opts.storedBalancePlatform,
       rowHolderId: row?.account_holder_id ? String(row.account_holder_id) : null,
       rowBalanceAccountId: row?.balance_account_id ? String(row.balance_account_id) : null,
     }),
@@ -749,7 +833,8 @@ async function lookupByReference(cfg: AdyenConfig, merchant: string, reference: 
   } else if (reference && !storeId) {
     out.candidates = storeCandidates(storeSide.sweep?.rows ?? [], reference, 50);
     if (!storeSide.scopeMissing && !storeSide.mismatch && !storeSide.sweep?.ambiguous) {
-      notes.push(`No store on ${merchant}, or on any other merchant account this credential can see, has the reference ${reference}. Pick one of the ${out.candidates.length} stores listed (storeId), create it with adyen_create_store_by_reference, or link the account holder on its own.`);
+      const where = opts.sweep === false ? `No store on ${merchant} has the reference ${reference}` : `No store on ${merchant}, or on any other merchant account this credential can see, has the reference ${reference}`;
+      notes.push(`${where}. Pick one of the ${out.candidates.length} stores listed (storeId), create it with adyen_create_store_by_reference, or link the account holder on its own.`);
     }
   }
 
@@ -782,6 +867,16 @@ async function lookupByReference(cfg: AdyenConfig, merchant: string, reference: 
   } else if (store) {
     notes.push('No account holder is reachable: the store names no balance account, no accountHolderId was given and no account holder carries the reference.');
   }
+  // HOW the account holder we ended up with was reached, for the one line the
+  // screen shows: 'pasted' (an id was typed in), 'reference' (the balance
+  // platform listing matched the venue code with nothing pasted, the automatic
+  // route every venue after the first takes), 'store' (the store's balance
+  // account named it), or null.
+  out.holderFoundBy = !ah?.id ? null
+    : String(opts.accountHolderId ?? '').trim() ? 'pasted'
+    : ba?.accountHolderId && ah.id === ba.accountHolderId ? 'store'
+    : holderSide.foundBy === 'reference' && ah.id === byReferenceHolderId ? 'reference'
+    : null;
   if (byReferenceHolderId && ba?.accountHolderId && byReferenceHolderId !== ba.accountHolderId) {
     notes.push(`Account holder ${byReferenceHolderId} carries the reference ${reference}, but the store's balance account belongs to account holder ${ba.accountHolderId}. The store's own account holder was used.`);
   }
@@ -875,6 +970,80 @@ async function upsertAccountRow(patch: Record<string, unknown>, select?: string)
     if (!error) return { error: null, warning: adyenRegionMigrationMessage() };
   }
   return { error: error ?? null, warning: null };
+}
+
+// ── OUR OWN ADYEN IDS: adyen_platform_settings (8 Sep 2026) ─────────────────
+// The Balance Platform Configuration API has no filter by reference, so the
+// FIRST venue on an Adyen account is linked by pasting its account holder id.
+// That one read answers accountHolder.balancePlatform, which is kept here, and
+// from then on GET /balancePlatforms/{id}/accountHolders finds every other
+// venue by its reference on its own. The merchant account codes a credential
+// can see are kept on the same row, so the flow can draw its account picker
+// with no live call.
+//
+// One row per environment ('test' | 'live') and region ('UK' | 'US'). Ids, not
+// secrets. The table arrives with the migration named below: until it runs,
+// every read answers { row: null, available: false } with a warning naming the
+// file and every write is skipped, so the flow works exactly as before (one
+// paste per venue) and the order of deploy and migration does not matter.
+const PLATFORM_SETTINGS_MIGRATION = 'supabase/migrations/20260908c_PLATFORM_adyen_platform_settings.sql';
+type PlatformSettings = { row: Dict | null; available: boolean; warning: string | null };
+
+async function readPlatformSettings(env: AdyenEnv, region: string): Promise<PlatformSettings> {
+  const key = platformSettingsKey(env, region);
+  const { data, error } = await platformAdmin.from(ADYEN_PLATFORM_SETTINGS_TABLE)
+    .select('environment, region, balance_platform_id, merchant_accounts, updated_at')
+    .eq('environment', key.environment).eq('region', key.region).maybeSingle();
+  if (error) {
+    if (isUnknownRelationError(error, ADYEN_PLATFORM_SETTINGS_TABLE)) return { row: null, available: false, warning: platformSettingsMissingMessage() };
+    return { row: null, available: false, warning: `Our own Adyen ids could not be read (${error.message}), so this venue needs its Adyen id pasted.` };
+  }
+  return { row: (data as Dict | null) ?? null, available: true, warning: null };
+}
+
+// Keep what THIS read learned, and nothing else. platformSettingsPatch answers
+// null when there is nothing new, which is the normal case, so no write leaves
+// on a repeat read. Fire and forget in spirit: a failure here never fails the
+// action that learned the id, it just means the next read learns it again.
+async function savePlatformSettings(
+  env: AdyenEnv, region: string, settings: PlatformSettings, learned: PlatformSettingsLearned,
+): Promise<{ saved: boolean; warning: string | null }> {
+  if (!settings.available) return { saved: false, warning: settings.warning };
+  const patch = platformSettingsPatch(settings.row, learned);
+  if (!patch) return { saved: false, warning: null };
+  const key = platformSettingsKey(env, region);
+  const { error } = await platformAdmin.from(ADYEN_PLATFORM_SETTINGS_TABLE)
+    .upsert({ ...key, ...patch, updated_at: new Date().toISOString() }, { onConflict: 'environment,region' });
+  if (error) {
+    if (isUnknownRelationError(error, ADYEN_PLATFORM_SETTINGS_TABLE)) return { saved: false, warning: platformSettingsMissingMessage() };
+    return { saved: false, warning: `Our own Adyen ids could not be kept (${error.message}). Run ${PLATFORM_SETTINGS_MIGRATION} on the platform project if the table is missing.` };
+  }
+  // The caller reads this row again on its next call, so keep the copy in hand
+  // in step with the write: a second learn in the same request writes nothing.
+  settings.row = { ...(settings.row ?? key), ...patch };
+  return { saved: true, warning: null };
+}
+
+// The same id ON THE VENUE ROW, so a venue carries the Adyen account it lives
+// on without a join. Its own statement, never part of the link upsert: the
+// column arrives with the same migration and a write naming a column that is
+// not there would take the whole link write down with it (PostgREST answers
+// PGRST204 for the lot). Absent column, or any refusal, is skipped in silence.
+async function rememberBalancePlatformOnVenue(locationId: string, balancePlatform: string | null): Promise<string | null> {
+  const bp = String(balancePlatform ?? '').trim();
+  if (!bp) return null;
+  try {
+    const { error } = await platformAdmin.from('merchant_adyen_accounts')
+      .update({ [ADYEN_ROW_BALANCE_PLATFORM_COLUMN]: bp })
+      .eq('location_id', locationId);
+    if (!error) return null;
+    // The column arrives with the same migration as the settings table. Absent
+    // is fine and quiet: the id is kept in adyen_platform_settings either way.
+    if (isUnknownColumnError(error, ADYEN_ROW_BALANCE_PLATFORM_COLUMN)) return null;
+    return `The venue row could not be told which Adyen balance platform it is on (${error.message}).`;
+  } catch (e) {
+    return `The venue row could not be told which Adyen balance platform it is on (${(e as Error)?.message || String(e)}).`;
+  }
 }
 
 // ── the kept setup: merchant_adyen_accounts.env_stash (8 Sep 2026) ──────────
@@ -1771,10 +1940,26 @@ Deno.serve(async (req) => {
       const venueCode = await venueCodeFor(opsLocationId);
       const reference = String(body.reference ?? '').trim().slice(0, 50) || venueCode;
       const linkCurrency = region === 'US' ? 'USD' : 'GBP';
+      // OUR OWN KEPT IDS for this Adyen account: the balance platform id
+      // learned the first time any account holder on it was read. With it the
+      // venue is found by its REFERENCE with nothing pasted (THE AUTOMATIC
+      // ROUTE in findAccountHolder); without it, the first venue pastes its id
+      // once and that read teaches us the id for every venue after it.
+      const linkSettings = await readPlatformSettings(linkEnv, region);
+      // The row's ids belong to the environment the venue is on NOW. Handing a
+      // TEST account holder to the LIVE Balance Platform is a guaranteed 404
+      // on every read and a live round trip for nothing (8 Sep 2026), so the
+      // row only bootstraps the search when the target IS the venue's own.
       const lookup = await lookupByReference(linkCfg, merchant, reference, {
         storeId, accountHolderId, currency: linkCurrency, balancePlatform,
-        merchantSecret, merchantOverride: !!merchantOverride, row: maa as Dict | null,
+        storedBalancePlatform: String(linkSettings.row?.balance_platform_id ?? '').trim() || null,
+        merchantSecret, merchantOverride: !!merchantOverride, row: linkEnv === env ? (maa as Dict | null) : null,
       });
+      // Whatever this read learned is kept, so the NEXT venue on this account
+      // needs no pasted id. Nothing new is the normal answer and writes nothing.
+      const learnedBp = learnedBalancePlatform(lookup);
+      const kept = await savePlatformSettings(linkEnv, region, linkSettings, { balancePlatformId: learnedBp });
+      const balancePlatformKnown = !!(learnedBp || String(linkSettings.row?.balance_platform_id ?? '').trim() || balancePlatformFromSecret(linkEnv, region));
       const patch = lookup.found ? buildLinkPatch(lookup, { merchantAccount: merchant, region, environment: linkEnv }) : null;
       const confirm = body.relink === true || body.reprovision === true;
       // storeStatus feeds the refusal wording for a store that is not
@@ -1801,6 +1986,12 @@ Deno.serve(async (req) => {
         balancePlatform: lookup.balancePlatform ?? null,
         balancePlatformSecret: lookup.balancePlatformSecret ?? balancePlatformSecretName(linkEnv, region),
         needsBalancePlatform: lookup.needsBalancePlatform === true,
+        // Is the reference search automatic on this account yet? True once a
+        // balance platform id is known for this environment and region, which
+        // is what the flow reads to stop making the paste box the main path.
+        balancePlatformKnown,
+        holderFoundBy: lookup.holderFoundBy ?? null,
+        platformSettingsWarning: kept.warning ?? linkSettings.warning ?? null,
       };
 
       if (action === 'adyen_lookup') {
@@ -1852,6 +2043,11 @@ Deno.serve(async (req) => {
           if (cleared.length) warnings.push(`The previous ids were replaced; the pieces the lookup did not reach were cleared (${cleared.join(', ')}).`);
         }
       }
+      // The venue row's own copy of the balance platform it lives on, on its
+      // own statement so an absent column never touches the link write.
+      const bpOnRow = await rememberBalancePlatformOnVenue(loc.id, learnedBp);
+      if (bpOnRow) warnings.push(bpOnRow);
+      if (kept.warning) warnings.push(kept.warning);
       if (errors.length) warnings.push(`Linked with gaps, ${errors.length === 1 ? 'this piece' : 'these pieces'} could not be read: ${errors.join(' ')}`);
       // A venue linked on its BUSINESS ACCOUNT alone is linked, and it cannot
       // take a card yet: the row now carries the account holder, balance
@@ -1925,8 +2121,20 @@ Deno.serve(async (req) => {
         };
       };
       const [live, test] = await Promise.all([side('live'), side('test')]);
+      // KEEP WHAT WE SAW (8 Sep 2026): the codes go onto the settings row for
+      // that environment and region, so the go live flow can draw its account
+      // picker with no live call. Merged, never replaced: a credential scoped
+      // down between reads must not lose the account a venue is already on.
+      const merchantWarnings: string[] = [];
+      for (const [want, answer] of [['live', live], ['test', test]] as Array<[AdyenEnv, typeof live]>) {
+        if (!answer.merchants.length) continue;
+        const settings = await readPlatformSettings(want, region);
+        const saved = await savePlatformSettings(want, region, settings, { merchantAccounts: answer.merchants });
+        const warning = saved.warning ?? settings.warning;
+        if (warning && !merchantWarnings.includes(warning)) merchantWarnings.push(warning);
+      }
       console.log(`[adyen-terminal-admin] ${caller.id} adyen_merchants for ${loc.id} (${region}): live ${live.merchants.length}, test ${test.merchants.length}`);
-      return json({ ok: true, action, region, environment: env, live, test });
+      return json({ ok: true, action, region, environment: env, live, test, platformSettingsWarning: merchantWarnings.join(' ') || null });
     }
 
     // ── golive_state: ONE call the wizard renders (OWNER FEEDBACK, 8 Sep 2026) ──
@@ -1960,6 +2168,10 @@ Deno.serve(async (req) => {
       if (pickedStoreId && !/^ST[0-9A-Z]{10,}$/i.test(pickedStoreId)) return json({ error: 'storeId does not look like an Adyen store id (ST...)' }, 400);
       if (pickedHolderId && !/^AH[0-9A-Z]{10,}$/i.test(pickedHolderId)) return json({ error: 'accountHolderId does not look like an Adyen account holder id (AH...)' }, 400);
       const merchantConfigured = merchantOverride || effectiveMerchantAccount(targetCfg, targetEnv === env ? maa?.merchant_account : null) || null;
+      // The venue code is what Adyen is searched for, unless the admin says
+      // Adyen carries this venue under a different code (the reference field
+      // the old dense panel had).
+      const lookupReference = String(body.reference ?? '').trim().slice(0, 50) || venueCode;
 
       // The readers, ours to answer with no Adyen call at all: the platform
       // registry rows (processor adyen, not retired) joined on the POIID to
@@ -2010,20 +2222,34 @@ Deno.serve(async (req) => {
       let lookup: LookupResult | null = null;
       let origins: OriginsProbe = { registered: false, wanted: [], existing: [], missing: [] };
       let applePay: ApplePayProbe = { domains: [], verification: null };
+      // OUR OWN KEPT IDS. This action is read only for the VENUE; it does keep
+      // what it learns about OUR Adyen account, because that is the whole point
+      // of the automatic route: the first venue pastes its account holder id,
+      // the balance platform id behind it is kept here, and every venue after
+      // it is found by its reference with nothing typed (8 Sep 2026).
+      const settings = await readPlatformSettings(targetEnv, region);
+      const storedBp = String(settings.row?.balance_platform_id ?? '').trim() || null;
       if (keysOk && merchantConfigured) {
         const linkCurrency = region === 'US' ? 'USD' : 'GBP';
-        lookup = await lookupByReference(targetCfg, merchantConfigured, venueCode, {
+        // The row's ids belong to the environment the venue is on NOW, so they
+        // only bootstrap the search when the target IS that environment. The
+        // credential wide sweep is opt in (body.sweep): the automatic read on
+        // every expand must not spend 70+ Adyen calls (8 Sep 2026).
+        lookup = await lookupByReference(targetCfg, merchantConfigured, lookupReference, {
           storeId: pickedStoreId,
           accountHolderId: pickedHolderId,
           currency: linkCurrency,
           balancePlatform: String(body.balancePlatform ?? body.balance_platform ?? '').trim() || null,
-          merchantSecret, merchantOverride: !!merchantOverride, row: maa as Dict | null,
+          storedBalancePlatform: storedBp,
+          merchantSecret, merchantOverride: !!merchantOverride,
+          row: targetEnv === env ? (maa as Dict | null) : null,
+          sweep: body.sweep === true,
         });
         errors.push(...(Array.isArray(lookup.errors) ? lookup.errors : []));
         notes.push(...(Array.isArray(lookup.notes) ? lookup.notes : []));
         let storefront: Storefront = { slug: null, customDomain: null };
         try { storefront = await storefrontFor(loc.id); } catch (e) { errors.push(`The venue's online address could not be read: ${(e as Error)?.message || String(e)}`); }
-        const storeIdNow = String((lookup.store as Dict | null)?.id ?? maa?.store_id ?? '').trim() || null;
+        const storeIdNow = String((lookup.store as Dict | null)?.id ?? (targetEnv === env ? maa?.store_id : '') ?? '').trim() || null;
         // Both probes always answer: a throw becomes that probe's own error
         // line, so one refused read never takes the whole screen down.
         const [o, a] = await Promise.all([
@@ -2045,7 +2271,7 @@ Deno.serve(async (req) => {
       }
 
       const state = {
-        venue: { name: loc.name ?? null, code: venueCode, region, environment: env },
+        venue: { name: loc.name ?? null, code: lookupReference, region, environment: env },
         keys: { configured: keysOk, missing: keysMissing },
         // What taking REAL money needs, whichever account was just read: the
         // go live step reads this, so a test read never says "ready to go live".
@@ -2061,18 +2287,47 @@ Deno.serve(async (req) => {
         origins,
         applePay,
       };
-      const steps: GoliveStep[] = buildGoliveSteps(state);
-      console.log(`[adyen-terminal-admin] ${caller.id} golive_state for ${loc.id} (${region} ${targetEnv}, venue on ${env}): ${steps.map((x) => `${x.id}=${x.state}`).join(' ')}`);
+      // Keep the balance platform id this read learned, so the NEXT venue on
+      // this account is found by its reference with nothing pasted.
+      const learnedBp = learnedBalancePlatform(lookup);
+      const kept = await savePlatformSettings(targetEnv, region, settings, { balancePlatformId: learnedBp });
+      const settingsWarning = kept.warning ?? settings.warning ?? null;
+      if (settingsWarning) notes.push(settingsWarning);
+      const balancePlatformKnown = !!(learnedBp || storedBp || balancePlatformFromSecret(targetEnv, region));
+      // The VENUE row is not touched here. golive_state stays read only for
+      // the venue: adyen_link writes the id onto the row, on the one call that
+      // already writes it (rememberBalancePlatformOnVenue).
+
+      // The target rides in: the venue's readers belong to the environment it
+      // is on now, so they are never "done" for a flow looking at the other.
+      const steps: GoliveStep[] = buildGoliveSteps(state, { target: targetEnv });
+      console.log(`[adyen-terminal-admin] ${caller.id} golive_state for ${loc.id} (${region} ${targetEnv}, venue on ${env}, sweep ${body.sweep === true}): ${steps.map((x) => `${x.id}=${x.state}`).join(' ')}`);
+      // Every read is written to the audit trail, so a "nothing happened"
+      // screen can be answered from the server instead of by asking the
+      // operator to click again (8 Sep 2026: a pasted account holder id
+      // redrew the same screen and the refusal was only in `errors`, which
+      // sat behind a toggle).
+      logLink('golive_state', loc.id, {
+        environment: targetEnv, region, venueOn: env,
+        merchantFromSecret: targetCfg.merchantAccount || null,
+        merchantUsed: merchantOverride ?? targetCfg.merchantAccount ?? null,
+        reference: lookupReference, pickedHolderId, pickedStoreId,
+        merchantsSearched: lookup?.merchantsSearched ?? [],
+        found: lookup?.found ?? null, holderFoundBy: lookup?.holderFoundBy ?? null,
+        steps: steps.map((x) => `${x.id}=${x.state}`).join(' '),
+        errors, notes,
+      });
       return json({
         ok: true, action, ...state, steps,
         target: targetEnv, merchantSecret, merchantOverride: merchantOverride ?? null,
+        swept: body.sweep === true,
         // merchantConfigured is the account the reads above actually used; this
         // is what the SECRET names. They differ only when the admin passed an
         // override, and merchantMismatch is the case that makes them differ on
         // purpose (live, 8 Sep 2026: the secret names FranPOS_QSR_UK and the
         // venue's store lives on FranPOS_UK).
         merchantFromSecret: targetCfg.merchantAccount || null,
-        reference: venueCode, summary: lookup ? lookupSummary(lookup) : null,
+        reference: lookupReference, venueCode, summary: lookup ? lookupSummary(lookup) : null,
         storeNeeded: lookup?.storeNeeded ?? null,
         candidates: lookup?.candidates ?? [],
         holderCandidates: lookup?.holderCandidates ?? [],
@@ -2081,6 +2336,17 @@ Deno.serve(async (req) => {
         balancePlatform: lookup?.balancePlatform ?? null,
         balancePlatformSecret: lookup?.balancePlatformSecret ?? balancePlatformSecretName(targetEnv, region),
         needsBalancePlatform: lookup?.needsBalancePlatform === true,
+        // THE TWO THE FLOW READS (8 Sep 2026). balancePlatformKnown says the
+        // reference search runs by itself on this account, so the flow stops
+        // making the paste box the main path; holderFoundBy says how THIS read
+        // reached the account holder, so a venue found by its reference with
+        // nothing pasted is said out loud in one line.
+        balancePlatformKnown,
+        holderFoundBy: lookup?.holderFoundBy ?? null,
+        // The merchant accounts we have SEEN on this account, kept from the
+        // last adyen_merchants, so the picker can draw with no live call.
+        merchantAccountsKnown: merchantAccountsSeen(settings.row?.merchant_accounts),
+        platformSettingsWarning: settingsWarning,
         blockedCapabilities: blockedCapabilityNames(state.capabilities),
         readers_error: readerAnswer.error,
         errors, notes,
@@ -2349,7 +2615,7 @@ Deno.serve(async (req) => {
     }
 
     // Everything below needs the store mapping.
-    if (!maa?.store_id) return json({ ok: false, error: 'no_store', hint: 'Run ensure_store first — the venue has no payments store yet.' }, 200);
+    if (!maa?.store_id) return json({ ok: false, error: 'no_store', hint: 'This venue has no payments location yet. Make one in step 3 first.' }, 200);
 
     // ── ensure_payment_methods: repair a store missing its card schemes ──────
     // ADMIN (OWNER RULE): changes the venue's store at Adyen.
