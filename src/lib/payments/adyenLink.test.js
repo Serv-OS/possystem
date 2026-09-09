@@ -428,11 +428,20 @@ test('planLink: a test venue linking test ids stays an update, undefined env rea
 // ── the admin line ───────────────────────────────────────────────────────────
 
 test('lookupSummary: found and not found, with the pieces that are missing named', () => {
-  assert.equal(lookupSummary(LOOKUP), `Found SV-1007: store ${PROVO.id} (active), balance account BA3224Z223226M5KMQ5RBAL01, account holder AH32BZP22322CJ5PXF2BD5FTR, legal entity Provo Coffee Ltd.`);
+  assert.equal(lookupSummary(LOOKUP), `Found SV-1007: store ${PROVO.id} (active), balance account BA3224Z223226M5KMQ5RBAL01, account holder AH32BZP22322CJ5PXF2BD5FTR (active), legal entity Provo Coffee Ltd.`);
   assert.equal(lookupSummary({ found: true, reference: 'SV-1007', store: { id: 'ST1' } }), 'Found SV-1007: store ST1, no balance account, no account holder, no legal entity.');
-  assert.equal(lookupSummary({ found: false, reference: 'SV-1007', merchantAccount: 'FranPOS_QSR_UK', candidates: [{ id: 'a' }, { id: 'b' }] }), 'No store with reference SV-1007 on FranPOS_QSR_UK (2 stores listed to pick from).');
-  assert.equal(lookupSummary({ found: false, candidates: [{ id: 'a' }] }), 'No store with reference no reference on the merchant account (1 store listed to pick from).');
-  assert.equal(lookupSummary(null), 'No store with reference no reference on the merchant account.');
+  assert.equal(lookupSummary({ found: false, reference: 'SV-1007', merchantAccount: 'FranPOS_QSR_UK', candidates: [{ id: 'a' }, { id: 'b' }] }), 'No store or account holder with reference SV-1007 on FranPOS_QSR_UK (2 stores listed to pick from).');
+  assert.equal(lookupSummary({ found: false, candidates: [{ id: 'a' }] }), 'No store or account holder with reference no reference on the merchant account (1 store listed to pick from).');
+  assert.equal(lookupSummary(null), 'No store or account holder with reference no reference on the merchant account.');
+});
+
+// The live shape (8 Sep 2026): the venue is an ACCOUNT HOLDER, no store.
+test('lookupSummary: an account holder with no store is found, and says the store is missing', () => {
+  const holderOnly = {
+    found: true, reference: 'SV-1007', merchantAccount: 'FranPOS_QSR_UK', store: null,
+    balanceAccount: balanceAccountSummary(BALANCE, 'account_holder'), accountHolder: accountHolderSummary(HOLDER), legalEntity: legalEntitySummary(LEGAL),
+  };
+  assert.equal(lookupSummary(holderOnly), 'Found SV-1007: NO store yet, balance account BA3224Z223226M5KMQ5RBAL01, account holder AH32BZP22322CJ5PXF2BD5FTR (active), legal entity Provo Coffee Ltd.');
 });
 
 // ── environment stash (8 Sep 2026): keep the setup a flip clears, put it back ──
@@ -544,4 +553,347 @@ test('stashRestorePlan: a stash made on another region account is left alone ent
   assert.match(plan.skipped, /US now/);
   // No region on either side: restored as normal (older stash entries).
   assert.equal(stashRestorePlan({ ...entry, region: null }, { region: 'US' }).skipped, null);
+});
+
+// ── find the venue however Adyen holds it (8 Sep 2026, live screens) ─────────
+// SV-1007 is the ACCOUNT HOLDER reference on the live account, no store
+// carries it, and the store that exists sits on FranPOS_UK while
+// ADYEN_LIVE_UK_MERCHANT_ACCOUNT names FranPOS_QSR_UK.
+
+import {
+  BALANCE_PLATFORM_SECRET_SUFFIX, balancePlatformSecretName, balancePlatformSecretNames,
+  merchantRows, accountHolderRows, merchantSummary, matchAccountHolderByReference,
+  accountHolderCandidates, pickBusinessLine, merchantMismatch, storeStillNeeded,
+} from './adyenLink.js';
+
+const MERCHANTS = {
+  data: [
+    { id: 'FranPOS_QSR_UK', name: 'FranPOS QSR UK Ltd', reference: 'franpos-qsr', status: 'Active', companyId: 'CompanyAccount123', primarySettlementCurrency: 'gbp' },
+    { id: 'FranPOS_UK', name: 'FranPOS UK Ltd', status: 'Active', primarySettlementCurrency: 'GBP' },
+    'junk',
+  ],
+  itemsTotal: 2, pagesTotal: 1,
+};
+const HOLDERS = {
+  accountHolders: [
+    { id: 'AH32BZP22322CJ5PXF2BD5FTR', reference: 'SV-1007', description: 'Provo', status: 'active', legalEntityId: 'LE32BZP22322CJ5PXF2BDLEG1', balancePlatform: 'FranPOSPlatform' },
+    { id: 'AH_OTHER', reference: 'SV-1008', description: 'Other venue', status: 'active', legalEntityId: 'LE_OTHER', balancePlatform: 'FranPOSPlatform' },
+    { id: 'AH_MIGRATED', migratedAccountHolderCode: 'SV-2001', status: 'inactive', balancePlatform: 'FranPOSPlatform' },
+    null,
+  ],
+  hasNext: false, hasPrevious: false,
+};
+
+test('balancePlatformSecretName(s): the name we would add, region and environment as everywhere else', () => {
+  assert.equal(BALANCE_PLATFORM_SECRET_SUFFIX, 'BALANCE_PLATFORM');
+  assert.equal(balancePlatformSecretName('live', 'UK'), 'ADYEN_LIVE_UK_BALANCE_PLATFORM');
+  assert.equal(balancePlatformSecretName('live', 'US'), 'ADYEN_LIVE_US_BALANCE_PLATFORM');
+  assert.equal(balancePlatformSecretName('live', 'EU'), 'ADYEN_LIVE_UK_BALANCE_PLATFORM');   // a legacy row reads as UK
+  assert.equal(balancePlatformSecretName('test', 'US'), 'ADYEN_BALANCE_PLATFORM');
+  assert.equal(balancePlatformSecretName(undefined, undefined), 'ADYEN_BALANCE_PLATFORM');
+  assert.deepEqual(balancePlatformSecretNames('live', 'UK'), ['ADYEN_LIVE_UK_BALANCE_PLATFORM', 'ADYEN_LIVE_BALANCE_PLATFORM']);
+  assert.deepEqual(balancePlatformSecretNames('live', 'US'), ['ADYEN_LIVE_US_BALANCE_PLATFORM']);
+  assert.deepEqual(balancePlatformSecretNames('test', 'UK'), ['ADYEN_BALANCE_PLATFORM']);
+  assert.deepEqual(balancePlatformSecretNames('test', 'US'), ['ADYEN_TEST_US_BALANCE_PLATFORM', 'ADYEN_BALANCE_PLATFORM']);
+});
+
+test('merchantRows and merchantSummary: the picker rows, Adyen casing kept on status', () => {
+  assert.equal(merchantRows(MERCHANTS).length, 2);
+  assert.equal(merchantRows([{ id: 'a' }]).length, 1);
+  assert.deepEqual(merchantRows(null), []);
+  assert.deepEqual(merchantSummary(MERCHANTS.data[0]), {
+    id: 'FranPOS_QSR_UK', name: 'FranPOS QSR UK Ltd', reference: 'franpos-qsr', status: 'Active',
+    description: null, companyId: 'CompanyAccount123', currency: 'GBP',
+  });
+  assert.equal(merchantSummary('nope'), null);
+});
+
+test('accountHolderRows: rows under accountHolders, a bare array, junk dropped', () => {
+  assert.equal(accountHolderRows(HOLDERS).length, 3);
+  assert.equal(accountHolderRows([{ id: 'AH1' }, 7]).length, 1);
+  assert.deepEqual(accountHolderRows({}), []);
+});
+
+test('matchAccountHolderByReference: the venue code as the HOLDER reference, exact and case insensitive', () => {
+  assert.equal(matchAccountHolderByReference(HOLDERS, 'SV-1007').holder.id, 'AH32BZP22322CJ5PXF2BD5FTR');
+  assert.equal(matchAccountHolderByReference(HOLDERS, ' sv-1007 ').holder.id, 'AH32BZP22322CJ5PXF2BD5FTR');
+  assert.equal(matchAccountHolderByReference(HOLDERS, 'SV-2001').holder.id, 'AH_MIGRATED');   // the classic code counts
+  assert.equal(matchAccountHolderByReference(HOLDERS, 'SV-100').holder, null);                // never partial
+  assert.equal(matchAccountHolderByReference(HOLDERS, '').holder, null);
+  // a repeated page collapses by id; two distinct holders are ambiguous
+  const twice = { accountHolders: [HOLDERS.accountHolders[0], HOLDERS.accountHolders[0]] };
+  assert.equal(matchAccountHolderByReference(twice, 'SV-1007').matches.length, 1);
+  const two = { accountHolders: [HOLDERS.accountHolders[0], { id: 'AH_DUP', reference: 'SV-1007' }] };
+  const amb = matchAccountHolderByReference(two, 'SV-1007');
+  assert.equal(amb.holder, null);
+  assert.equal(amb.ambiguous, true);
+  assert.equal(amb.matches.length, 2);
+});
+
+test('accountHolderCandidates: exact first, then mentions, deduped and capped', () => {
+  const list = accountHolderCandidates(HOLDERS, 'SV-1007');
+  assert.deepEqual(list.map((c) => c.id), ['AH32BZP22322CJ5PXF2BD5FTR', 'AH_OTHER', 'AH_MIGRATED']);
+  assert.deepEqual(list[0], {
+    id: 'AH32BZP22322CJ5PXF2BD5FTR', reference: 'SV-1007', description: 'Provo', status: 'active',
+    legalEntityId: 'LE32BZP22322CJ5PXF2BDLEG1', balancePlatform: 'FranPOSPlatform',
+  });
+  assert.equal(list[2].reference, 'SV-2001');            // the classic code stands in for a missing reference
+  assert.equal(accountHolderCandidates(HOLDERS, 'SV-1007', 1).length, 1);
+  assert.deepEqual(accountHolderCandidates(null, 'SV-1007'), []);
+});
+
+test('pickBusinessLine: the paymentProcessing line, else the only one', () => {
+  const pay = { id: 'SBL_PAY', service: 'paymentProcessing', legalEntityId: 'LE1' };
+  const issuing = { id: 'SBL_CARD', service: 'issuing', legalEntityId: 'LE1' };
+  assert.equal(pickBusinessLine({ businessLines: [issuing, pay] }), pay);
+  assert.equal(pickBusinessLine([issuing]), issuing);                      // the only line there is
+  assert.equal(pickBusinessLine([pay, { ...pay, id: 'SBL_PAY2' }]), null);  // two of the same service: the admin picks
+  assert.equal(pickBusinessLine({ businessLines: [] }), null);
+  assert.equal(pickBusinessLine(null), null);
+});
+
+test('merchantMismatch: a store on another merchant is named, never used silently', () => {
+  const m = merchantMismatch({ configured: 'FranPOS_QSR_UK', found: 'FranPOS_UK', secret: 'ADYEN_LIVE_UK_MERCHANT_ACCOUNT', storeId: 'ST_ELSEWHERE', reference: 'SV-1007' });
+  assert.equal(m.configured, 'FranPOS_QSR_UK');
+  assert.equal(m.found, 'FranPOS_UK');
+  assert.equal(m.secret, 'ADYEN_LIVE_UK_MERCHANT_ACCOUNT');
+  assert.match(m.message, /ST_ELSEWHERE/);
+  assert.match(m.message, /ADYEN_LIVE_UK_MERCHANT_ACCOUNT names FranPOS_QSR_UK/);
+  assert.match(m.message, /choose FranPOS_UK/);
+  // the same account (any casing), or an unknown one: no warning
+  assert.equal(merchantMismatch({ configured: 'FranPOS_UK', found: 'franpos_uk' }), null);
+  assert.equal(merchantMismatch({ configured: 'FranPOS_QSR_UK', found: '' }), null);
+  assert.equal(merchantMismatch(), null);
+});
+
+test('storeStillNeeded: an account holder with no store says so; a store says nothing', () => {
+  const holderOnly = { reference: 'SV-1007', store: null, accountHolder: accountHolderSummary(HOLDER) };
+  assert.match(storeStillNeeded(holderOnly), /A STORE IS STILL NEEDED/);
+  assert.match(storeStillNeeded(holderOnly), /SV-1007/);
+  assert.equal(storeStillNeeded({ ...holderOnly, store: { id: 'ST1' } }), null);
+  assert.equal(storeStillNeeded({ reference: 'SV-1007', store: null, accountHolder: null }), null);
+  assert.equal(storeStillNeeded(null), null);
+});
+
+// ── one answer for the wizard (8 Sep 2026, OWNER FEEDBACK) ───────────────────
+// "too many words and too small ... a flow that supports someone doing this":
+// the steps are computed HERE, on the server side of the wire, so the screen
+// renders five rows and decides nothing.
+
+import { capabilityList, blockedCapabilityNames, buildGoliveSteps } from './adyenLink.js';
+
+// The live shape, 8 Sep 2026: Active account holder, ONE capability blocked.
+const LIVE_CAPS = {
+  receivePayments: { enabled: true, allowed: true, requested: true, verificationStatus: 'valid' },
+  sendToTransferInstrument: { enabled: false, allowed: false, requested: true, verificationStatus: 'invalid', problems: [{ verificationErrors: [{ message: 'Bank account not verified' }] }] },
+  receiveFromPlatformPayments: { enabled: false, allowed: false, requested: true, verificationStatus: 'pending' },
+  issueCard: { enabled: false, allowed: false, requested: false, verificationStatus: null },
+};
+
+const READY = {
+  venue: { name: 'Provo', code: 'SV-1007', region: 'UK', environment: 'live' },
+  keys: { configured: true, missing: [] },
+  holder: accountHolderSummary(HOLDER),
+  balanceAccount: balanceAccountSummary(BALANCE),
+  legalEntity: legalEntitySummary(LEGAL),
+  capabilities: capabilityList(summariseCapabilities({ receivePayments: { allowed: true, requested: true, verificationStatus: 'valid' } })),
+  store: storeSummary(PROVO),
+  merchantConfigured: 'FranPOS_QSR_UK',
+  merchantMismatch: null,
+  readers: [{ label: 'Front till', serial: 'S1', poiid: 'AMS1-1', bound: true }],
+  origins: { registered: true },
+  applePay: { domains: ['provo.serv-os.app'], verification: 'valid' },
+};
+
+const ids = (steps) => steps.map((s) => s.id);
+const byId = (steps, id) => steps.find((s) => s.id === id);
+
+test('capabilityList: every capability by name, the blocked one first', () => {
+  const list = capabilityList(summariseCapabilities(LIVE_CAPS));
+  assert.deepEqual(list.map((c) => c.name), ['sendToTransferInstrument', 'receiveFromPlatformPayments', 'receivePayments', 'issueCard']);
+  assert.deepEqual(list[0], {
+    name: 'sendToTransferInstrument', allowed: false, requested: true, enabled: false,
+    verification: 'invalid', blocked: true, problems: 1,
+  });
+  assert.equal(list[1].blocked, true);          // requested, not allowed, still being checked
+  assert.equal(list[1].verification, 'pending');
+  assert.equal(list[2].allowed, true);
+  assert.equal(list[2].blocked, false);
+  assert.equal(list[3].blocked, false);         // never asked for is not blocked
+  // a bare { name: entry } map works too, and junk is dropped
+  assert.equal(capabilityList({ receivePayments: { allowed: true }, junk: 7 }).length, 1);
+  assert.deepEqual(capabilityList(null), []);
+});
+
+test('blockedCapabilityNames: only the settled refusals, so a pending one is not shouted about', () => {
+  assert.deepEqual(blockedCapabilityNames(capabilityList(summariseCapabilities(LIVE_CAPS))), ['sendToTransferInstrument']);
+  assert.deepEqual(blockedCapabilityNames([]), []);
+  assert.deepEqual(blockedCapabilityNames(null), []);
+});
+
+test('buildGoliveSteps: always the same five steps in the same order', () => {
+  assert.deepEqual(ids(buildGoliveSteps(READY)), ['find_venue', 'business_account', 'payments_location', 'go_live', 'readers']);
+  assert.deepEqual(ids(buildGoliveSteps({})), ['find_venue', 'business_account', 'payments_location', 'go_live', 'readers']);
+  assert.deepEqual(ids(buildGoliveSteps()), ['find_venue', 'business_account', 'payments_location', 'go_live', 'readers']);
+  for (const s of buildGoliveSteps(READY)) {
+    assert.ok(s.title && s.title.length < 24, `${s.id} title is short`);
+    assert.ok(['done', 'todo', 'attention', 'blocked'].includes(s.state));
+    assert.equal(typeof s.detail, 'string');
+    assert.ok(!/[—–]/.test(`${s.title} ${s.detail} ${s.hint ?? ''}`), 'no dashes as punctuation');
+  }
+});
+
+test('buildGoliveSteps: a venue that is fully live reads done all the way down', () => {
+  const steps = buildGoliveSteps(READY);
+  assert.deepEqual(steps.map((s) => s.state), ['done', 'done', 'done', 'done', 'done']);
+  assert.match(byId(steps, 'find_venue').detail, /business account and a store/);
+  assert.match(byId(steps, 'payments_location').detail, /SV-1007/);
+  assert.match(byId(steps, 'go_live').detail, /Provo takes real cards/);
+  assert.equal(byId(steps, 'readers').detail, '1 reader ready.');
+  assert.equal(byId(steps, 'go_live').action, null);
+});
+
+test('buildGoliveSteps: no keys blocks every step and names the secrets', () => {
+  const steps = buildGoliveSteps({ ...READY, keys: { configured: false, missing: ['ADYEN_LIVE_UK_API_KEY', 'ADYEN_LIVE_UK_MERCHANT_ACCOUNT'] } });
+  assert.deepEqual(steps.slice(0, 4).map((s) => s.state), ['blocked', 'blocked', 'blocked', 'blocked']);
+  assert.match(byId(steps, 'find_venue').hint, /ADYEN_LIVE_UK_MERCHANT_ACCOUNT/);
+  assert.match(byId(steps, 'go_live').detail, /live Adyen keys/);
+  // the readers step is ours, not Adyen's, so it still reads
+  assert.equal(byId(steps, 'readers').state, 'done');
+});
+
+test('buildGoliveSteps: the LIVE case, an account holder with NO store', () => {
+  const steps = buildGoliveSteps({
+    ...READY,
+    venue: { ...READY.venue, environment: 'test' },
+    store: null,
+    capabilities: capabilityList(summariseCapabilities(LIVE_CAPS)),
+    readers: [],
+    origins: { registered: false },
+  });
+  assert.equal(byId(steps, 'find_venue').state, 'done');
+  assert.match(byId(steps, 'find_venue').detail, /holds SV-1007 as a business account/);
+  assert.match(byId(steps, 'find_venue').hint, /no store yet/);
+  // a settled refusal is BLOCKED and named, never hidden behind "pending"
+  assert.equal(byId(steps, 'business_account').state, 'blocked');
+  assert.match(byId(steps, 'business_account').detail, /sendToTransferInstrument/);
+  assert.equal(byId(steps, 'business_account').action, 'open_adyen');
+  // the store is the next thing someone does
+  assert.equal(byId(steps, 'payments_location').state, 'todo');
+  assert.equal(byId(steps, 'payments_location').action, 'create_store');
+  assert.match(byId(steps, 'payments_location').hint, /SV-1007/);
+  assert.equal(byId(steps, 'go_live').state, 'todo');
+  assert.equal(byId(steps, 'readers').state, 'todo');
+});
+
+test('buildGoliveSteps: nothing found at all asks for the id, no code asks for the code', () => {
+  const empty = buildGoliveSteps({ venue: { code: 'SV-1007', environment: 'test' }, keys: { configured: true, missing: [] } });
+  assert.equal(byId(empty, 'find_venue').state, 'todo');
+  assert.equal(byId(empty, 'find_venue').action, 'find_venue');
+  assert.match(byId(empty, 'find_venue').hint, /starts with AH/);
+  assert.equal(byId(empty, 'business_account').state, 'todo');
+  assert.equal(byId(empty, 'payments_location').detail, 'Find the venue first.');
+  const noCode = buildGoliveSteps({ venue: { environment: 'test' }, keys: { configured: true, missing: [] } });
+  assert.equal(byId(noCode, 'find_venue').action, 'set_venue_code');
+});
+
+test('buildGoliveSteps: a store on another merchant account is the loud step', () => {
+  const steps = buildGoliveSteps({
+    ...READY,
+    venue: { ...READY.venue, environment: 'test' },
+    store: null,
+    merchantMismatch: merchantMismatch({ configured: 'FranPOS_QSR_UK', found: 'FranPOS_UK', secret: 'ADYEN_LIVE_UK_MERCHANT_ACCOUNT', storeId: 'ST_ELSEWHERE', reference: 'SV-1007' }),
+  });
+  const step = byId(steps, 'payments_location');
+  assert.equal(step.state, 'attention');
+  assert.equal(step.action, 'choose_merchant');
+  assert.match(step.detail, /sits on FranPOS_UK, not on FranPOS_QSR_UK/);
+  assert.match(step.hint, /ADYEN_LIVE_UK_MERCHANT_ACCOUNT/);
+  // a mismatch is never "ready to go live"
+  assert.equal(byId(steps, 'go_live').state, 'todo');
+});
+
+test('buildGoliveSteps: an inactive store, a pending check and a missing bank account each read differently', () => {
+  const inactive = buildGoliveSteps({ ...READY, store: storeSummary({ ...PROVO, status: 'inactive' }) });
+  assert.equal(byId(inactive, 'payments_location').state, 'attention');
+  assert.match(byId(inactive, 'payments_location').detail, /is inactive at Adyen/);
+  assert.equal(byId(inactive, 'go_live').state, 'attention');
+
+  const pending = buildGoliveSteps({ ...READY, capabilities: capabilityList(summariseCapabilities({ receivePayments: { allowed: true, requested: true, verificationStatus: 'valid' }, sendToTransferInstrument: { allowed: false, requested: true, verificationStatus: 'pending' } })) });
+  assert.equal(byId(pending, 'business_account').state, 'attention');
+  assert.match(byId(pending, 'business_account').detail, /still checking sendToTransferInstrument/);
+
+  const noBank = buildGoliveSteps({ ...READY, legalEntity: legalEntitySummary({ ...LEGAL, transferInstruments: [] }) });
+  assert.equal(byId(noBank, 'business_account').state, 'attention');
+  assert.match(byId(noBank, 'business_account').detail, /no bank account yet/);
+
+  const noBalance = buildGoliveSteps({ ...READY, balanceAccount: null });
+  assert.equal(byId(noBalance, 'business_account').state, 'attention');
+  assert.match(byId(noBalance, 'business_account').detail, /nowhere to land/);
+
+  const inactiveHolder = buildGoliveSteps({ ...READY, holder: accountHolderSummary({ ...HOLDER, status: 'suspended', capabilities: {} }), capabilities: [] });
+  assert.equal(byId(inactiveHolder, 'business_account').state, 'attention');
+  assert.match(byId(inactiveHolder, 'business_account').detail, /is suspended at Adyen/);
+});
+
+test('buildGoliveSteps: live with unregistered web origins is attention, not done', () => {
+  const steps = buildGoliveSteps({ ...READY, origins: { registered: false } });
+  assert.equal(byId(steps, 'go_live').state, 'attention');
+  assert.equal(byId(steps, 'go_live').action, 'register_origins');
+  // Apple Pay still being verified is a hint on a done step, never a block
+  const pending = buildGoliveSteps({ ...READY, applePay: { domains: [], verification: 'pending' } });
+  assert.equal(byId(pending, 'go_live').state, 'done');
+  assert.match(byId(pending, 'go_live').hint, /Apple Pay is pending/);
+});
+
+test('buildGoliveSteps: readers count what is bound to a till', () => {
+  const half = buildGoliveSteps({ ...READY, readers: [{ poiid: 'A', bound: true }, { poiid: 'B', bound: false }] });
+  assert.equal(byId(half, 'readers').state, 'attention');
+  assert.equal(byId(half, 'readers').detail, '1 of 2 readers are on a till.');
+  const none = buildGoliveSteps({ ...READY, readers: [{ poiid: 'A', bound: false }, { poiid: 'B', bound: false }] });
+  assert.equal(byId(none, 'readers').state, 'attention');
+  assert.match(byId(none, 'readers').detail, /2 readers boarded, none on a till/);
+  assert.equal(byId(none, 'readers').action, 'bind_reader');
+});
+
+test('buildLinkPatch: a business account with no store is NOT receive ok, and store_id stays out', () => {
+  const p = buildLinkPatch(
+    { found: true, reference: 'SV-1007', store: null, balanceAccount: balanceAccountSummary(BALANCE, 'account_holder'), accountHolder: accountHolderSummary(HOLDER), legalEntity: legalEntitySummary(LEGAL), businessLineIds: ['SBL_PAY'] },
+    { merchantAccount: 'FranPOS_UK', region: 'UK', environment: 'live' },
+  );
+  assert.equal('store_id' in p, false);
+  assert.equal(p.receive_payments_ok, false);
+  assert.equal(p.merchant_account, 'FranPOS_UK');
+  assert.equal(p.account_holder_id, 'AH32BZP22322CJ5PXF2BD5FTR');
+  assert.equal(p.balance_account_id, 'BA3224Z223226M5KMQ5RBAL01');
+  assert.equal(p.legal_entity_id, 'LE32BZP22322CJ5PXF2BDLEG1');
+  assert.equal(p.business_line_id, 'SBL_PAY');
+  // and it LINKS: no store id means no inactive store refusal
+  const plan = planLink({ row: null, currentEnv: 'test', targetEnv: 'live', patch: p });
+  assert.equal(plan.kind, 'flip');
+  assert.equal(plan.reason, null);
+  const same = planLink({ row: null, currentEnv: 'live', targetEnv: 'live', patch: p });
+  assert.equal(same.kind, 'update');
+});
+
+test('buildGoliveSteps: the go live step reads the LIVE keys, not the ones the read used', () => {
+  // A venue read on TEST with test keys: the first three steps are fine, but
+  // "ready to go live" must not be said on the back of test keys.
+  const onTest = {
+    ...READY,
+    venue: { ...READY.venue, environment: 'test' },
+    keys: { configured: true, missing: [] },
+    liveKeys: { configured: false, missing: ['ADYEN_LIVE_UK_CLIENT_KEY'] },
+  };
+  const steps = buildGoliveSteps(onTest);
+  assert.equal(byId(steps, 'find_venue').state, 'done');
+  assert.equal(byId(steps, 'payments_location').state, 'done');
+  assert.equal(byId(steps, 'go_live').state, 'blocked');
+  assert.match(byId(steps, 'go_live').hint, /ADYEN_LIVE_UK_CLIENT_KEY/);
+  // with the live keys in place the same venue is ready
+  const ready = buildGoliveSteps({ ...onTest, liveKeys: { configured: true, missing: [] } });
+  assert.equal(byId(ready, 'go_live').state, 'todo');
+  assert.equal(byId(ready, 'go_live').action, 'go_live');
+  // no liveKeys given at all falls back to keys, as before
+  assert.equal(byId(buildGoliveSteps({ ...READY }), 'go_live').state, 'done');
 });

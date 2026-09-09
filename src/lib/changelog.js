@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.41',
+    date: '8 Sep 2026',
+    items: [
+      'Taking a venue live is now a guided flow in the admin portal. Five numbered steps, one open at a time, one button per step, plain words instead of Adyen jargon, and a tick as each is done. It works out where the venue is up to on its own.',
+      'It finds a venue however Adyen holds it: by its payments location, by its business account, or from a pasted account holder id, and it searches every Adyen account we can see, not just the one in our settings.',
+      'When a venue sits on a different Adyen account than the one we are set to use, the screen says so in plain words and lets you pick the right one.',
+      'A venue can be linked before it has a payments location, and the screen says a location is still needed before cards will run.',
+    ],
+  },
+  {
     v: '5.8.40',
     date: '8 Sep 2026',
     items: [

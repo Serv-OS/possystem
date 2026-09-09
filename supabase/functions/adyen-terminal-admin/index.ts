@@ -33,7 +33,27 @@
 //                  code as the reference (finds an existing store by
 //                  reference before creating one), on the account
 //                  adyen_lookup looks on (live by default); across
-//                  environments the row is not written, adyen_link maps it
+//                  environments the row is not written, adyen_link maps it.
+//                  Takes an optional merchantAccount (create it on the
+//                  account the store belongs on, not the one the secret
+//                  names) and, when the venue's row already holds a balance
+//                  account, JOINS the new store to it so the chain completes
+//   adyen_merchants → ADMIN. { } the merchant accounts each configured
+//                  credential can see, with code, name, status and a store
+//                  count, plus the secret that names the configured one. The
+//                  live account has more than one and the portal could not
+//                  show it (8 Sep 2026)
+//   golive_state → ADMIN. { locationId } ONE call the go live wizard renders:
+//                  { venue, keys, holder, balanceAccount, legalEntity,
+//                    capabilities, store, merchantConfigured,
+//                    merchantMismatch, readers, origins, applePay,
+//                    steps: [{ id, title, state, detail, action, hint }] }.
+//                  The five steps (find_venue, business_account,
+//                  payments_location, go_live, readers) are computed on the
+//                  SERVER so the screen assembles nothing and decides
+//                  nothing (OWNER FEEDBACK, 8 Sep 2026: "far too many words
+//                  and too small ... a flow that supports someone doing
+//                  this"). Read only
 //
 // Auth: BO JWT → user_locations membership (or super_admin), the ryft-terminals
 // fence, verbatim in spirit. All writes service-role.
@@ -117,7 +137,11 @@ import {
   referenceKey, storeRows, matchStoreByReference, storeSummary, storeCandidates, accountHolderSummary, balanceAccountSummary,
   legalEntitySummary, pickBalanceAccount, resolveLinkEnvironment, buildLinkPatch, planLink, replacementClear, lookupSummary,
   stashReaders, buildEnvStashEntry, stashHasSetup, stashSummary, stashRestorePlan,
+  merchantRows, merchantSummary, accountHolderRows, matchAccountHolderByReference, accountHolderCandidates,
+  pickBusinessLine, merchantMismatch, storeStillNeeded, balancePlatformSecretName, balancePlatformSecretNames,
+  capabilityList, blockedCapabilityNames, buildGoliveSteps,
   type StoreSummary, type BalanceAccountSummary, type AccountHolderSummary, type LookupResult, type StashReader, type StashRestorePlan,
+  type MerchantSummary, type MerchantMismatch, type AccountHolderCandidate, type CapabilityRow, type GoliveStep, type GoliveReader,
 } from '../_shared/adyenLink.ts';
 
 const opsAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
@@ -266,12 +290,362 @@ async function findStoreByReference(cfg: AdyenConfig, merchant: string, referenc
   return { ...found, rows: all.rows, errors: all.errors.length ? [...byRef.errors, ...all.errors] : [], scopeMissing: false };
 }
 
-interface LookupOpts { storeId?: string | null; accountHolderId?: string | null; currency: string }
+// ── FIND THE VENUE HOWEVER ADYEN HOLDS IT (8 Sep 2026, LIVE FINDING) ─────────
+// The store first chain above assumed the venue code is a STORE reference. On
+// the live account it is not: SV-1007 is the ACCOUNT HOLDER reference
+// (AH32BZP22322CJ5PXF2BD5FTR, legal entity POINT OF SALE UNIFIED PARTNERS
+// LIMITED, Active, one capability Blocked), the store search on
+// FranPOS_QSR_UK (the value of ADYEN_LIVE_UK_MERCHANT_ACCOUNT) answered 0
+// stores, and Adyen's own row for that account holder names a DIFFERENT
+// merchant account, FranPOS_UK. So a lookup runs TWO routes in parallel and
+// merges them, and a store on another merchant is REPORTED, never used
+// silently.
+//
+// Every endpoint below was confirmed against docs.adyen.com and the Adyen
+// OpenAPI specs on 8 Sep 2026:
+//   Management API v3 (cfg.managementKey)
+//     GET /stores?reference=X&pageSize=&pageNumber=          credential wide, merchantId optional
+//        https://docs.adyen.com/api-explorer/Management/3/get/stores
+//     GET /merchants?pageSize=&pageNumber=                   role "Account read"
+//        https://docs.adyen.com/api-explorer/Management/3/get/merchants
+//     GET /merchants/{m}/stores?reference=X                  per merchant, role "Stores read"
+//        https://docs.adyen.com/api-explorer/Management/3/get/merchants/_merchantId_/stores
+//     PATCH /merchants/{m}/stores/{storeId}                  splitConfiguration { balanceAccountId, splitConfigurationId }
+//        https://docs.adyen.com/api-explorer/Management/3/patch/merchants/_merchantId_/stores/_storeId_
+//        https://docs.adyen.com/platforms/automatic-split-configuration/create-split-configuration
+//     GET /merchants/{m}/splitConfigurations                 the merchant's split profiles
+//        https://docs.adyen.com/api-explorer/Management/3/get/merchants/_merchantId_/splitConfigurations
+//   Balance Platform Configuration API v2 (cfg.bpKey)
+//     GET /balancePlatforms/{id}/accountHolders?limit=&offset=   THE ONLY listing; max 100 a page
+//        https://docs.adyen.com/api-explorer/balanceplatform/2/get/balancePlatforms/_id_/accountHolders
+//     GET /accountHolders/{id}                               reference, status, capabilities, legalEntityId, balancePlatform
+//        https://docs.adyen.com/api-explorer/balanceplatform/2/get/accountHolders/_id_
+//     GET /accountHolders/{id}/balanceAccounts?limit=&offset=
+//        https://docs.adyen.com/api-explorer/balanceplatform/2/get/accountHolders/_id_/balanceAccounts
+//   Legal Entity Management API v4 (cfg.lemKey)
+//     GET /legalEntities/{id}/businessLines                  { businessLines: [{ id, service }] }
+//        https://docs.adyen.com/api-explorer/legalentity/4/get/legalEntities/_id_/businessLines
+// There is NO GET /accountHolders list and NO reference filter anywhere on the
+// Balance Platform API, so the balance platform id is the only way into the
+// holder listing. It is taken from the venue's own row (its account holder, or
+// its balance account's account holder), from a pasted balancePlatform, or
+// from the secret balancePlatformSecretName names; with none of those the
+// answer says the secret is needed instead of guessing.
+// An account holder names NO merchant account and NO store (the Adyen schema
+// carries balancePlatform, reference, status, capabilities, legalEntityId and
+// primaryBalanceAccount, nothing else), so the merchant a venue charges on can
+// only come from its store or from the admin.
+const MERCHANT_PAGE_SIZE = 100;
+const MERCHANT_PAGES = 5;         // 500 merchant accounts on one credential
+const MERCHANT_SWEEP_MAX = 25;    // store searches one lookup will run
+const HOLDER_PAGE_SIZE = 100;     // the Balance Platform maximum
+const HOLDER_PAGES = 20;          // 2000 account holders on one balance platform
 
-// The whole chain for one venue on one config. `reference` is the venue
-// code (or the admin's override); `storeId` skips the search (the admin
-// picked a candidate); `accountHolderId` is the fallback holder when the
-// store names no balance account (the owner supplied Provo id).
+interface MerchantListAnswer { merchants: Dict[]; errors: string[]; scopeMissing: boolean; capped: boolean }
+
+// Every merchant account the credential can see, paged. A refusal is a line,
+// never a throw: the sweep is a best effort extra route.
+async function listMerchants(cfg: AdyenConfig): Promise<MerchantListAnswer> {
+  const merchants: Dict[] = [];
+  const errors: string[] = [];
+  let capped = false;
+  for (let page = 1; page <= MERCHANT_PAGES; page++) {
+    const r = await mgmt<{ data?: unknown[]; pagesTotal?: unknown; _links?: { next?: unknown } }>(cfg, 'GET', `/merchants?pageSize=${MERCHANT_PAGE_SIZE}&pageNumber=${page}`);
+    if (!r.ok) {
+      errors.push(`merchant list: ${refusalText(cfg, r, 'managementKey', 'the Management API role "Account read"')}`);
+      return { merchants, errors, scopeMissing: scopeMissing(r.status), capped };
+    }
+    const rows = merchantRows(r.data);
+    merchants.push(...rows);
+    const pagesTotal = Number(r.data?.pagesTotal);
+    const more = rows.length > 0 && ((Number.isFinite(pagesTotal) && pagesTotal > page) || !!r.data?._links?.next);
+    if (!more) break;
+    if (page === MERCHANT_PAGES) capped = true;
+  }
+  return { merchants, errors, scopeMissing: false, capped };
+}
+
+// How many stores a merchant account holds (itemsTotal on a one row page).
+// Null when Adyen refused: the count is decoration, never a decision.
+async function storeCountFor(cfg: AdyenConfig, merchant: string): Promise<number | null> {
+  const r = await mgmt<{ itemsTotal?: unknown }>(cfg, 'GET', `/merchants/${encodeURIComponent(merchant)}/stores?pageSize=1&pageNumber=1`);
+  if (!r.ok) return null;
+  const n = Number(r.data?.itemsTotal);
+  return Number.isFinite(n) ? n : null;
+}
+
+// EVERY merchant account the credential can see, with a store count each
+// (adyen_merchants, 8 Sep 2026, OWNER RULE 5). The live account has more than
+// one (FranPOS_QSR_UK, the value of ADYEN_LIVE_UK_MERCHANT_ACCOUNT, and
+// FranPOS_UK, which is where the venue's store actually lives), and nobody
+// could see that from the portal. Counts are decoration: a refused count is
+// null, never an error.
+//   GET /v3/merchants                       role "Account read"
+//   GET /v3/merchants/{m}/stores?pageSize=1 role "Stores read", itemsTotal
+const MERCHANT_COUNT_MAX = 25;   // store counts one answer will fetch
+
+async function merchantsWithStoreCounts(cfg: AdyenConfig): Promise<{ merchants: Array<MerchantSummary & { storeCount: number | null }>; errors: string[]; scopeMissing: boolean; capped: boolean }> {
+  const list = await listMerchants(cfg);
+  const rows = list.merchants.map(merchantSummary).filter((m): m is MerchantSummary => !!m && !!m.id);
+  const counted = rows.slice(0, MERCHANT_COUNT_MAX);
+  const counts = await Promise.all(counted.map((m) => storeCountFor(cfg, m.id as string)));
+  const merchants = rows.map((m, i) => ({ ...m, storeCount: i < counted.length ? counts[i] : null }));
+  return { merchants, errors: list.errors, scopeMissing: list.scopeMissing, capped: list.capped || rows.length > counted.length };
+}
+
+// The credential wide store search: GET /stores?reference=X, whose merchantId
+// filter is optional, so it can answer stores from every merchant account the
+// credential can see in one call. Paged the same way as the per merchant list.
+async function listStoresAnywhere(cfg: AdyenConfig, reference: string): Promise<StoreListAnswer> {
+  const rows: Dict[] = [];
+  const errors: string[] = [];
+  for (let page = 1; page <= STORE_PAGES; page++) {
+    const r = await mgmt<{ data?: unknown[]; pagesTotal?: unknown; _links?: { next?: unknown } }>(cfg, 'GET', `/stores?reference=${encodeURIComponent(reference)}&pageSize=${STORE_PAGE_SIZE}&pageNumber=${page}`);
+    if (!r.ok) {
+      errors.push(`store search across merchant accounts: ${refusalText(cfg, r, 'managementKey', 'the Management API role "Stores read"')}`);
+      return { rows, errors, scopeMissing: scopeMissing(r.status) };
+    }
+    const pageRows = storeRows(r.data);
+    rows.push(...pageRows);
+    const pagesTotal = Number(r.data?.pagesTotal);
+    const more = pageRows.length > 0 && ((Number.isFinite(pagesTotal) && pagesTotal > page) || !!r.data?._links?.next);
+    if (!more) break;
+  }
+  return { rows, errors, scopeMissing: false };
+}
+
+interface StoreSweep extends StoreSearch { merchantsSearched: string[]; notes: string[] }
+
+// The store, wherever it lives: the configured merchant account first (the
+// filtered list, then its whole list so the admin gets candidates), then the
+// credential wide search, then merchant by merchant. The sweep only runs when
+// the configured account has no match, which is exactly the live case.
+async function findStoreAnywhere(cfg: AdyenConfig, merchant: string, reference: string): Promise<StoreSweep> {
+  const searched: string[] = [];
+  const notes: string[] = [];
+  const own = await findStoreByReference(cfg, merchant, reference);
+  searched.push(merchant);
+  if (own.scopeMissing || own.matches.length) return { ...own, merchantsSearched: searched, notes };
+
+  const rows: Dict[] = [...own.rows];
+  const errors: string[] = [...own.errors];
+  const anywhere = await listStoresAnywhere(cfg, reference);
+  errors.push(...anywhere.errors);
+  rows.push(...anywhere.rows);
+  let found = matchStoreByReference(rows, reference);
+  if (found.matches.length) {
+    notes.push(`No store on ${merchant} carries the reference ${reference}; it was found by searching every merchant account this credential can see.`);
+    return { ...found, rows, errors, scopeMissing: false, merchantsSearched: searched, notes };
+  }
+
+  // Merchant by merchant: the credential wide call may be scoped down on some
+  // credentials, so the sweep the owner asked for is run in full.
+  const list = await listMerchants(cfg);
+  errors.push(...list.errors);
+  const others = list.merchants
+    .map((m) => String(m.id ?? '').trim())
+    .filter((id) => id && id.toLowerCase() !== merchant.toLowerCase());
+  const sweep = others.slice(0, MERCHANT_SWEEP_MAX);
+  if (others.length > sweep.length) notes.push(`Only the first ${sweep.length} of ${others.length} other merchant accounts were searched. Pass merchantAccount to search one directly.`);
+  for (const other of sweep) {
+    const r = await listStores(cfg, other, `reference=${encodeURIComponent(reference)}&`);
+    searched.push(other);
+    if (r.scopeMissing) { errors.push(...r.errors); break; }
+    errors.push(...r.errors);
+    rows.push(...r.rows);
+  }
+  found = matchStoreByReference(rows, reference);
+  if (found.matches.length) notes.push(`The store with the reference ${reference} was found by sweeping ${searched.length} merchant account${searched.length === 1 ? '' : 's'}, not on ${merchant}.`);
+  return { ...found, rows, errors, scopeMissing: false, merchantsSearched: searched, notes };
+}
+
+interface HolderSearch {
+  holder: Dict | null;
+  candidates: AccountHolderCandidate[];
+  balancePlatform: string | null;
+  balancePlatformSource: string | null;
+  needsBalancePlatform: boolean;
+  errors: string[];
+  notes: string[];
+  scopeMissing: boolean;
+}
+
+// The balance platform id a holder listing needs, without asking the admin to
+// type one: a pasted id, the venue's own account holder, its balance account's
+// account holder, or the secret. Reads only.
+async function resolveBalancePlatform(
+  cfg: AdyenConfig,
+  { given, holderId, balanceAccountId }: { given?: string | null; holderId?: string | null; balanceAccountId?: string | null },
+): Promise<{ id: string | null; source: string | null; errors: string[] }> {
+  const errors: string[] = [];
+  const pasted = String(given ?? '').trim();
+  if (pasted) return { id: pasted, source: 'the id given', errors };
+  const fromEnv = balancePlatformSecretNames(cfg.env, cfg.region)
+    .map((name) => String(Deno.env.get(name) ?? '').trim())
+    .find((v) => !!v);
+  if (fromEnv) return { id: fromEnv, source: `the secret ${balancePlatformSecretName(cfg.env, cfg.region)}`, errors };
+  const known = String(holderId ?? '').trim();
+  if (known) {
+    const r = await bcl<Dict>(cfg, 'GET', `/accountHolders/${encodeURIComponent(known)}`);
+    if (r.ok) {
+      const bp = String((r.data as Dict)?.balancePlatform ?? '').trim();
+      if (bp) return { id: bp, source: `the venue's account holder ${known}`, errors };
+    } else errors.push(`account holder ${known} on the row: ${refusalText(cfg, r, 'bpKey', 'the Balance Platform BCL role')}`);
+  }
+  const ba = String(balanceAccountId ?? '').trim();
+  if (ba) {
+    const r = await bcl<Dict>(cfg, 'GET', `/balanceAccounts/${encodeURIComponent(ba)}`);
+    if (r.ok) {
+      const ahId = String((r.data as Dict)?.accountHolderId ?? '').trim();
+      if (ahId) {
+        const h = await bcl<Dict>(cfg, 'GET', `/accountHolders/${encodeURIComponent(ahId)}`);
+        if (h.ok) {
+          const bp = String((h.data as Dict)?.balancePlatform ?? '').trim();
+          if (bp) return { id: bp, source: `the venue's balance account ${ba}`, errors };
+        } else errors.push(`account holder ${ahId} of balance account ${ba}: ${refusalText(cfg, h, 'bpKey', 'the Balance Platform BCL role')}`);
+      }
+    } else errors.push(`balance account ${ba} on the row: ${refusalText(cfg, r, 'bpKey', 'the Balance Platform BCL role')}`);
+  }
+  return { id: null, source: null, errors };
+}
+
+// The ACCOUNT HOLDER route: a pasted AH id, else every account holder on the
+// balance platform, paged, matched on reference (or a migrated classic code).
+// Nothing here throws: a refusal is a line and the store route still answers.
+async function findAccountHolder(
+  cfg: AdyenConfig,
+  reference: string | null,
+  opts: { accountHolderId?: string | null; balancePlatform?: string | null; rowHolderId?: string | null; rowBalanceAccountId?: string | null },
+): Promise<HolderSearch> {
+  const out: HolderSearch = {
+    holder: null, candidates: [], balancePlatform: null, balancePlatformSource: null,
+    needsBalancePlatform: false, errors: [], notes: [], scopeMissing: false,
+  };
+  const pasted = String(opts.accountHolderId ?? '').trim();
+  if (pasted) {
+    const r = await bcl<Dict>(cfg, 'GET', `/accountHolders/${encodeURIComponent(pasted)}`);
+    if (r.ok) {
+      out.holder = r.data as Dict;
+      out.balancePlatform = String((r.data as Dict)?.balancePlatform ?? '').trim() || null;
+      out.balancePlatformSource = 'the account holder given';
+      out.notes.push(`Account holder ${pasted} was read from the id given, not found by reference.`);
+    } else {
+      out.errors.push(`account holder ${pasted}: ${refusalText(cfg, r, 'bpKey', 'the Balance Platform BCL role')}`);
+      out.scopeMissing = scopeMissing(r.status);
+    }
+    return out;
+  }
+  if (!reference) return out;
+
+  const bp = await resolveBalancePlatform(cfg, { given: opts.balancePlatform, holderId: opts.rowHolderId, balanceAccountId: opts.rowBalanceAccountId });
+  out.errors.push(...bp.errors);
+  if (!bp.id) {
+    out.needsBalancePlatform = true;
+    out.notes.push(`Adyen has no account holder lookup by reference, so the venue's account holder can only be found by listing the balance platform. Set ${balancePlatformSecretName(cfg.env, cfg.region)} to the balance platform id (BP...), or paste the venue's account holder id (AH...).`);
+    return out;
+  }
+  out.balancePlatform = bp.id;
+  out.balancePlatformSource = bp.source;
+
+  const rows: Dict[] = [];
+  for (let page = 0; page < HOLDER_PAGES; page++) {
+    const r = await bcl<Dict>(cfg, 'GET', `/balancePlatforms/${encodeURIComponent(bp.id)}/accountHolders?limit=${HOLDER_PAGE_SIZE}&offset=${page * HOLDER_PAGE_SIZE}`);
+    if (!r.ok) {
+      out.errors.push(`account holders on balance platform ${bp.id}: ${refusalText(cfg, r, 'bpKey', 'the Balance Platform BCL role')}`);
+      out.scopeMissing = scopeMissing(r.status);
+      break;
+    }
+    const pageRows = accountHolderRows(r.data);
+    rows.push(...pageRows);
+    if (!pageRows.length || (r.data as Dict)?.hasNext !== true) break;
+  }
+  const match = matchAccountHolderByReference(rows, reference);
+  if (match.holder) {
+    out.holder = match.holder;
+    out.notes.push(`Account holder ${String(match.holder.id ?? '')} carries the reference ${reference} on balance platform ${bp.id} (found from ${bp.source}).`);
+    return out;
+  }
+  if (match.ambiguous) {
+    out.errors.push(`${match.matches.length} account holders on balance platform ${bp.id} carry the reference ${reference} (${match.matches.map((x) => String(x.id ?? '?')).join(', ')}). Paste the accountHolderId to pick one.`);
+    out.candidates = accountHolderCandidates(match.matches, reference, 50);
+    return out;
+  }
+  out.candidates = accountHolderCandidates(rows, reference, 50);
+  if (rows.length) out.notes.push(`No account holder on balance platform ${bp.id} carries the reference ${reference} (${rows.length} read). Paste the accountHolderId if Adyen gave you one.`);
+  return out;
+}
+
+// The business line a store must name, read from the venue's legal entity.
+// Only used when there is no store to take one from.
+async function findBusinessLine(cfg: AdyenConfig, legalEntityId: string): Promise<{ id: string | null; error: string | null }> {
+  const r = await lem<Dict>(cfg, 'GET', `/legalEntities/${encodeURIComponent(legalEntityId)}/businessLines`);
+  if (!r.ok) return { id: null, error: `business lines of ${legalEntityId}: ${refusalText(cfg, r, 'lemKey', 'the roles "Manage LegalEntities via API" and "Balance Platform BCL Legal Entity role"')}` };
+  const pick = pickBusinessLine(r.data);
+  return { id: pick ? String(pick.id ?? '').trim() || null : null, error: null };
+}
+
+// The merchant's split configuration profiles: used when a store must be
+// linked to a balance account and no profile id is known (the documented
+// splitConfiguration takes BOTH the profile and the balance account).
+async function findSplitConfiguration(cfg: AdyenConfig, merchant: string): Promise<{ id: string | null; error: string | null; count: number }> {
+  const r = await mgmt<{ data?: unknown[] }>(cfg, 'GET', `/merchants/${encodeURIComponent(merchant)}/splitConfigurations`);
+  if (!r.ok) return { id: null, error: `split configuration profiles on ${merchant}: ${refusalText(cfg, r, 'managementKey', 'the Management API role "Split configuration read"')}`, count: 0 };
+  const rows = storeRows(r.data);
+  const ids = rows.map((x) => String(x.splitConfigurationId ?? x.id ?? '').trim()).filter(Boolean);
+  return { id: ids.length === 1 ? ids[0] : null, error: null, count: ids.length };
+}
+
+// Link a store to the venue's balance account, the documented way: the store's
+// splitConfiguration names BOTH the split configuration profile and the
+// balance account the split amounts are booked to. Done as a PATCH AFTER the
+// store exists, so a refusal here never loses a created store.
+async function linkStoreToBalanceAccount(
+  cfg: AdyenConfig, merchant: string, storeId: string,
+  { balanceAccountId, splitConfigurationId }: { balanceAccountId: string; splitConfigurationId?: string | null },
+): Promise<{ ok: boolean; splitConfigurationId: string | null; message: string }> {
+  let profile = String(splitConfigurationId ?? '').trim();
+  const notes: string[] = [];
+  if (!profile) {
+    const found = await findSplitConfiguration(cfg, merchant);
+    if (found.error) notes.push(found.error);
+    if (found.id) profile = found.id;
+    else if (found.count > 1) notes.push(`${merchant} has ${found.count} split configuration profiles, so none could be chosen. Pass splitConfigurationId.`);
+  }
+  const splitConfiguration: Dict = { balanceAccountId };
+  if (profile) splitConfiguration.splitConfigurationId = profile;
+  const r = await mgmt<Dict>(cfg, 'PATCH', `/merchants/${encodeURIComponent(merchant)}/stores/${encodeURIComponent(storeId)}`, { splitConfiguration });
+  if (r.ok) {
+    return {
+      ok: true, splitConfigurationId: profile || null,
+      message: `Store ${storeId} now books its payments to balance account ${balanceAccountId}${profile ? ` under split configuration ${profile}` : ''}.${notes.length ? ` ${notes.join(' ')}` : ''}`,
+    };
+  }
+  return {
+    ok: false, splitConfigurationId: profile || null,
+    message: `Store ${storeId} was NOT linked to balance account ${balanceAccountId}: ${adyenRefusalMessage(r.status, r.data)}${profile ? '' : ' Adyen wants a split configuration profile as well as the balance account.'}${notes.length ? ` ${notes.join(' ')}` : ''}`,
+  };
+}
+
+interface LookupOpts {
+  storeId?: string | null;
+  accountHolderId?: string | null;
+  currency: string;
+  merchantSecret?: string;            // the secret that names `merchant`, for the mismatch line
+  merchantOverride?: boolean;         // the admin named the merchant account explicitly
+  balancePlatform?: string | null;    // a pasted balance platform id (BP...)
+  row?: Dict | null;                  // merchant_adyen_accounts as it is NOW: its ids bootstrap the holder listing
+}
+
+// The whole chain for one venue on one config, BOTH ROUTES AT ONCE (8 Sep
+// 2026): the STORE route (this merchant, then every merchant the credential
+// can see) and the ACCOUNT HOLDER route (a pasted AH id, else the balance
+// platform's holders matched on reference) run in parallel and are merged, so
+// a venue Adyen holds only as an account holder is found, and a store that
+// lives on another merchant account is reported instead of used.
+// `reference` is the venue code (or the admin's override); `storeId` skips the
+// search (the admin picked a candidate); `accountHolderId` is the holder the
+// admin pasted. Nothing throws: every refusal is a line in `errors`, every gap
+// a line in `notes`.
 async function lookupByReference(cfg: AdyenConfig, merchant: string, reference: string | null, opts: LookupOpts): Promise<LookupResult> {
   const errors: string[] = [];
   const notes: string[] = [];
@@ -279,62 +653,125 @@ async function lookupByReference(cfg: AdyenConfig, merchant: string, reference: 
     found: false, reference, merchantAccount: merchant, environment: cfg.env, region: cfg.region,
     store: null, balanceAccount: null, accountHolder: null, legalEntity: null,
     splitConfigurationId: null, businessLineIds: [], candidates: [], errors, notes, scopeMissing: false,
+    holderCandidates: [], merchantMismatch: null, merchantsSearched: [], balancePlatform: null, storeNeeded: null,
   };
-
-  // 1. the store: by id when the admin picked one, else by reference
-  let store: StoreSummary | null = null;
   const storeId = String(opts.storeId ?? '').trim();
-  if (storeId) {
-    const r = await mgmt<Dict>(cfg, 'GET', `/stores/${encodeURIComponent(storeId)}`);
-    if (!r.ok) {
-      errors.push(`store ${storeId}: ${refusalText(cfg, r, 'managementKey', 'the Management API role "Stores read"')}`);
-      out.scopeMissing = scopeMissing(r.status);
-    } else {
-      store = storeSummary(r.data);
-      if (store?.merchantId && store.merchantId.toLowerCase() !== merchant.toLowerCase()) {
-        errors.push(`store ${storeId} belongs to merchant account ${store.merchantId}, not ${merchant}; it cannot be linked to a ${cfg.region} venue on this account.`);
-        store = null;
-      } else if (store && reference && referenceKey(store.reference) !== referenceKey(reference)) {
-        notes.push(`Store ${storeId} carries the reference ${store.reference ?? '(none)'}, not the venue code ${reference}. It was chosen by id.`);
+  const row = (opts.row ?? null) as Dict | null;
+  const merchantSecret = String(opts.merchantSecret ?? '').trim();
+
+  // ── the two routes, together ────────────────────────────────────────────────
+  const [storeSide, holderSide] = await Promise.all([
+    (async () => {
+      const e: string[] = [];
+      const n: string[] = [];
+      let store: StoreSummary | null = null;
+      let sweep: StoreSweep | null = null;
+      let mismatch: MerchantMismatch | null = null;
+      let scope = false;
+      // Every EXACT reference match, whatever merchant account it sits on: the
+      // reference is unique inside a merchant account only, so a credential
+      // wide sweep can answer one store per account and the admin must see
+      // WHICH account each one is on before picking (8 Sep 2026).
+      let raw: Dict[] = [];
+      if (storeId) {
+        // 1a. the store the admin picked, by id
+        const r = await mgmt<Dict>(cfg, 'GET', `/stores/${encodeURIComponent(storeId)}`);
+        if (!r.ok) {
+          e.push(`store ${storeId}: ${refusalText(cfg, r, 'managementKey', 'the Management API role "Stores read"')}`);
+          scope = scopeMissing(r.status);
+        } else {
+          const s = storeSummary(r.data);
+          if (s?.merchantId && s.merchantId.toLowerCase() !== merchant.toLowerCase()) {
+            // NEVER silently: the venue would charge on one account while its
+            // store lived on another. merchantAccount is the way to say yes.
+            mismatch = merchantMismatch({ configured: merchant, found: s.merchantId, secret: merchantSecret, storeId, reference });
+            e.push(mismatch?.message ?? `store ${storeId} belongs to merchant account ${s.merchantId}, not ${merchant}.`);
+          } else {
+            store = s;
+            raw = [r.data as Dict];
+            if (s && reference && referenceKey(s.reference) !== referenceKey(reference)) {
+              n.push(`Store ${storeId} carries the reference ${s.reference ?? '(none)'}, not the venue code ${reference}. It was chosen by id.`);
+            }
+          }
+        }
+      } else if (reference) {
+        // 1b. the store by reference: this merchant, then anywhere
+        sweep = await findStoreAnywhere(cfg, merchant, reference);
+        e.push(...sweep.errors);
+        n.push(...sweep.notes);
+        scope = sweep.scopeMissing;
+        raw = sweep.matches;
+        if (sweep.store) {
+          const s = storeSummary(sweep.store)!;
+          if (s.merchantId && s.merchantId.toLowerCase() !== merchant.toLowerCase()) {
+            mismatch = merchantMismatch({ configured: merchant, found: s.merchantId, secret: merchantSecret, storeId: s.id, reference });
+          } else {
+            store = s;
+          }
+        } else if (sweep.ambiguous) {
+          e.push(`${sweep.matches.length} stores carry the reference ${reference} (${sweep.matches.map((x) => `${String(x.id ?? '?')} on ${String(x.merchantId ?? '?')}`).join(', ')}). Pass storeId to pick one.`);
+        }
+      } else {
+        e.push('This venue has no venue code, so there is no store reference to look up. Set one in the Back Office (Venue settings) or pass reference.');
       }
+      return { store, sweep, errors: e, notes: n, scopeMissing: scope, mismatch, raw };
+    })(),
+    findAccountHolder(cfg, reference, {
+      accountHolderId: opts.accountHolderId,
+      balancePlatform: opts.balancePlatform,
+      rowHolderId: row?.account_holder_id ? String(row.account_holder_id) : null,
+      rowBalanceAccountId: row?.balance_account_id ? String(row.balance_account_id) : null,
+    }),
+  ]);
+
+  errors.push(...storeSide.errors, ...holderSide.errors);
+  notes.push(...storeSide.notes, ...holderSide.notes);
+  out.scopeMissing = storeSide.scopeMissing || holderSide.scopeMissing;
+  out.merchantMismatch = storeSide.mismatch;
+  out.merchantsSearched = storeSide.sweep?.merchantsSearched ?? [merchant];
+  // WHICH MERCHANT EACH HIT SITS ON, as rows the picker renders: id, reference,
+  // status and merchantId per exact match. One row is the normal case; more
+  // than one means the same reference exists on several merchant accounts and
+  // the admin passes storeId (and merchantAccount) to say which.
+  out.storeHits = storeCandidates(storeSide.raw, reference, 25);
+  out.holderCandidates = holderSide.candidates;
+  out.balancePlatform = holderSide.balancePlatform;
+  out.needsBalancePlatform = holderSide.needsBalancePlatform;
+  out.balancePlatformSecret = balancePlatformSecretName(cfg.env, cfg.region);
+
+  // 1. the store, or the plain reason there is none
+  const store = storeSide.store;
+  if (store) {
+    out.store = store;
+    out.splitConfigurationId = store.splitConfigurationId;
+    out.businessLineIds = store.businessLineIds;
+    if (store.status && store.status !== 'active') notes.push(`The store is ${store.status} at Adyen; payments naming it are refused until it is active.`);
+  } else if (reference && !storeId) {
+    out.candidates = storeCandidates(storeSide.sweep?.rows ?? [], reference, 50);
+    if (!storeSide.scopeMissing && !storeSide.mismatch && !storeSide.sweep?.ambiguous) {
+      notes.push(`No store on ${merchant}, or on any other merchant account this credential can see, has the reference ${reference}. Pick one of the ${out.candidates.length} stores listed (storeId), create it with adyen_create_store_by_reference, or link the account holder on its own.`);
     }
-  } else if (reference) {
-    const s = await findStoreByReference(cfg, merchant, reference);
-    errors.push(...s.errors);
-    out.scopeMissing = s.scopeMissing;
-    if (s.store) store = storeSummary(s.store);
-    else {
-      out.candidates = storeCandidates(s.rows, reference, 50);
-      if (s.ambiguous) {
-        errors.push(`${s.matches.length} stores on ${merchant} carry the reference ${reference} (${s.matches.map((x) => String(x.id ?? '?')).join(', ')}). Pass storeId to pick one.`);
-      } else if (!s.scopeMissing) {
-        notes.push(`No store on ${merchant} has the reference ${reference}. Pick one of the ${out.candidates.length} stores listed (storeId), or create it with adyen_create_store_by_reference.`);
-      }
-    }
-  } else {
-    errors.push('This venue has no venue code, so there is no store reference to look up. Set one in the Back Office (Venue settings) or pass reference.');
   }
-  if (!store) return out;
-  out.found = true;
-  out.store = store;
-  out.splitConfigurationId = store.splitConfigurationId;
-  out.businessLineIds = store.businessLineIds;
-  if (store.status && store.status !== 'active') notes.push(`The store is ${store.status} at Adyen; payments naming it are refused until it is active.`);
 
   // 2. the balance account the store's split configuration names
   let ba: BalanceAccountSummary | null = null;
-  if (store.balanceAccountId) {
+  if (store?.balanceAccountId) {
     const r = await bcl<Dict>(cfg, 'GET', `/balanceAccounts/${encodeURIComponent(store.balanceAccountId)}`);
     if (r.ok) ba = balanceAccountSummary(r.data, 'store');
     else errors.push(`balance account ${store.balanceAccountId}: ${refusalText(cfg, r, 'bpKey', 'the Balance Platform BCL role')}`);
-  } else {
+  } else if (store) {
     notes.push('The store carries no split configuration, so Adyen names no balance account for it.');
   }
 
-  // 3. the account holder: the balance account's, else the id the admin passed
+  // 3. the account holder: the store's (through its balance account), the id
+  //    the admin pasted, else the one the reference matched
   let ah: AccountHolderSummary | null = null;
-  const holderId = ba?.accountHolderId || String(opts.accountHolderId ?? '').trim() || null;
-  if (holderId) {
+  const byReferenceHolder = holderSide.holder;
+  const byReferenceHolderId = String(byReferenceHolder?.id ?? '').trim();
+  const holderId = ba?.accountHolderId || String(opts.accountHolderId ?? '').trim() || byReferenceHolderId || null;
+  if (holderId && holderId === byReferenceHolderId) {
+    ah = accountHolderSummary(byReferenceHolder);       // already read on the holder route
+  } else if (holderId) {
     const r = await bcl<Dict>(cfg, 'GET', `/accountHolders/${encodeURIComponent(holderId)}`);
     if (r.ok) {
       ah = accountHolderSummary(r.data);
@@ -342,20 +779,25 @@ async function lookupByReference(cfg: AdyenConfig, merchant: string, reference: 
     } else errors.push(`account holder ${holderId}: ${refusalText(cfg, r, 'bpKey', 'the Balance Platform BCL role')}`);
   } else if (ba) {
     errors.push(`balance account ${ba.id} names no account holder.`);
-  } else {
-    notes.push('No account holder is reachable: the store names no balance account and no accountHolderId was given.');
+  } else if (store) {
+    notes.push('No account holder is reachable: the store names no balance account, no accountHolderId was given and no account holder carries the reference.');
+  }
+  if (byReferenceHolderId && ba?.accountHolderId && byReferenceHolderId !== ba.accountHolderId) {
+    notes.push(`Account holder ${byReferenceHolderId} carries the reference ${reference}, but the store's balance account belongs to account holder ${ba.accountHolderId}. The store's own account holder was used.`);
   }
 
-  // 3b. the store names no balance account but the holder is known: pick
-  //     one of the holder's (primary, else the one open account in the
-  //     region's currency, else the only one)
+  // 3b. no balance account from the store, but the holder is known: pick one
+  //     of the holder's (primary, else the one open account in the region's
+  //     currency, else the only one)
   if (!ba && ah?.id) {
     const r = await bcl<Dict>(cfg, 'GET', `/accountHolders/${encodeURIComponent(ah.id)}/balanceAccounts?limit=100`);
     if (r.ok) {
       const pick = pickBalanceAccount(r.data, { primaryId: ah.primaryBalanceAccount, currency: opts.currency });
       if (pick) {
         ba = balanceAccountSummary(pick, 'account_holder');
-        notes.push(`Balance account ${ba?.id} was taken from the account holder (its primary, or the one open account in ${opts.currency}); the store's split configuration at Adyen does not name it yet, so payments do not split into it until that is configured.`);
+        notes.push(store
+          ? `Balance account ${ba?.id} was taken from the account holder (its primary, or the one open account in ${opts.currency}); the store's split configuration at Adyen does not name it yet, so payments do not split into it until that is configured.`
+          : `Balance account ${ba?.id} was taken from the account holder (its primary, or the one open account in ${opts.currency}).`);
       } else {
         const n = Array.isArray((r.data as Dict)?.balanceAccounts) ? ((r.data as Dict).balanceAccounts as unknown[]).length : 0;
         errors.push(`account holder ${ah.id} has ${n} balance account${n === 1 ? '' : 's'} and none could be chosen for ${opts.currency}.`);
@@ -372,8 +814,30 @@ async function lookupByReference(cfg: AdyenConfig, merchant: string, reference: 
     errors.push(`account holder ${ah.id} names no legal entity.`);
   }
 
+  // 5. no store to take a business line from: read the legal entity's
+  //    payment processing line, so the row can hold it and a store created
+  //    later can name it.
+  if (!store && out.legalEntity?.id) {
+    const bl = await findBusinessLine(cfg, out.legalEntity.id);
+    if (bl.error) errors.push(bl.error);
+    else if (bl.id) {
+      out.businessLineIds = [bl.id];
+      notes.push(`Business line ${bl.id} was read from the legal entity (its payment processing line); a store created for this venue must name it.`);
+    }
+  }
+
   out.balanceAccount = ba;
   out.accountHolder = ah;
+  // EVERY capability by name, blocked ones first (8 Sep 2026): the live account
+  // holder is Active with ONE capability Blocked, and a single verification
+  // word hid it. The wizard renders this list as it is.
+  out.capabilities = capabilityList(ah?.capabilities);
+  // FOUND means Adyen holds this venue: as a store, as an account holder, or
+  // as both. A holder with no store can be linked; card payments wait for the
+  // store (storeNeeded says so in plain words).
+  out.found = !!store || !!ah?.id;
+  out.storeNeeded = storeStillNeeded(out);
+  if (out.storeNeeded) notes.push(out.storeNeeded);
   return out;
 }
 
@@ -664,6 +1128,67 @@ async function registerApplePayDomains(cfg: AdyenConfig, merchant: string, store
   if (known === null) notes.push('Adyen did not list the domains registered already, so every host was sent; "already exists" answers count as existing.');
   if (failed.length) notes.push('A host is refused when it does not serve /.well-known/apple-developer-merchantid-domain-association over https. The app serves it on every ServOS host, so check that the host resolves.');
   return { ...base, ok: failed.length === 0, paymentMethodId: pmId, verificationStatus, added, existing, failed, note: notes.join(' ') };
+}
+
+// ── READ ONLY probes for golive_state (8 Sep 2026) ───────────────────────────
+// The wizard must SHOW where a venue stands without changing anything, so
+// these two are the register actions with every POST taken out. Same
+// endpoints, same credential rules, nothing written:
+//   GET /v3/me                  https://docs.adyen.com/api-explorer/Management/3/get/me
+//   GET /v3/me/allowedOrigins   https://docs.adyen.com/api-explorer/Management/3/get/me/allowedOrigins
+// `registered` is the one thing the step reads: true when every ServOS origin
+// is already on the credential the Drop-in client key belongs to. A refusal
+// answers registered false with the reason, never a throw.
+async function probeWebOrigins(cfg: AdyenConfig, customDomain: string | null): Promise<Record<string, unknown> & { registered: boolean }> {
+  const wanted = buildWebOrigins({ customDomain });
+  const base = { environment: cfg.env, region: cfg.region, credential: null as string | null, wanted, existing: [] as string[], missing: wanted, registered: false };
+  const apiKeyName = adyenSecretName(cfg.env, 'apiKey', cfg.region);
+  const me = await mgmt<{ username?: unknown; clientKey?: unknown }>(cfg, 'GET', '/me', undefined, cfg.apiKey);
+  if (!me.ok) return { ...base, error: `Could not read the ${cfg.region} ${cfg.env} API credential (${apiKeyName}): ${adyenRefusalMessage(me.status, me.data)}` };
+  const username = String(me.data?.username ?? '').trim() || null;
+  const meClientKey = String(me.data?.clientKey ?? '').trim();
+  if (cfg.clientKey && meClientKey !== cfg.clientKey) {
+    return { ...base, credential: username, code: 'wrong_credential', error: `${apiKeyName} is not the credential the Drop-in client key belongs to, so its origins are not the ones the browser checks.` };
+  }
+  const list = await mgmt(cfg, 'GET', '/me/allowedOrigins', undefined, cfg.apiKey);
+  if (!list.ok) return { ...base, credential: username, error: `Could not read the allowed origins: ${adyenRefusalMessage(list.status, list.data)}` };
+  const plan = originsPlan(list.data, { customDomain });
+  return { ...base, credential: username, existing: plan.existing, missing: plan.missing, registered: plan.missing.length === 0 };
+}
+
+// The venue's Apple Pay state, read only:
+//   GET /v3/merchants/{m}/paymentMethodSettings                              https://docs.adyen.com/api-explorer/Management/3/get/merchants/_merchantId_/paymentMethodSettings
+//   GET /v3/merchants/{m}/paymentMethodSettings/{id}/getApplePayDomains      https://docs.adyen.com/api-explorer/Management/3/get/merchants/_merchantId_/paymentMethodSettings/_paymentMethodId_/getApplePayDomains
+// `domains` is what Adyen holds NOW, `verification` the payment method's own
+// status (valid | pending | invalid | rejected), null when Apple Pay was never
+// requested on the merchant.
+async function probeApplePay(cfg: AdyenConfig, merchant: string, storeId: string | null, storefront: Storefront): Promise<Record<string, unknown> & { domains: string[]; verification: string | null }> {
+  const wanted = buildStorefrontDomains(storefront);
+  const base = { environment: cfg.env, region: cfg.region, merchant, domains: [] as string[], wanted, missing: wanted, verification: null as string | null, registered: false };
+  if (!wanted.length) return { ...base, code: 'no_storefront', error: 'This venue has no online address yet, so there is nothing to register for Apple Pay.' };
+  const m = encodeURIComponent(merchant);
+  const rows: unknown[] = [];
+  for (let page = 1; page <= 5; page++) {
+    const r = await mgmt<{ data?: unknown[]; _links?: { next?: unknown } }>(cfg, 'GET', `/merchants/${m}/paymentMethodSettings?pageSize=100&pageNumber=${page}`);
+    if (!r.ok) return { ...base, error: `Could not read the payment methods on ${merchant}: ${adyenRefusalMessage(r.status, r.data)}` };
+    const pageRows: unknown = r.data?.data;
+    rows.push(...(Array.isArray(pageRows) ? pageRows : []));
+    if (!r.data?._links?.next) break;
+  }
+  const pm = pickApplePayMethod(rows, storeId);
+  const storeScoped = !pm && hasApplePayEntries(rows);
+  if (!pm) return { ...base, code: storeScoped ? 'apple_pay_store_scoped' : 'apple_pay_not_requested', error: applePayStatusNote(pm, merchant, { storeScoped }) };
+  const pmId = String(pm.id ?? '');
+  const verification = pm.verificationStatus === undefined || pm.verificationStatus === null ? null : String(pm.verificationStatus);
+  const cur = await mgmt<{ domains?: unknown }>(cfg, 'GET', `/merchants/${m}/paymentMethodSettings/${encodeURIComponent(pmId)}/getApplePayDomains`);
+  const got: unknown = cur.ok ? cur.data?.domains : null;
+  const own: unknown = pm.applePay?.domains;
+  let known: string[] = [];
+  if (cur.ok && (cur.status === 204 || cur.data == null || got === undefined)) known = [];
+  else if (Array.isArray(got)) known = got.filter((d): d is string => typeof d === 'string');
+  else if (Array.isArray(own)) known = own.filter((d): d is string => typeof d === 'string');
+  const plan = applePayDomainsPlan(known, storefront);
+  return { ...base, paymentMethodId: pmId, verification, domains: known, missing: plan.missing, registered: plan.missing.length === 0 };
 }
 
 Deno.serve(async (req) => {
@@ -1230,15 +1755,26 @@ Deno.serve(async (req) => {
           error: `The ${region} ${linkEnv} Adyen set is not configured on the server (missing ${linkMissing.join(', ')}), so nothing can be pulled from Adyen for this venue.`,
         }, 400);
       }
-      const merchant = effectiveMerchantAccount(linkCfg, linkEnv === env ? maa?.merchant_account : null);
+      // MERCHANT OVERRIDE (8 Sep 2026): the venue's store may live on another
+      // merchant account than the secret names (live: FranPOS_UK, not
+      // FranPOS_QSR_UK). The lookup reports that as merchantMismatch and never
+      // uses the store; body.merchantAccount is the admin's explicit yes, and
+      // adyen_link writes it onto the row.
+      const merchantOverride = String(body.merchantAccount ?? body.merchant_account ?? '').trim() || null;
+      if (merchantOverride && !/^[A-Za-z0-9_.-]{3,80}$/.test(merchantOverride)) return json({ error: 'merchantAccount does not look like an Adyen merchant account code' }, 400);
+      const merchant = merchantOverride || effectiveMerchantAccount(linkCfg, linkEnv === env ? maa?.merchant_account : null);
       const storeId = String(body.storeId ?? body.store_id ?? '').trim() || null;
       const accountHolderId = String(body.accountHolderId ?? body.account_holder_id ?? '').trim() || null;
+      const balancePlatform = String(body.balancePlatform ?? body.balance_platform ?? '').trim() || null;
       if (storeId && !/^ST[0-9A-Z]{10,}$/i.test(storeId)) return json({ error: 'storeId does not look like an Adyen store id (ST...)' }, 400);
       if (accountHolderId && !/^AH[0-9A-Z]{10,}$/i.test(accountHolderId)) return json({ error: 'accountHolderId does not look like an Adyen account holder id (AH...)' }, 400);
       const venueCode = await venueCodeFor(opsLocationId);
       const reference = String(body.reference ?? '').trim().slice(0, 50) || venueCode;
       const linkCurrency = region === 'US' ? 'USD' : 'GBP';
-      const lookup = await lookupByReference(linkCfg, merchant, reference, { storeId, accountHolderId, currency: linkCurrency });
+      const lookup = await lookupByReference(linkCfg, merchant, reference, {
+        storeId, accountHolderId, currency: linkCurrency, balancePlatform,
+        merchantSecret, merchantOverride: !!merchantOverride, row: maa as Dict | null,
+      });
       const patch = lookup.found ? buildLinkPatch(lookup, { merchantAccount: merchant, region, environment: linkEnv }) : null;
       const confirm = body.relink === true || body.reprovision === true;
       // storeStatus feeds the refusal wording for a store that is not
@@ -1254,6 +1790,17 @@ Deno.serve(async (req) => {
       const base = {
         action, environment: linkEnv, previous: env, region, merchantAccount: merchant, venueCode, reference, summary, lookup, patch, plan, provisioned, readers,
         keepsSetup: envStash.available, stashes: stashSummaries(envStash), stashWarning: envStash.warning,
+        // 8 Sep 2026: what the two route lookup found out about WHERE the venue
+        // lives. merchantMismatch is a warning with a way forward, never a
+        // silent choice; merchantSecret names the secret the switch compares to.
+        merchantSecret, merchantOverride: merchantOverride ?? null,
+        merchantMismatch: lookup.merchantMismatch ?? null,
+        merchantsSearched: lookup.merchantsSearched ?? [],
+        storeHits: lookup.storeHits ?? [],
+        storeNeeded: lookup.storeNeeded ?? null,
+        balancePlatform: lookup.balancePlatform ?? null,
+        balancePlatformSecret: lookup.balancePlatformSecret ?? balancePlatformSecretName(linkEnv, region),
+        needsBalancePlatform: lookup.needsBalancePlatform === true,
       };
 
       if (action === 'adyen_lookup') {
@@ -1306,6 +1853,12 @@ Deno.serve(async (req) => {
         }
       }
       if (errors.length) warnings.push(`Linked with gaps, ${errors.length === 1 ? 'this piece' : 'these pieces'} could not be read: ${errors.join(' ')}`);
+      // A venue linked on its BUSINESS ACCOUNT alone is linked, and it cannot
+      // take a card yet: the row now carries the account holder, balance
+      // account, legal entity and business line with store_id still empty and
+      // receive_payments_ok false. Said out loud in the warnings as well as in
+      // storeNeeded, because this is the live case (8 Sep 2026).
+      if (lookup.storeNeeded) warnings.push(String(lookup.storeNeeded));
       // Origins and Apple Pay on the linked set, best effort, with the store
       // id the row now holds (a store scoped Apple Pay entry is preferred).
       let webOrigins: RegistrationAnswer | null = null;
@@ -1331,6 +1884,206 @@ Deno.serve(async (req) => {
         web_origins: webOrigins, apple_pay_domains: applePayDomains,
         warnings, warning: warnings.join(' ') || null,
         stash_saved: stashSaved, restored,
+      });
+    }
+
+    // ── adyen_merchants: which merchant accounts can we even see? (OWNER RULE 5) ──
+    // super_admin only, read only. The live account has MORE THAN ONE and
+    // nobody could see that from the portal: the secret named FranPOS_QSR_UK
+    // while the venue's store sat on FranPOS_UK (8 Sep 2026, live screens).
+    // One answer per configured credential set (this venue's region live set,
+    // and test), each with the accounts the credential can see, a store count
+    // apiece and the secret that names the configured one, so the merchant
+    // picker in the portal is a plain list instead of a typed guess.
+    //   GET /v3/merchants                        https://docs.adyen.com/api-explorer/Management/3/get/merchants
+    //   GET /v3/merchants/{m}/stores?pageSize=1  https://docs.adyen.com/api-explorer/Management/3/get/merchants/_merchantId_/stores
+    if (action === 'adyen_merchants') {
+      if (!isServosAdmin) return adminOnly();
+      const side = async (want: AdyenEnv) => {
+        const sideCfg = want === 'live' ? liveCfg : testCfg;
+        const secret = adyenSecretName(want, 'merchantAccount', region);
+        const missing = [...sideCfg.missing];
+        if (!sideCfg.merchantAccount && !missing.includes(secret)) missing.push(secret);
+        const merchantAccount = sideCfg.merchantAccount || null;
+        // A LIST needs only a key that can sign a Management call: the host is
+        // fixed per environment, so no prefix and no merchant account are
+        // needed. That matters, because the reason to open this list is usually
+        // that the merchant account secret is missing or names the wrong
+        // account. No key at all is the only thing that stops the call.
+        if (!sideCfg.managementKey) {
+          return {
+            configured: false, secret, merchantAccount, merchants: [], capped: false, missing,
+            error: `The ${region} ${want} Adyen set has no API key on the server (missing ${missing.join(', ') || adyenSecretName(want, 'apiKey', region)}), so the merchant accounts cannot be listed.`,
+          };
+        }
+        const r = await merchantsWithStoreCounts(sideCfg);
+        return {
+          // `configured` is what the merchant picker reads: the set is usable.
+          // The list can be there while the merchant account secret is not.
+          configured: missing.length === 0, secret, merchantAccount, merchants: r.merchants, capped: r.capped, missing,
+          error: r.errors.length ? r.errors.join(' ') : null,
+        };
+      };
+      const [live, test] = await Promise.all([side('live'), side('test')]);
+      console.log(`[adyen-terminal-admin] ${caller.id} adyen_merchants for ${loc.id} (${region}): live ${live.merchants.length}, test ${test.merchants.length}`);
+      return json({ ok: true, action, region, environment: env, live, test });
+    }
+
+    // ── golive_state: ONE call the wizard renders (OWNER FEEDBACK, 8 Sep 2026) ──
+    // "we need this to be easier and better there is far too many words and
+    // too small we need a flow that supports someone doing this". The screen
+    // used to assemble this from four calls (environment, adyen_lookup,
+    // status, list) and decide the wording itself. It does not any more:
+    // super_admin asks once and renders `steps` in order, one thing at a time.
+    // Read only. Everything is best effort: a refusal is a line, never a 500.
+    //   { venue, keys, holder, balanceAccount, legalEntity, capabilities,
+    //     store, merchantConfigured, merchantMismatch, readers, origins,
+    //     applePay, steps: [{ id, title, state, detail, action, hint }] }
+    // The five step ids are fixed: find_venue, business_account,
+    // payments_location, go_live, readers (buildGoliveSteps, _shared/adyenLink.ts).
+    if (action === 'golive_state') {
+      if (!isServosAdmin) return adminOnly();
+      const targetEnv = resolveLinkEnvironment(env, body.environment);
+      const targetCfg = targetEnv === 'live' ? liveCfg : testCfg;
+      const merchantSecret = adyenSecretName(targetEnv, 'merchantAccount', region);
+      // What a GO LIVE actually needs: the set's own secrets, its merchant
+      // account AND the Drop-in client key (online checkout is half the venue).
+      const keysMissing = [...targetCfg.missing];
+      if (!targetCfg.clientKey) keysMissing.push(adyenSecretName(targetEnv, 'clientKey', region));
+      if (!targetCfg.merchantAccount && !keysMissing.includes(merchantSecret)) keysMissing.push(merchantSecret);
+      const keysOk = keysMissing.length === 0;
+      const venueCode = await venueCodeFor(opsLocationId);
+      const merchantOverride = String(body.merchantAccount ?? body.merchant_account ?? '').trim() || null;
+      if (merchantOverride && !/^[A-Za-z0-9_.-]{3,80}$/.test(merchantOverride)) return json({ error: 'merchantAccount does not look like an Adyen merchant account code' }, 400);
+      const pickedStoreId = String(body.storeId ?? body.store_id ?? '').trim() || null;
+      const pickedHolderId = String(body.accountHolderId ?? body.account_holder_id ?? '').trim() || null;
+      if (pickedStoreId && !/^ST[0-9A-Z]{10,}$/i.test(pickedStoreId)) return json({ error: 'storeId does not look like an Adyen store id (ST...)' }, 400);
+      if (pickedHolderId && !/^AH[0-9A-Z]{10,}$/i.test(pickedHolderId)) return json({ error: 'accountHolderId does not look like an Adyen account holder id (AH...)' }, 400);
+      const merchantConfigured = merchantOverride || effectiveMerchantAccount(targetCfg, targetEnv === env ? maa?.merchant_account : null) || null;
+
+      // The readers, ours to answer with no Adyen call at all: the platform
+      // registry rows (processor adyen, not retired) joined on the POIID to
+      // the ops link rows, and `bound` is the till the reader sits on.
+      const readReaders = async (): Promise<{ readers: GoliveReader[]; error: string | null }> => {
+        const [pd, td] = await Promise.all([
+          platformAdmin.from('payment_devices').select('label, adyen_terminal_id, serial_number')
+            .eq('location_id', loc.id).eq('processor', 'adyen').neq('status', 'retired'),
+          opsAdmin.from('terminal_devices').select('label, adyen_terminal_id, serial_number, bound_pos_device_id')
+            .eq('location_id', opsLocationId).not('adyen_terminal_id', 'is', null).neq('status', 'retired'),
+        ]);
+        if (pd.error) return { readers: [], error: `The reader list could not be read: ${pd.error.message}` };
+        if (td.error) return { readers: [], error: `The till links could not be read: ${td.error.message}` };
+        const byPoiid = new Map<string, GoliveReader>();
+        const out: GoliveReader[] = [];
+        for (const r of (pd.data || []) as Dict[]) {
+          const poiid = String(r.adyen_terminal_id ?? '').trim();
+          if (!poiid || byPoiid.has(poiid)) continue;
+          const entry: GoliveReader = { label: String(r.label ?? '').trim() || null, serial: String(r.serial_number ?? '').trim() || null, poiid, bound: false };
+          byPoiid.set(poiid, entry);
+          out.push(entry);
+        }
+        for (const r of (td.data || []) as Dict[]) {
+          const poiid = String(r.adyen_terminal_id ?? '').trim();
+          if (!poiid) continue;
+          const have = byPoiid.get(poiid);
+          const bound = !!String(r.bound_pos_device_id ?? '').trim();
+          if (have) {
+            if (bound) have.bound = true;
+            if (!have.label) have.label = String(r.label ?? '').trim() || null;
+            if (!have.serial) have.serial = String(r.serial_number ?? '').trim() || null;
+            continue;
+          }
+          const entry: GoliveReader = { label: String(r.label ?? '').trim() || null, serial: String(r.serial_number ?? '').trim() || null, poiid, bound };
+          byPoiid.set(poiid, entry);
+          out.push(entry);
+        }
+        return { readers: out, error: null };
+      };
+
+      const readerAnswer = await readReaders();
+      const errors: string[] = [];
+      const notes: string[] = [];
+      if (readerAnswer.error) errors.push(readerAnswer.error);
+
+      type OriginsProbe = Record<string, unknown> & { registered: boolean };
+      type ApplePayProbe = Record<string, unknown> & { domains: string[]; verification: string | null };
+      let lookup: LookupResult | null = null;
+      let origins: OriginsProbe = { registered: false, wanted: [], existing: [], missing: [] };
+      let applePay: ApplePayProbe = { domains: [], verification: null };
+      if (keysOk && merchantConfigured) {
+        const linkCurrency = region === 'US' ? 'USD' : 'GBP';
+        lookup = await lookupByReference(targetCfg, merchantConfigured, venueCode, {
+          storeId: pickedStoreId,
+          accountHolderId: pickedHolderId,
+          currency: linkCurrency,
+          balancePlatform: String(body.balancePlatform ?? body.balance_platform ?? '').trim() || null,
+          merchantSecret, merchantOverride: !!merchantOverride, row: maa as Dict | null,
+        });
+        errors.push(...(Array.isArray(lookup.errors) ? lookup.errors : []));
+        notes.push(...(Array.isArray(lookup.notes) ? lookup.notes : []));
+        let storefront: Storefront = { slug: null, customDomain: null };
+        try { storefront = await storefrontFor(loc.id); } catch (e) { errors.push(`The venue's online address could not be read: ${(e as Error)?.message || String(e)}`); }
+        const storeIdNow = String((lookup.store as Dict | null)?.id ?? maa?.store_id ?? '').trim() || null;
+        // Both probes always answer: a throw becomes that probe's own error
+        // line, so one refused read never takes the whole screen down.
+        const [o, a] = await Promise.all([
+          (async (): Promise<OriginsProbe> => {
+            try { return await probeWebOrigins(targetCfg, storefront.customDomain); }
+            catch (e) { return { registered: false, wanted: [], existing: [], missing: [], error: `web origins: ${(e as Error)?.message || String(e)}` }; }
+          })(),
+          (async (): Promise<ApplePayProbe> => {
+            try { return await probeApplePay(targetCfg, merchantConfigured, storeIdNow, storefront); }
+            catch (e) { return { domains: [], verification: null, error: `Apple Pay: ${(e as Error)?.message || String(e)}` }; }
+          })(),
+        ]);
+        origins = o;
+        applePay = a;
+      } else if (!keysOk) {
+        notes.push(`Nothing was read from Adyen: the ${region} ${targetEnv} set is missing ${keysMissing.join(', ')}.`);
+      } else {
+        notes.push(`Nothing was read from Adyen: no merchant account is known for the ${region} ${targetEnv} account (${merchantSecret}).`);
+      }
+
+      const state = {
+        venue: { name: loc.name ?? null, code: venueCode, region, environment: env },
+        keys: { configured: keysOk, missing: keysMissing },
+        // What taking REAL money needs, whichever account was just read: the
+        // go live step reads this, so a test read never says "ready to go live".
+        liveKeys: { configured: liveReady, missing: liveMissing },
+        holder: (lookup?.accountHolder as AccountHolderSummary | null) ?? null,
+        balanceAccount: (lookup?.balanceAccount as BalanceAccountSummary | null) ?? null,
+        legalEntity: lookup?.legalEntity ?? null,
+        capabilities: (lookup?.capabilities as CapabilityRow[] | undefined) ?? [],
+        store: (lookup?.store as StoreSummary | null) ?? null,
+        merchantConfigured,
+        merchantMismatch: lookup?.merchantMismatch ?? null,
+        readers: readerAnswer.readers,
+        origins,
+        applePay,
+      };
+      const steps: GoliveStep[] = buildGoliveSteps(state);
+      console.log(`[adyen-terminal-admin] ${caller.id} golive_state for ${loc.id} (${region} ${targetEnv}, venue on ${env}): ${steps.map((x) => `${x.id}=${x.state}`).join(' ')}`);
+      return json({
+        ok: true, action, ...state, steps,
+        target: targetEnv, merchantSecret, merchantOverride: merchantOverride ?? null,
+        // merchantConfigured is the account the reads above actually used; this
+        // is what the SECRET names. They differ only when the admin passed an
+        // override, and merchantMismatch is the case that makes them differ on
+        // purpose (live, 8 Sep 2026: the secret names FranPOS_QSR_UK and the
+        // venue's store lives on FranPOS_UK).
+        merchantFromSecret: targetCfg.merchantAccount || null,
+        reference: venueCode, summary: lookup ? lookupSummary(lookup) : null,
+        storeNeeded: lookup?.storeNeeded ?? null,
+        candidates: lookup?.candidates ?? [],
+        holderCandidates: lookup?.holderCandidates ?? [],
+        merchantsSearched: lookup?.merchantsSearched ?? [],
+        storeHits: lookup?.storeHits ?? [],
+        balancePlatform: lookup?.balancePlatform ?? null,
+        balancePlatformSecret: lookup?.balancePlatformSecret ?? balancePlatformSecretName(targetEnv, region),
+        needsBalancePlatform: lookup?.needsBalancePlatform === true,
+        blockedCapabilities: blockedCapabilityNames(state.capabilities),
+        readers_error: readerAnswer.error,
+        errors, notes,
       });
     }
 
@@ -1445,11 +2198,22 @@ Deno.serve(async (req) => {
           }, 200);
         }
       }
-      const storeMerchant = crossEnv ? effectiveMerchantAccount(storeCfg, null) : merchant;
+      // MERCHANT OVERRIDE (8 Sep 2026, OWNER RULE 4): the venue's store may
+      // belong on a merchant account the secret does not name (live:
+      // FranPOS_UK, not FranPOS_QSR_UK). adyen_lookup reports that as
+      // merchantMismatch; body.merchantAccount is the admin saying "create it
+      // there", and the same name goes on the row so every terminal call
+      // afterwards uses it.
+      const storeMerchantOverride = String(body.merchantAccount ?? body.merchant_account ?? '').trim() || null;
+      if (storeMerchantOverride && !/^[A-Za-z0-9_.-]{3,80}$/.test(storeMerchantOverride)) return json({ error: 'merchantAccount does not look like an Adyen merchant account code' }, 400);
+      const storeMerchant = storeMerchantOverride || (crossEnv ? effectiveMerchantAccount(storeCfg, null) : merchant);
       // The mapped store belongs to the venue's CURRENT environment, so it
       // only answers "existing" on that environment: a test venue asking
       // for its live store is never handed its test store id.
-      if (maa?.store_id && !crossEnv) return json({ ok: true, storeId: maa.store_id, existing: true, foundByReference: false, mapped: true, environment: env, region });
+      // An override means "look on THAT account": the mapped store id is the
+      // one on the configured account, so it is not the answer.
+      const sameMerchant = !storeMerchantOverride || storeMerchantOverride.toLowerCase() === String(maa?.merchant_account ?? merchant).toLowerCase();
+      if (maa?.store_id && !crossEnv && sameMerchant) return json({ ok: true, storeId: maa.store_id, existing: true, foundByReference: false, mapped: true, environment: env, region });
       // Across environments the row is NOT written: a live store id on a
       // test row would be a mixed identity (and would count as test setup
       // for the next flip). The store is found or created on the target
@@ -1490,6 +2254,7 @@ Deno.serve(async (req) => {
           return json({
             ok: true, storeId: s.id, existing: true, foundByReference: true, mapped: !crossEnv, reference: s.reference, store: s,
             environment: storeCfg.env, region, warning: mapWarning,
+            merchantAccount: storeMerchant, merchantOverride: storeMerchantOverride ?? null,
             hint: crossEnv ? crossHint : s.status === 'active' ? 'Run adyen_link to pull the balance account, account holder and legal entity too.' : `The store is ${s.status ?? 'not active'} at Adyen.`,
           });
         }
@@ -1520,9 +2285,23 @@ Deno.serve(async (req) => {
       // reference actions and adyen-onboard list_stores match a store to
       // its venue on it.
       if (reference) payload.reference = reference;
+      // A merchant with more than one business line REFUSES a store that names
+      // none (docs.adyen.com, POST /merchants/{m}/stores). The venue's own line
+      // is on its row, put there by adyen_link from the legal entity's
+      // paymentProcessing line, and it belongs to the SAME Adyen environment,
+      // so it only rides when the store is created on that environment.
+      const rowBusinessLine = !crossEnv ? String(maa?.business_line_id ?? '').trim() : '';
+      if (rowBusinessLine) payload.businessLineIds = [rowBusinessLine];
       const r = await mgmt(storeCfg, 'POST', `/merchants/${storeMerchant}/stores`, payload);
       if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
-      if (!r.ok) return json({ ok: false, error: (r.data as Record<string, unknown>)?.detail || (r.data as Record<string, unknown>)?.title || `store create failed (${r.status})` }, 200);
+      if (!r.ok) {
+        const detail = String((r.data as Record<string, unknown>)?.detail || (r.data as Record<string, unknown>)?.title || `store create failed (${r.status})`);
+        // A platform merchant with more than one business line refuses a store
+        // that names none, and the message from Adyen does not say where to
+        // get one (8 Sep 2026).
+        const hint = !rowBusinessLine ? `This venue's row holds no business line. Link the venue to Adyen first: the link reads the legal entity's payment processing line and writes it on the venue, and the store then names it.` : null;
+        return json({ ok: false, error: detail, hint, merchantAccount: storeMerchant }, 200);
+      }
       const storeId = String((r.data as Record<string, unknown>).id || '');
       let regionWarning: string | null = null;
       if (!crossEnv) {
@@ -1536,11 +2315,36 @@ Deno.serve(async (req) => {
         regionWarning = warning;
       }
       const pm = await ensurePaymentMethods(storeCfg, storeMerchant, storeId, market);
-      logLink('store_created', loc.id, { environment: storeCfg.env, region, merchant: storeMerchant, reference, storeId, mapped: !crossEnv });
-      console.log(`[adyen-terminal-admin] ${caller.id} ${action} created store ${storeId} (reference ${reference ?? '(none)'}) for ${loc.id} on ${storeMerchant} (${region} ${storeCfg.env}${crossEnv ? ', not mapped' : ''})`);
+      // COMPLETE THE CHAIN (8 Sep 2026, OWNER RULE 4): a venue Adyen already
+      // holds as an account holder has a balance account and no store, so the
+      // store created here is joined to that balance account straight away
+      // (PATCH /merchants/{m}/stores/{storeId} with splitConfiguration, the
+      // documented way: it names the profile AND the balance account). Done as
+      // a PATCH after the create, so a refusal never loses the store. Only on
+      // the venue's OWN environment: a balance account id belongs to one Adyen
+      // environment and joining a live store to a test account would be wrong.
+      const rowBalanceAccount = !crossEnv ? String(maa?.balance_account_id ?? '').trim() : '';
+      let balanceAccountLink: { ok: boolean; splitConfigurationId: string | null; message: string } | null = null;
+      if (rowBalanceAccount) {
+        balanceAccountLink = await linkStoreToBalanceAccount(storeCfg, storeMerchant, storeId, {
+          balanceAccountId: rowBalanceAccount,
+          splitConfigurationId: String(maa?.split_profile_id ?? '').trim() || null,
+        });
+        if (balanceAccountLink.ok && balanceAccountLink.splitConfigurationId && !crossEnv) {
+          const { error: splitErr } = await upsertAccountRow({ location_id: loc.id, split_profile_id: balanceAccountLink.splitConfigurationId, updated_at: new Date().toISOString() });
+          if (splitErr) balanceAccountLink.message += ` The split configuration could not be written on the venue: ${splitErr.message}`;
+        }
+      } else if (!crossEnv) {
+        balanceAccountLink = { ok: false, splitConfigurationId: null, message: 'This venue has no balance account on its row yet, so the store books its payments nowhere in particular. Link the venue to Adyen first, then create the store.' };
+      }
+      logLink('store_created', loc.id, { environment: storeCfg.env, region, merchant: storeMerchant, reference, storeId, mapped: !crossEnv, businessLineId: rowBusinessLine || null, balanceAccount: rowBalanceAccount || null, balanceAccountLinked: balanceAccountLink?.ok ?? null });
+      console.log(`[adyen-terminal-admin] ${caller.id} ${action} created store ${storeId} (reference ${reference ?? '(none)'}) for ${loc.id} on ${storeMerchant} (${region} ${storeCfg.env}${crossEnv ? ', not mapped' : ''})${rowBalanceAccount ? `, balance account ${balanceAccountLink?.ok ? 'linked' : 'NOT linked'}` : ''}`);
       return json({
         ok: true, storeId, existing: false, foundByReference: false, mapped: !crossEnv, paymentMethods: pm,
         environment: storeCfg.env, region, reference, warning: regionWarning, hint: crossEnv ? crossHint : null,
+        merchantAccount: storeMerchant, merchantOverride: storeMerchantOverride ?? null,
+        businessLineId: rowBusinessLine || null,
+        balanceAccount: rowBalanceAccount || null, balanceAccountLink,
       });
     }
 

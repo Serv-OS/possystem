@@ -25,9 +25,12 @@
 //   1. Onboarding is seamless: Adyen already holds the venue's store,
 //      balance account and account holder under the venue code (SV-1007) as
 //      the store reference, so the admin PULLS the ids from Adyen by
-//      reference (AdyenLinkPanel: adyen_lookup, then adyen_link) and never
-//      types them. The manual "Enter Adyen details" form survives only under
-//      a collapsed Advanced section, as a fallback.
+//      reference and never types them. Since 8 Sep 2026 that is a GUIDED
+//      FLOW of five numbered steps, one open at a time, one primary button
+//      each (AdyenGoLiveFlow, driven by the fn's golive_state), after the
+//      owner said the dense panel had "far too many words and too small".
+//      The manual "Enter Adyen details" form survives only under a
+//      collapsed Advanced section, as a fallback.
 //   2. The Processing list scales to many customers: one compact row per
 //      venue (name, venue code, region chip, environment chip, then Linked /
 //      Holder / KYC / Payouts chips), a search box (name, code or slug), the
@@ -35,14 +38,16 @@
 //      through sessionStorage.
 //   The per venue Adyen ENVIRONMENT switch and the region are ServOS
 //   internal actions too (AdyenEnvironmentControls; the adyen-terminal-admin
-//   fn refuses them for anyone but a super_admin).
+//   fn refuses them for anyone but a super_admin). Going LIVE is the flow's
+//   fourth step, so the environment line only switches a live venue back to
+//   test: one way to do each thing.
 //
 // Themed with the same CSS variables as the customer back office.
 
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { supabase, platformSupabase } from '../../lib/supabase';
 import AdyenEnvironmentControls from '../components/AdyenEnvironmentControls';
-import AdyenLinkPanel from '../components/AdyenLinkPanel';
+import AdyenGoLiveFlow from '../components/AdyenGoLiveFlow';
 import { adyenVenueStatus, stripeVenueStatus, matchesVenueSearch } from '../../lib/payments/adyenAdminRows';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
@@ -88,7 +93,7 @@ async function callAdyenOnboard(action, payload) {
 // user_locations row at the venue. It resolves the venue from either id: the
 // ops id is sent when the platform row knows it, else the platform id, which
 // the fn maps onto the ops id itself. Non-2xx answers THROW with .status and
-// .data so AdyenEnvironmentControls and AdyenLinkPanel can act on structured
+// .data so AdyenEnvironmentControls and AdyenGoLiveFlow can act on structured
 // refusals (set_environment answers 409 + needs_reprovision, adyen_link 409 +
 // needs_relink).
 function terminalAdminFor(location) {
@@ -904,20 +909,24 @@ const AdyenRow = ({ ok, children }) => (
   </div>
 );
 
-// Order (owner, 8 Sep 2026): Link to Adyen first, then the environment line
-// (region, switch, readers), then the connection status, the rate card and
-// the payout status with the manual form under Advanced.
+// Order (owner, 8 Sep 2026): the guided flow first, then the environment
+// line (region, the switch back to test, readers), then the connection
+// status, the rate card and the payout status with the manual form under
+// Advanced.
 function AdyenBlock({ location, venueCode, adyenRow, defaults, onError, onRowChanged }) {
   const [st, setSt] = useState(null);   // null=loading, {error} or status payload
-  // envRev: bumped after a link, a flip or a region change, so the
-  // connection pill here and the payout panel re-read the venue. linkRev:
-  // bumped after a link only, so the environment line re-reads the fn (it
-  // reloads itself after its own flips and region changes).
+  // envRev: bumped by ANY change, so the connection pill here and the payout
+  // panel re-read the venue. linkRev and flowRev point the OTHER way round,
+  // so nothing reads itself twice: the flow reloads itself after its own
+  // actions and bumps linkRev (the environment line re-reads); the
+  // environment line reloads itself after its own flips and bumps flowRev
+  // (the flow re-reads).
   const [envRev, setEnvRev] = useState(0);
   const [linkRev, setLinkRev] = useState(0);
+  const [flowRev, setFlowRev] = useState(0);
   const callTerminalAdmin = useMemo(() => terminalAdminFor(location), [location.id, location.ops_location_id]);   // eslint-disable-line react-hooks/exhaustive-deps
-  const envChanged = () => { setEnvRev((n) => n + 1); onRowChanged?.(); };
-  const linkChanged = () => { setLinkRev((n) => n + 1); envChanged(); };
+  const envChanged = () => { setEnvRev((n) => n + 1); setFlowRev((n) => n + 1); onRowChanged?.(); };
+  const linkChanged = () => { setEnvRev((n) => n + 1); setLinkRev((n) => n + 1); onRowChanged?.(); };
   useEffect(() => {
     let live = true;
     (async () => {
@@ -1017,23 +1026,22 @@ function AdyenBlock({ location, venueCode, adyenRow, defaults, onError, onRowCha
         </div>
         <AdyenRow ok={st.online}>Online payments: this venue&rsquo;s online shop charges through Adyen{st.environment === 'test' ? ' (test cards only)' : ' (real money)'}</AdyenRow>
         <AdyenRow ok={st.inPerson}>In-person on the tills: a card reader is paired and boarded</AdyenRow>
-        <AdyenRow ok={!!adyenRow?.store_id}>Linked to Adyen: {adyenRow?.store_id ? `store ${adyenRow.store_id} is mapped on ${adyenRow.environment || st.environment || 'this environment'}` : 'no store is mapped yet. Use Link to Adyen'}</AdyenRow>
-        <AdyenRow ok={!!adyenRow?.account_holder_id}>Account holder and payouts: Link to Adyen pulls the venue&rsquo;s balance account and account holder by its reference{adyenRow?.store_id && !adyenRow?.account_holder_id ? ' (this store names no balance account)' : ''}</AdyenRow>
+        <AdyenRow ok={!!adyenRow?.store_id}>Linked to Adyen: {adyenRow?.store_id ? `store ${adyenRow.store_id} is mapped on ${adyenRow.environment || st.environment || 'this environment'}` : 'no store is mapped yet. The steps above make one'}</AdyenRow>
+        <AdyenRow ok={!!adyenRow?.account_holder_id}>Account holder and payouts: the steps above pull the venue&rsquo;s balance account and account holder by its reference{adyenRow?.store_id && !adyenRow?.account_holder_id ? ' (this store names no balance account)' : ''}</AdyenRow>
       </div>;
-
-  // This VENUE's Adyen environment for the link panel: the status probe's
-  // answer (re-read after every flip and link), else the bulk row's.
-  const venueEnvironment = (st && !st.error && st.environment) || adyenRow?.environment || null;
 
   return (
     <>
-      {/* (a) Link to Adyen: pull by reference, never typed (OWNER RULE 1). */}
-      <AdyenLinkPanel
+      {/* (a) The guided flow: five steps, one open at a time, one primary
+          button each (OWNER FEEDBACK 8 Sep 2026). It replaced the dense Link
+          to Adyen panel, and it owns the pull by reference, the store create,
+          the merchant picker, going live and the web addresses. */}
+      <AdyenGoLiveFlow
         location={location}
         venueCode={venueCode}
-        environment={venueEnvironment}
         callAdmin={callTerminalAdmin}
         onChanged={linkChanged}
+        refreshKey={flowRev}
       />
       {/* (b) Region select and environment switch on one line, with the
           reader count (c). ServOS internal (OWNER RULE). */}
