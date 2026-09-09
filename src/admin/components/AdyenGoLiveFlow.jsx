@@ -75,6 +75,12 @@
 //   venueCode   ops locations.venue_code, for the empty state line
 //   callAdmin   (action, payload) => the adyen-terminal-admin answer; MUST
 //               throw on a non-2xx with err.status and err.data set
+//   wallets     adyen-checkout `status` (wallets: true) probe for this venue:
+//               { applepay, googlepay, offered[], error }. null = not read.
+//               Step 4 says it out loud, because "the owner asked why Apple
+//               Pay did not load" was previously unanswerable anywhere in the
+//               product: the checkout falls back to a card-only form in
+//               silence, and a scheme-only Adyen answer did not even warn.
 //   onChanged   fired after anything changed the venue
 //   refreshKey  bump it to make the flow read again
 
@@ -293,7 +299,23 @@ function savePick(id, v) {
   try { sessionStorage.setItem(pickKey(id), JSON.stringify(v || {})); } catch { /* private mode: the choice lives for this mount */ }
 }
 
-export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, onChanged, refreshKey = 0 }) {
+// The one plain line per wallet under step 4. `on` is "Adyen offers it AND it
+// carries the identifiers the browser needs"; anything else names the next
+// thing to do rather than leaving an operator to guess.
+function walletLines(wallets) {
+  if (!wallets || typeof wallets !== 'object') return [];
+  const say = (label, on, extra) => ({
+    label,
+    on: !!on,
+    text: on ? `${label}: on. Adyen offers it on this venue.` : `${label}: off. ${extra}`,
+  });
+  return [
+    say('Apple Pay', wallets.applepay, 'Turn it on in the Adyen Customer Area, then add the web addresses below so the venue\u2019s shop is registered with Apple.'),
+    say('Google Pay', wallets.googlepay, 'Turn it on in the Adyen Customer Area. It also needs a Google merchant ID on the account before a live shopper can use it.'),
+  ];
+}
+
+export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, wallets = null, onChanged, refreshKey = 0 }) {
   const name = location?.name || 'this venue';
   const locId = location?.id || null;
   // Every read and write carries the same identity choices: the merchant
@@ -384,6 +406,10 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, onChan
   const stateNotes = lines(state?.notes);
   const readersError = str(state?.readers_error);
   const merchantNow = str(state?.merchantConfigured);
+  // Apple Pay and Google Pay, read from adyen-checkout `status` by the panel
+  // above and passed in. Nothing here decides: it says what Adyen answered.
+  const walletRows = walletLines(wallets);
+  const walletProblem = str(wallets?.error) || '';
 
   // The accounts the credential can see. A mismatch loads them straight away
   // (picking one is the only way forward); otherwise the admin asks.
@@ -734,7 +760,11 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, onChan
                           venue was just found by its reference on its own. */}
                       {refSearch.firstVenueLine && <p style={S.quiet}>{refSearch.firstVenueLine}</p>}
                       {refSearch.foundLine && <p style={S.quiet}>{refSearch.foundLine}</p>}
-                      {state.needsBalancePlatform && <IdLine label="Server setting still needed" value={str(state.balancePlatformSecret)} />}
+                      {/* Not on the paste first path: firstVenueLine has just
+                          said to paste the id once, and a server secret name
+                          under it is a second, contradicting instruction. The
+                          secret is still named in the server's own note. */}
+                      {state.needsBalancePlatform && !refSearch.pastePrimary && <IdLine label="Server setting still needed" value={str(state.balancePlatformSecret)} />}
                       {/* Pasting the id IS the way forward when there is no
                           venue code to search for, and when no balance
                           platform id is known yet (the first venue on this
@@ -998,6 +1028,21 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, onChan
                       )}
                       {step.action === 'register_origins' && (
                         <Primary busy={busy === 'origins'} disabled={anyBusy} onClick={addOrigins}>Add the web addresses</Primary>
+                      )}
+                      {/* WHAT THE SHOPPER WILL ACTUALLY SEE. The checkout asks
+                          Adyen for the venue's real payment methods and falls
+                          back to a plain card form in silence when a wallet is
+                          not there, so this is the only place an operator can
+                          read the answer. */}
+                      {walletRows.length > 0 && (
+                        <div style={{ marginTop: 18, maxWidth: MEASURE }}>
+                          {walletRows.map((w) => (
+                            <div key={w.label} style={{ fontSize: 15, lineHeight: 1.5, marginBottom: 6, color: w.on ? 'var(--grn, #15C26A)' : 'var(--t3)' }}>
+                              {w.text}
+                            </div>
+                          ))}
+                          {walletProblem && <p style={{ ...S.quiet, marginTop: 6 }}>{walletProblem}</p>}
+                        </div>
                       )}
                     </>
                   )}

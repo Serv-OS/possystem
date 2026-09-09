@@ -679,11 +679,11 @@ export function mergeMerchantAccounts(stored, seen) {
   for (const m of kept) {
     const key = m.id.toLowerCase();
     done.add(key);
-    const fresh_ = byKey.get(key);
+    const seenNow = byKey.get(key);
     // The id we kept FIRST is the one the picker keeps offering, so a
     // different casing back from Adyen refreshes the name and the status
     // without changing the value under the option.
-    out.push(fresh_ ? { ...fresh_, id: m.id } : m);
+    out.push(seenNow ? { ...seenNow, id: m.id } : m);
   }
   for (const m of fresh) if (!done.has(m.id.toLowerCase())) out.push(m);
   return out.slice(0, MERCHANT_ACCOUNTS_KEPT);
@@ -694,14 +694,18 @@ export function mergeMerchantAccounts(stored, seen) {
 // is the normal answer and no write leaves.
 //   `row`     the settings row as it is now (null when there is none yet)
 //   `learned` { balancePlatformId, merchantAccounts } from this read
-// Never clears: a learned id fills a blank or replaces a DIFFERENT id, and
-// the merchant accounts merge.
+// Never clears and never RE-POINTS: a learned id fills a blank only, and the
+// merchant accounts merge. A different id is a clash, not an update. The row is
+// keyed by (environment, region) alone and more than one Adyen account is in
+// play for one region under the reseller model, so one venue sitting on a
+// second balance platform must not re-point the search for every other venue.
+// savePlatformSettings turns that clash into a warning the admin can read.
 export function platformSettingsPatch(row, learned) {
   const r = isObj(row) ? row : {};
   const l = isObj(learned) ? learned : {};
   const patch = {};
   const bp = str(l.balancePlatformId);
-  if (bp && bp !== str(r.balance_platform_id)) patch.balance_platform_id = bp;
+  if (bp && !str(r.balance_platform_id)) patch.balance_platform_id = bp;
   const fresh = merchantAccountsSeen(l.merchantAccounts);
   if (fresh.length) {
     const kept = merchantAccountsSeen(r.merchant_accounts);
@@ -711,14 +715,18 @@ export function platformSettingsPatch(row, learned) {
   return Object.keys(patch).length ? patch : null;
 }
 
-// The balance platform id THIS lookup learned, wherever it came from: the
-// holder listing, a pasted holder, or the holder the store's balance account
-// named (accountHolderSummary carries balancePlatform). Null when no account
-// holder was read at all.
+// The balance platform id THIS lookup learned, and ONLY from an account holder
+// Adyen actually answered with: a pasted holder, the holder the listing matched
+// by reference, or the holder the store's balance account named
+// (accountHolderSummary carries balancePlatform). NEVER lookup.balancePlatform:
+// that is the id the listing SEARCHED with, set before the listing ran and so
+// true whether or not any holder was found. Learning it would write an
+// unverified id (a stale secret, a typed BP) over the good kept one, on a row
+// no screen can read back or clear. Null when no account holder was read.
 export function learnedBalancePlatform(lookup) {
   const l = isObj(lookup) ? lookup : {};
   const holder = isObj(l.accountHolder) ? l.accountHolder : {};
-  return str(l.balancePlatform) || str(holder.balancePlatform) || null;
+  return str(holder.balancePlatform) || null;
 }
 
 // PostgREST's two shapes for a table that is not there: 42P01 "relation
@@ -912,14 +920,12 @@ export function buildGoliveSteps(state = {}, opts = {}) {
   // A payments location was found on ANOTHER Adyen account, so nothing was
   // resolved. The explanation belongs on the step the flow opens, not one row
   // down behind a click (8 Sep 2026: pasting an ST id redrew the screen
-  // byte for byte and said nothing).
+  // byte for byte and said nothing). The STATE and the ACTION carry it: the
+  // screen draws the mismatch block itself on any step whose action is
+  // choose_merchant (the two account names as ids, with the picker under
+  // them), so a detail and a hint here would be written and never rendered.
   else if (mismatch && str(mismatch.found)) {
-    out.push(step('find_venue', {
-      state: 'attention',
-      detail: `This venue sits on ${str(mismatch.found)}, not on ${str(mismatch.configured) || 'the account we are set to use'}.`,
-      action: 'choose_merchant',
-      hint: 'Pick the right Adyen account below, then the search runs again.',
-    }));
+    out.push(step('find_venue', { state: 'attention', detail: '', action: 'choose_merchant' }));
   } else if (holder) out.push(step('find_venue', { state: 'done', detail: `Adyen holds ${code || 'this venue'} as a business account.`, hint: 'It has no store yet. That is the third step.' }));
   else if (!code) {
     out.push(step('find_venue', { state: 'todo', detail: 'This venue has no code, so there is nothing to search for.', action: 'set_venue_code', hint: 'Set the venue code in the Back Office, then look again.' }));

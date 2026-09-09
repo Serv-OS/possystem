@@ -1040,6 +1040,13 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         // cannot say WHICH day). SMS, tracker, Hub and ticket all read this.
         customer: { ...customer, collection_at: collectionAt.toISOString(), ...(tipMinor > 0 ? { tip: tipMinor / 100 } : {}) },
         total: (discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor + tipMinor) / 100,   // v5.5.657: include the delivery fee; v5.5.787: net of offers; v5.8.8: + tip, matching kiosk so the Orders Hub total is what was charged
+        // v5.8.43: the money is taken BEFORE the row is written, so stamp the
+        // COLUMNS too. customer.paid has been set since v5.5.658 but the Orders
+        // Hub reads the column, so every online order showed as unpaid (proven
+        // on the first live payment, 9 Sep 2026: OL-BVUIH, closed_checks paid,
+        // order_queue.paid false).
+        paid: true,
+        payment_method: 'card',
         sent_at: sentAt.toISOString(),
         collection_time: collectionTimeLabel,
         is_asap: timeMode === 'asap',
@@ -1157,6 +1164,13 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         // cannot say WHICH day). SMS, tracker, Hub and ticket all read this.
         customer: { ...customer, collection_at: collectionAt.toISOString(), ...(tipMinor > 0 ? { tip: tipMinor / 100 } : {}) },
         total: (discountedSubtotalMinor + exclusiveTaxMinor + deliveryFeeMinor + tipMinor) / 100,   // v5.5.657: include the delivery fee; v5.5.787: net of offers; v5.8.8: + tip, matching kiosk so the Orders Hub total is what was charged
+        // v5.8.43: the money is taken BEFORE the row is written, so stamp the
+        // COLUMNS too. customer.paid has been set since v5.5.658 but the Orders
+        // Hub reads the column, so every online order showed as unpaid (proven
+        // on the first live payment, 9 Sep 2026: OL-BVUIH, closed_checks paid,
+        // order_queue.paid false).
+        paid: true,
+        payment_method: 'card',
         sent_at: sentAt.toISOString(),
         collection_time: collectionTimeLabel,
         is_asap: timeMode === 'asap',
@@ -1346,6 +1360,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
               amountMinor={remainingMinor}
               currency={stripeCurrency()}
               reference={orderShape?.ref}
+              merchantName={location?.name || ''}
               customerEmail={orderShape?.customer?.email}
               onSuccess={onPaymentSuccess}
               onError={(e) => setError(e?.message || 'Payment failed')}

@@ -372,7 +372,13 @@ const MERCHANT_PAGE_SIZE = 100;
 const MERCHANT_PAGES = 5;         // 500 merchant accounts on one credential
 const MERCHANT_SWEEP_MAX = 25;    // store searches one lookup will run
 const HOLDER_PAGE_SIZE = 100;     // the Balance Platform maximum
-const HOLDER_PAGES = 50;          // 5000 account holders on one balance platform
+// 2000 account holders on one balance platform. Deliberately NOT deeper: the
+// whole listing runs inside golive_state, which the panel calls on mount and
+// again after every action, and for a venue that is not on Adyen yet it runs
+// to the cap every time, sequentially, each page a round trip bounded by
+// MGMT_TIMEOUT_MS. The store sweep below was made opt in for the same reason.
+// A listing that stops here says so (`capped`), it never reports an absence.
+const HOLDER_PAGES = 20;
 
 interface MerchantListAnswer { merchants: Dict[]; errors: string[]; scopeMissing: boolean; capped: boolean }
 
@@ -503,6 +509,9 @@ interface HolderSearch {
   // pasted, which is the automatic route every venue after the first takes),
   // or null (no holder on this route).
   foundBy: 'pasted' | 'reference' | null;
+  // TRUE when the listing stopped at HOLDER_PAGES with more still to read, so
+  // "nothing carries this reference" is not something this read established.
+  capped: boolean;
   errors: string[];
   notes: string[];
   scopeMissing: boolean;
@@ -569,7 +578,7 @@ async function findAccountHolder(
 ): Promise<HolderSearch> {
   const out: HolderSearch = {
     holder: null, candidates: [], balancePlatform: null, balancePlatformSource: null,
-    needsBalancePlatform: false, foundBy: null, errors: [], notes: [], scopeMissing: false,
+    needsBalancePlatform: false, foundBy: null, capped: false, errors: [], notes: [], scopeMissing: false,
   };
   const pasted = String(opts.accountHolderId ?? '').trim();
   if (pasted) {
@@ -601,28 +610,35 @@ async function findAccountHolder(
   out.balancePlatform = bp.id;
   out.balancePlatformSource = bp.source;
 
-  // THE AUTOMATIC ROUTE. Page the balance platform's account holders and match
-  // the reference exactly, case insensitively, after each page: 100 a page is
-  // the documented maximum, the paging stops at a SHORT page (Adyen's own
-  // offset/limit end of list), at hasNext false, or at HOLDER_PAGES, and it
-  // stops the moment the reference matches so a venue near the front costs one
-  // call. `matches` therefore covers everything read up to and including the
-  // page that matched, which is what the several matches line reports on.
+  // THE AUTOMATIC ROUTE. Page the balance platform's account holders, then
+  // match the reference exactly and case insensitively over EVERYTHING read:
+  // 100 a page is the documented maximum, and the paging stops at a SHORT page
+  // (Adyen's own offset/limit end of list), at hasNext false, at a refusal, or
+  // at HOLDER_PAGES. It deliberately does NOT stop on the first page that
+  // matches. Adyen does not enforce a unique reference across a balance
+  // platform (references are only unique per merchant account), so two holders
+  // carrying the same venue code on different pages must BOTH be seen: the
+  // account holder is the settlement identity, and picking the wrong one in
+  // silence sends the venue's payouts to another business's bank account.
   const rows: Dict[] = [];
-  let match = matchAccountHolderByReference(rows, reference);
+  let capped = false;
+  let refused = false;
   for (let page = 0; page < HOLDER_PAGES; page++) {
     const r = await bcl<Dict>(cfg, 'GET', `/balancePlatforms/${encodeURIComponent(bp.id)}/accountHolders?limit=${HOLDER_PAGE_SIZE}&offset=${page * HOLDER_PAGE_SIZE}`);
     if (!r.ok) {
       out.errors.push(`account holders on balance platform ${bp.id}: ${refusalText(cfg, r, 'bpKey', 'the Balance Platform BCL role')}`);
       out.scopeMissing = scopeMissing(r.status);
+      refused = true;
       break;
     }
     const pageRows = accountHolderRows(r.data);
     rows.push(...pageRows);
-    match = matchAccountHolderByReference(rows, reference);
-    if (match.matches.length) break;
     if (pageRows.length < HOLDER_PAGE_SIZE || (r.data as Dict)?.hasNext === false) break;
+    // Pages ran out before account holders did.
+    if (page === HOLDER_PAGES - 1) capped = true;
   }
+  out.capped = capped;
+  const match = matchAccountHolderByReference(rows, reference);
   if (match.holder) {
     out.holder = match.holder;
     out.foundBy = 'reference';
@@ -635,7 +651,17 @@ async function findAccountHolder(
     return out;
   }
   out.candidates = accountHolderCandidates(rows, reference, 50);
-  if (rows.length) out.notes.push(`No account holder on balance platform ${bp.id} carries the reference ${reference} (${rows.length} read). Paste the accountHolderId if Adyen gave you one.`);
+  // A TRUNCATED listing, or one a refusal cut short, NEVER reports an absence.
+  // The definite line drives buildGoliveSteps to "Nothing at Adyen carries the
+  // code" and offers to create a store, which would make a duplicate for a
+  // venue Adyen already holds further down the list.
+  if (capped || refused) {
+    out.notes.push(rows.length
+      ? `The first ${rows.length} account holders on balance platform ${bp.id} were read and none carries the reference ${reference}. There are more on this account, so paste this venue's account holder id (AH...).`
+      : `No account holder on balance platform ${bp.id} could be read, so nothing was ruled out. Paste this venue's account holder id (AH...).`);
+  } else if (rows.length) {
+    out.notes.push(`No account holder on balance platform ${bp.id} carries the reference ${reference} (${rows.length} read). Paste the accountHolderId if Adyen gave you one.`);
+  }
   return out;
 }
 
@@ -1009,8 +1035,19 @@ async function savePlatformSettings(
   env: AdyenEnv, region: string, settings: PlatformSettings, learned: PlatformSettingsLearned,
 ): Promise<{ saved: boolean; warning: string | null }> {
   if (!settings.available) return { saved: false, warning: settings.warning };
+  // A DIFFERENT balance platform id is a CLASH, never an update. The row is
+  // keyed by (environment, region) alone, and under the reseller model more
+  // than one Adyen account is in play for one region: silently re-pointing it
+  // would make every OTHER venue on the kept account list the wrong platform,
+  // match nothing, and be told it is not on Adyen when it is. The kept id
+  // stays (platformSettingsPatch fills a blank only) and the admin is told.
+  const learnedBp = String(learned.balancePlatformId ?? '').trim();
+  const keptBp = String(settings.row?.balance_platform_id ?? '').trim();
+  const clash = learnedBp && keptBp && learnedBp !== keptBp
+    ? `This venue is on balance platform ${learnedBp}, but the ${region} ${env} account we search is ${keptBp}. Nothing was changed.`
+    : null;
   const patch = platformSettingsPatch(settings.row, learned);
-  if (!patch) return { saved: false, warning: null };
+  if (!patch) return { saved: false, warning: clash };
   const key = platformSettingsKey(env, region);
   const { error } = await platformAdmin.from(ADYEN_PLATFORM_SETTINGS_TABLE)
     .upsert({ ...key, ...patch, updated_at: new Date().toISOString() }, { onConflict: 'environment,region' });
@@ -1021,7 +1058,7 @@ async function savePlatformSettings(
   // The caller reads this row again on its next call, so keep the copy in hand
   // in step with the write: a second learn in the same request writes nothing.
   settings.row = { ...(settings.row ?? key), ...patch };
-  return { saved: true, warning: null };
+  return { saved: true, warning: clash };
 }
 
 // The same id ON THE VENUE ROW, so a venue carries the Adyen account it lives
@@ -2143,7 +2180,9 @@ Deno.serve(async (req) => {
     // used to assemble this from four calls (environment, adyen_lookup,
     // status, list) and decide the wording itself. It does not any more:
     // super_admin asks once and renders `steps` in order, one thing at a time.
-    // Read only. Everything is best effort: a refusal is a line, never a 500.
+    // Read only for the VENUE row. It DOES write adyen_platform_settings (the
+    // balance platform id it learned) and the audit trail. Everything else is
+    // best effort: a refusal is a line, never a 500.
     //   { venue, keys, holder, balanceAccount, legalEntity, capabilities,
     //     store, merchantConfigured, merchantMismatch, readers, origins,
     //     applePay, steps: [{ id, title, state, detail, action, hint }] }

@@ -691,6 +691,7 @@ export default function QrCheckout({ cart, theme, location, tableId, tableLabel,
               amountMinor={Math.round((isOpenTab ? tabPreAuthAmount : total) * 100)}
               currency={stripeCurrency()}
               reference={orderShape?.ref}
+              merchantName={location?.name || ''}
               captureMethod={isOpenTab ? 'manual' : 'automatic'}
               storeCard={false}
               shopperReference={orderShape?.ref}

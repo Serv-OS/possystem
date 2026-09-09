@@ -1011,21 +1011,36 @@ test('platformSettingsPatch: nothing new writes nothing', () => {
 
 test('platformSettingsPatch: the first venue teaches us the balance platform', () => {
   assert.deepEqual(platformSettingsPatch(null, { balancePlatformId: BP }), { balance_platform_id: BP });
-  // a DIFFERENT id replaces (the account was re-pointed), the merchant list merges
+  // A DIFFERENT id is a CLASH, never an update: the row is keyed by
+  // (environment, region) alone and the reseller model puts more than one
+  // Adyen account on one region, so a venue on a second balance platform must
+  // NOT re-point the search for every other venue. The kept id survives and
+  // savePlatformSettings (the edge function) reports the clash as a warning.
+  // The merchant list still merges.
   const p = platformSettingsPatch(
     { balance_platform_id: 'BPOLD', merchant_accounts: [{ id: 'FranPOS_UK' }] },
     { balancePlatformId: BP, merchantAccounts: [{ id: 'FranPOS_QSR_UK', name: 'QSR' }] },
   );
-  assert.equal(p.balance_platform_id, BP);
+  assert.equal('balance_platform_id' in p, false);
   assert.deepEqual(p.merchant_accounts.map((m) => m.id), ['FranPOS_UK', 'FranPOS_QSR_UK']);
+  // nothing else new alongside the clash writes nothing at all
+  assert.equal(platformSettingsPatch({ balance_platform_id: 'BPOLD' }, { balancePlatformId: BP }), null);
   // and it never clears: a read that learned nothing leaves the kept id alone
   assert.equal(platformSettingsPatch({ balance_platform_id: BP }, { balancePlatformId: null }), null);
 });
 
-test('learnedBalancePlatform: from the listing, from a pasted holder, from the store route', () => {
-  assert.equal(learnedBalancePlatform({ balancePlatform: BP }), BP);
-  // the store's balance account named the holder, so the id rides on the summary
+test('learnedBalancePlatform: only an account holder Adyen answered with teaches the id', () => {
+  // lookup.balancePlatform is the id the listing SEARCHED with. It is set
+  // before the listing runs, so it is there whether or not a holder was found,
+  // and learning it would write an unverified id (a stale secret, a typed BP)
+  // onto the shared row no screen can read back.
+  assert.equal(learnedBalancePlatform({ balancePlatform: BP }), null);
+  assert.equal(learnedBalancePlatform({ balancePlatform: 'BP_WRONG', accountHolder: null, found: false }), null);
+  // a pasted holder, a holder matched by reference and the holder the store's
+  // balance account named all arrive as the same summary, which carries the id
   assert.equal(learnedBalancePlatform({ accountHolder: accountHolderSummary({ ...HOLDER, balancePlatform: BP }) }), BP);
+  // the searched id never wins over the one the holder confirmed
+  assert.equal(learnedBalancePlatform({ balancePlatform: 'BP_WRONG', accountHolder: accountHolderSummary({ ...HOLDER, balancePlatform: BP }) }), BP);
   assert.equal(learnedBalancePlatform({ balancePlatform: null, accountHolder: null }), null);
   assert.equal(learnedBalancePlatform(null), null);
 });

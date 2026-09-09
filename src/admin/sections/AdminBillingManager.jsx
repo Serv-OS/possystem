@@ -938,7 +938,10 @@ function AdyenBlock({ location, venueCode, adyenRow, defaults, onError, onRowCha
         const res = await fetch(`${FUNCTIONS_URL}/adyen-checkout`, {
           method: 'POST',
           headers: { 'content-type': 'application/json', authorization: `Bearer ${session?.session?.access_token || ''}` },
-          body: JSON.stringify({ action: 'status', location_id: location.id }),
+          // wallets:true asks the fn for one extra /paymentMethods probe, so
+          // the go-live flow can say whether Adyen actually OFFERS Apple Pay
+          // and Google Pay on this venue. Admin only: the checkout never asks.
+          body: JSON.stringify({ action: 'status', location_id: location.id, wallets: true }),
         });
         const j = await res.json();
         if (live) setSt(j.error ? { error: j.error } : j);
@@ -1040,6 +1043,7 @@ function AdyenBlock({ location, venueCode, adyenRow, defaults, onError, onRowCha
         location={location}
         venueCode={venueCode}
         callAdmin={callTerminalAdmin}
+        wallets={st && !st.error ? (st.wallets || null) : null}
         onChanged={linkChanged}
         refreshKey={flowRev}
       />
