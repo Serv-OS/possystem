@@ -16,7 +16,7 @@
  */
 
 import { adyenEnvFromRow, adyenRegionFromRow } from './adyenEnv.js';
-import { worstVerificationStatus, LINK_ID_FIELDS } from './adyenLink.js';
+import { worstVerificationStatus, LINK_ID_FIELDS, storeStillNeeded } from './adyenLink.js';
 import { registrationLines } from './adyenOrigins.js';
 
 const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -272,8 +272,377 @@ export function restoredLine(restored) {
   return bits.join(', ');
 }
 
+// ── THE THREE BLOCKS (8 Sep 2026, live screens) ──────────────────────────────
+// A venue may be held at Adyen as an ACCOUNT HOLDER, as a STORE, or as both:
+// on the live account SV-1007 is the account holder reference and no store
+// carries it. So the panel shows THREE blocks, Account holder, Store, Legal
+// entity, and each one either names what Adyen holds or says in plain words
+// what is missing and what to do next. Nothing here decides anything: the
+// function's own notes, errors and merchantMismatch line ride alongside.
+
+// Readable names for the Adyen capabilities an account holder or legal entity
+// carries. Anything not listed is split out of its camelCase name.
+const CAPABILITY_LABELS = Object.freeze({
+  receivePayments: 'receive payments',
+  receiveFromPlatformPayments: 'receive platform payments',
+  receiveFromBalanceAccount: 'receive from balance account',
+  sendToTransferInstrument: 'pay out to a bank account',
+  sendToBalanceAccount: 'send to balance account',
+  issueCard: 'issue cards',
+  useCard: 'use cards',
+  withdrawFromAtm: 'withdraw from an ATM',
+  getGrantOffers: 'capital offers',
+});
+
+function capabilityLabel(name) {
+  const n = str(name);
+  if (CAPABILITY_LABELS[n]) return CAPABILITY_LABELS[n];
+  return n.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase() || 'capability';
+}
+
+// One row per Adyen capability, so a BLOCKED one is visible instead of hiding
+// inside a verification status. Takes the capability summary
+// (summariseCapabilities: { byName, ... }) or a bare { name: entry } map.
+//   allowed true                    → ok      (green)
+//   requested, not allowed, pending → missing (amber, Adyen is still checking)
+//   requested, not allowed          → bad     (red, this is the blocked one)
+//   not requested                   → muted   (grey, nothing was asked for)
+export function capabilityRows(capabilities) {
+  const c = isObj(capabilities) ? capabilities : {};
+  const byName = isObj(c.byName) ? c.byName : c;
+  const rows = [];
+  for (const [name, raw] of Object.entries(byName)) {
+    if (!isObj(raw)) continue;
+    const allowed = raw.allowed === true;
+    const requested = raw.requested !== false;
+    const status = lower(raw.verificationStatus) || null;
+    const tone = allowed ? 'ok' : !requested ? 'muted' : status === 'pending' ? 'missing' : 'bad';
+    const state = allowed ? 'allowed' : !requested ? 'not requested' : 'NOT ALLOWED';
+    rows.push({
+      key: name,
+      name,
+      label: capabilityLabel(name),
+      allowed,
+      requested,
+      enabled: raw.enabled === true,
+      verificationStatus: status,
+      tone,
+      text: `${capabilityLabel(name)}: ${state}${status ? ` · verification ${status}` : ''}${raw.enabled === false && allowed ? ' · disabled' : ''}`,
+      problems: Array.isArray(raw.problems) ? raw.problems.length : 0,
+    });
+  }
+  // The blocking ones first (red, then amber), then allowed, then unrequested.
+  const order = { bad: 0, missing: 1, ok: 2, muted: 3 };
+  return rows.sort((a, b) => (order[a.tone] ?? 4) - (order[b.tone] ?? 4) || a.label.localeCompare(b.label));
+}
+
+// A block's id rows, empty values dropped.
+function idRows(pairs) {
+  return pairs.filter(([, v]) => str(v)).map(([label, v]) => ({ label, value: str(v) }));
+}
+
+// The three blocks a lookup answer shows: [{ key, title, found, tone, rows,
+// lines, capabilities }]. `lines` is what to do next when a piece is missing
+// (or a caveat when it is there); `capabilities` is only on the holder block.
+export function lookupBlocks(lookup) {
+  const l = isObj(lookup) ? lookup : {};
+  const store = isObj(l.store) && str(l.store.id) ? l.store : null;
+  const ba = isObj(l.balanceAccount) && str(l.balanceAccount.id) ? l.balanceAccount : null;
+  const ah = isObj(l.accountHolder) && str(l.accountHolder.id) ? l.accountHolder : null;
+  const le = isObj(l.legalEntity) && str(l.legalEntity.id) ? l.legalEntity : null;
+  const mismatch = isObj(l.merchantMismatch) ? l.merchantMismatch : null;
+  const ref = str(l.reference) || 'this venue';
+
+  // 1. Account holder (with its balance account: the money side)
+  const holder = { key: 'holder', title: 'Account holder', found: !!ah, tone: 'missing', rows: [], lines: [], capabilities: [] };
+  if (ah) {
+    holder.rows = idRows([
+      ['Account holder', ah.id],
+      ['Reference', ah.reference],
+      ['Status', ah.status],
+      ['Balance platform', ah.balancePlatform],
+      ['Balance account', ba ? ba.id : ''],
+      ['Currency', ba ? ba.currency : ''],
+    ]);
+    const caps = isObj(ah.capabilities) ? ah.capabilities : null;
+    holder.capabilities = capabilityRows(caps);
+    const blocked = holder.capabilities.filter((c) => c.tone === 'bad');
+    holder.tone = ah.status && ah.status !== 'active' ? 'missing' : blocked.length ? 'bad' : 'ok';
+    if (ah.status && ah.status !== 'active') holder.lines.push({ tone: 'missing', text: `The account holder is ${ah.status} at Adyen, so nothing settles to it until Adyen makes it active.` });
+    if (blocked.length) holder.lines.push({ tone: 'bad', text: `Adyen BLOCKS ${blocked.length === 1 ? 'this capability' : 'these capabilities'}: ${blocked.map((c) => c.label).join(', ')}. Clear the verification problems in the Adyen Customer Area (or send the venue its onboarding link) before promising it money.` });
+    if (!ba) holder.lines.push({ tone: 'missing', text: 'No balance account could be chosen for the account holder, so payouts have nowhere to land. Check the account holder in the Adyen Customer Area.' });
+    else if (ba.source === 'account_holder' && store) holder.lines.push({ tone: 'missing', text: `Balance account ${ba.id} came from the account holder, not from the store: the store's split configuration at Adyen does not name it, so payments do not split into it yet.` });
+  } else {
+    holder.lines.push({ tone: 'missing', text: `Adyen holds no account holder for ${ref}. Paste the account holder id (AH...) from the Adyen Customer Area, or check the balance platform the venue was onboarded on.` });
+  }
+
+  // 2. Store (what a card payment names)
+  const block = { key: 'store', title: 'Store', found: !!store, tone: 'missing', rows: [], lines: [] };
+  if (store) {
+    block.rows = idRows([
+      ['Store', store.id],
+      ['Reference', store.reference],
+      ['Status', store.status],
+      ['Merchant account', store.merchantId],
+      ['Split configuration', l.splitConfigurationId || store.splitConfigurationId],
+      ['Balance account', store.balanceAccountId],
+      ['Business line', Array.isArray(store.businessLineIds) ? store.businessLineIds[0] : ''],
+    ]);
+    block.tone = store.status === 'active' ? 'ok' : 'missing';
+    if (store.status && store.status !== 'active') block.lines.push({ tone: 'missing', text: `The store is ${store.status} at Adyen: payments naming it are refused until Adyen makes it active.` });
+    if (!store.balanceAccountId) block.lines.push({ tone: 'missing', text: 'The store carries no split configuration, so Adyen books its payments nowhere in particular. Create or link the split configuration to the venue’s balance account.' });
+  } else {
+    const needed = storeStillNeeded(l);
+    block.lines.push({ tone: 'missing', text: needed || `No store carries the reference ${ref} on any merchant account this credential can see. Create it with this reference, or pick one of the stores listed below.` });
+  }
+  if (mismatch && str(mismatch.message)) block.lines.push({ tone: 'bad', text: str(mismatch.message) });
+
+  // 3. Legal entity (the KYC truth and the bank account)
+  const legal = { key: 'legal', title: 'Legal entity', found: !!le, tone: 'missing', rows: [], lines: [] };
+  if (le) {
+    legal.rows = idRows([
+      ['Legal entity', le.id],
+      ['Name', le.name],
+      ['Type', le.type],
+      ['Verification', le.status],
+      ['Bank account', le.transferInstrumentId],
+    ]);
+    legal.tone = le.status === 'valid' ? 'ok' : le.status === 'invalid' || le.status === 'rejected' ? 'bad' : 'missing';
+    if (!le.transferInstrumentId) legal.lines.push({ tone: 'missing', text: 'The legal entity has no bank account yet, so Adyen cannot pay the venue out. It adds one through its onboarding link.' });
+    for (const p of Array.isArray(le.problems) ? le.problems : []) legal.lines.push({ tone: 'bad', text: str(p) });
+  } else if (ah) {
+    legal.lines.push({ tone: 'missing', text: 'The account holder names no legal entity, so there is no KYC to read. Adyen creates one when the venue is onboarded.' });
+  } else {
+    legal.lines.push({ tone: 'missing', text: 'The legal entity is read from the account holder, so the account holder is needed first.' });
+  }
+
+  return [holder, block, legal];
+}
+
+// The merchant picker for one environment, from the adyen_merchants answer
+// ({ live: { configured, secret, merchantAccount, merchants, error }, test:
+// { ... } }): the accounts the credential can see, the configured one marked,
+// and the secret that names it. Options are plain { value, label }.
+export function merchantPicker(answer, environment = 'live') {
+  const a = isObj(answer) ? answer : {};
+  const env = lower(environment) === 'test' ? 'test' : 'live';
+  const side = isObj(a[env]) ? a[env] : {};
+  const configured = str(side.merchantAccount) || null;
+  const rows = Array.isArray(side.merchants) ? side.merchants.filter(isObj) : [];
+  const options = rows.map((m) => {
+    const id = str(m.id);
+    const count = Number(m.storeCount);
+    const bits = [
+      str(m.name),
+      str(m.status),
+      Number.isFinite(count) && count >= 0 ? `${count} store${count === 1 ? '' : 's'}` : '',
+      configured && id.toLowerCase() === configured.toLowerCase() ? 'the secret’s account' : '',
+    ].filter(Boolean);
+    return { value: id, label: [id, ...bits].join(' · '), configured: !!configured && id.toLowerCase() === configured.toLowerCase() };
+  }).filter((o) => o.value);
+  return {
+    environment: env,
+    configured,
+    secret: str(side.secret) || null,
+    error: str(side.error) || null,
+    options,
+  };
+}
+
 // A candidate store as one option label.
 export function candidateLabel(c) {
   const x = isObj(c) ? c : {};
   return [x.reference || '(no reference)', x.description ? `"${x.description}"` : '', x.status && x.status !== 'active' ? `(${x.status})` : '', x.id].filter(Boolean).join(' · ');
+}
+
+// ── THE GUIDED FLOW (8 Sep 2026, OWNER FEEDBACK) ─────────────────────────────
+// "we need this to be easier and better there is far too many words and too
+// small we need a flow that supports someone doing this". So the admin portal
+// no longer shows the dense lookup blocks: it shows FIVE numbered steps, one
+// open at a time, each with one sentence and one primary button
+// (src/admin/components/AdyenGoLiveFlow.jsx). Everything that decides a
+// title, a chip, which step is open or how an error reads lives here so it is
+// testable and the screen only draws.
+//
+// The Adyen words stay available in small grey brackets on first use, and the
+// plain words carry the meaning:
+//   Adyen business account (account holder)
+//   Where the money lands (balance account)
+//   Registered company (legal entity)
+//   Payments location (store)
+//   Card machine (terminal)
+
+export const GOLIVE_STEP_TITLES = Object.freeze({
+  find_venue: 'Find the venue on Adyen',
+  business_account: 'The venue’s Adyen business account',
+  payments_location: 'The venue’s payments location',
+  go_live: 'Turn on live payments',
+  readers: 'Card readers',
+});
+
+// The five ids, in order. The server answers all five (buildGoliveSteps); the
+// order here is the screen's own so a missing or reordered answer still draws
+// the same five rows.
+const GOLIVE_ORDER = Object.freeze(['find_venue', 'business_account', 'payments_location', 'go_live', 'readers']);
+
+// The state chip: Done green, To do grey, Needs attention amber, Blocked red.
+const GOLIVE_CHIPS = Object.freeze({
+  done: { label: 'Done', tone: 'ok' },
+  todo: { label: 'To do', tone: 'idle' },
+  attention: { label: 'Needs attention', tone: 'warn' },
+  blocked: { label: 'Blocked', tone: 'bad' },
+});
+
+// The whole flow as the screen draws it: the five rows, which ONE is open
+// (the first that is not done, unless the reader opened another), and the
+// progress line at the top. openId is the row the reader clicked, or null.
+export function goliveFlowView(state, openId = null) {
+  const s = isObj(state) ? state : {};
+  const answered = new Map((Array.isArray(s.steps) ? s.steps : []).filter(isObj).map((x) => [str(x.id), x]));
+  const steps = GOLIVE_ORDER.map((id, i) => {
+    const x = answered.get(id) || {};
+    const st = GOLIVE_CHIPS[lower(x.state)] ? lower(x.state) : 'todo';
+    return {
+      id,
+      number: i + 1,
+      title: GOLIVE_STEP_TITLES[id],
+      state: st,
+      chip: GOLIVE_CHIPS[st],
+      done: st === 'done',
+      detail: str(x.detail) || null,
+      hint: str(x.hint) || null,
+      action: str(x.action) || null,
+      open: false,
+    };
+  });
+  const picked = steps.find((x) => x.id === str(openId)) || null;
+  const next = steps.find((x) => !x.done) || null;
+  const open = picked || next;
+  if (open) open.open = true;
+  const doneCount = steps.filter((x) => x.done).length;
+  const allDone = doneCount === steps.length;
+  return {
+    steps,
+    openId: open ? open.id : null,
+    doneCount,
+    total: steps.length,
+    allDone,
+    progressLabel: allDone && !picked ? `All ${steps.length} steps done` : `Step ${open ? open.number : steps.length} of ${steps.length}`,
+    progressPct: Math.round((doneCount / steps.length) * 100),
+  };
+}
+
+// A capability Adyen has not allowed, in plain words: never the word Blocked
+// on its own. Takes golive_state's capabilities (capabilityList's wire shape).
+export function capabilityNotices(list) {
+  return (Array.isArray(list) ? list : [])
+    .filter((c) => isObj(c) && c.blocked === true)
+    .map((c) => {
+      const pending = lower(c.verification) === 'pending';
+      return {
+        name: str(c.name),
+        label: capabilityLabel(c.name),
+        pending,
+        text: pending ? 'Adyen is still checking this' : 'Adyen has not approved this yet',
+        tone: pending ? 'missing' : 'bad',
+      };
+    });
+}
+
+// The merchant mismatch in plain words, with the two account names apart from
+// the sentence so the screen can show them as ids and offer the picker (live,
+// 8 Sep 2026: the secret names FranPOS_QSR_UK, the venue sits on FranPOS_UK).
+export function mismatchView(mismatch) {
+  const m = isObj(mismatch) ? mismatch : null;
+  const theirs = str(m?.found) || null;
+  const ours = str(m?.configured) || null;
+  if (!theirs && !ours) return null;
+  return {
+    text: 'This venue is on a different Adyen account than the one we are set to use.',
+    theirs,
+    ours,
+    secret: str(m.secret) || null,
+    detail: str(m.message) || null,
+  };
+}
+
+// One plain sentence for a failure, and the raw answer kept for the small
+// "Show detail" toggle. `what` is what was being done, in plain words.
+export function plainFailure(err, what = 'That did not work') {
+  const e = isObj(err) ? err : {};
+  const data = isObj(e.data) ? e.data : {};
+  const raw = str(data.detail) || str(data.error) || str(e.message) || str(err);
+  const status = Number(e.status) || null;
+  // The kind is read from the error AND the detail: a refused scope answers
+  // error 'scope_missing' with the role named in detail, and detail is what
+  // Show detail keeps.
+  const low = `${lower(data.error)} ${lower(raw)}`;
+  const said = str(what).replace(/\.$/, '') || 'That did not work';
+  let text;
+  if (status === 403 || low.includes('servos admin only')) text = 'Only a ServOS super admin can do this. Sign in as one, then try again.';
+  else if (low.includes('not authenticated')) text = 'You are signed out. Sign in again, then try once more.';
+  else if (low.includes('scope_missing') || low.includes('management role') || low.includes('lacks management') || low.includes('lacks the management')) text = 'The Adyen key we use is missing a permission, so Adyen refused. Add the missing role to the key, then try again.';
+  else if (low.includes('not configured') || low.includes('missing adyen') || low.includes('adyen_live') || low.includes('adyen_test')) text = 'The Adyen keys for this account are not on the server yet. Add them, then try again.';
+  else if (low.includes('failed to fetch') || low.includes('networkerror') || low.includes('load failed')) text = 'The server could not be reached. Check the connection and try again.';
+  else if (low.includes('timed out') || low.includes('timeout') || low.includes('aborted')) text = 'Adyen took too long to answer. Try again in a moment.';
+  else if (low.includes('needs the venue address')) text = 'Adyen needs the street, town, postcode and phone number for a live venue. Fill all four in, then try again.';
+  else if (low.includes('carry the reference')) text = 'More than one payments location already carries this code. Pick the right one in step 1 instead of making another.';
+  else text = `${said}. Try again, and open Show detail to see what Adyen said.`;
+  return { text, detail: raw || null };
+}
+
+// THE ONE CONFIRM before any write, built from an adyen_lookup answer: what
+// the link does (going live: real money), a store that is not active, the
+// stored ids it replaces, and what a move between test and live sets aside,
+// keeps and puts back. Kept word for word from the dense panel it replaces
+// (8 Sep 2026), because going live must always ask.
+export function goLiveConfirmText(lookup, venueName = 'this venue') {
+  const a = isObj(lookup) ? lookup : {};
+  const l = isObj(a.lookup) ? a.lookup : {};
+  const plan = isObj(a.plan) ? a.plan : {};
+  const name = str(venueName) || 'this venue';
+  const storeId = str(l.store?.id) || null;
+  const status = lower(l.store?.status);
+  const live = lower(a.environment) === 'live';
+  const flips = str(a.previous) !== str(a.environment);
+  const where = storeId ? ` and link it to payments location ${storeId}` : '';
+  const lines = [];
+  if (live) {
+    lines.push(flips
+      ? `Turn on live payments for ${name} on the ${str(a.region) || 'Adyen'} account${where}. Real cards are charged from then on.`
+      : `Link ${name} on the ${str(a.region) || 'Adyen'} live account${storeId ? ` to payments location ${storeId}` : ''}.`);
+  } else {
+    lines.push(`Link ${name} on the ${str(a.region) || 'Adyen'} test account${storeId ? ` to payments location ${storeId}` : ''}.`);
+  }
+  if (!storeId) lines.push('Adyen holds no payments location for this venue yet, so cards still have nowhere to go. Create it in the next step.');
+  const inactive = !!status && status !== 'active';
+  if (inactive) lines.push(`The payments location is ${status.toUpperCase()} at Adyen, so it cannot take cards until Adyen makes it active.`);
+  const conflicts = Array.isArray(plan.diff?.conflicts) ? plan.diff.conflicts : [];
+  if (!flips && conflicts.length) {
+    lines.push(`This REPLACES stored ids: ${conflicts.map((c) => `${LINK_FIELD_LABELS[c.field] || c.field} ${c.current} to ${c.next}`).join(', ')}.`);
+  }
+  if (flips) {
+    const provisioned = Array.isArray(a.provisioned) ? a.provisioned : [];
+    const readers = Number(a.readers) || 0;
+    const bits = [provisioned.length ? 'the Adyen ids' : '', readers ? `${readers} card machine${readers === 1 ? '' : 's'}` : ''].filter(Boolean);
+    if (bits.length) {
+      lines.push(a.keepsSetup
+        ? `This sets aside the venue’s ${a.previous} setup (${bits.join(' and ')}). It is kept, and it comes back if you switch back.`
+        : `This CLEARS the venue’s ${a.previous} setup (${bits.join(' and ')}). Register the card machines again afterwards.`);
+    } else if (plan.kind === 'refuse' && plan.reason && !inactive) lines.push(str(plan.reason));
+    const back = isObj(a.stashes) ? a.stashes[str(a.environment)] : null;
+    if (back) lines.push(`The ${a.environment} setup kept earlier comes back too: ${stashLine('', back)}.`);
+    if (a.stashWarning) lines.push(str(a.stashWarning));
+  }
+  return `${lines.join('\n\n')}\n\nContinue?`;
+}
+
+// The second confirm: the fn answered 409 needs_relink (the venue changed
+// between the read and the click), with its own reason.
+export function relinkConfirmText(data, venueName = 'this venue') {
+  const d = isObj(data) ? data : {};
+  const name = str(venueName) || 'this venue';
+  const kept = d.keepsSetup === true && str(d.previous) && str(d.environment) && str(d.previous) !== str(d.environment)
+    ? `\n\nThe venue’s ${d.previous} setup is kept, and it comes back if you switch back.` : '';
+  return `${str(d.error) || 'Adyen holds different ids for this venue now.'}${kept}\n\nGo ahead and link ${name} again?`;
 }

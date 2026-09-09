@@ -21,10 +21,12 @@
 //      regionLocked). It calls set_region; until the platform migration
 //      20260908_PLATFORM_adyen_region_uk.sql runs the fn refuses 'UK' with a
 //      message naming it, shown as is.
-//   2. Environment: the state and the switch on the same line, the typed
-//      LIVE confirm when going live (only offered while the server reports
-//      THIS region's live secret set as configured), one confirm going back
-//      to test, and the reprovision flow: the fn answers 409 +
+//   2. Environment: the state and the switch on the same line. Going LIVE
+//      is NOT here since 8 Sep 2026: it is step 4 of the guided flow
+//      (AdyenGoLiveFlow), which links the venue's Adyen ids and flips it in
+//      one write, so there is exactly ONE way to do it. The switch here only
+//      brings a live venue BACK to test cards, with its confirm, and the
+//      reprovision flow: the fn answers 409 +
 //      needs_reprovision while the venue's store or readers were set up on
 //      the current environment, and the flip is retried with reprovision:
 //      true after a confirm. KEPT SETUP (8 Sep 2026): the fn keeps the
@@ -34,14 +36,10 @@
 //      block lists what is kept per environment (envInfo.stashes).
 //   3. Readers: how many card readers the venue has on this account (the
 //      fn's cheap `environment` answer, no Adyen call) and what is set up.
-//   4. Web origins and Apple Pay: one button that runs register_origins and
-//      register_apple_pay_domains and lists what was added, what was there
-//      already and what Adyen refused. The fn also runs both when a venue
-//      is switched to live and the answer lands in the same list.
-//   5. Store: the mapped store id and the "Request card schemes again"
-//      repair once a store exists. Creating or finding the store is Link to
-//      Adyen's job (AdyenLinkPanel, pull by reference), so no create form
-//      lives here any more.
+//   4. Store: the mapped store id and the "Request card schemes again"
+//      repair once a store exists. Finding or creating the store, and the
+//      web addresses for online checkout and Apple Pay, belong to the
+//      guided flow above, so neither lives here any more.
 //
 // Props:
 //   opsLocationId       ops locations.id (null when the platform row has no
@@ -57,7 +55,6 @@
 //                       (the host does so after a link).
 
 import { useEffect, useState, useCallback } from 'react';
-import { registrationLines } from '../../lib/payments/adyenOrigins';
 import { stashLine, restoredLine } from '../../lib/payments/adyenAdminRows';
 
 const S = {
@@ -95,25 +92,6 @@ function EnvSwitch({ on, disabled, title, onToggle }) {
   );
 }
 
-// One registration answer from the fn ({ added, existing, failed, error,
-// note }) as a titled list: added in green, already there in plain text,
-// each refusal in red with Adyen's status and message.
-const LINE_TONES = { ok: 'var(--grn)', info: 'var(--t2)', warn: 'var(--orn, #e8a020)', err: 'var(--red)' };
-function RegistrationLines({ title, result }) {
-  const lines = registrationLines(result);
-  if (!lines.length) return null;
-  return (
-    <div style={{ marginTop: 8 }}>
-      <div style={{ fontSize: 12, fontWeight: 800, color: 'var(--t1)' }}>{title}</div>
-      <ul style={{ margin: '3px 0 0', paddingLeft: 18 }}>
-        {lines.map((l, i) => (
-          <li key={i} style={{ fontSize: 12, lineHeight: 1.5, color: LINE_TONES[l.tone] || 'var(--t2)', wordBreak: 'break-word' }}>{l.text}</li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
 const PROVISIONED_LABELS = {
   store_id: 'store', legal_entity_id: 'legal entity', account_holder_id: 'account holder', balance_account_id: 'balance account',
   split_profile_id: 'split configuration', transfer_instrument_id: 'bank account', business_line_id: 'business line',
@@ -129,8 +107,6 @@ export default function AdyenEnvironmentControls({ opsLocationId, platformLocati
   const [envErr, setEnvErr] = useState('');
   const [envBusy, setEnvBusy] = useState(false);
   const [regionBusy, setRegionBusy] = useState(false);
-  const [liveConfirm, setLiveConfirm] = useState(false);   // the "type LIVE" box is open
-  const [liveTyped, setLiveTyped] = useState('');
   // The fn's 'status' answer (venue, merchant, storeId, scopeOk, scopeError).
   // It talks to Adyen, so it fails closed on a live venue without live keys;
   // statusErr keeps that visible next to the switch.
@@ -142,11 +118,6 @@ export default function AdyenEnvironmentControls({ opsLocationId, platformLocati
   // Result of the last ensure_payment_methods: what was requested, what
   // Adyen refused, and whether live review applies.
   const [pmResult, setPmResult] = useState(null);
-  // The last register_origins / register_apple_pay_domains answers (from the
-  // button, or from set_environment's web_origins / apple_pay_domains when
-  // the venue was just switched to live).
-  const [domainsBusy, setDomainsBusy] = useState(false);
-  const [domainsResult, setDomainsResult] = useState(null);
 
   const load = useCallback(async () => {
     // Environment first. It never touches Adyen, so it answers even when the
@@ -231,11 +202,7 @@ export default function AdyenEnvironmentControls({ opsLocationId, platformLocati
       const r = await callAdmin('set_environment', { environment: next, ...(reprovision ? { reprovision: true } : {}) });
       if (r.ok === false) throw new Error(r.error || 'could not change the environment');
       setEnvInfo((prev) => ({ ...(prev || {}), environment: r.environment, region: r.region ?? prev?.region, liveConfigured: r.liveConfigured ?? prev?.liveConfigured, liveRegionsConfigured: r.liveRegionsConfigured ?? prev?.liveRegionsConfigured }));
-      setLiveConfirm(false); setLiveTyped('');
       setPmResult(null);
-      // A move to live registers the web origins and Apple Pay domains by
-      // itself; show what happened in the same list the button fills.
-      if (r.web_origins || r.apple_pay_domains) setDomainsResult({ origins: r.web_origins || null, applePay: r.apple_pay_domains || null });
       // What the switch put back from the kept setup (env_stash), if anything.
       const back = restoredLine(r.restored);
       setNotice((r.environment === 'live'
@@ -268,9 +235,12 @@ export default function AdyenEnvironmentControls({ opsLocationId, platformLocati
     setEnvBusy(false);
   };
 
+  // ONE WAY EACH (8 Sep 2026): the switch only brings a live venue back to
+  // test. Turning live payments ON is step 4 of the guided flow above, which
+  // links the venue's Adyen ids and flips it in the same write.
   const onEnvToggle = () => {
-    if (envBusy || !envInfo || !canSetEnv) return;
-    if (isLive) {
+    if (envBusy || !envInfo || !canSetEnv || !isLive) return;
+    {
       if (!window.confirm(
         `Switch ${name} back to test cards?\n\n`
         + 'Real cards stop working at this venue until you switch live back on. '
@@ -278,10 +248,7 @@ export default function AdyenEnvironmentControls({ opsLocationId, platformLocati
         + (keepsSetup && hasSetup ? '\n\nYour live setup is kept and comes back if you switch back.' : ''),
       )) return;
       setEnvironment('test');
-      return;
     }
-    if (!envInfo.liveConfigured) return;   // switch is disabled anyway (this region's live set is incomplete)
-    setLiveConfirm((v) => !v); setLiveTyped('');
   };
 
   // Repair a store whose card schemes were refused or never requested (a
@@ -296,24 +263,6 @@ export default function AdyenEnvironmentControls({ opsLocationId, platformLocati
       setNotice('Card schemes requested on the store.');
     } catch (e) { setErr(e?.message || String(e)); }
     setBusy('');
-  };
-
-  // Put the ServOS hosts on the venue's API credential and the venue's
-  // storefront on the merchant's Apple Pay method. Two calls, each caught on
-  // its own so a refused one never hides the other's lines. The fn answers
-  // 200 with ok false and the detail on an Adyen refusal; a thrown answer
-  // (403 for a venue role, 500 for a live venue without keys) becomes the
-  // error line of that half.
-  const registerDomains = async () => {
-    setDomainsBusy(true); setErr(''); setNotice('');
-    const run = async (action) => {
-      try { return await callAdmin(action, {}); }
-      catch (e) { return { ok: false, error: e?.data?.error || e?.message || String(e) }; }
-    };
-    const origins = await run('register_origins');
-    const applePay = await run('register_apple_pay_domains');
-    setDomainsResult({ origins, applePay });
-    setDomainsBusy(false);
   };
 
   if (!envInfo) {
@@ -360,8 +309,8 @@ export default function AdyenEnvironmentControls({ opsLocationId, platformLocati
               {canSetEnv ? (
                 <EnvSwitch
                   on={isLive}
-                  disabled={envBusy || regionBusy || (!isLive && !envInfo.liveConfigured)}
-                  title={isLive ? 'Switch back to test cards' : envInfo.liveConfigured ? `Switch to live payments on the ${region} account` : `Live keys for the ${region} account are not set on the server yet`}
+                  disabled={envBusy || regionBusy || !isLive}
+                  title={isLive ? 'Switch back to test cards' : 'Turn live payments on in the steps above'}
                   onToggle={onEnvToggle}
                 />
               ) : (
@@ -408,41 +357,20 @@ export default function AdyenEnvironmentControls({ opsLocationId, platformLocati
             It becomes {region} once the platform migration <span style={S.mono}>20260908_PLATFORM_adyen_region_uk.sql</span> is run.
           </div>
         )}
+        {canSetEnv && !isLive && (
+          <div style={{ ...S.desc, marginTop: 6 }}>
+            Live payments are turned on in the steps above, not here. This switch only brings a live venue back to test cards.
+          </div>
+        )}
         {canSetEnv && !isLive && !envInfo.liveConfigured && (
           <div style={{ ...S.desc, marginTop: 6, color: 'var(--orn, #e8a020)' }}>
             <b>Live keys for the {region} account are not fully set on the server yet</b>
             {Array.isArray(envInfo.liveMissing) && envInfo.liveMissing.length > 0 && (
               <> (missing: <span style={S.mono}>{envInfo.liveMissing.join(', ')}</span>)</>
-            )}. The switch unlocks once they are in place.
+            )}. Step 4 above unlocks once they are in place.
             {liveRegions && liveRegions.length > 0 && !liveRegions.includes(region) && (
               <> Live keys are set for {liveRegions.join(', ')}; if this venue belongs there, change its region.</>
             )}
-          </div>
-        )}
-
-        {liveConfirm && !isLive && (
-          <div style={{ marginTop: 12, padding: 12, borderRadius: 8, background: 'var(--red-d, rgba(255,90,74,.1))', border: '1px solid var(--red-b, var(--red))' }}>
-            <div style={{ fontSize: 13, fontWeight: 800, color: 'var(--red)' }}>Switch {name} to live payments on the {region} account?</div>
-            <div style={{ ...S.desc, marginTop: 4, color: 'var(--t2)' }}>
-              From the moment you confirm, every card taken there charges the customer for real.
-              {keepsSetup && hasSetup ? ' Your test setup is kept and comes back if you switch back.' : ''}
-              {' '}Type <b>LIVE</b> to confirm.
-            </div>
-            <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-              <input
-                style={{ ...S.input, ...S.mono, width: 140, letterSpacing: '.1em' }}
-                value={liveTyped}
-                onChange={(e) => setLiveTyped(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter' && liveTyped.trim() === 'LIVE' && !envBusy) setEnvironment('live'); }}
-                placeholder="Type LIVE" autoFocus autoCapitalize="characters" autoComplete="off" spellCheck={false}
-              />
-              <button style={{ ...S.btn, ...S.btnLive }}
-                disabled={envBusy || liveTyped.trim() !== 'LIVE'}
-                onClick={() => setEnvironment('live')}>
-                {envBusy ? 'Switching…' : 'Switch to live'}
-              </button>
-              <button style={S.btn} disabled={envBusy} onClick={() => { setLiveConfirm(false); setLiveTyped(''); }}>Cancel</button>
-            </div>
           </div>
         )}
 
@@ -451,7 +379,7 @@ export default function AdyenEnvironmentControls({ opsLocationId, platformLocati
         {status?.ok && !status.scopeOk && <div style={S.err}>{status.scopeError}</div>}
         {status?.ok && status.scopeOk && !status.storeId && (
           <div style={{ ...S.desc, marginTop: 10 }}>
-            <b style={{ color: 'var(--t2)' }}>No payments store mapped yet.</b> Link to Adyen (above) finds the venue&rsquo;s store by its reference, or creates it with that reference.
+            <b style={{ color: 'var(--t2)' }}>No payments store mapped yet.</b> The steps above find the venue&rsquo;s store by its reference, or make one with that reference.
           </div>
         )}
         {status?.ok && status.storeId && (
@@ -472,36 +400,6 @@ export default function AdyenEnvironmentControls({ opsLocationId, platformLocati
             {pmResult.live ? ' Adyen must approve them before this store can take cards.' : ''}
             {pmResult.errors.length ? ` Refused: ${pmResult.errors.join('; ')}. Fix the cause, then use "Request card schemes again".` : ''}
           </div>
-        )}
-
-        {/* ── web origins and Apple Pay: one line and a button ── */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--bdr)' }}>
-          <div style={{ flex: '1 1 240px', minWidth: 0, fontSize: 12, color: 'var(--t3)', lineHeight: 1.5 }}>
-            <b style={{ color: 'var(--t2)' }}>Web origins and Apple Pay.</b> Puts the ServOS hosts and the <span style={S.mono}>*.serv-os.app</span> wildcards on the {region} {isLive ? 'live' : 'test'} API credential
-            and {name}&rsquo;s storefront addresses on the merchant&rsquo;s Apple Pay method. Safe to run again; runs by itself on a switch to live and on a link.
-          </div>
-          {canSetEnv ? (
-            <button style={{ ...S.btn, opacity: domainsBusy || envBusy ? 0.6 : 1 }}
-              disabled={domainsBusy || envBusy || regionBusy}
-              title="Register the ServOS web origins on this venue's API credential and its storefront domains for Apple Pay"
-              onClick={registerDomains}>
-              {domainsBusy ? 'Registering…' : 'Register origins and Apple Pay'}
-            </button>
-          ) : (
-            <span style={{ fontSize: 11, color: 'var(--t3)' }}>Only a ServOS super admin can run this.</span>
-          )}
-        </div>
-        {domainsResult && (
-          <>
-            <RegistrationLines
-              title={['Web origins', domainsResult.origins?.region ? `on the ${[domainsResult.origins.region, domainsResult.origins.environment].filter(Boolean).join(' ')} credential` : ''].filter(Boolean).join(' ')}
-              result={domainsResult.origins}
-            />
-            <RegistrationLines
-              title={['Apple Pay domains', domainsResult.applePay?.merchant ? `on ${domainsResult.applePay.merchant}` : ''].filter(Boolean).join(' ')}
-              result={domainsResult.applePay}
-            />
-          </>
         )}
 
         {err && <div style={S.err}>{err}</div>}
