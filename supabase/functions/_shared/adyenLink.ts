@@ -136,6 +136,10 @@ export interface LookupResult {
   errors?: string[];
   notes?: string[];
   scopeMissing?: boolean;
+  // The STORE route alone was refused (401 or 403 on the Management key).
+  // scopeMissing above merges both routes, and the Balance Platform refusing
+  // the key sets it too, so the go live flow reads THIS one for step 1.
+  storeScopeMissing?: boolean;
   // 8 Sep 2026, the two route lookup (FIND THE VENUE HOWEVER ADYEN HOLDS IT)
   holderCandidates?: unknown[];
   merchantMismatch?: unknown;
@@ -568,6 +572,24 @@ export function replacementClear(patch: unknown): Record<string, unknown> {
   clear.onboarding_link_url = null;
   clear.onboarding_link_expires_at = null;
   return clear;
+}
+
+// WHEN that clear rides (9 Sep 2026). replacementClear exists so an OLD
+// account holder's bank account never survives under a NEW balance account,
+// so it belongs to a replacement that MOVES THE MONEY SIDE: a conflict on
+// balance_account_id or account_holder_id. A store swap alone, with the
+// holder side simply unreadable this time (the Balance Platform refused the
+// key), is not that case: nulling the holder, legal entity and bank account
+// because a READ failed would drop the venue to "No holder", "No payouts",
+// KYC unknown, with the onboarding link gone. So: the full clear when the
+// conflicts move the money, nothing otherwise.
+export const MONEY_CONFLICT_FIELDS: readonly string[] = Object.freeze(['balance_account_id', 'account_holder_id']);
+export function conflictsMoveMoney(conflicts: unknown): boolean {
+  return (Array.isArray(conflicts) ? conflicts : []).some((c) => isObj(c) && MONEY_CONFLICT_FIELDS.includes(str(c.field)));
+}
+export function relinkClear(diff: unknown, patch: unknown): Record<string, unknown> {
+  const conflicts = isObj(diff) && Array.isArray(diff.conflicts) ? diff.conflicts : [];
+  return conflicts.length && conflictsMoveMoney(conflicts) ? replacementClear(patch) : {};
 }
 
 // The admin's one line summary of a lookup: what was found, what was not.
@@ -1009,8 +1031,22 @@ export interface GoliveStateInput {
   readers?: unknown;
   origins?: { registered?: unknown } | null;
   applePay?: { verification?: unknown } | null;
+  // The venue row on the environment the flow looks at ({ store_id, ... }, {}
+  // for no row yet), null or absent when the flow looks at the other one.
+  row?: unknown;
+  // { refused, secret }: the Balance Platform refused our key (401 or 403),
+  // and the secret the separate credential goes in.
+  balancePlatformKey?: { refused?: unknown; secret?: unknown } | null;
+  // { refused, ambiguous }: what the STORE search came back with when no
+  // store was resolved (the store list refused, or more than one store
+  // carrying the code), so step 1 never says "nothing carries the code".
+  storeRead?: { refused?: unknown; ambiguous?: unknown } | null;
   [k: string]: unknown;
 }
+
+// One error line as the screen shows it (PLAIN PROBLEMS below).
+export interface PlainProblem { kind: string; text: string; rawDetail: string }
+export interface GoliveProblems { raw: string[]; problems: PlainProblem[]; bpRefused: boolean; platformSettingsMissing: boolean }
 
 // Every capability as ONE row: the name Adyen uses, whether it is allowed, and
 // the verification behind it. A capability Adyen BLOCKS (asked for, not
@@ -1067,6 +1103,26 @@ const PAYOUT_BLOCKED_HINT = 'Sort it out with Adyen when you can. It does not st
 // src/lib/payments/adyenAdminRows.js (GOLIVE_STEP_TITLES). The steps answered
 // here carry no title of their own, so the two can never drift.
 
+// THE ONE PLAIN REASON when the Balance Platform refuses our key (9 Sep 2026,
+// live screen). The payments key cannot read the business account side at
+// all: Adyen issues a SEPARATE credential for the Balance Platform (Customer
+// Area, Developers, API credentials, the Platforms tab), and it goes in the
+// BP_KEY secret of the region. Four long code lines said that on the live
+// screen and the owner read "errors all over the place". The step says it
+// once, in these words, and nothing else on the screen repeats it.
+export const BP_KEY_BLOCKED_DETAIL = 'Our payments key cannot see the business account side.';
+// Two short sentences and NO id inside them (rule 5): the secret the key goes
+// in rides as its own grey "Server setting" row under the step, so the hint
+// only points at it. The 201 character version named the secret in the
+// sentence and broke the 120 character rule the plain lines keep.
+export function bpKeyBlockedHint(_secret: unknown, env: unknown): string {
+  const where = lower(env) === 'live' ? 'live' : 'test';
+  return `A second key is made in the ${where} Customer Area: Developers, API credentials, Platforms. It goes in the setting below.`;
+}
+
+// The line for a found store the venue row does not name yet (link_store).
+export const STORE_NOT_SAVED_DETAIL = 'Adyen holds the payments location, it is not saved on the venue yet.';
+
 // The five steps, always all five, always in this order. Nothing is decided on
 // the screen: `state` is the colour, `detail` is the one line under the title,
 // `action` is the button (or null) and `hint` is the only extra sentence.
@@ -1074,7 +1130,8 @@ const PAYOUT_BLOCKED_HINT = 'Sort it out with Adyen when you can. It does not st
 //   business_account  the account holder, its money account, its KYC, its
 //                     capabilities (a BLOCKED one is named)
 //   payments_location the store a card payment names, and whether it sits on
-//                     the merchant account the secret names
+//                     the merchant account the secret names, and whether the
+//                     VENUE ROW names it (a found store is not a linked one)
 //   go_live           real cards on or off
 //   readers           the card machines, and whether they are on a till
 //
@@ -1082,6 +1139,19 @@ const PAYOUT_BLOCKED_HINT = 'Sort it out with Adyen when you can. It does not st
 // ever looks at live today). When it is not the environment the venue is on,
 // the readers step cannot be "done": those readers belong to the account the
 // venue is leaving, and going live retires every one of them.
+//
+// `state.row` is the venue's merchant_adyen_accounts row as it is NOW on the
+// environment the flow looks at ({ store_id, ... }, or {} for no row yet), and
+// null or absent when the flow looks at the OTHER environment: the row's ids
+// belong to the one the venue is on, and the go live flip writes the new ones.
+// `state.balancePlatformKey` is { refused, secret }: refused is true when the
+// Balance Platform answered 401 or 403 to the key, secret names the secret the
+// separate credential goes in.
+// `state.storeRead` is { refused, ambiguous }, what the STORE search itself
+// came back with when no store was resolved: refused is true when the store
+// list was refused (401 or 403 on the Management key), ambiguous when more
+// than one store carries the code. Either way "nothing carries the code" is
+// not something the read established, so step 1 must not say it (rule 6).
 export function buildGoliveSteps(state: GoliveStateInput = {}, opts: GoliveStepOptions = {}): GoliveStep[] {
   const s: Dict = isObj(state) ? state : {};
   const o: Dict = isObj(opts) ? (opts as Dict) : {};
@@ -1101,6 +1171,19 @@ export function buildGoliveSteps(state: GoliveStateInput = {}, opts: GoliveStepO
   const target = lower(o.target) === 'live' ? 'live' : lower(o.target) === 'test' ? 'test' : null;
   const missing = (Array.isArray(keys.missing) ? keys.missing : []).map(str).filter(Boolean);
   const keysOk = keys.configured === true && missing.length === 0;
+  // A FOUND STORE IS NOT A LINKED STORE (9 Sep 2026, live screen): the read
+  // found the store at Adyen, said step 3 was done, and the venue row still
+  // held store_id NULL with the list chip reading NOT LINKED. With the row in
+  // hand the step is done ONLY when the row names the store Adyen holds;
+  // otherwise it offers to save it. No row in hand (the other environment, or
+  // an old caller) keeps the old reading: the flip writes the ids.
+  const row: Dict | null = isObj(s.row) ? s.row : null;
+  const storeSaved = !store || !row || str(row.store_id) === str(store.id);
+  const storeActive = !!store && lower(store.status) === 'active';
+  const bpKey: Dict = isObj(s.balancePlatformKey) ? s.balancePlatformKey : {};
+  const bpRefused = bpKey.refused === true;
+  const bpSecret = str(bpKey.secret) || null;
+  const storeRead: Dict = isObj(s.storeRead) ? s.storeRead : {};
   // `keys` is the set the reads above were made with; `liveKeys` is the LIVE
   // set of the venue's region, which is what taking real money needs. They are
   // the same for a venue already being read on live; a test read passes both,
@@ -1134,13 +1217,32 @@ export function buildGoliveSteps(state: GoliveStateInput = {}, opts: GoliveStepO
   } else if (holder) out.push(step('find_venue', { state: 'done', detail: `Adyen holds ${code || 'this venue'} as a business account.`, hint: 'It has no store yet. That is the third step.' }));
   else if (!code) {
     out.push(step('find_venue', { state: 'todo', detail: 'This venue has no code, so there is nothing to search for.', action: 'set_venue_code', hint: 'Set the venue code in the Back Office, then look again.' }));
+  } else if (storeRead.ambiguous === true) {
+    // More than one store carries the code, so nothing was resolved and
+    // "nothing carries the code" would contradict the box under the steps.
+    out.push(step('find_venue', { state: 'attention', detail: `More than one payments location carries the code ${code}.`, action: 'find_venue', hint: 'Pick the right one from the list below.' }));
+  } else if (storeRead.refused === true) {
+    // The store list itself was refused: a refusal Adyen gave us must never
+    // look like nothing found (rule 6). Nothing to press until the key has
+    // the role.
+    out.push(step('find_venue', { state: 'blocked', detail: 'Our payments key was refused, so the search could not run.', action: null, hint: 'The key needs the Stores read role at Adyen.' }));
+  } else if (bpRefused) {
+    // Only the payments side could be searched, so "nothing carries the code"
+    // would be a guess. Pasting an id would not help either: the one thing to
+    // do is at step 2, and it is said there, once.
+    out.push(step('find_venue', { state: 'todo', detail: `No payments location carries the code ${code} yet.`, action: 'find_venue', hint: 'The business account side could not be checked. See step 2.' }));
   } else {
     out.push(step('find_venue', { state: 'todo', detail: `Nothing at Adyen carries the code ${code} yet.`, action: 'find_venue', hint: 'Paste the account holder id (it starts with AH), or pick the store from the list.' }));
   }
 
   // 2. the business account
   if (!keysOk) out.push(step('business_account', keysBlocked));
-  else if (!holder) out.push(step('business_account', { state: 'todo', detail: 'No business account at Adyen yet.', action: 'find_venue', hint: 'Adyen makes one when the venue is onboarded. Paste its id if you have it.' }));
+  else if (bpRefused) {
+    // THE ONE PLAIN REASON. Whatever else was or was not read, the business
+    // account side is unreadable until the separate credential is on the
+    // server, and waiting will not change that.
+    out.push(step('business_account', { state: 'blocked', detail: BP_KEY_BLOCKED_DETAIL, action: 'add_bp_key', hint: bpKeyBlockedHint(bpSecret, target || env) }));
+  } else if (!holder) out.push(step('business_account', { state: 'todo', detail: 'No business account at Adyen yet.', action: 'find_venue', hint: 'Adyen makes one when the venue is onboarded. Paste its id if you have it.' }));
   else {
     const blocked = blockedCapabilityNames(caps);
     // Taking cards and paying out are separate refusals. Only a refused PAY IN
@@ -1186,10 +1288,15 @@ export function buildGoliveSteps(state: GoliveStateInput = {}, opts: GoliveStepO
       action: 'choose_merchant',
       hint: str(mismatch.message) || null,
     }));
-  } else if (store && lower(store.status) === 'active') {
+  } else if (storeActive && !storeSaved) {
+    // Found at Adyen, not on the venue row. ONE button saves it (adyen_link on
+    // the venue's own environment with this store id), and that works with
+    // the Balance Platform read refused: only the store side is written.
+    out.push(step('payments_location', { state: 'attention', detail: STORE_NOT_SAVED_DETAIL, action: 'link_store', hint: 'One click writes it on the venue.' }));
+  } else if (storeActive) {
     // The Adyen account name is an id, so it rides as its own grey row on the
     // screen, never inside this sentence (rule 5, 8 Sep 2026).
-    out.push(step('payments_location', { state: 'done', detail: `Card payments go to ${str(store.reference) || 'this venue'}.` }));
+    out.push(step('payments_location', { state: 'done', detail: `Card payments go to ${str(store!.reference) || 'this venue'}.` }));
   } else if (store) {
     out.push(step('payments_location', { state: 'attention', detail: `The store is ${lower(store.status) || 'not active'} at Adyen.`, action: 'open_adyen', hint: 'Cards are refused until Adyen makes it active.' }));
   } else if (holder) {
@@ -1204,7 +1311,7 @@ export function buildGoliveSteps(state: GoliveStateInput = {}, opts: GoliveStepO
   }
 
   // 4. real cards
-  const storeReady = !!store && lower(store.status) === 'active' && !mismatch;
+  const storeReady = storeActive && !mismatch && storeSaved;
   const originsOk = origins.registered !== false;
   if (!liveKeysOk) {
     out.push(step('go_live', {
@@ -1218,6 +1325,10 @@ export function buildGoliveSteps(state: GoliveStateInput = {}, opts: GoliveStepO
     out.push(step('go_live', { state: 'attention', detail: 'Real cards are on. Online checkout still needs its web addresses.', action: 'register_origins', hint: 'One click adds them.' }));
   } else if (env === 'live' && storeReady) {
     out.push(step('go_live', { state: 'done', detail: `${str(venue.name) || 'This venue'} takes real cards.`, hint: str(applePay.verification) && lower(applePay.verification) !== 'valid' ? `Apple Pay is ${lower(applePay.verification)} at Adyen.` : null }));
+  } else if (env === 'live' && storeActive && !mismatch && !storeSaved) {
+    // Live, the store is fine at Adyen, and the venue row does not name it:
+    // a card names a store the venue has not been told about. Step 3 saves it.
+    out.push(step('go_live', { state: 'attention', detail: 'Real cards are on, but the payments location is not saved on the venue.', action: null, hint: 'Save it in the step above.' }));
   } else if (env === 'live') {
     out.push(step('go_live', { state: 'attention', detail: 'Real cards are on, but the store is not ready.', action: null, hint: 'Fix the step above, or switch back to test cards.' }));
   } else if (storeReady && holder) {
@@ -1245,6 +1356,132 @@ export function buildGoliveSteps(state: GoliveStateInput = {}, opts: GoliveStepO
   else out.push(step('readers', { state: 'done', detail: `${readers.length} reader${readers.length === 1 ? '' : 's'} ready.` }));
 
   return out;
+}
+
+// ── PLAIN PROBLEMS FOR THE SCREEN (9 Sep 2026, OWNER FEEDBACK) ───────────────
+// "just errors all over the place, I dont know whats happening". The live
+// screen showed a box of four long code lines for ONE fact: the payments key
+// cannot read the Balance Platform, and Adyen issues a separate credential for
+// that. So every error string the function collects becomes ONE plain line
+// under PROBLEM_TEXT_MAX characters, deduped by that line, with the raw Adyen
+// status and message kept apart in rawDetail for the small Show detail toggle.
+//   kind       what it is, so the screen can route it: a bp_refused line is
+//              said once, at the business account step, and nowhere else; a
+//              mismatch has its own block
+//   text       the plain line, under PROBLEM_TEXT_MAX characters, no ids
+//   rawDetail  the raw line(s) as the function produced them
+// KEEP IN SYNC with src/lib/payments/adyenLink.js (adyenLink.test.js).
+export const PROBLEM_TEXT_MAX = 120;
+
+// The refusal line refusalText (adyen-terminal-admin) builds: "refused (401):
+// the credential behind ADYEN_LIVE_UK_BP_KEY (the set's API key when that is
+// unset) needs the Balance Platform BCL role". The secret NAME in it says
+// which key was refused; the role text is the fallback.
+const REFUSED = /\brefused \((401|403)\)/i;
+function refusedKey(raw: string): string | null {
+  if (!REFUSED.test(raw)) return null;
+  if (/_BP_KEY\b/.test(raw)) return 'bp';
+  if (/_LEM_KEY\b/.test(raw)) return 'lem';
+  if (/_MANAGEMENT_KEY\b/.test(raw)) return 'management';
+  if (/Legal Entity role|LegalEntities/i.test(raw)) return 'lem';
+  if (/Balance Platform BCL role/i.test(raw)) return 'bp';
+  if (/Management API role/i.test(raw)) return 'management';
+  return 'unknown';
+}
+
+// What an error line is about, from the label the function puts first. Adyen
+// words become the plain words the screen uses everywhere else.
+const PROBLEM_SUBJECTS: ReadonlyArray<readonly [RegExp, string]> = Object.freeze([
+  [/^(store list|store search)/i, 'the payments locations'],
+  [/^merchant list/i, 'the Adyen accounts'],
+  [/^store\b/i, 'the payments location'],
+  [/^balance accounts? of\b/i, 'where the money lands'],
+  [/^balance account\b/i, 'where the money lands'],
+  [/^account holders? on balance platform/i, 'the business accounts'],
+  [/^account holder\b/i, 'the business account'],
+  [/^legal entity\b/i, 'the registered company'],
+  [/^business lines? of\b/i, 'the business line'],
+  [/^web origins/i, 'the web addresses'],
+  [/^apple pay/i, 'Apple Pay'],
+] as const);
+
+// ONE raw error line as the screen shows it, or null for an empty line.
+export function plainAdyenProblem(raw: unknown): PlainProblem | null {
+  const text = str(raw);
+  if (!text) return null;
+  const say = (kind: string, plain: string): PlainProblem => ({ kind, text: plain, rawDetail: text });
+  const key = refusedKey(text);
+  if (key === 'bp') return say('bp_refused', BP_KEY_BLOCKED_DETAIL);
+  if (key === 'lem') return say('lem_refused', 'Our key cannot read the registered company at Adyen. It needs the legal entity roles.');
+  if (key === 'management') return say('management_refused', 'Our payments key is missing an Adyen permission, so a read was refused.');
+  if (key) return say('refused', 'Adyen refused one of our keys.');
+  // Our OWN lists (Postgres) before the Adyen timeout words: "The reader list
+  // could not be read: connection timed out" is our database, not Adyen.
+  if (/reader list|till links/i.test(text)) return say('readers', 'The card reader list could not be read, so step 5 may be wrong.');
+  if (/online address/i.test(text)) return say('storefront', 'The venue’s web address could not be read.');
+  if (/did not answer .* within \d+s/i.test(text) || /\btimed? ?out\b/i.test(text)) return say('timeout', 'Adyen took too long to answer. Try again in a moment.');
+  if (/sits on merchant account/i.test(text)) return say('mismatch', 'This venue is on a different Adyen account than the one we are set to use.');
+  if (/stores carry the reference/i.test(text)) return say('ambiguous_store', 'More than one payments location carries this code. Pick one in step 1.');
+  if (/account holders .* carry the reference/i.test(text)) return say('ambiguous_holder', 'More than one business account carries this code. Paste the right id in step 1.');
+  if (/names no account holder/i.test(text)) return say('gap', 'Where the money lands names no business account at Adyen.');
+  if (/names no legal entity/i.test(text)) return say('gap', 'The business account names no registered company at Adyen.');
+  if (/none could be chosen/i.test(text)) return say('gap', 'The business account has several money accounts and none could be chosen.');
+  if (/no venue code/i.test(text)) return say('no_code', 'This venue has no code, so there is nothing to search for.');
+  for (const [re, subject] of PROBLEM_SUBJECTS) if (re.test(text)) return say('read_failed', `Adyen would not answer about ${subject}.`);
+  return say('other', 'Adyen said something we did not expect.');
+}
+
+// The settings warning for a platform table the migration has not made yet
+// (platformSettingsMissingMessage), told apart from a read or write failure.
+export function isPlatformSettingsMissingWarning(text: unknown): boolean {
+  const t = lower(text);
+  return !!t && t.includes(ADYEN_PLATFORM_SETTINGS_TABLE) && t.includes('not there yet');
+}
+
+// Everything golive_state (and adyen_lookup, adyen_link) says about problems,
+// ready for the screen:
+//   raw        the error lines with exact repeats dropped (the pasted account
+//              holder was refused twice, word for word, on the live screen)
+//   problems   one plain line per DISTINCT plain text, first come first kept,
+//              every raw line behind it in rawDetail
+//   bpRefused  the Balance Platform refused our key: the business account step
+//              says the one reason and the box says nothing about it
+//   platformSettingsMissing  the settings table is not there yet: one short
+//              line at the top of the flow, never inside the box
+export function goliveProblems(errors: unknown, { settingsWarning }: { settingsWarning?: unknown } = {}): GoliveProblems {
+  const raw: string[] = [];
+  const seenRaw = new Set<string>();
+  for (const e of Array.isArray(errors) ? errors : []) {
+    const t = str(e);
+    if (!t || seenRaw.has(t)) continue;
+    seenRaw.add(t);
+    raw.push(t);
+  }
+  const problems: PlainProblem[] = [];
+  const byText = new Map<string, PlainProblem>();
+  const add = (p: PlainProblem | null) => {
+    if (!p) return;
+    const have = byText.get(p.text);
+    if (have) {
+      if (p.rawDetail && !have.rawDetail.split('\n').includes(p.rawDetail)) have.rawDetail = `${have.rawDetail}\n${p.rawDetail}`;
+      return;
+    }
+    byText.set(p.text, p);
+    problems.push(p);
+  };
+  for (const t of raw) add(plainAdyenProblem(t));
+  const warning = str(settingsWarning);
+  const platformSettingsMissing = isPlatformSettingsMissingWarning(warning);
+  if (warning && !platformSettingsMissing) {
+    add({
+      kind: 'settings',
+      text: /nothing was changed/i.test(warning)
+        ? 'This venue sits on a different Adyen platform than the one we search.'
+        : 'Our own Adyen ids could not be kept this time.',
+      rawDetail: warning,
+    });
+  }
+  return { raw, problems, bpRefused: problems.some((p) => p.kind === 'bp_refused'), platformSettingsMissing };
 }
 
 // ── ENVIRONMENT STASH (8 Sep 2026) ───────────────────────────────────────────
