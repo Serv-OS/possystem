@@ -22,6 +22,9 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import { supabase } from '../../lib/supabase';
+// Check a payment (10 Sep 2026): one card payment proven from Adyen's own
+// records, where the money went and what ServOS made on it.
+import PaymentCheck from '../components/PaymentCheck';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
@@ -49,7 +52,7 @@ const TIERS = [
 const S = {
   page:  { padding: 0 },
   h1:    { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, marginBottom: 4, letterSpacing: '-.01em' },
-  sub:   { fontSize: 13, color: 'var(--t3)', marginBottom: 20, maxWidth: 760, lineHeight: 1.5 },
+  sub:   { fontSize: 15, color: 'var(--t3)', marginBottom: 20, maxWidth: 760, lineHeight: 1.5 },
   card:  { background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 12, padding: 18, marginBottom: 14, boxShadow: 'var(--sh)' },
   label: { fontSize: 11, fontWeight: 700, color: 'var(--t3)', marginBottom: 5, display: 'block', textTransform: 'uppercase', letterSpacing: '.06em' },
   input: { padding: '8px 10px', borderRadius: 8, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t1)', fontSize: 13, fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' },
@@ -177,10 +180,12 @@ export default function AdminRevenue() {
 
   return (
     <div style={S.page}>
-      <h1 style={S.h1}>Revenue — what the platform makes</h1>
+      <h1 style={S.h1}>Revenue: what the platform makes</h1>
       <div style={S.sub}>
-        Per month and per venue: processed card volume by payment type, the commission ServOS earns on it, SaaS fees, and the margin after processor costs where settlement data exists.
+        Card payments and SaaS fees for each venue, month by month. It shows the venue fees ServOS earns, and what is left after Adyen fees where Adyen has sent them.
       </div>
+
+      <PaymentCheck />
 
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginBottom: 14, flexWrap: 'wrap' }}>
         <label style={{ ...S.label, marginBottom: 0 }}>Month</label>

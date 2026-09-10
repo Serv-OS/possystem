@@ -232,7 +232,7 @@ import {
   capabilityList, blockedCapabilityNames, buildGoliveSteps, goliveProblems,
   summariseCapabilities, findPushSweep, pickPayoutInstrument, PAYOUT_CAPABILITY,
   buildTieredProfile, tieredCommissionRules, tiersFromResolved, unpricedTiers, tierRowList, rateCardLine, ratesOnAdyen,
-  rateCardProblems,
+  rateCardProblems, rateTierLabel,
   liableBalanceAccountSecretName, liableBalanceAccountSecretNames, ADYEN_LIABLE_BALANCE_ACCOUNT_COLUMN,
   ADYEN_PLATFORM_SETTINGS_TABLE, ADYEN_ROW_BALANCE_PLATFORM_COLUMN,
   platformSettingsKey, platformSettingsPatch, platformSettingsMissingMessage,
@@ -242,6 +242,8 @@ import {
   type PlatformSettingsLearned,
 } from '../_shared/adyenLink.ts';
 import { createSplitOnStore, ensurePushSweep, type AdyenApi } from '../_shared/adyenPayouts.ts';
+import { resellerRateFor, resellerRateLine } from '../_shared/resellerRate.ts';
+import { buildPaymentBreakdown, paymentCardLabel, ruleForTier, ruleRate, venueRateLine } from '../_shared/paymentBreakdown.ts';
 
 const opsAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
 const platformAdmin = createClient(
@@ -256,7 +258,15 @@ const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers
 // venue's reader settings from the server, list for diagnostics. A service
 // role caller passes ops_location_id in the body as any caller does.
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
-const SERVICE_ROLE_ACTIONS = new Set(['sync_store_settings', 'list']);
+// payment_list and payment_breakdown (10 Sep 2026) only READ: the payment
+// check on the Revenue page, and the same proof from a server script.
+const SERVICE_ROLE_ACTIONS = new Set(['sync_store_settings', 'list', 'payment_list', 'payment_breakdown']);
+// The payment check: how far back the list reaches, and how many pages of
+// Adyen transfers one check reads per listing.
+const PAYMENT_CHECK_DAYS = 30;
+const PAYMENT_CHECK_MAX_DAYS = 90;
+const PAYMENT_CHECK_LIST_LIMIT = 200;
+const PAYMENT_CHECK_PAGES = 10;
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
 
 // Management API call with the VENUE'S config: its host and, by default, its
@@ -1821,6 +1831,260 @@ Deno.serve(async (req) => {
     const canSetEnvironment = isServosAdmin;
     const canSetRegion = isServosAdmin;
     const adminOnly = () => json({ error: 'ServOS admin only' }, 403);
+
+    // ── payment_list / payment_breakdown (10 Sep 2026): PROOF FROM ADYEN ─────
+    // OWNER BRIEF: "tell me how £1 is broken down at 0.8% + 5p where I can see
+    // what the customer has paid and that equals that and then how much we
+    // made on that transaction", "I need this proven not just calculations".
+    // READ ONLY, super_admin (or the service role bearer). Nothing here writes
+    // a row or calls Adyen with anything but GET.
+    //   payment_list       { days = 30, max 90 } the venue's successful Adyen
+    //                      payments, newest first, 200 at most
+    //   payment_breakdown  { psp } the payment row (it must be THIS venue's),
+    //                      the split rule for its tier on the store's profile,
+    //                      Adyen's Balance Platform transfers for it (the venue
+    //                      balance account and the liable balance account
+    //                      first, the whole balance platform only as the
+    //                      fallback, merged by transfer id, this psp only) and
+    //                      the FranPOS rate for its currency and month, put
+    //                      together by _shared/paymentBreakdown.ts. A read
+    //                      that is not complete answers state 'incomplete'
+    // Every Adyen refusal is one plain sentence with the raw detail beside it.
+    if (action === 'payment_list' || action === 'payment_breakdown') {
+      if (!isServosAdmin && !isServiceRole) return adminOnly();
+
+      if (action === 'payment_list') {
+        const daysRaw = Math.round(Number(body.days));
+        const days = Number.isFinite(daysRaw) && daysRaw > 0 ? Math.min(daysRaw, PAYMENT_CHECK_MAX_DAYS) : PAYMENT_CHECK_DAYS;
+        const since = new Date(Date.now() - days * 86_400_000).toISOString();
+        const { data, error } = await platformAdmin.from('adyen_payments')
+          .select('psp_reference, amount_minor, currency, card, rate_category, commission_minor, live, authorised_at, created_at')
+          .eq('location_id', loc.id).eq('success', true).gte('created_at', since)
+          .order('created_at', { ascending: false })
+          .limit(PAYMENT_CHECK_LIST_LIMIT);
+        if (error) return json({ error: 'The payments could not be read.', detail: error.message }, 500);
+        const payments = ((data ?? []) as Dict[]).map((p) => ({
+          psp: String(p.psp_reference ?? ''),
+          at: String(p.authorised_at ?? p.created_at ?? ''),
+          amountMinor: Number(p.amount_minor) || 0,
+          currency: String(p.currency ?? 'GBP').toUpperCase(),
+          cardLabel: paymentCardLabel(p.card),
+          typeLabel: p.rate_category ? rateTierLabel(p.rate_category) : 'Not known',
+          venueFeeMinor: p.commission_minor === null || p.commission_minor === undefined ? null : Number(p.commission_minor),
+          live: p.live === true,
+        }));
+        return json({ ok: true, venue: loc.name, days, payments });
+      }
+
+      // payment_breakdown
+      const psp = String(body.psp ?? '').trim();
+      if (!psp) return json({ error: 'Pick a payment to check.' }, 400);
+      const { data: payRow, error: payErr } = await platformAdmin.from('adyen_payments')
+        .select('psp_reference, merchant_reference, amount_minor, currency, success, live, channel, store, card, rate_category, commission_minor, fee_minor, gratuity_minor, amount_refunded_minor, authorised_at, captured_at, created_at, location_id, merchant_account')
+        .eq('psp_reference', psp).eq('location_id', loc.id).limit(1).maybeSingle();
+      if (payErr) return json({ error: 'The payment could not be read.', detail: payErr.message }, 500);
+      if (!payRow) return json({ error: 'That payment was not found at this venue.' }, 404);
+      const pay = payRow as Dict;
+      const currency = String(pay.currency ?? 'GBP').toUpperCase();
+      const atIso = String(pay.authorised_at ?? pay.created_at ?? '');
+      const atMs = Date.parse(atIso);
+      if (!Number.isFinite(atMs)) return json({ error: 'This payment has no time on record, so Adyen cannot be searched.' }, 422);
+
+      // The payment's OWN environment picks the keys (a venue may have moved
+      // between test and real cards since); the ids are the venue row's.
+      const payEnv: AdyenEnv = typeof pay.live === 'boolean' ? (pay.live ? 'live' : 'test') : env;
+      const payCfg = adyenConfig(payEnv, region);
+      const notes: string[] = [];
+      const problems: Array<{ text: string; detail: string | null }> = [];
+      if (payEnv !== env) {
+        notes.push(payEnv === 'live'
+          ? 'This payment was taken with real cards, but the venue is on test cards now.'
+          : 'This payment was taken with test cards, but the venue is on real cards now.');
+      }
+      const acct = (maa ?? {}) as Dict;
+      const venueBa = String(acct.balance_account_id ?? '').trim();
+      const merchantForProfile = String(pay.merchant_account ?? '').trim() || effectiveMerchantAccount(payCfg, acct.merchant_account) || '';
+      const thrown = (e: unknown) => String((e as Error)?.message ?? e);
+
+      // The rate on Adyen: the store's split profile, its rule for the tier.
+      let profile: Dict | null = null;
+      let profileId = String(acct.split_profile_id ?? '').trim();
+      try {
+        if (!profileId && acct.store_id) {
+          const sr = await mgmt<Dict>(payCfg, 'GET', `/stores/${encodeURIComponent(String(acct.store_id))}`);
+          if (sr.ok) profileId = String((sr.data?.splitConfiguration as Dict | undefined)?.splitConfigurationId ?? '').trim();
+          else problems.push({ text: 'Adyen would not show the venue store, so its rate could not be read.', detail: refusalText(payCfg, sr, 'managementKey', 'the Management API role "Stores read"') });
+        }
+        if (profileId && merchantForProfile) {
+          const pr = await readProfileRates(payCfg, merchantForProfile, profileId);
+          if (pr.read) profile = pr.raw;
+          else problems.push({ text: 'Adyen would not show the rate on the venue store.', detail: pr.error });
+        } else if (!profileId) {
+          notes.push('No rate is set on the venue store at Adyen.');
+        }
+      } catch (e) {
+        problems.push({ text: 'Adyen did not answer when the rate on the venue store was read.', detail: thrown(e) });
+      }
+      if (!pay.rate_category) notes.push('This payment has no payment type on record, so its rate cannot be matched.');
+      const rule = profile ? ruleForTier(profile, pay.rate_category, currency) : null;
+
+      // Adyen's transfers for this payment. Window: 10 minutes before it was
+      // taken, to 7 days after it was booked (captured, for a manual capture)
+      // or now, whichever is earlier.
+      const capturedMs = Date.parse(String(pay.captured_at ?? ''));
+      const bookedMs = Math.max(atMs, Number.isFinite(capturedMs) ? capturedMs : atMs);
+      const since = new Date(atMs - 10 * 60_000).toISOString();
+      const until = new Date(Math.min(Date.now(), bookedMs + 7 * 86_400_000)).toISOString();
+      // Adyen lists transfers oldest first. Once a page runs a day past the
+      // booking, every later page is later still, so the payment's own records
+      // have all been seen and the listing stops there (a busy venue no longer
+      // pages to the cap on every check). A refund booked after that is still
+      // on the payment row's refunded amount.
+      const stopAtMs = bookedMs + 86_400_000;
+      const BTL = balancePlatformBase(payCfg).replace(/\/bcl\/v2$/, '/btl/v4');
+      const windowQs = `createdSince=${encodeURIComponent(since)}&createdUntil=${encodeURIComponent(until)}&limit=100`;
+      const merged = new Map<string, Dict>();
+      // PROOF, NOT A GAP (review, 10 Sep 2026): every listing the check needs
+      // must be read in full. A listing that was refused, did not answer, was
+      // cut off at the page cap, or could not be tried leaves the check
+      // 'incomplete', never a red money gap built from half of Adyen's records.
+      const readProblems: Array<{ text: string; detail: string | null }> = [];
+      const readListing = async (first: string, what: string): Promise<boolean> => {
+        let url: string | null = first;
+        let n = 0;
+        let ascending: boolean | null = null;
+        let prevLast: number | null = null;
+        try {
+          while (url) {
+            if (n >= PAYMENT_CHECK_PAGES) {
+              readProblems.push({ text: `Adyen has more records for ${what} than one check reads.`, detail: `Stopped after ${n} pages of ${what}, before ${new Date(stopAtMs).toISOString()}.` });
+              return false;
+            }
+            const r: { ok: boolean; status: number; data: Dict } = await adyenFetch<Dict>('GET', url, undefined, { cfg: payCfg, apiKey: payCfg.bpKey, timeoutMs: 20_000 });
+            if (!r.ok) {
+              readProblems.push({ text: `Adyen would not show the money records for ${what}.`, detail: refusalText(payCfg, r, 'bpKey', 'the Balance Platform role "Transfers read"') });
+              return false;
+            }
+            const items = (Array.isArray(r.data?.data) ? r.data.data : []) as Dict[];
+            for (const it of items) {
+              if (String((it?.categoryData as Dict | undefined)?.pspPaymentReference ?? '') !== psp) continue;
+              const id = String(it?.id ?? '');
+              merged.set(id || `${what}:${merged.size}`, it);
+            }
+            url = (r.data?._links as Dict | undefined)?.next?.href ?? null;
+            n++;
+            const times = items.map((it) => Date.parse(String(it?.creationDate ?? it?.createdAt ?? ''))).filter((x) => Number.isFinite(x));
+            if (times.length) {
+              if (ascending === null) {
+                if (times.length >= 2 && times[0] !== times[times.length - 1]) ascending = times[0] < times[times.length - 1];
+                else if (prevLast !== null && prevLast !== times[0]) ascending = prevLast < times[0];
+              }
+              prevLast = times[times.length - 1];
+              if (url && ascending === true && prevLast > stopAtMs) url = null;
+            }
+          }
+          return true;
+        } catch (e) {
+          readProblems.push({ text: `Adyen did not answer when the money records for ${what} were read.`, detail: thrown(e) });
+          return false;
+        }
+      };
+      const bpKey = platformSettingsKey(payEnv, region);
+      let bpId = '';
+      try {
+        const { data: kept } = await platformAdmin.from(ADYEN_PLATFORM_SETTINGS_TABLE)
+          .select('balance_platform_id').eq('environment', bpKey.environment).eq('region', bpKey.region).maybeSingle();
+        bpId = String((kept as Dict | null)?.balance_platform_id ?? '').trim();
+      } catch { /* the two account listings below do not need it */ }
+      const liableBa = String((await readLiableBalanceAccount(payEnv, region)) ?? '').trim();
+      // The venue account holds the venue's money, tips and surcharges; the
+      // liable (platform) account holds the venue fee and Adyen's fees. Each
+      // small account listing first; the whole balance platform (every
+      // merchant, so far more records) only as the fallback for a side the
+      // account listings did not cover.
+      let venueSide = false;
+      let platformSide = false;
+      if (venueBa) venueSide = await readListing(`${BTL}/transfers?balanceAccountId=${encodeURIComponent(venueBa)}&${windowQs}`, 'the venue account');
+      if (liableBa) platformSide = await readListing(`${BTL}/transfers?balanceAccountId=${encodeURIComponent(liableBa)}&${windowQs}`, 'the platform account');
+      if ((!venueSide || !platformSide) && bpId) {
+        if (await readListing(`${BTL}/transfers?balancePlatform=${encodeURIComponent(bpId)}&${windowQs}`, 'the platform')) {
+          venueSide = true;
+          platformSide = true;
+        }
+      }
+      if (!venueBa && !bpId) readProblems.push({ text: 'The venue has no money account saved, so its records could not be read.', detail: null });
+      if (!liableBa && !bpId) readProblems.push({ text: 'Our Adyen platform details are not saved, so the venue fee records could not be read.', detail: null });
+      const readComplete = venueSide && platformSide;
+      if (!readComplete) problems.push(...readProblems);
+      else if (readProblems.length) console.log(`[adyen-terminal-admin] payment_breakdown ${psp}: covered by the balance platform listing after: ${readProblems.map((p) => `${p.text} ${p.detail ?? ''}`).join(' | ')}`);
+      if (readComplete && !venueBa) notes.push('The venue has no money account saved, so its records could not be checked by account.');
+
+      // The FranPOS rate for this currency and month.
+      let reseller: Dict | null = null;
+      const month = new Date(atMs).toISOString().slice(0, 7);
+      try {
+        const { data: st, error: stErr } = await platformAdmin.from('platform_settings').select('*').eq('id', true).maybeSingle();
+        if (stErr) {
+          problems.push({ text: 'The FranPOS rate could not be read.', detail: stErr.message });
+        } else {
+          const s = (st ?? {}) as Dict;
+          const r = resellerRateFor({ history: s.adyen_reseller_rate_history, buyPercent: s.adyen_reseller_buy_percent, buyFixedMinor: s.adyen_reseller_buy_fixed_minor }, currency, month);
+          reseller = { ...r, currency, month, line: resellerRateLine(r, currency) };
+          if (r.source === 'default') notes.push('No FranPOS rate is saved, so the signed terms are used.');
+        }
+      } catch (e) {
+        problems.push({ text: 'The FranPOS rate could not be read.', detail: thrown(e) });
+      }
+
+      const transfers = [...merged.values()];
+      const breakdown = buildPaymentBreakdown({
+        payment: pay, transfers, rule, venueBalanceAccountId: venueBa, liableBalanceAccountId: liableBa, reseller, readComplete,
+      });
+      const rr = rule ? ruleRate(rule) : null;
+      console.log(`[adyen-terminal-admin] ${caller.id} payment_breakdown for ${loc.id} psp ${psp} (${payEnv} ${region}): ${transfers.length} transfers, read ${readComplete ? 'complete' : 'NOT complete'}, state ${breakdown.state}`);
+      return json({
+        ok: true,
+        venue: loc.name,
+        environment: payEnv,
+        region,
+        payment: {
+          psp,
+          at: atIso,
+          amountMinor: Number(pay.amount_minor) || 0,
+          currency,
+          cardLabel: paymentCardLabel(pay.card),
+          typeLabel: pay.rate_category ? rateTierLabel(pay.rate_category) : 'Not known',
+          venueFeeMinor: pay.commission_minor === null || pay.commission_minor === undefined ? null : Number(pay.commission_minor),
+          gratuityMinor: pay.gratuity_minor === null || pay.gratuity_minor === undefined ? null : Number(pay.gratuity_minor),
+          refundedMinor: Number(pay.amount_refunded_minor) || 0,
+          live: pay.live === true,
+        },
+        rule: rule ? {
+          currency: rule.currency ?? null, paymentMethod: rule.paymentMethod ?? null, shopperInteraction: rule.shopperInteraction ?? null,
+          fundingSource: rule.fundingSource ?? null, commission: (rule.splitLogic as Dict | undefined)?.commission ?? null,
+          paymentFee: (rule.splitLogic as Dict | undefined)?.paymentFee ?? null, remainder: (rule.splitLogic as Dict | undefined)?.remainder ?? null,
+          rateLine: rr ? venueRateLine(rr, currency) : null,
+        } : null,
+        transfers: transfers.map((t) => ({
+          id: t.id ?? null,
+          createdAt: t.createdAt ?? t.creationDate ?? null,
+          type: t.type ?? null,
+          status: t.status ?? null,
+          direction: t.direction ?? null,
+          amountMinor: (t.amount as Dict | undefined)?.value ?? null,
+          currency: (t.amount as Dict | undefined)?.currency ?? null,
+          balanceAccountId: (t.balanceAccount as Dict | undefined)?.id ?? null,
+          reference: t.reference ?? null,
+          platformPaymentType: (t.categoryData as Dict | undefined)?.platformPaymentType ?? null,
+          pspPaymentReference: (t.categoryData as Dict | undefined)?.pspPaymentReference ?? null,
+        })),
+        reseller,
+        breakdown,
+        notes,
+        problems,
+        window: { since, until },
+      });
+    }
 
     // ── environment: read the venue's Adyen environment and region (never the values) ──
     if (action === 'environment') {

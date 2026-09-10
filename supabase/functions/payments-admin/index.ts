@@ -42,6 +42,10 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { createSubAccount, getAccount, createAccountLink, authorizeAccount, listBalanceTransactions, listPlatformFees, ryftConfigured } from '../_shared/ryft.ts';
 import { RATE_TIERS, resolveAdyenRateCard, sanitizeRateCard, upsertAdyenAccountRow } from '../_shared/adyen.ts';
 import { ADYEN_PLATFORM_SETTINGS_TABLE, isUnknownRelationError, platformSettingsMissingMessage, rateCardProblems } from '../_shared/adyenLink.ts';
+import {
+  resellerRateFor, resellerMarginFor, resellerRateLine, resellerFixedTable, parseFixedByCurrency,
+  type ResellerRate, type ResellerSettings,
+} from '../_shared/resellerRate.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -1121,26 +1125,35 @@ Deno.serve(async (req) => {
     // select('*') on the singleton row on purpose: naming the columns errors
     // whenever the deploy precedes the hand-applied migration, and that error
     // would silently revert a renegotiated rate to the hardcoded fallback.
-    let buyPercent = 0.10, buyFixedMinor = 5, buyFromSettings = false;
+    // PER CURRENCY (10 Sep 2026, owner): FranPOS's fixed fee is 5 US cents,
+    // which is 3p in GBP, so a history entry may carry fixed_minor_by_currency
+    // ({ GBP, USD, EUR }). _shared/resellerRate.ts resolves the governing entry
+    // the way this action always did and then picks the currency's fixed fee;
+    // an entry without the map reads exactly as before.
+    let resellerSettings: ResellerSettings = {};
     {
       const { data: st, error: stErr } = await platformAdmin.from('platform_settings').select('*').maybeSingle();
       if (!stErr && st) {
-        if ((st as any).adyen_reseller_buy_percent != null) { buyPercent = Number((st as any).adyen_reseller_buy_percent); buyFromSettings = true; }
-        if ((st as any).adyen_reseller_buy_fixed_minor != null) buyFixedMinor = Number((st as any).adyen_reseller_buy_fixed_minor);
-        const hist = (st as any).adyen_reseller_rate_history;
-        if (Array.isArray(hist) && hist.length) {
-          const governing = hist
-            .filter((h: any) => h && typeof h.from_month === 'string' && h.from_month <= month)
-            .sort((a: any, b: any) => String(a.from_month).localeCompare(String(b.from_month)))
-            .pop();
-          if (governing && Number.isFinite(Number(governing.percent)) && Number.isFinite(Number(governing.fixed_minor))) {
-            buyPercent = Number(governing.percent);
-            buyFixedMinor = Number(governing.fixed_minor);
-            buyFromSettings = true;
-          }
-        }
+        resellerSettings = {
+          history: (st as any).adyen_reseller_rate_history,
+          buyPercent: (st as any).adyen_reseller_buy_percent,
+          buyFixedMinor: (st as any).adyen_reseller_buy_fixed_minor,
+        };
       }
     }
+    const rateByCur = new Map<string, ResellerRate>();
+    const rateFor = (cur: string): ResellerRate => {
+      if (!rateByCur.has(cur)) rateByCur.set(cur, resellerRateFor(resellerSettings, cur, month));
+      return rateByCur.get(cur)!;
+    };
+    // The single numbers the answer has always carried (old readers): the
+    // percent and the entry's own fixed_minor, as the GBP-less legacy read.
+    const legacyRate = resellerRateFor({ ...resellerSettings, history: Array.isArray(resellerSettings.history)
+      ? (resellerSettings.history as any[]).map((h) => (h && typeof h === 'object' ? { ...h, fixed_minor_by_currency: undefined } : h))
+      : resellerSettings.history }, 'GBP', month);
+    const buyPercent = legacyRate.percent;
+    const buyFixedMinor = legacyRate.fixedMinor;
+    const buyFromSettings = legacyRate.source !== 'default';
 
     // Column ladder so a pre-migration ledger degrades honestly instead of
     // erroring. applied_mods rides the raw jsonb (always present) because it is
@@ -1255,8 +1268,9 @@ Deno.serve(async (req) => {
         continue;
       }
       // FranPOS's cut, rounded the same half-up way commissionForAmount rounds
-      // ours, so the two sides of the split are computed identically.
-      const buy = Math.floor((amount * buyPercent) / 100 + 0.5) + buyFixedMinor;
+      // ours, so the two sides of the split are computed identically. The
+      // fixed fee is the payment currency's (3p in GBP, 5c in USD).
+      const buy = resellerMarginFor(amount, rateFor(cur)).totalMinor;
       // A tiny payment can price below the buy rate. That is a real loss on the
       // transaction, and hiding it by clamping to zero would overstate what
       // FranPOS owes across the month.
@@ -1283,7 +1297,19 @@ Deno.serve(async (req) => {
       };
     }).filter((s) => s.totals.count > 0 || s.totals.refunds_minor > 0);
 
-    const config = { buy_percent: buyPercent, buy_fixed_minor: buyFixedMinor, from_settings: buyFromSettings, commission_classified: ladderIdx === 0 };
+    // fixed_by_currency: the fixed fee that priced each editor currency this
+    // month; rate_by_currency: the full rate and its words for every currency
+    // the statement actually holds.
+    const rateByCurrency: Record<string, { percent: number; fixed_minor: number; from_month: string | null; source: string; line: string }> = {};
+    for (const s of statements) {
+      const r = rateFor(s.currency);
+      rateByCurrency[s.currency] = { percent: r.percent, fixed_minor: r.fixedMinor, from_month: r.fromMonth, source: r.source, line: resellerRateLine(r, s.currency) };
+    }
+    const config = {
+      buy_percent: buyPercent, buy_fixed_minor: buyFixedMinor, from_settings: buyFromSettings, commission_classified: ladderIdx === 0,
+      fixed_by_currency: resellerFixedTable(resellerSettings, month),
+      rate_by_currency: rateByCurrency,
+    };
 
     if (action === 'reseller_statement') return json({ success: true, month, config, statements });
 
@@ -1303,6 +1329,10 @@ Deno.serve(async (req) => {
         return json({ error: `invoice numbering check failed: ${priorErr.message}`, created }, 500);
       }
       const revision = (prior ?? 0) + 1;
+      // The rate THIS currency's invoice was priced at, stamped on the row:
+      // buy_fixed_minor is the currency's own fixed fee (3p on a GBP invoice),
+      // and breakdown.rate keeps the words and where the rate came from.
+      const curRate = rateFor(s.currency);
       const row = {
         counterparty: 'FranPOS',
         period: month,
@@ -1315,9 +1345,13 @@ Deno.serve(async (req) => {
         net_due_minor: s.totals.net_due_minor,
         unrated_count: s.totals.unrated_count,
         unrated_volume_minor: s.totals.unrated_volume_minor,
-        buy_percent: buyPercent,
-        buy_fixed_minor: buyFixedMinor,
+        buy_percent: curRate.percent,
+        buy_fixed_minor: curRate.fixedMinor,
         breakdown: {
+          rate: {
+            currency: s.currency, percent: curRate.percent, fixed_minor: curRate.fixedMinor,
+            from_month: curRate.fromMonth, source: curRate.source, line: resellerRateLine(curRate, s.currency),
+          },
           lines: s.lines,
           refunds_minor: s.totals.refunds_minor,
           unsettled_count: s.totals.unsettled_count,
@@ -1412,30 +1446,79 @@ Deno.serve(async (req) => {
 
   if (action === 'reseller_config') {
     if (body.set) {
-      const pct = Number(body.set.buy_percent);
-      const fixed = Number(body.set.buy_fixed_minor);
-      if (!Number.isFinite(pct) || pct < 0 || pct > 5) return json({ error: 'buy_percent must be between 0 and 5' }, 400);
-      if (!Number.isInteger(fixed) || fixed < 0 || fixed > 100) return json({ error: 'buy_fixed_minor must be a whole number of minor units, 0 to 100' }, 400);
-      // Effective-dated: the change governs from the CURRENT month onward and
-      // is APPENDED to the rate history, so a statement or a void-and-recreate
-      // for an old month always resolves the rate that governed that month.
-      // A renegotiation must never quietly reprice history.
+      // A blank percent is not 0%: Number('') is 0, which saved FranPOS's
+      // percent as 0.00% with no sentence.
+      const pctRaw = body.set.buy_percent;
+      const pct = Number(pctRaw);
+      if (pctRaw === undefined || pctRaw === null || String(pctRaw).trim() === '' || !Number.isFinite(pct) || pct < 0 || pct > 5) {
+        return json({ error: 'The percent of the sale must be from 0 to 5.' }, 400);
+      }
+      // PER CURRENCY (10 Sep 2026): buy_fixed_by_currency { GBP, USD, EUR },
+      // whole numbers 0 to 100, lands on the new history entry as
+      // fixed_minor_by_currency. When the map is sent, EVERY currency must be
+      // in it (review: a GBP-only map made the GBP pence the fallback fee for
+      // USD and EUR). fixed_minor stays on the entry for old readers:
+      // buy_fixed_minor when given, else the USD fee (the contract is written
+      // in US cents).
+      const byCur = parseFixedByCurrency(body.set.buy_fixed_by_currency, { requireAll: true });
+      if (byCur.error) return json({ error: byCur.error }, 400);
+      const givenFixed = body.set.buy_fixed_minor;
+      const fixed = givenFixed !== undefined && givenFixed !== null && givenFixed !== ''
+        ? Number(givenFixed)
+        : (byCur.fixed ? byCur.fixed.USD : NaN);
+      if (!Number.isInteger(fixed) || fixed < 0 || fixed > 100) return json({ error: 'The fixed fee must be a whole number, from 0 to 100.' }, 400);
+      // Effective-dated: by default the change governs from the CURRENT month
+      // onward and is APPENDED to the rate history, so a statement or a
+      // void-and-recreate for an old month always resolves the rate that
+      // governed that month. A renegotiation must never quietly reprice history.
+      // set.from_month 'YYYY-MM' (review, 10 Sep 2026: the seeded 2026-08
+      // entry has no per currency map, so the first invoice, August GBP,
+      // prices FranPOS at 5p) lets the rate start in an EARLIER month, and
+      // only while no live invoice was made from the rate that month change
+      // would replace. Whether August is 3p is the owner's call.
       const { data: st0 } = await platformAdmin.from('platform_settings').select('*').maybeSingle();
       const hist = Array.isArray((st0 as any)?.adyen_reseller_rate_history) ? [...(st0 as any).adyen_reseller_rate_history] : [];
-      const fromMonth = new Date().toISOString().slice(0, 7);
+      const nowMonth = new Date().toISOString().slice(0, 7);
+      const rawMonth = body.set.from_month;
+      const fromMonth = rawMonth === undefined || rawMonth === null || String(rawMonth).trim() === '' ? nowMonth : String(rawMonth).trim();
+      if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(fromMonth)) return json({ error: 'Write the month as year and month, for example 2026-08.' }, 400);
+      if (fromMonth > nowMonth) return json({ error: 'A rate can start this month or an earlier month, not a later one.' }, 400);
+      // The next entry after this month, if any: the change governs up to it.
+      const nextFrom = hist
+        .map((h: any) => (typeof h?.from_month === 'string' ? h.from_month : ''))
+        .filter((m: string) => m > fromMonth)
+        .sort()[0] ?? null;
+      if (fromMonth < nowMonth) {
+        let q = platformAdmin.from('reseller_invoices').select('invoice_number, period').gte('period', fromMonth).neq('status', 'void');
+        if (nextFrom) q = q.lt('period', nextFrom);
+        const { data: liveInv, error: invErr } = await q.limit(1);
+        if (invErr && !isUnknownRelationError(invErr, 'reseller_invoices')) {
+          return json({ error: 'The invoices could not be checked, so the rate was not saved.', detail: invErr.message }, 500);
+        }
+        if (Array.isArray(liveInv) && liveInv.length) {
+          return json({ error: `Invoice ${(liveInv[0] as any).invoice_number} already uses this rate. Void it before changing ${(liveInv[0] as any).period}.` }, 409);
+        }
+      }
       const idx = hist.findIndex((h: any) => h?.from_month === fromMonth);
-      const entry = { percent: pct, fixed_minor: fixed, from_month: fromMonth, set_by: caller.id ?? null, set_at: new Date().toISOString() };
+      const entry: Record<string, unknown> = { percent: pct, fixed_minor: fixed, from_month: fromMonth, set_by: caller.id ?? null, set_at: new Date().toISOString() };
+      if (byCur.fixed) entry.fixed_minor_by_currency = byCur.fixed;
       if (idx >= 0) hist[idx] = entry; else hist.push(entry);
       const patch: Record<string, unknown> = {
-        adyen_reseller_buy_percent: pct,
-        adyen_reseller_buy_fixed_minor: fixed,
         adyen_reseller_rate_history: hist,
         updated_at: new Date().toISOString(),
         updated_by_user_id: caller.id ?? null,
       };
+      // The flat columns are "the current rate": only an entry with no later
+      // entry after it may set them.
+      if (!nextFrom) {
+        patch.adyen_reseller_buy_percent = pct;
+        patch.adyen_reseller_buy_fixed_minor = fixed;
+      }
       let { error } = await platformAdmin.from('platform_settings').update(patch).eq('id', true);
       if (error && /does not exist|42703|PGRST204/i.test(String(error.message))) {
-        // History column not applied yet: keep the flat rate change working.
+        // History column not applied yet: keep the flat rate change working
+        // for this month. An earlier month lives only in the history.
+        if (fromMonth !== nowMonth) return json({ error: 'The rate history is not set up yet, so an earlier month cannot be changed.' }, 400);
         delete patch.adyen_reseller_rate_history;
         ({ error } = await platformAdmin.from('platform_settings').update(patch).eq('id', true));
       }
@@ -1464,10 +1547,20 @@ Deno.serve(async (req) => {
       }
     }
     const { data: st } = await platformAdmin.from('platform_settings').select('*').maybeSingle();
+    // The rate that governs THIS month, per editor currency, so the screen's
+    // three boxes and its rate line read what the statement will charge.
+    const nowSettings: ResellerSettings = {
+      history: (st as any)?.adyen_reseller_rate_history,
+      buyPercent: (st as any)?.adyen_reseller_buy_percent,
+      buyFixedMinor: (st as any)?.adyen_reseller_buy_fixed_minor,
+    };
+    const nowMonth = new Date().toISOString().slice(0, 7);
     return json({
       success: true,
       buy_percent: (st as any)?.adyen_reseller_buy_percent ?? 0.10,
       buy_fixed_minor: (st as any)?.adyen_reseller_buy_fixed_minor ?? 5,
+      fixed_by_currency: resellerFixedTable(nowSettings, nowMonth),
+      current_percent: resellerRateFor(nowSettings, 'GBP', nowMonth).percent,
       from_settings: (st as any)?.adyen_reseller_buy_percent != null,
       rate_history: (st as any)?.adyen_reseller_rate_history ?? [],
       remit: (st as any)?.reseller_invoice_remit ?? null,
