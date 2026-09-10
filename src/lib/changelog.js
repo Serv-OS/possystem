@@ -7,6 +7,20 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.51',
+    date: '10 Sep 2026',
+    items: [
+      'Release notes for 5.8.50 added. No change to how anything works.',
+    ],
+  },
+  {
+    v: '5.8.50',
+    date: '10 Sep 2026',
+    items: [
+      'Card readers: the Pay at table switch is back on each reader. It was left off the rebuilt page by mistake. Readers that already had Pay at table on kept it.',
+    ],
+  },
+  {
     v: '5.8.49',
     date: '10 Sep 2026',
     items: [
