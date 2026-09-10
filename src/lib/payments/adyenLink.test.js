@@ -748,11 +748,27 @@ const READY = {
   origins: { registered: true },
   applePay: { domains: ['provo.serv-os.app'], verification: 'valid' },
   row: LIVE_ROW,
-  // step 5: the profile on the store says 0.8% plus 5p and sends the rest to
-  // the venue, and the sweep exists
-  commission: { percent: 0.8, fixedPence: 5, currency: 'GBP', profilePercent: 0.8, profileFixedPence: 5, profileRead: true, profileRules: 1, profileRemainder: 'addToOneBalanceAccount' },
+  // step 5 (10 Sep 2026): the venue's rate card, four tiers, and the profile
+  // on the store holding the same four rates and sending the rest to the
+  // venue; the sweep exists
+  rates: {
+    currency: 'GBP',
+    tiers: {
+      card_present: { percent: 0.8, fixedPence: 5, source: 'venue' },
+      card_not_present: { percent: 1.2, fixedPence: 5, source: 'venue' },
+      amex: { percent: 1.75, fixedPence: 10, source: 'venue' },
+      keyed: { percent: 1.5, fixedPence: 8, source: 'platform default' },
+    },
+    priced: true, unpriced: [],
+    onAdyen: {
+      profileId: PROVO.splitConfiguration.splitConfigurationId, read: true,
+      tiers: { card_present: { percent: 0.8, fixedPence: 5 }, card_not_present: { percent: 1.2, fixedPence: 5 }, amex: { percent: 1.75, fixedPence: 10 }, keyed: { percent: 1.5, fixedPence: 8 } },
+      matches: true, missing: false, remainder: 'addToOneBalanceAccount', rules: 6,
+    },
+  },
   payouts: { read: true, sweep: SWEEP },
 };
+const RATES_LINE = 'In person 0.8% + 5p, online 1.2% + 5p, Amex 1.75% + 10p, keyed 1.5% + 8p';
 const SIX = ['find_venue', 'business_account', 'payments_location', 'go_live', 'payouts', 'readers'];
 
 const ids = (steps) => steps.map((s) => s.id);
@@ -815,7 +831,9 @@ test('buildGoliveSteps: a venue that is fully live reads done all the way down',
   assert.match(byId(steps, 'find_venue').detail, /business account and a store/);
   assert.match(byId(steps, 'payments_location').detail, /SV-1007/);
   assert.match(byId(steps, 'go_live').detail, /Provo takes real cards/);
-  assert.equal(byId(steps, 'payouts').detail, 'Commission is set. Paid out daily to the venue bank.');
+  assert.equal(byId(steps, 'payouts').detail, `${RATES_LINE}. Paid out daily to the venue bank.`);
+  assert.equal(byId(steps, 'payouts').parts[0].detail, 'Adyen holds these rates.');
+  assert.equal(byId(steps, 'payouts').parts[0].hint, RATES_LINE);
   assert.equal(byId(steps, 'payouts').action, null);
   assert.deepEqual(byId(steps, 'payouts').parts.map((p) => p.state), ['done', 'done']);
   assert.equal(byId(steps, 'readers').detail, '1 reader ready.');
@@ -1162,8 +1180,10 @@ import {
 const BP_REFUSED = (what) => `${what}: refused (401): the credential behind ADYEN_LIVE_UK_BP_KEY (the set's API key when that is unset) needs the Balance Platform BCL role`;
 
 test('buildGoliveSteps: a store Adyen holds that the venue row does not name is attention with link_store', () => {
-  // the live shape: found at Adyen, store_id NULL on the row
-  const empty = buildGoliveSteps({ ...READY, row: { store_id: null } }, { target: 'live' });
+  // the live shape: found at Adyen, store_id NULL on the row, the holder
+  // already saved (both unsaved is link_all, its own test, 10 Sep 2026)
+  const HOLDER_ON_ROW = { account_holder_id: HOLDER.id, balance_account_id: BALANCE.id };
+  const empty = buildGoliveSteps({ ...READY, row: { ...HOLDER_ON_ROW, store_id: null } }, { target: 'live' });
   assert.equal(byId(empty, 'find_venue').state, 'done');
   assert.equal(byId(empty, 'payments_location').state, 'attention');
   assert.equal(byId(empty, 'payments_location').detail, STORE_NOT_SAVED_DETAIL);
@@ -1174,7 +1194,7 @@ test('buildGoliveSteps: a store Adyen holds that the venue row does not name is 
   assert.match(byId(empty, 'go_live').detail, /not saved on the venue/);
   assert.equal(byId(empty, 'go_live').action, null);
   // another store on the row is the same thing to the owner: save the one Adyen holds
-  const other = buildGoliveSteps({ ...READY, row: { store_id: 'ST_SOMETHING_ELSE' } }, { target: 'live' });
+  const other = buildGoliveSteps({ ...READY, row: { ...HOLDER_ON_ROW, store_id: 'ST_SOMETHING_ELSE' } }, { target: 'live' });
   assert.equal(byId(other, 'payments_location').action, 'link_store');
   // the row names it: done, as before
   const saved = buildGoliveSteps({ ...READY, row: { store_id: PROVO.id } }, { target: 'live' });
@@ -1188,8 +1208,10 @@ test('buildGoliveSteps: a store Adyen holds that the venue row does not name is 
   assert.equal(byId(flipping, 'payments_location').state, 'done');
   assert.equal(byId(flipping, 'go_live').action, 'go_live');
   // on test, looking at test, with no row at all: the same offer, and go live waits
-  const onTest = buildGoliveSteps({ ...READY, venue: { ...READY.venue, environment: 'test' }, row: {} }, { target: 'test' });
+  const onTest = buildGoliveSteps({ ...READY, venue: { ...READY.venue, environment: 'test' }, row: { ...HOLDER_ON_ROW } }, { target: 'test' });
   assert.equal(byId(onTest, 'payments_location').action, 'link_store');
+  // ...and with the holder unsaved too, ONE click saves both (link_all)
+  assert.equal(byId(buildGoliveSteps({ ...READY, venue: { ...READY.venue, environment: 'test' }, row: {} }, { target: 'test' }), 'payments_location').action, 'link_all');
   assert.equal(byId(onTest, 'go_live').detail, 'Finish the steps above first.');
   // an inactive store is still the inactive store line: cards are refused either way
   const inactive = buildGoliveSteps({ ...READY, store: storeSummary({ ...PROVO, status: 'inactive' }), row: { store_id: null } }, { target: 'live' });
@@ -1475,27 +1497,63 @@ test('buildGoliveSteps: a business account Adyen holds that the venue row does n
   every120(live); every120(saved); every120(blockedUnsaved);
 });
 
-test('buildGoliveSteps: step 5a, the commission on the store, present or absent', () => {
-  // ABSENT (the live case): the store carries no split configuration, so every sale settles to ServOS
-  const absent = buildGoliveSteps({ ...READY, store: noSplit, row: SAVED_ROW, commission: { percent: 0.8, fixedPence: 5, currency: 'GBP' } }, { target: 'live' });
+test('buildGoliveSteps: step 5a, the card rates on the store (10 Sep 2026)', () => {
+  const tiers = READY.rates.tiers;
+  // ABSENT (the live case): the store carries no split configuration, so every sale settles to the platform
+  const absent = buildGoliveSteps({ ...READY, store: noSplit, row: SAVED_ROW }, { target: 'live' });
   const split = byId(absent, 'payouts').parts[0];
-  assert.equal(split.state, 'todo');
-  assert.equal(split.detail, 'Commission is not set, so every card sale settles to ServOS and nothing to the venue.');
+  assert.equal(split.state, 'attention');
+  assert.equal(split.detail, 'Adyen does not hold these rates yet, so every card sale settles to the platform and nothing to the venue.');
   assert.equal(split.action, 'set_split');
-  assert.equal(split.hint, 'Set 0.8% plus 5p to ServOS, the rest to the venue.');
+  assert.equal(split.hint, RATES_LINE);
   // the step opens on it: it is the first part with work the owner can do
   assert.equal(byId(absent, 'payouts').action, 'set_split');
   assert.equal(byId(absent, 'payouts').detail, split.detail);
-  // no numbers known yet: the hint says to type them
-  assert.equal(byId(buildGoliveSteps({ ...READY, store: noSplit, row: SAVED_ROW, commission: { currency: 'GBP' } }, { target: 'live' }), 'payouts').parts[0].hint, 'Type the percent and the pence, then set it.');
-  // PRESENT, and the profile was read: the real numbers, in plain words
+  // PRESENT, read, and the same four rates: done, the four rates as the quiet line
   const present = buildGoliveSteps({ ...READY, row: { ...SAVED_ROW, split_profile_id: PROVO.splitConfiguration.splitConfigurationId } }, { target: 'live' });
   assert.equal(byId(present, 'payouts').parts[0].state, 'done');
-  assert.equal(byId(present, 'payouts').parts[0].detail, 'Commission is set: 0.8% plus 5p to ServOS, the rest to the venue.');
-  // present, profile not readable: still done, no numbers claimed
-  const unread = buildGoliveSteps({ ...READY, row: SAVED_ROW, commission: { percent: 0.8, fixedPence: 5, currency: 'GBP', profileRead: false } }, { target: 'live' });
-  assert.equal(byId(unread, 'payouts').parts[0].detail, 'Commission is set on the payments location.');
-  // the profile points the rest at ANOTHER balance account than the venue's: attention, set it again
+  assert.equal(byId(present, 'payouts').parts[0].detail, 'Adyen holds these rates.');
+  assert.equal(byId(present, 'payouts').parts[0].hint, RATES_LINE);
+  // present, profile not readable: still done, trusted on the account alone
+  const unread = buildGoliveSteps({ ...READY, row: SAVED_ROW, rates: { currency: 'GBP', tiers, onAdyen: { read: false } } }, { target: 'live' });
+  assert.equal(byId(unread, 'payouts').parts[0].state, 'done');
+  assert.equal(byId(unread, 'payouts').parts[0].detail, 'Adyen holds these rates.');
+  // present, read, DIFFERENT rates on Adyen: attention, apply again
+  const differs = buildGoliveSteps({ ...READY, rates: { ...READY.rates, onAdyen: { ...READY.rates.onAdyen, matches: false } } }, { target: 'live' });
+  assert.equal(byId(differs, 'payouts').parts[0].state, 'attention');
+  assert.equal(byId(differs, 'payouts').parts[0].detail, 'Adyen holds different rates. Apply again.');
+  assert.equal(byId(differs, 'payouts').parts[0].action, 'set_split');
+  assert.equal(byId(differs, 'payouts').parts[0].hint, RATES_LINE);
+  // present, read, a tier with no rule at all (an old one rule profile): the same
+  const fewer = buildGoliveSteps({ ...READY, rates: { ...READY.rates, onAdyen: { ...READY.rates.onAdyen, matches: false, missing: true, rules: 1 } } }, { target: 'live' });
+  assert.equal(byId(fewer, 'payouts').parts[0].detail, 'Adyen holds different rates. Apply again.');
+  // A TIER WITH NO PRICE: attention naming the tiers, and the editor is the button
+  const unpriced = buildGoliveSteps({ ...READY, store: noSplit, row: SAVED_ROW, rates: { currency: 'GBP', tiers: { ...tiers, amex: { percent: null, fixedPence: null }, keyed: {} } } }, { target: 'live' });
+  assert.equal(byId(unpriced, 'payouts').parts[0].state, 'attention');
+  assert.equal(byId(unpriced, 'payouts').parts[0].detail, 'No rate is set for Amex and keyed yet.');
+  assert.equal(byId(unpriced, 'payouts').parts[0].action, 'edit_rates');
+  assert.equal(byId(unpriced, 'payouts').parts[0].hint, 'Set every payment type, then apply the rates on Adyen.');
+  assert.equal(byId(unpriced, 'payouts').action, 'edit_rates');
+  // ...even when Adyen already holds a profile: the card must be whole first
+  assert.equal(byId(buildGoliveSteps({ ...READY, rates: { currency: 'GBP', tiers: { card_present: tiers.card_present } } }, { target: 'live' }), 'payouts').parts[0].detail, 'No rate is set for online, Amex and keyed yet.');
+  // nothing priced anywhere: all four named
+  assert.equal(byId(buildGoliveSteps({ ...READY, store: noSplit, row: SAVED_ROW, rates: { currency: 'GBP', tiers: {} } }, { target: 'live' }), 'payouts').parts[0].detail, 'No rate is set for in person, online, Amex and keyed yet.');
+  // a tier priced 0% and 0p IS priced
+  const free = buildGoliveSteps({ ...READY, store: noSplit, row: SAVED_ROW, rates: { currency: 'GBP', tiers: { ...tiers, amex: { percent: 0, fixedPence: 0 } } } }, { target: 'live' });
+  assert.equal(byId(free, 'payouts').parts[0].action, 'set_split');
+  assert.equal(byId(free, 'payouts').parts[0].hint, 'In person 0.8% + 5p, online 1.2% + 5p, Amex 0%, keyed 1.5% + 8p');
+  // THE RESOLVED CARD DECIDES, never the venue row alone: a venue on the
+  // platform default with every tier priced is priced (the "flat" bug)
+  const onDefault = buildGoliveSteps({ ...READY, store: noSplit, row: SAVED_ROW, rates: { currency: 'GBP', tiers: Object.fromEntries(Object.entries(tiers).map(([k, v]) => [k, { ...v, source: 'platform default' }])) } }, { target: 'live' });
+  assert.equal(byId(onDefault, 'payouts').parts[0].action, 'set_split');
+  // US venues read cents
+  assert.equal(byId(buildGoliveSteps({ ...READY, store: noSplit, row: SAVED_ROW, rates: { currency: 'USD', tiers } }, { target: 'live' }), 'payouts').parts[0].hint, 'In person 0.8% + 5c, online 1.2% + 5c, Amex 1.75% + 10c, keyed 1.5% + 8c');
+  // the old `commission` name still reads when it carries the same shape, and is ignored otherwise
+  const alias = buildGoliveSteps({ ...READY, rates: undefined, commission: READY.rates }, { target: 'live' });
+  assert.equal(byId(alias, 'payouts').parts[0].state, 'done');
+  const oldShape = buildGoliveSteps({ ...READY, rates: undefined, commission: { percent: 0.8, fixedPence: 5, currency: 'GBP' } }, { target: 'live' });
+  assert.equal(byId(oldShape, 'payouts').parts[0].action, 'edit_rates');
+  // the profile points the rest at ANOTHER balance account than the venue's: attention, apply again
   const elsewhere = buildGoliveSteps({ ...READY, store: storeSummary({ ...PROVO, splitConfiguration: { ...PROVO.splitConfiguration, balanceAccountId: 'BA_SOMEONE_ELSE' } }), row: SAVED_ROW }, { target: 'live' });
   assert.equal(byId(elsewhere, 'payouts').parts[0].state, 'attention');
   assert.equal(byId(elsewhere, 'payouts').parts[0].action, 'set_split');
@@ -1511,24 +1569,56 @@ test('buildGoliveSteps: step 5a, the commission on the store, present or absent'
   assert.equal(byId(noMoney, 'payouts').parts[0].detail, 'Save the business account on the venue first.');
   assert.equal(byId(buildGoliveSteps({ venue: { code: 'SV-1007', environment: 'test' }, keys: { configured: true, missing: [] }, row: {} }), 'payouts').parts[0].detail, 'Find the venue first.');
   // DONE NEEDS THE REST TO REACH THE VENUE (9 Sep 2026): a profile whose
-  // catch all rule keeps the remainder for ServOS is not "the rest to the venue"
-  const keptByUs = buildGoliveSteps({ ...READY, commission: { ...READY.commission, profileRemainder: 'addToLiableAccount' } }, { target: 'live' });
+  // catch all rule keeps the remainder for the platform is not "the rest to the venue"
+  const keptByUs = buildGoliveSteps({ ...READY, rates: { ...READY.rates, onAdyen: { ...READY.rates.onAdyen, remainder: 'addToLiableAccount' } } }, { target: 'live' });
   assert.equal(byId(keptByUs, 'payouts').parts[0].state, 'attention');
-  assert.equal(byId(keptByUs, 'payouts').parts[0].detail, 'The commission rule does not send the rest of each sale to the venue.');
+  assert.equal(byId(keptByUs, 'payouts').parts[0].detail, 'The rates on Adyen do not send the rest of each sale to the venue.');
   assert.equal(byId(keptByUs, 'payouts').parts[0].action, 'set_split');
   // ...and a profile that was read with no remainder word at all is the same
-  assert.equal(byId(buildGoliveSteps({ ...READY, commission: { ...READY.commission, profileRemainder: null } }, { target: 'live' }), 'payouts').parts[0].state, 'attention');
+  assert.equal(byId(buildGoliveSteps({ ...READY, rates: { ...READY.rates, onAdyen: { ...READY.rates.onAdyen, remainder: null } } }, { target: 'live' }), 'payouts').parts[0].state, 'attention');
   // a store with a profile but NO balance account named: the rest goes nowhere the venue can see
   const noStoreBa = buildGoliveSteps({ ...READY, store: storeSummary({ ...PROVO, splitConfiguration: { splitConfigurationId: PROVO.splitConfiguration.splitConfigurationId } }) }, { target: 'live' });
   assert.equal(byId(noStoreBa, 'payouts').parts[0].state, 'attention');
-  assert.equal(byId(noStoreBa, 'payouts').parts[0].detail, 'The commission rule names no account for the rest of each sale.');
+  assert.equal(byId(noStoreBa, 'payouts').parts[0].detail, 'The rates on Adyen name no account for the rest of each sale.');
   assert.equal(byId(noStoreBa, 'payouts').parts[0].action, 'set_split');
-  // "from 0.8% plus 5p" when the venue pays more than one rate (tiers) or the profile holds more than one rule
-  const tieredRead = buildGoliveSteps({ ...READY, commission: { ...READY.commission, tiers: 4, profileRules: 6 } }, { target: 'live' });
-  assert.equal(byId(tieredRead, 'payouts').parts[0].detail, 'Commission is set: from 0.8% plus 5p to ServOS, the rest to the venue.');
-  const tieredTodo = buildGoliveSteps({ ...READY, store: noSplit, commission: { percent: 0.8, fixedPence: 5, currency: 'GBP', tiers: 3 } }, { target: 'live' });
-  assert.equal(byId(tieredTodo, 'payouts').parts[0].hint, 'Set from 0.8% plus 5p to ServOS, the rest to the venue.');
-  every120(absent); every120(present); every120(elsewhere); every120(keptByUs); every120(noStoreBa); every120(tieredRead); every120(noMoney);
+  // NEVER the word commission, never "to ServOS", never a one tier "from" summary
+  for (const steps of [absent, present, unread, differs, unpriced, free, elsewhere, keptByUs, noStoreBa, noMoney]) {
+    for (const s of steps) for (const x of [s, ...(s.parts || [])]) for (const t of [x.detail, x.hint]) {
+      if (!t) continue;
+      assert.doesNotMatch(t, /commission/i, t);
+      assert.doesNotMatch(t, /to ServOS/, t);
+      assert.doesNotMatch(t, /\bfrom \d/, t);
+    }
+    every120(steps);
+  }
+});
+
+test('buildGoliveSteps: both found and neither saved is ONE click, link_all (10 Sep 2026)', () => {
+  // the zero paste shape: the read found the store and the business account
+  // by reference, the venue row holds neither
+  const fresh = buildGoliveSteps({ ...READY, row: {} }, { target: 'live' });
+  assert.equal(byId(fresh, 'business_account').state, 'attention');
+  assert.equal(byId(fresh, 'business_account').action, 'link_all');
+  assert.equal(byId(fresh, 'business_account').detail, DETAILS_NOT_SAVED_DETAIL);
+  assert.equal(byId(fresh, 'business_account').detail, 'Adyen holds the venue’s details, they are not saved on the venue yet.');
+  assert.equal(byId(fresh, 'payments_location').action, 'link_all');
+  assert.equal(byId(fresh, 'payments_location').detail, DETAILS_NOT_SAVED_DETAIL);
+  // a row naming OTHER ids is the same to the owner
+  assert.equal(byId(buildGoliveSteps({ ...READY, row: { store_id: 'ST_OTHER', account_holder_id: 'AH_OTHER' } }, { target: 'live' }), 'business_account').action, 'link_all');
+  // the partial cases keep their own click: store saved, holder not
+  assert.equal(byId(buildGoliveSteps({ ...READY, row: { store_id: PROVO.id } }, { target: 'live' }), 'business_account').action, 'link_holder');
+  assert.equal(byId(buildGoliveSteps({ ...READY, row: { store_id: PROVO.id } }, { target: 'live' }), 'payments_location').state, 'done');
+  // holder saved, store not
+  const holderOnly = buildGoliveSteps({ ...READY, row: { account_holder_id: HOLDER.id, balance_account_id: BALANCE.id } }, { target: 'live' });
+  assert.equal(byId(holderOnly, 'business_account').state, 'done');
+  assert.equal(byId(holderOnly, 'payments_location').action, 'link_store');
+  // one side missing at Adyen: never link_all
+  assert.equal(byId(buildGoliveSteps({ ...READY, store: null, row: {} }, { target: 'live' }), 'business_account').action, 'link_holder');
+  assert.equal(byId(buildGoliveSteps({ ...READY, holder: null, balanceAccount: null, legalEntity: null, capabilities: [], row: {} }, { target: 'live' }), 'payments_location').action, 'link_store');
+  // an inactive store or a mismatch: never link_all
+  assert.equal(byId(buildGoliveSteps({ ...READY, store: storeSummary({ ...PROVO, status: 'inactive' }), row: {} }, { target: 'live' }), 'business_account').action, 'link_holder');
+  assert.equal(byId(buildGoliveSteps({ ...READY, row: {}, merchantMismatch: merchantMismatch({ configured: 'A', found: 'B' }) }, { target: 'live' }), 'business_account').action, 'link_holder');
+  every120(fresh); every120(holderOnly);
 });
 
 test('buildGoliveSteps: step 5 offers NOTHING while the flow looks at the other environment', () => {
@@ -1626,7 +1716,7 @@ test('buildGoliveSteps: step 5b, the bank account, the approval and the daily pa
   assert.equal(byId(ok, 'payouts').parts[1].state, 'done');
   assert.equal(byId(ok, 'payouts').parts[1].detail, 'Paid out daily to the venue bank.');
   assert.equal(byId(ok, 'payouts').state, 'done');
-  assert.equal(byId(ok, 'payouts').detail, 'Commission is set. Paid out daily to the venue bank.');
+  assert.equal(byId(ok, 'payouts').detail, `${RATES_LINE}. Paid out daily to the venue bank.`);
   const weekly = buildGoliveSteps({ ...base, payouts: { read: true, sweep: { ...SWEEP, schedule: 'weekly' } } }, { target: 'live' });
   assert.equal(byId(weekly, 'payouts').parts[1].detail, 'Paid out weekly to the venue bank.');
   // REJECTED (Adyen has decided): Adyen's door, a wait for the flow
@@ -1685,8 +1775,15 @@ test('tieredCommissionRules and buildTieredProfile: one rule per tier, the shape
     assert.equal(r.splitLogic.remainder, REMAINDER_TO_VENUE);
     assert.equal(r.splitLogic.paymentFee, 'deductFromLiableAccount');
   }
-  // a tier with no rate at all is named, and no rules come back: a 0% rule is never written
-  assert.deepEqual(tieredCommissionRules('GBP', { ...tiers, amex: { percent: 0, fixedPence: 0 }, keyed: {} }), { rules: [], lacking: ['amex', 'keyed'] });
+  // a tier with no price at all is named and no rules come back; a tier priced
+  // 0% and 0p IS a price (10 Sep 2026): its rule carries no commission block
+  assert.deepEqual(tieredCommissionRules('GBP', { ...tiers, amex: { percent: 0, fixedPence: 0 }, keyed: {} }), { rules: [], lacking: ['keyed'] });
+  assert.deepEqual(tieredCommissionRules('GBP', { ...tiers, keyed: { percent: '', fixed_pence: null } }).lacking, ['keyed']);
+  const free = tieredCommissionRules('GBP', { ...tiers, amex: { percent: 0, fixedPence: 0 } });
+  assert.deepEqual(free.lacking, []);
+  assert.equal(free.rules.length, 6);
+  for (const r of free.rules.filter((x) => x.paymentMethod === 'amex')) assert.equal('commission' in r.splitLogic, false);
+  assert.deepEqual(free.rules[5].splitLogic.commission, { variablePercentage: 80, fixedAmount: 5 });
   assert.deepEqual(tieredCommissionRules('GBP', null).lacking, [...COMMISSION_TIERS]);
   const profile = buildTieredProfile({ description: 'ServOS Provo rates', currency: 'GBP', tiers });
   assert.equal(profile.rules.length, 6);
@@ -1779,7 +1876,9 @@ test('commissionFromRates and buildCommissionProfile: basis points and minor uni
   assert.equal(buildCommissionProfile({ currency: 'USD', percent: 1 }).description, 'ServOS rates');
   // the shared logic and a specific rule read the same way adyen-onboard writes them
   assert.equal(splitLogicFor({ fixedAmount: 5 }).remainder, 'addToOneBalanceAccount');
-  assert.deepEqual(splitLogicFor(null).commission, {});
+  // no commission means NO commission key (a 0% and 0p tier), never an empty block
+  assert.equal('commission' in splitLogicFor(null), false);
+  assert.equal(splitLogicFor(null).remainder, 'addToOneBalanceAccount');
   assert.equal(splitRule({ currency: 'usd', paymentMethod: 'amex', shopperInteraction: 'Moto', commission: { fixedAmount: 1 } }).shopperInteraction, 'Moto');
   assert.equal(splitRule().currency, 'GBP');
 });
@@ -1886,6 +1985,146 @@ test('buildLinkPatch: payouts_ok is the capability, payout_sweep_id is PAID OUT 
   assert.equal(LINK_ID_FIELDS.includes('payout_sweep_id'), false);
 });
 
+
+// ── CARD RATES (10 Sep 2026, OWNER RULE) ─────────────────────────────────────
+// "we set the rate that customers get charged for the different card types,
+// out of the money the adyen charge whats left is ours". The screen and the
+// server read the same four tier card and the same comparison from here.
+import {
+  RATE_TIER_LABELS, rateTierLabel, tierRateLine, rateCardLine, tiersFromResolved, unpricedTiers, tierListWords,
+  profileTiers, tiersMatch, ratesOnAdyen, DETAILS_NOT_SAVED_DETAIL,
+} from './adyenLink.js';
+
+// resolveAdyenRateCard's answer, the venue's own card on three tiers and the
+// platform default on the fourth, with the legacy flat markup nowhere.
+const RESOLVED = {
+  card_present: { percent: 1.4, fixed_pence: 5, source: 'venue' },
+  card_not_present: { percent: 1.9, fixed_pence: 10, source: 'venue' },
+  amex: { percent: 2.5, fixed_pence: 10, source: 'venue' },
+  keyed: { percent: 2.9, fixed_pence: 15, source: 'platform' },
+};
+const FOUR = { card_present: { percent: 1.4, fixedPence: 5 }, card_not_present: { percent: 1.9, fixedPence: 10 }, amex: { percent: 2.5, fixedPence: 10 }, keyed: { percent: 2.9, fixedPence: 15 } };
+
+test('rateTierLabel and tierListWords: plain words, Amex keeps its capital', () => {
+  assert.deepEqual(RATE_TIER_LABELS, { card_present: 'In person', card_not_present: 'Online', amex: 'Amex', keyed: 'Keyed' });
+  assert.equal(rateTierLabel('card_present'), 'In person');
+  assert.equal(rateTierLabel('card_present', { lower: true }), 'in person');
+  assert.equal(rateTierLabel('amex', { lower: true }), 'Amex');
+  assert.equal(rateTierLabel('other'), 'other');
+  assert.equal(tierListWords(['card_not_present', 'amex', 'keyed']), 'online, Amex and keyed');
+  assert.equal(tierListWords(['amex', 'keyed']), 'Amex and keyed');
+  assert.equal(tierListWords(['keyed']), 'keyed');
+  assert.equal(tierListWords([]), '');
+  assert.equal(tierListWords(null), '');
+});
+
+test('tierRateLine: a plus between percent and pence, 0% for a free tier, null for no price', () => {
+  assert.equal(tierRateLine(1.4, 5), '1.4% + 5p');
+  assert.equal(tierRateLine('1.4', '5', 'GBP'), '1.4% + 5p');
+  assert.equal(tierRateLine(1.75, 10, 'USD'), '1.75% + 10c');
+  assert.equal(tierRateLine(1, 0), '1%');
+  assert.equal(tierRateLine(1, null), '1%');
+  assert.equal(tierRateLine(0, 5), '5p');
+  assert.equal(tierRateLine(null, 5), '5p');
+  assert.equal(tierRateLine(0, 0), '0%');
+  assert.equal(tierRateLine(0, null), '0%');
+  assert.equal(tierRateLine(null, null), null);
+  assert.equal(tierRateLine('', ''), null);
+  assert.equal(tierRateLine(undefined, undefined), null);
+  assert.equal(tierRateLine('x', 'y'), null);
+  assert.equal(tierRateLine(0.80000001, 4.6), '0.8% + 5p');
+});
+
+test('rateCardLine: the four rates in one line, the owner’s example word for word', () => {
+  assert.equal(rateCardLine(FOUR), 'In person 1.4% + 5p, online 1.9% + 10p, Amex 2.5% + 10p, keyed 2.9% + 15p');
+  assert.equal(rateCardLine(FOUR, 'USD'), 'In person 1.4% + 5c, online 1.9% + 10c, Amex 2.5% + 10c, keyed 2.9% + 15c');
+  // the rate card's own spelling is read too
+  assert.equal(rateCardLine(RESOLVED), 'In person 1.4% + 5p, online 1.9% + 10p, Amex 2.5% + 10p, keyed 2.9% + 15p');
+  assert.equal(rateCardLine({ ...FOUR, keyed: {} }), 'In person 1.4% + 5p, online 1.9% + 10p, Amex 2.5% + 10p, keyed not set');
+  assert.equal(rateCardLine({}), 'In person not set, online not set, Amex not set, keyed not set');
+  assert.equal(rateCardLine(null), 'In person not set, online not set, Amex not set, keyed not set');
+  assert.doesNotMatch(rateCardLine(FOUR), /[–—]/);
+  assert.ok(rateCardLine(FOUR).length < 120);
+});
+
+test('tiersFromResolved: the four tiers with one grey source word each', () => {
+  assert.deepEqual(tiersFromResolved(RESOLVED), {
+    card_present: { percent: 1.4, fixedPence: 5, source: 'venue' },
+    card_not_present: { percent: 1.9, fixedPence: 10, source: 'venue' },
+    amex: { percent: 2.5, fixedPence: 10, source: 'venue' },
+    keyed: { percent: 2.9, fixedPence: 15, source: 'platform default' },
+  });
+  // the legacy flat columns count as the side they sit on
+  assert.equal(tiersFromResolved({ card_present: { percent: 0.8, fixed_pence: 5, source: 'legacy_venue' } }).card_present.source, 'venue');
+  assert.equal(tiersFromResolved({ card_present: { percent: 0.8, fixed_pence: 5, source: 'legacy_platform' } }).card_present.source, 'platform default');
+  // no price is null, null, null; 0 is a price; pence are whole
+  assert.deepEqual(tiersFromResolved({}).amex, { percent: null, fixedPence: null, source: null });
+  assert.deepEqual(tiersFromResolved({ amex: { percent: 0, fixed_pence: 0, source: 'venue' } }).amex, { percent: 0, fixedPence: 0, source: 'venue' });
+  assert.equal(tiersFromResolved({ amex: { percent: 1, fixed_pence: 4.6, source: 'venue' } }).amex.fixedPence, 5);
+  assert.deepEqual(tiersFromResolved(null).keyed, { percent: null, fixedPence: null, source: null });
+});
+
+test('unpricedTiers: empty is unpriced, 0 is a price, either field is enough', () => {
+  assert.deepEqual(unpricedTiers(FOUR), []);
+  assert.deepEqual(unpricedTiers({ ...FOUR, amex: { percent: 0, fixedPence: 0 } }), []);
+  assert.deepEqual(unpricedTiers({ ...FOUR, amex: { percent: null, fixedPence: 10 } }), []);
+  assert.deepEqual(unpricedTiers({ ...FOUR, amex: { percent: null, fixedPence: null }, keyed: {} }), ['amex', 'keyed']);
+  assert.deepEqual(unpricedTiers({ ...FOUR, keyed: { percent: '', fixed_pence: '' } }), ['keyed']);
+  assert.deepEqual(unpricedTiers({}), ['card_present', 'card_not_present', 'amex', 'keyed']);
+  assert.deepEqual(unpricedTiers(null), ['card_present', 'card_not_present', 'amex', 'keyed']);
+});
+
+test('profileTiers: the six rules back into four tiers, the Amex ANY rule wins, no commission block is 0%', () => {
+  const written = tieredCommissionRules('GBP', FOUR).rules;
+  assert.deepEqual(profileTiers({ rules: written }), FOUR);
+  // the old one rule profile: in person only, the rest have no rule
+  assert.deepEqual(profileTiers(PROFILE), { card_present: { percent: 0.8, fixedPence: 5 }, card_not_present: { percent: 1.2, fixedPence: 5 }, amex: { percent: 1.75, fixedPence: 10 }, keyed: null });
+  assert.deepEqual(profileTiers({ rules: [{ paymentMethod: 'ANY', shopperInteraction: 'ANY', splitLogic: { commission: { variablePercentage: 80, fixedAmount: 5 } } }] }), { card_present: { percent: 0.8, fixedPence: 5 }, card_not_present: null, amex: null, keyed: null });
+  // a rule with no commission block is a tier priced at nothing
+  assert.deepEqual(profileTiers({ rules: [{ paymentMethod: 'amex', shopperInteraction: 'ANY', splitLogic: { remainder: 'addToOneBalanceAccount' } }] }).amex, { percent: 0, fixedPence: 0 });
+  // Amex: the ANY interaction rule is THE rate even when a specific one comes first
+  const amexFirst = { rules: [
+    { paymentMethod: 'amex', shopperInteraction: 'Ecommerce', splitLogic: { commission: { variablePercentage: 300 } } },
+    { paymentMethod: 'amex', shopperInteraction: 'ANY', splitLogic: { commission: { variablePercentage: 250, fixedAmount: 10 } } },
+  ] };
+  assert.deepEqual(profileTiers(amexFirst).amex, { percent: 2.5, fixedPence: 10 });
+  // a rule for one scheme that is not Amex belongs to no tier
+  assert.deepEqual(profileTiers({ rules: [{ paymentMethod: 'visa', shopperInteraction: 'ANY', splitLogic: { commission: { variablePercentage: 100 } } }] }), { card_present: null, card_not_present: null, amex: null, keyed: null });
+  assert.equal(profileTiers({ rules: [] }), null);
+  assert.equal(profileTiers(null), null);
+});
+
+test('tiersMatch and ratesOnAdyen: the same four rates on both sides, in basis points', () => {
+  assert.equal(tiersMatch(FOUR, FOUR), true);
+  assert.equal(tiersMatch(FOUR, RESOLVED), true);
+  assert.equal(tiersMatch(FOUR, { ...FOUR, keyed: { percent: 2.9, fixedPence: 16 } }), false);
+  assert.equal(tiersMatch(FOUR, { ...FOUR, keyed: { percent: 2.90000001, fixedPence: 15 } }), true);
+  // an empty pence on the venue card reads back as 0 from Adyen
+  assert.equal(tiersMatch({ ...FOUR, keyed: { percent: 2.9, fixedPence: null } }, { ...FOUR, keyed: { percent: 2.9, fixedPence: 0 } }), true);
+  // a tier with no price never matches, a tier with no rule never matches
+  assert.equal(tiersMatch({ ...FOUR, keyed: {} }, FOUR), false);
+  assert.equal(tiersMatch(FOUR, { ...FOUR, keyed: null }), false);
+  assert.equal(tiersMatch({}, {}), false);
+  // ratesOnAdyen: the profile the flow wrote, read back
+  const same = ratesOnAdyen({ rules: tieredCommissionRules('GBP', FOUR).rules }, FOUR);
+  assert.deepEqual(same, { tiers: FOUR, matches: true, missing: false, remainder: 'addToOneBalanceAccount', rules: 6 });
+  // the old one rule profile: missing tiers, so never a match
+  const old = ratesOnAdyen(PROFILE, FOUR);
+  assert.equal(old.missing, true);
+  assert.equal(old.matches, false);
+  assert.equal(old.rules, 3);
+  assert.equal(old.remainder, 'addToOneBalanceAccount');
+  // different numbers: not missing, not a match
+  const changed = ratesOnAdyen({ rules: tieredCommissionRules('GBP', { ...FOUR, amex: { percent: 2.75, fixedPence: 10 } }).rules }, FOUR);
+  assert.deepEqual([changed.missing, changed.matches], [false, false]);
+  // nothing read
+  assert.deepEqual(ratesOnAdyen(null, FOUR), { tiers: null, matches: false, missing: true, remainder: null, rules: 0 });
+  assert.deepEqual(ratesOnAdyen({ rules: [] }, FOUR), { tiers: null, matches: false, missing: true, remainder: null, rules: 0 });
+  // the link_all line, plain and short
+  assert.ok(DETAILS_NOT_SAVED_DETAIL.length < 120);
+  assert.doesNotMatch(DETAILS_NOT_SAVED_DETAIL, /[–—]/);
+});
+
 test('plainAdyenProblem: the step 5 reads have plain subjects', () => {
   assert.equal(plainAdyenProblem('sweeps of balance account BA1: Adyen answered 500').text, 'Adyen would not answer about the payout schedule.');
   assert.equal(plainAdyenProblem('split configuration SC1: Adyen answered 404').text, 'Adyen would not answer about the commission rules.');
@@ -1918,7 +2157,10 @@ test('TS mirror: buildGoliveSteps, goliveProblems and plainAdyenProblem answer e
   // pending, allowed with no sweep, and everything done
   shapes.push(
     [{ ...READY, row: { store_id: PROVO.id, account_holder_id: null } }, { target: 'live' }],
-    [{ ...READY, store: storeSummary({ ...PROVO, splitConfiguration: undefined }), row: { store_id: PROVO.id, account_holder_id: HOLDER.id, balance_account_id: BALANCE.id }, commission: { percent: 0.8, fixedPence: 5, currency: 'GBP' } }, { target: 'live' }],
+    [{ ...READY, store: storeSummary({ ...PROVO, splitConfiguration: undefined }), row: { store_id: PROVO.id, account_holder_id: HOLDER.id, balance_account_id: BALANCE.id }, rates: { currency: 'GBP', tiers: READY.rates.tiers } }, { target: 'live' }],
+    [{ ...READY, store: storeSummary({ ...PROVO, splitConfiguration: undefined }), row: { store_id: PROVO.id, account_holder_id: HOLDER.id, balance_account_id: BALANCE.id }, rates: { currency: 'GBP', tiers: { ...READY.rates.tiers, amex: { percent: null, fixedPence: null }, keyed: {} } } }, { target: 'live' }],
+    [{ ...READY, rates: { ...READY.rates, onAdyen: { ...READY.rates.onAdyen, matches: false } } }, { target: 'live' }],
+    [{ ...READY, row: { ...READY.row, account_holder_id: null, store_id: null } }, { target: 'live' }],
     [{ ...READY, legalEntity: legalEntitySummary({ ...LEGAL, transferInstruments: [] }), payouts: { read: true, sweep: null } }, { target: 'live' }],
     [{ ...READY, capabilities: capabilityList(summariseCapabilities(CAPS)), payouts: { read: true, sweep: null } }, { target: 'live' }],
     [{ ...READY, payouts: { read: true, sweep: null } }, { target: 'live' }],
@@ -1931,7 +2173,7 @@ test('TS mirror: buildGoliveSteps, goliveProblems and plainAdyenProblem answer e
   shapes.push(
     [{ ...READY, venue: { ...READY.venue, environment: 'test' }, row: null, store: storeSummary({ ...PROVO, splitConfiguration: undefined }) }, { target: 'live' }],
     [{ ...READY, store: foreignStore, row: { ...READY.row, transfer_instrument_id: 'SI32BZP22322CJ5PXF2BDBANK1' } }, { target: 'live' }],
-    [{ ...READY, commission: { ...READY.commission, profileRemainder: 'addToLiableAccount', tiers: 4, profileRules: 6 } }, { target: 'live' }],
+    [{ ...READY, rates: { ...READY.rates, onAdyen: { ...READY.rates.onAdyen, remainder: 'addToLiableAccount' } } }, { target: 'live' }],
     [{ ...READY, capabilities: capabilityList(summariseCapabilities({ receivePayments: { allowed: true, requested: true, verificationStatus: 'valid' } })) }, { target: 'live' }],
     [{ ...READY, capabilities: capabilityList(summariseCapabilities(LIVE_CAPS)) }, { target: 'live' }],
     [{ ...READY, row: { ...READY.row, balance_account_id: 'BA_SOMEONE_ELSE' } }, { target: 'live' }],
@@ -1958,6 +2200,28 @@ test('TS mirror: buildGoliveSteps, goliveProblems and plainAdyenProblem answer e
   assert.deepEqual(ts.buildLinkPatch(foreignLookup, { at }), buildLinkPatch(foreignLookup, { at }));
   assert.deepEqual(ts.buildLinkPatch({ ...foreignLookup, balanceAccount: null }, { at }), buildLinkPatch({ ...foreignLookup, balanceAccount: null }, { at }));
   assert.equal(ts.commissionLine(0.8, 5, 'GBP'), commissionLine(0.8, 5, 'GBP'));
+  // the card rates helpers (10 Sep 2026) answer the same on both sides
+  const four = { card_present: { percent: 1.4, fixedPence: 5 }, card_not_present: { percent: 1.9, fixedPence: 10 }, amex: { percent: 2.5, fixedPence: 10 }, keyed: { percent: 2.9, fixedPence: 15 } };
+  const resolved = { card_present: { percent: 1.4, fixed_pence: 5, source: 'venue' }, card_not_present: { percent: 1.9, fixed_pence: 10, source: 'platform' }, amex: { percent: 0, fixed_pence: 0, source: 'legacy_venue' }, keyed: { percent: null, fixed_pence: null, source: null } };
+  assert.equal(ts.rateCardLine(four, 'USD'), rateCardLine(four, 'USD'));
+  assert.equal(ts.rateCardLine(resolved), rateCardLine(resolved));
+  assert.equal(ts.tierRateLine(0, 0), tierRateLine(0, 0));
+  assert.equal(ts.tierRateLine(null, null), tierRateLine(null, null));
+  assert.deepEqual(ts.tiersFromResolved(resolved), tiersFromResolved(resolved));
+  assert.deepEqual(ts.unpricedTiers(resolved), unpricedTiers(resolved));
+  assert.equal(ts.tierListWords(['card_not_present', 'amex', 'keyed']), tierListWords(['card_not_present', 'amex', 'keyed']));
+  assert.deepEqual(ts.tieredCommissionRules('GBP', { ...four, amex: { percent: 0, fixedPence: 0 } }), tieredCommissionRules('GBP', { ...four, amex: { percent: 0, fixedPence: 0 } }));
+  assert.deepEqual(ts.tieredCommissionRules('GBP', { ...four, keyed: {} }), tieredCommissionRules('GBP', { ...four, keyed: {} }));
+  assert.deepEqual(ts.splitLogicFor(null), splitLogicFor(null));
+  const written = { rules: tieredCommissionRules('GBP', four).rules };
+  assert.deepEqual(ts.profileTiers(written), profileTiers(written));
+  assert.deepEqual(ts.profileTiers(PROFILE), profileTiers(PROFILE));
+  assert.equal(ts.tiersMatch(four, resolved), tiersMatch(four, resolved));
+  assert.deepEqual(ts.ratesOnAdyen(written, four), ratesOnAdyen(written, four));
+  assert.deepEqual(ts.ratesOnAdyen(PROFILE, four), ratesOnAdyen(PROFILE, four));
+  assert.deepEqual(ts.ratesOnAdyen(null, four), ratesOnAdyen(null, four));
+  assert.equal(ts.DETAILS_NOT_SAVED_DETAIL, DETAILS_NOT_SAVED_DETAIL);
+  assert.deepEqual(ts.RATE_TIER_LABELS, RATE_TIER_LABELS);
   assert.deepEqual(ts.findPushSweep(SWEEPS, 'SI32BZP22322CJ5PXF2BDBANK1'), findPushSweep(SWEEPS, 'SI32BZP22322CJ5PXF2BDBANK1'));
   assert.deepEqual(ts.sweepPayload({ transferInstrumentId: 'SI1', currency: 'gbp', description: 'ServOS daily payout, Provo' }), sweepPayload({ transferInstrumentId: 'SI1', currency: 'gbp', description: 'ServOS daily payout, Provo' }));
   assert.equal(ts.payoutCapabilityState(capabilityList(summariseCapabilities(CAPS))), payoutCapabilityState(capabilityList(summariseCapabilities(CAPS))));

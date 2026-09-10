@@ -16,26 +16,30 @@
 // client, so client-side writes silently no-op: reads stay direct where
 // allowed, writes go through the edge fn.
 //
-// OWNER RULES (8 Sep 2026):
-//   0. The four payout onboarding buttons (Start onboarding, New onboarding
-//      link, Configure splits, Set up daily payout) are HIDDEN from the admin
-//      portal, not collapsed: the owner cannot use them here. The
-//      adyen-onboard actions stay on the server; no UI in this portal calls
-//      them.
+// OWNER RULES (8 Sep 2026, reordered 10 Sep 2026: "the admin processing is
+// a complete mess"):
+//   0. No Start onboarding, New onboarding link, Configure splits or Set up
+//      daily payout buttons anywhere here, and no "create store" wording
+//      outside the flow. The flow owns every Adyen write, one step at a time.
 //   1. Onboarding is seamless: Adyen already holds the venue's store,
-//      balance account and account holder under the venue code (SV-1007) as
-//      the store reference, so the admin PULLS the ids from Adyen by
-//      reference and never types them. Since 8 Sep 2026 that is a GUIDED
-//      FLOW of five numbered steps, one open at a time, one primary button
-//      each (AdyenGoLiveFlow, driven by the fn's golive_state), after the
-//      owner said the dense panel had "far too many words and too small".
-//      The manual "Enter Adyen details" form survives only under a
-//      collapsed Advanced section, as a fallback.
+//      balance account and account holder under the venue code (SV-1007),
+//      so the admin PULLS the ids from Adyen by reference and never types
+//      them. That is a GUIDED FLOW of six numbered steps, one open at a
+//      time, one primary button each (AdyenGoLiveFlow, driven by the fn's
+//      golive_state). The manual link survives under a collapsed Advanced
+//      section, reduced to a merchant account select and a store select.
 //   2. The Processing list scales to many customers: one compact row per
 //      venue (name, venue code, region chip, environment chip, then Linked /
 //      Holder / KYC / Payouts chips), a search box (name, code or slug), the
 //      detail only on expand. The open row and the search survive a reload
 //      through sessionStorage.
+//   3. Inside an expanded venue, in this order: (a) the go live flow, (b)
+//      Card rates (the venue rate card editor, RateCardRows, the same editor
+//      the flow's Edit rates opens), (c) Plan (the SaaS plan), (d) Advanced,
+//      collapsed: environment and region, the Adyen connection, the ids
+//      Adyen gave us as grey rows with Copy, and the manual link.
+//   4. The platform defaults panel is collapsed by default and shows the
+//      Adyen balance platform known per environment and region.
 //   The per venue Adyen ENVIRONMENT switch and the region are ServOS
 //   internal actions too (AdyenEnvironmentControls; the adyen-terminal-admin
 //   fn refuses them for anyone but a super_admin). Going LIVE is the flow's
@@ -48,7 +52,9 @@ import { useEffect, useState, useCallback, useMemo } from 'react';
 import { supabase, platformSupabase } from '../../lib/supabase';
 import AdyenEnvironmentControls from '../components/AdyenEnvironmentControls';
 import AdyenGoLiveFlow from '../components/AdyenGoLiveFlow';
+import RateCardRows from '../components/RateCardRows';
 import { adyenVenueStatus, stripeVenueStatus, matchesVenueSearch } from '../../lib/payments/adyenAdminRows';
+import { RATE_CARD_TIERS, emptyCard, cardToState, stateToCard, cardsEqual, fmtRate } from '../../lib/payments/rateCard';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
@@ -70,9 +76,10 @@ async function callPaymentsAdmin(action, payload) {
 // Call the payout-onboarding edge fn (adyen-onboard, super_admin fenced).
 // Unlike callPaymentsAdmin this RETURNS non-ok payloads instead of throwing:
 // the fn classifies every failure (awaiting_enablement / missing_prerequisite
-// / error) and the panel renders each kind differently. Since 8 Sep 2026
-// the portal only calls status, list_merchants, list_stores and save_manual
-// (OWNER RULE 0: the onboarding actions have no buttons here).
+// / error) and the panel renders each kind differently. Since 10 Sep 2026
+// the portal only calls list_merchants, list_stores and save_manual, from
+// the manual link under Advanced (OWNER RULE 0: the onboarding actions have
+// no buttons here).
 async function callAdyenOnboard(action, payload) {
   const { data: session } = await supabase.auth.getSession();
   const token = session?.session?.access_token;
@@ -117,46 +124,9 @@ function terminalAdminFor(location) {
   };
 }
 
-// The four pricing tiers (migration 20260821b); the order matches the venue's
-// Settings tab so both screens read the same way.
-const TIERS = [
-  { id: 'card_present', label: 'Card-present (credit & debit)' },
-  { id: 'card_not_present', label: 'Card-not-present (online)' },
-  { id: 'amex', label: 'American Express & business cards' },
-  { id: 'keyed', label: 'Manually keyed' },
-];
-
-const emptyCard = () => Object.fromEntries(TIERS.map(t => [t.id, { percent: '', fixed_pence: '' }]));
-
-// jsonb rate card → editor state ('' for null so inputs stay controlled).
-const cardToState = (card) => {
-  const st = emptyCard();
-  for (const t of TIERS) {
-    const row = card?.[t.id];
-    if (!row) continue;
-    st[t.id] = {
-      percent: row.percent === null || row.percent === undefined ? '' : String(row.percent),
-      fixed_pence: row.fixed_pence === null || row.fixed_pence === undefined ? '' : String(row.fixed_pence),
-    };
-  }
-  return st;
-};
-
-// editor state → jsonb rate card ('' → null; the server sanitizes again).
-const stateToCard = (st) => Object.fromEntries(TIERS.map(t => {
-  const row = st[t.id] ?? {};
-  return [t.id, {
-    percent: row.percent === '' || row.percent === undefined ? null : Number(row.percent),
-    fixed_pence: row.fixed_pence === '' || row.fixed_pence === undefined ? null : Math.round(Number(row.fixed_pence)),
-  }];
-}));
-
-const cardsEqual = (a, b) => JSON.stringify(stateToCard(a)) === JSON.stringify(stateToCard(b));
-
-const fmtRate = (pct, pence) => {
-  if (pct == null && pence == null) return 'Not set';
-  return `${Number(pct ?? 0).toFixed(2)}% + ${Math.round(Number(pence ?? 0))}p`;
-};
+// The four pricing tiers and the editor helpers live in
+// src/lib/payments/rateCard.js (10 Sep 2026), shared with the go live flow.
+const TIERS = RATE_CARD_TIERS;
 
 // The search box and the open row survive a reload (per tab). Every access
 // is guarded: private mode, blocked storage and a quota error all just mean
@@ -334,7 +304,7 @@ export default function AdminBillingManager({ authUser }) {
   return (
     <div style={S.page}>
       <h1 style={S.h1}>Processing: accounts and pricing</h1>
-      <div style={S.sub}>Per-location payment processor (Stripe or ServOS Payments via Adyen), the Adyen link pulled by venue reference, and the tiered processing rates each venue pays.</div>
+      <div style={S.sub}>Which processor each venue uses, the Adyen link found by venue code, and the card rates each venue pays.</div>
 
       {/* Platform-wide defaults */}
       <PlatformDefaultsPanel
@@ -343,9 +313,6 @@ export default function AdminBillingManager({ authUser }) {
         authUserId={authUser?.id}
         onError={setError}
       />
-
-      {/* SaaS plans (v5.7.4): its own card, separate from the card-rate editors */}
-      <SaasPlansPanel onError={setError} />
 
       <div style={{ display: 'flex', gap: 10, marginBottom: 14, alignItems: 'center', flexWrap: 'wrap' }}>
         <select
@@ -451,57 +418,26 @@ export default function AdminBillingManager({ authUser }) {
   );
 }
 
-// ─── Rate card editor rows (shared by defaults + per-venue) ─────────────────
-// One row per tier: % + pence inputs and the live effective value with where
-// it comes from (override / default / legacy flat). `fallbackFor(tierId,
-// field)` returns { value, label } for what applies when the input is blank.
-function RateCardRows({ value, onChange, fallbackFor }) {
-  const setField = (tierId, field, v) => onChange({ ...value, [tierId]: { ...(value[tierId] ?? { percent: '', fixed_pence: '' }), [field]: v } });
-  return (
-    <div style={{ display: 'grid', gap: 10 }}>
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(190px, 1.4fr) 1fr 1fr minmax(150px, 1.2fr)', gap: 10, alignItems: 'center' }}>
-        <span style={{ ...S.label, marginBottom: 0 }}>Payment type</span>
-        <span style={{ ...S.label, marginBottom: 0 }}>Rate %</span>
-        <span style={{ ...S.label, marginBottom: 0 }}>Per-txn (pence)</span>
-        <span style={{ ...S.label, marginBottom: 0 }}>Effective</span>
-      </div>
-      {TIERS.map(t => {
-        const row = value[t.id] ?? { percent: '', fixed_pence: '' };
-        const fbPct = fallbackFor(t.id, 'percent');
-        const fbFix = fallbackFor(t.id, 'fixed_pence');
-        const effPct = row.percent === '' ? fbPct.value : Number(row.percent);
-        const effFix = row.fixed_pence === '' ? fbFix.value : Math.round(Number(row.fixed_pence));
-        const isOverride = row.percent !== '' || row.fixed_pence !== '';
-        const srcLabel = isOverride ? 'set here' : (fbPct.label ?? fbFix.label);
-        return (
-          <div key={t.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(190px, 1.4fr) 1fr 1fr minmax(150px, 1.2fr)', gap: 10, alignItems: 'center' }}>
-            <span style={{ fontSize: 13, color: 'var(--t1)', fontWeight: 600 }}>{t.label}</span>
-            <input type="number" step="0.01" min="0" max="100" value={row.percent}
-              placeholder={fbPct.value == null ? 'none' : Number(fbPct.value).toFixed(2)}
-              onChange={e => setField(t.id, 'percent', e.target.value)}
-              style={{ ...S.input, ...S.inputMono }} />
-            <input type="number" step="1" min="0" max="10000" value={row.fixed_pence}
-              placeholder={fbFix.value == null ? 'none' : String(Math.round(Number(fbFix.value)))}
-              onChange={e => setField(t.id, 'fixed_pence', e.target.value)}
-              style={{ ...S.input, ...S.inputMono }} />
-            <div style={{ fontSize: 12, color: (effPct == null && effFix == null) ? 'var(--t4)' : 'var(--t2)' }}>
-              <strong style={{ color: (effPct == null && effFix == null) ? 'var(--t4)' : 'var(--acc)' }}>{fmtRate(effPct, effFix)}</strong>
-              {srcLabel && (effPct != null || effFix != null) && <span style={{ color: 'var(--t4)' }}> · {srcLabel}</span>}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
 // ─── Platform-wide defaults panel ─────────────────────────────────────────
 // Stripe: markup defaults (unchanged). ServOS Payments (Adyen): the DEFAULT
 // TIERED RATE CARD (four payment types, each % + pence) used wherever a
 // venue has no override. The old flat default stays on file as the legacy
 // card-present fallback until this card is saved.
 function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
+  // Collapsed by default (10 Sep 2026): the venues are the page.
+  const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
+  // What we know about OUR Adyen accounts: the balance platform id per
+  // environment and region (payments-admin platform_settings), read on open.
+  const [known, setKnown] = useState(null);   // null = not read, { rows, available, warning } or { error }
+  useEffect(() => {
+    if (!open || known !== null) return;
+    let live = true;
+    callPaymentsAdmin('platform_settings', {})
+      .then((r) => { if (live) setKnown(r); })
+      .catch((e) => { if (live) setKnown({ error: e.message }); });
+    return () => { live = false; };
+  }, [open, known]);
   const [cp, setCp] = useState(defaults.default_cardpresent_markup_percent);
   const [on, setOn] = useState(defaults.default_online_markup_percent);
   const [drc, setDrc] = useState(cardToState(defaults.default_adyen_rate_card));
@@ -521,7 +457,7 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
   const fallbackFor = (tierId, field) => {
     if (tierId === 'card_present' && hasLegacy) {
       const v = field === 'percent' ? legacyPct : legacyFix;
-      return { value: v == null ? null : Number(v), label: 'legacy flat rate' };
+      return { value: v == null ? null : Number(v), label: 'old flat rate' };
     }
     return { value: null, label: null };
   };
@@ -553,9 +489,12 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
   const resolvedDefault = (tierId) => {
     const row = defaults.default_adyen_rate_card?.[tierId];
     if (row && (row.percent != null || row.fixed_pence != null)) return { pct: row.percent, fix: row.fixed_pence, src: null };
-    if (tierId === 'card_present' && hasLegacy) return { pct: legacyPct, fix: legacyFix, src: 'legacy flat rate' };
+    if (tierId === 'card_present' && hasLegacy) return { pct: legacyPct, fix: legacyFix, src: 'old flat rate' };
     return { pct: null, fix: null, src: null };
   };
+
+  const bpRows = Array.isArray(known?.rows) ? known.rows : [];
+  const bpLine = (r) => `${r.environment === 'live' ? 'Live' : 'Test'} ${r.region}`;
 
   return (
     <div style={{ ...S.card, borderColor: 'var(--acc-b)', background: 'var(--acc-d)' }}>
@@ -565,9 +504,25 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
             Platform defaults
           </div>
           <div style={{ fontSize: 14, color: 'var(--t1)', marginBottom: 8, lineHeight: 1.4 }}>
-            Stripe markup, and the ServOS Payments standard rate card: four payment types, each a percent plus pence per transaction. Venues without their own agreed card pay these.
+            The standard card rates a venue pays when it has no rates of its own, the Stripe markup, and the Adyen accounts we know.
           </div>
-          {!editing && (
+          {open && (
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ ...S.label, color: 'var(--t2)', marginBottom: 4 }}>Adyen balance platform</div>
+              {known === null && <div style={{ fontSize: 12.5, color: 'var(--t3)' }}>Reading what is known.</div>}
+              {known?.error && <div style={{ fontSize: 12.5, color: 'var(--red)' }}>Could not read it: {known.error}</div>}
+              {known && !known.error && known.available === false && <div style={{ fontSize: 12.5, color: 'var(--orn, #e8a020)' }}>One database step is waiting on ServOS, so nothing is known yet.</div>}
+              {known && !known.error && known.available !== false && bpRows.length === 0 && <div style={{ fontSize: 12.5, color: 'var(--t3)' }}>No balance platform is known yet. The first venue read on each account teaches it.</div>}
+              {bpRows.map((r) => (
+                <div key={`${r.environment}-${r.region}`} style={{ display: 'flex', gap: 10, alignItems: 'center', fontSize: 12.5, margin: '3px 0', flexWrap: 'wrap' }}>
+                  <span style={{ color: 'var(--t3)', minWidth: 70 }}>{bpLine(r)}</span>
+                  <code style={{ fontFamily: 'var(--font-mono, monospace)', color: r.balance_platform_id ? 'var(--t1)' : 'var(--t4)' }}>{r.balance_platform_id || 'not known'}</code>
+                  {r.merchant_accounts > 0 && <span style={{ color: 'var(--t4)' }}>{r.merchant_accounts} merchant account{r.merchant_accounts === 1 ? '' : 's'} seen</span>}
+                </div>
+              ))}
+            </div>
+          )}
+          {open && !editing && (
             <div style={{ display: 'grid', gap: 10 }}>
               <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap' }}>
                 <Stat label="Stripe in-person markup" value={pct(defaults.default_cardpresent_markup_percent)} />
@@ -580,18 +535,18 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
                 })}
               </div>
               {hasLegacy && (
-                <div style={{ fontSize: 11, color: 'var(--t3)' }}>
-                  Legacy flat rate on file: {fmtRate(legacyPct, legacyFix)}. It counts as the card-present default until a rate card value replaces it.
+                <div style={{ fontSize: 12, color: 'var(--t3)' }}>
+                  An old flat rate is on file: {fmtRate(legacyPct, legacyFix)}. It counts as the in person default until a value replaces it.
                 </div>
               )}
               {defaults.adyen_rate_card_ready === false && (
-                <div style={{ fontSize: 11, color: 'var(--orn, #e8a020)' }}>
-                  Rate-card storage is not live yet. Hand-apply migration 20260821b_adyen_rate_card.sql, then save the card.
+                <div style={{ fontSize: 12, color: 'var(--orn, #e8a020)' }}>
+                  The rate card storage is not there yet. Apply migration 20260821b_adyen_rate_card.sql, then save the card.
                 </div>
               )}
             </div>
           )}
-          {editing && (
+          {open && editing && (
             <div style={{ display: 'grid', gap: 14, maxWidth: 640 }}>
               <div>
                 <div style={{ ...S.label, color: 'var(--t2)' }}>Stripe markup (platform fee)</div>
@@ -601,17 +556,21 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
                 </div>
               </div>
               <div>
-                <div style={{ ...S.label, color: 'var(--t2)' }}>ServOS Payments standard rate card: what a venue pays per payment type</div>
+                <div style={{ ...S.label, color: 'var(--t2)' }}>Standard card rates: what a venue pays per payment type</div>
                 <RateCardRows value={drc} onChange={setDrc} fallbackFor={fallbackFor} />
               </div>
             </div>
           )}
         </div>
         <div style={{ display: 'flex', gap: 8 }}>
-          {!editing && <button onClick={() => setEditing(true)} style={{ ...S.btn, ...S.btnGhost }}>Edit defaults</button>}
-          {editing && <>
+          {!open && <button onClick={() => setOpen(true)} style={{ ...S.btn, ...S.btnGhost }} aria-expanded={false}>Show</button>}
+          {open && !editing && <>
+            <button onClick={() => setEditing(true)} style={{ ...S.btn, ...S.btnGhost }}>Edit defaults</button>
+            <button onClick={() => setOpen(false)} style={{ ...S.btn, ...S.btnGhost }} aria-expanded>Hide</button>
+          </>}
+          {open && editing && <>
             <button onClick={() => setEditing(false)} disabled={busy} style={{ ...S.btn, ...S.btnGhost }}>Cancel</button>
-            <button onClick={save} disabled={busy} style={{ ...S.btn, ...S.btnPrim }}>{busy ? 'Saving…' : 'Save defaults'}</button>
+            <button onClick={save} disabled={busy} style={{ ...S.btn, ...S.btnPrim }}>{busy ? 'Saving' : 'Save defaults'}</button>
           </>}
         </div>
       </div>
@@ -630,51 +589,8 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
 // each row, never enforced.
 const gbp = (pounds) => new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP' }).format(Number(pounds) || 0);
 
-function SaasPlansPanel({ onError }) {
-  const [data, setData] = useState(null);   // null = loading, {error} or saas_pricing get payload
-  const [loading, setLoading] = useState(true);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try { setData(await callPaymentsAdmin('saas_pricing', {})); }
-    catch (e) { setData({ error: e.message }); }
-    finally { setLoading(false); }
-  }, []);
-  useEffect(() => { load(); }, [load]);
-
-  const catalog = data?.catalog;
-
-  return (
-    <div style={S.card}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap', marginBottom: 6 }}>
-        <div>
-          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--acc)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 4 }}>SaaS plans</div>
-          <div style={{ fontSize: 13, color: 'var(--t2)', lineHeight: 1.5, maxWidth: 720 }}>
-            The monthly software plan each venue is on. Invoiced manually through the CRM, so this only records the plan and feeds the Revenue section.
-            {catalog && ` Plans: ${Object.values(catalog.plans).map(p => p.monthly > 0 ? `${p.label} ${p.monthly} GBP with ${p.devices} devices` : `${p.label} with ${p.devices} devices`).join(', ')}. Extra devices ${catalog.extra_device_monthly} GBP each, HubRise ${catalog.hubrise_monthly} GBP per month.`}
-          </div>
-        </div>
-        <button onClick={load} disabled={loading} style={{ ...S.btn, ...S.btnGhost }}>{loading ? 'Loading…' : '↻ Refresh'}</button>
-      </div>
-
-      {data == null && <div style={{ fontSize: 12, color: 'var(--t3)', padding: '10px 0' }}>Loading SaaS plans…</div>}
-      {data?.error && <div style={{ fontSize: 12, color: 'var(--red)', padding: '10px 0' }}>Could not load SaaS plans: {data.error}</div>}
-
-      {data && !data.error && data.typed === false && (
-        <div style={{ padding: 12, borderRadius: 8, background: 'var(--orn-d, rgba(230,160,60,.12))', color: 'var(--orn, #e8a020)', fontSize: 12.5, lineHeight: 1.5, border: '1px solid var(--orn-b, var(--bdr2))', marginTop: 8 }}>
-          {data.migration_note || 'The extra devices and HubRise columns are not on the subscriptions table yet. Apply supabase/migrations/20260822_saas_plans.sql on the Ops database, then refresh this panel.'}
-        </div>
-      )}
-
-      {data && !data.error && data.typed !== false && (data.venues ?? []).map(v => (
-        <SaasVenueRow key={v.location_id} venue={v} catalog={catalog} deviceNote={data.device_count_note} onSaved={load} onError={onError} />
-      ))}
-      {data && !data.error && data.typed !== false && (data.venues ?? []).length === 0 && (
-        <div style={{ fontSize: 12, color: 'var(--t3)', padding: '10px 0' }}>No venues found.</div>
-      )}
-    </div>
-  );
-}
+// SaasPlansPanel (one list of every venue) was replaced on 10 Sep 2026 by
+// VenuePlanPanel inside each expanded venue (Plan), below AdyenBlock.
 
 function SaasVenueRow({ venue, catalog, deviceNote, onSaved, onError }) {
   // A stored plan outside the catalog (legacy or hand-set) is kept as-is, not
@@ -909,24 +825,65 @@ const AdyenRow = ({ ok, children }) => (
   </div>
 );
 
-// Order (owner, 8 Sep 2026): the guided flow first, then the environment
-// line (region, the switch back to test, readers), then the connection
-// status, the rate card and the payout status with the manual form under
-// Advanced.
+// ─── Adyen block (owner, 10 Sep 2026) ──────────────────────────────────────
+// Inside an expanded Adyen venue, in this order:
+//   (a) the go live flow (AdyenGoLiveFlow, driven by golive_state)
+//   (b) Card rates: the venue's rate card editor with Save (RateCardRows,
+//       the same editor the flow's Edit rates opens)
+//   (c) Plan: the SaaS plan (unchanged, now inside the venue)
+//   (d) Advanced, collapsed: the environment and region controls, the Adyen
+//       connection, the ids Adyen gave us as grey rows with Copy, and the
+//       manual link reduced to a merchant account select and a store select
+// Nothing here makes a store, starts onboarding, configures splits or sets up
+// a payout: the flow owns all of that, one step at a time.
+const BOX = { marginTop: 14, padding: '14px 16px', borderRadius: 12, background: 'var(--bg2)', border: '1px solid var(--bdr2)' };
+const PLAIN = { fontSize: 14, color: 'var(--t2)', lineHeight: 1.5 };
+const QUIET = { fontSize: 13, color: 'var(--t3)', lineHeight: 1.5 };
+
+// A grey monospace id with a Copy button. Never inside a sentence.
+function IdRow({ label, value }) {
+  const [copied, setCopied] = useState(false);
+  if (!value) return null;
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(String(value)); setCopied(true); setTimeout(() => setCopied(false), 1400); }
+    catch { /* clipboard blocked: the id is on screen to read */ }
+  };
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '4px 0', flexWrap: 'wrap' }}>
+      <span style={{ fontSize: 12.5, color: 'var(--t3)', minWidth: 170 }}>{label}</span>
+      <code style={{ fontSize: 12.5, color: 'var(--t3)', fontFamily: 'var(--font-mono, monospace)', wordBreak: 'break-all' }}>{value}</code>
+      <button type="button" onClick={copy} style={{ background: 'transparent', border: '1px solid var(--bdr2)', borderRadius: 6, color: 'var(--t3)', fontSize: 11.5, padding: '2px 8px', cursor: 'pointer', fontFamily: 'inherit' }}>{copied ? 'Copied' : 'Copy'}</button>
+    </div>
+  );
+}
+
+// The ids Adyen gave us, from the bulk adyen_accounts row, in plain words.
+const ADYEN_ID_ROWS = [
+  ['store_id', 'Payments location'],
+  ['merchant_account', 'Adyen account'],
+  ['account_holder_id', 'Adyen business account'],
+  ['balance_account_id', 'Where the money lands'],
+  ['legal_entity_id', 'Registered company'],
+  ['split_profile_id', 'Rates on Adyen'],
+  ['transfer_instrument_id', 'Bank account'],
+  ['business_line_id', 'Business line'],
+  ['payout_sweep_id', 'Daily payout'],
+];
+
 function AdyenBlock({ location, venueCode, adyenRow, defaults, onError, onRowChanged }) {
-  const [st, setSt] = useState(null);   // null=loading, {error} or status payload
-  // envRev: bumped by ANY change, so the connection pill here and the payout
-  // panel re-read the venue. linkRev and flowRev point the OTHER way round,
-  // so nothing reads itself twice: the flow reloads itself after its own
-  // actions and bumps linkRev (the environment line re-reads); the
-  // environment line reloads itself after its own flips and bumps flowRev
-  // (the flow re-reads).
+  const [st, setSt] = useState(null);   // null=loading, {error} or the adyen-checkout status payload
+  // envRev: bumped by ANY change, so the connection line and the rates
+  // re-read the venue. linkRev and flowRev point the OTHER way round, so
+  // nothing reads itself twice: the flow reloads itself after its own actions
+  // and bumps linkRev (the environment line re-reads); the environment line
+  // reloads itself after its own flips and bumps flowRev (the flow re-reads).
   const [envRev, setEnvRev] = useState(0);
   const [linkRev, setLinkRev] = useState(0);
   const [flowRev, setFlowRev] = useState(0);
   const callTerminalAdmin = useMemo(() => terminalAdminFor(location), [location.id, location.ops_location_id]);   // eslint-disable-line react-hooks/exhaustive-deps
   const envChanged = () => { setEnvRev((n) => n + 1); setFlowRev((n) => n + 1); onRowChanged?.(); };
   const linkChanged = () => { setEnvRev((n) => n + 1); setLinkRev((n) => n + 1); onRowChanged?.(); };
+  const currency = String(location.currency || 'GBP').toUpperCase();
   useEffect(() => {
     let live = true;
     (async () => {
@@ -934,13 +891,12 @@ function AdyenBlock({ location, venueCode, adyenRow, defaults, onError, onRowCha
         const { data: session } = await supabase.auth.getSession();
         // location_id (platform id) makes the fn answer for THIS venue: its
         // environment ('test' | 'live', per venue since 7 Sep 2026), its keys,
-        // its store. Without it the fn falls back to the global default.
+        // its store. wallets:true asks for one extra /paymentMethods probe, so
+        // the go live flow can say whether Adyen OFFERS Apple Pay and Google
+        // Pay on this venue. Admin only: the checkout never asks.
         const res = await fetch(`${FUNCTIONS_URL}/adyen-checkout`, {
           method: 'POST',
           headers: { 'content-type': 'application/json', authorization: `Bearer ${session?.session?.access_token || ''}` },
-          // wallets:true asks the fn for one extra /paymentMethods probe, so
-          // the go-live flow can say whether Adyen actually OFFERS Apple Pay
-          // and Google Pay on this venue. Admin only: the checkout never asks.
           body: JSON.stringify({ action: 'status', location_id: location.id, wallets: true }),
         });
         const j = await res.json();
@@ -950,10 +906,9 @@ function AdyenBlock({ location, venueCode, adyenRow, defaults, onError, onRowCha
     return () => { live = false; };
   }, [location.id, envRev]);
 
-  // Per-venue TIERED rate card (v5.7.3). merchant_adyen_accounts is
-  // service-role-only, so reads AND writes go through payments-admin
-  // adyen_pricing. Independent of the checkout-keys probe above: rates are
-  // editable even while the probe runs.
+  // (b) The venue's rate card. merchant_adyen_accounts is service-role-only,
+  // so reads AND writes go through payments-admin adyen_pricing. Re-read
+  // after any change (the flow's Edit rates saves through the same action).
   const [acct, setAcct] = useState(null);      // adyen_pricing get result (null = loading)
   const [rc, setRc] = useState(emptyCard());
   const [savedCard, setSavedCard] = useState(emptyCard());
@@ -973,21 +928,21 @@ function AdyenBlock({ location, venueCode, adyenRow, defaults, onError, onRowCha
       } catch (e) { if (live) { setAcct({ error: e.message }); } }
     })();
     return () => { live = false; };
-  }, [location.id]);
+  }, [location.id, envRev]);
 
-  // Blank venue field → the platform default card, then (card-present only)
-  // the legacy flat markup: the same chain the server resolves with.
+  // Blank venue field: the platform default card, then (in person only) the
+  // legacy flat markup, the same chain the server resolves with.
   const fallbackFor = (tierId, field) => {
     const defRow = acct?.defaults?.rate_card?.[tierId] ?? defaults?.default_adyen_rate_card?.[tierId];
     const defVal = defRow?.[field];
     if (defVal != null) return { value: Number(defVal), label: 'platform default' };
     if (tierId === 'card_present') {
       const legacyVenue = field === 'percent' ? acct?.account?.markup_percent : acct?.account?.markup_fixed_pence;
-      if (legacyVenue != null) return { value: Number(legacyVenue), label: 'legacy venue flat rate' };
+      if (legacyVenue != null) return { value: Number(legacyVenue), label: 'venue flat rate' };
       const legacyDef = field === 'percent'
         ? (acct?.defaults?.default_markup_percent ?? defaults?.default_adyen_markup_percent)
         : (acct?.defaults?.default_markup_fixed_pence ?? defaults?.default_adyen_markup_fixed_pence);
-      if (legacyDef != null) return { value: Number(legacyDef), label: 'legacy flat default' };
+      if (legacyDef != null) return { value: Number(legacyDef), label: 'platform flat rate' };
     }
     return { value: null, label: null };
   };
@@ -1004,84 +959,51 @@ function AdyenBlock({ location, venueCode, adyenRow, defaults, onError, onRowCha
       setSavedCard(rc);
       setAcct(prev => ({ ...prev, account: { ...(prev?.account ?? {}), exists: true, rate_card: stateToCard(rc) } }));
       setSavedAt(Date.now()); setTimeout(() => setSavedAt(null), 2500);
-    } catch (e) { onError?.(`Save failed: ${e.message}`); }
+      // The flow's step 5 reads the resolved card, so it reads again.
+      setFlowRev((n) => n + 1);
+    } catch (e) { onError?.(`The rates could not be saved: ${e.message}`); }
     finally { setBusy(false); }
   };
 
-  const statusBox = !st
-    ? <div style={{ marginTop: 14, padding: '12px 16px', borderRadius: 12, background: 'var(--bg2)', border: '1px solid var(--bdr2)', fontSize: 12.5, color: 'var(--t3)' }}>Checking the Adyen connection…</div>
-    : (st.error || !st.configured)
-    ? <div style={{ marginTop: 14, padding: '12px 16px', borderRadius: 12, background: 'var(--bg2)', border: '1px solid var(--bdr2)', fontSize: 12.5, color: 'var(--t3)' }}>
-        <b style={{ color: 'var(--t1)' }}>Adyen: not reachable.</b><br/>
-        {st.error || 'Keys are not configured on this environment.'} Card payments will refuse safely at this venue until it is.
-      </div>
-    : <div style={{ marginTop: 14, padding: '12px 16px', borderRadius: 12, background: 'var(--bg2)', border: '1px solid var(--bdr2)', display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-          <span>Adyen connected <span style={{ fontWeight: 400, color: 'var(--t3)' }}>· {st.merchantAccount}</span></span>
-          {/* This VENUE's environment (merchant_adyen_accounts.environment),
-              not the global default. Switched in the environment line above
-              (ServOS admin only since 8 Sep 2026). */}
-          <span
-            title={st.environment === 'live' ? 'Live, real money at this venue' : 'Test cards only at this venue'}
-            style={{ ...S.pill, ...(st.environment === 'live' ? { background: 'var(--red)', color: '#fff', borderColor: 'var(--red)' } : {}) }}>
-            {st.environment === 'live' ? 'LIVE' : 'TEST'}
-          </span>
-        </div>
-        <AdyenRow ok={st.online}>Online payments: this venue&rsquo;s online shop charges through Adyen{st.environment === 'test' ? ' (test cards only)' : ' (real money)'}</AdyenRow>
-        <AdyenRow ok={st.inPerson}>In-person on the tills: a card reader is paired and boarded</AdyenRow>
-        <AdyenRow ok={!!adyenRow?.store_id}>Linked to Adyen: {adyenRow?.store_id ? `store ${adyenRow.store_id} is mapped on ${adyenRow.environment || st.environment || 'this environment'}` : 'no store is mapped yet. The steps above make one'}</AdyenRow>
-        <AdyenRow ok={!!adyenRow?.account_holder_id}>Account holder and payouts: the steps above pull the venue&rsquo;s balance account and account holder by its reference{adyenRow?.store_id && !adyenRow?.account_holder_id ? ' (this store names no balance account)' : ''}</AdyenRow>
-      </div>;
-
   return (
     <>
-      {/* (a) The guided flow: five steps, one open at a time, one primary
-          button each (OWNER FEEDBACK 8 Sep 2026). It replaced the dense Link
-          to Adyen panel, and it owns the pull by reference, the store create,
-          the merchant picker, going live and the web addresses. */}
+      {/* (a) The guided flow: six steps, one open at a time, one primary
+          button each. It owns the pull by reference, the store create, the
+          merchant picker, going live, the card rates on Adyen, the payouts
+          and the web addresses. */}
       <AdyenGoLiveFlow
         location={location}
         venueCode={venueCode}
         callAdmin={callTerminalAdmin}
+        callPayments={callPaymentsAdmin}
         wallets={st && !st.error ? (st.wallets || null) : null}
         onChanged={linkChanged}
         refreshKey={flowRev}
       />
-      {/* (b) Region select and environment switch on one line, with the
-          reader count (c). ServOS internal (OWNER RULE). */}
-      <AdyenEnvironmentControls
-        opsLocationId={location.ops_location_id || null}
-        platformLocationId={location.id}
-        venueName={location.name}
-        callAdmin={callTerminalAdmin}
-        onChanged={envChanged}
-        refreshKey={linkRev}
-      />
-      {statusBox}
-      {/* Pricing: the venue's tiered rate card. Shown read-only to the venue
-          in Back Office → Card payments → Settings; the same resolved card
-          drives commission stamping (adyen-webhook) and the split rules.
-          Blank = platform default. */}
-      <div style={{ marginTop: 14 }}>
-        <div style={{ ...S.label, color: 'var(--t2)', marginBottom: 8 }}>Venue rate card: what the venue pays, per payment type (blank = platform default)</div>
-        {acct == null && <div style={{ fontSize: 12, color: 'var(--t3)' }}>Loading rates…</div>}
-        {acct?.error && <div style={{ fontSize: 12, color: 'var(--red)' }}>Couldn't load the rates: {acct.error}</div>}
+
+      {/* (b) Card rates: what the venue pays per payment type. Blank means the
+          platform default applies. The same resolved card drives what the
+          ledger stamps and what the flow applies on Adyen. */}
+      <div style={BOX}>
+        <div style={{ ...S.label, color: 'var(--t2)', marginBottom: 6 }}>Card rates</div>
+        <div style={{ ...PLAIN, marginBottom: 12 }}>What the venue pays per payment type. Blank means the platform default applies.</div>
+        {acct == null && <div style={QUIET}>Loading the rates.</div>}
+        {acct?.error && <div style={{ fontSize: 13, color: 'var(--red)' }}>The rates could not be read: {acct.error}</div>}
         {acct && !acct.error && (
           <>
-            <RateCardRows value={rc} onChange={setRc} fallbackFor={fallbackFor} />
+            <RateCardRows value={rc} onChange={setRc} fallbackFor={fallbackFor} currency={currency} />
             {hasVenueLegacy && (
-              <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 8 }}>
-                Legacy flat rate on file for this venue: {fmtRate(legacyVenuePct, legacyVenueFix)}. It counts as the card-present tier until a rate card value replaces it.
+              <div style={{ ...QUIET, marginTop: 8 }}>
+                An old flat rate is on file for this venue: {fmtRate(legacyVenuePct, legacyVenueFix, currency)}. It counts as the in person rate until a value replaces it.
               </div>
             )}
             {acct.rate_card_ready === false && (
-              <div style={{ fontSize: 11, color: 'var(--orn, #e8a020)', marginTop: 8 }}>
-                Rate-card storage is not live yet. Hand-apply migration 20260821b_adyen_rate_card.sql, then save.
+              <div style={{ fontSize: 13, color: 'var(--orn, #e8a020)', marginTop: 8 }}>
+                The rate card storage is not there yet. Apply migration 20260821b_adyen_rate_card.sql, then save.
               </div>
             )}
-            <div style={{ fontSize: 11, color: 'var(--t3)', margin: '10px 0 12px', lineHeight: 1.5 }}>
-              The venue sees the effective card read-only in Back Office → Card payments → Settings, branded ServOS Payments.
-              Commission on each payment is stamped from these rates.
+            <div style={{ ...QUIET, margin: '10px 0 12px' }}>
+              The venue sees these rates read only in Back Office, under Card payments. Step 5 of the flow applies them on Adyen.
             </div>
             <SaveRow busy={busy} dirty={dirty} savedAt={savedAt}
               onSave={savePricing}
@@ -1090,329 +1012,257 @@ function AdyenBlock({ location, venueCode, adyenRow, defaults, onError, onRowCha
           </>
         )}
       </div>
-      <AdyenPayoutPanel key={envRev} location={location} />
+
+      {/* (c) Plan: the SaaS plan, unchanged, inside the venue. */}
+      <VenuePlanPanel location={location} onError={onError} />
+
+      {/* (d) Advanced, collapsed. */}
+      <AdvancedPanel
+        location={location}
+        adyenRow={adyenRow}
+        st={st}
+        callTerminalAdmin={callTerminalAdmin}
+        onEnvChanged={envChanged}
+        linkRev={linkRev}
+        onManualSaved={linkChanged}
+      />
     </>
   );
 }
 
-// ─── Payout status panel (Phase 4, v5.7.1; trimmed 8 Sep 2026) ─────────────
-// Reads the adyen-onboard status: which ids the venue holds, whether the
-// balance platform answers for it, its balances and sweeps. Every failure
-// arrives pre-classified: awaiting_enablement (amber: the balance platform
-// is not switched on yet), missing_prerequisite (neutral: says exactly what
-// to do first), error (red).
-//
-// OWNER RULE 0 (8 Sep 2026): the four payout onboarding buttons (Start
-// onboarding, New onboarding link, Configure splits, Set up daily payout)
-// are HIDDEN from the admin portal, not collapsed: the owner cannot use
-// them here. The adyen-onboard start / refresh_link / configure_splits /
-// setup_sweep actions stay on the server; nothing in this portal calls them.
-// The manual "Enter Adyen details" form lives under Advanced as a fallback:
-// Link to Adyen (above) is the normal route.
-const fmtMinor = (m, cur = 'GBP') =>
-  new Intl.NumberFormat('en-GB', { style: 'currency', currency: cur }).format((Number(m) || 0) / 100);
+// ─── Plan (SaaS), one venue (10 Sep 2026) ──────────────────────────────────
+// The saas_pricing read answers every venue at once (the catalog, the plan,
+// the devices, the volume), so it is read ONCE per page and shared between
+// the expanded venues; a save reads it again. subscriptions is an OPS table,
+// so the venue is matched on its ops id.
+let saasShared = null;
+const loadSaas = (force = false) => {
+  if (force || !saasShared) {
+    saasShared = callPaymentsAdmin('saas_pricing', {}).catch((e) => { saasShared = null; throw e; });
+  }
+  return saasShared;
+};
 
-function OnbStep({ done, label, detail }) {
+function VenuePlanPanel({ location, onError }) {
+  const [data, setData] = useState(null);   // null = loading, {error} or the saas_pricing get payload
+  // rev: bumped after a save so the shared read runs again.
+  const [rev, setRev] = useState(0);
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      let next;
+      try { next = await loadSaas(rev > 0); }
+      catch (e) { next = { error: e.message }; }
+      if (live) setData(next);
+    })();
+    return () => { live = false; };
+  }, [rev]);
+  const opsId = location.ops_location_id || location.id;
+  const venue = (data?.venues ?? []).find((v) => v.location_id === opsId || v.location_id === location.id) || null;
   return (
-    <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, fontSize: 12.5 }}>
-      <span style={{ color: done ? 'var(--grn, #15C26A)' : 'var(--t4)', fontWeight: 700, width: 12 }}>{done ? '✓' : '·'}</span>
-      <span style={{ color: done ? 'var(--t1)' : 'var(--t3)' }}>{label}</span>
-      {detail && <code style={{ fontSize: 10.5, color: 'var(--t4)', fontFamily: 'var(--font-mono, monospace)' }}>{detail}</code>}
+    <div style={BOX}>
+      <div style={{ ...S.label, color: 'var(--t2)', marginBottom: 6 }}>Plan</div>
+      {data == null && <div style={QUIET}>Loading the plan.</div>}
+      {data?.error && <div style={{ fontSize: 13, color: 'var(--red)' }}>The plan could not be read: {data.error}</div>}
+      {data && !data.error && data.typed === false && (
+        <div style={{ ...QUIET, padding: 10, borderRadius: 8, background: 'var(--orn-d, rgba(230,160,60,.12))', color: 'var(--orn, #e8a020)', border: '1px solid var(--orn-b, var(--bdr2))' }}>
+          {data.migration_note || 'The extra devices and HubRise columns are not on the subscriptions table yet. Apply supabase/migrations/20260822_saas_plans.sql on the Ops database.'}
+        </div>
+      )}
+      {data && !data.error && data.typed !== false && !venue && <div style={QUIET}>This venue has no plan row yet.</div>}
+      {data && !data.error && data.typed !== false && venue && (
+        <SaasVenueRow venue={venue} catalog={data.catalog} deviceNote={data.device_count_note} onSaved={() => setRev((n) => n + 1)} onError={onError} />
+      )}
     </div>
   );
 }
 
-function AdyenPayoutPanel({ location }) {
-  const [st, setSt] = useState(null);        // null = loading, {error} or adyen-onboard status payload
-  const [msg, setMsg] = useState(null);      // { kind, text } from the last action
-  // Advanced: the manual form, collapsed (OWNER RULE 1: pull by reference is
-  // the normal route; typing ids is the fallback).
-  const [advanced, setAdvanced] = useState(false);
-  // v5.7.93: venues onboarded BY HAND in the Adyen Customer Area can have the
-  // ids typed in here. Same columns the API path and adyen_link write, so
-  // everything downstream behaves identically.
-  const [manual, setManual] = useState(null);   // null = form closed
-  const [manualBusy, setManualBusy] = useState(false);
-  // The real merchant accounts from Adyen. null = not fetched, [] = could not.
-  const [merchants, setMerchants] = useState(null);
-  // Stores for the CHOSEN merchant. Refetched when the merchant changes.
-  const [stores, setStores] = useState(null);
+// ─── Advanced (10 Sep 2026), collapsed ─────────────────────────────────────
+function AdvancedPanel({ location, adyenRow, st, callTerminalAdmin, onEnvChanged, linkRev, onManualSaved }) {
+  const [open, setOpen] = useState(false);
+  const row = adyenRow || {};
+  const idRows = ADYEN_ID_ROWS.filter(([key]) => !!row[key]);
+  const liveVenue = st && !st.error ? st.environment === 'live' : String(row.environment || '') === 'live';
+  return (
+    <div style={BOX}>
+      <button
+        type="button"
+        style={{ ...S.btn, ...S.btnGhost, padding: '4px 10px', fontSize: 13 }}
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}>
+        {open ? '▾' : '▸'} Advanced
+      </button>
+      {open && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ ...QUIET, marginBottom: 4 }}>The environment and region, the Adyen connection, the ids Adyen gave us, and a manual link.</div>
 
-  const load = useCallback(async () => {
-    try {
-      const r = await callAdyenOnboard('status', { location_id: location.id });
-      setSt(r.ok ? r : { error: r.message || r.error || 'status failed' });
-    } catch (e) { setSt({ error: e.message }); }
-  }, [location.id]);
+          {/* The region select and the environment switch. ServOS internal:
+              going live is the flow's fourth step, so this only brings a
+              live venue back to test. */}
+          <AdyenEnvironmentControls
+            opsLocationId={location.ops_location_id || null}
+            platformLocationId={location.id}
+            venueName={location.name}
+            callAdmin={callTerminalAdmin}
+            onChanged={onEnvChanged}
+            refreshKey={linkRev}
+          />
 
-  useEffect(() => { setSt(null); load(); }, [load]);
+          {/* The Adyen connection, as adyen-checkout status answers it. */}
+          <div style={{ ...BOX, background: 'var(--bg1)' }}>
+            <div style={{ ...S.label, color: 'var(--t2)', marginBottom: 6 }}>Adyen connection</div>
+            {!st && <div style={QUIET}>Checking the Adyen connection.</div>}
+            {st && (st.error || !st.configured) && (
+              <>
+                <div style={PLAIN}>Adyen is not reachable on this environment, so card payments refuse safely here.</div>
+                {st.error && <div style={{ ...QUIET, marginTop: 4 }}>{st.error}</div>}
+              </>
+            )}
+            {st && !st.error && st.configured && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ ...PLAIN, color: 'var(--t1)', fontWeight: 700 }}>Adyen is connected.</span>
+                  <span
+                    title={liveVenue ? 'Live, real money at this venue' : 'Test cards only at this venue'}
+                    style={{ ...S.pill, ...(liveVenue ? { background: 'var(--red)', color: '#fff', borderColor: 'var(--red)' } : {}) }}>
+                    {liveVenue ? 'LIVE' : 'TEST'}
+                  </span>
+                </div>
+                <AdyenRow ok={st.online}>{st.online ? 'Online shop payments go through Adyen.' : 'Online shop payments are not set up yet.'}</AdyenRow>
+                <AdyenRow ok={st.inPerson}>{st.inPerson ? 'A card reader is paired for the tills.' : 'No card reader is paired for the tills yet.'}</AdyenRow>
+                <IdRow label="Adyen account" value={st.merchantAccount} />
+              </div>
+            )}
+          </div>
 
-  const box = { marginTop: 14, padding: '12px 16px', borderRadius: 12, background: 'var(--bg2)', border: '1px solid var(--bdr2)' };
+          {/* The ids Adyen gave us, grey and monospace, with Copy. */}
+          <div style={{ ...BOX, background: 'var(--bg1)' }}>
+            <div style={{ ...S.label, color: 'var(--t2)', marginBottom: 6 }}>The ids Adyen gave us</div>
+            {idRows.length === 0 && <div style={QUIET}>Adyen has given us no ids for this venue yet. The flow above finds them.</div>}
+            {idRows.map(([key, label]) => <IdRow key={key} label={label} value={row[key]} />)}
+          </div>
 
-  if (st == null) return <div style={box}><div style={{ fontSize: 12, color: 'var(--t3)' }}>Checking payout status…</div></div>;
-  if (st.error) {
-    return (
-      <div style={box}>
-        <div style={{ ...S.label, color: 'var(--t2)', marginBottom: 6 }}>Payout status</div>
-        <div style={{ fontSize: 12, color: 'var(--red)' }}>Couldn't load the payout status: {st.error}</div>
-        <button style={{ ...S.btn, ...S.btnGhost, marginTop: 8 }} onClick={() => { setSt(null); load(); }}>Retry</button>
-      </div>
-    );
-  }
+          <ManualLink location={location} adyenRow={adyenRow} onSaved={onManualSaved} />
+        </div>
+      )}
+    </div>
+  );
+}
 
-  const ids = st.ids || {};
-  const awaiting = st.enablement === 'awaiting_enablement';
-  const hasSweep = Array.isArray(st.sweeps) && st.sweeps.length > 0;
-  const bal = Array.isArray(st.balances) && st.balances.length ? st.balances[0] : null;
-  // This VENUE's Adyen environment (older fn builds send none: treat as test).
-  const liveVenue = st.environment === 'live';
-
-  const kindStyle = (kind) => kind === 'ok'
-    ? { background: 'var(--grn-d)', color: 'var(--grn)', border: '1px solid var(--grn-b)' }
-    : kind === 'awaiting_enablement' || kind === 'warning'
-    ? { background: 'var(--orn-d, rgba(230,160,60,.12))', color: 'var(--orn)', border: '1px solid var(--orn-b, var(--bdr2))' }
-    : kind === 'missing_prerequisite'
-    ? { background: 'var(--bg3)', color: 'var(--t2)', border: '1px solid var(--bdr2)' }
-    : { background: 'var(--red-d)', color: 'var(--red)', border: '1px solid var(--red-b)' };
-
-  const openManual = () => {
+// ─── The manual link (10 Sep 2026): a merchant account and a store, picked ──
+// from Adyen's own lists, for a venue the flow cannot find by its code. No
+// typed ids: the business account, where the money lands, the registered
+// company and the rates on Adyen are pulled by the flow, never pasted.
+function ManualLink({ location, adyenRow, onSaved }) {
+  const [form, setForm] = useState(null);       // null = closed
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);         // { kind, text }
+  const [merchants, setMerchants] = useState(null);   // null = not read, [] = could not
+  const [stores, setStores] = useState(null);         // stores of the chosen merchant
+  const openForm = () => {
     if (merchants === null) {
       callAdyenOnboard('list_merchants', { location_id: location.id })
         .then((r) => setMerchants(r?.merchants || []))
         .catch(() => setMerchants([]));
     }
     setMsg(null);
-    setManual({
-      merchant_account: ids.merchant_account || '', store_id: ids.store_id || '',
-      account_holder_id: ids.account_holder_id || '', balance_account_id: ids.balance_account_id || '',
-      legal_entity_id: ids.legal_entity_id || '', split_profile_id: ids.split_profile_id || '',
-      // a stored legacy 'EU' reads as UK. The region is only SENT when
-      // the admin picks one here or the venue has no row yet (8 Sep 2026).
-      region: st.region === 'US' ? 'US' : 'UK',
-      region_touched: false,
-    });
+    setForm({ merchant_account: adyenRow?.merchant_account || '', store_id: adyenRow?.store_id || '', region: null });
   };
-
+  const kindStyle = (kind) => kind === 'ok'
+    ? { background: 'var(--grn-d)', color: 'var(--grn)', border: '1px solid var(--grn-b)' }
+    : kind === 'warning'
+    ? { background: 'var(--orn-d, rgba(230,160,60,.12))', color: 'var(--orn)', border: '1px solid var(--orn-b, var(--bdr2))' }
+    : { background: 'var(--red-d)', color: 'var(--red)', border: '1px solid var(--red-b)' };
+  const save = async () => {
+    setBusy(true); setMsg(null);
+    try {
+      const fields = { merchant_account: form.merchant_account, store_id: form.store_id };
+      // The region rides only when the merchant pick decided it, or the venue
+      // has no row yet: sending it on every save was refused until the region
+      // migration ran, even when only the store changed (8 Sep 2026).
+      if (form.region && (!adyenRow || form.region !== adyenRow.region)) fields.region = form.region;
+      const r = await callAdyenOnboard('save_manual', { location_id: location.id, ...fields });
+      if (r.ok) {
+        setForm(null);
+        setMsg(r.warning ? { kind: 'warning', text: `The Adyen details are saved. ${r.warning}` } : { kind: 'ok', text: 'The Adyen details are saved for this venue.' });
+        onSaved?.();
+      } else setMsg({ kind: r.kind === 'warning' ? 'warning' : 'error', text: r.message || r.error || 'The details could not be saved.' });
+    } catch (e) { setMsg({ kind: 'error', text: e.message }); }
+    finally { setBusy(false); }
+  };
   return (
-    <div style={box}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
-        <div style={{ ...S.label, color: 'var(--t2)', marginBottom: 0 }}>Payout status</div>
-        <span style={S.pill}>{awaiting ? 'Awaiting enablement' : st.enablement === 'enabled' ? 'Balance platform live' : 'Not started'}</span>
-        {st.environment && (
-          <span title={liveVenue ? 'Live, real money at this venue' : 'Test only at this venue'}
-            style={{ ...S.pill, ...(liveVenue ? { background: 'var(--red)', color: '#fff', borderColor: 'var(--red)' } : {}) }}>
-            {liveVenue ? 'LIVE money' : 'Test'}
-          </span>
-        )}
-        {st.payouts_ok && <span title="Adyen allows payouts to the venue bank. Whether the venue is paid out daily is the Payouts chip on the venue row and step 5 of the go live flow." style={{ ...S.pill, color: 'var(--grn)', borderColor: 'var(--grn-b)' }}>Payouts allowed</span>}
-        <button style={{ ...S.btn, ...S.btnGhost, marginLeft: 'auto', padding: '4px 10px', fontSize: 12 }} disabled={manualBusy} onClick={() => { setSt(null); setMsg(null); load(); }}>Refresh</button>
-      </div>
-
-      {awaiting && (
-        <div style={{ padding: 10, borderRadius: 8, fontSize: 12, lineHeight: 1.5, marginBottom: 10, ...kindStyle('awaiting_enablement') }}>
-          <b>The balance platform does not answer for this venue yet.</b> Link to Adyen (above) pulls the
-          venue&rsquo;s balance account and account holder once Adyen holds them; nothing needs redeploying when it does.
-        </div>
-      )}
-
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 5, marginBottom: 12 }}>
-        <OnbStep done={!!ids.legal_entity_id} label="Legal entity" detail={ids.legal_entity_id} />
-        <OnbStep done={!!ids.account_holder_id} label="Account holder" detail={ids.account_holder_id} />
-        <OnbStep done={!!ids.balance_account_id} label="Balance account (funds land here)" detail={ids.balance_account_id} />
-        <OnbStep done={!!ids.transfer_instrument_id} label="Bank account (the venue adds it through Adyen's hosted onboarding)" detail={ids.transfer_instrument_id} />
-        <OnbStep done={!!ids.split_profile_id} label="Commission splits on the store" detail={ids.split_profile_id} />
-        <OnbStep done={hasSweep} label="Payout sweep (pushes the balance to the venue bank)" detail={hasSweep ? `${st.sweeps[0].schedule || ''} · ${st.sweeps[0].status || ''}` : null} />
-      </div>
-
-      {bal && (
-        <div style={{ display: 'flex', gap: 22, flexWrap: 'wrap', padding: '10px 12px', background: 'var(--bg1)', borderRadius: 8, marginBottom: 12, border: '1px solid var(--bdr)' }}>
-          <Stat label="Total balance" value={fmtMinor(bal.total_minor, bal.currency)} accent />
-          <Stat label="Pending" value={fmtMinor(bal.pending_minor, bal.currency)} />
-          <Stat label="Available" value={fmtMinor(bal.available_minor, bal.currency)} />
-        </div>
-      )}
-
-      {msg && (
-        <div style={{ padding: 10, borderRadius: 8, fontSize: 12, lineHeight: 1.5, marginBottom: 12, ...kindStyle(msg.kind) }}>{msg.text}</div>
-      )}
-
-      {/* OWNER RULE 0: no Start onboarding / New onboarding link / Configure
-          splits / Set up daily payout buttons here. Hidden, not collapsed. */}
-      <div style={{ borderTop: '1px solid var(--bdr)', paddingTop: 8 }}>
-        <button
-          style={{ ...S.btn, ...S.btnGhost, padding: '4px 10px', fontSize: 12 }}
-          aria-expanded={advanced}
-          onClick={() => setAdvanced((v) => !v)}>
-          {advanced ? '▾' : '▸'} Advanced
-        </button>
-        {advanced && (
-          <div style={{ marginTop: 10 }}>
-            <div style={{ fontSize: 12, color: 'var(--t3)', lineHeight: 1.55, marginBottom: 10 }}>
-              Link to Adyen (at the top of this venue) is the normal route: it pulls every id from Adyen by the venue reference.
-              Type ids here only when Adyen holds no store with the venue code and the ids must be copied from the Customer Area by hand.
-            </div>
-            {!manual && (
-              <button style={{ ...S.btn, ...S.btnGhost }} disabled={manualBusy} onClick={openManual}>Enter Adyen details</button>
-            )}
-            {manual && (
-              <div style={{ ...box, marginTop: 0, marginBottom: 12 }}>
-                <div style={{ ...S.label, color: 'var(--t2)', marginBottom: 4 }}>Enter the Adyen details for this venue</div>
-                <div style={{ fontSize: 12, color: 'var(--t3)', lineHeight: 1.55, marginBottom: 12 }}>
-                  Onboard the venue in the Adyen Customer Area first, then copy the ids from that screen
-                  into here. Leave a box empty to keep what is already saved.
-                </div>
-                <div style={{ marginBottom: 10 }}>
-                  <div style={{ ...S.label, color: 'var(--t3)', marginBottom: 4 }}>Merchant account *</div>
-                  {merchants === null ? (
-                    <div style={{ fontSize: 12, color: 'var(--t3)' }}>Loading the list from Adyen…</div>
-                  ) : merchants.length ? (
-                    <>
-                      <select style={{ ...S.input, fontSize: 12.5 }} value={manual.merchant_account || ''}
-                        onChange={(e) => {
-                          const pick = merchants.find((m) => m.id === e.target.value);
-                          setManual((m) => ({
-                            ...m,
-                            merchant_account: e.target.value,
-                            store_id: '',
-                            // The merchant's own country decides the endpoint, so the
-                            // region follows the choice instead of being guessed again.
-                            // Region codes are UK and US (8 Sep 2026, EU is gone).
-                            region: pick?.country === 'US' ? 'US' : (pick ? 'UK' : m.region),
-                            region_touched: !!pick || !!m.region_touched,
-                          }));
-                          setStores(null);
-                          if (e.target.value) {
-                            callAdyenOnboard('list_stores', { location_id: location.id, merchant_account: e.target.value })
-                              .then((r) => {
-                                const list = r?.stores || [];
-                                setStores(list);
-                                // Pre-pick the store whose Adyen reference matches this
-                                // venue's own code, so the common case needs no thought.
-                                const hit = list.find((st) => st.suggested);
-                                if (hit) setManual((m) => ({ ...m, store_id: hit.id }));
-                              })
-                              .catch(() => setStores([]));
-                          }
-                        }}>
-                        <option value="">Choose the merchant account…</option>
-                        {merchants.map((m) => (
-                          <option key={m.id} value={m.id}>
-                            {m.name}{m.country ? ` (${m.country})` : ''}{m.status && m.status !== 'active' ? ` (${m.status})` : ''}
-                          </option>
-                        ))}
-                      </select>
-                      <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 5 }}>
-                        Straight from Adyen, so it cannot be mistyped. Choosing one sets the region for you.
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <input style={{ ...S.input, ...S.inputMono, fontSize: 12 }} value={manual.merchant_account || ''}
-                        placeholder="e.g. Franpos US"
-                        onChange={(e) => setManual((m) => ({ ...m, merchant_account: e.target.value }))} />
-                      <div style={{ fontSize: 11, color: 'var(--orn, #e8a020)', marginTop: 5 }}>
-                        Could not read the list from Adyen, so type it exactly as it appears in the Customer Area.
-                      </div>
-                    </>
-                  )}
-                </div>
-                <div style={{ marginBottom: 10 }}>
-                  <div style={{ ...S.label, color: 'var(--t3)', marginBottom: 4 }}>Store</div>
-                  {!manual.merchant_account ? (
-                    <div style={{ fontSize: 12, color: 'var(--t3)' }}>Choose a merchant account first.</div>
-                  ) : stores === null ? (
-                    <div style={{ fontSize: 12, color: 'var(--t3)' }}>Loading this merchant&rsquo;s stores…</div>
-                  ) : stores.length ? (
-                    <>
-                      <select style={{ ...S.input, fontSize: 12.5 }} value={manual.store_id || ''}
-                        onChange={(e) => setManual((m) => ({ ...m, store_id: e.target.value }))}>
-                        <option value="">Choose the store…</option>
-                        {stores.map((st) => (
-                          <option key={st.id} value={st.id}>
-                            {st.reference || st.id}{st.description ? `: ${st.description}` : ''}
-                            {st.suggested ? '   ← matches this venue' : ''}
-                            {st.status && st.status !== 'active' ? `  (${st.status})` : ''}
-                          </option>
-                        ))}
-                      </select>
-                      <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 5 }}>
-                        Shown by the store reference set in Adyen. Put this venue&rsquo;s code
-                        (for example SV-1007) in that field when you create the store and it
-                        will match itself here every time.
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <input style={{ ...S.input, ...S.inputMono, fontSize: 12 }} value={manual.store_id || ''}
-                        placeholder="ST32DG5223..."
-                        onChange={(e) => setManual((m) => ({ ...m, store_id: e.target.value }))} />
-                      <div style={{ fontSize: 11, color: 'var(--orn, #e8a020)', marginTop: 5 }}>
-                        No stores found for this merchant, or the list could not be read. Paste the Store Id from the Customer Area.
-                      </div>
-                    </>
-                  )}
-                </div>
-                {[
-                  ['account_holder_id', 'Account holder Id', 'AH32DB9223...'],
-                  ['balance_account_id', 'Balance Account Id', 'BA32DH2223...'],
-                  ['legal_entity_id', 'Legal entity Id (optional)', 'LE32...'],
-                  ['split_profile_id', 'Split configuration Id (optional)', 'SP...'],
-                ].map(([key, label, ph, req]) => (
-                  <div key={key} style={{ marginBottom: 10 }}>
-                    <div style={{ ...S.label, color: 'var(--t3)', marginBottom: 4 }}>
-                      {label}{req ? ' *' : ''}
-                    </div>
-                    <input
-                      style={{ ...S.input, ...S.inputMono, fontSize: 12 }}
-                      value={manual[key] || ''}
-                      placeholder={ph}
-                      onChange={(e) => setManual((m) => ({ ...m, [key]: e.target.value }))}
-                    />
-                  </div>
+    <div style={{ ...BOX, background: 'var(--bg1)' }}>
+      <div style={{ ...S.label, color: 'var(--t2)', marginBottom: 6 }}>Manual link</div>
+      <div style={{ ...QUIET, marginBottom: 10 }}>The flow finds the venue by its code. Use this only when Adyen holds it under another store.</div>
+      {msg && <div style={{ padding: 10, borderRadius: 8, fontSize: 13, lineHeight: 1.5, marginBottom: 10, ...kindStyle(msg.kind) }}>{msg.text}</div>}
+      {!form && <button style={{ ...S.btn, ...S.btnGhost }} disabled={busy} onClick={openForm}>Pick the merchant account and store</button>}
+      {form && (
+        <div>
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ ...S.label, color: 'var(--t3)', marginBottom: 4 }}>Merchant account</div>
+            {merchants === null ? (
+              <div style={QUIET}>Reading the list from Adyen.</div>
+            ) : merchants.length ? (
+              <select style={{ ...S.input, fontSize: 13 }} value={form.merchant_account || ''}
+                onChange={(e) => {
+                  const pick = merchants.find((m) => m.id === e.target.value);
+                  // The merchant's own country decides the endpoint, so the
+                  // region follows the choice instead of being guessed again.
+                  setForm((f) => ({ ...f, merchant_account: e.target.value, store_id: '', region: pick ? (pick.country === 'US' ? 'US' : 'UK') : null }));
+                  setStores(null);
+                  if (e.target.value) {
+                    callAdyenOnboard('list_stores', { location_id: location.id, merchant_account: e.target.value })
+                      .then((r) => {
+                        const list = r?.stores || [];
+                        setStores(list);
+                        // The store whose reference is this venue's code is picked for you.
+                        const hit = list.find((st) => st.suggested);
+                        if (hit) setForm((f) => ({ ...f, store_id: hit.id }));
+                      })
+                      .catch(() => setStores([]));
+                  }
+                }}>
+                <option value="">Pick one</option>
+                {merchants.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name}{m.country ? ` (${m.country})` : ''}{m.status && m.status !== 'active' ? ` (${m.status})` : ''}
+                  </option>
                 ))}
-                <div style={{ marginBottom: 12 }}>
-                  <div style={{ ...S.label, color: 'var(--t3)', marginBottom: 4 }}>Region</div>
-                  <select style={{ ...S.input, fontSize: 12.5 }} value={manual.region === 'US' ? 'US' : 'UK'}
-                    onChange={(e) => setManual((m) => ({ ...m, region: e.target.value, region_touched: true }))}>
-                    <option value="UK">United Kingdom (Adyen EU data centre)</option>
-                    <option value="US">United States</option>
-                  </select>
-                  <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 5 }}>
-                    The UK and US live accounts are different Adyen accounts: this decides which keys, Checkout host
-                    and Terminal API endpoint the venue uses. Getting it wrong stops payments.
-                  </div>
-                </div>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <button style={{ ...S.btn, ...S.btnPrim, opacity: manualBusy ? 0.6 : 1 }} disabled={manualBusy}
-                    onClick={async () => {
-                      setManualBusy(true); setMsg(null);
-                      try {
-                        const { region_touched, ...fields } = manual;
-                        // The region only rides when the admin chose it here, or the
-                        // venue has no row yet (8 Sep 2026): sending the prefilled
-                        // value on every save meant a UK save was refused until the
-                        // region migration runs, even when only the store id changed.
-                        if (!region_touched && st.account_row !== false) delete fields.region;
-                        const r = await callAdyenOnboard('save_manual', { location_id: location.id, ...fields });
-                        if (r.ok) {
-                          setManual(null);
-                          setMsg(r.warning
-                            ? { kind: 'warning', text: `Adyen details saved. ${r.warning}` }
-                            : { kind: 'ok', text: 'Adyen details saved for this venue.' });
-                          await load();
-                        } else setMsg({ kind: r.kind || 'error', text: r.message || r.error || 'Could not save' });
-                      } catch (e) { setMsg({ kind: 'error', text: e.message }); }
-                      finally { setManualBusy(false); }
-                    }}>
-                    {manualBusy ? 'Saving…' : 'Save Adyen details'}
-                  </button>
-                  <button style={{ ...S.btn, ...S.btnGhost }} disabled={manualBusy} onClick={() => setManual(null)}>Cancel</button>
-                </div>
-              </div>
+              </select>
+            ) : (
+              <div style={{ fontSize: 13, color: 'var(--orn, #e8a020)' }}>The merchant accounts could not be read from Adyen.</div>
             )}
           </div>
-        )}
-      </div>
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ ...S.label, color: 'var(--t3)', marginBottom: 4 }}>Store</div>
+            {!form.merchant_account ? (
+              <div style={QUIET}>Pick a merchant account first.</div>
+            ) : stores === null ? (
+              <div style={QUIET}>Reading the stores on that account.</div>
+            ) : stores.length ? (
+              <select style={{ ...S.input, fontSize: 13 }} value={form.store_id || ''}
+                onChange={(e) => setForm((f) => ({ ...f, store_id: e.target.value }))}>
+                <option value="">Pick one</option>
+                {stores.map((st) => (
+                  <option key={st.id} value={st.id}>
+                    {st.reference || st.id}{st.description ? `: ${st.description}` : ''}
+                    {st.suggested ? '   (matches this venue)' : ''}
+                    {st.status && st.status !== 'active' ? `  (${st.status})` : ''}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <div style={{ fontSize: 13, color: 'var(--orn, #e8a020)' }}>No stores were found on that account.</div>
+            )}
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button style={{ ...S.btn, ...S.btnPrim, opacity: busy ? 0.6 : 1 }} disabled={busy || !form.merchant_account} onClick={save}>
+              {busy ? 'Saving' : 'Save the Adyen details'}
+            </button>
+            <button style={{ ...S.btn, ...S.btnGhost }} disabled={busy} onClick={() => setForm(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

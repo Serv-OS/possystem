@@ -349,7 +349,7 @@ test('goliveFlowView: six numbered rows, the owner’s titles, the first not don
     'The venue’s Adyen business account',
     'The venue’s payments location',
     'Turn on live payments',
-    'Payouts and commission',
+    'Card rates and payouts',
     'Card readers',
   ]);
   assert.equal(v.openId, 'payments_location');
@@ -361,7 +361,7 @@ test('goliveFlowView: six numbered rows, the owner’s titles, the first not don
   assert.deepEqual(v.steps.map((x) => x.chip.tone), ['ok', 'ok', 'idle', 'idle', 'idle', 'idle']);
   // the payouts step's two parts ride through with their own titles and chips
   const payouts = v.steps[4];
-  assert.deepEqual(payouts.parts.map((p) => p.title), ['Commission', 'Payouts to the venue']);
+  assert.deepEqual(payouts.parts.map((p) => p.title), ['Card rates', 'Payouts to the venue']);
   assert.deepEqual(payouts.parts.map((p) => p.chip.label), ['To do', 'To do']);
   assert.equal(payouts.parts[1].action, 'send_bank_link');
   assert.equal(payouts.parts[1].hint, 'One click makes a link for the venue owner.');
@@ -668,6 +668,7 @@ test('the flow’s wording never uses a dash as punctuation', () => {
     ...Object.values(GOLIVE_STEP_TITLES),
     ...goliveFlowView({ steps: FIVE }).steps.map((s) => s.chip.label),
     ...goliveFlowView({ steps: FIVE }).steps[4].parts.map((p) => p.title),
+    ...rateCardRows({ tiers: {} }).map((r) => `${r.label} ${r.rate}`),
     ...capabilityNotices(capabilityList({ sendToTransferInstrument: { allowed: false, requested: true, verificationStatus: 'rejected' } })).map((n) => n.text),
     mismatchView({ found: 'A', configured: 'B' }).text,
     plainFailure({ status: 403 }).text,
@@ -678,24 +679,63 @@ test('the flow’s wording never uses a dash as punctuation', () => {
   for (const w of words) assert.doesNotMatch(String(w), /[–—]/, `dash in: ${w}`);
 });
 
-// ── FINDING A VENUE BY ITS REFERENCE (8 Sep 2026) ───────────────────────────
-import { referenceSearchView } from './adyenAdminRows.js';
+// ── FINDING A VENUE BY ITS REFERENCE, NOTHING PASTED (8 and 10 Sep 2026) ─────
+import { referenceSearchView, PLATFORM_ID_LINE, RATES_LEDE, rateCardRows } from './adyenAdminRows.js';
 
-test('referenceSearchView: the FIRST venue pastes its id, and the line says it is a one off', () => {
+test('referenceSearchView: with no balance platform known, ONE input asks for it once per region', () => {
   const v = referenceSearchView({ reference: 'SV-1007', balancePlatformKnown: false });
   assert.equal(v.known, false);
-  assert.equal(v.pastePrimary, true);
-  assert.equal(v.firstVenueLine, 'The first venue needs its Adyen id pasted once. After that we find venues by their reference on their own.');
+  assert.equal(v.needsPlatformId, true);
+  assert.equal(v.platformLine, PLATFORM_ID_LINE);
+  assert.equal(v.platformLine, 'Adyen needs the balance platform id once per region. After that every venue is found by its code.');
+  assert.ok(v.platformLine.length < 120);
   assert.equal(v.foundLine, null);
   // no state at all reads the same way: nothing is known, so nothing is claimed
-  assert.equal(referenceSearchView(null).pastePrimary, true);
+  assert.equal(referenceSearchView(null).needsPlatformId, true);
+  // the old paste first flags are gone: nothing on the screen reads them
+  assert.equal('pastePrimary' in v, false);
+  assert.equal('firstVenueLine' in v, false);
 });
 
-test('referenceSearchView: once the id is known the paste box is not the main path', () => {
+test('referenceSearchView: once the id is known there is no box at all, Find on Adyen is the one primary', () => {
   const v = referenceSearchView({ reference: 'SV-1008', balancePlatformKnown: true });
   assert.equal(v.known, true);
-  assert.equal(v.pastePrimary, false);
-  assert.equal(v.firstVenueLine, null);
+  assert.equal(v.needsPlatformId, false);
+  assert.equal(v.platformLine, null);
+});
+
+test('rateCardRows: four big rows, Payment type, Rate, Per payment, one grey source word', () => {
+  const rates = {
+    currency: 'GBP',
+    tiers: {
+      card_present: { percent: 1.4, fixedPence: 5, source: 'venue' },
+      card_not_present: { percent: 1.9, fixedPence: 10, source: 'platform default' },
+      amex: { percent: 0, fixedPence: 0, source: 'venue' },
+      keyed: { percent: null, fixedPence: null, source: null },
+    },
+  };
+  assert.deepEqual(rateCardRows(rates), [
+    { id: 'card_present', label: 'In person', rate: '1.4%', perPayment: '5p', source: 'venue', unpriced: false },
+    { id: 'card_not_present', label: 'Online', rate: '1.9%', perPayment: '10p', source: 'platform default', unpriced: false },
+    { id: 'amex', label: 'Amex and business cards', rate: '0%', perPayment: '0p', source: 'venue', unpriced: false },
+    { id: 'keyed', label: 'Keyed in', rate: 'not set', perPayment: '', source: null, unpriced: true },
+  ]);
+  // US venues read cents; a percent with no pence reads 0c
+  const us = rateCardRows({ currency: 'USD', tiers: { amex: { percent: 2.5 } } });
+  assert.equal(us[2].perPayment, '0c');
+  assert.equal(us[2].rate, '2.5%');
+  // the rate card's own spelling is read too, and nothing at all is four unpriced rows
+  assert.equal(rateCardRows({ tiers: { keyed: { percent: 2.9, fixed_pence: 15 } } })[3].perPayment, '15p');
+  assert.deepEqual(rateCardRows(null).map((r) => r.unpriced), [true, true, true, true]);
+  // the two sentences above the table: plain, short, no dashes, never the word commission
+  assert.equal(RATES_LEDE.length, 2);
+  for (const l of RATES_LEDE) {
+    assert.ok(l.length < 120, l);
+    assert.doesNotMatch(l, /[–—]/, l);
+    assert.doesNotMatch(l, /commission/i, l);
+  }
+  assert.equal(RATES_LEDE[0], 'The venue pays these rates on every card payment.');
+  assert.equal(RATES_LEDE[1], 'Adyen and FranPOS take their costs out of them and the rest is ServOS margin.');
 });
 
 test('referenceSearchView: a venue found by its reference says so in one line', () => {
@@ -712,7 +752,7 @@ test('referenceSearchView: a venue found by its reference says so in one line', 
 
 test('referenceSearchView: its wording never uses a dash as punctuation', () => {
   const words = [
-    referenceSearchView({}).firstVenueLine,
+    referenceSearchView({}).platformLine,
     referenceSearchView({ reference: 'SV-1007', balancePlatformKnown: true, holderFoundBy: 'reference' }).foundLine,
   ];
   for (const w of words) assert.doesNotMatch(String(w), /[–—]/, `dash in: ${w}`);

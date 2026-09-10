@@ -16,7 +16,7 @@
  */
 
 import { adyenEnvFromRow, adyenRegionFromRow } from './adyenEnv.js';
-import { worstVerificationStatus, LINK_ID_FIELDS, storeStillNeeded, conflictsMoveMoney } from './adyenLink.js';
+import { worstVerificationStatus, LINK_ID_FIELDS, storeStillNeeded, conflictsMoveMoney, COMMISSION_TIERS } from './adyenLink.js';
 import { registrationLines } from './adyenOrigins.js';
 
 const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -161,7 +161,7 @@ export function lookupRows(lookup) {
       tone: s.status === 'active' ? 'ok' : 'missing',
     });
     if (s.splitConfigurationId || l.splitConfigurationId) {
-      rows.push({ key: 'split', label: 'Split configuration', value: str(l.splitConfigurationId || s.splitConfigurationId), detail: 'commission rules on the store', tone: 'ok' });
+      rows.push({ key: 'split', label: 'Split configuration', value: str(l.splitConfigurationId || s.splitConfigurationId), detail: 'the card rates on the store', tone: 'ok' });
     }
   }
   const ba = isObj(l.balanceAccount) ? l.balanceAccount : null;
@@ -489,15 +489,15 @@ export const GOLIVE_STEP_TITLES = Object.freeze({
   business_account: 'The venue’s Adyen business account',
   payments_location: 'The venue’s payments location',
   go_live: 'Turn on live payments',
-  payouts: 'Payouts and commission',
+  payouts: 'Card rates and payouts',
   readers: 'Card readers',
 });
 
-// The two parts of the payouts step (9 Sep 2026), each its own line and
-// button on the screen: the commission rule on the store, and the bank
-// account, Adyen's approval and the daily payout.
+// The two parts of the payouts step (9 Sep 2026, renamed 10 Sep 2026), each
+// its own line and button on the screen: the venue's card rates on the
+// store, and the bank account, Adyen's approval and the daily payout.
 export const GOLIVE_PART_TITLES = Object.freeze({
-  split: 'Commission',
+  split: 'Card rates',
   payout: 'Payouts to the venue',
 });
 
@@ -648,32 +648,71 @@ export function capabilityNotices(list) {
     });
 }
 
-// ── FINDING A VENUE BY ITS REFERENCE (8 Sep 2026) ───────────────────────────
+// ── FINDING A VENUE BY ITS REFERENCE, NOTHING PASTED (8 and 10 Sep 2026) ─────
 // Adyen has no lookup by reference on the money side: account holders can only
-// be listed under a balance platform id. So the FIRST venue on an account has
-// to have its Adyen id pasted once, that read hands us the balance platform
-// id, we keep it (adyen_platform_settings), and every venue after it is found
-// by its reference on its own.
+// be listed under a balance platform id. With that id known for the venue's
+// environment and region (adyen_platform_settings, learned from the first
+// read or typed once), EVERY venue is found by its code with nothing pasted.
 //
-// The screen says which of those two it is in ONE line, and the paste box
-// stops being the main path the moment the id is known:
-//   known === false   the paste box IS the way in, with firstVenueLine above it
-//   known === true    "Look again" is the primary and the paste box is a small
-//                     secondary underneath
+// The screen draws whichever of the two it is in:
+//   known === false   ONE input, the balance platform id (the name Adyen shows,
+//                     FranPOS_UK, or its BP id), saved once per region with
+//                     set_balance_platform; platformLine says why
+//   known === true    "Find on Adyen" is the one primary and there is no box
 //   foundLine         set when THIS read found the venue by its reference with
 //                     nothing pasted, so the admin sees it working
+// Pasting an account holder id lives under Advanced as a last resort only.
+export const PLATFORM_ID_LINE = 'Adyen needs the balance platform id once per region. After that every venue is found by its code.';
 export function referenceSearchView(state) {
   const s = isObj(state) ? state : {};
   const known = s.balancePlatformKnown === true;
   const ref = str(s.reference) || str(isObj(s.venue) ? s.venue.code : '');
   return {
     known,
-    pastePrimary: !known,
-    firstVenueLine: known ? null : 'The first venue needs its Adyen id pasted once. After that we find venues by their reference on their own.',
+    needsPlatformId: !known,
+    platformLine: known ? null : PLATFORM_ID_LINE,
     foundLine: lower(s.holderFoundBy) === 'reference'
       ? `${ref || 'This venue'} was found on Adyen by its reference. Nothing was pasted.`
       : null,
   };
+}
+
+// ── THE CARD RATES TABLE (10 Sep 2026, OWNER RULE) ──────────────────────────
+// "we set the rate that customers get charged for the different card types".
+// Step 5 draws the venue's rate card as four rows, big type: Payment type,
+// Rate, Per payment, with one grey source word per row. The two sentences
+// above it say what the money does, and the word commission is never used.
+export const RATES_LEDE = Object.freeze([
+  'The venue pays these rates on every card payment.',
+  'Adyen and FranPOS take their costs out of them and the rest is ServOS margin.',
+]);
+
+// The rows of the table from golive_state's `rates` ({ currency, tiers }):
+//   label       In person, Online, Amex and business cards, Keyed in
+//   rate        "1.4%", "0%"; "not set" when the tier has no price
+//   perPayment  "5p" or "10c"; "0p" when priced with no pence; "" when not set
+//   source      "venue", "platform default" or null
+//   unpriced    true when the tier has no price at all
+const RATE_ROW_LABELS = Object.freeze({ card_present: 'In person', card_not_present: 'Online', amex: 'Amex and business cards', keyed: 'Keyed in' });
+export function rateCardRows(rates) {
+  const r = isObj(rates) ? rates : {};
+  const tiers = isObj(r.tiers) ? r.tiers : {};
+  const minor = str(r.currency).toUpperCase() === 'USD' ? 'c' : 'p';
+  const num = (v) => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+  return COMMISSION_TIERS.map((id) => {
+    const t = isObj(tiers[id]) ? tiers[id] : {};
+    const pct = num(t.percent);
+    const fix = num(t.fixedPence ?? t.fixed_pence);
+    const unpriced = pct === null && fix === null;
+    return {
+      id,
+      label: RATE_ROW_LABELS[id],
+      rate: unpriced ? 'not set' : `${String(Number(Number(pct ?? 0).toFixed(4)))}%`,
+      perPayment: unpriced ? '' : `${Math.round(fix ?? 0)}${minor}`,
+      source: str(t.source) || null,
+      unpriced,
+    };
+  });
 }
 
 // The merchant mismatch in plain words, with the two account names apart from

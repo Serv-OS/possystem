@@ -41,6 +41,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { createSubAccount, getAccount, createAccountLink, authorizeAccount, listBalanceTransactions, listPlatformFees, ryftConfigured } from '../_shared/ryft.ts';
 import { RATE_TIERS, resolveAdyenRateCard, sanitizeRateCard, upsertAdyenAccountRow } from '../_shared/adyen.ts';
+import { ADYEN_PLATFORM_SETTINGS_TABLE, isUnknownRelationError, platformSettingsMissingMessage } from '../_shared/adyenLink.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -254,6 +255,34 @@ Deno.serve(async (req) => {
       notes.push(`venue codes could not be read: ${(e as Error)?.message || String(e)}`);
     }
     return json({ ok: true, accounts, venue_codes, notes });
+  }
+
+  // ── platform_settings: what we know about OUR Adyen accounts (10 Sep 2026) ──
+  //    Read only. One row per environment and region from
+  //    adyen_platform_settings: the balance platform id the venue lookup
+  //    pages (learned from the first read, or typed once with
+  //    adyen-terminal-admin set_balance_platform) and how many merchant
+  //    account codes were seen. The Processing page's platform defaults panel
+  //    shows the balance platform line per environment and region so the
+  //    owner can see what is known. Until the table's migration runs the
+  //    answer is { rows: [], available: false } with a warning naming it.
+  //    Handled BEFORE the location_id guard: it is platform wide.
+  if (action === 'platform_settings') {
+    const { data, error } = await platformAdmin.from(ADYEN_PLATFORM_SETTINGS_TABLE)
+      .select('environment, region, balance_platform_id, merchant_accounts, updated_at')
+      .order('environment', { ascending: false }).order('region');
+    if (error) {
+      if (isUnknownRelationError(error, ADYEN_PLATFORM_SETTINGS_TABLE)) return json({ ok: true, rows: [], available: false, warning: platformSettingsMissingMessage() });
+      return json({ error: `platform settings read failed: ${error.message}` }, 500);
+    }
+    const rows = ((data ?? []) as Array<Record<string, unknown>>).map((r) => ({
+      environment: String(r.environment ?? ''),
+      region: String(r.region ?? ''),
+      balance_platform_id: String(r.balance_platform_id ?? '').trim() || null,
+      merchant_accounts: Array.isArray(r.merchant_accounts) ? r.merchant_accounts.length : 0,
+      updated_at: r.updated_at ?? null,
+    }));
+    return json({ ok: true, rows, available: true, warning: null });
   }
 
   // ── adyen_pricing v2: get/set the ServOS Payments TIERED RATE CARD ──────
