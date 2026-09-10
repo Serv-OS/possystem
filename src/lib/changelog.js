@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.52',
+    date: '10 Sep 2026',
+    items: [
+      'Check a payment, on the admin Revenue page. Pick a venue and a card payment to see where every penny went, read from Adyen\'s own records: what the customer paid, the venue fee and its rate, what the venue receives, Adyen\'s fees, the FranPOS rate and what ServOS keeps. It also splits what ServOS keeps into the percent part and the fixed part.',
+      'The FranPOS fixed fee is now set per currency: 3p for pounds, 5c for dollars and euros. The monthly FranPOS statement uses the fee for each payment\'s currency.',
+    ],
+  },
+  {
     v: '5.8.51',
     date: '10 Sep 2026',
     items: [
