@@ -16,7 +16,7 @@
  */
 
 import { adyenEnvFromRow, adyenRegionFromRow } from './adyenEnv.js';
-import { worstVerificationStatus, LINK_ID_FIELDS, storeStillNeeded, conflictsMoveMoney, COMMISSION_TIERS } from './adyenLink.js';
+import { worstVerificationStatus, LINK_ID_FIELDS, storeStillNeeded, conflictsMoveMoney, COMMISSION_TIERS, RATE_ROW_LABELS } from './adyenLink.js';
 import { registrationLines } from './adyenOrigins.js';
 
 const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -629,7 +629,7 @@ export function goliveProblemBox(problems, { exclude = PROBLEM_BOX_SKIP } = {}) 
 // The ONE short line at the top of the flow while the platform settings table
 // waits on its migration (platformSettingsMissing). It used to be a long
 // sentence naming the table and the migration file inside the error box.
-export const PLATFORM_SETTINGS_WAITING_LINE = 'One database step is waiting on ServOS. Venues need their id pasted until it runs.';
+export const PLATFORM_SETTINGS_WAITING_LINE = 'One database step is waiting on ServOS. Until then venues cannot be found by their code.';
 
 // A capability Adyen has not allowed, in plain words: never the word Blocked
 // on its own. Takes golive_state's capabilities (capabilityList's wire shape).
@@ -655,22 +655,29 @@ export function capabilityNotices(list) {
 // read or typed once), EVERY venue is found by its code with nothing pasted.
 //
 // The screen draws whichever of the two it is in:
-//   known === false   ONE input, the balance platform id (the name Adyen shows,
-//                     FranPOS_UK, or its BP id), saved once per region with
-//                     set_balance_platform; platformLine says why
-//   known === true    "Find on Adyen" is the one primary and there is no box
+//   needsPlatformId   ONE input, the Adyen platform name (balance platform:
+//                     the name Adyen shows, FranPOS_UK, or its BP id), saved
+//                     once per region with set_balance_platform; platformLine
+//                     says why. ONLY when the business account search actually
+//                     needed it (the server's needsBalancePlatform, or the
+//                     step state's holderRead.needsPlatform): keys missing, no
+//                     merchant account or a refused read never draw the box
+//                     on a step that already says nothing could be read
+//   otherwise         "Find on Adyen" is the one primary and there is no box
 //   foundLine         set when THIS read found the venue by its reference with
 //                     nothing pasted, so the admin sees it working
 // Pasting an account holder id lives under Advanced as a last resort only.
-export const PLATFORM_ID_LINE = 'Adyen needs the balance platform id once per region. After that every venue is found by its code.';
+export const PLATFORM_ID_LINE = 'The Adyen platform name is needed once for each region. After that every venue is found by its code.';
 export function referenceSearchView(state) {
   const s = isObj(state) ? state : {};
   const known = s.balancePlatformKnown === true;
+  const holderRead = isObj(s.holderRead) ? s.holderRead : {};
+  const needs = s.needsBalancePlatform === true || holderRead.needsPlatform === true;
   const ref = str(s.reference) || str(isObj(s.venue) ? s.venue.code : '');
   return {
     known,
-    needsPlatformId: !known,
-    platformLine: known ? null : PLATFORM_ID_LINE,
+    needsPlatformId: needs,
+    platformLine: needs ? PLATFORM_ID_LINE : null,
     foundLine: lower(s.holderFoundBy) === 'reference'
       ? `${ref || 'This venue'} was found on Adyen by its reference. Nothing was pasted.`
       : null,
@@ -693,12 +700,14 @@ export const RATES_LEDE = Object.freeze([
 //   perPayment  "5p" or "10c"; "0p" when priced with no pence; "" when not set
 //   source      "venue", "platform default" or null
 //   unpriced    true when the tier has no price at all
-const RATE_ROW_LABELS = Object.freeze({ card_present: 'In person', card_not_present: 'Online', amex: 'Amex and business cards', keyed: 'Keyed in' });
+// The row words are adyenLink's RATE_ROW_LABELS, so step 5's sentence naming
+// an unpriced tier reads the same words as these rows. A negative number is
+// no price, as adyenLink reads it.
 export function rateCardRows(rates) {
   const r = isObj(rates) ? rates : {};
   const tiers = isObj(r.tiers) ? r.tiers : {};
   const minor = str(r.currency).toUpperCase() === 'USD' ? 'c' : 'p';
-  const num = (v) => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? null : Number(v));
+  const num = (v) => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) || Number(v) < 0 ? null : Number(v));
   return COMMISSION_TIERS.map((id) => {
     const t = isObj(tiers[id]) ? tiers[id] : {};
     const pct = num(t.percent);

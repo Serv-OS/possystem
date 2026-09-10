@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.48',
+    date: '10 Sep 2026',
+    items: [
+      'Card rates, the way they were always meant to work. The go live flow step 5 is now Card rates and payouts: it shows the four rates the venue pays (in person, online, Amex and business cards, keyed) and one button applies them on Adyen as one rule per payment type. The two flat boxes are gone. Rates are edited in the same four row editor on the Processing page.',
+      'No more pasting Adyen ids. A venue is found on Adyen by its venue code and its store, business account, balance, legal entity and bank details are saved on the venue in one click. The balance platform id is typed once per region, not per venue. The old id form is gone from the Processing page; the environment and region controls and the ids Adyen gave us sit under Advanced.',
+      'Card readers page rebuilt for venues on Adyen: one list of this venue\'s readers with a name you can change, which till each one takes payments from, and two switches. Add a reader by its serial number. Tips on the reader are one venue setting. Everything else is under Advanced. Adding a reader now sends the store settings to Adyen itself, including the Pay at table button, so the reader is ready without any extra steps.',
+      'Safety checks on card rates. A rate above 5% or 50p asks again before it is saved or applied. Rates that cannot be read are never sent to Adyen. The step only says Adyen holds the rates when every rule on Adyen matches the venue rates exactly.',
+      'Readers keep the venue\'s existing tip choices when a reader is added, and the tip prompt on till payments stays on. Messages on the Card readers page now show next to the button you pressed, and removing a reader asks on the page instead of a browser pop up.',
+    ],
+  },
+  {
     v: '5.8.47',
     date: '10 Sep 2026',
     items: [

@@ -682,16 +682,23 @@ test('the flow’s wording never uses a dash as punctuation', () => {
 // ── FINDING A VENUE BY ITS REFERENCE, NOTHING PASTED (8 and 10 Sep 2026) ─────
 import { referenceSearchView, PLATFORM_ID_LINE, RATES_LEDE, rateCardRows } from './adyenAdminRows.js';
 
-test('referenceSearchView: with no balance platform known, ONE input asks for it once per region', () => {
-  const v = referenceSearchView({ reference: 'SV-1007', balancePlatformKnown: false });
+test('referenceSearchView: when the business account search needed the platform name, ONE input asks for it once per region', () => {
+  const v = referenceSearchView({ reference: 'SV-1007', balancePlatformKnown: false, needsBalancePlatform: true });
   assert.equal(v.known, false);
   assert.equal(v.needsPlatformId, true);
   assert.equal(v.platformLine, PLATFORM_ID_LINE);
-  assert.equal(v.platformLine, 'Adyen needs the balance platform id once per region. After that every venue is found by its code.');
+  assert.equal(v.platformLine, 'The Adyen platform name is needed once for each region. After that every venue is found by its code.');
   assert.ok(v.platformLine.length < 120);
   assert.equal(v.foundLine, null);
-  // no state at all reads the same way: nothing is known, so nothing is claimed
-  assert.equal(referenceSearchView(null).needsPlatformId, true);
+  // the step state's own flag says the same
+  assert.equal(referenceSearchView({ balancePlatformKnown: false, holderRead: { needsPlatform: true } }).needsPlatformId, true);
+  // NOT KNOWN IS NOT NEEDED (10 Sep 2026): keys missing, no merchant account
+  // or a refused read never ran the search, so no box on a blocked step
+  const keysMissing = referenceSearchView({ reference: 'SV-1007', balancePlatformKnown: false, needsBalancePlatform: false, keys: { configured: false, missing: ['ADYEN_API_KEY'] } });
+  assert.equal(keysMissing.needsPlatformId, false);
+  assert.equal(keysMissing.platformLine, null);
+  assert.equal(referenceSearchView(null).needsPlatformId, false);
+  assert.equal(referenceSearchView({ balancePlatformKnown: false }).needsPlatformId, false);
   // the old paste first flags are gone: nothing on the screen reads them
   assert.equal('pastePrimary' in v, false);
   assert.equal('firstVenueLine' in v, false);
@@ -727,6 +734,8 @@ test('rateCardRows: four big rows, Payment type, Rate, Per payment, one grey sou
   // the rate card's own spelling is read too, and nothing at all is four unpriced rows
   assert.equal(rateCardRows({ tiers: { keyed: { percent: 2.9, fixed_pence: 15 } } })[3].perPayment, '15p');
   assert.deepEqual(rateCardRows(null).map((r) => r.unpriced), [true, true, true, true]);
+  // a negative number is no price, as the step builder reads it
+  assert.equal(rateCardRows({ tiers: { amex: { percent: -1, fixedPence: -5 } } })[2].unpriced, true);
   // the two sentences above the table: plain, short, no dashes, never the word commission
   assert.equal(RATES_LEDE.length, 2);
   for (const l of RATES_LEDE) {
@@ -752,7 +761,7 @@ test('referenceSearchView: a venue found by its reference says so in one line', 
 
 test('referenceSearchView: its wording never uses a dash as punctuation', () => {
   const words = [
-    referenceSearchView({}).platformLine,
+    referenceSearchView({ needsBalancePlatform: true }).platformLine,
     referenceSearchView({ reference: 'SV-1007', balancePlatformKnown: true, holderFoundBy: 'reference' }).foundLine,
   ];
   for (const w of words) assert.doesNotMatch(String(w), /[–—]/, `dash in: ${w}`);
@@ -817,7 +826,7 @@ test('goliveProblemBox: at most three plain lines, every raw answer behind Show 
 });
 
 test('PLATFORM_SETTINGS_WAITING_LINE: one short plain line, no table names, no dashes', () => {
-  assert.equal(PLATFORM_SETTINGS_WAITING_LINE, 'One database step is waiting on ServOS. Venues need their id pasted until it runs.');
+  assert.equal(PLATFORM_SETTINGS_WAITING_LINE, 'One database step is waiting on ServOS. Until then venues cannot be found by their code.');
   assert.ok(PLATFORM_SETTINGS_WAITING_LINE.length < 120);
-  assert.doesNotMatch(PLATFORM_SETTINGS_WAITING_LINE, /adyen_platform_settings|\.sql|[\u2013\u2014]/);
+  assert.doesNotMatch(PLATFORM_SETTINGS_WAITING_LINE, /adyen_platform_settings|\.sql|[\u2013\u2014]|paste/i);
 });

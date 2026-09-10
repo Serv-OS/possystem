@@ -215,8 +215,9 @@ import {
 } from '../_shared/adyen.ts';
 import {
   readReaderTips, readerTipsPatch, normaliseTipPresets, buildGratuities, buildStoreSettingsPatches, storeSettingsOutcome,
-  readSyncState, syncStatePatch, readerRows, nextReaderName,
-  type PatchResult, type StoreSettingsOutcome,
+  readSyncState, syncStatePatch, readerRows, nextReaderName, tipsFromTipConfig, tipsFromGratuities, tipConfigFromTips,
+  READER_TIPS_KEY,
+  type PatchResult, type StoreSettingsOutcome, type ReaderTips, type TipsSkip,
 } from '../_shared/readerSettings.ts';
 import {
   buildWebOrigins, buildStorefrontDomains, originsPlan, applePayDomainsPlan, pickApplePayMethod, hasApplePayEntries,
@@ -230,7 +231,8 @@ import {
   pickBusinessLine, merchantMismatch, storeStillNeeded, balancePlatformSecretName, balancePlatformSecretNames,
   capabilityList, blockedCapabilityNames, buildGoliveSteps, goliveProblems,
   summariseCapabilities, findPushSweep, pickPayoutInstrument, PAYOUT_CAPABILITY,
-  buildTieredProfile, tieredCommissionRules, tiersFromResolved, unpricedTiers, tierListWords, rateCardLine, ratesOnAdyen,
+  buildTieredProfile, tieredCommissionRules, tiersFromResolved, unpricedTiers, tierRowList, rateCardLine, ratesOnAdyen,
+  rateCardProblems,
   liableBalanceAccountSecretName, liableBalanceAccountSecretNames, ADYEN_LIABLE_BALANCE_ACCOUNT_COLUMN,
   ADYEN_PLATFORM_SETTINGS_TABLE, ADYEN_ROW_BALANCE_PLATFORM_COLUMN,
   platformSettingsKey, platformSettingsPatch, platformSettingsMissingMessage,
@@ -590,9 +592,13 @@ interface HolderSearch {
   // pasted, which is the automatic route every venue after the first takes),
   // or null (no holder on this route).
   foundBy: 'pasted' | 'reference' | null;
-  // TRUE when the listing stopped at HOLDER_PAGES with more still to read, so
-  // "nothing carries this reference" is not something this read established.
+  // TRUE when the listing stopped at HOLDER_PAGES with more still to read, or
+  // a page read failed for a reason other than a refused key (10 Sep 2026),
+  // so "nothing carries this reference" is not something this read established.
   capped: boolean;
+  // TRUE when more than one account holder carries the reference: candidates
+  // holds them, and the step builder offers pick_holder (10 Sep 2026).
+  ambiguous: boolean;
   errors: string[];
   notes: string[];
   scopeMissing: boolean;
@@ -659,7 +665,7 @@ async function findAccountHolder(
 ): Promise<HolderSearch> {
   const out: HolderSearch = {
     holder: null, candidates: [], balancePlatform: null, balancePlatformSource: null,
-    needsBalancePlatform: false, foundBy: null, capped: false, errors: [], notes: [], scopeMissing: false,
+    needsBalancePlatform: false, foundBy: null, capped: false, ambiguous: false, errors: [], notes: [], scopeMissing: false,
   };
   const pasted = String(opts.accountHolderId ?? '').trim();
   if (pasted) {
@@ -718,7 +724,9 @@ async function findAccountHolder(
     // Pages ran out before account holders did.
     if (page === HOLDER_PAGES - 1) capped = true;
   }
-  out.capped = capped;
+  // A page that failed for any reason other than a refused key cut the list
+  // short just as a cap does: nothing was ruled out.
+  out.capped = capped || (refused && !out.scopeMissing);
   const match = matchAccountHolderByReference(rows, reference);
   if (match.holder) {
     out.holder = match.holder;
@@ -729,6 +737,7 @@ async function findAccountHolder(
   if (match.ambiguous) {
     out.errors.push(`${match.matches.length} account holders on balance platform ${bp.id} carry the reference ${reference} (${match.matches.map((x) => String(x.id ?? '?')).join(', ')}). They cannot be told apart by reference, so paste the account holder id of the right one.`);
     out.candidates = accountHolderCandidates(match.matches, reference, 50);
+    out.ambiguous = true;
     return out;
   }
   out.candidates = accountHolderCandidates(rows, reference, 50);
@@ -931,6 +940,11 @@ async function lookupByReference(cfg: AdyenConfig, merchant: string, reference: 
   out.holderCandidates = holderSide.candidates;
   out.balancePlatform = holderSide.balancePlatform;
   out.needsBalancePlatform = holderSide.needsBalancePlatform;
+  // What the business account search came back with (10 Sep 2026), for the
+  // go live flow's holderRead: two holders carrying the code, or a listing
+  // that did not reach the end.
+  out.holderAmbiguous = holderSide.ambiguous;
+  out.holderCapped = holderSide.capped;
   out.balancePlatformSecret = balancePlatformSecretName(cfg.env, cfg.region);
 
   // 1. the store, or the plain reason there is none
@@ -2479,32 +2493,34 @@ Deno.serve(async (req) => {
       const targetEnv = resolveLinkEnvironment(env, body.environment);
       const targetCfg = targetEnv === 'live' ? liveCfg : testCfg;
       const given = String(body.balancePlatformId ?? body.balance_platform_id ?? body.balancePlatform ?? '').trim();
-      if (!given) return json({ ok: false, error: 'Type the balance platform id first.' }, 400);
-      if (!/^[A-Za-z0-9_.-]{2,80}$/.test(given)) return json({ ok: false, error: 'That does not look like a balance platform id.' }, 400);
+      // Plain words (10 Sep 2026): "the Adyen platform name", the screen's own
+      // label; the Adyen word and any missing secret names ride in detail.
+      if (!given) return json({ ok: false, error: 'Type the Adyen platform name first.' }, 400);
+      if (!/^[A-Za-z0-9_.-]{2,80}$/.test(given)) return json({ ok: false, error: 'That does not look like an Adyen platform name. Copy it from Adyen, for example FranPOS_UK.' }, 400);
       if (targetCfg.missing.length) {
-        return json({ ok: false, error: `The ${region} ${targetEnv} Adyen set is not configured on the server, so the id could not be checked.`, detail: `missing ${targetCfg.missing.join(', ')}` }, 200);
+        return json({ ok: false, error: `ServOS has no Adyen keys for ${region} ${targetEnv} yet, so the name could not be checked.`, detail: `missing ${targetCfg.missing.join(', ')}` }, 200);
       }
       const check = await bcl<Dict>(targetCfg, 'GET', `/balancePlatforms/${encodeURIComponent(given)}`);
       if (!check.ok) {
         const refused = scopeMissing(check.status);
         return json({
           ok: false, status: check.status,
-          error: refused ? 'Our payments key was refused, so the id could not be checked.' : `Adyen does not know that balance platform on the ${region} ${targetEnv} account.`,
+          error: refused ? 'Our payments key was refused, so the name could not be checked.' : `Adyen does not know that platform name on the ${region} ${targetEnv} account.`,
           detail: refusalText(targetCfg, check, 'bpKey', 'the Balance Platform BCL role'),
         }, 200);
       }
       const confirmed = String((check.data as Dict)?.id ?? '').trim() || given;
       const settings = await readPlatformSettings(targetEnv, region);
       if (!settings.available) {
-        return json({ ok: false, error: 'The settings table is not there yet, so the id could not be kept.', detail: settings.warning }, 200);
+        return json({ ok: false, error: 'One database update is waiting on ServOS, so the name could not be kept.', detail: settings.warning }, 200);
       }
       const previous = String(settings.row?.balance_platform_id ?? '').trim() || null;
       const key = platformSettingsKey(targetEnv, region);
       const { error: keepErr } = await platformAdmin.from(ADYEN_PLATFORM_SETTINGS_TABLE)
         .upsert({ ...key, balance_platform_id: confirmed, updated_at: new Date().toISOString() }, { onConflict: 'environment,region' });
       if (keepErr) {
-        if (isUnknownRelationError(keepErr, ADYEN_PLATFORM_SETTINGS_TABLE)) return json({ ok: false, error: 'The settings table is not there yet, so the id could not be kept.', detail: platformSettingsMissingMessage() }, 200);
-        return json({ ok: false, error: 'The id was checked but could not be kept.', detail: keepErr.message }, 200);
+        if (isUnknownRelationError(keepErr, ADYEN_PLATFORM_SETTINGS_TABLE)) return json({ ok: false, error: 'One database update is waiting on ServOS, so the name could not be kept.', detail: platformSettingsMissingMessage() }, 200);
+        return json({ ok: false, error: 'The name was checked but could not be kept.', detail: keepErr.message }, 200);
       }
       logLink('set_balance_platform', loc.id, { environment: targetEnv, region, balancePlatformId: confirmed, previous, status: check.status });
       console.log(`[adyen-terminal-admin] ${caller.id} set_balance_platform ${confirmed} for ${region} ${targetEnv}${previous && previous !== confirmed ? ` (was ${previous})` : ''}`);
@@ -2543,6 +2559,13 @@ Deno.serve(async (req) => {
       const pickedHolderId = String(body.accountHolderId ?? body.account_holder_id ?? '').trim() || null;
       if (pickedStoreId && !/^ST[0-9A-Z]{10,}$/i.test(pickedStoreId)) return json({ error: 'storeId does not look like an Adyen store id (ST...)' }, 400);
       if (pickedHolderId && !/^AH[0-9A-Z]{10,}$/i.test(pickedHolderId)) return json({ error: 'accountHolderId does not look like an Adyen account holder id (AH...)' }, 400);
+      // THE ROW'S OWN STORE (10 Sep 2026): the manual link under Advanced saves
+      // a store whose reference may not be the venue code. On the venue's own
+      // environment, with no store picked, the store route reads the store the
+      // row names by id (merchant checked), so a reference miss can never hide
+      // it and step 3 never loops on "Make the payments location".
+      const rowStoreId = targetEnv === env ? (String(maa?.store_id ?? '').trim() || null) : null;
+      const storeRouteId = pickedStoreId || (rowStoreId && /^ST[0-9A-Z]{10,}$/i.test(rowStoreId) ? rowStoreId : null);
       const merchantConfigured = merchantOverride || effectiveMerchantAccount(targetCfg, targetEnv === env ? maa?.merchant_account : null) || null;
       // The venue code is what Adyen is searched for, unless the admin says
       // Adyen carries this venue under a different code (the reference field
@@ -2612,7 +2635,7 @@ Deno.serve(async (req) => {
         // credential wide sweep is opt in (body.sweep): the automatic read on
         // every expand must not spend 70+ Adyen calls (8 Sep 2026).
         lookup = await lookupByReference(targetCfg, merchantConfigured, lookupReference, {
-          storeId: pickedStoreId,
+          storeId: storeRouteId,
           accountHolderId: pickedHolderId,
           currency: linkCurrency,
           balancePlatform: String(body.balancePlatform ?? body.balance_platform ?? '').trim() || null,
@@ -2621,6 +2644,22 @@ Deno.serve(async (req) => {
           row: targetEnv === env ? (maa as Dict | null) : null,
           sweep: body.sweep === true,
         });
+        // The row's store could not be read (deleted at Adyen, a stale id):
+        // search by the code as before, so a store Adyen holds under the venue
+        // code is still found. A store on another merchant is an answer, not
+        // a miss, so it is kept.
+        if (!pickedStoreId && storeRouteId && !lookup.store && !lookup.merchantMismatch) {
+          lookup = await lookupByReference(targetCfg, merchantConfigured, lookupReference, {
+            storeId: null,
+            accountHolderId: pickedHolderId,
+            currency: linkCurrency,
+            balancePlatform: String(body.balancePlatform ?? body.balance_platform ?? '').trim() || null,
+            storedBalancePlatform: storedBp,
+            merchantSecret, merchantOverride: !!merchantOverride,
+            row: targetEnv === env ? (maa as Dict | null) : null,
+            sweep: body.sweep === true,
+          });
+        }
         errors.push(...(Array.isArray(lookup.errors) ? lookup.errors : []));
         notes.push(...(Array.isArray(lookup.notes) ? lookup.notes : []));
         let storefront: Storefront = { slug: null, customDomain: null };
@@ -2663,6 +2702,10 @@ Deno.serve(async (req) => {
       // each, and `unpriced` names the tiers with no price at all.
       const venueRates = await readVenueRates(loc.id, maa as Dict | null);
       errors.push(...venueRates.errors);
+      // A FAILED READ IS UNKNOWN, NEVER A MISMATCH (10 Sep 2026): the tiers
+      // below are then a fallback (the platform default, or no pence), so
+      // nothing is compared and step 5 offers Check again, never Apply.
+      const ratesReadFailed = venueRates.errors.length > 0;
       const rateTiers = tiersFromResolved(venueRates.cards);
       const unpriced = unpricedTiers(rateTiers);
       const profileId = String((lookup?.store as StoreSummary | null)?.splitConfigurationId ?? '').trim();
@@ -2671,15 +2714,18 @@ Deno.serve(async (req) => {
         profileRead = await readProfileRates(targetCfg, merchantConfigured, profileId);
         if (profileRead.error) errors.push(profileRead.error);
       }
-      const onAdyen = ratesOnAdyen(profileRead.raw, rateTiers);
+      // The WHOLE profile against what we would write for this venue in its
+      // region's currency (ratesOnAdyen, profileMatchesRules).
+      const onAdyen = ratesOnAdyen(profileRead.raw, rateTiers, stepCurrency);
       const liableBalanceAccountId = await readLiableBalanceAccount(targetEnv, region);
       const rates = {
         currency: stepCurrency,
         tiers: rateTiers,
         priced: unpriced.length === 0,
         unpriced,
+        readFailed: ratesReadFailed,
         line: unpriced.length ? null : rateCardLine(rateTiers, stepCurrency),
-        onAdyen: { profileId: profileId || null, read: profileRead.read, ...onAdyen },
+        onAdyen: { profileId: profileId || null, read: profileRead.read, ...onAdyen, ...(ratesReadFailed ? { matches: null } : {}) },
         liableBalanceAccountId, liableSecret: liableBalanceAccountSecretName(targetEnv, region),
       };
       const payoutsState = { read: lookup?.sweepKnown === true, sweep: lookup?.sweep ?? null };
@@ -2773,6 +2819,15 @@ Deno.serve(async (req) => {
         storeRead: {
           refused: lookup?.storeScopeMissing === true && !lookup?.store,
           ambiguous: (lookup?.storeHits ?? []).length > 1,
+        },
+        // What the BUSINESS ACCOUNT search came back with when no holder was
+        // resolved (10 Sep 2026): the listing could not run because the Adyen
+        // platform name is not known, two holders carry the code, or the
+        // listing did not reach the end. None of them is "no business account".
+        holderRead: {
+          needsPlatform: lookup?.needsBalancePlatform === true && !lookup?.accountHolder,
+          ambiguous: lookup?.holderAmbiguous === true && !lookup?.accountHolder,
+          capped: lookup?.holderCapped === true && !lookup?.accountHolder,
         },
       };
       // The VENUE row's ids are not touched here: adyen_link writes them, and
@@ -2911,7 +2966,14 @@ Deno.serve(async (req) => {
       if (!storeId) return json({ ok: false, error: stepPlainErrors.noStore }, 200);
       if (!balanceAccountId || !holderId) return json({ ok: false, error: stepPlainErrors.noHolder }, 200);
       const venueRates = await readVenueRates(loc.id, maa as Dict | null);
-      const warnings: string[] = [...venueRates.errors];
+      // A FAILED READ NEVER REACHES ADYEN (10 Sep 2026): the resolved card is
+      // then a fallback (the platform default in place of negotiated rates,
+      // or a rate with its pence dropped), so writing it would charge every
+      // sale the wrong rate. Refuse before any Adyen call.
+      if (venueRates.errors.length) {
+        return json({ ok: false, rates_unread: true, error: 'The venue rates could not be read, so nothing was changed on Adyen.', detail: venueRates.errors.join(' ') }, 200);
+      }
+      const warnings: string[] = [];
       const cards = venueRates.cards;
       const rateTiers = tiersFromResolved(cards);
       const tiers = tiersForProfile(cards);
@@ -2919,8 +2981,19 @@ Deno.serve(async (req) => {
       if (built.lacking.length) {
         return json({
           ok: false, lacking: built.lacking,
-          error: `No rate is set for ${tierListWords(built.lacking)}. Set the venue rate card in Processing first.`,
+          error: `No rate is set yet for: ${tierRowList(built.lacking)}. Set the venue rate card in Processing first.`,
         }, 200);
+      }
+      // THE SAME CHECKS AS A SAVE (rateCardProblems): a value that can never
+      // be right (a rate finer than a basis point drifts from the ledger) is
+      // refused; a value above the usual limit (14 typed for 1.4) is refused
+      // unless the admin confirms with over_limit.
+      const checked = rateCardProblems(tiers, { currency: stepCurrency, verb: 'applied' });
+      if (checked.errors.length) {
+        return json({ ok: false, invalid: true, error: `${checked.errors[0].text} Nothing was applied on Adyen.`, detail: checked.errors.map((e) => e.text).join(' ') }, 200);
+      }
+      if (checked.overLimit.length && body.over_limit !== true) {
+        return json({ ok: false, over_limit: true, error: checked.overLimit[0].text, lines: checked.overLimit.map((e) => e.text) }, 200);
       }
       // The store, as it is now: on which merchant, and what it carries.
       const storeRead = await mgmt<Dict>(cfg, 'GET', `/stores/${encodeURIComponent(storeId)}`);
@@ -3401,16 +3474,63 @@ Deno.serve(async (req) => {
     // a refusal or a timeout is an error line for that group, the rest still
     // apply. The outcome is stamped on the ops venue row so the page can show
     // what happened and when.
+    // THE VENUE'S TIPS, never a silent default (10 Sep 2026). Saved venue tips
+    // win; a venue that never saved them here keeps what its readers already
+    // carry (terminal_devices.tip_config, the old per reader setting), and
+    // only then the default. The store's own gratuities are read by the sync
+    // itself, where the PATCH would otherwise replace them.
+    const venueTips = async (settings: Record<string, unknown> | null): Promise<ReaderTips> => {
+      const saved = readReaderTips(settings);
+      if (saved.source === 'saved') return saved;
+      const { data, error } = await opsAdmin.from('terminal_devices').select('tip_config')
+        .eq('location_id', opsLocationId).eq('status', 'paired').not('adyen_terminal_id', 'is', null);
+      if (!error) {
+        for (const r of (data || []) as Dict[]) {
+          const t = tipsFromTipConfig(r.tip_config);
+          if (t) return t;
+        }
+      }
+      return saved;
+    };
+
     const syncStoreSettings = async (): Promise<StoreSettingsOutcome> => {
       const at = new Date().toISOString();
       const current = await readOpsPosSettings();
-      const tips = readReaderTips(current.settings);
+      let tips: ReaderTips = readReaderTips(null);
+      let tipsSkip: TipsSkip | null = null;
+      // Whether the tips found here (readers, or Adyen's own) become the
+      // venue's saved tips after this run.
+      let adoptTips = false;
+      if (current.error || !current.settings) {
+        // No read, no tips: sending the default would replace what the venue set.
+        tipsSkip = { text: 'The venue settings could not be read, so the tip choices were left as they are.', problem: true };
+      } else {
+        tips = await venueTips(current.settings);
+        if (tips.source === 'readers') adoptTips = true;
+        else if (tips.source === 'default') {
+          // Nothing saved and no reader carries choices: what Adyen already
+          // holds for the store is the venue's, and it is kept, never
+          // overwritten with 5, 10, 15.
+          let got: { ok: boolean; data: unknown } | null = null;
+          try { got = await mgmt<Dict>(cfg, 'GET', storePath); } catch { got = null; }
+          if (!got?.ok) {
+            tipsSkip = { text: 'The tip choices on Adyen could not be read, so they were left as they are.', problem: true };
+          } else {
+            const fromStore = tipsFromGratuities((got.data as Dict | null)?.gratuities, market.currency);
+            if (fromStore) {
+              tips = fromStore;
+              adoptTips = true;
+              tipsSkip = { text: 'The tip choices Adyen already holds were kept.', problem: false };
+            }
+          }
+        }
+      }
       let pair: { user: string; pass: string } | null = null;
       try {
         const pairs = webhookAuthPairsFor(cfg.live, 'events');
         pair = pairs.find((x) => x.region === cfg.region) ?? pairs[0] ?? null;
       } catch { pair = null; }
-      const patches = buildStoreSettingsPatches({ supabaseUrl: Deno.env.get('SUPABASE_URL'), pair, currency: market.currency, tips });
+      const patches = buildStoreSettingsPatches({ supabaseUrl: Deno.env.get('SUPABASE_URL'), pair, currency: market.currency, tips, tipsSkip });
       const results: PatchResult[] = [];
       for (const patch of patches) {
         if (!patch.body) continue;
@@ -3422,13 +3542,26 @@ Deno.serve(async (req) => {
         }
       }
       const outcome = storeSettingsOutcome(patches, results, { tips, at });
-      if (!current.error && current.settings) {
+      // RE-READ BEFORE THE WRITE (10 Sep 2026): the patches above can take up
+      // to a minute, and a whole object write from the first read would wipe
+      // anything saved meanwhile (tip on printed receipt, the receipt
+      // printer, a tips save). Only reader_tips and reader_settings_sync are
+      // merged onto the fresh copy, reader_tips only when nobody saved tips
+      // in between, and a failed re-read writes nothing.
+      const fresh = await readOpsPosSettings();
+      if (!fresh.error && fresh.settings) {
         const tipsOk = results.some((r) => r.key === 'tips' && r.ok);
-        const next = syncStatePatch(readerTipsPatch(current.settings, tips, tipsOk ? at : tips.syncedAt), outcome);
-        const wErr = await writeOpsPosSettings(next);
+        const before = JSON.stringify((current.settings ?? {})[READER_TIPS_KEY] ?? null);
+        const now = JSON.stringify(fresh.settings[READER_TIPS_KEY] ?? null);
+        const base = before === now && (tipsOk || adoptTips)
+          ? readerTipsPatch(fresh.settings, tips, tipsOk ? at : (tips.syncedAt ?? null))
+          : fresh.settings;
+        const wErr = await writeOpsPosSettings(syncStatePatch(base, outcome));
         if (wErr) console.warn(`[adyen-terminal-admin] reader settings sync outcome not saved for ${opsLocationId}: ${wErr}`);
+      } else {
+        console.warn(`[adyen-terminal-admin] reader settings sync outcome not saved for ${opsLocationId}: the venue settings could not be read again (${fresh.error})`);
       }
-      console.log(`[adyen-terminal-admin] ${caller.id} sync_store_settings for ${loc.id} on ${maa.store_id} (${cfg.region} ${cfg.env}): ${outcome.applied.length} applied, ${outcome.errors.length} refused${outcome.errors.length ? ` (${outcome.errors.join(' | ')})` : ''}`);
+      console.log(`[adyen-terminal-admin] ${caller.id} sync_store_settings for ${loc.id} on ${maa.store_id} (${cfg.region} ${cfg.env}): ${outcome.applied.length} applied, ${outcome.errors.length} refused${outcome.errors.length ? ` (${outcome.errors.map((e) => `${e.text}${e.detail ? ` [${e.detail}]` : ''}`).join(' | ')})` : ''}`);
       return outcome;
     };
 
@@ -3453,13 +3586,29 @@ Deno.serve(async (req) => {
       if (linkErr) return json({ ok: false, error: `The reader rows could not be read: ${linkErr.message}` }, 200);
       const view = readerRows({ terminals: r.data?.data || [], links: links || [] });
       const ps = await readOpsPosSettings();
+      // The tips box shows what the venue HAS (10 Sep 2026), never the
+      // default dressed as saved: saved venue tips, else what its readers
+      // carry, else what Adyen holds for the store, else the default (source
+      // 'default' says so).
+      let tips: ReaderTips = readReaderTips(ps.settings);
+      if (!ps.error && tips.source === 'default') {
+        const fromReaders = ((links || []) as Dict[]).map((l) => tipsFromTipConfig(l.tip_config)).find(Boolean) ?? null;
+        if (fromReaders) tips = fromReaders;
+        else {
+          try {
+            const g = await mgmt<Dict>(cfg, 'GET', storePath);
+            const fromStore = g.ok ? tipsFromGratuities((g.data as Dict | null)?.gratuities, market.currency) : null;
+            if (fromStore) tips = fromStore;
+          } catch { /* the default stands, and says it is the default */ }
+        }
+      }
       return json({
         ok: true,
         storeId: maa.store_id,
         currency: market.currency,
         readers: view.readers,
         notAdded: view.notAdded,
-        tips: readReaderTips(ps.settings),
+        tips,
         settingsSync: readSyncState(ps.settings),
       });
     }
@@ -3569,23 +3718,35 @@ Deno.serve(async (req) => {
       // Matched either explicitly (`terminal_device_id`, chosen by the operator from
       // the picker in AdyenTerminals) or automatically by hardware serial — which
       // only lines up when Build.getSerial() returned the real one, hence the picker.
+      // THE READER ASKS FOR A TIP LIKE EVERY OTHER READER HERE (10 Sep 2026):
+      // the charge path reads terminal_devices.tip_config per reader and null
+      // means never ask, so a row with none is seeded from the venue's tips
+      // (saved, else what its readers carry, else the usual choices, on).
+      // A row that already carries a setting keeps it.
+      const seedTipConfig = async (): Promise<Dict | null> => {
+        const ps = await readOpsPosSettings();
+        if (ps.error) return null;
+        return tipConfigFromTips(await venueTips(ps.settings));
+      };
+      const hasTipConfig = (v: unknown) => !!v && typeof v === 'object' && !Array.isArray(v);
+
       const adoptId = String(body.terminal_device_id || '');
-      let adopt: { id: string } | null = null;
+      let adopt: { id: string; tipConfig: unknown } | null = null;
       if (adoptId) {
         const { data: cand } = await opsAdmin.from('terminal_devices')
-          .select('id, location_id, status, active')
+          .select('id, location_id, status, active, tip_config')
           .eq('id', adoptId).maybeSingle();
         // Venue-fenced: an id from the client can only ever name a row at the venue
         // this caller already proved access to.
         if (!cand || cand.location_id !== opsLocationId || cand.status !== 'paired' || cand.active !== true) {
           return json({ ok: false, error: 'That paired terminal is not at this venue (or is no longer active).' }, 200);
         }
-        adopt = { id: cand.id };
+        adopt = { id: cand.id, tipConfig: cand.tip_config };
       } else {
         const { data: bySerial } = await opsAdmin.from('terminal_devices')
-          .select('id').eq('location_id', opsLocationId).eq('serial_number', serial)
+          .select('id, tip_config').eq('location_id', opsLocationId).eq('serial_number', serial)
           .eq('status', 'paired').eq('active', true).is('adyen_terminal_id', null).maybeSingle();
-        if (bySerial) adopt = { id: bySerial.id };
+        if (bySerial) adopt = { id: bySerial.id, tipConfig: bySerial.tip_config };
       }
 
       if (adopt) {
@@ -3596,10 +3757,12 @@ Deno.serve(async (req) => {
           .update({ status: 'retired', active: false })
           .eq('adyen_terminal_id', terminalId).eq('location_id', opsLocationId).neq('id', adopt.id);
         // An adopted app terminal keeps its own name unless one was given.
+        const adoptTip = hasTipConfig(adopt.tipConfig) ? null : await seedTipConfig();
         const { error: adErr } = await opsAdmin.from('terminal_devices')
           .update({
             adyen_terminal_id: terminalId, location_id: opsLocationId,
             ...(givenLabel ? { label: givenLabel } : {}),
+            ...(adoptTip ? { tip_config: adoptTip } : {}),
             status: 'paired', active: true, claimed_at: new Date().toISOString(),
           })
           .eq('id', adopt.id);
@@ -3610,19 +3773,22 @@ Deno.serve(async (req) => {
       }
 
       const { data: tdExisting } = await opsAdmin.from('terminal_devices')
-        .select('id, status').eq('adyen_terminal_id', terminalId).maybeSingle();
+        .select('id, status, tip_config').eq('adyen_terminal_id', terminalId).maybeSingle();
       let terminalDeviceId: string;
       if (tdExisting) {
+        const existingTip = hasTipConfig(tdExisting.tip_config) ? null : await seedTipConfig();
         await opsAdmin.from('terminal_devices')
-          .update({ location_id: opsLocationId, label, status: 'paired', active: true, claimed_at: new Date().toISOString() })
+          .update({ location_id: opsLocationId, label, ...(existingTip ? { tip_config: existingTip } : {}), status: 'paired', active: true, claimed_at: new Date().toISOString() })
           .eq('id', tdExisting.id);
         terminalDeviceId = tdExisting.id;
       } else {
+        const newTip = await seedTipConfig();
         const { data: td, error: tdErr } = await opsAdmin.from('terminal_devices').insert({
           device_uid: crypto.randomUUID(),
           serial_number: serial,
           location_id: opsLocationId,
           label,
+          ...(newTip ? { tip_config: newTip } : {}),
           status: 'paired',
           active: true,
           claimed_at: new Date().toISOString(),
@@ -3646,18 +3812,32 @@ Deno.serve(async (req) => {
       // (10 Sep 2026): applied on the store, so every reader here shows it,
       // and saved on the ops venue row so sync_store_settings reuses it.
       const allowCustom = body.allow_custom !== false;
+      // Whether the readers ASK for a tip on a till payment (10 Sep 2026): on
+      // unless the box's switch is off.
+      const enabled = body.enabled !== false;
       const pcts = normaliseTipPresets(Array.isArray(body.percentages) ? body.percentages : [5, 10, 15], { allowCustom });
-      const tips = { percentages: pcts.length ? pcts : [5, 10, 15], allowCustom };
+      const tips = { percentages: pcts.length ? pcts : [5, 10, 15], allowCustom, enabled };
       const gratuities = buildGratuities(market.currency, tips);   // the venue's region: GBP for UK, USD for US
       const r = await mgmt(cfg, 'PATCH', storePath, { gratuities });
       if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
-      if (!r.ok) return json({ ok: false, error: (r.data as Record<string, unknown>)?.detail || `gratuities update failed (${r.status})` }, 200);
+      if (!r.ok) return json({ ok: false, error: 'Adyen did not take the tip choices.', detail: (r.data as Record<string, unknown>)?.detail || `gratuities update failed (${r.status})` }, 200);
+      // THE READERS FOLLOW THE BOX (10 Sep 2026): the store's gratuities only
+      // set the choices; whether a reader asks on a till payment is its own
+      // terminal_devices.tip_config, which the charge path reads. Every paired,
+      // active Adyen reader at THIS venue gets the same one.
+      const warnings: string[] = [];
+      const { data: tcRows, error: tcErr } = await opsAdmin.from('terminal_devices')
+        .update({ tip_config: tipConfigFromTips(tips), updated_at: new Date().toISOString() })
+        .eq('location_id', opsLocationId).eq('status', 'paired').eq('active', true).not('adyen_terminal_id', 'is', null)
+        .select('id');
+      if (tcErr) warnings.push(`The readers could not be told to ask for tips: ${tcErr.message}`);
+      // Merged onto a read taken AFTER the Adyen call, and only reader_tips.
       const current = await readOpsPosSettings();
       if (!current.error && current.settings) {
         const wErr = await writeOpsPosSettings(readerTipsPatch(current.settings, tips, new Date().toISOString()));
         if (wErr) console.warn(`[adyen-terminal-admin] sync_gratuities: tips not saved on the venue row: ${wErr}`);
       }
-      return json({ ok: true, presets: tips.percentages, allowCustom });
+      return json({ ok: true, presets: tips.percentages, allowCustom, enabled, readers: (tcRows || []).length, warning: warnings.join(' ') || null });
     }
 
     // ── standalone (manual payments ON the reader): per-terminal setting ─────

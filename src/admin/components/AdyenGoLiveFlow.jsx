@@ -23,7 +23,7 @@
 //   4. Plain words, with the Adyen word in small grey brackets on first use:
 //      Adyen business account (account holder), Where the money lands
 //      (balance account), Registered company (legal entity), Payments
-//      location (store), Card machine (terminal).
+//      location (store), Card reader (terminal).
 //   5. Ids are secondary: small, monospace, grey, with a copy button. Never
 //      in a sentence.
 //   6. An error is one plain sentence: what happened and what to do next. The
@@ -142,9 +142,9 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'rea
 import {
   goliveFlowView, capabilityNotices, mismatchView, plainFailure, referenceSearchView,
   goLiveConfirmLines, relinkConfirmLines, relinkStoreConfirmView, merchantPicker, candidateLabel,
-  goliveProblemBox, PLATFORM_SETTINGS_WAITING_LINE, RATES_LEDE, rateCardRows,
+  goliveProblemBox, PLATFORM_SETTINGS_WAITING_LINE, RATES_LEDE, rateCardRows, PLATFORM_ID_LINE,
 } from '../../lib/payments/adyenAdminRows';
-import { isPlatformSettingsMissingWarning } from '../../lib/payments/adyenLink';
+import { isPlatformSettingsMissingWarning, rateCardProblems } from '../../lib/payments/adyenLink';
 import { cardToState, stateToCard, cardsEqual } from '../../lib/payments/rateCard';
 import RateCardRows from './RateCardRows';
 
@@ -223,7 +223,7 @@ const TERMS = {
   money: ['Where the money lands', 'balance account'],
   legal: ['Registered company', 'legal entity'],
   store: ['Payments location', 'store'],
-  reader: ['Card machine', 'terminal'],
+  reader: ['Card reader', 'terminal'],
 };
 function makeTerm() {
   const seen = new Set();
@@ -328,7 +328,7 @@ function Problem({ problem, tone = 'bad' }) {
 // Rate, Per payment, and one grey source word per row (rateCardRows). Read
 // only: Edit rates opens the editor under it.
 function RatesTable({ rows }) {
-  const head = { fontSize: 13, fontWeight: 700, color: 'var(--t3)' };
+  const head = { fontSize: 15, fontWeight: 700, color: 'var(--t3)' };
   const cell = { fontSize: 17, lineHeight: 1.4, color: 'var(--t1)' };
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'minmax(150px, 1.4fr) 1fr 1.4fr', gap: '8px 14px', maxWidth: 520, margin: '4px 0 0', alignItems: 'baseline' }}>
@@ -370,7 +370,7 @@ function whatFailed(key) {
   if (key === 'save_holder') return 'The business account could not be saved on the venue';
   if (key === 'save_all') return 'The Adyen details could not be saved on the venue';
   if (key === 'split') return 'The rates could not be applied on Adyen';
-  if (key === 'platform') return 'The balance platform id could not be saved';
+  if (key === 'platform') return 'The Adyen platform name could not be saved';
   if (key === 'rates_read') return 'The rates could not be read';
   if (key === 'rates') return 'The rates could not be saved';
   if (key === 'bank_link') return 'The bank details link could not be made';
@@ -462,6 +462,9 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
   // shown at once with Copy and never kept past this mount).
   const [rateEdit, setRateEdit] = useState(null);
   const [bankLink, setBankLink] = useState(null);
+  // Apply these rates on Adyen answered over_limit (a rate above the usual
+  // limit, 14 typed for 1.4): { lines }. The next press sends over_limit.
+  const [splitOver, setSplitOver] = useState(null);
   const pickRef = useRef(pick);
   pickRef.current = pick;
   const envRef = useRef(lookTest);
@@ -492,6 +495,11 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
   }, [callAdmin, setPick]);
 
   useEffect(() => { load(); }, [load, refreshKey, lookTest]);
+  // A SAVE ELSEWHERE ON THE PAGE (Processing's Card rates) bumps refreshKey.
+  // An open editor holds the card as it was when it opened, so it closes
+  // rather than save that old card over the newer one (10 Sep 2026); the
+  // server refuses a stale save as well (expected_rate_card).
+  useEffect(() => { setRateEdit(null); setSplitOver(null); }, [refreshKey]);
 
   const view = useMemo(() => goliveFlowView(state, openId), [state, openId]);
   const open = view.steps.find((x) => x.open) || null;
@@ -532,9 +540,9 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
     if (defVal !== null && defVal !== undefined) return { value: Number(defVal), label: 'platform default' };
     if (tierId === 'card_present') {
       const legacyVenue = field === 'percent' ? a.markup_percent : a.markup_fixed_pence;
-      if (legacyVenue !== null && legacyVenue !== undefined) return { value: Number(legacyVenue), label: 'venue flat rate' };
+      if (legacyVenue !== null && legacyVenue !== undefined) return { value: Number(legacyVenue), label: 'old venue rate' };
       const legacyDef = field === 'percent' ? d.default_markup_percent : d.default_markup_fixed_pence;
-      if (legacyDef !== null && legacyDef !== undefined) return { value: Number(legacyDef), label: 'platform flat rate' };
+      if (legacyDef !== null && legacyDef !== undefined) return { value: Number(legacyDef), label: 'old platform rate' };
     }
     return { value: null, label: null };
   };
@@ -857,11 +865,21 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
   // as it resolves (venue, else platform default) and refuses in plain words
   // naming any tier with no price.
   const setSplit = () => act('split', async () => {
-    const r = await callAdmin('set_split', { environment: target });
+    // A rate above the usual limit is refused once (over_limit) and said in
+    // plain words under the table; pressing Apply again sends over_limit.
+    const confirmOver = !!splitOver;
+    const r = await callAdmin('set_split', { environment: target, ...(confirmOver ? { over_limit: true } : {}) });
     if (r?.ok === false) {
+      if (r.over_limit && !confirmOver) {
+        setSplitOver({ lines: lines(r.lines).length ? lines(r.lines) : [str(r.error)] });
+        setOpenId('payouts');
+        return { stop: true };
+      }
+      setSplitOver(null);
       setProblem({ text: str(r.error) || 'The rates could not be applied on Adyen.', detail: str(r.detail) || null });
       return { stop: true };
     }
+    setSplitOver(null);
     return {
       notice: {
         text: 'Adyen holds these rates now.',
@@ -880,13 +898,43 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
     if (!callPayments) return { stop: true };
     const r = await callPayments('adyen_pricing', { location_id: locId });
     const value = cardToState(r?.account?.rate_card);
-    setRateEdit({ value, saved: value, defaults: r?.defaults || {}, account: r?.account || {}, ready: r?.rate_card_ready !== false });
+    setRateEdit({ value, saved: value, defaults: r?.defaults || {}, account: r?.account || {}, ready: r?.rate_card_ready !== false, overLimit: null });
     setOpenId('payouts');
     return { stop: true };
   });
+  // Save: a value that can never be right is said under the editor and never
+  // sent; a value above the usual limit asks once (Save again keeps it); the
+  // card the editor OPENED rides as expected_rate_card, so a card changed
+  // meanwhile (Processing, another admin) is never overwritten.
   const saveRates = () => act('rates', async () => {
     if (!callPayments || !rateEdit) return { stop: true };
-    const r = await callPayments('adyen_pricing', { set: true, location_id: locId, rate_card: stateToCard(rateEdit.value) });
+    const card = stateToCard(rateEdit.value);
+    const check = rateCardProblems(card);
+    if (check.errors.length) return { stop: true };
+    const confirmOver = Array.isArray(rateEdit.overLimit) && rateEdit.overLimit.length > 0;
+    if (check.overLimit.length && !confirmOver) {
+      setRateEdit((e) => (e ? { ...e, overLimit: check.overLimit.map((x) => x.text) } : e));
+      return { stop: true };
+    }
+    let r;
+    try {
+      r = await callPayments('adyen_pricing', {
+        set: true, location_id: locId, rate_card: card, expected_rate_card: stateToCard(rateEdit.saved),
+        ...(confirmOver ? { over_limit: true } : {}),
+      });
+    } catch (e) {
+      const d = e?.data || {};
+      if (d.over_limit) {
+        setRateEdit((x) => (x ? { ...x, overLimit: lines(d.lines).length ? lines(d.lines) : [str(d.error)] } : x));
+        return { stop: true };
+      }
+      if (d.changed) {
+        setRateEdit(null);
+        return { problem: { text: 'The rates changed since you opened them. Open them again.', detail: null } };
+      }
+      if (d.invalid) return { stop: true, problem: { text: str(d.error) || 'The rates could not be saved.', detail: lines(d.lines).join(' ') || null } };
+      throw e;
+    }
     setRateEdit(null);
     return {
       notice: { text: 'The venue rates are saved.' },
@@ -903,12 +951,12 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
     if (!v) return { stop: true };
     const r = await callAdmin('set_balance_platform', { balancePlatformId: v, environment: target });
     if (r?.ok === false) {
-      setProblem({ text: str(r.error) || 'The balance platform id could not be saved.', detail: str(r.detail) || null });
+      setProblem({ text: str(r.error) || 'The Adyen platform name could not be saved.', detail: str(r.detail) || null });
       return { stop: true };
     }
     setBpDraft('');
     return {
-      notice: { text: 'The balance platform id is saved. Looking for the venue now.', ids: [{ label: 'Balance platform', value: str(r.balancePlatformId) }] },
+      notice: { text: 'Saved. Looking for the venue now.', ids: [{ label: 'Adyen platform name', value: str(r.balancePlatformId) }] },
       changed: true,
     };
   });
@@ -1058,6 +1106,59 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
   const typedOk = !needsTyped || liveTyped.trim().toUpperCase() === typedWord;
   const askGo = () => (ask?.kind === 'relink_store' ? saveStore(true) : ask?.kind === 'relink_holder' ? saveHolder(true) : ask?.kind === 'relink_all' ? saveAll(true) : doGoLive(ask?.kind === 'relink'));
 
+  // THE ADYEN PLATFORM NAME, typed once per region (10 Sep 2026). Drawn on
+  // whichever step carries set_balance_platform (step 1 with nothing found,
+  // step 2 when the store was found), and never on a step that says nothing
+  // could be read.
+  const platformBox = (
+    <div style={{ maxWidth: 460 }}>
+      <p style={S.say}>{PLATFORM_ID_LINE}</p>
+      <label style={S.field}>
+        <span style={S.fieldLabel}>Adyen platform name <span style={S.brack}>(balance platform)</span></span>
+        <input
+          style={{ ...S.input, ...S.mono }}
+          value={bpDraft}
+          placeholder="FranPOS_UK"
+          onChange={(e) => setBpDraft(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter' && bpDraft.trim() && !anyBusy) savePlatformId(); }}
+          spellCheck={false}
+          autoComplete="off"
+        />
+      </label>
+      <div style={{ marginTop: 14 }}>
+        <Primary busy={busy === 'platform'} disabled={!bpDraft.trim() || anyBusy} onClick={savePlatformId}>Save and find the venue</Primary>
+      </div>
+    </div>
+  );
+
+  // The business accounts Adyen holds for the code. On the step that carries
+  // pick_holder (two carry the code) it is THE thing to do, with the one
+  // primary; on step 1 otherwise it is a quiet choice.
+  const holderPicker = (asPrimary) => (holderCandidates.length > 0 ? (
+    <div style={{ marginTop: asPrimary ? 0 : 18, maxWidth: 520 }}>
+      <label style={S.field}>
+        <span style={S.fieldLabel}>{asPrimary ? 'Pick the business account for this venue' : `Or pick the business account from the ${holderCandidates.length} Adyen holds`}</span>
+        <select style={S.input} value={pickedHolder} disabled={anyBusy} onChange={(e) => setPickedHolder(e.target.value)}>
+          <option value="">Pick one</option>
+          {holderCandidates.map((c) => <option key={c.id} value={c.id}>{candidateLabel(c)}</option>)}
+        </select>
+      </label>
+      <div style={{ marginTop: asPrimary ? 14 : 10 }}>
+        {asPrimary
+          ? <Primary busy={busy === 'holder'} disabled={!pickedHolder || anyBusy} onClick={applyHolderCandidate}>Use this business account</Primary>
+          : (
+            <Secondary busy={anyBusy} disabled={!pickedHolder} onClick={applyHolderCandidate}>
+              {busy === 'holder' ? 'Reading it' : 'Use the business account I picked'}
+            </Secondary>
+          )}
+      </div>
+    </div>
+  ) : null);
+
+  // The rate editor's own checks, live: an impossible value is said under
+  // the rows and Save waits for it.
+  const editCheck = rateEdit ? rateCardProblems(stateToCard(rateEdit.value)) : { errors: [], overLimit: [] };
+
   // The mismatch block: the two accounts and the picker. It renders on
   // whichever step owns the choice, so the explanation is never one row down
   // behind a click.
@@ -1123,7 +1224,20 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
           // Adyen's words ("Adyen blocks sendToTransferInstrument"). The rule
           // here is plainer: "Adyen has not approved this yet" with the name
           // in grey, so the capability rows say it instead of the detail.
-          const capsSpeak = step.id === 'business_account' && caps.length > 0;
+          // A save click (link_all, link_holder) keeps its own sentence and its
+          // one primary: the capability lines go UNDER the button and Open
+          // Adyen is not offered over it (10 Sep 2026). The platform name and
+          // the holder picker speak for themselves too.
+          const holderSave = step.action === 'link_all' || step.action === 'link_holder';
+          const ownBox = step.action === 'set_balance_platform' || step.action === 'pick_holder';
+          const capsSpeak = step.id === 'business_account' && caps.length > 0 && !holderSave && !ownBox;
+          // Step 5: the ONE part whose button is the primary (the step's own
+          // action, else the first part with something to press). Every other
+          // part button is a secondary, and none is primary while the rate
+          // editor is open (Save the rates is).
+          const primaryPartId = step.id === 'payouts' && !rateEdit
+            ? ((step.parts.find((p) => p.action && p.action === step.action) || step.parts.find((p) => !p.done && p.action))?.id ?? null)
+            : null;
           // Same for the two accounts: the mismatch block says it once, in
           // plain words, with the two names as ids and a picker under them.
           const mismatchSpeaks = !!mismatch && (step.id === 'payments_location' || step.action === 'choose_merchant');
@@ -1189,8 +1303,9 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
                       {refSearch.foundLine && <p style={S.quiet}>{refSearch.foundLine}</p>}
                       {/* Three ways in, one at a time (10 Sep 2026):
                             no code       pasting the id is the only way forward
-                            no platform   ONE input, the balance platform id,
-                                          saved once per region
+                            no platform   ONE input, the Adyen platform name,
+                                          saved once per region, on whichever
+                                          step carries set_balance_platform
                             known         "Find on Adyen", no box at all */}
                       {noCode ? (
                         <div style={{ maxWidth: 460 }}>
@@ -1210,25 +1325,10 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
                             <Primary busy={busy === 'paste'} disabled={!pastedLooksRight || anyBusy} onClick={applyPastedId}>Use this id</Primary>
                           </div>
                         </div>
-                      ) : refSearch.needsPlatformId ? (
-                        <div style={{ maxWidth: 460 }}>
-                          <p style={S.say}>{refSearch.platformLine}</p>
-                          <label style={S.field}>
-                            <span style={S.fieldLabel}>Balance platform id. The name Adyen shows, or the id.</span>
-                            <input
-                              style={{ ...S.input, ...S.mono }}
-                              value={bpDraft}
-                              placeholder="FranPOS_UK"
-                              onChange={(e) => setBpDraft(e.target.value)}
-                              onKeyDown={(e) => { if (e.key === 'Enter' && bpDraft.trim() && !anyBusy) savePlatformId(); }}
-                              spellCheck={false}
-                              autoComplete="off"
-                            />
-                          </label>
-                          <div style={{ marginTop: 14 }}>
-                            <Primary busy={busy === 'platform'} disabled={!bpDraft.trim() || anyBusy} onClick={savePlatformId}>Save the platform id</Primary>
-                          </div>
-                        </div>
+                      ) : step.action === 'set_balance_platform' ? (
+                        platformBox
+                      ) : step.action === 'pick_holder' ? (
+                        holderPicker(true)
                       ) : (
                         <Primary busy={busy === 'look'} disabled={anyBusy} onClick={() => act('look', async () => ({}))}>Find on Adyen</Primary>
                       )}
@@ -1255,22 +1355,7 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
                               </div>
                             </div>
                           )}
-                          {holderCandidates.length > 0 && (
-                            <div style={{ marginTop: 18, maxWidth: 520 }}>
-                              <label style={S.field}>
-                                <span style={S.fieldLabel}>Or pick the business account from the {holderCandidates.length} Adyen holds</span>
-                                <select style={S.input} value={pickedHolder} disabled={anyBusy} onChange={(e) => setPickedHolder(e.target.value)}>
-                                  <option value="">Pick one</option>
-                                  {holderCandidates.map((c) => <option key={c.id} value={c.id}>{candidateLabel(c)}</option>)}
-                                </select>
-                              </label>
-                              <div style={{ marginTop: 10 }}>
-                                <Secondary busy={anyBusy} disabled={!pickedHolder} onClick={applyHolderCandidate}>
-                                  {busy === 'holder' ? 'Reading it' : 'Use the business account I picked'}
-                                </Secondary>
-                              </div>
-                            </div>
-                          )}
+                          {step.action !== 'pick_holder' && holderPicker(false)}
                           {/* The wide search, the test system and a different
                               code: three small choices, never in the way. */}
                           <div style={{ display: 'flex', gap: 18, alignItems: 'center', flexWrap: 'wrap', marginTop: 18 }}>
@@ -1352,7 +1437,7 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
                           our key. The detail and hint above say the one thing;
                           Open Adyen is where the second credential is made, and
                           the secret it goes in rides as its own grey row. */}
-                      {(step.action === 'open_adyen' || step.action === 'send_onboarding' || step.action === 'add_bp_key' || caps.length > 0) && (
+                      {(step.action === 'open_adyen' || step.action === 'send_onboarding' || step.action === 'add_bp_key' || capsSpeak) && (
                         <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
                           <Primary disabled={anyBusy} onClick={openAdyen}>Open Adyen</Primary>
                           <Secondary busy={anyBusy} onClick={() => act('look2', async () => ({}))}>{busy === 'look2' ? 'Checking' : 'Check again'}</Secondary>
@@ -1361,6 +1446,11 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
                       {step.action === 'find_venue' && (
                         <Primary busy={busy === 'look'} disabled={anyBusy} onClick={() => act('look', async () => ({}))}>Look again</Primary>
                       )}
+                      {/* The business accounts could not be searched until the
+                          Adyen platform name is known, or two carry the code:
+                          the one thing to do is on THIS step (10 Sep 2026). */}
+                      {step.action === 'set_balance_platform' && platformBox}
+                      {step.action === 'pick_holder' && holderPicker(true)}
                       {/* link_holder (9 Sep 2026): Adyen holds the business
                           account, the venue row does not name it yet. ONE
                           button, and it carries the store too. */}
@@ -1372,6 +1462,17 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
                           click saves every id. */}
                       {step.action === 'link_all' && !ask && (
                         <Primary busy={busy === 'save_all'} disabled={anyBusy || !str(state.holder?.id) || !str(state.store?.id)} onClick={() => saveAll(false)}>Save the Adyen details on the venue</Primary>
+                      )}
+                      {/* What Adyen is still checking, UNDER the one save click,
+                          never an Open Adyen primary over it (10 Sep 2026). */}
+                      {holderSave && caps.length > 0 && (
+                        <div style={{ margin: '14px 0 0', maxWidth: MEASURE }}>
+                          {caps.map((c) => (
+                            <div key={c.name} style={{ fontSize: 15, lineHeight: 1.5, marginBottom: 4, color: c.tone === 'bad' ? 'var(--red)' : 'var(--orn, #e8a020)' }}>
+                              {c.text} <span style={S.brack}>({c.label})</span>
+                            </div>
+                          ))}
+                        </div>
                       )}
                       <div style={{ marginTop: 16 }}>
                         {/* The one value ServOS acts on, so it is body size,
@@ -1514,6 +1615,11 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
                   {/* ── 5. card rates and payouts: two parts ── */}
                   {step.id === 'payouts' && step.parts.map((part) => {
                     const pt = CHIP[part.chip.tone] || CHIP.idle;
+                    // ONE primary in the step (primaryPartId): this part's button
+                    // is a Primary only when it is that part.
+                    const isNext = part.id === primaryPartId;
+                    const Btn = isNext ? Primary : Secondary;
+                    const btnBusy = (key) => (isNext ? busy === key : anyBusy);
                     return (
                       <div key={part.id} style={{ margin: '0 0 22px' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
@@ -1530,17 +1636,34 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
                             opens the same editor Processing uses. */}
                         {part.id === 'split' && ratesKnown && !rateEdit && (
                           <>
-                            <p style={S.say}>{RATES_LEDE[0]}</p>
-                            <p style={S.quiet}>{RATES_LEDE[1]}</p>
-                            <RatesTable rows={rateRows} />
+                            {/* The venue rates could not be read: the numbers
+                                would be a fallback, so no table is drawn. */}
+                            {rates.readFailed !== true && (
+                              <>
+                                <p style={S.say}>{RATES_LEDE[0]}</p>
+                                <p style={S.quiet}>{RATES_LEDE[1]}</p>
+                                <RatesTable rows={rateRows} />
+                              </>
+                            )}
+                            {/* A rate above the usual limit asked once: the
+                                sentence here, and Apply again sends it. */}
+                            {splitOver && part.action === 'set_split' && (
+                              <div style={{ margin: '14px 0 0', maxWidth: MEASURE }}>
+                                {splitOver.lines.map((l) => <p key={l} style={{ ...S.say, color: 'var(--orn, #e8a020)', margin: '0 0 6px' }}>{l}</p>)}
+                                <p style={S.quiet}>Press Apply again to use these rates.</p>
+                              </div>
+                            )}
                             <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap', marginTop: 16 }}>
                               {part.action === 'set_split' && (
-                                <Primary busy={busy === 'split'} disabled={anyBusy} onClick={setSplit}>Apply these rates on Adyen</Primary>
+                                <Btn busy={btnBusy('split')} disabled={anyBusy} onClick={setSplit}>{splitOver ? 'Apply these rates anyway' : 'Apply these rates on Adyen'}</Btn>
                               )}
                               {part.action === 'edit_rates' && callPayments && (
-                                <Primary busy={busy === 'rates_read'} disabled={anyBusy} onClick={openRates}>Edit rates</Primary>
+                                <Btn busy={btnBusy('rates_read')} disabled={anyBusy} onClick={openRates}>Edit rates</Btn>
                               )}
-                              {part.action !== 'edit_rates' && callPayments && (
+                              {part.action === 'check_rates' && (
+                                <Btn busy={btnBusy('look5')} disabled={anyBusy} onClick={() => act('look5', async () => ({}))}>Check again</Btn>
+                              )}
+                              {part.action !== 'edit_rates' && callPayments && rates.readFailed !== true && (
                                 <Secondary busy={anyBusy} onClick={openRates}>{busy === 'rates_read' ? 'Reading the rates' : 'Edit rates'}</Secondary>
                               )}
                               {part.done && (
@@ -1555,13 +1678,29 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
                             <RateCardRows
                               big
                               value={rateEdit.value}
-                              onChange={(v) => setRateEdit((e) => ({ ...e, value: v }))}
+                              onChange={(v) => setRateEdit((e) => ({ ...e, value: v, overLimit: null }))}
                               fallbackFor={rateFallback}
                               currency={str(rates.currency) || 'GBP'}
                             />
-                            {rateEdit.ready === false && <p style={{ ...S.quiet, marginTop: 10 }}>The rate card storage is not there yet, so this cannot be saved.</p>}
+                            {editCheck.errors.length > 0 && (
+                              <div style={{ marginTop: 10, maxWidth: MEASURE }}>
+                                {editCheck.errors.map((e) => <p key={e.text} style={{ ...S.say, color: 'var(--red)', margin: '0 0 6px' }}>{e.text}</p>)}
+                              </div>
+                            )}
+                            {Array.isArray(rateEdit.overLimit) && rateEdit.overLimit.length > 0 && (
+                              <div style={{ marginTop: 10, maxWidth: MEASURE }}>
+                                {rateEdit.overLimit.map((l) => <p key={l} style={{ ...S.say, color: 'var(--orn, #e8a020)', margin: '0 0 6px' }}>{l}</p>)}
+                                <p style={S.quiet}>Press Save again to keep it.</p>
+                              </div>
+                            )}
+                            {rateEdit.ready === false && (
+                              <div style={{ marginTop: 10 }}>
+                                <p style={S.quiet}>Rates cannot be saved yet. One database update is waiting on ServOS.</p>
+                                <IdLine label="Database update" value="20260821b_adyen_rate_card.sql" />
+                              </div>
+                            )}
                             <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap', marginTop: 16 }}>
-                              <Primary busy={busy === 'rates'} disabled={anyBusy || rateEdit.ready === false || cardsEqual(rateEdit.value, rateEdit.saved)} onClick={saveRates}>Save the rates</Primary>
+                              <Primary busy={busy === 'rates'} disabled={anyBusy || rateEdit.ready === false || editCheck.errors.length > 0 || cardsEqual(rateEdit.value, rateEdit.saved)} onClick={saveRates}>Save the rates</Primary>
                               <Secondary busy={anyBusy} onClick={() => setRateEdit(null)}>Cancel</Secondary>
                             </div>
                           </div>
@@ -1576,7 +1715,7 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
 
                         {/* 5b. the payouts: the link, the daily payout, or a check */}
                         {part.id === 'payout' && part.action === 'send_bank_link' && !bankLink && (
-                          <Primary busy={busy === 'bank_link'} disabled={anyBusy} onClick={sendBankLink}>Send the bank details link</Primary>
+                          <Btn busy={btnBusy('bank_link')} disabled={anyBusy} onClick={sendBankLink}>Send the bank details link</Btn>
                         )}
                         {part.id === 'payout' && bankLink && (
                           <div style={{ margin: '0 0 14px' }}>
@@ -1590,17 +1729,17 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
                           </div>
                         )}
                         {part.id === 'payout' && part.action === 'setup_sweep' && (
-                          <Primary busy={busy === 'sweep'} disabled={anyBusy} onClick={payOutDaily}>Pay out daily</Primary>
+                          <Btn busy={btnBusy('sweep')} disabled={anyBusy} onClick={payOutDaily}>Pay out daily</Btn>
                         )}
                         {part.id === 'payout' && part.action === 'check_payouts' && (
-                          <Primary busy={busy === 'look5'} disabled={anyBusy} onClick={() => act('look5', async () => ({}))}>Check again</Primary>
+                          <Btn busy={btnBusy('look5')} disabled={anyBusy} onClick={() => act('look5', async () => ({}))}>Check again</Btn>
                         )}
                         {part.id === 'payout' && part.action === 'request_payouts' && (
-                          <Primary busy={busy === 'request'} disabled={anyBusy} onClick={requestPayouts}>Ask Adyen to allow payouts</Primary>
+                          <Btn busy={btnBusy('request')} disabled={anyBusy} onClick={requestPayouts}>Ask Adyen to allow payouts</Btn>
                         )}
                         {part.id === 'payout' && part.action === 'open_adyen' && (
                           <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
-                            <Primary disabled={anyBusy} onClick={openAdyen}>Open Adyen</Primary>
+                            <Btn busy={isNext ? false : anyBusy} disabled={anyBusy} onClick={openAdyen}>Open Adyen</Btn>
                             <Secondary busy={anyBusy} onClick={() => act('look5', async () => ({}))}>{busy === 'look5' ? 'Checking' : 'Check again'}</Secondary>
                           </div>
                         )}
@@ -1621,7 +1760,7 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
                   {step.id === 'readers' && (
                     <>
                       <p style={S.quiet}>
-                        A {term('reader', { lower: true })} is added and put on a till in the venue&rsquo;s own Back Office, under Card payments.
+                        A {term('reader', { lower: true })} is added and put on a till in the venue&rsquo;s own Back Office, under Hardware, Card readers.
                       </p>
                       {readers.length > 0 && (
                         <div style={{ margin: '0 0 16px' }}>
@@ -1636,7 +1775,7 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
                       <Primary busy={busy === 'readers'} disabled={anyBusy} onClick={() => act('readers', async () => ({}))}>Check again</Primary>
                       {readers.length > 0 && (
                         <div style={{ marginTop: 16 }}>
-                          {readers.map((r) => <IdLine key={r.poiid} label={str(r.label) || 'Card machine'} value={r.poiid} />)}
+                          {readers.map((r) => <IdLine key={r.poiid} label={str(r.label) || 'Card reader'} value={r.poiid} />)}
                         </div>
                       )}
                     </>

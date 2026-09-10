@@ -41,7 +41,6 @@ const S = {
 
 export default function CardReaders() {
   const [platformLocationId, setPlatformLocationId] = useState(null);
-  const [opsLocationId, setOpsLocationId] = useState(null);
   const [locationName, setLocationName] = useState('');
   const [companyName, setCompanyName] = useState('');
   const [readers, setReaders] = useState([]);
@@ -76,7 +75,6 @@ export default function CardReaders() {
         setLoading(false);
         return;
       }
-      setOpsLocationId(opsLocId);
       // Resolve the venue's processor (fire-and-forget — gates the Stripe auto-check below).
       getLocationProcessor(opsLocId).then(setProcessor).catch(() => setProcessor('stripe'));
       const platformId = await resolvePlatformLocationId(opsLocId);

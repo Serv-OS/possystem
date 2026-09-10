@@ -10,6 +10,12 @@
 // cannot import from src/). Change both or neither.
 // src/lib/payments/readerSettings.test.js is the contract for both copies.
 //
+// Whether the reader ASKS for a tip on a till payment is NOT the store's
+// gratuities (they only set the choices): the charge path reads
+// terminal_devices.tip_config per reader (terminal-job-create normTipConfig,
+// null means off). tipConfigFromTips builds that row value from the venue's
+// tips, so the venue box drives every reader here.
+//
 // Adyen facts (research notes, 9 Sep 2026): gratuities take whole percentages
 // only; at most four presets, or three plus the custom amount option;
 // lastActivityAt is absent after 14 days; eventPublicUrls entries carry
@@ -31,12 +37,16 @@ type Dict = Record<string, unknown>;
 
 const isObj = (v: unknown): v is Dict => !!v && typeof v === 'object' && !Array.isArray(v);
 const str = (v: unknown): string => (v == null ? '' : String(v)).trim();
+const boolOf = (v: unknown): boolean | null => (v === true || v === 'true' ? true : v === false || v === 'false' ? false : null);
 
-export interface ReaderTips { percentages: number[]; allowCustom: boolean; source?: 'saved' | 'default'; syncedAt?: string | null }
+export interface ReaderTips { percentages: number[]; allowCustom: boolean; enabled?: boolean; source?: 'saved' | 'default' | 'readers' | 'adyen'; syncedAt?: string | null }
 export interface AuthPair { user?: unknown; pass?: unknown }
-export interface StorePatch { key: string; label: string; body: Dict | null; missing: string | null }
+export interface TipsSkip { text: string; problem: boolean }
+export interface StorePatch { key: string; label: string; noun: string; notSent: string; body: Dict | null; missing: string | null; skipped: TipsSkip | null }
 export interface PatchResult { key: string; ok: boolean; status?: number; detail?: unknown }
-export interface StoreSettingsOutcome { ok: boolean; applied: string[]; errors: string[]; at: string | null }
+export interface SettingsError { key: string | null; text: string; detail: string | null }
+export interface StoreSettingsOutcome { ok: boolean; applied: string[]; errors: SettingsError[]; at: string | null }
+export interface TipChanges { kept: number[]; dropped: number[]; rounded: Array<{ from: number; to: number }> }
 export interface ReaderRow {
   id: string; poiid: string; label: string; model: string; serialNumber: string; firmwareVersion: string | null;
   lastActivityAt: string | null; status: string; onAdyen: boolean; boundPosDeviceId: string | null;
@@ -64,14 +74,44 @@ export function normaliseTipPresets(input: unknown, { allowCustom = true }: { al
   return out;
 }
 
+export function tipPresetChanges(input: unknown, { allowCustom = true }: { allowCustom?: boolean } = {}): TipChanges {
+  const cap = allowCustom ? MAX_TIP_PRESETS - 1 : MAX_TIP_PRESETS;
+  const whole: number[] = [];
+  const rounded: Array<{ from: number; to: number }> = [];
+  for (const raw of parseTipPresetText(input)) {
+    const x = Number(raw);
+    const n = Math.round(x);
+    if (!Number.isFinite(n) || n <= 0 || n > 100) continue;
+    if (n !== x && !rounded.some((r) => r.from === x)) rounded.push({ from: x, to: n });
+    if (!whole.includes(n)) whole.push(n);
+  }
+  return { kept: whole.slice(0, cap), dropped: whole.slice(cap), rounded };
+}
+
+export function tipChangeSentence(changes: unknown, { allowCustom = true }: { allowCustom?: boolean } = {}): string | null {
+  const c: Dict = isObj(changes) ? changes : {};
+  const parts: string[] = [];
+  const dropped = Array.isArray(c.dropped) ? (c.dropped as number[]) : [];
+  const rounded = Array.isArray(c.rounded) ? (c.rounded as Array<{ from: number; to: number }>) : [];
+  if (dropped.length) {
+    const fit = allowCustom ? 'three fit with a custom amount' : 'four fit';
+    parts.push(`Only ${fit}, so ${dropped.map((n) => `${n}%`).join(' and ')} ${dropped.length === 1 ? 'was' : 'were'} left off.`);
+  }
+  if (rounded.length) {
+    parts.push(`Tips are whole percentages, so ${rounded.map((r) => `${r.from} became ${r.to}`).join(' and ')}.`);
+  }
+  return parts.length ? parts.join(' ') : null;
+}
+
 export function readReaderTips(posSettings: unknown): ReaderTips {
-  const saved = isObj(posSettings) && isObj(posSettings[READER_TIPS_KEY]) ? posSettings[READER_TIPS_KEY] : null;
+  const saved = isObj(posSettings) && isObj(posSettings[READER_TIPS_KEY]) ? (posSettings[READER_TIPS_KEY] as Dict) : null;
   const allowCustom = saved ? saved.allow_custom !== false : true;
+  const enabled = saved ? saved.enabled !== false : true;
   const percentages = saved ? normaliseTipPresets(saved.percentages, { allowCustom }) : [];
   if (!saved || !percentages.length) {
-    return { percentages: [...DEFAULT_TIP_PRESETS], allowCustom: saved ? allowCustom : true, source: 'default', syncedAt: saved?.synced_at ? str(saved.synced_at) : null };
+    return { percentages: [...DEFAULT_TIP_PRESETS], allowCustom: saved ? allowCustom : true, enabled, source: 'default', syncedAt: saved?.synced_at ? str(saved.synced_at) : null };
   }
-  return { percentages, allowCustom, source: 'saved', syncedAt: saved.synced_at ? str(saved.synced_at) : null };
+  return { percentages, allowCustom, enabled, source: 'saved', syncedAt: saved.synced_at ? str(saved.synced_at) : null };
 }
 
 export function readerTipsPatch(posSettings: unknown, tips: Partial<ReaderTips> | null | undefined, at?: unknown): Dict {
@@ -82,8 +122,48 @@ export function readerTipsPatch(posSettings: unknown, tips: Partial<ReaderTips> 
     [READER_TIPS_KEY]: {
       percentages: percentages.length ? percentages : [...DEFAULT_TIP_PRESETS],
       allow_custom: allowCustom,
+      enabled: tips?.enabled !== false,
       synced_at: at ? str(at) : null,
     },
+  };
+}
+
+export function tipsFromTipConfig(tipConfig: unknown): ReaderTips | null {
+  if (!isObj(tipConfig)) return null;
+  let bands: unknown[] | null = null;
+  for (const k of ['percentBands', 'tip_percentages', 'percentages']) {
+    if (Array.isArray(tipConfig[k])) { bands = tipConfig[k] as unknown[]; break; }
+  }
+  const allowCustom = boolOf(tipConfig.allowCustom) ?? boolOf(tipConfig.allow_custom) ?? true;
+  const percentages = normaliseTipPresets(bands || [], { allowCustom });
+  if (!percentages.length) return null;
+  const enabled = boolOf(tipConfig.enabled) ?? boolOf(tipConfig.tipping_enabled) ?? false;
+  return { percentages, allowCustom, enabled, source: 'readers', syncedAt: null };
+}
+
+export function tipsFromGratuities(gratuities: unknown, currency: unknown): ReaderTips | null {
+  const list = (Array.isArray(gratuities) ? gratuities : []).filter(isObj);
+  if (!list.length) return null;
+  const cur = str(currency).toUpperCase();
+  const g = list.find((x) => str(x.currency).toUpperCase() === cur) || list[0];
+  const allowCustom = g.allowCustomAmount !== false;
+  const percentages = normaliseTipPresets(Array.isArray(g.predefinedTipEntries) ? g.predefinedTipEntries : [], { allowCustom });
+  if (!percentages.length) return null;
+  return { percentages, allowCustom, enabled: true, source: 'adyen', syncedAt: null };
+}
+
+export function tipConfigFromTips(tips: Partial<ReaderTips> | null | undefined): Dict {
+  const allowCustom = tips?.allowCustom !== false;
+  const pcts = normaliseTipPresets(tips?.percentages, { allowCustom });
+  const list = pcts.length ? pcts : [...DEFAULT_TIP_PRESETS];
+  const enabled = tips?.enabled !== false;
+  return {
+    enabled,
+    tipping_enabled: enabled,
+    percentBands: list,
+    tip_percentages: list,
+    allowCustom,
+    allow_custom: allowCustom,
   };
 }
 
@@ -138,22 +218,38 @@ export function buildPayAtTable(): Dict {
 
 export const STORE_SETTING_KEYS: readonly string[] = Object.freeze(['event_url', 'wakeup_button', 'pay_at_table', 'tips']);
 
-export function buildStoreSettingsPatches({ supabaseUrl, pair, currency, tips }: { supabaseUrl?: unknown; pair?: AuthPair | null; currency?: unknown; tips?: Partial<ReaderTips> | null } = {}): StorePatch[] {
+const PATCH_WORDS: Readonly<Record<string, { label: string; noun: string; notSent: string }>> = Object.freeze({
+  event_url: { label: 'Reader updates', noun: 'the address the readers send updates to', notSent: 'The address the readers send updates to was not sent.' },
+  wakeup_button: { label: 'Pay at table button', noun: 'the Pay at table button', notSent: 'The Pay at table button was not sent.' },
+  pay_at_table: { label: 'Pay at table', noun: 'Pay at table', notSent: 'Pay at table was not sent.' },
+  tips: { label: 'Tip choices', noun: 'the tip choices', notSent: 'The tip choices were not sent.' },
+});
+
+export function buildStoreSettingsPatches({ supabaseUrl, pair, currency, tips, tipsSkip }: { supabaseUrl?: unknown; pair?: AuthPair | null; currency?: unknown; tips?: Partial<ReaderTips> | null; tipsSkip?: Partial<TipsSkip> | null } = {}): StorePatch[] {
   const eventUrls = buildEventUrls(supabaseUrl, pair);
+  const w = PATCH_WORDS;
   const eventPatch: StorePatch = eventUrls
-    ? { key: 'event_url', label: 'Reader events', body: { nexo: { eventUrls } }, missing: null }
-    : { key: 'event_url', label: 'Reader events', body: null, missing: !eventsEndpoint(supabaseUrl) ? 'ServOS does not know its own events address.' : 'The events password for this environment is not set on ServOS.' };
+    ? { key: 'event_url', ...w.event_url, body: { nexo: { eventUrls } }, missing: null, skipped: null }
+    : {
+      key: 'event_url', ...w.event_url, body: null, skipped: null,
+      missing: !eventsEndpoint(supabaseUrl)
+        ? 'ServOS is missing its own address, so the reader updates were not set up.'
+        : 'ServOS is missing a password, so the reader updates were not set up.',
+    };
+  const skip: TipsSkip | null = isObj(tipsSkip) && str(tipsSkip.text) ? { text: str(tipsSkip.text), problem: tipsSkip.problem === true } : null;
   return [
     eventPatch,
-    { key: 'wakeup_button', label: 'Pay at table button', body: { nexo: { notification: buildNotification() } }, missing: null },
-    { key: 'pay_at_table', label: 'Pay at table', body: { payAtTable: buildPayAtTable() }, missing: null },
-    { key: 'tips', label: 'Tips on the reader', body: { gratuities: buildGratuities(currency, tips) }, missing: null },
+    { key: 'wakeup_button', ...w.wakeup_button, body: { nexo: { notification: buildNotification() } }, missing: null, skipped: null },
+    { key: 'pay_at_table', ...w.pay_at_table, body: { payAtTable: buildPayAtTable() }, missing: null, skipped: null },
+    skip
+      ? { key: 'tips', ...w.tips, body: null, missing: null, skipped: skip }
+      : { key: 'tips', ...w.tips, body: { gratuities: buildGratuities(currency, tips) }, missing: null, skipped: null },
   ];
 }
 
 export function appliedLine(key: string, tips?: Partial<ReaderTips> | null): string {
   switch (key) {
-    case 'event_url': return 'Reader events go to ServOS.';
+    case 'event_url': return 'The readers send payment updates to ServOS.';
     case 'wakeup_button': return 'The Pay at table button is on the reader menu.';
     case 'pay_at_table': return 'Pay at table is on.';
     case 'tips': return `Tip choices on the reader: ${tipsSentence(tips)}.`;
@@ -176,30 +272,43 @@ export function plainAdyenDetail(data: unknown, fallback = 'Adyen refused the ch
   return fallback;
 }
 
+function errorEntry(e: unknown): SettingsError | null {
+  if (typeof e === 'string') return str(e) ? { key: null, text: str(e), detail: null } : null;
+  if (!isObj(e) || !str(e.text)) return null;
+  return { key: str(e.key) || null, text: str(e.text), detail: str(e.detail) || null };
+}
+
 export function storeSettingsOutcome(patches: unknown, results: unknown, { tips, at }: { tips?: Partial<ReaderTips> | null; at?: unknown } = {}): StoreSettingsOutcome {
   const byKey = new Map<string, Dict>((Array.isArray(results) ? results : []).filter(isObj).map((r) => [str(r.key), r]));
   const applied: string[] = [];
-  const errors: string[] = [];
+  const errors: SettingsError[] = [];
   for (const p of Array.isArray(patches) ? patches : []) {
     if (!isObj(p)) continue;
-    if (p.missing) { errors.push(`${p.label} was not sent: ${p.missing}`); continue; }
-    const r = byKey.get(str(p.key));
-    if (!r) { errors.push(`${p.label} was not sent.`); continue; }
-    if (r.ok) applied.push(appliedLine(str(p.key), tips));
-    else if (r.status === 401 || r.status === 403) errors.push(`${p.label} was refused: the Adyen credential lacks the terminal settings role (${r.status}).`);
-    else errors.push(`${p.label} was refused: ${plainAdyenDetail(r.detail, `Adyen answered ${r.status || 'with an error'}`)}`);
+    const key = str(p.key);
+    const words = PATCH_WORDS[key] || { noun: str(p.label) || key, notSent: `${str(p.label) || key} was not sent.` };
+    if (p.missing) { errors.push({ key, text: str(p.missing), detail: null }); continue; }
+    if (isObj(p.skipped)) {
+      if (p.skipped.problem === true) errors.push({ key, text: str(p.skipped.text), detail: null });
+      else applied.push(str(p.skipped.text));
+      continue;
+    }
+    const r = byKey.get(key);
+    if (!r) { errors.push({ key, text: words.notSent, detail: null }); continue; }
+    if (r.ok) applied.push(appliedLine(key, tips));
+    else if (r.status === 401 || r.status === 403) errors.push({ key, text: `Adyen refused ${words.noun}. Contact ServOS support.`, detail: `refused (${r.status}): the Adyen credential lacks the terminal settings role` });
+    else errors.push({ key, text: `Adyen did not take ${words.noun}.`, detail: plainAdyenDetail(r.detail, `Adyen answered ${r.status || 'with an error'}`) });
   }
   return { ok: errors.length === 0, applied, errors, at: at ? str(at) : null };
 }
 
-export function readSyncState(posSettings: unknown): { at: string | null; ok: boolean; applied: string[]; errors: string[] } | null {
-  const s = isObj(posSettings) && isObj(posSettings[READER_SYNC_KEY]) ? posSettings[READER_SYNC_KEY] : null;
+export function readSyncState(posSettings: unknown): { at: string | null; ok: boolean; applied: string[]; errors: SettingsError[] } | null {
+  const s = isObj(posSettings) && isObj(posSettings[READER_SYNC_KEY]) ? (posSettings[READER_SYNC_KEY] as Dict) : null;
   if (!s) return null;
   return {
     at: s.at ? str(s.at) : null,
     ok: s.ok === true,
     applied: Array.isArray(s.applied) ? s.applied.map(str).filter(Boolean) : [],
-    errors: Array.isArray(s.errors) ? s.errors.map(str).filter(Boolean) : [],
+    errors: Array.isArray(s.errors) ? s.errors.map(errorEntry).filter((x): x is SettingsError => !!x) : [],
   };
 }
 
@@ -210,7 +319,7 @@ export function syncStatePatch(posSettings: unknown, outcome: Partial<StoreSetti
       at: outcome?.at ? str(outcome.at) : null,
       ok: outcome?.ok === true,
       applied: Array.isArray(outcome?.applied) ? outcome.applied.map(str) : [],
-      errors: Array.isArray(outcome?.errors) ? outcome.errors.map(str) : [],
+      errors: Array.isArray(outcome?.errors) ? (outcome.errors as unknown[]).map(errorEntry).filter((x): x is SettingsError => !!x) : [],
     },
   };
 }

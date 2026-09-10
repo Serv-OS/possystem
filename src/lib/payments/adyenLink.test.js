@@ -927,11 +927,13 @@ test('buildGoliveSteps: readers on the environment the venue is LEAVING are neve
   assert.equal(byId(buildGoliveSteps({ ...onTest, readers: [] }, { target: 'live' }), 'readers').detail, 'No card readers on this venue yet.');
 });
 
-test('buildGoliveSteps: nothing found at all asks for the id, no code asks for the code', () => {
+test('buildGoliveSteps: nothing found at all points at the code and the wide search, no code asks for the code', () => {
   const empty = buildGoliveSteps({ venue: { code: 'SV-1007', environment: 'test' }, keys: { configured: true, missing: [] } });
   assert.equal(byId(empty, 'find_venue').state, 'todo');
   assert.equal(byId(empty, 'find_venue').action, 'find_venue');
-  assert.match(byId(empty, 'find_venue').hint, /starts with AH/);
+  // zero paste onboarding (10 Sep 2026): the main path never tells the owner to paste
+  assert.equal(byId(empty, 'find_venue').hint, 'Check the venue code, or search every Adyen account.');
+  assert.doesNotMatch(`${byId(empty, 'find_venue').hint} ${byId(empty, 'business_account').hint}`, /paste/i);
   assert.equal(byId(empty, 'business_account').state, 'todo');
   assert.equal(byId(empty, 'payments_location').detail, 'Find the venue first.');
   const noCode = buildGoliveSteps({ venue: { environment: 'test' }, keys: { configured: true, missing: [] } });
@@ -1514,10 +1516,18 @@ test('buildGoliveSteps: step 5a, the card rates on the store (10 Sep 2026)', () 
   assert.equal(byId(present, 'payouts').parts[0].state, 'done');
   assert.equal(byId(present, 'payouts').parts[0].detail, 'Adyen holds these rates.');
   assert.equal(byId(present, 'payouts').parts[0].hint, RATES_LINE);
-  // present, profile not readable: still done, trusted on the account alone
+  // present, profile NOT readable: never done, its rates are not checked (10 Sep 2026)
   const unread = buildGoliveSteps({ ...READY, row: SAVED_ROW, rates: { currency: 'GBP', tiers, onAdyen: { read: false } } }, { target: 'live' });
-  assert.equal(byId(unread, 'payouts').parts[0].state, 'done');
-  assert.equal(byId(unread, 'payouts').parts[0].detail, 'Adyen holds these rates.');
+  assert.equal(byId(unread, 'payouts').parts[0].state, 'attention');
+  assert.equal(byId(unread, 'payouts').parts[0].detail, 'Adyen’s rates could not be read, so they are not checked yet.');
+  assert.equal(byId(unread, 'payouts').parts[0].action, 'check_rates');
+  assert.notEqual(byId(unread, 'payouts').state, 'done');
+  // the VENUE rates could not be read: nothing compared, nothing offered to apply
+  const venueUnread = buildGoliveSteps({ ...READY, rates: { ...READY.rates, readFailed: true, onAdyen: { ...READY.rates.onAdyen, matches: null } } }, { target: 'live' });
+  assert.equal(byId(venueUnread, 'payouts').parts[0].state, 'attention');
+  assert.equal(byId(venueUnread, 'payouts').parts[0].detail, 'The venue rates could not be read, so they are not checked yet.');
+  assert.equal(byId(venueUnread, 'payouts').parts[0].action, 'check_rates');
+  assert.equal(byId(venueUnread, 'payouts').action, 'check_rates');
   // present, read, DIFFERENT rates on Adyen: attention, apply again
   const differs = buildGoliveSteps({ ...READY, rates: { ...READY.rates, onAdyen: { ...READY.rates.onAdyen, matches: false } } }, { target: 'live' });
   assert.equal(byId(differs, 'payouts').parts[0].state, 'attention');
@@ -1530,14 +1540,14 @@ test('buildGoliveSteps: step 5a, the card rates on the store (10 Sep 2026)', () 
   // A TIER WITH NO PRICE: attention naming the tiers, and the editor is the button
   const unpriced = buildGoliveSteps({ ...READY, store: noSplit, row: SAVED_ROW, rates: { currency: 'GBP', tiers: { ...tiers, amex: { percent: null, fixedPence: null }, keyed: {} } } }, { target: 'live' });
   assert.equal(byId(unpriced, 'payouts').parts[0].state, 'attention');
-  assert.equal(byId(unpriced, 'payouts').parts[0].detail, 'No rate is set for Amex and keyed yet.');
+  assert.equal(byId(unpriced, 'payouts').parts[0].detail, 'No rate is set yet for: Amex and business cards, Keyed in.');
   assert.equal(byId(unpriced, 'payouts').parts[0].action, 'edit_rates');
   assert.equal(byId(unpriced, 'payouts').parts[0].hint, 'Set every payment type, then apply the rates on Adyen.');
   assert.equal(byId(unpriced, 'payouts').action, 'edit_rates');
   // ...even when Adyen already holds a profile: the card must be whole first
-  assert.equal(byId(buildGoliveSteps({ ...READY, rates: { currency: 'GBP', tiers: { card_present: tiers.card_present } } }, { target: 'live' }), 'payouts').parts[0].detail, 'No rate is set for online, Amex and keyed yet.');
+  assert.equal(byId(buildGoliveSteps({ ...READY, rates: { currency: 'GBP', tiers: { card_present: tiers.card_present } } }, { target: 'live' }), 'payouts').parts[0].detail, 'No rate is set yet for: Online, Amex and business cards, Keyed in.');
   // nothing priced anywhere: all four named
-  assert.equal(byId(buildGoliveSteps({ ...READY, store: noSplit, row: SAVED_ROW, rates: { currency: 'GBP', tiers: {} } }, { target: 'live' }), 'payouts').parts[0].detail, 'No rate is set for in person, online, Amex and keyed yet.');
+  assert.equal(byId(buildGoliveSteps({ ...READY, store: noSplit, row: SAVED_ROW, rates: { currency: 'GBP', tiers: {} } }, { target: 'live' }), 'payouts').parts[0].detail, 'No rate is set yet for: In person, Online, Amex and business cards, Keyed in.');
   // a tier priced 0% and 0p IS priced
   const free = buildGoliveSteps({ ...READY, store: noSplit, row: SAVED_ROW, rates: { currency: 'GBP', tiers: { ...tiers, amex: { percent: 0, fixedPence: 0 } } } }, { target: 'live' });
   assert.equal(byId(free, 'payouts').parts[0].action, 'set_split');
@@ -1582,7 +1592,7 @@ test('buildGoliveSteps: step 5a, the card rates on the store (10 Sep 2026)', () 
   assert.equal(byId(noStoreBa, 'payouts').parts[0].detail, 'The rates on Adyen name no account for the rest of each sale.');
   assert.equal(byId(noStoreBa, 'payouts').parts[0].action, 'set_split');
   // NEVER the word commission, never "to ServOS", never a one tier "from" summary
-  for (const steps of [absent, present, unread, differs, unpriced, free, elsewhere, keptByUs, noStoreBa, noMoney]) {
+  for (const steps of [absent, present, unread, venueUnread, differs, unpriced, free, elsewhere, keptByUs, noStoreBa, noMoney]) {
     for (const s of steps) for (const x of [s, ...(s.parts || [])]) for (const t of [x.detail, x.hint]) {
       if (!t) continue;
       assert.doesNotMatch(t, /commission/i, t);
@@ -1776,13 +1786,19 @@ test('tieredCommissionRules and buildTieredProfile: one rule per tier, the shape
     assert.equal(r.splitLogic.paymentFee, 'deductFromLiableAccount');
   }
   // a tier with no price at all is named and no rules come back; a tier priced
-  // 0% and 0p IS a price (10 Sep 2026): its rule carries no commission block
+  // 0% and 0p IS a price (10 Sep 2026): its rule carries an EXPLICIT zero
+  // commission, because Adyen's SplitConfigurationLogic marks commission required
   assert.deepEqual(tieredCommissionRules('GBP', { ...tiers, amex: { percent: 0, fixedPence: 0 }, keyed: {} }), { rules: [], lacking: ['keyed'] });
   assert.deepEqual(tieredCommissionRules('GBP', { ...tiers, keyed: { percent: '', fixed_pence: null } }).lacking, ['keyed']);
   const free = tieredCommissionRules('GBP', { ...tiers, amex: { percent: 0, fixedPence: 0 } });
   assert.deepEqual(free.lacking, []);
   assert.equal(free.rules.length, 6);
-  for (const r of free.rules.filter((x) => x.paymentMethod === 'amex')) assert.equal('commission' in r.splitLogic, false);
+  for (const r of free.rules.filter((x) => x.paymentMethod === 'amex')) assert.deepEqual(r.splitLogic.commission, { variablePercentage: 0 });
+  // every rule carries a commission block, whatever the prices
+  for (const r of free.rules) assert.equal('commission' in r.splitLogic, true);
+  // a NEGATIVE rate is no price: named, never written as 0%
+  assert.deepEqual(tieredCommissionRules('GBP', { ...tiers, amex: { percent: -1 } }).lacking, ['amex']);
+  assert.deepEqual(tieredCommissionRules('GBP', { ...tiers, amex: { percent: -1, fixedPence: -5 } }).lacking, ['amex']);
   assert.deepEqual(free.rules[5].splitLogic.commission, { variablePercentage: 80, fixedAmount: 5 });
   assert.deepEqual(tieredCommissionRules('GBP', null).lacking, [...COMMISSION_TIERS]);
   const profile = buildTieredProfile({ description: 'ServOS Provo rates', currency: 'GBP', tiers });
@@ -2127,9 +2143,165 @@ test('tiersMatch and ratesOnAdyen: the same four rates on both sides, in basis p
 
 test('plainAdyenProblem: the step 5 reads have plain subjects', () => {
   assert.equal(plainAdyenProblem('sweeps of balance account BA1: Adyen answered 500').text, 'Adyen would not answer about the payout schedule.');
-  assert.equal(plainAdyenProblem('split configuration SC1: Adyen answered 404').text, 'Adyen would not answer about the commission rules.');
+  assert.equal(plainAdyenProblem('split configuration SC1: Adyen answered 404').text, 'Adyen would not answer about the card rates on Adyen.');
   assert.equal(plainAdyenProblem('platform defaults: permission denied').text, 'Adyen would not answer about the default rates.');
   assert.equal(plainAdyenProblem(BP_REFUSED('sweeps of balance account BA1')).kind, 'bp_refused');
+});
+
+// ── 10 Sep 2026 REVIEW: never commission, never paste, the whole profile ────
+import {
+  RATE_ROW_LABELS, tierRowList, rateCardProblems, RATE_PERCENT_LIMIT, RATE_PENCE_LIMIT, profileMatchesRules,
+  PLATFORM_STEP_DETAIL, HOLDER_AMBIGUOUS_DETAIL,
+} from './adyenLink.js';
+
+// Every plain problem line the screen can draw, one raw line per subject and kind.
+const PROBLEM_RAWS = [
+  'store list by reference on A: Adyen answered 500', 'merchant list: Adyen answered 500', 'store ST1: Adyen answered 404',
+  'balance accounts of AH1: Adyen answered 500', 'balance account BA1: Adyen answered 500', 'account holders on balance platform BP1: Adyen answered 500',
+  'account holder AH1: Adyen answered 500', 'legal entity LE1: Adyen answered 500', 'business lines of LE1: Adyen answered 500',
+  'web origins: Adyen answered 500', 'Apple Pay: Adyen answered 500', 'sweeps of balance account BA1: Adyen answered 500',
+  'split configuration SC1: Adyen answered 404', 'split configuration profiles on FranPOS_UK: Adyen answered 422', 'onboarding link LE1: Adyen answered 500',
+  'platform defaults: permission denied', 'payout capability AH1: Adyen answered 500', 'rate card of the venue: timeout reading',
+  '2 account holders on balance platform BP1 carry the reference SV-1007 (AH1, AH2). They cannot be told apart by reference, so paste the account holder id of the right one.',
+  '2 stores carry the reference SV-1007 (ST1 on A, ST2 on B). Pass storeId to pick one.',
+];
+
+test('plainAdyenProblem: no screen line ever says commission, and the ambiguous holder line never says paste', () => {
+  for (const raw of PROBLEM_RAWS) {
+    const p = plainAdyenProblem(raw);
+    assert.doesNotMatch(p.text, /commission/i, p.text);
+    assert.doesNotMatch(p.text, /paste/i, p.text);
+    assert.ok(p.text.length < PROBLEM_TEXT_MAX, p.text);
+  }
+  assert.equal(plainAdyenProblem(PROBLEM_RAWS[18]).text, 'More than one business account carries this code. Pick the right one from the list.');
+});
+
+test('tierRowList: the table’s own row words, so a sentence reads like the rows under it', () => {
+  assert.deepEqual(RATE_ROW_LABELS, { card_present: 'In person', card_not_present: 'Online', amex: 'Amex and business cards', keyed: 'Keyed in' });
+  assert.equal(tierRowList(['card_not_present', 'keyed']), 'Online, Keyed in');
+  assert.equal(tierRowList([]), '');
+  assert.equal(tierRowList(null), '');
+});
+
+test('rateCardProblems: impossible values are errors, values above the usual limit ask first', () => {
+  const ok = rateCardProblems({ card_present: { percent: 1.4, fixed_pence: 5 }, amex: { percent: 0, fixed_pence: 0 }, keyed: { percent: '', fixed_pence: null } });
+  assert.deepEqual(ok, { errors: [], overLimit: [] });
+  // 14 typed for 1.4, and 60p typed for 6p
+  const slip = rateCardProblems({ card_not_present: { percent: 14, fixed_pence: 10 }, keyed: { percent: 1, fixedPence: 60 } }, { verb: 'saved' });
+  assert.deepEqual(slip.errors, []);
+  assert.deepEqual(slip.overLimit.map((x) => x.tier), ['card_not_present', 'keyed']);
+  assert.equal(slip.overLimit[0].text, 'Online is 14% + 10p. That is above the usual limit, so it was not saved.');
+  assert.equal(rateCardProblems({ keyed: { percent: 1, fixed_pence: 60 } }, { currency: 'USD' }).overLimit[0].text, 'Keyed in is 1% + 60c. That is above the usual limit.');
+  assert.equal(RATE_PERCENT_LIMIT, 5);
+  assert.equal(RATE_PENCE_LIMIT, 50);
+  // 140 typed for 1.40 is never silently blanked: it is an error naming the row
+  const bad = rateCardProblems({ card_present: { percent: 140, fixed_pence: 5 }, amex: { percent: -1 }, keyed: { percent: 'x', fixed_pence: 4.6 }, card_not_present: { percent: 1.255, fixed_pence: 20000 } });
+  assert.deepEqual(bad.errors.map((e) => e.text), [
+    'In person rate must be between 0 and 100.',
+    'Online rate can have at most two decimals.',
+    'Online per payment must be between 0 and 10000.',
+    'Amex and business cards rate must be between 0 and 100.',
+    'Keyed in rate must be a number.',
+    'Keyed in per payment must be a whole number.',
+  ]);
+  // two decimals are fine, float noise included
+  assert.deepEqual(rateCardProblems({ card_present: { percent: 1.4 }, amex: { percent: 2.55 }, keyed: { percent: 0.07 } }).errors, []);
+  for (const e of [...bad.errors, ...slip.overLimit]) {
+    assert.ok(e.text.length < PROBLEM_TEXT_MAX);
+    assert.doesNotMatch(e.text, /[–—]|commission/i);
+  }
+  assert.deepEqual(rateCardProblems(null), { errors: [], overLimit: [] });
+});
+
+test('ratesOnAdyen: the WHOLE profile must be what we would write, not just the four numbers', () => {
+  const written = tieredCommissionRules('GBP', FOUR).rules;
+  const clone = () => JSON.parse(JSON.stringify(written));
+  assert.equal(ratesOnAdyen({ rules: clone() }, FOUR, 'GBP').matches, true);
+  assert.equal(profileMatchesRules({ rules: clone() }, written), true);
+  // Adyen's own ids on the rules and cardRegion ANY change nothing
+  const echoed = clone().map((r, i) => ({ ...r, ruleId: `SCRL${i}`, cardRegion: 'ANY', splitLogic: { ...r.splitLogic, splitLogicId: `SCLG${i}` } }));
+  assert.equal(ratesOnAdyen({ rules: echoed }, FOUR, 'GBP').matches, true);
+  // (1) every rule in USD on a GBP venue: no sale matches a rule
+  assert.equal(ratesOnAdyen({ rules: clone().map((r) => ({ ...r, currency: 'USD' })) }, FOUR, 'GBP').matches, false);
+  // (2) the venue pays Adyen's fees on top of its rate
+  assert.equal(ratesOnAdyen({ rules: clone().map((r) => ({ ...r, splitLogic: { ...r.splitLogic, paymentFee: 'deductFromOneBalanceAccount' } })) }, FOUR, 'GBP').matches, false);
+  // (3) amex Ecommerce at 5% while amex ANY holds 2.5%
+  const amexEcom = clone();
+  amexEcom[0].splitLogic.commission = { variablePercentage: 500, fixedAmount: 10 };
+  assert.equal(ratesOnAdyen({ rules: amexEcom }, FOUR, 'GBP').matches, false);
+  // (4) an extra debit Ecommerce rule with no commission outranks the online one
+  const debit = [...clone(), { currency: 'GBP', paymentMethod: 'ANY', shopperInteraction: 'Ecommerce', fundingSource: 'debit', splitLogic: { ...written[3].splitLogic, commission: { variablePercentage: 0 } } }];
+  assert.equal(ratesOnAdyen({ rules: debit }, FOUR, 'GBP').matches, false);
+  // (5) the three amex rules keep the rest of every Amex sale for the platform
+  assert.equal(ratesOnAdyen({ rules: clone().map((r) => (r.paymentMethod === 'amex' ? { ...r, splitLogic: { ...r.splitLogic, remainder: 'addToLiableAccount' } } : r)) }, FOUR, 'GBP').matches, false);
+  // (6) a different fee level on one rule
+  const fees = clone();
+  fees[5].splitLogic = { ...fees[5].splitLogic, adyenFees: 'deductFromOneBalanceAccount' };
+  assert.equal(ratesOnAdyen({ rules: fees }, FOUR, 'GBP').matches, false);
+  // an explicit zero and an absent commission read the same
+  const zero = tieredCommissionRules('GBP', { ...FOUR, amex: { percent: 0, fixedPence: 0 } }).rules;
+  const absent = JSON.parse(JSON.stringify(zero)).map((r) => (r.paymentMethod === 'amex' ? { ...r, splitLogic: Object.fromEntries(Object.entries(r.splitLogic).filter(([k]) => k !== 'commission')) } : r));
+  assert.equal(ratesOnAdyen({ rules: absent }, { ...FOUR, amex: { percent: 0, fixedPence: 0 } }, 'GBP').matches, true);
+});
+
+test('round trip: every priced card written by tieredCommissionRules reads back as a match', () => {
+  const cards = [
+    FOUR,
+    { ...FOUR, amex: { percent: 0, fixedPence: 0 } },
+    { ...FOUR, keyed: { percent: 2.9, fixedPence: null } },
+    { ...FOUR, card_present: { percent: null, fixedPence: 20 } },
+    { card_present: { percent: 0.07, fixed_pence: 1 }, card_not_present: { percent: 4.99, fixed_pence: 50 }, amex: { percent: 3, fixed_pence: 0 }, keyed: { percent: 0, fixed_pence: 0 } },
+  ];
+  for (const currency of ['GBP', 'USD']) {
+    for (const card of cards) {
+      const tiers = tiersFromResolved(Object.fromEntries(Object.entries(card).map(([k, v]) => [k, { percent: v.percent, fixed_pence: v.fixedPence ?? v.fixed_pence, source: 'venue' }])));
+      assert.equal(ratesOnAdyen({ rules: tieredCommissionRules(currency, tiers).rules }, tiers, currency).matches, true, `${currency} ${JSON.stringify(card)}`);
+    }
+  }
+  // a negative stored value is no price: never written, never "different rates" forever
+  const negative = tiersFromResolved({ ...RESOLVED, amex: { percent: -1, fixed_pence: 1.4, source: 'venue' } });
+  assert.equal(negative.amex.percent, null);
+  assert.equal(negative.amex.fixedPence, 1);
+  assert.deepEqual(unpricedTiers(tiersFromResolved({ ...RESOLVED, amex: { percent: -1, fixed_pence: -5, source: 'venue' } })), ['amex']);
+});
+
+test('buildGoliveSteps: a business account search that did not run or split never reads as none (10 Sep 2026)', () => {
+  const noHolder = { ...READY, holder: null, balanceAccount: null, legalEntity: null, capabilities: [], row: {} };
+  // store found, the Adyen platform name not known: step 2 asks for it, never "no business account"
+  const needs = buildGoliveSteps({ ...noHolder, holderRead: { needsPlatform: true } }, { target: 'live' });
+  assert.equal(byId(needs, 'find_venue').state, 'done');
+  const ba = byId(needs, 'business_account');
+  assert.equal(ba.state, 'attention');
+  assert.equal(ba.action, 'set_balance_platform');
+  assert.equal(ba.detail, PLATFORM_STEP_DETAIL);
+  assert.equal(ba.hint, null);
+  // no store either: step 1 carries it, with no guess about what Adyen holds
+  const needsNothing = buildGoliveSteps({ ...noHolder, store: null, holderRead: { needsPlatform: true } }, { target: 'live' });
+  assert.equal(byId(needsNothing, 'find_venue').action, 'set_balance_platform');
+  assert.equal(byId(needsNothing, 'find_venue').detail, PLATFORM_STEP_DETAIL);
+  assert.equal(byId(needsNothing, 'find_venue').hint, null);
+  // two holders carry the code: pick one, on step 2 with a store, on step 1 without
+  const two = buildGoliveSteps({ ...noHolder, holderRead: { ambiguous: true } }, { target: 'live' });
+  assert.equal(byId(two, 'business_account').action, 'pick_holder');
+  assert.equal(byId(two, 'business_account').detail, HOLDER_AMBIGUOUS_DETAIL);
+  const twoNoStore = buildGoliveSteps({ ...noHolder, store: null, holderRead: { ambiguous: true } }, { target: 'live' });
+  assert.equal(byId(twoNoStore, 'find_venue').action, 'pick_holder');
+  assert.doesNotMatch(byId(twoNoStore, 'find_venue').detail, /Nothing at Adyen/);
+  // a capped listing never reads as none
+  const capped = buildGoliveSteps({ ...noHolder, store: null, holderRead: { capped: true } }, { target: 'live' });
+  assert.doesNotMatch(byId(capped, 'find_venue').detail, /Nothing at Adyen/);
+  assert.doesNotMatch(byId(capped, 'business_account').detail, /No business account/);
+  // the searched and found nothing case keeps its plain words, and nothing tells the owner to paste
+  const none = buildGoliveSteps({ ...noHolder, store: null }, { target: 'live' });
+  assert.equal(byId(none, 'business_account').hint, 'Adyen makes one when the venue is onboarded. Look again after that.');
+  for (const steps of [needs, needsNothing, two, twoNoStore, capped, none]) {
+    for (const s of steps) {
+      assert.doesNotMatch(`${s.detail} ${s.hint ?? ''}`, /paste/i, `${s.id}: ${s.detail} ${s.hint}`);
+      assert.ok(s.detail.length < PROBLEM_TEXT_MAX);
+      if (s.hint) assert.ok(s.hint.length < PROBLEM_TEXT_MAX);
+    }
+    every120(steps);
+  }
 });
 
 // ── THE TWO COPIES AGREE (9 Sep 2026) ────────────────────────────────────────
@@ -2179,7 +2351,38 @@ test('TS mirror: buildGoliveSteps, goliveProblems and plainAdyenProblem answer e
     [{ ...READY, row: { ...READY.row, balance_account_id: 'BA_SOMEONE_ELSE' } }, { target: 'live' }],
     [{ ...READY, row: {} }, { target: 'live' }],
   );
+  // 10 Sep 2026 review: the business account search that did not run, split
+  // or ran out of pages, the unread profile, and the unread venue rates
+  const noHolderTs = { ...READY, holder: null, balanceAccount: null, legalEntity: null, capabilities: [], row: {} };
+  shapes.push(
+    [{ ...noHolderTs, holderRead: { needsPlatform: true } }, { target: 'live' }],
+    [{ ...noHolderTs, store: null, holderRead: { needsPlatform: true } }, { target: 'live' }],
+    [{ ...noHolderTs, holderRead: { ambiguous: true } }, { target: 'live' }],
+    [{ ...noHolderTs, store: null, holderRead: { ambiguous: true } }, { target: 'live' }],
+    [{ ...noHolderTs, store: null, holderRead: { capped: true } }, { target: 'live' }],
+    [{ ...noHolderTs, store: null }, { target: 'live' }],
+    [{ ...READY, rates: { ...READY.rates, onAdyen: { read: false } } }, { target: 'live' }],
+    [{ ...READY, rates: { ...READY.rates, readFailed: true } }, { target: 'live' }],
+    [{ ...READY, store: storeSummary({ ...PROVO, splitConfiguration: undefined }), rates: { currency: 'GBP', tiers: { card_present: READY.rates.tiers.card_present } } }, { target: 'live' }],
+  );
   for (const [state, opts] of shapes) assert.deepEqual(ts.buildGoliveSteps(state, opts), buildGoliveSteps(state, opts));
+  // the review helpers answer the same on both sides
+  for (const raw of PROBLEM_RAWS) assert.deepEqual(ts.plainAdyenProblem(raw), plainAdyenProblem(raw));
+  const slipCard = { card_present: { percent: 140, fixed_pence: 5 }, card_not_present: { percent: 14, fixed_pence: 60 }, amex: { percent: 1.255, fixed_pence: 4.6 }, keyed: { percent: 'x', fixed_pence: -1 } };
+  assert.deepEqual(ts.rateCardProblems(slipCard, { verb: 'applied', currency: 'USD' }), rateCardProblems(slipCard, { verb: 'applied', currency: 'USD' }));
+  assert.equal(ts.tierRowList(['amex', 'keyed']), tierRowList(['amex', 'keyed']));
+  assert.deepEqual(ts.RATE_ROW_LABELS, RATE_ROW_LABELS);
+  assert.equal(ts.RATE_PERCENT_LIMIT, RATE_PERCENT_LIMIT);
+  assert.equal(ts.RATE_PENCE_LIMIT, RATE_PENCE_LIMIT);
+  assert.equal(ts.PLATFORM_STEP_DETAIL, PLATFORM_STEP_DETAIL);
+  assert.equal(ts.HOLDER_AMBIGUOUS_DETAIL, HOLDER_AMBIGUOUS_DETAIL);
+  const fourTs = { card_present: { percent: 1.4, fixedPence: 5 }, card_not_present: { percent: 1.9, fixedPence: 10 }, amex: { percent: 2.5, fixedPence: 10 }, keyed: { percent: 2.9, fixedPence: 15 } };
+  const usdRules = { rules: tieredCommissionRules('USD', fourTs).rules };
+  assert.deepEqual(ts.ratesOnAdyen(usdRules, fourTs, 'GBP'), ratesOnAdyen(usdRules, fourTs, 'GBP'));
+  assert.deepEqual(ts.ratesOnAdyen(usdRules, fourTs, 'USD'), ratesOnAdyen(usdRules, fourTs, 'USD'));
+  assert.equal(ts.profileMatchesRules(usdRules, tieredCommissionRules('USD', fourTs).rules), profileMatchesRules(usdRules, tieredCommissionRules('USD', fourTs).rules));
+  assert.deepEqual(ts.tieredCommissionRules('GBP', { ...fourTs, amex: { percent: -1 } }), tieredCommissionRules('GBP', { ...fourTs, amex: { percent: -1 } }));
+  assert.deepEqual(ts.tiersFromResolved({ amex: { percent: -1, fixed_pence: 2, source: 'venue' } }), tiersFromResolved({ amex: { percent: -1, fixed_pence: 2, source: 'venue' } }));
   // the step 5 helpers answer the same on both sides
   assert.deepEqual(ts.buildCommissionProfile({ description: 'ServOS Provo rates', currency: 'GBP', percent: 0.8, fixedPence: 5 }), buildCommissionProfile({ description: 'ServOS Provo rates', currency: 'GBP', percent: 0.8, fixedPence: 5 }));
   assert.deepEqual(ts.profileCommission(PROFILE), profileCommission(PROFILE));

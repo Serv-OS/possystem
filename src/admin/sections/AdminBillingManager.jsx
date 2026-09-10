@@ -55,6 +55,7 @@ import AdyenGoLiveFlow from '../components/AdyenGoLiveFlow';
 import RateCardRows from '../components/RateCardRows';
 import { adyenVenueStatus, stripeVenueStatus, matchesVenueSearch } from '../../lib/payments/adyenAdminRows';
 import { RATE_CARD_TIERS, emptyCard, cardToState, stateToCard, cardsEqual, fmtRate } from '../../lib/payments/rateCard';
+import { rateCardProblems } from '../../lib/payments/adyenLink';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
@@ -69,7 +70,15 @@ async function callPaymentsAdmin(action, payload) {
     body: JSON.stringify({ action, ...payload }),
   });
   const j = await res.json().catch(() => ({}));
-  if (!res.ok || j.error) throw new Error(j.error ?? `HTTP ${res.status}`);
+  if (!res.ok || j.error) {
+    // The answer rides on the error (10 Sep 2026), so a caller can act on a
+    // structured refusal (over_limit, changed, invalid, migration_file)
+    // instead of gluing the raw text into a sentence.
+    const err = new Error(j.error ?? `HTTP ${res.status}`);
+    err.status = res.status;
+    err.data = j;
+    throw err;
+  }
   return j;
 }
 
@@ -339,7 +348,9 @@ export default function AdminBillingManager({ authUser }) {
         </div>
       </div>
 
-      {error && <div style={S.errorBox}>{error}</div>}
+      {error && (typeof error === 'string'
+        ? <div style={S.errorBox}>{error}</div>
+        : <div style={S.errorBox}><ErrorNote text={error.text} detail={error.detail} /></div>)}
       {rowsNote && !error && <div style={S.warnBox}>{rowsNote}</div>}
 
       {!error && locations.length === 0 && !loading && (
@@ -442,29 +453,50 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
   const [on, setOn] = useState(defaults.default_online_markup_percent);
   const [drc, setDrc] = useState(cardToState(defaults.default_adyen_rate_card));
   const [busy, setBusy] = useState(false);
+  // A rate above the usual limit asked once: the sentences, and Save again sends it.
+  const [overLimit, setOverLimit] = useState(null);
 
   useEffect(() => {
     setCp(defaults.default_cardpresent_markup_percent);
     setOn(defaults.default_online_markup_percent);
     setDrc(cardToState(defaults.default_adyen_rate_card));
+    setOverLimit(null);
   }, [defaults]);
 
   const legacyPct = defaults.default_adyen_markup_percent;
   const legacyFix = defaults.default_adyen_markup_fixed_pence;
   const hasLegacy = legacyPct != null || legacyFix != null;
+  // The old rate only applies while the default card leaves in person blank.
+  const defaultInPerson = defaults.default_adyen_rate_card?.card_present;
+  const inPersonBlank = !defaultInPerson || (defaultInPerson.percent == null && defaultInPerson.fixed_pence == null);
 
-  // Blank default field → the legacy flat rate, card-present tier only.
+  // Blank default field → the old platform rate, in person only.
   const fallbackFor = (tierId, field) => {
     if (tierId === 'card_present' && hasLegacy) {
       const v = field === 'percent' ? legacyPct : legacyFix;
-      return { value: v == null ? null : Number(v), label: 'old flat rate' };
+      return { value: v == null ? null : Number(v), label: 'old platform rate' };
     }
     return { value: null, label: null };
   };
 
+  const drcCheck = rateCardProblems(stateToCard(drc));
+
   const save = async () => {
+    const card = stateToCard(drc);
+    const check = rateCardProblems(card);
+    if (check.errors.length) return;
+    const confirmOver = Array.isArray(overLimit) && overLimit.length > 0;
+    if (check.overLimit.length && !confirmOver) { setOverLimit(check.overLimit.map((x) => x.text)); return; }
     setBusy(true);
     try {
+      // The Adyen rate card FIRST, through the service role fn (platform_settings
+      // is not reliably writable from the anon platform client), so a card the
+      // server refuses leaves the Stripe markup untouched too. The card this
+      // editor opened rides as expected_rate_card.
+      await callPaymentsAdmin('adyen_pricing', {
+        set: true, rate_card: card, expected_rate_card: stateToCard(cardToState(defaults.default_adyen_rate_card)),
+        ...(confirmOver ? { over_limit: true } : {}),
+      });
       const patch = {
         default_cardpresent_markup_percent: Number(cp),
         default_online_markup_percent: Number(on),
@@ -473,13 +505,15 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
       };
       const { error } = await platformSupabase.from('platform_settings').update(patch).eq('id', true);
       if (error) throw error;
-      // The Adyen rate card goes through the service-role fn: platform_settings
-      // is not reliably writable from the anon platform client.
-      await callPaymentsAdmin('adyen_pricing', { set: true, rate_card: stateToCard(drc) });
-      onSave({ ...defaults, ...patch, default_adyen_rate_card: stateToCard(drc) });
+      onSave({ ...defaults, ...patch, default_adyen_rate_card: card });
+      setOverLimit(null);
       setEditing(false);
     } catch (e) {
-      onError(`Failed to save platform defaults: ${e.message}`);
+      const d = e?.data || {};
+      if (d.over_limit) setOverLimit(Array.isArray(d.lines) && d.lines.length ? d.lines : [d.error]);
+      else if (d.changed) onError({ text: 'The default rates changed since you opened them. Open them again.', detail: null });
+      else if (d.invalid) onError({ text: d.error || 'The default rates could not be saved.', detail: Array.isArray(d.lines) ? d.lines.join(' ') : null });
+      else onError({ text: 'The platform defaults could not be saved.', detail: e?.message || null });
     } finally {
       setBusy(false);
     }
@@ -488,9 +522,9 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
   const pct = (v) => `${Number(v ?? 0).toFixed(2)}%`;
   const resolvedDefault = (tierId) => {
     const row = defaults.default_adyen_rate_card?.[tierId];
-    if (row && (row.percent != null || row.fixed_pence != null)) return { pct: row.percent, fix: row.fixed_pence, src: null };
-    if (tierId === 'card_present' && hasLegacy) return { pct: legacyPct, fix: legacyFix, src: 'old flat rate' };
-    return { pct: null, fix: null, src: null };
+    if (row && (row.percent != null || row.fixed_pence != null)) return { pct: row.percent, fix: row.fixed_pence };
+    if (tierId === 'card_present' && hasLegacy) return { pct: legacyPct, fix: legacyFix };
+    return { pct: null, fix: null };
   };
 
   const bpRows = Array.isArray(known?.rows) ? known.rows : [];
@@ -500,24 +534,24 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
     <div style={{ ...S.card, borderColor: 'var(--acc-b)', background: 'var(--acc-d)' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16, flexWrap: 'wrap' }}>
         <div style={{ flex: 1, minWidth: 260 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--acc)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 4 }}>
+          <div style={{ ...TITLE, color: 'var(--acc)', marginBottom: 4 }}>
             Platform defaults
           </div>
-          <div style={{ fontSize: 14, color: 'var(--t1)', marginBottom: 8, lineHeight: 1.4 }}>
+          <div style={{ ...PLAIN, color: 'var(--t1)', marginBottom: 8 }}>
             The standard card rates a venue pays when it has no rates of its own, the Stripe markup, and the Adyen accounts we know.
           </div>
           {open && (
             <div style={{ marginBottom: 12 }}>
-              <div style={{ ...S.label, color: 'var(--t2)', marginBottom: 4 }}>Adyen balance platform</div>
-              {known === null && <div style={{ fontSize: 12.5, color: 'var(--t3)' }}>Reading what is known.</div>}
-              {known?.error && <div style={{ fontSize: 12.5, color: 'var(--red)' }}>Could not read it: {known.error}</div>}
-              {known && !known.error && known.available === false && <div style={{ fontSize: 12.5, color: 'var(--orn, #e8a020)' }}>One database step is waiting on ServOS, so nothing is known yet.</div>}
-              {known && !known.error && known.available !== false && bpRows.length === 0 && <div style={{ fontSize: 12.5, color: 'var(--t3)' }}>No balance platform is known yet. The first venue read on each account teaches it.</div>}
+              <div style={{ ...TITLE, marginBottom: 4 }}>Adyen platform name <span style={BRACK}>(balance platform)</span></div>
+              {known === null && <div style={QUIET}>Reading what is known.</div>}
+              {known?.error && <ErrorNote text="What ServOS knows about Adyen could not be read." detail={known.error} />}
+              {known && !known.error && known.available === false && <div style={{ ...PLAIN, color: 'var(--orn, #e8a020)' }}>One database step is waiting on ServOS, so nothing is known yet.</div>}
+              {known && !known.error && known.available !== false && bpRows.length === 0 && <div style={QUIET}>No Adyen platform name is known yet. The first venue read on each account teaches it.</div>}
               {bpRows.map((r) => (
-                <div key={`${r.environment}-${r.region}`} style={{ display: 'flex', gap: 10, alignItems: 'center', fontSize: 12.5, margin: '3px 0', flexWrap: 'wrap' }}>
-                  <span style={{ color: 'var(--t3)', minWidth: 70 }}>{bpLine(r)}</span>
-                  <code style={{ fontFamily: 'var(--font-mono, monospace)', color: r.balance_platform_id ? 'var(--t1)' : 'var(--t4)' }}>{r.balance_platform_id || 'not known'}</code>
-                  {r.merchant_accounts > 0 && <span style={{ color: 'var(--t4)' }}>{r.merchant_accounts} merchant account{r.merchant_accounts === 1 ? '' : 's'} seen</span>}
+                <div key={`${r.environment}-${r.region}`} style={{ display: 'flex', gap: 10, alignItems: 'center', fontSize: 15, margin: '3px 0', flexWrap: 'wrap' }}>
+                  <span style={{ color: 'var(--t3)', minWidth: 80 }}>{bpLine(r)}</span>
+                  <code style={{ fontFamily: 'var(--font-mono, monospace)', fontSize: 13, color: r.balance_platform_id ? 'var(--t1)' : 'var(--t4)' }}>{r.balance_platform_id || 'not known'}</code>
+                  {r.merchant_accounts > 0 && <span style={{ color: 'var(--t3)' }}>{r.merchant_accounts} Adyen account{r.merchant_accounts === 1 ? '' : 's'} seen</span>}
                 </div>
               ))}
             </div>
@@ -534,14 +568,15 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
                   return <Stat key={t.id} label={t.label} value={fmtRate(r.pct, r.fix)} accent={r.pct != null || r.fix != null} />;
                 })}
               </div>
-              {hasLegacy && (
-                <div style={{ fontSize: 12, color: 'var(--t3)' }}>
-                  An old flat rate is on file: {fmtRate(legacyPct, legacyFix)}. It counts as the in person default until a value replaces it.
+              {hasLegacy && inPersonBlank && (
+                <div style={QUIET}>
+                  An old rate is on file for in person payments: {fmtRate(legacyPct, legacyFix)}. It applies until you type an in person rate here.
                 </div>
               )}
               {defaults.adyen_rate_card_ready === false && (
-                <div style={{ fontSize: 12, color: 'var(--orn, #e8a020)' }}>
-                  The rate card storage is not there yet. Apply migration 20260821b_adyen_rate_card.sql, then save the card.
+                <div>
+                  <div style={{ ...PLAIN, color: 'var(--orn, #e8a020)' }}>Rates cannot be saved yet. One database update is waiting on ServOS.</div>
+                  <IdRow label="Database update" value="20260821b_adyen_rate_card.sql" />
                 </div>
               )}
             </div>
@@ -549,15 +584,22 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
           {open && editing && (
             <div style={{ display: 'grid', gap: 14, maxWidth: 640 }}>
               <div>
-                <div style={{ ...S.label, color: 'var(--t2)' }}>Stripe markup (platform fee)</div>
+                <div style={TITLE}>Stripe markup <span style={BRACK}>(platform fee)</span></div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                   <NumField label="In-person %" value={cp} onChange={setCp} />
                   <NumField label="Online %" value={on} onChange={setOn} />
                 </div>
               </div>
               <div>
-                <div style={{ ...S.label, color: 'var(--t2)' }}>Standard card rates: what a venue pays per payment type</div>
-                <RateCardRows value={drc} onChange={setDrc} fallbackFor={fallbackFor} />
+                <div style={TITLE}>Standard card rates: what a venue pays per payment type</div>
+                <RateCardRows big value={drc} onChange={(v) => { setDrc(v); setOverLimit(null); }} fallbackFor={fallbackFor} />
+                {drcCheck.errors.map((e) => <div key={e.text} style={{ ...PLAIN, color: 'var(--red)', marginTop: 6 }}>{e.text}</div>)}
+                {Array.isArray(overLimit) && overLimit.length > 0 && (
+                  <div style={{ marginTop: 8 }}>
+                    {overLimit.map((l) => <div key={l} style={{ ...PLAIN, color: 'var(--orn, #e8a020)' }}>{l}</div>)}
+                    <div style={QUIET}>Press Save defaults again to keep it.</div>
+                  </div>
+                )}
               </div>
             </div>
           )}
@@ -570,7 +612,7 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
           </>}
           {open && editing && <>
             <button onClick={() => setEditing(false)} disabled={busy} style={{ ...S.btn, ...S.btnGhost }}>Cancel</button>
-            <button onClick={save} disabled={busy} style={{ ...S.btn, ...S.btnPrim }}>{busy ? 'Saving' : 'Save defaults'}</button>
+            <button onClick={save} disabled={busy || drcCheck.errors.length > 0} style={{ ...S.btn, ...S.btnPrim }}>{busy ? 'Saving' : 'Save defaults'}</button>
           </>}
         </div>
       </div>
@@ -837,8 +879,12 @@ const AdyenRow = ({ ok, children }) => (
 // Nothing here makes a store, starts onboarding, configures splits or sets up
 // a payout: the flow owns all of that, one step at a time.
 const BOX = { marginTop: 14, padding: '14px 16px', borderRadius: 12, background: 'var(--bg2)', border: '1px solid var(--bdr2)' };
-const PLAIN = { fontSize: 14, color: 'var(--t2)', lineHeight: 1.5 };
-const QUIET = { fontSize: 13, color: 'var(--t3)', lineHeight: 1.5 };
+// Body text 15px or more (owner rule); section titles in plain case, never
+// 11px capitals; the Adyen word in small grey brackets.
+const PLAIN = { fontSize: 15, color: 'var(--t2)', lineHeight: 1.5 };
+const QUIET = { fontSize: 15, color: 'var(--t3)', lineHeight: 1.5 };
+const TITLE = { fontSize: 16, fontWeight: 700, color: 'var(--t1)', marginBottom: 6, display: 'block' };
+const BRACK = { fontSize: 13, fontWeight: 400, color: 'var(--t3)' };
 
 // A grey monospace id with a Copy button. Never inside a sentence.
 function IdRow({ label, value }) {
@@ -850,9 +896,31 @@ function IdRow({ label, value }) {
   };
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '4px 0', flexWrap: 'wrap' }}>
-      <span style={{ fontSize: 12.5, color: 'var(--t3)', minWidth: 170 }}>{label}</span>
-      <code style={{ fontSize: 12.5, color: 'var(--t3)', fontFamily: 'var(--font-mono, monospace)', wordBreak: 'break-all' }}>{value}</code>
-      <button type="button" onClick={copy} style={{ background: 'transparent', border: '1px solid var(--bdr2)', borderRadius: 6, color: 'var(--t3)', fontSize: 11.5, padding: '2px 8px', cursor: 'pointer', fontFamily: 'inherit' }}>{copied ? 'Copied' : 'Copy'}</button>
+      <span style={{ fontSize: 15, color: 'var(--t3)', minWidth: 170 }}>{label}</span>
+      <code style={{ fontSize: 13, color: 'var(--t3)', fontFamily: 'var(--font-mono, monospace)', wordBreak: 'break-all' }}>{value}</code>
+      <button type="button" onClick={copy} style={{ background: 'transparent', border: '1px solid var(--bdr2)', borderRadius: 6, color: 'var(--t3)', fontSize: 12, padding: '2px 8px', cursor: 'pointer', fontFamily: 'inherit' }}>{copied ? 'Copied' : 'Copy'}</button>
+    </div>
+  );
+}
+
+// One plain sentence, with the raw answer behind a small Show detail
+// (10 Sep 2026): a database or HTTP message is never glued into the sentence.
+function ErrorNote({ text, detail, tone = 'bad', style }) {
+  const [open, setOpen] = useState(false);
+  if (!text) return null;
+  const color = tone === 'warn' ? 'var(--orn, #e8a020)' : tone === 'ok' ? 'var(--grn)' : 'var(--red)';
+  return (
+    <div style={{ fontSize: 15, lineHeight: 1.5, color, ...style }}>
+      <div>{text}</div>
+      {detail && (
+        <>
+          <button type="button" onClick={() => setOpen((v) => !v)}
+            style={{ background: 'none', border: 0, padding: 0, color: 'inherit', textDecoration: 'underline', cursor: 'pointer', fontSize: 15, fontFamily: 'inherit' }}>
+            {open ? 'Hide detail' : 'Show detail'}
+          </button>
+          {open && <div style={{ fontSize: 13, fontFamily: 'var(--font-mono, monospace)', wordBreak: 'break-word', marginTop: 4 }}>{detail}</div>}
+        </>
+      )}
     </div>
   );
 }
@@ -938,11 +1006,11 @@ function AdyenBlock({ location, venueCode, adyenRow, defaults, onError, onRowCha
     if (defVal != null) return { value: Number(defVal), label: 'platform default' };
     if (tierId === 'card_present') {
       const legacyVenue = field === 'percent' ? acct?.account?.markup_percent : acct?.account?.markup_fixed_pence;
-      if (legacyVenue != null) return { value: Number(legacyVenue), label: 'venue flat rate' };
+      if (legacyVenue != null) return { value: Number(legacyVenue), label: 'old venue rate' };
       const legacyDef = field === 'percent'
         ? (acct?.defaults?.default_markup_percent ?? defaults?.default_adyen_markup_percent)
         : (acct?.defaults?.default_markup_fixed_pence ?? defaults?.default_adyen_markup_fixed_pence);
-      if (legacyDef != null) return { value: Number(legacyDef), label: 'platform flat rate' };
+      if (legacyDef != null) return { value: Number(legacyDef), label: 'old platform rate' };
     }
     return { value: null, label: null };
   };
@@ -950,18 +1018,46 @@ function AdyenBlock({ location, venueCode, adyenRow, defaults, onError, onRowCha
   const dirty = acct && !acct.error && !cardsEqual(rc, savedCard);
   const legacyVenuePct = acct?.account?.markup_percent;
   const legacyVenueFix = acct?.account?.markup_fixed_pence;
-  const hasVenueLegacy = legacyVenuePct != null || legacyVenueFix != null;
+  const hasVenueLegacy = (legacyVenuePct != null || legacyVenueFix != null) && rc.card_present?.percent === '' && rc.card_present?.fixed_pence === '';
+  // What this box says about the card: a refusal or a stale save, one plain
+  // sentence with the raw answer behind Show detail; and a rate above the
+  // usual limit asked once (Save again keeps it).
+  const [rateProblem, setRateProblem] = useState(null);   // { text, detail, file }
+  const [rateOver, setRateOver] = useState(null);         // [sentence]
+  const rcCheck = rateCardProblems(stateToCard(rc));
 
   const savePricing = async () => {
+    const card = stateToCard(rc);
+    const check = rateCardProblems(card);
+    setRateProblem(null);
+    if (check.errors.length) return;
+    const confirmOver = Array.isArray(rateOver) && rateOver.length > 0;
+    if (check.overLimit.length && !confirmOver) { setRateOver(check.overLimit.map((x) => x.text)); return; }
     setBusy(true);
     try {
-      await callPaymentsAdmin('adyen_pricing', { set: true, location_id: location.id, rate_card: stateToCard(rc) });
+      // The card this box OPENED rides as expected_rate_card: a card changed
+      // meanwhile (the flow's Edit rates, another admin) is never overwritten.
+      await callPaymentsAdmin('adyen_pricing', {
+        set: true, location_id: location.id, rate_card: card, expected_rate_card: stateToCard(savedCard),
+        ...(confirmOver ? { over_limit: true } : {}),
+      });
       setSavedCard(rc);
-      setAcct(prev => ({ ...prev, account: { ...(prev?.account ?? {}), exists: true, rate_card: stateToCard(rc) } }));
+      setRateOver(null);
+      setAcct(prev => ({ ...prev, account: { ...(prev?.account ?? {}), exists: true, rate_card: card } }));
       setSavedAt(Date.now()); setTimeout(() => setSavedAt(null), 2500);
-      // The flow's step 5 reads the resolved card, so it reads again.
+      // The flow's step 5 reads the resolved card, so it reads again (and an
+      // open Edit rates there closes, it held the old card).
       setFlowRev((n) => n + 1);
-    } catch (e) { onError?.(`The rates could not be saved: ${e.message}`); }
+    } catch (e) {
+      const d = e?.data || {};
+      if (d.over_limit) setRateOver(Array.isArray(d.lines) && d.lines.length ? d.lines : [d.error]);
+      else if (d.changed) {
+        setRateProblem({ text: 'The rates changed since you opened them. They are shown again, so check them and save.', detail: null });
+        setEnvRev((n) => n + 1);
+      } else if (d.invalid) setRateProblem({ text: d.error || 'The rates could not be saved.', detail: Array.isArray(d.lines) ? d.lines.join(' ') : null });
+      else if (d.migration_file) setRateProblem({ text: d.error || 'Rates cannot be saved yet. One database update is waiting on ServOS.', detail: null, file: d.migration_file });
+      else setRateProblem({ text: 'The rates could not be saved. Try again in a moment.', detail: e?.message || null });
+    }
     finally { setBusy(false); }
   };
 
@@ -985,29 +1081,44 @@ function AdyenBlock({ location, venueCode, adyenRow, defaults, onError, onRowCha
           platform default applies. The same resolved card drives what the
           ledger stamps and what the flow applies on Adyen. */}
       <div style={BOX}>
-        <div style={{ ...S.label, color: 'var(--t2)', marginBottom: 6 }}>Card rates</div>
+        <div style={TITLE}>Card rates</div>
         <div style={{ ...PLAIN, marginBottom: 12 }}>What the venue pays per payment type. Blank means the platform default applies.</div>
         {acct == null && <div style={QUIET}>Loading the rates.</div>}
-        {acct?.error && <div style={{ fontSize: 13, color: 'var(--red)' }}>The rates could not be read: {acct.error}</div>}
+        {acct?.error && <ErrorNote text="The rates could not be read. Try again in a moment." detail={acct.error} />}
         {acct && !acct.error && (
           <>
-            <RateCardRows value={rc} onChange={setRc} fallbackFor={fallbackFor} currency={currency} />
+            <RateCardRows big value={rc} onChange={(v) => { setRc(v); setRateOver(null); }} fallbackFor={fallbackFor} currency={currency} />
+            {rcCheck.errors.map((e) => <div key={e.text} style={{ ...PLAIN, color: 'var(--red)', marginTop: 6 }}>{e.text}</div>)}
+            {Array.isArray(rateOver) && rateOver.length > 0 && (
+              <div style={{ marginTop: 8 }}>
+                {rateOver.map((l) => <div key={l} style={{ ...PLAIN, color: 'var(--orn, #e8a020)' }}>{l}</div>)}
+                <div style={QUIET}>Press Save the rates again to keep it.</div>
+              </div>
+            )}
             {hasVenueLegacy && (
               <div style={{ ...QUIET, marginTop: 8 }}>
-                An old flat rate is on file for this venue: {fmtRate(legacyVenuePct, legacyVenueFix, currency)}. It counts as the in person rate until a value replaces it.
+                An old rate is on file for this venue’s in person payments: {fmtRate(legacyVenuePct, legacyVenueFix, currency)}. It applies until you type an in person rate above.
               </div>
             )}
             {acct.rate_card_ready === false && (
-              <div style={{ fontSize: 13, color: 'var(--orn, #e8a020)', marginTop: 8 }}>
-                The rate card storage is not there yet. Apply migration 20260821b_adyen_rate_card.sql, then save.
+              <div style={{ marginTop: 8 }}>
+                <div style={{ ...PLAIN, color: 'var(--orn, #e8a020)' }}>Rates cannot be saved yet. One database update is waiting on ServOS.</div>
+                <IdRow label="Database update" value="20260821b_adyen_rate_card.sql" />
+              </div>
+            )}
+            {rateProblem && (
+              <div style={{ marginTop: 8 }}>
+                <ErrorNote text={rateProblem.text} detail={rateProblem.detail} />
+                {rateProblem.file && <IdRow label="Database update" value={rateProblem.file} />}
               </div>
             )}
             <div style={{ ...QUIET, margin: '10px 0 12px' }}>
               The venue sees these rates read only in Back Office, under Card payments. Step 5 of the flow applies them on Adyen.
             </div>
-            <SaveRow busy={busy} dirty={dirty} savedAt={savedAt}
+            <SaveRow busy={busy} dirty={dirty && rcCheck.errors.length === 0} savedAt={savedAt}
+              label="Save the rates" busyLabel="Saving"
               onSave={savePricing}
-              onReset={() => setRc(savedCard)}
+              onReset={() => { setRc(savedCard); setRateOver(null); setRateProblem(null); }}
             />
           </>
         )}
@@ -1024,7 +1135,7 @@ function AdyenBlock({ location, venueCode, adyenRow, defaults, onError, onRowCha
         callTerminalAdmin={callTerminalAdmin}
         onEnvChanged={envChanged}
         linkRev={linkRev}
-        onManualSaved={linkChanged}
+        onManualSaved={() => { linkChanged(); setFlowRev((n) => n + 1); }}
       />
     </>
   );
@@ -1061,12 +1172,13 @@ function VenuePlanPanel({ location, onError }) {
   const venue = (data?.venues ?? []).find((v) => v.location_id === opsId || v.location_id === location.id) || null;
   return (
     <div style={BOX}>
-      <div style={{ ...S.label, color: 'var(--t2)', marginBottom: 6 }}>Plan</div>
+      <div style={TITLE}>Plan</div>
       {data == null && <div style={QUIET}>Loading the plan.</div>}
-      {data?.error && <div style={{ fontSize: 13, color: 'var(--red)' }}>The plan could not be read: {data.error}</div>}
+      {data?.error && <ErrorNote text="The plan could not be read. Try again in a moment." detail={data.error} />}
       {data && !data.error && data.typed === false && (
         <div style={{ ...QUIET, padding: 10, borderRadius: 8, background: 'var(--orn-d, rgba(230,160,60,.12))', color: 'var(--orn, #e8a020)', border: '1px solid var(--orn-b, var(--bdr2))' }}>
-          {data.migration_note || 'The extra devices and HubRise columns are not on the subscriptions table yet. Apply supabase/migrations/20260822_saas_plans.sql on the Ops database.'}
+          <div>{data.migration_note || 'Plans cannot be saved yet. One database update is waiting on ServOS.'}</div>
+          <IdRow label="Database update" value={data.migration_file || '20260822_saas_plans.sql'} />
         </div>
       )}
       {data && !data.error && data.typed !== false && !venue && <div style={QUIET}>This venue has no plan row yet.</div>}
@@ -1087,7 +1199,7 @@ function AdvancedPanel({ location, adyenRow, st, callTerminalAdmin, onEnvChanged
     <div style={BOX}>
       <button
         type="button"
-        style={{ ...S.btn, ...S.btnGhost, padding: '4px 10px', fontSize: 13 }}
+        style={{ ...S.btn, ...S.btnGhost, padding: '6px 12px', fontSize: 15 }}
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}>
         {open ? '▾' : '▸'} Advanced
@@ -1110,13 +1222,10 @@ function AdvancedPanel({ location, adyenRow, st, callTerminalAdmin, onEnvChanged
 
           {/* The Adyen connection, as adyen-checkout status answers it. */}
           <div style={{ ...BOX, background: 'var(--bg1)' }}>
-            <div style={{ ...S.label, color: 'var(--t2)', marginBottom: 6 }}>Adyen connection</div>
+            <div style={TITLE}>Adyen connection</div>
             {!st && <div style={QUIET}>Checking the Adyen connection.</div>}
             {st && (st.error || !st.configured) && (
-              <>
-                <div style={PLAIN}>Adyen is not reachable on this environment, so card payments refuse safely here.</div>
-                {st.error && <div style={{ ...QUIET, marginTop: 4 }}>{st.error}</div>}
-              </>
+              <ErrorNote tone="warn" text="Adyen is not reachable on this environment, so card payments refuse safely here." detail={st.error || null} />
             )}
             {st && !st.error && st.configured && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -1137,7 +1246,7 @@ function AdvancedPanel({ location, adyenRow, st, callTerminalAdmin, onEnvChanged
 
           {/* The ids Adyen gave us, grey and monospace, with Copy. */}
           <div style={{ ...BOX, background: 'var(--bg1)' }}>
-            <div style={{ ...S.label, color: 'var(--t2)', marginBottom: 6 }}>The ids Adyen gave us</div>
+            <div style={TITLE}>The ids Adyen gave us</div>
             {idRows.length === 0 && <div style={QUIET}>Adyen has given us no ids for this venue yet. The flow above finds them.</div>}
             {idRows.map(([key, label]) => <IdRow key={key} label={label} value={row[key]} />)}
           </div>
@@ -1184,26 +1293,36 @@ function ManualLink({ location, adyenRow, onSaved }) {
       const r = await callAdyenOnboard('save_manual', { location_id: location.id, ...fields });
       if (r.ok) {
         setForm(null);
-        setMsg(r.warning ? { kind: 'warning', text: `The Adyen details are saved. ${r.warning}` } : { kind: 'ok', text: 'The Adyen details are saved for this venue.' });
+        setMsg(r.warning
+          ? { kind: 'warning', text: 'The Adyen details are saved. The server said something else as well.', detail: r.warning }
+          : { kind: 'ok', text: 'The Adyen details are saved for this venue.' });
         onSaved?.();
-      } else setMsg({ kind: r.kind === 'warning' ? 'warning' : 'error', text: r.message || r.error || 'The details could not be saved.' });
-    } catch (e) { setMsg({ kind: 'error', text: e.message }); }
+      } else {
+        setMsg(r.kind === 'warning'
+          ? { kind: 'warning', text: 'The Adyen details are saved. The server said something else as well.', detail: r.message || r.error || null }
+          : { kind: 'error', text: 'The Adyen details could not be saved.', detail: r.message || r.error || null });
+      }
+    } catch (e) { setMsg({ kind: 'error', text: 'The Adyen details could not be saved.', detail: e.message }); }
     finally { setBusy(false); }
   };
   return (
     <div style={{ ...BOX, background: 'var(--bg1)' }}>
-      <div style={{ ...S.label, color: 'var(--t2)', marginBottom: 6 }}>Manual link</div>
-      <div style={{ ...QUIET, marginBottom: 10 }}>The flow finds the venue by its code. Use this only when Adyen holds it under another store.</div>
-      {msg && <div style={{ padding: 10, borderRadius: 8, fontSize: 13, lineHeight: 1.5, marginBottom: 10, ...kindStyle(msg.kind) }}>{msg.text}</div>}
-      {!form && <button style={{ ...S.btn, ...S.btnGhost }} disabled={busy} onClick={openForm}>Pick the merchant account and store</button>}
+      <div style={TITLE}>Manual link</div>
+      <div style={{ ...QUIET, marginBottom: 10 }}>The flow finds the venue by its code. Use this only when the venue has a different code on Adyen.</div>
+      {msg && (
+        <div style={{ padding: 10, borderRadius: 8, marginBottom: 10, ...kindStyle(msg.kind) }}>
+          <ErrorNote text={msg.text} detail={msg.detail} tone={msg.kind === 'ok' ? 'ok' : msg.kind === 'warning' ? 'warn' : 'bad'} />
+        </div>
+      )}
+      {!form && <button style={{ ...S.btn, ...S.btnGhost, fontSize: 15 }} disabled={busy} onClick={openForm}>Pick the Adyen account and payments location</button>}
       {form && (
         <div>
           <div style={{ marginBottom: 10 }}>
-            <div style={{ ...S.label, color: 'var(--t3)', marginBottom: 4 }}>Merchant account</div>
+            <div style={{ ...TITLE, fontSize: 15 }}>Adyen account</div>
             {merchants === null ? (
               <div style={QUIET}>Reading the list from Adyen.</div>
             ) : merchants.length ? (
-              <select style={{ ...S.input, fontSize: 13 }} value={form.merchant_account || ''}
+              <select style={{ ...S.input, fontSize: 15 }} value={form.merchant_account || ''}
                 onChange={(e) => {
                   const pick = merchants.find((m) => m.id === e.target.value);
                   // The merchant's own country decides the endpoint, so the
@@ -1230,17 +1349,17 @@ function ManualLink({ location, adyenRow, onSaved }) {
                 ))}
               </select>
             ) : (
-              <div style={{ fontSize: 13, color: 'var(--orn, #e8a020)' }}>The merchant accounts could not be read from Adyen.</div>
+              <div style={{ ...PLAIN, color: 'var(--orn, #e8a020)' }}>The Adyen accounts could not be read.</div>
             )}
           </div>
           <div style={{ marginBottom: 12 }}>
-            <div style={{ ...S.label, color: 'var(--t3)', marginBottom: 4 }}>Store</div>
+            <div style={{ ...TITLE, fontSize: 15 }}>Payments location</div>
             {!form.merchant_account ? (
-              <div style={QUIET}>Pick a merchant account first.</div>
+              <div style={QUIET}>Pick an Adyen account first.</div>
             ) : stores === null ? (
-              <div style={QUIET}>Reading the stores on that account.</div>
+              <div style={QUIET}>Reading the payments locations on that account.</div>
             ) : stores.length ? (
-              <select style={{ ...S.input, fontSize: 13 }} value={form.store_id || ''}
+              <select style={{ ...S.input, fontSize: 15 }} value={form.store_id || ''}
                 onChange={(e) => setForm((f) => ({ ...f, store_id: e.target.value }))}>
                 <option value="">Pick one</option>
                 {stores.map((st) => (
@@ -1252,7 +1371,7 @@ function ManualLink({ location, adyenRow, onSaved }) {
                 ))}
               </select>
             ) : (
-              <div style={{ fontSize: 13, color: 'var(--orn, #e8a020)' }}>No stores were found on that account.</div>
+              <div style={{ ...PLAIN, color: 'var(--orn, #e8a020)' }}>No payments locations were found on that account.</div>
             )}
           </div>
           <div style={{ display: 'flex', gap: 8 }}>
@@ -1381,11 +1500,13 @@ function NotesRow({ notes, setNotes }) {
   );
 }
 
-function SaveRow({ busy, dirty, savedAt, onSave, onReset }) {
+// label and busyLabel: the Card rates box says "Save the rates", the same
+// words as the flow's editor; the Stripe block keeps its own.
+function SaveRow({ busy, dirty, savedAt, onSave, onReset, label = 'Save pricing', busyLabel = 'Saving…' }) {
   return (
     <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
       <button onClick={onSave} disabled={busy || !dirty} style={{ ...S.btn, ...(dirty ? S.btnPrim : S.btnGhost) }}>
-        {busy ? 'Saving…' : 'Save pricing'}
+        {busy ? busyLabel : label}
       </button>
       <button onClick={onReset} disabled={busy || !dirty} style={{ ...S.btn, ...S.btnGhost }}>Reset</button>
       {savedAt && <span style={{ fontSize: 12, color: 'var(--grn)', fontWeight: 700 }}>✓ Saved</span>}

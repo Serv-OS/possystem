@@ -16,7 +16,9 @@
 //                applies when the input is blank (the platform default, the
 //                legacy flat rate), value null when nothing does
 //   currency     'GBP' | 'USD': pence or cents in the labels
-//   big          15px inputs and labels for the go live flow (13px by default)
+//   big          15px inputs, headers, notes and labels (the owner rule: body
+//                text 15px or more). Both the go live flow and Processing
+//                pass it; the small size is kept only for any older caller
 
 import { RATE_CARD_TIERS, fmtRate } from '../../lib/payments/rateCard';
 
@@ -27,7 +29,7 @@ export default function RateCardRows({ value, onChange, fallbackFor, currency = 
   const fb = typeof fallbackFor === 'function' ? fallbackFor : () => ({ value: null, label: null });
   const minor = String(currency || '').toUpperCase() === 'USD' ? 'cents' : 'pence';
   const size = big ? 15 : 13;
-  const head = { fontSize: big ? 13 : 11, fontWeight: 700, color: 'var(--t3)', textTransform: big ? 'none' : 'uppercase', letterSpacing: big ? 0 : '.06em' };
+  const head = { fontSize: big ? 15 : 11, fontWeight: 700, color: 'var(--t3)', textTransform: big ? 'none' : 'uppercase', letterSpacing: big ? 0 : '.06em' };
   const input = {
     width: '100%', boxSizing: 'border-box', padding: big ? '10px 12px' : '8px 10px', borderRadius: 8,
     border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t1)', fontSize: size,
@@ -55,7 +57,7 @@ export default function RateCardRows({ value, onChange, fallbackFor, currency = 
           <div key={t.id} style={{ display: 'grid', gridTemplateColumns: GRID, gap: 10, alignItems: 'center' }}>
             <span style={{ fontSize: size, color: 'var(--t1)', fontWeight: 600, lineHeight: 1.4 }}>
               {t.label}
-              {t.note && <span style={{ display: 'block', fontSize: big ? 13 : 11, color: 'var(--t3)', fontWeight: 400 }}>{t.note}</span>}
+              {t.note && <span style={{ display: 'block', fontSize: big ? 15 : 11, color: 'var(--t3)', fontWeight: 400 }}>{t.note}</span>}
             </span>
             <input
               type="number" step="0.01" min="0" max="100" value={row.percent}
