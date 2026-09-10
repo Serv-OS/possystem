@@ -421,6 +421,15 @@ export default function AdyenTerminals() {
     catch (e) { fail(`The switch for ${r.label} could not be saved.`, e, 'readers'); }
     setBusy('');
   };
+  // Pay at table per reader: the same modes.table_pay the table payment RPCs
+  // check (terminal_start_table_payment and _for refuse when it is false).
+  // The rebuild on 10 Sep left this switch off the page by mistake.
+  const setTablePay = async (r, on) => {
+    setBusy(`tp-${r.id}`); clearMessages();
+    try { await writeSettings(r, { modes: { ...(r.modes || {}), table_pay: on } }); await loadList(status); }
+    catch (e) { fail(`The Pay at table switch for ${r.label} could not be saved.`, e, 'readers'); }
+    setBusy('');
+  };
   const setStandaloneFor = async (r, on) => {
     setBusy(`sa-${r.id}`); clearMessages();
     try {
@@ -613,6 +622,8 @@ export default function AdyenTerminals() {
               <div style={{ display: 'flex', gap: 24, alignItems: 'center', flexWrap: 'wrap' }}>
                 <Switch label="Take payments from the till" checked={r.modes?.pos_dispatch !== false} disabled={!!busy}
                   onChange={(on) => setPosDispatch(r, on)} />
+                <Switch label="Pay at table on this reader" checked={r.modes?.table_pay !== false} disabled={!!busy}
+                  onChange={(on) => setTablePay(r, on)} />
                 <Switch label="Staff can type an amount on the reader" checked={sa === true} disabled={!!busy || sa == null}
                   title="Payments typed on the reader book against the venue and show in payment reports. They do not attach to a till check."
                   onChange={(on) => setStandaloneFor(r, on)} />

@@ -45,7 +45,7 @@ import {
   terminalEndpoint, adyenFetch, checkoutBase,
   buildPaymentRequest, buildTransactionStatusRequest, buildAbortRequest,
   parsePaymentResponse, newServiceId,
-  adyenConfig, adyenEnvForLocation, adyenNotConfiguredMessage, effectiveMerchantAccount, managementBase, lemBase, type AdyenConfig,
+  adyenConfig, adyenEnvForLocation, adyenNotConfiguredMessage, effectiveMerchantAccount, managementBase, lemBase, balancePlatformBase, type AdyenConfig,
 } from '../_shared/adyen.ts';
 import { insertCaptureRow } from '../_shared/tip_capture.ts';
 import {
@@ -757,6 +757,70 @@ Deno.serve(async (req) => {
       probe(`other (${otherEnv})`, otherCfg, otherStash.merchant_account ?? otherCfg.merchantAccount ?? null, otherStash.store_id ?? null),
     ]);
     return json({ ok: true, poiid, opsLocationId: opsLocId, platformLocationId: platformLocId, row: { environment: (maa as any)?.environment, region: (maa as any)?.region, merchant_account: (maa as any)?.merchant_account, store_id: (maa as any)?.store_id }, probes: results });
+  }
+
+  // ── diag_payment (10 Sep 2026): how ADYEN booked one payment, read only ─
+  // Service role only, GETs only. Reads the split configuration profile named
+  // on the venue row, the store's link to it, and the Balance Platform
+  // transfers and transactions in a time window, filtered to the payment's
+  // psp reference (and any extra refs). This is Adyen's own record of what
+  // went to the venue's balance account, what went to the platform as the
+  // venue rate, and the fees Adyen took, so a split is checked, not guessed.
+  if (action === 'diag_payment') {
+    if (!isServiceRole) return json({ error: 'diag_payment: service role only' }, 403);
+    const opsLocId = String(body.location_id ?? '');
+    const since = String(body.since ?? '');
+    const until = String(body.until ?? '');
+    const refs = [String(body.psp ?? ''), ...(Array.isArray(body.refs) ? (body.refs as unknown[]).map(String) : [])].map((x) => x.trim()).filter(Boolean);
+    if (!opsLocId || !since || !until) return json({ error: 'location_id, since and until required' }, 400);
+    const { data: ploc } = await platformAdmin.from('locations').select('id').eq('ops_location_id', opsLocId).maybeSingle();
+    const platformLocId = ploc?.id ?? opsLocId;
+    const [{ data: maa }, target] = await Promise.all([
+      platformAdmin.from('merchant_adyen_accounts')
+        .select('merchant_account, store_id, balance_account_id, account_holder_id, split_profile_id')
+        .eq('location_id', platformLocId).maybeSingle(),
+      adyenEnvForLocation(platformAdmin, platformLocId),
+    ]);
+    const cfg = adyenConfig(target);
+    const row = (maa ?? {}) as Record<string, any>;
+    const { data: kept } = await platformAdmin.from('adyen_platform_settings')
+      .select('balance_platform_id').eq('environment', cfg.env).eq('region', cfg.region).maybeSingle();
+    const bpId = String((kept as any)?.balance_platform_id ?? '');
+    const merchant = effectiveMerchantAccount(cfg, row.merchant_account) || '';
+    const call = async (url: string, apiKey?: string) => {
+      try {
+        const r = await adyenFetch('GET', url, undefined, { cfg, apiKey, timeoutMs: 25_000 });
+        return { url, status: r.status, ok: r.ok, data: r.data as any };
+      } catch (e) { return { url, status: 0, ok: false, data: { thrown: String((e as Error)?.message ?? e) } as any }; }
+    };
+    const M = managementBase(cfg);
+    const BTL = balancePlatformBase(cfg).replace(/\/bcl\/v2$/, '/btl/v4');
+    const window = `createdSince=${encodeURIComponent(since)}&createdUntil=${encodeURIComponent(until)}&limit=100`;
+    const matches = (item: unknown) => !refs.length || refs.some((r) => JSON.stringify(item).includes(r));
+    const pageAll = async (first: string) => {
+      const items: any[] = []; const pages: Array<{ status: number; count: number }> = []; let url: string | null = first; let n = 0;
+      while (url && n < 10) {
+        const r = await call(url, cfg.bpKey);
+        pages.push({ status: r.status, count: Array.isArray(r.data?.data) ? r.data.data.length : 0 });
+        if (!r.ok) return { items, pages, error: r.data };
+        for (const it of (r.data?.data ?? [])) if (matches(it)) items.push(it);
+        url = r.data?._links?.next?.href ?? null; n++;
+      }
+      return { items, pages, error: null };
+    };
+    const [profile, store, venueTransfers, platformTransfers, platformTransactions] = await Promise.all([
+      row.split_profile_id && merchant ? call(`${M}/merchants/${encodeURIComponent(merchant)}/splitConfigurations/${encodeURIComponent(row.split_profile_id)}`) : Promise.resolve(null),
+      row.store_id ? call(`${M}/stores/${encodeURIComponent(row.store_id)}`) : Promise.resolve(null),
+      row.balance_account_id ? pageAll(`${BTL}/transfers?balanceAccountId=${encodeURIComponent(row.balance_account_id)}&${window}`) : Promise.resolve(null),
+      bpId ? pageAll(`${BTL}/transfers?balancePlatform=${encodeURIComponent(bpId)}&${window}`) : Promise.resolve(null),
+      bpId ? pageAll(`${BTL}/transactions?balancePlatform=${encodeURIComponent(bpId)}&${window}`) : Promise.resolve(null),
+    ]);
+    return json({
+      ok: true, env: cfg.env, region: cfg.region, merchant, balancePlatform: bpId || null, refs,
+      row: { store_id: row.store_id, balance_account_id: row.balance_account_id, account_holder_id: row.account_holder_id, split_profile_id: row.split_profile_id },
+      profile, storeSplit: store ? { status: store.status, splitConfiguration: store.data?.splitConfiguration ?? null } : null,
+      venueTransfers, platformTransfers, platformTransactions,
+    });
   }
 
   // ── sweep_unsent (9 Sep 2026): re-kick STRANDED cloud jobs ────────────────
