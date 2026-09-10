@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.47',
+    date: '10 Sep 2026',
+    items: [
+      'Card readers on a live venue: the payment now names the venue\'s store the way Adyen expects (its store code, for example SV-1007) instead of the internal store id. On the test account the two were the same, which is why it only showed on live.',
+    ],
+  },
+  {
     v: '5.8.46',
     date: '9 Sep 2026',
     items: [
