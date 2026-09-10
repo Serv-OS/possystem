@@ -11,11 +11,27 @@
 //   status       → processor, merchant, store mapping, Management-API scope probe
 //   ensure_store → ADMIN. create the venue's Adyen store + merchant_adyen_accounts row
 //   ensure_payment_methods → ADMIN. request the card schemes on the store again
-//   list         → Adyen fleet for the merchant, split store vs inventory,
-//                  joined to our terminal_devices links
+//   list         → the venue's OWN readers (GET /terminals?storeIds=<store>,
+//                  never the merchant wide list) joined to our terminal_devices
+//                  links: { readers, notAdded, tips, settingsSync }. Also
+//                  accepted with the project's service role bearer (diagnostics)
 //   assign       → reassign terminal to the venue store + payment_devices row
-//                  + ops terminal_devices row (paired, ready to bind to a till)
-//   unlink       → retire the ops row (terminal stays boarded at Adyen)
+//                  + ops terminal_devices row (paired, ready to bind to a till),
+//                  then sync_store_settings (the reader gets its store settings
+//                  the moment it is added, nothing to click)
+//   rename       → { terminal_device_id, label } the reader's name on the ops
+//                  row AND the platform payment_devices row
+//   unlink       → retire the ops row AND the platform payment_devices row
+//                  (the terminal stays boarded at Adyen)
+//   sync_store_settings → idempotent PATCH /stores/{storeId}/terminalSettings,
+//                  one patch per group (_shared/readerSettings.ts): the events
+//                  url with the environment's EVENTS_USER/EVENTS_PASS (and ?k=),
+//                  the Pay at table wake up button, payAtTable, gratuities from
+//                  the venue's saved tips. Answers { ok, applied, errors, at },
+//                  one plain line each, and stamps the outcome on ops
+//                  locations.pos_settings.reader_settings_sync. BO fenced like
+//                  the rest AND accepted with the project's service role bearer
+//                  (ServOS runs it from the server)
 //   register_origins → ADMIN. the ServOS hosts and wildcards on the venue's
 //                  API credential's allowed origins (WEB ORIGINS below)
 //   register_apple_pay_domains → ADMIN. the venue's storefront hosts on the
@@ -150,8 +166,14 @@ import {
   buildDisplayIdleRequest, newServiceId, adyenFetch, terminalEndpoint,
   adyenConfig, adyenEnvForLocation, adyenSecretName, normalizeAdyenEnv, assertAdyenConfigured, effectiveMerchantAccount,
   parseAdyenRegion, liveRegionsConfigured, isAdyenRegionCheckError, adyenRegionMigrationMessage, ADYEN_REGION_MIGRATION,
+  webhookAuthPairsFor,
   type AdyenConfig, type AdyenEnv,
 } from '../_shared/adyen.ts';
+import {
+  readReaderTips, readerTipsPatch, normaliseTipPresets, buildGratuities, buildStoreSettingsPatches, storeSettingsOutcome,
+  readSyncState, syncStatePatch, readerRows, nextReaderName,
+  type PatchResult, type StoreSettingsOutcome,
+} from '../_shared/readerSettings.ts';
 import {
   buildWebOrigins, buildStorefrontDomains, originsPlan, applePayDomainsPlan, pickApplePayMethod, hasApplePayEntries,
   applePayStatusNote, adyenRefusalMessage, isDuplicateRefusal,
@@ -178,6 +200,13 @@ const platformAdmin = createClient(
 );
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
+// The project's own service role bearer is accepted for these actions only
+// (the adyen-terminal-charge pattern: compared to SUPABASE_SERVICE_ROLE_KEY,
+// never a client supplied flag). sync_store_settings so ServOS can push a
+// venue's reader settings from the server, list for diagnostics. A service
+// role caller passes ops_location_id in the body as any caller does.
+const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
+const SERVICE_ROLE_ACTIONS = new Set(['sync_store_settings', 'list']);
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
 
 // Management API call with the VENUE'S config: its host and, by default, its
@@ -1414,14 +1443,24 @@ Deno.serve(async (req) => {
     if (!opsLocationId || opsLocationId === 'loc-demo') return json({ error: 'ops_location_id required' }, 400);
 
     // ── BO fence (the ryft-terminals pattern) ────────────────────────────────
+    // The service role bearer (SERVICE_ROLE_ACTIONS only) carries no user: the
+    // caller reads as 'service_role' in the log and is never a ServOS admin.
     const authHeader = req.headers.get('Authorization') || '';
-    const { data: { user: caller } } = await opsAdmin.auth.getUser(authHeader.replace('Bearer ', ''));
-    if (!caller) return json({ error: 'not authenticated' }, 401);
-    const [{ data: ul }, { data: prof }] = await Promise.all([
-      opsAdmin.from('user_locations').select('location_id').eq('user_id', caller.id).eq('location_id', opsLocationId).maybeSingle(),
-      opsAdmin.from('user_profiles').select('role').eq('id', caller.id).maybeSingle(),
-    ]);
-    if (!ul && prof?.role !== 'super_admin') return json({ error: 'No access to this location' }, 403);
+    const bearer = authHeader.replace('Bearer ', '').trim();
+    const isServiceRole = !!bearer && !!SERVICE_ROLE_KEY && bearer === SERVICE_ROLE_KEY && SERVICE_ROLE_ACTIONS.has(action);
+    let caller: { id: string } = { id: 'service_role' };
+    let prof: { role?: string | null } | null = null;
+    if (!isServiceRole) {
+      const { data: { user } } = await opsAdmin.auth.getUser(bearer);
+      if (!user) return json({ error: 'not authenticated' }, 401);
+      caller = user;
+      const [{ data: ul }, { data: p }] = await Promise.all([
+        opsAdmin.from('user_locations').select('location_id').eq('user_id', caller.id).eq('location_id', opsLocationId).maybeSingle(),
+        opsAdmin.from('user_profiles').select('role').eq('id', caller.id).maybeSingle(),
+      ]);
+      if (!ul && p?.role !== 'super_admin') return json({ error: 'No access to this location' }, 403);
+      prof = p;
+    }
 
     // ── venue resolution: ops → platform → merchant mapping ──────────────────
     // No `country` in this select: platform locations has no such column
@@ -2714,43 +2753,112 @@ Deno.serve(async (req) => {
       return json({ ok: pm.errors.length === 0, ...pm });
     }
 
-    // ── list: merchant fleet split store vs inventory, joined to our links ───
-    if (action === 'list') {
-      const r = await mgmt<{ data?: Record<string, unknown>[] }>(cfg, 'GET', `/terminals?merchantIds=${encodeURIComponent(merchant)}&pageSize=100`);
-      if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
-      if (!r.ok) return json({ ok: false, error: `terminal list failed (${r.status})` }, 200);
-      const { data: links } = await opsAdmin.from('terminal_devices')
-        .select('id, label, adyen_terminal_id, bound_pos_device_id, status, last_seen_at, tip_config, modes, idle_screen')
-        .eq('location_id', opsLocationId).not('adyen_terminal_id', 'is', null).neq('status', 'retired');
-      const linkBy = new Map((links || []).map((l) => [String(l.adyen_terminal_id), l]));
-      const rows = (r.data.data || []).map((t) => {
-        const asn = (t.assignment || {}) as Record<string, unknown>;
-        return {
-          id: t.id, model: t.model, serialNumber: t.serialNumber,
-          firmwareVersion: t.firmwareVersion || null,
-          lastActivityAt: t.lastActivityAt || null,
-          onStore: asn.storeId === maa.store_id,
-          assignmentStatus: asn.status || null,
-          link: linkBy.get(String(t.id)) || null,
-        };
-      });
-      // v5.6.81 — app terminals waiting for a POIID: a paired terminal_devices row
-      // at this venue that a DEVICE owns (self-registered by our MPOS wrapper on an
-      // Adyen Android terminal, then claimed by code) and that no POIID is on yet.
-      // The panel offers these when registering, so the link lands on the row the
-      // physical device can actually authenticate as. See 'assign' → adopt.
-      const { data: appTerms } = await opsAdmin.from('terminal_devices')
-        .select('id, label, serial_number, last_seen_at, app_version')
-        .eq('location_id', opsLocationId).eq('status', 'paired').eq('active', true)
-        .is('adyen_terminal_id', null).is('ryft_terminal_id', null)
-        .order('last_seen_at', { ascending: false }).limit(20);
+    // ── the venue's readers and their store settings (10 Sep 2026) ───────────
+    // The ops venue row's pos_settings holds the venue level tip settings
+    // (reader_tips) and the last sync outcome (reader_settings_sync). Read
+    // once per action; a failed read means NO write (merging over {} would
+    // wipe tip_on_receipt and every other key on the row).
+    const readOpsPosSettings = async (): Promise<{ settings: Record<string, unknown> | null; error: string | null }> => {
+      const { data, error } = await opsAdmin.from('locations').select('pos_settings').eq('id', opsLocationId).maybeSingle();
+      if (error) return { settings: null, error: error.message };
+      const ps = data?.pos_settings;
+      return { settings: ps && typeof ps === 'object' && !Array.isArray(ps) ? (ps as Record<string, unknown>) : {}, error: null };
+    };
+    const writeOpsPosSettings = async (next: Record<string, unknown>): Promise<string | null> => {
+      const { error } = await opsAdmin.from('locations').update({ pos_settings: next }).eq('id', opsLocationId);
+      return error ? error.message : null;
+    };
+    const storePath = `/stores/${encodeURIComponent(String(maa.store_id))}/terminalSettings`;
 
+    // Every reader on this venue's store gets the same settings, pushed as
+    // four idempotent patches (readerSettings.ts builds the bodies): the
+    // events url with the environment's events credentials (the region's
+    // pair first, then what resolveWebhookAuthPairs falls back to), the Pay
+    // at table wake up button, payAtTable and the venue's tips. Never throws:
+    // a refusal or a timeout is an error line for that group, the rest still
+    // apply. The outcome is stamped on the ops venue row so the page can show
+    // what happened and when.
+    const syncStoreSettings = async (): Promise<StoreSettingsOutcome> => {
+      const at = new Date().toISOString();
+      const current = await readOpsPosSettings();
+      const tips = readReaderTips(current.settings);
+      let pair: { user: string; pass: string } | null = null;
+      try {
+        const pairs = webhookAuthPairsFor(cfg.live, 'events');
+        pair = pairs.find((x) => x.region === cfg.region) ?? pairs[0] ?? null;
+      } catch { pair = null; }
+      const patches = buildStoreSettingsPatches({ supabaseUrl: Deno.env.get('SUPABASE_URL'), pair, currency: market.currency, tips });
+      const results: PatchResult[] = [];
+      for (const patch of patches) {
+        if (!patch.body) continue;
+        try {
+          const r = await mgmt(cfg, 'PATCH', storePath, patch.body);
+          results.push({ key: patch.key, ok: r.ok, status: r.status, detail: r.data });
+        } catch (e) {
+          results.push({ key: patch.key, ok: false, status: 0, detail: (e as Error)?.message || 'no answer' });
+        }
+      }
+      const outcome = storeSettingsOutcome(patches, results, { tips, at });
+      if (!current.error && current.settings) {
+        const tipsOk = results.some((r) => r.key === 'tips' && r.ok);
+        const next = syncStatePatch(readerTipsPatch(current.settings, tips, tipsOk ? at : tips.syncedAt), outcome);
+        const wErr = await writeOpsPosSettings(next);
+        if (wErr) console.warn(`[adyen-terminal-admin] reader settings sync outcome not saved for ${opsLocationId}: ${wErr}`);
+      }
+      console.log(`[adyen-terminal-admin] ${caller.id} sync_store_settings for ${loc.id} on ${maa.store_id} (${cfg.region} ${cfg.env}): ${outcome.applied.length} applied, ${outcome.errors.length} refused${outcome.errors.length ? ` (${outcome.errors.join(' | ')})` : ''}`);
+      return outcome;
+    };
+
+    if (action === 'sync_store_settings') {
+      const outcome = await syncStoreSettings();
+      return json({ ok: outcome.ok, ...outcome });
+    }
+
+    // ── list: the venue's own readers, joined to our links ───────────────────
+    // Store scoped (storeIds), never the merchant wide list: the page shows
+    // ONE list of this venue's readers plus the readers on its store that are
+    // not added yet. `readers` are the paired ops rows the till can use (kept
+    // even when Adyen no longer lists the terminal on the store, so a reader
+    // is never lost from the page); `notAdded` are on the store with no row.
+    if (action === 'list') {
+      const r = await mgmt<{ data?: Record<string, unknown>[] }>(cfg, 'GET', `/terminals?storeIds=${encodeURIComponent(String(maa.store_id))}&pageSize=100`);
+      if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
+      if (!r.ok) return json({ ok: false, error: `The reader list could not be read from Adyen (${r.status}).` }, 200);
+      const { data: links, error: linkErr } = await opsAdmin.from('terminal_devices')
+        .select('id, label, adyen_terminal_id, serial_number, bound_pos_device_id, status, active, last_seen_at, tip_config, modes, idle_screen')
+        .eq('location_id', opsLocationId).not('adyen_terminal_id', 'is', null).eq('status', 'paired');
+      if (linkErr) return json({ ok: false, error: `The reader rows could not be read: ${linkErr.message}` }, 200);
+      const view = readerRows({ terminals: r.data?.data || [], links: links || [] });
+      const ps = await readOpsPosSettings();
       return json({
         ok: true,
-        store: rows.filter((x) => x.onStore),
-        inventory: rows.filter((x) => !x.onStore),
-        appTerminals: appTerms ?? [],
+        storeId: maa.store_id,
+        currency: market.currency,
+        readers: view.readers,
+        notAdded: view.notAdded,
+        tips: readReaderTips(ps.settings),
+        settingsSync: readSyncState(ps.settings),
       });
+    }
+
+    // ── rename: the reader's name, on the ops row and the platform registry ──
+    if (action === 'rename') {
+      const tdId = String(body.terminal_device_id || '');
+      const label = String(body.label || '').trim().slice(0, 60);
+      if (!tdId) return json({ error: 'terminal_device_id required' }, 400);
+      if (!label) return json({ ok: false, error: 'Type a name for the reader.' }, 200);
+      const { data: row, error } = await opsAdmin.from('terminal_devices')
+        .update({ label, updated_at: new Date().toISOString() })
+        .eq('id', tdId).eq('location_id', opsLocationId)
+        .select('id, adyen_terminal_id').maybeSingle();
+      if (error) return json({ ok: false, error: `The name could not be saved: ${error.message}` }, 500);
+      if (!row) return json({ ok: false, error: 'That reader is not at this venue.' }, 200);
+      if (row.adyen_terminal_id) {
+        const { error: pdErr } = await platformAdmin.from('payment_devices').update({ label })
+          .eq('adyen_terminal_id', row.adyen_terminal_id).eq('location_id', loc.id);
+        if (pdErr) console.warn(`[adyen-terminal-admin] rename: platform registry label not updated for ${row.adyen_terminal_id}: ${pdErr.message}`);
+      }
+      return json({ ok: true, label });
     }
 
     // ── find_by_serial: locate a boxed reader anywhere the credential sees ───
@@ -2779,7 +2887,15 @@ Deno.serve(async (req) => {
     if (action === 'assign') {
       const terminalId = String(body.terminal_id || '');
       if (!terminalId) return json({ error: 'terminal_id required' }, 400);
-      const label = String(body.label || '').slice(0, 60) || terminalId;
+      // A friendly default name (Reader 1, Reader 2...) when the caller gives
+      // none; the POIID is never a name (10 Sep 2026).
+      const givenLabel = String(body.label || '').trim().slice(0, 60);
+      let label = givenLabel;
+      if (!label) {
+        const { data: named } = await opsAdmin.from('terminal_devices').select('label')
+          .eq('location_id', opsLocationId).eq('status', 'paired');
+        label = nextReaderName((named || []).map((x) => x.label));
+      }
 
       // 1. Adyen-side: put the terminal on the venue's store (no-op if already there).
       const re = await mgmt(cfg, 'POST', `/terminals/${encodeURIComponent(terminalId)}/reassign`, { storeId: maa.store_id });
@@ -2856,15 +2972,18 @@ Deno.serve(async (req) => {
         await opsAdmin.from('terminal_devices')
           .update({ status: 'retired', active: false })
           .eq('adyen_terminal_id', terminalId).eq('location_id', opsLocationId).neq('id', adopt.id);
+        // An adopted app terminal keeps its own name unless one was given.
         const { error: adErr } = await opsAdmin.from('terminal_devices')
           .update({
-            adyen_terminal_id: terminalId, label, location_id: opsLocationId,
+            adyen_terminal_id: terminalId, location_id: opsLocationId,
+            ...(givenLabel ? { label: givenLabel } : {}),
             status: 'paired', active: true, claimed_at: new Date().toISOString(),
           })
           .eq('id', adopt.id);
         if (adErr) return json({ ok: false, error: `terminal link write failed: ${adErr.message}` }, 500);
         console.log(`[adyen-terminal-admin] adopted app-terminal row ${adopt.id} for POIID ${terminalId} (${adoptId ? 'operator-chosen' : 'serial match'})`);
-        return json({ ok: true, terminalDeviceId: adopt.id, poiid: terminalId, adopted: true });
+        const settings = await syncStoreSettings();
+        return json({ ok: true, terminalDeviceId: adopt.id, poiid: terminalId, adopted: true, label, settings });
       }
 
       const { data: tdExisting } = await opsAdmin.from('terminal_devices')
@@ -2889,26 +3008,33 @@ Deno.serve(async (req) => {
         if (tdErr || !td) return json({ ok: false, error: `terminal link write failed: ${tdErr?.message || 'no row'}` }, 500);
         terminalDeviceId = td.id;
       }
-      return json({ ok: true, terminalDeviceId, poiid: terminalId });
+      // The store settings go on the moment a reader is added: events url,
+      // Pay at table button, payAtTable, the venue's tips. One plain line
+      // each in `settings`; a refusal there never undoes the add.
+      const settings = await syncStoreSettings();
+      return json({ ok: true, terminalDeviceId, poiid: terminalId, label, settings });
     }
 
     // ── sync_gratuities: BO tipping percentages → the reader's tip screen ────
     if (action === 'sync_gratuities') {
-      // Adyen's gratuity presets take WHOLE percentages only — "12.5%" is
-      // rejected as an invalid JSON value (hit live 14 Aug). Round + dedupe.
-      const pcts = [...new Set((Array.isArray(body.percentages) ? body.percentages : [5, 10, 15])
-        .map((n: unknown) => Math.round(Number(n)))
-        .filter((n: number) => Number.isFinite(n) && n > 0 && n <= 100))].slice(0, 4);
-      const gratuities = [{
-        currency: market.currency,   // the venue's region: GBP for UK, USD for US
-        usePredefinedTipEntries: true,
-        predefinedTipEntries: pcts.map((n: number) => `${n}%`),
-        allowCustomAmount: body.allow_custom !== false,
-      }];
-      const r = await mgmt(cfg, 'PATCH', `/stores/${maa.store_id}/terminalSettings`, { gratuities });
+      // Adyen's gratuity presets take WHOLE percentages only ("12.5%" is
+      // refused, hit live 14 Aug): normaliseTipPresets rounds, dedupes and
+      // caps (four, or three plus the custom amount). ONE venue level setting
+      // (10 Sep 2026): applied on the store, so every reader here shows it,
+      // and saved on the ops venue row so sync_store_settings reuses it.
+      const allowCustom = body.allow_custom !== false;
+      const pcts = normaliseTipPresets(Array.isArray(body.percentages) ? body.percentages : [5, 10, 15], { allowCustom });
+      const tips = { percentages: pcts.length ? pcts : [5, 10, 15], allowCustom };
+      const gratuities = buildGratuities(market.currency, tips);   // the venue's region: GBP for UK, USD for US
+      const r = await mgmt(cfg, 'PATCH', storePath, { gratuities });
       if (scopeMissing(r.status)) return json({ ok: false, error: 'scope_missing' }, 200);
       if (!r.ok) return json({ ok: false, error: (r.data as Record<string, unknown>)?.detail || `gratuities update failed (${r.status})` }, 200);
-      return json({ ok: true, presets: pcts });
+      const current = await readOpsPosSettings();
+      if (!current.error && current.settings) {
+        const wErr = await writeOpsPosSettings(readerTipsPatch(current.settings, tips, new Date().toISOString()));
+        if (wErr) console.warn(`[adyen-terminal-admin] sync_gratuities: tips not saved on the venue row: ${wErr}`);
+      }
+      return json({ ok: true, presets: tips.percentages, allowCustom });
     }
 
     // ── standalone (manual payments ON the reader): per-terminal setting ─────
@@ -3177,14 +3303,24 @@ Deno.serve(async (req) => {
       });
     }
 
-    // ── unlink: retire our link; the terminal stays boarded at Adyen ─────────
+    // ── unlink: retire our link AND the platform registry row ────────────────
+    // The terminal stays boarded at Adyen and can be added again any time.
+    // The platform payment_devices row is retired too (10 Sep 2026): it used
+    // to stay 'online' and count the reader as still on the venue.
     if (action === 'unlink') {
       const tdId = String(body.terminal_device_id || '');
       if (!tdId) return json({ error: 'terminal_device_id required' }, 400);
-      const { error } = await opsAdmin.from('terminal_devices')
+      const { data: row, error } = await opsAdmin.from('terminal_devices')
         .update({ status: 'retired', active: false })
-        .eq('id', tdId).eq('location_id', opsLocationId);
+        .eq('id', tdId).eq('location_id', opsLocationId)
+        .select('id, adyen_terminal_id').maybeSingle();
       if (error) return json({ ok: false, error: error.message }, 500);
+      if (!row) return json({ ok: false, error: 'That reader is not at this venue.' }, 200);
+      if (row.adyen_terminal_id) {
+        const { error: pdErr } = await platformAdmin.from('payment_devices').update({ status: 'retired' })
+          .eq('adyen_terminal_id', row.adyen_terminal_id).eq('location_id', loc.id).eq('processor', 'adyen');
+        if (pdErr) console.warn(`[adyen-terminal-admin] unlink: platform registry row not retired for ${row.adyen_terminal_id}: ${pdErr.message}`);
+      }
       return json({ ok: true });
     }
 

@@ -221,8 +221,8 @@ export async function findPaxTerminal({ posDeviceId } = {}) {
     if (!unassigned.length) {
       return {
         terminal: null,
-        reason: 'Every card terminal at this venue is assigned to another till. '
-              + 'Assign one to this till in Back Office → Card readers → Terminals running the ServOS app → Settings.',
+        reason: 'Every card reader at this venue is set to another till. '
+              + 'In Back Office, Card readers, choose which till each reader takes payments from.',
       };
     }
 
@@ -232,8 +232,8 @@ export async function findPaxTerminal({ posDeviceId } = {}) {
     if (online.length > 1) {
       return {
         terminal: null,
-        reason: `${online.length} card terminals at this venue and none is assigned to this till. `
-              + 'Assign one in Back Office → Card readers → Terminals running the ServOS app → Settings.',
+        reason: `${online.length} card readers at this venue and none is set to this till. `
+              + 'In Back Office, Card readers, choose which till each reader takes payments from.',
       };
     }
 
@@ -241,8 +241,8 @@ export async function findPaxTerminal({ posDeviceId } = {}) {
     if (unassigned.length === 1) return { terminal: unassigned[0], reason: null };
     return {
       terminal: null,
-      reason: `${unassigned.length} card terminals at this venue, none online and none assigned to this till. `
-            + 'Assign one in Back Office → Card readers → Terminals running the ServOS app → Settings.',
+      reason: `${unassigned.length} card readers at this venue, none online and none set to this till. `
+            + 'In Back Office, Card readers, choose which till each reader takes payments from.',
     };
   } catch {
     return { terminal: null, reason: null };

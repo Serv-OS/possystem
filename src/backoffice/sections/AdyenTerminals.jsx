@@ -1,66 +1,62 @@
 // src/backoffice/sections/AdyenTerminals.jsx
 //
-// "💳 Adyen card terminals" — the Lightspeed-style register-on-the-location
-// flow (Peter, 14 Aug). AMS1-class terminals run Adyen's own software, so
-// there is no claim code: the panel lists the fleet Adyen says belongs to the
-// merchant, and REGISTER = one tap that boards the terminal onto this venue's
-// store and links it to a till-ready terminal_devices row.
+// Card readers for an Adyen venue (Back Office, Hardware, Card readers).
+// REBUILT 10 Sep 2026 for the venue owner: one list of this venue's readers
+// with editable names, Add a reader by serial, tips as one venue level box,
+// everything else under Advanced. Registration pushes the store settings
+// (events url, Pay at table button, pay at table flag, tips) on its own
+// through the fn's sync_store_settings, so there is nothing to click after
+// typing the serial.
 //
 // Self-gating sibling of PaxTerminals inside CardReaders (renders null until
 // the adyen-terminal-admin 'status' probe says this venue is Adyen-relevant).
-// All writes go through the edge fn (service-role); the ONLY client-side write
-// is till binding via the existing set_terminal_settings RPC — the same
-// whole-settings write PaxTerminals uses, so the two panels can never drift.
-//
-// ENVIRONMENT (7 Sep 2026): dev and live share one Supabase project pair, so
-// the Adyen environment is a PER VENUE setting on merchant_adyen_accounts
-// ('test' | 'live', default 'test'). This panel READS it through the fn's
-// 'environment' action and shows it: a badge in the header (Test cards or
-// LIVE, real money) and a red banner across the panel while live.
+// All Adyen writes go through the edge fn (service-role); the only client
+// side write is till binding and the till switch via the existing
+// set_terminal_settings RPC (whole-settings write, the PaxTerminals contract).
+// The pure helpers (tip presets, the readers view words, the sync state)
+// live in src/lib/payments/readerSettings.js, mirrored in the fn.
 //
 // OWNER RULE (8 Sep 2026): the venue cannot move itself between test and
-// live, create its Adyen store or request its card schemes. Those controls
-// (the switch, the typed LIVE confirm, the reprovision flow, the Create store
-// box, Request card schemes again) live in the ServOS admin portal,
-// src/admin/components/AdyenEnvironmentControls.jsx, and the fn refuses
-// set_environment, ensure_store and ensure_payment_methods for anyone but a
-// super_admin. The environment probe never talks to Adyen, so it still
-// answers when a live venue's status probe fails closed (live keys missing);
-// the panel then shows the state, the error and "Contact ServOS support".
-// With no store yet the Register a new reader box stays on screen, disabled,
-// and says the venue needs its Adyen store first (8 Sep 2026: it used to
-// vanish with the store id, so a venue whose test store was set aside by a
-// switch saw no way to register a reader at all).
+// live, create its Adyen store or request its card schemes. Those live in the
+// ServOS admin portal. The environment is shown here read only, under
+// Advanced, with a red banner across the panel while live.
+//
+// WORDS: body text 15px or more, one primary button per box, ids small and
+// monospace with a Copy button, errors as one plain sentence with the raw
+// detail behind Show detail. Status words: online, not seen recently, not
+// added yet. No dashes as punctuation.
 
 import { useEffect, useState, useCallback } from 'react';
 import { supabase, getActiveLocationSync } from '../../lib/supabase';
+import {
+  DEFAULT_TIP_PRESETS, STATUS_ONLINE, normaliseTipPresets, parseTipPresetText, tillSentence, nextReaderName,
+} from '../../lib/payments/readerSettings';
 
 const FN_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/adyen-terminal-admin`;
 
 const S = {
-  card: { background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 14, padding: 20, marginBottom: 18 },
-  h2: { margin: 0, fontSize: 16, fontWeight: 800, letterSpacing: '-0.01em' },
-  desc: { fontSize: 12, color: 'var(--t3)', margin: '6px 0 0', lineHeight: 1.5 },
-  label: { fontSize: 10, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.07em' },
-  input: { boxSizing: 'border-box', height: 34, padding: '0 10px', borderRadius: 8, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t1)', fontSize: 13, fontFamily: 'inherit' },
-  btn: { boxSizing: 'border-box', minHeight: 34, padding: '7px 14px', borderRadius: 8, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t1)', fontSize: 12.5, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' },
+  card: { background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 14, padding: 20, marginBottom: 18, fontSize: 15, lineHeight: 1.5, color: 'var(--t1)' },
+  h2: { margin: 0, fontSize: 19, fontWeight: 800, letterSpacing: '-0.01em' },
+  h3: { margin: 0, fontSize: 16, fontWeight: 800 },
+  p: { fontSize: 15, color: 'var(--t2)', margin: '6px 0 0', lineHeight: 1.5 },
+  grey: { fontSize: 15, color: 'var(--t3)' },
+  box: { marginTop: 16, padding: 16, borderRadius: 12, background: 'var(--bg2)', border: '1px solid var(--bdr)' },
+  input: { boxSizing: 'border-box', height: 40, padding: '0 12px', borderRadius: 8, border: '1px solid var(--bdr2)', background: 'var(--bg)', color: 'var(--t1)', fontSize: 15, fontFamily: 'inherit' },
+  select: { boxSizing: 'border-box', height: 40, padding: '0 10px', borderRadius: 8, border: '1px solid var(--bdr2)', background: 'var(--bg)', color: 'var(--t1)', fontSize: 15, fontFamily: 'inherit' },
+  btn: { boxSizing: 'border-box', minHeight: 40, padding: '8px 16px', borderRadius: 8, border: '1px solid var(--bdr2)', background: 'var(--bg2)', color: 'var(--t1)', fontSize: 15, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' },
   btnPrim: { background: 'var(--acc)', borderColor: 'var(--acc)', color: 'var(--acc-t, #fff)' },
   btnDan: { color: 'var(--red)', borderColor: 'var(--red-b, var(--red))', background: 'transparent' },
-  err: { marginTop: 10, padding: '8px 12px', borderRadius: 8, background: 'var(--red-d, rgba(255,90,74,.1))', color: 'var(--red)', fontSize: 12, lineHeight: 1.5 },
-  ok: { marginTop: 10, padding: '8px 12px', borderRadius: 8, background: 'var(--grn-d, rgba(21,194,106,.1))', color: 'var(--grn)', fontSize: 12 },
-  mono: { fontFamily: 'var(--font-mono, ui-monospace, monospace)' },
-  row: { display: 'grid', gridTemplateColumns: '1.4fr 1fr 1fr auto', gap: 10, alignItems: 'center', padding: '10px 0', borderTop: '1px solid var(--bdr)' },
-  pill: { fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 999, display: 'inline-block' },
-  // Environment badge: quiet for test, unmissable red for live.
-  pillTest: { background: 'var(--bg3, var(--bg2))', color: 'var(--t2)', border: '1px solid var(--bdr2)', letterSpacing: '.06em' },
-  pillLive: { background: 'var(--red)', color: '#fff', border: '1px solid var(--red)', letterSpacing: '.06em' },
-  // Runs edge to edge across the card (the card pads 20px) while the venue is live.
-  liveBanner: { margin: '-20px -20px 16px', padding: '10px 20px', borderRadius: '14px 14px 0 0', background: 'var(--red)', color: '#fff', fontSize: 12.5, fontWeight: 700, lineHeight: 1.4, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' },
-};
-
-const onlineDot = (iso) => {
-  const on = iso && Date.now() - new Date(iso).getTime() < 5 * 60_000;
-  return <span title={on ? 'online' : 'not seen recently'} style={{ display: 'inline-block', width: 8, height: 8, borderRadius: 999, background: on ? 'var(--grn)' : 'var(--t4)', marginRight: 7 }} />;
+  btnSmall: { minHeight: 32, padding: '4px 10px', fontSize: 14 },
+  err: { marginTop: 12, padding: '10px 14px', borderRadius: 8, background: 'var(--red-d, rgba(255,90,74,.1))', color: 'var(--red)', fontSize: 15, lineHeight: 1.5 },
+  ok: { marginTop: 12, padding: '10px 14px', borderRadius: 8, background: 'var(--grn-d, rgba(21,194,106,.1))', color: 'var(--grn)', fontSize: 15, lineHeight: 1.5 },
+  mono: { fontFamily: 'var(--font-mono, ui-monospace, monospace)', fontSize: 13, color: 'var(--t3)' },
+  row: { padding: '14px 0', borderTop: '1px solid var(--bdr)', display: 'flex', flexDirection: 'column', gap: 8 },
+  pill: { fontSize: 12, fontWeight: 700, padding: '2px 9px', borderRadius: 999, display: 'inline-block', letterSpacing: '.05em' },
+  pillTest: { background: 'var(--bg3, var(--bg2))', color: 'var(--t2)', border: '1px solid var(--bdr2)' },
+  pillLive: { background: 'var(--red)', color: '#fff', border: '1px solid var(--red)' },
+  liveBanner: { margin: '-20px -20px 16px', padding: '10px 20px', borderRadius: '14px 14px 0 0', background: 'var(--red)', color: '#fff', fontSize: 15, fontWeight: 700, lineHeight: 1.4, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' },
+  switchRow: { display: 'flex', alignItems: 'center', gap: 10, fontSize: 15, cursor: 'pointer' },
+  linkBtn: { background: 'none', border: 'none', color: 'var(--acc)', cursor: 'pointer', fontSize: 14, fontWeight: 700, padding: 0, fontFamily: 'inherit' },
 };
 
 async function callAdmin(action, payload = {}) {
@@ -75,8 +71,6 @@ async function callAdmin(action, payload = {}) {
   });
   const data = await res.json();
   if (!res.ok) {
-    // The fn's payload rides on the error so callers can act on structured
-    // refusals (a 403 'ServOS admin only', for one).
     const err = new Error(data?.error || `HTTP ${res.status}`);
     err.status = res.status;
     err.data = data;
@@ -85,241 +79,381 @@ async function callAdmin(action, payload = {}) {
   return data;
 }
 
+const fmtWhen = (iso) => {
+  if (!iso) return 'never';
+  const d = new Date(iso);
+  return Number.isFinite(d.getTime()) ? d.toLocaleString() : 'never';
+};
+
+// One plain sentence, the raw detail behind Show detail.
+function Notice({ kind, text, detail, onClose }) {
+  const [open, setOpen] = useState(false);
+  if (!text) return null;
+  return (
+    <div style={kind === 'error' ? S.err : S.ok} role={kind === 'error' ? 'alert' : 'status'}>
+      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+        <div style={{ flex: 1 }}>{text}</div>
+        {onClose && <button style={{ ...S.linkBtn, color: 'inherit' }} onClick={onClose}>Close</button>}
+      </div>
+      {detail && (
+        <div style={{ marginTop: 4 }}>
+          <button style={{ ...S.linkBtn, color: 'inherit', fontSize: 13 }} onClick={() => setOpen((v) => !v)}>{open ? 'Hide detail' : 'Show detail'}</button>
+          {open && <div style={{ ...S.mono, color: 'inherit', marginTop: 4, wordBreak: 'break-word' }}>{detail}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CopyId({ value }) {
+  const [done, setDone] = useState(false);
+  if (!value) return null;
+  return (
+    <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+      <span style={S.mono}>{value}</span>
+      <button style={{ ...S.linkBtn, fontSize: 12 }} onClick={() => {
+        try { navigator.clipboard?.writeText(String(value)); } catch { /* no clipboard */ }
+        setDone(true); setTimeout(() => setDone(false), 1500);
+      }}>{done ? 'Copied' : 'Copy'}</button>
+    </span>
+  );
+}
+
+function Switch({ checked, onChange, label, disabled, title }) {
+  return (
+    <label style={{ ...S.switchRow, opacity: disabled ? 0.6 : 1 }} title={title}>
+      <input type="checkbox" role="switch" checked={!!checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)}
+        style={{ width: 20, height: 20, margin: 0 }} />
+      <span>{label}</span>
+    </label>
+  );
+}
+
+function StatusDot({ status }) {
+  const on = status === STATUS_ONLINE;
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, ...S.grey }}>
+      <span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 999, background: on ? 'var(--grn)' : 'var(--t4)' }} />
+      {status}
+    </span>
+  );
+}
+
 export default function AdyenTerminals() {
   const [status, setStatus] = useState(null);      // 'status' action result
-  const [fleet, setFleet] = useState(null);        // { store, inventory }
-  const [busy, setBusy] = useState('');
-  const [err, setErr] = useState('');
-  const [notice, setNotice] = useState('');
+  const [statusErr, setStatusErr] = useState('');  // a LIVE venue whose probe failed
+  const [envInfo, setEnvInfo] = useState(null);    // 'environment' action result
+  const [list, setList] = useState(null);          // 'list' action result: { readers, notAdded, tips, settingsSync, currency }
+  const [listErr, setListErr] = useState('');
   const [posDevices, setPosDevices] = useState([]);
-  const [bindFor, setBindFor] = useState(null);    // terminal_device id with settings open
-  const [bindTo, setBindTo] = useState('');
+  const [busy, setBusy] = useState('');
+  const [err, setErr] = useState(null);            // { text, detail }
+  const [notice, setNotice] = useState(null);      // { text, lines }
+  // add a reader
   const [serial, setSerial] = useState('');
-  // v5.6.81 — when set, a register/assign puts the POIID on THIS already-paired
-  // app-terminal row (the S1F2L running MPOS) instead of minting a rival record.
-  const [adoptId, setAdoptId] = useState('');
-  const [tipOn, setTipOn] = useState(true);
-  const [tipPcts, setTipPcts] = useState('5, 10, 15');
+  // names
+  const [editId, setEditId] = useState(null);
+  const [editName, setEditName] = useState('');
+  // standalone (Adyen, per reader): poiid -> true | false | undefined (not read yet)
+  const [standalone, setStandalone] = useState({});
+  // tips (venue level)
+  const [tipText, setTipText] = useState(DEFAULT_TIP_PRESETS.join(', '));
   const [tipCustom, setTipCustom] = useState(true);
-  // v5.7.5 - venue-level tip-on-printed-receipt (US signature flow)
+  const [tipsSeeded, setTipsSeeded] = useState(false);
+  // advanced
+  const [advOpen, setAdvOpen] = useState(false);
+  const [syncOut, setSyncOut] = useState(null);    // last sync_store_settings answer shown on the page
+  const [releaseId, setReleaseId] = useState('');
+  const [pinInfo, setPinInfo] = useState(null);
+  const [pinChoice, setPinChoice] = useState('');
+  // tip on printed receipt (United States)
   const [torLoaded, setTorLoaded] = useState(false);
   const [torEnabled, setTorEnabled] = useState(false);
   const [torHours, setTorHours] = useState(24);
-  // v5.7.6 - which POS sales go paper: 'all_pos' (default) or 'table_checks'.
   const [torScope, setTorScope] = useState('all_pos');
-  const [torBusy, setTorBusy] = useState(false);
   const [torMsg, setTorMsg] = useState('');
-  const [modeTable, setModeTable] = useState(true);
-  const [modePos, setModePos] = useState(true);
-  const [standalone, setStandalone] = useState(false);
-  const [standaloneWas, setStandaloneWas] = useState(false);
-  // Per venue Adyen environment (7 Sep 2026): the fn's 'environment' answer
-  // { environment, region, liveConfigured, testConfigured, liveMissing }.
-  // Names only, never secret values. Read only here (OWNER RULE, 8 Sep 2026):
-  // the switch and the region select live in the ServOS admin portal.
-  const [envInfo, setEnvInfo] = useState(null);
-  // Set when the status probe failed on a LIVE venue (fails closed without
-  // live keys). The panel then stays on screen with the state and the error,
-  // pointing the venue at ServOS support.
-  const [statusErr, setStatusErr] = useState('');
+
+  // One plain sentence on top, the raw detail behind Show detail. A sentence
+  // this page wrote itself (plainError) IS the headline; a server or Adyen
+  // message rides as the detail under the generic line.
+  const fail = (text, e) => {
+    const msg = e?.message || (typeof e === 'string' ? e : '');
+    if (e?.plain) { setErr({ text: msg, detail: null }); return; }
+    setErr({ text, detail: msg && msg !== text ? msg : null });
+  };
+  const plainError = (m) => Object.assign(new Error(m), { plain: true });
+
+  const loadList = useCallback(async (st) => {
+    if (!st?.storeId) { setList(null); return; }
+    try {
+      const fl = await callAdmin('list');
+      if (fl.ok) { setList(fl); setListErr(''); }
+      else setListErr(fl.error === 'scope_missing' ? (st.scopeError || 'The Adyen credential lacks the Management roles.') : (fl.error || 'The readers could not be listed.'));
+    } catch (e) { setListErr(e?.message || String(e)); }
+  }, []);
 
   const load = useCallback(async () => {
-    // Environment first. It never touches Adyen, so it answers even when the
-    // status probe below throws.
     let env = null;
     try {
       env = await callAdmin('environment');
       if (env?.ok) setEnvInfo(env);
-    } catch (e) {
-      console.warn('[AdyenTerminals] environment', e?.message || e);
-    }
+    } catch (e) { console.warn('[AdyenTerminals] environment', e?.message || e); }
     try {
-      // probe: true keeps the durable store diagnostic (the fn logs the
-      // store's splitConfiguration to adyen_webhook_events) on the venue's
-      // own panel only; the admin portal's cards read status without it.
       const st = await callAdmin('status', { probe: true });
       setStatus(st);
       setStatusErr('');
-      if (st.storeId) {
-        const fl = await callAdmin('list');
-        if (fl.ok) setFleet(fl);
-        else if (fl.error && fl.error !== 'no_store') setErr(fl.error === 'scope_missing' ? st.scopeError || 'API key missing Management role' : fl.error);
-      } else {
-        // No store: nothing can be listed, and a list from an earlier store
-        // must not linger with Link buttons that would fail.
-        setFleet(null);
-      }
+      await loadList(st);
       const locId = getActiveLocationSync();
       const { data: devs } = await supabase.from('devices')
-        .select('id, name, type').eq('location_id', locId).in('type', ['pos', 'kiosk', 'handheld'])   /* v5.8.24: a handset can own a reader too */;
+        .select('id, name, type').eq('location_id', locId).in('type', ['pos', 'kiosk', 'handheld']);
       setPosDevices(devs || []);
-      // v5.7.5 - venue tip-on-receipt setting off ops locations.pos_settings
-      const { data: locRow } = await supabase.from('locations')
-        .select('pos_settings').eq('id', locId).maybeSingle();
+      const { data: locRow } = await supabase.from('locations').select('pos_settings').eq('id', locId).maybeSingle();
       const tor = locRow?.pos_settings?.tip_on_receipt;
       setTorEnabled(tor?.enabled === true);
       const h = Number(tor?.capture_hours);
       setTorHours(Number.isFinite(h) ? Math.max(1, Math.min(72, h)) : 24);
-      // Same fail-open-to-'all_pos' rule as the server (readTipOnReceipt):
-      // only the exact narrowing value counts, anything else means every till payment.
       setTorScope(tor?.scope === 'table_checks' ? 'table_checks' : 'all_pos');
       setTorLoaded(true);
     } catch (e) {
-      // Panel self-hides on hard failures (venue not provisioned etc.), with
-      // one exception: a LIVE venue keeps the state on screen (see statusErr).
-      // The previous status and fleet are DROPPED (8 Sep 2026): after a flip
-      // to live whose probe fails, the panel used to keep showing the test
-      // store, the test readers and "Register a new reader" as if nothing
-      // had changed.
       console.warn('[AdyenTerminals]', e?.message || e);
-      setStatus(null); setFleet(null);
+      setStatus(null); setList(null);
       if (env?.ok && env.environment === 'live') setStatusErr(e?.message || String(e));
     }
-  }, []);
+  }, [loadList]);
   useEffect(() => { load(); }, [load]);
 
-  const isLive = envInfo?.environment === 'live';
-  const venueName = status?.venue || 'this venue';
+  // Seed the tips box from the venue's saved tips once, then leave what is typed alone.
+  useEffect(() => {
+    if (!list?.tips || tipsSeeded) return;
+    setTipText((list.tips.percentages || DEFAULT_TIP_PRESETS).join(', '));
+    setTipCustom(list.tips.allowCustom !== false);
+    setTipsSeeded(true);
+  }, [list, tipsSeeded]);
 
-  // Red banner across the panel while the venue is live.
+  // Read the Adyen standalone flag for each reader once it is listed.
+  useEffect(() => {
+    const readers = list?.readers || [];
+    for (const r of readers) {
+      if (standalone[r.poiid] !== undefined) continue;
+      setStandalone((m) => ({ ...m, [r.poiid]: null }));   // reading
+      callAdmin('standalone_get', { terminal_id: r.poiid })
+        .then((a) => setStandalone((m) => ({ ...m, [r.poiid]: a?.ok ? !!a.enabled : false })))
+        .catch(() => setStandalone((m) => ({ ...m, [r.poiid]: false })));
+    }
+  }, [list]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Admin PIN: read when Advanced opens the first time.
+  useEffect(() => {
+    if (!advOpen || pinInfo || !status?.storeId) return;
+    callAdmin('passcodes').then((r) => setPinInfo(r)).catch((e) => setPinInfo({ ok: false, error: e?.message }));
+  }, [advOpen, pinInfo, status]);
+
+  const isLive = envInfo?.environment === 'live';
+  const isUS = (status?.region || envInfo?.region) === 'US';
+  const venueName = status?.venue || 'this venue';
+  const readers = list?.readers || [];
+  const notAdded = list?.notAdded || [];
+
   const liveBanner = isLive ? (
     <div style={S.liveBanner} role="alert">
       <span style={{ ...S.pill, background: '#fff', color: 'var(--red)', border: '1px solid #fff' }}>LIVE</span>
       <span>Real money. Every card taken at {venueName} is charged for real.</span>
     </div>
   ) : null;
-
-  // Badge in the panel header: the venue's environment and its region
-  // ('UK' | 'US', the Adyen account it is on), read only.
   const envBadge = envInfo ? (
-    <span style={{ ...S.pill, ...(isLive ? S.pillLive : S.pillTest), marginLeft: 8, verticalAlign: 'middle' }}>
-      {isLive ? 'LIVE, real money' : 'Test cards'}{envInfo.region ? ` · ${envInfo.region}` : ''}
+    <span style={{ ...S.pill, ...(isLive ? S.pillLive : S.pillTest), marginLeft: 10, verticalAlign: 'middle' }}>
+      {isLive ? 'LIVE, real money' : 'Test cards'}{envInfo.region ? ` ${envInfo.region}` : ''}
     </span>
-  ) : null;
-
-  // One line of what the state means. Changing it is a ServOS action (OWNER
-  // RULE, 8 Sep 2026), done from the admin portal, never from here.
-  const envLine = envInfo ? (
-    <div style={{ ...S.desc, marginTop: 10, color: isLive ? 'var(--red)' : 'var(--t3)' }}>
-      {isLive
-        ? 'Every card taken at this venue is charged for real: tills, online, table pay and bookings. Refunds and disputes are real too.'
-        : 'Card payments at this venue go to the Adyen test system. Only test cards work. Nobody is charged.'}
-      {' '}Moving between test and live is done by ServOS support.
-    </div>
   ) : null;
 
   const ready = !!(status?.ok && status.merchant);
   if (!ready && !(isLive && statusErr)) return null;   // self-gating sibling
 
-  // A live venue whose status probe failed (live keys missing, fail closed):
-  // show only the banner, the state and the error. The way back to test is a
-  // ServOS action now, so the venue is pointed at support. Nothing below
-  // needs a status payload.
   if (!ready) {
     return (
       <div style={S.card}>
         {liveBanner}
-        <h2 style={S.h2}>💳 Card terminals{envBadge}</h2>
-        {envLine}
-        <div style={S.err}>Could not reach Adyen for this venue: {statusErr}. Contact ServOS support.</div>
-        {err && <div style={S.err}>{err}</div>}
-        {notice && <div style={S.ok}>{notice}</div>}
+        <h2 style={S.h2}>Card readers{envBadge}</h2>
+        <Notice kind="error" text="ServOS could not reach Adyen for this venue. Contact ServOS support." detail={statusErr} />
       </div>
     );
   }
 
-  // v5.6.85 — "Release stuck payment", the twin of the one in the ServOS-app
-  // panel. It has to exist HERE too: a cloud reader (AMS1) never appears in that
-  // panel at all, and v5.6.84's last_seen_at filter also hides an S1F2L that has
-  // not yet run our app — which is exactly when a dispatch can wedge. Without
-  // this the only route out of "that card machine is already taking a payment"
-  // was editing the database by hand (live 19 Aug: a £2.85 charging_unsent job
-  // sat past its lease with no nexo_service_id, so it had provably never
-  // reached the reader, and there was no button left to clear it).
+  const canAdd = !!(status.scopeOk && status.storeId);
+  const addBlocked = !status.scopeOk
+    ? 'The Adyen credential lacks the Management roles, so readers cannot be added. Contact ServOS support.'
+    : !status.storeId
+      ? 'This venue needs its Adyen store first. ServOS sets it up from the admin portal.'
+      : '';
 
-  const release = async (t) => {
-    const opsId = t?.link?.id;
-    if (!opsId) return;
+  const settingsLines = (settings) => {
+    if (!settings) return [];
+    return [...(settings.applied || []), ...(settings.errors || [])];
+  };
+
+  // ── add a reader ──────────────────────────────────────────────────────────
+  const addReader = async (poiid, label) => {
+    const r = await callAdmin('assign', { terminal_id: poiid, label });
+    if (r.ok === false) throw new Error(r.error === 'scope_missing' ? (status.scopeError || 'The Adyen credential lacks the Management roles.') : (r.error || 'The reader could not be added.'));
+    setNotice({
+      text: r.adopted
+        ? `${r.label || label} is added and linked to the terminal running the ServOS app.`
+        : `${r.label || label} is added. It takes payments from the till now.`,
+      lines: settingsLines(r.settings),
+    });
+    if (r.settings) setSyncOut(r.settings);
+    await loadList(status);
+  };
+
+  const addBySerial = async () => {
+    setBusy('serial'); setErr(null); setNotice(null);
+    try {
+      const found = await callAdmin('find_by_serial', { serial });
+      if (found.ok === false) throw new Error(found.error === 'scope_missing' ? (status.scopeError || 'The Adyen credential lacks the Management roles.') : (found.error || 'The search failed.'));
+      const m = found.matches || [];
+      if (m.length === 0) throw plainError('No reader with that serial is on your Adyen account yet. Check the number, then switch the reader on and connect it to WiFi once.');
+      if (m.length > 1) throw plainError(`That serial matches ${m.length} readers. Type the whole number from the label.`);
+      const already = readers.find((r) => r.poiid === m[0].id);
+      if (already) { setNotice({ text: `${already.label} is already added to this venue.` }); setSerial(''); setBusy(''); return; }
+      await addReader(m[0].id, nextReaderName(readers.map((r) => r.label)));
+      setSerial('');
+    } catch (e) { fail('The reader could not be added.', e); }
+    setBusy('');
+  };
+
+  const addFromStore = async (t) => {
+    setBusy(`add-${t.poiid}`); setErr(null); setNotice(null);
+    try { await addReader(t.poiid, nextReaderName(readers.map((r) => r.label))); }
+    catch (e) { fail('The reader could not be added.', e); }
+    setBusy('');
+  };
+
+  // ── names ─────────────────────────────────────────────────────────────────
+  const saveName = async (r) => {
+    const name = editName.trim();
+    if (!name) { setEditId(null); return; }
+    setBusy(`name-${r.id}`); setErr(null);
+    try {
+      const a = await callAdmin('rename', { terminal_device_id: r.id, label: name });
+      if (a.ok === false) throw new Error(a.error || 'The name could not be saved.');
+      setEditId(null);
+      await loadList(status);
+    } catch (e) { fail('The name could not be saved.', e); }
+    setBusy('');
+  };
+
+  // ── till binding and the till switch: whole-settings RPC, passthrough ────
+  const writeSettings = async (r, { bound = r.boundPosDeviceId, modes = r.modes } = {}) => {
+    const { data, error } = await supabase.rpc('set_terminal_settings', {
+      p_terminal_id: r.id,
+      p_tip_config: r.tipConfig ?? null,
+      p_bound_pos_device_id: bound || null,
+      p_modes: modes || {},
+      p_label: r.label ?? null,
+      p_idle_screen: r.idleScreen ?? null,
+    });
+    if (error || !data?.ok) throw new Error(error?.message || 'settings save failed');
+  };
+  const setTill = async (r, deviceId) => {
+    setBusy(`till-${r.id}`); setErr(null);
+    try { await writeSettings(r, { bound: deviceId || null }); await loadList(status); }
+    catch (e) { fail('The till choice could not be saved.', e); }
+    setBusy('');
+  };
+  const setPosDispatch = async (r, on) => {
+    setBusy(`pos-${r.id}`); setErr(null);
+    try { await writeSettings(r, { modes: { ...(r.modes || {}), pos_dispatch: on } }); await loadList(status); }
+    catch (e) { fail('The switch could not be saved.', e); }
+    setBusy('');
+  };
+  const setStandaloneFor = async (r, on) => {
+    setBusy(`sa-${r.id}`); setErr(null);
+    try {
+      const a = await callAdmin('standalone_set', { terminal_id: r.poiid, enabled: on });
+      if (a.ok === false) throw new Error(a.error === 'scope_missing' ? (status.scopeError || 'The Adyen credential lacks the Management roles.') : (a.error || 'Adyen refused the change.'));
+      setStandalone((m) => ({ ...m, [r.poiid]: on }));
+    } catch (e) { fail('The reader setting could not be saved on Adyen.', e); }
+    setBusy('');
+  };
+
+  // ── remove ────────────────────────────────────────────────────────────────
+  const remove = async (r) => {
+    if (!window.confirm(`Remove ${r.label} from this venue? The reader stays on your Adyen account and can be added again.`)) return;
+    setBusy(`rm-${r.id}`); setErr(null); setNotice(null);
+    try {
+      const a = await callAdmin('unlink', { terminal_device_id: r.id });
+      if (a.ok === false) throw new Error(a.error || 'The reader could not be removed.');
+      setNotice({ text: `${r.label} is removed from this venue.` });
+      await loadList(status);
+    } catch (e) { fail('The reader could not be removed.', e); }
+    setBusy('');
+  };
+
+  // ── tips (venue level) ────────────────────────────────────────────────────
+  const saveTips = async () => {
+    setBusy('tips'); setErr(null); setNotice(null);
+    try {
+      const pcts = normaliseTipPresets(parseTipPresetText(tipText), { allowCustom: tipCustom });
+      if (!pcts.length) throw plainError('Type whole percentages, for example 5, 10, 15.');
+      const g = await callAdmin('sync_gratuities', { percentages: pcts, allow_custom: tipCustom });
+      if (g.ok === false) throw new Error(g.error === 'scope_missing' ? (status.scopeError || 'The Adyen credential lacks the Management roles.') : (g.error || 'Adyen refused the tip settings.'));
+      setTipText((g.presets || pcts).join(', '));
+      setNotice({ text: 'Tip choices saved. Every reader here picks them up within a minute.' });
+      await loadList(status);
+    } catch (e) { fail('The tip choices could not be saved.', e); }
+    setBusy('');
+  };
+
+  // ── advanced ──────────────────────────────────────────────────────────────
+  const sendSettings = async () => {
+    setBusy('sync'); setErr(null); setNotice(null);
+    try {
+      const a = await callAdmin('sync_store_settings');
+      setSyncOut(a);
+      if (a.ok === false && !(a.applied || []).length) throw new Error((a.errors || []).join(' ') || a.error || 'Adyen refused the settings.');
+      await loadList(status);
+    } catch (e) { fail('The reader settings could not be sent to Adyen.', e); }
+    setBusy('');
+  };
+
+  const release = async () => {
+    const r = readers.find((x) => x.id === releaseId);
+    if (!r) return;
     if (!window.confirm(
-      `Release "${t.link.label || t.id}"?\n\n`
-      + 'Use this if the terminal says a payment is already in progress but nothing is happening.\n\n'
+      `Release ${r.label}?\n\n`
+      + 'Use this if the reader says a payment is already in progress but nothing is happening.\n\n'
       + 'If a payment could not be confirmed, releasing it means you are satisfied the customer was NOT charged. '
       + 'Check your card statement first if you are unsure. This is recorded against your name.',
     )) return;
-    setBusy(`release-${t.id}`);
-    const { data, error } = await supabase.rpc('release_terminal_jobs', { p_terminal_id: opsId, p_note: null });
+    setBusy('release'); setErr(null); setNotice(null);
+    const { data, error } = await supabase.rpc('release_terminal_jobs', { p_terminal_id: r.id, p_note: null });
     setBusy('');
-    if (error) { setErr(`Could not release: ${error.message}`); return; }
+    if (error) { fail('The payment could not be released.', error); return; }
     const n = (data?.expired || 0) + (data?.released || 0);
-    setNotice(n ? `Released ${n} stuck payment${n === 1 ? '' : 's'}. The terminal can take payments again.`
-                : 'Nothing was stuck on this terminal.');
-    await load();
+    setNotice({ text: n ? `Released ${n} stuck payment${n === 1 ? '' : 's'}. ${r.label} can take payments again.` : `Nothing was stuck on ${r.label}.` });
   };
 
-  const run = async (label, action, payload) => {
-    setBusy(label); setErr(''); setNotice('');
+  const setPin = async () => {
+    setBusy('pin'); setErr(null);
     try {
-      // An app terminal picked above adopts the POIID onto its OWN record.
-      const body = action === 'assign' && adoptId ? { ...payload, terminal_device_id: adoptId } : payload;
-      const r = await callAdmin(action, body);
-      if (r.ok === false) throw new Error(r.error === 'scope_missing' ? (status.scopeError || 'API key missing Management role') : (r.error || 'failed'));
-      setNotice(
-        action === 'assign' ? (r.adopted ? 'Reader linked to the ServOS terminal, it can now take cards on its own screen' : 'Terminal registered to this venue')
-          : 'Done',
-      );
-      if (action === 'assign' && r.adopted) setAdoptId('');
-      await load();
-    } catch (e) { setErr(e?.message || String(e)); }
+      const pin = pinChoice.trim();
+      if (isLive && !/^\d{4,6}$/.test(pin)) throw plainError('Choose a PIN of 4 to 6 digits.');
+      const a = await callAdmin('passcodes', { set_default: true, ...(pin ? { pin } : {}) });
+      if (a.ok === false) throw new Error(a.error || 'The PIN could not be set.');
+      setPinInfo(a);
+      setPinChoice('');
+      setNotice({ text: 'The admin PIN is set on the readers.' });
+    } catch (e) { fail('The admin PIN could not be set.', e); }
     setBusy('');
   };
 
-  const saveBinding = async (link) => {
-    setBusy(`bind-${link.id}`); setErr(''); setNotice('');
-    try {
-      const percentages = tipPcts.split(/[\s,]+/).map(Number).filter((n) => Number.isFinite(n) && n > 0 && n <= 100).slice(0, 4);
-      const tipConfig = { enabled: tipOn, percentages: percentages.length ? percentages : [5, 10, 15], allowCustom: tipCustom };
-      // Whole-settings write — same contract as PaxTerminals: always the full
-      // set, pass everything not edited here through unchanged.
-      const { data, error } = await supabase.rpc('set_terminal_settings', {
-        p_terminal_id: link.id,
-        p_tip_config: tipConfig,
-        p_bound_pos_device_id: bindTo || null,
-        p_modes: { ...(link.modes || {}), table_pay: modeTable, pos_dispatch: modePos },
-        p_label: link.label ?? null,
-        p_idle_screen: link.idle_screen ?? null,
-      });
-      if (error || !data?.ok) throw new Error(error?.message || 'settings save failed');
-      // Manual (standalone) mode lives at Adyen, per terminal — push on change.
-      if (standalone !== standaloneWas) {
-        const st = await callAdmin('standalone_set', { terminal_id: link.adyen_terminal_id, enabled: standalone });
-        if (st.ok === false) throw new Error(`Saved here, but manual-payments mode did not sync: ${st.error}`);
-      }
-      // Push the tip presets onto the reader's own gratuity screen at Adyen.
-      if (tipOn) {
-        const g = await callAdmin('sync_gratuities', { percentages: tipConfig.percentages, allow_custom: tipCustom });
-        if (g.ok === false) throw new Error(`Saved here, but the reader's tip presets did not sync: ${g.error}`);
-      }
-      setNotice('Reader settings saved' + (tipOn ? ' — tip presets synced to the reader (it picks them up within a minute)' : ''));
-      setBindFor(null);
-      await load();
-    } catch (e) { setErr(e?.message || String(e)); }
-    setBusy('');
-  };
-
-  const tillName = (id) => posDevices.find((d) => d.id === id)?.name || (id ? 'unknown till' : 'any till (unassigned)');
-
-  // v5.7.5 - save the venue tip-on-receipt setting. READ-MODIFY-MERGE onto
-  // locations.pos_settings (the LocationSettings.jsx pattern): a failed read
-  // ABORTS the save, because merging over {} would wipe every other key
-  // (takeaway_customer_details, default_receipt_printer_id, ...).
   const saveTipOnReceipt = async () => {
-    setTorBusy(true); setTorMsg(''); setErr('');
+    setBusy('tor'); setTorMsg(''); setErr(null);
     try {
       const locId = getActiveLocationSync();
       if (!locId) throw new Error('No location');
       const hours = Math.max(1, Math.min(72, Math.round(Number(torHours) || 24)));
-      const { data, error: readErr } = await supabase.from('locations')
-        .select('pos_settings').eq('id', locId).maybeSingle();
+      const { data, error: readErr } = await supabase.from('locations').select('pos_settings').eq('id', locId).maybeSingle();
       if (readErr) throw new Error(`could not read the current settings: ${readErr.message}`);
       const scope = torScope === 'table_checks' ? 'table_checks' : 'all_pos';
       const { error: writeErr } = await supabase.from('locations').update({
@@ -328,339 +462,266 @@ export default function AdyenTerminals() {
       if (writeErr) throw new Error(writeErr.message);
       setTorHours(hours);
       setTorMsg(torEnabled
-        ? `Saved${scope === 'table_checks' ? ' for table checks only' : ''}. Tills pick it up next boot or Push to POS. Unadjusted cards capture automatically at the original amount after ${hours} hour${hours === 1 ? '' : 's'}.`
+        ? `Saved. Tills pick it up next boot or Push to POS. Cards nobody adjusts capture at the original amount after ${hours} hour${hours === 1 ? '' : 's'}.`
         : 'Saved. Tip on printed receipt is off. Cards capture at payment time as normal.');
-    } catch (e) { setErr(e?.message || String(e)); }
-    setTorBusy(false);
-  };
-
-  // Type the serial off the box → find it anywhere in Adyen (company inventory
-  // included) → register straight to this venue. The whole onboarding motion.
-  const registerBySerial = async () => {
-    setBusy('serial'); setErr(''); setNotice('');
-    try {
-      const found = await callAdmin('find_by_serial', { serial });
-      if (found.ok === false) throw new Error(found.error === 'scope_missing' ? (status.scopeError || 'API key missing Management role') : (found.error || 'search failed'));
-      const m = found.matches || [];
-      if (m.length === 0) throw new Error('No reader with that serial is visible to your payments account yet. Check the number, and make sure the reader has been switched on and connected to WiFi at least once.');
-      if (m.length > 1) throw new Error(`That serial matches ${m.length} readers — type more of the number.`);
-      if (m[0].onStore) { setNotice(`${m[0].id} is already registered to this venue.`); setSerial(''); await load(); setBusy(''); return; }
-      const r = await callAdmin('assign', {
-        terminal_id: m[0].id, label: m[0].id,
-        ...(adoptId ? { terminal_device_id: adoptId } : {}),
-      });
-      if (r.ok === false) throw new Error(r.error || 'register failed');
-      setNotice(r.adopted
-        ? `${m[0].id} linked to the ServOS terminal — it can now take cards on its own screen.`
-        : `${m[0].id} registered — it syncs for about a minute, then it is ready to assign to a till.`);
-      setSerial('');
-      if (r.adopted) setAdoptId('');
-      await load();
-    } catch (e) { setErr(e?.message || String(e)); }
+    } catch (e) { fail('Tip on receipt could not be saved.', e); }
     setBusy('');
   };
 
-  // Register a new reader: the box is ALWAYS on screen while the status probe
-  // answers (8 Sep 2026: it used to vanish with the store id, so a venue whose
-  // test store was set aside by an environment switch saw no way to register
-  // a reader at all). With no store, or without the Management scope, it is
-  // disabled and the line says why. The scope error stays above it too.
-  const canRegister = !!(status.scopeOk && status.storeId);
-  const registerBlocked = !status.scopeOk
-    ? (status.scopeError || 'The Adyen credential lacks the Management roles, so readers cannot be registered.')
-    : !status.storeId
-      ? "A reader needs the venue's Adyen store first. ServOS registers it from the admin portal."
-      : '';
+  const lastSync = syncOut || list?.settingsSync || null;
 
   return (
     <div style={S.card}>
       {liveBanner}
-      <h2 style={S.h2}>💳 Card terminals{envBadge}</h2>
-      <p style={S.desc}>
-        Register a reader to this venue and it is paired: it appears here the moment your payments
-        account sees it, one tap registers it to <b>{status.venue}</b>, and the till drives it from
-        then on. These readers run their own payment software, so there is no code to type.
-      </p>
+      <h2 style={S.h2}>Card readers at {venueName}{envBadge}</h2>
+      <p style={S.p}>Add a reader by its serial number and it takes payments from the till.</p>
 
-      {/* environment: read only here (OWNER RULE, 8 Sep 2026) */}
-      {envLine}
+      {!status.scopeOk && <Notice kind="error" text="Adyen refused ServOS access to this venue's readers. Contact ServOS support." detail={status.scopeError} />}
 
-      {!status.scopeOk && <div style={S.err}>{status.scopeError}</div>}
-
-      {/* register by serial: the onboarding motion. ALWAYS on screen while the
-          status probe answers (8 Sep 2026): with no store, or without the
-          Management scope, it is disabled and says why. */}
-      <div style={{ marginTop: 14, padding: 14, borderRadius: 10, background: 'var(--bg2)', border: '1px solid var(--bdr)', opacity: canRegister ? 1 : 0.75 }}>
-        <div style={{ fontSize: 13, fontWeight: 700 }}>Register a new reader</div>
-        <div style={{ ...S.desc, marginTop: 4 }}>
-          Plug the reader in, connect it to WiFi, then type the serial number from the label on
-          the reader (or its box). It registers to this venue in one step.
-        </div>
-        {registerBlocked && (
-          <div style={{ ...S.desc, marginTop: 6, color: status.scopeOk ? 'var(--orn, #e8a020)' : 'var(--red)' }}>{registerBlocked}</div>
-        )}
-        <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
-          <input style={{ ...S.input, ...S.mono, flex: '1 1 220px', minWidth: 0, opacity: canRegister ? 1 : 0.6 }} value={serial}
-            disabled={!canRegister}
-            onChange={(e) => setSerial(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && canRegister && serial.trim()) registerBySerial(); }}
-            placeholder="Serial number, e.g. 000168254080216" />
-          <button style={{ ...S.btn, ...S.btnPrim, opacity: canRegister ? 1 : 0.6 }} disabled={!canRegister || !!busy || !serial.trim()} onClick={registerBySerial}>
-            {busy === 'serial' ? 'Registering…' : 'Register'}
-          </button>
-        </div>
+      {/* ── 1. the readers ── */}
+      <div style={{ ...S.box, marginTop: 18 }}>
+        <h3 style={S.h3}>Readers at {venueName}</h3>
+        {listErr && <Notice kind="error" text="The readers could not be listed. Refresh to try again." detail={listErr} />}
+        {!listErr && !list && status.storeId && <p style={S.p}>Loading the readers.</p>}
+        {!status.storeId && <p style={S.p}>This venue has no Adyen store yet, so no readers can be listed.</p>}
+        {list && readers.length === 0 && <p style={S.p}>No readers yet. Add one below.</p>}
+        {readers.map((r) => {
+          const sa = standalone[r.poiid];
+          return (
+            <div key={r.id} style={S.row}>
+              <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+                {editId === r.id ? (
+                  <>
+                    <input style={{ ...S.input, width: 220 }} value={editName} autoFocus maxLength={60}
+                      onChange={(e) => setEditName(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') saveName(r); if (e.key === 'Escape') setEditId(null); }} />
+                    <button style={{ ...S.btn, ...S.btnPrim, ...S.btnSmall }} disabled={busy === `name-${r.id}`} onClick={() => saveName(r)}>
+                      {busy === `name-${r.id}` ? 'Saving' : 'Save'}
+                    </button>
+                    <button style={{ ...S.btn, ...S.btnSmall }} onClick={() => setEditId(null)}>Cancel</button>
+                  </>
+                ) : (
+                  <>
+                    <span style={{ fontSize: 17, fontWeight: 800 }}>{r.label}</span>
+                    <button style={S.linkBtn} title="Rename" aria-label={`Rename ${r.label}`}
+                      onClick={() => { setEditId(r.id); setEditName(r.label); }}>Rename</button>
+                  </>
+                )}
+                <StatusDot status={r.status} />
+                <span style={{ flex: 1 }} />
+                <button style={{ ...S.btn, ...S.btnDan, ...S.btnSmall }} disabled={!!busy} onClick={() => remove(r)}>
+                  {busy === `rm-${r.id}` ? 'Removing' : 'Remove'}
+                </button>
+              </div>
+              <div style={{ ...S.grey, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span>{r.model || 'Reader'}</span>
+                <CopyId value={r.serialNumber} />
+                {!r.onAdyen && <span style={{ color: 'var(--orn, #e8a020)' }}>Adyen no longer lists this reader on the venue's store.</span>}
+              </div>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                <span>Sends payments from:</span>
+                <select style={{ ...S.select, minWidth: 200 }} value={r.boundPosDeviceId || ''} disabled={!!busy}
+                  onChange={(e) => setTill(r, e.target.value)}>
+                  <option value="">Any till</option>
+                  {posDevices.map((d) => <option key={d.id} value={d.id}>{d.name || d.id}</option>)}
+                </select>
+                {r.boundPosDeviceId && !posDevices.some((d) => d.id === r.boundPosDeviceId) && (
+                  <span style={S.grey}>{tillSentence(r.boundPosDeviceId, posDevices)}</span>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: 24, alignItems: 'center', flexWrap: 'wrap' }}>
+                <Switch label="Take payments from the till" checked={r.modes?.pos_dispatch !== false} disabled={!!busy}
+                  onChange={(on) => setPosDispatch(r, on)} />
+                <Switch label="Staff can type an amount on the reader" checked={sa === true} disabled={!!busy || sa == null}
+                  title="Payments typed on the reader book against the venue and show in payment reports. They do not attach to a till check."
+                  onChange={(on) => setStandaloneFor(r, on)} />
+              </div>
+            </div>
+          );
+        })}
       </div>
 
-      {/* ── app terminals waiting for a POIID (v5.6.81) ── */}
-      {fleet?.appTerminals?.length > 0 && (
-        <div style={{ marginTop: 14, padding: 14, borderRadius: 10, background: 'var(--bg2)', border: '1px solid var(--bdr)' }}>
-          <div style={{ fontSize: 13, fontWeight: 700 }}>Terminals running the ServOS app</div>
-          <div style={{ ...S.desc, marginTop: 4 }}>
-            These are paired to this venue and take orders, but they have no card reader linked yet,
-            so they cannot take a card. Pick one below when you register the matching reader and the
-            link lands on the terminal itself — not on a second, separate record.
-          </div>
-          <div style={{ marginTop: 10 }}>
-            {fleet.appTerminals.map((a) => (
-              <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '6px 0' }}>
-                <input
-                  type="radio" name="adyen-app-terminal"
-                  checked={adoptId === a.id}
-                  onChange={() => setAdoptId(adoptId === a.id ? '' : a.id)}
-                />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 700 }}>{a.label || 'Card terminal'}</div>
-                  <div style={{ ...S.desc, margin: 0 }}>
-                    <span style={S.mono}>{a.serial_number}</span>
-                    {a.app_version ? ` · ${a.app_version}` : ''}
-                  </div>
-                </div>
-                {onlineDot(a.last_seen_at)}
+      {/* ── 2. add a reader ── */}
+      <div style={{ ...S.box, opacity: canAdd ? 1 : 0.8 }}>
+        <h3 style={S.h3}>Add a reader</h3>
+        <p style={S.p}>Switch the reader on, connect it to WiFi, then type the serial number from the label on the reader or its box.</p>
+        {addBlocked && <p style={{ ...S.p, color: status.scopeOk ? 'var(--orn, #e8a020)' : 'var(--red)' }}>{addBlocked}</p>}
+        <div style={{ display: 'flex', gap: 10, marginTop: 12, flexWrap: 'wrap' }}>
+          <input style={{ ...S.input, flex: '1 1 260px', minWidth: 0, fontFamily: 'var(--font-mono, ui-monospace, monospace)' }} value={serial}
+            disabled={!canAdd}
+            onChange={(e) => setSerial(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && canAdd && serial.trim()) addBySerial(); }}
+            placeholder="Serial number from the label" aria-label="Serial number from the label" />
+          <button style={{ ...S.btn, ...S.btnPrim }} disabled={!canAdd || !!busy || !serial.trim()} onClick={addBySerial}>
+            {busy === 'serial' ? 'Adding' : 'Add'}
+          </button>
+        </div>
+        {notAdded.length > 0 && (
+          <div style={{ marginTop: 14 }}>
+            <div style={{ fontWeight: 700 }}>Readers already on this venue's Adyen store that are not added yet</div>
+            {notAdded.map((t) => (
+              <div key={t.poiid} style={{ ...S.row, flexDirection: 'row', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                <span>{t.model || 'Reader'}</span>
+                <CopyId value={t.serialNumber} />
+                <StatusDot status={t.seen} />
+                <span style={{ flex: 1 }} />
+                <button style={{ ...S.btn, ...S.btnPrim, ...S.btnSmall }} disabled={!canAdd || !!busy} onClick={() => addFromStore(t)}>
+                  {busy === `add-${t.poiid}` ? 'Adding' : 'Add'}
+                </button>
               </div>
             ))}
           </div>
-          <div style={{ ...S.desc, marginTop: 6 }}>
-            {adoptId
-              ? 'Selected. Now register that terminal\'s reader below and the POIID goes onto this record.'
-              : 'Nothing selected — registering a reader will create a separate record instead.'}
-          </div>
-        </div>
-      )}
-
-      {/* ── fleet: the readers list is never hidden (8 Sep 2026); with nothing
-          to list it says why instead of rows ── */}
-      <div style={{ ...S.label, marginTop: 18 }}>Registered to this venue</div>
-      {!fleet && (
-        <div style={{ ...S.desc, marginTop: 6 }}>
-          {status.storeId
-            ? 'The readers are not listed yet. Refresh to try again.'
-            : 'No readers can be listed until the venue has its Adyen store.'}
-        </div>
-      )}
-      {fleet && (
-        <>
-          {fleet.store.length === 0 && <div style={{ ...S.desc, marginTop: 6 }}>None yet — register one from the list below.</div>}
-          {fleet.store.map((t) => (
-            <div key={t.id}>
-              <div style={S.row}>
-                <div>
-                  {onlineDot(t.lastActivityAt)}
-                  <span style={{ fontSize: 13.5, fontWeight: 800 }}>{t.link?.label || t.id}</span>
-                  <div style={{ ...S.desc, margin: '2px 0 0' }}><span style={S.mono}>{t.id}</span>{t.firmwareVersion ? ` · fw ${t.firmwareVersion}` : ''}</div>
-                </div>
-                <div style={{ fontSize: 12, color: 'var(--t2)' }}>{t.model || 'AMS1'}</div>
-                <div style={{ fontSize: 12, color: 'var(--t2)' }}>
-                  {t.link
-                    ? <>till: <b>{tillName(t.link.bound_pos_device_id)}</b></>
-                    : <span style={{ color: 'var(--orn)' }}>boarded, not linked</span>}
-                </div>
-                <div style={{ display: 'flex', gap: 6 }}>
-                  {t.link ? (
-                    <>
-                      <button style={S.btn} disabled={!!busy}
-                        onClick={() => {
-                          if (bindFor === t.link.id) { setBindFor(null); return; }
-                          setBindFor(t.link.id);
-                          setBindTo(t.link.bound_pos_device_id || '');
-                          const tc = t.link.tip_config || {};
-                          setTipOn(tc.enabled !== false);
-                          setTipPcts((Array.isArray(tc.percentages) && tc.percentages.length ? tc.percentages : [5, 10, 15]).join(', '));
-                          setTipCustom(tc.allowCustom !== false);
-                          const m = t.link.modes || {};
-                          setModeTable(m.table_pay !== false);
-                          setModePos(m.pos_dispatch !== false);
-                          setStandalone(false); setStandaloneWas(false);
-                          callAdmin('standalone_get', { terminal_id: t.id })
-                            .then((r) => { if (r.ok) { setStandalone(!!r.enabled); setStandaloneWas(!!r.enabled); } })
-                            .catch(() => {});
-                        }}>
-                        Settings
-                      </button>
-                      <button style={{ ...S.btn }} disabled={!!busy}
-                        title="Use if the terminal says a payment is already in progress but nothing is happening"
-                        onClick={() => release(t)}>
-                        {busy === `release-${t.id}` ? 'Releasing…' : 'Release stuck payment'}
-                      </button>
-                      <button style={{ ...S.btn, ...S.btnDan }} disabled={!!busy}
-                        onClick={() => { if (window.confirm(`Unlink ${t.link.label || t.id}? The reader stays on your payments account and can be re-registered any time.`)) run(`unlink-${t.id}`, 'unlink', { terminal_device_id: t.link.id }); }}>
-                        Unlink
-                      </button>
-                    </>
-                  ) : (
-                    <button style={{ ...S.btn, ...S.btnPrim }} disabled={!!busy}
-                      onClick={() => run(`link-${t.id}`, 'assign', { terminal_id: t.id, label: t.id })}>
-                      {busy === `link-${t.id}` ? 'Linking…' : 'Link to this venue'}
-                    </button>
-                  )}
-                </div>
-              </div>
-              {t.link && bindFor === t.link.id && (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '10px 0 14px', borderTop: '1px dashed var(--bdr)' }}>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                    <span style={S.label}>Send payments from</span>
-                    <select style={{ ...S.input, minWidth: 200 }} value={bindTo} onChange={(e) => setBindTo(e.target.value)}>
-                      <option value="">Any till (unassigned)</option>
-                      {posDevices.map((d) => <option key={d.id} value={d.id}>{d.name || d.id} ({d.type})</option>)}
-                    </select>
-                  </div>
-                  <div style={{ display: 'flex', gap: 18, alignItems: 'center', flexWrap: 'wrap' }}>
-                    <span style={S.label}>This reader takes</span>
-                    <label style={{ fontSize: 12.5, display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
-                      <input type="checkbox" checked={modePos} onChange={(e) => setModePos(e.target.checked)} /> Payments sent from the POS
-                    </label>
-                    <label style={{ fontSize: 12.5, display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
-                      <input type="checkbox" checked={modeTable} onChange={(e) => setModeTable(e.target.checked)} /> Table Pay
-                    </label>
-                    <label style={{ fontSize: 12.5, display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}
-                      title="Staff type the amount on the reader itself. Payments book against the venue but do not attach to a POS check — they appear in payment reports.">
-                      <input type="checkbox" checked={standalone} onChange={(e) => setStandalone(e.target.checked)} /> Manual payments on the reader
-                    </label>
-                  </div>
-                  <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-                    <label style={{ fontSize: 12.5, display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
-                      <input type="checkbox" checked={tipOn} onChange={(e) => setTipOn(e.target.checked)} /> <b>Tipping on the reader</b>
-                    </label>
-                    {tipOn && (
-                      <>
-                        <span style={S.label}>Suggested %</span>
-                        <input style={{ ...S.input, width: 130, ...S.mono }} value={tipPcts} onChange={(e) => setTipPcts(e.target.value)} placeholder="whole numbers, e.g. 5, 10, 15" />
-                        <label style={{ fontSize: 12, display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
-                          <input type="checkbox" checked={tipCustom} onChange={(e) => setTipCustom(e.target.checked)} /> allow custom amount
-                        </label>
-                      </>
-                    )}
-                  </div>
-                  <div>
-                    <button style={{ ...S.btn, ...S.btnPrim }} disabled={busy === `bind-${t.link.id}`}
-                      onClick={() => saveBinding(t.link)}>
-                      {busy === `bind-${t.link.id}` ? 'Saving…' : 'Save reader settings'}
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          ))}
-
-          <div style={{ ...S.label, marginTop: 18 }}>In your reader inventory</div>
-          {fleet.inventory.length === 0 && (
-            <div style={{ ...S.desc, marginTop: 6 }}>
-              Nothing waiting. New readers appear here once they are assigned to your payments
-              account. If a reader you have is not listed, contact ServOS support and we will
-              move it onto your account.
-            </div>
-          )}
-          {fleet.inventory.map((t) => (
-            <div key={t.id} style={S.row}>
-              <div>
-                {onlineDot(t.lastActivityAt)}
-                <span style={{ fontSize: 13.5, fontWeight: 800, ...S.mono }}>{t.id}</span>
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--t2)' }}>{t.model || 'AMS1'}</div>
-              <div style={{ fontSize: 12, color: t.link ? 'var(--orn)' : 'var(--t3)' }}>
-                {t.link ? 'registering — the reader is syncing (about a minute)' : 'unregistered'}
-              </div>
-              {t.link ? (
-                <button style={S.btn} disabled={!!busy} onClick={() => load()}>Check again</button>
-              ) : (
-                <button style={{ ...S.btn, ...S.btnPrim }} disabled={!!busy}
-                  onClick={() => run(`assign-${t.id}`, 'assign', { terminal_id: t.id, label: t.id })}>
-                  {busy === `assign-${t.id}` ? 'Registering…' : 'Register to this venue'}
-                </button>
-              )}
-            </div>
-          ))}
-
-        </>
-      )}
-      <div>
-        <button style={{ ...S.btn, marginTop: 14 }} disabled={!!busy} onClick={() => { setErr(''); setNotice(''); load(); }}>Refresh</button>
+        )}
       </div>
 
-      {/* ── v5.7.5 venue-level: tip on printed receipt (United States) ── */}
-      {torLoaded && (
-        <div style={{ marginTop: 18, padding: 14, borderRadius: 10, background: 'var(--bg2)', border: '1px solid var(--bdr)' }}>
-          <div style={{ fontSize: 13, fontWeight: 700 }}>Tip on printed receipt (United States)</div>
-          <div style={{ ...S.desc, marginTop: 4 }}>
-            The American signature flow. The card machine approves the payment but holds the
-            charge, the till prints a merchant copy with a tip line, the guest writes a tip and
-            signs, and staff type the tip in from History. While this is on, the tip prompt on
-            the reader itself is switched off for payments sent from the POS, so guests are never
-            asked twice. Applies to the whole venue, main POS payments only.
-          </div>
-          <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap', marginTop: 12 }}>
-            <label style={{ fontSize: 12.5, display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer' }}>
-              <input type="checkbox" checked={torEnabled} onChange={(e) => setTorEnabled(e.target.checked)} />
-              <b>Print a tip line on the merchant copy</b>
-            </label>
-            {torEnabled && (
-              <label style={{ fontSize: 12.5, display: 'flex', gap: 6, alignItems: 'center' }}>
-                <span style={S.label}>Capture window</span>
-                <input type="number" min={1} max={72} value={torHours}
-                  onChange={(e) => setTorHours(e.target.value)}
-                  style={{ ...S.input, width: 70, ...S.mono }} />
-                <span style={{ color: 'var(--t3)' }}>hours (1 to 72)</span>
-              </label>
+      {/* ── 3. tips (venue level) ── */}
+      <div style={S.box}>
+        <h3 style={S.h3}>Tips on the reader <span style={{ ...S.grey, fontWeight: 400, fontSize: 13 }}>(Adyen gratuities)</span></h3>
+        <p style={S.p}>These tip choices apply to every reader at {venueName}.</p>
+        <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap', marginTop: 12 }}>
+          <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            <span>Choices</span>
+            <input style={{ ...S.input, width: 160 }} value={tipText} onChange={(e) => setTipText(e.target.value)} placeholder="5, 10, 15" aria-label="Tip choices, whole percentages" />
+          </label>
+          <Switch label="Allow a custom amount" checked={tipCustom} onChange={setTipCustom} />
+          <button style={{ ...S.btn, ...S.btnPrim }} disabled={!canAdd || busy === 'tips'} onClick={saveTips}>
+            {busy === 'tips' ? 'Saving' : 'Save tips'}
+          </button>
+        </div>
+        <p style={{ ...S.grey, marginTop: 8 }}>
+          Whole percentages, up to {tipCustom ? 'three plus the custom amount' : 'four'}.
+          {list?.tips?.syncedAt ? ` Last sent to Adyen ${fmtWhen(list.tips.syncedAt)}.` : ''}
+        </p>
+      </div>
+
+      {/* ── 4. advanced ── */}
+      <div style={S.box}>
+        <button style={{ ...S.linkBtn, fontSize: 16 }} onClick={() => setAdvOpen((v) => !v)} aria-expanded={advOpen}>
+          {advOpen ? 'Hide advanced' : 'Advanced'}
+        </button>
+        {advOpen && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 18, marginTop: 12 }}>
+
+            <div>
+              <div style={{ fontWeight: 800 }}>Send reader settings to Adyen</div>
+              <p style={S.p}>Sends the events address, the Pay at table button and the tip choices to every reader here. Adding a reader does this on its own.</p>
+              <div style={{ marginTop: 8 }}>
+                <button style={S.btn} disabled={!canAdd || busy === 'sync'} onClick={sendSettings}>{busy === 'sync' ? 'Sending' : 'Send reader settings to Adyen'}</button>
+              </div>
+              {lastSync && (
+                <div style={{ marginTop: 8 }}>
+                  <div style={S.grey}>Last run {fmtWhen(lastSync.at)}.</div>
+                  {(lastSync.applied || []).map((l, i) => <div key={`a${i}`} style={{ color: 'var(--grn)' }}>{l}</div>)}
+                  {(lastSync.errors || []).map((l, i) => <div key={`e${i}`} style={{ color: 'var(--red)' }}>{l}</div>)}
+                </div>
+              )}
+            </div>
+
+            <div>
+              <div style={{ fontWeight: 800 }}>Release stuck payment</div>
+              <p style={S.p}>Use this if a reader says a payment is already in progress but nothing is happening.</p>
+              <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginTop: 8 }}>
+                <select style={{ ...S.select, minWidth: 200 }} value={releaseId} onChange={(e) => setReleaseId(e.target.value)} aria-label="Reader">
+                  <option value="">Choose a reader</option>
+                  {readers.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
+                </select>
+                <button style={S.btn} disabled={!releaseId || busy === 'release'} onClick={release}>{busy === 'release' ? 'Releasing' : 'Release'}</button>
+              </div>
+            </div>
+
+            <div>
+              <div style={{ fontWeight: 800 }}>Environment</div>
+              <p style={{ ...S.p, color: isLive ? 'var(--red)' : 'var(--t2)' }}>
+                {isLive
+                  ? 'LIVE, real money. Every card taken at this venue is charged for real. Refunds and disputes are real too.'
+                  : 'Test cards. Card payments go to the Adyen test system. Only test cards work. Nobody is charged.'}
+                {' '}Moving between test and live is done by ServOS support.
+              </p>
+            </div>
+
+            <div>
+              <div style={{ fontWeight: 800 }}>Admin PIN on the readers</div>
+              {!pinInfo && <p style={S.p}>Reading the PIN.</p>}
+              {pinInfo?.ok === false && <Notice kind="error" text="The PIN could not be read from Adyen." detail={pinInfo.error} />}
+              {pinInfo?.ok && (
+                <p style={S.p}>
+                  {pinInfo.adminMenuPin
+                    ? <>The admin menu PIN is <span style={{ ...S.mono, color: 'var(--t1)', fontSize: 15 }}>{pinInfo.adminMenuPin}</span>.</>
+                    : 'No admin PIN is set yet.'}
+                </p>
+              )}
+              {pinInfo?.ok && !pinInfo.adminMenuPin && (
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginTop: 8 }}>
+                  {isLive && (
+                    <input style={{ ...S.input, width: 160 }} value={pinChoice} inputMode="numeric" maxLength={6}
+                      onChange={(e) => setPinChoice(e.target.value.replace(/\D/g, ''))} placeholder="Choose a PIN" aria-label="Choose a PIN" />
+                  )}
+                  <button style={S.btn} disabled={!canAdd || busy === 'pin' || (isLive && !pinChoice)} onClick={setPin}>
+                    {busy === 'pin' ? 'Setting' : isLive ? 'Set this PIN' : 'Set the standard PIN'}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {isUS && torLoaded && (
+              <div>
+                <div style={{ fontWeight: 800 }}>Tip on printed receipt (United States)</div>
+                <p style={S.p}>
+                  The reader approves the card and holds the charge. The till prints a slip with a tip line, the guest writes a tip
+                  and signs, and staff type the tip in from History. While this is on, the reader does not ask for a tip on till payments.
+                </p>
+                <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap', marginTop: 10 }}>
+                  <Switch label="Print a tip line on the merchant copy" checked={torEnabled} onChange={setTorEnabled} />
+                  {torEnabled && (
+                    <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      <span>Capture window</span>
+                      <input type="number" min={1} max={72} value={torHours} onChange={(e) => setTorHours(e.target.value)} style={{ ...S.input, width: 80 }} />
+                      <span style={S.grey}>hours, 1 to 72</span>
+                    </label>
+                  )}
+                </div>
+                {torEnabled && (
+                  <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <label style={S.switchRow}>
+                      <input type="radio" name="tor-scope" checked={torScope === 'all_pos'} onChange={() => setTorScope('all_pos')} />
+                      All card payments at the till
+                    </label>
+                    <label style={S.switchRow}>
+                      <input type="radio" name="tor-scope" checked={torScope === 'table_checks'} onChange={() => setTorScope('table_checks')} />
+                      Table checks only. Counter sales keep the tip prompt on the reader.
+                    </label>
+                    <p style={{ ...S.grey, margin: 0 }}>A card nobody adjusts captures at the original amount when the window closes. 24 hours covers a normal close.</p>
+                  </div>
+                )}
+                <div style={{ marginTop: 10 }}>
+                  <button style={{ ...S.btn, ...S.btnPrim }} disabled={busy === 'tor'} onClick={saveTipOnReceipt}>{busy === 'tor' ? 'Saving' : 'Save tip on receipt'}</button>
+                </div>
+                {torMsg && <div style={S.ok}>{torMsg}</div>}
+              </div>
             )}
-          </div>
-          {torEnabled && (
-            <div style={{ marginTop: 10 }}>
-              <div style={S.label}>Which sales print the tip line</div>
-              <label style={{ fontSize: 12.5, display: 'flex', gap: 6, alignItems: 'center', cursor: 'pointer', marginTop: 6 }}>
-                <input type="radio" name="tor-scope" checked={torScope === 'all_pos'}
-                  onChange={() => setTorScope('all_pos')} />
-                <b>All card payments at the till</b>
-              </label>
-              <label style={{ fontSize: 12.5, display: 'flex', gap: 6, alignItems: 'flex-start', cursor: 'pointer', marginTop: 6 }}>
-                <input type="radio" name="tor-scope" checked={torScope === 'table_checks'}
-                  onChange={() => setTorScope('table_checks')} style={{ marginTop: 2 }} />
-                <span>
-                  <b>Table checks only</b>
-                  <span style={{ display: 'block', color: 'var(--t3)' }}>
-                    Counter and walk-in sales keep the tip prompt on the card reader; table checks
-                    print the signature slip and take the tip from History.
-                  </span>
-                </span>
-              </label>
+
+            <div>
+              <div style={{ fontWeight: 800 }}>Ids Adyen gave this venue</div>
+              <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginTop: 6 }}>
+                <span style={S.grey}>Store <CopyId value={status.storeId} /></span>
+                {readers.map((r) => <span key={r.id} style={S.grey}>{r.label} <CopyId value={r.poiid} /></span>)}
+              </div>
             </div>
-          )}
-          {torEnabled && (
-            <div style={{ ...S.desc, marginTop: 8 }}>
-              A card nobody adjusts captures automatically at the original amount when the window
-              closes, so a forgotten slip can only ever lose the tip, never the sale. Card schemes
-              give roughly 5 to 7 days before a held authorisation dies, so keep the window short. 24 hours covers a normal close-out.
-            </div>
-          )}
-          <div style={{ marginTop: 10 }}>
-            <button style={{ ...S.btn, ...S.btnPrim }} disabled={torBusy} onClick={saveTipOnReceipt}>
-              {torBusy ? 'Saving…' : 'Save tip on receipt'}
-            </button>
           </div>
-          {torMsg && <div style={S.ok}>{torMsg}</div>}
+        )}
+      </div>
+
+      <div style={{ marginTop: 14 }}>
+        <button style={S.btn} disabled={!!busy} onClick={() => { setErr(null); setNotice(null); load(); }}>Refresh</button>
+      </div>
+
+      {err && <Notice kind="error" text={err.text} detail={err.detail} onClose={() => setErr(null)} />}
+      {notice && (
+        <div style={S.ok} role="status">
+          <div>{notice.text}</div>
+          {(notice.lines || []).map((l, i) => <div key={i} style={{ marginTop: 2 }}>{l}</div>)}
         </div>
       )}
-
-      {err && <div style={S.err}>{err}</div>}
-      {notice && <div style={S.ok}>{notice}</div>}
     </div>
   );
 }

@@ -188,7 +188,7 @@ export default function CardReaders() {
       <h1 style={S.h1}>Card readers</h1>
       <div style={S.sub}>
         {processor != null && processor !== 'stripe'
-          ? 'Card terminals for this venue are managed in the panels below: Card terminals for readers that run their own payment software, and Terminals running the ServOS app for hardware paired by code.'
+          ? 'Card readers for this venue. Add a reader by its serial number and it takes payments from the till.'
           : 'Network readers (Stripe Reader S700, WisePOS E in WiFi mode) are registered here and serve all POS terminals at this location.'}
       </div>
 
