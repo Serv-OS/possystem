@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.49',
+    date: '10 Sep 2026',
+    items: [
+      'A server only check now reads how Adyen booked a card payment: what went to the venue, the venue rate that went to the platform, and the fee Adyen took. Used to confirm the first live split on a Visa Debit payment matched the venue rates exactly.',
+    ],
+  },
+  {
     v: '5.8.48',
     date: '10 Sep 2026',
     items: [
