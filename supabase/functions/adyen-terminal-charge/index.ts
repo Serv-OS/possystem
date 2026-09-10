@@ -290,6 +290,31 @@ async function logDemoHold(action: string, ctx: Record<string, unknown>) {
 // cfg.region, never a value re-derived from the row.
 const notConfigured = (cfg: AdyenConfig) => (cfg.configured ? null : json({ error: adyenNotConfiguredMessage(cfg) }, 503));
 
+// ── Store REFERENCE for SaleToAcquirerData (10 Sep 2026) ─────────────────────
+// Adyen's Terminal API `store=` takes the store's REFERENCE (its store code,
+// SV-1007), not the Management API id (ST…). On test the two are equal, which
+// is why store=<id> worked there for weeks; on live the store was made by
+// reference, carries SV-1007, and the id is refused (403 910 "Invalid Store"
+// on /connectedTerminals, read 9 Sep). Read once per isolate from
+// GET /stores/{id} (10 minute cache); when Adyen cannot answer, send nothing:
+// the reader is assigned to the store, so Adyen routes the sale there itself.
+const storeRefCache = new Map<string, { ref: string | null; at: number }>();
+async function storeReferenceFor(cfg: AdyenConfig, storeId: string | null | undefined): Promise<string | undefined> {
+  const id = String(storeId ?? '').trim();
+  if (!id) return undefined;
+  const key = `${cfg.env}:${cfg.region}:${id}`;
+  const hit = storeRefCache.get(key);
+  if (hit && Date.now() - hit.at < 10 * 60_000) return hit.ref ?? undefined;
+  let ref: string | null = null;
+  try {
+    const r = await adyenFetch('GET', `${managementBase(cfg)}/stores/${encodeURIComponent(id)}`, undefined, { cfg, apiKey: cfg.managementKey, timeoutMs: 8_000 });
+    const got = r.ok ? String((r.data as { reference?: unknown })?.reference ?? '').trim() : '';
+    if (got) ref = got;
+  } catch { ref = null; }
+  storeRefCache.set(key, { ref, at: Date.now() });
+  return ref ?? undefined;
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
@@ -426,7 +451,7 @@ Deno.serve(async (req) => {
         amountMinor,
         currency,
         preAuth: true,
-        storeId: maa.store_id ?? undefined,
+        storeId: await storeReferenceFor(cfg, maa.store_id),
       });
       const res = await adyenFetch('POST', terminalEndpoint(maa.merchant_account, term.adyen_terminal_id, 'sync', cfg.region, cfg), nexo, { cfg, timeoutMs: 165_000 });
       if (!res.ok) return json({ ok: false, error: `adyen ${res.status}` }, 200);
@@ -680,7 +705,7 @@ Deno.serve(async (req) => {
       if (merchant) {
         const [ct, ctStore, ctOne] = await Promise.all([
           call(cfg, 'POST', `${D}/connectedTerminals`, { merchantAccount: merchant }),
-          storeId ? call(cfg, 'POST', `${D}/connectedTerminals`, { merchantAccount: merchant, store: storeId }) : Promise.resolve(null),
+          storeId ? storeReferenceFor(cfg, storeId).then((ref) => call(cfg, 'POST', `${D}/connectedTerminals`, { merchantAccount: merchant, store: ref ?? storeId })) : Promise.resolve(null),
           call(cfg, 'POST', `${D}/connectedTerminals`, { merchantAccount: merchant, uniqueTerminalId: poiid }),
         ]);
         out.connectedTerminals = { merchant: ct, store: ctStore, one: ctOne };
@@ -1030,7 +1055,7 @@ Deno.serve(async (req) => {
       transactionId: `tj-${job.id}`,
       amountMinor: chargeMinor,
       currency: String(job.currency || 'GBP').toUpperCase(),
-      storeId: maa.store_id ?? undefined,
+      storeId: await storeReferenceFor(cfg, maa.store_id),
       // v5.7.5 TIP ON RECEIPT: a manual-capture job authorises without
       // capturing (PreAuth + manualCapture) and FORCES the on-reader tip
       // prompt off - the tip arrives in writing on the merchant slip and is
