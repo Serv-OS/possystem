@@ -67,6 +67,25 @@ test('adyenVenueStatus: Linked means the store is mapped; a plain merchant venue
   assert.equal(h.chips.linked.label, 'Not linked');
 });
 
+test('adyenVenueStatus: Payouts means allowed AND paid out once the sweep column is there', () => {
+  // the column present (migration 20260909b ran): allowed with no sweep is NOT paid out
+  const allowedOnly = adyenVenueStatus({ environment: 'live', account_holder_id: 'AH1', payouts_ok: true, payout_sweep_id: null }, { currency: 'GBP' });
+  assert.equal(allowedOnly.payouts, false);
+  assert.equal(allowedOnly.chips.payouts.label, 'No payouts');
+  assert.match(allowedOnly.chips.payouts.title, /daily payout is not switched on/);
+  // allowed and the sweep exists: paid out
+  const paid = adyenVenueStatus({ environment: 'live', account_holder_id: 'AH1', payouts_ok: true, payout_sweep_id: 'SWPC1' }, { currency: 'GBP' });
+  assert.equal(paid.payouts, true);
+  assert.equal(paid.chips.payouts.tone, 'ok');
+  assert.match(paid.chips.payouts.title, /SWPC1/);
+  // a sweep with the capability gone is not paid out
+  assert.equal(adyenVenueStatus({ environment: 'live', payouts_ok: false, payout_sweep_id: 'SWPC1' }, { currency: 'GBP' }).payouts, false);
+  // the column absent (a row read before the migration): the capability alone, as it always was
+  const old = adyenVenueStatus({ environment: 'live', account_holder_id: 'AH1', payouts_ok: true }, { currency: 'GBP' });
+  assert.equal(old.payouts, true);
+  assert.equal(old.chips.payouts.title, 'Adyen allows payouts to the venue bank');
+});
+
 test('adyenVenueStatus: a legacy EU row reads as UK', () => {
   assert.equal(adyenVenueStatus({ region: 'EU' }, { currency: 'GBP' }).region, 'UK');
 });
@@ -309,43 +328,57 @@ import {
 } from './adyenAdminRows.js';
 import { buildGoliveSteps, capabilityList } from './adyenLink.js';
 
+const PAYOUT_PARTS = [
+  { id: 'split', state: 'todo', detail: 'Make the payments location first.' },
+  { id: 'payout', state: 'todo', detail: 'The venue has not added its bank account yet.', action: 'send_bank_link', hint: 'One click makes a link for the venue owner.' },
+];
 const FIVE = [
   { id: 'find_venue', state: 'done', detail: 'Adyen holds SV-1007 as a business account.' },
   { id: 'business_account', state: 'done', detail: 'POINT OF SALE UNIFIED PARTNERS LIMITED is set up.' },
   { id: 'payments_location', state: 'todo', detail: 'No store yet, so card payments have nowhere to go.', action: 'create_store' },
   { id: 'go_live', state: 'todo', detail: 'Finish the steps above first.' },
+  { id: 'payouts', state: 'todo', detail: 'Make the payments location first.', action: 'send_bank_link', parts: PAYOUT_PARTS },
   { id: 'readers', state: 'todo', detail: 'No card readers on this venue yet.', action: 'add_reader' },
 ];
 
-test('goliveFlowView: five numbered rows, the owner’s titles, the first not done is open', () => {
+test('goliveFlowView: six numbered rows, the owner’s titles, the first not done is open', () => {
   const v = goliveFlowView({ steps: FIVE });
-  assert.deepEqual(v.steps.map((x) => x.number), [1, 2, 3, 4, 5]);
+  assert.deepEqual(v.steps.map((x) => x.number), [1, 2, 3, 4, 5, 6]);
   assert.deepEqual(v.steps.map((x) => x.title), [
     'Find the venue on Adyen',
     'The venue’s Adyen business account',
     'The venue’s payments location',
     'Turn on live payments',
+    'Payouts and commission',
     'Card readers',
   ]);
   assert.equal(v.openId, 'payments_location');
   assert.equal(v.steps.filter((x) => x.open).length, 1);
-  assert.equal(v.progressLabel, 'Step 3 of 5');
+  assert.equal(v.progressLabel, 'Step 3 of 6');
   assert.equal(v.doneCount, 2);
-  assert.equal(v.progressPct, 40);
-  assert.deepEqual(v.steps.map((x) => x.chip.label), ['Done', 'Done', 'To do', 'To do', 'To do']);
-  assert.deepEqual(v.steps.map((x) => x.chip.tone), ['ok', 'ok', 'idle', 'idle', 'idle']);
+  assert.equal(v.progressPct, 33);
+  assert.deepEqual(v.steps.map((x) => x.chip.label), ['Done', 'Done', 'To do', 'To do', 'To do', 'To do']);
+  assert.deepEqual(v.steps.map((x) => x.chip.tone), ['ok', 'ok', 'idle', 'idle', 'idle', 'idle']);
+  // the payouts step's two parts ride through with their own titles and chips
+  const payouts = v.steps[4];
+  assert.deepEqual(payouts.parts.map((p) => p.title), ['Commission', 'Payouts to the venue']);
+  assert.deepEqual(payouts.parts.map((p) => p.chip.label), ['To do', 'To do']);
+  assert.equal(payouts.parts[1].action, 'send_bank_link');
+  assert.equal(payouts.parts[1].hint, 'One click makes a link for the venue owner.');
+  // every other step has no parts, and a missing parts list is an empty one
+  for (const s of v.steps) if (s.id !== 'payouts') assert.deepEqual(s.parts, []);
 });
 
-test('goliveFlowView: the four states each get their own chip, and a bad answer still draws five rows', () => {
+test('goliveFlowView: the four states each get their own chip, and a bad answer still draws six rows', () => {
   const v = goliveFlowView({ steps: [
     { id: 'find_venue', state: 'blocked' },
     { id: 'business_account', state: 'attention' },
     { id: 'payments_location', state: 'nonsense' },
   ] });
-  assert.deepEqual(v.steps.map((x) => x.chip.label), ['Blocked', 'Needs attention', 'To do', 'To do', 'To do']);
-  assert.deepEqual(v.steps.map((x) => x.chip.tone), ['bad', 'warn', 'idle', 'idle', 'idle']);
+  assert.deepEqual(v.steps.map((x) => x.chip.label), ['Blocked', 'Needs attention', 'To do', 'To do', 'To do', 'To do']);
+  assert.deepEqual(v.steps.map((x) => x.chip.tone), ['bad', 'warn', 'idle', 'idle', 'idle', 'idle']);
   assert.equal(v.openId, 'find_venue');
-  assert.equal(goliveFlowView(null).steps.length, 5);
+  assert.equal(goliveFlowView(null).steps.length, 6);
   assert.equal(goliveFlowView(null).openId, 'find_venue');
 });
 
@@ -354,7 +387,7 @@ test('goliveFlowView: everything done closes every row and says so', () => {
   const v = goliveFlowView({ steps: done });
   assert.equal(v.allDone, true);
   assert.equal(v.openId, null);
-  assert.equal(v.progressLabel, 'All 5 steps done');
+  assert.equal(v.progressLabel, 'All 6 steps done');
   assert.equal(v.progressPct, 100);
   assert.equal(v.steps.filter((x) => x.open).length, 0);
 });
@@ -363,7 +396,7 @@ test('goliveFlowView: opening a done row keeps exactly one open', () => {
   const v = goliveFlowView({ steps: FIVE }, 'find_venue');
   assert.equal(v.openId, 'find_venue');
   assert.equal(v.steps.filter((x) => x.open).length, 1);
-  assert.equal(v.progressLabel, 'Step 1 of 5');
+  assert.equal(v.progressLabel, 'Step 1 of 6');
   // a row id nobody answered falls back to the first that is not done
   assert.equal(goliveFlowView({ steps: FIVE }, 'not_a_step').openId, 'payments_location');
 });
@@ -412,12 +445,17 @@ test('goliveFlowView: the live shape reaches step 3, blocked payout and all', ()
       sendToTransferInstrument: { allowed: false, requested: true, verificationStatus: 'rejected' },
     }),
     store: null,
+    // the venue's own row (step 5 offers nothing at all without one, 9 Sep 2026)
+    row: { store_id: null, account_holder_id: 'AH32BZP22322CJ5PXF2BD5FTR', balance_account_id: 'BA3224Z223226M5KMQ5RBAL01', legal_entity_id: 'LE32BZP22322CJ5PXF2BDLEG1', transfer_instrument_id: 'SE123' },
   });
   const v = goliveFlowView({ steps });
-  assert.equal(v.steps[1].state, 'attention');
-  assert.equal(v.steps[1].detail, 'Cards work. Payouts wait for Adyen.');
+  // since 9 Sep 2026 the refused pay out sits on step 5, so step 2 is done
+  assert.equal(v.steps[1].state, 'done');
+  assert.match(v.steps[1].detail, /is set up/);
   assert.equal(v.openId, 'payments_location');
   assert.equal(v.steps[2].action, 'create_store');
+  assert.equal(v.steps[4].parts[1].detail, 'Adyen will not pay this venue out yet.');
+  assert.equal(v.steps[4].action, null, 'a wait on Adyen never parks the flow');
 });
 
 test('goliveFlowView: a step blocked on a server secret never hides the one click the owner can make', () => {
@@ -434,24 +472,27 @@ test('goliveFlowView: a step blocked on a server secret never hides the one clic
   ];
   const v = goliveFlowView({ steps: live });
   assert.equal(v.openId, 'payments_location');
-  assert.equal(v.progressLabel, 'Step 3 of 5');
+  assert.equal(v.progressLabel, 'Step 3 of 6');
   assert.equal(v.steps[1].chip.label, 'Blocked', 'step 2 still reads Blocked');
   assert.equal(v.steps.filter((x) => x.open).length, 1);
-  // after the save: step 3 and 4 done, the next click is on step 5, step 2 still not parking the flow
+  // after the save: step 3 and 4 done, step 5 blocked on the same key (a
+  // wait), the next click is on step 6, step 2 still not parking the flow
   const after = goliveFlowView({ steps: [
     live[0],
     live[1],
     { id: 'payments_location', state: 'done', detail: 'Card payments go to SV-1007.' },
     { id: 'go_live', state: 'done', detail: 'Provo takes real cards.' },
+    { id: 'payouts', state: 'blocked', detail: 'Our payments key cannot see the business account side.', action: 'add_bp_key' },
     live[4],
   ] });
   assert.equal(after.openId, 'readers');
-  assert.equal(after.progressLabel, 'Step 5 of 5');
+  assert.equal(after.progressLabel, 'Step 6 of 6');
   // nothing else left to press: the server secret step opens after all, so its reason is on screen
   const only = goliveFlowView({ steps: [
     live[0], live[1],
     { id: 'payments_location', state: 'done', detail: 'z' },
     { id: 'go_live', state: 'done', detail: 'w' },
+    { id: 'payouts', state: 'done', detail: 'u' },
     { id: 'readers', state: 'done', detail: 'v' },
   ] });
   assert.equal(only.openId, 'business_account');
@@ -469,7 +510,7 @@ test('goliveFlowView: a step blocked on a server secret never hides the one clic
 
 test('goliveFlowView: the server’s own steps drive it, ids and order match', () => {
   const v = goliveFlowView({ steps: buildGoliveSteps({ venue: { code: 'SV-1007', environment: 'test' }, keys: { configured: true, missing: [] } }) });
-  assert.deepEqual(v.steps.map((x) => x.id), ['find_venue', 'business_account', 'payments_location', 'go_live', 'readers']);
+  assert.deepEqual(v.steps.map((x) => x.id), ['find_venue', 'business_account', 'payments_location', 'go_live', 'payouts', 'readers']);
   assert.equal(v.openId, 'find_venue');
   assert.equal(v.steps[0].action, 'find_venue');
 });
@@ -626,6 +667,7 @@ test('the flow’s wording never uses a dash as punctuation', () => {
   const words = [
     ...Object.values(GOLIVE_STEP_TITLES),
     ...goliveFlowView({ steps: FIVE }).steps.map((s) => s.chip.label),
+    ...goliveFlowView({ steps: FIVE }).steps[4].parts.map((p) => p.title),
     ...capabilityNotices(capabilityList({ sendToTransferInstrument: { allowed: false, requested: true, verificationStatus: 'rejected' } })).map((n) => n.text),
     mismatchView({ found: 'A', configured: 'B' }).text,
     plainFailure({ status: 403 }).text,
@@ -700,7 +742,9 @@ test('goliveProblemBox: nothing to say is no box at all, and the Balance Platfor
   const noCode = goliveProblems(['This venue has no venue code, so there is no store reference to look up. Set one in the Back Office (Venue settings) or pass reference.']).problems;
   assert.equal(noCode[0].kind, 'no_code');
   assert.equal(goliveProblemBox(noCode), null, 'step 1 says it, the box does not');
-  assert.deepEqual([...PROBLEM_BOX_SKIP], ['bp_refused', 'mismatch', 'no_code']);
+  assert.deepEqual([...PROBLEM_BOX_SKIP], ['bp_refused', 'mismatch', 'no_code', 'foreign_balance_account']);
+  // the store sending the rest to another business account is step 5a's line, not the box's
+  assert.equal(goliveProblemBox([{ kind: 'foreign_balance_account', text: 'The payments location sends the rest of each sale to another business account.', rawDetail: 'x' }]), null);
 });
 
 test('goliveProblemBox: at most three plain lines, every raw answer behind Show detail', () => {

@@ -38,7 +38,7 @@
 //   PATCH {bcl}/balanceAccounts/{baId}/sweeps/{id} update schedule
 //   GET  {bcl}/accountHolders/{id}                 capabilities (verification truth)
 //   POST {mgmt}/merchants/{m}/splitConfigurations  commission/fee/remainder profile
-//   PATCH {mgmt}/stores/{storeId}                  { splitConfiguration: { splitConfigurationId, balanceAccountId } }
+//   PATCH {mgmt}/merchants/{m}/stores/{storeId}    { splitConfiguration: { splitConfigurationId, balanceAccountId } }
 //
 // Auth: super_admin only (payments-admin fence) — this is the internal admin
 // portal's door. The venue-facing reads live in adyen-financial.
@@ -52,6 +52,20 @@ import {
   assertAdyenConfigured, effectiveMerchantAccount, parseAdyenRegion, isAdyenRegionCheckError, adyenRegionMigrationMessage, upsertAdyenAccountRow,
   type AdyenConfig,
 } from '../_shared/adyen.ts';
+// The split logic, the sweep matching and the two writes are SHARED with
+// adyen-terminal-admin's go live flow (step 5, Payouts and commission), so
+// the two doors write the same profile shape and the same sweep (9 Sep 2026).
+import { findPushSweep, buildTieredProfile, tieredCommissionRules } from '../_shared/adyenLink.ts';
+import { createSplitOnStore, ensurePushSweep } from '../_shared/adyenPayouts.ts';
+
+// THE PAYOUT SWEEP ON THE ROW (9 Sep 2026, shared meaning with
+// adyen-terminal-admin): payouts_ok stays the CAPABILITY (Adyen allows
+// payouts); merchant_adyen_accounts.payout_sweep_id is the daily push sweep
+// (PAID OUT), and the admin list chip reads the two together. The column
+// arrives with the migration named here and is written ON ITS OWN, so this
+// function works before it runs (a write then answers a warning).
+const PAYOUT_SWEEP_COLUMN = 'payout_sweep_id';
+const PAYOUT_SWEEP_MIGRATION = 'supabase/migrations/20260909b_PLATFORM_adyen_payout_sweep_id.sql';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -267,6 +281,17 @@ Deno.serve(async (req) => {
       return r;
     };
     const warning = () => warnings.join(' ') || null;
+    // payout_sweep_id on its own statement: an unknown column is a warning
+    // naming the migration, never a failed action.
+    const stampPayoutSweep = async (locationId: string, sweepId: string | null) => {
+      const { error } = await platformAdmin.from('merchant_adyen_accounts').update({ [PAYOUT_SWEEP_COLUMN]: sweepId }).eq('location_id', locationId);
+      if (!error) return;
+      const text = `${error.code ?? ''} ${error.message ?? ''}`;
+      const w = (isMissingColumn(text) || /PGRST204|schema cache|could not find/i.test(text)) && text.includes(PAYOUT_SWEEP_COLUMN)
+        ? `The daily payout was not kept on the venue: merchant_adyen_accounts has no ${PAYOUT_SWEEP_COLUMN} column yet. Run ${PAYOUT_SWEEP_MIGRATION} on the platform project.`
+        : `The daily payout could not be kept on the venue (${error.message}).`;
+      if (!warnings.includes(w)) warnings.push(w);
+    };
 
     // ── list_merchants: the real merchant accounts, so nobody types one ──────
     // v5.7.94. Typing the merchant account by hand is the one field in manual
@@ -423,6 +448,7 @@ Deno.serve(async (req) => {
       let balances: any[] | null = null;
       let capabilities: Record<string, unknown> | null = null;
       let sweeps: any[] | null = null;
+      let sweepsRaw: unknown = null;
 
       if (maa?.balance_account_id) {
         // The cheapest call that is also USEFUL: balances double as the probe.
@@ -432,7 +458,10 @@ Deno.serve(async (req) => {
         else { const c = classify(r); enablement = c.kind === 'awaiting_enablement' ? 'awaiting_enablement' : 'enabled'; enablementMessage = c.message; }
         if (enablement === 'enabled') {
           const sr = await bcl('GET', `/balanceAccounts/${encodeURIComponent(maa.balance_account_id)}/sweeps`);
-          if (sr.ok) sweeps = (sr.data?.sweeps ?? []).map((s: any) => ({ id: s.id, type: s.type, category: s.category, schedule: s.schedule?.type ?? null, status: s.status ?? null, counterparty: s.counterparty ?? null }));
+          if (sr.ok) {
+            sweepsRaw = sr.data;
+            sweeps = (sr.data?.sweeps ?? []).map((s: any) => ({ id: s.id, type: s.type, category: s.category, schedule: s.schedule?.type ?? null, status: s.status ?? null, counterparty: s.counterparty ?? null }));
+          }
         }
       }
       if (maa?.account_holder_id) {
@@ -447,7 +476,11 @@ Deno.serve(async (req) => {
           // completes, must not take that away (8 Sep 2026: it did, and every
           // online payment lost its store and was refused 905_1).
           const flags = capabilityFlags(r.data?.capabilities);
+          // payouts_ok is the CAPABILITY (9 Sep 2026); the daily push sweep
+          // to ANY bank (the venue may have changed bank) is kept apart as
+          // payout_sweep_id. Sweeps not read this time leave that column alone.
           await stamp(loc.id, { verification_status: { source: 'status_sync', at: new Date().toISOString(), accountHolderStatus: r.data?.status ?? null, capabilities }, receive_payments_ok: flags.receive_ok || !!maa?.store_id, payouts_ok: flags.payouts_ok });
+          if (sweepsRaw !== null) await stampPayoutSweep(loc.id, findPushSweep(sweepsRaw, null)?.id ?? null);
         } else if (enablement === 'unknown') {
           const c = classify(r);
           enablement = c.kind === 'awaiting_enablement' ? 'awaiting_enablement' : 'enabled';
@@ -681,65 +714,38 @@ Deno.serve(async (req) => {
       if (missing.length) return json({ ok: false, kind: 'missing_prerequisite', message: `Not ready to configure splits. Missing: ${missing.join('; ')}.`, missing, lacking_tiers: lacking }, 400);
 
       const currency = String(loc.currency || 'GBP').toUpperCase();
-      const commissionFor = (tier: string): Record<string, number> => {
-        const commission: Record<string, number> = {};
-        const fixed = Math.round(Number(cards[tier].fixed_pence ?? 0));
-        const pct = Number(cards[tier].percent ?? 0);
-        if (fixed > 0) commission.fixedAmount = fixed;                       // minor units
-        if (pct > 0) commission.variablePercentage = Math.round(pct * 100);  // basis points
-        return commission;
-      };
-      const logicFor = (tier: string) => ({
-        commission: commissionFor(tier),                // our revenue → liable account
-        paymentFee: 'deductFromLiableAccount',          // platform absorbs Adyen's costs (venue pays the all-in tier rate)
-        remainder: 'addToOneBalanceAccount',            // sale minus commission → the venue
-        tip: 'addToOneBalanceAccount',
-        surcharge: 'addToOneBalanceAccount',
-        chargeback: 'deductFromOneBalanceAccount',      // the venue carries its own chargebacks
-        chargebackCostAllocation: 'deductFromLiableAccount',
-        refund: 'deductAccordingToSplitRatio',          // refund unwinds commission + venue share alike
-        refundCostAllocation: 'deductFromLiableAccount',
-      });
-      const rule = (tier: string, paymentMethod: string, shopperInteraction: string) => ({
-        currency,                       // must be a real ISO code (the one condition with no ANY)
-        fundingSource: 'ANY',           // credit AND debit — one fee, per the pricing model
-        paymentMethod,
-        shopperInteraction,
-        splitLogic: logicFor(tier),
-      });
-      const profile = {
-        description: `ServOS ${loc.name} tiered rates`.slice(0, 300),
-        rules: [
-          // amex tier per interaction — always more specific than the channel rules
-          rule('amex', 'amex', 'Ecommerce'),
-          rule('amex', 'amex', 'Moto'),
-          rule('amex', 'amex', 'ANY'),
-          // channel tiers
-          rule('card_not_present', 'ANY', 'Ecommerce'),
-          rule('keyed', 'ANY', 'Moto'),
-          // default — POS / ContAuth / anything new
-          rule('card_present', 'ANY', 'ANY'),
-        ],
-      };
+      // ONE RULE PER TIER, built by the SHARED builder (_shared/adyenLink.ts
+      // tieredCommissionRules and buildTieredProfile, the same the go live
+      // flow's set_split writes): amex per interaction so it always outranks
+      // the channel rules, then online, keyed, and the in person catch all.
+      // The split logic is the shared shape too: our commission to the liable
+      // account, the platform absorbs Adyen's fees (the venue pays the all in
+      // tier rate), the rest to the venue, chargebacks against the venue,
+      // refunds unwound in the same ratio.
+      const tiers = Object.fromEntries((RATE_TIERS as readonly string[]).map((t) => [t, { percent: cards[t].percent, fixedPence: cards[t].fixed_pence }]));
+      const built = tieredCommissionRules(currency, tiers);
+      if (built.lacking.length) {
+        return json({ ok: false, kind: 'missing_prerequisite', message: `Not ready to configure splits. Missing: processing rates for ${built.lacking.map(tierLabel).join('; ')}.`, missing: built.lacking, lacking_tiers: built.lacking }, 400);
+      }
+      const profile = buildTieredProfile({ description: `ServOS ${loc.name} tiered rates`, currency, tiers })!;
 
-      const created = await mgmt('POST', `/merchants/${encodeURIComponent(merchant)}/splitConfigurations`, profile);
-      logStep('split_profile', loc.id, { httpStatus: created.status, request: profile, response: created.data ?? null });
-      if (!created.ok || !created.data?.splitConfigurationId) { const c = classify(created); return json({ ok: false, kind: c.kind, message: c.message }, 502); }
-      const splitConfigurationId = created.data.splitConfigurationId as string;
-
-      const patched = await mgmt('PATCH', `/stores/${encodeURIComponent(maa.store_id)}`, {
-        splitConfiguration: { splitConfigurationId, balanceAccountId: maa.balance_account_id },
+      // The create and the store PATCH are the shared calls
+      // (_shared/adyenPayouts.ts createSplitOnStore), the same ones the go
+      // live flow's set_split runs. The profile the store carried before is
+      // never deleted (it may be on other stores); a refused PATCH deletes
+      // the one just made.
+      const split = await createSplitOnStore({ mgmt, bcl }, {
+        merchant, storeId: maa.store_id, balanceAccountId: maa.balance_account_id, profile, previousProfileId: maa.split_profile_id ?? null,
       });
-      logStep('split_store_patch', loc.id, { httpStatus: patched.status, splitConfigurationId, response: patched.data ?? null });
-      if (!patched.ok) { const c = classify(patched); return json({ ok: false, kind: c.kind, message: `Split profile ${splitConfigurationId} created but the store could not be pointed at it: ${c.message}`, split_profile_id: splitConfigurationId }, 502); }
+      logStep('split_profile', loc.id, { httpStatus: split.status, stage: split.stage, request: profile, response: split.created ?? null });
+      if (split.stage === 'create') { const c = classify({ ok: false, status: split.status, data: split.created }); return json({ ok: false, kind: c.kind, message: c.message }, 502); }
+      const splitConfigurationId = split.splitConfigurationId as string;
+      logStep('split_store_patch', loc.id, { httpStatus: split.status, splitConfigurationId, response: split.patched ?? null, orphanDeleted: split.orphanDeleted });
+      if (!split.ok) { const c = classify({ ok: false, status: split.status, data: split.patched }); return json({ ok: false, kind: c.kind, message: `Split profile ${splitConfigurationId} created but the store could not be pointed at it: ${c.message}${split.orphanDeleted ? ' The new profile was removed again.' : ''}`, split_profile_id: splitConfigurationId }, 502); }
 
       const oldProfile = maa.split_profile_id;
       await stamp(loc.id, { split_profile_id: splitConfigurationId });
-      if (oldProfile && oldProfile !== splitConfigurationId) {
-        // Best-effort tidy-up — the store no longer references it.
-        const del = await mgmt('DELETE', `/merchants/${encodeURIComponent(merchant)}/splitConfigurations/${encodeURIComponent(oldProfile)}`);
-        logStep('split_profile_delete_old', loc.id, { httpStatus: del.status, oldProfile });
-      }
+      if (oldProfile && oldProfile !== splitConfigurationId) logStep('split_profile_previous_kept', loc.id, { oldProfile, note: 'left in place: a profile can be on other stores' });
 
       const tierSummary = (RATE_TIERS as readonly string[]).map((t) =>
         `${tierLabel(t)}: ${Number(cards[t].percent ?? 0)}% + ${Math.round(Number(cards[t].fixed_pence ?? 0))}p`);
@@ -783,37 +789,34 @@ Deno.serve(async (req) => {
         schedule.cronExpression = String(body.cron_expression);
       }
 
-      // Idempotent: reuse the existing push-to-this-bank sweep if there is one.
-      const list = await bcl('GET', `/balanceAccounts/${encodeURIComponent(maa.balance_account_id)}/sweeps`);
-      if (!list.ok) { const c = classify(list); return json({ ok: false, kind: c.kind, message: c.message }, 502); }
-      const existing = (list.data?.sweeps ?? []).find((s: any) =>
-        s?.type === 'push' && s?.category === 'bank' && s?.counterparty?.transferInstrumentId === ti);
-      if (existing) {
-        if (existing.schedule?.type !== scheduleType || (scheduleType === 'cron' && existing.schedule?.cronExpression !== schedule.cronExpression)) {
-          const up = await bcl('PATCH', `/balanceAccounts/${encodeURIComponent(maa.balance_account_id)}/sweeps/${encodeURIComponent(existing.id)}`, { schedule });
-          logStep('sweep_update', loc.id, { httpStatus: up.status, sweepId: existing.id, schedule, response: up.data ?? null });
-          if (!up.ok) { const c = classify(up); return json({ ok: false, kind: c.kind, message: c.message }, 502); }
-          return json({ ok: true, sweep: { id: existing.id, schedule: scheduleType, status: up.data?.status ?? existing.status ?? 'active' }, updated: true });
-        }
-        return json({ ok: true, sweep: { id: existing.id, schedule: existing.schedule?.type ?? scheduleType, status: existing.status ?? 'active' }, existed: true });
+      // Idempotent, and SHARED with the go live flow's setup_sweep
+      // (_shared/adyenPayouts.ts ensurePushSweep): the existing push to this
+      // bank is reused (rescheduled when the schedule differs), else one is
+      // made with no triggerAmount or targetAmount, so the schedule fires and
+      // pushes the FULL available balance to the venue's bank.
+      const outcome = await ensurePushSweep({ mgmt, bcl }, {
+        balanceAccountId: maa.balance_account_id, transferInstrumentId: ti, currency: String(loc.currency || 'GBP').toUpperCase(),
+        schedule: scheduleType, cronExpression: scheduleType === 'cron' ? String(schedule.cronExpression) : null,
+        description: `ServOS ${scheduleType} payout, ${loc.name}`.slice(0, 140),
+        // The key names the BANK (9 Sep 2026): a create for a different bank
+        // inside Adyen's replay window is a new request, never a replay.
+        idempotencyKey: `sweep:${cfg.env}:${loc.id}:${ti}`,
+      });
+      logStep(outcome.created ? 'sweep_create' : outcome.updated ? 'sweep_update' : outcome.ok ? 'sweep_exists' : 'sweep_failed', loc.id, {
+        httpStatus: outcome.status, stage: outcome.stage, sweepId: outcome.sweep?.id ?? null, schedule, retargeted: outcome.retargeted, deactivated: outcome.deactivated, response: outcome.data ?? null,
+      });
+      if (!outcome.ok || !outcome.sweep?.id) { const c = classify({ ok: false, status: outcome.status, data: outcome.data }); return json({ ok: false, kind: c.kind, message: c.message }, 502); }
+      // payouts_ok is the CAPABILITY (9 Sep 2026); the sweep that now exists
+      // is kept apart as payout_sweep_id (PAID OUT).
+      if (maa.account_holder_id) {
+        const ah = await bcl('GET', `/accountHolders/${encodeURIComponent(maa.account_holder_id)}`);
+        if (ah.ok) await stamp(loc.id, { payouts_ok: capabilityFlags(ah.data?.capabilities).payouts_ok });
       }
-
-      // No triggerAmount/targetAmount: the schedule fires and pushes the FULL
-      // available balance to the venue's bank.
-      const payload = {
-        counterparty: { transferInstrumentId: ti },
-        currency: String(loc.currency || 'GBP').toUpperCase(),
-        category: 'bank',
-        priorities: ['regular', 'fast'],
-        schedule,
-        status: 'active',
-        type: 'push',
-        description: `ServOS ${scheduleType} payout — ${loc.name}`.slice(0, 140),
-      };
-      const r = await bcl('POST', `/balanceAccounts/${encodeURIComponent(maa.balance_account_id)}/sweeps`, payload, `sweep:${cfg.env}:${loc.id}`);
-      logStep('sweep_create', loc.id, { httpStatus: r.status, request: payload, response: r.data ?? null });
-      if (!r.ok || !r.data?.id) { const c = classify(r); return json({ ok: false, kind: c.kind, message: c.message }, 502); }
-      return json({ ok: true, sweep: { id: r.data.id, schedule: scheduleType, status: r.data.status ?? 'active' }, created: true });
+      await stampPayoutSweep(loc.id, outcome.sweep.id);
+      const sweep = { id: outcome.sweep.id, schedule: outcome.sweep.schedule ?? scheduleType, status: outcome.sweep.status ?? 'active' };
+      if (outcome.updated) return json({ ok: true, sweep, updated: true, retargeted: outcome.retargeted, deactivated: outcome.deactivated, warning: warning() });
+      if (outcome.existed) return json({ ok: true, sweep, existed: true, deactivated: outcome.deactivated, warning: warning() });
+      return json({ ok: true, sweep, created: true, deactivated: outcome.deactivated, warning: warning() });
     }
 
     return json({ error: `unknown action: ${action}` }, 400);

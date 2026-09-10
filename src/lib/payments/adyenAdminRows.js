@@ -76,7 +76,15 @@ export function adyenVenueStatus(row, location) {
   const holder = !!str(r?.account_holder_id);
   const store = linked;
   const kyc = kycState(r);
-  const payouts = r?.payouts_ok === true;
+  // PAID OUT (9 Sep 2026): Adyen allows payouts (payouts_ok, the capability)
+  // AND a daily push sweep to the venue's bank exists (payout_sweep_id). A
+  // row read before the payout_sweep_id column exists (the migration
+  // 20260909b has not run, so the key is absent) reads the capability alone,
+  // as it always did, and says so in the title.
+  const allowed = r?.payouts_ok === true;
+  const sweepKnown = !!r && 'payout_sweep_id' in r;
+  const sweep = sweepKnown ? str(r.payout_sweep_id) : '';
+  const payouts = allowed && (!sweepKnown || !!sweep);
   const ids = {};
   for (const k of LINK_ID_FIELDS) {
     const v = str(r?.[k]);
@@ -105,9 +113,13 @@ export function adyenVenueStatus(row, location) {
         ? { tone: 'ok', label: 'Holder', title: `Account holder ${ids.account_holder_id}` }
         : { tone: 'missing', label: 'No holder', title: 'No account holder is known, so KYC and payouts cannot be read. Link to Adyen pulls it from the store\'s balance account.' },
       kyc: { tone: kyc.tone, label: kyc.label, title: 'From the last verification snapshot Adyen gave' },
+      // PAID OUT (9 Sep 2026): Adyen allows payouts AND a daily push to the
+      // venue's bank exists (the go live flow's step 5 sets both up).
       payouts: payouts
-        ? { tone: 'ok', label: 'Payouts', title: 'Adyen allows payouts to the venue bank account' }
-        : { tone: 'missing', label: 'No payouts', title: 'Adyen does not allow payouts to the venue yet' },
+        ? { tone: 'ok', label: 'Payouts', title: sweepKnown ? `Adyen allows payouts and the venue is paid out to its bank daily (sweep ${sweep})` : 'Adyen allows payouts to the venue bank' }
+        : allowed
+          ? { tone: 'missing', label: 'No payouts', title: 'Adyen allows payouts, but the daily payout is not switched on yet. See step 5 of the go live flow.' }
+          : { tone: 'missing', label: 'No payouts', title: 'The venue is not paid out yet: the bank account, Adyen approval or the daily payout is missing. See step 5 of the go live flow.' },
     },
   };
 }
@@ -458,7 +470,7 @@ export function candidateLabel(c) {
 // ── THE GUIDED FLOW (8 Sep 2026, OWNER FEEDBACK) ─────────────────────────────
 // "we need this to be easier and better there is far too many words and too
 // small we need a flow that supports someone doing this". So the admin portal
-// no longer shows the dense lookup blocks: it shows FIVE numbered steps, one
+// no longer shows the dense lookup blocks: it shows SIX numbered steps, one
 // open at a time, each with one sentence and one primary button
 // (src/admin/components/AdyenGoLiveFlow.jsx). Everything that decides a
 // title, a chip, which step is open or how an error reads lives here so it is
@@ -477,13 +489,22 @@ export const GOLIVE_STEP_TITLES = Object.freeze({
   business_account: 'The venue’s Adyen business account',
   payments_location: 'The venue’s payments location',
   go_live: 'Turn on live payments',
+  payouts: 'Payouts and commission',
   readers: 'Card readers',
 });
 
-// The five ids, in order. The server answers all five (buildGoliveSteps); the
+// The two parts of the payouts step (9 Sep 2026), each its own line and
+// button on the screen: the commission rule on the store, and the bank
+// account, Adyen's approval and the daily payout.
+export const GOLIVE_PART_TITLES = Object.freeze({
+  split: 'Commission',
+  payout: 'Payouts to the venue',
+});
+
+// The six ids, in order. The server answers all six (buildGoliveSteps); the
 // order here is the screen's own so a missing or reordered answer still draws
-// the same five rows.
-const GOLIVE_ORDER = Object.freeze(['find_venue', 'business_account', 'payments_location', 'go_live', 'readers']);
+// the same six rows.
+const GOLIVE_ORDER = Object.freeze(['find_venue', 'business_account', 'payments_location', 'go_live', 'payouts', 'readers']);
 
 // The state chip: Done green, To do grey, Needs attention amber, Blocked red.
 const GOLIVE_CHIPS = Object.freeze({
@@ -493,15 +514,30 @@ const GOLIVE_CHIPS = Object.freeze({
   blocked: { label: 'Blocked', tone: 'bad' },
 });
 
-// The whole flow as the screen draws it: the five rows, which ONE is open
+// The whole flow as the screen draws it: the six rows, which ONE is open
 // (the first that is not done, unless the reader opened another), and the
 // progress line at the top. openId is the row the reader clicked, or null.
+// A step's `parts` (the payouts step) ride through in the same shape, each
+// with its own title, chip and button.
 export function goliveFlowView(state, openId = null) {
   const s = isObj(state) ? state : {};
   const answered = new Map((Array.isArray(s.steps) ? s.steps : []).filter(isObj).map((x) => [str(x.id), x]));
   const steps = GOLIVE_ORDER.map((id, i) => {
     const x = answered.get(id) || {};
     const st = GOLIVE_CHIPS[lower(x.state)] ? lower(x.state) : 'todo';
+    const parts = (Array.isArray(x.parts) ? x.parts : []).filter(isObj).map((p) => {
+      const ps = GOLIVE_CHIPS[lower(p.state)] ? lower(p.state) : 'todo';
+      return {
+        id: str(p.id),
+        title: GOLIVE_PART_TITLES[str(p.id)] || str(p.id),
+        state: ps,
+        chip: GOLIVE_CHIPS[ps],
+        done: ps === 'done',
+        detail: str(p.detail) || null,
+        hint: str(p.hint) || null,
+        action: str(p.action) || null,
+      };
+    });
     return {
       id,
       number: i + 1,
@@ -512,6 +548,7 @@ export function goliveFlowView(state, openId = null) {
       detail: str(x.detail) || null,
       hint: str(x.hint) || null,
       action: str(x.action) || null,
+      parts,
       open: false,
     };
   });
@@ -562,7 +599,9 @@ export function goliveFlowView(state, openId = null) {
 // Null when nothing is left to say, so the box does not appear at all.
 export const PROBLEM_BOX_MAX_LINES = 3;
 export const PROBLEM_BOX_TEXT = 'Adyen did not answer everything, so what is on screen may not be the whole picture.';
-export const PROBLEM_BOX_SKIP = Object.freeze(['bp_refused', 'mismatch', 'no_code']);
+//   foreign_balance_account  the store sends the rest of each sale to another
+//                business account: step 5a says it and offers to set it again
+export const PROBLEM_BOX_SKIP = Object.freeze(['bp_refused', 'mismatch', 'no_code', 'foreign_balance_account']);
 
 export function goliveProblemBox(problems, { exclude = PROBLEM_BOX_SKIP } = {}) {
   const skip = new Set(Array.isArray(exclude) ? exclude.map(str) : []);

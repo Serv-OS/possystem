@@ -197,9 +197,14 @@ Deno.serve(async (req) => {
         // which a STORE grants on its own (ensure_store writes true). The
         // account holder's capability is false until KYC completes and must
         // not take the store away from every online payment (8 Sep 2026).
-        // payouts_ok stays capability driven: it is THE payout gate.
+        // payouts_ok is the CAPABILITY (Adyen allows payouts to the venue's
+        // bank), so this webhook follows it both ways: a capability blip
+        // lowers it and its return raises it again. Whether the venue is
+        // actually PAID OUT (the daily push sweep) is a separate column,
+        // payout_sweep_id, that only adyen-terminal-admin and adyen-onboard
+        // write; the admin list chip reads the two together (9 Sep 2026).
         const { data: rows, error: readErr } = await platformAdmin.from('merchant_adyen_accounts')
-          .select('location_id, store_id').eq('account_holder_id', ah.id);
+          .select('location_id, store_id, payouts_ok').eq('account_holder_id', ah.id);
         if (readErr) console.error('[adyen-bp-webhook] accountHolder venue read failed:', readErr.message);
         else if (!rows?.length) console.warn(`[adyen-bp-webhook] accountHolder ${ah.id} matches no venue (yet) — raw kept for replay`);
         else {

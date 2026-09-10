@@ -45,7 +45,7 @@ import {
   terminalEndpoint, adyenFetch, checkoutBase,
   buildPaymentRequest, buildTransactionStatusRequest, buildAbortRequest,
   parsePaymentResponse, newServiceId,
-  adyenConfig, adyenEnvForLocation, adyenNotConfiguredMessage, effectiveMerchantAccount, type AdyenConfig,
+  adyenConfig, adyenEnvForLocation, adyenNotConfiguredMessage, effectiveMerchantAccount, managementBase, lemBase, type AdyenConfig,
 } from '../_shared/adyen.ts';
 import { insertCaptureRow } from '../_shared/tip_capture.ts';
 import {
@@ -583,6 +583,157 @@ Deno.serve(async (req) => {
     return json({ ok: true, ...(started as Record<string, unknown>) });
   }
 
+  // ── diag_reader (9 Sep 2026): ask ADYEN where a reader is, read only ───────
+  // Service role only. Every call below is a GET (Management API v3) or the
+  // documented POST /connectedTerminals and a nexo Diagnosis, none of which
+  // changes anything at Adyen or here. It exists because the live AMS1 refused
+  // every payment with "010 Not allowed" while the Customer Area showed it
+  // boarded, and the only honest way to settle that is Adyen's own answers
+  // with the key this function actually signs with. Keys are never returned.
+  if (action === 'diag_reader') {
+    if (!isServiceRole) return json({ error: 'diag_reader: service role only' }, 403);
+    const opsLocId = String(body.location_id ?? '');
+    const poiid = String(body.poiid ?? '');
+    const serials = Array.isArray(body.serials) ? (body.serials as unknown[]).map(String) : [];
+    if (!opsLocId || !poiid) return json({ error: 'location_id and poiid required' }, 400);
+
+    const { data: ploc } = await platformAdmin.from('locations').select('id').eq('ops_location_id', opsLocId).maybeSingle();
+    const platformLocId = ploc?.id ?? opsLocId;
+    const [{ data: maa }, target] = await Promise.all([
+      platformAdmin.from('merchant_adyen_accounts')
+        .select('merchant_account, store_id, region, environment, env_stash')
+        .eq('location_id', platformLocId).maybeSingle(),
+      adyenEnvForLocation(platformAdmin, platformLocId),
+    ]);
+    const stash = ((maa as any)?.env_stash ?? {}) as Record<string, any>;
+
+    const call = async (cfg: AdyenConfig, method: string, url: string, b?: unknown, apiKey?: string, timeoutMs = 20_000) => {
+      try {
+        const r = await adyenFetch(method, url, b, { cfg, apiKey, timeoutMs });
+        return { url, status: r.status, ok: r.ok, data: r.data };
+      } catch (e) { return { url, status: 0, ok: false, data: { thrown: String((e as Error)?.message ?? e) } }; }
+    };
+    const trim = (t: any) => t && ({
+      id: t.id, model: t.model, serialNumber: t.serialNumber, firmwareVersion: t.firmwareVersion,
+      assignment: t.assignment, connectivity: t.connectivity, lastActivityAt: t.lastActivityAt, lastTransactionAt: t.lastTransactionAt,
+    });
+    const diagnosis = (id: string) => ({
+      SaleToPOIRequest: {
+        MessageHeader: { ProtocolVersion: '3.0', MessageClass: 'Service', MessageCategory: 'Diagnosis', MessageType: 'Request', SaleID: 'servos-diag', ServiceID: newServiceId(), POIID: id },
+        DiagnosisRequest: { HostDiagnosisFlag: false },
+      },
+    });
+
+    const probe = async (label: string, cfg: AdyenConfig, merchant: string | null, storeId: string | null) => {
+      if (!cfg.configured) return { label, env: cfg.env, region: cfg.region, configured: false, missing: cfg.missing };
+      const M = managementBase(cfg);
+      const D = cfg.deviceBase;
+      const out: Record<string, unknown> = {
+        label, env: cfg.env, region: cfg.region, merchant, storeId, managementBase: M, deviceBase: D,
+        sameKeyForManagement: cfg.managementKey === cfg.apiKey,
+      };
+      const [me, meMgmt, companies, merchants, bySearch, byMerchant, byStore, termSettings, storeSettings, merchantSettings, store, merchantRow] = await Promise.all([
+        call(cfg, 'GET', `${M}/me`),
+        cfg.managementKey !== cfg.apiKey ? call(cfg, 'GET', `${M}/me`, undefined, cfg.managementKey) : Promise.resolve(null),
+        call(cfg, 'GET', `${M}/companies?pageSize=50`),
+        call(cfg, 'GET', `${M}/merchants?pageSize=100`),
+        call(cfg, 'GET', `${M}/terminals?searchQuery=${encodeURIComponent(poiid)}&pageSize=20`),
+        merchant ? call(cfg, 'GET', `${M}/terminals?merchantIds=${encodeURIComponent(merchant)}&pageSize=100`) : Promise.resolve(null),
+        storeId ? call(cfg, 'GET', `${M}/terminals?storeIds=${encodeURIComponent(storeId)}&pageSize=100`) : Promise.resolve(null),
+        call(cfg, 'GET', `${M}/terminals/${encodeURIComponent(poiid)}/terminalSettings`),
+        storeId ? call(cfg, 'GET', `${M}/stores/${encodeURIComponent(storeId)}/terminalSettings`) : Promise.resolve(null),
+        merchant ? call(cfg, 'GET', `${M}/merchants/${encodeURIComponent(merchant)}/terminalSettings`) : Promise.resolve(null),
+        storeId ? call(cfg, 'GET', `${M}/stores/${encodeURIComponent(storeId)}`) : Promise.resolve(null),
+        merchant ? call(cfg, 'GET', `${M}/merchants/${encodeURIComponent(merchant)}`) : Promise.resolve(null),
+      ]);
+      out.me = me; if (meMgmt) out.meManagementKey = meMgmt;
+      out.companies = { status: companies.status, data: (companies.data?.data ?? []).map((c: any) => ({ id: c.id, name: c.name, status: c.status })) , raw: companies.ok ? undefined : companies.data };
+      out.merchants = { status: merchants.status, data: (merchants.data?.data ?? []).map((m: any) => ({ id: m.id, name: m.name, companyId: m.companyId, status: m.status, captureDelay: m.captureDelay })), raw: merchants.ok ? undefined : merchants.data };
+      out.terminalBySearch = { status: bySearch.status, data: (bySearch.data?.data ?? []).map(trim), raw: bySearch.ok ? undefined : bySearch.data };
+      if (byMerchant) out.terminalsOnMerchant = { status: byMerchant.status, count: (byMerchant.data?.data ?? []).length, data: (byMerchant.data?.data ?? []).map(trim), raw: byMerchant.ok ? undefined : byMerchant.data };
+      if (byStore) out.terminalsOnStore = { status: byStore.status, count: (byStore.data?.data ?? []).length, data: (byStore.data?.data ?? []).map(trim), raw: byStore.ok ? undefined : byStore.data };
+      out.terminalSettings = termSettings;
+      if (storeSettings) out.storeTerminalSettings = storeSettings;
+      if (merchantSettings) out.merchantTerminalSettings = merchantSettings;
+      if (store) out.store = store;
+      if (merchantRow) out.merchantAccount = merchantRow;
+      // Serial searches (other readers we know of): where do THEY live on this environment?
+      // More of Adyen's own records (read only): the company, the credentials it
+      // will list, the store's business line (sales channels) and the store's
+      // POS payment methods.
+      const companyId = String((merchantRow?.data as any)?.companyId ?? '');
+      const businessLineId = String(((store?.data as any)?.businessLineIds ?? [])[0] ?? '');
+      const [company, merchantCreds, companyCreds, businessLine, storePaymentMethods] = await Promise.all([
+        companyId ? call(cfg, 'GET', `${M}/companies/${encodeURIComponent(companyId)}`) : Promise.resolve(null),
+        merchant ? call(cfg, 'GET', `${M}/merchants/${encodeURIComponent(merchant)}/apiCredentials?pageSize=50`) : Promise.resolve(null),
+        companyId ? call(cfg, 'GET', `${M}/companies/${encodeURIComponent(companyId)}/apiCredentials?pageSize=50`) : Promise.resolve(null),
+        businessLineId ? call(cfg, 'GET', `${lemBase(cfg)}/businessLines/${encodeURIComponent(businessLineId)}`, undefined, cfg.lemKey) : Promise.resolve(null),
+        merchant && storeId ? call(cfg, 'GET', `${M}/merchants/${encodeURIComponent(merchant)}/paymentMethods?storeId=${encodeURIComponent(storeId)}&pageSize=100`) : Promise.resolve(null),
+      ]);
+      out.company = company;
+      out.merchantCredentials = merchantCreds && { status: merchantCreds.status, data: (merchantCreds.data?.data ?? []).map((c: any) => ({ id: c.id, username: c.username, description: c.description, active: c.active, roles: c.roles })), raw: merchantCreds.ok ? undefined : merchantCreds.data };
+      out.companyCredentials = companyCreds && { status: companyCreds.status, data: (companyCreds.data?.data ?? []).map((c: any) => ({ id: c.id, username: c.username, description: c.description, active: c.active, roles: c.roles, associatedMerchantAccounts: c.associatedMerchantAccounts })), raw: companyCreds.ok ? undefined : companyCreds.data };
+      out.businessLine = businessLine;
+      out.storePaymentMethods = storePaymentMethods && { status: storePaymentMethods.status, data: (storePaymentMethods.data?.data ?? []).map((m: any) => ({ id: m.id, type: m.type, enabled: m.enabled, verificationStatus: m.verificationStatus, shopperInteraction: m.shopperInteraction, storeIds: m.storeIds })), raw: storePaymentMethods.ok ? undefined : storePaymentMethods.data };
+      out.serialSearches = await Promise.all(serials.map(async (s) => ({ serial: s, ...(await call(cfg, 'GET', `${M}/terminals?searchQuery=${encodeURIComponent(s)}&pageSize=10`)) }))).then((rs) => rs.map((r) => ({ serial: r.serial, status: r.status, data: (r.data?.data ?? []).map(trim), raw: r.ok ? undefined : r.data })));
+      // Cloud connection (docs: POST /connectedTerminals, same key as Terminal API).
+      if (merchant) {
+        const [ct, ctStore, ctOne] = await Promise.all([
+          call(cfg, 'POST', `${D}/connectedTerminals`, { merchantAccount: merchant }),
+          storeId ? call(cfg, 'POST', `${D}/connectedTerminals`, { merchantAccount: merchant, store: storeId }) : Promise.resolve(null),
+          call(cfg, 'POST', `${D}/connectedTerminals`, { merchantAccount: merchant, uniqueTerminalId: poiid }),
+        ]);
+        out.connectedTerminals = { merchant: ct, store: ctStore, one: ctOne };
+        // nexo Diagnosis on EVERY regional cloud host (read only; a disconnected
+        // reader answers with an error, not a prompt). Live cloud Terminal API is
+        // regional and cross-regional calls were decommissioned in 2026, so a
+        // terminal homed on another region's cloud refuses from the wrong host.
+        const hosts: Array<{ region: string; classic: string; device: string }> = cfg.live
+          ? [
+              { region: 'EU', classic: 'https://terminal-api-live.adyen.com', device: 'https://device-api-live.adyen.com' },
+              { region: 'US', classic: 'https://terminal-api-live-us.adyen.com', device: 'https://device-api-live-us.adyen.com' },
+              { region: 'AU', classic: 'https://terminal-api-live-au.adyen.com', device: 'https://device-api-live-au.adyen.com' },
+              { region: 'APSE', classic: 'https://terminal-api-live-apse.adyen.com', device: 'https://device-api-live-apse.adyen.com' },
+            ]
+          : [{ region: 'TEST', classic: terminalEndpoint(merchant, poiid, 'sync', cfg.region, cfg).replace(/\/sync$/, ''), device: 'https://device-api-test.adyen.com' }];
+        // Every DISTINCT live key this venue's secret set holds (the API key, the
+        // Platforms key, a separate management key if any): who is it, and does the
+        // classic cloud gate answer it differently? Read only.
+        const keyNames: Array<[string, string]> = [['apiKey', cfg.apiKey], ['bpKey', cfg.bpKey], ['managementKey', cfg.managementKey], ['lemKey', cfg.lemKey]];
+        const seen = new Set<string>();
+        out.byKey = await Promise.all(keyNames.filter(([, k]) => k && !seen.has(k) && seen.add(k)).map(async ([name, k]) => {
+          const [me, sync, asyncCall, connected] = await Promise.all([
+            call(cfg, 'GET', `${M}/me`, undefined, k),
+            call(cfg, 'POST', `${hosts[0].classic}/sync`, diagnosis(poiid), k, 25_000),
+            call(cfg, 'POST', `${hosts[0].classic}/async`, diagnosis(poiid), k, 25_000),
+            call(cfg, 'POST', `${hosts[0].classic}/connectedTerminals`, { merchantAccount: merchant }, k),
+          ]);
+          return { key: name, me: { status: me.status, username: (me.data as any)?.username, roles: ((me.data as any)?.roles ?? []).length, merchants: (me.data as any)?.associatedMerchantAccounts }, sync, async: asyncCall, connected };
+        }));
+        out.diagnosisByRegion = await Promise.all(hosts.map(async (h) => {
+          const alt = `${h.device}/v1/merchants/${encodeURIComponent(merchant)}/devices/${encodeURIComponent(poiid)}/sync`;
+          const [connected, d1, d2] = await Promise.all([
+            call(cfg, 'POST', `${h.classic}/connectedTerminals`, { merchantAccount: merchant }),
+            call(cfg, 'POST', `${h.classic}/sync`, diagnosis(poiid), undefined, 25_000),
+            call(cfg, 'POST', alt, diagnosis(poiid), undefined, 25_000),
+          ]);
+          return { region: h.region, connected, classic: d1, deviceApi: d2 };
+        }));
+      }
+      return out;
+    };
+
+    const liveCfg = adyenConfig(target);
+    const otherEnv = liveCfg.env === 'live' ? 'test' : 'live';
+    const otherCfg = adyenConfig(otherEnv, liveCfg.region);
+    const otherStash = stash[otherEnv] ?? {};
+    const results = await Promise.all([
+      probe('venue', liveCfg, (maa as any)?.merchant_account ?? null, (maa as any)?.store_id ?? null),
+      probe(`other (${otherEnv})`, otherCfg, otherStash.merchant_account ?? otherCfg.merchantAccount ?? null, otherStash.store_id ?? null),
+    ]);
+    return json({ ok: true, poiid, opsLocationId: opsLocId, platformLocationId: platformLocId, row: { environment: (maa as any)?.environment, region: (maa as any)?.region, merchant_account: (maa as any)?.merchant_account, store_id: (maa as any)?.store_id }, probes: results });
+  }
+
   // ── sweep_unsent (9 Sep 2026): re-kick STRANDED cloud jobs ────────────────
   // The backstop for the incident class where an Adyen job is minted in
   // charging_unsent and nobody ever sends 'start' (stale till bundle, till
@@ -914,8 +1065,25 @@ Deno.serve(async (req) => {
 
     // CLOUD TRANSPORT: one long sync call carries the whole cardholder interaction.
     let res;
+    let hostUsed = terminalEndpoint(maa.merchant_account, poiid, 'sync', cfg.region, cfg);
     try {
-      res = await adyenFetch('POST', terminalEndpoint(maa.merchant_account, poiid, 'sync', cfg.region, cfg), nexo, { cfg, timeoutMs: 165_000 });
+      res = await adyenFetch('POST', hostUsed, nexo, { cfg, timeoutMs: 165_000 });
+      // 9 Sep 2026, first live reader: the classic terminal-api-live host answered
+      // 403 "010 Not allowed" for a boarded reader on a fully permitted key. Adyen
+      // runs two cloud terminal host families (classic terminal-api and the newer
+      // device-api); which one a live account has enabled is not visible to us.
+      // On that exact refusal try the other family once, same request, same
+      // ServiceID, so the outcome is the same to the till whichever host works.
+      const notAllowed = !res.ok && res.status === 403 && /010|not allowed/i.test(JSON.stringify(res.data ?? ''));
+      if (notAllowed && cfg.live && /terminal-api/.test(hostUsed)) {
+        const region = String(cfg.region || 'UK').toUpperCase();
+        const deviceHost = region === 'UK' || region === 'EU' ? 'https://device-api-live.adyen.com' : `https://device-api-live-${region.toLowerCase()}.adyen.com`;
+        const alt = `${deviceHost}/v1/merchants/${encodeURIComponent(maa.merchant_account)}/devices/${encodeURIComponent(poiid)}/sync`;
+        console.log(`adyen-terminal-charge: ${hostUsed} said 010 Not allowed, retrying on ${deviceHost} (job ${job.id})`);
+        const second = await adyenFetch('POST', alt, nexo, { cfg, timeoutMs: 165_000 });
+        if (second.ok || second.status !== 403) { res = second; hostUsed = alt; }
+        else res = { ...second, data: { first_host: hostUsed, first: res.data, second_host: alt, second: second.data } };
+      }
     } catch (e) {
       // Outcome UNKNOWABLE (timeout/network) — row stays 'charging'; recovery owns it.
       console.error('adyen-terminal-charge: sync transport error', (e as Error).message);
@@ -924,10 +1092,14 @@ Deno.serve(async (req) => {
     if (!res.ok && res.status >= 400 && res.status < 500) {
       // Definitive rejection before any card interaction — nothing charged.
       // CAS-revert so the till can retry cleanly.
+      // 9 Sep 2026: write Adyen's refusal on the job. The first live reader sat
+      // unsent for an hour with nothing on the row; the 409 body only ever
+      // reached the till's screen.
+      const refusal = `adyen ${res.status}: ${JSON.stringify(res.data).slice(0, 300)}`;
       await opsAdmin.from('terminal_jobs')
-        .update({ status: 'charging_unsent', nexo_service_id: null, updated_at: new Date().toISOString() })
+        .update({ status: 'charging_unsent', nexo_service_id: null, last_error: refusal, updated_at: new Date().toISOString() })
         .eq('id', job.id).eq('status', 'charging');
-      return json({ ok: false, safe: true, error: `adyen ${res.status}: ${JSON.stringify(res.data).slice(0, 300)}` }, 409);
+      return json({ ok: false, safe: true, error: refusal }, 409);
     }
     if (!res.ok) {
       return json({ ok: false, error: 'terminal_unreachable — result pending recovery', code: 'UNKNOWN_OUTCOME' }, 502);
@@ -1112,7 +1284,7 @@ Deno.serve(async (req) => {
       // The terminal never saw the request — provably nothing charged. Revert so
       // the till can retry (the one branch where reverting in-flight is safe).
       await opsAdmin.from('terminal_jobs')
-        .update({ status: 'charging_unsent', nexo_service_id: null, updated_at: new Date().toISOString() })
+        .update({ status: 'charging_unsent', nexo_service_id: null, last_error: 'terminal never received the payment (Adyen: not found)', updated_at: new Date().toISOString() })
         .eq('id', job.id).in('status', ['charging', 'unknown']);
       return json({ ok: false, safe: true, error: 'terminal never received the payment — retry' }, 409);
     }

@@ -31,6 +31,29 @@ import { adyenLocalBridgeAvailable, runAdyenLocalPayment, abortAdyenLocalPayment
 import { resolveSelfHostedAdyenTerminal } from '../../lib/payments/localTerminalIdentity';
 import { dispatchTerminalJob, buildCheckKey, toMinor, forgetJob, getPosDeviceId, cancelTerminalJob, findPaxTerminal, pollTerminalJob, abortTerminalJob } from '../../lib/payments/terminalJobs';
 
+// 9 Sep 2026: ONE closed-check id per bill, held across a remount of this
+// component. The error screen's only exit is "Back to tender", and Confirm
+// mounts a fresh MCardFlow, so `chk-<now>` minted here would give the retry a
+// DIFFERENT closedCheckId for the SAME bill. dispatchTerminalJob's stale-bill
+// rule then (correctly, for the till) drops the remembered job handle and
+// mints a fresh job id, and a bill whose first job the customer had meanwhile
+// tapped for (its kick raced or was re-kicked by the sweep) gets a SECOND
+// prompt instead of ALREADY_PAID. Keyed by the bill itself (table + session
+// id, or the walk-in order id); no strong identity means no persistence.
+// Entries clear on a terminal outcome. In memory only, on purpose: a reload
+// loses the walk-in order too, and a sessionStorage entry could outlive the
+// bill and pin a later one to an old id.
+const _billCheckIds = new Map();
+function billIdentity(st, tableId, session) {
+  if (tableId) return session?.id ? `t:${tableId}:${session.id}` : null;
+  return st.walkInOrder?.id ? `w:${st.walkInOrder.id}` : null;
+}
+function closedCheckIdForBill(bill, prior) {
+  const id = prior || (bill && _billCheckIds.get(bill)) || `chk-${Date.now()}`;
+  if (bill) _billCheckIds.set(bill, id);
+  return id;
+}
+
 // Stage → what the person holding the terminal is actually being asked to do.
 // NOTHING here may say "hand it to the customer" or "sent to the card machine":
 // the machine IS this device, and telling staff to look at another screen while a
@@ -168,8 +191,11 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
     const tipMinor = Math.min(toMinor(payment?.tip), grandMinor);
     const billMinor = grandMinor - tipMinor;
     if (!(grandMinor > 0)) throw new Error('There is nothing for the card to take.');
-    const closedCheckId = localJobRef.current?.closedCheckId || `chk-${Date.now()}`;
+    const bill = billIdentity(st, tableId, session);
+    const closedCheckId = closedCheckIdForBill(bill, localJobRef.current?.closedCheckId);
     const checkKey = buildCheckKey({ locationId, tableId, sessionId: session?.id, leg: tableId ? undefined : closedCheckId });
+    // A terminal outcome: this bill's handle AND its id are spent.
+    const settleBill = () => { forgetJob(checkKey); if (bill) _billCheckIds.delete(bill); };
     const { job, kickError } = await dispatchTerminalJob({
       checkKey,
       targetTerminalId: terminal.id,
@@ -196,19 +222,25 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
       localBridge: false,
     });
     localJobRef.current = { jobId: job.id, checkKey, closedCheckId, cloud: true };
-    if (kickError) {
-      forgetJob(checkKey);
+    // 9 Sep 2026: a lost CAS ('in_flight') means someone else (the server's
+    // kick, another device) is already asking the reader for THIS job. Not a
+    // failure: fall through and poll it like any other kick. Any other kick
+    // error still surfaces, but the job handle is KEPT: the next attempt then
+    // re-attaches to this job (or gets ALREADY_PAID if the customer tapped in
+    // the meantime) instead of minting a fresh id and putting a second prompt
+    // up for the same bill.
+    if (kickError && kickError !== 'in_flight') {
       throw new Error(`Could not reach the card machine: ${kickError}`);
     }
     if (localCancelRequestedRef.current) {
       await cancelTerminalJob(job.id);
-      forgetJob(checkKey);
+      settleBill();
       return;
     }
     stage('waiting');
     const done = await pollTerminalJob(job.id, { onUpdate: (j) => stage(j?.status || 'waiting') });
     if (done?.status === 'approved') {
-      forgetJob(checkKey);
+      settleBill();
       setPhase('approved');
       onApproved?.({
         method: 'card',
@@ -228,11 +260,11 @@ export default function MCardFlow({ payment, onCancel, onApproved }) {
       );
     }
     if (done?.status === 'cancelled') {
-      forgetJob(checkKey);
+      settleBill();
       onCancel?.();
       return;
     }
-    forgetJob(checkKey);
+    settleBill();
     throw new Error(done?.decline_reason || done?.last_error || 'The card was declined.');
   };
 

@@ -202,7 +202,10 @@ Deno.serve(async (req) => {
     const FIELDS = [
       'location_id', 'region', 'environment', 'merchant_account', 'store_id', 'account_holder_id',
       'balance_account_id', 'legal_entity_id', 'split_profile_id', 'transfer_instrument_id', 'business_line_id',
-      'receive_payments_ok', 'payouts_ok', 'verification_status', 'updated_at',
+      // payout_sweep_id (9 Sep 2026): the daily push sweep, PAID OUT; the list
+      // chip reads it with payouts_ok (the capability). Present only once
+      // 20260909b_PLATFORM_adyen_payout_sweep_id.sql has run (select('*')).
+      'receive_payments_ok', 'payouts_ok', 'payout_sweep_id', 'verification_status', 'updated_at',
     ];
     // .in() serialises the ids into the query string (about 40 bytes each):
     // 500 in one GET is about 20 KB, past the request line limit of the
