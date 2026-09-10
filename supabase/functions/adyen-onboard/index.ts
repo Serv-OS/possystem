@@ -55,8 +55,8 @@ import {
 // The split logic, the sweep matching and the two writes are SHARED with
 // adyen-terminal-admin's go live flow (step 5, Payouts and commission), so
 // the two doors write the same profile shape and the same sweep (9 Sep 2026).
-import { findPushSweep, buildTieredProfile, tieredCommissionRules } from '../_shared/adyenLink.ts';
-import { createSplitOnStore, ensurePushSweep } from '../_shared/adyenPayouts.ts';
+import { findPushSweep } from '../_shared/adyenLink.ts';
+import { ensurePushSweep } from '../_shared/adyenPayouts.ts';
 
 // THE PAYOUT SWEEP ON THE ROW (9 Sep 2026, shared meaning with
 // adyen-terminal-admin): payouts_ok stays the CAPABILITY (Adyen allows
@@ -701,66 +701,13 @@ Deno.serve(async (req) => {
     //     card_not_present (channel 'booking') — a second documented
     //     divergence; revisit when ContAuth volume matters.
     // Refuses missing_prerequisite listing exactly which tiers lack rates.
+    // RETIRED (10 Sep 2026): nothing in the portal calls this, and it wrote the
+    // profile without set_split's safety checks (the balance account must be
+    // the venue's own holder's, the store must sit on the venue's merchant).
+    // The go live flow's step 5 (adyen-terminal-admin set_split) is the only
+    // way the venue's rates reach Adyen.
     if (action === 'configure_splits') {
-      const missing: string[] = [];
-      if (!maa?.store_id) missing.push('store — register the venue store first (Card terminals → ensure store)');
-      if (!maa?.balance_account_id) missing.push('balance account — run Start onboarding first');
-      if (!merchant) missing.push(`merchant account (${adyenSecretName(cfg.env, 'merchantAccount', cfg.region)})`);
-      const { cards } = await effectiveRates(maa);
-      const lacking = tiersLackingRates(cards);
-      if (lacking.length) {
-        missing.push(`processing rates for: ${lacking.map(tierLabel).join('; ')} — set every tier in the Processing rate editor first (one commission rule is written per tier)`);
-      }
-      if (missing.length) return json({ ok: false, kind: 'missing_prerequisite', message: `Not ready to configure splits. Missing: ${missing.join('; ')}.`, missing, lacking_tiers: lacking }, 400);
-
-      const currency = String(loc.currency || 'GBP').toUpperCase();
-      // ONE RULE PER TIER, built by the SHARED builder (_shared/adyenLink.ts
-      // tieredCommissionRules and buildTieredProfile, the same the go live
-      // flow's set_split writes): amex per interaction so it always outranks
-      // the channel rules, then online, keyed, and the in person catch all.
-      // The split logic is the shared shape too: our commission to the liable
-      // account, the platform absorbs Adyen's fees (the venue pays the all in
-      // tier rate), the rest to the venue, chargebacks against the venue,
-      // refunds unwound in the same ratio.
-      const tiers = Object.fromEntries((RATE_TIERS as readonly string[]).map((t) => [t, { percent: cards[t].percent, fixedPence: cards[t].fixed_pence }]));
-      const built = tieredCommissionRules(currency, tiers);
-      if (built.lacking.length) {
-        return json({ ok: false, kind: 'missing_prerequisite', message: `Not ready to configure splits. Missing: processing rates for ${built.lacking.map(tierLabel).join('; ')}.`, missing: built.lacking, lacking_tiers: built.lacking }, 400);
-      }
-      const profile = buildTieredProfile({ description: `ServOS ${loc.name} tiered rates`, currency, tiers })!;
-
-      // The create and the store PATCH are the shared calls
-      // (_shared/adyenPayouts.ts createSplitOnStore), the same ones the go
-      // live flow's set_split runs. The profile the store carried before is
-      // never deleted (it may be on other stores); a refused PATCH deletes
-      // the one just made.
-      const split = await createSplitOnStore({ mgmt, bcl }, {
-        merchant, storeId: maa.store_id, balanceAccountId: maa.balance_account_id, profile, previousProfileId: maa.split_profile_id ?? null,
-      });
-      logStep('split_profile', loc.id, { httpStatus: split.status, stage: split.stage, request: profile, response: split.created ?? null });
-      if (split.stage === 'create') { const c = classify({ ok: false, status: split.status, data: split.created }); return json({ ok: false, kind: c.kind, message: c.message }, 502); }
-      const splitConfigurationId = split.splitConfigurationId as string;
-      logStep('split_store_patch', loc.id, { httpStatus: split.status, splitConfigurationId, response: split.patched ?? null, orphanDeleted: split.orphanDeleted });
-      if (!split.ok) { const c = classify({ ok: false, status: split.status, data: split.patched }); return json({ ok: false, kind: c.kind, message: `Split profile ${splitConfigurationId} created but the store could not be pointed at it: ${c.message}${split.orphanDeleted ? ' The new profile was removed again.' : ''}`, split_profile_id: splitConfigurationId }, 502); }
-
-      const oldProfile = maa.split_profile_id;
-      await stamp(loc.id, { split_profile_id: splitConfigurationId });
-      if (oldProfile && oldProfile !== splitConfigurationId) logStep('split_profile_previous_kept', loc.id, { oldProfile, note: 'left in place: a profile can be on other stores' });
-
-      const tierSummary = (RATE_TIERS as readonly string[]).map((t) =>
-        `${tierLabel(t)}: ${Number(cards[t].percent ?? 0)}% + ${Math.round(Number(cards[t].fixed_pence ?? 0))}p`);
-      return json({
-        ok: true,
-        split_profile_id: splitConfigurationId,
-        rate_card: cards,
-        tier_summary: tierSummary,
-        applied: { rules: profile.rules.length, currency, store_id: maa.store_id, balance_account_id: maa.balance_account_id },
-        warning: warning(),
-        notes: [
-          'Business cards on Visa/Mastercard cannot be keyed at Adyen (no commercial fundingSource) — they ride their channel rule; the internal ledger still reports them under the Amex & business tier.',
-          'Stored-card (ContAuth) payments ride the card-present catch-all rule.',
-        ],
-      });
+      return json({ ok: false, kind: 'gone', message: 'Rates are applied from step 5 of the go live flow.' }, 410);
     }
 
     // ── setup_sweep: daily push of the full available balance to the bank ────

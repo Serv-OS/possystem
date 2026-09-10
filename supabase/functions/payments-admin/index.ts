@@ -41,6 +41,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { createSubAccount, getAccount, createAccountLink, authorizeAccount, listBalanceTransactions, listPlatformFees, ryftConfigured } from '../_shared/ryft.ts';
 import { RATE_TIERS, resolveAdyenRateCard, sanitizeRateCard, upsertAdyenAccountRow } from '../_shared/adyen.ts';
+import { ADYEN_PLATFORM_SETTINGS_TABLE, isUnknownRelationError, platformSettingsMissingMessage, rateCardProblems } from '../_shared/adyenLink.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -93,7 +94,10 @@ function saasMonthlyFee(plan: string, extraDevices: number, hubrise: boolean): n
   return Math.round((base + extraDevices * SAAS_CATALOG.extra_device_monthly + (hubrise ? SAAS_CATALOG.hubrise_monthly : 0)) * 100) / 100;
 }
 
-const SAAS_MIGRATION_NOTE = 'The extra devices and HubRise columns are not on the subscriptions table yet. Apply supabase/migrations/20260822_saas_plans.sql on the Ops database, then save again.';
+// Plain words on the screen (10 Sep 2026); the file name rides apart as
+// migration_file, shown on its own grey row, never inside the sentence.
+const SAAS_MIGRATION_NOTE = 'Plans cannot be saved yet. One database update is waiting on ServOS.';
+const SAAS_MIGRATION_FILE = '20260822_saas_plans.sql';
 
 // What the device count actually is — shown to the operator, so say it plainly.
 const DEVICE_COUNT_NOTE = 'Paired devices on record for the venue in the devices registry (POS, kiosk, KDS and handheld rows not marked unpaired), whether or not currently online.';
@@ -256,6 +260,34 @@ Deno.serve(async (req) => {
     return json({ ok: true, accounts, venue_codes, notes });
   }
 
+  // ── platform_settings: what we know about OUR Adyen accounts (10 Sep 2026) ──
+  //    Read only. One row per environment and region from
+  //    adyen_platform_settings: the balance platform id the venue lookup
+  //    pages (learned from the first read, or typed once with
+  //    adyen-terminal-admin set_balance_platform) and how many merchant
+  //    account codes were seen. The Processing page's platform defaults panel
+  //    shows the balance platform line per environment and region so the
+  //    owner can see what is known. Until the table's migration runs the
+  //    answer is { rows: [], available: false } with a warning naming it.
+  //    Handled BEFORE the location_id guard: it is platform wide.
+  if (action === 'platform_settings') {
+    const { data, error } = await platformAdmin.from(ADYEN_PLATFORM_SETTINGS_TABLE)
+      .select('environment, region, balance_platform_id, merchant_accounts, updated_at')
+      .order('environment', { ascending: false }).order('region');
+    if (error) {
+      if (isUnknownRelationError(error, ADYEN_PLATFORM_SETTINGS_TABLE)) return json({ ok: true, rows: [], available: false, warning: platformSettingsMissingMessage() });
+      return json({ error: `platform settings read failed: ${error.message}` }, 500);
+    }
+    const rows = ((data ?? []) as Array<Record<string, unknown>>).map((r) => ({
+      environment: String(r.environment ?? ''),
+      region: String(r.region ?? ''),
+      balance_platform_id: String(r.balance_platform_id ?? '').trim() || null,
+      merchant_accounts: Array.isArray(r.merchant_accounts) ? r.merchant_accounts.length : 0,
+      updated_at: r.updated_at ?? null,
+    }));
+    return json({ ok: true, rows, available: true, warning: null });
+  }
+
   // ── adyen_pricing v2: get/set the ServOS Payments TIERED RATE CARD ──────
   //    Four tiers (v5.7.3, the model every competitor uses):
   //      card_present      in-person credit AND debit — one fee
@@ -285,9 +317,53 @@ Deno.serve(async (req) => {
     const numOrNull = (v: unknown) => (v === '' || v === null || v === undefined ? null : Number(v));
     const intOrNull = (v: unknown) => (v === '' || v === null || v === undefined ? null : Math.round(Number(v)));
     const isMissingColumn = (msg: unknown) => /does not exist|42703|PGRST204|Could not find the/i.test(String(msg ?? ''));
-    const migrationHint = 'rate-card columns missing — hand-apply migration 20260821b_adyen_rate_card.sql first';
+    // Plain words (10 Sep 2026): the file name rides apart as migration_file.
+    const migrationHint = 'Rates cannot be saved yet. One database update is waiting on ServOS.';
+    const migrationFile = '20260821b_adyen_rate_card.sql';
+
+    // THE CARD IS CHECKED BEFORE IT IS KEPT (10 Sep 2026). sanitizeRateCard
+    // used to turn 140 typed for 1.40 into a blank, which then resolved to the
+    // platform default and went to Adyen under "platform default", while the
+    // screen said saved. Now:
+    //   a value that can never be right   400, one sentence naming the row
+    //   above the usual limit (14 for 1.4) 409 over_limit, unless the admin
+    //                                      sends over_limit: true (a second Save)
+    //   expected_rate_card (the card the editor opened) differs from what is
+    //   stored                             409 changed: a stale editor never
+    //                                      saves an old card over a newer one
+    const sameCard = (a: unknown, b: unknown): boolean => {
+      const x = sanitizeRateCard(a) ?? {};
+      const y = sanitizeRateCard(b) ?? {};
+      return (RATE_TIERS as readonly string[]).every((t) => {
+        const tx = (x as Record<string, { percent: number | null; fixed_pence: number | null }>)[t] ?? { percent: null, fixed_pence: null };
+        const ty = (y as Record<string, { percent: number | null; fixed_pence: number | null }>)[t] ?? { percent: null, fixed_pence: null };
+        return (tx.percent ?? null) === (ty.percent ?? null) && (tx.fixed_pence ?? null) === (ty.fixed_pence ?? null);
+      });
+    };
+    const refuseCard = (): Response | null => {
+      if (!('rate_card' in body)) return null;
+      const problems = rateCardProblems(body.rate_card, { verb: 'saved' });
+      if (problems.errors.length) {
+        return json({ error: problems.errors[0].text, invalid: true, lines: problems.errors.map((e) => e.text) }, 400);
+      }
+      if (problems.overLimit.length && body.over_limit !== true) {
+        return json({ error: problems.overLimit[0].text, over_limit: true, lines: problems.overLimit.map((e) => e.text) }, 409);
+      }
+      return null;
+    };
+    const changedAnswer = () => json({ error: 'The rates changed since you opened them. Open them again.', changed: true }, 409);
 
     if (body.set === true && !location_id) {
+      const refused = refuseCard();
+      if (refused) return refused;
+      if ('rate_card' in body && 'expected_rate_card' in body) {
+        const { data: nowPs, error: nowErr } = await platformAdmin.from('platform_settings').select('default_adyen_rate_card').eq('id', true).maybeSingle();
+        if (nowErr) {
+          if (isMissingColumn(nowErr.message)) return json({ error: migrationHint, migration_file: migrationFile }, 500);
+          return json({ error: 'The rates could not be checked before saving.', detail: nowErr.message }, 500);
+        }
+        if (!sameCard((nowPs as Record<string, unknown> | null)?.default_adyen_rate_card, body.expected_rate_card)) return changedAnswer();
+      }
       const patch: Record<string, unknown> = {
         updated_at: new Date().toISOString(),
         updated_by_user_id: caller.id,
@@ -297,7 +373,7 @@ Deno.serve(async (req) => {
       if ('rate_card' in body) patch.default_adyen_rate_card = sanitizeRateCard(body.rate_card);
       const { error } = await platformAdmin.from('platform_settings').update(patch).eq('id', true);
       if (error) {
-        if ('rate_card' in body && isMissingColumn(error.message)) return json({ error: migrationHint }, 500);
+        if ('rate_card' in body && isMissingColumn(error.message)) return json({ error: migrationHint, migration_file: migrationFile }, 500);
         return json({ error: `defaults update failed: ${error.message}` }, 500);
       }
       return json({ success: true });
@@ -306,6 +382,16 @@ Deno.serve(async (req) => {
     if (body.set === true) {
       const aLoc = await resolveLocation(location_id);
       if (!aLoc) return json({ error: 'location not found in platform DB' }, 404);
+      const refused = refuseCard();
+      if (refused) return refused;
+      if ('rate_card' in body && 'expected_rate_card' in body) {
+        const { data: nowAcct, error: nowErr } = await platformAdmin.from('merchant_adyen_accounts').select('rate_card').eq('location_id', aLoc.id).maybeSingle();
+        if (nowErr) {
+          if (isMissingColumn(nowErr.message)) return json({ error: migrationHint, migration_file: migrationFile }, 500);
+          return json({ error: 'The rates could not be checked before saving.', detail: nowErr.message }, 500);
+        }
+        if (!sameCard((nowAcct as Record<string, unknown> | null)?.rate_card, body.expected_rate_card)) return changedAnswer();
+      }
       const patch: Record<string, unknown> = {
         location_id: aLoc.id,
         updated_at: new Date().toISOString(),
@@ -325,7 +411,7 @@ Deno.serve(async (req) => {
       catch (e) { return json({ error: `pricing update failed: ${(e as Error).message}` }, 500); }
       const { error, warning } = write;
       if (error) {
-        if ('rate_card' in body && isMissingColumn(error.message)) return json({ error: migrationHint }, 500);
+        if ('rate_card' in body && isMissingColumn(error.message)) return json({ error: migrationHint, migration_file: migrationFile }, 500);
         return json({ error: `pricing update failed: ${error.message}` }, 500);
       }
       return json({ success: true, warning: warning ?? null, region: write.region });
@@ -419,7 +505,7 @@ Deno.serve(async (req) => {
       const { data: updated, error: upErr } = await opsAdmin.from('subscriptions')
         .update(patch).eq('location_id', location_id).select('id');
       if (upErr) {
-        if (isMissingColumn(upErr.message)) return json({ error: SAAS_MIGRATION_NOTE }, 500);
+        if (isMissingColumn(upErr.message)) return json({ error: SAAS_MIGRATION_NOTE, migration_file: SAAS_MIGRATION_FILE }, 500);
         return json({ error: `subscription update failed: ${upErr.message}` }, 500);
       }
       if (!updated || updated.length === 0) {
@@ -436,7 +522,7 @@ Deno.serve(async (req) => {
           ...patch,
         });
         if (insErr) {
-          if (isMissingColumn(insErr.message)) return json({ error: SAAS_MIGRATION_NOTE }, 500);
+          if (isMissingColumn(insErr.message)) return json({ error: SAAS_MIGRATION_NOTE, migration_file: SAAS_MIGRATION_FILE }, 500);
           // Two concurrent first-saves race the read-then-insert; the unique
           // index on location_id (20260822) turns the loser into 23505 —
           // finish it as the update it should have been.
@@ -560,7 +646,7 @@ Deno.serve(async (req) => {
     });
     venues.sort((a, b) => String(a.name).localeCompare(String(b.name)));
 
-    return json({ ok: true, typed, catalog: SAAS_CATALOG, device_count_note: DEVICE_COUNT_NOTE, migration_note: typed ? null : SAAS_MIGRATION_NOTE, volume_capped: volumeCapped, venues });
+    return json({ ok: true, typed, catalog: SAAS_CATALOG, device_count_note: DEVICE_COUNT_NOTE, migration_note: typed ? null : SAAS_MIGRATION_NOTE, migration_file: typed ? null : SAAS_MIGRATION_FILE, volume_capped: volumeCapped, venues });
   }
 
   // ── revenue: the internal platform-revenue report (admin Revenue section) ──

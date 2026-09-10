@@ -979,7 +979,10 @@ export function commissionFromRates(percent, fixedPence) {
 // against the venue, refunds unwound in the same ratio.
 export function splitLogicFor(commission) {
   return {
-    commission: isObj(commission) ? commission : {},
+    // Adyen's SplitConfigurationLogic marks commission REQUIRED (Management
+    // API v3). tieredCommissionRules always passes a block, an explicit zero
+    // for a tier priced at 0% and 0p; a null here leaves the key out.
+    ...(isObj(commission) ? { commission } : {}),
     paymentFee: 'deductFromLiableAccount',
     remainder: 'addToOneBalanceAccount',
     tip: 'addToOneBalanceAccount',
@@ -1027,9 +1030,12 @@ export function buildCommissionProfile({ description, currency, percent, fixedPe
 // 'ANY + Ecommerce'), so the amex tier is written per interaction.
 //   tiers   { card_present: { percent, fixedPence }, card_not_present, amex, keyed }
 //           (fixed_pence is accepted too, the rate card's own spelling)
-// Answers { rules, lacking }: lacking names the tiers with no commission at
-// all (a rule with an empty commission is refused by Adyen, and a 0% rule is
-// never wanted), and rules is empty when any tier lacks one.
+// Answers { rules, lacking }: lacking names the tiers with NO PRICE at all
+// (percent and pence both empty), and rules is empty when any tier lacks
+// one. A tier priced 0% and 0p is a valid price (10 Sep 2026): its rule
+// carries an EXPLICIT zero commission ({ variablePercentage: 0 }), because
+// Adyen's contract marks commission required, so Adyen takes nothing on it.
+// A negative number is no price at all (rateNumber).
 export const COMMISSION_TIERS = Object.freeze(['card_present', 'card_not_present', 'amex', 'keyed']);
 const TIER_RULES = Object.freeze([
   ['amex', 'amex', 'Ecommerce'],
@@ -1043,9 +1049,9 @@ export function tieredCommissionRules(currency, tiers) {
   const t = isObj(tiers) ? tiers : {};
   const commissionOf = (tier) => {
     const c = isObj(t[tier]) ? t[tier] : {};
-    return commissionFromRates(c.percent, c.fixedPence ?? c.fixed_pence);
+    return commissionFromRates(c.percent, c.fixedPence ?? c.fixed_pence) ?? { variablePercentage: 0 };
   };
-  const lacking = COMMISSION_TIERS.filter((tier) => !commissionOf(tier));
+  const lacking = unpricedTiers(t);
   if (lacking.length) return { rules: [], lacking };
   return {
     rules: TIER_RULES.map(([tier, paymentMethod, shopperInteraction]) => splitRule({ currency, paymentMethod, shopperInteraction, commission: commissionOf(tier) })),
@@ -1054,8 +1060,7 @@ export function tieredCommissionRules(currency, tiers) {
 }
 
 // The profile the go live flow and configure_splits both write: one rule per
-// tier. Null when any tier lacks a commission (tieredCommissionRules says
-// which).
+// tier. Null when any tier has no price (tieredCommissionRules says which).
 export function buildTieredProfile({ description, currency, tiers } = {}) {
   const built = tieredCommissionRules(currency, tiers);
   if (!built.rules.length) return null;
@@ -1139,6 +1144,275 @@ export function commissionLine(percent, fixedPence, currency) {
   const minor = str(currency).toUpperCase() === 'USD' ? 'c' : 'p';
   return [hasPct ? `${plainNumber(pct)}%` : '', hasFix ? `${Math.round(fix)}${minor}` : ''].filter(Boolean).join(' plus ');
 }
+
+// ── CARD RATES (10 Sep 2026, OWNER RULE) ─────────────────────────────────────
+// "we set the rate that customers get charged for the different card types,
+// out of the money the adyen charge whats left is ours". The venue pays a
+// RATE CARD with four payment types (in person, online, Amex, keyed), and on
+// Adyen that is ONE RULE PER TIER on the venue's store with the tier's rate as
+// the rule's commission. There is no flat rate and no separate platform fee:
+// Adyen and FranPOS take their costs out of the rate, the rest is ServOS
+// margin. The word commission stays off every screen; these helpers give the
+// screen and the server the same words and the same comparison.
+//   tiersFromResolved  resolveAdyenRateCard's answer as the screen reads it
+//   unpricedTiers      the tiers with no price at all (both fields empty)
+//   profileTiers       the profile on the store, rule by rule, as four tiers
+//   ratesOnAdyen       what Adyen holds against what the venue pays
+//   rateCardLine       the four rates in one line for a collapsed step
+
+// Plain words for each tier. Amex keeps its capital everywhere.
+export const RATE_TIER_LABELS = Object.freeze({ card_present: 'In person', card_not_present: 'Online', amex: 'Amex', keyed: 'Keyed' });
+export function rateTierLabel(tier, { lower: lc = false } = {}) {
+  const label = RATE_TIER_LABELS[str(tier)] || str(tier);
+  return lc && label !== 'Amex' ? label.charAt(0).toLowerCase() + label.slice(1) : label;
+}
+
+// A number, or null for empty: '' and null are "not set", 0 is a price. A
+// NEGATIVE number is no price either (a hand edited card or an old column):
+// Adyen cannot take it, so the tier is named as unpriced and never applied.
+const rateNumber = (v) => {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+};
+const tierOf = (tiers, tier) => (isObj(tiers) && isObj(tiers[tier]) ? tiers[tier] : {});
+const tierPercent = (c) => rateNumber(c.percent);
+const tierFixed = (c) => {
+  const n = rateNumber(c.fixedPence ?? c.fixed_pence);
+  return n === null ? null : Math.round(n);
+};
+
+// One tier's rate in plain words: "1.4% + 5p", "1.4%", "5p"; "0%" for a tier
+// priced at nothing; null when it has no price at all. US pence read as cents.
+export function tierRateLine(percent, fixedPence, currency) {
+  const pct = rateNumber(percent);
+  const fix = rateNumber(fixedPence);
+  if (pct === null && fix === null) return null;
+  const minor = str(currency).toUpperCase() === 'USD' ? 'c' : 'p';
+  const parts = [];
+  if (pct !== null && pct > 0) parts.push(`${plainNumber(pct)}%`);
+  if (fix !== null && fix > 0) parts.push(`${Math.round(fix)}${minor}`);
+  return parts.length ? parts.join(' + ') : '0%';
+}
+
+// The four rates in one line, for a collapsed step or a log line:
+// "In person 1.4% + 5p, online 1.9% + 10p, Amex 2.5% + 10p, keyed 2.9% + 15p".
+// A tier with no price reads "not set".
+export function rateCardLine(tiers, currency) {
+  return COMMISSION_TIERS.map((tier, i) => {
+    const c = tierOf(tiers, tier);
+    return `${rateTierLabel(tier, { lower: i > 0 })} ${tierRateLine(tierPercent(c), tierFixed(c), currency) || 'not set'}`;
+  }).join(', ');
+}
+
+// resolveAdyenRateCard's answer ({ tier: { percent, fixed_pence, source } })
+// as the screen reads it: { tier: { percent, fixedPence, source } } with the
+// source as one grey word, "venue" or "platform default" (the legacy flat
+// columns count as whichever side they sit on), or null for no price.
+export function tiersFromResolved(cards) {
+  const out = {};
+  for (const tier of COMMISSION_TIERS) {
+    const c = tierOf(cards, tier);
+    const src = lower(c.source);
+    out[tier] = {
+      percent: tierPercent(c),
+      fixedPence: tierFixed(c),
+      source: src === 'venue' || src === 'legacy_venue' ? 'venue' : src === 'platform' || src === 'legacy_platform' ? 'platform default' : null,
+    };
+  }
+  return out;
+}
+
+// The tiers with no price at all: percent AND pence empty. 0 is a price.
+export function unpricedTiers(tiers) {
+  return COMMISSION_TIERS.filter((tier) => {
+    const c = tierOf(tiers, tier);
+    return tierPercent(c) === null && tierFixed(c) === null;
+  });
+}
+
+// Tier names for a sentence: "online, Amex and keyed".
+export function tierListWords(tiers) {
+  const words = (Array.isArray(tiers) ? tiers : []).map((t) => rateTierLabel(t, { lower: true })).filter(Boolean);
+  if (words.length <= 1) return words.join('');
+  return `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}`;
+}
+
+// The row names every rate table and editor uses (the Card rates table in
+// step 5, RateCardRows), so a sentence naming tiers reads the SAME words as
+// the rows under it: "No rate is set yet for: Online, Keyed in."
+export const RATE_ROW_LABELS = Object.freeze({ card_present: 'In person', card_not_present: 'Online', amex: 'Amex and business cards', keyed: 'Keyed in' });
+export function tierRowList(tiers) {
+  return (Array.isArray(tiers) ? tiers : []).map((t) => RATE_ROW_LABELS[str(t)] || str(t)).filter(Boolean).join(', ');
+}
+
+// ── WHAT IS WRONG WITH A RATE CARD (10 Sep 2026) ────────────────────────────
+// Checked before the card is saved (payments-admin adyen_pricing) and before
+// it is applied on Adyen (set_split), and live in both editors:
+//   errors     a value that can never be right: not a number, outside 0 to 100
+//              percent or 0 to 10000 pence, a percent finer than a basis
+//              point (Adyen holds whole basis points, so 1.255% would drift
+//              from the ledger), or pence that are not whole
+//   overLimit  a value above the usual limit (RATE_PERCENT_LIMIT percent or
+//              RATE_PENCE_LIMIT pence): 14 typed for 1.4 takes 14% of every
+//              sale. It is refused unless the admin confirms (over_limit)
+// Each entry is { tier, text } with one plain sentence naming the row. `verb`
+// ends the over limit sentence ("so it was not saved"); null ends it there.
+export const RATE_PERCENT_LIMIT = 5;
+export const RATE_PENCE_LIMIT = 50;
+export function rateCardProblems(card, { currency, verb = null } = {}) {
+  const c = isObj(card) ? card : {};
+  const errors = [];
+  const overLimit = [];
+  const empty = (v) => v === null || v === undefined || v === '';
+  for (const tier of COMMISSION_TIERS) {
+    const row = isObj(c[tier]) ? c[tier] : {};
+    const label = RATE_ROW_LABELS[tier];
+    const pRaw = row.percent;
+    const fRaw = row.fixedPence ?? row.fixed_pence;
+    let pct = null;
+    let fix = null;
+    if (!empty(pRaw)) {
+      const n = Number(pRaw);
+      if (!Number.isFinite(n)) errors.push({ tier, field: 'percent', text: `${label} rate must be a number.` });
+      else if (n < 0 || n > 100) errors.push({ tier, field: 'percent', text: `${label} rate must be between 0 and 100.` });
+      else if (Math.abs(n * 100 - Math.round(n * 100)) > 1e-6) errors.push({ tier, field: 'percent', text: `${label} rate can have at most two decimals.` });
+      else pct = n;
+    }
+    if (!empty(fRaw)) {
+      const n = Number(fRaw);
+      if (!Number.isFinite(n)) errors.push({ tier, field: 'fixed_pence', text: `${label} per payment must be a number.` });
+      else if (n < 0 || n > 10000) errors.push({ tier, field: 'fixed_pence', text: `${label} per payment must be between 0 and 10000.` });
+      else if (!Number.isInteger(n)) errors.push({ tier, field: 'fixed_pence', text: `${label} per payment must be a whole number.` });
+      else fix = n;
+    }
+    if ((pct !== null && pct > RATE_PERCENT_LIMIT) || (fix !== null && fix > RATE_PENCE_LIMIT)) {
+      const rate = tierRateLine(pct, fix, currency) || '';
+      overLimit.push({ tier, text: `${label} is ${rate}. That is above the usual limit${str(verb) ? `, so it was not ${str(verb)}` : ''}.` });
+    }
+  }
+  return { errors, overLimit };
+}
+
+// The profile on the store (GET /merchants/{m}/splitConfigurations/{id}) rule
+// by rule, back into the four tiers the way tieredCommissionRules wrote them:
+// paymentMethod amex is the Amex tier, shopperInteraction Ecommerce is online,
+// Moto is keyed, the catch all rule is in person. A rule with no commission
+// block is a tier priced at 0% and 0p. Null when the profile has no rules;
+// a tier with no rule is null inside the answer.
+export function profileTiers(profile) {
+  const rules = (Array.isArray(profile?.rules) ? profile.rules : []).filter(isObj);
+  if (!rules.length) return null;
+  const any = (v) => !str(v) || lower(v) === 'any';
+  const out = { card_present: null, card_not_present: null, amex: null, keyed: null };
+  let amexGeneral = false;
+  for (const r of rules) {
+    const pm = lower(r.paymentMethod);
+    const si = lower(r.shopperInteraction);
+    const tier = pm === 'amex' ? 'amex'
+      : any(pm) && si === 'ecommerce' ? 'card_not_present'
+      : any(pm) && si === 'moto' ? 'keyed'
+      : any(pm) && any(si) ? 'card_present'
+      : null;
+    if (!tier) continue;
+    const c = isObj(r.splitLogic) && isObj(r.splitLogic.commission) ? r.splitLogic.commission : {};
+    const bp = Number(c.variablePercentage);
+    const fix = Number(c.fixedAmount);
+    const rate = { percent: Number.isFinite(bp) ? bp / 100 : 0, fixedPence: Number.isFinite(fix) ? Math.round(fix) : 0 };
+    // Amex is written three times (per interaction); the ANY one is THE
+    // Amex rate, the others only exist so the most specific rule wins.
+    if (tier === 'amex') {
+      if (out.amex && (amexGeneral || !any(si))) continue;
+      amexGeneral = any(si);
+    } else if (out[tier]) continue;
+    out[tier] = rate;
+  }
+  return out;
+}
+
+// Do two rate cards say the same thing on every tier? An empty pence on one
+// side is 0 on the other (a rule with no fixedAmount reads back as 0), a
+// tier with no price on either side never matches, and percents compare in
+// basis points so 1.4 and 1.4000001 agree.
+export function tiersMatch(a, b) {
+  return COMMISSION_TIERS.every((tier) => {
+    const x = tierOf(a, tier);
+    const y = tierOf(b, tier);
+    const xp = tierPercent(x); const yp = tierPercent(y);
+    const xf = tierFixed(x); const yf = tierFixed(y);
+    if ((xp === null && xf === null) || (yp === null && yf === null)) return false;
+    return Math.round((xp ?? 0) * 100) === Math.round((yp ?? 0) * 100) && (xf ?? 0) === (yf ?? 0);
+  });
+}
+
+// THE WHOLE PROFILE, NOT JUST THE NUMBERS (10 Sep 2026). A profile that holds
+// the venue's four commission numbers can still route money differently: a
+// USD rule on a GBP venue matches no sale (everything books to the liable
+// account), paymentFee on the venue's account makes it pay Adyen's fees on
+// top, an extra amex Ecommerce or debit Ecommerce rule outranks the one read
+// back, or a remainder kept for the platform. So "matches" means the profile
+// holds EXACTLY the rules tieredCommissionRules would write for this venue:
+// the same conditions (currency, payment method, interaction, funding source,
+// card region and usage ANY or absent) and the same split logic on every key
+// we write, with no other fee type or additional commission on any rule.
+const SPLIT_LOGIC_KEYS = Object.freeze(['paymentFee', 'remainder', 'tip', 'surcharge', 'chargeback', 'chargebackCostAllocation', 'refund', 'refundCostAllocation']);
+const OTHER_SPLIT_KEYS = Object.freeze(['acquiringFees', 'adyenFees', 'adyenCommission', 'adyenMarkup', 'interchange', 'schemeFee', 'additionalCommission']);
+function splitRuleKey(r) {
+  const cond = (v) => (!str(v) || lower(v) === 'any' ? 'any' : lower(v));
+  return [str(r.currency).toUpperCase(), cond(r.paymentMethod), cond(r.shopperInteraction), cond(r.fundingSource), cond(r.cardRegion), cond(r.cardUsageType)].join('|');
+}
+function sameSplitLogic(a, b) {
+  const x = isObj(a) ? a : {};
+  const y = isObj(b) ? b : {};
+  const cx = isObj(x.commission) ? x.commission : {};
+  const cy = isObj(y.commission) ? y.commission : {};
+  const whole = (v) => { const n = Number(v); return Number.isFinite(n) ? Math.round(n) : 0; };
+  if (whole(cx.variablePercentage) !== whole(cy.variablePercentage) || whole(cx.fixedAmount) !== whole(cy.fixedAmount)) return false;
+  if (SPLIT_LOGIC_KEYS.some((k) => lower(x[k]) !== lower(y[k]))) return false;
+  const present = (v) => v !== undefined && v !== null && v !== '' && !(isObj(v) && !Object.keys(v).length);
+  return !OTHER_SPLIT_KEYS.some((k) => present(x[k]) !== present(y[k]));
+}
+export function profileMatchesRules(profile, expectedRules) {
+  const actual = (Array.isArray(profile?.rules) ? profile.rules : []).filter(isObj);
+  const expected = (Array.isArray(expectedRules) ? expectedRules : []).filter(isObj);
+  if (!expected.length || actual.length !== expected.length) return false;
+  const used = new Set();
+  return expected.every((e) => {
+    const key = splitRuleKey(e);
+    const i = actual.findIndex((a, j) => !used.has(j) && splitRuleKey(a) === key && sameSplitLogic(a.splitLogic, e.splitLogic));
+    if (i < 0) return false;
+    used.add(i);
+    return true;
+  });
+}
+
+// What Adyen holds against what the venue pays: the profile's tiers, whether
+// every tier has a rule (missing), whether the WHOLE profile is what we would
+// write for this venue in this currency (profileMatchesRules), and where the
+// catch all rule sends the rest of each sale. Null profile (not read, or no
+// rules) is { tiers: null, matches: false, missing: true }.
+export function ratesOnAdyen(profile, venueTiers, currency = 'GBP') {
+  const tiers = profileTiers(profile);
+  const pc = profileCommission(profile);
+  if (!tiers || !pc) return { tiers: null, matches: false, missing: true, remainder: null, rules: 0 };
+  const missing = COMMISSION_TIERS.some((t) => !tiers[t]);
+  const expected = tieredCommissionRules(str(currency) || 'GBP', venueTiers).rules;
+  const matches = !missing && tiersMatch(tiers, venueTiers) && profileMatchesRules(profile, expected);
+  return { tiers, matches, missing, remainder: pc.remainder, rules: pc.rules };
+}
+
+// The line for a found store AND a found business account that the venue row
+// does not name yet (link_all, 10 Sep 2026): one click saves every id.
+export const DETAILS_NOT_SAVED_DETAIL = 'Adyen holds the venue’s details, they are not saved on the venue yet.';
+
+// The business accounts could not be searched because the Adyen platform
+// name for this environment and region is not known yet (10 Sep 2026). Never
+// "no business account": nothing was searched. The step carries
+// set_balance_platform and the screen draws the one input on it.
+export const PLATFORM_STEP_DETAIL = 'ServOS cannot search Adyen for this venue until it knows the Adyen platform name.';
+// Two business accounts carry the venue code: the step carries pick_holder
+// and the screen draws the picker on it.
+export const HOLDER_AMBIGUOUS_DETAIL = 'More than one business account carries the code.';
 
 // Rows of GET /balanceAccounts/{id}/sweeps ({ sweeps: [...] }) or a bare array.
 export function sweepRows(response) {
@@ -1289,8 +1563,9 @@ const PAYOUT_WAIT_ACTIONS = Object.freeze(['check_payouts', 'open_adyen']);
 //                     the merchant account the secret names, and whether the
 //                     VENUE ROW names it (a found store is not a linked one)
 //   go_live           real cards on or off
-//   payouts           TWO parts (`parts`): split, the commission rule on the
-//                     store that sends the rest of every sale to the venue;
+//   payouts           TWO parts (`parts`): split, the venue's card rates on
+//                     the store, one rule per payment type, the rest of
+//                     every sale to the venue (Card rates, 10 Sep 2026);
 //                     payout, the bank account, Adyen's approval and the
 //                     daily sweep. The step's own state, detail and action
 //                     are the first part that needs doing
@@ -1316,12 +1591,19 @@ const PAYOUT_WAIT_ACTIONS = Object.freeze(['check_payouts', 'open_adyen']);
 // list was refused (401 or 403 on the Management key), ambiguous when more
 // than one store carries the code. Either way "nothing carries the code" is
 // not something the read established, so step 1 must not say it (rule 6).
-// `state.commission` is { percent, fixedPence, currency, tiers, profilePercent,
-// profileFixedPence, profileRead, profileRules, profileRemainder,
-// liableBalanceAccountId }: the venue's rate as the LEDGER resolves it (the
-// in person tier of resolveAdyenRateCard, tiers = how many distinct rates the
-// card holds) and what the profile on the store actually says, when it could
-// be read (profileRemainder is where its catch all rule sends the rest).
+// `state.holderRead` is { needsPlatform, ambiguous, capped } (10 Sep 2026),
+// what the BUSINESS ACCOUNT search came back with when no holder was
+// resolved: needsPlatform when the listing could not run because the Adyen
+// platform name is not known (set_balance_platform), ambiguous when more than
+// one holder carries the code (pick_holder), capped when the listing ran out
+// of pages. None of them may read as "no business account".
+// `state.rates` is { currency, tiers, priced, unpriced, onAdyen, liableBalanceAccountId, readFailed }
+// (10 Sep 2026): the venue's RATE CARD as the ledger resolves it, four tiers
+// each { percent, fixedPence, source } (tiersFromResolved), and what the
+// profile on the store actually says when it could be read: onAdyen is
+// { profileId, read, tiers, matches, missing, remainder, rules } (ratesOnAdyen).
+// The old `state.commission` is read as an alias when it carries the same
+// shape, and ignored otherwise.
 // `state.payouts` is { read, sweep }: read is true when the sweeps of the
 // venue balance account were listed, sweep is the push to bank sweep
 // (sweepSummary) or null.
@@ -1339,7 +1621,7 @@ export function buildGoliveSteps(state = {}, opts = {}) {
   const readers = (Array.isArray(s.readers) ? s.readers : []).filter(isObj);
   const origins = isObj(s.origins) ? s.origins : {};
   const applePay = isObj(s.applePay) ? s.applePay : {};
-  const commission = isObj(s.commission) ? s.commission : {};
+  const rates = isObj(s.rates) ? s.rates : (isObj(s.commission) && isObj(s.commission.tiers) ? s.commission : {});
   const payouts = isObj(s.payouts) ? s.payouts : {};
   const code = str(venue.code) || null;
   const env = lower(venue.environment) === 'live' ? 'live' : 'test';
@@ -1368,6 +1650,12 @@ export function buildGoliveSteps(state = {}, opts = {}) {
   const bpRefused = bpKey.refused === true;
   const bpSecret = str(bpKey.secret) || null;
   const storeRead = isObj(s.storeRead) ? s.storeRead : {};
+  const holderRead = isObj(s.holderRead) ? s.holderRead : {};
+  // BOTH FOUND, NEITHER SAVED (10 Sep 2026, zero paste onboarding): the read
+  // found the store and the business account and the row names neither, so
+  // steps 2 and 3 collapse into ONE click (link_all, adyen_link with every id
+  // the read found). link_store and link_holder stay for the partial cases.
+  const linkAll = !!store && storeActive && !mismatch && !!holder && !storeSaved && !holderNamed;
   // `keys` is the set the reads above were made with; `liveKeys` is the LIVE
   // set of the venue's region, which is what taking real money needs. They are
   // the same for a venue already being read on live; a test read passes both,
@@ -1414,8 +1702,17 @@ export function buildGoliveSteps(state = {}, opts = {}) {
     // would be a guess. Pasting an id would not help either: the one thing to
     // do is at step 2, and it is said there, once.
     out.push(step('find_venue', { state: 'todo', detail: `No payments location carries the code ${code} yet.`, action: 'find_venue', hint: 'The business account side could not be checked. See step 2.' }));
+  } else if (holderRead.needsPlatform === true) {
+    // The business accounts were never searched: the one thing to do is the
+    // Adyen platform name, typed once per region, on THIS step.
+    out.push(step('find_venue', { state: 'attention', detail: PLATFORM_STEP_DETAIL, action: 'set_balance_platform' }));
+  } else if (holderRead.ambiguous === true) {
+    out.push(step('find_venue', { state: 'attention', detail: HOLDER_AMBIGUOUS_DETAIL, action: 'pick_holder', hint: 'Pick the right one from the list below.' }));
+  } else if (holderRead.capped === true) {
+    // The listing ran out of pages: nothing was ruled out.
+    out.push(step('find_venue', { state: 'todo', detail: `No payments location carries the code ${code} yet.`, action: 'find_venue', hint: 'Not every business account could be checked. Open Advanced if Adyen gave you its id.' }));
   } else {
-    out.push(step('find_venue', { state: 'todo', detail: `Nothing at Adyen carries the code ${code} yet.`, action: 'find_venue', hint: 'Paste the account holder id (it starts with AH), or pick the store from the list.' }));
+    out.push(step('find_venue', { state: 'todo', detail: `Nothing at Adyen carries the code ${code} yet.`, action: 'find_venue', hint: 'Check the venue code, or search every Adyen account.' }));
   }
 
   // 2. the business account
@@ -1425,8 +1722,16 @@ export function buildGoliveSteps(state = {}, opts = {}) {
     // account side is unreadable until the separate credential is on the
     // server, and waiting will not change that.
     out.push(step('business_account', { state: 'blocked', detail: BP_KEY_BLOCKED_DETAIL, action: 'add_bp_key', hint: bpKeyBlockedHint(bpSecret, target || env) }));
-  } else if (!holder) out.push(step('business_account', { state: 'todo', detail: 'No business account at Adyen yet.', action: 'find_venue', hint: 'Adyen makes one when the venue is onboarded. Paste its id if you have it.' }));
-  else if (!holderNamed) {
+  } else if (!holder && holderRead.needsPlatform === true) {
+    out.push(step('business_account', { state: 'attention', detail: PLATFORM_STEP_DETAIL, action: 'set_balance_platform' }));
+  } else if (!holder && holderRead.ambiguous === true) {
+    out.push(step('business_account', { state: 'attention', detail: HOLDER_AMBIGUOUS_DETAIL, action: 'pick_holder', hint: 'Pick the right one from the list below.' }));
+  } else if (!holder && holderRead.capped === true) {
+    out.push(step('business_account', { state: 'attention', detail: 'Not every business account at Adyen could be checked.', action: 'find_venue', hint: 'Open Advanced in step 1 if Adyen gave you its id.' }));
+  } else if (!holder) out.push(step('business_account', { state: 'todo', detail: 'No business account at Adyen yet.', action: 'find_venue', hint: 'Adyen makes one when the venue is onboarded. Look again after that.' }));
+  else if (linkAll) {
+    out.push(step('business_account', { state: 'attention', detail: DETAILS_NOT_SAVED_DETAIL, action: 'link_all', hint: 'One click saves all of them on the venue.' }));
+  } else if (!holderNamed) {
     // Found at Adyen, not on the venue row. ONE button saves it (adyen_link on
     // the venue's own environment with this account holder id): the holder,
     // where the money lands, the registered company, the business line, the
@@ -1476,6 +1781,8 @@ export function buildGoliveSteps(state = {}, opts = {}) {
       action: 'choose_merchant',
       hint: str(mismatch.message) || null,
     }));
+  } else if (linkAll) {
+    out.push(step('payments_location', { state: 'attention', detail: DETAILS_NOT_SAVED_DETAIL, action: 'link_all', hint: 'One click saves all of them on the venue.' }));
   } else if (storeActive && !storeSaved) {
     // Found at Adyen, not on the venue row. ONE button saves it (adyen_link on
     // the venue's own environment with this store id), and that works with
@@ -1525,9 +1832,9 @@ export function buildGoliveSteps(state = {}, opts = {}) {
     out.push(step('go_live', { state: 'todo', detail: 'Finish the steps above first.', action: null }));
   }
 
-  // 5. payouts and commission: two parts, one step
+  // 5. card rates and payouts: two parts, one step
   out.push(buildPayoutsStep({
-    keysOk, keysBlocked, bpRefused, holder, holderSaved, ba, le, store, storeSaved, mismatch, caps, row, commission, payouts,
+    keysOk, keysBlocked, bpRefused, holder, holderSaved, ba, le, store, storeSaved, mismatch, caps, row, rates, payouts,
   }));
 
   // 6. the card readers
@@ -1569,17 +1876,21 @@ function buildPayoutsStep(x) {
   }
   const rowBa = str(row.balance_account_id);
   const rowTi = str(row.transfer_instrument_id);
-  const currency = str(x.commission.currency).toUpperCase() || str(x.ba?.currency).toUpperCase() || 'GBP';
-  // "from 0.8% plus 5p" when the venue is priced per card type (the rate card
-  // has more than one distinct tier, or the profile more than one rule): the
-  // number shown is the in person one, the lowest a venue pays.
-  const from = (line, many) => (line && many ? `from ${line}` : line);
-  const rate = from(commissionLine(x.commission.percent, x.commission.fixedPence, currency), Number(x.commission.tiers) > 1);
-  const profileRate = from(commissionLine(x.commission.profilePercent, x.commission.profileFixedPence, currency), Number(x.commission.profileRules) > 1);
-  const profileRead = x.commission.profileRead === true;
-  const remainder = str(x.commission.profileRemainder);
+  const rates = isObj(x.rates) ? x.rates : {};
+  const currency = str(rates.currency).toUpperCase() || str(x.ba?.currency).toUpperCase() || 'GBP';
+  // THE VENUE RATE CARD (10 Sep 2026): four tiers, every one priced before
+  // anything goes to Adyen. The four rates in one line ride as the hint and,
+  // when short, as the collapsed step's own line.
+  const tiers = isObj(rates.tiers) ? rates.tiers : {};
+  const unpriced = unpricedTiers(tiers);
+  const priced = unpriced.length === 0;
+  const line = priced ? rateCardLine(tiers, currency) : null;
+  const shortLine = line && line.length <= PROBLEM_TEXT_MAX ? line : null;
+  const onAdyen = isObj(rates.onAdyen) ? rates.onAdyen : {};
+  const profileRead = onAdyen.read === true;
+  const remainder = str(onAdyen.remainder);
 
-  // (a) the commission on the store
+  // (a) the card rates on the store
   let split;
   if (!x.keysOk) split = part('split', x.keysBlocked);
   else if (!x.store && !x.holder) split = part('split', { state: 'todo', detail: 'Find the venue first.', action: null });
@@ -1588,31 +1899,42 @@ function buildPayoutsStep(x) {
   else if (!x.storeSaved) split = part('split', { state: 'todo', detail: 'Save the payments location on the venue first.', action: null });
   else if (!x.holderSaved) split = part('split', { state: 'todo', detail: 'Save the business account on the venue first.', action: null });
   else if (!rowBa) split = part('split', { state: 'todo', detail: 'The venue has no account for the money to land in yet.', action: null, hint: 'Save the business account in step 2.' });
-  else if (str(x.store.splitConfigurationId)) {
-    // DONE needs all three (9 Sep 2026): the store names an account for the
-    // rest of each sale, it is the venue's own, and the rule actually sends
-    // the rest there (a profile whose remainder is addToLiableAccount keeps
-    // it for ServOS). A profile that could not be read is trusted on the
-    // account alone, as before.
+  else if (rates.readFailed === true) {
+    // THE VENUE RATES COULD NOT BE READ (10 Sep 2026): the tiers above are a
+    // fallback, not the venue's card, so nothing is compared and nothing is
+    // offered to apply. Check again reads the venue once more.
+    split = part('split', { state: 'attention', detail: 'The venue rates could not be read, so they are not checked yet.', action: 'check_rates', hint: null });
+  } else if (!priced) {
+    // A tier with no price cannot go to Adyen: name the tiers in the table's
+    // own row words and offer the editor. 0% and 0p is a price; empty is not.
+    split = part('split', { state: 'attention', detail: `No rate is set yet for: ${tierRowList(unpriced)}.`, action: 'edit_rates', hint: 'Set every payment type, then apply the rates on Adyen.' });
+  } else if (str(x.store.splitConfigurationId)) {
+    // DONE needs all of these (9 and 10 Sep 2026): the store names an account
+    // for the rest of each sale, it is the venue's own, the profile was READ,
+    // the rules send the rest there (a profile whose remainder is
+    // addToLiableAccount keeps it for the platform), and the whole profile is
+    // what we would write for these rates. A profile that could not be read
+    // is never shown as done: its rates are not checked.
     const storeBa = str(x.store.balanceAccountId);
     if (!storeBa) {
-      split = part('split', { state: 'attention', detail: 'The commission rule names no account for the rest of each sale.', action: 'set_split', hint: 'Set it again to point it at the venue.' });
+      split = part('split', { state: 'attention', detail: 'The rates on Adyen name no account for the rest of each sale.', action: 'set_split', hint: 'Apply the rates again to point them at the venue.' });
     } else if (storeBa !== rowBa) {
-      split = part('split', { state: 'attention', detail: 'The commission sends the rest of each sale to a different account, not the venue’s.', action: 'set_split', hint: 'Set it again to point it at the venue.' });
-    } else if (profileRead && lower(remainder) !== lower(REMAINDER_TO_VENUE)) {
-      split = part('split', { state: 'attention', detail: 'The commission rule does not send the rest of each sale to the venue.', action: 'set_split', hint: 'Set it again to point it at the venue.' });
+      split = part('split', { state: 'attention', detail: 'The rates on Adyen send the rest of each sale to a different account, not the venue’s.', action: 'set_split', hint: 'Apply the rates again to point them at the venue.' });
+    } else if (!profileRead) {
+      split = part('split', { state: 'attention', detail: 'Adyen’s rates could not be read, so they are not checked yet.', action: 'check_rates', hint: null });
+    } else if (lower(remainder) !== lower(REMAINDER_TO_VENUE)) {
+      split = part('split', { state: 'attention', detail: 'The rates on Adyen do not send the rest of each sale to the venue.', action: 'set_split', hint: 'Apply the rates again to point them at the venue.' });
+    } else if (onAdyen.matches !== true) {
+      split = part('split', { state: 'attention', detail: 'Adyen holds different rates. Apply again.', action: 'set_split', hint: shortLine });
     } else {
-      split = part('split', {
-        state: 'done',
-        detail: profileRate ? `Commission is set: ${profileRate} to ServOS, the rest to the venue.` : 'Commission is set on the payments location.',
-      });
+      split = part('split', { state: 'done', detail: 'Adyen holds these rates.', hint: shortLine });
     }
   } else {
     split = part('split', {
-      state: 'todo',
-      detail: 'Commission is not set, so every card sale settles to ServOS and nothing to the venue.',
+      state: 'attention',
+      detail: 'Adyen does not hold these rates yet, so every card sale settles to the platform and nothing to the venue.',
       action: 'set_split',
-      hint: rate ? `Set ${rate} to ServOS, the rest to the venue.` : 'Type the percent and the pence, then set it.',
+      hint: shortLine,
     });
   }
 
@@ -1658,10 +1980,13 @@ function buildPayoutsStep(x) {
   const next = parts.find((p) => p.state !== 'done' && p.action && !PAYOUT_WAIT_ACTIONS.includes(p.action))
     || parts.find((p) => p.state !== 'done');
   const both = split.state === 'done' && payout.state === 'done';
+  // The collapsed line when everything is done: the four rates when they fit
+  // in one line, else the plain sentence.
+  const bothLine = shortLine && `${shortLine}. ${payout.detail}`.length <= PROBLEM_TEXT_MAX ? `${shortLine}. ${payout.detail}` : `Adyen holds these rates. ${payout.detail}`;
   return {
     id: 'payouts',
     state: worst,
-    detail: both ? `Commission is set. ${payout.detail}` : str(next?.detail) || split.detail,
+    detail: both ? bothLine : str(next?.detail) || split.detail,
     action: next && next.action && !PAYOUT_WAIT_ACTIONS.includes(next.action) ? next.action : null,
     hint: both ? null : (next?.hint ?? null),
     parts,
@@ -1713,7 +2038,7 @@ const PROBLEM_SUBJECTS = Object.freeze([
   [/^web origins/i, 'the web addresses'],
   [/^apple pay/i, 'Apple Pay'],
   [/^sweeps? (of|on)\b/i, 'the payout schedule'],
-  [/^split configuration\b/i, 'the commission rules'],
+  [/^split configuration\b/i, 'the card rates on Adyen'],
   [/^onboarding link\b/i, 'the bank details link'],
   [/^platform defaults?\b/i, 'the default rates'],
   [/^payout (capability|approval)\b/i, 'the payout approval'],
@@ -1740,7 +2065,7 @@ export function plainAdyenProblem(raw) {
   // another account holder (9 Sep 2026): step 5a says it in its own place.
   if (/belongs to (a different|another) (account holder|business account)/i.test(text)) return say('foreign_balance_account', 'The payments location sends the rest of each sale to another business account.');
   if (/stores carry the reference/i.test(text)) return say('ambiguous_store', 'More than one payments location carries this code. Pick one in step 1.');
-  if (/account holders .* carry the reference/i.test(text)) return say('ambiguous_holder', 'More than one business account carries this code. Paste the right id in step 1.');
+  if (/account holders .* carry the reference/i.test(text)) return say('ambiguous_holder', 'More than one business account carries this code. Pick the right one from the list.');
   if (/names no account holder/i.test(text)) return say('gap', 'Where the money lands names no business account at Adyen.');
   if (/names no legal entity/i.test(text)) return say('gap', 'The business account names no registered company at Adyen.');
   if (/none could be chosen/i.test(text)) return say('gap', 'The business account has several money accounts and none could be chosen.');
