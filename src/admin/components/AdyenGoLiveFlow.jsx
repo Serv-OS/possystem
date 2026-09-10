@@ -1,13 +1,15 @@
 // src/admin/components/AdyenGoLiveFlow.jsx
 //
 // ServOS admin portal (?mode=admin): GET THIS VENUE TAKING CARDS, the guided
-// five step flow that replaced the dense "Link to Adyen" panel on 8 Sep 2026.
+// six step flow that replaced the dense "Link to Adyen" panel on 8 Sep 2026
+// (five steps then; step 5, Payouts and commission, arrived 9 Sep 2026).
 //
 // OWNER FEEDBACK (8 Sep 2026, verbatim): "we need this to be easier and better
 // there is far too many words and too small we need a flow that supports
 // someone doing this". So:
-//   1. Five numbered steps down the page, one open at a time. A done step
-//      collapses to its title, a tick and one line.
+//   1. Six numbered steps down the page, one open at a time. A done step
+//      collapses to its title, a tick and one line. Step 5 has two parts
+//      (the commission, the payouts), each its own line and one button.
 //   2. Inside the open step: ONE sentence, then ONE primary button. Anything
 //      else is a small secondary link.
 //   3. Body text 15px, titles 18px, line height 1.5, one column, 720px wide,
@@ -48,11 +50,28 @@
 //   adyen_merchants                  the accounts the credential can see
 //   adyen_lookup                     read again, to build the go live panel
 //   adyen_link                       ONE write of the ids + the flip to live;
-//                                    ALSO "Save it on the venue" (link_store,
-//                                    9 Sep 2026): the same call on the venue's
-//                                    own environment with the store id the
-//                                    read found, so a store Adyen holds lands
-//                                    on the row without touching anything else
+//                                    ALSO "Save it on the venue" (link_store
+//                                    and link_holder, 9 Sep 2026): the same
+//                                    call on the venue's own environment with
+//                                    the store id or the account holder id the
+//                                    read found, so what Adyen holds lands on
+//                                    the row without touching anything else.
+//                                    Each save carries the OTHER id too when
+//                                    it is known and the row does not name a
+//                                    different one, so nobody saves twice
+//   set_split                        step 5a: the commission rules on the store
+//                                    (one per card type, from the two boxes
+//                                    or from the venue's own rate card; a
+//                                    rate past 3% or 50p asks for a typed
+//                                    CONFIRM first, 9 Sep 2026)
+//   onboarding_link                  step 5b: the bank details link (4 minutes,
+//                                    once) for the venue owner
+//   setup_sweep                      step 5b: pay the venue out daily
+//   request_payouts                  step 5b: ask Adyen for the payout
+//                                    capability it was never asked for
+//   The three step 5 writes and request_payouts name the environment the
+//   flow is LOOKING at, so the server refuses them while the venue is on
+//   the other one (they act on the venue's own row).
 //   adyen_create_store_by_reference  make the payments location
 //   register_origins                 the ServOS web addresses
 //   register_apple_pay_domains       the venue's storefront for Apple Pay
@@ -296,6 +315,11 @@ const lines = (v) => (Array.isArray(v) ? v.map(str).filter(Boolean) : []);
 function whatFailed(key) {
   if (key === 'create') return 'The payments location could not be made';
   if (key === 'save_store') return 'The payments location could not be saved on the venue';
+  if (key === 'save_holder') return 'The business account could not be saved on the venue';
+  if (key === 'split') return 'The commission could not be set';
+  if (key === 'bank_link') return 'The bank details link could not be made';
+  if (key === 'sweep') return 'The daily payout could not be switched on';
+  if (key === 'request') return 'Adyen could not be asked for payouts';
   if (key === 'golive') return 'Live payments could not be turned on';
   if (key === 'origins') return 'The web addresses could not be added';
   if (key === 'merchant') return 'That Adyen account could not be read';
@@ -373,6 +397,12 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, wallet
   // The in page ask that replaced window.confirm: { kind, lines }.
   const [ask, setAsk] = useState(null);
   const [liveTyped, setLiveTyped] = useState('');
+  // Step 5 (9 Sep 2026): the percent and pence the admin types before
+  // pressing Set the commission (null = show the venue's rate as read), and
+  // the bank details link minted on the click (it works once, for 4 minutes,
+  // so it is shown at once with Copy and never kept past this mount).
+  const [rateDraft, setRateDraft] = useState(null);
+  const [bankLink, setBankLink] = useState(null);
   const pickRef = useRef(pick);
   pickRef.current = pick;
   const envRef = useRef(lookTest);
@@ -427,6 +457,16 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, wallet
   // The reader list failing is one of those lines now, not its own box.
   const problemBox = view.allDone ? null : goliveProblemBox(state?.problems);
   const merchantNow = str(state?.merchantConfigured);
+  // The venue's rate as the server read it (its row, else the platform
+  // default), unless the admin has typed over it. Both write the row on Set.
+  const commission = state?.commission && typeof state.commission === 'object' ? state.commission : {};
+  const rateShown = rateDraft || {
+    percent: commission.percent === null || commission.percent === undefined ? '' : String(commission.percent),
+    pence: commission.fixedPence === null || commission.fixedPence === undefined ? '' : String(commission.fixedPence),
+  };
+  const rateTyped = (v) => (v === '' || v === null || v === undefined ? null : Number(v));
+  const rateOk = (rateTyped(rateShown.percent) ?? 0) > 0 || (rateTyped(rateShown.pence) ?? 0) > 0;
+  const currencyMinor = str(commission.currency).toUpperCase() === 'USD' ? 'Cents' : 'Pence';
   // Apple Pay and Google Pay, read from adyen-checkout `status` by the panel
   // above and passed in. Nothing here decides: it says what Adyen answered.
   const walletRows = walletLines(wallets);
@@ -638,7 +678,19 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, wallet
       // offered when the flow looks at the environment the venue is on, and
       // resolveLinkEnvironment keeps a live venue on live whatever is passed,
       // so this write can never ride a flip.
-      r = await callAdmin('adyen_link', { ...pickRef.current, storeId, environment: venueEnv, ...(relink ? { relink: true } : {}) });
+      // The business account rides along when the read found one and the
+      // row names no other (9 Sep 2026): one click saves both, nobody saves
+      // twice. A row that names a DIFFERENT holder keeps it out of this
+      // click, so the store save can never turn into a holder replacement.
+      const holderId = str(state?.holder?.id);
+      const rowHolder = str(state?.row?.account_holder_id);
+      const withHolder = holderId && (!rowHolder || rowHolder === holderId) ? { accountHolderId: holderId } : {};
+      // ONLY the ids the guards above chose ride (9 Sep 2026): the pick can
+      // hold a pasted or picked storeId and accountHolderId, and spreading it
+      // whole sent an id the guard had decided to leave out, so the server
+      // planned a conflict on it and asked to replace the wrong thing.
+      const { storeId: _pickedStore, accountHolderId: _pickedHolder, ...pickRest } = pickRef.current;
+      r = await callAdmin('adyen_link', { ...pickRest, ...withHolder, storeId, environment: venueEnv, ...(relink ? { relink: true } : {}) });
     } catch (e) {
       if (e?.data?.needs_relink && !relink) {
         // Plain lines and the ids as grey rows, from plan.diff.conflicts: the
@@ -674,6 +726,145 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, wallet
       problem: box || said.length
         ? { text: 'It is saved. Adyen said something else as well.', tone: 'warn', lines: box ? box.lines : [], more: box ? box.more : 0, detail: detail || null }
         : null,
+      changed: true,
+    };
+  });
+
+  // A FOUND HOLDER GETS SAVED (9 Sep 2026, live screen: golive_state read the
+  // pasted account holder, said step 2 was Done, and the row still held
+  // account_holder_id NULL so the list chips read NO HOLDER and NO PAYOUTS).
+  // This is adyen_link on the venue's OWN environment with the account holder
+  // id the read found: the holder, where the money lands, the registered
+  // company, the business line, the bank account, the KYC snapshot and the
+  // payout flag land on the row. The store rides along when the row already
+  // names it or names none (so the same click writes both and the store's
+  // own flag is read fresh); a row naming a DIFFERENT store keeps it out. A
+  // row that names another holder answers 409 needs_relink: the in page ask.
+  const saveHolder = (relink) => act('save_holder', async () => {
+    const holderId = str(state?.holder?.id);
+    if (!holderId) return { stop: true };
+    const foundStore = !mismatch && str(state?.store?.id) && str(state?.store?.status).toLowerCase() === 'active' ? str(state.store.id) : '';
+    const rowStore = str(state?.row?.store_id);
+    const storeId = rowStore || foundStore;
+    const withStore = storeId && (!rowStore || !foundStore || rowStore === foundStore) ? { storeId } : {};
+    let r;
+    try {
+      // Only the ids the guards chose ride (the same rule as saveStore).
+      const { storeId: _pickedStore, accountHolderId: _pickedHolder, ...pickRest } = pickRef.current;
+      r = await callAdmin('adyen_link', { ...pickRest, ...withStore, accountHolderId: holderId, environment: venueEnv, ...(relink ? { relink: true } : {}) });
+    } catch (e) {
+      if (e?.data?.needs_relink && !relink) {
+        setAsk({ kind: 'relink_holder', ...relinkStoreConfirmView(e.data) });
+        setLiveTyped('');
+        return { stop: true };
+      }
+      throw e;
+    }
+    if (r?.ok === false) throw new Error(r.error || 'the business account was not saved');
+    setAsk(null); setLiveTyped('');
+    const box = goliveProblemBox(r.problems);
+    const said = lines(r.warnings).filter((w) => !/^Linked with gaps/i.test(w) && w !== str(r.storeNeeded) && !isPlatformSettingsMissingWarning(w));
+    const detail = [box?.detail, ...said].filter(Boolean).join('\n\n');
+    return {
+      notice: {
+        text: r.unchanged ? 'The business account was already on the venue.' : 'The business account is saved on the venue.',
+        ids: [
+          { label: 'Adyen business account', value: holderId },
+          { label: 'Where the money lands', value: str(r.patch?.balance_account_id) },
+          { label: 'Registered company', value: str(r.patch?.legal_entity_id) },
+        ],
+      },
+      problem: box || said.length
+        ? { text: 'It is saved. Adyen said something else as well.', tone: 'warn', lines: box ? box.lines : [], more: box ? box.more : 0, detail: detail || null }
+        : null,
+      changed: true,
+    };
+  });
+
+  // STEP 5a: the commission rules on the venue's store, one per card type,
+  // from the same rate card the ledger charges. A venue priced with one
+  // number types it in the two boxes (written as its rate card for every
+  // card type); a venue with its own per card type rates sets the rules
+  // FROM those rates (no boxes). A slipped decimal point (8 for 0.8) would
+  // take 8% of every sale, so a rate past SPLIT_ASK_PERCENT or
+  // SPLIT_ASK_PENCE asks for a typed CONFIRM first, and the server refuses
+  // past 10% or 100p without it.
+  const SPLIT_ASK_PERCENT = 3;
+  const SPLIT_ASK_PENCE = 50;
+  const setSplit = (confirm = false) => act('split', async () => {
+    const tiered = commission.tiered === true;
+    const percent = tiered ? null : rateTyped(rateShown.percent);
+    const pence = tiered ? null : rateTyped(rateShown.pence);
+    if (!tiered && !confirm && ((percent ?? 0) > SPLIT_ASK_PERCENT || (pence ?? 0) > SPLIT_ASK_PENCE)) {
+      const line = [percent ? `${percent}%` : '', pence ? `${pence}${currencyMinor === 'Cents' ? 'c' : 'p'}` : ''].filter(Boolean).join(' plus ');
+      setAsk({ kind: 'split_confirm', lines: [`That is ${line} of every sale, taken from the venue on every card.`, 'Most venues pay under 3% plus 50p. Check the numbers before you go on.'], ids: [] });
+      setLiveTyped('');
+      return { stop: true };
+    }
+    // The environment the flow is LOOKING at rides along, so the server
+    // refuses while the venue is still on the other one.
+    const payload = tiered ? { environment: target, ...(confirm ? { confirm: true } : {}) } : { percent, fixedPence: pence, environment: target, ...(confirm ? { confirm: true } : {}) };
+    const r = await callAdmin('set_split', payload);
+    if (r?.ok === false) {
+      setProblem({ text: str(r.error) || 'The commission could not be set.', detail: str(r.detail) || null });
+      return { stop: true };
+    }
+    setAsk(null); setLiveTyped('');
+    setRateDraft(null);
+    return {
+      notice: {
+        text: r.line ? `Commission is set: ${r.line} to ServOS, the rest to the venue.` : 'Commission is set.',
+        ids: [{ label: 'Commission rules', value: str(r.splitConfigurationId) }, { label: 'Where the money lands', value: str(r.balanceAccountId) }],
+      },
+      problem: str(r.warning) ? { text: 'It is set. The server said something else as well.', tone: 'warn', detail: str(r.warning) } : null,
+      changed: true,
+    };
+  });
+
+  // STEP 5b: the bank details link. It works once and for four minutes, so it
+  // is shown the moment it exists, with Copy, and the flow does not reload
+  // over it (a reload would hide it before it was sent).
+  const sendBankLink = () => act('bank_link', async () => {
+    const r = await callAdmin('onboarding_link', { environment: target });
+    if (r?.ok === false) {
+      setProblem({ text: str(r.error) || 'The bank details link could not be made.', detail: str(r.detail) || null });
+      return { stop: true };
+    }
+    setBankLink({ url: str(r.url), expiresAt: str(r.expiresAt) });
+    setOpenId('payouts');
+    return { stop: true, problem: str(r.warning) ? { text: 'The link is ready. The server said something else as well.', tone: 'warn', detail: str(r.warning) } : null };
+  });
+
+  // STEP 5b: pay the venue out daily. Adyen's approval is read on the server
+  // at the click, so a pending check answers as a plain line, never a failure.
+  const payOutDaily = () => act('sweep', async () => {
+    const r = await callAdmin('setup_sweep', { environment: target });
+    if (r?.ok === false) {
+      if (r.pending) return { notice: { text: str(r.error) || 'Adyen has not approved payouts for this venue yet.' } };
+      setProblem({ text: str(r.error) || 'The daily payout could not be switched on.', detail: str(r.detail) || null });
+      return { stop: true };
+    }
+    return {
+      notice: {
+        text: r.retargeted ? 'The daily payout now goes to the venue’s current bank.' : r.existed && !r.updated ? 'The venue was already paid out daily.' : 'The venue is paid out daily to its bank.',
+        ids: [{ label: 'Daily payout', value: str(r.sweep?.id) }, { label: 'Bank account', value: str(r.transferInstrumentId) }],
+      },
+      problem: str(r.warning) ? { text: 'It is on. The server said something else as well.', tone: 'warn', detail: str(r.warning) } : null,
+      changed: true,
+    };
+  });
+
+  // STEP 5b: ask Adyen for the payout capability a holder was never asked
+  // for. One click; Adyen then runs its checks and the flow reads the answer.
+  const requestPayouts = () => act('request', async () => {
+    const r = await callAdmin('request_payouts', { environment: target });
+    if (r?.ok === false) {
+      setProblem({ text: str(r.error) || 'Adyen could not be asked for payouts.', detail: str(r.detail) || null });
+      return { stop: true };
+    }
+    return {
+      notice: { text: r.allowed ? 'Adyen allows payouts for this venue.' : 'Adyen has been asked to allow payouts. It is checking the venue now.' },
+      problem: str(r.warning) ? { text: 'Adyen was asked. The server said something else as well.', tone: 'warn', detail: str(r.warning) } : null,
       changed: true,
     };
   });
@@ -724,9 +915,12 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, wallet
 
   const term = makeTerm();
   const anyBusy = !!busy;
-  // The typed word is only asked for when this click starts real money.
-  const needsTyped = ask?.kind === 'golive' && target === 'live' && venueEnv !== 'live';
-  const typedOk = !needsTyped || liveTyped.trim().toUpperCase() === 'LIVE';
+  // The typed word is only asked for when this click starts real money (LIVE)
+  // or sets a commission past the usual range (CONFIRM, 9 Sep 2026).
+  const typedWord = ask?.kind === 'split_confirm' ? 'CONFIRM' : 'LIVE';
+  const needsTyped = (ask?.kind === 'golive' && target === 'live' && venueEnv !== 'live') || ask?.kind === 'split_confirm';
+  const typedOk = !needsTyped || liveTyped.trim().toUpperCase() === typedWord;
+  const askGo = () => (ask?.kind === 'relink_store' ? saveStore(true) : ask?.kind === 'relink_holder' ? saveHolder(true) : ask?.kind === 'split_confirm' ? setSplit(true) : doGoLive(ask?.kind === 'relink'));
 
   // The mismatch block: the two accounts and the picker. It renders on
   // whichever step owns the choice, so the explanation is never one row down
@@ -773,7 +967,7 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, wallet
       <div style={S.card}>
         <div style={S.head}>
           <h3 style={S.h1}>Get {name} taking cards</h3>
-          <p style={S.lede}>Five steps. Do the open one, the rest follow.</p>
+          <p style={S.lede}>Six steps. Do the open one, the rest follow.</p>
           <p style={{ ...S.lede, marginTop: 4 }}>
             {reference ? <>Looking for <span style={S.mono}>{reference}</span> on the {region} {target} account.</> : <>Looking on the {region} {target} account.</>}
           </p>
@@ -797,6 +991,10 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, wallet
           // Same for the two accounts: the mismatch block says it once, in
           // plain words, with the two names as ids and a picker under them.
           const mismatchSpeaks = !!mismatch && (step.id === 'payments_location' || step.action === 'choose_merchant');
+          // Step 5 speaks through its two parts, each with its own line and
+          // button, so the step's own line (the first part that needs doing)
+          // is only drawn on the collapsed row.
+          const partsSpeak = step.id === 'payouts' && step.parts.length > 0;
           return (
             <div key={step.id}>
               <button
@@ -833,7 +1031,7 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, wallet
 
               {step.open && (
                 <div style={S.body}>
-                  {step.detail && !capsSpeak && !mismatchSpeaks && <p style={S.say}>{step.detail}</p>}
+                  {step.detail && !capsSpeak && !mismatchSpeaks && !partsSpeak && <p style={S.say}>{step.detail}</p>}
                   {capsSpeak && (
                     <div style={{ margin: '0 0 12px', maxWidth: MEASURE }}>
                       {caps.map((c) => (
@@ -843,7 +1041,7 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, wallet
                       ))}
                     </div>
                   )}
-                  {step.hint && !mismatchSpeaks && <p style={S.quiet}>{step.hint}</p>}
+                  {step.hint && !mismatchSpeaks && !partsSpeak && <p style={S.quiet}>{step.hint}</p>}
                   {mismatchSpeaks && mismatchBlock}
 
                   {/* ── 1. find the venue ── */}
@@ -1020,6 +1218,12 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, wallet
                       {step.action === 'find_venue' && (
                         <Primary busy={busy === 'look'} disabled={anyBusy} onClick={() => act('look', async () => ({}))}>Look again</Primary>
                       )}
+                      {/* link_holder (9 Sep 2026): Adyen holds the business
+                          account, the venue row does not name it yet. ONE
+                          button, and it carries the store too. */}
+                      {step.action === 'link_holder' && !ask && (
+                        <Primary busy={busy === 'save_holder'} disabled={anyBusy || !str(state.holder?.id)} onClick={() => saveHolder(false)}>Save it on the venue</Primary>
+                      )}
                       <div style={{ marginTop: 16 }}>
                         {/* The one value ServOS acts on, so it is body size,
                             not the 13px of a reference id. The hint above
@@ -1155,7 +1359,107 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, wallet
                     </>
                   )}
 
-                  {/* ── 5. card readers ── */}
+                  {/* ── 5. payouts and commission: two parts ── */}
+                  {step.id === 'payouts' && step.parts.map((part) => {
+                    const pt = CHIP[part.chip.tone] || CHIP.idle;
+                    return (
+                      <div key={part.id} style={{ margin: '0 0 22px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                          <span style={{ fontSize: 15, fontWeight: 700, color: 'var(--t1)' }}>{part.title}</span>
+                          <span style={{ fontSize: 13, fontWeight: 700, padding: '3px 9px', borderRadius: 999, background: pt.bg, color: pt.fg, border: `1px solid ${pt.bd}` }}>{part.chip.label}</span>
+                        </div>
+                        {part.detail && <p style={S.say}>{part.detail}</p>}
+                        {part.hint && <p style={S.quiet}>{part.hint}</p>}
+
+                        {/* 5a. the commission: the two numbers, editable, then ONE
+                            button; or, for a venue priced per card type, ONE button
+                            that sets the rules from those rates (no boxes). */}
+                        {part.id === 'split' && part.action === 'set_split' && commission.tiered === true && (
+                          <>
+                            <p style={S.say}>This venue has a rate for each card type. The commission is set from those rates{commission.line ? `, from ${commission.line}` : ''}.</p>
+                            <Primary busy={busy === 'split'} disabled={anyBusy} onClick={() => setSplit(false)}>Set the commission from the venue rates</Primary>
+                          </>
+                        )}
+                        {part.id === 'split' && part.action === 'set_split' && commission.tiered !== true && (
+                          <>
+                            <div style={{ display: 'flex', gap: 14, alignItems: 'flex-end', flexWrap: 'wrap', maxWidth: 460, margin: '0 0 14px' }}>
+                              <label style={{ ...S.field, flex: '1 1 140px' }}>
+                                <span style={S.fieldLabel}>Percent of each sale</span>
+                                <input
+                                  style={S.input}
+                                  inputMode="decimal"
+                                  value={rateShown.percent}
+                                  disabled={anyBusy}
+                                  onChange={(e) => setRateDraft({ ...rateShown, percent: e.target.value.replace(/[^0-9.]/g, '') })}
+                                />
+                              </label>
+                              <label style={{ ...S.field, flex: '1 1 140px' }}>
+                                <span style={S.fieldLabel}>{currencyMinor} on each sale</span>
+                                <input
+                                  style={S.input}
+                                  inputMode="numeric"
+                                  value={rateShown.pence}
+                                  disabled={anyBusy}
+                                  onChange={(e) => setRateDraft({ ...rateShown, pence: e.target.value.replace(/[^0-9]/g, '') })}
+                                />
+                              </label>
+                            </div>
+                            <p style={S.quiet}>The same rate on every card type. It is written on the venue when Adyen accepts it.</p>
+                            <Primary busy={busy === 'split'} disabled={anyBusy || !rateOk} onClick={() => setSplit(false)}>Set the commission</Primary>
+                          </>
+                        )}
+                        {part.id === 'split' && (
+                          <div style={{ marginTop: 12 }}>
+                            <IdLine label="Commission rules (split configuration)" value={state.store?.splitConfigurationId} />
+                            <IdLine label={<>{term('money')}</>} value={state.row?.balance_account_id || state.balanceAccount?.id} />
+                            <IdLine label="ServOS account (liable balance account)" value={commission.liableBalanceAccountId} />
+                          </div>
+                        )}
+
+                        {/* 5b. the payouts: the link, the daily payout, or a check */}
+                        {part.id === 'payout' && part.action === 'send_bank_link' && !bankLink && (
+                          <Primary busy={busy === 'bank_link'} disabled={anyBusy} onClick={sendBankLink}>Send the bank details link</Primary>
+                        )}
+                        {part.id === 'payout' && bankLink && (
+                          <div style={{ margin: '0 0 14px' }}>
+                            <IdLine big label="Bank details link" value={bankLink.url} />
+                            <p style={{ ...S.say, marginTop: 8 }}>Send this to the venue owner. They add the bank account and finish identity checks on Adyen.</p>
+                            <p style={S.quiet}>It works once and for 4 minutes. Press the button again for a new one.</p>
+                            <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+                              <Secondary busy={anyBusy} onClick={sendBankLink}>{busy === 'bank_link' ? 'Making a new link' : 'New link'}</Secondary>
+                              <Secondary busy={anyBusy} onClick={() => { setBankLink(null); act('look5', async () => ({})); }}>{busy === 'look5' ? 'Checking' : 'Check again'}</Secondary>
+                            </div>
+                          </div>
+                        )}
+                        {part.id === 'payout' && part.action === 'setup_sweep' && (
+                          <Primary busy={busy === 'sweep'} disabled={anyBusy} onClick={payOutDaily}>Pay out daily</Primary>
+                        )}
+                        {part.id === 'payout' && part.action === 'check_payouts' && (
+                          <Primary busy={busy === 'look5'} disabled={anyBusy} onClick={() => act('look5', async () => ({}))}>Check again</Primary>
+                        )}
+                        {part.id === 'payout' && part.action === 'request_payouts' && (
+                          <Primary busy={busy === 'request'} disabled={anyBusy} onClick={requestPayouts}>Ask Adyen to allow payouts</Primary>
+                        )}
+                        {part.id === 'payout' && part.action === 'open_adyen' && (
+                          <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+                            <Primary disabled={anyBusy} onClick={openAdyen}>Open Adyen</Primary>
+                            <Secondary busy={anyBusy} onClick={() => act('look5', async () => ({}))}>{busy === 'look5' ? 'Checking' : 'Check again'}</Secondary>
+                          </div>
+                        )}
+                        {part.id === 'payout' && part.done && (
+                          <Secondary busy={anyBusy} onClick={() => act('look5', async () => ({}))}>{busy === 'look5' ? 'Checking' : 'Check again'}</Secondary>
+                        )}
+                        {part.id === 'payout' && (
+                          <div style={{ marginTop: 12 }}>
+                            <IdLine label="Bank account (transfer instrument)" value={state.legalEntity?.transferInstrumentId || state.row?.transfer_instrument_id} />
+                            <IdLine label="Daily payout (sweep)" value={state.payouts?.sweep?.id} />
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                  {/* ── 6. card readers ── */}
                   {step.id === 'readers' && (
                     <>
                       <p style={S.quiet}>
@@ -1194,6 +1498,8 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, wallet
             <h4 style={S.panelH}>
               {ask.kind === 'relink' ? `Link ${name} again?`
                 : ask.kind === 'relink_store' ? `Replace the payments location on ${name}?`
+                : ask.kind === 'relink_holder' ? `Replace the business account on ${name}?`
+                : ask.kind === 'split_confirm' ? `Set this commission on ${name}?`
                 : `Turn on live payments for ${name}?`}
             </h4>
             {ask.lines.map((l, i) => <p key={i} style={S.panelLine}>{l}</p>)}
@@ -1207,13 +1513,13 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, wallet
             {needsTyped && (
               <div style={{ marginTop: 16, maxWidth: 320 }}>
                 <label style={S.field}>
-                  <span style={{ ...S.fieldLabel, color: 'var(--t1)' }}>Type LIVE to confirm.</span>
+                  <span style={{ ...S.fieldLabel, color: 'var(--t1)' }}>Type {typedWord} to confirm.</span>
                   <input
                     style={{ ...S.input, ...S.mono, letterSpacing: '.1em' }}
                     value={liveTyped}
                     onChange={(e) => setLiveTyped(e.target.value)}
-                    onKeyDown={(e) => { if (e.key === 'Enter' && typedOk && !anyBusy) doGoLive(ask.kind === 'relink'); }}
-                    placeholder="LIVE"
+                    onKeyDown={(e) => { if (e.key === 'Enter' && typedOk && !anyBusy) askGo(); }}
+                    placeholder={typedWord}
                     autoFocus
                     autoCapitalize="characters"
                     autoComplete="off"
@@ -1224,12 +1530,12 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, wallet
             )}
             <div style={{ display: 'flex', gap: 16, alignItems: 'center', flexWrap: 'wrap', marginTop: 18 }}>
               <Primary
-                busy={busy === 'golive' || busy === 'save_store'}
+                busy={busy === 'golive' || busy === 'save_store' || busy === 'save_holder' || busy === 'split'}
                 disabled={!typedOk || anyBusy}
                 live
-                onClick={() => (ask.kind === 'relink_store' ? saveStore(true) : doGoLive(ask.kind === 'relink'))}
+                onClick={askGo}
               >
-                {ask.kind === 'relink' ? 'Link it again' : ask.kind === 'relink_store' ? 'Replace it' : 'Turn on live payments'}
+                {ask.kind === 'relink' ? 'Link it again' : ask.kind === 'relink_store' || ask.kind === 'relink_holder' ? 'Replace it' : ask.kind === 'split_confirm' ? 'Set it' : 'Turn on live payments'}
               </Primary>
               <Secondary busy={anyBusy} onClick={() => { setAsk(null); setLiveTyped(''); }}>Not now</Secondary>
             </div>

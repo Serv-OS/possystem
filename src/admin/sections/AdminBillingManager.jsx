@@ -1204,7 +1204,7 @@ function AdyenPayoutPanel({ location }) {
             {liveVenue ? 'LIVE money' : 'Test'}
           </span>
         )}
-        {st.payouts_ok && <span style={{ ...S.pill, color: 'var(--grn)', borderColor: 'var(--grn-b)' }}>Payouts allowed</span>}
+        {st.payouts_ok && <span title="Adyen allows payouts to the venue bank. Whether the venue is paid out daily is the Payouts chip on the venue row and step 5 of the go live flow." style={{ ...S.pill, color: 'var(--grn)', borderColor: 'var(--grn-b)' }}>Payouts allowed</span>}
         <button style={{ ...S.btn, ...S.btnGhost, marginLeft: 'auto', padding: '4px 10px', fontSize: 12 }} disabled={manualBusy} onClick={() => { setSt(null); setMsg(null); load(); }}>Refresh</button>
       </div>
 

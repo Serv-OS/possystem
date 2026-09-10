@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.46',
+    date: '9 Sep 2026',
+    items: [
+      'Go live flow: step 2 saves the business account Adyen already holds on the venue with one click. New step 5, Payouts and commission: sets the ServOS commission on the venue, sends the bank details link, and turns on the daily payout once Adyen approves. The PAYOUTS chip on the list now means paid out, not only allowed.',
+      'Card readers: when Adyen refuses a payment for a reader, the reason is written on the payment and shown on the till instead of a silent retry. A refused live reader is also tried on Adyen\'s second cloud host before giving up.',
+      'A server only check asks Adyen where a reader is, whether it is cloud connected, which credential our key is, and what settings the store holds, so a reader problem is read from Adyen\'s own records instead of guessed.',
+    ],
+  },
+  {
     v: '5.8.45',
     date: '9 Sep 2026',
     items: [

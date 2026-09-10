@@ -720,20 +720,40 @@ const LIVE_CAPS = {
   issueCard: { enabled: false, allowed: false, requested: false, verificationStatus: null },
 };
 
+// The daily push to the venue's bank, as sweepSummary answers it.
+const SWEEP = { id: 'SWPC3224Z223226M5KMQ5SWEEP1', type: 'push', category: 'bank', schedule: 'daily', status: 'active', transferInstrumentId: 'SI32BZP22322CJ5PXF2BDBANK1', currency: 'GBP' };
+
+// The venue row of a venue that is live and fully linked (its own
+// environment, so step 5 computes; a null row means the flow looks at the
+// OTHER environment and step 5 waits for the go live flip).
+const LIVE_ROW = {
+  store_id: PROVO.id, merchant_account: 'FranPOS_QSR_UK', account_holder_id: HOLDER.id, balance_account_id: BALANCE.id,
+  legal_entity_id: LEGAL.id, split_profile_id: PROVO.splitConfiguration.splitConfigurationId, transfer_instrument_id: null,
+  payouts_ok: true, payout_sweep_id: SWEEP.id, markup_percent: 0.8, markup_fixed_pence: 5,
+};
 const READY = {
   venue: { name: 'Provo', code: 'SV-1007', region: 'UK', environment: 'live' },
   keys: { configured: true, missing: [] },
   holder: accountHolderSummary(HOLDER),
   balanceAccount: balanceAccountSummary(BALANCE),
   legalEntity: legalEntitySummary(LEGAL),
-  capabilities: capabilityList(summariseCapabilities({ receivePayments: { allowed: true, requested: true, verificationStatus: 'valid' } })),
+  capabilities: capabilityList(summariseCapabilities({
+    receivePayments: { allowed: true, requested: true, verificationStatus: 'valid' },
+    sendToTransferInstrument: { allowed: true, requested: true, verificationStatus: 'valid' },
+  })),
   store: storeSummary(PROVO),
   merchantConfigured: 'FranPOS_QSR_UK',
   merchantMismatch: null,
   readers: [{ label: 'Front till', serial: 'S1', poiid: 'AMS1-1', bound: true }],
   origins: { registered: true },
   applePay: { domains: ['provo.serv-os.app'], verification: 'valid' },
+  row: LIVE_ROW,
+  // step 5: the profile on the store says 0.8% plus 5p and sends the rest to
+  // the venue, and the sweep exists
+  commission: { percent: 0.8, fixedPence: 5, currency: 'GBP', profilePercent: 0.8, profileFixedPence: 5, profileRead: true, profileRules: 1, profileRemainder: 'addToOneBalanceAccount' },
+  payouts: { read: true, sweep: SWEEP },
 };
+const SIX = ['find_venue', 'business_account', 'payments_location', 'go_live', 'payouts', 'readers'];
 
 const ids = (steps) => steps.map((s) => s.id);
 const byId = (steps, id) => steps.find((s) => s.id === id);
@@ -761,10 +781,13 @@ test('blockedCapabilityNames: only the settled refusals, so a pending one is not
   assert.deepEqual(blockedCapabilityNames(null), []);
 });
 
-test('buildGoliveSteps: always the same five steps in the same order', () => {
-  assert.deepEqual(ids(buildGoliveSteps(READY)), ['find_venue', 'business_account', 'payments_location', 'go_live', 'readers']);
-  assert.deepEqual(ids(buildGoliveSteps({})), ['find_venue', 'business_account', 'payments_location', 'go_live', 'readers']);
-  assert.deepEqual(ids(buildGoliveSteps()), ['find_venue', 'business_account', 'payments_location', 'go_live', 'readers']);
+test('buildGoliveSteps: always the same six steps in the same order', () => {
+  assert.deepEqual(ids(buildGoliveSteps(READY)), SIX);
+  assert.deepEqual(ids(buildGoliveSteps({})), SIX);
+  assert.deepEqual(ids(buildGoliveSteps()), SIX);
+  // only the payouts step carries parts, always the same two
+  for (const s of buildGoliveSteps({})) assert.equal('parts' in s, s.id === 'payouts', s.id);
+  assert.deepEqual(byId(buildGoliveSteps({}), 'payouts').parts.map((p) => p.id), ['split', 'payout']);
   for (const s of buildGoliveSteps(READY)) {
     // The titles live in ONE place, GOLIVE_STEP_TITLES on the screen's side,
     // so the fn answers none and the two can never drift.
@@ -788,17 +811,20 @@ test('buildGoliveSteps: no step detail ever carries an Adyen id', () => {
 
 test('buildGoliveSteps: a venue that is fully live reads done all the way down', () => {
   const steps = buildGoliveSteps(READY);
-  assert.deepEqual(steps.map((s) => s.state), ['done', 'done', 'done', 'done', 'done']);
+  assert.deepEqual(steps.map((s) => s.state), ['done', 'done', 'done', 'done', 'done', 'done']);
   assert.match(byId(steps, 'find_venue').detail, /business account and a store/);
   assert.match(byId(steps, 'payments_location').detail, /SV-1007/);
   assert.match(byId(steps, 'go_live').detail, /Provo takes real cards/);
+  assert.equal(byId(steps, 'payouts').detail, 'Commission is set. Paid out daily to the venue bank.');
+  assert.equal(byId(steps, 'payouts').action, null);
+  assert.deepEqual(byId(steps, 'payouts').parts.map((p) => p.state), ['done', 'done']);
   assert.equal(byId(steps, 'readers').detail, '1 reader ready.');
   assert.equal(byId(steps, 'go_live').action, null);
 });
 
 test('buildGoliveSteps: no keys blocks every step and names the secrets', () => {
   const steps = buildGoliveSteps({ ...READY, keys: { configured: false, missing: ['ADYEN_LIVE_UK_API_KEY', 'ADYEN_LIVE_UK_MERCHANT_ACCOUNT'] } });
-  assert.deepEqual(steps.slice(0, 4).map((s) => s.state), ['blocked', 'blocked', 'blocked', 'blocked']);
+  assert.deepEqual(steps.slice(0, 5).map((s) => s.state), ['blocked', 'blocked', 'blocked', 'blocked', 'blocked']);
   assert.match(byId(steps, 'find_venue').hint, /ADYEN_LIVE_UK_MERCHANT_ACCOUNT/);
   assert.match(byId(steps, 'go_live').detail, /live Adyen keys/);
   // the readers step is ours, not Adyen's, so it still reads
@@ -820,9 +846,29 @@ test('buildGoliveSteps: the LIVE case, an account holder with NO store', () => {
   // The ONE refusal on the live account is sendToTransferInstrument, a PAY
   // OUT. It holds the settlement to the venue's bank, not a card payment, so
   // it must never stop the flow (8 Sep 2026: it parked the owner on step 2).
+  // Since 9 Sep 2026 paying out has its own step (5), so step 2 only speaks
+  // about the pay in side: the one still being checked is named, no button.
   assert.equal(byId(steps, 'business_account').state, 'attention');
-  assert.equal(byId(steps, 'business_account').detail, 'Cards work. Payouts wait for Adyen.');
+  assert.equal(byId(steps, 'business_account').detail, 'Adyen is still checking receiveFromPlatformPayments.');
   assert.equal(byId(steps, 'business_account').action, null);
+  // the pay out sits on step 5. The live shape is verification INVALID with
+  // "Bank account not verified": Adyen wants more from the venue, which is
+  // exactly what the bank details link is for (9 Sep 2026), so it is the
+  // owner's click, not a wait on Adyen.
+  const payouts = byId(steps, 'payouts');
+  assert.equal(payouts.parts[1].state, 'attention');
+  assert.equal(payouts.parts[1].detail, 'Adyen needs more details from the venue.');
+  assert.equal(payouts.parts[1].action, 'send_bank_link');
+  assert.equal(payouts.action, 'send_bank_link');
+  assert.equal(payouts.parts[0].detail, 'Make the payments location first.');
+  // a settled refusal (verification rejected) is Adyen's door, a wait for the flow
+  const rejected = buildGoliveSteps({
+    ...READY, venue: { ...READY.venue, environment: 'test' }, store: null, readers: [],
+    capabilities: capabilityList(summariseCapabilities({ ...LIVE_CAPS, sendToTransferInstrument: { ...LIVE_CAPS.sendToTransferInstrument, verificationStatus: 'rejected' } })),
+  });
+  assert.equal(byId(rejected, 'payouts').parts[1].detail, 'Adyen will not pay this venue out yet.');
+  assert.equal(byId(rejected, 'payouts').parts[1].action, 'open_adyen');
+  assert.equal(byId(rejected, 'payouts').action, null);
   // the store is the next thing someone does
   assert.equal(byId(steps, 'payments_location').state, 'todo');
   assert.equal(byId(steps, 'payments_location').action, 'create_store');
@@ -896,13 +942,21 @@ test('buildGoliveSteps: an inactive store, a pending check and a missing bank ac
   assert.match(byId(inactive, 'payments_location').detail, /is inactive at Adyen/);
   assert.equal(byId(inactive, 'go_live').state, 'attention');
 
+  // a pay OUT still being checked is step 5's business now, so step 2 is done
   const pending = buildGoliveSteps({ ...READY, capabilities: capabilityList(summariseCapabilities({ receivePayments: { allowed: true, requested: true, verificationStatus: 'valid' }, sendToTransferInstrument: { allowed: false, requested: true, verificationStatus: 'pending' } })) });
-  assert.equal(byId(pending, 'business_account').state, 'attention');
-  assert.match(byId(pending, 'business_account').detail, /still checking sendToTransferInstrument/);
+  assert.equal(byId(pending, 'business_account').state, 'done');
+  assert.equal(byId(pending, 'payouts').parts[1].state, 'attention');
+  assert.match(byId(pending, 'payouts').parts[1].detail, /still checking the venue/);
+  // a pay IN still being checked is named on step 2
+  const pendingIn = buildGoliveSteps({ ...READY, capabilities: capabilityList(summariseCapabilities({ receivePayments: { allowed: false, requested: true, verificationStatus: 'pending' } })) });
+  assert.equal(byId(pendingIn, 'business_account').state, 'attention');
+  assert.match(byId(pendingIn, 'business_account').detail, /still checking receivePayments/);
 
   const noBank = buildGoliveSteps({ ...READY, legalEntity: legalEntitySummary({ ...LEGAL, transferInstruments: [] }) });
-  assert.equal(byId(noBank, 'business_account').state, 'attention');
-  assert.match(byId(noBank, 'business_account').detail, /no bank account yet/);
+  assert.equal(byId(noBank, 'business_account').state, 'done');
+  assert.equal(byId(noBank, 'payouts').parts[1].state, 'todo');
+  assert.match(byId(noBank, 'payouts').parts[1].detail, /not added its bank account yet/);
+  assert.equal(byId(noBank, 'payouts').parts[1].action, 'send_bank_link');
 
   const noBalance = buildGoliveSteps({ ...READY, balanceAccount: null });
   assert.equal(byId(noBalance, 'business_account').state, 'attention');
@@ -1335,6 +1389,510 @@ test('buildGoliveSteps: the new lines never use a dash as punctuation and stay s
   }
 });
 
+// ── STEP 5, PAYOUTS AND COMMISSION, and THE HOLDER SAVE (9 Sep 2026) ─────────
+// Live screen, venue Provo: golive_state READ the pasted account holder and
+// said step 2 was Done because Adyen holds it, while the venue row still held
+// account_holder_id, balance_account_id and legal_entity_id NULL (the list
+// chips read NO HOLDER and NO PAYOUTS). And the store carried no split
+// configuration, so every sale settled to the liable account and nothing
+// reached the venue. These are the contracts for both copies.
+import {
+  HOLDER_NOT_SAVED_DETAIL, HOLDER_MONEY_MISMATCH_DETAIL, PAYOUTS_WAIT_FOR_LIVE_DETAIL, PAYOUT_CAPABILITY, REMAINDER_TO_VENUE, COMMISSION_TIERS,
+  commissionFromRates, splitLogicFor, splitRule, buildCommissionProfile, profileCommission, commissionLine,
+  tieredCommissionRules, buildTieredProfile, flatRateCard, rateCardPriced, pickPayoutInstrument,
+  sweepRows, sweepSummary, findPushSweep, sweepPayload, payoutCapabilityState,
+  liableBalanceAccountSecretName, liableBalanceAccountSecretNames, ADYEN_LIABLE_BALANCE_ACCOUNT_COLUMN,
+} from './adyenLink.js';
+
+// GET /merchants/{m}/splitConfigurations/{id}, the tiered shape adyen-onboard
+// writes: a catch all rule and a few specific ones, every one sending the
+// rest of the sale to the venue.
+const PROFILE = {
+  splitConfigurationId: 'SC3224Z223226M5KMQ5SPLIT1',
+  description: 'ServOS Provo tiered rates',
+  rules: [
+    { currency: 'GBP', paymentMethod: 'amex', shopperInteraction: 'ANY', fundingSource: 'ANY', splitLogic: { commission: { variablePercentage: 175, fixedAmount: 10 }, remainder: 'addToOneBalanceAccount' } },
+    { currency: 'GBP', paymentMethod: 'ANY', shopperInteraction: 'Ecommerce', fundingSource: 'ANY', splitLogic: { commission: { variablePercentage: 120, fixedAmount: 5 }, remainder: 'addToOneBalanceAccount' } },
+    { currency: 'GBP', paymentMethod: 'ANY', shopperInteraction: 'ANY', fundingSource: 'ANY', splitLogic: { commission: { variablePercentage: 80, fixedAmount: 5 }, remainder: 'addToOneBalanceAccount' } },
+  ],
+};
+// GET /balanceAccounts/{id}/sweeps
+const SWEEPS = { sweeps: [
+  { id: 'SWPC_PULL', type: 'pull', category: 'bank', schedule: { type: 'daily' }, status: 'active', counterparty: { transferInstrumentId: 'SI32BZP22322CJ5PXF2BDBANK1' } },
+  { id: 'SWPC_OFF', type: 'push', category: 'bank', schedule: { type: 'daily' }, status: 'inactive', counterparty: { transferInstrumentId: 'SI32BZP22322CJ5PXF2BDBANK1' } },
+  { id: 'SWPC_OTHER_BANK', type: 'push', category: 'bank', schedule: { type: 'weekly' }, status: 'active', counterparty: { transferInstrumentId: 'SI_SOMEONE_ELSE' }, currency: 'GBP' },
+  { id: 'SWPC3224Z223226M5KMQ5SWEEP1', type: 'push', category: 'bank', schedule: { type: 'daily' }, status: 'active', counterparty: { transferInstrumentId: 'SI32BZP22322CJ5PXF2BDBANK1' }, currency: 'GBP' },
+] };
+// The live row, 9 Sep 2026 22:20 UTC: the store saved, nothing on the money side.
+const PROVO_ROW = { store_id: PROVO.id, merchant_account: 'FranPOS_QSR_UK', account_holder_id: null, balance_account_id: null, legal_entity_id: null, split_profile_id: null, transfer_instrument_id: null, payouts_ok: false, markup_percent: 0.8, markup_fixed_pence: 5 };
+// The same row once the holder is saved.
+const SAVED_ROW = { ...PROVO_ROW, account_holder_id: HOLDER.id, balance_account_id: BALANCE.id, legal_entity_id: LEGAL.id, transfer_instrument_id: 'SI32BZP22322CJ5PXF2BDBANK1' };
+const noSplit = storeSummary({ ...PROVO, splitConfiguration: undefined });
+const allowedCaps = capabilityList(summariseCapabilities({ receivePayments: { allowed: true, requested: true, verificationStatus: 'valid' }, sendToTransferInstrument: { allowed: true, requested: true, verificationStatus: 'valid' } }));
+const every120 = (steps) => {
+  for (const s of steps) {
+    for (const x of [s, ...(s.parts || [])]) {
+      for (const t of [x.detail, x.hint]) {
+        if (!t) continue;
+        assert.ok(t.length <= 120, `${x.id}: ${t.length} chars: ${t}`);
+        assert.doesNotMatch(t, /[\u2013\u2014]/, `dash in: ${t}`);
+        assert.doesNotMatch(t, /\b(AH|ST|BA|LE|SI|SC|SWPC)[0-9A-Z]{10,}\b/, `id in a sentence: ${t}`);
+      }
+    }
+  }
+};
+
+test('buildGoliveSteps: a business account Adyen holds that the venue row does not name is attention with link_holder', () => {
+  // the live shape: the holder read (pasted), the store saved, the money side NULL on the row
+  const live = buildGoliveSteps({ ...READY, row: PROVO_ROW }, { target: 'live' });
+  const ba = byId(live, 'business_account');
+  assert.equal(ba.state, 'attention');
+  assert.equal(ba.detail, HOLDER_NOT_SAVED_DETAIL);
+  assert.equal(ba.detail, 'Adyen holds the business account, it is not saved on the venue yet.');
+  assert.equal(ba.action, 'link_holder');
+  // the store IS saved, so step 3 and 4 are fine
+  assert.equal(byId(live, 'payments_location').state, 'done');
+  assert.equal(byId(live, 'go_live').state, 'done');
+  // step 5 waits for the save, both parts, nothing to press there yet
+  const payouts = byId(live, 'payouts');
+  assert.equal(payouts.state, 'todo');
+  assert.equal(payouts.action, null);
+  assert.equal(payouts.parts[0].detail, 'Save the business account on the venue first.');
+  assert.equal(payouts.parts[1].detail, 'Save the business account on the venue first.');
+  // a row naming ANOTHER holder is the same thing to the owner: save the one Adyen holds
+  assert.equal(byId(buildGoliveSteps({ ...READY, row: { ...PROVO_ROW, account_holder_id: 'AH_SOMEONE_ELSE' } }, { target: 'live' }), 'business_account').action, 'link_holder');
+  // the row names it: done, and it reads the real state (a pending pay in is named)
+  const saved = buildGoliveSteps({ ...READY, row: SAVED_ROW }, { target: 'live' });
+  assert.equal(byId(saved, 'business_account').state, 'done');
+  assert.match(byId(saved, 'business_account').detail, /Provo Coffee Ltd is set up/);
+  // no row in hand (the other environment, or an old caller): the old reading stands
+  assert.equal(byId(buildGoliveSteps(READY), 'business_account').state, 'done');
+  // the save comes before any refusal talk: a blocked pay in still shows once the holder is on the row
+  const blockedUnsaved = buildGoliveSteps({ ...READY, row: PROVO_ROW, capabilities: capabilityList(summariseCapabilities({ receivePayments: { allowed: false, requested: true, verificationStatus: 'rejected' } })) }, { target: 'live' });
+  assert.equal(byId(blockedUnsaved, 'business_account').action, 'link_holder');
+  const blockedSaved = buildGoliveSteps({ ...READY, row: SAVED_ROW, capabilities: capabilityList(summariseCapabilities({ receivePayments: { allowed: false, requested: true, verificationStatus: 'rejected' } })) }, { target: 'live' });
+  assert.equal(byId(blockedSaved, 'business_account').state, 'blocked');
+  every120(live); every120(saved); every120(blockedUnsaved);
+});
+
+test('buildGoliveSteps: step 5a, the commission on the store, present or absent', () => {
+  // ABSENT (the live case): the store carries no split configuration, so every sale settles to ServOS
+  const absent = buildGoliveSteps({ ...READY, store: noSplit, row: SAVED_ROW, commission: { percent: 0.8, fixedPence: 5, currency: 'GBP' } }, { target: 'live' });
+  const split = byId(absent, 'payouts').parts[0];
+  assert.equal(split.state, 'todo');
+  assert.equal(split.detail, 'Commission is not set, so every card sale settles to ServOS and nothing to the venue.');
+  assert.equal(split.action, 'set_split');
+  assert.equal(split.hint, 'Set 0.8% plus 5p to ServOS, the rest to the venue.');
+  // the step opens on it: it is the first part with work the owner can do
+  assert.equal(byId(absent, 'payouts').action, 'set_split');
+  assert.equal(byId(absent, 'payouts').detail, split.detail);
+  // no numbers known yet: the hint says to type them
+  assert.equal(byId(buildGoliveSteps({ ...READY, store: noSplit, row: SAVED_ROW, commission: { currency: 'GBP' } }, { target: 'live' }), 'payouts').parts[0].hint, 'Type the percent and the pence, then set it.');
+  // PRESENT, and the profile was read: the real numbers, in plain words
+  const present = buildGoliveSteps({ ...READY, row: { ...SAVED_ROW, split_profile_id: PROVO.splitConfiguration.splitConfigurationId } }, { target: 'live' });
+  assert.equal(byId(present, 'payouts').parts[0].state, 'done');
+  assert.equal(byId(present, 'payouts').parts[0].detail, 'Commission is set: 0.8% plus 5p to ServOS, the rest to the venue.');
+  // present, profile not readable: still done, no numbers claimed
+  const unread = buildGoliveSteps({ ...READY, row: SAVED_ROW, commission: { percent: 0.8, fixedPence: 5, currency: 'GBP', profileRead: false } }, { target: 'live' });
+  assert.equal(byId(unread, 'payouts').parts[0].detail, 'Commission is set on the payments location.');
+  // the profile points the rest at ANOTHER balance account than the venue's: attention, set it again
+  const elsewhere = buildGoliveSteps({ ...READY, store: storeSummary({ ...PROVO, splitConfiguration: { ...PROVO.splitConfiguration, balanceAccountId: 'BA_SOMEONE_ELSE' } }), row: SAVED_ROW }, { target: 'live' });
+  assert.equal(byId(elsewhere, 'payouts').parts[0].state, 'attention');
+  assert.equal(byId(elsewhere, 'payouts').parts[0].action, 'set_split');
+  assert.match(byId(elsewhere, 'payouts').parts[0].detail, /different account/);
+  // the store, the merchant and the saves come first
+  assert.equal(byId(buildGoliveSteps({ ...READY, store: null, row: { ...SAVED_ROW, store_id: null } }, { target: 'live' }), 'payouts').parts[0].detail, 'Make the payments location first.');
+  assert.equal(byId(buildGoliveSteps({ ...READY, store: null, merchantMismatch: merchantMismatch({ configured: 'A', found: 'B' }), row: SAVED_ROW }, { target: 'live' }), 'payouts').parts[0].detail, 'Pick the right Adyen account in step 3 first.');
+  assert.equal(byId(buildGoliveSteps({ ...READY, row: { ...SAVED_ROW, store_id: null } }, { target: 'live' }), 'payouts').parts[0].detail, 'Save the payments location on the venue first.');
+  // a row with no balance account is not saved right: step 2 offers link_holder, step 5a waits on it
+  const noMoney = buildGoliveSteps({ ...READY, store: noSplit, row: { ...SAVED_ROW, balance_account_id: null } }, { target: 'live' });
+  assert.equal(byId(noMoney, 'business_account').action, 'link_holder');
+  assert.equal(byId(noMoney, 'business_account').detail, HOLDER_MONEY_MISMATCH_DETAIL);
+  assert.equal(byId(noMoney, 'payouts').parts[0].detail, 'Save the business account on the venue first.');
+  assert.equal(byId(buildGoliveSteps({ venue: { code: 'SV-1007', environment: 'test' }, keys: { configured: true, missing: [] }, row: {} }), 'payouts').parts[0].detail, 'Find the venue first.');
+  // DONE NEEDS THE REST TO REACH THE VENUE (9 Sep 2026): a profile whose
+  // catch all rule keeps the remainder for ServOS is not "the rest to the venue"
+  const keptByUs = buildGoliveSteps({ ...READY, commission: { ...READY.commission, profileRemainder: 'addToLiableAccount' } }, { target: 'live' });
+  assert.equal(byId(keptByUs, 'payouts').parts[0].state, 'attention');
+  assert.equal(byId(keptByUs, 'payouts').parts[0].detail, 'The commission rule does not send the rest of each sale to the venue.');
+  assert.equal(byId(keptByUs, 'payouts').parts[0].action, 'set_split');
+  // ...and a profile that was read with no remainder word at all is the same
+  assert.equal(byId(buildGoliveSteps({ ...READY, commission: { ...READY.commission, profileRemainder: null } }, { target: 'live' }), 'payouts').parts[0].state, 'attention');
+  // a store with a profile but NO balance account named: the rest goes nowhere the venue can see
+  const noStoreBa = buildGoliveSteps({ ...READY, store: storeSummary({ ...PROVO, splitConfiguration: { splitConfigurationId: PROVO.splitConfiguration.splitConfigurationId } }) }, { target: 'live' });
+  assert.equal(byId(noStoreBa, 'payouts').parts[0].state, 'attention');
+  assert.equal(byId(noStoreBa, 'payouts').parts[0].detail, 'The commission rule names no account for the rest of each sale.');
+  assert.equal(byId(noStoreBa, 'payouts').parts[0].action, 'set_split');
+  // "from 0.8% plus 5p" when the venue pays more than one rate (tiers) or the profile holds more than one rule
+  const tieredRead = buildGoliveSteps({ ...READY, commission: { ...READY.commission, tiers: 4, profileRules: 6 } }, { target: 'live' });
+  assert.equal(byId(tieredRead, 'payouts').parts[0].detail, 'Commission is set: from 0.8% plus 5p to ServOS, the rest to the venue.');
+  const tieredTodo = buildGoliveSteps({ ...READY, store: noSplit, commission: { percent: 0.8, fixedPence: 5, currency: 'GBP', tiers: 3 } }, { target: 'live' });
+  assert.equal(byId(tieredTodo, 'payouts').parts[0].hint, 'Set from 0.8% plus 5p to ServOS, the rest to the venue.');
+  every120(absent); every120(present); every120(elsewhere); every120(keptByUs); every120(noStoreBa); every120(tieredRead); every120(noMoney);
+});
+
+test('buildGoliveSteps: step 5 offers NOTHING while the flow looks at the other environment', () => {
+  // A test venue looking at live (the go live path): the server acts on the
+  // venue's OWN row, so set_split, the bank details link and Pay out daily
+  // must not be offered on the back of the live read (9 Sep 2026).
+  const other = buildGoliveSteps({ ...READY, venue: { ...READY.venue, environment: 'test' }, row: null }, { target: 'live' });
+  const payouts = byId(other, 'payouts');
+  assert.equal(payouts.state, 'todo');
+  assert.equal(payouts.action, null);
+  assert.equal(payouts.detail, PAYOUTS_WAIT_FOR_LIVE_DETAIL);
+  assert.equal(payouts.detail, 'Turn on live payments first.');
+  assert.deepEqual(payouts.parts.map((p) => [p.state, p.action, p.detail]), [['todo', null, 'Turn on live payments first.'], ['todo', null, 'Turn on live payments first.']]);
+  // the same with the split absent and the bank missing on the live read: still nothing
+  const bare = buildGoliveSteps({ ...READY, venue: { ...READY.venue, environment: 'test' }, row: null, store: noSplit, legalEntity: legalEntitySummary({ ...LEGAL, transferInstruments: [] }), payouts: { read: true, sweep: null } }, { target: 'live' });
+  assert.equal(byId(bare, 'payouts').action, null);
+  assert.deepEqual(byId(bare, 'payouts').parts.map((p) => p.action), [null, null]);
+  // no row at all but the venue's own environment is `{}`, and the step works
+  const own = buildGoliveSteps({ ...READY, store: noSplit, row: {} }, { target: 'live' });
+  assert.notEqual(byId(own, 'payouts').detail, PAYOUTS_WAIT_FOR_LIVE_DETAIL);
+  every120(other); every120(bare);
+});
+
+test('buildGoliveSteps and buildLinkPatch: a store whose split names ANOTHER holder’s balance account never wins', () => {
+  // The live shape this guards against (9 Sep 2026): a store FranPOS made in
+  // the Customer Area carries a split configuration naming the platform's
+  // liable account (or another venue's). The admin pastes AH32BZP... for
+  // Provo. The lookup keeps the pasted holder, drops the foreign account,
+  // picks the holder's own primary (source account_holder) and flags it.
+  const foreignStore = storeSummary({ ...PROVO, splitConfiguration: { splitConfigurationId: 'SC_FRANPOS_SHARED', balanceAccountId: 'BA_SOMEONE_ELSE' } });
+  const lookup = {
+    found: true, reference: 'SV-1007', store: foreignStore,
+    balanceAccount: balanceAccountSummary(BALANCE, 'account_holder'),
+    accountHolder: accountHolderSummary(HOLDER), legalEntity: legalEntitySummary(LEGAL),
+    storeBalanceAccountForeign: true, storeBalanceAccountId: 'BA_SOMEONE_ELSE',
+  };
+  const patch = buildLinkPatch(lookup, { merchantAccount: 'FranPOS_QSR_UK', region: 'UK', environment: 'live' });
+  assert.equal(patch.balance_account_id, BALANCE.id, 'the pasted holder’s primary, never the store’s');
+  assert.equal(patch.account_holder_id, HOLDER.id);
+  assert.equal(patch.legal_entity_id, LEGAL.id);
+  assert.equal(patch.split_profile_id, 'SC_FRANPOS_SHARED');
+  // with the holder's own account unreadable, the foreign one still never falls through
+  const blind = buildLinkPatch({ ...lookup, balanceAccount: null });
+  assert.equal(blind.balance_account_id, undefined);
+  assert.equal(blind.account_holder_id, HOLDER.id);
+  // an ordinary store (not flagged) still hands its account over when the deeper read failed
+  assert.equal(buildLinkPatch({ found: true, store: storeSummary(PROVO) }).balance_account_id, BALANCE.id);
+  // step 5a, once the holder is saved with its own account: attention, set it again
+  const steps = buildGoliveSteps({ ...READY, store: foreignStore, row: SAVED_ROW }, { target: 'live' });
+  assert.equal(byId(steps, 'business_account').state, 'done');
+  assert.equal(byId(steps, 'payouts').parts[0].state, 'attention');
+  assert.equal(byId(steps, 'payouts').parts[0].action, 'set_split');
+  assert.match(byId(steps, 'payouts').parts[0].detail, /different account/);
+  assert.equal(byId(steps, 'payouts').action, 'set_split');
+  // a row that was written with the foreign account before this fix is not saved right: step 2 offers the right one
+  const wrongRow = buildGoliveSteps({ ...READY, store: foreignStore, row: { ...SAVED_ROW, balance_account_id: 'BA_SOMEONE_ELSE' } }, { target: 'live' });
+  assert.equal(byId(wrongRow, 'business_account').state, 'attention');
+  assert.equal(byId(wrongRow, 'business_account').detail, HOLDER_MONEY_MISMATCH_DETAIL);
+  assert.equal(byId(wrongRow, 'business_account').action, 'link_holder');
+  assert.equal(byId(wrongRow, 'payouts').parts[0].detail, 'Save the business account on the venue first.');
+  // the plain line for the box: said by step 5a, so the box skips its kind
+  const line = plainAdyenProblem('balance account BA_SOMEONE_ELSE (named by the store\'s split configuration) belongs to a different account holder, AH_OTHER, not AH32BZP22322CJ5PXF2BD5FTR. It was not used.');
+  assert.equal(line.kind, 'foreign_balance_account');
+  assert.ok(line.text.length < PROBLEM_TEXT_MAX);
+  every120(steps); every120(wrongRow);
+});
+
+test('buildGoliveSteps: step 5b, the bank account, the approval and the daily payout', () => {
+  const base = { ...READY, row: SAVED_ROW };
+  // no bank account: the link is the one thing to do
+  const noBank = buildGoliveSteps({ ...base, legalEntity: legalEntitySummary({ ...LEGAL, transferInstruments: [] }), row: { ...SAVED_ROW, transfer_instrument_id: null }, payouts: { read: true, sweep: null } }, { target: 'live' });
+  const bank = byId(noBank, 'payouts').parts[1];
+  assert.equal(bank.state, 'todo');
+  assert.equal(bank.detail, 'The venue has not added its bank account yet.');
+  assert.equal(bank.action, 'send_bank_link');
+  assert.equal(byId(noBank, 'payouts').action, 'send_bank_link');
+  // a bank account on the row alone is enough to know it is there
+  assert.equal(byId(buildGoliveSteps({ ...base, legalEntity: legalEntitySummary({ ...LEGAL, transferInstruments: [] }) }, { target: 'live' }), 'payouts').parts[1].state, 'done');
+  // PENDING: Adyen is still checking; a wait, never parking the flow (step action null)
+  const pending = buildGoliveSteps({ ...base, capabilities: capabilityList(summariseCapabilities(CAPS)), payouts: { read: true, sweep: null } }, { target: 'live' });
+  const wait = byId(pending, 'payouts').parts[1];
+  assert.equal(wait.state, 'attention');
+  assert.equal(wait.detail, 'Adyen is still checking the venue. Payouts start when it is approved.');
+  assert.equal(wait.action, 'check_payouts');
+  assert.equal(byId(pending, 'payouts').action, null);
+  assert.equal(byId(pending, 'payouts').state, 'attention');
+  // ALLOWED, no sweep yet: one click pays out daily
+  const allowed = buildGoliveSteps({ ...base, payouts: { read: true, sweep: null } }, { target: 'live' });
+  assert.equal(byId(allowed, 'payouts').parts[1].state, 'todo');
+  assert.equal(byId(allowed, 'payouts').parts[1].action, 'setup_sweep');
+  assert.match(byId(allowed, 'payouts').parts[1].detail, /not switched on yet/);
+  assert.equal(byId(allowed, 'payouts').action, 'setup_sweep');
+  // OK: allowed and the sweep exists
+  const ok = buildGoliveSteps(base, { target: 'live' });
+  assert.equal(byId(ok, 'payouts').parts[1].state, 'done');
+  assert.equal(byId(ok, 'payouts').parts[1].detail, 'Paid out daily to the venue bank.');
+  assert.equal(byId(ok, 'payouts').state, 'done');
+  assert.equal(byId(ok, 'payouts').detail, 'Commission is set. Paid out daily to the venue bank.');
+  const weekly = buildGoliveSteps({ ...base, payouts: { read: true, sweep: { ...SWEEP, schedule: 'weekly' } } }, { target: 'live' });
+  assert.equal(byId(weekly, 'payouts').parts[1].detail, 'Paid out weekly to the venue bank.');
+  // REJECTED (Adyen has decided): Adyen's door, a wait for the flow
+  const rejected = buildGoliveSteps({ ...base, capabilities: capabilityList(summariseCapabilities({ ...LIVE_CAPS, sendToTransferInstrument: { ...LIVE_CAPS.sendToTransferInstrument, verificationStatus: 'rejected' } })) }, { target: 'live' });
+  assert.equal(byId(rejected, 'payouts').parts[1].detail, 'Adyen will not pay this venue out yet.');
+  assert.equal(byId(rejected, 'payouts').parts[1].action, 'open_adyen');
+  assert.equal(byId(rejected, 'payouts').action, null);
+  // INVALID (the live shape, "Bank account not verified"): Adyen wants more
+  // from the venue, and the bank details link is where it gives it (9 Sep 2026)
+  const invalid = buildGoliveSteps({ ...base, capabilities: capabilityList(summariseCapabilities(LIVE_CAPS)) }, { target: 'live' });
+  assert.equal(byId(invalid, 'payouts').parts[1].state, 'attention');
+  assert.equal(byId(invalid, 'payouts').parts[1].detail, 'Adyen needs more details from the venue.');
+  assert.equal(byId(invalid, 'payouts').parts[1].action, 'send_bank_link');
+  assert.equal(byId(invalid, 'payouts').action, 'send_bank_link');
+  // NEVER ASKED: one click asks Adyen (request_payouts), instead of the Customer Area
+  const never = buildGoliveSteps({ ...base, capabilities: capabilityList(summariseCapabilities({ receivePayments: { allowed: true, requested: true, verificationStatus: 'valid' }, sendToTransferInstrument: { allowed: false, requested: false } })) }, { target: 'live' });
+  assert.match(byId(never, 'payouts').parts[1].detail, /never asked to allow payouts/);
+  assert.equal(byId(never, 'payouts').parts[1].state, 'todo');
+  assert.equal(byId(never, 'payouts').parts[1].action, 'request_payouts');
+  assert.equal(byId(never, 'payouts').action, 'request_payouts');
+  // ...and a capability list with NO payout row at all means the same thing (Adyen only answers what was requested)
+  const absent = buildGoliveSteps({ ...base, capabilities: capabilityList(summariseCapabilities({ receivePayments: { allowed: true, requested: true, verificationStatus: 'valid' } })) }, { target: 'live' });
+  assert.equal(byId(absent, 'payouts').parts[1].action, 'request_payouts');
+  // a null verification with requested true is still being checked, never a refusal
+  const nullVerification = buildGoliveSteps({ ...base, capabilities: capabilityList(summariseCapabilities({ sendToTransferInstrument: { allowed: false, requested: true } })), payouts: { read: true, sweep: null } }, { target: 'live' });
+  assert.equal(byId(nullVerification, 'payouts').parts[1].action, 'check_payouts');
+  // the Balance Platform refused our key: blocked, said once at step 2
+  const refused = buildGoliveSteps({ ...base, holder: null, balanceAccount: null, legalEntity: null, capabilities: [], balancePlatformKey: { refused: true, secret: 'ADYEN_LIVE_UK_BP_KEY' } }, { target: 'live' });
+  assert.equal(byId(refused, 'payouts').parts[1].state, 'blocked');
+  assert.equal(byId(refused, 'payouts').parts[1].detail, 'Payouts cannot be checked until step 2 is fixed.');
+  assert.equal(byId(refused, 'payouts').parts[1].action, 'add_bp_key', 'server only, so the flow never parks here');
+  assert.equal(byId(refused, 'payouts').state, 'blocked');
+  assert.equal(byId(refused, 'payouts').action, 'add_bp_key');
+  // the worst colour wins the step, the first owner click wins the button
+  const mixed = buildGoliveSteps({ ...base, store: noSplit, capabilities: capabilityList(summariseCapabilities(CAPS)), payouts: { read: true, sweep: null } }, { target: 'live' });
+  assert.equal(byId(mixed, 'payouts').state, 'attention');
+  assert.equal(byId(mixed, 'payouts').action, 'set_split');
+  for (const s of [noBank, pending, allowed, ok, weekly, rejected, invalid, never, absent, nullVerification, refused, mixed]) every120(s);
+});
+
+test('tieredCommissionRules and buildTieredProfile: one rule per tier, the shape configure_splits always wrote', () => {
+  const tiers = { card_present: { percent: 0.8, fixedPence: 5 }, card_not_present: { percent: 1.2, fixed_pence: 5 }, amex: { percent: 1.75, fixedPence: 10 }, keyed: { percent: 1.5, fixedPence: 8 } };
+  const built = tieredCommissionRules('gbp', tiers);
+  assert.deepEqual(built.lacking, []);
+  assert.deepEqual(built.rules.map((r) => [r.paymentMethod, r.shopperInteraction, r.splitLogic.commission]), [
+    ['amex', 'Ecommerce', { variablePercentage: 175, fixedAmount: 10 }],
+    ['amex', 'Moto', { variablePercentage: 175, fixedAmount: 10 }],
+    ['amex', 'ANY', { variablePercentage: 175, fixedAmount: 10 }],
+    ['ANY', 'Ecommerce', { variablePercentage: 120, fixedAmount: 5 }],
+    ['ANY', 'Moto', { variablePercentage: 150, fixedAmount: 8 }],
+    ['ANY', 'ANY', { variablePercentage: 80, fixedAmount: 5 }],
+  ]);
+  for (const r of built.rules) {
+    assert.equal(r.currency, 'GBP');
+    assert.equal(r.fundingSource, 'ANY');
+    assert.equal(r.splitLogic.remainder, REMAINDER_TO_VENUE);
+    assert.equal(r.splitLogic.paymentFee, 'deductFromLiableAccount');
+  }
+  // a tier with no rate at all is named, and no rules come back: a 0% rule is never written
+  assert.deepEqual(tieredCommissionRules('GBP', { ...tiers, amex: { percent: 0, fixedPence: 0 }, keyed: {} }), { rules: [], lacking: ['amex', 'keyed'] });
+  assert.deepEqual(tieredCommissionRules('GBP', null).lacking, [...COMMISSION_TIERS]);
+  const profile = buildTieredProfile({ description: 'ServOS Provo rates', currency: 'GBP', tiers });
+  assert.equal(profile.rules.length, 6);
+  assert.equal(profile.description, 'ServOS Provo rates');
+  assert.equal(buildTieredProfile({ currency: 'GBP', tiers: { card_present: { percent: 1 } } }), null);
+  // the flat number becomes every tier, so the ledger charges what Adyen takes
+  assert.deepEqual(flatRateCard(0.8, 5), {
+    card_present: { percent: 0.8, fixed_pence: 5 }, card_not_present: { percent: 0.8, fixed_pence: 5 },
+    amex: { percent: 0.8, fixed_pence: 5 }, keyed: { percent: 0.8, fixed_pence: 5 },
+  });
+  assert.deepEqual(flatRateCard(null, 5).amex, { percent: null, fixed_pence: 5 });
+  assert.equal(flatRateCard(0, 0), null);
+  assert.equal(flatRateCard(null, null), null);
+  assert.deepEqual(tieredCommissionRules('GBP', flatRateCard(0.8, 5)).rules.map((r) => r.splitLogic.commission), Array(6).fill({ variablePercentage: 80, fixedAmount: 5 }));
+  // a rate card prices something when any tier holds a number
+  assert.equal(rateCardPriced({ amex: { percent: 1.75, fixed_pence: 10 } }), true);
+  assert.equal(rateCardPriced({ amex: { percent: null, fixed_pence: null }, keyed: {} }), false);
+  assert.equal(rateCardPriced(null), false);
+  assert.equal(rateCardPriced({ card_present: { percent: 0, fixed_pence: 0 } }), false);
+});
+
+test('pickPayoutInstrument: the approved bank an existing sweep names, never simply the oldest one', () => {
+  // The venue changed bank: Adyen holds SI_OLD (first in the legal entity's
+  // list) and SI_NEW, both approved, and the live daily sweep points at SI_NEW.
+  const holderCaps = {
+    receivePayments: { allowed: true, requested: true, verificationStatus: 'valid' },
+    sendToTransferInstrument: {
+      allowed: true, requested: true, verificationStatus: 'valid',
+      transferInstruments: [
+        { id: 'SI_OLD', allowed: true, requested: true, verificationStatus: 'valid' },
+        { id: 'SI_NEW', allowed: true, requested: true, verificationStatus: 'valid' },
+        { id: 'SI_PENDING', allowed: false, requested: true, verificationStatus: 'pending' },
+      ],
+    },
+  };
+  const sweeps = { sweeps: [
+    { id: 'SWPC_OLD_OFF', type: 'push', category: 'bank', schedule: { type: 'daily' }, status: 'inactive', counterparty: { transferInstrumentId: 'SI_OLD' } },
+    { id: 'SWPC_NEW', type: 'push', category: 'bank', schedule: { type: 'daily' }, status: 'active', counterparty: { transferInstrumentId: 'SI_NEW' } },
+  ] };
+  assert.deepEqual(pickPayoutInstrument(holderCaps, { sweeps, rowTransferInstrumentId: 'SI_OLD', legalEntityInstruments: ['SI_OLD', 'SI_NEW'] }), { transferInstrumentId: 'SI_NEW', source: 'sweep', sweepId: 'SWPC_NEW' });
+  // no sweep yet: the row's bank when Adyen approved it, else the first approved one
+  assert.deepEqual(pickPayoutInstrument(holderCaps, { sweeps: { sweeps: [] }, rowTransferInstrumentId: 'SI_NEW' }), { transferInstrumentId: 'SI_NEW', source: 'row', sweepId: null });
+  assert.deepEqual(pickPayoutInstrument(holderCaps, { sweeps: null, rowTransferInstrumentId: 'SI_PENDING' }), { transferInstrumentId: 'SI_OLD', source: 'approved', sweepId: null });
+  // a sweep pointing at a bank Adyen has not approved is not followed
+  const pendingSweep = { sweeps: [{ id: 'SWPC_P', type: 'push', category: 'bank', schedule: { type: 'daily' }, status: 'active', counterparty: { transferInstrumentId: 'SI_PENDING' } }] };
+  assert.equal(pickPayoutInstrument(holderCaps, { sweeps: pendingSweep }).transferInstrumentId, 'SI_OLD');
+  // no approved list on the capability: the legal entity's banks stand in, same order of preference
+  const bare = { sendToTransferInstrument: { allowed: true, requested: true, verificationStatus: 'valid' } };
+  assert.deepEqual(pickPayoutInstrument(bare, { sweeps, rowTransferInstrumentId: 'SI_OLD', legalEntityInstruments: ['SI_OLD', 'SI_NEW'] }), { transferInstrumentId: 'SI_NEW', source: 'sweep', sweepId: 'SWPC_NEW' });
+  assert.deepEqual(pickPayoutInstrument(bare, { legalEntityInstruments: [{ id: 'SI_OLD' }, { id: 'SI_NEW' }] }), { transferInstrumentId: 'SI_OLD', source: 'legal_entity', sweepId: null });
+  // nothing approved and nothing on the legal entity: null (the bank details link is the next thing)
+  assert.equal(pickPayoutInstrument(bare, {}), null);
+  assert.equal(pickPayoutInstrument(null), null);
+  // "paid out" is ANY active push to a bank: the sweep on the second bank counts with no bank named
+  assert.equal(findPushSweep(sweeps, null).id, 'SWPC_NEW');
+  assert.equal(findPushSweep(sweeps, 'SI_OLD'), null, 'the old bank has only the switched off one');
+});
+
+test('commissionFromRates and buildCommissionProfile: basis points and minor units, one catch all rule', () => {
+  assert.deepEqual(commissionFromRates(0.8, 5), { variablePercentage: 80, fixedAmount: 5 });
+  assert.deepEqual(commissionFromRates('1.75', '10'), { variablePercentage: 175, fixedAmount: 10 });
+  assert.deepEqual(commissionFromRates(0.8, 0), { variablePercentage: 80 });
+  assert.deepEqual(commissionFromRates(0, 5), { fixedAmount: 5 });
+  assert.deepEqual(commissionFromRates(0.005, 4.6), { variablePercentage: 1, fixedAmount: 5 });
+  assert.equal(commissionFromRates(0, 0), null);
+  assert.equal(commissionFromRates(null, undefined), null);
+  assert.equal(commissionFromRates(-1, -5), null);
+  const profile = buildCommissionProfile({ description: 'ServOS Provo rates', currency: 'gbp', percent: 0.8, fixedPence: 5 });
+  assert.equal(profile.description, 'ServOS Provo rates');
+  assert.equal(profile.rules.length, 1);
+  assert.deepEqual(profile.rules[0], {
+    currency: 'GBP', fundingSource: 'ANY', paymentMethod: 'ANY', shopperInteraction: 'ANY',
+    splitLogic: {
+      commission: { variablePercentage: 80, fixedAmount: 5 },
+      paymentFee: 'deductFromLiableAccount',
+      remainder: 'addToOneBalanceAccount',
+      tip: 'addToOneBalanceAccount',
+      surcharge: 'addToOneBalanceAccount',
+      chargeback: 'deductFromOneBalanceAccount',
+      chargebackCostAllocation: 'deductFromLiableAccount',
+      refund: 'deductAccordingToSplitRatio',
+      refundCostAllocation: 'deductFromLiableAccount',
+    },
+  });
+  // nothing to set is null, never a 0% rule
+  assert.equal(buildCommissionProfile({ description: 'x', currency: 'GBP', percent: 0, fixedPence: 0 }), null);
+  assert.equal(buildCommissionProfile({ description: 'x', currency: 'GBP' }), null);
+  // a long description is cut to what Adyen takes; an empty one is named
+  assert.equal(buildCommissionProfile({ description: 'a'.repeat(400), currency: 'GBP', percent: 1 }).description.length, 300);
+  assert.equal(buildCommissionProfile({ currency: 'USD', percent: 1 }).description, 'ServOS rates');
+  // the shared logic and a specific rule read the same way adyen-onboard writes them
+  assert.equal(splitLogicFor({ fixedAmount: 5 }).remainder, 'addToOneBalanceAccount');
+  assert.deepEqual(splitLogicFor(null).commission, {});
+  assert.equal(splitRule({ currency: 'usd', paymentMethod: 'amex', shopperInteraction: 'Moto', commission: { fixedAmount: 1 } }).shopperInteraction, 'Moto');
+  assert.equal(splitRule().currency, 'GBP');
+});
+
+test('profileCommission: the catch all rule wins, else the first priced one, and where the rest goes', () => {
+  assert.deepEqual(profileCommission(PROFILE), { percent: 0.8, fixedPence: 5, rules: 3, remainder: 'addToOneBalanceAccount', venueRules: 3 });
+  assert.deepEqual(profileCommission({ rules: [PROFILE.rules[0], PROFILE.rules[1]] }), { percent: 1.75, fixedPence: 10, rules: 2, remainder: 'addToOneBalanceAccount', venueRules: 2 });
+  assert.deepEqual(profileCommission({ rules: [{ currency: 'GBP', splitLogic: { commission: { fixedAmount: 5 } } }] }), { percent: 0, fixedPence: 5, rules: 1, remainder: null, venueRules: 0 });
+  // a rule with a remainder and no commission is a profile that takes nothing for ServOS, not "no profile"
+  assert.deepEqual(profileCommission({ rules: [{ currency: 'GBP', splitLogic: { remainder: 'addToOneBalanceAccount' } }] }), { percent: 0, fixedPence: 0, rules: 1, remainder: 'addToOneBalanceAccount', venueRules: 1 });
+  // the catch all rule's remainder is THE remainder, even when a specific rule differs
+  const mixed = { rules: [
+    { currency: 'GBP', paymentMethod: 'amex', splitLogic: { commission: { variablePercentage: 175 }, remainder: 'addToOneBalanceAccount' } },
+    { currency: 'GBP', paymentMethod: 'ANY', shopperInteraction: 'ANY', splitLogic: { commission: { variablePercentage: 80 }, remainder: 'addToLiableAccount' } },
+  ] };
+  assert.deepEqual(profileCommission(mixed), { percent: 0.8, fixedPence: 0, rules: 2, remainder: 'addToLiableAccount', venueRules: 1 });
+  assert.equal(profileCommission({ rules: [] }), null);
+  assert.equal(profileCommission(null), null);
+  assert.equal(REMAINDER_TO_VENUE, 'addToOneBalanceAccount');
+});
+
+test('commissionLine: plain words, pence or cents, null for nothing', () => {
+  assert.equal(commissionLine(0.8, 5, 'GBP'), '0.8% plus 5p');
+  assert.equal(commissionLine(0.8, 5), '0.8% plus 5p');
+  assert.equal(commissionLine(1.75, 10, 'USD'), '1.75% plus 10c');
+  assert.equal(commissionLine(1, 0), '1%');
+  assert.equal(commissionLine(0, 5), '5p');
+  assert.equal(commissionLine('0.80000001', '4.6'), '0.8% plus 5p');
+  assert.equal(commissionLine(0, 0), null);
+  assert.equal(commissionLine(null, null), null);
+  assert.equal(commissionLine('x', 'y'), null);
+});
+
+test('sweeps: rows, summary, the push to THIS bank, and the payload that pays it', () => {
+  assert.equal(sweepRows(SWEEPS).length, 4);
+  assert.equal(sweepRows(SWEEPS.sweeps).length, 4);
+  assert.deepEqual(sweepRows({ hasNext: false }), []);
+  assert.deepEqual(sweepSummary(SWEEPS.sweeps[3]), SWEEP);
+  assert.equal(sweepSummary({ id: 'S', schedule: 'weekly' }).schedule, 'weekly');   // adyen-onboard's flattened shape
+  assert.equal(sweepSummary(null), null);
+  // the push to this bank, not the pull, not the inactive one, not another bank's
+  assert.equal(findPushSweep(SWEEPS, 'SI32BZP22322CJ5PXF2BDBANK1').id, 'SWPC3224Z223226M5KMQ5SWEEP1');
+  assert.equal(findPushSweep(SWEEPS, 'SI_NOBODY'), null);
+  // no bank named: the first live push to any bank
+  assert.equal(findPushSweep(SWEEPS).id, 'SWPC_OTHER_BANK');
+  assert.equal(findPushSweep({ sweeps: [] }, 'SI1'), null);
+  assert.equal(findPushSweep(null), null);
+  assert.deepEqual(sweepPayload({ transferInstrumentId: 'SI1', currency: 'gbp', description: 'ServOS daily payout, Provo' }), {
+    counterparty: { transferInstrumentId: 'SI1' }, currency: 'GBP', category: 'bank', priorities: ['regular', 'fast'],
+    schedule: { type: 'daily' }, status: 'active', type: 'push', description: 'ServOS daily payout, Provo',
+  });
+  assert.deepEqual(sweepPayload({ transferInstrumentId: 'SI1', currency: 'USD', schedule: 'cron', cronExpression: '0 7 * * 1' }).schedule, { type: 'cron', cronExpression: '0 7 * * 1' });
+  assert.equal(sweepPayload({ transferInstrumentId: 'SI1', schedule: 'hourly' }).schedule.type, 'daily');
+  assert.equal(sweepPayload({ transferInstrumentId: 'SI1' }).description, 'ServOS daily payout');
+});
+
+test('payoutCapabilityState: one word for the payout capability', () => {
+  assert.equal(PAYOUT_CAPABILITY, 'sendToTransferInstrument');
+  assert.equal(payoutCapabilityState(allowedCaps), 'allowed');
+  assert.equal(payoutCapabilityState(capabilityList(summariseCapabilities(CAPS))), 'pending');
+  // invalid is "Adyen needs more from the venue" (the live shape: Bank account not verified), not a refusal
+  assert.equal(payoutCapabilityState(capabilityList(summariseCapabilities(LIVE_CAPS))), 'needs_details');
+  assert.equal(payoutCapabilityState(capabilityList(summariseCapabilities({ sendToTransferInstrument: { allowed: false, requested: true, verificationStatus: 'rejected' } }))), 'rejected');
+  // no verification word yet with requested true: still being checked
+  assert.equal(payoutCapabilityState(capabilityList(summariseCapabilities({ sendToTransferInstrument: { allowed: false, requested: true } }))), 'pending');
+  assert.equal(payoutCapabilityState(capabilityList(summariseCapabilities({ sendToTransferInstrument: { allowed: false, requested: false } }))), 'unrequested');
+  // Adyen only answers the capabilities that were requested: a list without the row means never asked
+  assert.equal(payoutCapabilityState(capabilityList(summariseCapabilities({ receivePayments: { allowed: true } }))), 'unrequested');
+  // no list at all is unknown (the holder was not read)
+  assert.equal(payoutCapabilityState([]), 'unknown');
+  assert.equal(payoutCapabilityState(null), 'unknown');
+});
+
+test('liable balance account: the secret names follow the balance platform rule, the column is named', () => {
+  assert.equal(liableBalanceAccountSecretName('live', 'UK'), 'ADYEN_LIVE_UK_LIABLE_BALANCE_ACCOUNT');
+  assert.equal(liableBalanceAccountSecretName('live', 'US'), 'ADYEN_LIVE_US_LIABLE_BALANCE_ACCOUNT');
+  assert.equal(liableBalanceAccountSecretName('test', 'UK'), 'ADYEN_LIABLE_BALANCE_ACCOUNT');
+  assert.deepEqual(liableBalanceAccountSecretNames('live', 'UK'), ['ADYEN_LIVE_UK_LIABLE_BALANCE_ACCOUNT', 'ADYEN_LIVE_LIABLE_BALANCE_ACCOUNT']);
+  assert.deepEqual(liableBalanceAccountSecretNames('live', 'US'), ['ADYEN_LIVE_US_LIABLE_BALANCE_ACCOUNT']);
+  assert.deepEqual(liableBalanceAccountSecretNames('test', 'US'), ['ADYEN_TEST_US_LIABLE_BALANCE_ACCOUNT', 'ADYEN_LIABLE_BALANCE_ACCOUNT']);
+  assert.equal(ADYEN_LIABLE_BALANCE_ACCOUNT_COLUMN, 'liable_balance_account_id');
+});
+
+test('buildLinkPatch: payouts_ok is the capability, payout_sweep_id is PAID OUT once the sweeps were listed', () => {
+  const allowed = accountHolderSummary({ ...HOLDER, capabilities: { sendToTransferInstrument: { allowed: true, requested: true, verificationStatus: 'valid' } } });
+  const base = { found: true, reference: 'SV-1007', store: storeSummary(PROVO), balanceAccount: balanceAccountSummary(BALANCE), accountHolder: allowed, legalEntity: legalEntitySummary(LEGAL) };
+  // sweeps not listed: the capability, and the sweep column is left alone
+  const unread = buildLinkPatch(base);
+  assert.equal(unread.payouts_ok, true);
+  assert.equal('payout_sweep_id' in unread, false);
+  // listed and none: still allowed (the webhook and the venue screen mean the capability), sweep null
+  const none = buildLinkPatch({ ...base, sweepKnown: true, sweep: null });
+  assert.equal(none.payouts_ok, true);
+  assert.equal(none.payout_sweep_id, null);
+  // listed and there: the sweep id rides
+  const paid = buildLinkPatch({ ...base, sweepKnown: true, sweep: SWEEP });
+  assert.equal(paid.payouts_ok, true);
+  assert.equal(paid.payout_sweep_id, SWEEP.id);
+  // not allowed is not allowed, sweep or not
+  const refused = buildLinkPatch({ ...base, accountHolder: accountHolderSummary(HOLDER), sweepKnown: true, sweep: SWEEP });
+  assert.equal(refused.payouts_ok, false);
+  assert.equal(refused.payout_sweep_id, SWEEP.id);
+  // the sweep column is never one of the eight link ids (linkDiff and the plan ignore it)
+  assert.equal(LINK_ID_FIELDS.includes('payout_sweep_id'), false);
+});
+
+test('plainAdyenProblem: the step 5 reads have plain subjects', () => {
+  assert.equal(plainAdyenProblem('sweeps of balance account BA1: Adyen answered 500').text, 'Adyen would not answer about the payout schedule.');
+  assert.equal(plainAdyenProblem('split configuration SC1: Adyen answered 404').text, 'Adyen would not answer about the commission rules.');
+  assert.equal(plainAdyenProblem('platform defaults: permission denied').text, 'Adyen would not answer about the default rates.');
+  assert.equal(plainAdyenProblem(BP_REFUSED('sweeps of balance account BA1')).kind, 'bp_refused');
+});
+
 // ── THE TWO COPIES AGREE (9 Sep 2026) ────────────────────────────────────────
 // The function (Deno) runs _shared/adyenLink.ts and the screen reads its
 // answer, so the step builder and the plain problem lines are checked on THAT
@@ -1356,7 +1914,55 @@ test('TS mirror: buildGoliveSteps, goliveProblems and plainAdyenProblem answer e
     [{ ...READY, holder: null, balanceAccount: null, legalEntity: null, capabilities: [], store: null, row: {}, storeRead: { refused: false, ambiguous: true } }, { target: 'live' }],
     [{ ...READY, holder: null, balanceAccount: null, legalEntity: null, capabilities: [], store: null, row: {}, storeRead: { refused: true }, balancePlatformKey: { refused: true, secret: 'ADYEN_LIVE_UK_BP_KEY' } }, { target: 'live' }],
   ];
+  // step 5 shapes (9 Sep 2026): holder not saved, split absent, no bank,
+  // pending, allowed with no sweep, and everything done
+  shapes.push(
+    [{ ...READY, row: { store_id: PROVO.id, account_holder_id: null } }, { target: 'live' }],
+    [{ ...READY, store: storeSummary({ ...PROVO, splitConfiguration: undefined }), row: { store_id: PROVO.id, account_holder_id: HOLDER.id, balance_account_id: BALANCE.id }, commission: { percent: 0.8, fixedPence: 5, currency: 'GBP' } }, { target: 'live' }],
+    [{ ...READY, legalEntity: legalEntitySummary({ ...LEGAL, transferInstruments: [] }), payouts: { read: true, sweep: null } }, { target: 'live' }],
+    [{ ...READY, capabilities: capabilityList(summariseCapabilities(CAPS)), payouts: { read: true, sweep: null } }, { target: 'live' }],
+    [{ ...READY, payouts: { read: true, sweep: null } }, { target: 'live' }],
+    [{ ...READY, row: { store_id: PROVO.id, account_holder_id: HOLDER.id, balance_account_id: BALANCE.id, transfer_instrument_id: 'SI32BZP22322CJ5PXF2BDBANK1', payouts_ok: true } }, { target: 'live' }],
+  );
+  // 9 Sep 2026: the other environment (nothing offered on step 5), a foreign
+  // store account, a profile keeping the remainder, a never asked payout, an
+  // invalid one, and a row saved with the wrong money account
+  const foreignStore = storeSummary({ ...PROVO, splitConfiguration: { splitConfigurationId: 'SC_FRANPOS_SHARED', balanceAccountId: 'BA_SOMEONE_ELSE' } });
+  shapes.push(
+    [{ ...READY, venue: { ...READY.venue, environment: 'test' }, row: null, store: storeSummary({ ...PROVO, splitConfiguration: undefined }) }, { target: 'live' }],
+    [{ ...READY, store: foreignStore, row: { ...READY.row, transfer_instrument_id: 'SI32BZP22322CJ5PXF2BDBANK1' } }, { target: 'live' }],
+    [{ ...READY, commission: { ...READY.commission, profileRemainder: 'addToLiableAccount', tiers: 4, profileRules: 6 } }, { target: 'live' }],
+    [{ ...READY, capabilities: capabilityList(summariseCapabilities({ receivePayments: { allowed: true, requested: true, verificationStatus: 'valid' } })) }, { target: 'live' }],
+    [{ ...READY, capabilities: capabilityList(summariseCapabilities(LIVE_CAPS)) }, { target: 'live' }],
+    [{ ...READY, row: { ...READY.row, balance_account_id: 'BA_SOMEONE_ELSE' } }, { target: 'live' }],
+    [{ ...READY, row: {} }, { target: 'live' }],
+  );
   for (const [state, opts] of shapes) assert.deepEqual(ts.buildGoliveSteps(state, opts), buildGoliveSteps(state, opts));
+  // the step 5 helpers answer the same on both sides
+  assert.deepEqual(ts.buildCommissionProfile({ description: 'ServOS Provo rates', currency: 'GBP', percent: 0.8, fixedPence: 5 }), buildCommissionProfile({ description: 'ServOS Provo rates', currency: 'GBP', percent: 0.8, fixedPence: 5 }));
+  assert.deepEqual(ts.profileCommission(PROFILE), profileCommission(PROFILE));
+  const tiers = { card_present: { percent: 0.8, fixedPence: 5 }, card_not_present: { percent: 1.2, fixedPence: 5 }, amex: { percent: 1.75, fixedPence: 10 }, keyed: { percent: 1.5, fixedPence: 8 } };
+  assert.deepEqual(ts.tieredCommissionRules('GBP', tiers), tieredCommissionRules('GBP', tiers));
+  assert.deepEqual(ts.buildTieredProfile({ description: 'x', currency: 'GBP', tiers }), buildTieredProfile({ description: 'x', currency: 'GBP', tiers }));
+  assert.deepEqual(ts.flatRateCard(0.8, 5), flatRateCard(0.8, 5));
+  assert.equal(ts.rateCardPriced({ amex: { percent: 1 } }), rateCardPriced({ amex: { percent: 1 } }));
+  const holderCaps = { sendToTransferInstrument: { allowed: true, requested: true, verificationStatus: 'valid', transferInstruments: [{ id: 'SI_OLD', allowed: true, verificationStatus: 'valid' }, { id: 'SI_NEW', allowed: true, verificationStatus: 'valid' }] } };
+  const twoBanks = { sweeps: [{ id: 'SWPC_NEW', type: 'push', category: 'bank', schedule: { type: 'daily' }, status: 'active', counterparty: { transferInstrumentId: 'SI_NEW' } }] };
+  assert.deepEqual(ts.pickPayoutInstrument(holderCaps, { sweeps: twoBanks, rowTransferInstrumentId: 'SI_OLD' }), pickPayoutInstrument(holderCaps, { sweeps: twoBanks, rowTransferInstrumentId: 'SI_OLD' }));
+  assert.equal(ts.payoutCapabilityState(capabilityList(summariseCapabilities(LIVE_CAPS))), payoutCapabilityState(capabilityList(summariseCapabilities(LIVE_CAPS))));
+  assert.equal(ts.HOLDER_MONEY_MISMATCH_DETAIL, HOLDER_MONEY_MISMATCH_DETAIL);
+  assert.equal(ts.PAYOUTS_WAIT_FOR_LIVE_DETAIL, PAYOUTS_WAIT_FOR_LIVE_DETAIL);
+  assert.equal(ts.REMAINDER_TO_VENUE, REMAINDER_TO_VENUE);
+  const foreignLookup = { found: true, store: foreignStore, balanceAccount: balanceAccountSummary(BALANCE, 'account_holder'), accountHolder: accountHolderSummary(HOLDER), legalEntity: legalEntitySummary(LEGAL), storeBalanceAccountForeign: true, sweepKnown: true, sweep: SWEEP };
+  const at = '2026-09-09T22:20:00.000Z';
+  assert.deepEqual(ts.buildLinkPatch(foreignLookup, { at }), buildLinkPatch(foreignLookup, { at }));
+  assert.deepEqual(ts.buildLinkPatch({ ...foreignLookup, balanceAccount: null }, { at }), buildLinkPatch({ ...foreignLookup, balanceAccount: null }, { at }));
+  assert.equal(ts.commissionLine(0.8, 5, 'GBP'), commissionLine(0.8, 5, 'GBP'));
+  assert.deepEqual(ts.findPushSweep(SWEEPS, 'SI32BZP22322CJ5PXF2BDBANK1'), findPushSweep(SWEEPS, 'SI32BZP22322CJ5PXF2BDBANK1'));
+  assert.deepEqual(ts.sweepPayload({ transferInstrumentId: 'SI1', currency: 'gbp', description: 'ServOS daily payout, Provo' }), sweepPayload({ transferInstrumentId: 'SI1', currency: 'gbp', description: 'ServOS daily payout, Provo' }));
+  assert.equal(ts.payoutCapabilityState(capabilityList(summariseCapabilities(CAPS))), payoutCapabilityState(capabilityList(summariseCapabilities(CAPS))));
+  assert.equal(ts.HOLDER_NOT_SAVED_DETAIL, HOLDER_NOT_SAVED_DETAIL);
+  assert.equal(ts.liableBalanceAccountSecretName('live', 'UK'), liableBalanceAccountSecretName('live', 'UK'));
   // the relink clear rule is the same on both sides of the wire
   const swap = { merchant_account: 'FranPOS_QSR_UK', store_id: PROVO.id, receive_payments_ok: true };
   const swapPlan = planLink({ row: { store_id: 'ST_OLD', account_holder_id: 'AH_OLD' }, currentEnv: 'live', targetEnv: 'live', patch: swap, relink: true });

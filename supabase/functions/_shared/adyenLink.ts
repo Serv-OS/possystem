@@ -146,6 +146,15 @@ export interface LookupResult {
   merchantsSearched?: string[];
   balancePlatform?: string | null;
   storeNeeded?: string | null;
+  // 9 Sep 2026: the push to bank sweep on the venue balance account, and
+  // whether the sweeps were listed at all (buildLinkPatch's payout_sweep_id).
+  sweep?: unknown;
+  sweepKnown?: boolean;
+  // The store's split configuration names a balance account that belongs to
+  // ANOTHER account holder than the one chosen (9 Sep 2026): it was not
+  // adopted, storeBalanceAccountId keeps what the store carries for step 5a.
+  storeBalanceAccountForeign?: boolean;
+  storeBalanceAccountId?: string | null;
   [k: string]: unknown;
 }
 
@@ -442,7 +451,12 @@ export function buildLinkPatch(
   if (str(store?.id)) patch.store_id = str(store!.id);
   const split = str(l.splitConfigurationId) || str(store?.splitConfigurationId);
   if (split) patch.split_profile_id = split;
-  const baId = str(ba?.id) || str(store?.balanceAccountId);
+  // THE STORE'S BALANCE ACCOUNT IS NOT ALWAYS THE VENUE'S (9 Sep 2026): a
+  // store FranPOS made in the Customer Area can carry a split configuration
+  // naming the platform's liable account or another venue's account. The
+  // lookup says so (storeBalanceAccountForeign) and hands over the chosen
+  // holder's own account instead; a foreign one never falls through here.
+  const baId = str(ba?.id) || (l.storeBalanceAccountForeign === true ? '' : str(store?.balanceAccountId));
   if (baId) patch.balance_account_id = baId;
   const ahId = str(ah?.id) || str(ba?.accountHolderId);
   if (ahId) patch.account_holder_id = ahId;
@@ -460,7 +474,16 @@ export function buildLinkPatch(
   if (store) patch.receive_payments_ok = lower(store.status) === 'active';
   else if (ah?.id) patch.receive_payments_ok = false;
   if (ah && isObj(ah.capabilities)) {
+    // payouts_ok is the CAPABILITY, as adyen-bp-webhook and adyen-financial
+    // mean it: Adyen allows payouts to the venue's bank. Whether the venue is
+    // actually PAID OUT (a daily push sweep exists) is a separate column,
+    // payout_sweep_id, written when the sweeps were listed (sweepKnown): the
+    // sweep's id, or null when none is there. The two together are what the
+    // list chip PAYOUTS reads (adyenAdminRows). Kept apart on purpose (9 Sep
+    // 2026): folding the sweep into payouts_ok told a venue Adyen had
+    // approved to complete KYC again in its own Back Office.
     patch.payouts_ok = ah.capabilities.payoutsOk === true;
+    if (l.sweepKnown === true) patch.payout_sweep_id = orNull(isObj(l.sweep) ? l.sweep.id : null);
     patch.verification_status = {
       source: 'adyen_link',
       at: str(at) || new Date().toISOString(),
@@ -997,12 +1020,23 @@ export interface CapabilityRow {
   problems: number;
 }
 
+export interface GoliveStepPart {
+  id: string;
+  state: GoliveStepState;
+  detail: string;
+  action: string | null;
+  hint: string | null;
+}
+
 export interface GoliveStep {
   id: string;
   state: GoliveStepState;
   detail: string;
   action: string | null;
   hint: string | null;
+  // Only the payouts step carries parts (split, payout): each its own line
+  // and button on the screen.
+  parts?: GoliveStepPart[];
 }
 
 // The environment the flow is LOOKING at, when it is not the venue's own.
@@ -1041,6 +1075,15 @@ export interface GoliveStateInput {
   // store was resolved (the store list refused, or more than one store
   // carrying the code), so step 1 never says "nothing carries the code".
   storeRead?: { refused?: unknown; ambiguous?: unknown } | null;
+  // The venue's rate and what the profile on the store says (PAYOUTS AND
+  // COMMISSION below).
+  commission?: {
+    percent?: unknown; fixedPence?: unknown; currency?: unknown; tiers?: unknown;
+    profilePercent?: unknown; profileFixedPence?: unknown; profileRead?: unknown; profileRules?: unknown; profileRemainder?: unknown;
+    liableBalanceAccountId?: unknown;
+  } | null;
+  // { read, sweep }: the push to bank sweep on the venue balance account.
+  payouts?: { read?: unknown; sweep?: unknown } | null;
   [k: string]: unknown;
 }
 
@@ -1122,17 +1165,434 @@ export function bpKeyBlockedHint(_secret: unknown, env: unknown): string {
 
 // The line for a found store the venue row does not name yet (link_store).
 export const STORE_NOT_SAVED_DETAIL = 'Adyen holds the payments location, it is not saved on the venue yet.';
+// The line for a found account holder the venue row does not name yet
+// (link_holder, 9 Sep 2026, live screen: golive_state READ the pasted
+// holder, said step 2 was Done because Adyen holds it, and the venue row
+// still had account_holder_id, balance_account_id and legal_entity_id NULL,
+// so the list chips read NO HOLDER and NO PAYOUTS). Nothing had written it.
+export const HOLDER_NOT_SAVED_DETAIL = 'Adyen holds the business account, it is not saved on the venue yet.';
+// The line for a saved holder whose money side on the row is blank or names
+// an account that is not the holder's (9 Sep 2026: a store's split
+// configuration can name the platform's or another venue's balance account,
+// and nothing checked that the row's account belonged to the row's holder
+// before money was routed to it). link_holder writes the right one.
+export const HOLDER_MONEY_MISMATCH_DETAIL = 'Where the money lands is not saved right on the venue.';
+// Step 5 while the flow looks at the OTHER environment (9 Sep 2026): the
+// server acts on the venue's own row, so nothing is offered until the venue
+// is on the account the flow is looking at.
+export const PAYOUTS_WAIT_FOR_LIVE_DETAIL = 'Turn on live payments first.';
 
-// The five steps, always all five, always in this order. Nothing is decided on
+// ── PAYOUTS AND COMMISSION (9 Sep 2026) ──────────────────────────────────────
+// Adyen for Platforms, confirmed on docs.adyen.com on 9 Sep 2026:
+//   ROUTING   A split configuration profile PATCHed onto the store is enough
+//             on its own: Adyen applies it to every payment through the store
+//             and no request needs split instructions. With NO profile "the
+//             whole transaction amount and fees are booked to your liable
+//             balance account", so nothing reaches the venue (live, Provo:
+//             the store carries no split configuration). The commission ALWAYS
+//             goes to the platform's liable account, so no liable account id
+//             is needed in the rule; the store's balanceAccountId is "the one
+//             balance account" the remainder is booked to.
+//               POST  /merchants/{m}/splitConfigurations   (role "SplitConfiguration read and write")
+//               PATCH /merchants/{m}/stores/{storeId}      { splitConfiguration: { splitConfigurationId, balanceAccountId } }
+//             commission.variablePercentage is in BASIS POINTS (100 = 1%),
+//             commission.fixedAmount in minor units: 0.8% plus 5p is 80 and 5.
+//   PAYOUTS   A push sweep on the venue balance account to its transfer
+//             instrument (bank account) pays the full balance out daily at
+//             07:00 CET. It needs the legal entity to hold a bank account
+//             (added on the hosted onboarding page) and the account holder's
+//             sendToTransferInstrument capability allowed.
+//               GET/POST /balanceAccounts/{id}/sweeps   { type push, category bank, counterparty { transferInstrumentId }, currency, schedule { type daily } }
+//               POST /legalEntities/{id}/onboardingLinks  { redirectUrl, locale }   the url works ONCE and for 4 MINUTES
+// The shape work is here (mirror of src/lib/payments/adyenLink.js); the calls
+// are in _shared/adyenPayouts.ts, used by adyen-terminal-admin (set_split,
+// onboarding_link, setup_sweep) and adyen-onboard (configure_splits,
+// setup_sweep). KEEP IN SYNC: adyenLink.test.js checks both copies.
+
+// The capability that gates paying the venue out.
+export const PAYOUT_CAPABILITY = 'sendToTransferInstrument';
+
+export interface AdyenCommission { variablePercentage?: number; fixedAmount?: number }
+
+export interface SplitLogic {
+  commission: AdyenCommission;
+  paymentFee: string;
+  remainder: string;
+  tip: string;
+  surcharge: string;
+  chargeback: string;
+  chargebackCostAllocation: string;
+  refund: string;
+  refundCostAllocation: string;
+}
+
+export interface SplitRule {
+  currency: string;
+  fundingSource: string;
+  paymentMethod: string;
+  shopperInteraction: string;
+  splitLogic: SplitLogic;
+}
+
+export interface SplitProfile { description: string; rules: SplitRule[] }
+
+export interface SweepSummary {
+  id: string | null;
+  type: string | null;
+  category: string | null;
+  schedule: string | null;
+  status: string | null;
+  transferInstrumentId: string | null;
+  currency: string | null;
+}
+
+export type PayoutCapabilityState = 'allowed' | 'pending' | 'needs_details' | 'rejected' | 'unrequested' | 'unknown';
+
+export interface PayoutInstrumentPick { transferInstrumentId: string; source: 'sweep' | 'row' | 'approved' | 'legal_entity'; sweepId: string | null }
+
+// A percent and a pence as Adyen's commission ({ variablePercentage in basis
+// points, fixedAmount in minor units }); null when both are nothing, because
+// a rule with an empty commission is refused and a 0% rule is never wanted.
+export function commissionFromRates(percent: unknown, fixedPence: unknown): AdyenCommission | null {
+  const pct = Number(percent);
+  const fix = Number(fixedPence);
+  const out: AdyenCommission = {};
+  if (Number.isFinite(pct) && pct > 0) out.variablePercentage = Math.round(pct * 100);
+  if (Number.isFinite(fix) && fix > 0) out.fixedAmount = Math.round(fix);
+  return Object.keys(out).length ? out : null;
+}
+
+// The split logic every ServOS rule carries: our commission to the liable
+// account, the platform absorbs Adyen's fees (the venue pays the all in
+// rate), the rest of the sale, tips and surcharges to the venue, chargebacks
+// against the venue, refunds unwound in the same ratio.
+export function splitLogicFor(commission: unknown): SplitLogic {
+  return {
+    commission: isObj(commission) ? (commission as AdyenCommission) : {},
+    paymentFee: 'deductFromLiableAccount',
+    remainder: 'addToOneBalanceAccount',
+    tip: 'addToOneBalanceAccount',
+    surcharge: 'addToOneBalanceAccount',
+    chargeback: 'deductFromOneBalanceAccount',
+    chargebackCostAllocation: 'deductFromLiableAccount',
+    refund: 'deductAccordingToSplitRatio',
+    refundCostAllocation: 'deductFromLiableAccount',
+  };
+}
+
+// One rule of a split configuration profile. currency must be a real ISO code
+// (the one condition Adyen refuses ANY for); the others default to ANY.
+export function splitRule({ currency, paymentMethod = 'ANY', shopperInteraction = 'ANY', fundingSource = 'ANY', commission }: {
+  currency?: unknown; paymentMethod?: unknown; shopperInteraction?: unknown; fundingSource?: unknown; commission?: unknown;
+} = {}): SplitRule {
+  return {
+    currency: str(currency).toUpperCase() || 'GBP',
+    fundingSource: str(fundingSource) || 'ANY',
+    paymentMethod: str(paymentMethod) || 'ANY',
+    shopperInteraction: str(shopperInteraction) || 'ANY',
+    splitLogic: splitLogicFor(commission),
+  };
+}
+
+// The ONE rule profile the go live flow writes: the venue's percent and pence
+// on every payment through its store, whatever the card or the channel. Null
+// when there is no commission to set.
+export function buildCommissionProfile({ description, currency, percent, fixedPence }: {
+  description?: unknown; currency?: unknown; percent?: unknown; fixedPence?: unknown;
+} = {}): SplitProfile | null {
+  const commission = commissionFromRates(percent, fixedPence);
+  if (!commission) return null;
+  return {
+    description: str(description).slice(0, 300) || 'ServOS rates',
+    rules: [splitRule({ currency, commission })],
+  };
+}
+
+// THE SAME RULES THE LEDGER CHARGES (9 Sep 2026). adyen-webhook stamps what
+// ServOS earns per payment from the venue's resolved rate card (four tiers:
+// card_present, card_not_present, amex, keyed; _shared/adyen.ts
+// resolveAdyenRateCard), so the profile on the store must carry ONE RULE PER
+// TIER built from the same numbers, or Adyen takes one rate while the ledger
+// and the venue's Card payments screen say another. This is the shape
+// adyen-onboard's configure_splits has always written; the go live flow's
+// set_split writes the same. Order matters to Adyen (the most specific rule
+// wins, and an Amex ecommerce payment would tie between 'amex + ANY' and
+// 'ANY + Ecommerce'), so the amex tier is written per interaction.
+//   tiers   { card_present: { percent, fixedPence }, card_not_present, amex, keyed }
+//           (fixed_pence is accepted too, the rate card's own spelling)
+// Answers { rules, lacking }: lacking names the tiers with no commission at
+// all (a rule with an empty commission is refused by Adyen, and a 0% rule is
+// never wanted), and rules is empty when any tier lacks one.
+export const COMMISSION_TIERS: readonly string[] = Object.freeze(['card_present', 'card_not_present', 'amex', 'keyed']);
+const TIER_RULES: ReadonlyArray<readonly [string, string, string]> = Object.freeze([
+  ['amex', 'amex', 'Ecommerce'],
+  ['amex', 'amex', 'Moto'],
+  ['amex', 'amex', 'ANY'],
+  ['card_not_present', 'ANY', 'Ecommerce'],
+  ['keyed', 'ANY', 'Moto'],
+  ['card_present', 'ANY', 'ANY'],
+] as const);
+export function tieredCommissionRules(currency: unknown, tiers: unknown): { rules: SplitRule[]; lacking: string[] } {
+  const t: Dict = isObj(tiers) ? tiers : {};
+  const commissionOf = (tier: string): AdyenCommission | null => {
+    const c: Dict = isObj(t[tier]) ? t[tier] : {};
+    return commissionFromRates(c.percent, c.fixedPence ?? c.fixed_pence);
+  };
+  const lacking = COMMISSION_TIERS.filter((tier) => !commissionOf(tier));
+  if (lacking.length) return { rules: [], lacking };
+  return {
+    rules: TIER_RULES.map(([tier, paymentMethod, shopperInteraction]) => splitRule({ currency, paymentMethod, shopperInteraction, commission: commissionOf(tier) })),
+    lacking: [],
+  };
+}
+
+// The profile the go live flow and configure_splits both write: one rule per
+// tier. Null when any tier lacks a commission (tieredCommissionRules says
+// which).
+export function buildTieredProfile({ description, currency, tiers }: { description?: unknown; currency?: unknown; tiers?: unknown } = {}): SplitProfile | null {
+  const built = tieredCommissionRules(currency, tiers);
+  if (!built.rules.length) return null;
+  return { description: str(description).slice(0, 300) || 'ServOS rates', rules: built.rules };
+}
+
+// A flat percent and pence as every tier, for a venue priced with one number
+// (the go live flow's two boxes): the ledger then charges the same on every
+// card because the venue's rate_card names it for every tier.
+export function flatRateCard(percent: unknown, fixedPence: unknown): Record<string, { percent: number | null; fixed_pence: number | null }> | null {
+  const pct = Number(percent);
+  const fix = Number(fixedPence);
+  const entry = {
+    percent: Number.isFinite(pct) && pct > 0 ? pct : null,
+    fixed_pence: Number.isFinite(fix) && fix > 0 ? Math.round(fix) : null,
+  };
+  if (entry.percent === null && entry.fixed_pence === null) return null;
+  const out: Record<string, { percent: number | null; fixed_pence: number | null }> = {};
+  for (const tier of COMMISSION_TIERS) out[tier] = { ...entry };
+  return out;
+}
+
+// Does a rate card price anything at all (any tier with a number)?
+export function rateCardPriced(card: unknown): boolean {
+  if (!isObj(card)) return false;
+  return COMMISSION_TIERS.some((tier) => {
+    const c: Dict | null = isObj(card[tier]) ? card[tier] : null;
+    if (!c) return false;
+    const pct = Number(c.percent);
+    const fix = Number(c.fixedPence ?? c.fixed_pence);
+    return (Number.isFinite(pct) && pct > 0) || (Number.isFinite(fix) && fix > 0);
+  });
+}
+
+export interface ProfileCommission { percent: number; fixedPence: number; rules: number; remainder: string | null; venueRules: number }
+
+// GET /merchants/{m}/splitConfigurations/{id} back into what it does:
+//   percent, fixedPence  the catch all rule (ANY method, ANY interaction)
+//                        when there is one, else the first rule that carries
+//                        a commission, else 0 and 0 (a profile with rules and
+//                        no commission takes nothing for ServOS)
+//   rules                how many rules there are
+//   remainder            where the catch all rule (else the first rule)
+//                        sends the rest of each sale: addToOneBalanceAccount
+//                        is the venue, addToLiableAccount is ServOS
+//   venueRules           how many rules send the rest to the venue
+// Null when the profile has no rules at all.
+export function profileCommission(profile: unknown): ProfileCommission | null {
+  const rules: Dict[] = (Array.isArray((profile as Dict)?.rules) ? ((profile as Dict).rules as unknown[]) : []).filter(isObj);
+  if (!rules.length) return null;
+  const any = (v: unknown): boolean => !str(v) || lower(v) === 'any';
+  const isCatchAll = (r: Dict): boolean => any(r.paymentMethod) && any(r.shopperInteraction) && any(r.fundingSource);
+  const priced = rules.filter((r) => isObj(r.splitLogic) && isObj(r.splitLogic.commission));
+  const catchAll = rules.find(isCatchAll) || null;
+  const pricedPick = priced.find(isCatchAll) || priced[0] || null;
+  const c: Dict = pricedPick ? pricedPick.splitLogic.commission : {};
+  const bp = Number(c.variablePercentage);
+  const fix = Number(c.fixedAmount);
+  const remainderOf = (r: Dict | null): string | null => orNull(isObj(r?.splitLogic) ? r!.splitLogic.remainder : null);
+  return {
+    percent: Number.isFinite(bp) ? bp / 100 : 0,
+    fixedPence: Number.isFinite(fix) ? Math.round(fix) : 0,
+    rules: rules.length,
+    remainder: remainderOf(catchAll || rules[0]),
+    venueRules: rules.filter((r) => lower(remainderOf(r)) === 'addtoonebalanceaccount').length,
+  };
+}
+
+// The remainder word that sends the rest of each sale to the venue.
+export const REMAINDER_TO_VENUE = 'addToOneBalanceAccount';
+
+// A number the way a person writes it: 0.8, 1, 1.75. Never 0.80000001.
+const plainNumber = (n: unknown): string => String(Number(Number(n).toFixed(4)));
+
+// The commission in plain words: "0.8% plus 5p", "0.8%", "5p"; US pence read
+// as cents. Null when there is nothing.
+export function commissionLine(percent: unknown, fixedPence: unknown, currency?: unknown): string | null {
+  const pct = Number(percent);
+  const fix = Number(fixedPence);
+  const hasPct = Number.isFinite(pct) && pct > 0;
+  const hasFix = Number.isFinite(fix) && fix > 0;
+  if (!hasPct && !hasFix) return null;
+  const minor = str(currency).toUpperCase() === 'USD' ? 'c' : 'p';
+  return [hasPct ? `${plainNumber(pct)}%` : '', hasFix ? `${Math.round(fix)}${minor}` : ''].filter(Boolean).join(' plus ');
+}
+
+// Rows of GET /balanceAccounts/{id}/sweeps ({ sweeps: [...] }) or a bare array.
+export function sweepRows(response: unknown): Dict[] {
+  if (Array.isArray(response)) return response.filter(isObj);
+  return Array.isArray((response as Dict)?.sweeps) ? ((response as Dict).sweeps as unknown[]).filter(isObj) : [];
+}
+
+// One sweep as the screen and the row see it. schedule is the type word
+// (daily, weekly, monthly, balance, cron), lower case.
+export function sweepSummary(sweep: unknown): SweepSummary | null {
+  if (!isObj(sweep)) return null;
+  const cp: Dict = isObj(sweep.counterparty) ? sweep.counterparty : {};
+  return {
+    id: orNull(sweep.id),
+    type: lower(sweep.type) || null,
+    category: lower(sweep.category) || null,
+    schedule: isObj(sweep.schedule) ? lower(sweep.schedule.type) || null : lower(sweep.schedule) || null,
+    status: lower(sweep.status) || null,
+    transferInstrumentId: orNull(cp.transferInstrumentId),
+    currency: str(sweep.currency).toUpperCase() || null,
+  };
+}
+
+// The sweep that pays the venue's bank: push, category bank, not inactive,
+// and pointed at the given bank account when one is named (else any). Null
+// when there is none, which is what "not paid out yet" means.
+export function findPushSweep(list: unknown, transferInstrumentId?: unknown): SweepSummary | null {
+  const ti = str(transferInstrumentId);
+  const rows = sweepRows(list).map(sweepSummary)
+    .filter((s): s is SweepSummary => !!s && !!s.id && s.type === 'push' && s.category === 'bank' && s.status !== 'inactive');
+  if (ti) return rows.find((s) => s.transferInstrumentId === ti) ?? null;
+  return rows[0] ?? null;
+}
+
+// POST /balanceAccounts/{id}/sweeps: the full available balance to the bank
+// on the schedule (daily by default). No sweepAmount, targetAmount or
+// triggerAmount, so everything goes.
+export function sweepPayload({ transferInstrumentId, currency, schedule = 'daily', cronExpression, description }: {
+  transferInstrumentId?: unknown; currency?: unknown; schedule?: unknown; cronExpression?: unknown; description?: unknown;
+} = {}): Dict {
+  const type = ['daily', 'weekly', 'monthly', 'balance', 'cron'].includes(lower(schedule)) ? lower(schedule) : 'daily';
+  const sched: Dict = { type };
+  if (type === 'cron' && str(cronExpression)) sched.cronExpression = str(cronExpression);
+  return {
+    counterparty: { transferInstrumentId: str(transferInstrumentId) },
+    currency: str(currency).toUpperCase() || 'GBP',
+    category: 'bank',
+    priorities: ['regular', 'fast'],
+    schedule: sched,
+    status: 'active',
+    type: 'push',
+    description: str(description).slice(0, 140) || `ServOS ${type} payout`,
+  };
+}
+
+// The payout capability as one word, from capabilityList's rows:
+//   allowed      Adyen pays the venue out
+//   pending      asked for, still being checked
+//   rejected     asked for, not allowed, and Adyen has decided
+//   unrequested  never asked for, so it can never become allowed
+//   unknown      no capability list at all
+// The payout capability as one word, from capabilityList's rows:
+//   allowed        Adyen pays the venue out
+//   pending        asked for, still being checked (a null verification with
+//                  requested true reads as this, not as a refusal)
+//   needs_details  asked for, and Adyen wants more from the venue
+//                  (verification invalid: the bank details link fixes it)
+//   rejected       asked for, not allowed, and Adyen has decided
+//   unrequested    never asked for, so it can never become allowed. Adyen
+//                  only answers the capabilities that were requested, so a
+//                  capability list WITHOUT this row means the same thing
+//   unknown        no capability list at all (the holder was not read)
+export function payoutCapabilityState(caps: unknown): PayoutCapabilityState {
+  const list: Dict[] = (Array.isArray(caps) ? (caps as unknown[]) : []).filter(isObj);
+  const row = list.find((c) => lower(c.name) === lower(PAYOUT_CAPABILITY));
+  if (!row) return list.length ? 'unrequested' : 'unknown';
+  if (row.allowed === true) return 'allowed';
+  if (row.requested === false) return 'unrequested';
+  const v = lower(row.verification);
+  if (v === 'invalid') return 'needs_details';
+  if (v === 'rejected') return 'rejected';
+  return 'pending';
+}
+
+// THE BANK A PAYOUT GOES TO (9 Sep 2026). A legal entity can hold more than
+// one bank account (the venue changed bank), and the OLDEST one Adyen lists
+// is not the one to pay: the account holder's own capability says which
+// banks Adyen has approved,
+//   capabilities.sendToTransferInstrument.transferInstruments[]
+//     { id (SI...), allowed, requested, verificationStatus, problems }
+// so the bank is chosen from there: allowed and valid, preferring the one an
+// active push sweep already names, then the one the venue row names, then
+// the first approved one. With no approved list at all (an older holder, or
+// the capability answered without the list) the legal entity's own list
+// stands in, with the same preference order. Null when nothing qualifies.
+// KEEP IN SYNC with src/lib/payments/adyenLink.js (adyenLink.test.js).
+export function pickPayoutInstrument(holderCapabilities: unknown, { sweeps, rowTransferInstrumentId, legalEntityInstruments }: {
+  sweeps?: unknown; rowTransferInstrumentId?: unknown; legalEntityInstruments?: unknown;
+} = {}): PayoutInstrumentPick | null {
+  const caps: Dict = isObj(holderCapabilities) ? holderCapabilities : {};
+  const cap: Dict = isObj(caps[PAYOUT_CAPABILITY]) ? caps[PAYOUT_CAPABILITY] : {};
+  const approved: string[] = (Array.isArray(cap.transferInstruments) ? (cap.transferInstruments as unknown[]) : []).filter(isObj)
+    .filter((t) => t.allowed === true && lower(t.verificationStatus) === 'valid')
+    .map((t) => str(t.id)).filter(Boolean);
+  const fallback: string[] = (Array.isArray(legalEntityInstruments) ? (legalEntityInstruments as unknown[]) : []).map((t) => str(isObj(t) ? t.id : t)).filter(Boolean);
+  const pool = approved.length ? approved : fallback;
+  const source: PayoutInstrumentPick['source'] = approved.length ? 'approved' : 'legal_entity';
+  if (!pool.length) return null;
+  const live = sweepRows(sweeps).map(sweepSummary)
+    .filter((s): s is SweepSummary => !!s && !!s.id && s.type === 'push' && s.category === 'bank' && s.status !== 'inactive');
+  const bySweep = live.find((s) => !!s.transferInstrumentId && pool.includes(s.transferInstrumentId));
+  if (bySweep) return { transferInstrumentId: bySweep.transferInstrumentId as string, source: 'sweep', sweepId: bySweep.id };
+  const onRow = str(rowTransferInstrumentId);
+  if (onRow && pool.includes(onRow)) return { transferInstrumentId: onRow, source: 'row', sweepId: null };
+  return { transferInstrumentId: pool[0], source, sweepId: null };
+}
+
+// The secret that may hold OUR liable balance account id (the platform
+// account the commission lands in). Optional: the commission goes there
+// whether or not we know the id, so it is only ever shown, never a gate.
+// Same rule as balancePlatformSecretName.
+export const LIABLE_BALANCE_ACCOUNT_SECRET_SUFFIX = 'LIABLE_BALANCE_ACCOUNT';
+export function liableBalanceAccountSecretName(env: unknown, region: unknown): string {
+  const s = LIABLE_BALANCE_ACCOUNT_SECRET_SUFFIX;
+  if (lower(env) !== 'live') return `ADYEN_${s}`;
+  return `ADYEN_LIVE_${isUsRegion(region) ? 'US' : 'UK'}_${s}`;
+}
+export function liableBalanceAccountSecretNames(env: unknown, region: unknown): string[] {
+  const s = LIABLE_BALANCE_ACCOUNT_SECRET_SUFFIX;
+  if (lower(env) !== 'live') return isUsRegion(region) ? [`ADYEN_TEST_US_${s}`, `ADYEN_${s}`] : [`ADYEN_${s}`];
+  return isUsRegion(region) ? [`ADYEN_LIVE_US_${s}`] : [`ADYEN_LIVE_UK_${s}`, `ADYEN_LIVE_${s}`];
+}
+// The same id kept on adyen_platform_settings (the column the migration
+// named here adds; read on its own, tolerated when absent).
+export const ADYEN_LIABLE_BALANCE_ACCOUNT_COLUMN = 'liable_balance_account_id';
+export const ADYEN_LIABLE_BALANCE_ACCOUNT_MIGRATION = 'supabase/migrations/20260909_PLATFORM_adyen_liable_balance_account.sql';
+
+// Actions on a payouts part that are WAITING on Adyen, not work the owner can
+// do: they stay on the part (the screen draws the button) and never lift to
+// the step, so the flow does not park the owner on them. add_bp_key is not
+// here on purpose: it lifts, so the step reads as server only, like step 2.
+const PAYOUT_WAIT_ACTIONS: readonly string[] = Object.freeze(['check_payouts', 'open_adyen']);
+
+// The six steps, always all six, always in this order. Nothing is decided on
 // the screen: `state` is the colour, `detail` is the one line under the title,
 // `action` is the button (or null) and `hint` is the only extra sentence.
 //   find_venue        does Adyen hold this venue at all (store, holder, both)
 //   business_account  the account holder, its money account, its KYC, its
-//                     capabilities (a BLOCKED one is named)
+//                     capabilities (a BLOCKED one is named), and whether the
+//                     VENUE ROW names it (a found holder is not a saved one)
 //   payments_location the store a card payment names, and whether it sits on
 //                     the merchant account the secret names, and whether the
 //                     VENUE ROW names it (a found store is not a linked one)
 //   go_live           real cards on or off
+//   payouts           TWO parts (`parts`): split, the commission rule on the
+//                     store that sends the rest of every sale to the venue;
+//                     payout, the bank account, Adyen's approval and the
+//                     daily sweep. The step's own state, detail and action
+//                     are the first part that needs doing
 //   readers           the card machines, and whether they are on a till
 //
 // `opts.target` is the environment the flow is LOOKING at (the screen only
@@ -1141,9 +1601,12 @@ export const STORE_NOT_SAVED_DETAIL = 'Adyen holds the payments location, it is 
 // venue is leaving, and going live retires every one of them.
 //
 // `state.row` is the venue's merchant_adyen_accounts row as it is NOW on the
-// environment the flow looks at ({ store_id, ... }, or {} for no row yet), and
-// null or absent when the flow looks at the OTHER environment: the row's ids
-// belong to the one the venue is on, and the go live flip writes the new ones.
+// environment the flow looks at ({ store_id, account_holder_id,
+// balance_account_id, legal_entity_id, split_profile_id,
+// transfer_instrument_id, payouts_ok, markup_percent, markup_fixed_pence },
+// or {} for no row yet), and null or absent when the flow looks at the OTHER
+// environment: the row's ids belong to the one the venue is on, and the go
+// live flip writes the new ones.
 // `state.balancePlatformKey` is { refused, secret }: refused is true when the
 // Balance Platform answered 401 or 403 to the key, secret names the secret the
 // separate credential goes in.
@@ -1152,6 +1615,13 @@ export const STORE_NOT_SAVED_DETAIL = 'Adyen holds the payments location, it is 
 // list was refused (401 or 403 on the Management key), ambiguous when more
 // than one store carries the code. Either way "nothing carries the code" is
 // not something the read established, so step 1 must not say it (rule 6).
+// `state.commission` is { percent, fixedPence, currency, profilePercent,
+// profileFixedPence, profileRead, liableBalanceAccountId }: the venue's rate
+// (its row, else the platform default) and what the profile on the store
+// actually says, when it could be read.
+// `state.payouts` is { read, sweep }: read is true when the sweeps of the
+// venue balance account were listed, sweep is the push to bank sweep
+// (sweepSummary) or null.
 export function buildGoliveSteps(state: GoliveStateInput = {}, opts: GoliveStepOptions = {}): GoliveStep[] {
   const s: Dict = isObj(state) ? state : {};
   const o: Dict = isObj(opts) ? (opts as Dict) : {};
@@ -1166,6 +1636,8 @@ export function buildGoliveSteps(state: GoliveStateInput = {}, opts: GoliveStepO
   const readers: Dict[] = (Array.isArray(s.readers) ? (s.readers as unknown[]) : []).filter(isObj);
   const origins: Dict = isObj(s.origins) ? s.origins : {};
   const applePay: Dict = isObj(s.applePay) ? s.applePay : {};
+  const commission: Dict = isObj(s.commission) ? s.commission : {};
+  const payouts: Dict = isObj(s.payouts) ? s.payouts : {};
   const code = str(venue.code) || null;
   const env = lower(venue.environment) === 'live' ? 'live' : 'test';
   const target = lower(o.target) === 'live' ? 'live' : lower(o.target) === 'test' ? 'test' : null;
@@ -1177,8 +1649,17 @@ export function buildGoliveSteps(state: GoliveStateInput = {}, opts: GoliveStepO
   // hand the step is done ONLY when the row names the store Adyen holds;
   // otherwise it offers to save it. No row in hand (the other environment, or
   // an old caller) keeps the old reading: the flip writes the ids.
+  // A FOUND HOLDER IS NOT A SAVED HOLDER either (same day, same screen): the
+  // same rule on account_holder_id, and link_holder writes it.
   const row: Dict | null = isObj(s.row) ? s.row : null;
   const storeSaved = !store || !row || str(row.store_id) === str(store.id);
+  // THE MONEY SIDE MUST AGREE TOO (9 Sep 2026): the balance account the read
+  // hands over is the chosen holder's own (the lookup never adopts a store's
+  // foreign one), so a row naming the holder with a blank or different
+  // balance account is not saved right, and link_holder writes the right one.
+  const holderNamed = !holder || !row || str(row.account_holder_id) === str(holder.id);
+  const moneySaved = !holder || !row || !ba || str(row.balance_account_id) === str(ba.id);
+  const holderSaved = holderNamed && moneySaved;
   const storeActive = !!store && lower(store.status) === 'active';
   const bpKey: Dict = isObj(s.balancePlatformKey) ? s.balancePlatformKey : {};
   const bpRefused = bpKey.refused === true;
@@ -1243,13 +1724,24 @@ export function buildGoliveSteps(state: GoliveStateInput = {}, opts: GoliveStepO
     // server, and waiting will not change that.
     out.push(step('business_account', { state: 'blocked', detail: BP_KEY_BLOCKED_DETAIL, action: 'add_bp_key', hint: bpKeyBlockedHint(bpSecret, target || env) }));
   } else if (!holder) out.push(step('business_account', { state: 'todo', detail: 'No business account at Adyen yet.', action: 'find_venue', hint: 'Adyen makes one when the venue is onboarded. Paste its id if you have it.' }));
-  else {
+  else if (!holderNamed) {
+    // Found at Adyen, not on the venue row. ONE button saves it (adyen_link on
+    // the venue's own environment with this account holder id): the holder,
+    // where the money lands, the registered company, the business line, the
+    // bank account, the KYC snapshot and the payout flag all land on the row.
+    out.push(step('business_account', { state: 'attention', detail: HOLDER_NOT_SAVED_DETAIL, action: 'link_holder', hint: 'One click writes it on the venue.' }));
+  } else if (!moneySaved) {
+    // The holder is on the row, but where the money lands is blank or is not
+    // the holder's own account. The same click writes the right one (a
+    // replacement asks first, as every money side replacement does).
+    out.push(step('business_account', { state: 'attention', detail: HOLDER_MONEY_MISMATCH_DETAIL, action: 'link_holder', hint: 'One click saves the right one.' }));
+  } else {
     const blocked = blockedCapabilityNames(caps);
     // Taking cards and paying out are separate refusals. Only a refused PAY IN
-    // stops the venue taking a card, so only that one blocks the flow.
+    // stops the venue taking a card, so only that one blocks the flow; paying
+    // out has its own step (5), so nothing about it is said here.
     const blockedIn = blocked.filter(isPayInCapability);
-    const blockedOut = blocked.filter((n) => !isPayInCapability(n));
-    const pending = caps.filter((c) => c.blocked === true && c.verification === 'pending').map((c) => str(c.name)).filter(Boolean);
+    const pendingIn = caps.filter((c) => c.blocked === true && c.verification === 'pending' && isPayInCapability(c.name)).map((c) => str(c.name)).filter(Boolean);
     // Never the account holder id inside a sentence: the screen carries every
     // id as its own small grey row with a copy button (rule 5, 8 Sep 2026).
     const who = str(le?.name) || 'This venue';
@@ -1264,14 +1756,8 @@ export function buildGoliveSteps(state: GoliveStateInput = {}, opts: GoliveStepO
       out.push(step('business_account', { state: 'attention', detail: `The business account is ${lower(holder.status)} at Adyen.`, action: 'open_adyen', hint: 'Nothing settles until Adyen makes it active.' }));
     } else if (!ba) {
       out.push(step('business_account', { state: 'attention', detail: 'The money has nowhere to land: no account was found.', action: 'open_adyen', hint: 'Check the business account in the Adyen Customer Area.' }));
-    } else if (blockedOut.length) {
-      // The live case: an ACTIVE account holder Adyen will not pay out from
-      // yet. Cards work, so the flow says so and moves on.
-      out.push(step('business_account', { state: 'attention', detail: 'Cards work. Payouts wait for Adyen.', action: null, hint: PAYOUT_BLOCKED_HINT }));
-    } else if (pending.length) {
-      out.push(step('business_account', { state: 'attention', detail: `Adyen is still checking ${pending.join(' and ')}.`, action: null, hint: 'Cards can still work. Payouts wait for the check.' }));
-    } else if (le && !str(le.transferInstrumentId)) {
-      out.push(step('business_account', { state: 'attention', detail: `${who} has no bank account yet.`, action: 'send_onboarding', hint: 'The venue adds one through its onboarding link.' }));
+    } else if (pendingIn.length) {
+      out.push(step('business_account', { state: 'attention', detail: `Adyen is still checking ${pendingIn.join(' and ')}.`, action: null, hint: 'Cards can still work while it checks.' }));
     } else {
       // No id inside a sentence (the screen shows every id as its own small
       // grey row with a copy button, 8 Sep 2026).
@@ -1337,7 +1823,12 @@ export function buildGoliveSteps(state: GoliveStateInput = {}, opts: GoliveStepO
     out.push(step('go_live', { state: 'todo', detail: 'Finish the steps above first.', action: null }));
   }
 
-  // 5. the card readers
+  // 5. payouts and commission: two parts, one step
+  out.push(buildPayoutsStep({
+    keysOk, keysBlocked, bpRefused, holder, holderSaved, ba, le, store, storeSaved, mismatch, caps, row, commission, payouts,
+  }));
+
+  // 6. the card readers
   const bound = readers.filter((r) => r.bound === true).length;
   // The readers on the row belong to the environment the venue is on NOW. When
   // the flow is looking at the OTHER one, they are not this flow's readers:
@@ -1356,6 +1847,141 @@ export function buildGoliveSteps(state: GoliveStateInput = {}, opts: GoliveStepO
   else out.push(step('readers', { state: 'done', detail: `${readers.length} reader${readers.length === 1 ? '' : 's'} ready.` }));
 
   return out;
+}
+
+interface PayoutsStepInput {
+  keysOk: boolean;
+  keysBlocked: { state: GoliveStepState; detail: string; action: string | null; hint: string | null };
+  bpRefused: boolean;
+  holder: Dict | null;
+  holderSaved: boolean;
+  ba: Dict | null;
+  le: Dict | null;
+  store: Dict | null;
+  storeSaved: boolean;
+  mismatch: Dict | null;
+  caps: Dict[];
+  row: Dict | null;
+  commission: Dict;
+  payouts: Dict;
+}
+
+// Step 5 on its own: the split part and the payout part, then the step that
+// carries them. Every line under 120 characters, no id in a sentence.
+function buildPayoutsStep(x: PayoutsStepInput): GoliveStep {
+  const part = (id: string, p: { state: GoliveStepState; detail: string; action?: string | null; hint?: string | null }): GoliveStepPart =>
+    ({ id, state: p.state, detail: p.detail, action: p.action ?? null, hint: p.hint ?? null });
+  const row = x.row;
+  // NO ROW IN HAND means the flow is looking at the OTHER environment (a test
+  // venue looking at live, the go live path). The three writes behind this
+  // step (set_split, onboarding_link, setup_sweep) act on the venue's OWN
+  // row and account, so offering them here would set a commission on the
+  // test store, mint a bank details link for the test legal entity, or sweep
+  // the test balance account (9 Sep 2026). Nothing is offered until the venue
+  // is on the account the flow looks at: step 4 moves it.
+  if (!row) {
+    const wait = { state: 'todo' as GoliveStepState, detail: PAYOUTS_WAIT_FOR_LIVE_DETAIL, action: null };
+    return { id: 'payouts', state: 'todo', detail: wait.detail, action: null, hint: null, parts: [part('split', wait), part('payout', wait)] };
+  }
+  const rowBa = str(row.balance_account_id);
+  const rowTi = str(row.transfer_instrument_id);
+  const currency = str(x.commission.currency).toUpperCase() || str(x.ba?.currency).toUpperCase() || 'GBP';
+  // "from 0.8% plus 5p" when the venue is priced per card type (the rate card
+  // has more than one distinct tier, or the profile more than one rule): the
+  // number shown is the in person one, the lowest a venue pays.
+  const from = (line: string | null, many: boolean): string | null => (line && many ? `from ${line}` : line);
+  const rate = from(commissionLine(x.commission.percent, x.commission.fixedPence, currency), Number(x.commission.tiers) > 1);
+  const profileRate = from(commissionLine(x.commission.profilePercent, x.commission.profileFixedPence, currency), Number(x.commission.profileRules) > 1);
+  const profileRead = x.commission.profileRead === true;
+  const remainder = str(x.commission.profileRemainder);
+
+  // (a) the commission on the store
+  let split: GoliveStepPart;
+  if (!x.keysOk) split = part('split', x.keysBlocked);
+  else if (!x.store && !x.holder) split = part('split', { state: 'todo', detail: 'Find the venue first.', action: null });
+  else if (x.mismatch && str(x.mismatch.found)) split = part('split', { state: 'todo', detail: 'Pick the right Adyen account in step 3 first.', action: null });
+  else if (!x.store) split = part('split', { state: 'todo', detail: 'Make the payments location first.', action: null });
+  else if (!x.storeSaved) split = part('split', { state: 'todo', detail: 'Save the payments location on the venue first.', action: null });
+  else if (!x.holderSaved) split = part('split', { state: 'todo', detail: 'Save the business account on the venue first.', action: null });
+  else if (!rowBa) split = part('split', { state: 'todo', detail: 'The venue has no account for the money to land in yet.', action: null, hint: 'Save the business account in step 2.' });
+  else if (str(x.store.splitConfigurationId)) {
+    // DONE needs all three (9 Sep 2026): the store names an account for the
+    // rest of each sale, it is the venue's own, and the rule actually sends
+    // the rest there (a profile whose remainder is addToLiableAccount keeps
+    // it for ServOS). A profile that could not be read is trusted on the
+    // account alone, as before.
+    const storeBa = str(x.store.balanceAccountId);
+    if (!storeBa) {
+      split = part('split', { state: 'attention', detail: 'The commission rule names no account for the rest of each sale.', action: 'set_split', hint: 'Set it again to point it at the venue.' });
+    } else if (storeBa !== rowBa) {
+      split = part('split', { state: 'attention', detail: 'The commission sends the rest of each sale to a different account, not the venue’s.', action: 'set_split', hint: 'Set it again to point it at the venue.' });
+    } else if (profileRead && lower(remainder) !== lower(REMAINDER_TO_VENUE)) {
+      split = part('split', { state: 'attention', detail: 'The commission rule does not send the rest of each sale to the venue.', action: 'set_split', hint: 'Set it again to point it at the venue.' });
+    } else {
+      split = part('split', {
+        state: 'done',
+        detail: profileRate ? `Commission is set: ${profileRate} to ServOS, the rest to the venue.` : 'Commission is set on the payments location.',
+      });
+    }
+  } else {
+    split = part('split', {
+      state: 'todo',
+      detail: 'Commission is not set, so every card sale settles to ServOS and nothing to the venue.',
+      action: 'set_split',
+      hint: rate ? `Set ${rate} to ServOS, the rest to the venue.` : 'Type the percent and the pence, then set it.',
+    });
+  }
+
+  // (b) the bank account, Adyen's approval and the daily sweep
+  let payout: GoliveStepPart;
+  const capability = payoutCapabilityState(x.caps);
+  const hasBank = !!(str(x.le?.transferInstrumentId) || rowTi);
+  const sweep: Dict | null = isObj(x.payouts.sweep) && str(x.payouts.sweep.id) ? x.payouts.sweep : null;
+  if (!x.keysOk) payout = part('payout', x.keysBlocked);
+  // The same server secret step 2 is blocked on. The ONE plain reason is said
+  // at step 2 and nowhere else, so this line only points there; the action
+  // names the secret step so the flow (goliveFlowView) treats it as server
+  // only and never parks the owner here, and the screen draws no button.
+  else if (x.bpRefused) payout = part('payout', { state: 'blocked', detail: 'Payouts cannot be checked until step 2 is fixed.', action: 'add_bp_key', hint: null });
+  else if (!x.holder) payout = part('payout', { state: 'todo', detail: 'Find the venue first.', action: null });
+  else if (!x.holderSaved) payout = part('payout', { state: 'todo', detail: 'Save the business account on the venue first.', action: null });
+  else if (!hasBank) {
+    payout = part('payout', { state: 'todo', detail: 'The venue has not added its bank account yet.', action: 'send_bank_link', hint: 'One click makes a link for the venue owner.' });
+  } else if (capability === 'allowed' && sweep) {
+    const when = sweep.schedule && sweep.schedule !== 'daily' ? String(sweep.schedule) : 'daily';
+    payout = part('payout', { state: 'done', detail: `Paid out ${when} to the venue bank.` });
+  } else if (capability === 'allowed') {
+    payout = part('payout', { state: 'todo', detail: 'The bank account is approved. Daily payouts are not switched on yet.', action: 'setup_sweep', hint: 'One click pays the venue out every day.' });
+  } else if (capability === 'unrequested') {
+    // Never asked for, so it can never become allowed. Asking is ONE call
+    // (PATCH the holder with requested true), so the flow asks instead of
+    // sending the owner to the Customer Area (9 Sep 2026).
+    payout = part('payout', { state: 'todo', detail: 'Adyen was never asked to allow payouts for this venue.', action: 'request_payouts', hint: 'One click asks Adyen. It then checks the venue.' });
+  } else if (capability === 'needs_details') {
+    // Adyen wants more from the venue (a bank statement, an identity
+    // document): the hosted onboarding page is where it is given.
+    payout = part('payout', { state: 'attention', detail: 'Adyen needs more details from the venue.', action: 'send_bank_link', hint: 'One click makes a link for the venue owner to give them.' });
+  } else if (capability === 'rejected') {
+    payout = part('payout', { state: 'attention', detail: 'Adyen will not pay this venue out yet.', action: 'open_adyen', hint: 'Clear the check in the Adyen Customer Area, then check again.' });
+  } else {
+    payout = part('payout', { state: 'attention', detail: 'Adyen is still checking the venue. Payouts start when it is approved.', action: 'check_payouts', hint: null });
+  }
+
+  // the step: the worst colour, and the first part with work the owner can do
+  const parts = [split, payout];
+  const rank: Record<string, number> = { blocked: 3, attention: 2, todo: 1, done: 0 };
+  const worst = parts.reduce<GoliveStepState>((a, p) => (rank[p.state] > rank[a] ? p.state : a), 'done');
+  const next = parts.find((p) => p.state !== 'done' && p.action && !PAYOUT_WAIT_ACTIONS.includes(p.action))
+    || parts.find((p) => p.state !== 'done');
+  const both = split.state === 'done' && payout.state === 'done';
+  return {
+    id: 'payouts',
+    state: worst,
+    detail: both ? `Commission is set. ${payout.detail}` : str(next?.detail) || split.detail,
+    action: next && next.action && !PAYOUT_WAIT_ACTIONS.includes(next.action) ? next.action : null,
+    hint: both ? null : (next?.hint ?? null),
+    parts,
+  };
 }
 
 // ── PLAIN PROBLEMS FOR THE SCREEN (9 Sep 2026, OWNER FEEDBACK) ───────────────
@@ -1403,6 +2029,12 @@ const PROBLEM_SUBJECTS: ReadonlyArray<readonly [RegExp, string]> = Object.freeze
   [/^business lines? of\b/i, 'the business line'],
   [/^web origins/i, 'the web addresses'],
   [/^apple pay/i, 'Apple Pay'],
+  [/^sweeps? (of|on)\b/i, 'the payout schedule'],
+  [/^split configuration\b/i, 'the commission rules'],
+  [/^onboarding link\b/i, 'the bank details link'],
+  [/^platform defaults?\b/i, 'the default rates'],
+  [/^payout (capability|approval)\b/i, 'the payout approval'],
+  [/^rate card\b/i, 'the venue rates'],
 ] as const);
 
 // ONE raw error line as the screen shows it, or null for an empty line.
@@ -1421,6 +2053,9 @@ export function plainAdyenProblem(raw: unknown): PlainProblem | null {
   if (/online address/i.test(text)) return say('storefront', 'The venue’s web address could not be read.');
   if (/did not answer .* within \d+s/i.test(text) || /\btimed? ?out\b/i.test(text)) return say('timeout', 'Adyen took too long to answer. Try again in a moment.');
   if (/sits on merchant account/i.test(text)) return say('mismatch', 'This venue is on a different Adyen account than the one we are set to use.');
+  // The store's split configuration names a balance account that belongs to
+  // another account holder (9 Sep 2026): step 5a says it in its own place.
+  if (/belongs to (a different|another) (account holder|business account)/i.test(text)) return say('foreign_balance_account', 'The payments location sends the rest of each sale to another business account.');
   if (/stores carry the reference/i.test(text)) return say('ambiguous_store', 'More than one payments location carries this code. Pick one in step 1.');
   if (/account holders .* carry the reference/i.test(text)) return say('ambiguous_holder', 'More than one business account carries this code. Paste the right id in step 1.');
   if (/names no account holder/i.test(text)) return say('gap', 'Where the money lands names no business account at Adyen.');

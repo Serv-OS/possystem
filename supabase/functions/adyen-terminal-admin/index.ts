@@ -46,18 +46,55 @@
 //   golive_state → ADMIN. { locationId } ONE call the go live wizard renders:
 //                  { venue, keys, holder, balanceAccount, legalEntity,
 //                    capabilities, store, merchantConfigured,
-//                    merchantMismatch, readers, origins, applePay,
-//                    steps: [{ id, title, state, detail, action, hint }] }.
-//                  The five steps (find_venue, business_account,
-//                  payments_location, go_live, readers) are computed on the
-//                  SERVER so the screen assembles nothing and decides
-//                  nothing (OWNER FEEDBACK, 8 Sep 2026: "far too many words
-//                  and too small ... a flow that supports someone doing
-//                  this"). Also answers balancePlatformKnown (is the
+//                    merchantMismatch, readers, origins, applePay, row,
+//                    commission, payouts,
+//                    steps: [{ id, state, detail, action, hint, parts? }] }.
+//                  The six steps (find_venue, business_account,
+//                  payments_location, go_live, payouts, readers) are
+//                  computed on the SERVER so the screen assembles nothing
+//                  and decides nothing (OWNER FEEDBACK, 8 Sep 2026: "far too
+//                  many words and too small ... a flow that supports someone
+//                  doing this"). Also answers balancePlatformKnown (is the
 //                  reference search automatic on this account yet) and
 //                  holderFoundBy ('pasted' | 'reference' | 'store'). Read
-//                  only for the VENUE; it does keep what it learns about OUR
-//                  Adyen account (FINDING A VENUE BY ITS REFERENCE below)
+//                  only for the VENUE bar ONE flag: payouts_ok is kept in
+//                  step with what it read (PAYOUTS AND COMMISSION below);
+//                  it does keep what it learns about OUR Adyen account
+//                  (FINDING A VENUE BY ITS REFERENCE below)
+//   set_split    → ADMIN. { percent?, fixedPence?, confirm?, environment? }
+//                  step 5a: ONE COMMISSION RULE PER PRICING TIER on the
+//                  venue's store, from the same rate card the ledger charges
+//                  (resolveAdyenRateCard). Two typed numbers become the
+//                  venue's rate card for every tier; nothing typed sets it
+//                  from the rates as they resolve. The row is written only
+//                  after Adyen accepted the profile and the store PATCH
+//   onboarding_link → ADMIN. step 5b: a hosted onboarding link for the
+//                  venue's legal entity (the venue adds its bank account and
+//                  finishes identity checks there). Works ONCE, for 4 MINUTES
+//   setup_sweep  → ADMIN. step 5b: the daily push of the full balance to the
+//                  venue's bank, once Adyen allows payouts and the bank is
+//                  there. One sweep, repointed rather than doubled. Writes
+//                  payouts_ok (the capability) and payout_sweep_id (the
+//                  sweep, PAID OUT)
+//   request_payouts → ADMIN. step 5b: ask Adyen for the payout capability
+//                  on a holder that was never asked for it
+//   The three step 5 writes and request_payouts act on the venue's OWN
+//   environment: a body.environment naming the other one is refused.
+//
+// PAYOUTS AND COMMISSION (9 Sep 2026, docs.adyen.com): a split configuration
+// profile PATCHed onto the store is enough on its own (no request carries
+// split instructions), and with NO profile "the whole transaction amount and
+// fees are booked to your liable balance account", which is exactly the live
+// Provo case: store ST32DDL22322BQ5PXJVN95JSM carried no split configuration
+// so nothing reached BA32C5F22322CJ5PXF2BD7FKK. The commission always goes
+// to OUR liable account, so the rule needs no liable account id. Paying out
+// needs a bank account on the legal entity (hosted onboarding), the
+// sendToTransferInstrument capability allowed, then a daily push sweep.
+// payouts_ok on the row is the CAPABILITY (Adyen allows payouts, what the
+// webhook and the venue's Card payments screen mean); payout_sweep_id is
+// PAID OUT (the sweep exists), and the list chip reads the two together. The
+// shape work is in _shared/adyenLink.ts, the writes in
+// _shared/adyenPayouts.ts (shared with adyen-onboard).
 //
 // FINDING A VENUE BY ITS REFERENCE, BY ITSELF (8 Sep 2026, docs checked that
 // day): the Balance Platform Configuration API has NO filter by reference, and
@@ -150,7 +187,8 @@ import {
   buildDisplayIdleRequest, newServiceId, adyenFetch, terminalEndpoint,
   adyenConfig, adyenEnvForLocation, adyenSecretName, normalizeAdyenEnv, assertAdyenConfigured, effectiveMerchantAccount,
   parseAdyenRegion, liveRegionsConfigured, isAdyenRegionCheckError, adyenRegionMigrationMessage, ADYEN_REGION_MIGRATION,
-  type AdyenConfig, type AdyenEnv,
+  resolveAdyenRateCard, RATE_TIERS,
+  type AdyenConfig, type AdyenEnv, type TierRate,
 } from '../_shared/adyen.ts';
 import {
   buildWebOrigins, buildStorefrontDomains, originsPlan, applePayDomainsPlan, pickApplePayMethod, hasApplePayEntries,
@@ -163,6 +201,9 @@ import {
   merchantRows, merchantSummary, accountHolderRows, matchAccountHolderByReference, accountHolderCandidates,
   pickBusinessLine, merchantMismatch, storeStillNeeded, balancePlatformSecretName, balancePlatformSecretNames,
   capabilityList, blockedCapabilityNames, buildGoliveSteps, goliveProblems,
+  summariseCapabilities, findPushSweep, profileCommission, commissionLine,
+  buildTieredProfile, tieredCommissionRules, flatRateCard, rateCardPriced, pickPayoutInstrument, PAYOUT_CAPABILITY,
+  liableBalanceAccountSecretName, liableBalanceAccountSecretNames, ADYEN_LIABLE_BALANCE_ACCOUNT_COLUMN,
   ADYEN_PLATFORM_SETTINGS_TABLE, ADYEN_ROW_BALANCE_PLATFORM_COLUMN,
   platformSettingsKey, platformSettingsPatch, platformSettingsMissingMessage,
   learnedBalancePlatform, isUnknownRelationError, merchantAccountsSeen,
@@ -170,6 +211,7 @@ import {
   type MerchantSummary, type MerchantMismatch, type AccountHolderCandidate, type CapabilityRow, type GoliveStep, type GoliveReader,
   type PlatformSettingsLearned,
 } from '../_shared/adyenLink.ts';
+import { createSplitOnStore, ensurePushSweep, type AdyenApi } from '../_shared/adyenPayouts.ts';
 
 const opsAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
 const platformAdmin = createClient(
@@ -196,13 +238,17 @@ interface HostAnswer<T> { ok: boolean; status: number; data: T }
 // Management host (mgmt), the Balance Platform host (bcl) and the Legal
 // Entity Management host (lem) share this body, the timeout and the fail
 // closed check. A 204 or a non JSON body reads as {}.
-async function adyenHostCall<T = Record<string, unknown>>(cfg: AdyenConfig, base: string, apiKey: string, method: string, path: string, body?: unknown): Promise<HostAnswer<T>> {
+async function adyenHostCall<T = Record<string, unknown>>(cfg: AdyenConfig, base: string, apiKey: string, method: string, path: string, body?: unknown, idempotencyKey?: string): Promise<HostAnswer<T>> {
   assertAdyenConfigured(cfg);
   let res: Response;
+  const headers: Record<string, string> = { 'X-API-Key': apiKey, 'Content-Type': 'application/json' };
+  // A create that must never happen twice (the sweep) carries Adyen's
+  // Idempotency-Key, the same way adyen-onboard sends it.
+  if (idempotencyKey) headers['Idempotency-Key'] = idempotencyKey;
   try {
     res = await fetch(`${base}${path}`, {
       method,
-      headers: { 'X-API-Key': apiKey, 'Content-Type': 'application/json' },
+      headers,
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: AbortSignal.timeout(MGMT_TIMEOUT_MS),
     });
@@ -222,7 +268,7 @@ async function mgmt<T = Record<string, unknown>>(cfg: AdyenConfig, method: strin
 // no separate ADYEN[_LIVE_<REGION>]_BP_KEY is set) and Legal Entity
 // Management API v4 (cfg.lemKey): the two further hosts of PULL BY
 // REFERENCE below. Same hosts for both regions, different key sets.
-const bcl = <T = Record<string, unknown>>(cfg: AdyenConfig, method: string, path: string, body?: unknown) => adyenHostCall<T>(cfg, balancePlatformBase(cfg), cfg.bpKey, method, path, body);
+const bcl = <T = Record<string, unknown>>(cfg: AdyenConfig, method: string, path: string, body?: unknown, idempotencyKey?: string) => adyenHostCall<T>(cfg, balancePlatformBase(cfg), cfg.bpKey, method, path, body, idempotencyKey);
 const lem = <T = Record<string, unknown>>(cfg: AdyenConfig, method: string, path: string, body?: unknown) => adyenHostCall<T>(cfg, lemBase(cfg), cfg.lemKey, method, path, body);
 
 const scopeMissing = (status: number) => status === 401 || status === 403;
@@ -869,6 +915,8 @@ async function lookupByReference(cfg: AdyenConfig, merchant: string, reference: 
 
   // 2. the balance account the store's split configuration names
   let ba: BalanceAccountSummary | null = null;
+  out.storeBalanceAccountId = store?.balanceAccountId ?? null;
+  out.storeBalanceAccountForeign = false;
   if (store?.balanceAccountId) {
     const r = await bcl<Dict>(cfg, 'GET', `/balanceAccounts/${encodeURIComponent(store.balanceAccountId)}`);
     if (r.ok) ba = balanceAccountSummary(r.data, 'store');
@@ -877,19 +925,29 @@ async function lookupByReference(cfg: AdyenConfig, merchant: string, reference: 
     notes.push('The store carries no split configuration, so Adyen names no balance account for it.');
   }
 
-  // 3. the account holder: the store's (through its balance account), the id
-  //    the admin pasted, else the one the reference matched
+  // 3. the account holder: THE PASTED ID WINS, then the one the reference
+  //    matched, and only then the store's (through its balance account).
+  //    A store's split configuration can name the platform's liable account
+  //    or another venue's balance account (a store FranPOS made in the
+  //    Customer Area before the venue's holder existed), and until 9 Sep
+  //    2026 that account's holder won over the one the admin pasted: the
+  //    read adopted the OTHER company, the link wrote its balance account,
+  //    legal entity and bank onto the venue, and step 5a blessed it. Now a
+  //    balance account that belongs to a different holder than the chosen
+  //    one is an ERROR, it is never adopted, and the chosen holder's own
+  //    account is picked instead (3b).
   let ah: AccountHolderSummary | null = null;
   const byReferenceHolder = holderSide.holder;
   const byReferenceHolderId = String(byReferenceHolder?.id ?? '').trim();
-  const holderId = ba?.accountHolderId || String(opts.accountHolderId ?? '').trim() || byReferenceHolderId || null;
+  const pastedHolderId = String(opts.accountHolderId ?? '').trim();
+  const holderId = pastedHolderId || byReferenceHolderId || ba?.accountHolderId || null;
   if (holderId && holderId === byReferenceHolderId) {
     ah = accountHolderSummary(byReferenceHolder);       // already read on the holder route
   } else if (holderId) {
     const r = await bcl<Dict>(cfg, 'GET', `/accountHolders/${encodeURIComponent(holderId)}`);
     if (r.ok) {
       ah = accountHolderSummary(r.data);
-      if (!ba?.accountHolderId) notes.push(`Account holder ${holderId} was read from the id given, not from the store.`);
+      if (holderId === pastedHolderId) notes.push(`Account holder ${holderId} was read from the id given, not from the store.`);
     } else errors.push(`account holder ${holderId}: ${refusalText(cfg, r, 'bpKey', 'the Balance Platform BCL role')}`);
   } else if (ba) {
     errors.push(`balance account ${ba.id} names no account holder.`);
@@ -897,17 +955,26 @@ async function lookupByReference(cfg: AdyenConfig, merchant: string, reference: 
     notes.push('No account holder is reachable: the store names no balance account, no accountHolderId was given and no account holder carries the reference.');
   }
   // HOW the account holder we ended up with was reached, for the one line the
-  // screen shows: 'pasted' (an id was typed in), 'reference' (the balance
-  // platform listing matched the venue code with nothing pasted, the automatic
-  // route every venue after the first takes), 'store' (the store's balance
-  // account named it), or null.
+  // screen shows: 'pasted' (an id was typed in AND it is the one used),
+  // 'reference' (the balance platform listing matched the venue code with
+  // nothing pasted, the automatic route every venue after the first takes),
+  // 'store' (the store's balance account named it), or null.
   out.holderFoundBy = !ah?.id ? null
-    : String(opts.accountHolderId ?? '').trim() ? 'pasted'
-    : ba?.accountHolderId && ah.id === ba.accountHolderId ? 'store'
+    : pastedHolderId && ah.id === pastedHolderId ? 'pasted'
     : holderSide.foundBy === 'reference' && ah.id === byReferenceHolderId ? 'reference'
+    : ba?.accountHolderId && ah.id === ba.accountHolderId ? 'store'
     : null;
-  if (byReferenceHolderId && ba?.accountHolderId && byReferenceHolderId !== ba.accountHolderId) {
-    notes.push(`Account holder ${byReferenceHolderId} carries the reference ${reference}, but the store's balance account belongs to account holder ${ba.accountHolderId}. The store's own account holder was used.`);
+  if (ba && ah?.id && ba.accountHolderId && ba.accountHolderId !== ah.id) {
+    // The store's account is NOT the chosen holder's. Said as an error (the
+    // screen turns it into one plain line, and step 5a offers set_split),
+    // and the account is dropped here so nothing downstream writes it.
+    errors.push(`balance account ${ba.id} (named by the store's split configuration) belongs to a different account holder, ${ba.accountHolderId}, not ${ah.id}. It was not used; set the commission again so the store points at the venue's own account.`);
+    out.storeBalanceAccountForeign = true;
+    ba = null;
+  } else if (ba && ah?.id && !ba.accountHolderId) {
+    errors.push(`balance account ${ba.id} (named by the store's split configuration) names no account holder, so it cannot be shown to be ${ah.id}'s. It was not used.`);
+    out.storeBalanceAccountForeign = true;
+    ba = null;
   }
 
   // 3b. no balance account from the store, but the holder is known: pick one
@@ -936,6 +1003,22 @@ async function lookupByReference(cfg: AdyenConfig, merchant: string, reference: 
     else errors.push(`legal entity ${ah.legalEntityId}: ${refusalText(cfg, r, 'lemKey', 'the roles "Manage LegalEntities via API" and "Balance Platform BCL Legal Entity role"')}`);
   } else if (ah) {
     errors.push(`account holder ${ah.id} names no legal entity.`);
+  }
+
+  // 4b. the sweeps on the venue balance account (9 Sep 2026): ANY active push
+  //     to a bank is what "paid out" means (the venue may have changed bank,
+  //     and the oldest bank the legal entity lists is not the one to look
+  //     for), for buildLinkPatch's payout_sweep_id and for the go live flow's
+  //     step 5. One read, best effort; sweepKnown says whether it happened.
+  //       GET /balanceAccounts/{id}/sweeps   https://docs.adyen.com/api-explorer/balanceplatform/latest/get/balanceAccounts/(balanceAccountId)/sweeps
+  out.sweep = null;
+  out.sweepKnown = false;
+  if (ba?.id) {
+    const r = await bcl<Dict>(cfg, 'GET', `/balanceAccounts/${encodeURIComponent(ba.id)}/sweeps`);
+    if (r.ok) {
+      out.sweepKnown = true;
+      out.sweep = findPushSweep(r.data, null);
+    } else errors.push(`sweeps of balance account ${ba.id}: ${refusalText(cfg, r, 'bpKey', 'the Balance Platform BCL role')}`);
   }
 
   // 5. no store to take a business line from: read the legal entity's
@@ -1400,6 +1483,138 @@ async function probeApplePay(cfg: AdyenConfig, merchant: string, storeId: string
   return { ...base, paymentMethodId: pmId, verification, domains: known, missing: plan.missing, registered: plan.missing.length === 0 };
 }
 
+// ── step 5 reads for golive_state and set_split (9 Sep 2026) ─────────────────
+const numOrNull = (v: unknown): number | null => (v === null || v === undefined || v === '' || isNaN(Number(v)) ? null : Number(v));
+// Where the hosted onboarding page sends the venue owner afterwards, and how
+// long Adyen keeps the link alive (docs: "Expires after 4 minutes").
+const ONBOARDING_REDIRECT_URL = 'https://app.serv-os.app/';
+const ONBOARDING_LINK_TTL_MS = 4 * 60_000;
+
+// THE VENUE'S RATE AS THE LEDGER RESOLVES IT (9 Sep 2026). adyen-webhook
+// stamps what ServOS earns on every payment from resolveAdyenRateCard, per
+// tier: the venue's rate_card, else the platform default rate_card, else the
+// legacy flat markup as the in person tier ONLY. Step 5 shows, and set_split
+// writes, those SAME numbers, so Adyen never takes one rate while the ledger
+// and the venue's Card payments screen say another. rate_card and
+// default_adyen_rate_card arrive with 20260821b_adyen_rate_card.sql and are
+// read on their own statements: a missing column is a line, never a 400 for
+// every action.
+interface VenueRates { cards: Record<string, TierRate>; rowRateCard: Dict | null; settings: Dict; errors: string[] }
+async function readVenueRates(locationId: string, maa: Dict | null): Promise<VenueRates> {
+  const errors: string[] = [];
+  let rowRateCard: Dict | null = null;
+  try {
+    const { data, error } = await platformAdmin.from('merchant_adyen_accounts').select('rate_card').eq('location_id', locationId).maybeSingle();
+    if (error && !isUnknownColumnError(error, 'rate_card')) errors.push(`rate card of the venue: ${error.message}`);
+    else if (!error) {
+      const card = (data as Dict | null)?.rate_card;
+      rowRateCard = card && typeof card === 'object' && !Array.isArray(card) ? (card as Dict) : null;
+    }
+  } catch (e) { errors.push(`rate card of the venue: ${(e as Error)?.message || String(e)}`); }
+  let settings: Dict = {};
+  try {
+    let { data, error } = await platformAdmin.from('platform_settings')
+      .select('default_adyen_rate_card, default_adyen_markup_percent, default_adyen_markup_fixed_pence').eq('id', true).maybeSingle();
+    if (error && isUnknownColumnError(error, 'default_adyen_rate_card')) {
+      ({ data, error } = await platformAdmin.from('platform_settings')
+        .select('default_adyen_markup_percent, default_adyen_markup_fixed_pence').eq('id', true).maybeSingle());
+    }
+    if (error) errors.push(`platform defaults: ${error.message}`);
+    else settings = (data as Dict | null) ?? {};
+  } catch (e) { errors.push(`platform defaults: ${(e as Error)?.message || String(e)}`); }
+  const cards = resolveAdyenRateCard(
+    { rate_card: rowRateCard, markup_percent: maa?.markup_percent, markup_fixed_pence: maa?.markup_fixed_pence },
+    settings as { default_adyen_rate_card?: unknown; default_adyen_markup_percent?: unknown; default_adyen_markup_fixed_pence?: unknown },
+  );
+  return { cards, rowRateCard, settings, errors };
+}
+// The resolved card as the profile builder takes it ({ tier: { percent, fixedPence } }).
+function tiersForProfile(cards: Record<string, TierRate>): Record<string, { percent: number | null; fixedPence: number | null }> {
+  const out: Record<string, { percent: number | null; fixedPence: number | null }> = {};
+  for (const t of RATE_TIERS) out[t] = { percent: cards[t]?.percent ?? null, fixedPence: cards[t]?.fixed_pence ?? null };
+  return out;
+}
+// How many DIFFERENT rates the card holds: 1 reads as one flat number on the
+// screen, more reads as "from 0.8% plus 5p".
+function distinctTierCount(cards: Record<string, TierRate>): number {
+  const keys = new Set<string>();
+  for (const t of RATE_TIERS) {
+    const c = cards[t];
+    if (c && (c.percent !== null || c.fixed_pence !== null)) keys.add(`${c.percent ?? 0}|${c.fixed_pence ?? 0}`);
+  }
+  return keys.size;
+}
+const TIER_WORDS: Record<string, string> = { card_present: 'in person', card_not_present: 'online', amex: 'Amex', keyed: 'keyed in' };
+const tierWord = (t: string): string => TIER_WORDS[t] ?? t;
+// A typed rate past these needs body.confirm true (9 Sep 2026): 8 typed for
+// 0.8 would take 8% of every sale until someone read a statement.
+const SPLIT_PERCENT_CAP = 10;
+const SPLIT_PENCE_CAP = 100;
+
+// THE PAYOUT SWEEP ON THE ROW (9 Sep 2026). payouts_ok stays the capability
+// (Adyen allows payouts), as adyen-bp-webhook, adyen-financial and the
+// venue's own Card payments screen mean it; whether the venue is actually
+// PAID OUT is merchant_adyen_accounts.payout_sweep_id, written by setup_sweep
+// and golive_state and read by the list chip together with the flag. The
+// column arrives with the migration named here and is read and written ON
+// ITS OWN, so the function works before it runs (a write then answers a
+// warning naming the file).
+const PAYOUT_SWEEP_COLUMN = 'payout_sweep_id';
+const PAYOUT_SWEEP_MIGRATION = 'supabase/migrations/20260909b_PLATFORM_adyen_payout_sweep_id.sql';
+function payoutSweepMissingMessage(): string {
+  return `The daily payout was not kept on the venue: merchant_adyen_accounts has no ${PAYOUT_SWEEP_COLUMN} column yet, so the list chip cannot read it. Run ${PAYOUT_SWEEP_MIGRATION} on the platform project.`;
+}
+async function readPayoutSweepId(locationId: string): Promise<{ id: string | null; available: boolean }> {
+  try {
+    const { data, error } = await platformAdmin.from('merchant_adyen_accounts').select(PAYOUT_SWEEP_COLUMN).eq('location_id', locationId).maybeSingle();
+    if (error) return { id: null, available: !isUnknownColumnError(error, PAYOUT_SWEEP_COLUMN) };
+    return { id: String((data as Dict | null)?.[PAYOUT_SWEEP_COLUMN] ?? '').trim() || null, available: true };
+  } catch { return { id: null, available: false }; }
+}
+async function rememberPayoutSweepOnVenue(locationId: string, sweepId: string | null): Promise<string | null> {
+  try {
+    const { error } = await platformAdmin.from('merchant_adyen_accounts')
+      .update({ [PAYOUT_SWEEP_COLUMN]: sweepId, updated_at: new Date().toISOString() })
+      .eq('location_id', locationId);
+    if (!error) return null;
+    if (isUnknownColumnError(error, PAYOUT_SWEEP_COLUMN)) return payoutSweepMissingMessage();
+    return `The daily payout could not be kept on the venue (${error.message}).`;
+  } catch (e) {
+    return `The daily payout could not be kept on the venue (${(e as Error)?.message || String(e)}).`;
+  }
+}
+
+// OUR liable balance account id, if we know it: the secret named by
+// liableBalanceAccountSecretName, else the column on adyen_platform_settings
+// (read on its own; absent until 20260909_PLATFORM_adyen_liable_balance_account.sql
+// runs, and that is fine: the commission lands there whether or not the id
+// can be shown, so this is decoration, never a gate).
+async function readLiableBalanceAccount(env: AdyenEnv, region: string): Promise<string | null> {
+  const fromSecret = liableBalanceAccountSecretNames(env, region).map((n) => String(Deno.env.get(n) ?? '').trim()).find((v) => !!v);
+  if (fromSecret) return fromSecret;
+  const key = platformSettingsKey(env, region);
+  try {
+    const { data, error } = await platformAdmin.from(ADYEN_PLATFORM_SETTINGS_TABLE)
+      .select(ADYEN_LIABLE_BALANCE_ACCOUNT_COLUMN).eq('environment', key.environment).eq('region', key.region).maybeSingle();
+    if (error) return null;
+    return String((data as Dict | null)?.[ADYEN_LIABLE_BALANCE_ACCOUNT_COLUMN] ?? '').trim() || null;
+  } catch { return null; }
+}
+
+// What the profile on the store actually says, so step 5 shows the real
+// numbers and not the row's: GET /merchants/{m}/splitConfigurations/{id}
+//   https://docs.adyen.com/api-explorer/Management/3/get/merchants/(merchantId)/splitConfigurations/(splitConfigurationId)
+// Answers the commission, how many rules the profile holds and where its
+// catch all rule sends the rest of each sale (profileCommission), so step 5a
+// can refuse to read Done on a profile that keeps the remainder for ServOS.
+interface ProfileRead { percent: number | null; fixedPence: number | null; rules: number; remainder: string | null; read: boolean; error: string | null }
+async function readProfileCommission(cfg: AdyenConfig, merchant: string, profileId: string): Promise<ProfileRead> {
+  const r = await mgmt<Dict>(cfg, 'GET', `/merchants/${encodeURIComponent(merchant)}/splitConfigurations/${encodeURIComponent(profileId)}`);
+  if (!r.ok) return { percent: null, fixedPence: null, rules: 0, remainder: null, read: false, error: `split configuration ${profileId}: ${refusalText(cfg, r, 'managementKey', 'the Management API role "SplitConfiguration read"')}` };
+  const c = profileCommission(r.data);
+  return { percent: c?.percent ?? null, fixedPence: c?.fixedPence ?? null, rules: c?.rules ?? 0, remainder: c?.remainder ?? null, read: true, error: null };
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   try {
@@ -1451,7 +1666,7 @@ Deno.serve(async (req) => {
     // reader ids are environment specific).
     const [{ data: maa }, target] = await Promise.all([
       platformAdmin.from('merchant_adyen_accounts')
-        .select('merchant_account, store_id, region, receive_payments_ok, legal_entity_id, account_holder_id, balance_account_id, split_profile_id, transfer_instrument_id, business_line_id')
+        .select('merchant_account, store_id, region, receive_payments_ok, payouts_ok, legal_entity_id, account_holder_id, balance_account_id, split_profile_id, transfer_instrument_id, business_line_id, markup_percent, markup_fixed_pence')
         .eq('location_id', loc.id).maybeSingle(),
       adyenEnvForLocation(platformAdmin, loc.id),
     ]);
@@ -1859,6 +2074,12 @@ Deno.serve(async (req) => {
         }
       }
       if (restored?.skipped.length) warnings.push(...restored.skipped);
+      // The daily payout belonged to the outgoing account's balance account
+      // (on its own statement: the column may be waiting on its migration).
+      if (provisionedOnCurrent) {
+        const sweepWarning = await rememberPayoutSweepOnVenue(loc.id, null);
+        if (sweepWarning && !warnings.includes(sweepWarning)) warnings.push(sweepWarning);
+      }
       if (next !== env && merchantWritten !== merchantWas) {
         warnings.push(merchantWritten
           ? `The merchant account was switched to the ${region} ${next} account (${merchantWritten})${merchantWas ? `, replacing ${merchantWas}` : ''}.`
@@ -2001,6 +2222,11 @@ Deno.serve(async (req) => {
       const kept = await savePlatformSettings(linkEnv, region, linkSettings, { balancePlatformId: learnedBp });
       const balancePlatformKnown = !!(learnedBp || String(linkSettings.row?.balance_platform_id ?? '').trim() || balancePlatformFromSecret(linkEnv, region));
       const patch = lookup.found ? buildLinkPatch(lookup, { merchantAccount: merchant, region, environment: linkEnv }) : null;
+      // payout_sweep_id rides on its OWN statement (the column may not exist
+      // yet, and a select or upsert naming an unknown column is a 400 for the
+      // whole write): taken off the patch here, written after the row below.
+      const sweepIdPatch: string | null | undefined = patch && 'payout_sweep_id' in patch ? ((patch.payout_sweep_id as string | null) ?? null) : undefined;
+      if (patch) delete (patch as Dict).payout_sweep_id;
       const confirm = body.relink === true || body.reprovision === true;
       // storeStatus feeds the refusal wording for a store that is not
       // active (the decision itself reads patch.receive_payments_ok).
@@ -2060,6 +2286,11 @@ Deno.serve(async (req) => {
       let reprovisioned = false;
       let stashSaved: ReturnType<typeof stashSummary> = null;
       let restored: Record<string, unknown> | null = null;
+      // What the daily payout column ends up as: the sweep the lookup listed
+      // (or null when it listed none), else null when the money side is
+      // replaced or cleared (the old sweep belonged to the old account), else
+      // untouched.
+      let sweepIdWrite: string | null | undefined = sweepIdPatch;
       if (plan.kind === 'flip') {
         // The environment changes: set_environment's rules, clearing and
         // merchant rewrite, with the pulled ids on the same upsert. The
@@ -2073,6 +2304,8 @@ Deno.serve(async (req) => {
         stashSaved = flip.stashSaved;
         restored = flip.restored;
         warnings.push(...flip.warnings);
+        // A reprovisioning flip already cleared the daily payout column
+        // (flipEnvironment); only a sweep the lookup listed is written here.
       } else {
         // Same environment. A CONFIRMED replacement (conflicts, relink
         // given) that MOVES THE MONEY SIDE (balance_account_id or
@@ -2083,7 +2316,15 @@ Deno.serve(async (req) => {
         // side unreadable this time (the Balance Platform refused the key)
         // clears NOTHING: a failed read is not a new holder (9 Sep 2026).
         // Filling blanks on a first link clears nothing either (relinkClear).
-        const clear = relinkClear(plan.diff, patch);
+        // A HOLDER ONLY SAVE KEEPS THE STORE (9 Sep 2026, link_holder): with no
+        // store read, buildLinkPatch says receive_payments_ok false, which
+        // would switch off the store the row already names. The store on the
+        // row is what a payment names, so it, its merchant account and its
+        // flag are left alone when the read reached no store at all.
+        const holderOnly = !lookup.store && !!String(maa?.store_id ?? '').trim();
+        if (holderOnly) delete (patch as Dict).receive_payments_ok;
+        const clear: Dict = relinkClear(plan.diff, patch);
+        if (holderOnly) { delete clear.receive_payments_ok; delete clear.store_id; delete clear.merchant_account; }
         const { error: linkErr, warning: regionWarning } = await upsertAccountRow({ location_id: loc.id, ...clear, ...patch, updated_at: new Date().toISOString() }, 'location_id');
         if (linkErr) return json({ ok: false, error: `link write failed: ${linkErr.message}`, ...base }, 500);
         if (regionWarning) warnings.push(regionWarning);
@@ -2091,11 +2332,18 @@ Deno.serve(async (req) => {
           const cleared = Object.keys(clear).filter((k) => k !== 'onboarding_link_url' && k !== 'onboarding_link_expires_at');
           if (cleared.length) warnings.push(`The previous ids were replaced; the pieces the lookup did not reach were cleared (${cleared.join(', ')}).`);
         }
+        if (sweepIdWrite === undefined && Object.keys(clear).length) sweepIdWrite = null;
       }
       // The venue row's own copy of the balance platform it lives on, on its
       // own statement so an absent column never touches the link write.
       const bpOnRow = await rememberBalancePlatformOnVenue(loc.id, learnedBp);
       if (bpOnRow) warnings.push(bpOnRow);
+      // The daily payout the lookup listed (or its absence), on its own
+      // statement for the same reason.
+      if (sweepIdWrite !== undefined) {
+        const sweepWarning = await rememberPayoutSweepOnVenue(loc.id, sweepIdWrite);
+        if (sweepWarning) warnings.push(sweepWarning);
+      }
       if (kept.warning) warnings.push(kept.warning);
       if (errors.length) warnings.push(`Linked with gaps, ${errors.length === 1 ? 'this piece' : 'these pieces'} could not be read: ${errors.join(' ')}`);
       // A venue linked on its BUSINESS ACCOUNT alone is linked, and it cannot
@@ -2321,6 +2569,75 @@ Deno.serve(async (req) => {
         notes.push(`Nothing was read from Adyen: no merchant account is known for the ${region} ${targetEnv} account (${merchantSecret}).`);
       }
 
+      // ── step 5, Payouts and commission (9 Sep 2026) ────────────────────────
+      // The venue's rate (its row, else the platform default), what the
+      // profile on the store actually says, our liable account if we know it,
+      // and the sweep the lookup listed. The row's ids ride only on the
+      // venue's own environment, as for step 3.
+      // A venue with NO row yet on its own environment is `{}` (a row with
+      // nothing on it), never null: null means the OTHER environment, and
+      // step 5 offers nothing there (buildPayoutsStep).
+      const rowNow: Dict | null = targetEnv === env ? ((maa as Dict | null) ?? {}) : null;
+      const stepCurrency = region === 'US' ? 'USD' : 'GBP';
+      // The rate the LEDGER charges (readVenueRates), not the row's flat
+      // number: with a venue or platform rate card the flat columns are not
+      // what adyen-webhook stamps. The in person tier is the number shown;
+      // `tiers` says whether the card holds more than one rate ("from ...").
+      const rates = await readVenueRates(loc.id, maa as Dict | null);
+      errors.push(...rates.errors);
+      const inPerson = rates.cards.card_present;
+      const ratePercent = inPerson.percent;
+      const rateFixed = inPerson.fixed_pence;
+      const rateSource: 'venue' | 'platform' | null = inPerson.source === 'venue' || inPerson.source === 'legacy_venue' ? 'venue' : inPerson.source ? 'platform' : null;
+      const rateTiers = distinctTierCount(rates.cards);
+      const rateTiered = rateCardPriced(rates.rowRateCard);
+      const profileId = String((lookup?.store as StoreSummary | null)?.splitConfigurationId ?? '').trim();
+      let profileRead: ProfileRead = { percent: null, fixedPence: null, rules: 0, remainder: null, read: false, error: null };
+      if (profileId && keysOk && merchantConfigured) {
+        profileRead = await readProfileCommission(targetCfg, merchantConfigured, profileId);
+        if (profileRead.error) errors.push(profileRead.error);
+      }
+      const liableBalanceAccountId = await readLiableBalanceAccount(targetEnv, region);
+      const commission = {
+        percent: ratePercent, fixedPence: rateFixed, source: rateSource, currency: stepCurrency,
+        line: commissionLine(ratePercent, rateFixed, stepCurrency),
+        // tiers: how many different rates the venue pays; tiered: the venue
+        // row carries its own per card type rate card (the screen then
+        // offers to set the commission FROM those rates instead of two boxes).
+        tiers: rateTiers, tiered: rateTiered,
+        rateCard: Object.fromEntries(RATE_TIERS.map((t) => [t, { percent: rates.cards[t].percent, fixedPence: rates.cards[t].fixed_pence, source: rates.cards[t].source }])),
+        profileId: profileId || null, profilePercent: profileRead.percent, profileFixedPence: profileRead.fixedPence, profileRead: profileRead.read,
+        profileRules: profileRead.rules, profileRemainder: profileRead.remainder,
+        liableBalanceAccountId, liableSecret: liableBalanceAccountSecretName(targetEnv, region),
+      };
+      const payoutsState = { read: lookup?.sweepKnown === true, sweep: lookup?.sweep ?? null };
+      // THE VENUE ROW WRITES this action makes, on the venue's own environment
+      // and only for the holder the row names: payouts_ok follows the
+      // CAPABILITY just read (Adyen allows payouts), and payout_sweep_id
+      // follows the sweeps just listed (the daily push to the venue's bank,
+      // or null when there is none). The list chip reads the two together.
+      let payoutsSynced: boolean | null = null;
+      let sweepSynced: string | null | undefined = undefined;
+      const sweepOnRow = rowNow ? await readPayoutSweepId(loc.id) : { id: null, available: false };
+      const holderRead = lookup?.accountHolder as AccountHolderSummary | null;
+      if (rowNow && holderRead?.id && String(rowNow.account_holder_id ?? '').trim() === holderRead.id) {
+        const allowed = holderRead.capabilities?.payoutsOk === true;
+        if ((rowNow.payouts_ok === true) !== allowed) {
+          const { error: syncErr } = await platformAdmin.from('merchant_adyen_accounts').update({ payouts_ok: allowed, updated_at: new Date().toISOString() }).eq('location_id', loc.id);
+          if (syncErr) notes.push(`The payout flag could not be updated on the venue: ${syncErr.message}`);
+          else { payoutsSynced = allowed; rowNow.payouts_ok = allowed; }
+        }
+        if (lookup?.sweepKnown === true) {
+          const sweepId = String((lookup?.sweep as Dict | null)?.id ?? '').trim() || null;
+          if (!sweepOnRow.available || sweepOnRow.id !== sweepId) {
+            const sweepWarning = await rememberPayoutSweepOnVenue(loc.id, sweepId);
+            if (sweepWarning) notes.push(sweepWarning);
+            else sweepSynced = sweepId;
+          }
+        }
+      }
+      const payoutSweepOnRow = sweepSynced !== undefined ? sweepSynced : sweepOnRow.id;
+
       // Keep the balance platform id this read learned, so the NEXT venue on
       // this account is found by its reference with nothing pasted.
       const learnedBp = learnedBalancePlatform(lookup);
@@ -2359,9 +2676,19 @@ Deno.serve(async (req) => {
         // save the store (link_store). Null when the flow looks at the OTHER
         // environment: those ids belong to the one the venue is on, and the go
         // live flip writes the new ones.
-        row: targetEnv === env
-          ? { store_id: maa?.store_id ?? null, merchant_account: maa?.merchant_account ?? null, account_holder_id: maa?.account_holder_id ?? null }
+        row: rowNow
+          ? {
+            store_id: rowNow.store_id ?? null, merchant_account: rowNow.merchant_account ?? null, account_holder_id: rowNow.account_holder_id ?? null,
+            balance_account_id: rowNow.balance_account_id ?? null, legal_entity_id: rowNow.legal_entity_id ?? null,
+            split_profile_id: rowNow.split_profile_id ?? null, transfer_instrument_id: rowNow.transfer_instrument_id ?? null,
+            payouts_ok: rowNow.payouts_ok === true, payout_sweep_id: payoutSweepOnRow,
+            markup_percent: rowNow.markup_percent ?? null, markup_fixed_pence: rowNow.markup_fixed_pence ?? null,
+          }
           : null,
+        // Step 5 (PAYOUTS AND COMMISSION above): the rate, the profile on the
+        // store, our liable account, and the push to bank sweep.
+        commission,
+        payouts: payoutsState,
         // THE ONE PLAIN REASON: the Balance Platform refused our key, and the
         // secret the separate credential goes in (the name, never a value).
         balancePlatformKey: { refused: screen.bpRefused, secret: bpSecret },
@@ -2373,10 +2700,10 @@ Deno.serve(async (req) => {
           ambiguous: (lookup?.storeHits ?? []).length > 1,
         },
       };
-      // The VENUE row is not touched here. golive_state stays read only for
-      // the venue: adyen_link writes the id onto the row, on the one call that
-      // already writes it (rememberBalancePlatformOnVenue), and link_store on
-      // the screen is that same call with the store id this read found.
+      // The VENUE row's ids are not touched here: adyen_link writes them, and
+      // link_store and link_holder on the screen are that same call with the
+      // store id or the account holder id this read found. The one exception
+      // is the payouts_ok flag above, kept in step with what was read.
 
       // The target rides in: the venue's readers belong to the environment it
       // is on now, so they are never "done" for a flow looking at the other.
@@ -2401,6 +2728,8 @@ Deno.serve(async (req) => {
         ok: true, action, ...state, steps,
         target: targetEnv, merchantSecret, merchantOverride: merchantOverride ?? null,
         swept: body.sweep === true,
+        payoutsSynced,
+        payoutSweepSynced: sweepSynced ?? null,
         // merchantConfigured is the account the reads above actually used; this
         // is what the SECRET names. They differ only when the admin passed an
         // override, and merchantMismatch is the case that makes them differ on
@@ -2446,6 +2775,298 @@ Deno.serve(async (req) => {
     // account (a row flipped before set_environment rewrote it).
     const merchant = effectiveMerchantAccount(cfg, maa?.merchant_account);
     if (!merchant) return json({ error: `no merchant account configured for card payments (${adyenSecretName(cfg.env, 'merchantAccount', cfg.region)})` }, 500);
+
+    // ── STEP 5, PAYOUTS AND COMMISSION (9 Sep 2026) ──────────────────────────
+    // Three super_admin writes on the venue's OWN environment and merchant,
+    // each ONE click on the go live flow. The calls live in
+    // _shared/adyenPayouts.ts, shared with adyen-onboard. Every refusal is a
+    // 200 with ok false, a plain `error` and the raw answer in `detail`.
+    const payoutApi: AdyenApi = {
+      mgmt: (m: string, p: string, b?: unknown) => mgmt<Dict>(cfg, m, p, b),
+      bcl: (m: string, p: string, b?: unknown, idem?: string) => bcl<Dict>(cfg, m, p, b, idem),
+    };
+    const stepCurrency = region === 'US' ? 'USD' : 'GBP';
+    const stepPlainErrors = {
+      noStore: 'The payments location is not saved on the venue yet. Do step 3 first.',
+      noHolder: 'The business account is not saved on the venue yet. Do step 2 first.',
+    };
+    // THE ENVIRONMENT THE SCREEN IS LOOKING AT must be the one the venue is on
+    // (9 Sep 2026): the flow looks at live by default while a test venue is
+    // still on test, and these writes act on the venue's OWN row and account,
+    // so a click there would set a commission on the test store, mint a bank
+    // details link for the test legal entity or sweep the test balance
+    // account. The screen names the environment it looks at; a different one
+    // is refused in plain words. No environment given is the venue's own.
+    const envGuard = (): Response | null => {
+      const asked = body.environment;
+      if (asked === undefined || asked === null || String(asked).trim() === '') return null;
+      const want = normalizeAdyenEnv(asked);
+      if (want === env) return null;
+      return json({
+        ok: false, wrong_environment: true, environment: env, asked: want,
+        error: want === 'live' ? 'This venue is still on test cards. Turn on live payments first.' : 'This venue is on live cards. This step only acts on the account it is on.',
+      }, 200);
+    };
+
+    // ── set_split: the commission rules on the venue's store (step 5a) ───────
+    // ONE RULE PER PRICING TIER, from the SAME source the ledger charges
+    // (readVenueRates, resolveAdyenRateCard): the venue's rate card, else the
+    // platform default, else the legacy flat markup. Two shapes of call:
+    //   { percent, fixedPence }  the two boxes on the screen, for a venue
+    //                            priced with one number: written as the
+    //                            venue's rate_card for EVERY tier (and the
+    //                            legacy columns), so the ledger charges what
+    //                            Adyen takes. Refused when the venue already
+    //                            carries a per card type rate card (set those
+    //                            in Processing rates, then set from them).
+    //                            Past SPLIT_PERCENT_CAP or SPLIT_PENCE_CAP it
+    //                            needs confirm: true (a slipped decimal point).
+    //   { }                      from the venue's rates as they resolve today.
+    // Nothing is written on the row until Adyen has accepted the profile AND
+    // put it on the store; a refused set leaves the row exactly as it was.
+    // Before any write the store is read (it must sit on the merchant the row
+    // names, and its own merchant is the one both calls use) and the balance
+    // account is read (it must belong to the venue's own account holder), so
+    // money is never routed to another company's account.
+    if (action === 'set_split') {
+      if (!isServosAdmin) return adminOnly();
+      const wrongEnv = envGuard();
+      if (wrongEnv) return wrongEnv;
+      const storeId = String(maa?.store_id ?? '').trim();
+      const balanceAccountId = String(maa?.balance_account_id ?? '').trim();
+      const holderId = String(maa?.account_holder_id ?? '').trim();
+      if (!storeId) return json({ ok: false, error: stepPlainErrors.noStore }, 200);
+      if (!balanceAccountId || !holderId) return json({ ok: false, error: stepPlainErrors.noHolder }, 200);
+      const typed = body.percent !== undefined || body.fixedPence !== undefined || body.fixed_pence !== undefined;
+      const percentTyped = numOrNull(body.percent);
+      const penceTyped = numOrNull(body.fixedPence ?? body.fixed_pence);
+      const rates = await readVenueRates(loc.id, maa as Dict | null);
+      const warnings: string[] = [...rates.errors];
+      let cards = rates.cards;
+      let flatCard: Record<string, { percent: number | null; fixed_pence: number | null }> | null = null;
+      if (typed) {
+        if ((percentTyped !== null && (percentTyped < 0 || percentTyped > 100)) || (penceTyped !== null && (penceTyped < 0 || penceTyped > 10000))) {
+          return json({ ok: false, error: 'The percent must be 0 to 100 and the pence 0 to 10000.' }, 400);
+        }
+        flatCard = flatRateCard(percentTyped, penceTyped);
+        if (!flatCard) return json({ ok: false, error: 'There is no commission to set. Type a percent or pence first.' }, 200);
+        if (rateCardPriced(rates.rowRateCard)) {
+          return json({ ok: false, tiered: true, error: 'This venue has rates per card type. Set them in Processing rates, then set the commission from them.' }, 200);
+        }
+        const pct = Number(flatCard.card_present?.percent ?? 0);
+        const fix = Number(flatCard.card_present?.fixed_pence ?? 0);
+        if ((pct > SPLIT_PERCENT_CAP || fix > SPLIT_PENCE_CAP) && body.confirm !== true) {
+          return json({ ok: false, needs_confirm: true, percent: pct, fixedPence: fix, error: `That is ${commissionLine(pct, fix, stepCurrency)} of every sale. Confirm it to set it.` }, 200);
+        }
+        cards = resolveAdyenRateCard({ rate_card: flatCard, markup_percent: percentTyped, markup_fixed_pence: penceTyped }, rates.settings as Dict);
+      }
+      const tiers = tiersForProfile(cards);
+      const built = tieredCommissionRules(stepCurrency, tiers);
+      if (built.lacking.length) {
+        const all = built.lacking.length === RATE_TIERS.length;
+        return json({
+          ok: false, lacking: built.lacking,
+          error: all ? 'There is no commission to set. Type a percent or pence first.' : `Set a rate for every card type in Processing rates first (${built.lacking.map(tierWord).join(', ')} have none).`,
+        }, 200);
+      }
+      // The store, as it is now: on which merchant, and what it carries.
+      const storeRead = await mgmt<Dict>(cfg, 'GET', `/stores/${encodeURIComponent(storeId)}`);
+      if (!storeRead.ok) {
+        return json({ ok: false, error: 'The payments location could not be read, so the commission was not set.', detail: refusalText(cfg, storeRead, 'managementKey', 'the Management API role "Stores read"') }, 200);
+      }
+      const storeNow = storeSummary(storeRead.data);
+      const storeMerchant = String(storeNow?.merchantId ?? '').trim();
+      if (storeMerchant && storeMerchant.toLowerCase() !== merchant.toLowerCase()) {
+        return json({ ok: false, error: 'The payments location sits on a different Adyen account than the venue names, so the commission was not set.', detail: `store ${storeId} is on ${storeMerchant}; the venue row names ${merchant}. Fix the venue's merchant account in step 3.` }, 200);
+      }
+      const useMerchant = storeMerchant || merchant;
+      // Where the money lands must be the venue's own business account's.
+      const baRead = await bcl<Dict>(cfg, 'GET', `/balanceAccounts/${encodeURIComponent(balanceAccountId)}`);
+      if (!baRead.ok) {
+        return json({ ok: false, error: 'Where the money lands could not be checked, so the commission was not set.', detail: refusalText(cfg, baRead, 'bpKey', 'the Balance Platform BCL role') }, 200);
+      }
+      const baHolder = String(baRead.data?.accountHolderId ?? '').trim();
+      if (baHolder !== holderId) {
+        logLink('set_split_refused', loc.id, { environment: env, region, storeId, balanceAccountId, balanceAccountHolder: baHolder || null, rowHolder: holderId });
+        return json({ ok: false, foreign_balance_account: true, error: 'Where the money lands is not the venue’s own business account, so the commission was not set.', detail: `balance account ${balanceAccountId} belongs to account holder ${baHolder || '(none)'}; the venue names ${holderId}. Save the business account again in step 2.` }, 200);
+      }
+      const profile = buildTieredProfile({ description: `ServOS ${loc.name ?? 'venue'} rates`, currency: stepCurrency, tiers });
+      if (!profile) return json({ ok: false, error: 'There is no commission to set. Type a percent or pence first.' }, 200);
+      const previousProfileId = String(maa?.split_profile_id ?? '').trim() || storeNow?.splitConfigurationId || null;
+      const split = await createSplitOnStore(payoutApi, { merchant: useMerchant, storeId, balanceAccountId, profile, previousProfileId });
+      logLink('set_split', loc.id, {
+        environment: env, region, merchant: useMerchant, storeId, balanceAccountId, typed, percent: percentTyped, fixedPence: penceTyped,
+        tiers, rules: profile.rules.length, stage: split.stage, httpStatus: split.status, splitConfigurationId: split.splitConfigurationId,
+        created: split.created, patched: split.patched, previousProfileId: split.previousProfileId, orphanDeleted: split.orphanDeleted,
+      });
+      if (!split.ok) {
+        const raw = split.stage === 'create' ? split.created : split.patched;
+        const refused = scopeMissing(split.status);
+        const orphan = split.stage === 'patch'
+          ? (split.orphanDeleted === true ? ' The rule that was made has been removed again.' : ' The rule that was made is still on the Adyen account, unused.')
+          : '';
+        return json({
+          ok: false, stage: split.stage, splitConfigurationId: split.splitConfigurationId, orphanDeleted: split.orphanDeleted,
+          error: refused
+            ? 'Our payments key is missing an Adyen permission, so the commission was not set.'
+            : split.stage === 'create' ? 'Adyen would not make the commission rule.' : `The rule was made, but Adyen would not put it on the payments location.${orphan}`,
+          detail: refused
+            ? `refused (${split.status}): the credential behind ${adyenSecretName(cfg.env, 'managementKey', cfg.region)} needs the Management API roles "SplitConfiguration read and write" and "Stores read and write"`
+            : adyenRefusalMessage(split.status, raw),
+        }, 200);
+      }
+      // ONLY NOW the row: the rate the ledger charges follows what Adyen has
+      // accepted, never the other way round. The typed number lands as the
+      // venue's rate_card for every tier (on its own statement, the column
+      // may be waiting on 20260821b) and on the legacy columns.
+      const rowPatch: Dict = { location_id: loc.id, split_profile_id: split.splitConfigurationId, updated_at: new Date().toISOString() };
+      if (typed) { rowPatch.markup_percent = percentTyped; rowPatch.markup_fixed_pence = penceTyped === null ? null : Math.round(penceTyped); }
+      const { error: stampErr, warning: stampWarning } = await upsertAccountRow(rowPatch);
+      if (stampErr) warnings.push(`The commission is set at Adyen but the venue row could not be updated: ${stampErr.message}`);
+      if (stampWarning) warnings.push(stampWarning);
+      if (flatCard) {
+        const { error: cardErr } = await platformAdmin.from('merchant_adyen_accounts').update({ rate_card: flatCard }).eq('location_id', loc.id);
+        if (cardErr && isUnknownColumnError(cardErr, 'rate_card')) warnings.push('The venue rate card column is not there yet (run supabase/migrations/20260821b_adyen_rate_card.sql), so the ledger reads the flat rate.');
+        else if (cardErr) warnings.push(`The venue rate card could not be written: ${cardErr.message}`);
+      }
+      const inPerson = cards.card_present;
+      const line = commissionLine(inPerson.percent, inPerson.fixed_pence, stepCurrency);
+      const from = distinctTierCount(cards) > 1;
+      console.log(`[adyen-terminal-admin] ${caller.id} set_split for ${loc.id} on ${useMerchant} (${region} ${env}): ${split.splitConfigurationId} (${profile.rules.length} rules) on ${storeId} to ${balanceAccountId}, ${from ? 'from ' : ''}${line}`);
+      return json({
+        ok: true, splitConfigurationId: split.splitConfigurationId, storeId, balanceAccountId,
+        percent: inPerson.percent, fixedPence: inPerson.fixed_pence, from, rules: profile.rules.length,
+        tiers: Object.fromEntries(RATE_TIERS.map((t) => [t, { percent: cards[t].percent, fixedPence: cards[t].fixed_pence, line: commissionLine(cards[t].percent, cards[t].fixed_pence, stepCurrency) }])),
+        line: from && line ? `from ${line}` : line, previousProfileId: split.previousProfileId,
+        warnings, warning: warnings.join(' ') || null,
+      });
+    }
+
+    // ── request_payouts: ask Adyen for the payout capability (step 5b) ────────
+    // Adyen only checks a capability that was REQUESTED, so a holder made
+    // without sendToTransferInstrument can never become allowed on its own.
+    // One PATCH asks for it; Adyen then runs its checks and the flow reads
+    // the answer on the next look.
+    //   PATCH /accountHolders/{id}   { capabilities: { sendToTransferInstrument: { requested: true } } }
+    if (action === 'request_payouts') {
+      if (!isServosAdmin) return adminOnly();
+      const wrongEnv = envGuard();
+      if (wrongEnv) return wrongEnv;
+      const holderId = String(maa?.account_holder_id ?? '').trim();
+      if (!holderId) return json({ ok: false, error: stepPlainErrors.noHolder }, 200);
+      const r = await bcl<Dict>(cfg, 'PATCH', `/accountHolders/${encodeURIComponent(holderId)}`, { capabilities: { [PAYOUT_CAPABILITY]: { requested: true } } });
+      logLink('request_payouts', loc.id, { environment: env, region, holderId, httpStatus: r.status, response: r.ok ? { capabilities: capabilityList(summariseCapabilities(r.data?.capabilities)) } : (r.data ?? null) });
+      if (!r.ok) return json({ ok: false, error: 'Adyen would not take the request for payouts.', detail: refusalText(cfg, r, 'bpKey', 'the Balance Platform BCL role') }, 200);
+      const caps = summariseCapabilities(r.data?.capabilities);
+      const { error: snapErr, warning: snapWarning } = await upsertAccountRow({
+        location_id: loc.id, payouts_ok: caps.payoutsOk,
+        verification_status: { source: 'request_payouts', at: new Date().toISOString(), accountHolderStatus: r.data?.status ?? null, verificationStatus: caps.verificationStatus, capabilities: caps.byName },
+        updated_at: new Date().toISOString(),
+      });
+      const warnings = [snapWarning, snapErr ? `Adyen took the request but the venue row could not be updated: ${snapErr.message}` : null].filter((w): w is string => !!w);
+      const entry = caps.byName[PAYOUT_CAPABILITY] ?? null;
+      console.log(`[adyen-terminal-admin] ${caller.id} request_payouts for ${loc.id} (${region} ${env}): ${holderId} requested, allowed ${caps.payoutsOk}, verification ${entry?.verificationStatus ?? 'none'}`);
+      return json({ ok: true, requested: true, allowed: caps.payoutsOk, verificationStatus: entry?.verificationStatus ?? null, warnings, warning: warnings.join(' ') || null });
+    }
+
+    // ── onboarding_link: the bank details link for the venue owner (step 5b) ──
+    // POST /legalEntities/{id}/onboardingLinks (LEM v4; every body field is
+    // optional). The url works ONCE and for 4 MINUTES, so it is minted on the
+    // click and shown at once with Copy; it is kept on the row the way
+    // adyen-onboard keeps it, and never logged.
+    if (action === 'onboarding_link') {
+      if (!isServosAdmin) return adminOnly();
+      const wrongEnv = envGuard();
+      if (wrongEnv) return wrongEnv;
+      const legalEntityId = String(maa?.legal_entity_id ?? '').trim();
+      if (!legalEntityId) return json({ ok: false, error: stepPlainErrors.noHolder }, 200);
+      const redirect = String(body.redirectUrl ?? body.redirect_url ?? '').trim();
+      if (redirect && !/^https:\/\/[^\s]+$/i.test(redirect)) return json({ error: 'redirectUrl must be an https address' }, 400);
+      const payload = { redirectUrl: redirect || ONBOARDING_REDIRECT_URL, locale: region === 'US' ? 'en-US' : 'en-GB' };
+      const r = await lem<Dict>(cfg, 'POST', `/legalEntities/${encodeURIComponent(legalEntityId)}/onboardingLinks`, payload);
+      const url = String(r.data?.url ?? '').trim();
+      logLink('onboarding_link', loc.id, { environment: env, region, legalEntityId, httpStatus: r.status, minted: r.ok && !!url, response: r.ok ? { url: 'minted' } : (r.data ?? null) });
+      if (!r.ok || !url) {
+        return json({ ok: false, error: 'Adyen would not make the bank details link.', detail: refusalText(cfg, r, 'lemKey', 'the roles "Manage LegalEntities via API" and "Onboarding"') }, 200);
+      }
+      const expiresAt = new Date(Date.now() + ONBOARDING_LINK_TTL_MS).toISOString();
+      const { error: keepErr, warning: keepWarning } = await upsertAccountRow({ location_id: loc.id, onboarding_link_url: url, onboarding_link_expires_at: expiresAt, updated_at: new Date().toISOString() });
+      const warnings = [keepWarning, keepErr ? `The link was made but could not be kept on the venue: ${keepErr.message}` : null].filter((w): w is string => !!w);
+      return json({ ok: true, url, expiresAt, legalEntityId, warnings, warning: warnings.join(' ') || null });
+    }
+
+    // ── setup_sweep: pay the venue out daily (step 5b) ────────────────────────
+    // Adyen's approval is read NOW (the row's snapshot may be old), the BANK
+    // is chosen from that same read (pickPayoutInstrument: the approved bank
+    // an active push sweep already names, else the row's, else the first
+    // approved one; never simply the oldest one the legal entity lists), the
+    // balance account must be this holder's own, and the sweep is the shared
+    // ensurePushSweep: one sweep, repointed rather than doubled. On success
+    // payouts_ok (the capability) and payout_sweep_id (PAID OUT) are written.
+    if (action === 'setup_sweep') {
+      if (!isServosAdmin) return adminOnly();
+      const wrongEnv = envGuard();
+      if (wrongEnv) return wrongEnv;
+      const balanceAccountId = String(maa?.balance_account_id ?? '').trim();
+      const holderId = String(maa?.account_holder_id ?? '').trim();
+      if (!balanceAccountId || !holderId) return json({ ok: false, error: stepPlainErrors.noHolder }, 200);
+      const h = await bcl<Dict>(cfg, 'GET', `/accountHolders/${encodeURIComponent(holderId)}`);
+      if (!h.ok) return json({ ok: false, error: 'The business account could not be read, so payouts were not switched on.', detail: refusalText(cfg, h, 'bpKey', 'the Balance Platform BCL role') }, 200);
+      const caps = summariseCapabilities(h.data?.capabilities);
+      if (!caps.payoutsOk) {
+        return json({ ok: false, pending: true, error: 'Adyen has not approved payouts for this venue yet. Check again later.', verificationStatus: caps.verificationStatus ?? null }, 200);
+      }
+      // Where the money lands must be this holder's, or the sweep would pay
+      // another company's balance to this venue's bank (or the reverse).
+      const baRead = await bcl<Dict>(cfg, 'GET', `/balanceAccounts/${encodeURIComponent(balanceAccountId)}`);
+      if (!baRead.ok) return json({ ok: false, error: 'Where the money lands could not be checked, so payouts were not switched on.', detail: refusalText(cfg, baRead, 'bpKey', 'the Balance Platform BCL role') }, 200);
+      const baHolder = String(baRead.data?.accountHolderId ?? '').trim();
+      if (baHolder !== holderId) {
+        return json({ ok: false, foreign_balance_account: true, error: 'Where the money lands is not the venue’s own business account, so payouts were not switched on.', detail: `balance account ${balanceAccountId} belongs to account holder ${baHolder || '(none)'}; the venue names ${holderId}. Save the business account again in step 2.` }, 200);
+      }
+      // The sweeps as they are now, and the registered company's banks as the
+      // fallback pool when the capability lists none.
+      const sweepsNow = await bcl<Dict>(cfg, 'GET', `/balanceAccounts/${encodeURIComponent(balanceAccountId)}/sweeps`);
+      if (!sweepsNow.ok) return json({ ok: false, error: 'The payout schedule could not be read, so payouts were not switched on.', detail: refusalText(cfg, sweepsNow, 'bpKey', 'the Balance Platform BCL role') }, 200);
+      const legalEntityId = String(maa?.legal_entity_id ?? '').trim();
+      let legalEntityInstruments: string[] = [];
+      const warnings: string[] = [];
+      if (legalEntityId) {
+        const le = await lem<Dict>(cfg, 'GET', `/legalEntities/${encodeURIComponent(legalEntityId)}`);
+        if (le.ok) legalEntityInstruments = legalEntitySummary(le.data)?.transferInstruments ?? [];
+        else warnings.push(`The registered company could not be read (${refusalText(cfg, le, 'lemKey', 'the roles "Manage LegalEntities via API" and "Balance Platform BCL Legal Entity role"')}), so only the banks Adyen has approved were considered.`);
+      }
+      const pick = pickPayoutInstrument(h.data?.capabilities, {
+        sweeps: sweepsNow.data, rowTransferInstrumentId: maa?.transfer_instrument_id ?? null, legalEntityInstruments,
+      });
+      if (!pick) return json({ ok: false, error: 'The venue has not added an approved bank account yet. Send the bank details link first.' }, 200);
+      const transferInstrumentId = pick.transferInstrumentId;
+      const outcome = await ensurePushSweep(payoutApi, {
+        balanceAccountId, transferInstrumentId, currency: stepCurrency, schedule: 'daily',
+        description: `ServOS daily payout, ${loc.name ?? 'venue'}`,
+        // The key names the BANK: a create for a different bank inside Adyen's
+        // replay window is a new request, never a replay of the old one.
+        idempotencyKey: `sweep:${cfg.env}:${loc.id}:${transferInstrumentId}`,
+      });
+      logLink('setup_sweep', loc.id, {
+        environment: env, region, balanceAccountId, transferInstrumentId, bankChosenBy: pick.source, stage: outcome.stage, httpStatus: outcome.status,
+        sweep: outcome.sweep, created: outcome.created, existed: outcome.existed, updated: outcome.updated, retargeted: outcome.retargeted, deactivated: outcome.deactivated, response: outcome.data ?? null,
+      });
+      if (!outcome.ok || !outcome.sweep?.id) {
+        return json({ ok: false, stage: outcome.stage, error: outcome.stage === 'update' ? 'Adyen would not change the payout that is already there, so nothing was made.' : 'Adyen would not set up the daily payout.', detail: adyenRefusalMessage(outcome.status, outcome.data) }, 200);
+      }
+      const { error: stampErr, warning: stampWarning } = await upsertAccountRow({ location_id: loc.id, payouts_ok: true, transfer_instrument_id: transferInstrumentId, updated_at: new Date().toISOString() });
+      if (stampWarning) warnings.push(stampWarning);
+      if (stampErr) warnings.push(`The payout is set up at Adyen but the venue row could not be updated: ${stampErr.message}`);
+      const sweepWarning = await rememberPayoutSweepOnVenue(loc.id, outcome.sweep.id);
+      if (sweepWarning) warnings.push(sweepWarning);
+      console.log(`[adyen-terminal-admin] ${caller.id} setup_sweep for ${loc.id} (${region} ${env}): sweep ${outcome.sweep.id} ${outcome.created ? 'created' : outcome.retargeted ? 'repointed' : outcome.updated ? 'updated' : 'existed'} on ${balanceAccountId} to ${transferInstrumentId} (${pick.source})${outcome.deactivated.length ? `, ${outcome.deactivated.length} other switched off` : ''}`);
+      return json({
+        ok: true, sweep: outcome.sweep, created: outcome.created, existed: outcome.existed, updated: outcome.updated,
+        retargeted: outcome.retargeted, deactivated: outcome.deactivated, transferInstrumentId, bankChosenBy: pick.source,
+        warnings, warning: warnings.join(' ') || null,
+      });
+    }
 
     // ── register_apple_pay_domains: the venue's storefront hosts on the merchant ──
     // super_admin only. The venue's config and merchant account (the row's
