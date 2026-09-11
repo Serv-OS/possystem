@@ -11,8 +11,9 @@ import { useStore } from '../../store';
 import { toMin, toHM } from '../../lib/bookings/optimiser.js';
 import {
   mono, tintBg, tintBd, rulesOf, displayStatus, useNowMin, money,
-  sessionTotal, bookingName, todayISO, isLive, useNarrowStand,
+  bookingName, todayISO, isLive, useNarrowStand,
 } from './bits.jsx';
+import { sessionTotal } from '../../lib/bookings/sessionTotal.js';
 
 // The POS's exact table colours (TablesSurface.jsx STATUS map) — one visual
 // language across till and host stand.

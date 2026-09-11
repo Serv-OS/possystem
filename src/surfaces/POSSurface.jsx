@@ -9,6 +9,7 @@ import { fetchMenuCategoryLinks } from '../lib/db';
 import { buildScheduleCtx } from '../lib/locationTime';
 import { resolveActiveMenu } from '../lib/menus/resolveActiveMenu';
 import { variantFromPrice } from '../lib/menuPricing';
+import { missingInstructionGroups } from '../lib/bookings/preorderChoices';
 import { linkedCategoryIdSet, categoryVisibleInMenu, allowedCategoryIds, itemInAllowedCats } from '../lib/menuMembership';
 import { supabase } from '../lib/supabase';
 import { pushReaderDisplay, clearReaderDisplay, cacheReaderDisplaySetting } from '../lib/readerDisplay';
@@ -81,6 +82,7 @@ export default function POSSurface() {
     deviceConfig,
     setDeviceConfig,
     menuItems: storeMenuItems,
+    instructionGroupDefs,
     menuCategories,
     quickScreenIds,
     quickScreenMode,
@@ -711,10 +713,17 @@ export default function POSSurface() {
   // instruction groups or variants — same shape as the tile's hasOptions
   // check). Pizza config can't run in InlineItemFlow, so pizza is excluded.
   // Non-preorder lines never get this — no new tap behaviour on them.
+  // 10 Sep 2026 review: a guest's pick arrives with a size or options already,
+  // but a REQUIRED instruction group (a cooking temperature) may still be
+  // unanswered, so the badge stays until it is (same per item min rule as
+  // InlineItemFlow, preorderChoices.missingInstructionGroups).
   const lineNeedsOptions = (line) => {
     if (!line?.fromPreorder || line.voided || line.status === 'sent') return false;
-    if ((line.mods?.length || 0) > 0 || line.variantName) return false;
     const mi = MENU_ITEMS.find(m => m.id === line.itemId);
+    if ((line.mods?.length || 0) > 0 || line.variantName) {
+      if (!mi || mi.type === 'pizza') return false;
+      return missingInstructionGroups({ item: mi, rows: MENU_ITEMS, instDefs: instructionGroupDefs, mods: line.mods }).length > 0;
+    }
     if (!mi || mi.type === 'pizza') return false;
     const hasVariants = mi.type === 'variants' || (childrenByParent.get(mi.id)?.length > 0);
     return hasVariants
@@ -2212,7 +2221,8 @@ function OrderItem({
         <span style={{fontSize:11,color:'var(--t1)',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>
           {item.qty>1&&<span style={{fontWeight:800,color:'var(--acc)',marginRight:4}}>{item.qty}×</span>}
           {item.menuName||item.name}
-          {item.variantName&&<span style={{color:'var(--t4)'}}> · {item.variantName}</span>}
+          {/* A seated guest pick is named "Dish · Size" already: no second size. */}
+          {item.variantName&&!String(item.menuName||item.name||'').endsWith(item.variantName)&&<span style={{color:'var(--t4)'}}> · {item.variantName}</span>}
           {isVoided&&<span style={{color:'var(--red)',marginLeft:4,fontSize:9}}>VOID</span>}
         </span>
         <span style={{fontSize:11,fontWeight:700,color:'var(--t2)',fontFamily:'var(--font-mono)',flexShrink:0}}>

@@ -170,12 +170,12 @@ export default function TableBookings() {
             sub="Covers the kitchen can absorb in one window — full slots go red at the host stand and stop selling on the widget."
             value={rules.pacingCap} onChange={v => patch({ pacingCap: v })}
             step={2} min={2} max={30} fmt={v => `${v} cvr`} />
-          <BoStepper label="No-show hold per cover"
-            sub="Held on card at booking, captured only on no-show."
+          <BoStepper label="Card hold per cover"
+            sub="Above zero, online guests save a card. This amount is not held or charged. No-show charges are not available yet."
             value={rules.holdPerCover} onChange={v => patch({ holdPerCover: v })}
             step={5} min={0} max={50} fmt={v => money(v)} />
           <BoStepper label="Cancellation window"
-            sub="Cancel inside this window and the hold may be captured."
+            sub="This setting is not used yet. Write your cancellation policy in Booking terms below."
             value={rules.cancellationWindowHours} onChange={v => patch({ cancellationWindowHours: v })}
             step={2} min={0} max={72} fmt={v => `${v} h`} />
           <BoToggle label="Pacing override needs a manager"
@@ -256,12 +256,12 @@ export default function TableBookings() {
           value={rules.widgetMaxDaysAhead} onChange={v => patch({ widgetMaxDaysAhead: v })}
           step={7} min={7} max={365} fmt={v => `${v} days`} />
         <BoToggle label="Card capture"
-          sub="On: prepay packages and deposits are charged at booking, and plain bookings hold a card (nothing charged) for the no-show policy. Off: bookings complete with no card step."
+          sub="On: guests pay for prepay and deposit packages when they book. Off: packages that need payment are not offered online."
           on={!!rules.cardCaptureEnabled}
           onToggle={() => patch({ cardCaptureEnabled: !rules.cardCaptureEnabled })} />
         {rules.cardCaptureEnabled && (
-          <BoStepper label="Hold a card from"
-            sub="Card holds only apply to parties of at least this size. 1 = every booking. Prepay and deposit packages always charge regardless."
+          <BoStepper label="Save a card from"
+            sub="Parties this size or bigger save a card, if Card hold per cover is above zero. The card is not charged. Prepay and deposit packages are always paid online."
             value={rules.cardCaptureMinCovers || 1} onChange={v => patch({ cardCaptureMinCovers: v <= 1 ? 0 : v })}
             step={1} min={1} max={30} fmt={v => v <= 1 ? 'every booking' : `${v}+ covers`} />
         )}
@@ -358,7 +358,7 @@ function Row({ label, sub, children }) {
     <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: '1px solid var(--bdr)' }}>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>{label}</div>
-        {sub && <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2, lineHeight: 1.4 }}>{sub}</div>}
+        {sub && <div style={{ fontSize: 15, color: 'var(--t3)', marginTop: 2, lineHeight: 1.45 }}>{sub}</div>}
       </div>
       {children}
 

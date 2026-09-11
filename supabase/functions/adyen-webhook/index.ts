@@ -76,6 +76,10 @@ import {
   adyenSecretName, ADYEN_REGIONS, adyenRegionForMerchantAccount, type AdyenConfig, type AdyenRegion, type WebhookKeyCandidate,
 } from '../_shared/adyen.ts';
 import { insertCaptureRow, applyTipToClosedCheck } from '../_shared/tip_capture.ts';
+// Booking payment gate (10 Sep 2026): the pure covers check and the one
+// promote door shared with booking-widget.
+import { coveringBookingPayment, stuckPaymentReason } from '../_shared/bookingPayment.js';
+import { promotePaidBooking, markPaymentNeedsRefund, loadBookingDue } from '../_shared/bookingPromote.ts';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -1166,10 +1170,12 @@ Deno.serve(async (req) => {
         const bkKind = refMatch ? refMatch[2] : null;
         const okEvent = String(item.success) === 'true';
         const code = String(item.eventCode || '');
+        // A stored card token can arrive here rather than on the sync reply.
+        const cardToken = item?.additionalData?.['tokenization.storedPaymentMethodId'] || item?.additionalData?.['recurring.recurringDetailReference'] || null;
         let patch: Record<string, unknown> | null = null;
         if (code === 'AUTHORISATION') {
           patch = okEvent
-            ? { authorised_at: new Date().toISOString(), psp_reference: item.pspReference }
+            ? { authorised_at: new Date().toISOString(), psp_reference: item.pspReference, ...(cardToken ? { stored_payment_method_id: cardToken } : {}) }
             : { status: 'failed', refusal_reason: item.reason || 'refused' };
           // capture-on-auth kinds settle to captured on a successful auth
           if (okEvent && (bkKind === 'prepay' || bkKind === 'deposit')) {
@@ -1184,6 +1190,22 @@ Deno.serve(async (req) => {
         } else if (code === 'REFUND' && okEvent) {
           patch = { status: 'refunded' };
         }
+        // The rows this event settled: what the promote below is allowed to
+        // rely on (10 Sep 2026 payment gate: no matched row, no promotion).
+        //   freshRows   rows THIS event turned into a success (pending or failed before)
+        //   replayRows  rows that were already a success (an Adyen retry, or a
+        //               CAPTURE after the sync reply). They may still promote, but
+        //               are never flagged for refund: the booking may have been
+        //               promoted and seated since.
+        const ROW_COLS = 'id, booking_id, kind, amount, currency, status, stored_payment_method_id, refusal_reason';
+        let matchedRows: Record<string, unknown>[] = [];
+        let freshRows: Record<string, unknown>[] = [];
+        let replayRows: Record<string, unknown>[] = [];
+        const isAuth = code === 'AUTHORISATION';
+        const successPatch = !!patch && (patch.status === 'captured' || patch.status === 'authorised');
+        // What the booking owes, read once for this event (insert and promote share it).
+        let dueRead: Awaited<ReturnType<typeof loadBookingDue>> | null = null;
+        const dueFor = async (id: string) => (dueRead ??= await loadBookingDue(admin, id));
         if (patch) {
           // v5.7.23 - settle by psp_reference (unique index), never by merchant
           // reference: booking_pay stores the sync response's psp on ITS row,
@@ -1195,9 +1217,19 @@ Deno.serve(async (req) => {
           const settleKey = code === 'AUTHORISATION'
             ? String(item.pspReference)
             : String(item.originalReference || item.pspReference);
-          const { data: settledRows } = await admin.from('booking_payments')
-            .update(patch).eq('psp_reference', settleKey).select('id');
-          if (!settledRows?.length) {
+          // A success event (or an Adyen retry of one) must never turn money
+          // that is already flagged for refund, refunded or cancelled back
+          // into a live payment. An AUTHORISATION only settles a row that was
+          // still open (pending or failed), so a retry reads as a replay.
+          let settleQ = admin.from('booking_payments').update(patch).eq('psp_reference', settleKey);
+          if (successPatch) {
+            settleQ = isAuth
+              ? settleQ.in('status', ['pending', 'failed'])
+              : settleQ.not('status', 'in', '(needs_refund,refunded,cancelled)');
+          }
+          const { data: settledRows } = await settleQ.select(ROW_COLS);
+          matchedRows = settledRows || [];
+          if (!matchedRows.length) {
             // Async-only flow: the row was inserted before any psp was known.
             // Settle the single MOST RECENT still-open attempt for this
             // reference - never a blanket reference-wide update.
@@ -1206,40 +1238,111 @@ Deno.serve(async (req) => {
               .in('status', ['pending', 'failed'])
               .order('created_at', { ascending: false }).limit(1);
             if (cand?.length) {
-              await admin.from('booking_payments').update(patch).eq('id', cand[0].id);
+              const { data: candRows } = await admin.from('booking_payments')
+                .update(patch).eq('id', cand[0].id).select(ROW_COLS);
+              matchedRows = candRows || [];
             }
           }
+          if (successPatch && isAuth) {
+            freshRows = matchedRows;
+            if (!freshRows.length) {
+              const { data: known } = await admin.from('booking_payments').select(ROW_COLS).eq('psp_reference', settleKey);
+              replayRows = (known || []).filter((r: Record<string, unknown>) => r.status === 'authorised' || r.status === 'captured');
+              if (!(known || []).length && refMatch && bkKind) {
+                // 10 Sep 2026 review: no ledger row at all (booking_pay's insert
+                // failed, or the answer never came back). The money is real, so
+                // write the row from the event, then run the same checks. It is
+                // never simply dropped.
+                const d0 = await dueFor(refMatch[1]);
+                const bkRow = d0.booking || null;
+                const ev0 = (item?.amount ?? {}) as { value?: unknown; currency?: unknown };
+                if (bkRow?.location_id) {
+                  const { data: ins, error: insErr } = await admin.from('booking_payments').insert({
+                    location_id: bkRow.location_id,
+                    booking_id: refMatch[1],
+                    kind: bkKind,
+                    amount: (Number(ev0.value) || 0) / 100,
+                    currency: String(ev0.currency || 'gbp').toLowerCase(),
+                    merchant_reference: ref,
+                    merchant_account: item.merchantAccountCode || null,
+                    ...patch,
+                  }).select(ROW_COLS);
+                  if (insErr) console.error(`[adyen-webhook] bkpay ${ref}: could not write the missing booking_payments row:`, insErr.message);
+                  else freshRows = ins || [];
+                } else {
+                  console.error(`[adyen-webhook] bkpay ${ref}: no booking_payments row and booking ${refMatch[1]} not readable (${d0.ok ? 'no location' : d0.error})`);
+                }
+              }
+            }
+          } else if (successPatch) {
+            replayRows = matchedRows;
+          }
         }
-        // ── pay-before-commit backstop (v5.7.21): a booking the widget wrote
-        // as 'pending_payment' promotes here when the money confirms async
-        // (3DS/redirect flows answer the browser 'pending'; this webhook is
-        // the durable result). prepay → 'prepaid'; deposit/hold → 'confirmed'.
-        // v5.7.23: 'expired' promotes too - a capture landing after the
-        // 20-minute sweep RESURRECTS the booking (the money is captured, the
-        // booking must live; the table-overlap risk is accepted). Cancelled
-        // and no-show bookings still never come back.
-        const settled = patch && (patch.status === 'captured' || patch.status === 'authorised');
-        if (settled && refMatch) {
+        // ── the payment gate backstop (10 Sep 2026) ─────────────────────────
+        // A booking the widget wrote as 'pending_payment' promotes here when
+        // the money confirms async (3DS, Received). It promotes ONLY when a
+        // booking_payments row for this booking settled, the event amount
+        // covers that row in the same currency, the row covers what the
+        // BOOKING owes (loadBookingDue: stored due, its own package and the
+        // audit row; a saved card never pays a prepay or deposit), and a hold
+        // really saved a card. _shared/bookingPromote.ts decides the rest:
+        // pending_payment always; expired only when its tables are still free
+        // (no booking, no live till tab); cancelled, no_show, departed and
+        // dining never promote. Money from THIS event that cannot secure the
+        // booking is marked needs_refund and raised on the activity feed.
+        const promoteRows = freshRows.length ? freshRows : replayRows;
+        if (successPatch && refMatch && promoteRows.length) {
           const bkId = refMatch[1];
-          const next = bkKind === 'prepay' ? 'prepaid' : 'confirmed';
-          const { data: promoted } = await admin.from('bookings')
-            .update({ status: next })
-            .eq('id', bkId).in('status', ['pending_payment', 'expired'])
-            .select('id');
-          if (promoted?.length) {
-            // The confirmation was deliberately NOT sent at booking time for
-            // pending_payment — fire it now the money is real. Ledger-gated
-            // inside booking-reminders, so racing the sync promote is safe.
-            fetch(`${SUPABASE_URL}/functions/v1/booking-reminders`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SERVICE_ROLE}` },
-              body: JSON.stringify({ action: 'confirm', booking_id: bkId }),
-            }).catch(() => {});
+          const fresh = freshRows.length > 0;
+          const ev = (item?.amount ?? {}) as { value?: unknown; currency?: unknown };
+          const dueRes = await dueFor(bkId);
+          const bkRow = (dueRes.booking || null) as Record<string, unknown> | null;
+          const guest = (bkRow?.customer ?? null) as Record<string, unknown> | null;
+          const ctx = { guestName: guest?.name ? String(guest.name) : null, time: bkRow?.start_time ? String(bkRow.start_time) : null };
+          const rowIds = promoteRows.map((r) => String(r.id));
+          if (!dueRes.ok) {
+            console.error(`[adyen-webhook] bkpay ${ref}: could not settle what booking ${bkId} owes (${dueRes.error}), NOT promoted`);
+            const why = stuckPaymentReason({ error: dueRes.error });
+            if (fresh && why) await markPaymentNeedsRefund(admin, rowIds, why, ctx);
+          } else {
+            const cov = coveringBookingPayment({
+              rows: promoteRows, bookingId: bkId, due: dueRes.due,
+              event: { value: ev.value, currency: ev.currency, storedCard: !!cardToken },
+            });
+            if (!cov.row) {
+              console.error(`[adyen-webhook] bkpay ${ref}: booking ${bkId} NOT promoted (${cov.reason}), event ${String(ev.value)} ${String(ev.currency)}`);
+              if (fresh && cov.reason === 'card_not_saved') {
+                // Nothing was taken and no card is on file: the attempt failed.
+                await admin.from('booking_payments').update({ status: 'failed', refusal_reason: 'Card not saved' })
+                  .in('id', rowIds).eq('kind', 'hold');
+              } else if (fresh && (cov.reason === 'amount_short' || cov.reason === 'due_not_covered')) {
+                await markPaymentNeedsRefund(admin, rowIds, 'the amount paid did not cover what the booking owed', ctx);
+              }
+            } else {
+              const pr = await promotePaidBooking(admin, bkId, String(cov.row.kind));
+              if (pr.promoted) {
+                // The confirmation was deliberately NOT sent at booking time for
+                // pending_payment — fire it now the money is real. Ledger-gated
+                // inside booking-reminders, so racing the sync promote is safe.
+                fetch(`${SUPABASE_URL}/functions/v1/booking-reminders`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${SERVICE_ROLE}` },
+                  body: JSON.stringify({ action: 'confirm', booking_id: bkId }),
+                }).catch(() => {});
+              } else {
+                const why = stuckPaymentReason(pr);
+                if (why && fresh) {
+                  await markPaymentNeedsRefund(admin, [String(cov.row.id)], why, ctx);
+                } else if (!pr.ok) {
+                  console.warn(`[adyen-webhook] bkpay ${ref}: booking ${bkId} not promoted (${pr.error || 'refused'}, status ${pr.status})`);
+                }
+              }
+            }
           }
         }
         // A stored card token can arrive on the webhook rather than the sync
         // response — enrich the guest record when we get it.
-        const token = item?.additionalData?.['recurring.recurringDetailReference'];
+        const token = item?.additionalData?.['tokenization.storedPaymentMethodId'] || item?.additionalData?.['recurring.recurringDetailReference'];
         const shopper = item?.additionalData?.shopperReference;
         if (token && shopper && code === 'AUTHORISATION' && okEvent) {
           await admin.from('customers').update({ stored_payment_method_id: token, shopper_reference: shopper }).eq('id', shopper);

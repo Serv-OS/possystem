@@ -15,7 +15,27 @@ import { orderOptionFlow, flowOrderedMods } from '../../lib/optionFlow';
 // one (catering) prices exactly as it always has. The sheet never picks a
 // channel or menu itself: only the surface that owns the cart may do that.
 const basePriceOf = (it) => Number(it?.pricing?.base ?? it?.price ?? 0);
-export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs = [], eightySixIds = [], stockLevels = {}, cart = [], priceFor = basePriceOf, onClose, onAdd }) {
+// extraPrices mode: a price that is EXTRA on top of a package reads "+£3.00",
+// nothing extra reads "Included" (the sheet never shows an included dish as £0.00).
+const extraLabel = (n, prefix = '+') => {
+  const v = Number(n) || 0;
+  if (v > 0) return `${prefix}${money(v)}`;
+  if (v < 0) return `−${money(Math.abs(v))}`;
+  return 'Included';
+};
+// 10 Sep 2026, guest pre-order choices (BookingWidget) reuse this sheet:
+//   lockQty   one plate per guest, so the quantity row is hidden and onAdd gets 1
+//   addLabel  the button words instead of "Add N to basket"
+//   notesMax  the note cap (a pre-order note is stored at 120 characters)
+// 10 Sep 2026 review, two more for the same caller:
+//   strictRequired  enforce the till's required rules too: an instruction
+//                   group whose per item min (or def min) is above 0, and a
+//                   nested sub group with a minimum, block the button and read
+//                   Required (the till merges a.min ?? def.min, InlineItemFlow)
+//   extraPrices     priceFor returns what is EXTRA on top of a package, so
+//                   sizes, options and the button read "+£x" or "Included"
+// All of these default to the storefront's behaviour.
+export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs = [], eightySixIds = [], stockLevels = {}, cart = [], priceFor = basePriceOf, onClose, onAdd, lockQty = false, addLabel = null, notesMax = 200, strictRequired = false, extraPrices = false }) {
   const [qty, setQty]               = useState(1);
   const [modGroups, setModGroups]   = useState([]);  // top-level groups assigned to item
   const [allModGroups, setAllModGroups] = useState([]); // includes nested sub-groups (lookup)
@@ -234,8 +254,43 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
   // Quantity-mode total picks for a group
   const qtyTotalForGroup = (gid) => Object.values(qtyPicks[gid] || {}).reduce((s, n) => s + (Number(n) || 0), 0);
 
+  // Per item instruction minimums (Back Office saves the Required toggle as
+  // { groupId, min } on the item, not on the def). Same own, else parent,
+  // fallback as instGroupIds. Only read under strictRequired.
+  const instMinById = useMemo(() => {
+    const entriesOf = (arr) => (arr || []).filter(g => g && typeof g === 'object' && (g.groupId || g.id));
+    let own = entriesOf(effectiveItem.assigned_instruction_groups);
+    if (!(effectiveItem.assigned_instruction_groups || []).length && effectiveItem.parent_id) {
+      const parent = (allItems || []).find(i => i.id === effectiveItem.parent_id);
+      own = entriesOf(parent?.assigned_instruction_groups);
+    }
+    const m = {};
+    for (const g of own) m[g.groupId || g.id] = g.min;
+    return m;
+  }, [effectiveItem, allItems]);
+  const instRequired = (ig) => {
+    if (!strictRequired) return !!ig.required;
+    const min = instMinById[ig.id] ?? ig.min ?? 0;
+    return (Number(min) || 0) > 0 || ig.required === true;
+  };
+
   const validationErrors = useMemo(() => {
     const errs = [];
+    if (strictRequired) {
+      // Required instruction groups (how the steak is cooked) need an answer.
+      for (const ig of instGroups) {
+        if (instRequired(ig) && !instSelections[ig.id]) errs.push(ig.id);
+      }
+      // A nested sub group with a minimum needs its pick once its option is chosen.
+      for (const g of modGroups) {
+        const val = selections[g.id];
+        for (const o of (Array.isArray(val) ? val : (val ? [val] : []))) {
+          if (!o?.subGroupId) continue;
+          const sg = allModGroups.find(x => x.id === o.subGroupId);
+          if (sg && (sg.min ?? 0) >= 1 && !subPicks[`${g.id}:${o.id || o.name}`]) errs.push(sg.id);
+        }
+      }
+    }
     for (const g of modGroups) {
       const min = g.min ?? 0;
       const max = g.max ?? 1;
@@ -253,7 +308,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
     }
     return errs;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [modGroups, selections, qtyPicks]);
+  }, [modGroups, selections, qtyPicks, strictRequired, instGroups, instSelections, instMinById, allModGroups, subPicks]);
   // v5.5.313: block Add when any SELECTED modifier option resolves to an 86'd
   // item (prevents ordering a sold-out item through a modifier group online).
   const has86Selection = useMemo(() => {
@@ -420,7 +475,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
         ? `${item.menu_name || item.name} — ${selectedVariant.menu_name || selectedVariant.name}`
         : (effectiveItem.menu_name || effectiveItem.name),
     };
-    onAdd(finalItem, flatMods, qty, notes.trim());
+    onAdd(finalItem, flatMods, lockQty ? 1 : qty, notes.trim().slice(0, notesMax));
   };
 
   const muted    = theme.isLight ? '#6b6b70' : '#a0a0a8';
@@ -512,7 +567,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
                   const v86 = eightySixIds.includes(v.id);
                   return (
                     <VariantRow key={v.id}
-                      variant={v} active={active} price={vPrice} is86={v86}
+                      variant={v} active={active} price={vPrice} is86={v86} extraPrices={extraPrices}
                       onClick={() => v86 ? null : setSelectedVariant(v)}
                       theme={theme} cardBdr={cardBdr} inputBg={inputBg}/>
                   );
@@ -554,9 +609,9 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
             if (entry.kind === 'inst') {
               const ig = entry.g;
               const value = instSelections[ig.id];
-              const required = !!ig.required;
+              const required = instRequired(ig);
               return (
-                <Section key={ig.id} title={ig.name} meta={required ? 'Required' : 'Optional'} required={required}>
+                <Section key={ig.id} title={ig.name} meta={required ? 'Required' : 'Optional'} required={required} erroring={errors.includes(ig.id)}>
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                     {(ig.options || []).map(opt => {
                       const label = typeof opt === 'string' ? opt : (opt.label || opt.name);
@@ -696,7 +751,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
               onChange={e => setNotes(e.target.value)}
               placeholder="Any special requests? e.g. no onions, allergy info…"
               rows={2}
-              maxLength={200}
+              maxLength={notesMax}
               style={{
                 width: '100%', boxSizing: 'border-box', resize: 'vertical',
                 padding: '12px 14px', borderRadius: 12, border: `1px solid ${cardBdr}`,
@@ -706,7 +761,8 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
             />
           </Section>
 
-          {/* Quantity */}
+          {/* Quantity (hidden when the caller fixes it at one) */}
+          {!lockQty && (
           <div style={{
             display: 'flex', alignItems: 'center', justifyContent: 'space-between',
             padding: '20px 0 8px',
@@ -723,6 +779,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
               }}>+</button>
             </div>
           </div>
+          )}
         </div>
 
         {/* Sticky bottom CTA */}
@@ -739,8 +796,8 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
             fontFamily: 'inherit',
             display: 'flex', justifyContent: 'space-between', alignItems: 'center',
           }}>
-            <span>{effectiveIs86 ? 'Out of stock' : has86Selection ? 'Option out of stock' : stockShort.length ? `Only ${stockShort[0].avail} ${stockShort[0].name} left` : `Add ${qty} to basket`}</span>
-            <span>{money(lineTotal)}</span>
+            <span>{effectiveIs86 ? 'Out of stock' : has86Selection ? 'Option out of stock' : stockShort.length ? `Only ${stockShort[0].avail} ${stockShort[0].name} left` : (addLabel || `Add ${qty} to basket`)}</span>
+            <span>{extraPrices ? extraLabel(lineTotal, 'Extra ') : money(lineTotal)}</span>
           </button>
         </div>
       </div>
@@ -809,7 +866,7 @@ function OptionRow({ label, priceDelta, absolutePrice, checked, onClick, mode, t
 }
 
 // Rich variant row — image, name, description, allergen pill, absolute price.
-function VariantRow({ variant, active, price, onClick, theme, cardBdr, inputBg, is86 = false }) {
+function VariantRow({ variant, active, price, onClick, theme, cardBdr, inputBg, is86 = false, extraPrices = false }) {
   const allergens = variant.allergens || [];
   return (
     <button onClick={is86 ? undefined : onClick} disabled={is86}
@@ -842,7 +899,7 @@ function VariantRow({ variant, active, price, onClick, theme, cardBdr, inputBg, 
       <div style={{ flex: 1, minWidth: 0, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 4 }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
           <span style={{ fontSize: 14, fontWeight: 700, flex: 1, minWidth: 0 }}>{variant.menu_name || variant.name}</span>
-          <span style={{ fontSize: 14, fontWeight: 800 }}>{money(price)}</span>
+          <span style={{ fontSize: 14, fontWeight: 800 }}>{extraPrices ? extraLabel(price) : money(price)}</span>
         </div>
         {variant.description && (
           <div style={{ fontSize: 12, opacity: 0.7, lineHeight: 1.45,

@@ -34,9 +34,9 @@ import { money } from '../../lib/currency';
 import MenuHeader from '../menu/MenuHeader';
 import { readTheme, deriveVars, DISPLAY_FONT } from '../menu/menuTheme';
 
-const FALLBACK_ACCENT = '#e8a020';
-const FALLBACK_BG     = '#ffffff';
-const FALLBACK_FG     = '#1a1a1a';
+// The item sheet's theme builder lives in ./sheetTheme so the guest booking
+// page's pre-order choices build exactly the same object (10 Sep 2026).
+import { isLightBackground, sheetThemeFrom } from './sheetTheme';
 
 // closedInfo (v5.5.802) — set by CustomerBoot when the venue is CLOSED but the
 // customer tapped through to browse: { reopenAt: Date|null, canOrderAhead: bool }.
@@ -459,18 +459,7 @@ export default function OnlineSurface({ location, mode = 'online', tableId = nul
     });
   }, [orderType, effectiveMenuId, items]);
 
-  const theme = useMemo(() => ({
-    // Menu Appearance saves the brand colour as `brand_color` — prefer it (accent_color is legacy).
-    accent: normaliseColour(branding?.brand_color || branding?.accent_color) || FALLBACK_ACCENT,
-    bg:     normaliseColour(branding?.background) || FALLBACK_BG,
-    fg:     normaliseColour(branding?.foreground) || FALLBACK_FG,
-    logo:   branding?.logo_url      || null,
-    hero:   branding?.hero_url      || null,
-    logoShape: branding?.logo_shape || 'rounded',
-    headerStyle: branding?.header_style || 'cinematic',
-    name:   location.name           || 'Restaurant',
-    isLight: isLightBackground(normaliseColour(branding?.background) || FALLBACK_BG),
-  }), [branding, location.name]);
+  const theme = useMemo(() => sheetThemeFrom(branding, location.name), [branding, location.name]);
 
   // Themeable menu (prototype design system): brand-colour palette as CSS vars + themed header.
   const mt = useMemo(() => readTheme(branding), [branding]);
@@ -1846,27 +1835,7 @@ function ConfirmTableScreen({ theme, cardBdr, muted, locationName, presetLabel, 
 // the rest of the page looked right because the newer theme pipeline repairs
 // the value on its way through. Repair it here too, on read, so existing venues
 // are fixed without anybody having to re-save. (v5.7.80)
-function normaliseColour(v) {
-  if (!v) return null;
-  const t = String(v).trim();
-  if (!t) return null;
-  if (/^#/.test(t)) return t;
-  // A bare 3, 4, 6 or 8 digit hex is the case we have actually seen in the wild.
-  if (/^[0-9a-f]{3,8}$/i.test(t) && [3, 4, 6, 8].includes(t.length)) return `#${t}`;
-  return t;   // named colours, rgb(), anything else: leave alone
-}
-
-function isLightBackground(hex) {
-  if (!hex) return true;
-  const c = hex.replace('#', '');
-  const n = c.length === 3 ? c.split('').map(x => x + x).join('') : c;
-  if (n.length !== 6) return true;
-  const r = parseInt(n.slice(0, 2), 16);
-  const g = parseInt(n.slice(2, 4), 16);
-  const b = parseInt(n.slice(4, 6), 16);
-  // Standard luminance check
-  return (0.299 * r + 0.587 * g + 0.114 * b) > 128;
-}
+// normaliseColour and isLightBackground moved to ./sheetTheme (10 Sep 2026).
 function contrastFg(bgHex) {
   return isLightBackground(bgHex) ? '#0b0c10' : '#ffffff';
 }

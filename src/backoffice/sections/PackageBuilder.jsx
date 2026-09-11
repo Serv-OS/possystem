@@ -17,6 +17,7 @@ import { money } from '../../lib/currency';
 import { CUSTOMER_ROOT } from '../../lib/env';
 import { platformSupabase, getLocationId } from '../../lib/supabase';
 import { countUpcomingBookingsForPackage } from '../../lib/bookings/bookingsData';
+import { packagePaymentNeed } from '../../lib/bookings/bookingPayment.js';
 import { courseColor } from '../../surfaces/bookings/bits.jsx';
 
 const MONO = 'var(--font-mono, ui-monospace, monospace)';
@@ -29,10 +30,23 @@ const payLabel = (p) =>
   : p.paymentModel === 'prepay' ? 'prepaid in full'
   : `deposit ${money(p.depositPerCover || 0)}/cover`;
 
+// 10 Sep 2026 payment gate: the SAME rule the booking widget uses
+// (lib/bookings/bookingPayment.js). A Deposit at 0 per cover or a Prepay at 0
+// is refused on save, because the widget will never sell it.
+const packageSaveError = (p) => {
+  const need = packagePaymentNeed(p);
+  if (!need.misconfigured) return '';
+  return need.kind === 'prepay'
+    ? `A prepay package needs a price above ${money(0)}.`
+    : `A deposit package needs a deposit above ${money(0)} per cover.`;
+};
+
+// A new package starts as a card hold (nothing taken), never as a Deposit at
+// 0, which the save now refuses.
 const newDraft = (sortOrder) => ({
   name: 'New package', description: '',
   price: 0, priceUnit: 'per_cover',
-  paymentModel: 'deposit', depositPerCover: 0,
+  paymentModel: 'hold', depositPerCover: 0,
   turnMinutes: null,
   availableFrom: null, availableTo: null,
   availableDays: [0, 1, 2, 3, 4, 5, 6],
@@ -113,8 +127,17 @@ export default function PackageBuilder() {
     }),
   }));
 
+  // Card capture off means a package that needs payment is never offered online.
+  const bookingRules = useStore(s => s.bookingRules);
+  const [saveErr, setSaveErr] = useState('');
+  const draftErr = draft ? packageSaveError(draft) : '';
+  const offlineWarn = !!draft && draft.isActive !== false && packagePaymentNeed(draft).needsPayment && !bookingRules?.cardCaptureEnabled;
+
   const save = async () => {
     if (!draft || busy) return;
+    const refuse = packageSaveError(draft);
+    if (refuse) { setSaveErr(refuse); return; }
+    setSaveErr('');
     setBusy(true);
     // sortOrder = visual order; the slice replaces lines wholesale on save.
     const res = await upsertPackage({ ...draft, lines: (draft.lines || []).map((l, i) => ({ ...l, sortOrder: i })) });
@@ -268,9 +291,9 @@ export default function PackageBuilder() {
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                     <select style={{ ...S.inp, width: '100%', minWidth: 0, paddingRight: 26 }}
                       value={draft.paymentModel} onChange={e => upd({ paymentModel: e.target.value })}>
-                      <option value="hold">Card hold — charged only on no-show</option>
-                      <option value="deposit">Deposit — part paid up front</option>
-                      <option value="prepay">Prepay — paid in full at booking</option>
+                      <option value="hold">Card hold: nothing is taken</option>
+                      <option value="deposit">Deposit: part paid when booking</option>
+                      <option value="prepay">Prepay: paid in full when booking</option>
                     </select>
                     {draft.paymentModel === 'deposit' && (
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -427,6 +450,13 @@ export default function PackageBuilder() {
                           <button style={S.mini} onClick={() => moveLine(i, +1)} disabled={i === draft.lines.length - 1} title="Move down">↓</button>
                           <button style={S.miniX} onClick={() => removeLine(i)} title="Remove line">×</button>
                         </span>
+                        {/* 10 Sep 2026: guests pick sizes and options from the linked
+                            menu item, so a free text choice can never offer any. */}
+                        {l.isPreorderChoice && !l.itemId && (
+                          <div role="status" style={{ flexBasis: '100%', marginLeft: 30, padding: '8px 10px', borderRadius: 9, background: 'var(--orn-d, rgba(249,115,22,.1))', border: '1px solid var(--orn-b, rgba(249,115,22,.35))', color: 'var(--orn)', fontSize: 15, lineHeight: 1.45 }}>
+                            Guests cannot choose options for this dish. Link it to a menu item.
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -458,6 +488,18 @@ export default function PackageBuilder() {
                   <div style={S.noteBody}>Lines carry their course so the KDS fires them in order. Pre-orders taken at booking arrive on the ticket with the guest's name against each seat.</div>
                 </div>
               </div>
+
+              {/* payment gate (10 Sep 2026): the refusal and the capture warning, in plain words */}
+              {(saveErr || draftErr) && (
+                <div role="alert" style={{ padding: '10px 12px', borderRadius: 10, background: 'var(--red-d)', border: '1px solid var(--red-b)', color: 'var(--red)', fontSize: 15, fontWeight: 700, lineHeight: 1.45 }}>
+                  {saveErr || draftErr}
+                </div>
+              )}
+              {offlineWarn && !draftErr && (
+                <div style={{ padding: '10px 12px', borderRadius: 10, background: 'var(--orn-d, rgba(249,115,22,.1))', border: '1px solid var(--orn-b, rgba(249,115,22,.35))', color: 'var(--orn)', fontSize: 15, lineHeight: 1.45 }}>
+                  Card capture is off, so this package is not offered online. Turn it on in Table bookings.
+                </div>
+              )}
 
               {/* save bar */}
               <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>

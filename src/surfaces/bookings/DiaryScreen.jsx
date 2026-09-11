@@ -22,6 +22,8 @@ import { useStore } from '../../store';
 import { supabase, isMock } from '../../lib/supabase';
 import { toMin, toHM, isTableFree, toOptimiserBooking, sessionsToBlocks } from '../../lib/bookings/optimiser.js';
 import { loadBookingPayments, lookupPreorderLinkBase } from '../../lib/bookings/bookingsData.js';
+import { undoNoShowStatus, bookingUnpaid, isNeedsRefundRow } from '../../lib/bookings/bookingPayment.js';
+import { choiceSummary } from '../../lib/bookings/preorderChoices.js';
 import {
   mono, tintBg, tintBd, rulesOf, displayStatus, statusMeta, StatusBadge, isLive,
   useNowMin, money, initialsOf, bookingName, todayISO, EmptyNote, Chip, preorderStateFor, courseColor,
@@ -132,8 +134,9 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
                  && !CARD_IMPOSSIBLE_SOURCES.has(b.source || 'host')) {
         // Only an ONLINE booking at a venue with capture ON can carry a card, and
         // even then this is what the rules would ask for, not what the ledger
-        // holds. Labelled as expected, never as money taken.
-        held += (rules.holdPerCover || 0) * (b.covers || 0);
+        // holds. A hold saves a card and takes nothing, so it is COUNTED, never
+        // shown as a money figure (10 Sep 2026 review).
+        if ((rules.holdPerCover || 0) > 0) held += 1;
       }
     }
     return { coversBooked, seated, capacity, freeNextHour, atRisk, held, prepaid, prepaidHidden };
@@ -158,7 +161,7 @@ export default function DiaryScreen({ sel, onSelect, onBook }) {
           <Kpi label="Seated now" value={`${kpi.seated} / ${kpi.capacity}`} sub="covers / capacity" />
           <Kpi label="Free tables" value={kpi.freeNextHour} sub="next hour" />
           <Kpi label="At risk" value={kpi.atRisk} sub="late + due" col={kpi.atRisk > 0 ? 'var(--red)' : undefined} />
-          <Kpi label="Holds expected" value={money(kpi.held)} sub="online bookings" />
+          <Kpi label="Cards to save" value={kpi.held} sub="online bookings, nothing taken" />
           <Kpi
             label="Prepaid"
             value={kpi.prepaidHidden && !kpi.prepaid ? 'Hidden' : money(kpi.prepaid, 2)}
@@ -368,25 +371,35 @@ function Kpi({ label, value, sub, col, last }) {
 // the same truth in both places. A stand on a pre-migration DB still gets []
 // and falls back to neutral copy — an empty read is "not visible here", never
 // "unpaid".
+// [rows, failed]: rows null = not read yet, or the read failed (failed true).
 function useBookingPayments(bookingId) {
-  const [state, setState] = useState({ id: null, rows: null });
+  const [state, setState] = useState({ id: null, rows: null, failed: false });
   useEffect(() => {
     let alive = true;
-    loadBookingPayments(bookingId).then((rows) => { if (alive) setState({ id: bookingId, rows }); });
+    loadBookingPayments(bookingId).then((rows) => { if (alive) setState({ id: bookingId, rows, failed: rows === null }); });
     return () => { alive = false; };
   }, [bookingId]);
-  return state.id === bookingId ? state.rows : null; // null = not read yet
+  return state.id === bookingId ? [state.rows, state.failed] : [null, false];
 }
 
 function PaymentState({ b, prepaid, rows }) {
   let line = null;
   if (rows && rows.length) {
-    const captured = rows.find((r) => r.status === 'captured' && r.kind !== 'refund');
-    const held = rows.find((r) => r.status === 'authorised' && r.kind === 'hold');
+    // Money that must go back is checked FIRST (10 Sep 2026 review): before
+    // migration 20260910 its status stays captured and only the reason says
+    // "NEEDS REFUND", so the captured branch used to show it as paid.
+    const refundRow = rows.find(isNeedsRefundRow);
+    const captured = rows.find((r) => r.status === 'captured' && r.kind !== 'refund' && !isNeedsRefundRow(r));
+    const held = rows.find((r) => r.status === 'authorised' && r.kind === 'hold' && !isNeedsRefundRow(r));
     const refunded = rows.find((r) => r.status === 'refunded' || r.kind === 'refund');
     const failed = rows.find((r) => r.status === 'failed');
     const card = (r) => (r?.card_brand || r?.card_last4) ? ` (${[r.card_brand, r.card_last4 ? `···${r.card_last4}` : null].filter(Boolean).join(' ')})` : '';
-    if (refunded) line = { txt: `Refund on file${card(refunded)}`, col: 'var(--orn)' };
+    if (refundRow) {
+      line = refundRow.kind === 'hold'
+        ? { txt: 'Card saved after the booking closed. Nothing was taken.', col: 'var(--t3)' }
+        : { txt: `${money(refundRow.amount, 2)} paid online after the booking closed. Refund the guest.`, col: 'var(--red)' };
+    }
+    else if (refunded) line = { txt: `Refund on file${card(refunded)}`, col: 'var(--orn)' };
     else if (captured) {
       const kind = captured.kind === 'prepay' ? 'prepaid' : captured.kind === 'deposit' ? 'deposit paid' : 'paid';
       const applied = captured.applied_to_check
@@ -395,9 +408,13 @@ function PaymentState({ b, prepaid, rows }) {
       // capture as £49. Never round a figure that was actually charged.
       line = { txt: `✓ ${money(captured.amount, 2)} ${kind} by card${card(captured)}${applied}`, col: 'var(--grn)' };
     }
-    else if (held) line = { txt: `✓ Card held${card(held)} — charged only on no-show`, col: 'var(--grn)' };
-    else if (failed) line = { txt: 'Card payment FAILED — take payment at the venue', col: 'var(--red)' };
-    else line = { txt: 'Card payment pending — confirmation arrives automatically', col: 'var(--t3)' };
+    else if (held) line = { txt: `✓ Card saved${card(held)}. Nothing was taken.`, col: 'var(--grn)' };
+    else if (failed) {
+      line = b.status === 'pending_payment'
+        ? { txt: 'Card payment failed. The guest can still try again.', col: 'var(--red)' }
+        : { txt: 'Card payment failed. Take payment at the venue.', col: 'var(--red)' };
+    }
+    else line = { txt: 'Card payment pending. It confirms by itself when the bank answers.', col: 'var(--t3)' };
   } else if (b.status === 'pending_payment') {
     line = { txt: 'Awaiting card payment. The guest has 20 minutes to pay before the booking expires and the table frees itself.', col: 'var(--orn)' };
   } else if (b.status === 'expired') {
@@ -411,7 +428,7 @@ function PaymentState({ b, prepaid, rows }) {
   } else {
     line = { txt: 'Checking for a card on file…', col: 'var(--t4)' };
   }
-  return <div style={{ fontSize: 10.5, marginTop: 5, lineHeight: 1.45, color: line.col }}>{line.txt}</div>;
+  return <div style={{ fontSize: 15, marginTop: 6, lineHeight: 1.45, color: line.col, fontWeight: line.col === 'var(--red)' ? 700 : 500 }}>{line.txt}</div>;
 }
 
 // ── Send / Copy the guest's pre-order link (v5.7.21, link-first) ─────────────
@@ -519,10 +536,15 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
   // rules.holdPerCover x covers, and since rulesOf() falls back to £20 per cover
   // for a venue with no saved rules, every walk-in claimed "Card held" over an
   // invented figure (Peter, 25 Aug). A hold is real only if a row says so.
-  const payRows = useBookingPayments(b.id);
-  const capturedRow = (payRows || []).find((r) => r.status === 'captured' && r.kind !== 'refund');
-  const heldRow = (payRows || []).find((r) => r.status === 'authorised' && r.kind === 'hold');
+  const [payRows, payReadFailed] = useBookingPayments(b.id);
+  // Money flagged to go back is never "on file" (isNeedsRefundRow).
+  const capturedRow = (payRows || []).find((r) => r.status === 'captured' && r.kind !== 'refund' && !isNeedsRefundRow(r));
+  const heldRow = (payRows || []).find((r) => r.status === 'authorised' && r.kind === 'hold' && !isNeedsRefundRow(r));
   const onFile = capturedRow || heldRow || null;
+  const [undoErr, setUndoErr] = useState('');
+  // 10 Sep 2026 payment gate: pending_payment, or a booking that owed money
+  // with no successful payment on the ledger (payRows null = not read yet).
+  const unpaid = bookingUnpaid({ booking: b, pkg, payments: payRows });
 
   // seatBooking REFUSES when any of the booking's tables still has a live POS tab
   // (overwriting one would destroy a real check). It reports that through a toast,
@@ -556,7 +578,7 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
       t: 'Payment',
       d: prepaid ? `${pkg?.name || 'Package'} prepaid at booking, posts to the check as tender when the tab closes`
         : capturedRow ? `${money(capturedRow.amount, 2)} already paid, comes off the bill at close`
-        : `${money(heldRow.amount, 2)} held on the card, charged only on a no-show`,
+        : 'Card saved at booking. Nothing was taken, and no-show charges are not available yet.',
     }] : []),
     ...(pkg ? [{ t: 'Package', d: `${pkg.name}, lines queue to the POS carrying their courses` }] : []),
     {
@@ -641,14 +663,15 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
         <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10 }}>
           <span style={{ fontSize: 12, color: 'var(--t2)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {capturedRow ? `${pkg?.name || 'Paid'} · ${capturedRow.kind === 'prepay' ? 'prepaid' : capturedRow.kind === 'deposit' ? 'deposit' : 'paid'}`
-              : heldRow ? 'Card held, no charge'
+              : heldRow ? 'Card saved, nothing taken'
               : 'Nothing on file'}
           </span>
-          {/* No figure at all when nothing is on file. A green number beside
-              "Nothing on file" is exactly how the invented hold read as real. */}
-          {onFile && (
+          {/* A figure only for money actually TAKEN. A hold row stores the rule's
+              amount but Adyen was sent 0, so a green £40 beside a saved card read
+              as £40 held (10 Sep 2026 review). */}
+          {capturedRow && (
             <span style={{ fontSize: 16, fontWeight: 800, color: 'var(--grn)', ...mono, flexShrink: 0 }}>
-              {money(onFile.amount, 2)}
+              {money(capturedRow.amount, 2)}
             </span>
           )}
         </div>
@@ -662,7 +685,7 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
             <span style={{ width: 6, height: 6, borderRadius: 999, background: 'var(--blu)', marginTop: 5, flexShrink: 0 }} />
             <div>
               <div style={{ fontSize: 12, fontWeight: 700 }}>{s2.t}</div>
-              <div style={{ fontSize: 11, color: 'var(--t3)', lineHeight: 1.45 }}>{s2.d}</div>
+              <div style={{ fontSize: 15, color: 'var(--t3)', lineHeight: 1.45 }}>{s2.d}</div>
             </div>
           </div>
         ))}
@@ -677,6 +700,13 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
       <div style={{ padding: '14px 18px', display: 'flex', flexDirection: 'column', gap: 8 }}>
         {isLive(b) && b.status !== 'dining' && (
           <>
+            {/* 10 Sep 2026 payment gate: seating an unpaid booking stays allowed
+                (the party is here), but the host must know the money is not in. */}
+            {unpaid && (
+              <div role="status" style={{ padding: '9px 11px', borderRadius: 9, background: tintBg('var(--orn)', 10), border: `1px solid ${tintBd('var(--orn)')}`, color: 'var(--orn)', fontSize: 15, fontWeight: 700, lineHeight: 1.4 }}>
+                Not paid online, take payment on the till
+              </div>
+            )}
             <button className="btn btn-acc" onClick={seatNow} style={{ height: 44, fontWeight: 800 }}>Seat now, open POS tab</button>
             {seatErr && (
               <div style={{ fontSize: 11.5, color: 'var(--red)', lineHeight: 1.45, marginTop: -2 }}>{seatErr}</div>
@@ -688,18 +718,36 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
         )}
         {/* A mis-tap on Mark departed or No-show used to be final: those statuses
             fail isLive, so the panel offered no buttons at all and the party was
-            gone from the stand with no way back. Returns a seated party to dining
-            and anyone else to confirmed. */}
+            gone from the stand with no way back. Returns a seated party to dining.
+            Anyone else goes back to confirmed ONLY when nothing was owed or a
+            captured or authorised payment is on file; otherwise the booking was
+            never paid and returns as expired (10 Sep 2026: No-show then Undo
+            used to turn an unpaid booking into a confirmed one). */}
         {['departed', 'no_show'].includes(b.status) && (
-          <button
-            className="btn btn-ghost"
-            onClick={() => updateBooking?.(b.id, b.seatedAt
-              ? { status: 'dining', departedAt: null }
-              : { status: 'confirmed', departedAt: null })}
-            style={{ height: 44 }}
-          >
-            {b.status === 'departed' ? 'Undo departed' : 'Undo no-show'}
-          </button>
+          <>
+            <button
+              className="btn btn-ghost"
+              // Waits for the payment ledger (10 Sep 2026 review): an unread
+              // ledger used to look like "not paid" and expired a paid booking.
+              disabled={!b.seatedAt && payRows === null && !payReadFailed}
+              onClick={() => {
+                setUndoErr('');
+                if (b.seatedAt) { updateBooking?.(b.id, { status: 'dining', departedAt: null }); return; }
+                const next = undoNoShowStatus({ booking: b, payments: payRows });
+                if (!next) {
+                  setUndoErr('Could not check the payment for this booking. Try again in a moment.');
+                  return;
+                }
+                updateBooking?.(b.id, { status: next, departedAt: null });
+              }}
+              style={{ height: 44 }}
+            >
+              {b.status === 'departed' ? 'Undo departed' : 'Undo no-show'}
+            </button>
+            {undoErr && (
+              <div role="alert" style={{ fontSize: 15, color: 'var(--red)', lineHeight: 1.45 }}>{undoErr}</div>
+            )}
+          </>
         )}
         {/* Three across a 262px panel on a narrow stand: minWidth 0 and tighter
             padding, or .btn's nowrap pushes the labels through the borders. */}
@@ -708,8 +756,11 @@ export function Inspector({ b, nowMin, packages, tables, onClose }) {
             <button className="btn btn-ghost" onClick={() => setMoving((m) => !m)} style={{ flex: 1, minWidth: 0, height: 40, padding: '0 10px', fontSize: 12 }}>{moving ? 'Close' : 'Move'}</button>
             {/* markBookingNoShow, not a raw status write: it also bumps the guest's
                 lifetime no-show count on the CRM record, which is what drives the
-                card-hold prompt on their next booking. */}
-            <button className="btn btn-red" onClick={() => (markBookingNoShow || updateBooking)?.(b.id, { status: 'no_show' })} style={{ flex: 1, minWidth: 0, height: 40, padding: '0 10px', fontSize: 12 }}>No-show</button>
+                card-hold prompt on their next booking. Not offered while the
+                guest is still paying: an unpaid booking is not a no-show. */}
+            {b.status !== 'pending_payment' && (
+              <button className="btn btn-red" onClick={() => (markBookingNoShow || updateBooking)?.(b.id, { status: 'no_show' })} style={{ flex: 1, minWidth: 0, height: 40, padding: '0 10px', fontSize: 12 }}>No-show</button>
+            )}
             <button className="btn btn-ghost" onClick={() => cancelBooking?.(b.id)} style={{ flex: 1, minWidth: 0, height: 40, padding: '0 10px', fontSize: 12 }}>Cancel</button>
           </div>
         )}
@@ -754,7 +805,7 @@ function PreordersPanel({ b, pkg }) {
   }
 
   const patchRow = (i, patch) => setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
-  const addRow = () => setRows((rs) => [...rs, { seat: Math.min((rs.at(-1)?.seat || 0) + 1, b.covers), guestName: '', itemId: choices[0]?.itemId || null, displayName: choices[0]?.displayName || '', course: choices[0]?.course ?? 0, notes: '' }]);
+  const addRow = () => setRows((rs) => [...rs, { seat: Math.min((rs.at(-1)?.seat || 0) + 1, b.covers), guestName: '', itemId: choices[0]?.itemId || null, displayName: choices[0]?.displayName || '', course: choices[0]?.course ?? 0, notes: '', mods: [], variantItemId: null, variantName: null }]);
 
   const save = async () => {
     setSaving(true);
@@ -773,7 +824,10 @@ function PreordersPanel({ b, pkg }) {
       </div>
       {open && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {rows.map((r, i) => (
+          {rows.map((r, i) => {
+            // 10 Sep 2026: the size and options the guest chose online.
+            const picked = choiceSummary(r);
+            return (
             <div key={i} style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
               <select value={r.seat || 1} onChange={(e) => patchRow(i, { seat: Number(e.target.value) })} style={{ ...inp, width: 62 }}>
                 {Array.from({ length: b.covers }, (_, s) => <option key={s + 1} value={s + 1}>S{s + 1}</option>)}
@@ -783,7 +837,9 @@ function PreordersPanel({ b, pkg }) {
                 value={`${r.itemId || ''}|${r.displayName}`}
                 onChange={(e) => {
                   const c = choices.find((x) => `${x.itemId || ''}|${x.displayName}` === e.target.value);
-                  if (c) patchRow(i, { itemId: c.itemId || null, displayName: c.displayName, course: c.course ?? 0 });
+                  // A different dish: the guest's size and options belonged to
+                  // the old one, so they clear. Seat or name edits keep them.
+                  if (c) patchRow(i, { itemId: c.itemId || null, displayName: c.displayName, course: c.course ?? 0, mods: [], variantItemId: null, variantName: null });
                 }}
                 style={{ ...inp, flex: '2 1 120px', minWidth: 0 }}>
                 {choices.map((c) => <option key={`${c.itemId || ''}|${c.displayName}`} value={`${c.itemId || ''}|${c.displayName}`}>{c.displayName} · {PO_COURSE_LABEL[c.course ?? 0] || `Course ${c.course}`}</option>)}
@@ -793,8 +849,15 @@ function PreordersPanel({ b, pkg }) {
                 color: courseColor(r.course), background: tintBg(courseColor(r.course), 12), border: `1px solid ${tintBd(courseColor(r.course), 30)}`,
               }}>{PO_COURSE_SHORT[r.course ?? 0] || `C${r.course}`}</span>
               <button onClick={() => setRows((rs) => rs.filter((_, j) => j !== i))} style={{ background: 'none', border: 'none', color: 'var(--t4)', cursor: 'pointer', fontSize: 14, padding: 2 }}>×</button>
+              {(picked || r.notes) && (
+                <div style={{ flexBasis: '100%', paddingLeft: 68, fontSize: 15, lineHeight: 1.4, color: 'var(--t2)' }}>
+                  {picked && <div>{picked}</div>}
+                  {r.notes && <div style={{ color: 'var(--t3)' }}>Note: {r.notes}</div>}
+                </div>
+              )}
             </div>
-          ))}
+            );
+          })}
           <div style={{ display: 'flex', gap: 8 }}>
             <button className="btn btn-ghost" onClick={addRow} style={{ flex: 1, height: 34, fontSize: 12 }}>+ Add choice</button>
             <button className="btn btn-acc" onClick={save} disabled={saving} style={{ flex: 1, height: 34, fontSize: 12, fontWeight: 800 }}>{saving ? 'Saving…' : 'Save pre-orders'}</button>
