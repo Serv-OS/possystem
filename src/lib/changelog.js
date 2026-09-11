@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.54',
+    date: '11 Sep 2026',
+    items: [
+      'Card payments in Back Office: the Fee column and the Fees tile now show what the venue pays on its card rates for each payment, and a new You receive column shows what the venue gets. The figures match Adyen\'s own records.',
+      'Test card payments are hidden on a live venue, with a switch to show them.',
+      'Dates and times on the ServOS Payments pages show in the venue\'s own time zone, not the time on your computer.',
+      'Payouts and statements use the same venue fees, and a statement month runs on the venue\'s time.',
+    ],
+  },
+  {
     v: '5.8.53',
     date: '10 Sep 2026',
     items: [
