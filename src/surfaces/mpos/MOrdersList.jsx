@@ -62,7 +62,7 @@ export default function MOrdersList({ onOpenOrder }) {
       customer:o.customer, status:o.status || 'received',
       items:o.items || [], total:o.total || 0,
       createdAt:o.createdAt, sentAt:o.sentAt,
-      type:o.type, source:o.source, paid:o.paid,
+      type:o.type, source:o.source, paid:!!(o.paid || o.customer?.paid),   // customer.paid survives a reload; the paid column is never written
       _raw:o,
     }))
     .filter(matchesFilter).filter(matchesSearch), [orderQueue, filter, search, myName]);

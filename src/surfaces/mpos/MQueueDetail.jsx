@@ -145,7 +145,9 @@ export default function MQueueDetail({ order, onBack }) {
             <span style={{ fontSize:13, color:'var(--t3)', fontWeight:700 }}>Total</span>
             <span style={{ fontSize:18, fontWeight:800, color:'var(--t1)', fontFamily:'var(--font-mono)' }}>{money(live.total || subtotal)}</span>
           </div>
-          {live.paid && (
+          {/* customer.paid is what QueueSync persists; the paid column is never written, so a
+              reload on another device only keeps the flag in customer. Same test as the guard. */}
+          {(live.paid || live.customer?.paid) && (
             <div style={{ marginTop:6, fontSize:11, fontWeight:700, color:'var(--grn)', textAlign:'right' }}>
               ✓ Already paid · {(live.paymentMethod || 'card').toUpperCase()}
             </div>
@@ -162,7 +164,10 @@ export default function MQueueDetail({ order, onBack }) {
             Order complete · removing from queue shortly
           </div>
         )}
-        {!isFinal && (
+        {/* Order screens: a paid till order kept in the queue (keep paid setting) is never
+            cancelled here, which would keep the money and drop the order with no refund.
+            Refund it from the order history instead. Other orders keep the old button. */}
+        {!isFinal && !((live.paid || live.customer?.paid) && (!live.source || live.source === 'pos')) && (
           <button
             onClick={() => { if (confirm('Cancel this order?')) { removeFromQueue(live.ref); onBack?.(); } }}
             style={{ ...Sx.btnGhost, color:'var(--red)', borderColor:'var(--red-b)', marginTop:8 }}>

@@ -31,7 +31,7 @@
 	<key>RPOSAllowsLocation</key>
 	<true/>
 	<key>RPOSAppURL</key>
-	<string>https://possystem-liard.vercel.app/?mode=staff</string>
+	<string>https://app.serv-os.app/?mode=staff</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UILaunchScreen</key>

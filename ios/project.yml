@@ -12,6 +12,9 @@
 #                                   NSCameraUsageDescription. Absent/false =
 #                                   camera denied and no permission string.
 #   - Each target has its OWN asset catalog (AppIcon + LaunchBackground).
+#   - App Store builds open the LIVE web app, https://app.serv-os.app (git main).
+#     possystem-liard.vercel.app and dev.serv-os.app are git develop (test cards).
+#     Any RPOSAppURL change needs a CURRENT_PROJECT_VERSION bump and a re-archive.
 # To add another app: copy the KDS target + scheme stanzas, change bundle id,
 # display name, RPOSAppURL and the asset catalog path. See README.md.
 
@@ -39,7 +42,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: co.posup.rpos.pos
         PRODUCT_NAME: ServOS POS
         MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: "3"
+        CURRENT_PROJECT_VERSION: "4"
         # Signing stays Automatic. The team is chosen in Xcode by the owner.
         # After first signing, record the 10-character team id here as
         # DEVELOPMENT_TEAM so `xcodegen generate` does not wipe the choice.
@@ -56,7 +59,7 @@ targets:
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         LSRequiresIPhoneOS: true
         # Per-app keys read by Config.swift (shared source tree).
-        RPOSAppURL: "https://possystem-liard.vercel.app/?mode=pos"
+        RPOSAppURL: "https://app.serv-os.app/?mode=pos"
         RPOSAllowsCamera: true
         # Camera is used by the web app's QR scanning (getUserMedia).
         # Microphone is deliberately NOT requested; the shell denies it.
@@ -97,7 +100,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: co.posup.rpos.kds
         PRODUCT_NAME: ServOS KDS
         MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: "2"
+        CURRENT_PROJECT_VERSION: "3"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: LYQ8K25MGZ
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -112,7 +115,7 @@ targets:
         LSRequiresIPhoneOS: true
         # Per-app keys read by Config.swift (shared source tree).
         # v5.7.35 pins the KDS surface from the mode param.
-        RPOSAppURL: "https://possystem-liard.vercel.app/?mode=kds"
+        RPOSAppURL: "https://app.serv-os.app/?mode=kds"
         # KDS never scans: camera denied in the WebView permission handler and
         # NO NSCameraUsageDescription is declared (no camera permission at all).
         RPOSAllowsCamera: false
@@ -149,7 +152,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: co.posup.rpos.clock
         PRODUCT_NAME: ServOS Time Clock
         MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: "2"
+        CURRENT_PROJECT_VERSION: "3"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: LYQ8K25MGZ
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -164,7 +167,7 @@ targets:
         LSRequiresIPhoneOS: true
         # Per-app keys read by Config.swift (shared source tree).
         # ?mode=clock is a native URL mode (TimeClockSurface).
-        RPOSAppURL: "https://possystem-liard.vercel.app/?mode=clock"
+        RPOSAppURL: "https://app.serv-os.app/?mode=clock"
         # The Time Clock is a PIN pad: camera denied, no permission declared.
         RPOSAllowsCamera: false
         UILaunchScreen:
@@ -200,7 +203,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: co.posup.rpos.waitlist
         PRODUCT_NAME: ServOS Waitlist
         MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: "2"
+        CURRENT_PROJECT_VERSION: "3"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: LYQ8K25MGZ
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -215,7 +218,7 @@ targets:
         LSRequiresIPhoneOS: true
         # Per-app keys read by Config.swift (shared source tree).
         # ?mode=waitlist is a native URL mode (WaitlistSurface, Tables Ready).
-        RPOSAppURL: "https://possystem-liard.vercel.app/?mode=waitlist"
+        RPOSAppURL: "https://app.serv-os.app/?mode=waitlist"
         # The waitlist is a host stand: camera denied, no permission declared.
         RPOSAllowsCamera: false
         UILaunchScreen:
@@ -251,7 +254,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: co.posup.rpos.bookings
         PRODUCT_NAME: ServOS Bookings
         MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: "2"
+        CURRENT_PROJECT_VERSION: "3"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: LYQ8K25MGZ
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -267,7 +270,7 @@ targets:
         # Per-app keys read by Config.swift (shared source tree).
         # ?mode=bookings is a native URL mode (BookingsSurface, the host stand:
         # diary, floor, pre-orders, widget controls).
-        RPOSAppURL: "https://possystem-liard.vercel.app/?mode=bookings"
+        RPOSAppURL: "https://app.serv-os.app/?mode=bookings"
         # The bookings host stand needs no camera: denied, no permission declared.
         RPOSAllowsCamera: false
         UILaunchScreen:
@@ -304,7 +307,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: co.posup.rpos.manager
         PRODUCT_NAME: ServOS Manager
         MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: "2"
+        CURRENT_PROJECT_VERSION: "3"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: LYQ8K25MGZ
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -320,7 +323,7 @@ targets:
         # Per-app keys read by Config.swift (shared source tree).
         # ?mode=manager is a native URL mode (ManagerSurface: Home, Reports,
         # Team, Ops, Kitchen, gated by pairing then a staff PIN).
-        RPOSAppURL: "https://possystem-liard.vercel.app/?mode=manager"
+        RPOSAppURL: "https://app.serv-os.app/?mode=manager"
         # Manager reads, it never scans: camera denied, no permission declared.
         RPOSAllowsCamera: false
         UILaunchScreen:
@@ -359,7 +362,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: co.posup.rpos.owner
         PRODUCT_NAME: ServOS Owner
         MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: "2"
+        CURRENT_PROJECT_VERSION: "3"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: LYQ8K25MGZ
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -379,7 +382,7 @@ targets:
         # and each iOS app has its own cookie store, so that session is isolated
         # from the tills. That is exactly what the one-session-per-browser rule
         # wants: an owner signing in here can never clobber a till's session.
-        RPOSAppURL: "https://possystem-liard.vercel.app/?mode=owner"
+        RPOSAppURL: "https://app.serv-os.app/?mode=owner"
         # Read-only reporting, nothing to scan: camera denied.
         RPOSAllowsCamera: false
         UILaunchScreen:
@@ -417,7 +420,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: co.posup.rpos.staff
         PRODUCT_NAME: ServOS Staff
         MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: "2"
+        CURRENT_PROJECT_VERSION: "3"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: LYQ8K25MGZ
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -437,7 +440,7 @@ targets:
         # read goes through the staff-portal edge fn, which serves only their own
         # data. On iOS each app has its own cookie store, so a staff member
         # signing in here can never disturb a till or the back office.
-        RPOSAppURL: "https://possystem-liard.vercel.app/?mode=staff"
+        RPOSAppURL: "https://app.serv-os.app/?mode=staff"
         # Nothing to scan: camera denied.
         RPOSAllowsCamera: false
         # Geofenced clock-in: the ONLY target with location. The bridge

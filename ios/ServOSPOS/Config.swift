@@ -21,10 +21,11 @@ enum Config {
 
     /// The web app this shell hosts, from the target's Info.plist.
     ///
-    /// Per the staging-cutover pointing matrix these shells always point at
-    /// PROD (MPOS and menuboard wrappers are the ones pointed at dev).
-    /// POS: https://possystem-liard.vercel.app/?mode=pos
-    /// KDS: https://possystem-liard.vercel.app/?mode=kds
+    /// Every App Store target points at the LIVE web app (git main) since the
+    /// 8 Sep 2026 cutover. possystem-liard.vercel.app and dev.serv-os.app serve
+    /// git develop, the test-cards system, so a venue app must never open them.
+    /// POS: https://app.serv-os.app/?mode=pos
+    /// KDS: https://app.serv-os.app/?mode=kds
     static let appURL: URL = {
         guard let raw = Bundle.main.object(forInfoDictionaryKey: "RPOSAppURL") as? String,
               let url = URL(string: raw) else {
@@ -62,7 +63,7 @@ enum Config {
     /// localhost / 127.0.0.1 cover on-LAN auxiliaries (e.g. loopback reader
     /// endpoints) so a future in-venue integration is not bounced to Safari.
     static let internalHosts: Set<String> = [
-        "possystem-liard.vercel.app",
+        "app.serv-os.app",                    // live web app (git main)
         "tbetcegmszzotrwdtqhi.supabase.co",  // Ops project (POS operational data)
         "yhzjgyrkyjabvhblqxzu.supabase.co",  // Platform project (gift cards, loyalty)
         "localhost",
@@ -82,6 +83,10 @@ enum Config {
     /// True when the URL should remain inside the WebView.
     static func isInternalHost(_ url: URL) -> Bool {
         guard let host = url.host?.lowercased() else { return false }
+        // The host this target opens is always ours. Without this, repointing
+        // RPOSAppURL to a host missing from the list sends the app's own start
+        // page to Safari on launch (main-frame off-host rule in WebView.swift).
+        if host == appURL.host?.lowercased() { return true }
         if internalHosts.contains(host) { return true }
         // Any *.supabase.co auxiliary (edge functions, storage CDN) stays in-app.
         if host.hasSuffix(".supabase.co") { return true }

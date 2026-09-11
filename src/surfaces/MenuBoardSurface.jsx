@@ -20,12 +20,19 @@
 // board shows. See src/lib/menuBoardMenus.js (shared with the BO preview).
 
 import { useEffect, useState, useRef, useLayoutEffect, useCallback, useMemo } from 'react';
-import { supabase, platformSupabase, isMock, ensureAuthToken } from '../lib/supabase';
+import { supabase, isMock, ensureAuthToken } from '../lib/supabase';
 import { fetchMenuCategories, fetchMenuItems, fetch86List, fetchMenus, fetchMenuCategoryLinks } from '../lib/db';
 import { money } from '../lib/currency';
 import { dietaryBadges } from '../lib/dietary';
 import { resolveBoardPrice } from '../lib/menuPricing';
 import { boardFollowsMenus, resolveBoardMenu, applyMenuToSections } from '../lib/menuBoardMenus';
+import { generatePairingCode } from '../lib/pairingCode';
+import { fetchVenueTimezone } from '../lib/venueTimezone';
+import { withTimeout } from '../lib/withTimeout';
+import OrderStatusScreen from './orderScreen/OrderStatusScreen';
+
+const TICK_TIMEOUT_MS = 10000;
+const MISS_SPACING_MS = 10000;   // a missing row counts as a miss at most once per 10s
 
 const DEFAULT_THEME = { bgColor: '#14110d', textColor: '#F5EFE6', mutedColor: '#B8AE9E', accent: '#E8A23C', font: '', footerNote: '', logoUrl: null, bgImageUrl: null };
 const DEFAULT_DISPLAY = { showDescription: true, showAllergens: true, showPrices: true, showImages: false, soldOut: 'grey', textScale: 1, hidePriceless: false };
@@ -37,17 +44,9 @@ const FIT = { base: 30, min: 11, max: 160 };         // px; the fit-loop lands s
 const COLS_FOR_SCALE = { portrait: [1, 1, 2, 2], landscape: [2, 3, 4, 5] };  // Smaller / Default / Larger / Extra large
 const scaleTier = (ts) => (ts <= 0.9 ? 0 : ts < 1.075 ? 1 : ts < 1.225 ? 2 : 3);
 const cacheKey = (loc, b) => `rpos-mb-${loc}-${b || 'def'}`;
-const LS_SCREEN = 'rpos-mbscreen';   // this device's screen row {id,code,board_id} — kept across tenant-fence wipes
-// Human pairing code shown on an unassigned screen (operator types it into Back Office).
-// 8 chars from a 30-symbol unambiguous alphabet (no I/L/O/U/0/1) ≈ 39 bits — high
-// enough that the codespace can't be brute-forced through the claim RPC, while
-// still readable across a room and quick to type. Formatted XXXX-XXXX.
-const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTVWXYZ23456789';
-const genCode = () => {
-  let out = '';
-  for (let i = 0; i < 8; i++) { if (i === 4) out += '-'; out += CODE_ALPHABET[Math.floor(Math.random() * CODE_ALPHABET.length)]; }
-  return out;
-};
+const LS_SCREEN = 'rpos-mbscreen';   // this device's screen row {id,code,board_id,order_display_id}, kept across tenant-fence wipes
+// Human pairing code shown on an unassigned screen: generatePairingCode() in
+// src/lib/pairingCode.js (8 chars, 30 symbol alphabet, about 39 bits, crypto random).
 
 // Board price: the active menu's tier (dineIn, then all) when one exists, else the
 // board's own display chain: dineIn, then any-channel, then base, then legacy scalar.
@@ -58,30 +57,8 @@ const boardPrice = (it, activeMenuId = null) => resolveBoardPrice(it, activeMenu
 // menu + online storefront — imported above, do not re-fork the map here.
 const visibleItem = (it) => !it.archived && (!it.visibility || it.visibility.kiosk !== false);
 
-// Venue clock for "Follow timed menus". The timezone an operator sets in Location
-// Settings lives on the PLATFORM locations row (joined by ops_location_id, anon
-// readable, kept that way on purpose in 20260805c B6); the ops locations.timezone
-// column is a legacy default and is only read when the platform row cannot be.
-// Never the device clock: a US venue's TV must flip menus on the venue's time,
-// not on London's. Returns null when nothing could be read so the caller can
-// keep the last good value from the cache.
-async function fetchVenueTimezone(locId) {
-  if (!locId) return null;
-  try {
-    if (platformSupabase) {
-      const { data } = await platformSupabase.from('locations').select('timezone')
-        .or(`ops_location_id.eq.${locId},id.eq.${locId}`).limit(1).maybeSingle();
-      if (data?.timezone) return data.timezone;
-    }
-  } catch { /* platform read failed, try the ops column */ }
-  try {
-    if (supabase) {
-      const { data } = await supabase.from('locations').select('timezone').eq('id', locId).maybeSingle();
-      if (data?.timezone) return data.timezone;
-    }
-  } catch { /* ops read failed too, caller keeps the last good tz */ }
-  return null;
-}
+// Venue clock for "Follow timed menus": fetchVenueTimezone lives in
+// src/lib/venueTimezone.js (shared with the order screen). Never the device clock.
 let warnedNoTz = false;
 
 export default function MenuBoardSurface() {
@@ -98,6 +75,7 @@ export default function MenuBoardSurface() {
     try { return JSON.parse(localStorage.getItem(LS_SCREEN) || 'null'); } catch { return null; }
   });
   const screenIdRef = useRef(screen?.id || null);
+  const tickRef = useRef(null);                        // re-read our own row now (order screen unassigned, wake, online)
   const effectiveBoardId = urlBoardId || screen?.board_id || null;
 
   const [locId, setLocId] = useState(null);
@@ -124,70 +102,134 @@ export default function MenuBoardSurface() {
   // by device_uid = auth.uid()); it never writes location_id/board_id. ──
   useEffect(() => {
     if (!pairing || isMock || !supabase) return;
-    let alive = true, poll = null, ch = null;
-    const persist = (s) => { try { localStorage.setItem(LS_SCREEN, JSON.stringify(s)); } catch {} };
+    let alive = true, ch = null, chId = null;
+    const persist = (s) => { try { localStorage.setItem(LS_SCREEN, JSON.stringify(s)); } catch { /* storage blocked */ } };
     const apply = (r) => {
       if (!alive || !r) return;
       screenIdRef.current = r.id;
-      const s = { id: r.id, code: r.code, board_id: r.board_id || null };
-      setScreen(s); persist(s);
+      // order_display_id: set when Back Office paired this TV to an ORDER SCREEN (then
+      // board_id is null). Undefined before the 20260911 migration, so it stays null.
+      const s = { id: r.id, code: r.code, board_id: r.board_id || null, order_display_id: r.order_display_id || null };
+      setScreen((prev) => (prev && prev.id === s.id && prev.code === s.code && prev.board_id === s.board_id && prev.order_display_id === s.order_display_id ? prev : s));
+      persist(s);
     };
-    (async () => {
-      await ensureAuthToken();                 // anon session → auth.uid() for device_uid + RLS
-      if (!alive) return;
-      // 1) load our existing row (by cached id) or create a fresh unclaimed one
-      let row = null;
-      if (screenIdRef.current) {
-        const { data } = await supabase.from('menu_board_screens').select('*').eq('id', screenIdRef.current).maybeSingle();
-        row = data || null;
-      }
-      for (let i = 0; i < 3 && !row; i++) {
-        const { data, error } = await supabase.from('menu_board_screens').insert({ code: genCode() }).select().maybeSingle();
-        if (!error) { row = data; break; }
-        if (error.code !== '23505') break;     // not a code collision → give up
-      }
-      if (!alive || !row) return;
-      apply(row);
-      const sid = row.id;
-      // Reliable loop: re-auth, re-read our row, and stamp last_seen — every 12s.
-      // This is the source of truth and works even when the realtime socket can't
-      // open on an older TV browser (which previously left the heartbeat stuck at
-      // "never seen" and the assignment unseen). Realtime below is a best-effort
-      // instant push layered on top, wrapped so it can never break this loop.
-      let misses = 0;
-      const tick = async () => {
-        try {
-          await ensureAuthToken();
-          const { data } = await supabase.from('menu_board_screens').select('*').eq('id', sid).maybeSingle();
-          if (data) { misses = 0; apply(data); supabase.rpc('mb_screen_heartbeat', { p_id: sid }).then(() => {}, () => {}); }
-          else if (++misses >= 3) { try { localStorage.removeItem(LS_SCREEN); } catch {} window.location.reload(); }  // genuinely retired in BO
-        } catch {}
-      };
-      tick();
-      poll = setInterval(tick, 12000);
+    // Realtime for our own row: a best effort instant push on top of the tick, wrapped so it
+    // can never break the tick. Re-subscribes only when the row id changes.
+    const subscribe = (sid) => {
+      if (!alive || !sid || chId === sid) return;
+      if (ch) { try { supabase.removeChannel(ch); } catch { /* already gone */ } ch = null; }
+      chId = sid;
       try {
         ch = supabase.channel(`mbscreen-${sid}`)
           .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'menu_board_screens', filter: `id=eq.${sid}` }, (p) => apply(p.new))
           .subscribe();
-      } catch {}
-    })();
-    return () => { alive = false; if (poll) clearInterval(poll); if (ch) { try { supabase.removeChannel(ch); } catch {} } };
+      } catch { /* realtime is best effort, the 12s tick carries correctness */ }
+    };
+    // A fresh unclaimed row with a new code. Retries a code collision only.
+    const createRow = async () => {
+      for (let i = 0; i < 3; i++) {
+        const { data, error } = await withTimeout(
+          supabase.from('menu_board_screens').insert({ code: generatePairingCode() }).select().maybeSingle(),
+          TICK_TIMEOUT_MS, 'New screen row');
+        if (!error) return data || null;
+        if (error.code !== '23505') return null;     // not a code collision → the next tick tries again
+      }
+      return null;
+    };
+    // Reliable loop: re-auth, re-read our row, and stamp last_seen, every 12s. It is also the
+    // boot: the first tick loads the cached row, or makes a row when there is none. It works
+    // even when the realtime socket cannot open on an older TV browser.
+    // Boot rules (a flaky network must never wipe a pairing):
+    //   a failed or timed out read or auth is UNKNOWN: keep the cached screen, retry next tick
+    //   a new row is made only with no cached id, or when a read that SUCCEEDED found no row
+    //     before any read ever found it (the row was removed while the TV was off)
+    // After a read has found the row, a missing row counts as a miss. Three misses at least
+    // 10s apart mean Back Office removed it, so a burst of wake, online and interval triggers
+    // during one short hidden window can never count three times.
+    let found = false, creating = false, misses = 0, lastMissAt = 0;
+    const tick = async () => {
+      try {
+        // Timeouts: a half open socket or a stalled auth lock after wake must not hang the tick.
+        await withTimeout(ensureAuthToken(), TICK_TIMEOUT_MS, 'Auth session');
+        if (!alive) return;
+        const sid = screenIdRef.current;
+        if (sid) {
+          const { data, error } = await withTimeout(
+            supabase.from('menu_board_screens').select('*').eq('id', sid).maybeSingle(),
+            TICK_TIMEOUT_MS, 'Screen row');
+          if (!alive || error) return;
+          if (data) {
+            found = true; misses = 0;
+            apply(data); subscribe(data.id);
+            supabase.rpc('mb_screen_heartbeat', { p_id: data.id }).then(() => {}, () => {});
+            return;
+          }
+          if (found) {
+            const now = Date.now();
+            if (now - lastMissAt < MISS_SPACING_MS) return;
+            lastMissAt = now;
+            if (++misses >= 3) { try { localStorage.removeItem(LS_SCREEN); } catch { /* storage blocked */ } window.location.reload(); }  // genuinely retired in BO
+            return;
+          }
+          screenIdRef.current = null;   // removed while this TV was off: make a fresh row below
+        }
+        if (creating) return;
+        creating = true;
+        try {
+          const row = await createRow();
+          if (alive && row) { found = true; misses = 0; apply(row); subscribe(row.id); }
+        } finally { creating = false; }
+      } catch { /* unknown: keep the cached pairing, the next tick retries */ }
+    };
+    tickRef.current = tick;
+    const poll = setInterval(tick, 12000);
+    // iPads and Android WebViews suspend the page and kill the socket: re-read on wake
+    // and when the network returns, instead of waiting for the next 12s tick.
+    const onVisible = () => { if (document.visibilityState === 'visible') tick(); };
+    const onOnline = () => tick();
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('online', onOnline);
+    tick();
+    return () => {
+      alive = false;
+      tickRef.current = null;
+      clearInterval(poll);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('online', onOnline);
+      if (ch) { try { supabase.removeChannel(ch); } catch { /* already gone */ } }
+    };
   }, [pairing]);
 
   // ── resolve the location from whatever board we're showing (direct link or
   // the screen's assignment). The board row carries its own location_id. ──
   useEffect(() => {
-    let alive = true;
+    let alive = true, retry = null, attempt = 0;
     setResolving(true);
-    (async () => {
+    const resolve = async () => {
       if (effectiveBoardId && !isMock && supabase) {
-        const { data: b } = await supabase.from('menu_boards').select('location_id').eq('id', effectiveBoardId).maybeSingle();
-        if (alive) { if (b?.location_id) setLocId(b.location_id); setResolving(false); }
+        let b = null;
+        try {
+          const { data } = await withTimeout(
+            supabase.from('menu_boards').select('location_id').eq('id', effectiveBoardId).maybeSingle(),
+            TICK_TIMEOUT_MS, 'Board venue');
+          b = data || null;
+        } catch { b = null; }
+        if (!alive) return;
+        setResolving(false);
+        if (b?.location_id) { setLocId(b.location_id); return; }
+        // One failed read at boot must not leave the TV on "Loading menu" until someone
+        // reloads it: try again, backing off from 5 seconds to once a minute.
+        attempt += 1;
+        retry = setTimeout(resolve, Math.min(60000, 5000 * 2 ** Math.min(attempt - 1, 4)));
       } else if (alive) {
         setLocId(null); setResolving(false);     // no board yet → pairing splash
+        // Leaving menu board mode (unpaired, or now an order screen): drop the old board, so a
+        // later board never flashes stale content (old prices) before its own load.
+        dataRef.current = null; setData(null);
       }
-    })();
-    return () => { alive = false; };
+    };
+    resolve();
+    return () => { alive = false; clearTimeout(retry); };
   }, [effectiveBoardId]);
 
   const load = useCallback(async (id) => {
@@ -220,7 +262,7 @@ export default function MenuBoardSurface() {
       }
       dataRef.current = next;
       setData(next);
-      try { localStorage.setItem(cacheKey(id, effectiveBoardId), JSON.stringify({ ...next, six: [...next.six] })); } catch {}
+      try { localStorage.setItem(cacheKey(id, effectiveBoardId), JSON.stringify({ ...next, six: [...next.six] })); } catch { /* cache is best effort */ }
     } catch (e) { console.warn('[menuboard] load', e?.message); }
   }, [effectiveBoardId]);
 
@@ -237,7 +279,7 @@ export default function MenuBoardSurface() {
         dataRef.current = d;
         setData(d);
       }
-    } catch {}
+    } catch { /* unreadable cache, load() below refreshes */ }
     load(locId);
 
     if (isMock || !supabase) return;
@@ -281,6 +323,12 @@ export default function MenuBoardSurface() {
     return () => { if (ch) { try { supabase.removeChannel(ch); } catch { /* already gone */ } } };
   }, [followMenus, menuIdsKey, locId, effectiveBoardId, reload]);
 
+  // Paired to an ORDER SCREEN (Back Office, Channels, Order screens): the order status
+  // board replaces the menu board. It reads only order_status_feed. When the feed says
+  // this screen is no longer assigned, re-read our own row now so the code shows again.
+  if (pairing && screen?.order_display_id) {
+    return <OrderStatusScreen key={screen.id} screenId={screen.id} onUnassigned={() => tickRef.current && tickRef.current()} />;
+  }
   // No board yet → device-pairing screen (shows the code to type into Back Office).
   if (pairing && !effectiveBoardId) return <PairScreen code={screen?.code} />;
   if (resolving && !data) return <Splash text="Starting menu board…" />;
@@ -295,7 +343,7 @@ function PairScreen({ code }) {
       <div style={{ fontSize: 'clamp(16px,2.6vw,32px)', color: '#B8AE9E', letterSpacing: '.04em' }}>Pair this screen</div>
       <div style={{ fontSize: 'clamp(48px,13vw,170px)', fontWeight: 700, letterSpacing: '.04em', color: '#E8A23C', lineHeight: 1.05, margin: '.25em 0' }}>{code || '· · ·'}</div>
       <div style={{ fontSize: 'clamp(13px,1.7vw,20px)', color: '#B8AE9E', marginTop: '.6em', maxWidth: 780, lineHeight: 1.5 }}>
-        In Back Office → Channels → Menu boards, tap <strong style={{ color: '#F5EFE6' }}>“Pair a screen”</strong> and enter this code to choose what this display shows.
+        In Back Office, open Channels, then Menu boards or Order screens. Enter this code there.
       </div>
     </div>
   );
@@ -372,7 +420,7 @@ function Board({ data }) {
     // fallback) would otherwise overflow once the real font swaps in, making the
     // board look "zoomed in / off the edge". Also a couple of delayed passes for
     // TV browsers that report their final viewport size only after first paint.
-    try { if (document.fonts && document.fonts.ready) document.fonts.ready.then(refit).catch(() => {}); } catch {}
+    try { if (document.fonts && document.fonts.ready) document.fonts.ready.then(refit).catch(() => {}); } catch { /* no font loading API */ }
     const timers = [setTimeout(refit, 400), setTimeout(refit, 1500), setTimeout(refit, 4000)];
     return () => {
       window.removeEventListener('resize', refit);

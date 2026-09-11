@@ -147,6 +147,10 @@ export async function flushQueues() {
   const activeQueueRefs = new Set();
   for (const o of queue) {
     if (!o?.ref) continue;
+    // TRAINING MODE: an entry created while training (addToQueue stamps training:true) is
+    // never published, even after training is switched off. Without this, the next flush
+    // once the device profile turned training off upserted the trainee's orders to live.
+    if (o.training === true) continue;
     if (o.status === 'collected') continue;
     activeQueueRefs.add(o.ref);
     const row = queueToRow(o, _locationId);

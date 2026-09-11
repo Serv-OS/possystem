@@ -34,6 +34,7 @@ Codebase: ~97,000 lines across 246 source files
 | Owner App | `?mode=owner` | Mobile owner snapshot — top-down KPIs across all accessible locations (back-office login; URL-bookmarked PWA, not a paired device) |
 | Review card | `/review` | Customer-facing branded review card (Review Manager) |
 | Menu Board | `?mode=menuboard` | Digital menu board for a TV / Android-TV stick. Pairs to a board via a code shown on screen (or open `?board=<id>` directly); auto-fits to one screen and live-updates on publish |
+| Order Screen | `?mode=orderscreen`, or a menu board TV paired to an order screen | Collection screen for customers and delivery drivers: Order received, Preparing, Ready and Collected per configurable section. Pairs with the same TV code as the menu board |
 
 ---
 
@@ -295,6 +296,13 @@ Sales Summary, Product Mix, Payments, Tax, Tips, Servers, Tables, Menu Engineeri
 ### Time Clock (`?mode=clock`)
 - Dedicated second-tablet surface (`src/surfaces/TimeClockSurface.jsx`): PIN pad → status → Clock in / Start break / End break / Clock out. Pairs to a location like a POS.
 - Punches write **server-side** via `workforce-clock` (validates PIN against `staff_members` for the location — PINs never reach the client; maps to `wf_staff`, auto-creating an HR record if needed; tracks breaks via `wf_timesheets.break_open_at`; snapshots rate; computes hours/pay at clock-out). Feeds Workforce → Timesheets/Pay/Tronc.
+
+### Order Screens (Back Office → Channels → Order screens)
+- A paired TV shows customers and drivers which orders are received, preparing, ready and collected. Config: `order_status_displays` (sections of channels × order types × steps, labels, timing, Brand v2 theme). Migration `20260911_OPS_order_status_displays.sql` (Peter applies); everything hides cleanly before it runs.
+- **Pairing reuses the menu board:** a `menu_board_screens` row shows EITHER `board_id` OR `order_display_id`. BO calls `claim_order_status_screen` / `set_order_status_screen`; `MenuBoardSurface` swaps to `src/surfaces/orderScreen/OrderStatusScreen.jsx` when its own row has an `order_display_id`. Same APK, no new build. Portrait TVs rotate in CSS (config "Turn right/left").
+- **The screen never reads `order_queue`.** It calls only `order_status_feed(p_screen_id)` (SECURITY DEFINER, resolves the caller's own row by `auth.uid()`, names shortened IN SQL). **No names at all** while `order_status_names_enabled()` is false, i.e. while order_queue still has its "allow all" policy (names switch on by themselves once the 20260907b fence file 3 lands); Back Office shows a note and the preview mirrors it. A trigger stamps `order_status_marks` (status and delete times, so "leave N minutes after collected" works for deleted till rows) and bumps `order_status_pings` (no personal data), which realtime nudges. Correctness = 5 s poll + visibilitychange/online refetch.
+- Pure rules: `src/lib/orderScreen/orderScreenStatus.js` (mirrors the SQL; change both), layout/paging/venue clock `orderScreenLayout.js`, board `OrderBoard.jsx` (TV and BO preview). Delivery apps (HubRise Deliveroo/Uber Eats/Just Eat/other, ezCater, Stuart) show the app name plus the app's order code.
+- Venue setting `locations.pos_settings.order_screen_keep_paid` (store `keepPaidTillOrders`, `src/lib/orderScreen/keepPaidOrder.js`): till orders paid BEFORE Ready stay queued, marked paid, until staff tap Collected (paying a ready order removes it as before; a full refund removes a kept one). Off by default = old payment behaviour.
 
 ### Digital Menu Board (`?mode=menuboard`)
 - TV / Android-TV display surface (`src/surfaces/MenuBoardSurface.jsx`) + Back Office builder (`src/backoffice/sections/MenuBoards.jsx`, Channels → Menu boards). A "screen" is a `menu_boards` row: chosen categories (drag-reorder; `span:'all'` = full-width hero), orientation/columns/branding/marketing-mode, published live.
