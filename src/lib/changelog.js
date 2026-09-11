@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.59',
+    date: '11 Sep 2026',
+    items: [
+      'Fix: menu board and order screen TVs could not pair or update. Since v5.8.56 a screen showed its pairing code and never talked to the server, because a new timeout helper called the browser timer the wrong way and the error was swallowed. Every TV recovers on its own within about 12 seconds of loading this version.',
+    ],
+  },
+  {
     v: '5.8.56',
     date: '11 Sep 2026',
     items: [

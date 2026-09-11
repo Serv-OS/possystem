@@ -34,3 +34,28 @@ test('always clears its timer', async () => {
   await assert.rejects(withTimeout(new Promise(() => {}), 5, 'y', timers));
   assert.equal(cleared, 2);
 });
+
+test('default timers never call the globals as an object method (browser Illegal invocation)', async () => {
+  // A browser throws "Illegal invocation" when setTimeout runs with anything but window as
+  // its receiver. Node does not, so this test stands in for the browser: it fails on
+  // `timers = { setTimeout, clearTimeout }` (receiver = the object) and passes on wrappers.
+  const realSet = globalThis.setTimeout;
+  const realClear = globalThis.clearTimeout;
+  let badReceiver = false;
+  globalThis.setTimeout = function patchedSetTimeout(fn, ms) {
+    if (this !== undefined && this !== globalThis) { badReceiver = true; throw new TypeError('Illegal invocation'); }
+    return realSet(fn, ms);
+  };
+  globalThis.clearTimeout = function patchedClearTimeout(id) {
+    if (this !== undefined && this !== globalThis) { badReceiver = true; throw new TypeError('Illegal invocation'); }
+    return realClear(id);
+  };
+  try {
+    assert.equal(await withTimeout(Promise.resolve('ok'), 50, 'probe'), 'ok');
+    await assert.rejects(withTimeout(new Promise(() => {}), 5, 'slow'), TimeoutError);
+    assert.equal(badReceiver, false, 'withTimeout called a global timer with the wrong receiver');
+  } finally {
+    globalThis.setTimeout = realSet;
+    globalThis.clearTimeout = realClear;
+  }
+});
