@@ -6,8 +6,16 @@ iPad-first WebView wrappers around the PROD web app, mirroring the Android wrapp
 
 | Target | Bundle id | URL | Camera |
 |---|---|---|---|
-| ServOS POS | `co.posup.rpos.pos` | `https://possystem-liard.vercel.app/?mode=pos` | yes (QR scanning) |
-| ServOS KDS | `co.posup.rpos.kds` | `https://possystem-liard.vercel.app/?mode=kds` | no |
+| ServOS POS | `co.posup.rpos.pos` | `https://app.serv-os.app/?mode=pos` | yes (QR scanning) |
+| ServOS KDS | `co.posup.rpos.kds` | `https://app.serv-os.app/?mode=kds` | no |
+| ServOS Time Clock | `co.posup.rpos.clock` | `https://app.serv-os.app/?mode=clock` | no |
+| ServOS Waitlist | `co.posup.rpos.waitlist` | `https://app.serv-os.app/?mode=waitlist` | no |
+| ServOS Bookings | `co.posup.rpos.bookings` | `https://app.serv-os.app/?mode=bookings` | no |
+| ServOS Manager | `co.posup.rpos.manager` | `https://app.serv-os.app/?mode=manager` | no |
+| ServOS Owner | `co.posup.rpos.owner` | `https://app.serv-os.app/?mode=owner` | no |
+| ServOS Staff | `co.posup.rpos.staff` | `https://app.serv-os.app/?mode=staff` | no (location yes) |
+
+**Live host (since 11 Sep 2026 builds):** every target opens `app.serv-os.app`, the live web app on git main. `possystem-liard.vercel.app` and `dev.serv-os.app` serve git develop (test cards only) and must not ship in an App Store build. The host a target opens is always treated as internal by `Config.isInternalHost`, so repointing `RPOSAppURL` can never bounce the app's own start page to Safari.
 
 - **No .xcodeproj in git.** `xcodegen generate` builds it from `project.yml` (XcodeGen 2.46.0 installed).
 - **No hardware bridges in v1.** `window.RposPrinter` is left undefined on purpose, so printing falls back to the Supabase `print_jobs` queue and the LAN print agent. The shell injects `window.RposIOS = { platform: 'ios', version: '<marketing version>' }` so the web app can detect it.
@@ -57,7 +65,7 @@ No Swift changes needed. Do not add per-app constants to `Config.swift`; add a p
 ## Before App Store submission
 
 - **KDS app icon** is a derived placeholder. Export the real KDS mark from the Brand Guidelines before public release.
-- **Version bumps**: `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` live per target in `project.yml` (POS currently 1.0.0 build 3, KDS 1.0.0 build 1). Bump there, regenerate, archive.
+- **Version bumps**: `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` live per target in `project.yml` (11 Sep 2026: POS 1.0.0 build 4, every other target 1.0.0 build 3). Bump there, regenerate, archive.
 
 ## Later automation
 
@@ -72,6 +80,6 @@ No Swift changes needed. Do not add per-app constants to `Config.swift`; add a p
 
 - **Never sleep**: `isIdleTimerDisabled` on, re-asserted whenever the app becomes active.
 - **Never white-screen**: any load failure shows a native Reconnecting view and retries the same URL every 5 seconds until it loads. A killed web process reloads itself.
-- **Stay put**: our host and `*.supabase.co` (plus localhost) load in the WebView; everything else opens in Safari.
+- **Stay put**: the target's own host, `app.serv-os.app` and `*.supabase.co` (plus localhost) load in the WebView; every other top-level page opens in Safari. Off-host iframes load in place.
 - **POS-friendly WebView**: no pinch zoom, no scroll bounce, no long-press callouts, inline media with no tap (order chime works). Camera granted to our origin only where `RPOSAllowsCamera` is true (POS); microphone always denied.
 - **Orientation**: iPad all orientations, iPhone portrait only (runs on iPhone so TestFlight review cannot crash it). Identical for every target.

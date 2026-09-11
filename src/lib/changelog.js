@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.55',
+    date: '11 Sep 2026',
+    items: [
+      'The ServOS iPhone and iPad apps now open the live system at app.serv-os.app. Before this they opened the test system. This covers POS, KDS, Time Clock, Waitlist, Bookings, Manager, Owner and Staff, from the next TestFlight build of each app.',
+    ],
+  },
+  {
     v: '5.8.54',
     date: '11 Sep 2026',
     items: [

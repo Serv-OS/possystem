@@ -27,7 +27,7 @@
 	<key>RPOSAllowsCamera</key>
 	<false/>
 	<key>RPOSAppURL</key>
-	<string>https://possystem-liard.vercel.app/?mode=owner</string>
+	<string>https://app.serv-os.app/?mode=owner</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UILaunchScreen</key>
