@@ -13,6 +13,20 @@
 //   slots  → per-slot availability for a date+party (full = pacing OR no table)
 //   book   → create the guest (unified org-scoped CRM, only-fill-blank),
 //            book the best candidate; audit row in booking_requests either way
+//   booking_pay         → take the card for a pending_payment booking
+//   booking_pay_details → finish a 3DS challenge on the SAME payment row
+//   booking_status      → the booking's status, polled while a payment confirms
+//
+// THE PAYMENT GATE (10 Sep 2026, Peter: "payment must be paid before booking
+// confirms on the system"). Only this server confirms a booking that needs
+// payment, and only after Adyen authorises the full amount due:
+//   - a package that needs payment is not offered or booked unless card
+//     capture is on and the venue's Adyen config is usable; a Deposit at 0 or
+//     a Prepay at 0 is never offered
+//   - book writes 'confirmed' (nothing due) or 'pending_payment' (anything
+//     due), never 'prepaid', and stores what was due on the booking
+//   - Authorised is the only success; the promote runs through
+//     _shared/bookingPromote.ts (shared with adyen-webhook)
 //
 // Payments (v5.7.21, pay-before-commit): when card capture is on and the
 // booking owes money (prepay/deposit/hold), book INSERTS with status
@@ -37,6 +51,17 @@ import {
   adyenConfig, adyenAccountForLocation, platformLocationIdFor, checkoutBase, adyenFetch,
   adyenNotConfiguredMessage, paymentIdempotencyKey, effectiveMerchantAccount, type AdyenConfig,
 } from '../_shared/adyen.ts';
+// THE PAYMENT GATE (10 Sep 2026, Peter: "payment must be paid before booking
+// confirms on the system"). The rules are pure and shared with adyen-webhook
+// and the web app; the promote is the one server door to confirmed/prepaid.
+import {
+  paymentDue as computePaymentDue, packagePaymentNeed, packageSellableOnline, statusAtBooking,
+  amountCovers, paymentSatisfiesDue, stuckPaymentReason,
+} from '../_shared/bookingPayment.js';
+import { promotePaidBooking, markPaymentNeedsRefund, isMissingColumnError, loadBookingDue } from '../_shared/bookingPromote.ts';
+// GUEST PRE ORDER CHOICES (10 Sep 2026): sizes and options on a pick are
+// validated here against the dish's real groups, never trusted from the page.
+import { sanitiseChoice, optionGroupIdsFor, matchChoice, MAX_CHOICE_NOTE } from '../_shared/preorderChoices.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -110,29 +135,46 @@ async function adyenCfgForOps(opsLocationId: string): Promise<{ cfg: AdyenConfig
 const adyenUsable = (v: { cfg: AdyenConfig; merchantAccount: string }): boolean =>
   v.cfg.configured && !!v.cfg.clientKey && !!v.merchantAccount;
 
-// What a booking owes at capture time. hold = zero-value auth that stores the
-// card (no charge today; no-show capture comes later, off-session).
-function paymentDueFor(bk: Record<string, unknown>, pkg: Record<string, unknown> | null, rules: { holdPerCover?: number } | Record<string, unknown>) {
-  const covers = Number(bk.covers) || 1;
-  if (pkg && pkg.payment_model === 'prepay') {
-    const per = String(pkg.price_unit || '').includes('cover');
-    const amt = per ? (Number(pkg.price) || 0) * covers : (Number(pkg.price) || 0);
-    return { kind: 'prepay', amountMinor: Math.round(amt * 100), label: `${pkg.name} — paid now, comes off the bill` };
+// Slots only: can this venue take a card right now? A lookup failure reads as
+// NO, so a payment package is simply not offered (the page never breaks).
+async function venueAdyenUsable(opsLocationId: string): Promise<boolean> {
+  try {
+    return adyenUsable(await adyenCfgForOps(opsLocationId));
+  } catch (e) {
+    console.warn('[booking-widget] Adyen lookup failed, payment packages hidden:', (e as Error).message);
+    return false;
   }
-  if (pkg && pkg.payment_model === 'deposit' && Number(pkg.deposit_per_cover) > 0) {
-    const amt = (Number(pkg.deposit_per_cover) || 0) * covers;
-    return { kind: 'deposit', amountMinor: Math.round(amt * 100), label: `Deposit — redeemed against the bill` };
-  }
-  // Hold only from the venue's covers threshold up (Peter, 13 Aug: "tables
-  // over 4 require card capture, under that doesn't"). 0 = every booking.
-  const minCovers = Number((rules as Record<string, unknown>).cardCaptureMinCovers) || 0;
-  if (minCovers > 0 && covers < minCovers) return null;
-  const hold = (Number((rules as Record<string, unknown>).holdPerCover) || 0) * covers;
-  if (hold > 0) {
-    return { kind: 'hold', amountMinor: Math.round(hold * 100), label: `Card held, nothing charged today` };
-  }
-  return null;
 }
+
+// What a booking owes (pure rules in _shared/bookingPayment.js). prepay and
+// deposit come from the package; a hold saves the card and takes NOTHING
+// (no no-show charge exists yet), only with card capture on and from the
+// venue's covers threshold up (Peter, 13 Aug). The label rides the response.
+const DUE_LABEL: Record<string, string> = {
+  prepay: 'Paid now, comes off the bill',
+  deposit: 'Deposit, comes off the bill',
+  hold: 'Card saved, nothing taken today',
+};
+function paymentDueFor(covers: unknown, pkg: Record<string, unknown> | null, rules: Record<string, unknown>) {
+  const due = computePaymentDue({ covers, pkg, rules });
+  return due ? { ...due, label: DUE_LABEL[due.kind] || '' } : null;
+}
+
+// Plain words for a package that needs payment but cannot take it right now.
+const PAYMENT_UNAVAILABLE_MESSAGE = 'This menu cannot be booked online right now. You can still book the table.';
+
+// /payments/details gets its OWN idempotency key, derived from the booking's
+// merchant reference and the exact details sent: a retransmit replays Adyen's
+// answer, a different challenge result is a fresh request.
+async function detailsIdempotencyKey(reference: string, details: unknown): Promise<string> {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`${reference}|${JSON.stringify(details ?? null)}`));
+  const hex = Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+  return `bkdet:${hex.slice(0, 56)}`;
+}
+
+// Apple Pay runs its own authentication; everything else asks for native 3DS2
+// so the challenge runs inside the Drop-in (same list as adyen-checkout).
+const NO_NATIVE_3DS_TYPES = ['applepay'];
 
 const normPhone = (raw: string) => {
   const d = String(raw || '').replace(/[^\d+]/g, '');
@@ -186,17 +228,20 @@ function rulesFrom(r: Record<string, unknown> | null) {
 
 // Load everything a quote needs, once per request.
 async function loadVenue(locationId: string) {
-  const [{ data: loc }, { data: rulesRow }, { data: floor }, { data: pkgs }, { data: choiceLines }] = await Promise.all([
+  // The rules read is checked (10 Sep 2026): a failed read used to look like
+  // "no rules", which the book path read as "nothing due".
+  const [{ data: loc }, { data: rulesRow, error: rulesError }, { data: floor }, { data: pkgs }, { data: choiceLines }] = await Promise.all([
     db.from('locations').select('id, org_id, name, timezone').eq('id', locationId).maybeSingle(),
     db.from('booking_rules').select('*').eq('location_id', locationId).maybeSingle(),
     db.from('floor_tables').select('id, label, max_covers, section').eq('location_id', locationId),
     db.from('packages').select('*').eq('location_id', locationId).eq('is_active', true).order('sort_order'),
-    db.from('package_lines').select('id, package_id, item_id, display_name, course, qty_per_cover, is_preorder_choice, sort_order')
+    db.from('package_lines').select('id, package_id, item_id, display_name, course, qty_per_cover, is_preorder_choice, sort_order, price_override')
       .eq('location_id', locationId).order('sort_order'),
   ]);
   if (!loc) return null;
   return {
     loc,
+    rulesError: rulesError ? String(rulesError.message || rulesError) : null,
     rules: rulesFrom(rulesRow),
     tables: (floor || []).map((t) => ({ id: t.id, label: t.label || t.id, covers: t.max_covers || 2, section: t.section || null })),
     packages: pkgs || [],
@@ -218,8 +263,100 @@ function choiceGroupsFor(packageId: string, choiceLines: Record<string, unknown>
   return [...byCourse.entries()].sort((a, b) => a[0] - b[0]).map(([course, lines]) => ({
     course,
     label: COURSE_LABEL[course] || `Course ${course}`,
-    options: lines.map((l) => ({ lineId: l.id, itemId: l.item_id || null, name: l.display_name })),
+    // priceOverride (10 Sep 2026): the page prices a size or an option
+    // relative to this line, with the same package rule the till uses.
+    options: lines.map((l) => ({
+      lineId: l.id, itemId: l.item_id || null, name: l.display_name,
+      priceOverride: l.price_override == null ? null : Number(l.price_override),
+    })),
   }));
+}
+
+// ── guest pre-order choices (10 Sep 2026) ─────────────────────────────────
+// One matcher for both writers (book and preorder_submit): matchChoice in
+// _shared/preorderChoices.js (tested). Course plus name, then name, then item.
+
+// The size and options for each pick, checked against the venue's menu: only
+// a live size of the dish, only options on the dish's modifier groups (sub
+// groups included) or its instruction groups (config_pushes snapshot), prices
+// restamped from the database, list capped. Any read failure keeps the pick
+// with no options (the till's Options badge still asks), never a guess.
+const blankChoice = () => ({ mods: [] as unknown[], variant_item_id: null as string | null, variant_name: null as string | null });
+async function choiceFieldsFor(locationId: string, picks: { itemId: unknown; variantItemId: unknown; mods: unknown }[]) {
+  const wants = picks.some((p) => (Array.isArray(p.mods) && p.mods.length > 0) || !!p.variantItemId);
+  if (!wants) return picks.map(blankChoice);
+  try {
+    const [itemsRes, snapRes] = await Promise.all([
+      db.from('menu_items').select('*').eq('location_id', locationId),
+      db.from('config_pushes').select('snapshot->instructionGroupDefs')
+        .eq('location_id', locationId).order('created_at', { ascending: false }).limit(1).maybeSingle(),
+    ]);
+    if (itemsRes.error) {
+      console.error('[booking-widget] menu read for pre-order choices failed:', itemsRes.error.message);
+      return picks.map(blankChoice);
+    }
+    // deno-lint-ignore no-explicit-any
+    const rows = (itemsRes.data || []) as any[];
+    if (snapRes.error) console.warn('[booking-widget] instruction groups read failed, instructions dropped:', snapRes.error.message);
+    // deno-lint-ignore no-explicit-any
+    const defsRaw = (snapRes.data as any)?.instructionGroupDefs;
+    const instDefs = Array.isArray(defsRaw) ? defsRaw : [];
+    const want = new Set<string>();
+    for (const p of picks) {
+      const line = rows.find((r) => String(r.id) === String(p.itemId));
+      if (!line) continue;
+      const size = p.variantItemId ? rows.find((r) => String(r.id) === String(p.variantItemId) && String(r.parent_id) === String(line.id)) : null;
+      for (const id of optionGroupIdsFor(size || line, rows).mod) want.add(id);
+    }
+    // deno-lint-ignore no-explicit-any
+    const groups = new Map<string, any>();
+    let queue = [...want];
+    for (let depth = 0; queue.length && depth < 6; depth++) {
+      const { data, error } = await db.from('modifier_groups').select('id, name, min, max, selection_type, options').in('id', queue);
+      if (error) { console.error('[booking-widget] modifier groups read failed, options dropped:', error.message); break; }
+      const next = new Set<string>();
+      for (const g of data || []) {
+        groups.set(String(g.id), g);
+        for (const o of Array.isArray(g.options) ? g.options : []) {
+          if (o?.subGroupId) next.add(String(o.subGroupId));
+        }
+      }
+      queue = [...next].filter((id) => !groups.has(id));
+    }
+    return picks.map((p) => {
+      const c = sanitiseChoice({ lineItemId: p.itemId, variantItemId: p.variantItemId, mods: p.mods, rows, groups: [...groups.values()], instDefs });
+      return { mods: c.mods as unknown[], variant_item_id: c.variantItemId as string | null, variant_name: c.variantName as string | null };
+    });
+  } catch (e) {
+    console.error('[booking-widget] pre-order choices check failed, options dropped:', (e as Error).message);
+    return picks.map(blankChoice);
+  }
+}
+
+// Insert pre-order rows; before migration 20260910 Part B the three choice
+// columns do not exist, so retry without them (the pick itself still lands).
+// deno-lint-ignore no-explicit-any
+async function insertPreorders(rows: Record<string, any>[]) {
+  if (!rows.length) return null;
+  const { error } = await db.from('booking_preorders').insert(rows);
+  if (!error || !isMissingColumnError(error)) return error;
+  const bare = rows.map((r) => {
+    const { mods: _m, variant_item_id: _v, variant_name: _n, ...rest } = r;
+    return rest;
+  });
+  const { error: e2 } = await db.from('booking_preorders').insert(bare);
+  return e2;
+}
+
+// A booking's saved picks, with the choice columns when they exist.
+async function loadPreorderRows(bookingId: string) {
+  const BASE = 'seat, guest_name, item_id, display_name, course, notes';
+  let res = await db.from('booking_preorders').select(`${BASE}, mods, variant_item_id, variant_name`).eq('booking_id', bookingId).order('seat');
+  if (res.error && isMissingColumnError(res.error)) {
+    // deno-lint-ignore no-explicit-any
+    res = await db.from('booking_preorders').select(BASE).eq('booking_id', bookingId).order('seat') as any;
+  }
+  return res;
 }
 
 // A package a GUEST may attach: active, inside its date/day window, party within
@@ -291,9 +428,9 @@ Deno.serve(async (req) => {
       const [{ data: loc2 }, { data: pkg2 }, { data: lines2 }, { data: existing }] = await Promise.all([
         db.from('locations').select('name, timezone').eq('id', bk.location_id).maybeSingle(),
         db.from('packages').select('*').eq('id', bk.package_id).maybeSingle(),
-        db.from('package_lines').select('id, package_id, item_id, display_name, course, sort_order, is_preorder_choice')
+        db.from('package_lines').select('id, package_id, item_id, display_name, course, sort_order, is_preorder_choice, price_override')
           .eq('package_id', bk.package_id).eq('is_preorder_choice', true).order('sort_order'),
-        db.from('booking_preorders').select('seat, guest_name, item_id, display_name, course').eq('booking_id', bk.id).order('seat'),
+        loadPreorderRows(String(bk.id)),
       ]);
       const groups2 = choiceGroupsFor(String(bk.package_id), (lines2 || []) as Record<string, unknown>[]);
       const dl = new Date(`${bk.booking_date}T12:00:00`);
@@ -306,37 +443,55 @@ Deno.serve(async (req) => {
         party: bk.covers,
         guestName: (bk.customer as Record<string, unknown>)?.name || null,
         packageName: pkg2?.name || 'your menu',
+        // 10 Sep 2026: the page prices sizes and options with the package rule,
+        // and loads the menu of the booking's own venue.
+        paymentModel: pkg2?.payment_model || null,
+        locationId: bk.location_id,
         deadline: dl.toISOString().slice(0, 10),
         choiceGroups: groups2,
-        preorders: (existing || []).map((r) => ({ seat: r.seat, guestName: r.guest_name, itemId: r.item_id, name: r.display_name, course: r.course })),
+        // The size, options and note ride back so the link page prefills them
+        // and an amend (wholesale replace below) never wipes them.
+        // deno-lint-ignore no-explicit-any
+        preorders: ((existing || []) as any[]).map((r) => ({
+          seat: r.seat, guestName: r.guest_name, itemId: r.item_id, name: r.display_name, course: r.course,
+          notes: r.notes || '',
+          mods: Array.isArray(r.mods) ? r.mods : [],
+          variantItemId: r.variant_item_id || null,
+          variantName: r.variant_name || null,
+        })),
       };
       if (action === 'preorder_info') return json(summary);
 
       // preorder_submit — replace wholesale with validated rows.
       const submitted2 = Array.isArray(body.preorders) ? body.preorders : [];
-      const rows2 = submitted2
-        .filter((r) => groups2.some((g) => g.options.some((o) =>
-          (r.itemId && o.itemId && String(r.itemId) === String(o.itemId)) || String(r.name || '') === String(o.name))))
-        .slice(0, bk.covers * Math.max(1, groups2.length))
-        .map((r) => {
-          const g = groups2.find((gg) => gg.options.some((o) =>
-            (r.itemId && o.itemId && String(r.itemId) === String(o.itemId)) || String(r.name || '') === String(o.name)));
-          const opt = g?.options.find((o) =>
-            (r.itemId && o.itemId && String(r.itemId) === String(o.itemId)) || String(r.name || '') === String(o.name));
-          return {
+      // deno-lint-ignore no-explicit-any
+      const pairs2: { raw: any; row: Record<string, unknown> }[] = [];
+      for (const r of submitted2) {
+        const hit = matchChoice(groups2, r);
+        if (!hit) continue;
+        pairs2.push({
+          raw: r,
+          row: {
             location_id: bk.location_id,
             booking_id: bk.id,
             seat: Math.max(1, Math.min(bk.covers, Math.round(Number(r.seat) || 0) || 1)),
             guest_name: String(r.guestName || '').slice(0, 60) || null,
-            item_id: opt?.itemId || null,
-            display_name: opt?.name || 'Choice',
-            course: g?.course ?? 0,
-            notes: String(r.notes || '').slice(0, 120),
-          };
+            item_id: hit.opt.itemId || null,
+            display_name: hit.opt.name || 'Choice',
+            course: hit.g.course ?? 0,
+            notes: String(r.notes || '').slice(0, MAX_CHOICE_NOTE),
+          },
         });
-      if (!rows2.length) return json({ ok: false, error: 'no valid choices' }, 400);
+      }
+      const kept2 = pairs2.slice(0, bk.covers * Math.max(1, groups2.length));
+      if (!kept2.length) return json({ ok: false, error: 'no valid choices' }, 400);
+      // Checked BEFORE the delete, so the replace window stays short.
+      const extras2 = await choiceFieldsFor(String(bk.location_id), kept2.map((p) => ({
+        itemId: p.row.item_id, variantItemId: p.raw?.variantItemId, mods: p.raw?.mods,
+      })));
+      const rows2 = kept2.map((p, i) => ({ ...p.row, ...extras2[i] }));
       await db.from('booking_preorders').delete().eq('booking_id', bk.id);
-      const { error: insErr } = await db.from('booking_preorders').insert(rows2);
+      const insErr = await insertPreorders(rows2);
       if (insErr) return json({ ok: false, error: insErr.message }, 500);
       return json({ ok: true, saved: rows2.length });
     }
@@ -346,6 +501,12 @@ Deno.serve(async (req) => {
 
     const venue = await loadVenue(locationId);
     if (!venue) return json({ error: 'unknown venue' }, 404);
+    // FAIL CLOSED (10 Sep 2026): a rules read that ERRORED is not "no rules".
+    // No slot, no booking, no payment runs on rules we could not read.
+    if (venue.rulesError) {
+      console.error('[booking-widget] booking_rules read failed:', venue.rulesError);
+      return json({ ok: false, error: 'rules_unavailable' }, 503);
+    }
     const rules = venue.rules;
     if (!rules) return json({ ok: true, widgetEnabled: false, reason: 'not configured' });
 
@@ -446,7 +607,15 @@ Deno.serve(async (req) => {
         .not('package_id', 'is', null).not('status', 'in', '(cancelled,no_show,expired)');
       const counts = new Map<string, number>();
       for (const r of pkgCounts || []) counts.set(r.package_id, (counts.get(r.package_id) || 0) + 1);
+      // THE PAYMENT GATE (10 Sep 2026): a package that needs payment is only
+      // offered when the venue can actually take it (card capture on AND a
+      // usable Adyen config). A Deposit at 0 or a Prepay at 0 is never offered.
+      // The Adyen lookup only runs when there is something to pay for.
+      const captureOn = rules.cardCaptureEnabled === true;
+      const anyPaid = captureOn && venue.packages.some((p) => packagePaymentNeed(p).needsPayment);
+      const canTakeCard = anyPaid ? await venueAdyenUsable(locationId) : false;
       const offers = venue.packages
+        .filter((p) => packageSellableOnline(p, { captureOn, adyenUsable: canTakeCard }).ok)
         .map((p) => packageOffer(p, date, party, counts.get(String(p.id)) || 0))
         .filter(Boolean)
         .map((o) => {
@@ -488,6 +657,63 @@ Deno.serve(async (req) => {
         return json({ ok: false, error: 'slot_full' });
       }
 
+      // Optional package: re-validate the offer server-side (window, covers,
+      // per-service cap) — never trust the card the page showed earlier.
+      // 10 Sep 2026: moved BEFORE the CRM write, so a refused package writes
+      // no row anywhere.
+      let pkg: Record<string, unknown> | null = null;
+      if (body.package_id) {
+        const row = venue.packages.find((x) => String(x.id) === String(body.package_id));
+        let booked = 0;
+        if (row?.max_per_service) {
+          const { count } = await db.from('bookings')
+            .select('id', { count: 'exact', head: true })
+            .eq('location_id', locationId).eq('booking_date', date)
+            .eq('package_id', String(row.id)).not('status', 'in', '(cancelled,no_show,expired)');
+          booked = count || 0;
+        }
+        const offer = row ? packageOffer(row, date, party, booked) : null;
+        if (!offer) return json({ ok: false, error: 'package_unavailable' });
+        // A Deposit at 0 or a Prepay at 0 is misconfigured: never sold.
+        if (packagePaymentNeed(row).misconfigured) return json({ ok: false, error: 'package_unavailable' });
+        pkg = row;
+      }
+      const pkgNeed = packagePaymentNeed(pkg);
+
+      // ── THE PAYMENT GATE (10 Sep 2026) ───────────────────────────────────
+      // What is due is decided HERE, on the server, from the package and the
+      // rules loadVenue already read (checked, never a second unchecked read).
+      //   - a package that needs payment while capture is off, or while the
+      //     venue cannot take a card: refused in plain words, NO row written
+      //   - nothing due: 'confirmed'
+      //   - anything due: 'pending_payment' (the table is held while the guest
+      //     pays; only booking_pay or adyen-webhook promote it, after Adyen
+      //     authorises the full amount). NEVER 'prepaid' at book time.
+      if (pkgNeed.needsPayment && !rules.cardCaptureEnabled) {
+        return json({ ok: false, error: 'payment_unavailable', message: PAYMENT_UNAVAILABLE_MESSAGE });
+      }
+      const paymentDue = paymentDueFor(party, pkg, rules as unknown as Record<string, unknown>);
+      const createStatus = statusAtBooking(paymentDue);
+      // Resolve the venue's Adyen config BEFORE the booking exists, and refuse
+      // here when it cannot take a card (live without live keys, no client
+      // key, no merchant account): the guest gets a clear error and no
+      // orphaned pending_payment row sits on the table for 20 minutes. The
+      // page needs the client key and environment to take the card next.
+      let guestAdyen: { clientKey: string; environment: 'test' | 'live'; region: string; dropinEnvironment: string; currency: string } | null = null;
+      if (paymentDue) {
+        const v = await adyenCfgForOps(locationId).catch((e) => {
+          console.error('[booking-widget] Adyen config lookup failed at book:', (e as Error).message);
+          return null;
+        });
+        if (!v || !adyenUsable(v)) {
+          if (pkgNeed.needsPayment) {
+            return json({ ok: false, error: 'payment_unavailable', message: PAYMENT_UNAVAILABLE_MESSAGE });
+          }
+          return json({ ok: false, error: v?.cfg.live ? adyenNotConfiguredMessage(v.cfg) : 'card capture not configured' }, 503);
+        }
+        guestAdyen = { clientKey: v.cfg.clientKey, environment: v.cfg.env, region: v.cfg.region, dropinEnvironment: v.cfg.dropinEnvironment, currency: v.currency };
+      }
+
       // Unified CRM (org-scoped, phone-matched, only-fill-blank — the same
       // semantics as every other customers writer).
       const email = String(body.email || '').trim().toLowerCase() || null;
@@ -509,6 +735,13 @@ Deno.serve(async (req) => {
           .select('id').maybeSingle();
         customerId = created?.id || null;
       }
+      // A card hold with no CRM record would go to Adyen with no shopper
+      // reference, so no card could be stored and nothing would secure the
+      // table (10 Sep 2026 review). Refuse the booking; no row is written.
+      if (paymentDue?.kind === 'hold' && !customerId) {
+        console.error('[booking-widget] card hold due but the customer record could not be written, booking refused');
+        return json({ ok: false, error: 'booking_failed' });
+      }
       if (body.consent === true && customerId) {
         // Consent is an AUDIT event, not a flag — customer_consents is the record.
         await db.from('customer_consents').insert({
@@ -521,23 +754,7 @@ Deno.serve(async (req) => {
       const note = String(body.note || '').slice(0, 300);
       const customerSnap = { name, phone, email, allergens };   // email rides the snapshot — the reminder fn needs it
 
-      // Optional package: re-validate the offer server-side (window, covers,
-      // per-service cap) — never trust the card the page showed earlier.
-      let pkg: Record<string, unknown> | null = null;
-      if (body.package_id) {
-        const row = venue.packages.find((x) => String(x.id) === String(body.package_id));
-        let booked = 0;
-        if (row?.max_per_service) {
-          const { count } = await db.from('bookings')
-            .select('id', { count: 'exact', head: true })
-            .eq('location_id', locationId).eq('booking_date', date)
-            .eq('package_id', String(row.id)).not('status', 'in', '(cancelled,no_show,expired)');
-          booked = count || 0;
-        }
-        const offer = row ? packageOffer(row, date, party, booked) : null;
-        if (!offer) return json({ ok: false, error: 'package_unavailable' });
-        pkg = row;
-      }
+      // (The package was re-validated, and the payment gate run, above.)
       const turnOverride = pkg?.turn_minutes ? Number(pkg.turn_minutes) : null;
 
       // ── pre-order choices (Peter, 12 Aug) ────────────────────────────────
@@ -550,24 +767,25 @@ Deno.serve(async (req) => {
         && daysAhead <= (Number(pkg.preorder_days_before) || 0);
       const submitted = Array.isArray(body.preorders) ? body.preorders : [];
       // Keep only rows matching a real choice option; cap at party × groups.
-      const validRows = submitted
-        .filter((r) => groups.some((g) => g.options.some((o) =>
-          (r.itemId && o.itemId && String(r.itemId) === String(o.itemId)) || String(r.name || r.displayName || '') === String(o.name))))
-        .slice(0, party * Math.max(1, groups.length))
-        .map((r) => {
-          const g = groups.find((gg) => gg.options.some((o) =>
-            (r.itemId && o.itemId && String(r.itemId) === String(o.itemId)) || String(r.name || r.displayName || '') === String(o.name)));
-          const opt = g?.options.find((o) =>
-            (r.itemId && o.itemId && String(r.itemId) === String(o.itemId)) || String(r.name || r.displayName || '') === String(o.name));
-          return {
+      // deno-lint-ignore no-explicit-any
+      const validPairs: { raw: any; row: { seat: number; guest_name: string | null; item_id: string | null; display_name: string; course: number; notes: string } }[] = [];
+      for (const r of submitted) {
+        const hit = matchChoice(groups, r);
+        if (!hit) continue;
+        validPairs.push({
+          raw: r,
+          row: {
             seat: Math.max(1, Math.min(party, Math.round(Number(r.seat) || 0) || 1)),
             guest_name: String(r.guestName || r.guest_name || '').slice(0, 60) || null,
-            item_id: opt?.itemId || null,
-            display_name: opt?.name || 'Choice',
-            course: g?.course ?? 0,
-            notes: String(r.notes || '').slice(0, 120),
-          };
+            item_id: hit.opt.itemId || null,
+            display_name: hit.opt.name || 'Choice',
+            course: hit.g.course ?? 0,
+            notes: String(r.notes || '').slice(0, MAX_CHOICE_NOTE),
+          },
         });
+      }
+      validPairs.splice(party * Math.max(1, groups.length));
+      const validRows = validPairs.map((p) => p.row);
       const completeNow = groups.length > 0 && groups.every((g) =>
         validRows.filter((r) => r.course === g.course).length >= party);
       // "Choose later" skip (Peter, 19 Aug): even inside the window the guest
@@ -576,38 +794,8 @@ Deno.serve(async (req) => {
         return json({ ok: false, error: 'preorders_required', choiceGroups: groups, party });
       }
 
-      // ── pay-before-commit (v5.7.21) ──────────────────────────────────────
-      // What this booking owes is decided BEFORE the insert: money due means
-      // status 'pending_payment' (the table is held, the guest pays on the
-      // next screen, the 20-minute cron frees it if they never do). Nothing
-      // due keeps the old statuses exactly.
-      let paymentDue: { kind: string; amountMinor: number; label: string } | null = null;
-      const { data: rulesRow2 } = await db.from('booking_rules')
-        .select('card_capture_enabled, hold_per_cover, card_capture_min_covers')
-        .eq('location_id', locationId).maybeSingle();
-      if (rulesRow2?.card_capture_enabled) {
-        paymentDue = paymentDueFor({ covers: party }, pkg, {
-          holdPerCover: Number(rulesRow2.hold_per_cover) || 0,
-          cardCaptureMinCovers: Number(rulesRow2.card_capture_min_covers) || 0,
-        });
-      }
-      const createStatus = paymentDue
-        ? 'pending_payment'
-        : (pkg && pkg.payment_model === 'prepay' ? 'prepaid' : 'confirmed');
-      // Resolve the venue's Adyen config BEFORE the booking exists, and refuse
-      // here when it cannot take a card (live without live keys, no client
-      // key, no merchant account): the guest gets a clear error and no
-      // orphaned pending_payment row sits on the table for 20 minutes. The
-      // page needs the client key and environment to take the card next.
-      let guestAdyen: { clientKey: string; environment: 'test' | 'live'; region: string; dropinEnvironment: string; currency: string } | null = null;
-      if (paymentDue) {
-        const v = await adyenCfgForOps(locationId);
-        if (!adyenUsable(v)) {
-          return json({ ok: false, error: v.cfg.live ? adyenNotConfiguredMessage(v.cfg) : 'card capture not configured' }, 503);
-        }
-        guestAdyen = { clientKey: v.cfg.clientKey, environment: v.cfg.env, region: v.cfg.region, dropinEnvironment: v.cfg.dropinEnvironment, currency: v.currency };
-      }
-
+      // (What is due, the status and the Adyen config were settled by the
+      // payment gate above, before any row was written.)
       const candidates = quote(time);
       let bookedId: string | null = null;
       let tableLabel: string | null = null;
@@ -643,13 +831,34 @@ Deno.serve(async (req) => {
       let preorderDeadline: string | null = null;
       if (bookedId && pkg?.requires_preorder && groups.length > 0) {
         if (validRows.length) {
-          await db.from('booking_preorders').insert(validRows.map((r) => ({ ...r, location_id: locationId, booking_id: bookedId })));
+          // The guest's sizes and options, checked against the menu (10 Sep 2026).
+          const extras = await choiceFieldsFor(locationId, validPairs.map((p) => ({
+            itemId: p.row.item_id, variantItemId: p.raw?.variantItemId, mods: p.raw?.mods,
+          })));
+          const poErr = await insertPreorders(validRows.map((r, i) => ({ ...r, ...extras[i], location_id: locationId, booking_id: bookedId })));
+          if (poErr) console.error('[booking-widget] booking_preorders insert failed for', bookedId, poErr.message);
         }
         preorderToken = (crypto.randomUUID() + crypto.randomUUID()).replace(/-/g, '');
         const dl = new Date(`${date}T12:00:00`);
         dl.setDate(dl.getDate() - (Number(pkg.preorder_days_before) || 0));
         preorderDeadline = dl.toISOString().slice(0, 10);
         await db.from('bookings').update({ preorder_token: preorderToken }).eq('id', bookedId);
+      }
+
+      // Store WHAT WAS DUE on the booking (10 Sep 2026, migration 20260910):
+      // booking_pay charges exactly this, so a package edited or switched off
+      // between booking and paying can never change the charge. Before the
+      // migration the columns are absent: booking_pay then recomputes from the
+      // booking's own package, so the booking still works.
+      if (bookedId && paymentDue) {
+        const { error: dueErr } = await db.from('bookings').update({
+          payment_kind: paymentDue.kind,
+          payment_due_minor: paymentDue.amountMinor,
+          payment_currency: guestAdyen?.currency || null,
+        }).eq('id', bookedId);
+        if (dueErr && !isMissingColumnError(dueErr)) {
+          console.error('[booking-widget] could not store what is due on', bookedId, dueErr.message);
+        }
       }
 
       // Booking confirmation SMS + email (Peter, 13 Aug: "didn't get SMS").
@@ -677,7 +886,8 @@ Deno.serve(async (req) => {
       await db.from('booking_requests').insert({
         location_id: locationId,
         payload: { date, time, party, name, phone, email, note, package_id: pkg ? String(pkg.id) : null, consent: body.consent === true },
-        status: bookedId ? 'accepted' : 'pending',
+        // 10 Sep 2026: an unpaid booking is not accepted yet.
+        status: bookedId && createStatus !== 'pending_payment' ? 'accepted' : 'pending',
         booking_id: bookedId,
       });
 
@@ -696,117 +906,352 @@ Deno.serve(async (req) => {
         ...(guestAdyen ? { adyen: guestAdyen } : {}) });
     }
 
-    // ── booking_pay: charge/hold the card for a just-made booking ───────────
-    // ADVANCED flow (mirrors adyen-checkout make_payment): payment_method is
-    // the encrypted blob from the browser. prepay/deposit charge now; hold is
-    // a ZERO-VALUE auth that stores the card against the guest for the
-    // no-show capture later. Idempotent-ish: refuses when a successful row of
-    // that kind already exists for the booking.
-    if (action === 'booking_pay') {
+    // ── booking_status: the guest page polls this while a payment confirms ──
+    // Answers the booking's status only (10 Sep 2026 payment gate): the page
+    // says "booked" only when this says confirmed or prepaid.
+    if (action === 'booking_status') {
+      const bookingId = String(body.booking_id || '');
+      if (!bookingId) return json({ ok: false, error: 'booking_id required' }, 400);
+      const { data: st, error: stErr } = await db.from('bookings')
+        .select('status').eq('id', bookingId).eq('location_id', locationId).maybeSingle();
+      if (stErr) return json({ ok: false, error: 'lookup_failed' }, 503);
+      if (!st) return json({ ok: false, error: 'unknown_booking' }, 404);
+      // The latest payment attempt's state, so the page can say plainly when a
+      // card could not be saved or the bank said no while it was waiting.
+      // Best effort: a failed read just leaves it out.
+      const { data: lastPay } = await db.from('booking_payments')
+        .select('status, kind').eq('booking_id', bookingId)
+        .order('created_at', { ascending: false }).limit(1);
+      const last = lastPay?.[0] || null;
+      return json({ ok: true, status: st.status, payment: last ? { status: last.status, kind: last.kind } : null });
+    }
+
+    // ── booking_pay / booking_pay_details: THE PAYMENT GATE (10 Sep 2026) ───
+    // ADVANCED flow (mirrors adyen-checkout make_payment + payment_details):
+    // payment_method is the encrypted blob from the browser; a 3DS challenge
+    // runs inside the Drop-in and comes back through booking_pay_details.
+    //   - Authorised is the ONLY success. Received or Pending write a pending
+    //     row and leave the booking pending_payment (the sweep skips a young
+    //     pending row for 30 minutes; the webhook settles it).
+    //   - The amount is what was STORED on the booking at book time. Without it
+    //     (older bookings) it is recomputed from the booking's OWN package,
+    //     fetched by id, inactive packages included.
+    //   - "Already paid" keys on the booking and its references, never on a
+    //     recomputed kind, so a changed package can never charge twice.
+    //   - Promote only after the authorised amount covers what is due (a hold
+    //     saves a card and takes nothing, so it is excepted), through
+    //     _shared/bookingPromote.ts: pending_payment, or expired only when its
+    //     tables are still free (else the payment is marked needs_refund).
+    //     cancelled, no_show, departed and dining never promote.
+    if (action === 'booking_pay' || action === 'booking_pay_details') {
       const venueAdyen = await adyenCfgForOps(locationId);
       const cfg = venueAdyen.cfg;
       if (!adyenUsable(venueAdyen)) {
         return json({ ok: false, error: cfg.live ? adyenNotConfiguredMessage(cfg) : 'card capture not configured' }, 503);
       }
       const merchantAccount = venueAdyen.merchantAccount;
+      const currency = String(venueAdyen.currency).toUpperCase();
       const bookingId = String(body.booking_id || '');
-      const { data: bk } = await db.from('bookings')
-        .select('id, location_id, covers, status, customer_id, customer, package_id, booking_date, start_time')
-        .eq('id', bookingId).eq('location_id', locationId).maybeSingle();
-      if (!bk || ['cancelled', 'no_show', 'departed', 'expired'].includes(bk.status)) {
-        // 'expired' lands here when the guest comes back after the 20-minute
-        // sweep freed the table — they must rebook, never pay a dead booking.
-        return json({ ok: false, error: 'unknown_or_closed' }, 404);
+      if (!bookingId) return json({ ok: false, error: 'booking_id required' }, 400);
+
+      // The booking and what it owes RIGHT NOW (10 Sep 2026 review): never the
+      // stored due alone, which a browser could rewrite before migration
+      // 20260910. loadBookingDue weighs the stored due, the booking's own
+      // package (by id, inactive included), the package and party in the
+      // widget's booking_requests audit row and the venue hold rule, and takes
+      // the largest; a stored card hold where money is owed is refused.
+      const dueRes = await loadBookingDue(db, bookingId);
+      const bk = (dueRes.booking || null) as Record<string, unknown> | null;
+      if (!dueRes.ok && dueRes.error === 'lookup_failed') {
+        console.error('[booking-widget] booking lookup failed for', bookingId);
+        return json({ ok: false, error: 'lookup_failed' }, 503);
       }
-      const { data: rulesRow3 } = await db.from('booking_rules').select('card_capture_enabled, hold_per_cover, card_capture_min_covers').eq('location_id', locationId).maybeSingle();
-      if (!rulesRow3?.card_capture_enabled) return json({ ok: false, error: 'card_capture_disabled' }, 403);
-      const pkg3 = bk.package_id ? venue.packages.find((x) => String(x.id) === String(bk.package_id)) || null : null;
-      const due = paymentDueFor(bk, pkg3 || null, {
-        holdPerCover: Number(rulesRow3.hold_per_cover) || 0,
-        cardCaptureMinCovers: Number(rulesRow3.card_capture_min_covers) || 0,
-      });
+      if (!bk || String(bk.location_id) !== locationId) return json({ ok: false, error: 'unknown_or_closed' }, 404);
+      // booking_pay starts a NEW charge only while the booking is waiting for it
+      // (pending_payment). Seated (dining), cancelled, expired, confirmed: no
+      // charge. booking_pay_details may still finish a payment already in flight
+      // for a booking that expired during the challenge (the promote then checks
+      // its tables), but never one staff have seated, cancelled or closed.
+      const open = action === 'booking_pay' ? ['pending_payment'] : ['pending_payment', 'expired'];
+      if (!open.includes(String(bk.status))) {
+        // 200, not 404: the guest page can only read a body on a 2xx reply,
+        // and it must be able to say plainly what happened to this booking.
+        return json({ ok: false, error: 'unknown_or_closed', status: bk.status });
+      }
+      if (!dueRes.ok) {
+        // due_mismatch: the booking no longer matches what it owed. Nothing is charged.
+        console.error('[booking-widget] what booking', bookingId, 'owes does not match its package, NOT charging:', dueRes.error);
+        return json({ ok: false, error: 'due_mismatch' });
+      }
+      const guestCtx = {
+        guestName: (bk.customer as Record<string, unknown> | null)?.name ? String((bk.customer as Record<string, unknown>).name) : null,
+        time: bk.start_time ? String(bk.start_time) : null,
+      };
+
+      // Promote, then fire the confirmation and (when choices are missing) the
+      // pre-order link. A payment that landed too late is flagged for refund.
+      const settlePromotion = async (kind: string, rowIds: string[]) => {
+        const pr = await promotePaidBooking(db, bookingId, kind);
+        if (pr.promoted) {
+          const url = `${Deno.env.get('SUPABASE_URL')}/functions/v1/booking-reminders`;
+          const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}` };
+          fetch(url, { method: 'POST', headers, body: JSON.stringify({ action: 'confirm', booking_id: bookingId }) }).catch(() => {});
+          if (bk.package_id) {
+            const { data: ownPkg } = await db.from('packages').select('requires_preorder').eq('id', String(bk.package_id)).maybeSingle();
+            if (ownPkg?.requires_preorder) {
+              // v5.7.26 - no choice lines = nothing to nag about.
+              const { count: choiceLines } = await db.from('package_lines')
+                .select('id', { count: 'exact', head: true })
+                .eq('package_id', String(bk.package_id)).eq('is_preorder_choice', true);
+              const { count: picked } = await db.from('booking_preorders')
+                .select('id', { count: 'exact', head: true }).eq('booking_id', bookingId);
+              if ((choiceLines || 0) > 0 && (picked || 0) < (Number(bk.covers) || 1)) {
+                fetch(url, { method: 'POST', headers, body: JSON.stringify({ action: 'send_link', booking_id: bookingId }) }).catch(() => {});
+              }
+            }
+          }
+        } else {
+          // 10 Sep 2026 review: EVERY payment that cannot secure its booking is
+          // flagged (seated, cancelled, closed, gone, or its table taken), not
+          // only table_taken, and raised on the venue's activity feed. A lookup
+          // that failed is not flagged: the webhook may still promote it.
+          const why = stuckPaymentReason(pr);
+          if (why) await markPaymentNeedsRefund(db, rowIds, why, guestCtx);
+        }
+        return pr;
+      };
+      // Money is in but the booking cannot promote: say so honestly. 200 with
+      // ok:false, because the guest page can only read a body on a 2xx reply.
+      const promotionFailed = (pr: { status: string | null; error?: string }, extra: Record<string, unknown> = {}) =>
+        json({ ...extra, ok: false, error: pr.error === 'table_taken' ? 'paid_but_table_taken' : 'paid_but_booking_not_promotable', status: pr.status });
+
+      // One Adyen answer (/payments or /payments/details) → the ledger row and
+      // the page reply. rowId null = a new attempt (insert); else the SAME row.
+      // deno-lint-ignore no-explicit-any
+      const finish = async (j: Record<string, any>, ctx: { rowId: string | null; reference: string; kind: string; dueMinor: number; sentMinor: number }) => {
+        const code = String(j.resultCode || '');
+        const authorised = code === 'Authorised';
+        const refused = code === 'Refused';
+        const notCompleted = code === 'Cancelled' || code === 'Error';
+        const isHold = ctx.kind === 'hold';
+        const nowIso = new Date().toISOString();
+        const storedId = j.additionalData?.['tokenization.storedPaymentMethodId'] || j.additionalData?.['recurring.recurringDetailReference'] || null;
+        // A card hold is only real when the card was STORED (10 Sep 2026
+        // review). Authorised with no stored card secures nothing: the attempt
+        // stays pending (the webhook may still bring the saved card and promote
+        // it, or fail it), and the page waits instead of saying booked.
+        // 10 Sep 2026 (integrator): an authorised hold confirms even when Adyen
+        // sends no saved card token. No no-show charge exists yet, and 30 days of
+        // live Adyen events carried no token at all, so requiring one would leave
+        // every hold booking unconfirmed until the sweep expired it. The token is
+        // still kept whenever it arrives (either additionalData key).
+        const holdNoCard = false;
+        const fields: Record<string, unknown> = {
+          status: holdNoCard ? 'pending'
+            : authorised ? (isHold ? 'authorised' : 'captured') : (refused || notCompleted) ? 'failed' : 'pending',
+          ...(j.pspReference ? { psp_reference: j.pspReference } : {}),
+          ...(storedId ? { stored_payment_method_id: storedId } : {}),
+          ...(j.additionalData?.cardSummary ? { card_last4: j.additionalData.cardSummary } : {}),
+          refusal_reason: holdNoCard ? 'Waiting for the saved card' : (j.refusalReason || (notCompleted ? code : null)),
+          ...(authorised ? { authorised_at: nowIso } : {}),
+          ...(authorised && !isHold ? { captured_at: nowIso } : {}),
+        };
+        const successWrite = fields.status === 'captured' || fields.status === 'authorised';
+        // Success never revives money already flagged for refund, refunded or
+        // cancelled; a non-success never downgrades a settled row.
+        // deno-lint-ignore no-explicit-any
+        const guard = (q: any) => (successWrite
+          ? q.not('status', 'in', '(needs_refund,refunded,cancelled)')
+          : q.in('status', ['pending', 'failed']));
+        let rowId = ctx.rowId;
+        if (!rowId) {
+          const { data: ins, error: insErr } = await db.from('booking_payments').insert({
+            location_id: locationId,
+            booking_id: bookingId,
+            kind: ctx.kind,
+            amount: ctx.dueMinor / 100,
+            currency: currency.toLowerCase(),
+            merchant_reference: ctx.reference,
+            merchant_account: merchantAccount,
+            ...fields,
+          }).select('id').maybeSingle();
+          if (insErr) {
+            // A retransmit of this attempt (same idempotency key) already wrote
+            // the row carrying this psp: settle THAT row, never a second one.
+            const { data: same } = j.pspReference
+              ? await db.from('booking_payments').select('id').eq('psp_reference', j.pspReference).eq('booking_id', bookingId).maybeSingle()
+              : { data: null };
+            if (same?.id) {
+              rowId = String(same.id);
+              await guard(db.from('booking_payments').update(fields).eq('id', rowId));
+            } else {
+              // Money Adyen authorised is still real: the checks below still
+              // run on the verified amount and the error is loud. A result that
+              // is not final (3DS, Received, Pending) still goes back to the page
+              // so it waits and polls instead of asking the guest to pay again;
+              // the webhook writes the missing row from the event (10 Sep 2026
+              // review). A refusal still reads as a refusal.
+              console.error('[booking-widget] booking_payments insert FAILED for', ctx.reference, code, insErr.message);
+            }
+          } else {
+            rowId = ins?.id ? String(ins.id) : null;
+          }
+        } else {
+          // Settle the SAME row: by psp_reference first (the webhook may have
+          // stamped it already), else the attempt row itself.
+          let settled = false;
+          if (j.pspReference) {
+            const { data: byPsp } = await guard(db.from('booking_payments').update(fields)
+              .eq('psp_reference', j.pspReference).eq('booking_id', bookingId)).select('id');
+            if (byPsp?.length) { settled = true; rowId = String(byPsp[0].id); }
+          }
+          if (!settled) {
+            const { error: upErr } = await guard(db.from('booking_payments').update(fields).eq('id', rowId));
+            if (upErr) console.error('[booking-widget] booking_payments settle failed for', ctx.reference, upErr.message);
+          }
+        }
+        // Card on file onto the unified CRM record (never re-keyed).
+        if (isHold && authorised && storedId && bk.customer_id) {
+          await db.from('customers').update({ stored_payment_method_id: storedId, shopper_reference: bk.customer_id }).eq('id', bk.customer_id);
+        }
+
+        const base = { kind: ctx.kind, resultCode: code || null, pspReference: j.pspReference || null, amountMinor: ctx.dueMinor, reference: ctx.reference };
+        if (authorised && !holdNoCard) {
+          const paidMinor = j.amount?.value !== undefined ? Number(j.amount.value) : ctx.sentMinor;
+          const paidCurrency = j.amount?.currency ? String(j.amount.currency) : currency;
+          if (!amountCovers({ kind: ctx.kind, dueMinor: ctx.dueMinor, paidMinor, dueCurrency: currency, paidCurrency })) {
+            console.error('[booking-widget] authorised amount does not cover what is due, NOT promoting:', ctx.reference, paidMinor, paidCurrency, ctx.dueMinor, currency);
+            // Money is in but short: it cannot secure the booking, so it goes back.
+            await markPaymentNeedsRefund(db, rowId ? [rowId] : [], 'the amount paid did not cover what the booking owed', guestCtx);
+            // 200: the guest page can only read a body on a 2xx reply.
+            return json({ ...base, ok: false, error: 'amount_short' });
+          }
+          const pr = await settlePromotion(ctx.kind, rowId ? [rowId] : []);
+          if (!pr.ok) return promotionFailed(pr, base);
+          return json({ ...base, ok: true, status: pr.status });
+        }
+        if (refused) return json({ ...base, ok: false, error: 'card_refused', refusalReason: j.refusalReason || null });
+        if (notCompleted) return json({ ...base, ok: false, error: 'payment_not_completed' });
+        // A 3DS action for the Drop-in, or Received / Pending: the booking
+        // stays pending_payment. No status in the reply: it is not booked.
+        return json({ ...base, ok: true, action: j.action || null, pending: !j.action });
+      };
+
+      if (action === 'booking_pay_details') {
+        const reference = String(body.reference || '');
+        if (!reference.startsWith(`bkpay-${bookingId}-`)) return json({ ok: false, error: 'bad reference' }, 400);
+        if (!body.details || typeof body.details !== 'object') return json({ ok: false, error: 'details required' }, 400);
+        const { data: atts, error: attErr } = await db.from('booking_payments')
+          .select('id, kind, amount, currency, status')
+          .eq('booking_id', bookingId).eq('merchant_reference', reference)
+          .order('created_at', { ascending: false }).limit(1);
+        if (attErr) return json({ ok: false, error: 'lookup_failed' }, 503);
+        const owedDue = dueRes.due;
+        // deno-lint-ignore no-explicit-any
+        let att: any = atts?.[0] || null;
+        if (!att) {
+          // booking_pay's insert failed (10 Sep 2026 review) but the attempt is
+          // real: rebuild it from the reference's kind and what the booking owes.
+          // finish() then writes the row, so the challenge is never stranded.
+          const refKind = reference.match(/^bkpay-.+-(hold|deposit|prepay)-a\d+$/)?.[1] || null;
+          if (!refKind || !owedDue || owedDue.kind !== refKind) return json({ ok: false, error: 'unknown_payment', reference });
+          att = { id: null, kind: refKind, amount: owedDue.amountMinor / 100, currency: currency.toLowerCase(), status: 'pending' };
+        }
+        const dueMinor = Math.round(Number(att.amount) * 100);
+        // What the BOOKING owes (loadBookingDue), never only what the attempt row says.
+        const owed = owedDue
+          ? { kind: owedDue.kind, amountMinor: owedDue.amountMinor, currency: owedDue.currency || currency }
+          : { kind: att.kind, amountMinor: dueMinor, currency };
+        const attemptCovers = paymentSatisfiesDue(owed, { kind: att.kind, amountMinor: dueMinor, currency: att.currency });
+        if (att.status === 'captured' || att.status === 'authorised') {
+          // The webhook settled it first. Promote only if that payment still
+          // covers what the booking owes.
+          if (!attemptCovers) return json({ ok: false, error: 'paid_amount_short', reference });
+          const pr = await settlePromotion(String(att.kind), [String(att.id)]);
+          if (!pr.ok) return promotionFailed(pr, { reference, kind: att.kind });
+          return json({ ok: true, kind: att.kind, resultCode: 'Authorised', amountMinor: dueMinor, reference, status: pr.status });
+        }
+        if (att.status !== 'pending') return json({ ok: false, error: 'payment_not_completed', reference });
+        // An attempt that could never cover the booking is not finished: no money moves.
+        if (!attemptCovers) {
+          console.error('[booking-widget] 3DS attempt does not cover what booking', bookingId, 'owes, NOT finishing it');
+          return json({ ok: false, error: 'due_mismatch', reference });
+        }
+        const res = await adyenFetch('POST', `${checkoutBase(cfg)}/payments/details`,
+          { details: body.details, ...(body.payment_data ? { paymentData: body.payment_data } : {}) },
+          { cfg, idempotencyKey: await detailsIdempotencyKey(reference, body.details) });
+        const j = res.data ?? {};
+        if (!res.ok) {
+          console.error('[booking-widget] booking_pay_details failed:', res.status, JSON.stringify(j).slice(0, 300));
+          return json({ ok: false, error: j.message || `payment details refused (${res.status})` }, 502);
+        }
+        if (j.merchantReference && String(j.merchantReference) !== reference) {
+          console.error('[booking-widget] details answered for another reference:', j.merchantReference, reference);
+          return json({ ok: false, error: 'reference_mismatch' }, 409);
+        }
+        return await finish(j, { rowId: att.id ? String(att.id) : null, reference, kind: String(att.kind), dueMinor, sentMinor: att.kind === 'hold' ? 0 : dueMinor });
+      }
+
+      // ── booking_pay ──
+      if (!rules.cardCaptureEnabled) return json({ ok: false, error: 'card_capture_disabled' }, 403);
+      // What to charge: loadBookingDue above (the stored due, the booking's own
+      // package, the audit row's package and party, the rules; largest wins).
+      const due = dueRes.due;
       if (!due) return json({ ok: false, error: 'nothing_due' });
+      if (due.currency && due.currency !== currency) {
+        console.error('[booking-widget] venue currency changed since booking:', bookingId, due.currency, currency);
+        return json({ ok: false, error: 'currency_changed' }, 409);
+      }
       if (!body.payment_method || typeof body.payment_method !== 'object') {
         return json({ ok: false, error: 'payment_method required' }, 400);
       }
-      // Promote pending_payment → prepaid/confirmed once the money side has
-      // succeeded. v5.7.23: 'expired' promotes too - a payment landing after
-      // the 20-minute sweep RESURRECTS the booking (the money is captured, the
-      // booking must live; the table-overlap risk is accepted). Zero rows
-      // matched is only "already promoted" when a re-select shows the booking
-      // ALREADY at the target status; any other status (cancelled, no_show,
-      // dining, ...) is an honest error, never a silent success. Fires the
-      // (ledger-idempotent) confirmation and, when pre-order choices are
-      // still missing, the pre-order link.
-      // → { ok:true, status } | { ok:false, status } (status = what the row says now)
-      const promotePaid = async () => {
-        const next = due.kind === 'prepay' ? 'prepaid' : 'confirmed';
-        const { data: promoted } = await db.from('bookings')
-          .update({ status: next })
-          .eq('id', bookingId).in('status', ['pending_payment', 'expired'])
-          .select('id');
-        if (!promoted?.length) {
-          const { data: cur } = await db.from('bookings')
-            .select('status').eq('id', bookingId).maybeSingle();
-          if (cur?.status === next) return { ok: true, status: next };
-          return { ok: false, status: cur?.status || null };
-        }
-        const url = `${Deno.env.get('SUPABASE_URL')}/functions/v1/booking-reminders`;
-        const headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')}` };
-        fetch(url, { method: 'POST', headers, body: JSON.stringify({ action: 'confirm', booking_id: bookingId }) }).catch(() => {});
-        if (pkg3?.requires_preorder) {
-          // v5.7.26 - no choice lines = nothing to nag about.
-          const { count: choiceLines } = await db.from('package_lines')
-            .select('id', { count: 'exact', head: true })
-            .eq('package_id', bk.package_id).eq('is_preorder_choice', true);
-          const { count: picked } = await db.from('booking_preorders')
-            .select('id', { count: 'exact', head: true }).eq('booking_id', bookingId);
-          if ((choiceLines || 0) > 0 && (picked || 0) < (Number(bk.covers) || 1)) {
-            fetch(url, { method: 'POST', headers, body: JSON.stringify({ action: 'send_link', booking_id: bookingId }) }).catch(() => {});
-          }
-        }
-        return { ok: true, status: next };
-      };
 
-      const { data: prior } = await db.from('booking_payments')
-        .select('id').eq('booking_id', bookingId).eq('kind', due.kind)
-        .in('status', ['authorised', 'captured']).limit(1);
+      // Already paid? Every successful payment on THIS booking's references,
+      // whatever kind it was: never charge a second time.
+      const { data: prior, error: priorErr } = await db.from('booking_payments')
+        .select('id, kind, amount, currency, status')
+        .eq('booking_id', bookingId).like('merchant_reference', `bkpay-${bookingId}-%`)
+        .in('status', ['authorised', 'captured']);
+      if (priorErr) return json({ ok: false, error: 'lookup_failed' }, 503);
       if (prior?.length) {
-        // Money already in but the booking may still say pending_payment
-        // (webhook race, page retry) — heal the status before answering.
-        const pr = await promotePaid();
-        if (!pr.ok) {
-          // Paid, but the booking sits in a status the promote must not touch
-          // (cancelled / no_show / dining ...). Say so - the venue sorts it.
-          return json({ ok: false, error: 'paid_but_booking_not_promotable', status: pr.status }, 409);
+        const covering = prior.find((p: Record<string, unknown>) => paymentSatisfiesDue(
+          { kind: due.kind, amountMinor: due.amountMinor, currency },
+          { kind: p.kind, amountMinor: Math.round(Number(p.amount) * 100), currency: p.currency },
+        ));
+        if (!covering) {
+          console.error('[booking-widget] an earlier payment does not cover what is due, NOT charging again:', bookingId);
+          // 200: the guest page can only read a body on a 2xx reply.
+          return json({ ok: false, error: 'paid_amount_short', kind: due.kind });
         }
+        const pr = await settlePromotion(due.kind, [String(covering.id)]);
+        if (!pr.ok) return promotionFailed(pr, { kind: due.kind });
         return json({ ok: true, already: true, kind: due.kind, status: pr.status });
       }
 
       const isHold = due.kind === 'hold';
-      // v5.7.23 - every attempt gets its OWN merchant reference (-a<N>). The
-      // shared per-booking+kind reference meant the webhook (then keyed on
-      // merchant_reference) flipped every attempt row at once on a
-      // refused-then-retried card. The webhook now settles by pspReference;
-      // the attempt suffix keeps each reference unique for Adyen-side tracing
-      // and the webhook's no-psp fallback path.
+      // v5.7.23 - every attempt gets its OWN merchant reference (-a<N>); the
+      // webhook settles by pspReference. Counted per booking, so a reference
+      // is unique across kinds too.
       const { count: priorAttempts } = await db.from('booking_payments')
         .select('id', { count: 'exact', head: true })
-        .eq('booking_id', bookingId).eq('kind', due.kind);
+        .eq('booking_id', bookingId);
       const attempt = (priorAttempts || 0) + 1;
       const reference = `bkpay-${bookingId}-${due.kind}-a${attempt}`;
+      const pmType = String((body.payment_method as Record<string, unknown>).type || '').toLowerCase();
       const payment: Record<string, unknown> = {
         merchantAccount,
-        amount: { value: isHold ? 0 : due.amountMinor, currency: venueAdyen.currency },   // the venue's currency, never a literal GBP (8 Sep 2026)
+        // A hold is a ZERO-value authorisation that saves the card. No money.
+        amount: { value: isHold ? 0 : due.amountMinor, currency },   // the venue's currency, never a literal GBP (8 Sep 2026)
         reference,
         paymentMethod: body.payment_method,
         channel: 'Web',
         origin: String(body.origin || ''),
         returnUrl: String(body.return_url || DEFAULT_RETURN_URL),
         shopperInteraction: 'Ecommerce',
+        // Native 3DS2: the challenge runs in the Drop-in and finishes through
+        // booking_pay_details (a redirect could never come back to this page).
+        ...(NO_NATIVE_3DS_TYPES.includes(pmType) ? {} : { authenticationData: { threeDSRequestData: { nativeThreeDS: 'preferred' } } }),
         ...(bk.customer_id ? { shopperReference: bk.customer_id } : {}),
-        // Store the card for holds (no-show capture is a later merchant-
-        // initiated charge against the stored method).
         ...(isHold && bk.customer_id ? { storePaymentMethod: true, recurringProcessingModel: 'UnscheduledCardOnFile' } : {}),
       };
       if (body.browser_info) payment.browserInfo = body.browser_info;
@@ -815,7 +1260,6 @@ Deno.serve(async (req) => {
 
       // Idempotency-Key = reference + attempt: a retransmit of this attempt
       // replays Adyen's first answer instead of charging the guest twice.
-      // cfg.checkoutBase carries the version segment for both host shapes.
       const res = await adyenFetch('POST', `${checkoutBase(cfg)}/payments`, payment,
         { cfg, idempotencyKey: await paymentIdempotencyKey(reference, attempt) });
       const j = res.data ?? {};
@@ -823,53 +1267,7 @@ Deno.serve(async (req) => {
         console.error('[booking-widget] booking_pay failed:', res.status, JSON.stringify(j).slice(0, 300));
         return json({ ok: false, error: j.message || `payment refused (${res.status})` }, 502);
       }
-      const authorised = j.resultCode === 'Authorised' || j.resultCode === 'Received';
-      await db.from('booking_payments').insert({
-        location_id: locationId,
-        booking_id: bookingId,
-        kind: due.kind,
-        amount: due.amountMinor / 100,
-        currency: venueAdyen.currency.toLowerCase(),
-        status: authorised ? (isHold ? 'authorised' : 'captured') : (j.resultCode === 'Refused' ? 'failed' : 'pending'),
-        psp_reference: j.pspReference || null,
-        merchant_reference: reference,
-        merchant_account: merchantAccount,
-        stored_payment_method_id: j.additionalData?.['recurring.recurringDetailReference'] || null,
-        card_last4: j.additionalData?.cardSummary || null,
-        refusal_reason: j.refusalReason || null,
-        ...(authorised ? { authorised_at: new Date().toISOString() } : {}),
-        ...(authorised && !isHold ? { captured_at: new Date().toISOString() } : {}),
-      });
-      // Card-on-file onto the unified CRM record (never re-keyed).
-      const storedId = j.additionalData?.['recurring.recurringDetailReference'] || null;
-      if (isHold && authorised && storedId && bk.customer_id) {
-        await db.from('customers').update({
-          stored_payment_method_id: storedId,
-          shopper_reference: bk.customer_id,
-        }).eq('id', bk.customer_id);
-      }
-      if (!authorised && j.resultCode === 'Refused') {
-        // Booking stays pending_payment — the widget offers a retry, and the
-        // 20-minute sweep expires it if the guest never succeeds.
-        return json({ ok: false, error: 'card_refused', refusalReason: j.refusalReason || null });
-      }
-      // Synchronous success settles it here and now; a 3DS/redirect flow
-      // answers 'pending' and the adyen-webhook bkpay capture promotes later.
-      let bookingStatus: string | null = null;
-      if (authorised) {
-        const pr = await promotePaid();
-        if (!pr.ok) {
-          // The money captured but the booking cannot promote (it moved to a
-          // status the promote must not touch while the guest paid). Honest
-          // error - the payment row is on the ledger for the venue to resolve.
-          return json({ ok: false, error: 'paid_but_booking_not_promotable', status: pr.status,
-            kind: due.kind, pspReference: j.pspReference || null }, 409);
-        }
-        bookingStatus = pr.status;
-      }
-      return json({ ok: true, kind: due.kind, resultCode: j.resultCode, pspReference: j.pspReference || null,
-        amountMinor: due.amountMinor, action: j.action || null,
-        ...(bookingStatus ? { status: bookingStatus } : {}) });
+      return await finish(j, { rowId: null, reference, kind: due.kind, dueMinor: due.amountMinor, sentMinor: isHold ? 0 : due.amountMinor });
     }
 
     return json({ error: `unknown action: ${action}` }, 400);

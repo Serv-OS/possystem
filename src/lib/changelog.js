@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.53',
+    date: '10 Sep 2026',
+    items: [
+      'Table bookings that need payment are confirmed only after Adyen approves the payment. An unpaid booking holds the table for 20 minutes and shows Awaiting payment on the host stand and on the till. Card payments that need a bank check now finish on the booking page.',
+      'Packages that need payment are not offered online when card payments are off for the venue. A deposit or prepay package set to £0 cannot be saved.',
+      'Guests can choose options for their pre order dishes, such as a size or how a steak is cooked, on the same screen as online ordering. The choices show on the host stand, on the till and on the kitchen ticket.',
+      'A card hold saves the guest\'s card and takes nothing today. The booking page and Back Office now say exactly that.',
+      'The host stand floor card no longer counts option prices twice.',
+    ],
+  },
+  {
     v: '5.8.52',
     date: '10 Sep 2026',
     items: [

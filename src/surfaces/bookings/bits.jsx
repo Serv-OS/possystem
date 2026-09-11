@@ -135,11 +135,8 @@ export const money = (n, dp = 0) => `£${Number(n || 0).toFixed(dp)}`;
 export const initialsOf = (name) =>
   String(name || '?').trim().split(/\s+/).map((w) => w[0]).slice(0, 2).join('').toUpperCase() || '?';
 
-export const sessionTotal = (session) =>
-  (session?.items || []).reduce((s, i) => {
-    const mods = (i.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0);
-    return s + ((Number(i.price) || 0) + mods) * (Number(i.qty) || 1);
-  }, 0);
+// sessionTotal moved to src/lib/bookings/sessionTotal.js (10 Sep 2026 review):
+// a pure helper, now tested, and no longer a react-refresh export here.
 
 // ── tiny controls ─────────────────────────────────────────────────────────────
 export function Chip({ active, danger, disabled, onClick, style = {}, children, title }) {
@@ -172,7 +169,7 @@ export function Stepper({ label, sub, value, onChange, step = 1, min = 0, max = 
     <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: '1px solid var(--bdr)' }}>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>{label}</div>
-        {sub && <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2, lineHeight: 1.4 }}>{sub}</div>}
+        {sub && <div style={{ fontSize: 15, color: 'var(--t3)', marginTop: 2, lineHeight: 1.45 }}>{sub}</div>}
       </div>
       <button style={btn} onClick={() => onChange(clamp(Number(value) - step))} aria-label={`decrease ${label}`}>−</button>
       <div style={{ minWidth: 58, textAlign: 'center', fontSize: 15, fontWeight: 800, color: 'var(--t1)', ...mono }}>{fmt(value)}</div>
@@ -186,7 +183,7 @@ export function ToggleRow({ label, sub, on, onToggle }) {
     <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderBottom: '1px solid var(--bdr)' }}>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--t1)' }}>{label}</div>
-        {sub && <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 2, lineHeight: 1.4 }}>{sub}</div>}
+        {sub && <div style={{ fontSize: 15, color: 'var(--t3)', marginTop: 2, lineHeight: 1.45 }}>{sub}</div>}
       </div>
       <button
         onClick={onToggle}

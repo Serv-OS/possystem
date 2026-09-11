@@ -13,6 +13,7 @@
 
 import { supabase, isMock, platformSupabase } from '../supabase';
 import { CUSTOMER_ROOT } from '../env';
+import { rowToPreorder, preorderInsertRows, withoutChoiceColumns, missingColumn } from './preorderRows.js';
 
 const isRealLoc = (l) => !!l && l !== 'loc-demo';
 
@@ -53,6 +54,12 @@ export function rowToBooking(r) {
     paidPrepayMinor: r._paidPrepayMinor ?? null,
     paidDepositMinor: r._paidDepositMinor ?? null,
     pacingOverrideBy: r.pacing_override_by || null,
+    // 10 Sep 2026 payment gate: what the widget said was due at book time
+    // (migration 20260910). undefined = column not there yet, null = nothing
+    // was due. Only booking-widget writes these (service role).
+    paymentKind: r.payment_kind === undefined ? undefined : (r.payment_kind || null),
+    paymentDueMinor: r.payment_due_minor === undefined ? undefined : (r.payment_due_minor ?? null),
+    paymentCurrency: r.payment_currency === undefined ? undefined : (r.payment_currency || null),
     seatedSessionRef: r.seated_session_ref || null,
     seatedAt: r.seated_at ? new Date(r.seated_at).getTime() : null,
     departedAt: r.departed_at ? new Date(r.departed_at).getTime() : null,
@@ -295,10 +302,10 @@ export async function loadBookingsRange(locationId, fromISO, toISO) {
 }
 
 // ── per-seat pre-orders ───────────────────────────────────────────────────────
-export const rowToPreorder = (r) => (r ? {
-  id: r.id, bookingId: r.booking_id, seat: r.seat ?? null, guestName: r.guest_name || '',
-  itemId: r.item_id || null, displayName: r.display_name || '', course: r.course ?? 0, notes: r.notes || '',
-} : null);
+// 10 Sep 2026: a guest's size and options ride the row (mods, variant_item_id,
+// variant_name; migration 20260910). Before the migration they read as none.
+// The mapping is pure and tested in preorderRows.js.
+export { rowToPreorder };
 
 export async function loadBookingPreorders(bookingId) {
   if (isMock || !supabase || !bookingId) return { data: [] };
@@ -312,24 +319,23 @@ export async function loadBookingPreorders(bookingId) {
 }
 
 // Replace a booking's pre-orders wholesale (delete+insert — nothing FKs onto
-// these rows). rows: [{seat, guestName, itemId, displayName, course, notes}]
+// these rows). rows: [{seat, guestName, itemId, displayName, course, notes,
+// mods, variantItemId, variantName}]
+// 10 Sep 2026: the guest's size and options are written back with every row,
+// so a staff save never wipes them. Before migration 20260910 those columns do
+// not exist, so the insert retries without them.
 export async function saveBookingPreorders(bookingId, locationId, rows) {
   if (isMock || !supabase || !isRealLoc(locationId) || !bookingId) return { ok: true };
   try {
     const { error: delErr } = await supabase.from('booking_preorders').delete().eq('booking_id', bookingId);
     if (delErr) return { ok: false, error: delErr.message };
-    const ins = (rows || []).filter((r) => r.displayName || r.itemId).map((r) => ({
-      location_id: locationId,
-      booking_id: bookingId,
-      seat: r.seat ?? null,
-      guest_name: r.guestName || null,
-      item_id: r.itemId || null,
-      display_name: r.displayName || 'Item',
-      course: r.course ?? 0,
-      notes: r.notes || '',
-    }));
+    // preorderInsertRows / withoutChoiceColumns: tested in preorderRows.test.js.
+    const ins = preorderInsertRows(bookingId, locationId, rows);
     if (ins.length) {
-      const { error: insErr } = await supabase.from('booking_preorders').insert(ins);
+      let { error: insErr } = await supabase.from('booking_preorders').insert(ins);
+      if (insErr && missingColumn(insErr)) {
+        ({ error: insErr } = await supabase.from('booking_preorders').insert(withoutChoiceColumns(ins)));
+      }
       if (insErr) return { ok: false, error: insErr.message };
     }
     return { ok: true };
@@ -360,15 +366,19 @@ export async function loadBookingTables(bookingId) {
 // device can read this too (the "paired device read" policy) — but a stand on
 // a pre-migration DB still gets [], so callers must treat empty as "not
 // visible", never "unpaid".
+// 10 Sep 2026 review: a FAILED read returns null, never []. An empty list means
+// "no payment", and Undo no-show used to write expired on a paid booking whose
+// ledger simply had not loaded. [] stays for mock mode and for a database
+// without the table yet (nothing can have been paid there).
 export async function loadBookingPayments(bookingId) {
   if (isMock || !supabase) return [];
   try {
     const { data, error } = await supabase.from('booking_payments')
-      .select('id, kind, status, amount, currency, card_last4, card_brand, applied_to_check, captured_at, authorised_at')
+      .select('id, kind, status, amount, currency, card_last4, card_brand, applied_to_check, captured_at, authorised_at, refusal_reason')
       .eq('booking_id', bookingId).order('created_at', { ascending: true });
-    if (error) { warnAbsentOr(error, 'loadBookingPayments'); return []; }
+    if (error) return warnAbsentOr(error, 'loadBookingPayments') ? [] : null;
     return data || [];
-  } catch (e) { warnAbsentOr(e, 'loadBookingPayments'); return []; }
+  } catch (e) { return warnAbsentOr(e, 'loadBookingPayments') ? [] : null; }
 }
 
 // v5.7.21 — the credit a seated booking carries onto its POS session: CAPTURED,

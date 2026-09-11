@@ -85,8 +85,8 @@ export default function RulesScreen() {
               fmt={(v) => `${v} cvr`}
             />
             <Stepper
-              label="No-show hold per cover"
-              sub="Held on card at booking, captured only on no-show."
+              label="Card hold per cover"
+              sub="Above zero, online guests save a card. This amount is not held or charged. No-show charges are not available yet."
               value={rules.holdPerCover}
               onChange={(v) => patch({ holdPerCover: v })}
               step={5} min={0} max={50}
@@ -94,7 +94,7 @@ export default function RulesScreen() {
             />
             <Stepper
               label="Cancellation window"
-              sub="Cancel inside this window and the hold may be captured."
+              sub="This setting is not used yet. Write your cancellation policy in the booking terms in Back Office."
               value={rules.cancellationWindowHours}
               onChange={(v) => patch({ cancellationWindowHours: v })}
               step={2} min={0} max={72}

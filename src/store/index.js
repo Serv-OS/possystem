@@ -2374,7 +2374,13 @@ export const useStore = create((set, get) => ({
       mods: mods || [],
       notes: nextNotes,
       price,
-      ...(variantName ? { variantName, name: `${i.name} · ${variantName}` } : {}),
+      // A line that already carries a size (a guest's pick) drops the old
+      // " · Size" before the new one goes on, so it never reads twice.
+      ...(variantName ? {
+        variantName,
+        name: `${i.variantName && String(i.name || '').endsWith(` · ${i.variantName}`)
+          ? String(i.name).slice(0, -(` · ${i.variantName}`.length)) : i.name} · ${variantName}`,
+      } : {}),
     });
     if (activeTableId) {
       set(s => ({ tables: s.tables.map(t => {

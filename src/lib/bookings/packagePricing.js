@@ -37,8 +37,8 @@ export function packageLinePrice(paymentModel, priceOverride, menuPrice) {
 // Materialise a package into ordinary order lines for `covers` guests.
 // pkg: camelCase package (lines: [{itemId, displayName, qtyPerCover, course,
 // priceOverride, isPreorderChoice}]). preorders: [{id, seat, guestName,
-// itemId, displayName, course, notes}]. menuItems: the live menu (id, name,
-// price, allergens).
+// itemId, displayName, course, notes, mods?, variantItemId?, variantName?}].
+// menuItems: the live menu (id, name, menuName, price, allergens).
 export function packageItemsFor({ pkg, covers, preorders = [], menuItems = [], now = Date.now(), prepayCaptured = true }) {
   if (!pkg) return [];
   // v5.7.23 - the prepay zero-pricing is EARNED by captured money, never by
@@ -123,26 +123,44 @@ export function packageItemsFor({ pkg, covers, preorders = [], menuItems = [], n
   // matched back to its package choice line by itemId first, display name
   // second; an UNMATCHED pick prices per the model rule (prepay → 0, deposit →
   // menu price) — never silently full-price on prepay.
+  //
+  // 10 Sep 2026, guest choices: a pick can carry the guest's size
+  // (variantItemId, variantName) and options (mods, already validated and
+  // priced by the booking-widget server). item_id stays the PACKAGE LINE's
+  // item, so matching is unchanged. The line follows the till's own
+  // conventions (configureLineOptions): name is "Dish · Size", and price is the
+  // model price for the line (the size's menu price wherever the model uses a
+  // menu price) PLUS the option prices, because a till line's price already
+  // includes its mods. A line with mods or a size never shows the till's
+  // Options badge (lineNeedsOptions), and the kitchen ticket prints the mods.
   const norm = (s) => String(s || '').trim().toLowerCase();
+  const cents = (n) => Math.round(n * 100) / 100;
   const chosen = preorders.map((r, i) => {
     const mi = findMenu(r.itemId);
+    const size = r.variantItemId ? findMenu(r.variantItemId) : null;
+    const priced = size || mi;
+    const mods = Array.isArray(r.mods) ? r.mods : [];
+    const modSum = mods.reduce((s, m) => s + (Number(m?.price) || 0), 0);
+    const variantName = r.variantName || (size ? (size.menuName || size.name || null) : null);
     const base = lines.find((l) => l.isPreorderChoice && (
       (l.itemId && r.itemId && l.itemId === r.itemId) ||
       (norm(l.displayName) && norm(l.displayName) === norm(r.displayName))
     )) || null;
-    const price = base
-      ? packageLinePrice(model, base.priceOverride, mi?.price)
-      : (model === 'prepay' ? 0 : (mi?.price ?? 0));
+    const linePrice = base
+      ? packageLinePrice(model, base.priceOverride, priced?.price)
+      : (model === 'prepay' ? 0 : (priced?.price ?? 0));
     const who = [r.seat ? `Seat ${r.seat}` : null, r.guestName || null].filter(Boolean).join(' · ');
+    const dish = r.displayName || mi?.name || 'Pre-order';
     return {
       uid: `po-${r.id || i}-${now}`,
       itemId: r.itemId || `preorder-${i}`,
-      name: r.displayName || mi?.name || 'Pre-order',
-      price,
+      name: variantName ? `${dish} · ${variantName}` : dish,
+      price: cents(linePrice + modSum),
       qty: 1,
-      mods: [],
-      notes: [who, r.notes || null].filter(Boolean).join(' — '),
-      allergens: mi?.allergens || [],
+      mods,
+      ...(variantName ? { variantName } : {}),
+      notes: [who, r.notes || null].filter(Boolean).join(' · '),
+      allergens: (size?.allergens?.length ? size.allergens : mi?.allergens) || [],
       course: r.course ?? 0,
       fired: (r.course ?? 0) === 0,
       seat: r.seat ?? null,

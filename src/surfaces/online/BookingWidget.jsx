@@ -24,13 +24,23 @@
 // mounts an Adyen Card (advanced flow, see BookingPaymentCard) that pays via
 // the same fn (booking_pay). Only the card ENCRYPTION talks to Adyen directly.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { AdyenCheckout, Dropin, Card, ApplePay, GooglePay } from '@adyen/adyen-web';
 import '@adyen/adyen-web/styles/adyen.css';
 import { supabase, ensureAuthToken, isMock } from '../../lib/supabase';
 import { normalisePhone } from '../../lib/customerLookup';
 import { readTheme, deriveVars, readableOn, DISPLAY_FONT, BODY_FONT } from '../menu/menuTheme';
 import MenuHeader from '../menu/MenuHeader';
+import OnlineItemSheet from './OnlineItemSheet';
+import { sheetThemeFrom } from './sheetTheme';
+import {
+  itemHasOptions, itemNeedsSheetReturn, choiceSummary,
+  optionGroupIdsFor, sizeChildren, MAX_CHOICE_NOTE,
+} from '../../lib/bookings/preorderChoices';
+import {
+  plainChoice, choiceFromRow, choicePayload, menuRowFor, choicePriceFor, choiceExtra, choiceComplete,
+} from '../../lib/bookings/guestChoicePricing';
 import {
   CARD_ONLY_PAYMENT_METHODS, buildPaymentMethodsRequest, resolvePaymentMethods,
   offeredWalletTypes, walletConfiguration, missingWalletNote, droppedWalletNote,
@@ -101,21 +111,21 @@ function pkgTotalLabel(p) {
 // nothing rather than a wrong promise.
 function pkgRuleLine(model, cfg, party) {
   const captureOn = !!cfg?.cardCaptureEnabled;
+  // 10 Sep 2026 payment gate: the fn no longer offers a prepay or deposit
+  // package when capture is off, so those lines only render with capture on.
+  // A hold SAVES a card and takes nothing; no no-show charge exists, so none
+  // is promised.
   if (model === 'prepay') {
-    return captureOn
-      ? 'Paid in full when you book — comes off the bill on the night'
-      : 'Payment taken at the venue';
+    return captureOn ? 'Paid in full when you book. It comes off the bill on the night.' : null;
   }
   if (model === 'deposit') {
-    return captureOn
-      ? 'Deposit paid when you book — the rest on the night'
-      : 'Deposit arranged with the venue';
+    return captureOn ? 'Deposit paid when you book. The rest is paid on the night.' : null;
   }
   if (model === 'hold') {
     if (!captureOn) return null;
     const min = Number(cfg?.cardCaptureMinCovers) || 0;
     if (min > 0 && party < min) return null;
-    return 'Card held to secure the table — nothing charged today';
+    return 'A card is saved to hold the table. Nothing is taken today.';
   }
   return null;
 }
@@ -196,16 +206,26 @@ function IncludesList({ includes, compact = false }) {
 // Google Pay appear here too. The money still runs through booking-widget's
 // booking_pay, which knows the amount server-side, so only the METHOD LIST and
 // the wallet configuration are shared, not the payment call.
+// 10 Sep 2026: a hold SAVES the card and takes nothing today. No no-show
+// charge exists, so the copy never promises one or quotes a held figure.
 const PAY_TITLE = {
-  prepay: (amt) => `Pay ${amt} now — it comes off your bill`,
+  prepay: (amt) => `Pay ${amt} now. It comes off your bill.`,
   deposit: (amt) => `Pay your ${amt} deposit`,
-  hold: (amt) => `Hold your table with a card — ${amt} held, nothing charged today`,
+  hold: () => 'Save a card to hold your table. Nothing is taken today.',
 };
 const PAID_LINE = {
   prepay: (amt) => `Paid ${amt}`,
   deposit: (amt) => `Deposit paid ${amt}`,
-  hold: () => 'Card held',
+  hold: () => 'Card saved',
 };
+// Under the card form while the table is held.
+const HELD_NOTE = {
+  prepay: 'Your table is held for 20 minutes while you pay. The booking only confirms once payment goes through.',
+  deposit: 'Your table is held for 20 minutes while you pay. The booking only confirms once payment goes through.',
+  hold: 'Your table is held for 20 minutes. The booking only confirms once your card is saved.',
+};
+const CONFIRM_POLL_MS = 4000;
+const CONFIRM_POLL_MAX_MS = 120000;   // up to two minutes, then say so plainly
 
 // Every request goes through the edge fn — one door, one shape. Non-2xx
 // responses surface as a FunctionsHttpError with no body, so they collapse to a
@@ -219,6 +239,98 @@ async function callWidget(body) {
   } catch (e) {
     return { ok: false, error: e?.message || 'network' };
   }
+}
+
+// ── guest pre-order choices: sizes and options (10 Sep 2026) ─────────────────
+// A dish with sizes, modifier groups or instruction groups opens the SAME item
+// sheet the online storefront uses (OnlineItemSheet), never a new picker. A
+// pick is an object { name, itemId, mods, variantItemId, variantName, notes },
+// compared on name where the page used to compare name strings. The server
+// (booking-widget) re-checks every option against the menu and restamps its
+// price, so this page only ever DISPLAYS prices. Extras are paid at the table.
+const NO_ROWS = [];
+const NO_STOCK = {};
+// plainChoice, choiceFromRow, choicePayload, menuRowFor, choicePriceFor,
+// choiceExtra and choiceComplete live in src/lib/bookings/guestChoicePricing.js
+// (10 Sep 2026 review), where node:test covers them.
+
+// The venue's menu for the choice sheet, loaded ONCE per venue the way
+// OnlineSurface loads it (menu_items for the location, not archived, plus the
+// config_pushes snapshot's instructionGroupDefs; both are public reads). Then
+// the minimum of every modifier group on the offered dishes, so the page knows
+// which dishes must be configured. For a future booking there is no 86 or
+// stock list: a dish out today may be back on the night.
+// Returns { status: 'off'|'loading'|'failed'|'ready', items, instGroupDefs, groupMin }.
+function useGuestMenu(locationId, enabled, optionItemIds) {
+  const menuKey = enabled && locationId && supabase && !isMock ? String(locationId) : null;
+  const [menuRes, setMenuRes] = useState(null); // { key, items, instGroupDefs, failed }
+  const loadedFor = useRef(null);
+  useEffect(() => {
+    if (!menuKey || loadedFor.current === menuKey) return undefined;
+    let off = false;
+    (async () => {
+      let res = { key: menuKey, items: NO_ROWS, instGroupDefs: NO_ROWS, failed: true };
+      try {
+        const [iRes, pRes] = await Promise.allSettled([
+          supabase.from('menu_items').select('*')
+            .eq('location_id', menuKey).eq('archived', false).order('sort_order'),
+          supabase.from('config_pushes').select('snapshot->instructionGroupDefs')
+            .eq('location_id', menuKey).order('created_at', { ascending: false }).limit(1).maybeSingle(),
+        ]);
+        const iOk = iRes.status === 'fulfilled' && !iRes.value?.error;
+        if (!iOk) console.warn('[BookingWidget] menu load failed, choices show without options');
+        const defs = pRes.status === 'fulfilled' ? pRes.value?.data?.instructionGroupDefs : null;
+        res = { key: menuKey, items: iOk ? (iRes.value.data || NO_ROWS) : NO_ROWS, instGroupDefs: Array.isArray(defs) ? defs : NO_ROWS, failed: !iOk };
+      } catch (e) {
+        console.warn('[BookingWidget] menu load threw:', e?.message);
+      }
+      if (off) return;
+      loadedFor.current = menuKey;
+      setMenuRes(res);
+    })();
+    return () => { off = true; };
+  }, [menuKey]);
+
+  const ready = !!menuKey && !!menuRes && menuRes.key === menuKey && !menuRes.failed;
+  const items = ready ? menuRes.items : NO_ROWS;
+  const wanted = new Set();
+  if (ready) {
+    for (const id of optionItemIds || []) {
+      const row = items.find((r) => String(r.id) === String(id));
+      if (!row) continue;
+      for (const g of optionGroupIdsFor(row, items).mod) wanted.add(g);
+      for (const kid of sizeChildren(row, items)) for (const g of optionGroupIdsFor(kid, items).mod) wanted.add(g);
+    }
+  }
+  const groupIds = [...wanted].sort();
+  const minKey = ready && groupIds.length ? `${menuKey}|${groupIds.join(',')}` : null;
+  const [minRes, setMinRes] = useState(null); // { key, groupMin }
+  useEffect(() => {
+    if (!minKey) return undefined;
+    let off = false;
+    const ids = minKey.slice(minKey.indexOf('|') + 1).split(',');
+    (async () => {
+      let groupMin = null;
+      try {
+        const { data, error } = await supabase.from('modifier_groups').select('id, min').in('id', ids);
+        if (error) console.warn('[BookingWidget] modifier group read failed:', error.message);
+        else {
+          groupMin = {};
+          for (const g of data || []) groupMin[String(g.id)] = Number(g.min) || 0;
+        }
+      } catch (e) {
+        console.warn('[BookingWidget] modifier group read threw:', e?.message);
+      }
+      if (!off) setMinRes({ key: minKey, groupMin });
+    })();
+    return () => { off = true; };
+  }, [minKey]);
+
+  const status = !menuKey ? 'off'
+    : (!menuRes || menuRes.key !== menuKey) ? 'loading'
+      : menuRes.failed ? 'failed' : 'ready';
+  const groupMin = !ready ? null : !minKey ? {} : (minRes?.key === minKey ? minRes.groupMin : null);
+  return { status, items, instGroupDefs: ready ? menuRes.instGroupDefs : NO_ROWS, groupMin };
 }
 
 // Themed page chrome: brand CSS vars on the root, storefront MenuHeader, one
@@ -251,8 +363,27 @@ function Shell({ vars, mt, venueName, children }) {
 // one selectable per group per guest). Shared verbatim by the in-flow booking
 // form and the tokened completion page; the STATE stays with the callers (they
 // key it differently), so this stays a pure render of getSel/getName.
-function GuestChoiceCards({ party, groups, getSel, onPick, getName, onName, brand, onBrand }) {
+// 10 Sep 2026: getSel returns a pick object (or null) and onPick receives one.
+// A dish with options opens the online item sheet (see useGuestMenu above).
+function GuestChoiceCards({ party, groups, getSel, onPick, getName, onName, brand, onBrand, menu = null, model = null, sheetTheme = null }) {
   const seats = Array.from({ length: Math.max(1, party) }, (_, i) => i + 1);
+  // The open sheet: which guest, which course, which option and its menu row.
+  const [sheet, setSheet] = useState(null);
+  const rows = menu?.status === 'ready' ? menu.items : NO_ROWS;
+  const tap = (seat, g, o) => {
+    const cur = getSel(seat, g.course);
+    const row = menuRowFor(menu, o.itemId);
+    if (!row || !sheetTheme || !itemHasOptions(row, rows)) {
+      onPick(seat, g.course, cur?.name === o.name ? cur : plainChoice(o));
+      return;
+    }
+    // Nothing required: the tap chooses the dish straight away (the old rule)
+    // and the sheet only adds options. A size or a required option: the dish
+    // counts only once the sheet comes back.
+    const mustFinish = itemNeedsSheetReturn(row, rows, { groupMin: menu.groupMin, instDefs: menu.instGroupDefs });
+    if (!mustFinish && cur?.name !== o.name) onPick(seat, g.course, plainChoice(o));
+    setSheet({ seat, course: g.course, option: o, row });
+  };
   return (
     <div style={{ display: 'grid', gap: 10 }}>
       {seats.map((seat) => (
@@ -272,6 +403,10 @@ function GuestChoiceCards({ party, groups, getSel, onPick, getName, onName, bran
           </div>
           {groups.map((g) => {
             const cur = getSel(seat, g.course);
+            const curOpt = cur ? g.options.find((o) => o.name === cur.name) || null : null;
+            const summary = curOpt ? choiceSummary(cur) : '';
+            const extra = curOpt ? choiceExtra(cur, curOpt, menu, model) : 0;
+            const unfinished = !!curOpt && !choiceComplete(cur, g.options, menu);
             return (
               <div key={g.course} style={{ marginTop: 9 }}>
                 <div style={{
@@ -280,10 +415,10 @@ function GuestChoiceCards({ party, groups, getSel, onPick, getName, onName, bran
                 }}>{g.label}</div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
                   {g.options.map((o) => {
-                    const on = cur === o.name;
+                    const on = cur?.name === o.name;
                     return (
                       <button key={o.lineId || o.name} type="button" aria-pressed={on}
-                        onClick={() => onPick(seat, g.course, o.name)}
+                        onClick={() => tap(seat, g, o)}
                         style={{
                           padding: '8px 12px', borderRadius: 999, fontSize: 12.5, fontWeight: 700,
                           fontFamily: 'inherit', cursor: 'pointer',
@@ -294,11 +429,65 @@ function GuestChoiceCards({ party, groups, getSel, onPick, getName, onName, bran
                     );
                   })}
                 </div>
+                {/* The size and options on this guest's pick, in one line, and
+                    what they add. Extras are paid at the table, never online. */}
+                {summary && (
+                  <div style={{ display: 'flex', flexWrap: 'wrap', columnGap: 8, marginTop: 6, fontSize: 14, lineHeight: 1.45, minWidth: 0 }}>
+                    <span style={{ flex: '1 1 140px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--muted)' }}>
+                      {summary}
+                    </span>
+                    {extra > 0 && (
+                      <span style={{ flex: 'none', whiteSpace: 'nowrap', fontWeight: 700, color: 'var(--ink)' }}>
+                        Extra {fmtGBP(extra)}, paid at the table
+                      </span>
+                    )}
+                  </div>
+                )}
+                {unfinished && (
+                  <div style={{ marginTop: 6, fontSize: 14, fontWeight: 700, color: '#b45309' }}>
+                    Tap {curOpt.name} to choose its options.
+                  </div>
+                )}
               </div>
             );
           })}
         </div>
       ))}
+      {sheet && typeof document !== 'undefined' && createPortal(
+        <OnlineItemSheet
+          key={`${sheet.seat}|${sheet.course}|${sheet.option.name}`}
+          item={sheet.row}
+          theme={sheetTheme}
+          allItems={rows}
+          instGroupDefs={menu?.instGroupDefs || NO_ROWS}
+          eightySixIds={NO_ROWS}
+          stockLevels={NO_STOCK}
+          cart={NO_ROWS}
+          priceFor={choicePriceFor(model, sheet.option.priceOverride, sheet.row, rows)}
+          lockQty
+          addLabel="Save choice"
+          notesMax={MAX_CHOICE_NOTE}
+          strictRequired
+          extraPrices
+          onClose={() => setSheet(null)}
+          onAdd={(finalItem, flatMods, _qty, notes) => {
+            const sized = finalItem && String(finalItem.id) !== String(sheet.row.id)
+              ? rows.find((r) => String(r.id) === String(finalItem.id)) || null
+              : null;
+            onPick(sheet.seat, sheet.course, {
+              name: sheet.option.name,
+              itemId: sheet.option.itemId || null,
+              mods: Array.isArray(flatMods) ? flatMods : [],
+              variantItemId: sized ? String(sized.id) : null,
+              variantName: sized ? (sized.menu_name || sized.name || null) : null,
+              notes: String(notes || '').slice(0, MAX_CHOICE_NOTE),
+              configured: true,
+            });
+            setSheet(null);
+          }}
+        />,
+        document.body,
+      )}
     </div>
   );
 }
@@ -316,11 +505,24 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '
   const dropinRef = useRef(null);
   const submittedRef = useRef(false); // pre-submit onError = setup failure → fallback copy
   const offeredWallets = useRef([]);  // wallet types the venue's Adyen config offers
+  // 10 Sep 2026: the merchant reference booking_pay answered with, sent back
+  // on booking_pay_details so the 3DS result settles the SAME payment row.
+  const referenceRef = useRef(null);
+  // The latest onPaid, read by the Drop-in callbacks and the confirm poll
+  // without making either depend on a new closure every render.
+  const onPaidRef = useRef(onPaid);
+  useEffect(() => { onPaidRef.current = onPaid; });
   const [attempt, setAttempt] = useState(0); // bump to remount the form after a refusal
   // phase: init | ready | failed | refused | paid
+  //        confirming (the server has not confirmed yet, polling)
+  //        slow (still not confirmed after two minutes) | lost (released) | taken (paid, table gone)
   const [phase, setPhase] = useState('init');
+  const [refusedText, setRefusedText] = useState(''); // the one plain sentence for 'refused'
   const [refusal, setRefusal] = useState('');
   const [payErr, setPayErr] = useState('');
+  // phase 'stuck' (money or a saved card is in, the booking is not): the
+  // server's error code, shown only behind Show detail.
+  const [stuckCode, setStuckCode] = useState('');
   const [walletNote, setWalletNote] = useState(''); // one line when a wallet cannot render here
   const [paidInfo, setPaidInfo] = useState(null); // { pspReference }
 
@@ -412,6 +614,83 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '
           paymentMethodsConfiguration[type] = { ...conf, ...walletCallbacks };
         }
 
+        // ONE reading of a booking-widget payment reply, shared by the first
+        // /payments (onSubmit) and the 3DS completion (onAdditionalDetails).
+        // 10 Sep 2026 payment gate: PAID means the SERVER says the booking is
+        // confirmed or prepaid. Nothing else is ever shown as booked.
+        const handleReply = (r, actions) => {
+          if (!live) return;
+          if (r?.reference) referenceRef.current = r.reference;
+          if (r?.ok && (r.status === 'confirmed' || r.status === 'prepaid')) {
+            setPaidInfo({ pspReference: r.pspReference || null });
+            setPhase('paid');
+            actions.resolve({ resultCode: 'Authorised' });
+            onPaidRef.current?.(r.status);
+            return;
+          }
+          if (r?.ok && r.action) {
+            // A full page redirect cannot come back to this page (the booking
+            // lives in memory here). Native 3DS runs inside the Drop-in.
+            if (r.action.type === 'redirect') {
+              setPayErr('Your bank asked for a step this page cannot finish. Nothing was taken. Please try another card.');
+              actions.reject();
+              return;
+            }
+            actions.resolve({ resultCode: r.resultCode || 'IdentifyShopper', action: r.action });
+            return;
+          }
+          if (r?.ok && r.pending) {
+            // Received or Pending: Adyen has not decided yet. The booking stays
+            // unpaid; poll the server for its real status.
+            setPhase('confirming');
+            actions.resolve({ resultCode: r.resultCode || 'Pending' });
+            return;
+          }
+          if (r?.error === 'card_refused' || r?.error === 'payment_not_completed') {
+            setRefusal(r.refusalReason || '');
+            setRefusedText(r.error === 'card_refused'
+              ? 'Your card was refused. No money was taken.'
+              : 'The payment was not finished. No money was taken.');
+            setPhase('refused');
+            actions.reject();
+            return;
+          }
+          if (r?.error === 'paid_but_table_taken') {
+            setPhase('taken');
+            actions.reject();
+            return;
+          }
+          // 10 Sep 2026 review: money (or a saved card) may already be in for
+          // these. Never "could not take the payment", never a retry.
+          if (r?.error === 'paid_but_booking_not_promotable' || r?.error === 'amount_short' || r?.error === 'paid_amount_short') {
+            setStuckCode(String(r.error));
+            setPhase('stuck');
+            actions.reject();
+            return;
+          }
+          if (r?.error === 'payment_record_failed') {
+            // An older server: the bank may still say yes. Wait and check.
+            setPhase('confirming');
+            actions.resolve({ resultCode: 'Pending' });
+            return;
+          }
+          if (r?.error === 'unknown_or_closed') {
+            if (r.status === 'confirmed' || r.status === 'prepaid') {
+              // Already paid and booked (the webhook got there first).
+              setPhase('paid');
+              actions.resolve({ resultCode: 'Authorised' });
+              onPaidRef.current?.(r.status);
+              return;
+            }
+            // Seated by the venue, or the 20 minutes ran out: nothing was charged here.
+            setPhase(r.status === 'dining' ? 'seated' : 'released');
+            actions.reject();
+            return;
+          }
+          setPayErr('We could not confirm your payment. Check your bank app before you try again.');
+          actions.reject();
+        };
+
         // 8 Sep 2026: the book response carries region ('UK' | 'US') and
         // dropinEnvironment ('test' | 'live' | 'live-us') beside the client
         // key, so a US venue's live Drop-in mounts against Adyen's US data
@@ -420,7 +699,14 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '
           clientKey: adyen?.clientKey || undefined,
           environment: adyen?.dropinEnvironment || (adyen?.environment === 'live' ? 'live' : 'test'),
           countryCode,
-          amount: { value: amountMinor, currency },
+          // A hold is a ZERO value check that saves the card (booking_pay sends
+          // 0), so the Drop-in must not show "Pay £40.00" (10 Sep 2026 review).
+          // At 0 Adyen labels its button with confirmPreauthorization.
+          amount: { value: kind === 'hold' ? 0 : amountMinor, currency },
+          translations: {
+            'en-GB': { confirmPreauthorization: 'Save card' },
+            'en-US': { confirmPreauthorization: 'Save card' },
+          },
           paymentMethodsResponse,
           onSubmit: async (state, _component, actions) => {
             submittedRef.current = true;
@@ -434,25 +720,21 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '
               origin: window.location.origin,
               return_url: window.location.href,
             });
-            if (r?.ok && (r.already || r.resultCode === 'Authorised')) {
-              // `already` = a previous attempt landed server-side — same success.
-              setPaidInfo({ pspReference: r.pspReference || null });
-              setPhase('paid');
-              actions.resolve({ resultCode: r.resultCode || 'Authorised' });
-              // v5.7.21 pay-before-commit: the fn's sync promote rides back as
-              // r.status ('prepaid' | 'confirmed') — hand it up so the page can
-              // move from the held screen to the real confirmation.
-              onPaid?.(r.status || null);
-              return;
-            }
-            if (r?.error === 'card_refused') {
-              setRefusal(r.refusalReason || '');
-              setPhase('refused');
-              actions.reject();
-              return;
-            }
-            setPayErr('We couldn’t take the payment — please try again.');
-            actions.reject();
+            handleReply(r, actions);
+          },
+          // 3DS: the Drop-in ran the challenge; the server finishes it under
+          // the same merchant reference and settles the same payment row.
+          onAdditionalDetails: async (state, _component, actions) => {
+            setPayErr('');
+            const r = await callWidget({
+              action: 'booking_pay_details',
+              location_id: opsId,
+              booking_id: bookingId,
+              reference: referenceRef.current,
+              details: state.data?.details,
+              payment_data: state.data?.paymentData,
+            });
+            handleReply(r, actions);
           },
           onPaymentCompleted: () => {}, // success already handled on the server reply
           onPaymentFailed: () => {},    // refusal already handled on the server reply
@@ -498,13 +780,70 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '
     // A retry (attempt bump) or another booking is a NEW payment — remount cleanly.
   }, [bookingId, attempt]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Received / Pending: poll the server for the booking's REAL status for up
+  // to two minutes. Primitive deps only, and the latest onPaid is read from a
+  // ref, so a parent re-render can never cancel the poll (the v5.7.12 timer
+  // trap). Every setState here runs after an await, never synchronously.
+  useEffect(() => {
+    if (phase !== 'confirming') return undefined;
+    let stopped = false;
+    let timer = null;
+    const started = Date.now();
+    const tick = async () => {
+      const r = await callWidget({ action: 'booking_status', location_id: opsId, booking_id: bookingId });
+      if (stopped) return;
+      if (r?.ok && (r.status === 'confirmed' || r.status === 'prepaid')) {
+        setPhase('paid');
+        onPaidRef.current?.(r.status);
+        return;
+      }
+      if (r?.ok && r.status === 'dining') {
+        setPhase('seated');
+        return;
+      }
+      if (r?.ok && ['expired', 'cancelled', 'no_show', 'departed'].includes(r.status)) {
+        setPhase('lost');
+        return;
+      }
+      // The bank said no, or the card could not be saved, while we waited.
+      if (r?.ok && r.payment?.status === 'failed') {
+        setRefusedText(kind === 'hold'
+          ? 'We could not save your card. Nothing was taken. Please try another card.'
+          : 'The payment did not go through. No money was taken.');
+        setPhase('refused');
+        return;
+      }
+      if (Date.now() - started >= CONFIRM_POLL_MAX_MS) {
+        setPhase('slow');
+        return;
+      }
+      timer = setTimeout(tick, CONFIRM_POLL_MS);
+    };
+    timer = setTimeout(tick, CONFIRM_POLL_MS);
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [phase, bookingId, opsId, kind]);
+
   const retry = () => {
     submittedRef.current = false;
+    referenceRef.current = null;
     setRefusal('');
+    setRefusedText('');
     setPayErr('');
     setPhase('init');
     setAttempt((n) => n + 1);
   };
+
+  const callVenue = venueName || 'the venue';
+  // One plain status: a bold line, then one short sentence.
+  const statusBox = (title, body) => (
+    <div role="status" style={{ marginTop: 10 }}>
+      <div style={{ fontSize: 15, fontWeight: 800, color: 'var(--ink)', lineHeight: 1.4 }}>{title}</div>
+      {body && <div style={{ fontSize: 14, color: 'var(--muted)', lineHeight: 1.5, marginTop: 4 }}>{body}</div>}
+    </div>
+  );
 
   const showForm = phase === 'init' || phase === 'ready';
   return (
@@ -528,6 +867,32 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '
             </div>
           )}
         </div>
+      ) : phase === 'confirming' ? (
+        statusBox(kind === 'hold' ? 'Your card is being checked' : 'Your payment is being confirmed', 'This can take a minute. Please keep this page open.')
+      ) : phase === 'slow' ? (
+        statusBox(kind === 'hold' ? 'Your card is still being checked' : 'Your payment is still being confirmed', `We will send you a message when your table is booked. If you do not hear from us, please call ${callVenue}.`)
+      ) : phase === 'lost' ? (
+        statusBox('We could not confirm your booking', `Your table is no longer held. If money was taken, call ${callVenue} to get it back.`)
+      ) : phase === 'released' ? (
+        statusBox('Your table is no longer held', `This payment was not taken. Please book again, or call ${callVenue}.`)
+      ) : phase === 'seated' ? (
+        statusBox('You are already seated', 'Please pay at the table. If money was taken online, tell your server.')
+      ) : phase === 'taken' ? (
+        kind === 'hold'
+          ? statusBox('Your card was saved, but this table is no longer free', `Nothing was taken. Please call ${callVenue} to book again.`)
+          : statusBox('Your payment went through, but this table is no longer free', `Please call ${callVenue} to get your money back.`)
+      ) : phase === 'stuck' ? (
+        <>
+          {kind === 'hold'
+            ? statusBox('Your card was saved, but we could not finish your booking', `Nothing was taken. Please call ${callVenue} to finish your booking.`)
+            : statusBox('Your payment went through, but we could not finish your booking', `Please do not pay again. Call ${callVenue} to finish your booking.`)}
+          {stuckCode && (
+            <details style={{ marginTop: 6, fontSize: 12, color: 'var(--muted)' }}>
+              <summary style={{ cursor: 'pointer' }}>Show detail</summary>
+              {stuckCode}
+            </details>
+          )}
+        </>
       ) : (
         <div style={{ marginTop: 10 }}>
           {phase === 'init' && (
@@ -541,8 +906,14 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '
           {phase === 'refused' && (
             <>
               <div style={{ fontSize: 13, fontWeight: 600, color: '#b91c1c', lineHeight: 1.5 }}>
-                Card refused{refusal ? ` — ${refusal}` : ''}. No charge was made.
+                {refusedText || 'Your card was refused. No money was taken.'}
               </div>
+              {refusal && (
+                <details style={{ marginTop: 4, fontSize: 12, color: 'var(--muted)' }}>
+                  <summary style={{ cursor: 'pointer' }}>Show detail</summary>
+                  {refusal}
+                </details>
+              )}
               <button type="button" onClick={retry} style={{
                 marginTop: 8, width: '100%', height: 40, borderRadius: 10,
                 border: '1px solid var(--line)', background: 'var(--card)', color: 'var(--ink)',
@@ -561,8 +932,8 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '
           )}
           <div style={{ marginTop: 10, fontSize: 12, color: 'var(--muted)', lineHeight: 1.5 }}>
             {required
-              ? 'Your table is held for 20 minutes while you pay. The booking only confirms once payment goes through.'
-              : 'Your table is booked either way — you can also sort payment with the venue.'}
+              ? (HELD_NOTE[kind] || HELD_NOTE.prepay)
+              : 'Your table is booked either way. You can also sort payment with the venue.'}
           </div>
         </div>
       )}
@@ -576,7 +947,7 @@ function BookingPaymentCard({ paymentDue, adyen, bookingId, opsId, venueName = '
 // page). Everything renders from preorder_info; submit replaces wholesale via
 // preorder_submit. Request-keyed like slotsRes in the main flow: a stale or
 // absent key IS the loading state, so no synchronous setState in the effect.
-function PreorderPage({ token, shell, brand, onBrand, venueName }) {
+function PreorderPage({ token, shell, brand, onBrand, venueName, opsId = null, sheetTheme = null }) {
   const [nonce, setNonce] = useState(0); // bump to retry a failed info load
   const infoKey = `${token}|${nonce}`;
   const [infoRes, setInfoRes] = useState(null); // { key, info, err }
@@ -585,7 +956,7 @@ function PreorderPage({ token, shell, brand, onBrand, venueName }) {
 
   // The guest's EDITS only — an untouched seat/course falls back to the saved
   // row at render time (prefill by render fallback, never effect-time setState).
-  const [sel, setSel] = useState({});     // `${seat}|${course}` → option name
+  const [sel, setSel] = useState({});     // `${seat}|${course}` → the guest's pick object
   const [names, setNames] = useState({}); // seat → guest name
   const [sending, setSending] = useState(false);
   const [sendErr, setSendErr] = useState('');
@@ -609,22 +980,27 @@ function PreorderPage({ token, shell, brand, onBrand, venueName }) {
   const existingName = {};
   for (const r of info?.preorders || []) {
     const k = `${r.seat}|${r.course}`;
-    if (existingSel[k] === undefined && r.name) existingSel[k] = r.name;
+    // The saved size, options and note come back too, so an amend keeps them.
+    if (existingSel[k] === undefined && r.name) existingSel[k] = choiceFromRow(r);
     if (existingName[r.seat] === undefined && r.guestName) existingName[r.seat] = r.guestName;
   }
   const effSel = (seat, course) => {
     const k = `${seat}|${course}`;
-    return sel[k] !== undefined ? sel[k] : (existingSel[k] || '');
+    return sel[k] !== undefined ? sel[k] : (existingSel[k] || null);
   };
   const effName = (seat) => (names[seat] !== undefined ? names[seat] : (existingName[seat] || ''));
 
   const party = info?.party || 0;
   const groups = Array.isArray(info?.choiceGroups) ? info.choiceGroups : [];
   const seats = Array.from({ length: party }, (_, i) => i + 1);
+  // The booking venue's menu, for sizes and options (10 Sep 2026).
+  const optionItemIds = groups.flatMap((g) => (g.options || []).map((o) => o.itemId)).filter(Boolean);
+  const guestMenu = useGuestMenu(info?.locationId || opsId, optionItemIds.length > 0, optionItemIds);
   // Complete = every guest holds a CURRENT option per group (a saved choice the
-  // venue has since removed from the package no longer counts).
+  // venue has since removed from the package no longer counts), configured
+  // where the dish needs a size or a required option.
   const complete = party > 0 && groups.length > 0 && groups.every((g) =>
-    seats.every((s) => g.options.some((o) => o.name === effSel(s, g.course))));
+    seats.every((s) => choiceComplete(effSel(s, g.course), g.options, guestMenu)));
 
   const summaryLine = info
     ? `${info.venue} · ${fmtDateLong(info.date)} · ${info.time} · ${info.party} ${info.party === 1 ? 'guest' : 'guests'}`
@@ -637,13 +1013,14 @@ function PreorderPage({ token, shell, brand, onBrand, venueName }) {
     const preorders = [];
     for (const s of seats) {
       for (const g of groups) {
-        preorders.push({ seat: s, guestName: effName(s).trim() || undefined, name: effSel(s, g.course) });
+        const c = effSel(s, g.course);
+        if (c) preorders.push(choicePayload(s, effName(s).trim() || undefined, g.course, c));
       }
     }
     const r = await callWidget({ action: 'preorder_submit', token, preorders });
     setSending(false);
     if (r?.ok) { setSaved(true); return; }
-    setSendErr('Something went wrong — please try again, or call the venue.');
+    setSendErr('Something went wrong. Please try again, or call the venue.');
   };
 
   if (loading) {
@@ -664,7 +1041,7 @@ function PreorderPage({ token, shell, brand, onBrand, venueName }) {
         <div style={S.h1}>We couldn’t find that booking</div>
         <div style={S.sub}>
           This menu link may have expired, or the booking has changed. Please call {venueName} to
-          give your menu choices — they’ll be happy to help.
+          give your menu choices. They’ll be happy to help.
         </div>
         <div style={{ marginTop: 12 }}>
           <button type="button" onClick={() => setNonce((n) => n + 1)} style={S.linkBtn}>Try again</button>
@@ -685,19 +1062,19 @@ function PreorderPage({ token, shell, brand, onBrand, venueName }) {
         <div style={{ fontFamily: MONO, fontSize: 15, fontWeight: 700, margin: '12px 0 14px', color: 'var(--ink)' }}>
           {summaryLine}
         </div>
-        <div style={S.sub}>See you then — just give your name when you arrive.</div>
+        <div style={S.sub}>See you then. Just give your name when you arrive.</div>
       </div>
     </Shell>;
   }
 
   return <Shell {...shell}>
     <div style={S.card}>
-      <h1 style={{ ...S.h1, marginBottom: 4 }}>Your menu — {info.packageName}</h1>
+      <h1 style={{ ...S.h1, marginBottom: 4 }}>Your menu: {info.packageName}</h1>
       <div style={{ fontFamily: MONO, fontSize: 13.5, fontWeight: 700, color: 'var(--ink)', margin: '10px 0 2px' }}>
         {summaryLine}
       </div>
       <div style={{ ...S.sub, marginBottom: 16 }}>
-        Choose one of each for every guest — choices due by {fmtDateLong(info.deadline)}.
+        Choose one of each for every guest. Choices are due by {fmtDateLong(info.deadline)}.
       </div>
 
       {groups.length === 0 ? (
@@ -706,9 +1083,10 @@ function PreorderPage({ token, shell, brand, onBrand, venueName }) {
         <GuestChoiceCards
           party={party} groups={groups} brand={brand} onBrand={onBrand}
           getSel={effSel}
-          onPick={(seat, course, nm) => { setSel((m) => ({ ...m, [`${seat}|${course}`]: nm })); setSendErr(''); }}
+          onPick={(seat, course, choice) => { setSel((m) => ({ ...m, [`${seat}|${course}`]: choice })); setSendErr(''); }}
           getName={effName}
           onName={(seat, v) => setNames((m) => ({ ...m, [seat]: v }))}
+          menu={guestMenu} model={info.paymentModel || null} sheetTheme={sheetTheme}
         />
 
         {sendErr && (
@@ -742,6 +1120,9 @@ export default function BookingWidget({ location }) {
   const vars = deriveVars(mt.brandColor, mt.bodyBg);
   const brand = vars['--brand'];
   const onBrand = readableOn(brand);
+  // The online item sheet's theme, built exactly as the storefront builds it
+  // (10 Sep 2026, guest pre-order choices).
+  const sheetTheme = useMemo(() => sheetThemeFrom(location.online_branding, location.name), [location.online_branding, location.name]);
 
   // ?preorder=<token> → the page IS the guest completion flow, checked BEFORE
   // any booking boot (the token is the credential; config/slots never load).
@@ -924,11 +1305,15 @@ export default function BookingWidget({ location }) {
     && (forced ? true : (!!selectedPkg.requiresPreorder && inWindow));
   const choicesLater = !!selectedPkg?.requiresPreorder && pkgGroups.length > 0 && !choicesNow;
   const preorderDeadlineISO = selectedPkg?.preorderDeadline || addDaysISO(-preDays, date);
+  // A pick is an object since 10 Sep 2026 (sizes and options); null = none.
   const seatSel = (seat, course) =>
-    (selectedPkg && preSel[`${String(selectedPkg.id)}|${seat}|${course}`]) || '';
+    (selectedPkg && preSel[`${String(selectedPkg.id)}|${seat}|${course}`]) || null;
+  // The venue menu, loaded once a selected package has dishes to choose from.
+  const optionItemIds = pkgGroups.flatMap((g) => (g.options || []).map((o) => o.itemId)).filter(Boolean);
+  const guestMenu = useGuestMenu(opsId, optionItemIds.length > 0, optionItemIds);
   const choicesComplete = !choicesNow || pkgGroups.every((g) =>
     Array.from({ length: party }, (_, i) => i + 1)
-      .every((s) => g.options.some((o) => o.name === seatSel(s, g.course))));
+      .every((s) => choiceComplete(seatSel(s, g.course), g.options, guestMenu)));
   const choicesHint = `Choose a ${joinAnd(pkgGroups.map((g) => String(g.label || '').toLowerCase()))} for each guest`;
 
   const maxCovers = Math.max(1, cfg?.maxCovers || 12);
@@ -956,7 +1341,7 @@ export default function BookingWidget({ location }) {
       for (let seat = 1; seat <= party; seat++) {
         for (const g of pkgGroups) {
           const sel = seatSel(seat, g.course);
-          if (sel) preorders.push({ seat, guestName: (preNames[seat] || '').trim() || undefined, name: sel });
+          if (sel) preorders.push(choicePayload(seat, (preNames[seat] || '').trim() || undefined, g.course, sel));
         }
       }
     }
@@ -989,26 +1374,34 @@ export default function BookingWidget({ location }) {
         pkgId: selectedPkg ? selectedPkg.id : null,
         groups: Array.isArray(r.choiceGroups) ? r.choiceGroups : [],
       });
-      setSubmitErr('This menu needs a choice for each guest — pick them below.');
+      setSubmitErr('This menu needs a choice for each guest. Pick them below.');
       wantChoicesScrollRef.current = true;
+      return;
+    }
+    if (r?.error === 'payment_unavailable') {
+      // 10 Sep 2026 payment gate: this package needs payment and the venue
+      // cannot take it online right now. No booking was made; keep the table flow.
+      setSubmitErr(r.message || 'This menu cannot be booked online right now. You can still book the table.');
+      setPkgPick({ id: null });
+      setSlotsNonce((n) => n + 1);
       return;
     }
     if (r?.error === 'package_unavailable') {
       // The offer vanished between render and book (cap filled / window moved) —
       // drop it, re-quote the day, keep the table flow alive.
-      setSubmitErr('That menu just sold out for this date — you can still book the table.');
+      setSubmitErr('That menu just sold out for this date. You can still book the table.');
       setPkgPick({ id: null });
       setSlotsNonce((n) => n + 1);
       return;
     }
     if (r?.error === 'slot_full') {
       // Someone took the slot between quote and write — refresh availability.
-      setSubmitErr('That time was just booked out — please pick another.');
+      setSubmitErr('That time was just booked out. Please pick another.');
       setTime(null);
       setSlotsNonce((n) => n + 1);
       return;
     }
-    setSubmitErr('Something went wrong — please try again, or call the venue.');
+    setSubmitErr('Something went wrong. Please try again, or call the venue.');
   };
 
   // Shared chrome props for the top-level Shell.
@@ -1018,7 +1411,8 @@ export default function BookingWidget({ location }) {
   // the boot states — boot never leaves 'loading' when a token is present).
   if (urlPreorderToken) {
     return <PreorderPage token={urlPreorderToken} shell={shell}
-      brand={brand} onBrand={onBrand} venueName={venueName} />;
+      brand={brand} onBrand={onBrand} venueName={venueName}
+      opsId={opsId} sheetTheme={sheetTheme} />;
   }
 
   if (boot === 'loading') {
@@ -1041,7 +1435,7 @@ export default function BookingWidget({ location }) {
         </div>
         <div style={S.sub}>
           {boot === 'off'
-            ? <>Please call {venueName} to book a table — they’ll be happy to help.</>
+            ? <>Please call {venueName} to book a table. They’ll be happy to help.</>
             : <>Please try again in a moment, or call {venueName} to book.</>}
         </div>
       </div>
@@ -1058,7 +1452,9 @@ export default function BookingWidget({ location }) {
     return <Shell {...shell}>
       <div style={{ ...S.card, textAlign: 'center', padding: '34px 22px' }}>
         <div style={{ fontSize: 38, marginBottom: 10 }}>💳</div>
-        <div style={S.h1}>Almost there, payment secures your table</div>
+        <div style={S.h1}>
+          {result.paymentDue?.kind === 'hold' ? 'Almost there, save a card to hold your table' : 'Almost there, payment secures your table'}
+        </div>
         <div style={{
           fontFamily: MONO, fontSize: 15, fontWeight: 700, margin: '12px 0 14px',
           color: 'var(--ink)',
@@ -1078,7 +1474,11 @@ export default function BookingWidget({ location }) {
             opsId={opsId}
             venueName={cfg?.name || venueName}
             required
-            onPaid={(status) => setResult((prev) => ({ ...(prev || {}), status: status || 'confirmed', paid: true }))}
+            // Only the server's own confirmed or prepaid moves this page to
+            // "Booked" (10 Sep 2026 payment gate). Nothing else calls onPaid.
+            onPaid={(status) => {
+              if (status === 'confirmed' || status === 'prepaid') setResult((prev) => ({ ...(prev || {}), status, paid: true }));
+            }}
           />
         ) : (
           <div style={S.sub}>We couldn’t start the payment here. Please call {venueName} to finish your booking.</div>
@@ -1104,7 +1504,7 @@ export default function BookingWidget({ location }) {
           background: brand, color: onBrand, display: 'flex', alignItems: 'center',
           justifyContent: 'center', fontSize: 34, fontWeight: 800,
         }}>✓</div>
-        <div style={S.h1}>Booked — {cfg?.name || venueName}</div>
+        <div style={S.h1}>Booked at {cfg?.name || venueName}</div>
         <div style={{
           fontFamily: MONO, fontSize: 15, fontWeight: 700, margin: '12px 0 14px',
           color: 'var(--ink)',
@@ -1178,7 +1578,7 @@ export default function BookingWidget({ location }) {
             <div style={{ fontSize: 13, color: 'var(--muted)', lineHeight: 1.5, marginTop: 4 }}>
               {result.package?.name || 'Your menu'} needs a choice for each guest
               {result.preorderDeadline
-                ? <> — choices due by <b style={{ color: 'var(--ink)' }}>{fmtDateLong(result.preorderDeadline)}</b>.</>
+                ? <>, choices due by <b style={{ color: 'var(--ink)' }}>{fmtDateLong(result.preorderDeadline)}</b>.</>
                 : '.'}
             </div>
             <a href={`${window.location.origin}/book?preorder=${result.preorderToken}`}
@@ -1195,7 +1595,7 @@ export default function BookingWidget({ location }) {
           </div>
         )}
         <div style={S.sub}>
-          We’ve saved your details — just give your name when you arrive.
+          We’ve saved your details. Just give your name when you arrive.
         </div>
       </div>
     </Shell>;
@@ -1259,7 +1659,7 @@ export default function BookingWidget({ location }) {
     )}
     <div style={S.card}>
       <h1 style={{ ...S.h1, marginBottom: 4 }}>Book a table</h1>
-      <div style={{ ...S.sub, marginBottom: 20 }}>Pick a time at {venueName} — it takes under a minute.</div>
+      <div style={{ ...S.sub, marginBottom: 20 }}>Pick a time at {venueName}. It takes under a minute.</div>
 
       {/* Party size */}
       <div style={S.fieldLbl}>Guests</div>
@@ -1304,7 +1704,7 @@ export default function BookingWidget({ location }) {
         </div>
       ) : slots.length === 0 ? (
         <div style={{ padding: '14px 0', fontSize: 13, color: 'var(--muted)' }}>
-          No online times for this date — try another day, or call {venueName}.
+          No online times for this date. Try another day, or call {venueName}.
         </div>
       ) : (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8 }}>
@@ -1425,12 +1825,13 @@ export default function BookingWidget({ location }) {
               <GuestChoiceCards
                 party={party} groups={pkgGroups} brand={brand} onBrand={onBrand}
                 getSel={seatSel}
-                onPick={(seat, course, nm) => {
-                  setPreSel((m) => ({ ...m, [`${String(selectedPkg.id)}|${seat}|${course}`]: nm }));
+                onPick={(seat, course, choice) => {
+                  setPreSel((m) => ({ ...m, [`${String(selectedPkg.id)}|${seat}|${course}`]: choice }));
                   setSubmitErr('');
                 }}
                 getName={(seat) => preNames[seat] || ''}
                 onName={(seat, v) => setPreNames((m) => ({ ...m, [seat]: v }))}
+                menu={guestMenu} model={selectedPkg.paymentModel || null} sheetTheme={sheetTheme}
               />
               {/* Choose-later skip: mints the link server-side and sends it. */}
               <button type="button"

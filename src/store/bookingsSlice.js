@@ -230,7 +230,22 @@ export function bookingsSlice(set, get) {
       if (isTrainingMode()) return { ok: true };
       const locId = await resolveLocationId();
       const res = await updateBookingRow(id, patch, locId);
-      if (!res.ok) console.warn('[bookings] updateBooking persist failed:', res.error);
+      if (!res.ok) {
+        // 10 Sep 2026 review: a refused write (the payment gate trigger, RLS,
+        // the network) used to leave the stand showing a status the database
+        // never took, with no realtime event to correct it. Put back the fields
+        // this patch touched and say so.
+        set((s) => ({
+          bookings: (s.bookings || []).map((x) => {
+            if (x.id !== id) return x;
+            const back = { ...x };
+            for (const k of Object.keys(patch || {})) back[k] = entry[k];
+            return back;
+          }),
+        }));
+        console.warn('[bookings] updateBooking persist failed, change put back:', res.error);
+        get().showToast?.('Booking NOT updated. The change was put back.', 'error');
+      }
       return res;
     },
 
@@ -378,6 +393,16 @@ export function bookingsSlice(set, get) {
         };
         if (pkgItems?.length) {
           get().seatTableWithItems?.(b.primaryTableId, pkgItems, { covers: b.covers, server: get().staff?.name, customer: seatCustomer, booking: bookingRef });
+          // 10 Sep 2026: options a guest chose on the booking page arrive on the
+          // line already. Take their linked daily counts now, the same maths as
+          // configureLineOptions, so a later till edit (which restores the old
+          // mods' counts) never gives back stock that was never taken.
+          for (const line of pkgItems) {
+            if (!line?.fromPreorder || !Array.isArray(line.mods) || !line.mods.length) continue;
+            for (const mod of line.mods) {
+              if (mod?.itemId) get().decrementDailyCount?.(mod.itemId, (mod.qty || 1) * (line.qty || 1));
+            }
+          }
         } else {
           get().seatTable?.(b.primaryTableId, { covers: b.covers, server: get().staff?.name, customer: seatCustomer, booking: bookingRef });
         }
@@ -437,12 +462,23 @@ export function bookingsSlice(set, get) {
     // ── rules ─────────────────────────────────────────────────────────────────
     updateBookingRules: async (patch) => {
       const current = get().bookingRules || {};
+      // The values this patch replaces, so a refused save can put them back
+      // (10 Sep 2026: the Card capture switch could read ON while the database
+      // said OFF, because a failed save only logged).
+      const previous = {};
+      for (const k of Object.keys(patch || {})) previous[k] = current[k];
       set({ bookingRules: { ...current, ...patch } });
       if (isTrainingMode()) return { ok: true };
+      const revert = (error) => {
+        // Only the keys this save touched, on top of whatever is there NOW.
+        set({ bookingRules: { ...(get().bookingRules || {}), ...previous } });
+        get().showToast?.('Booking rules NOT saved', 'error');
+        console.warn('[bookings] saveBookingRules failed:', error);
+      };
       const locId = await resolveLocationId();
-      if (!locId) return { ok: false, error: 'no location' };
+      if (!locId) { revert('no location'); return { ok: false, error: 'no location' }; }
       const res = await saveBookingRules(locId, patch);
-      if (!res.ok) console.warn('[bookings] saveBookingRules failed:', res.error);
+      if (!res.ok) revert(res.error);
       return res;
     },
 

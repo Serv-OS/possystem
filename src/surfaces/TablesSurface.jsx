@@ -394,6 +394,13 @@ function TableNode({ table, onClick }) {
           <div style={{ fontSize:9, color:'var(--t3)', marginTop:1 }}>
             {(bk.customer?.name || 'Guest').split(' ')[0]}
           </div>
+          {/* 10 Sep 2026: the table is HELD while an online guest pays, but it
+              is not a booking yet. Without this it read as a normal reservation. */}
+          {bk.status === 'pending_payment' && (
+            <div style={{ fontSize:9, color:'var(--orn)', marginTop:1, fontWeight:800, lineHeight:1.2 }}>
+              Awaiting payment
+            </div>
+          )}
         </>
       )}
 
@@ -923,6 +930,14 @@ export default function TablesSurface() {
 
                     {selectedBk && !session && (
                       <div style={{ background:'var(--bg3)', borderRadius:10, padding:'10px 12px' }}>
+                        {/* 10 Sep 2026: an online guest is still paying. The table is held,
+                            the booking is not confirmed, and nothing has been paid. */}
+                        {selectedBk.status === 'pending_payment' && (
+                          <div style={{ marginBottom:8, padding:'8px 10px', borderRadius:8, background:'rgba(249,115,22,.1)', border:'1px solid rgba(249,115,22,.35)', color:'var(--orn)', fontSize:15, fontWeight:700, lineHeight:1.35 }}>
+                            Awaiting payment
+                            <div style={{ fontSize:15, fontWeight:500, marginTop:2 }}>Not paid online, take payment on the till.</div>
+                          </div>
+                        )}
                         <div style={{ display:'flex', justifyContent:'space-between', fontSize:12, marginBottom:3 }}>
                           <span style={{ color:'var(--t3)' }}>Name</span><span style={{ color:'var(--t1)', fontWeight:600 }}>{selectedBk.customer?.name || 'Guest'}</span>
                         </div>

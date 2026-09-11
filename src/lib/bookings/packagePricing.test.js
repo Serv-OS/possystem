@@ -276,3 +276,81 @@ test('a zero-priced package posts no line (nothing to report)', () => {
   const items = packageItemsFor({ pkg: p, covers: 2, menuItems: MENU });
   assert.ok(!items.some((i) => i.itemId === 'pkg-pk-1'));
 });
+
+// ── 10 Sep 2026: guest choices (sizes and options) ride onto the seated line ─
+// The till convention: a line's price INCLUDES its option prices
+// (configureLineOptions, addItem), and a size shows as "Dish · Size".
+const SIZED_MENU = [
+  ...MENU,
+  { id: 'm-rib', name: 'Ribeye steak', price: 0, allergens: [] },
+  { id: 'm-rib-8', name: '8oz', menuName: '8oz', parentId: 'm-rib', price: 28, allergens: [] },
+  { id: 'm-rib-12', name: '12oz', menuName: '12oz', parentId: 'm-rib', price: 36, allergens: ['mustard'] },
+];
+const COOK = { id: 'ig-igd-cook-Medium rare', name: 'Medium rare', label: 'Medium rare', groupLabel: 'Cooking preference', price: 0, _instruction: true };
+const PEPPER = { id: 'o-pep', name: 'Peppercorn sauce', label: 'Peppercorn sauce', itemId: 'm-pep', groupLabel: 'Sauce', price: 2.5 };
+
+test('prepay pick WITH options: 0.00 food plus the option prices, mods carried to the kitchen', () => {
+  const p = pricedPkg('prepay', 'per_cover', 120, [L({ itemId: 'm-steak', displayName: 'Ribeye', isPreorderChoice: true })]);
+  const items = packageItemsFor({
+    pkg: p, covers: 1, menuItems: MENU,
+    preorders: [{ id: 'r1', seat: 1, guestName: 'Ana', itemId: 'm-steak', displayName: 'Ribeye', course: 2, mods: [COOK, PEPPER], notes: 'No salt' }],
+  });
+  const pick = items.find((i) => i.itemId === 'm-steak');
+  assert.equal(pick.price, 2.5);                 // included dish, paid sauce on top
+  assert.deepEqual(pick.mods, [COOK, PEPPER]);
+  assert.equal(pick.name, 'Ribeye');             // no size, name unchanged
+  assert.equal(pick.variantName, undefined);
+  assert.equal(pick.notes, 'Seat 1 · Ana · No salt');
+  // Face value: the £120 package line plus the £2.50 extra.
+  assert.equal(items.reduce((s, i) => s + i.price * i.qty, 0), 122.5);
+});
+
+test('prepay upcharge plus a size: the size never changes a prepay line price, options still add', () => {
+  const p = pkg('prepay', [L({ itemId: 'm-rib', displayName: 'Ribeye', isPreorderChoice: true, priceOverride: 8 })]);
+  const [pick] = packageItemsFor({
+    pkg: p, covers: 1, menuItems: SIZED_MENU,
+    preorders: [{ id: 'r1', seat: 1, itemId: 'm-rib', displayName: 'Ribeye', course: 2, variantItemId: 'm-rib-12', variantName: '12oz', mods: [PEPPER] }],
+  });
+  assert.equal(pick.price, 10.5);
+  assert.equal(pick.name, 'Ribeye · 12oz');
+});
+
+test('deposit pick with a SIZE: the size menu price plus options, item id stays the package line item', () => {
+  const p = pkg('deposit', [L({ itemId: 'm-rib', displayName: 'Ribeye', isPreorderChoice: true })]);
+  const [pick] = packageItemsFor({
+    pkg: p, covers: 1, menuItems: SIZED_MENU,
+    preorders: [{ id: 'r1', seat: 2, itemId: 'm-rib', displayName: 'Ribeye', course: 2, variantItemId: 'm-rib-12', variantName: '12oz', mods: [COOK, PEPPER] }],
+  });
+  assert.equal(pick.itemId, 'm-rib');            // matching and the till badge key stay on the line item
+  assert.equal(pick.price, 38.5);                // 12oz £36 + sauce £2.50, never the parent's £0
+  assert.equal(pick.name, 'Ribeye · 12oz');
+  assert.equal(pick.variantName, '12oz');
+  assert.deepEqual(pick.allergens, ['mustard']); // the size's own allergens
+});
+
+test('deposit size with no stored size name takes it from the menu', () => {
+  const p = pkg('deposit', [L({ itemId: 'm-rib', displayName: 'Ribeye', isPreorderChoice: true })]);
+  const [pick] = packageItemsFor({
+    pkg: p, covers: 1, menuItems: SIZED_MENU,
+    preorders: [{ id: 'r1', seat: 1, itemId: 'm-rib', displayName: 'Ribeye', course: 2, variantItemId: 'm-rib-8' }],
+  });
+  assert.equal(pick.price, 28);
+  assert.equal(pick.variantName, '8oz');
+  assert.equal(pick.name, 'Ribeye · 8oz');
+});
+
+test('an UNMATCHED pick with options: prepay is the options only, deposit is menu price plus options', () => {
+  const pre = pkg('prepay', [L({ itemId: 'm-steak', displayName: 'Ribeye', isPreorderChoice: true })]);
+  const [a] = packageItemsFor({
+    pkg: pre, covers: 1, menuItems: MENU,
+    preorders: [{ id: 'r1', seat: 1, itemId: 'm-fish', displayName: 'Sea bass special', course: 2, mods: [PEPPER] }],
+  });
+  assert.equal(a.price, 2.5);
+  assert.deepEqual(a.mods, [PEPPER]);
+  const dep = pkg('deposit', [L({ itemId: 'm-steak', displayName: 'Ribeye', isPreorderChoice: true })]);
+  const [b] = packageItemsFor({
+    pkg: dep, covers: 1, menuItems: MENU,
+    preorders: [{ id: 'r1', seat: 1, itemId: 'm-fish', displayName: 'Sea bass special', course: 2, mods: [PEPPER, COOK] }],
+  });
+  assert.equal(b.price, 28.5);                   // £26 menu + £2.50 sauce
+});
