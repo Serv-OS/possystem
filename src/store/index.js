@@ -38,6 +38,7 @@ import { waitlistSlice } from './waitlistSlice';
 import { bookingsSlice } from './bookingsSlice';
 import { reportSave } from '../lib/saveHealth';
 import { bumpChallenge21 } from '../lib/challenge21Counter';
+import { shouldKeepPaidOrderInQueue, markQueueEntryPaid, paidQueueRefToClearOnRefund } from '../lib/orderScreen/keepPaidOrder';
 
 // v5.5.944: terminal jobs whose closed_check upsert failed and were flagged to the
 // activity feed — once per job per boot, so the 8s retry loop doesn't spam the feed.
@@ -3747,7 +3748,14 @@ export const useStore = create((set, get) => ({
 
   // ── Collection queue ──────────────────────
   orderQueue: [],
-  addToQueue: o => set(s => ({ orderQueue: [o, ...s.orderQueue] })),
+  // Order screens: venue setting locations.pos_settings.order_screen_keep_paid (Back Office,
+  // Order screens). On = a paid till order stays queued (marked paid) until staff tap
+  // Collected, so Orders Hub and the order screen can show it. Hydrated in useSupabaseInit;
+  // the cache means an offline boot keeps the last known value. Off by default.
+  keepPaidTillOrders: (() => { try { return localStorage.getItem('rpos-keep-paid-till-orders') === '1'; } catch { return false; } })(),
+  // TRAINING MODE: an entry created while training carries training:true, so QueueSync never
+  // publishes it, not even after the device profile switches training off.
+  addToQueue: o => set(s => ({ orderQueue: [(o && isTrainingMode()) ? { ...o, training: true } : o, ...s.orderQueue] })),
   updateQueueStatus: (ref, status) => set(s => ({ orderQueue: s.orderQueue.map(o => o.ref===ref ? {...o, status} : o) })),
   updateQueueItem: (ref, patch) => set(s => ({ orderQueue: s.orderQueue.map(o => o.ref===ref ? {...o,...patch} : o) })),
   removeFromQueue: ref => {
@@ -5982,9 +5990,19 @@ export const useStore = create((set, get) => ({
     // the stale entry so the order stops showing as open. Previously only the
     // closedCheck was written — queue entry persisted, so 'cash off' left the
     // order visible in Orders and re-cashing produced duplicate closed checks.
+    // Order screens (keepPaidTillOrders): with the venue setting on, a paid till order that
+    // is still in the kitchen flow stays in the queue marked paid (entry.paid and
+    // customer.paid, which QueueSync persists), so isOrderPaid passes on Collected and the
+    // order can never be charged twice. Setting off: exactly the old filter.
+    // Never in training mode: a kept entry would outlive training and reach the live queue.
+    const existingEntry = existingRef ? get().orderQueue.find(o => o.ref === existingRef) : null;
+    const keepQueued = !!existingRef && !isTrainingMode()
+      && shouldKeepPaidOrderInQueue({ enabled: get().keepPaidTillOrders, orderType, entry: existingEntry });
     set(s => ({
       closedChecks: capClosedChecks([record, ...s.closedChecks]),
-      orderQueue: existingRef ? s.orderQueue.filter(o => o.ref !== existingRef) : s.orderQueue,
+      orderQueue: !existingRef ? s.orderQueue
+        : keepQueued ? s.orderQueue.map(o => (o.ref === existingRef ? markQueueEntryPaid(o) : o))
+        : s.orderQueue.filter(o => o.ref !== existingRef),
     }));
     // v4.6.30: cash drawer auto-fire on cash payment
     // v4.6.62: attribute to customer DB (fire-and-forget)
@@ -6265,6 +6283,9 @@ export const useStore = create((set, get) => ({
     // TRAINING MODE: the refund shows in-memory but NOTHING external fires — no
     // closed_checks update, no card reversal, no gift/loyalty refund.
     if (isTrainingMode()) {
+      // Order screens (keepPaidTillOrders): a fully refunded kept order leaves the local queue.
+      const trainingQueueRef = paidQueueRefToClearOnRefund({ queue: get().orderQueue, ref: chkBefore.ref, checkStatus: nextStatus });
+      if (trainingQueueRef) set(s => ({ orderQueue: s.orderQueue.filter(o => o.ref !== trainingQueueRef) }));
       return { ok: true, amount, cardStatus: 'none', legs: [], training: true, message: `Training refund of ${money(amount)} recorded` };
     }
     // Persist to Supabase so other POS devices at the location see this refund
@@ -6494,6 +6515,15 @@ export const useStore = create((set, get) => ({
       message = `Refund of ${money(amount)} accepted by the card processor — it settles shortly.`;
     } else {
       message = `Refund of ${money(amount)} returned to the card`;
+    }
+    // Order screens (keepPaidTillOrders): a paid till order kept in the queue that is now
+    // FULLY refunded leaves it, or it stays on the TV and in Orders Hub as paid. Only once the
+    // money is really going back: a failed or partly failed card reversal keeps the order,
+    // because the customer may still be waiting for it. A refund that matches no queue entry,
+    // or a partial refund, changes nothing here.
+    if (cashPayout || !legs.length || (cardStatus !== 'failed' && cardStatus !== 'partial')) {
+      const refundedQueueRef = paidQueueRefToClearOnRefund({ queue: get().orderQueue, ref: chkBefore.ref, checkStatus: nextStatus });
+      if (refundedQueueRef) get().removeFromQueue(refundedQueueRef);
     }
     get().showToast(message, ok ? 'success' : 'error');
     return { ok, amount, cardStatus, legs: legOutcomes, refundId, message };

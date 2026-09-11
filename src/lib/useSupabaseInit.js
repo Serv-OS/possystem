@@ -225,7 +225,7 @@ export default function useSupabaseInit() {
       // can resolve it synchronously.
       if (locId && supabase) {
         try {
-          const { data: locRow } = await supabase
+          const { data: locRow, error: locErr } = await supabase
             .from('locations')
             .select('pos_settings')
             .eq('id', locId)
@@ -233,6 +233,14 @@ export default function useSupabaseInit() {
           const venuePrinterId = locRow?.pos_settings?.default_receipt_printer_id || null;
           if (venuePrinterId) localStorage.setItem('rpos-venue-receipt-printer', venuePrinterId);
           else localStorage.removeItem('rpos-venue-receipt-printer');
+          // Order screens: keep paid till orders queued until collected (Back Office setting).
+          // supabase-js RESOLVES with { error } offline, so only a successful read of the row
+          // may change it. Otherwise the cached value (store default) stays, as promised.
+          if (!locErr && locRow) {
+            const keepPaid = locRow.pos_settings?.order_screen_keep_paid === true;
+            useStore.setState({ keepPaidTillOrders: keepPaid });
+            try { localStorage.setItem('rpos-keep-paid-till-orders', keepPaid ? '1' : '0'); } catch { /* storage blocked */ }
+          }
         } catch (err) {
           console.warn('[useSupabaseInit] venue receipt printer hydration failed:', err?.message || err);
         }

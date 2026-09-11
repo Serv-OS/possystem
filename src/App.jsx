@@ -237,6 +237,7 @@ export default function App() {
       onSelectMPOS={() => { localStorage.setItem('rpos-device-mode', 'mpos'); window.location.href = '?mode=mpos'; }}
       onSelectClock={() => { localStorage.setItem('rpos-device-mode', 'clock'); window.location.href = '?mode=clock'; }}
       onSelectMenuBoard={() => { localStorage.setItem('rpos-device-mode', 'menuboard'); window.location.href = '?mode=menuboard'; }}
+      onSelectOrderScreen={() => { localStorage.setItem('rpos-device-mode', 'orderscreen'); window.location.href = '?mode=orderscreen'; }}
       onSelectWaitlist={() => { localStorage.setItem('rpos-device-mode', 'waitlist'); window.location.href = '?mode=waitlist'; }}
       onSelectBookings={() => { localStorage.setItem('rpos-device-mode', 'bookings'); window.location.href = '?mode=bookings'; }}
       onSelectManager={() => { localStorage.setItem('rpos-device-mode', 'manager'); window.location.href = '?mode=manager'; }}
@@ -264,7 +265,11 @@ export default function App() {
   // Digital menu board — read-only Android-TV display. Resolves its own location,
   // renders one menu_boards "screen" with the auto-fit/auto-balance engine, live
   // over Realtime. No SyncBridge (like customer-display).
-  if (deviceMode === 'menuboard') return <><KioskAutoUpdate /><MenuBoardSurface /></>;
+  // ?mode=orderscreen is a browser alias (iPad or TV browser): the same pairing code
+  // flow, and Back Office decides at pairing whether the TV shows a menu board or an
+  // order screen (MenuBoardSurface swaps to OrderStatusScreen on order_display_id).
+  // Must stay in this early block, before the rpos-device pairing gate.
+  if (deviceMode === 'menuboard' || deviceMode === 'orderscreen') return <><KioskAutoUpdate /><MenuBoardSurface /></>;
 
   // Demo card reader — a browser-window replica of an Adyen reader for sales
   // demos (?mode=readerdemo). A real software terminal: registers, pairs and

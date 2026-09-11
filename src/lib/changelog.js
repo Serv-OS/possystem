@@ -7,6 +7,22 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.56',
+    date: '11 Sep 2026',
+    items: [
+      'New: Order screens. A TV shows customers and delivery drivers which orders are received, being made, ready to collect and collected. Set one up in Back Office under Channels, Order screens, then pair a TV with the code it shows.',
+      'Order screens use the same TV app and the same pairing as menu boards, so no new app is needed. A portrait TV can turn the picture in the screen settings.',
+      'Each screen has up to 4 sections, or 3 on a landscape TV. For each section choose which till, kiosk, online, table QR, catering and delivery app orders show, which steps show, and how names appear.',
+      'Delivery app orders show the app name and the app order code, so drivers can find theirs. Deliveroo, Uber Eats, Just Eat, ezCater and Stuart courier orders are all covered.',
+      'For now order screens show order numbers, not customer names. Names switch on by themselves once the order security update is applied to the database.',
+      'New venue setting: keep paid till orders in Orders Hub until staff tap Collected, so they show on the order screen. It is off by default and changes nothing until it is switched on.',
+      'Menu board TVs are steadier. A slow network at start up no longer wipes a paired screen or leaves it on Loading menu, and pairing codes now use secure random numbers.',
+      'Training mode: orders taken in training are never sent to the live order list, even after training is switched off.',
+      'Handheld till: an order that is already paid shows as paid after a reload, and a paid counter order can no longer be cancelled there without a refund.',
+      'Order screens need a database update before they can be used. Until it is run the Back Office page says so.',
+    ],
+  },
+  {
     v: '5.8.55',
     date: '11 Sep 2026',
     items: [

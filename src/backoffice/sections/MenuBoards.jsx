@@ -181,7 +181,7 @@ export default function MenuBoards() {
 
   const screenUrl = (id) => `${window.location.origin}/?mode=menuboard&board=${id}`;
   const copyLink = async (id) => {
-    try { await navigator.clipboard.writeText(screenUrl(id)); } catch {}
+    try { await navigator.clipboard.writeText(screenUrl(id)); } catch { /* clipboard blocked; nothing else to do */ }
     setCopied(id); setTimeout(() => setCopied(c => (c === id ? '' : c)), 1800);
   };
 
@@ -210,6 +210,10 @@ export default function MenuBoards() {
   );
 
   const boardName = (id) => screens.find(b => b.id === id)?.name || '—';
+  // TVs paired to an order screen (Channels → Order screens) are managed there, not here.
+  // Before the 20260911 migration order_display_id is undefined, so nothing is filtered.
+  const boardTvs = paired.filter(s => !s.order_display_id);
+  const orderScreenTvs = paired.length - boardTvs.length;
 
   return (
     <div style={{ maxWidth: 1100 }}>
@@ -253,9 +257,9 @@ export default function MenuBoards() {
           {pairMsg && <span style={{ fontSize: 12, color: pairMsg.startsWith('✓') ? 'var(--grn)' : 'var(--red)' }}>{pairMsg}</span>}
         </div>
 
-        {paired.length > 0 ? (
+        {boardTvs.length > 0 ? (
           <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {paired.map(s => { const sl = seenLabel(s.last_seen_at); return (
+            {boardTvs.map(s => { const sl = seenLabel(s.last_seen_at); return (
               <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '8px 10px', border: '1px solid var(--bdr)', borderRadius: 10, background: 'var(--bg2)' }}>
                 <span style={{ width: 8, height: 8, borderRadius: '50%', background: sl.online ? '#3BD16F' : 'var(--bdr2)', flexShrink: 0 }} title={sl.text} />
                 <div style={{ flex: 1, minWidth: 140 }}>
@@ -271,7 +275,12 @@ export default function MenuBoards() {
               </div>
             ); })}
           </div>
-        ) : <div style={{ fontSize: 12, color: 'var(--t4)', marginTop: 12 }}>No screens paired yet.</div>}
+        ) : orderScreenTvs > 0
+          ? <div style={{ fontSize: 15, color: 'var(--t4)', marginTop: 12 }}>No TVs show a menu board yet.</div>
+          : <div style={{ fontSize: 12, color: 'var(--t4)', marginTop: 12 }}>No screens paired yet.</div>}
+        {orderScreenTvs > 0 && (
+          <div style={{ fontSize: 15, color: 'var(--t3)', marginTop: 12 }}>Some TVs show order screens. Manage them in Order screens.</div>
+        )}
       </div>
     </div>
   );

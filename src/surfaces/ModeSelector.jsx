@@ -24,7 +24,7 @@ function Card({ icon, title, desc, note, accent, onClick }) {
   );
 }
 
-export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelectAdmin, onSelectMPOS, onSelectClock, onSelectMenuBoard, onSelectWaitlist, onSelectManager, onSelectBookings }) {
+export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelectAdmin, onSelectMPOS, onSelectClock, onSelectMenuBoard, onSelectOrderScreen, onSelectWaitlist, onSelectManager, onSelectBookings }) {
   return (
     <div style={{
       minHeight: '100vh',
@@ -77,11 +77,19 @@ export default function ModeSelector({ onSelectPOS, onSelectBackOffice, onSelect
         <Card
           icon="📺"
           title="Menu Board"
-          desc="A TV or display showing your menu — categories, prices and allergens, updating live. Marks items sold out automatically."
-          note="Pairs to a location like a regular POS"
+          desc="A TV or display showing your menu, with categories, prices and allergens, updating live. Marks items sold out automatically."
+          note="Pair it with a code from Back Office"
           accent="#0ea5e9"
           onClick={onSelectMenuBoard}
         />
+        {onSelectOrderScreen && <Card
+          icon="🧾"
+          title="Order screen"
+          desc="A TV that shows customers and delivery drivers when their order is ready."
+          note="Pair it with a code from Back Office"
+          accent="#15C26A"
+          onClick={onSelectOrderScreen}
+        />}
         <Card
           icon="🪑"
           title="Tables Ready"
