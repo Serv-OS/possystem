@@ -680,9 +680,16 @@ async function applyMoneyEvent(item: any, live: boolean | null = null, region: A
     const rowKey = isModification ? String(item?.originalReference || itemPsp) : itemPsp;
     if (!rowKey) { console.error('[adyen-webhook] money event with no psp — skipped', code); return 'skipped'; }
 
-    const { data: existing, error: readErr } = await platformAdmin.from('adyen_payments')
-      .select('psp_reference, location_id, amount_minor, currency, amount_refunded_minor, success, channel, card, merchant_reference, merchant_account, store, matched_terminal_job, matched_closed_check, rate_category, raw')
+    const LEDGER_READ_COLS = 'psp_reference, location_id, amount_minor, currency, amount_refunded_minor, success, channel, card, merchant_reference, merchant_account, store, matched_terminal_job, matched_closed_check, rate_category, raw';
+    // capture_required (20260826) decides whether a smaller CAPTURE shrinks a
+    // hold. Retried without it so the ledger read never breaks on its account.
+    let { data: existing, error: readErr } = await platformAdmin.from('adyen_payments')
+      .select(`${LEDGER_READ_COLS}, capture_required`)
       .eq('psp_reference', rowKey).maybeSingle();
+    if (readErr && isMissingColumn(readErr.message)) {
+      ({ data: existing, error: readErr } = await platformAdmin.from('adyen_payments')
+        .select(LEDGER_READ_COLS).eq('psp_reference', rowKey).maybeSingle());
+    }
     if (readErr) { console.error('[adyen-webhook] ledger read failed:', readErr.message); return 'failed'; }
 
     const raw: Record<string, any> = (existing?.raw && typeof existing.raw === 'object') ? { ...existing.raw } : {};
@@ -695,18 +702,29 @@ async function applyMoneyEvent(item: any, live: boolean | null = null, region: A
         // bump. Idempotent, it only ever raises, and it touches nothing else,
         // so a backfill that replayed the AUTHORISATION first (flattening the
         // tip bump) heals the row when the CAPTURE replays after it.
+        // 11 Sep 2026: the same repair lowers a hold captured below its hold,
+        // and stamps raw.captured_minor on a row captured before it existed.
         const capMinor = Number(item?.amount?.value);
-        if (code === 'CAPTURE' && okEvent && Number.isFinite(capMinor)
-            && existing?.amount_minor != null && capMinor > Number(existing.amount_minor)) {
-          const patch: Record<string, unknown> = { amount_minor: capMinor, updated_at: new Date().toISOString() };
-          const rc = (existing as any)?.rate_category as string | null;
-          const loc = existing?.location_id ?? null;
-          if (rc && loc) {
-            const tiers = await resolveVenueTiers(loc);
-            if (tiers) patch.commission_minor = commissionForAmount(capMinor, tiers[rc]);
+        if (code === 'CAPTURE' && okEvent && Number.isFinite(capMinor) && existing?.amount_minor != null) {
+          const stored = Number(existing.amount_minor);
+          const holdRow = (existing as any)?.capture_required === true;
+          const moveAmount = capMinor > stored || (holdRow && capMinor < stored);
+          const stampCaptured = Number(raw.captured_minor) !== capMinor;
+          if (moveAmount || stampCaptured) {
+            const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
+            if (moveAmount) {
+              patch.amount_minor = capMinor;
+              const rc = (existing as any)?.rate_category as string | null;
+              const loc = existing?.location_id ?? null;
+              if (rc && loc) {
+                const tiers = await resolveVenueTiers(loc);
+                if (tiers) patch.commission_minor = commissionForAmount(capMinor, tiers[rc]);
+              }
+            }
+            if (stampCaptured) patch.raw = { ...raw, captured_minor: capMinor };
+            const { error: fixErr } = await platformAdmin.from('adyen_payments').update(patch).eq('psp_reference', rowKey);
+            if (fixErr) console.error('[adyen-webhook] duplicate-capture repair failed:', fixErr.message, rowKey);
           }
-          const { error: fixErr } = await platformAdmin.from('adyen_payments').update(patch).eq('psp_reference', rowKey);
-          if (fixErr) console.error('[adyen-webhook] duplicate-capture bump repair failed:', fixErr.message, rowKey);
         }
         return 'duplicate';
       }
@@ -777,10 +795,14 @@ async function applyMoneyEvent(item: any, live: boolean | null = null, region: A
       // The CAPTURE replay would then be a modKey duplicate and the tip would be
       // gone from the ledger, and from the FranPOS invoice, forever. Paired with
       // the re-raise in the duplicate path above, this makes backfill idempotent.
-      const capBumped = applied.some((m) => String(m).startsWith('CAPTURE:') && String(m).endsWith(':true'))
+      // 11 Sep 2026: NEVER UN-SHRINK either. A hold captured below its hold
+      // (capture_required) keeps the captured amount, not the hold.
+      const authAmt = Number.isFinite(amountMinor) ? amountMinor : -1;
+      const capAdjusted = applied.some((m) => String(m).startsWith('CAPTURE:') && String(m).endsWith(':true'))
         && existing?.amount_minor != null
-        && Number(existing.amount_minor) > (Number.isFinite(amountMinor) ? amountMinor : -1);
-      const effAmount = capBumped ? Number(existing!.amount_minor) : amountMinor;
+        && (Number(existing.amount_minor) > authAmt
+          || ((existing as any)?.capture_required === true && Number(existing.amount_minor) < authAmt));
+      const effAmount = capAdjusted ? Number(existing!.amount_minor) : amountMinor;
       row.amount_minor = Number.isFinite(effAmount) ? effAmount : existing?.amount_minor ?? null;
       row.currency = currency ?? existing?.currency ?? null;
       row.success = okEvent;
@@ -826,9 +848,24 @@ async function applyMoneyEvent(item: any, live: boolean | null = null, region: A
       // the tip landing (overcapture / post-adjust capture). The payment's
       // true value is what was CAPTURED, so bump amount_minor and recompute
       // what we earn at the SAME tier (rate_category unchanged by contract).
-      if (code === 'CAPTURE' && okEvent) row.captured_at = new Date().toISOString();
+      // 11 Sep 2026: a hold (capture_required) captured for LESS than it held
+      // (a QR open tab closed below its hold) is the mirror case. Only the
+      // captured money moved, so amount_minor drops to it and the venue fee is
+      // restamped at the same tier. raw.captured_minor records what the
+      // capture took, so a venue screen can tell a hold's real amount is known
+      // (src/lib/payments/venueFees.js). Captures are one per payment here
+      // (tab_capture, hold_capture, the capture sweep), so the last successful
+      // capture is the captured amount. Replay safe: a duplicate CAPTURE
+      // returns above (and repairs), and an AUTHORISATION replay keeps the
+      // captured amount (capAdjusted).
+      if (code === 'CAPTURE' && okEvent) {
+        row.captured_at = new Date().toISOString();
+        if (Number.isFinite(amountMinor)) raw.captured_minor = amountMinor;
+      }
+      const isHold = (existing as any)?.capture_required === true;
       if (code === 'CAPTURE' && okEvent && Number.isFinite(amountMinor)
-          && existing?.amount_minor != null && amountMinor > Number(existing.amount_minor)) {
+          && existing?.amount_minor != null
+          && (amountMinor > Number(existing.amount_minor) || (isHold && amountMinor < Number(existing.amount_minor)))) {
         row.amount_minor = amountMinor;
         const rc = (existing as any)?.rate_category as string | null;
         let restamped: number | null = null;
