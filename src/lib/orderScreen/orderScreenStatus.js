@@ -55,6 +55,8 @@ export const DEFAULT_SETTINGS = {
   maxAgeHours: 6,
   showUnacceptedPlatform: false,
   chime: false,
+  // The venue's own risk call: show customer names before the order_queue fence lands.
+  showNamesNow: false,
 };
 
 export const DEFAULT_THEME = {
@@ -291,6 +293,7 @@ export function normaliseDisplay(dbRow) {
     maxAgeHours: parseIntLike(rs.maxAgeHours, DEFAULT_SETTINGS.maxAgeHours, 1, 24),
     showUnacceptedPlatform: rs.showUnacceptedPlatform === true || rs.showUnacceptedPlatform === 'true',
     chime: rs.chime === true,
+    showNamesNow: rs.showNamesNow === true || rs.showNamesNow === 'true',
   };
 
   const rt = isObj(r.theme) ? r.theme : {};
@@ -385,9 +388,10 @@ const RANK = { ready: 0, preparing: 1, received: 2 };
  * status_hidden, future, stale, status_off, expired, ok.
  */
 export function evaluateOrder(order, display, nowMs, opts = {}) {
-  const namesEnabled = !(isObj(opts) && opts.namesEnabled === false);
   const o = isObj(order) ? order : {};
   const d = normaliseDisplay(display);
+  // Mirrors the feed: order_status_names_enabled() OR this screen's own showNamesNow.
+  const namesEnabled = !(isObj(opts) && opts.namesEnabled === false) || d.settings.showNamesNow === true;
   const now = Number.isFinite(nowMs) ? nowMs : Date.now();
   const { lingerMinutes: linger, maxAgeHours: maxAge, showUnacceptedPlatform } = d.settings;
   const cust = isObj(o.customer) ? o.customer : {};

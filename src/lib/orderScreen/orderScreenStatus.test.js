@@ -659,3 +659,21 @@ test('default settings take a collected order off the screen at once', () => {
   assert.equal(lingering.visible, true);
   assert.equal(lingering.row.bucket, 'collected');
 });
+
+test('a screen can show names before the order queue fence, with its own setting', () => {
+  // Default: the feed says names are off, so every row falls back to its number.
+  assert.equal(DEFAULT_SETTINGS.showNamesNow, false);
+  const off = evaluateOrder(order({ source: 'pos', status: 'ready' }), allDisplay(), NOW, { namesEnabled: false });
+  assert.equal(off.visible, true);
+  assert.equal(off.row.name, null);
+  // The venue accepts the risk on this screen: names show even while the feed gate is shut.
+  const on = evaluateOrder(order({ source: 'pos', status: 'ready' }), allDisplay({ showNamesNow: true }), NOW, { namesEnabled: false });
+  assert.equal(on.row.name, 'Joseph W');
+  // It is a per screen setting, so another screen without it still hides names.
+  const other = evaluateOrder(order({ source: 'pos', status: 'ready' }), allDisplay({ showNamesNow: false }), NOW, { namesEnabled: false });
+  assert.equal(other.row.name, null);
+  // Normalising keeps only a real true, and the string 'true' a jsonb round trip can produce.
+  assert.equal(normaliseDisplay({ settings: { showNamesNow: 'true' } }).settings.showNamesNow, true);
+  assert.equal(normaliseDisplay({ settings: { showNamesNow: 'yes' } }).settings.showNamesNow, false);
+  assert.equal(normaliseDisplay({ settings: {} }).settings.showNamesNow, false);
+});
