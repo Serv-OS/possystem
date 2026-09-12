@@ -3,7 +3,8 @@
 // Order screens: the pure status, channel, name and config rules.
 // NO imports, so node:test can load it and the Back Office preview and the TV share it.
 //
-// This file MIRRORS supabase/migrations/20260911_OPS_order_status_displays.sql:
+// This file MIRRORS supabase/migrations/20260911_OPS_order_status_displays.sql, with the
+// feed as 20260911c_OPS_order_screen_names_follow_the_section.sql replaces it:
 //   channelKeyOf      = _osd_channel_key
 //   orderTypeKey      = _osd_type_key
 //   formatOrderName   = _osd_name
@@ -11,7 +12,6 @@
 //   evaluateOrder     = the judged, bucketed and visible CTEs of order_status_feed
 //   parseIntLike      = _osd_int
 //   resolveNumberClashes = the num column of the feed's limited CTE (4 characters on a clash)
-//   evaluateOrder(..., { namesEnabled }) = order_status_names_enabled() in the feed
 // Change both together. The TV never runs evaluateOrder on real orders: the feed RPC
 // does the work in SQL (names are shortened there). evaluateOrder drives the Back Office
 // preview on sample orders and pins the rules in tests.
@@ -55,8 +55,6 @@ export const DEFAULT_SETTINGS = {
   maxAgeHours: 6,
   showUnacceptedPlatform: false,
   chime: false,
-  // The venue's own risk call: show customer names before the order_queue fence lands.
-  showNamesNow: false,
 };
 
 export const DEFAULT_THEME = {
@@ -293,7 +291,6 @@ export function normaliseDisplay(dbRow) {
     maxAgeHours: parseIntLike(rs.maxAgeHours, DEFAULT_SETTINGS.maxAgeHours, 1, 24),
     showUnacceptedPlatform: rs.showUnacceptedPlatform === true || rs.showUnacceptedPlatform === 'true',
     chime: rs.chime === true,
-    showNamesNow: rs.showNamesNow === true || rs.showNamesNow === 'true',
   };
 
   const rt = isObj(r.theme) ? r.theme : {};
@@ -383,15 +380,13 @@ const RANK = { ready: 0, preparing: 1, received: 2 };
  *          hubrise:{hrStatus,updatedAt}|null }
  * firstSeenAt is the mark's first_seen_at: a kiosk, online, QR or catering name shows only
  * when statusChangedAt is later than it (a status change made in a separate request).
- * opts.namesEnabled false (the feed's order_status_names_enabled()) gives every row a null name.
+ * A section set to Order number only shows no name: that is the only control over names.
  * Returns { visible, reason, row }. reason is one of no_section, removed, unaccepted,
  * status_hidden, future, stale, status_off, expired, ok.
  */
-export function evaluateOrder(order, display, nowMs, opts = {}) {
+export function evaluateOrder(order, display, nowMs) {
   const o = isObj(order) ? order : {};
   const d = normaliseDisplay(display);
-  // Mirrors the feed: order_status_names_enabled() OR this screen's own showNamesNow.
-  const namesEnabled = !(isObj(opts) && opts.namesEnabled === false) || d.settings.showNamesNow === true;
   const now = Number.isFinite(nowMs) ? nowMs : Date.now();
   const { lingerMinutes: linger, maxAgeHours: maxAge, showUnacceptedPlatform } = d.settings;
   const cust = isObj(o.customer) ? o.customer : {};
@@ -448,7 +443,8 @@ export function evaluateOrder(order, display, nowMs, opts = {}) {
   const createdAt = toMs(o.createdAt);
   const firstSeenAt = toMs(o.firstSeenAt);
   const staffMoved = statusChangedAt != null && firstSeenAt != null && statusChangedAt > firstSeenAt;
-  const nameHidden = !namesEnabled || (CUSTOMER_TYPED_SOURCES.includes(o.source) && !staffMoved);
+  // formatOrderName returns null for a section set to 'number', so that is the name control.
+  const nameHidden = CUSTOMER_TYPED_SOURCES.includes(o.source) && !staffMoved;
   const row = {
     key: o.ref ?? null,
     sectionId: section.id,

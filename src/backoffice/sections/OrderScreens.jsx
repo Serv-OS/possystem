@@ -328,7 +328,8 @@ function Editor({ initial, locId, onSaved, onClose }) {
   const [busy, setBusy] = useState('');
   const [tz, setTz] = useState(null);
   const [venueName, setVenueName] = useState('');
-  // true: TVs may show names. false: numbers only until the order security update. null: unknown.
+  // Drives the risk note under Name on screen, nothing else. Names themselves follow each
+  // section's own choice. false: the order_queue fence is still missing. null: unknown.
   const [namesEnabled, setNamesEnabled] = useState(null);
   const [now, setNow] = useState(() => Date.now());
 
@@ -389,16 +390,15 @@ function Editor({ initial, locId, onSaved, onClose }) {
     onSaved();
   };
 
-  // Same rules as the TV feed: no names while the TV shows numbers only, and 4 characters
-  // for online, catering and QR codes that clash in a section.
+  // Same rules as the TV feed: each section's own Name on screen choice decides the name,
+  // and 4 characters for online, catering and QR codes that clash in a section.
   const preview = useMemo(() => {
     const display = normaliseDisplay(draft);
-    const opts = { namesEnabled: namesEnabled !== false };
     const rows = sortRows(resolveNumberClashes(
-      sampleOrders(now).map(o => evaluateOrder(o, display, now, opts)).filter(r => r.visible).map(r => r.row),
+      sampleOrders(now).map(o => evaluateOrder(o, display, now)).filter(r => r.visible).map(r => r.row),
     ));
     return { display, rows };
-  }, [draft, now, namesEnabled]);
+  }, [draft, now]);
 
   const portrait = draft.orientation !== 'landscape';
   const sections = Array.isArray(draft.sections) ? draft.sections : [];
@@ -505,22 +505,6 @@ function Editor({ initial, locId, onSaved, onClose }) {
               ))}
             </div>
           </Box>
-
-          {/* 4b. Customer names, only while the orders table still has its old open permission */}
-          {namesEnabled === false && (
-            <Box title="Customer names" help={[
-              'Your orders table still has an old permission that lets any caller add an order.',
-              'So names are hidden on TVs until that is fixed, and screens show order numbers.',
-            ]}>
-              <Check checked={settings.showNamesNow === true} onChange={v => setSettings({ showNamesNow: v })}
-                label="Show customer names now" />
-              {settings.showNamesNow === true && (
-                <div style={S.warn} role="note">
-                  Names will show on this screen. Someone who knows how could place a fake order and put words on it. Turn this off if that worries you.
-                </div>
-              )}
-            </Box>
-          )}
 
           {/* 5. Timing and sound */}
           <Box title="Timing and sound" help={['Orders show as Ready when staff tap Ready in Orders Hub or on the handheld till.']}>
@@ -642,8 +626,11 @@ function SectionCard({ index, count, sec, labels, namesEnabled, onChange, onMove
             <Radio key={v} name={radioName} checked={nameFormat === v} onChange={() => onChange({ nameFormat: v })} label={label} />
           ))}
         </div>
-        {namesEnabled === false && nameFormat !== 'number' && (
-          <p style={S.helpP}>The TV shows order numbers only until the security update to your orders, unless you tick Show customer names now above.</p>
+        {namesEnabled !== true && nameFormat !== 'number' && (
+          <p style={S.helpP}>
+            Names will show on the TV. The orders security update is still outstanding.
+            Someone who knows how could place a fake order and put words on this screen.
+          </p>
         )}
         {nameFormat === 'full' && (
           <div style={S.warn} role="note">Anyone nearby can read full names. Check your privacy notice says names show on a screen.</div>

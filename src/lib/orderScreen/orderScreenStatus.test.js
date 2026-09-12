@@ -18,25 +18,47 @@ import {
   sampleOrders, lastSeenLabel, contrastRatio, MIN_LARGE_CONTRAST, resolveNumberClashes,
 } from './orderScreenStatus.js';
 
-// ── names switched off (order_status_names_enabled() false) and number clashes ──
+// ── names follow each section's own Name on screen choice, and number clashes ──
 
-test('evaluateOrder: namesEnabled false gives every source a null name, and nothing else changes', () => {
+// One section that takes everything, with the name format under test. A section is the only
+// control over names: short shortens, full shows the lot, number shows no name at all.
+const sectionWith = (nameFormat) => ({
+  name: 'One', sections: [{ id: 'only', title: 'Only', channels: CHANNELS.map(c => c.key),
+    orderTypes: ORDER_TYPES.map(t => t.key), statuses: [...STEPS], nameFormat }],
+  settings: { ...DEFAULT_SETTINGS },
+});
+
+test('evaluateOrder: the section name format is the only control over names', () => {
   const NOWX = Date.parse('2026-09-11T12:00:00Z');
-  const d = newDisplayTemplate();
-  const orders = [
-    { ref: 'R47', source: 'pos', type: 'dine-in', status: 'prep', customer: { name: 'Joseph Walker' }, createdAt: NOWX - 60000, statusChangedAt: NOWX - 30000, firstSeenAt: NOWX - 60000 },
-    { ref: 'R13', source: 'kiosk', type: 'dine-in', status: 'prep', customer: { name: 'Priya Kaur' }, createdAt: NOWX - 60000, statusChangedAt: NOWX - 30000, firstSeenAt: NOWX - 60000 },
-  ];
-  for (const o of orders) {
-    const on = evaluateOrder(o, d, NOWX);
-    const off = evaluateOrder(o, d, NOWX, { namesEnabled: false });
-    assert.ok(on.row.name, `${o.ref} has a name when names are on`);
-    assert.equal(off.row.name, null, `${o.ref} has no name when names are off`);
-    assert.deepEqual({ ...off.row, name: on.row.name }, on.row, 'only the name differs');
-    assert.equal(off.visible, on.visible);
+  const staffMoved = { createdAt: NOWX - 60000, statusChangedAt: NOWX - 30000, firstSeenAt: NOWX - 60000 };
+  const o = { ref: 'R47', source: 'pos', type: 'dine-in', status: 'prep', customer: { name: 'Joseph Walker' }, ...staffMoved };
+  const short = evaluateOrder(o, sectionWith('short'), NOWX);
+  const full = evaluateOrder(o, sectionWith('full'), NOWX);
+  const number = evaluateOrder(o, sectionWith('number'), NOWX);
+  assert.equal(short.row.name, 'Joseph W');
+  assert.equal(full.row.name, 'Joseph Walker');
+  assert.equal(number.row.name, null, 'Order number only shows no name');
+  assert.equal(number.row.number, '47');
+  // Nothing else about the row moves with the format, and every one of them still shows.
+  for (const r of [full, number]) {
+    assert.deepEqual({ ...r.row, name: short.row.name }, short.row, 'only the name differs');
+    assert.equal(r.visible, true);
   }
-  assert.ok(evaluateOrder(orders[0], d, NOWX, { namesEnabled: true }).row.name, 'explicit true');
-  assert.ok(evaluateOrder(orders[0], d, NOWX, null).row.name, 'bad opts keep the default');
+  // A customer typed name still waits for a status change made in a separate request.
+  const kiosk = { ref: 'R13', source: 'kiosk', type: 'dine-in', status: 'prep', customer: { name: 'Priya Kaur' } };
+  const fresh = evaluateOrder({ ...kiosk, createdAt: NOWX - 60000, statusChangedAt: NOWX - 60000, firstSeenAt: NOWX - 60000 }, sectionWith('full'), NOWX);
+  assert.equal(fresh.row.name, null, 'kiosk name untouched by staff');
+  assert.equal(evaluateOrder({ ...kiosk, ...staffMoved }, sectionWith('full'), NOWX).row.name, 'Priya Kaur');
+  // There is no second control: the v5.8.61 screen switch is gone, and a stray saved one is ignored.
+  assert.equal('showNamesNow' in DEFAULT_SETTINGS, false);
+  assert.equal('showNamesNow' in normaliseDisplay({ settings: { showNamesNow: true } }).settings, false);
+  const stray = { ...sectionWith('number'), settings: { ...DEFAULT_SETTINGS, showNamesNow: true } };
+  assert.equal(evaluateOrder(o, stray, NOWX).row.name, null, 'an old saved setting changes nothing');
+  // The template ships a names section and a numbers section, and both behave that way.
+  const tpl = newDisplayTemplate();
+  assert.equal(tpl.sections[0].nameFormat, 'short');
+  assert.equal(tpl.sections[2].nameFormat, 'number');
+  assert.equal(evaluateOrder(o, tpl, NOWX).row.name, 'Joseph W');
 });
 
 test('resolveNumberClashes: online, catering and QR codes that clash in a section show 4 characters', () => {
@@ -658,22 +680,4 @@ test('default settings take a collected order off the screen at once', () => {
   const lingering = evaluateOrder(order({ status: 'collected', statusChangedAt: NOW - 1000 }), allDisplay({ lingerMinutes: 2 }), NOW);
   assert.equal(lingering.visible, true);
   assert.equal(lingering.row.bucket, 'collected');
-});
-
-test('a screen can show names before the order queue fence, with its own setting', () => {
-  // Default: the feed says names are off, so every row falls back to its number.
-  assert.equal(DEFAULT_SETTINGS.showNamesNow, false);
-  const off = evaluateOrder(order({ source: 'pos', status: 'ready' }), allDisplay(), NOW, { namesEnabled: false });
-  assert.equal(off.visible, true);
-  assert.equal(off.row.name, null);
-  // The venue accepts the risk on this screen: names show even while the feed gate is shut.
-  const on = evaluateOrder(order({ source: 'pos', status: 'ready' }), allDisplay({ showNamesNow: true }), NOW, { namesEnabled: false });
-  assert.equal(on.row.name, 'Joseph W');
-  // It is a per screen setting, so another screen without it still hides names.
-  const other = evaluateOrder(order({ source: 'pos', status: 'ready' }), allDisplay({ showNamesNow: false }), NOW, { namesEnabled: false });
-  assert.equal(other.row.name, null);
-  // Normalising keeps only a real true, and the string 'true' a jsonb round trip can produce.
-  assert.equal(normaliseDisplay({ settings: { showNamesNow: 'true' } }).settings.showNamesNow, true);
-  assert.equal(normaliseDisplay({ settings: { showNamesNow: 'yes' } }).settings.showNamesNow, false);
-  assert.equal(normaliseDisplay({ settings: {} }).settings.showNamesNow, false);
 });

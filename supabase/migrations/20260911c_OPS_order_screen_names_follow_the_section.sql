@@ -1,26 +1,34 @@
--- 20260911b_OPS_order_screen_show_names_now.sql
---
--- SUPERSEDED, DO NOT RUN. 20260911c_OPS_order_screen_names_follow_the_section.sql replaces
--- this feed: each section's own "Name on screen" choice is the only control over names, and
--- the settings.showNamesNow switch this file added is gone from the app. Kept for history,
--- and because running 20260911c is safe whether or not this file was ever run.
+-- 20260911c_OPS_order_screen_names_follow_the_section.sql
 --
 -- OPS project (tbetcegmszzotrwdtqhi) ONLY. Peter runs this by hand in the SQL editor.
 --
--- Adds the per screen override "Show customer names now" (Back Office, Channels, Order
--- screens). order_status_feed still hides every name while order_queue keeps its "allow all"
--- policy, UNLESS that screen's own config has settings.showNamesNow = true.
+-- One control for names, not two. Each section of an order screen already has its own
+-- "Name on screen" choice in Back Office: First name and last initial, Full name, or
+-- Order number only. That choice is now the ONLY thing that decides what a TV shows.
+-- A section set to a name shows a name. A section set to Order number only shows the number.
 --
--- Safe to run twice: it only replaces one function. Grants, ownership and the security
--- barrier are unchanged. Run it after 20260911_OPS_order_status_displays.sql.
+-- What changes: order_status_feed no longer empties the name column when
+-- order_status_names_enabled() is false, and the per screen "Show customer names now"
+-- setting (20260911b) is gone. Nothing else in the function changes.
 --
--- Rollback: re-run 20260911_OPS_order_status_displays.sql, which holds the old definition.
-
--- Refuses to run. Running this after 20260911c would put the second control back, and the
--- app no longer writes settings.showNamesNow, so every name would go blank with no error.
-do $super$ begin
-  raise exception 'SUPERSEDED. Run 20260911c_OPS_order_screen_names_follow_the_section.sql instead.';
-end $super$;
+-- The risk Peter has accepted: order_queue still carries a policy that lets any caller
+-- insert or update rows, so someone with the public key could place a fake order and put
+-- words on a customer facing TV. order_status_names_enabled() stays in the database because
+-- Back Office calls it directly (loadNamesEnabled) for the plain note it shows while the
+-- order_queue fence (20260907b, file 3) is outstanding. names_enabled stays in this payload
+-- only so the shape does not change for a TV still running older JS. It hides nothing now.
+--
+-- Still true after this runs: the function stays SECURITY DEFINER with search_path pinned to
+-- public, it resolves the caller's own paired screen by auth.uid(), names are shortened in SQL
+-- by _osd_name (which returns null for a section set to Order number only), a name never
+-- carries an @ or a digit, and kiosk, online, QR and catering names show only after a status
+-- change made in a separate request.
+--
+-- Safe to run twice, and safe whether or not 20260911b was ever run: it replaces one function
+-- and touches nothing else. Ownership, the security barrier and every permission are untouched.
+-- Run it after 20260911_OPS_order_status_displays.sql.
+--
+-- Rollback: re-run 20260911_OPS_order_status_displays.sql, which holds the earlier definition.
 
 do $guard$ begin
   if to_regclass('public.order_status_displays') is null then
@@ -72,11 +80,9 @@ begin
   v_linger := public._osd_int(d.settings->>'lingerMinutes', 2, 0, 30);
   v_max_age := public._osd_int(d.settings->>'maxAgeHours', 6, 1, 24);
   v_unaccepted := coalesce(d.settings->>'showUnacceptedPlatform', 'false') = 'true';
-  -- Names stay hidden while order_queue carries a policy that lets any caller insert or update
-  -- it (order_status_names_enabled), because words typed by anyone would land on a customer
-  -- facing TV. A venue may accept that risk for ONE screen with that screen's own setting.
-  v_names := coalesce(public.order_status_names_enabled(), false)
-             or coalesce((d.settings->>'showNamesNow')::boolean, false);
+  -- Hides nothing now: each section's own "Name on screen" choice decides what shows. It comes
+  -- back below as names_enabled, to keep the payload shape steady for a TV on older JS.
+  v_names := coalesce(public.order_status_names_enabled(), false);
 
   if not d.is_active then
     v_rows := '[]'::jsonb; v_count := 0;
@@ -209,12 +215,13 @@ begin
              'section_index', l.sec_idx,
              'bucket', l.bucket,
              'number', l.num,
-             -- No names at all while order_queue is open to any writer (see NAMES at the top).
-             -- Customer typed names (kiosk, online, QR, catering) then show only after a status
-             -- change made in a separate request. That alone does NOT stop an attacker while
-             -- anyone can update order_queue; only the fence does, which is why v_names gates it.
+             -- The section's own "Name on screen" choice is the only control here: _osd_name
+             -- returns null when that section is set to Order number only, so the row shows
+             -- its number instead. Customer typed names (kiosk, online, QR, catering) still
+             -- show only after a status change made in a separate request. That does NOT stop
+             -- a determined writer while anyone can update order_queue, which is the risk
+             -- named at the top of this file.
              'name', case
-               when not v_names then null
                when l.source in ('kiosk','online','qr','catering')
                 and not coalesce(l.status_changed_at > l.first_seen_at, false) then null
                else public._osd_name(l.cust->>'name', l.sec->>'nameFormat')
