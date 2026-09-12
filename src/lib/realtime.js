@@ -541,6 +541,7 @@ export function startRealtime(store, locationId = LOCATION_ID) {
           store.getState().routeKioskOrderPrints?.({
             ref,
             source: src,                                     // 'kiosk' | 'online' | 'qr' | 'hubrise'
+            type: row.type || null,                          // v5.8.63: production centres by order type
             tableLabel: row.customer?.tableLabel || null,    // QR only
             items: row.items || [],
             customer: row.customer || null,
@@ -627,7 +628,7 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       if (!isMaster) return;
       const { data, error } = await supabase
         .from('order_queue')
-        .select('ref, source, items, customer, sent_at, status, collection_time, is_asap')
+        .select('ref, type, source, items, customer, sent_at, status, collection_time, is_asap')
         .eq('location_id', locationId)
         .in('source', ['kiosk', 'online', 'qr', 'hubrise'])
         .is('kitchen_routed_at', null)
@@ -644,6 +645,7 @@ export function startRealtime(store, locationId = LOCATION_ID) {
           await store.getState().routeKioskOrderPrints?.({
             ref: row.ref,
             source: row.source,
+            type: row.type || null,                          // v5.8.63: production centres by order type
             tableLabel: row.customer?.tableLabel || null,
             items: row.items || [],
             customer: row.customer || null,

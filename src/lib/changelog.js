@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.63',
+    date: '12 Sep 2026',
+    items: [
+      'Production centers can now take only certain order types. On the center, keep All order types, or tick Eat in, Takeaway, Collection or Delivery. An item reaches a center only when its category and its order type are both ticked, so a takeaway coffee can go to one center and an eat in coffee to another.',
+      'Nothing is lost if no center takes an order type. Those orders still go to every center that matches the category, the center page warns you before it happens, and the till says so when it does.',
+      'Tills use a change after you press Push to POS. Kiosk, online, table QR, 3rd party and catering orders use it straight away.',
+      'Counter and named walk in orders count as Eat in, and so do bar rounds. Use the Takeaway button for a takeaway.',
+    ],
+  },
+  {
     v: '5.8.62',
     date: '12 Sep 2026',
     items: [

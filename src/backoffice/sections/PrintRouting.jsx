@@ -3,6 +3,11 @@ import { useStore } from '../../store';
 import { isMock, supabase, getLocationId } from '../../lib/supabase';
 import { reportSave } from '../../lib/saveHealth';
 import { money } from '../../lib/currency';
+import { ORDER_TYPES } from '../../lib/orderScreen/orderScreenStatus';
+import {
+  normaliseCentreOrderTypes, describeCentreOrderTypes, orderTypeLabelOf,
+  nextCentreOrderTypes, fallbackOrderTypesForCentre, joinList,
+} from '../../lib/productionRouting';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const uid = () => `pc-${Date.now()}-${Math.random().toString(36).slice(2,6)}`;
@@ -101,8 +106,11 @@ async function saveVenueReceiptPrinter(printerId, previousId) {
   return { error: null };
 }
 
-// Default routing entry for a centre
-const emptyRouting = () => ({ assignedCategories:[], excludedItems:[] });
+// Default routing entry for a centre.
+// orderTypes: [] means ALL order types, which is what every existing centre keeps.
+// That is the OPPOSITE of `orderTypes` in lib/orderScreen/orderScreenStatus.js, where an
+// empty list matches nothing. See the note at the top of lib/productionRouting.js.
+const emptyRouting = () => ({ assignedCategories:[], excludedItems:[], orderTypes:[] });
 
 const S = {
   page: { display:'flex', height:'100%', overflow:'hidden' },
@@ -122,9 +130,112 @@ const S = {
   input: { width:'100%', padding:'8px 11px', borderRadius:8, border:'1px solid var(--bdr)', background:'var(--bg)', color:'var(--t1)', fontSize:13, fontFamily:'inherit', outline:'none', boxSizing:'border-box' },
   label: { fontSize:12, fontWeight:600, color:'var(--t3)', marginBottom:4, display:'block' },
   card: { background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12, padding:20, marginBottom:16 },
-  cardTitle: { fontSize:14, fontWeight:700, color:'var(--t1)', marginBottom:14 },
+  cardTitle: { fontSize:16, fontWeight:700, color:'var(--t1)', marginBottom:14 },
   row: { display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:12 },
 };
+
+// ─── Order type routing ───────────────────────────────────────────────────────
+// The house Back Office kit (15px or more, a real 18px checkbox), copied from
+// OrderScreens.jsx so this card matches the screens already signed off. Deliberately NOT
+// the 11px to 14px `S` scale the rest of this older file uses.
+const OT = {
+  card: { background:'var(--bg1)', border:'1px solid var(--bdr)', borderRadius:12, padding:20, marginBottom:16 },
+  // 16px to match S.cardTitle, so Category routing and Order types read as a matched pair
+  // rather than the newer card looking like the more important one.
+  title: { fontSize:16, fontWeight:800, color:'var(--t1)', margin:'0 0 4px' },
+  help: { fontSize:15, color:'var(--t3)', lineHeight:1.5, margin:'6px 0 0', maxWidth:760 },
+  checkWrap: { display:'flex', flexWrap:'wrap', gap:'6px 18px', margin:'12px 0' },
+  check: { display:'inline-flex', alignItems:'center', gap:8, fontSize:15, color:'var(--t1)', cursor:'pointer', minHeight:32 },
+  checkbox: { width:18, height:18, accentColor:'var(--acc)', cursor:'pointer', margin:0 },
+  status: { fontSize:15, fontWeight:700, color:'var(--t1)', marginTop:12 },
+  warn: { marginTop:12, fontSize:15, color:'var(--t1)', background:'var(--acc-d)', border:'1px solid var(--acc-b)', borderRadius:8, padding:'8px 12px', lineHeight:1.5 },
+};
+
+const Check = ({ checked, onChange, label, disabled }) => (
+  <label style={{ ...OT.check, cursor: disabled ? 'default' : 'pointer' }}>
+    <input type="checkbox" checked={!!checked} disabled={!!disabled}
+      onChange={e => onChange(e.target.checked)}
+      style={{ ...OT.checkbox, cursor: disabled ? 'default' : 'pointer' }} />
+    <span>{label}</span>
+  </label>
+);
+
+// A centre serves the categories ticked AND the order types ticked. All order types is the
+// default: it is what every existing centre keeps until someone changes it here.
+// Wording note: every sentence on screen says "center" and "order", matching the rest of
+// this page, and never "centre" or "food". A centre can be a Bar, a Cold section or an
+// Expo / pass, none of which make food.
+function OrderTypeRouter({ centreId, centreName, routing, setRouting, centres, catParents }) {
+  const r = routing[centreId] || emptyRouting();
+  const list = normaliseCentreOrderTypes(r.orderTypes);
+  const takesAll = list.length === 0;
+  // Order types alone route nothing: the category stage runs first and a centre with no
+  // categories ticked receives nothing at all. Saying "Kitchen takes Takeaway" on such a
+  // centre would be the exact opposite of the truth.
+  const hasCats = (r.assignedCategories || []).length > 0;
+
+  // Rides the same debounced save effect, and the same revert, as the category ticks.
+  // Same value in means the same object back, so a no-op click never triggers a save.
+  const write = (next) => setRouting(prev => {
+    const clean = normaliseCentreOrderTypes(next);
+    const cur = prev[centreId] || emptyRouting();
+    const before = normaliseCentreOrderTypes(cur.orderTypes);
+    if (before.length === clean.length && before.every((k, i) => k === clean[i])) return prev;
+    return { ...prev, [centreId]: { ...cur, orderTypes: clean } };
+  });
+
+  // nextCentreOrderTypes owns the All behaviour and is covered by node:test.
+  const toggleType = (key, on) => write(nextCentreOrderTypes(list, key, on));
+
+  // Asked per category, not per venue: a takeaway pizza whose only centre is Eat in only
+  // is the case that bites, and a venue wide check hides it the moment any other centre
+  // takes Takeaway.
+  const gaps = fallbackOrderTypesForCentre(centreId, centres, routing, catParents);
+
+  return (
+    <div style={OT.card}>
+      <h2 style={OT.title}>🍽 Order types</h2>
+      <p style={OT.help}>An item needs a <strong>ticked category</strong> and a <strong>ticked order type</strong> to reach this center.</p>
+      <div style={OT.checkWrap}>
+        {/* Disabled while it is on: a centre can never be saved serving nothing, so
+            unticking All is meaningless. Narrowing happens by ticking one of the four. */}
+        <Check checked={takesAll} disabled={takesAll} onChange={() => write([])} label="All order types" />
+        {ORDER_TYPES.map(t => (
+          <Check
+            key={t.key}
+            checked={!takesAll && list.includes(t.key)}
+            onChange={(on) => toggleType(t.key, on)}
+            label={t.label}
+          />
+        ))}
+      </div>
+      {!hasCats && (
+        <div style={OT.warn}>
+          No categories are ticked above, so nothing reaches this center yet. Tick a category first.
+        </div>
+      )}
+      {hasCats && (
+        <div style={OT.status}>
+          {takesAll
+            ? 'This center takes every order type. Ticking all four is the same as All order types.'
+            : `${centreName} takes ${joinList(list.map(orderTypeLabelOf))}.`}
+        </div>
+      )}
+      {hasCats && gaps.length > 0 && (
+        <div style={OT.warn}>
+          No center takes {joinList(gaps.map(orderTypeLabelOf))} for some of the categories ticked above.
+          {' '}Those orders go to every center that matches the category, so nothing is lost.
+        </div>
+      )}
+      {/* Only while it can bite, and never alongside the warning above, which says it
+          already in the specific. A centre on All order types cannot reach the fallback. */}
+      {!takesAll && gaps.length === 0 && (
+        <p style={OT.help}>If no center takes an order type, the order still goes to every center that matches the category.</p>
+      )}
+      <p style={OT.help}>Tills use this after you press <strong>Push to POS</strong>. Kiosk and online orders use it straight away.</p>
+    </div>
+  );
+}
 
 // ─── Category/Item routing picker ─────────────────────────────────────────────
 function CategoryRouter({ centreId, routing, setRouting, menuCategories, menuItems }) {
@@ -139,7 +250,8 @@ function CategoryRouter({ centreId, routing, setRouting, menuCategories, menuIte
     const excluded = r.assignedCategories.includes(catId)
       ? r.excludedItems.filter(id => !menuItems.filter(i => i.cat===catId||i.cats?.includes(catId)).map(i=>i.id).includes(id))
       : r.excludedItems;
-    setRouting(prev => ({ ...prev, [centreId]: { assignedCategories:assigned, excludedItems:excluded } }));
+    // The spread matters: without it, ticking a category wiped this centre's orderTypes.
+    setRouting(prev => ({ ...prev, [centreId]: { ...(prev[centreId] || emptyRouting()), assignedCategories:assigned, excludedItems:excluded } }));
   };
 
   const toggleItem = (itemId) => {
@@ -381,6 +493,14 @@ export default function PrintRouting() {
 
   const activeCentre = data.centres.find(c => c.id === selected);
 
+  // catId -> parentId, so the order type warning knows a centre assigned a PARENT
+  // category also serves that category's children, exactly as the routing rule does.
+  const catParents = useMemo(() => {
+    const m = {};
+    (menuCategories || []).forEach(c => { m[c.id] = c.parentId || c.parent_id || null; });
+    return m;
+  }, [menuCategories]);
+
   // Merge Supabase KDS data into centre display
   const kdsForCentre = (centreId) => kdsDevices.find(k => k.centre_id === centreId);
   const unassignedKds = kdsDevices.filter(k => !k.centre_id || !data.centres.find(c=>c.id===k.centre_id?.toString()));
@@ -552,6 +672,12 @@ export default function PrintRouting() {
                     {c.printer && <span>🖨 {c.printer.name}</span>}
                     {kds && <span>📺 {kds.name}</span>}
                     {catCount > 0 && <span style={{ color:'var(--acc)' }}>{catCount} categor{catCount===1?'y':'ies'}</span>}
+                    {/* Only when the centre is narrowed: every centre reading "All order
+                        types" says nothing and buries the one row that differs. 15px
+                        because it is new Back Office copy; the 11px around it is older. */}
+                    {normaliseCentreOrderTypes(r.orderTypes).length > 0 && (
+                      <span style={{ color:'var(--acc)', fontSize:15, fontWeight:700 }}>{describeCentreOrderTypes(r)} only</span>
+                    )}
                   </div>
                 </div>
               </div>
@@ -644,6 +770,16 @@ export default function PrintRouting() {
                 menuItems={menuItems || []}
               />
             </div>
+
+            {/* Order types (v5.8.63): same page, next to category routing */}
+            <OrderTypeRouter
+              centreId={activeCentre.id}
+              centreName={activeCentre.name}
+              routing={routing}
+              setRouting={setRouting}
+              centres={data.centres}
+              catParents={catParents}
+            />
           </>
         )}
 

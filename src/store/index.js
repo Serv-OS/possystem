@@ -5,6 +5,7 @@ import { resolveServiceCharge } from '../lib/serviceCharge';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
 import { buildScheduleCtx } from '../lib/locationTime';
 import { resolveItemPrice, cartUnitPrice } from '../lib/menuPricing';
+import { resolveCentresForItem, resolveOrderTypeKey, orderTypeFallbackMessage, orderTypeLabelOf } from '../lib/productionRouting';
 import { clockStatusForPos } from '../lib/posClockIn';
 import { computeCheckTotals } from '../lib/payments/checkTotals';
 import { operatorSwitchPatch, logoutPatch } from '../lib/cartHold';
@@ -423,9 +424,10 @@ export const findDuplicateProductName = (items, name, excludeId = null) => {
 // never printed the transfer notice: the operator saw "Transferred to Table 12" and
 // the kitchen was never told the food had moved. Lifted to module scope so both
 // callers share one implementation.
-// NOTE: two further near-copies of this logic still live inside other store actions
-// (the KDS ticket builder and the kiosk print router). They work; folding them in is a
-// separate cleanup, deliberately not bundled into a pre-stage hardening pass.
+// v5.8.63: the two further near-copies (addRoundToTab's bar-round router and
+// routeKioskOrderPrints' channel router) have now been folded in. There is ONE
+// implementation of the rule, and it lives in src/lib/productionRouting.js so node:test
+// can pin it. Production centres are filtered by ORDER TYPE as well as category there.
 
 // catId → parentId, for walking the category hierarchy.
 const buildCatParentMap = () => {
@@ -438,45 +440,26 @@ const buildCatParentMap = () => {
   } catch { return {}; }
 };
 
-// Is catId, or any ancestor of it, in the assigned set?
-const catOrAncestorMatches = (catId, assignedSet, parentMap, depth = 0) => {
-  if (!catId || depth > 5) return false;
-  if (assignedSet.has(catId)) return true;
-  const parentId = parentMap[catId];
-  if (!parentId) return false;
-  return catOrAncestorMatches(parentId, assignedSet, parentMap, depth + 1);
-};
-
-const getCentresForItem = (item, config) => {
-  const { centres, routing } = config;
-  if (!centres?.length || !routing) return [];
-
-  // Order line items only carry itemId — look up the full menu item to get cat/parentId
-  const allItems = useStore.getState().menuItems || [];
-  const menuItem = allItems.find(i => i.id === (item.itemId || item.id));
-
-  // Direct category from the item (or looked-up menu item)
-  let itemCat = item.cat || item.cats?.[0] || menuItem?.cat || menuItem?.cats?.[0] || null;
-
-  // For variant items (e.g. Small Latte), also check the parent item's category
-  // (variants often inherit their routing from the parent: Latte → Coffee → Hot Drinks → KDS Bar)
-  const parentId = item.parentId || menuItem?.parentId || null;
-  const parentMenuItem = parentId ? allItems.find(i => i.id === parentId) : null;
-  const parentCat = parentMenuItem?.cat || parentMenuItem?.cats?.[0] || null;
-
-  const parentMap = buildCatParentMap();
-  const matched = [];
-  centres.forEach(centre => {
-    const r = routing[centre.id];
-    if (!r?.assignedCategories?.length) return;
-    if (r.excludedItems?.includes(item.id) || r.excludedItems?.includes(item.itemId)) return;
-    const assignedSet = new Set(r.assignedCategories);
-    const catMatches = (itemCat && catOrAncestorMatches(itemCat, assignedSet, parentMap)) ||
-                       (parentCat && catOrAncestorMatches(parentCat, assignedSet, parentMap));
-    if (catMatches) matched.push(centre.id);
-  });
-  return matched;
-};
+// The whole routing decision is resolveCentresForItem, imported from
+// src/lib/productionRouting.js: category ticks AND order type ticks, both read from
+// print_routing.routing[centreId]. It returns { centreIds, byCategory, usedTypeFallback,
+// typeKey }, and it is RENAMED from this file's old getCentresForItem on purpose, because
+// it returns an object now, not an array: any call site the v5.8.63 fold missed becomes
+// an eslint no-undef error instead of silently iterating an object, which is the
+// v5.5.974 failure mode described above.
+//
+// The context it needs is built ONCE PER SEND by makeRoutingCtx, never per line.
+// buildCatParentMap JSON.parses the whole pushed config snapshot out of localStorage
+// (menuItems, menuCategories and menus, commonly a few hundred KB), so building it
+// per item made a 150 line catering or HubRise order parse that blob 150 times,
+// synchronously, on the one path that must not stall a Sunmi.
+// orderType is 'dine-in' | 'takeaway' | 'collection' | 'delivery'; null or unknown
+// matches every centre, so the rule is never narrower than before.
+const makeRoutingCtx = (orderType) => ({
+  menuItems: useStore.getState().menuItems || [],
+  catParents: buildCatParentMap(),
+  orderType,
+});
 
 // ── Tax context (v5.7.33, delivery only — no consumer computes with it yet) ──
 // Packages everything lib/taxEngine.js needs into one object:
@@ -2056,8 +2039,10 @@ export const useStore = create((set, get) => ({
           } catch { return { centres: [], routing: {} }; }
         })();
         const byCenter = {};
+        // A table transfer is an eat in order by definition.
+        const routingCtx = makeRoutingCtx('dine-in');
         sentItems.forEach(item => {
-          const centres = getCentresForItem(item, routingConfig);
+          const centres = resolveCentresForItem(item, routingConfig, routingCtx).centreIds;
           centres.forEach(cid => {
             if (!byCenter[cid]) byCenter[cid] = [];
             byCenter[cid].push(item);
@@ -2472,8 +2457,9 @@ export const useStore = create((set, get) => ({
       } catch { return { centres: [], routing: {} }; }
     })();
     const byCentre = {};
+    const routingCtx = makeRoutingCtx(orderType);
     items.forEach(item => {
-      getCentresForItem(item, routingConfig).forEach(cid => {
+      resolveCentresForItem(item, routingConfig, routingCtx).centreIds.forEach(cid => {
         if (!byCentre[cid]) byCentre[cid] = [];
         byCentre[cid].push(item);
       });
@@ -2539,9 +2525,8 @@ export const useStore = create((set, get) => ({
       } catch { return { centres:[], routing:{} }; }
     };
 
-    // buildCatParentMap / catOrAncestorMatches / getCentresForItem now live at module
-    // scope (see the block above useStore) — transferTable needs them too and could not
-    // see these local copies.
+    // buildCatParentMap / resolveCentresForItem now live at module scope (see the block
+    // above useStore) — transferTable needs them too and could not see these local copies.
 
     // v5.5.191: compute which courses auto-fire on send. Always includes 0
     // (immediate) and 1 (starters). If the lowest occupied course is higher
@@ -2572,13 +2557,27 @@ export const useStore = create((set, get) => ({
       // reach KDS or the kitchen printers — the print jobs below are built FROM
       // these tickets, so this one filter covers both. buildKitchenTicket
       // (printer.js) guards again at the docket builder.
+      // v5.8.63: production centres are filtered by ORDER TYPE as well as category.
+      // If a category matched but no centre takes this order type the food still goes to
+      // every centre the category matched, and the operator is told once below.
+      // targetTableId means a table's food, which is Eat in by definition, matching
+      // transferTable and fireCourse. The walk in branch is the only one that routes by
+      // the store's orderType: clearTable's payment-time fire can run for a table that is
+      // not the active one, so a stale takeaway orderType must never reach a table's food.
+      const routingCtx = makeRoutingCtx(targetTableId ? 'dine-in' : orderType);
+      let typeFallback = false;
       items.filter(isUnsentLine).filter(i => !i.noKitchen).forEach(item => {
-        const centres = getCentresForItem(item, routingConfig);
-        centres.forEach(cid => {
+        const { centreIds, usedTypeFallback } = resolveCentresForItem(item, routingConfig, routingCtx);
+        if (usedTypeFallback) typeFallback = true;
+        centreIds.forEach(cid => {
           if (!byCenter[cid]) byCenter[cid] = [];
           byCenter[cid].push(item);
         });
       });
+      // Delayed on purpose: every caller fires a success toast immediately after
+      // sendToKitchen, and showToast is a single slot, so a warning raised here would be
+      // overwritten before it painted. See showDelayedToast.
+      if (typeFallback) get().showDelayedToast(orderTypeFallbackMessage(resolveOrderTypeKey({ type: routingCtx.orderType })), 'warning');
       return Object.entries(byCenter).map(([centreId, centreItems]) => {
         const allCourses = [...new Set(centreItems.map(i => i.course ?? 1))].sort((a,b)=>a-b);
         return {
@@ -2900,6 +2899,7 @@ export const useStore = create((set, get) => ({
         for (const row of data) {
           await get().routeKioskOrderPrints?.({
             ref: row.ref, source: row.source || 'catering',
+            type: row.type || null,                          // v5.8.63: production centres by order type
             items: row.items || [], customer: row.customer || null,
             collectionTime: row.collection_time || null, isASAP: !!row.is_asap,
             sentAt: row.sent_at ? new Date(row.sent_at).getTime() : Date.now(),
@@ -3015,8 +3015,9 @@ export const useStore = create((set, get) => ({
           // centre at all — no fire docket, while the toast still said "fired to
           // kitchen". Call the shared module-level helper instead: it is the same one
           // sendToKitchen routed these items with, so the marker lands where the food did.
+          const routingCtx = makeRoutingCtx('dine-in');
           courseItems.forEach(item => {
-            getCentresForItem(item, routingConfig).forEach(cid => centresInCourse.add(cid));
+            resolveCentresForItem(item, routingConfig, routingCtx).centreIds.forEach(cid => centresInCourse.add(cid));
           });
           if (centresInCourse.size > 0) {
             console.log('[fireCourse] derived centres from session items:', [...centresInCourse]);
@@ -4047,43 +4048,26 @@ export const useStore = create((set, get) => ({
       };
       const routingConfig = getRoutingConfig();
       const centres = routingConfig.centres || [];
-      const routing = routingConfig.routing || {};
-      const parentMap = (() => {
-        try {
-          const snap = JSON.parse(localStorage.getItem('rpos-config-snapshot') || '{}');
-          const cats = snap.menuCategories || state.menuCategories || [];
-          const m = {}; cats.forEach(c => { m[c.id] = c.parentId || null; }); return m;
-        } catch { return {}; }
-      })();
-      const catOrAncestor = (catId, set, depth=0) => {
-        if (!catId || depth > 5) return false;
-        if (set.has(catId)) return true;
-        return catOrAncestor(parentMap[catId], set, depth + 1);
-      };
-      const allMenuItems = state.menuItems || [];
-      const centresForItem = (item) => {
-        if (!centres.length) return [];
-        const mi = allMenuItems.find(i => i.id === (item.itemId || item.id));
-        const itemCat = item.cat || item.cats?.[0] || mi?.cat || mi?.cats?.[0] || null;
-        const parentCat = (mi?.parentId ? allMenuItems.find(i => i.id === mi.parentId)?.cat : null) || null;
-        const matched = [];
-        centres.forEach(c => {
-          const r = routing[c.id];
-          if (!r?.assignedCategories?.length) return;
-          if (r.excludedItems?.includes(item.id) || r.excludedItems?.includes(item.itemId)) return;
-          const set = new Set(r.assignedCategories);
-          if ((itemCat && catOrAncestor(itemCat, set)) || (parentCat && catOrAncestor(parentCat, set))) matched.push(c.id);
-        });
-        return matched;
-      };
+      // v5.8.63: this used to be a third near-copy of the centre walk. It now calls the
+      // one shared rule, so bar rounds honour the order type ticks as well.
+      // A bar round is routed as EAT IN, hardcoded on purpose: a round carries no order
+      // type anywhere in the data, and POSSurface calls addRoundToTab BEFORE
+      // setOrderType('dine-in'), so reading get().orderType here would pick up whatever
+      // the PREVIOUS order was.
       const byCentre = {};
+      const routingCtx = makeRoutingCtx('dine-in');
+      let typeFallback = false;
       items.forEach(it => {
         if (it.voided) return;
-        centresForItem(it).forEach(cid => {
+        const { centreIds, usedTypeFallback } = resolveCentresForItem(it, routingConfig, routingCtx);
+        if (usedTypeFallback) typeFallback = true;
+        centreIds.forEach(cid => {
           if (!byCentre[cid]) byCentre[cid] = [];
           byCentre[cid].push(it);
         });
       });
+      // Delayed: POSSurface fires its own success toast straight after this action.
+      if (typeFallback) state.showDelayedToast?.(orderTypeFallbackMessage('dine-in'), 'warning');
       const getCentrePrinter = (cid) => {
         const c = centres.find(x => x.id === cid);
         return c?.printer?.name || c?.name || { pc1:'Hot kitchen', pc2:'Cold section', pc3:'Pizza oven', pc4:'Bar', pc5:'Expo / pass' }[cid] || 'Kitchen';
@@ -6986,7 +6970,9 @@ export const useStore = create((set, get) => ({
         .eq('ref', order.ref)
         .eq('location_id', locId)
         .is('kitchen_routed_at', null)
-        .select('ref');
+        // v5.8.63: `type` comes back with the claim so the order type rule works even when
+        // a caller passed no type. Free, and it covers any future caller too.
+        .select('ref, type');
       if (r.error && COL_MISSING(r.error)) {
         console.warn('[routeKioskOrderPrints] kitchen_routed_at column missing — proceeding without idempotency claim. Run: alter table order_queue add column kitchen_routed_at timestamptz;');
         // v5.5.159: surface a loud, visible toast — silent console warnings
@@ -7011,6 +6997,7 @@ export const useStore = create((set, get) => ({
         if (!r.data?.length && !opts?.force) return; // Another device already routed
         markRouted(order.ref);   // v5.5.860: claim won — remember locally too, so a later claim-reset can never re-print here
       }
+      const claimedRow = r.data?.[0] || null;
       // v5.5.861: we are now COMMITTED to printing this order on this device — this is
       // the only point the operator-facing toast belongs (skipped/held/claimed-elsewhere
       // passes above stay silent instead of re-notifying on every boot).
@@ -7036,48 +7023,30 @@ export const useStore = create((set, get) => ({
           catch { routingConfig = { centres:[], routing:{} }; }
         }
       }
-      let parentMap = {};
-      try {
-        const snap = JSON.parse(localStorage.getItem('rpos-config-snapshot') || '{}');
-        const cats = snap.menuCategories || useStore.getState().menuCategories || [];
-        cats.forEach(c => { parentMap[c.id] = c.parentId || null; });
-      } catch {}
-      const allMenuItems = useStore.getState().menuItems || [];
-      const catOrAncestorMatches = (catId, set, depth = 0) => {
-        if (!catId || depth > 5) return false;
-        if (set.has(catId)) return true;
-        const p = parentMap[catId];
-        return p ? catOrAncestorMatches(p, set, depth + 1) : false;
-      };
-      const centresForItem = (item) => {
-        const { centres, routing } = routingConfig;
-        if (!centres?.length || !routing) return [];
-        const menuItem = allMenuItems.find(i => i.id === (item.itemId || item.id));
-        const itemCat = item.cat || item.cats?.[0] || menuItem?.cat || menuItem?.cats?.[0] || null;
-        const parentId = item.parentId || menuItem?.parentId || null;
-        const parentMenuItem = parentId ? allMenuItems.find(i => i.id === parentId) : null;
-        const parentCat = parentMenuItem?.cat || parentMenuItem?.cats?.[0] || null;
-        const matched = [];
-        centres.forEach(centre => {
-          const r = routing[centre.id];
-          if (!r?.assignedCategories?.length) return;
-          if (r.excludedItems?.includes(item.id) || r.excludedItems?.includes(item.itemId)) return;
-          const set = new Set(r.assignedCategories);
-          if ((itemCat && catOrAncestorMatches(itemCat, set)) || (parentCat && catOrAncestorMatches(parentCat, set))) {
-            matched.push(centre.id);
-          }
-        });
-        return matched;
-      };
+      // v5.8.63: this was the third near-copy of the centre walk. It now calls the one
+      // shared rule in src/lib/productionRouting.js, so a kiosk, online, QR, HubRise or
+      // catering order honours the order type ticks exactly like a till order does.
+      // The type comes from order_queue.type (order.type, else the claimed row). The raw
+      // channel value customer.serviceType is only a fallback inside resolveOrderTypeKey,
+      // because ezCater sends serviceType 'TAKEOUT' on a 'collection' order.
+      const typeKey = resolveOrderTypeKey(order) || resolveOrderTypeKey(claimedRow) || null;
+      const allMenuItems = useStore.getState().menuItems || [];   // unknown-SKU check below
 
-      // Bucket items by centre
+      // Bucket items by centre. One routing context for the whole order, never one per
+      // line: building it parses the pushed config snapshot out of localStorage.
       const byCentre = {};
+      const routingCtx = makeRoutingCtx(typeKey);
+      let typeFallback = false;
       order.items.forEach(item => {
-        centresForItem(item).forEach(cid => {
+        const { centreIds, usedTypeFallback } = resolveCentresForItem(item, routingConfig, routingCtx);
+        if (usedTypeFallback) typeFallback = true;
+        centreIds.forEach(cid => {
           if (!byCentre[cid]) byCentre[cid] = [];
           byCentre[cid].push(item);
         });
       });
+      // The fallback warning is raised at the END of this action (see below), because the
+      // routed / did-not-print toast further down would overwrite it: showToast is one slot.
 
       // v5.5.850 (supersedes v5.5.555's whole-order-only fallback): PER-ITEM fallback — any
       // item that matched no centre (e.g. a HubRise sku_ref that isn't in our catalog) still
@@ -7223,6 +7192,7 @@ export const useStore = create((set, get) => ({
           centres: routingConfig.centres?.length || 0,
           routingKeys: Object.keys(routingConfig.routing || {}).length,
           allCats: order.items?.map(i => i.cat || i.cats?.[0] || null),
+          orderType: typeKey,   // v5.8.63: which order type we tried to route
         };
         console.warn('[routeKioskOrderPrints] NOTHING ROUTED for', order.ref, '— diagnostic dump:', dump);
         // v5.5.131: on-screen diagnostic toast for Sunmi (no DevTools).
@@ -7231,7 +7201,9 @@ export const useStore = create((set, get) => ({
         if (!dump.centres) reason = 'no production centres configured';
         else if (!dump.routingKeys) reason = 'centres exist but no category routing rules';
         else if (dump.allCats?.every(c => !c)) reason = 'order items have no `cat` field — try refreshing customer browser';
-        else reason = `item cats (${dump.allCats?.join(', ')}) don\'t match any centre`;
+        // v5.8.63: name the order type too. A centre can be narrowed to certain order
+        // types now, and the per-item fallback means the CATEGORY is what failed here.
+        else reason = `item cats (${dump.allCats?.join(', ')}) don\'t match any centre that takes ${orderTypeLabelOf(typeKey) || 'this order type'}`;
         showToast?.(`⚠ ${srcLabel} ${order.ref} did not print: ${reason}`, 'error');
       } else {
         const centreNames = Object.keys(byCentre).map(cid =>
@@ -7249,6 +7221,9 @@ export const useStore = create((set, get) => ({
           showToast?.(`✓ ${srcLabel} ${order.ref} routed → ${centreNames.join(', ')}`, 'success');
         }
       }
+      // v5.8.63: now that the routed / did-not-print toast has been raised, queue the
+      // order type fallback warning behind it so the operator actually reads it.
+      if (typeFallback) useStore.getState().showDelayedToast?.(orderTypeFallbackMessage(typeKey), 'warning');
 
       // v5.5.128: AFTER prints have fired (or we tried — the print path is
       // durable so the row was at minimum queued), flip status from
@@ -7440,6 +7415,13 @@ export const useStore = create((set, get) => ({
     set({ theme: t });
   },
   showToast: (msg,type='info') => { set({ toast:{ msg,type,key:Date.now() } }); setTimeout(()=>set({toast:null}),2800); },
+  // v5.8.63: a toast raised BEHIND the one a caller is about to show.
+  // `toast` is a single slot and showToast's own 2800ms timer clears whatever is in it,
+  // so a warning raised inside sendToKitchen / addRoundToTab / routeKioskOrderPrints was
+  // overwritten by the success toast the caller fires microseconds later and never
+  // painted. The delay clears the success toast first, then shows this one on its own.
+  // For warnings the operator must actually read, never the happy path.
+  showDelayedToast: (msg,type='info',delayMs=3000) => { setTimeout(()=>get().showToast(msg,type), delayMs); },
 
   // ── Change due (v5.5.943) ─────────────────
   // A cash sale's change used to flash past on the tender screen and die with the
@@ -7485,6 +7467,7 @@ export const useStore = create((set, get) => ({
     const locId = getActiveLocationSync();
     get().routeKioskOrderPrints?.({
       ref: o.ref, source: o.source || 'hubrise',
+      type: o.type || o._raw?.type || null,                  // v5.8.63: production centres by order type
       items: o.items || [],
       customer: o.customer || null,
       collectionTime: o.collectionTime || null,
