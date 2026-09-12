@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.60',
+    date: '11 Sep 2026',
+    items: [
+      'Order screens: a collected order now leaves the screen the moment staff tap Collected. New screens are set to no delay. A screen you already made keeps the delay it was saved with, so open it in Back Office and set "Keep collected orders on screen for this many minutes" to 0.',
+      'The Back Office field now says what 0 means.',
+    ],
+  },
+  {
     v: '5.8.59',
     date: '11 Sep 2026',
     items: [

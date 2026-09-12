@@ -51,7 +51,7 @@ export const DEFAULT_LABELS = {
 
 export const DEFAULT_SETTINGS = {
   headerText: 'Orders ready for pickup',
-  lingerMinutes: 2,
+  lingerMinutes: 0,
   maxAgeHours: 6,
   showUnacceptedPlatform: false,
   chime: false,

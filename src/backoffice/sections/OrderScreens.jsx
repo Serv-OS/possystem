@@ -508,7 +508,7 @@ function Editor({ initial, locId, onSaved, onClose }) {
 
           {/* 5. Timing and sound */}
           <Box title="Timing and sound" help={['Orders show as Ready when staff tap Ready in Orders Hub or on the handheld till.']}>
-            <Field label="Keep collected orders on screen for this many minutes">
+            <Field label="Keep collected orders on screen for this many minutes" help="0 means the order leaves the screen the moment staff tap Collected.">
               <input type="number" min={0} max={30} step={1} style={{ ...S.inp, width: 120 }}
                 value={settings.lingerMinutes ?? ''} onChange={e => setSettings({ lingerMinutes: e.target.value })} />
             </Field>
@@ -662,9 +662,10 @@ const Box = ({ title, help = [], children }) => (
   </section>
 );
 
-const Field = ({ label, children }) => (
+const Field = ({ label, help, children }) => (
   <div>
     <div style={S.lbl}>{label}</div>
+    {help && <div style={{ ...S.help, marginTop: 2 }}>{help}</div>}
     <div style={{ marginTop: 6 }}>{children}</div>
   </div>
 );

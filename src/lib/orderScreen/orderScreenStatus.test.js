@@ -62,7 +62,9 @@ const HOUR = 60 * MIN;
 const allDisplay = (settings = {}) => ({
   name: 'All', sections: [{ id: 'all', title: 'All', channels: CHANNELS.map(c => c.key),
     orderTypes: ORDER_TYPES.map(t => t.key), statuses: [...STEPS], nameFormat: 'short' }],
-  settings: { ...DEFAULT_SETTINGS, ...settings },
+  // The product default is lingerMinutes 0 (collected leaves at once), so the linger rules
+  // are tested against an explicit 2 here. A test that wants the default passes 0 itself.
+  settings: { ...DEFAULT_SETTINGS, lingerMinutes: 2, ...settings },
 });
 const order = (o = {}) => ({
   ref: 'R1047', source: 'kiosk', type: 'dine-in', status: 'received', customer: { name: 'Joseph Wong' },
@@ -423,8 +425,9 @@ test('normaliseDisplay clamps and defaults settings', () => {
   assert.equal(n({ lingerMinutes: 99 }).lingerMinutes, 30);
   assert.equal(n({ lingerMinutes: -5 }).lingerMinutes, 0);
   assert.equal(n({ lingerMinutes: '7' }).lingerMinutes, 7);
-  assert.equal(n({ lingerMinutes: '2.5' }).lingerMinutes, 2);
-  assert.equal(n({ lingerMinutes: 2.5 }).lingerMinutes, 2);
+  // Not a whole number, so the default applies (it is 0: collected leaves the screen at once).
+  assert.equal(n({ lingerMinutes: '2.5' }).lingerMinutes, DEFAULT_SETTINGS.lingerMinutes);
+  assert.equal(n({ lingerMinutes: 2.5 }).lingerMinutes, DEFAULT_SETTINGS.lingerMinutes);
   assert.equal(n({ maxAgeHours: 0 }).maxAgeHours, 1);
   assert.equal(n({ maxAgeHours: 50 }).maxAgeHours, 24);
   assert.equal(n({ maxAgeHours: 'abc' }).maxAgeHours, 6);
@@ -625,7 +628,10 @@ test('preview never blank: every template section shows sample orders', () => {
   assert.equal(byKey.R1049.number, '49');
   assert.equal(byKey['HR-a1b2c3'].number, 'A7F3');
   assert.equal(byKey['HR-a1b2c3'].name, null, 'delivery section shows number only');
-  assert.equal(byKey.R1044.bucket, 'collected');
+  assert.equal(byKey.R1044, undefined, 'a collected sample leaves at once with the default linger');
+  // A venue that chooses a grace period still sees it.
+  const keptRows = samples.map(o => evaluateOrder(o, { ...tpl, settings: { ...tpl.settings, lingerMinutes: 2 } }, NOW)).filter(r => r.visible).map(r => r.row);
+  assert.equal(keptRows.find(r => r.key === 'R1044').bucket, 'collected');
   assert.equal(byKey['OL-9QW3M'].courier, 'stuart');
   assert.equal(byKey['OL-9QW3M'].number, 'W3M');
   // A kiosk sample still at its first status shows its number, not the typed name.
@@ -636,4 +642,20 @@ test('preview never blank: every template section shows sample orders', () => {
     const created = o.createdAt;
     assert.ok(created <= NOW - 3 * MIN && created >= NOW - 20 * MIN, o.ref);
   }
+});
+
+test('default settings take a collected order off the screen at once', () => {
+  assert.equal(DEFAULT_SETTINGS.lingerMinutes, 0);
+  const withDefaults = { ...allDisplay(), settings: { ...DEFAULT_SETTINGS } };
+  // Staff tapped Collected a second ago: with the default it is already gone.
+  const justCollected = evaluateOrder(order({ status: 'collected', statusChangedAt: NOW - 1000 }), withDefaults, NOW);
+  assert.equal(justCollected.visible, false);
+  assert.equal(justCollected.reason, 'expired');
+  // A till order deleted from ready is the same: no grace period by default.
+  const deleted = evaluateOrder(order({ departedAt: NOW - 1000, departedFrom: 'ready' }), withDefaults, NOW);
+  assert.equal(deleted.visible, false);
+  // A venue that wants a grace period still gets one.
+  const lingering = evaluateOrder(order({ status: 'collected', statusChangedAt: NOW - 1000 }), allDisplay({ lingerMinutes: 2 }), NOW);
+  assert.equal(lingering.visible, true);
+  assert.equal(lingering.row.bucket, 'collected');
 });
