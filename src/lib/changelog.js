@@ -7,11 +7,21 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.62',
+    date: '12 Sep 2026',
+    items: [
+      'Order screens: the Name on screen choice on each section is now the only control over names. Choose First name and last initial or Full name and that section shows names. Choose Order number only and it shows the number. The separate Show customer names now switch is gone.',
+      'A line under that choice says what it means while the orders security update is outstanding: someone who knows how could place a fake order and put words on the screen.',
+      'Needs a database update to be run first. It replaces the one sent with v5.8.61.',
+    ],
+  },
+  {
     v: '5.8.61',
     date: '11 Sep 2026',
     items: [
       'Order screens: a new switch, Show customer names now, per screen in Back Office. Names are normally hidden because your orders table still has an old permission that lets any caller add an order, so a stranger could put words on a customer facing TV. The switch lets a venue accept that risk and show names today. It is off by default, and it needs a database update to be run first.',
       'The name setting on each section now explains why numbers show and where the switch is.',
+      'Replaced in v5.8.62: the switch is gone and the Name on screen choice decides on its own.',
     ],
   },
   {
