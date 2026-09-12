@@ -506,6 +506,22 @@ function Editor({ initial, locId, onSaved, onClose }) {
             </div>
           </Box>
 
+          {/* 4b. Customer names, only while the orders table still has its old open permission */}
+          {namesEnabled === false && (
+            <Box title="Customer names" help={[
+              'Your orders table still has an old permission that lets any caller add an order.',
+              'So names are hidden on TVs until that is fixed, and screens show order numbers.',
+            ]}>
+              <Check checked={settings.showNamesNow === true} onChange={v => setSettings({ showNamesNow: v })}
+                label="Show customer names now" />
+              {settings.showNamesNow === true && (
+                <div style={S.warn} role="note">
+                  Names will show on this screen. Someone who knows how could place a fake order and put words on it. Turn this off if that worries you.
+                </div>
+              )}
+            </Box>
+          )}
+
           {/* 5. Timing and sound */}
           <Box title="Timing and sound" help={['Orders show as Ready when staff tap Ready in Orders Hub or on the handheld till.']}>
             <Field label="Keep collected orders on screen for this many minutes" help="0 means the order leaves the screen the moment staff tap Collected.">
@@ -627,7 +643,7 @@ function SectionCard({ index, count, sec, labels, namesEnabled, onChange, onMove
           ))}
         </div>
         {namesEnabled === false && nameFormat !== 'number' && (
-          <p style={S.helpP}>For now the TV shows order numbers only. Names switch on by themselves after a security update to your orders.</p>
+          <p style={S.helpP}>The TV shows order numbers only until the security update to your orders, unless you tick Show customer names now above.</p>
         )}
         {nameFormat === 'full' && (
           <div style={S.warn} role="note">Anyone nearby can read full names. Check your privacy notice says names show on a screen.</div>

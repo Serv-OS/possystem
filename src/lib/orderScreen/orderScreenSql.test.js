@@ -179,3 +179,26 @@ test('the replaced claim_menu_board_screen keeps the live error text byte for by
 test('the migration guards against the wrong database', () => {
   assert.ok(sql.includes("raise exception 'Wrong database. Run this on the Ops project.'"));
 });
+
+// ── 20260911b: the per screen "Show customer names now" override ────────────────────────
+const sqlNames = fs.readFileSync(new URL('../../../supabase/migrations/20260911b_OPS_order_screen_show_names_now.sql', import.meta.url), 'utf8');
+
+test('20260911b: the names override is per screen and only widens the gate', () => {
+  const l = sqlNames.toLowerCase();
+  // It replaces one function and nothing else: no table, policy or grant changes.
+  assert.equal((l.match(/create or replace function/g) || []).length, 1);
+  assert.ok(l.includes('create or replace function public.order_status_feed'));
+  for (const word of ['drop table', 'alter table', 'create policy', 'drop policy', 'grant ', 'revoke ']) {
+    assert.equal(l.includes(word), false, `the file must not contain ${word}`);
+  }
+  // The gate is the global check OR that screen's own setting, never the setting alone.
+  assert.ok(sqlNames.includes("v_names := coalesce(public.order_status_names_enabled(), false)"));
+  assert.ok(sqlNames.includes("or coalesce((d.settings->>'showNamesNow')::boolean, false)"));
+  // Still a security definer function with a pinned search path, and still fenced on auth.uid().
+  assert.ok(l.includes('security definer'));
+  assert.ok(l.includes("set search_path to 'public'"));
+  assert.ok(sqlNames.includes('ms.device_uid = v_uid'));
+  // Wrong database guard, and Ops named in the header.
+  assert.ok(l.includes("to_regclass('public.order_status_displays') is null"));
+  assert.ok(sqlNames.includes('tbetcegmszzotrwdtqhi'));
+});

@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.61',
+    date: '11 Sep 2026',
+    items: [
+      'Order screens: a new switch, Show customer names now, per screen in Back Office. Names are normally hidden because your orders table still has an old permission that lets any caller add an order, so a stranger could put words on a customer facing TV. The switch lets a venue accept that risk and show names today. It is off by default, and it needs a database update to be run first.',
+      'The name setting on each section now explains why numbers show and where the switch is.',
+    ],
+  },
+  {
     v: '5.8.60',
     date: '11 Sep 2026',
     items: [
