@@ -31,6 +31,12 @@ export const CHANNELS = [
   { key: 'ezcater', label: 'ezCater', group: 'apps' },
 ];
 
+// The four order types anything writes to order_queue.type / store.orderType.
+// src/lib/productionRouting.js reuses this list for the production centre ticks, where
+// an EMPTY orderTypes list means ALL order types (a centre with nothing saved keeps
+// taking everything). Here an empty `orderTypes` on an order screen section matches
+// NOTHING and is a validation error. Two opposite conventions, both deliberate: do not
+// unify them, or every existing production centre stops printing.
 export const ORDER_TYPES = [
   { key: 'dine-in', label: 'Eat in' },
   { key: 'takeaway', label: 'Takeaway' },

@@ -910,7 +910,8 @@ export default function OrdersHub() {
       // kitchen miss. Fire it now (idempotent: routeKioskOrderPrints' kitchen_routed_at claim
       // dedups against the scheduled release), so the kitchen ticket is guaranteed.
       if (o.source === 'catering') {
-        try { useStore.getState().routeKioskOrderPrints?.({ ref: o.ref, source: 'catering', items: o.items || [], customer: o.customer || null, collectionTime: o.collectionTime || null, isASAP: o.isASAP, sentAt: Date.now() }); } catch { /* best-effort */ }
+        // v5.8.63: `type` rides along so production centres by order type apply here too.
+        try { useStore.getState().routeKioskOrderPrints?.({ ref: o.ref, source: 'catering', type: o.type || o._raw?.type || null, items: o.items || [], customer: o.customer || null, collectionTime: o.collectionTime || null, isASAP: o.isASAP, sentAt: Date.now() }); } catch { /* best-effort */ }
       }
       // Walk-in / takeaway / delivery / counter order — load it back into the
       // walk-in slot so the POS actually shows the items. Previously this branch
