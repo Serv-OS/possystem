@@ -36,6 +36,7 @@ import { supabase } from '../lib/supabase';
 import { useStore } from '../store';
 import { t, useKioskLang } from '../lib/i18n';
 import { displayName } from '../lib/itemDisplay';
+import { kioskLineNeed } from '../lib/kioskLine';
 import { money } from '../lib/currency';
 import { orderOptionFlow } from '../lib/optionFlow';
 import { resolveItemPrice, variantChildren, variantFromPrice } from '../lib/menuPricing';
@@ -691,12 +692,12 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
     // (nested picks, qty bumped after picking, races with another kiosk):
     // aggregate this line's need per linked item (picks × qty, main item × qty)
     // and refuse with a named message rather than silently overselling.
+    // The chosen size row (null when the item has no sizes). The Size group is
+    // not in mods (buildModsArray skips it), so the size is handed to onAdd on
+    // its own and the gate counts the size and its parent, like the till.
+    const variantItem = pickedVariantOpt ? ((allItems || []).find(i => i.id === pickedVariantOpt.id) || null) : null;
     {
-      const need = {};
-      if (item?.id) need[item.id] = (need[item.id] || 0) + qty;
-      for (const m of mods) {
-        if (m.itemId) need[m.itemId] = (need[m.itemId] || 0) + (Number(m.qty) || 1) * qty;
-      }
+      const need = kioskLineNeed({ item, variantItem, mods, qty });
       for (const [rid, want] of Object.entries(need)) {
         const banned = eightySixIds.includes(rid);
         const stock = dailyCounts[rid];
@@ -720,6 +721,7 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
       mods,
       summary,
       priceEach: totalPriceEach,
+      variantItem,
       instructions: instructions.trim(),
     });
   };
