@@ -71,7 +71,7 @@ Deno.serve(async (req) => {
 
     // Consolidated KDS ticket (all items, centre_id null → shows on the all-items KDS view).
     const who = row.customer?.name || 'Catering';
-    const { error: kErr } = await sb.from('kds_tickets').insert({
+    const ticket = {
       id: `kds-cat-${row.ref}`,
       location_id: row.location_id,
       table_label: `Catering ${row.ref}`,
@@ -79,7 +79,22 @@ Deno.serve(async (req) => {
       status: 'pending', course: 'main', centre_id: null,
       server: who, covers: 1,
       sent_at: new Date().toISOString(),
-    });
+    };
+    // v5.8.66: order type, name, number and source for the redesigned KDS. Same shape as
+    // buildTicketMeta in src/lib/kds/kdsTicket.js. Catering refs (CA-XXXXX) show in full.
+    const meta = {
+      v: 1, channel: 'catering', isTable: false,
+      orderType: ['takeaway', 'collection', 'delivery'].includes(row.type) ? row.type : 'collection',
+      customerName: row.customer?.name || null,
+      orderNo: row.ref, source: 'Catering', staff: null,
+      note: (typeof row.customer?.notes === 'string' && row.customer.notes.trim()) || null,
+    };
+    let { error: kErr } = await sb.from('kds_tickets').insert({ ...ticket, meta });
+    // Before the kds_tickets.meta migration is run the column is missing: insert the
+    // ticket exactly as before so the kitchen still gets the order.
+    if (kErr && /PGRST204|42703/.test(`${kErr.code || ''} ${kErr.message || ''}`) && /meta/.test(kErr.message || '')) {
+      ({ error: kErr } = await sb.from('kds_tickets').insert(ticket));
+    }
     if (kErr) { console.warn('[catering-release] kds insert', row.ref, kErr.message); continue; }
     fired++;
   }

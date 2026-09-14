@@ -1,3 +1,10 @@
+# Session, 14 Sep 2026, v5.8.66, KDS redesign
+
+- Built design_handoff_kds (Peter's Downloads) after 25 answered questions (project memory project_kds_redesign). New code: src/surfaces/kds/ (KDSSurface, KdsTicketCard, KdsSettingsSheet, kdsStyles), src/lib/kds/ (kdsTicket, kdsSettings, kdsFit, 33 tests). OtherSurfaces.jsx re-exports KDSSurface.
+- Writers stamp kds_tickets.meta: sendToKitchen (table + walk in), addRoundToTab, routeKioskOrderPrints, catering-release. All retry without meta when the column is missing. table_label unchanged (fireCourse matches on it).
+- MIGRATION PENDING (Peter): supabase/migrations/20260914_OPS_kds_redesign.sql (kds_tickets.meta, devices.kds_settings).
+- Verified in Chromium: mock board at 1920, 1366 and 1024 by 600; every action scripted; live read of Provo (6 bar tickets, 390 stale tickets in 0.24s), bump and undo restored the real row exactly.
+
 # Session, 7 to 8 Sep 2026, v5.8.32 and v5.8.33, live cutover preparation
 
 ## Decisions (Peter, 7 Sep evening)

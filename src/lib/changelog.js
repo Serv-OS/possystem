@@ -7,6 +7,22 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.66',
+    date: '14 Sep 2026',
+    items: [
+      'New kitchen display design. Every ticket shows its order type as a coloured badge and top bar: Dine-in by name green, Dine-in at a table teal, Takeaway orange, Collection purple and Delivery pink.',
+      'The customer name or table is its own big line and is never cut off. Under the badge is the till it came from and the order number, for example Till 2 | #35. Delivery app orders show the app code, tables show no number, and an order with no name shows its number big.',
+      'Counts by order type in the header. Tap one to show only that type.',
+      'Tap a ticket to open it big in the middle of the screen. Tick items, hold, resume or bump from there.',
+      'After a bump an Undo button shows for 5 seconds. Recall last brings back the last ticket bumped at this station today, from any screen. History shows today only.',
+      'Held tickets stay on the board, dimmed, and move to the end. Resume and Recall keep the original time.',
+      'Settings on each kitchen screen, behind a manager PIN: show or hide the name, till name, staff name, covers, timer, course tags, notes, type counts and the To make list, move held tickets to the end, set the orange and red minutes (now 10 and 15, were fixed at 12 and 25), colour cards by order type or time, and comfortable or compact.',
+      'The order note for the kitchen typed on the till now shows on the ticket, along with order notes from online and delivery app orders.',
+      'Fix: pop up messages (held, recalled, a failed save) never showed on a paired kitchen screen.',
+      'Needs a database update to be run. Until then tickets still show, read from the old label, and screen settings are kept on that tablet only.',
+    ],
+  },
+  {
     v: '5.8.65',
     date: '14 Sep 2026',
     items: [
