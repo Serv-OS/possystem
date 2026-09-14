@@ -544,6 +544,7 @@ export default function SyncBridge({ onSyncPulse }) {
             spacerSlots: cat.spacer_slots ?? cat.spacerSlots ?? [],
             isSpecial: cat.is_special ?? cat.isSpecial ?? false,  // v5.5.316: map so POS/bar/inventory hide special cats
             taxProfileId: cat.tax_profile_id ?? cat.taxProfileId ?? null,   // v5.7.33: profile assignment (dark)
+            image: cat.image ?? null,   // v5.8.65: category photo (display only on tills)
           }));
           // v5.7.11: normalise to camelCase WITH the snake originals kept — raw DB rows
           // carried is_default/is_active only, and MenuManager reads isDefault, so the

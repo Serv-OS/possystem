@@ -16,6 +16,7 @@ import { isTrainingMode } from './trainingMode';
 import { reportSave } from './saveHealth';
 import { describeMenuChange } from './menuDiff';
 import { money } from './currency';
+import { categoryImageField, categoryPhotoUrl, checkPhotoFile, categoryPhotoPath, peerPhotoTargets, isMissingImageColumn } from './categoryPhoto';
 
 // ── Order number generation ──────────────────────────────────────────────────
 // The order number is the order's IDENTITY: unique per location and unlimited.
@@ -184,7 +185,7 @@ export const upsertMenuCategory = async (cat, locationId = null) => {
   // upsert (PGRST204) — silently, since the only caller .catch()es it. The push
   // therefore never wrote categories to menu_categories, so kiosk/online (which
   // query that table directly) saw stale categories. Mirror sbUpsertCategory.
-  const result = await supabase.from('menu_categories').upsert({
+  const row = {
     id: cat.id,
     location_id: locationId,
     menu_id: cat.menuId ?? cat.menu_id ?? null,
@@ -203,8 +204,18 @@ export const upsertMenuCategory = async (cat, locationId = null) => {
     // _sbUpsertCategoryNow in store/index.js — the CLAUDE.md two-paths gotcha.
     ...(cat.taxProfileId !== undefined || cat.tax_profile_id !== undefined
       ? { tax_profile_id: cat.taxProfileId ?? cat.tax_profile_id ?? null } : {}),
+    // v5.8.65: category photo, ONLY when a real category photo URL is present, so a
+    // Push from a stale tab can never wipe it. Mirror of _sbUpsertCategoryNow.
+    ...categoryImageField(cat),
     updated_at: new Date().toISOString(),
-  });
+  };
+  let result = await supabase.from('menu_categories').upsert(row);
+  // v5.8.65: the image column is missing (migration rolled back while this tab still
+  // holds photo URLs): save the category without the photo instead of losing the edit.
+  if (result.error && row.image && isMissingImageColumn(result.error)) {
+    delete row.image;
+    result = await supabase.from('menu_categories').upsert(row);
+  }
   reportSave('category', result.error);   // v5.5.951 — loud, not console-only
   return result;
 };
@@ -895,6 +906,84 @@ export const deleteProductImage = async (itemId, locationId) => {
   }
 };
 
+// ── Category photos (v5.8.65) ─────────────────────────────────────────────────
+// Path <loc>/categories/<catId>-<ts>.<ext>: the cat_photo storage fence (migration
+// 20260914_OPS_category_photos.sql) lets only that venue's Back Office users write
+// there. Every upload gets a NEW name and old files are never deleted: other venues
+// that share the category and stale tabs may still point at the old URL.
+export const uploadCategoryPhoto = async (catId, locationId, file) => {
+  if (!supabase || isMock) return { url: null, error: new Error('Not connected') };
+  const bad = checkPhotoFile(file);
+  if (bad) return { url: null, error: new Error(bad === 'type' ? 'Unsupported photo type' : 'Photo is over 5MB') };
+  const path = categoryPhotoPath(locationId, catId, file.type, Date.now());
+  if (!path) return { url: null, error: new Error('No location') };
+  const { error: upErr } = await supabase.storage.from(BUCKET).upload(path, file, {
+    upsert: false,
+    contentType: file.type,
+    cacheControl: '3600',
+  });
+  if (upErr) return { url: null, error: upErr };
+  const { data } = supabase.storage.from(BUCKET).getPublicUrl(path);
+  const url = categoryPhotoUrl({ image: data?.publicUrl });   // must match the database's URL shape check
+  return { url, error: url ? null : new Error('Unexpected public URL shape') };
+};
+
+// The ONLY path that can clear menu_categories.image. Targeted update scoped to the
+// venue with 0 row detection (same traps as the item photo save). When the category
+// is shared, peers still on the previous photo (or with none) follow it.
+export const saveCategoryImage = async (cat, locationId, nextUrl, prevUrl = null) => {
+  if (!supabase || isMock) return { error: new Error('Not connected'), needsMigration: false, peersUpdated: 0, peersFailed: false };
+  if (!cat?.id || !locationId || locationId === 'loc-demo') return { error: new Error('No location'), needsMigration: false, peersUpdated: 0, peersFailed: false };
+  const now = new Date().toISOString();
+  const { data, error: dbErr } = await supabase
+    .from('menu_categories')
+    .update({ image: nextUrl || null, updated_at: now })
+    .eq('id', cat.id)
+    .eq('location_id', locationId)
+    .select('id');
+  const err = dbErr || (!data?.length
+    ? new Error('Category photo update matched 0 rows. RLS blocked it or the row belongs to another venue')
+    : null);
+  reportSave('category photo', err);
+  if (err) return { error: err, needsMigration: isMissingImageColumn(dbErr), peersUpdated: 0, peersFailed: false };
+
+  let peersUpdated = 0;
+  let peersFailed = false;
+  const masterId = cat.master_id ?? cat.masterId ?? null;
+  if (masterId && (cat.scope || 'local') !== 'local') {
+    try {
+      const { data: peers, error: pErr } = await supabase
+        .from('menu_categories').select('id,image').eq('master_id', masterId).neq('id', cat.id);
+      if (pErr) throw pErr;
+      const ids = peerPhotoTargets(peers, prevUrl, nextUrl);
+      if (ids.length) {
+        const { data: upd, error: uErr } = await supabase
+          .from('menu_categories').update({ image: nextUrl || null, updated_at: now }).in('id', ids).select('id');
+        if (uErr) throw uErr;
+        peersUpdated = upd?.length || 0;
+      }
+    } catch (e) {
+      // The photo IS saved at this venue. The caller tells the user the other venues were not.
+      peersFailed = true;
+      console.warn('[saveCategoryImage] shared venues not updated:', e?.message || e);
+    }
+  }
+  return { error: null, needsMigration: false, peersUpdated, peersFailed };
+};
+
+// True once menu_categories.image exists (the 20260914 migration has run).
+// Cached for the session once true; false in mock mode. ONLY a missing column counts as
+// not ready: a network blip must not tell Peter the migration did not run, so any other
+// error keeps the upload box (the upload itself then reports its own error).
+let _categoryPhotosReady = null;
+export const categoryPhotosReady = async () => {
+  if (!supabase || isMock) return false;
+  if (_categoryPhotosReady === true) return true;
+  const { error } = await supabase.from('menu_categories').select('image').limit(1);
+  if (!error) { _categoryPhotosReady = true; return true; }
+  return !isMissingImageColumn(error);
+};
+
 // v3.9.0 — image field in upsert
 
 // ── Quick Screen ───────────────────────────────────────────────────────────────
@@ -1549,6 +1638,9 @@ export const setMenuCategoryScope = async (cat, newScope, _visited = new Set()) 
       org_id,
       master_id: masterId,
       lock_pricing: cat.lock_pricing ?? cat.lockPricing ?? false,
+      // v5.8.65: the photo is shared with the category (decision 4). Only when the
+      // source row has one, so a pre-migration row never sends an unknown column.
+      ...categoryImageField(cat),
       updated_at: new Date().toISOString(),
     };
     for (const peerLocId of otherLocationIds) {
@@ -1566,6 +1658,14 @@ export const setMenuCategoryScope = async (cat, newScope, _visited = new Set()) 
       const peerMenuId = await resolvePeerDefaultMenu(peerLocId);
       const peerParentId = parentMasterId ? `${parentMasterId}_${peerSuffix}` : null;
       const peerRow = { ...baseRow, id: peerId, location_id: peerLocId, menu_id: peerMenuId, parent_id: peerParentId };
+      // v5.8.65: sharing again (local, then shared) reuses the same peer ids. A peer venue
+      // that added its OWN photo meanwhile keeps it: the photo is only sent to a peer row
+      // that has none (same rule as peerPhotoTargets). If the check fails, leave it alone.
+      if (peerRow.image) {
+        const { data: existingPeer, error: exErr } = await supabase
+          .from('menu_categories').select('id,image').eq('id', peerId).maybeSingle();
+        if (exErr || categoryPhotoUrl(existingPeer)) delete peerRow.image;
+      }
       const { error } = await supabase.from('menu_categories').upsert(peerRow);
       if (error) { console.warn('[setMenuCategoryScope] peer upsert failed for', peerLocId, error); continue; }
       createdCount++;

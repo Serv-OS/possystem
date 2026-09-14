@@ -15,6 +15,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase, getLocationId } from '../../lib/supabase';
+import { CATEGORY_PHOTO_COPY } from '../../lib/categoryPhoto';
 
 const TABLE_MODES = [
   { v: 'either',   label: 'Either — customer chooses',     desc: 'Allow customer to enter their table OR take a number' },
@@ -78,6 +79,7 @@ export default function KioskSettings({ kioskId, onBack }) {
           kiosk_allergen_required: prof?.kiosk_allergen_required ?? false,
           kiosk_avg_wait_minutes:  prof?.kiosk_avg_wait_minutes  ?? 8,
           kiosk_banners:           prof?.kiosk_banners           ?? [],
+          kiosk_category_photos:   prof?.kiosk_category_photos   ?? true,
         });
       }
 
@@ -92,6 +94,10 @@ export default function KioskSettings({ kioskId, onBack }) {
   }, [kioskId]);
 
   useEffect(() => { load(); }, [load]);
+
+  // v5.8.65: the category photo switch exists only once the 20260914 migration has
+  // run. The loaded row is select('*'), so the key is present exactly when the column is.
+  const photoSwitchReady = !!profile && Object.prototype.hasOwnProperty.call(profile, 'kiosk_category_photos');
 
   // ─── Save handler ───
   const save = async () => {
@@ -119,10 +125,14 @@ export default function KioskSettings({ kioskId, onBack }) {
         kiosk_allergen_required: !!draft.kiosk_allergen_required,
         kiosk_avg_wait_minutes:  draft.kiosk_avg_wait_minutes  ?? 8,
         kiosk_banners:           draft.kiosk_banners           || [],
+        kiosk_category_photos:   draft.kiosk_category_photos !== false,
       };
       // v5.7.9: an omitted column keeps its DB value, so a stale tab saving a
       // branding tweak can never clobber the kiosk's menu pin.
       if (!touchedRef.current.has('menu_id')) delete patch.menu_id;
+      // v5.8.65: same touched-only rule for the category photo switch, and never sent
+      // before the migration adds the column (PGRST204 would fail the whole save).
+      if (!photoSwitchReady || !touchedRef.current.has('kiosk_category_photos')) delete patch.kiosk_category_photos;
       const { error } = await supabase.from('device_profiles').update(patch).eq('id', profile.id);
       if (error) throw error;
       setSuccess('Saved. Refresh the kiosk to see changes.');
@@ -340,6 +350,21 @@ export default function KioskSettings({ kioskId, onBack }) {
                 {menus.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
               </select>
             </Field>
+            {/* v5.8.65: category photos on the kiosk tiles, per profile */}
+            {photoSwitchReady ? (
+              <div>
+                <LargeToggleRow
+                  checked={draft.kiosk_category_photos !== false}
+                  onChange={v => setField('kiosk_category_photos', v)}
+                  title={CATEGORY_PHOTO_COPY.switchTitle}
+                  desc={CATEGORY_PHOTO_COPY.switchDesc}
+                />
+                <div style={{ fontSize: 15, color: 'var(--t3)', lineHeight: 1.45 }}>{CATEGORY_PHOTO_COPY.switchOffNote}</div>
+                <div style={{ fontSize: 15, color: 'var(--t3)', lineHeight: 1.45, marginTop: 4 }}>{CATEGORY_PHOTO_COPY.switchShared}</div>
+              </div>
+            ) : (
+              <div style={{ fontSize: 15, color: 'var(--t3)', lineHeight: 1.45 }}>{CATEGORY_PHOTO_COPY.switchNotReady}</div>
+            )}
           </Section>
 
           {/* ── Customer flow ── */}
@@ -506,6 +531,25 @@ function ToggleRow({ checked, onChange, title, desc }) {
       <span style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
         <span style={{ fontSize: 13, fontWeight: 600 }}>{title}</span>
         <span style={{ fontSize: 11, color: 'var(--t3)' }}>{desc}</span>
+      </span>
+    </button>
+  );
+}
+
+// v5.8.65: same shape as ToggleRow with Back Office sized text (16px title, 15px description).
+function LargeToggleRow({ checked, onChange, title, desc }) {
+  return (
+    <button type="button" role="switch" aria-checked={!!checked} onClick={() => onChange(!checked)} style={{
+      display: 'flex', alignItems: 'center', gap: 14, padding: '14px 16px', marginBottom: 8,
+      background: 'var(--bg2)', border: '1px solid var(--bdr)', borderRadius: 8,
+      cursor: 'pointer', textAlign: 'left', fontFamily: 'inherit', color: 'inherit', width: '100%',
+    }}>
+      <span style={{ position: 'relative', width: 44, height: 24, background: checked ? 'var(--acc)' : 'var(--bg3)', borderRadius: 12, flexShrink: 0, transition: 'background .15s' }}>
+        <span style={{ position: 'absolute', top: 2, left: checked ? 22 : 2, width: 20, height: 20, background: '#fff', borderRadius: '50%', transition: 'all .15s' }} />
+      </span>
+      <span style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+        <span style={{ fontSize: 16, fontWeight: 600 }}>{title}</span>
+        <span style={{ fontSize: 15, color: 'var(--t3)', lineHeight: 1.45 }}>{desc}</span>
       </span>
     </button>
   );

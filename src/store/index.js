@@ -28,6 +28,7 @@ import { getDeliveryQuote, recordDeliverySurcharge } from '../lib/delivery/quote
 import { dispatchDelivery, sendDeliveryTrackingSMS } from '../lib/delivery/dispatch';
 import { STALE_ORDER_FLOOR_MS } from '../sync/staleness';
 import { giftRecordFrom, giftLegs, reverseGiftCard } from '../lib/giftCommit';
+import { categoryImageField, isMissingImageColumn } from '../lib/categoryPhoto';
 // v5.6.79 (#107/#108) — refund money maths + the per-leg processor router.
 import {
   refundBreakdown, cardLegsOf, legRefundedMinor, allocateToLegs,
@@ -182,6 +183,14 @@ const enqueueMenuWrite = (job) => {
   _menuWriteChain = _menuWriteChain.then(job).catch(() => {});
   return _menuWriteChain;
 };
+// v5.8.65: run a job IN the same serialised chain and hand back its own result (or throw).
+// CategoryPhotoField saves the photo through this, so a category upsert queued before the
+// photo change always lands BEFORE it, and every upsert queued after it reads the new photo.
+export const runInMenuWriteQueue = (job) => {
+  const run = _menuWriteChain.then(job);
+  _menuWriteChain = run.catch(() => {});
+  return run;
+};
 const sbUpsertMenu = (menu) => enqueueMenuWrite(() => _sbUpsertMenuNow(menu));
 const _sbUpsertMenuNow = async (menu) => {
   if (isMock) return;
@@ -233,7 +242,11 @@ const _sbUpsertCategoryNow = async (cat, isRetry = false) => {
   if (isMock) return;
   const locationId = getActiveLocationSync() || await getLocationId();
   if (!locationId) return console.warn('[Supabase] no location ID — category not saved');
-  const { error } = await supabase.from('menu_categories').upsert({
+  // v5.8.65: the photo is read from the LIVE store row when this write actually runs, not
+  // from the copy captured when it was queued. A reorder queued before a photo Replace or
+  // Remove would otherwise write the old photo back after saveCategoryImage.
+  const liveCat = useStore.getState().menuCategories?.find(c => c.id === cat.id);
+  const row = {
     id: cat.id,
     location_id: locationId,
     menu_id: cat.menuId || null,
@@ -254,8 +267,20 @@ const _sbUpsertCategoryNow = async (cat, isRetry = false) => {
     // upsertMenuCategory — the CLAUDE.md two-paths gotcha.
     ...(cat.taxProfileId !== undefined || cat.tax_profile_id !== undefined
       ? { tax_profile_id: cat.taxProfileId ?? cat.tax_profile_id ?? null } : {}),
+    // v5.8.65: category photo, written ONLY when a real https URL is present
+    // (lib/categoryPhoto.js). A missing column, null or '' leaves the DB value
+    // alone, so a stale tab can never wipe a photo. Removal goes only through
+    // saveCategoryImage in db.js. Mirrored in db.js upsertMenuCategory.
+    ...categoryImageField(liveCat ?? cat),
     updated_at: new Date().toISOString(),
-  });
+  };
+  let { error } = await supabase.from('menu_categories').upsert(row);
+  // v5.8.65: image column missing (migration rolled back while this tab holds photo URLs):
+  // save the category without the photo rather than lose the edit.
+  if (error && row.image && isMissingImageColumn(error)) {
+    delete row.image;
+    ({ error } = await supabase.from('menu_categories').upsert(row));
+  }
   // Parent still landing (or landed by ANOTHER tab a beat later): wait and retry once
   // before going loud — this heals the race instead of just reporting it.
   if (error && !isRetry && /parent_id_fkey|menu_id_fkey/.test(String(error.message || ''))) {
@@ -751,6 +776,7 @@ export const useStore = create((set, get) => ({
       ...(snap.menuCategories?.length ? { menuCategories: snap.menuCategories.map(c => ({
         ...c,
         taxProfileId: c.taxProfileId ?? c.tax_profile_id ?? null,
+        image: c.image ?? null,   // v5.8.65: category photo rides the push (display only on tills)
       })) } : {}),
       // Tax rates — full replace
       ...(snap.taxRates?.length ? { taxRates: snap.taxRates } : {}),
