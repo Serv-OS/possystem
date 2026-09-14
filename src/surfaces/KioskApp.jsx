@@ -32,6 +32,8 @@ import { resolveActiveMenu } from '../lib/menus/resolveActiveMenu';
 import { resolveItemPrice, variantFromPrice } from '../lib/menuPricing';
 import { depleteForSaleServer } from '../lib/stock/deplete';
 import KioskProductModal from './KioskProductModal';
+import KioskCategoryTile from './kiosk/KioskCategoryTile';
+import { railTileMode } from '../lib/categoryPhoto';
 import { t, setLang, useKioskLang, LANGUAGES, getLanguageMeta } from '../lib/i18n';
 import { displayName } from '../lib/itemDisplay';
 import { kioskVariant, kioskLineStockIds, kioskLineRemaining, kioskLineRoom, kioskLineKey, kioskCartUsage, kioskOrderItem, kioskDepleteItem } from '../lib/kioskLine';
@@ -482,6 +484,13 @@ export default function KioskApp({ kioskId, onUnpair }) {
   const tipPresets = profile?.kiosk_tip_presets || [10, 12.5, 15];
   const tableMode = profile?.kiosk_table_mode || 'either';
   const loyaltyEnabled = profile?.kiosk_loyalty_enabled !== false;
+  // v5.8.65: per profile category photo switch. Missing column (before the migration) reads as on;
+  // photo tiles still only show when a category actually has a photo (railTileMode).
+  const categoryPhotos = profile?.kiosk_category_photos !== false;
+  // Category photos only ever show from this app's own Supabase storage.
+  const categoryPhotoOrigin = useMemo(() => { try { return OPS_URL ? new URL(OPS_URL).origin : null; } catch { return null; } }, []);
+  // Tile mode comes from EVERY venue category, so a timed menu change never flips the rail.
+  const railCategories = useMemo(() => categories.filter(c => !c.is_special), [categories]);
   const idleTimeoutSec = profile?.kiosk_idle_timeout_sec || 60;
   // `??` not `||`: a saved 0 means "do not promise a wait", and `||` silently
   // turned it back into 8 so the operator could never switch the pill off.
@@ -1084,7 +1093,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
         else setScreen('menu');
       }} onBack={() => setScreen('attract')} onCancel={resetSession} />}
       {screen === 'tableNumber' && <ScreenTableNumber brandColor={brandColor} locationId={locationId} value={tableNumber} onChange={setTableNumber} onContinue={() => setScreen('menu')} onBack={() => setScreen('orderType')} onCancel={resetSession} />}
-      {screen === 'menu' && <ScreenMenu brandColor={brandColor} brandAccent={brandAccent} categories={visibleCategories} items={visibleItems} allItems={items} selectedCategoryId={selectedCategoryId} onSelectCategory={setSelectedCategoryId} onSelectItem={(item) => { setSelectedItem(item); setScreen('item'); }} cartItemCount={cartItemCount} subtotal={subtotal} onCart={() => setScreen('cart')} orderType={orderType} activeMenuId={activeMenuId} banner={bannerFor('menu')} allergenFilter={allergenFilter} onShowAllergenPicker={() => setShowAllergenPicker(true)} eightySixIds={eightySixIds} dailyCounts={dailyCounts} onBack={() => setScreen('orderType')} onCancel={resetSession} />}
+      {screen === 'menu' && <ScreenMenu brandColor={brandColor} brandAccent={brandAccent} categoryPhotos={categoryPhotos} categoryPhotoOrigin={categoryPhotoOrigin} railCategories={railCategories} categories={visibleCategories} items={visibleItems} allItems={items} selectedCategoryId={selectedCategoryId} onSelectCategory={setSelectedCategoryId} onSelectItem={(item) => { setSelectedItem(item); setScreen('item'); }} cartItemCount={cartItemCount} subtotal={subtotal} onCart={() => setScreen('cart')} orderType={orderType} activeMenuId={activeMenuId} banner={bannerFor('menu')} allergenFilter={allergenFilter} onShowAllergenPicker={() => setShowAllergenPicker(true)} eightySixIds={eightySixIds} dailyCounts={dailyCounts} onBack={() => setScreen('orderType')} onCancel={resetSession} />}
       {screen === 'item' && selectedItem && (
         <KioskProductModal
           item={selectedItem}
@@ -1795,7 +1804,7 @@ function ScreenTableNumber({ brandColor, value, onChange, onContinue, onBack, on
 //   - TOP BAR simplified to back button + allergen icon button
 // All customer-facing strings translated via t().
 // ============================================================
-function ScreenMenu({ brandColor, brandAccent, categories, items, allItems = [], selectedCategoryId, onSelectCategory, onSelectItem, cartItemCount, subtotal, onCart, orderType, activeMenuId, banner, allergenFilter, onShowAllergenPicker, eightySixIds = [], dailyCounts = {}, onBack, onCancel }) {
+function ScreenMenu({ brandColor, brandAccent, categoryPhotos = true, categoryPhotoOrigin = null, railCategories = null, categories, items, allItems = [], selectedCategoryId, onSelectCategory, onSelectItem, cartItemCount, subtotal, onCart, orderType, activeMenuId, banner, allergenFilter, onShowAllergenPicker, eightySixIds = [], dailyCounts = {}, onBack, onCancel }) {
   const hasCart = cartItemCount > 0;
   const hasAllergenFilter = allergenFilter && allergenFilter.size > 0;
   // Child rows bucketed by parent so a variant parent's card can show
@@ -1816,6 +1825,13 @@ function ScreenMenu({ brandColor, brandAccent, categories, items, allItems = [],
     return map;
   }, [allItems, eightySixIds, dailyCounts]);
   const itemWord = cartItemCount === 1 ? t('menu.itemSingular') : t('menu.itemPlural');
+  // v5.8.65: one tile mode for the whole rail, so every tile is the same height.
+  // Based on every venue category (railCategories), not only this menu's, so it does not
+  // switch between text and photo tiles when a timed menu changes during the day.
+  const railMode = useMemo(
+    () => railTileMode(categoryPhotos, railCategories || categories, categoryPhotoOrigin),
+    [categoryPhotos, railCategories, categories, categoryPhotoOrigin],
+  );
   return (
     <div style={fullScreen()}>
       {/* TOP BAR — back left, allergen filter center, cancel right */}
@@ -1939,30 +1955,17 @@ function ScreenMenu({ brandColor, brandAccent, categories, items, allItems = [],
         }}>
           {categories.length === 0 ? (
             <div style={{ padding: 16, fontSize: 14, color: 'var(--kFgMuted)' }}>{t('menu.noCategories')}</div>
-          ) : categories.map(c => {
-            const active = c.id === selectedCategoryId;
-            return (
-              <button
-                key={c.id}
-                onClick={() => onSelectCategory(c.id)}
-                style={{
-                  padding: 'clamp(14px, 2vw, 20px) clamp(14px, 1.8vw, 22px)',
-                  background: active ? brandColor : 'transparent',
-                  color: active ? '#fff' : brandColor,
-                  borderRadius: 14,
-                  fontSize: 'clamp(15px, 1.9vw, 20px)',
-                  fontWeight: 700,
-                  border: 0,
-                  cursor: 'pointer',
-                  fontFamily: 'inherit',
-                  textAlign: 'left',
-                  letterSpacing: '-0.01em',
-                  lineHeight: 1.2,
-                  transition: 'background 0.1s',
-                }}
-              >{c.label}</button>
-            );
-          })}
+          ) : categories.map(c => (
+            <KioskCategoryTile
+              key={c.id}
+              cat={c}
+              active={c.id === selectedCategoryId}
+              mode={railMode}
+              brandColor={brandColor}
+              photoOrigin={categoryPhotoOrigin}
+              onSelect={() => onSelectCategory(c.id)}
+            />
+          ))}
         </div>
 
         {/* RIGHT — items grid */}

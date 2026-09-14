@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.65',
+    date: '14 Sep 2026',
+    items: [
+      'New: category photos. In Back Office, open a category in the menu editor and upload a photo for the kiosk. JPG, PNG or WebP up to 5MB. You get a warning if it is smaller than 572 by 208 pixels.',
+      'New kiosk setting: Show category photos, on each kiosk profile. When it is on, categories with a photo show it on their tile, and categories without one show a block in your brand colour so every tile lines up. When it is off, tiles are plain text as before.',
+      'A photo on a shared category also shows at your other venues that share it, unless a venue has its own photo.',
+      'Needs a database update to be run first. Until then Back Office says so and kiosks look exactly as they do today.',
+    ],
+  },
+  {
     v: '5.8.64',
     date: '14 Sep 2026',
     items: [

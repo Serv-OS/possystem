@@ -34,6 +34,9 @@ import { getLocationConfig } from '../../lib/locationTime';
 // v4.7.8: per-menu pricing tier UI (item-level)
 import PerMenuPricingTiers from './PerMenuPricingTiers';
 import MenuImportModal from '../components/MenuImportModal';
+// v5.8.65: category kiosk photo (saves on its own, not part of CatModal's form)
+import CategoryPhotoField from '../components/CategoryPhotoField';
+import { CATEGORY_PHOTO_COPY, categoryPhotoUrl } from '../../lib/categoryPhoto';
 import { money } from '../../lib/currency';
 import { orderOptionFlow } from '../../lib/optionFlow';
 // v5.5.813: recipe-derived cost + GP% on the Items list. Same engine + same
@@ -923,7 +926,7 @@ function MenuTab() {
                   <span style={{ position:'relative', width:70, height:20, flexShrink:0 }}>
                     <span className="mm-count" style={{ position:'absolute', right:2, top:'50%', transform:'translateY(-50%)', fontSize:11.5, fontVariantNumeric:'tabular-nums', color:count===0?'var(--t4)':'var(--t3)' }}>{count}</span>
                     <span className="mm-acts" style={{ position:'absolute', right:0, top:'50%', transform:'translateY(-50%)', display:'flex', gap:4 }}>
-                      <button onClick={e=>{e.stopPropagation();setEditingCat(cat);}} title="Rename category" style={{ width:20,height:20,borderRadius:5,border:'1px solid var(--bdr)',background:'var(--bg1)',color:'var(--t3)',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>✎</button>
+                      <button onClick={e=>{e.stopPropagation();setEditingCat(cat);}} title={CATEGORY_PHOTO_COPY.editCategory} aria-label={CATEGORY_PHOTO_COPY.editCategory} style={{ width:20,height:20,borderRadius:5,border:'1px solid var(--bdr)',background:'var(--bg1)',color:'var(--t3)',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>✎</button>
                       <button onClick={e=>{e.stopPropagation();setMovingCatId(cat.id);}} title="Move / nest this category" style={{ width:20,height:20,borderRadius:5,border:'1px solid var(--bdr)',background:'var(--bg1)',color:'var(--t3)',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>↕</button>
                       <button className="mm-del" onClick={e=>{e.stopPropagation();if(confirm(`Delete "${cat.label}"? Items in this category will become uncategorised.`)){removeCategory(cat.id);if(selCatId===cat.id)setSelCatId(null);markBOChange();}}} title="Delete category" style={{ width:20,height:20,borderRadius:5,border:'1px solid var(--bdr)',background:'var(--bg1)',color:'var(--t3)',cursor:'pointer',fontSize:12,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>×</button>
                     </span>
@@ -950,7 +953,7 @@ function MenuTab() {
                         <span style={{ position:'relative', width:64, height:18, flexShrink:0 }}>
                           <span className="mm-count" style={{ position:'absolute', right:2, top:'50%', transform:'translateY(-50%)', fontSize:11, fontVariantNumeric:'tabular-nums', color:subCount===0?'var(--t4)':'var(--t3)' }}>{subCount}</span>
                           <span className="mm-acts" style={{ position:'absolute', right:0, top:'50%', transform:'translateY(-50%)', display:'flex', gap:4 }}>
-                            <button onClick={e=>{e.stopPropagation();setEditingCat(sub);}} title="Rename" style={{ width:18,height:18,borderRadius:4,border:'1px solid var(--bdr)',background:'var(--bg1)',color:'var(--t3)',cursor:'pointer',fontSize:10,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>✎</button>
+                            <button onClick={e=>{e.stopPropagation();setEditingCat(sub);}} title={CATEGORY_PHOTO_COPY.editCategory} aria-label={CATEGORY_PHOTO_COPY.editCategory} style={{ width:18,height:18,borderRadius:4,border:'1px solid var(--bdr)',background:'var(--bg1)',color:'var(--t3)',cursor:'pointer',fontSize:10,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>✎</button>
                             <button onClick={e=>{e.stopPropagation();setMovingCatId(sub.id);}} title="Move / un-nest" style={{ width:18,height:18,borderRadius:4,border:'1px solid var(--bdr)',background:'var(--bg1)',color:'var(--t3)',cursor:'pointer',fontSize:10,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>↕</button>
                             <button className="mm-del" onClick={e=>{e.stopPropagation();if(confirm(`Delete "${sub.label}"?`)){removeCategory(sub.id);if(selCatId===sub.id)setSelCatId(null);markBOChange();}}} title="Delete" style={{ width:18,height:18,borderRadius:4,border:'1px solid var(--bdr)',background:'var(--bg1)',color:'var(--t3)',cursor:'pointer',fontSize:11,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0 }}>×</button>
                           </span>
@@ -977,6 +980,14 @@ function MenuTab() {
                 <div style={{ width:28, height:28, borderRadius:8, background:`${selCat.color||'#3b82f6'}22`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:16 }}>{selCat.icon}</div>
                 <span style={{ fontSize:14, fontWeight:800, color:'var(--t1)' }}>{selCat.label}</span>
                 <span style={{ fontSize:10, color:'var(--t4)' }}>{displayItems.length} items</span>
+                {/* v5.8.65: a visible way to the category photo (it lives in the edit modal) */}
+                {(() => { const ph = categoryPhotoUrl(selCat); return (
+                  <button onClick={()=>setEditingCat(selCat)} title={CATEGORY_PHOTO_COPY.editCategory}
+                    style={{ display:'flex', alignItems:'center', gap:6, marginLeft:4, padding:'3px 10px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:'var(--bg3)', border:'1px solid var(--bdr2)', color:'var(--t2)', fontSize:15, fontWeight:600, flexShrink:0 }}>
+                    {ph && <img src={ph} alt="" style={{ width:36, height:21, objectFit:'cover', borderRadius:4, display:'block' }}/>}
+                    {ph ? CATEGORY_PHOTO_COPY.editPhoto : CATEGORY_PHOTO_COPY.addPhoto}
+                  </button>
+                ); })()}
               </div>
             )}
             {selCat && !search && (
@@ -3483,13 +3494,14 @@ function CatModal({ cat, roots, onSave, onDelete, onClose }) {
   const COURSES = [{v:0,l:'Immediate',hint:'Drinks, bread — fires instantly with order'},{v:1,l:'Course 1',hint:'Starters / first plates'},{v:2,l:'Course 2',hint:'Mains'},{v:3,l:'Course 3',hint:'Desserts'}];
   return (
     <div className="modal-back" onClick={e=>e.target===e.currentTarget&&onClose()}>
-      <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr2)', borderRadius:18, width:'100%', maxWidth:440, padding:'20px', boxShadow:'var(--sh3)' }}>
+      <div style={{ background:'var(--bg1)', border:'1px solid var(--bdr2)', borderRadius:18, width:'100%', maxWidth:480, maxHeight:'90vh', overflowY:'auto', padding:'20px', boxShadow:'var(--sh3)' }}>
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:14 }}>
           <div style={{ fontSize:15, fontWeight:800, color:'var(--t1)' }}>Edit category</div>
           <button onClick={onClose} style={{ background:'none', border:'none', color:'var(--t4)', cursor:'pointer', fontSize:20 }}>×</button>
         </div>
         <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
           <div><span style={lbl}>Name</span><input style={inp} value={f.label} onChange={e=>set('label',e.target.value)} autoFocus/></div>
+          <CategoryPhotoField cat={cat}/>
           <div><span style={lbl}>Accounting group</span><input style={inp} value={f.accountingGroup} onChange={e=>set('accountingGroup',e.target.value)} placeholder="e.g. Food, Beverages"/></div>
           <div><span style={lbl}>Icon</span><div style={{ display:'flex', gap:3, flexWrap:'wrap' }}>{ICONS.map(ic=><button key={ic} onClick={()=>set('icon',ic)} style={{ width:28,height:28,borderRadius:7,border:`1.5px solid ${f.icon===ic?'var(--acc)':'var(--bdr)'}`,background:f.icon===ic?'var(--acc-d)':'var(--bg3)',cursor:'pointer',fontSize:14 }}>{ic}</button>)}</div></div>
           <div><span style={lbl}>Colour</span><div style={{ display:'flex', gap:5, flexWrap:'wrap' }}>{COLOURS.map(c=><button key={c} onClick={()=>set('color',c)} style={{ width:20,height:20,borderRadius:'50%',background:c,border:'none',cursor:'pointer',outline:f.color===c?'3px solid var(--t1)':'none',outlineOffset:2 }}/>)}</div></div>

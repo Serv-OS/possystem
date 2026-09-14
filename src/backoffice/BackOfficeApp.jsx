@@ -485,6 +485,7 @@ export default function BackOfficeApp() {
       defaultCourse: c.default_course ?? c.defaultCourse ?? 1,
       spacerSlots: c.spacer_slots ?? c.spacerSlots ?? [],
       taxProfileId: c.tax_profile_id ?? c.taxProfileId ?? null,   // v5.7.33: profile assignment (dark)
+      image: c.image ?? null,   // v5.8.65: category photo (writers only send it when present)
     }));
     if (itemsRes.data?.length)   patch.menuItems       = itemsRes.data.map(item => ({
       ...item,
