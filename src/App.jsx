@@ -938,7 +938,9 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
   let body;
   if (isKdsDevice) {
     // KDS devices always show KDS surface regardless of URL mode
-    body = <><KioskAutoUpdate /><KDSSurface /></>;
+    // v5.8.66: a paired kitchen screen never had a Toast, so every KDS message (held,
+    // recalled, a failed save) was invisible on the wall. Render it here too.
+    body = <><KioskAutoUpdate /><KDSSurface />{toast && <Toast toast={toast} />}</>;
   } else if (!staff) {
     body = <PINScreen />;
   } else if (surface === 'kiosk' || deviceConfig?.defaultSurface === 'kiosk') {

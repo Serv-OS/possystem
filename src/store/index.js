@@ -10,6 +10,8 @@ import { clockStatusForPos } from '../lib/posClockIn';
 import { computeCheckTotals } from '../lib/payments/checkTotals';
 import { operatorSwitchPatch, logoutPatch } from '../lib/cartHold';
 import { kitchenOverride, receiptOverride } from '../lib/itemDisplay';
+import { buildTicketMeta, joinNotes } from '../lib/kds/kdsTicket';
+import { isMissingColumnError } from '../lib/kds/kdsSettings';
 import { normaliseMenuRow, assembleTaxProfiles } from '../lib/rowMapping';
 import { buildLegacyProfiles } from '../lib/taxAdapter';
 import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, upsertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC, upsertModifierGroup, deleteModifierGroup } from '../lib/db';
@@ -485,6 +487,14 @@ const makeRoutingCtx = (orderType) => ({
   catParents: buildCatParentMap(),
   orderType,
 });
+
+// v5.8.66: the POS name on a KDS ticket is this paired device's own name ("Till 2").
+// Only the till paths use it. routeKioskOrderPrints runs on the MASTER till for kiosk,
+// online and delivery app orders, so those tickets name their channel instead.
+const thisDeviceName = () => {
+  try { return JSON.parse(localStorage.getItem('rpos-device') || 'null')?.name || null; }
+  catch { return null; }
+};
 
 // ── Tax context (v5.7.33, delivery only — no consumer computes with it yet) ──
 // Packages everything lib/taxEngine.js needs into one object:
@@ -2573,7 +2583,10 @@ export const useStore = create((set, get) => ({
       return fired;
     };
 
-    const createKdsTickets = (items, tableLabel, serverName, covers, _firedOnSend) => {
+    // v5.8.66: `meta` is the ticket's own order type, name, number and till name for the
+    // redesigned KDS (kds_tickets.meta, see src/lib/kds/kdsTicket.js). table_label keeps
+    // its old text because fireCourse matches tickets on it.
+    const createKdsTickets = (items, tableLabel, serverName, covers, _firedOnSend, meta = null) => {
       const routingConfig = getRoutingConfig();
       const byCenter = {};
       const FIRED_ON_SEND = _firedOnSend;
@@ -2612,6 +2625,7 @@ export const useStore = create((set, get) => ({
           sentAt: Date.now(), minutes: 0,
           firedCourses: FIRED_ON_SEND,
           allCourses,
+          meta,
           items: centreItems.map(i => ({
             qty: i.qty, name: i.kitchenName || i.menu_name || i.menuName || i.name,
             mods: [
@@ -2639,7 +2653,13 @@ export const useStore = create((set, get) => ({
       const session = table?.session;
       const pendingItems = session?.items?.filter(isUnsentLine) || [];
       const firedOnSend = computeFiredOnSend(session?.items || []);
-      const newTickets = createKdsTickets(pendingItems, table?.label || targetTableId, staff?.name || 'Server', session?.covers || 2, firedOnSend);
+      const tableMeta = buildTicketMeta({
+        channel: 'table', isTable: true,
+        customerName: session?.customer?.name,
+        source: thisDeviceName(), staff: staff?.name,
+        note: joinNotes(session?.orderNote, session?.customer?.notes),
+      });
+      const newTickets = createKdsTickets(pendingItems, table?.label || targetTableId, staff?.name || 'Server', session?.covers || 2, firedOnSend, tableMeta);
       // Route print jobs for each ticket (fires to mapped printer per centre)
       const printConfig = getRoutingConfig();
       const getCentrePrinter = (centreId) => {
@@ -2763,7 +2783,17 @@ export const useStore = create((set, get) => ({
       const pendingItems = order.items.filter(isUnsentLine);
       const label = customer?.name ? `${orderType.charAt(0).toUpperCase()+orderType.slice(1)} · ${customer.name}` : orderType;
       const wiFiredOnSend = computeFiredOnSend(order.items || []);
-      const newTickets = createKdsTickets(pendingItems, label, staff?.name || 'Server', 1, wiFiredOnSend);
+      // v5.8.66: the ref is taken HERE, before the tickets, so the KDS can show the receipt
+      // number (#35). It was taken a few lines further down; the value and the single
+      // getNextOrderRefLocal call are unchanged, only the moment moved.
+      const ref = order.ref || getNextOrderRefLocal();
+      const walkInMeta = buildTicketMeta({
+        channel: 'till', orderType,
+        customerName: customer?.name, orderRef: ref,
+        source: thisDeviceName(), staff: staff?.name,
+        note: joinNotes(order.orderNote, customer?.notes),
+      });
+      const newTickets = createKdsTickets(pendingItems, label, staff?.name || 'Server', 1, wiFiredOnSend, walkInMeta);
       // v4.6.5 Bug 3: walk-in / takeaway / collection / delivery orders must ALSO route
       // print jobs to each production centre. Previously only the table branch did this,
       // so non-table orders only hit the KDS screen and silently skipped every printer.
@@ -2786,7 +2816,7 @@ export const useStore = create((set, get) => ({
         });
       });
       // Always add walk-in orders to queue so they appear in Orders Hub
-      const ref = order.ref || getNextOrderRefLocal();
+      // (ref is taken above, before the KDS tickets, v5.8.66)
       const queueEntry = {
         ref, type: orderType,
         customer: customer ? { ...customer } : { name: customer?.name || label },
@@ -4103,6 +4133,8 @@ export const useStore = create((set, get) => ({
         table: label, server: staffName, covers: 1, centreId,
         sentAt: Date.now(), minutes: 0,
         firedCourses: [0, 1], allCourses: [1],
+        // v5.8.66: a bar round is Dine-in by name, the tab name as the headline (Peter).
+        meta: buildTicketMeta({ channel: 'bar', customerName: tab.name || null, source: thisDeviceName(), staff: staffName }),
         items: centreItems.map(i => ({
           qty: i.qty,
           name: i.kitchenName || i.menu_name || i.menuName || i.name,
@@ -7142,10 +7174,25 @@ export const useStore = create((set, get) => ({
       const ticketLocationId = useStore.getState().locationConfig?.id
         || getActiveLocationSync()
         || (await getLocationId().catch(() => null));
+      // v5.8.66: the redesigned KDS reads type, name, number and source from meta. The
+      // POS name is the CHANNEL (Kiosk, Online, QR, Deliveroo), never this device's name:
+      // this runs on the master till, not on the kiosk or phone that took the order.
+      // A delivery app order shows the app's own code (#8455) when it has one (Peter).
+      const _kdsMeta = buildTicketMeta({
+        channel: order.source || 'kiosk',
+        orderType: typeKey,
+        isTable: order.source === 'qr' && !!order.tableLabel,
+        customerName: order.customer?.name,
+        orderRef: order.ref,
+        appCode: order.source === 'hubrise' ? order.customer?.collectionCode : null,
+        source: order.source === 'hubrise' ? (order.customer?.channel || srcLabel) : srcLabel,
+        note: order.customer?.notes,
+      });
       const tickets = Object.entries(byCentre).map(([centreId, items]) => ({
         id: `kds-${sentAt}-${centreId}-${Math.random().toString(36).slice(2,6)}`,
         location_id: ticketLocationId,
         centre_id: centreId,
+        meta: _kdsMeta,
         course: 1,
         all_courses: [1],
         fired_courses: [1],
@@ -7163,7 +7210,13 @@ export const useStore = create((set, get) => ({
         covers: 1,
       }));
       if (tickets.length) {
-        const { error: kdsErr } = await supabase.from('kds_tickets').insert(tickets);
+        let { error: kdsErr } = await supabase.from('kds_tickets').insert(tickets);
+        // v5.8.66: until the kds_tickets.meta migration is run the column is missing and
+        // PostgREST rejects the whole insert. Retry without it so the kitchen never loses
+        // the order; the KDS reads these rows from table_label exactly as before.
+        if (kdsErr && isMissingColumnError(kdsErr, 'meta')) {
+          ({ error: kdsErr } = await supabase.from('kds_tickets').insert(tickets.map(t => { const { meta: _meta, ...rest } = t; return rest; })));
+        }
         // v5.5.971: a rejected ticket insert means the kitchen never sees the order.
         reportSave('kitchen ticket', kdsErr);
         if (kdsErr) {

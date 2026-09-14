@@ -492,7 +492,21 @@ export const fetchKDSTickets = async (locationId = null) => {
     .order('sent_at', { ascending: true });
 };
 
+// v5.8.66: does kds_tickets.meta exist? null = not known yet, true = a write with it
+// worked, false = PostgREST said the column is missing (migration not run). A false is
+// re-tested after 10 minutes so a till that stays open picks the column up once Peter
+// has run the migration, without a reload.
+let _kdsMetaColumn = null;
+let _kdsMetaMissingAt = 0;
+const _isMissingMetaColumn = (error) => {
+  const msg = `${error?.code || ''} ${error?.message || ''}`;
+  const missing = /PGRST204|42703/.test(msg) && msg.includes('meta');
+  if (missing) _kdsMetaMissingAt = Date.now();
+  return missing;
+};
+
 export const insertKDSTicket = async (ticket, locationId = null) => {
+  if (_kdsMetaColumn === false && Date.now() - _kdsMetaMissingAt > 10 * 60 * 1000) _kdsMetaColumn = null;
   if (isMock) return { data: null, error: null };
   // TRAINING MODE: don't fire a real kitchen ticket to the KDS / DB.
   if (isTrainingMode()) return { data: null, error: null };
@@ -513,13 +527,19 @@ export const insertKDSTicket = async (ticket, locationId = null) => {
     all_courses: ticket.allCourses || [],
     sent_at: ticket.sentAt ? new Date(ticket.sentAt).toISOString() : new Date().toISOString(),
   };
+  // v5.8.66: order type, name, number and till name for the redesigned KDS.
+  const withMeta = ticket.meta && _kdsMetaColumn !== false ? { ...row, meta: ticket.meta } : row;
 
   // v4.3 — durable send: if the network/Supabase fails, queue the write to
   // IndexedDB so it replays when the device comes back online. No lost tickets.
   const handleFailure = async (err) => {
     try {
       const { queueWrite } = await import('../sync/OfflineQueue');
-      await queueWrite({ type: 'upsert', table: 'kds_tickets', payload: row, onConflict: 'id' });
+      // v5.8.66: the queued copy carries meta ONLY once this session has seen the column
+      // accept a write. The queue gives up after 5 failed replays, so a payload the
+      // database cannot take (meta before the migration) would be a lost kitchen ticket.
+      // Without meta the KDS still reads the row from table_label.
+      await queueWrite({ type: 'upsert', table: 'kds_tickets', payload: _kdsMetaColumn === true ? withMeta : row, onConflict: 'id' });
       console.warn('[KDS] Send failed, queued for retry:', err?.message || err);
     } catch (qe) {
       console.error('[KDS] CRITICAL: send failed AND queueing failed:', qe?.message || qe);
@@ -527,7 +547,15 @@ export const insertKDSTicket = async (ticket, locationId = null) => {
   };
 
   try {
-    const res = await supabase.from('kds_tickets').insert(row);
+    let res = await supabase.from('kds_tickets').insert(withMeta);
+    if (withMeta !== row) {
+      if (res?.error && _isMissingMetaColumn(res.error)) {
+        _kdsMetaColumn = false;                       // migration not run yet: retry plain
+        res = await supabase.from('kds_tickets').insert(row);
+      } else if (!res?.error) {
+        _kdsMetaColumn = true;
+      }
+    }
     if (res?.error) await handleFailure(res.error);
     return res;
   } catch (err) {
