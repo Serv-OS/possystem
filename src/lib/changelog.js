@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.64',
+    date: '14 Sep 2026',
+    items: [
+      'Fix: on the kiosk, the size a customer picked was lost after the basket. A Large Latte printed in the kitchen, showed on the KDS and on the receipt as just Latte, and was saved and reported without its size. It now carries the size everywhere, the same way the till does.',
+      'Kiosk stock now counts the size that was sold, and still counts a stock limit set on the main item, so a tracked size can no longer be oversold. Recipe stock now comes off the size that was sold.',
+      'The amount charged is unchanged. It has been correct since v5.8.32.',
+    ],
+  },
+  {
     v: '5.8.63',
     date: '12 Sep 2026',
     items: [

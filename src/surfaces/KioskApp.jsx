@@ -33,7 +33,8 @@ import { resolveItemPrice, variantFromPrice } from '../lib/menuPricing';
 import { depleteForSaleServer } from '../lib/stock/deplete';
 import KioskProductModal from './KioskProductModal';
 import { t, setLang, useKioskLang, LANGUAGES, getLanguageMeta } from '../lib/i18n';
-import { displayName, kitchenOverride, receiptOverride } from '../lib/itemDisplay';
+import { displayName } from '../lib/itemDisplay';
+import { kioskVariant, kioskLineStockIds, kioskLineRemaining, kioskLineRoom, kioskLineKey, kioskCartUsage, kioskOrderItem, kioskDepleteItem } from '../lib/kioskLine';
 import { fetchCustomerByPhone } from '../lib/customerLookup';
 import { fetchKioskTables, groupKioskTables } from '../lib/kioskTables';
 import { stageGiftCard, commitGiftCard, giftCardCheckRecord } from '../lib/giftCommit';
@@ -627,24 +628,8 @@ export default function KioskApp({ kioskId, onUnpair }) {
   // v5.5.285: Count total usage of each item (by itemId) across the cart,
   // including both direct item orders and modifier option picks.
   // Used to enforce stock limits in KioskProductModal and ScreenCart.
-  const cartItemUsage = useMemo(() => {
-    const usage = {};
-    for (const line of cart) {
-      // Direct item
-      if (line.item?.id) {
-        usage[line.item.id] = (usage[line.item.id] || 0) + line.qty;
-      }
-      // Modifier options with itemId
-      if (line.modsArray) {
-        for (const mod of line.modsArray) {
-          if (mod.itemId) {
-            usage[mod.itemId] = (usage[mod.itemId] || 0) + line.qty;
-          }
-        }
-      }
-    }
-    return usage;
-  }, [cart]);
+  // A line with a size counts the size and its parent (lib/kioskLine.js).
+  const cartItemUsage = useMemo(() => kioskCartUsage(cart), [cart]);
 
   // ─── Idle timer ───
   const lastActivityRef = useRef(Date.now());
@@ -701,12 +686,15 @@ export default function KioskApp({ kioskId, onUnpair }) {
   }, []);
 
   // ─── Cart actions ───
-  const addToCart = useCallback((item, qty = 1, selectedMods = {}, summaryOverride = null, priceEachOverride = null, modsArrayOverride = null, instructions = '') => {
-    // v5.5.285: Stock enforcement — cap qty at remaining stock
-    const stock = dailyCounts[item?.id];
-    if (stock) {
-      const inCart = cartItemUsage[item?.id] || 0;
-      const maxAdd = Math.max(0, stock.remaining - inCart);
+  const addToCart = useCallback((item, qty = 1, selectedMods = {}, summaryOverride = null, priceEachOverride = null, modsArrayOverride = null, instructions = '', variantItem = null) => {
+    // The chosen size (null for a plain item). The line stays the parent for the
+    // basket screen and every money path; the size rides on line.variant so the
+    // order line, kitchen, receipt and stock all get it (lib/kioskLine.js).
+    const variant = kioskVariant(item, variantItem);
+    // v5.5.285: Stock enforcement — cap qty at remaining stock. A size line is
+    // capped by the size and by its parent when each has a count, like the till.
+    const maxAdd = kioskLineRoom({ item, variant }, dailyCounts, cartItemUsage);
+    if (maxAdd !== null) {
       if (maxAdd <= 0) return; // fully sold out
       qty = Math.min(qty, maxAdd);
     }
@@ -720,7 +708,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
     if (instructions && instructions.trim()) {
       modsArray.push({ label: instructions.trim(), price: 0, groupLabel: 'Note', _instruction: true });
     }
-    const key = item.id + ':' + JSON.stringify(selectedMods);
+    const key = kioskLineKey(item, variant, selectedMods);
     setCart(prev => {
       const existing = prev.find(l => l.key === key);
       if (existing) {
@@ -738,6 +726,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
       return [...prev, {
         key,
         item,
+        variant,
         name: displayName(item),
         qty,
         mods: modSummary + ((instructions && instructions.trim()) ? ((modSummary ? ' · ' : '') + 'Note: ' + instructions.trim()) : ''),
@@ -757,8 +746,8 @@ export default function KioskApp({ kioskId, onUnpair }) {
         let newQty = Math.max(0, l.qty + delta);
         // v5.5.285: Stock cap on increment
         if (delta > 0 && l.item?.id) {
-          const stock = dailyCounts[l.item.id];
-          if (stock) newQty = Math.min(newQty, stock.remaining);
+          const remaining = kioskLineRemaining(l, dailyCounts);
+          if (remaining !== null) newQty = Math.min(newQty, remaining);
         }
         return { ...l, qty: newQty, lineTotal: newQty * l.linePrice };
       })
@@ -835,33 +824,11 @@ export default function KioskApp({ kioskId, onUnpair }) {
       const { getNextOrderRef } = await import('../lib/db');
       const num = await getNextOrderRef(locationId);
       const orderTypeOut = orderType === 'dineIn' ? 'dine-in' : 'takeaway';
-      const itemsPayload = cart.map(l => ({
-        id: l.item.id,
-        name: l.name,
-        // Triple-naming: explicit kitchen/receipt names ride into closed_checks
-        // + order_queue (null when not set). routeKioskOrderPrints reads
-        // kitchenName || name for KDS/tickets; receipt builders read
-        // receiptName || name. l.item is a raw Supabase row (snake_case) —
-        // the itemDisplay resolvers read both shapes.
-        kitchenName: kitchenOverride(l.item),
-        receiptName: receiptOverride(l.item),
-        qty: l.qty,
-        price: l.linePrice,
-        // POS expects mods as array of { label, price, groupLabel }
-        mods: Array.isArray(l.modsArray) ? l.modsArray : [],
-        cat: l.item.cat,
-        // KIOSK NEVER HOLDS COURSES. A kiosk order is paid and gone — there is no
-        // server to fire course 2, so every line must be produced in one go. Stamped
-        // at SOURCE (same three fields online sets, OnlineCheckout.jsx:316-318) so it
-        // holds no matter which downstream path picks the order up: routeKioskOrderPrints
-        // already forces course 1, but fireScheduledOrder (store/index.js:2165) replays a
-        // scheduled order through the normal walk-in sendToKitchen, where
-        // computeFiredOnSend honours per-line courses and would hold anything above the
-        // lowest occupied course.
-        status: 'sent',
-        fired: true,
-        course: 1,
-      }));
+      // One order line shape for closed_checks, order_queue and customer_orders.
+      // A size line carries the size id, the till's "Latte — Large" name and the
+      // parent id, so kitchen, KDS, receipts, reports and stock see the size.
+      // Price stays the basket line price. See lib/kioskLine.js.
+      const itemsPayload = cart.map(kioskOrderItem);
       // 1. closed_checks
       const checkRow = {
         id: checkId,
@@ -937,10 +904,8 @@ export default function KioskApp({ kioskId, onUnpair }) {
       if (e1) throw e1;
       // v5.5.583: deplete recipe ingredients from the stock ledger (server-side, since
       // kiosk runs anonymously). Fire-and-forget — never blocks the order.
-      depleteForSaleServer({ id: checkId, items: cart.map(l => ({ itemId: l.item.id, qty: l.qty,
-        // v5.5.935: chosen modifier sub-items (the bun) deplete too — options carry itemId
-        // when linked (KioskProductModal stamps it), plain instructions don't and are skipped.
-        mods: (Array.isArray(l.modsArray) ? l.modsArray : []).filter(m => m && m.itemId).map(m => ({ itemId: m.itemId, qty: m.qty || 1 })) })), orderType: orderTypeOut });
+      // A size line depletes the size's recipe (lib/kioskLine.js kioskDepleteItem).
+      depleteForSaleServer({ id: checkId, items: cart.map(kioskDepleteItem), orderType: orderTypeOut });
       // 2. v5.5.5: customer attribution — kiosks were missing this path, so a customer
       // who ordered at the kiosk was stamped on the closed_check (customer name + phone)
       // but never made it into the customers table, customer_locations junction, or
@@ -1058,10 +1023,13 @@ export default function KioskApp({ kioskId, onUnpair }) {
       try {
         const currentCounts = useStore.getState().dailyCounts || {};
         for (const line of cart) {
-          const itemId = line.item?.id;
-          if (itemId && currentCounts[itemId]) {
-            decrementStockRPC(itemId, line.qty || 1, locationId)
-              .catch(e => console.warn('[kiosk] stock decrement failed:', itemId, e?.message));
+          // The size and its parent when a size was picked, each only when it
+          // has a count set (same rule as the till's decrementDailyCount).
+          for (const itemId of kioskLineStockIds(line)) {
+            if (itemId && currentCounts[itemId]) {
+              decrementStockRPC(itemId, line.qty || 1, locationId)
+                .catch(e => console.warn('[kiosk] stock decrement failed:', itemId, e?.message));
+            }
           }
           // Modifier sub-items (e.g. "Bueno Donut" inside a "Box of 3")
           if (line.modsArray) {
@@ -1129,8 +1097,8 @@ export default function KioskApp({ kioskId, onUnpair }) {
           activeMenuId={activeMenuId}
           dailyCounts={dailyCounts}
           cartItemUsage={cartItemUsage}
-          onAdd={({ qty, selections, summary, priceEach, mods, instructions }) => {
-            addToCart(selectedItem, qty, selections, summary, priceEach, mods, instructions);
+          onAdd={({ qty, selections, summary, priceEach, mods, instructions, variantItem }) => {
+            addToCart(selectedItem, qty, selections, summary, priceEach, mods, instructions, variantItem);
             setScreen('menu');
           }}
           onCancel={() => setScreen('menu')}
@@ -2395,8 +2363,8 @@ function ScreenCart({ brandColor, cart, subtotal, exclusiveTax = 0, cartItemCoun
           <>
             {cart.map(l => {
               // v5.5.285: Stock cap for cart qty increment
-              const stock = dailyCounts[l.item?.id] || null;
-              const atStockLimit = stock && l.qty >= stock.remaining;
+              const remaining = kioskLineRemaining(l, dailyCounts);
+              const atStockLimit = remaining !== null && l.qty >= remaining;
               return (
                 <CartLineCard
                   key={l.key}
