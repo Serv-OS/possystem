@@ -17,7 +17,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase, getLocationId } from '../../lib/supabase';
 import { CATEGORY_PHOTO_COPY } from '../../lib/categoryPhoto';
 import { KIOSK_NEW_DESIGN_READY } from '../../lib/kioskFlow';
-import { kioskPrimary, kioskPalette, parseCssColor, contrastWithWhite, DESIGN_GREEN, OLD_DEFAULT_BRAND } from '../../lib/kioskTheme';
+import { kioskPrimary, kioskPalette, parseCssColor, contrastWithWhite, DESIGN_GREEN, OLD_DEFAULT_BRAND, kioskAccent, kioskBackground, kioskBackgroundTooDark, OLD_DEFAULT_ACCENT, OLD_DEFAULT_BG } from '../../lib/kioskTheme';
 import KioskTipping from './KioskTipping';
 
 // v5.8.76 (Peter, 15 Sep 2026): one eat in mode per kiosk, in plain words, the same for both kiosk
@@ -286,7 +286,7 @@ export default function KioskSettings({ kioskId, onBack }) {
 
           {v2 ? (
             <SectionLg title="Look" desc="How the new kiosk design looks at this kiosk.">
-              <div style={{ fontSize: 15, color: 'var(--t3)', lineHeight: 1.45, marginBottom: 14 }}>The new design always uses the cream look. The light or dark theme setting only applies to the current design.</div>
+              <div style={{ fontSize: 15, color: 'var(--t3)', lineHeight: 1.45, marginBottom: 14 }}>The new design is a light look for now. A dark theme for the new design is coming next.</div>
               <FieldLg label="Main colour" hint="Buttons and highlights use this colour. Leave it on the design green if you have no brand colour. The old default orange (#f97316) shows as the design green, so for that orange pick a shade one step away, for example #f97416.">
                 <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                   <span aria-hidden="true" style={{ width: 40, height: 40, borderRadius: 10, background: kioskPrimary(draft), border: '1px solid var(--bdr)', flexShrink: 0 }} />
@@ -300,6 +300,28 @@ export default function KioskSettings({ kioskId, onBack }) {
                 </div>
                 {lookColourIsLight(draft) ? (
                   <div style={{ fontSize: 15, color: 'var(--t2)', marginTop: 8, lineHeight: 1.45 }}>This colour is very light. Text and highlights will use a darker shade so customers can read them.</div>
+                ) : null}
+              </FieldLg>
+              {/* v5.8.78 (Peter, 15 Sep 2026: all the old colour settings on the new design). */}
+              <FieldLg label="Accent colour" hint="Prices on the item screen, Tap for extras and money off amounts use this colour. Leave it empty to use the main colour.">
+                <OptionalColour
+                  label="Accent colour"
+                  value={optionalColourText(draft.kiosk_brand_accent_color, OLD_DEFAULT_ACCENT)}
+                  shown={kioskAccent(draft) || kioskPrimary(draft)}
+                  onChange={v => setField('kiosk_brand_accent_color', v)}
+                  clearLabel="Use the main colour"
+                />
+              </FieldLg>
+              <FieldLg label="Background colour" hint="The page colour behind every screen. Use a light colour. Leave it empty for the design cream.">
+                <OptionalColour
+                  label="Background colour"
+                  value={optionalColourText(draft.kiosk_brand_bg_color, OLD_DEFAULT_BG)}
+                  shown={kioskBackground(draft)?.ground || '#EFE4D9'}
+                  onChange={v => setField('kiosk_brand_bg_color', v)}
+                  clearLabel="Use the design cream"
+                />
+                {kioskBackgroundTooDark(draft) ? (
+                  <div style={{ fontSize: 15, color: 'var(--t2)', marginTop: 8, lineHeight: 1.45 }}>This colour is too dark for the light look, so the kiosk keeps the cream background. Dark backgrounds come with the dark theme.</div>
                 ) : null}
               </FieldLg>
               <FieldLg label="Brand name" hint="Shown when there is no logo.">
@@ -669,12 +691,34 @@ function lookColourIsLight(draft) {
   return !!rgb && contrastWithWhite(rgb) < 3;
 }
 
+// v5.8.78: an optional colour for the new design. The old kiosk's untouched default counts as empty.
+function optionalColourText(value, oldDefault) {
+  const c = String(value || '').trim();
+  return !c || c.toLowerCase() === oldDefault ? '' : c;
+}
+function OptionalColour({ label, value, shown, onChange, clearLabel }) {
+  const swatch = /^#[0-9a-f]{6}$/i.test(String(shown || '')) ? shown : '#EFE4D9';
+  return (
+    <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+      <span aria-hidden="true" style={{ width: 40, height: 40, borderRadius: 10, background: shown || swatch, border: '1px solid var(--bdr)', flexShrink: 0 }} />
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center', background: 'var(--bg2)', border: '1px solid var(--bdr)', borderRadius: 6, padding: 4, width: 220 }}>
+        <input type="color" aria-label={label} value={/^#[0-9a-f]{6}$/i.test(value) ? value : swatch} onChange={e => onChange(e.target.value)}
+          style={{ width: 32, height: 32, border: 0, padding: 0, background: 'transparent', cursor: 'pointer' }} />
+        <input type="text" aria-label={label + ' code'} value={value} placeholder="Empty" onChange={e => onChange(e.target.value)}
+          style={{ flex: 1, background: 'transparent', border: 0, color: 'var(--t1)', fontSize: 15, fontFamily: 'ui-monospace, monospace', outline: 'none', minWidth: 0 }} />
+      </div>
+      {value ? <button type="button" onClick={() => onChange('')} style={Object.assign({}, btnGhost(), { fontSize: 15 })}>{clearLabel}</button> : null}
+    </div>
+  );
+}
+
 function DesignPreview({ draft, deviceName }) {
   const primary = kioskPrimary(draft);
+  const ground = kioskBackground(draft)?.ground || '#EFE4D9';
   const onPrimary = kioskPalette(primary).onPrimary;
   const tile = { background: '#fff', borderRadius: 12, padding: '14px 8px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, boxShadow: '0 3px 9px rgba(0,0,0,.06)' };
   return (
-    <div style={{ borderRadius: 16, overflow: 'hidden', border: '1px solid var(--bdr)', background: '#EFE4D9', aspectRatio: '9 / 16', padding: 16, display: 'flex', flexDirection: 'column', color: '#14110F', fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif" }}>
+    <div style={{ borderRadius: 16, overflow: 'hidden', border: '1px solid var(--bdr)', background: ground, aspectRatio: '9 / 16', padding: 16, display: 'flex', flexDirection: 'column', color: '#14110F', fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif" }}>
       <div style={{ height: 40, display: 'flex', alignItems: 'center' }}>
         {draft.kiosk_brand_logo_url
           ? <div style={{ background: '#fff', borderRadius: 6, padding: 4, height: 36 }}><img src={draft.kiosk_brand_logo_url} alt="" style={{ height: 28, width: 'auto', maxWidth: 120, objectFit: 'contain', display: 'block' }} /></div>

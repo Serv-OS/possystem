@@ -17,6 +17,10 @@ export const DESIGN_INK = '#14110F';
 // The old kiosk default colour. A profile still on it never chose a colour, so it gets
 // the design green.
 export const OLD_DEFAULT_BRAND = '#f97316';
+// v5.8.78: the old kiosk's defaults for the accent and background colours. Back Office saved them
+// on every profile that was ever saved, so they mean "not chosen", not a real choice.
+export const OLD_DEFAULT_ACCENT = '#fbbf24';
+export const OLD_DEFAULT_BG = '#0e0e10';
 
 export const DESIGN_TOKENS = Object.freeze({
   '--k2Ground': '#EFE4D9',
@@ -214,9 +218,14 @@ export function kioskPrimary(profile) {
  * white when white reads at 3:1 or better (every primary label is 26px or larger and
  * bold), otherwise ink.
  */
-export function kioskPalette(primary) {
+export function kioskPalette(primary, groundRgb = GROUND_RGB) {
   const safe = safeCssColor(primary);
-  if (!safe || safe === DESIGN_GREEN.toLowerCase()) return { ...DESIGN_PALETTE };
+  if (!safe || safe === DESIGN_GREEN.toLowerCase()) {
+    // The design green on a venue background: still a readable border there.
+    if (groundRgb === GROUND_RGB) return { ...DESIGN_PALETTE };
+    const g = parseCssColor(DESIGN_GREEN);
+    return { ...DESIGN_PALETTE, primaryLine: hexOf(...darkenUntil(g, c => contrastRatio(c, WHITE_RGB) >= 3 && contrastRatio(c, groundRgb) >= 3)) };
+  }
   const rgb = parseCssColor(safe);
   if (!rgb) return { ...DESIGN_PALETTE, primary: safe, primaryDeep: safe, primaryTint: DESIGN_TOKENS['--k2Neutral'], onPrimary: '#FFFFFF' };
   const [h, s, l] = rgbToHsl(...rgb);
@@ -230,16 +239,56 @@ export function kioskPalette(primary) {
     // The colour used AS text or an icon on white and on the tint (4.5:1 on white, 3:1 on the tint).
     primaryInk: hexOf(...darkenUntil(rgb, c => contrastRatio(c, WHITE_RGB) >= 4.5 && contrastRatio(c, tint) >= 3)),
     // The colour used as a border or ring on white and on the cream ground (3:1).
-    primaryLine: hexOf(...darkenUntil(rgb, c => contrastRatio(c, WHITE_RGB) >= 3 && contrastRatio(c, GROUND_RGB) >= 3)),
+    primaryLine: hexOf(...darkenUntil(rgb, c => contrastRatio(c, WHITE_RGB) >= 3 && contrastRatio(c, groundRgb) >= 3)),
     // A light edge for a button in the colour on the ink order bar, when the two are too close.
     onInkEdge: contrastRatio(rgb, INK_RGB) < 3 ? 'inset 0 0 0 2px rgba(255,255,255,.45)' : 'none',
   };
 }
 
 
+/**
+ * v5.8.78 (Peter, 15 Sep 2026: "all the old colour settings"): the venue's background colour for the
+ * new design, or null for the design cream. The new design is a LIGHT look, so a background is
+ * used only when body text reads on it (ink at 7:1 or better), the same rule the old kiosk used
+ * (a custom background only when it matched the light or dark theme). Dark backgrounds come with
+ * the dark theme. The old untouched default (#0e0e10) and anything unreadable give null.
+ * Returns { ground, groundDeep, rgb }.
+ */
+export function kioskBackground(profile) {
+  const safe = safeCssColor(profile?.kiosk_brand_bg_color);
+  if (!safe || safe === OLD_DEFAULT_BG) return null;
+  const rgb = parseCssColor(safe);
+  if (!rgb || contrastRatio(rgb, INK_RGB) < 7) return null;
+  const [h, s, l] = rgbToHsl(...rgb);
+  return { ground: hexOf(...rgb), groundDeep: hexOf(...hslToRgb(h, s, Math.max(0, l - 0.05))), rgb };
+}
+
+/** True when the profile has a background colour the light design cannot use (too dark). */
+export function kioskBackgroundTooDark(profile) {
+  const safe = safeCssColor(profile?.kiosk_brand_bg_color);
+  if (!safe || safe === OLD_DEFAULT_BG) return false;
+  const rgb = parseCssColor(safe);
+  return !!rgb && contrastRatio(rgb, INK_RGB) < 7;
+}
+
+/**
+ * The venue's accent colour, or null (then highlights use the main colour). The accent colours
+ * the highlight text: the price on the item sheet, "tap for extras" and money off amounts. The old
+ * untouched default (#fbbf24) and anything a browser cannot read give null.
+ */
+export function kioskAccent(profile) {
+  const safe = safeCssColor(profile?.kiosk_brand_accent_color);
+  if (!safe || safe === OLD_DEFAULT_ACCENT) return null;
+  return parseCssColor(safe) ? safe : null;
+}
+
 /** The per venue CSS variables for the kiosk shell. */
 export function kioskThemeVars(profile) {
-  const p = kioskPalette(kioskPrimary(profile));
+  const bg = kioskBackground(profile);
+  const p = kioskPalette(kioskPrimary(profile), bg ? bg.rgb : GROUND_RGB);
+  const accent = kioskAccent(profile);
+  // Highlight text in the accent, darkened until it reads on white (4.5:1), like primaryInk.
+  const accentInk = accent ? hexOf(...darkenUntil(parseCssColor(accent), c => contrastRatio(c, WHITE_RGB) >= 4.5)) : p.primaryInk;
   return {
     '--k2Primary': p.primary,
     '--k2PrimaryDeep': p.primaryDeep,
@@ -248,7 +297,9 @@ export function kioskThemeVars(profile) {
     '--k2PrimaryInk': p.primaryInk,
     '--k2PrimaryLine': p.primaryLine,
     '--k2PrimaryOnInkEdge': p.onInkEdge,
+    '--k2AccentInk': accentInk,
     '--kBrand': p.primary,
+    ...(bg ? { '--k2Ground': bg.ground, '--k2GroundDeep': bg.groundDeep, '--kSurfaceShell': bg.ground } : {}),
   };
 }
 

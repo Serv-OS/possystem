@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.78',
+    date: '15 Sep 2026',
+    items: [
+      'New kiosk design: the background colour and accent colour settings work again. Set them in Back Office, Kiosks, Settings, Look.',
+      'Background colour: the page colour behind every screen, instead of the design cream. The new design is light for now, so a colour too dark to read text on is not used, and Back Office says so.',
+      'Accent colour: prices on the item screen, Tap for extras and money off amounts. Always darkened enough to read. Empty uses the main colour.',
+      'Kiosks that never chose these colours stay exactly as they are. A dark theme for the new design comes next.',
+    ],
+  },
+  {
     v: '5.8.77',
     date: '15 Sep 2026',
     items: [
