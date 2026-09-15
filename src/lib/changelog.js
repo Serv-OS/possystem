@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.74',
+    date: '15 Sep 2026',
+    items: [
+      'Every change now runs all the automatic tests and the build on GitHub, and a change cannot go live while any of them fail. Before, the tests only ran when someone remembered to run them.',
+    ],
+  },
+  {
     v: '5.8.73',
     date: '15 Sep 2026',
     items: [
