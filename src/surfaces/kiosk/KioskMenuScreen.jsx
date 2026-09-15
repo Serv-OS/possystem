@@ -11,7 +11,7 @@
  * Every rule is in lib/kioskMenu.js; this file only draws and calls back.
  * Sizes are design px (the canvas scales them). No vw, vh or clamp.
  */
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { t, tf, tn } from '../../lib/i18n';
 import { resolveItemPrice, variantFromPrice, variantChildren } from '../../lib/menuPricing';
 import { railTileMode } from '../../lib/categoryPhoto';
@@ -27,6 +27,28 @@ import KioskCategoryTile from './KioskCategoryTile';
 import KioskItemCard from './KioskItemCard';
 import KioskOrderBar from './KioskOrderBar';
 
+/**
+ * The hero banner at the top of the menu (v5.8.77): the venue's Menu screen banner, the same shape
+ * as the old kiosk's (5 by 2, full width of the items, rounded). An image that fails to load is
+ * hidden, remembering WHICH url failed, so a new banner gets its own try.
+ */
+function KioskMenuBanner({ banner }) {
+  const url = banner && typeof banner.imageUrl === 'string' ? banner.imageUrl.trim() : '';
+  const [failedUrl, setFailedUrl] = useState(null);
+  if (!url || failedUrl === url) return null;
+  return (
+    <div style={{ width: '100%', aspectRatio: '5 / 2', borderRadius: 26, overflow: 'hidden', marginBottom: 26, background: 'var(--k2Neutral)' }}>
+      <img
+        src={url}
+        alt={banner.label || ''}
+        draggable={false}
+        onError={() => setFailedUrl(url)}
+        style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+      />
+    </div>
+  );
+}
+
 export default function KioskMenuScreen({
   engine, primary, instructionDefs, groupRules,
   onBack, onCancel, onOpenAllergens, onOpenItem, onQuickAdd, onOpenBasket, onReview,
@@ -34,7 +56,7 @@ export default function KioskMenuScreen({
   const {
     items, visibleCategories, railCategories, activeMenuId, eightySixIds, dailyCounts,
     orderType, tableNumber, selectedCategoryId, setSelectedCategoryId, allergenFilter,
-    cartItemCount, subtotal, categoryPhotos, categoryPhotoOrigin,
+    cartItemCount, subtotal, categoryPhotos, categoryPhotoOrigin, menuBanner,
   } = engine;
 
   const roots = useMemo(() => kioskRailRoots(visibleCategories, items), [visibleCategories, items]);
@@ -104,6 +126,7 @@ export default function KioskMenuScreen({
 
           {/* keyed on the tile, so a new category starts scrolled to the top */}
           <div key={rootId || 'none'} style={{ flex: 1, minWidth: 0, overflowY: 'auto', padding: '26px 28px 220px' }}>
+            <KioskMenuBanner banner={menuBanner} />
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 14, marginBottom: 22, flexWrap: 'wrap' }}>
               <div style={{ fontSize: 40, fontWeight: 800, color: 'var(--k2Ink)', lineHeight: 1.1 }}>{root?.label || ''}</div>
               <div style={{ fontSize: 19, color: 'var(--k2InkSubtle)' }}>{tn('k2.items', count)}</div>

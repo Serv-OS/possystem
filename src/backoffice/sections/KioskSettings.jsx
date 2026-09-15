@@ -396,10 +396,33 @@ export default function KioskSettings({ kioskId, onBack }) {
             </Field>
           </Section>}
 
-          {/* ── Hero banners ── */}
+          {/* ── Hero banners ── v5.8.77: the new design shows the Menu screen banner at the top of the menu. */}
           {v2 ? (
-            <SectionLg title="Hero banners">
-              <div style={{ fontSize: 15, color: 'var(--t3)', lineHeight: 1.45 }}>Banners and button wording are not used by the new kiosk design.</div>
+            <SectionLg title="Hero banner" desc="A promo image at the top of the menu. The new design uses the first banner set to Menu screen.">
+              {(draft.kiosk_banners || []).length === 0 && (
+                <div style={{ padding: 18, fontSize: 15, color: 'var(--t3)', textAlign: 'center', background: 'var(--bg2)', borderRadius: 8, border: '1px dashed var(--bdr)' }}>No banner yet.</div>
+              )}
+              {(draft.kiosk_banners || []).map((b, idx) => (
+                <div key={idx} style={{ display: 'grid', gridTemplateColumns: '160px 1fr auto', gap: 12, marginBottom: 12, alignItems: 'center', background: 'var(--bg2)', padding: 12, borderRadius: 8 }}>
+                  <FileSlot
+                    currentUrl={b.imageUrl}
+                    onUpload={(e) => onBannerUpload(e, idx)}
+                    onClear={() => updateBanner(idx, 'imageUrl', '')}
+                    accept="image/*"
+                    uploading={uploadingFor === `banner${idx}`}
+                    kind="image"
+                    compact
+                  />
+                  <div style={{ fontSize: 15, color: 'var(--t2)', lineHeight: 1.45 }}>
+                    {(b.screen || 'menu') === 'menu'
+                      ? (idx === (draft.kiosk_banners || []).findIndex(x => (x.screen || 'menu') === 'menu' && x.imageUrl) ? 'Shows at the top of the menu.' : 'Menu screen banner. Only the first one with an image shows.')
+                      : 'Set for the current design only. Not shown on the new design.'}
+                  </div>
+                  <button onClick={() => removeBanner(idx)} style={btnGhostDanger()}>×</button>
+                </div>
+              ))}
+              <button onClick={addBanner} style={Object.assign({}, btnGhost(), { width: '100%', borderStyle: 'dashed', fontSize: 15 })}>+ Add banner</button>
+              <div style={{ fontSize: 15, color: 'var(--t3)', lineHeight: 1.45, marginTop: 8 }}>A wide image works best, about 5 wide by 2 high.</div>
             </SectionLg>
           ) : <Section title="Hero banners" desc="Promo images that appear at the top of menu screens. Optional.">
             {(draft.kiosk_banners || []).length === 0 && (

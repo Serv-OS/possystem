@@ -260,3 +260,15 @@ test('the old kiosk design asks for a number in every eat in mode, and only the 
   for (const label of ['Table plan', 'Type a table number', 'Flag number', 'Take away only']) assert.ok(settings.includes(`label: '${label}'`), label);
   assert.match(settings, /const TABLE_MODES_V2 = TABLE_MODES;/);
 });
+
+test('the new design shows the Menu screen hero banner at the top of the menu, and Back Office can set it', () => {
+  const app = fs.readFileSync(new URL('../surfaces/KioskApp.jsx', import.meta.url), 'utf8');
+  assert.match(app, /menuBanner: bannerFor\('menu'\) \|\| null,/);
+  const menu = fs.readFileSync(new URL('../surfaces/kiosk/KioskMenuScreen.jsx', import.meta.url), 'utf8');
+  assert.match(menu, /<KioskMenuBanner banner=\{menuBanner\} \/>/);
+  assert.match(menu, /aspectRatio: '5 \/ 2'/);
+  assert.match(menu, /onError=\{\(\) => setFailedUrl\(url\)\}/);
+  const settings = fs.readFileSync(new URL('../backoffice/sections/KioskSettings.jsx', import.meta.url), 'utf8');
+  assert.doesNotMatch(settings, /Banners and button wording are not used by the new kiosk design/);
+  assert.match(settings, /title="Hero banner" desc="A promo image at the top of the menu\./);
+});

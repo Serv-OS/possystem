@@ -223,6 +223,7 @@ export default function KioskV2Preview() {
     checkIdRef, orderNumber, submitting, submitError, setSubmitError, submitOrder,
     brandName: profile.kiosk_brand_name, brandLogoUrl: profile.kiosk_brand_logo_url, attractVideoUrl: profile.kiosk_attract_video_url,
     avgWaitMinutes: profile.kiosk_avg_wait_minutes, tableMode: profile.kiosk_table_mode, loyaltyEnabled: profile.kiosk_loyalty_enabled !== false,
+    menuBanner: (Array.isArray(profile.kiosk_banners) ? profile.kiosk_banners : []).find(b => b && b.screen === 'menu' && b.imageUrl) || null,
     categoryPhotos: profile.kiosk_category_photos !== false, categoryPhotoOrigin: null, idleTimeoutSec: profile.kiosk_idle_timeout_sec, lang,
     resetIdle, resetSession, idleWarning, warningCountdown: 7,
     setIdlePaused, deviceLocationId: FIXTURE_LOCATION_ID,
