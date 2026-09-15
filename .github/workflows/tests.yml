@@ -1,0 +1,40 @@
+name: Tests and build
+# v5.8.74 (Peter, 15 Sep 2026: "all this was once working and then it wasnt so how do we ensure
+# these issues are fixed fully"). Every change runs ALL the tests and the production build here.
+# main is protected in the repo settings: a pull request can only merge when this passes, whoever
+# (or whichever Claude session) made the change. Before this the tests only ran when someone
+# remembered to run them locally.
+on:
+  pull_request:
+    branches: [ main, develop ]
+  push:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests-and-build:
+    name: Tests and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node 24 is what the tests are written against (node --test with a glob needs 21 or later).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Tests
+        run: npm test
+
+      # The same build Vercel runs. No secrets are given: the build must work without them.
+      - name: Build
+        run: npx vite build
