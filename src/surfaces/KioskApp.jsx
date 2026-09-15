@@ -1161,6 +1161,9 @@ export default function KioskApp({ kioskId, onUnpair }) {
       customerPhone, setCustomerPhone,
       checkIdRef, orderNumber, submitting, submitError, setSubmitError, submitOrder,
       brandName, brandLogoUrl, attractVideoUrl, avgWaitMinutes, tableMode, loyaltyEnabled,
+      // v5.8.77 (Peter, 15 Sep 2026: "the hero banner should be used", top of the menu): the
+      // first Menu screen banner from Back Office, Kiosks, Settings, Hero banners.
+      menuBanner: bannerFor('menu') || null,
       categoryPhotos, categoryPhotoOrigin, idleTimeoutSec, lang,
       resetIdle, resetSession, idleWarning, warningCountdown,
       setIdlePaused, deviceLocationId: device?.location_id || null,

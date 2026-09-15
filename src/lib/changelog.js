@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.77',
+    date: '15 Sep 2026',
+    items: [
+      'New kiosk design: the hero banner shows at the top of the menu, full width above the items, like the old kiosk. It uses the first banner set to Menu screen.',
+      'Back Office, Kiosks, Settings: the Hero banner section is back for the new design, to add or remove the banner image.',
+    ],
+  },
+  {
     v: '5.8.76',
     date: '15 Sep 2026',
     items: [
