@@ -1,0 +1,58 @@
+// ServOS Kiosk (co.posup.rpos.kiosk), v5.8.79. Self service kiosk: full screen, never dims, and the back button does nothing so customers cannot leave.
+//
+// A thin app on the shared :webshell (android/webshell/build.gradle explains the settings): this
+// module is only the manifest, the icon and res/values/shell.xml. It opens
+// https://app.serv-os.app/?mode=kiosk and self-updates from app-releases/latest-kiosk.json.
+//
+// SIGNING: in-app auto-update only installs in place when every build is signed with the SAME key.
+// CI (build-device-apps.yml) signs RELEASE builds with the shared keystore from GitHub secrets; a
+// local build without them falls back to the debug key (builds, but will not update a signed install).
+// RELEASE: bump versionCode (+ versionName) here AND in android/release/latest-kiosk.json.
+plugins {
+    id 'com.android.application'
+}
+
+def ksPath = System.getenv('ANDROID_KEYSTORE_FILE')
+def hasKeystore = ksPath != null && new File(ksPath).exists()
+
+android {
+    namespace 'co.posup.rpos.kiosk'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "co.posup.rpos.kiosk"
+        minSdk 26
+        targetSdk 34
+        versionCode 1          // bump every release; the updater compares this to latest-kiosk.json
+        versionName "1.0"
+    }
+
+    signingConfigs {
+        release {
+            if (hasKeystore) {
+                storeFile file(ksPath)
+                storePassword System.getenv('ANDROID_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('ANDROID_KEY_ALIAS')
+                keyPassword System.getenv('ANDROID_KEY_PASSWORD')
+                storeType 'PKCS12'
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            debuggable false
+            signingConfig hasKeystore ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation project(':webshell')
+}

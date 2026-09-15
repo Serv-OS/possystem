@@ -1,0 +1,7 @@
+{
+  "versionCode": 1,
+  "versionName": "1.0",
+  "apkUrl": "https://tbetcegmszzotrwdtqhi.supabase.co/storage/v1/object/public/app-releases/clock.apk",
+  "mandatory": false,
+  "notes": "ServOS Time Clock for Android, with automatic updates."
+}

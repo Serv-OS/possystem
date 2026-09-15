@@ -107,7 +107,8 @@ export default function ClockCard({ call, venueFallbackName }) {
       const res = await call({
         action: 'clock_punch', kind, fix, punch_id: punchId,
         platform: window.RposIOS ? 'ios' : 'android',
-        app_version: window.RposIOS?.version || null,
+        // v5.8.79: the Android app exposes version() as a method (android/webshell ShellActivity).
+        app_version: window.RposIOS?.version || (typeof window.RposAndroid?.version === 'function' ? window.RposAndroid.version() : null) || null,
       });
       if (res?.refused) { setMsg({ tone: 'warn', text: res.reason || 'That was refused.' }); }
       else if (res?.error) { setMsg({ tone: 'bad', text: res.error }); }

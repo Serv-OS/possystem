@@ -1,0 +1,7 @@
+{
+  "versionCode": 1,
+  "versionName": "1.0",
+  "apkUrl": "https://tbetcegmszzotrwdtqhi.supabase.co/storage/v1/object/public/app-releases/manager.apk",
+  "mandatory": false,
+  "notes": "ServOS Manager for Android, with automatic updates."
+}

@@ -1,0 +1,36 @@
+// :webshell — the ONE shared Android shell for the Serv OS device apps (v5.8.79, 15 Sep 2026).
+//
+// KDS, Kiosk, Owner, Manager, Staff, Time Clock, Waitlist and the Bookings host stand are the same
+// app: a full screen WebView on https://app.serv-os.app/?mode=<app> that updates itself. Instead of
+// eight copies of MainActivity + UpdateChecker (copies drift, the lesson of 15 Sep), each app module
+// is only a manifest, an icon and res/values/shell.xml; everything else lives here.
+//
+// Per app settings (app module res/values/shell.xml, read at runtime):
+//   shell_app_url          the page to open
+//   shell_channel          update channel: app-releases/latest-<channel>.json and <channel>.apk
+//   shell_keep_screen_on   never dim (KDS, kiosk, clock, host stands)
+//   shell_immersive        hide the system bars (KDS, kiosk, clock)
+//   shell_lock_back        the back button does nothing (kiosk: customers must not leave)
+//   shell_allows_location  window.RposLocation for the geofenced clock in (Staff only, as on iOS)
+plugins {
+    id 'com.android.library'
+}
+
+android {
+    namespace 'co.posup.rpos.webshell'
+    compileSdk 34
+
+    defaultConfig {
+        minSdk 26
+        targetSdk 34
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+}
