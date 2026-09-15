@@ -121,7 +121,7 @@ function AppliedChip({ label, amount, onRemove }) {
     <div style={{ display: 'flex', alignItems: 'center', gap: 14, background: '#FFFFFF', border: '2px solid var(--k2Hairline)', borderRadius: 18, padding: '18px 22px', fontSize: 22 }}>
       <span style={{ color: 'var(--k2PrimaryInk)', flex: 'none' }}><TickIcon size={26} /></span>
       <span style={{ flex: 1, minWidth: 0, fontWeight: 700, color: 'var(--k2Ink)', overflowWrap: 'anywhere' }}>{label}</span>
-      <span style={{ fontWeight: 800, color: 'var(--k2PrimaryInk)', fontVariantNumeric: 'tabular-nums', flex: 'none' }}>{`−${money(amount)}`}</span>
+      <span style={{ fontWeight: 800, color: 'var(--k2AccentInk, var(--k2PrimaryInk))', fontVariantNumeric: 'tabular-nums', flex: 'none' }}>{`−${money(amount)}`}</span>
       <button
         type="button"
         onClick={onRemove}

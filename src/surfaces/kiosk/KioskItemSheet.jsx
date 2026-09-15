@@ -121,7 +121,7 @@ export default function KioskItemSheet(props) {
             {item?.description ? (
               <div style={{ fontSize: 21, color: 'var(--k2InkSubtle)', marginTop: 6, lineHeight: 1.35 }}>{item.description}</div>
             ) : null}
-            <div style={{ fontSize: 26, fontWeight: 800, color: 'var(--k2PrimaryInk)', marginTop: 10, fontVariantNumeric: 'tabular-nums' }}>{priceLine}</div>
+            <div style={{ fontSize: 26, fontWeight: 800, color: 'var(--k2AccentInk, var(--k2PrimaryInk))', marginTop: 10, fontVariantNumeric: 'tabular-nums' }}>{priceLine}</div>
             {allergenLabels.length > 0 ? (
               <div style={{ fontSize: 21, color: 'var(--k2InkBody)', marginTop: 8, lineHeight: 1.35 }}>
                 {tf('k2.sheet.allergens', { list: allergenLabels.join(', ') })}

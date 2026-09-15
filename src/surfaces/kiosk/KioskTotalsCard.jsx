@@ -12,7 +12,7 @@ export default function KioskTotalsCard({ rows }) {
   return (
     <div style={{ background: '#FFFFFF', borderRadius: 26, padding: '26px 28px', display: 'flex', flexDirection: 'column', gap: 12, flex: 'none' }}>
       {lines.map(r => (
-        <div key={r.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 16, fontSize: 22, color: r.negative ? 'var(--k2PrimaryInk)' : 'var(--k2InkMuted)' }}>
+        <div key={r.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 16, fontSize: 22, color: r.negative ? 'var(--k2AccentInk, var(--k2PrimaryInk))' : 'var(--k2InkMuted)' }}>
           <span style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{r.label || t(r.labelKey)}</span>
           <span style={{ fontVariantNumeric: 'tabular-nums', flex: 'none' }}>{r.negative ? `−${money(r.amount)}` : money(r.amount)}</span>
         </div>

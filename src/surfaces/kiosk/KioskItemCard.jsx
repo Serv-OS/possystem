@@ -62,7 +62,7 @@ export default function KioskItemCard({ item, addMode, button, price, fromPrice 
             display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
           }}>{item.description || ''}</div>
           {quick && addMode.hasExtras ? (
-            <div style={{ fontSize: 17, fontWeight: 600, color: 'var(--k2PrimaryInk)', marginTop: 2 }}>{t('k2.menu.tapForExtras')}</div>
+            <div style={{ fontSize: 17, fontWeight: 600, color: 'var(--k2AccentInk, var(--k2PrimaryInk))', marginTop: 2 }}>{t('k2.menu.tapForExtras')}</div>
           ) : null}
         </div>
       </button>

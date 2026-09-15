@@ -55,7 +55,7 @@ export function KioskRewardRow({ redemption, credit, onOpen, onRemove }) {
       <div style={{ ...rowStyle(true), cursor: 'default' }}>
         <span style={{ display: 'grid', placeItems: 'center', width: 40 }}><StarIcon size={34} /></span>
         <RowText strong title={tf('k2.reward.appliedTitle', { name: redemption.reward_name || '' })} />
-        <span style={{ fontSize: 24, fontWeight: 800, color: 'var(--k2PrimaryInk)', fontVariantNumeric: 'tabular-nums', flex: 'none' }}>{`−${money(credit)}`}</span>
+        <span style={{ fontSize: 24, fontWeight: 800, color: 'var(--k2AccentInk, var(--k2PrimaryInk))', fontVariantNumeric: 'tabular-nums', flex: 'none' }}>{`−${money(credit)}`}</span>
         <button
           type="button"
           onClick={onRemove}

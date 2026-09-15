@@ -10,6 +10,11 @@ import {
   kioskPrimary,
   kioskPalette,
   kioskThemeVars,
+  kioskBackground,
+  kioskBackgroundTooDark,
+  kioskAccent,
+  OLD_DEFAULT_ACCENT,
+  OLD_DEFAULT_BG,
   photoBlock,
   parseCssColor,
   contrastWithWhite,
@@ -77,7 +82,7 @@ test('parseCssColor reads hex, names, rgb and hsl', () => {
 test('kioskThemeVars sets the four venue variables and the shared --kBrand', () => {
   assert.deepEqual(kioskThemeVars({}), {
     '--k2Primary': '#4E7B27', '--k2PrimaryDeep': '#3E6320', '--k2PrimaryTint': '#EDF3E6', '--k2OnPrimary': '#FFFFFF',
-    '--k2PrimaryInk': '#4E7B27', '--k2PrimaryLine': '#4E7B27', '--k2PrimaryOnInkEdge': 'none', '--kBrand': '#4E7B27',
+    '--k2PrimaryInk': '#4E7B27', '--k2PrimaryLine': '#4E7B27', '--k2PrimaryOnInkEdge': 'none', '--k2AccentInk': '#4E7B27', '--kBrand': '#4E7B27',
   });
   const v = kioskThemeVars({ kiosk_brand_color: 'yellow' });
   assert.equal(v['--k2Primary'], 'yellow');
@@ -130,4 +135,39 @@ test('a light or very dark venue colour still gives readable text, borders and a
   assert.equal(kioskPalette('#0F5F52').primaryInk, '#0f5f52');
   const v = kioskThemeVars({ kiosk_brand_color: '#E9C84D' });
   assert.notEqual(v['--k2PrimaryInk'], '#e9c84d');
+});
+
+// v5.8.78 (Peter, 15 Sep 2026: all the old colour settings on the new design; dark theme next).
+test('background colour: a light colour replaces the cream; the old default, dark or junk colours do not', () => {
+  // Every profile ever saved in Back Office carries the old defaults: they mean "not chosen".
+  assert.equal(OLD_DEFAULT_BG, '#0e0e10');
+  assert.equal(OLD_DEFAULT_ACCENT, '#fbbf24');
+  for (const c of [undefined, null, '', '#0e0e10', 'junk', 'url(x)']) assert.equal(kioskBackground({ kiosk_brand_bg_color: c }), null, String(c));
+  const light = kioskBackground({ kiosk_brand_bg_color: '#F4F7FB' });
+  assert.equal(light.ground.toLowerCase(), '#f4f7fb');
+  assert.ok(contrastRatio(parseCssColor(light.groundDeep), parseCssColor('#14110F')) < contrastRatio(parseCssColor('#F4F7FB'), parseCssColor('#14110F')));
+  // Too dark for the light look: not used, and Back Office can say so.
+  assert.equal(kioskBackground({ kiosk_brand_bg_color: '#1a1a2e' }), null);
+  assert.equal(kioskBackgroundTooDark({ kiosk_brand_bg_color: '#1a1a2e' }), true);
+  assert.equal(kioskBackgroundTooDark({ kiosk_brand_bg_color: '#0e0e10' }), false);
+  assert.equal(kioskBackgroundTooDark({ kiosk_brand_bg_color: '#F4F7FB' }), false);
+  // The shell gets the ground, and the main colour's border still reads on it.
+  const v = kioskThemeVars({ kiosk_brand_bg_color: '#FFE9A8', kiosk_brand_color: '#F2C200' });
+  assert.equal(v['--k2Ground'].toLowerCase(), '#ffe9a8');
+  assert.equal(v['--kSurfaceShell'].toLowerCase(), '#ffe9a8');
+  assert.ok(contrastRatio(parseCssColor(v['--k2PrimaryLine']), parseCssColor('#FFE9A8')) >= 3);
+  assert.equal(kioskThemeVars({})['--k2Ground'], undefined, 'no background chosen: the cream from globals.css');
+});
+
+test('accent colour: highlight text in the accent, always readable on white; none chosen uses the main colour', () => {
+  for (const c of [undefined, null, '', '#fbbf24', 'junk']) assert.equal(kioskAccent({ kiosk_brand_accent_color: c }), null, String(c));
+  assert.equal(kioskAccent({ kiosk_brand_accent_color: '#C0392B' }), '#c0392b');
+  const v = kioskThemeVars({ kiosk_brand_accent_color: '#FFD000' });
+  assert.ok(contrastRatio(parseCssColor(v['--k2AccentInk']), [255, 255, 255]) >= 4.5, 'a yellow accent is darkened until it reads');
+  assert.equal(kioskThemeVars({ kiosk_brand_color: '#1E6FD9' })['--k2AccentInk'], kioskThemeVars({ kiosk_brand_color: '#1E6FD9' })['--k2PrimaryInk']);
+  // The screens use it for the highlight text, with the main colour as the fallback.
+  for (const rel of ['KioskItemSheet.jsx', 'KioskItemCard.jsx', 'KioskTotalsCard.jsx', 'KioskLoyaltyRows.jsx', 'KioskCodeCard.jsx']) {
+    const src = fs.readFileSync(new URL('../surfaces/kiosk/' + rel, import.meta.url), 'utf8');
+    assert.ok(src.includes("var(--k2AccentInk, var(--k2PrimaryInk))"), rel);
+  }
 });
