@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.72',
+    date: '15 Sep 2026',
+    items: [
+      'Security (database update): only a super admin can create or delete user profiles through the app, and nobody can give themselves a role. Before this, a signed in venue login could delete its own profile and create it again as a super admin, which opens the admin portal. Sign ups, staff invites and the admin portal are unchanged.',
+    ],
+  },
+  {
     v: '5.8.71',
     date: '15 Sep 2026',
     items: [
