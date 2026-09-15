@@ -575,6 +575,10 @@ Deno.serve(async (req) => {
           id: r.id, name: r.name, description: r.description,
           icon: r.icon, points_cost: r.points_cost,
           reward_type: r.reward_type,
+          // What the reward gives (amount_minor / percent / eligible_items). The kiosk turns
+          // this into money off; without it every points reward staged 0p and still spent
+          // the points. loyalty-balance (the till's lookup) already sends the full row.
+          reward_value: r.reward_value || {},
         })),
         // v5.5.885: earned stamp-card rewards (completed cards not yet redeemed) — checkout
         // surfaces list these as FREE alongside points rewards.
