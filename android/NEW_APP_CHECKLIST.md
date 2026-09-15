@@ -1,5 +1,21 @@
 # Adding a new Serv OS device app (the standard)
 
+## A plain WebView app: use :webshell (since v5.8.79, 15 Sep 2026)
+
+KDS, Kiosk, Owner, Manager, Staff, Time Clock, Waitlist and Bookings are all thin modules on the
+shared shell in `android/webshell` (ShellActivity, ShellUpdateChecker, ShellLocationBridge). A new
+app that only opens a web surface needs NO Java:
+1. Copy `android/kds` to `android/<app>`: change `namespace`/`applicationId` in `build.gradle`,
+   `app_name` in `res/values/strings.xml`, and `res/values/shell.xml` (page URL, channel, keep screen
+   on, immersive, lock back, location). Replace the five `mipmap-*/ic_launcher.png` icons.
+2. `android/settings.gradle`: `include ':<app>'`. `android/release/latest-<app>.json` at versionCode 1.
+3. Add the app to the matrix and the paths in `.github/workflows/build-device-apps.yml`, and to
+   `src/lib/androidApps.test.js`.
+Fix a shell bug once in `android/webshell` and every app gets it. Only apps with native hardware
+(POS printers and customer display, MPOS Adyen, Menu Board TV launcher, PAX) use the copy :mpos
+route below.
+
+
 Every device app is its own Gradle module with its own `applicationId`, icon, CI workflow, and
 **self-update channel**, all signed with the **one shared release keystore** so updates install in
 place. POS (`:app`), MPOS (`:mpos`) and Menu Board (`:menuboard`) all follow this. Copy `:mpos`

@@ -14,3 +14,14 @@ include ':mpos'
 // :paxpay = card payments on a PAX A920 Pro via the Ryft/STS "G8" stack. The only NATIVE
 // module (no WebView) — the RPOS SPA does not run on that hardware's Chrome 80 WebView.
 include ':paxpay'
+
+// v5.8.79: the shared WebView shell and the eight device apps built on it (android/webshell).
+include ':webshell'
+include ':kds'
+include ':kiosk'
+include ':owner'
+include ':manager'
+include ':staff'
+include ':clock'
+include ':waitlist'
+include ':bookings'

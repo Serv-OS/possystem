@@ -1,0 +1,58 @@
+// ServOS Bookings (co.posup.rpos.bookings), v5.8.79. Table bookings host stand: diary, floor and pre orders, never dims.
+//
+// A thin app on the shared :webshell (android/webshell/build.gradle explains the settings): this
+// module is only the manifest, the icon and res/values/shell.xml. It opens
+// https://app.serv-os.app/?mode=bookings and self-updates from app-releases/latest-bookings.json.
+//
+// SIGNING: in-app auto-update only installs in place when every build is signed with the SAME key.
+// CI (build-device-apps.yml) signs RELEASE builds with the shared keystore from GitHub secrets; a
+// local build without them falls back to the debug key (builds, but will not update a signed install).
+// RELEASE: bump versionCode (+ versionName) here AND in android/release/latest-bookings.json.
+plugins {
+    id 'com.android.application'
+}
+
+def ksPath = System.getenv('ANDROID_KEYSTORE_FILE')
+def hasKeystore = ksPath != null && new File(ksPath).exists()
+
+android {
+    namespace 'co.posup.rpos.bookings'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "co.posup.rpos.bookings"
+        minSdk 26
+        targetSdk 34
+        versionCode 1          // bump every release; the updater compares this to latest-bookings.json
+        versionName "1.0"
+    }
+
+    signingConfigs {
+        release {
+            if (hasKeystore) {
+                storeFile file(ksPath)
+                storePassword System.getenv('ANDROID_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('ANDROID_KEY_ALIAS')
+                keyPassword System.getenv('ANDROID_KEY_PASSWORD')
+                storeType 'PKCS12'
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            debuggable false
+            signingConfig hasKeystore ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation project(':webshell')
+}

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ServOS KDS: the :webshell settings (android/webshell/build.gradle explains each). -->
+<resources>
+    <string name="shell_app_url" translatable="false">https://app.serv-os.app/?mode=kds</string>
+    <string name="shell_channel" translatable="false">kds</string>
+    <bool name="shell_keep_screen_on">true</bool>
+    <bool name="shell_immersive">true</bool>
+    <bool name="shell_lock_back">false</bool>
+    <bool name="shell_allows_location">false</bool>
+</resources>

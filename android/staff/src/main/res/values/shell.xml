@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ServOS Staff: the :webshell settings (android/webshell/build.gradle explains each). -->
+<resources>
+    <string name="shell_app_url" translatable="false">https://app.serv-os.app/?mode=staff</string>
+    <string name="shell_channel" translatable="false">staff</string>
+    <bool name="shell_keep_screen_on">false</bool>
+    <bool name="shell_immersive">false</bool>
+    <bool name="shell_lock_back">false</bool>
+    <bool name="shell_allows_location">true</bool>
+</resources>

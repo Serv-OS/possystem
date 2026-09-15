@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Defaults. Every app overrides these in its own res/values/shell.xml. -->
+<resources>
+    <string name="app_name">ServOS</string>
+    <string name="shell_app_url" translatable="false">https://app.serv-os.app/</string>
+    <string name="shell_channel" translatable="false">app</string>
+    <bool name="shell_keep_screen_on">false</bool>
+    <bool name="shell_immersive">false</bool>
+    <bool name="shell_lock_back">false</bool>
+    <bool name="shell_allows_location">false</bool>
+</resources>

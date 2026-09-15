@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.79',
+    date: '15 Sep 2026',
+    items: [
+      'Android apps for KDS, Kiosk, Owner, Manager, Staff, Time Clock, Waitlist and the Bookings host stand. Each opens the live Serv OS app for its job and updates itself.',
+      'KDS, Kiosk and Time Clock run full screen and never dim. The kiosk back button does nothing, so customers cannot leave the ordering screen. Waitlist and Bookings never dim.',
+      'The Staff app can read the phone\'s location for the geofenced clock in, the same as the iPhone app. No other app asks for location or the camera.',
+      'All eight share one Android shell, so a fix to it reaches every app.',
+    ],
+  },
+  {
     v: '5.8.78',
     date: '15 Sep 2026',
     items: [
