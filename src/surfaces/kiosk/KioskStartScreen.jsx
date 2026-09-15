@@ -61,7 +61,7 @@ export default function KioskStartScreen({
 
           {showTables && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 24, minHeight: 0, flex: '0 1 auto' }}>
-              <KioskTablePanel tables={tables} selected={tableNumber} onPick={onPickTable} onChangeMode={onChangeMode} />
+              <KioskTablePanel tables={tables} selected={tableNumber} onPick={onPickTable} onChangeMode={onChangeMode} entry={model.tableEntry || 'plan'} numberKind={model.numberKind || 'table'} />
               {model.allowNoTable ? (
                 <button type="button" onClick={onNoTable} style={{ ...secondaryButton(), flex: 'none' }}>{t('k2.start.noTable')}</button>
               ) : null}

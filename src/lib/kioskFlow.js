@@ -48,12 +48,18 @@ export function resolveV2Screen(screen) {
 export const KIOSK_TABLE_MODES = Object.freeze(['enter', 'either', 'dispense', 'none']);
 
 /**
- * How the start screen works for the profile's kiosk_table_mode (decision 14: keep
- * every table mode). An unknown or missing mode is read as 'either', as today.
- *   enter    : Eat in or Take away. Eat in needs a table.
- *   either   : Eat in or Take away. Eat in shows the tables, with "no table" allowed.
- *   dispense : Eat in or Take away. Eat in goes straight to the menu (sit anywhere).
+ * How the start screen works for the profile's kiosk_table_mode, set per kiosk in Back Office
+ * (Peter, 15 Sep 2026: "Choose a table number that loads the table plan / Type a table number /
+ * Customer picks up a flag and enters that number, we find the flag to give them their meal").
+ * The stored values are unchanged (a database check allows only these four):
+ *   either   : TABLE PLAN. Eat in shows the venue's tables to pick from ("no table" allowed, as
+ *              before). With no tables set up, or the list unreadable, the keypad instead.
+ *   enter    : TYPE A TABLE NUMBER. Eat in shows the keypad.
+ *   dispense : FLAG NUMBER. The customer takes a numbered flag and types its number on the
+ *              keypad. It is kept as the table number, so tickets say "Table 12" (Peter's call).
+ *              Before v5.8.76 this went straight to the menu and asked for nothing.
  *   none     : Take away only.
+ * An unknown or missing mode is read as 'either', as today.
  */
 export function kioskStartModel(tableMode) {
   const mode = KIOSK_TABLE_MODES.includes(tableMode) ? tableMode : 'either';
@@ -66,6 +72,8 @@ export function kioskStartModel(tableMode) {
       eatInSubKey: null,
       eatInLeadsTo: null,
       allowNoTable: false,
+      tableEntry: null,
+      numberKind: null,
     };
   }
   return {
@@ -73,15 +81,19 @@ export function kioskStartModel(tableMode) {
     takeawayOnly: false,
     tiles: ['dineIn', 'takeaway'],
     titleKey: 'k2.start.title',
-    eatInSubKey: mode === 'dispense' ? 'k2.start.eatInSubAnywhere' : 'k2.start.eatInSub',
-    eatInLeadsTo: mode === 'dispense' ? 'menu' : 'table',
+    eatInSubKey: mode === 'dispense' ? 'k2.start.eatInSubFlag' : 'k2.start.eatInSub',
+    eatInLeadsTo: 'table',
     allowNoTable: mode === 'either',
+    // 'plan' shows the table plan (keypad only when there are no tables); 'keypad' always types.
+    tableEntry: mode === 'either' ? 'plan' : 'keypad',
+    // What the number is: a table, or the number on a flag the customer picked up.
+    numberKind: mode === 'dispense' ? 'flag' : 'table',
   };
 }
 
 /** The start screen headline key for the model and the step showing ('mode' | 'table'). */
 export function kioskStartTitleKey(model, step) {
-  if (step === 'table' && model && !model.takeawayOnly) return 'k2.start.titleEatIn';
+  if (step === 'table' && model && !model.takeawayOnly) return model.numberKind === 'flag' ? 'k2.start.titleEatInFlag' : 'k2.start.titleEatIn';
   return model?.titleKey || 'k2.start.title';
 }
 

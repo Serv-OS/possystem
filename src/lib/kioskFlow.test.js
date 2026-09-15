@@ -2,6 +2,7 @@
 // (lib/kioskFlow.js).
 
 import test from 'node:test';
+import fs from 'node:fs';
 import assert from 'node:assert/strict';
 import {
   KIOSK_NEW_DESIGN_READY,
@@ -60,28 +61,40 @@ test('resolveV2Screen maps shared screen values, gift lands on review, unknown s
 test('kioskStartModel covers every table mode, unknown reads as either', () => {
   assert.deepEqual(KIOSK_TABLE_MODES, ['enter', 'either', 'dispense', 'none']);
 
+  // Peter, 15 Sep 2026: per kiosk, "Table plan / Type a table number / Flag number / Take away only".
+  // Type a table number: the keypad, a table.
   const enter = kioskStartModel('enter');
   assert.deepEqual(enter.tiles, ['dineIn', 'takeaway']);
   assert.equal(enter.eatInLeadsTo, 'table');
   assert.equal(enter.allowNoTable, false);
   assert.equal(enter.eatInSubKey, 'k2.start.eatInSub');
+  assert.equal(enter.tableEntry, 'keypad');
+  assert.equal(enter.numberKind, 'table');
 
+  // Table plan: the tables (keypad only as fallback), "no table" still allowed as before.
   const either = kioskStartModel('either');
   assert.equal(either.eatInLeadsTo, 'table');
   assert.equal(either.allowNoTable, true);
   assert.equal(either.eatInSubKey, 'k2.start.eatInSub');
+  assert.equal(either.tableEntry, 'plan');
+  assert.equal(either.numberKind, 'table');
 
+  // Flag number: the keypad, the number on the flag (kept as the table number, so "Table 12").
+  // Before v5.8.76 this went straight to the menu and asked for nothing.
   const dispense = kioskStartModel('dispense');
   assert.deepEqual(dispense.tiles, ['dineIn', 'takeaway']);
-  assert.equal(dispense.eatInLeadsTo, 'menu');
+  assert.equal(dispense.eatInLeadsTo, 'table');
   assert.equal(dispense.allowNoTable, false);
-  assert.equal(dispense.eatInSubKey, 'k2.start.eatInSubAnywhere');
+  assert.equal(dispense.eatInSubKey, 'k2.start.eatInSubFlag');
+  assert.equal(dispense.tableEntry, 'keypad');
+  assert.equal(dispense.numberKind, 'flag');
 
   const none = kioskStartModel('none');
   assert.equal(none.takeawayOnly, true);
   assert.deepEqual(none.tiles, ['takeaway']);
   assert.equal(none.titleKey, 'k2.start.titleTakeawayOnly');
   assert.equal(none.eatInLeadsTo, null);
+  assert.equal(none.tableEntry, null);
 
   for (const odd of [undefined, null, '', 'grid', 'ENTER']) {
     assert.deepEqual(kioskStartModel(odd), { ...either });
@@ -91,6 +104,8 @@ test('kioskStartModel covers every table mode, unknown reads as either', () => {
 test('kioskStartTitleKey switches to the eat in headline only on the table step', () => {
   assert.equal(kioskStartTitleKey(kioskStartModel('either'), 'mode'), 'k2.start.title');
   assert.equal(kioskStartTitleKey(kioskStartModel('either'), 'table'), 'k2.start.titleEatIn');
+  assert.equal(kioskStartTitleKey(kioskStartModel('enter'), 'table'), 'k2.start.titleEatIn');
+  assert.equal(kioskStartTitleKey(kioskStartModel('dispense'), 'table'), 'k2.start.titleEatInFlag');
   assert.equal(kioskStartTitleKey(kioskStartModel('none'), 'table'), 'k2.start.titleTakeawayOnly');
   assert.equal(kioskStartTitleKey(null, 'mode'), 'k2.start.title');
 });
@@ -234,4 +249,14 @@ test('done: eat in with no table and a ready text says we will text', () => {
   assert.equal(kioskDoneModel({ orderType: 'dineIn', tableNumber: '', textSent: true }).messageKey, 'k2.done.eatInAnywhereText');
   assert.equal(kioskDoneModel({ orderType: 'dineIn', tableNumber: '', textSent: false }).messageKey, 'k2.done.eatInAnywhere');
   assert.equal(kioskDoneModel({ orderType: 'dineIn', tableNumber: '4', textSent: true }).messageKey, 'k2.done.eatInTable');
+});
+
+test('the old kiosk design asks for a number in every eat in mode, and only the plan loads tables', () => {
+  const app = fs.readFileSync(new URL('../surfaces/KioskApp.jsx', import.meta.url), 'utf8');
+  assert.match(app, /tableMode === 'enter' \|\| tableMode === 'either' \|\| tableMode === 'dispense'\)\) setScreen\('tableNumber'\)/);
+  assert.match(app, /const keypadOnly = tableMode === 'enter' \|\| tableMode === 'dispense';/);
+  assert.match(app, /if \(!keypadOnly && tableList && tableList\.tables\.length\)/);
+  const settings = fs.readFileSync(new URL('../backoffice/sections/KioskSettings.jsx', import.meta.url), 'utf8');
+  for (const label of ['Table plan', 'Type a table number', 'Flag number', 'Take away only']) assert.ok(settings.includes(`label: '${label}'`), label);
+  assert.match(settings, /const TABLE_MODES_V2 = TABLE_MODES;/);
 });

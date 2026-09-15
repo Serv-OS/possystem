@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.76',
+    date: '15 Sep 2026',
+    items: [
+      'Kiosk eat in is set per kiosk in Back Office, Kiosks, Settings, with four plain choices: Table plan, Type a table number, Flag number, Take away only. Both kiosk designs.',
+      'Table plan: customers pick their table from the table plan (they type it only if no tables are set up). Type a table number: customers type it on the keypad.',
+      'Flag number: customers take a numbered flag and type its number. It shows as the table number on tickets, the KDS and the order screen, so staff take the meal to that flag. Before, this setting sent customers straight to the menu without asking for any number.',
+    ],
+  },
+  {
     v: '5.8.75',
     date: '15 Sep 2026',
     items: [
