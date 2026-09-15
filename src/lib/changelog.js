@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.69',
+    date: '15 Sep 2026',
+    items: [
+      'Kiosk: items set as not sold alone (like No Ice and No Lemon) no longer show as products. The till already hid them. Both kiosk designs.',
+      'Kiosk: sized items now show the options set on the size, exactly like the till. Pick Regular or Large on Pepsi Max and No Ice and No Lemon show. The main product\'s options are only used when the size has none. Options every size shares show before a size is picked. Picks you already made stay when you change size, and options that only the old size had are dropped.',
+      'New kiosk design: the logo on tap to start is big and in the middle again, above the venue name, like the old kiosk. The video is dimmed top to bottom so the logo and name stay readable.',
+      'New kiosk design: no blue outline on a tapped size or option. Keyboard focus shows a green ring instead.',
+    ],
+  },
+  {
     v: '5.8.68',
     date: '15 Sep 2026',
     items: [

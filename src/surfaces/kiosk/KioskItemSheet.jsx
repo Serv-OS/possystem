@@ -131,8 +131,10 @@ export default function KioskItemSheet(props) {
           <KioskCloseButton onClick={onCancel} />
         </div>
 
-        {/* Scrolling body */}
-        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 30 }}>
+        {/* Scrolling body. The 6px padding, taken back by a -6px margin so nothing moves, is
+            room for the keyboard focus ring (globals.css): a scroller clips an outline drawn
+            outside a tile at its edge. */}
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 30, padding: 6, margin: -6 }}>
           {unsafeNames.length > 0 && !requireAck ? (
             <div style={{ display: 'flex', alignItems: 'center', gap: 14, background: 'var(--k2DangerFill)', borderRadius: 18, padding: 20, fontSize: 21, color: 'var(--k2Danger)', fontWeight: 600 }}>
               <WarningIcon size={30} />
