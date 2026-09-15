@@ -4,6 +4,7 @@ import { ALLERGENS } from '../data/seed';
 import { money } from '../lib/currency';
 import { orderOptionFlow, flowOrderedMods } from '../lib/optionFlow';
 import { resolveItemPrice } from '../lib/menuPricing';
+import { sizeOrMainOptions, modifierGroupRequired, instructionGroupMin } from '../lib/menuRules';
 
 // ══════════════════════════════════════════════════════════════════════════════
 // InlineItemFlow — replaces ProductModal for POS
@@ -51,9 +52,9 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
       targetItem.assignedModifierGroups.forEach(ag => {
         const def = modifierGroupDefs?.find(d => d.id === ag.groupId);
         if (def) {
-          // Rule: inherit min/max from group definition only — no per-item override
-          // This keeps one source of truth: the Modifier Groups editor
-          all.push({ ...def, required: (def.min ?? 0) > 0 });
+          // lib/menuRules.js rule 3: required comes from the group only, never an item's copy
+          // (the Modifier Groups editor is the one source of truth).
+          all.push({ ...def, required: modifierGroupRequired(def) });
         }
       });
     }
@@ -70,7 +71,8 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
       .map(e => typeof e === 'string' ? { groupId: e } : e)
       .map(a => {
         const def = instructionGroupDefs?.find(g => g.id === a.groupId);
-        return def ? { ...def, min: a.min ?? def.min ?? 0 } : null;
+        // lib/menuRules.js rule 4: the item's min when it sets one, else the group's, else 0.
+        return def ? { ...def, min: instructionGroupMin(a, def) } : null;
       })
       .filter(Boolean);
 
@@ -112,15 +114,12 @@ export default function InlineItemFlow({ item, menuItems, activeAllergens = [], 
   const activeItem = selectedVariant || (step === 'modifiers' && !isVariant ? item : null);
   const modGroups = useMemo(() => {
     if (!activeItem) return buildModGroups(item);
-    const childMods = buildModGroups(activeItem);
-    // Child variant has its own modifier groups — use those
-    // Otherwise fall back to parent item's modifier groups
-    return childMods.length > 0 ? childMods : buildModGroups(item);
+    // lib/menuRules.js rule 2: the size's own groups, the main product's only when it has none.
+    return sizeOrMainOptions(buildModGroups(activeItem), buildModGroups(item));
   }, [activeItem, item, modifierGroupDefs]);
   const instGroups = useMemo(() => {
     if (!activeItem) return buildInstGroups(item);
-    const childInst = buildInstGroups(activeItem);
-    return childInst.length > 0 ? childInst : buildInstGroups(item);
+    return sizeOrMainOptions(buildInstGroups(activeItem), buildInstGroups(item));
   }, [activeItem, item, instructionGroupDefs]);
 
   const missingRequired = useMemo(() => {

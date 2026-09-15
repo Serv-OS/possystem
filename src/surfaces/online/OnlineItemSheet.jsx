@@ -8,6 +8,7 @@ import { supabase } from '../../lib/supabase';
 import { money } from '../../lib/currency';
 import { dietaryBadges, DIET_LABELS } from '../../lib/dietary';
 import { orderOptionFlow, flowOrderedMods } from '../../lib/optionFlow';
+import { sizeOrMainOptions } from '../../lib/menuRules';
 
 // priceFor: the surface's own unit price rule, so the sheet total is the same
 // number the card shows and the cart line charges. Defaults to the plain base
@@ -132,22 +133,20 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
     .map(g => typeof g === 'string' ? g : (g?.groupId || g?.id))
     .filter(Boolean);
 
+  // lib/menuRules.js rule 2 (shared with the till and kiosk): a size's own groups, the main
+  // product's only when the size has none.
   const modGroupIds = useMemo(() => {
     const own = extractIds(effectiveItem.assigned_modifier_groups);
-    if (own.length === 0 && effectiveItem.parent_id) {
-      const parent = (allItems || []).find(i => i.id === effectiveItem.parent_id);
-      return extractIds(parent?.assigned_modifier_groups);
-    }
-    return own;
+    if (!effectiveItem.parent_id) return own;
+    const parent = (allItems || []).find(i => i.id === effectiveItem.parent_id);
+    return sizeOrMainOptions(own, extractIds(parent?.assigned_modifier_groups));
   }, [effectiveItem, allItems]);
 
   const instGroupIds = useMemo(() => {
     const own = extractIds(effectiveItem.assigned_instruction_groups);
-    if (own.length === 0 && effectiveItem.parent_id) {
-      const parent = (allItems || []).find(i => i.id === effectiveItem.parent_id);
-      return extractIds(parent?.assigned_instruction_groups);
-    }
-    return own;
+    if (!effectiveItem.parent_id) return own;
+    const parent = (allItems || []).find(i => i.id === effectiveItem.parent_id);
+    return sizeOrMainOptions(own, extractIds(parent?.assigned_instruction_groups));
   }, [effectiveItem, allItems]);
 
   // v5.5.948: the Back Office Flow tab's combined drag order — same parent

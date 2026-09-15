@@ -3,9 +3,11 @@
  * helpers it runs on them. KioskProductModal owns the item screen for BOTH kiosk designs
  * (today's modal and the new design's sheet), so both follow these rules.
  *
- * Pure, NO imports, so node:test can load it (kioskOptionGroups.test.js). The group build
- * needs normalizeGroup (kioskGroupRules.js) and orderOptionFlow (optionFlow.js); the caller
- * passes them in, and the tests pass the same two.
+ * Pure: the only import is lib/menuRules.js (itself import free), so node:test can load it
+ * (kioskOptionGroups.test.js). The group build needs normalizeGroup (kioskGroupRules.js) and
+ * orderOptionFlow (optionFlow.js); the caller passes them in, and the tests pass the same two.
+ * The rules themselves (which options a size shows, required, instruction min) are the shared
+ * ones in lib/menuRules.js, the same functions the till's InlineItemFlow calls.
  *
  * SIZES AND GROUPS (the till's rule, src/components/InlineItemFlow.jsx, the flow the POS and
  * the bar run for every sized item)
@@ -26,6 +28,8 @@
  *
  * The Size group itself always comes first.
  */
+
+import { sizeOrMainOptions, instructionGroupMin } from './menuRules.js';
 
 // ── Assignments ─────────────────────────────────────────────────────────────
 
@@ -79,9 +83,12 @@ function uniqueById(list) {
 // yet (then every id counts, and the plan is worked out again once they are).
 const existsIn = (known) => (id) => !known || known.has(id);
 
-// The till's rule for ONE size: its own groups when it has any that exist, else the parent's.
+// The shared rule for ONE size (lib/menuRules.js rule 2, the till's InlineItemFlow): its own
+// groups that still exist, else the main product's. Counting only groups that exist is what the
+// till does (it builds the groups from the definitions it has before choosing).
 function forSize(sizeList, parentList, exists) {
-  return uniqueById(sizeList.some(e => exists(e.id)) ? sizeList : parentList);
+  const own = sizeList.filter(e => exists(e.id));
+  return uniqueById(sizeOrMainOptions(own, parentList.filter(e => exists(e.id))));
 }
 
 // The groups every size's list carries, in the first size's order, with the first size's
@@ -180,23 +187,23 @@ export function kioskSheetInstructionIds(parent, sizes) {
 /**
  * The sheet's groups for a plan: the Size group first, then the modifier and instruction
  * groups in the option flow order. Built exactly as KioskProductModal built them before:
- *   modifier group: the modifier_groups row with the assignment's min and max override,
- *                   normalizeGroup'd. A row that was not found is skipped.
- *   instruction group: id '__instr__' + def id, single choice, min 1 unless the assignment
- *                   sets one, max 1, one 0 priced option per label. A missing def is skipped.
+ *   modifier group: the modifier_groups row as it is (its own min and max), normalizeGroup'd.
+ *                   A row that was not found is skipped.
+ *   instruction group: id '__instr__' + def id, single choice, min from the assignment, else
+ *                   the definition, else 0 (optional), max 1, one 0 priced option per label.
+ *                   A missing def is skipped.
  * groupRows is a Map or a plain object of id to row. normalizeGroup and orderOptionFlow are
  * the functions from kioskGroupRules.js and optionFlow.js.
  */
 export function kioskSheetGroups({ plan, sizeGroup = null, groupRows, instructionDefs, normalizeGroup, orderOptionFlow }) {
   const rowOf = (id) => (groupRows instanceof Map ? groupRows.get(id) : (groupRows ? groupRows[id] : undefined));
   const mods = [];
-  for (const { id, min, max } of (plan?.modifiers || [])) {
+  for (const { id } of (plan?.modifiers || [])) {
     const g = rowOf(id);
     if (!g) continue;
-    const merged = { ...g };
-    if (min !== null && min !== undefined) merged.min = min;
-    if (max !== null && max !== undefined) merged.max = max;
-    mods.push(normalizeGroup(merged));
+    // The group's own min and max (lib/menuRules.js rule 3). A { min, max } copy saved on the
+    // item is ignored, as on the till and in Back Office (Milk stays required).
+    mods.push(normalizeGroup({ ...g }));
   }
   const defs = Array.isArray(instructionDefs) ? instructionDefs : [];
   const insts = [];
@@ -207,7 +214,7 @@ export function kioskSheetGroups({ plan, sizeGroup = null, groupRows, instructio
       id: '__instr__' + def.id,
       name: def.name,
       selection_type: 'single',
-      min: min !== null && min !== undefined ? min : 1,
+      min: instructionGroupMin({ min }, def),   // lib/menuRules.js rule 4
       max: 1,
       __isInstructionGroup: true,
       options: (def.options || []).map((label, idx) => ({

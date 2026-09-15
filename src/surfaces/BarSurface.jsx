@@ -3,6 +3,7 @@ import { useStore } from '../store';
 import { MENU_ITEMS, ALLERGENS } from '../data/seed';
 import ProductModal, { AllergenModal } from '../components/ProductModal';
 import InlineItemFlow from '../components/InlineItemFlow';
+import { isOptionOnlyItem } from '../lib/menuRules';
 import CheckoutModal from './CheckoutModal';
 import TabPreAuthTerminal from '../components/TabPreAuthTerminal';
 import { getNextOrderRefLocal, fetchMenuCategoryLinks } from '../lib/db';
@@ -248,7 +249,7 @@ export default function BarSurface() {
     [menuCategories, deviceMenuId, _categoryLinks]); // null means show all
 
   const ITEMS = (storeMenuItems || MENU_ITEMS).filter(i => {
-    if (i.archived || i.parentId || i.parent_id || (i.type==='subitem'&&!i.soldAlone)) return false;
+    if (i.archived || i.parentId || i.parent_id || isOptionOnlyItem(i)) return false;
     return itemInAllowedCats(i, activeMenuCatIds);
   });
   const catMeta = (menuCategories||[]).find(c=>c.id===cat) || {color:'var(--acc)',icon:'🍸',label:'All'};

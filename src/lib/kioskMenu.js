@@ -19,6 +19,7 @@ import {
   modifierAssignments, groupRequired, instructionAssignmentRequired, instructionAssignmentId,
 } from './kioskGroupRules.js';
 import { isUnsafe } from './kioskAllergens.js';
+import { isOptionOnlyItem } from './menuRules.js';
 
 const parentOf = (c) => c?.parent_id ?? c?.parentId ?? null;
 const orderOf = (c) => Number(c?.sort_order ?? c?.sortOrder ?? 0) || 0;
@@ -31,8 +32,7 @@ const orderOf = (c) => Number(c?.sort_order ?? c?.sortOrder ?? 0) || 0;
  * never hidden by this rule, whatever its sold alone flag says.
  */
 export function kioskOptionOnlySubitem(item) {
-  if (!item || item.type !== 'subitem') return false;
-  return (item.sold_alone ?? item.soldAlone) !== true;
+  return isOptionOnlyItem(item);   // lib/menuRules.js rule 1, the till's rule
 }
 
 /**
@@ -227,7 +227,7 @@ export function kioskAddMode(item, ctx = {}) {
   for (const a of instr) {
     const id = instructionAssignmentId(a);
     if (!defs.some(d => d && d.id === id)) continue;   // the sheet skips a missing definition too
-    if (instructionAssignmentRequired(a)) return { mode: 'sheet', reason: 'required' };
+    if (instructionAssignmentRequired(a, defs.find(d => d && d.id === id))) return { mode: 'sheet', reason: 'required' };
   }
 
   const assignments = modifierAssignments(item.assigned_modifier_groups);
@@ -236,7 +236,7 @@ export function kioskAddMode(item, ctx = {}) {
     for (const a of assignments) {
       const row = groupRules.get(a.id);
       if (!row) continue;   // the sheet skips a group row that is not found
-      if (groupRequired(row, a)) return { mode: 'sheet', reason: 'required' };
+      if (groupRequired(row)) return { mode: 'sheet', reason: 'required' };
     }
     return { mode: 'quick', hasExtras: true };
   }

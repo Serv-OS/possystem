@@ -20,13 +20,14 @@ import { fetchInventoryItems } from '../lib/stock/data';
 import { buildDepletionCtx } from '../lib/stock/recipes';
 import { explodeBasket } from '../lib/stock/explode';
 import { displayInUnits } from '../lib/stock/uom';
+import { isOptionOnlyItem } from '../lib/menuRules';
 
 const field = { width: '100%', background: 'var(--bg2)', color: 'var(--t1)', border: '1.5px solid var(--bdr2)', borderRadius: 10, padding: '12px 12px', fontSize: 15, outline: 'none', boxSizing: 'border-box', fontFamily: 'inherit' };
 const lbl = { fontSize: 11, fontWeight: 800, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.07em', display: 'block', marginBottom: 6 };
 const DEFAULT_REASON = WASTE_REASONS.includes('Breakage / spill') ? 'Breakage / spill' : WASTE_REASONS[0];
 // A "selling item" is anything the POS itself shows: normal products + sold-alone
 // sub-items, minus variant containers (you waste the variant) and archived items.
-const isSellingItem = (m, parents) => !m.archived && !(m.type === 'subitem' && !m.soldAlone) && !parents.has(String(m.id));
+const isSellingItem = (m, parents) => !m.archived && !isOptionOnlyItem(m) && !parents.has(String(m.id));
 
 export default function PosWasteModal({ open, onClose, locationId, showToast }) {
   const menuItems = useStore(s => s.menuItems) || [];
