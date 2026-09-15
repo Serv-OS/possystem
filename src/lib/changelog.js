@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.75',
+    date: '15 Sep 2026',
+    items: [
+      'Kiosk: card payments at Adyen venues now go to the card reader paired to the kiosk, the same way the till sends them. The kiosk only knew Ryft readers and sent Adyen payments to the old Stripe reader call, which said no reader was set up.',
+      'Kiosk: the reader lookup now uses the kiosk\'s own venue. A kiosk is paired differently from a till, so the lookup could not see which venue it was at.',
+      'The till, split bill and kiosk now use one rule for which card system takes the payment, with a test that stops copies.',
+    ],
+  },
+  {
     v: '5.8.74',
     date: '15 Sep 2026',
     items: [

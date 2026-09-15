@@ -43,7 +43,7 @@ import { stageGiftCard, commitGiftCard, giftCardCheckRecord } from '../lib/giftC
 import { commitRedemption } from '../lib/commitRedemptions';
 import { kioskLoyaltyCreditMinor, kioskRewardTapCheck } from '../lib/kioskLoyaltyReward';
 import { money, stripeCurrency } from '../lib/currency';
-import { getLocationProcessor } from '../lib/payments/processor';
+import { getLocationProcessor, takesCardsOnTerminal } from '../lib/payments/processor';
 import { findPaxTerminal, dispatchTerminalJob, pollTerminalJob, cancelTerminalJob, buildCheckKey } from '../lib/payments/terminalJobs';
 import KioskV2Root from './kiosk/KioskV2Root';
 import KioskV2Status from './kiosk/KioskV2Status';
@@ -3163,7 +3163,7 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCred
   // (RECONCILABLE_SOURCES) — NO closed_check is ever created for a kiosk sale.
   const startRyftTerminalPayment = async () => {
     try {
-      const { terminal, reason } = await findPaxTerminal({ posDeviceId: kioskId });
+      const { terminal, reason } = await findPaxTerminal({ posDeviceId: kioskId, locationId });
       if (!terminal) {
         setCardState('error');
         setCardError(reason
@@ -3180,6 +3180,7 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCred
         checkKey,
         targetTerminalId: terminal.id,
         posDeviceId: kioskId,
+        locationId,
         tipBasisMinor: dueMinor,
         dueMinor,
         suppressTip: true,        // kiosk collects the tip in its own screen — never re-prompt on the PAX
@@ -3247,8 +3248,9 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCred
       // v5.5.871: route by the venue's payment processor. A Ryft venue takes card
       // payments on a paired PAX terminal (the same "send to terminal" job path the
       // POS/Table-Pay use), NOT a Stripe reader. Stripe venues are unchanged.
+      // v5.8.75: Adyen venues too (lib/payments/processor.js takesCardsOnTerminal, the till's rule).
       const processor = await getLocationProcessor(locationId);
-      if (processor === 'ryft') { await startRyftTerminalPayment(); return; }
+      if (takesCardsOnTerminal(processor)) { await startRyftTerminalPayment(); return; }
 
       const amountMinor = Math.round(total * 100);
       const lineItems = cart.map(l => ({

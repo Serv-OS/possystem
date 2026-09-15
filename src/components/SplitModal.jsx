@@ -6,7 +6,7 @@ import {
   resolvePlatformLocationId,
   getAssignedNetworkReader,
 } from '../lib/networkReader';
-import { getLocationProcessorInfo } from '../lib/payments/processor';
+import { getLocationProcessorInfo, takesCardsOnTerminal } from '../lib/payments/processor';
 import { chargeRyftTerminal } from '../lib/payments/ryftTerminal';
 // v5.5.904: split legs dispatch a REAL terminal job, exactly like a full payment.
 import { findPaxTerminal, dispatchTerminalJob, buildCheckKey, toMinor, getPosDeviceId,
@@ -235,7 +235,7 @@ function SplitCardTerminal({ amount, portionLabel, onComplete, onBack }) {
         try { procInfo = await getLocationProcessorInfo(opsLocationId); } catch { /* stays non-definitive */ }
         if (cancelled) return;
         processorRef.current = procInfo.processor;
-        if (procInfo.processor === 'ryft' || procInfo.processor === 'adyen') {
+        if (takesCardsOnTerminal(procInfo.processor)) {
           if (!startedRef.current) {
             startedRef.current = true;
             // v5.5.904: prefer the terminal-job path (same as a full payment). Only fall
