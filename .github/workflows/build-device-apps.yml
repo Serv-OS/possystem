@@ -53,7 +53,12 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
+      # 15 Sep 2026: setup-android@v3 installs the SDK "tools" package by default, which the runner's
+      # sdkmanager no longer has ("Failed to find package 'tools'", exit 1), so every Android build
+      # failed before gradle ran. Ask only for what the builds use.
       - uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-34 build-tools;34.0.0'
       - run: chmod +x android/gradlew
 
       - name: Decode signing keystore
