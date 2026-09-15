@@ -20,7 +20,11 @@ import { ChevronDownIcon } from './KioskIcons';
 
 const TABLE_DIGITS_MAX = 4;
 
-export default function KioskTablePanel({ tables, selected = '', onPick, onChangeMode }) {
+export default function KioskTablePanel({ tables, selected = '', onPick, onChangeMode , entry = 'plan', numberKind = 'table' }) {
+  // v5.8.76: the kiosk's table mode (lib/kioskFlow.js kioskStartModel). 'keypad' always types the
+  // number (a table, or the number on a flag); 'plan' shows the tables, keypad only as fallback.
+  const keypadOnly = entry === 'keypad';
+  const titleKey = !keypadOnly ? 'k2.start.whichTable' : (numberKind === 'flag' ? 'k2.start.flagTitle' : 'k2.start.typeTable');
   const status = tables?.status || 'loading';
   const groups = Array.isArray(tables?.groups) ? tables.groups : [];
   const [digits, setDigits] = useState(() => (/^\d{1,4}$/.test(selected) ? selected : ''));
@@ -50,7 +54,7 @@ export default function KioskTablePanel({ tables, selected = '', onPick, onChang
       display: 'flex', flexDirection: 'column', animation: 'kfade .22s ease',
     }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, padding: '36px 36px 0', marginBottom: 26, flex: 'none' }}>
-        <div style={{ fontSize: 34, fontWeight: 800, color: 'var(--k2Ink)' }}>{t('k2.start.whichTable')}</div>
+        <div style={{ fontSize: 34, fontWeight: 800, color: 'var(--k2Ink)' }}>{t(titleKey)}</div>
         <button
           type="button"
           onClick={onChangeMode}
@@ -60,7 +64,7 @@ export default function KioskTablePanel({ tables, selected = '', onPick, onChang
 
       <div ref={scrollRef} onScroll={checkMore} style={{ flex: '0 1 auto', minHeight: 0, overflowY: 'auto', padding: '0 36px 40px' }}>
         <div>
-          {status === 'loading' && (
+          {!keypadOnly && status === 'loading' && (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 14 }} aria-busy="true">
               {Array.from({ length: 10 }, (_, i) => (
                 <button key={i} type="button" disabled aria-hidden="true" tabIndex={-1}
@@ -69,7 +73,7 @@ export default function KioskTablePanel({ tables, selected = '', onPick, onChang
             </div>
           )}
 
-          {status === 'ok' && groups.map((g, gi) => (
+          {!keypadOnly && status === 'ok' && groups.map((g, gi) => (
             <div key={g.sectionId || `g${gi}`} style={{ marginBottom: gi === groups.length - 1 ? 0 : 26 }}>
               {g.label ? (
                 <div style={{ fontSize: 17, fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--k2InkSubtle)', marginBottom: 14 }}>
@@ -90,12 +94,12 @@ export default function KioskTablePanel({ tables, selected = '', onPick, onChang
             </div>
           ))}
 
-          {(status === 'empty' || status === 'failed') && (
+          {(keypadOnly || status === 'empty' || status === 'failed') && (
             <KioskKeypad
               value={digits}
               onChange={setDigits}
               maxLength={TABLE_DIGITS_MAX}
-              placeholder={t('k2.start.tableKeypadPlaceholder')}
+              placeholder={t(numberKind === 'flag' ? 'k2.start.flagKeypadPlaceholder' : 'k2.start.tableKeypadPlaceholder')}
               confirmLabel={t('k2.start.continue')}
               canConfirm={digits.length > 0}
               onConfirm={(d) => onPick(d)}

@@ -1177,10 +1177,12 @@ export default function KioskApp({ kioskId, onUnpair }) {
       {screen === 'attract' && <ScreenAttract brandName={brandName} brandColor={brandColor} brandAccent={brandAccent} brandLogoUrl={brandLogoUrl} attractVideoUrl={attractVideoUrl} avgWaitMinutes={avgWaitMinutes} banner={bannerFor('attract')} ctaLabel={labelTapToOrder} onStart={() => { resetIdle(); setScreen('orderType'); }} />}
       {screen === 'orderType' && <ScreenOrderType brandColor={brandColor} brandLogoUrl={brandLogoUrl} brandName={brandName} tableMode={tableMode} lang={lang} onOpenLanguagePicker={() => setShowLangPicker(true)} loyaltyEnabled={loyaltyEnabled} customerName={customerName} onLoyaltySignIn={() => { setLoyaltyReturnScreen('orderType'); setScreen('loyalty'); }} onPick={(t) => {
         setOrderType(t);
-        if (t === 'dineIn' && (tableMode === 'enter' || tableMode === 'either')) setScreen('tableNumber');
+        // v5.8.76: every eat in mode asks for a number (lib/kioskFlow.js kioskStartModel): the table
+        // plan (either), a typed table number (enter) or the number on a flag (dispense).
+        if (t === 'dineIn' && (tableMode === 'enter' || tableMode === 'either' || tableMode === 'dispense')) setScreen('tableNumber');
         else setScreen('menu');
       }} onBack={() => setScreen('attract')} onCancel={resetSession} />}
-      {screen === 'tableNumber' && <ScreenTableNumber brandColor={brandColor} locationId={locationId} value={tableNumber} onChange={setTableNumber} onContinue={() => setScreen('menu')} onBack={() => setScreen('orderType')} onCancel={resetSession} />}
+      {screen === 'tableNumber' && <ScreenTableNumber brandColor={brandColor} locationId={locationId} tableMode={tableMode} value={tableNumber} onChange={setTableNumber} onContinue={() => setScreen('menu')} onBack={() => setScreen('orderType')} onCancel={resetSession} />}
       {screen === 'menu' && <ScreenMenu brandColor={brandColor} brandAccent={brandAccent} categoryPhotos={categoryPhotos} categoryPhotoOrigin={categoryPhotoOrigin} railCategories={railCategories} categories={legacyCategories} items={visibleItems} allItems={items} selectedCategoryId={selectedCategoryId} onSelectCategory={setSelectedCategoryId} onSelectItem={(item) => { setSelectedItem(item); setScreen('item'); }} cartItemCount={cartItemCount} subtotal={subtotal} onCart={() => setScreen('cart')} orderType={orderType} activeMenuId={activeMenuId} banner={bannerFor('menu')} allergenFilter={allergenFilter} onShowAllergenPicker={() => setShowAllergenPicker(true)} eightySixIds={eightySixIds} dailyCounts={dailyCounts} onBack={() => setScreen('orderType')} onCancel={resetSession} />}
       {screen === 'item' && selectedItem && (
         <KioskProductModal
@@ -1667,7 +1669,11 @@ function ScreenLanguagePicker({ brandColor, currentLang, onPick, onClose }) {
 // centered on the full viewport. Back button is absolute-positioned
 // so it doesn't displace the centered content column.
 // ============================================================
-function ScreenTableNumber({ brandColor, value, onChange, onContinue, onBack, onCancel, locationId }) {
+function ScreenTableNumber({ brandColor, value, onChange, onContinue, onBack, onCancel, locationId, tableMode = 'either' }) {
+  // v5.8.76: 'enter' types a table number and 'dispense' types the number on a flag, so neither
+  // loads the table plan; 'either' shows the plan as before.
+  const keypadOnly = tableMode === 'enter' || tableMode === 'dispense';
+  const flag = tableMode === 'dispense';
   const [val, setVal] = useState(value || '');
   const press = (k) => setVal(v => k === '⌫' ? v.slice(0, -1) : (v.length < 4 ? v + k : v));
   const submit = () => { if (val.trim()) { onChange(val.trim()); onContinue(); } };
@@ -1684,16 +1690,17 @@ function ScreenTableNumber({ brandColor, value, onChange, onContinue, onBack, on
   // able to order. Losing the picker is an inconvenience; losing the order is not.
   const [tableList, setTableList] = useState(null);   // null = still loading
   useEffect(() => {
+    if (keypadOnly) return undefined;
     let alive = true;
     fetchKioskTables(locationId)
       .then(r => { if (alive) setTableList(r.ok && r.tables.length ? r : { tables: [], sectionLabels: {} }); })
       .catch(() => { if (alive) setTableList({ tables: [], sectionLabels: {} }); });
     return () => { alive = false; };
-  }, [locationId]);
+  }, [locationId, keypadOnly]);
 
   const pickTable = (label) => { onChange(label); onContinue(); };
 
-  if (tableList && tableList.tables.length) {
+  if (!keypadOnly && tableList && tableList.tables.length) {
     const groups = groupKioskTables(tableList.tables, tableList.sectionLabels);
     return (
       <div style={fullScreen()}>
@@ -1715,7 +1722,7 @@ function ScreenTableNumber({ brandColor, value, onChange, onContinue, onBack, on
             <div style={{
               fontSize: 'clamp(34px, 5.4vw, 56px)', fontWeight: 800,
               letterSpacing: '-0.01em', color: brandColor, lineHeight: 1.15,
-            }}>{t('tableNumber.title')}</div>
+            }}>{t(flag ? 'tableNumber.flagTitle' : 'tableNumber.title')}</div>
           </div>
 
           {groups.map((g, gi) => (
@@ -1794,7 +1801,7 @@ function ScreenTableNumber({ brandColor, value, onChange, onContinue, onBack, on
             letterSpacing: '-0.01em',
             color: brandColor,
             lineHeight: 1.15,
-          }}>{t('tableNumber.title')}</div>
+          }}>{t(flag ? 'tableNumber.flagTitle' : 'tableNumber.title')}</div>
         </div>
 
         {/* Input-field-style display */}

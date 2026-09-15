@@ -20,20 +20,15 @@ import { KIOSK_NEW_DESIGN_READY } from '../../lib/kioskFlow';
 import { kioskPrimary, kioskPalette, parseCssColor, contrastWithWhite, DESIGN_GREEN, OLD_DEFAULT_BRAND } from '../../lib/kioskTheme';
 import KioskTipping from './KioskTipping';
 
+// v5.8.76 (Peter, 15 Sep 2026): one eat in mode per kiosk, in plain words, the same for both kiosk
+// designs. The stored values are unchanged (lib/kioskFlow.js kioskStartModel explains each).
 const TABLE_MODES = [
-  { v: 'either',   label: 'Either — customer chooses',     desc: 'Allow customer to enter their table OR take a number' },
-  { v: 'enter',    label: 'Enter their table number',       desc: 'Customer types their table number on the kiosk' },
-  { v: 'dispense', label: 'Dispense a number',              desc: 'Customer takes a number card and grabs any table' },
-  { v: 'none',     label: 'Takeaway only',                   desc: 'No dine-in option — counter pickup only' },
+  { v: 'either',   label: 'Table plan',          desc: 'Customers pick their table on the table plan. If no tables are set up, they type the number.' },
+  { v: 'enter',    label: 'Type a table number', desc: 'Customers type their table number.' },
+  { v: 'dispense', label: 'Flag number',         desc: 'Customers take a numbered flag and type its number. It shows as the table number, so staff take the meal to that flag.' },
+  { v: 'none',     label: 'Take away only',      desc: 'No eat in option.' },
 ];
-
-// The same four table modes, worded for the new kiosk design.
-const TABLE_MODES_V2 = [
-  { v: 'either',   label: 'Table or sit anywhere', desc: 'Customers pick their table, or sit anywhere and we call their number.' },
-  { v: 'enter',    label: 'Table number needed',   desc: 'Customers must pick or type their table number.' },
-  { v: 'dispense', label: 'Sit anywhere',          desc: 'Customers sit anywhere and we call their order number.' },
-  { v: 'none',     label: 'Take away only',        desc: 'No eat in option.' },
-];
+const TABLE_MODES_V2 = TABLE_MODES;
 
 export default function KioskSettings({ kioskId, onBack }) {
   const [device, setDevice] = useState(null);
