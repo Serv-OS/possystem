@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.67',
+    date: '14 Sep 2026',
+    items: [
+      'Fix: on the kiosk, spending a points reward took nothing off the order but still used up the points. A reward now takes the right amount off: a fixed amount, a percentage of the items, or the cheapest matching item free. Points are only spent when money actually comes off.',
+      'A reward that would be worth nothing, or that a gift card already covers, is refused with a clear message instead of using up the points.',
+      'Fix: order confirmed and ready texts could go missing when two venues had an order with the same number, such as R12. Each text now finds the order at its own venue. Needs a database update to be run.',
+    ],
+  },
+  {
     v: '5.8.66',
     date: '14 Sep 2026',
     items: [

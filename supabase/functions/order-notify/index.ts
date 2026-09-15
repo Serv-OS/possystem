@@ -2,8 +2,11 @@
 //
 // THE wiring for the Back Office → Messages "Orders" section. Called by a DB trigger on
 // order_queue (see migration 20260803b_order_notify.sql):
-//   INSERT                    → { ref, event: 'confirmed' }  (order placed — any channel)
-//   UPDATE status → 'ready'   → { ref, event: 'ready' }      (staff marked ready in OrdersHub)
+//   INSERT                    → { ref, event: 'confirmed', location_id }  (order placed — any channel)
+//   UPDATE status → 'ready'   → { ref, event: 'ready', location_id }      (staff marked ready in OrdersHub)
+// location_id arrives from 20260915_OPS_order_notify_by_location.sql on. Refs are per venue, so
+// with it every read, claim and ledger row is scoped to that venue. WITHOUT it (the trigger before
+// that migration runs) the function behaves exactly as it always has: see _shared/orderNotifyScope.js.
 //
 // Because it fires from the DATABASE, every order channel is covered with no client changes:
 // online, kiosk, QR, POS phone orders — anything that writes order_queue. Exclusions:
@@ -24,6 +27,10 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { resolveAndRender, wrapInEmailHtml } from '../_shared/template-resolver.ts';
 import { resolveSenderFrom, type Sender } from '../_shared/sending-domain.ts';
 import { collectionLabel } from '../_shared/collection-label.ts';
+import {
+  parseNotifyPayload, scopeToOrder, scopeToOtherVenues, ledgerClaimFor, isMissingTableError,
+  legacyLedgerBlocks, LEGACY_LEDGER_TABLE,
+} from '../_shared/orderNotifyScope.js';
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
@@ -135,12 +142,15 @@ Deno.serve(async (req) => {
   let body: Record<string, unknown>;
   try { body = await req.json(); } catch { return json({ error: 'invalid json' }, 400); }
 
-  const ref = String(body.ref || '').trim();
-  const event = String(body.event || '').trim(); // 'confirmed' | 'ready'
-  if (!ref || (event !== 'confirmed' && event !== 'ready')) return json({ error: 'ref + event required' }, 400);
+  const parsed = parseNotifyPayload(body);
+  if (parsed.error) return json({ error: parsed.error }, 400);
+  const target = parsed as { ref: string; event: string; locationId: string | null };
+  const { ref, event } = target; // event: 'confirmed' | 'ready'
 
-  // Load the order (service role — the ref is the only caller input we act on).
-  const { data: order } = await opsAdmin.from('order_queue').select('*').eq('ref', ref).maybeSingle();
+  // Load the order (service role — ref, plus location when the trigger sends it, are the only
+  // caller inputs we act on). Refs repeat across venues: an unscoped maybeSingle() over two rows
+  // returns PGRST116 and data null, which used to drop the text as "order gone".
+  const { data: order } = await scopeToOrder(opsAdmin.from('order_queue').select('*'), target).maybeSingle();
   if (!order) return json({ ok: true, skipped: 'order gone' });
 
   const source = String(order.source || '');
@@ -159,12 +169,48 @@ Deno.serve(async (req) => {
       return json({ ok: true, skipped: 'order too old — stale-device replay' });
     }
   }
-  // 2. PERMANENT LEDGER — one row per (ref, event), ever; survives the order_queue
-  //    row being deleted and re-created, which the per-row claim stamp cannot.
-  const { data: ledger } = await opsAdmin
-    .from('order_notifications')
-    .upsert({ ref, event }, { onConflict: 'ref,event', ignoreDuplicates: true })
+  // 2. PERMANENT LEDGER — one row per (location, ref, event), ever; survives the order_queue
+  //    row being deleted and re-created, which the per-row claim stamp cannot. Without a
+  //    location in the payload this is today's (ref, event) ledger, unchanged.
+  let claim = ledgerClaimFor(target);
+  if (target.locationId) {
+    // Texts sent before the location-keyed ledger existed live only in the (ref, event) ledger,
+    // and that row does not say which venue it was for. The migration copies every stamped
+    // order into the new ledger; for what is left, a legacy row blocks only when no other
+    // venue's order with this ref accounts for it (legacyRowOwnedElsewhere) and this order
+    // already existed when it was written. A failed read of the other venues falls back to the
+    // time rule alone.
+    const legacy = await opsAdmin
+      .from(LEGACY_LEDGER_TABLE)
+      .select('sent_at')
+      .eq('ref', ref)
+      .eq('event', event)
+      .maybeSingle();
+    let otherVenueRows: Record<string, unknown>[] = [];
+    if (!legacy.error && legacy.data?.sent_at) {
+      const others = await scopeToOtherVenues(
+        opsAdmin.from('order_queue').select('location_id, created_at, notify_confirmed_at, notify_ready_at'),
+        target,
+      ).limit(50);
+      if (!others.error && Array.isArray(others.data)) otherVenueRows = others.data;
+    }
+    if (legacyLedgerBlocks(legacy, order.created_at, { event, otherVenueRows })) {
+      return json({ ok: true, skipped: 'already notified (ledger)' });
+    }
+  }
+  let ledgerRes = await opsAdmin
+    .from(claim.table)
+    .upsert(claim.row, { onConflict: claim.onConflict, ignoreDuplicates: true })
     .select('ref');
+  if (target.locationId && isMissingTableError(ledgerRes.error)) {
+    // A location arrived before the migration made order_notify_ledger: use today's ledger.
+    claim = ledgerClaimFor({ ref, event, locationId: null });
+    ledgerRes = await opsAdmin
+      .from(claim.table)
+      .upsert(claim.row, { onConflict: claim.onConflict, ignoreDuplicates: true })
+      .select('ref');
+  }
+  const ledger = ledgerRes.data;
   if (!ledger || ledger.length === 0) return json({ ok: true, skipped: 'already notified (ledger)' });
 
   const customer = (order.customer || {}) as Record<string, unknown>;
@@ -174,10 +220,10 @@ Deno.serve(async (req) => {
 
   // Claim BEFORE sending — one notification per event per order, ever.
   const claimCol = event === 'confirmed' ? 'notify_confirmed_at' : 'notify_ready_at';
-  const { data: claimed } = await opsAdmin
-    .from('order_queue')
-    .update({ [claimCol]: new Date().toISOString() })
-    .eq('ref', ref)
+  const { data: claimed } = await scopeToOrder(
+    opsAdmin.from('order_queue').update({ [claimCol]: new Date().toISOString() }),
+    target,
+  )
     .is(claimCol, null)
     .select('ref');
   if (!claimed || claimed.length === 0) return json({ ok: true, skipped: 'already notified' });
@@ -289,6 +335,6 @@ Deno.serve(async (req) => {
     }
   }
 
-  console.log('[order-notify]', { ref, event, source, ...result });
+  console.log('[order-notify]', { ref, event, location_id: target.locationId, source, ...result });
   return json({ ok: true, ...result });
 });

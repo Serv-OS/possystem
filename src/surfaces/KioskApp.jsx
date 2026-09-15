@@ -41,6 +41,7 @@ import { fetchCustomerByPhone } from '../lib/customerLookup';
 import { fetchKioskTables, groupKioskTables } from '../lib/kioskTables';
 import { stageGiftCard, commitGiftCard, giftCardCheckRecord } from '../lib/giftCommit';
 import { commitRedemption } from '../lib/commitRedemptions';
+import { kioskLoyaltyCreditMinor, kioskRewardTapCheck } from '../lib/kioskLoyaltyReward';
 import { money, stripeCurrency } from '../lib/currency';
 import { getLocationProcessor } from '../lib/payments/processor';
 import { findPaxTerminal, dispatchTerminalJob, pollTerminalJob, cancelTerminalJob, buildCheckKey } from '../lib/payments/terminalJobs';
@@ -767,7 +768,16 @@ export default function KioskApp({ kioskId, onUnpair }) {
 
   // ─── Order submission ───
   // v5.5.219: Loyalty credit reduces the total paid by card
-  const loyaltyCredit = loyaltyRedemption?.discount_value ? loyaltyRedemption.discount_value / 100 : 0;
+  // Worked out LIVE from the staged reward's type + value against the current basket
+  // (lib/kioskLoyaltyReward.js), not the figure frozen at the tap. 0 means the reward is
+  // not used: nothing comes off and submitOrder does not commit it.
+  const loyaltyDiscountMinor = kioskLoyaltyCreditMinor(loyaltyRedemption, {
+    cart,
+    goodsMinor: Math.round(discountedSubtotal * 100),
+    dueMinor: Math.round(total * 100),
+    giftMinor: giftCardPayment?.applied || 0,
+  });
+  const loyaltyCredit = loyaltyDiscountMinor / 100;
   const giftCardCredit = giftCardPayment?.applied ? giftCardPayment.applied / 100 : 0;
   // Promo discount (major units, from promo-redeem validate) — capped at what's left to pay.
   const promoCredit = promoApplied
@@ -866,12 +876,13 @@ export default function KioskApp({ kioskId, onUnpair }) {
         kiosk_table_number: tableNumber || null,
         covers: 1,
         // v5.5.219: Stamp loyalty redemption on check for receipt / refund use
-        loyalty: loyaltyRedemption ? {
+        // Only a reward that actually took money off is recorded (and committed below).
+        loyalty: (loyaltyRedemption && loyaltyDiscountMinor > 0) ? {
           reward_id: loyaltyRedemption.reward_id,
           stamp_program_id: loyaltyRedemption.stampProgramId || null,
           reward_name: loyaltyRedemption.reward_name,
           points_deducted: loyaltyRedemption.points_deducted,
-          discount_value: loyaltyRedemption.discount_value,
+          discount_value: loyaltyDiscountMinor,
           idempotency_key: loyaltyRedemption.idempotency_key,
         } : null,
         // v5.5.901: `applied` is what the server actually debited (giftCardCheckRecord),
@@ -1012,7 +1023,9 @@ export default function KioskApp({ kioskId, onUnpair }) {
       }
       // The loyalty-screen tap is apply-only (stages the discount, consumes nothing), so an
       // abandoned/failed payment can never burn points or a stamp card.
-      if (loyaltyRedemption?.pending_commit && (loyaltyRedemption.stampProgramId || loyaltyRedemption.reward_id)) {
+      // And only when the reward took money off this order: a reward worth 0p here (value
+      // missing, basket changed, gift card already covering it) must never spend points.
+      if (loyaltyDiscountMinor > 0 && loyaltyRedemption?.pending_commit && (loyaltyRedemption.stampProgramId || loyaltyRedemption.reward_id)) {
         ensureAuthToken().catch(() => null).then(token => commitRedemption({
           kind: 'loyalty',
           closedCheckId: checkId,
@@ -1063,7 +1076,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
     } finally {
       setSubmitting(false);
     }
-  }, [submitting, kioskId, locationId, cart, subtotal, total, grandTotal, taxBreakdown, loyaltyCredit, giftCardCredit, promoCredit, promoApplied, verifiedLoyalty, loyaltyRedemption, giftCardPayment, tip, orderType, customerName, customerPhone, customerEmail, customerMarketingOptIn, tableNumber, resetSession]);
+  }, [submitting, kioskId, locationId, cart, subtotal, total, grandTotal, taxBreakdown, loyaltyCredit, loyaltyDiscountMinor, giftCardCredit, promoCredit, promoApplied, verifiedLoyalty, loyaltyRedemption, giftCardPayment, tip, orderType, customerName, customerPhone, customerEmail, customerMarketingOptIn, tableNumber, resetSession]);
 
   // ─── Loading + error gates ───
   if (profLoading || menuLoading) {
@@ -1116,7 +1129,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
       {screen === 'cart' && <ScreenCart brandColor={brandColor} cart={cart} subtotal={subtotal} exclusiveTax={exclusiveTax} cartItemCount={cartItemCount} orderType={orderType} onUpdate={updateCartQty} onAddMore={() => setScreen('menu')} onContinue={() => setScreen('tip')} onShowAllergenPicker={() => setShowAllergenPicker(true)} onBack={() => setScreen('menu')} onCancel={resetSession} dailyCounts={dailyCounts} />}
       {screen === 'tip' && <ScreenTip brandColor={brandColor} subtotal={discountedSubtotal} tipPresets={tipPresets} tip={tip} onSetTip={setTip} onContinue={() => { if (loyaltyEnabled) setScreen('loyalty'); else setScreen('gift'); }} onBack={() => setScreen('cart')} onCancel={resetSession} />}
       {/* v5.5.219: loyalty/customer-details BEFORE pay so reward discount adjusts amount due */}
-      {screen === 'loyalty' && <ScreenLoyalty brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} customerEmail={customerEmail} marketingOptIn={customerMarketingOptIn} locationId={locationId} companyId={companyId} subtotal={subtotal} cart={cart} loyaltyRedemption={loyaltyRedemption} onLoyaltyRedeem={setLoyaltyRedemption} verifiedLoyalty={verifiedLoyalty} onVerifiedLoyalty={setVerifiedLoyalty} onName={setCustomerName} onPhone={setCustomerPhone} onEmail={setCustomerEmail} onMarketingOptIn={setCustomerMarketingOptIn} onContinue={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'gift'); }} onSkip={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'gift'); }} submitting={submitting} placeOrderLabel={labelPlaceOrder} earlySignIn={!!loyaltyReturnScreen} onCancel={resetSession} />}
+      {screen === 'loyalty' && <ScreenLoyalty brandColor={brandColor} customerName={customerName} customerPhone={customerPhone} customerEmail={customerEmail} marketingOptIn={customerMarketingOptIn} locationId={locationId} companyId={companyId} goodsTotal={discountedSubtotal} dueMinor={Math.round(total * 100)} giftMinor={giftCardPayment?.applied || 0} cart={cart} loyaltyRedemption={loyaltyRedemption} loyaltyCredit={loyaltyCredit} onLoyaltyRedeem={setLoyaltyRedemption} verifiedLoyalty={verifiedLoyalty} onVerifiedLoyalty={setVerifiedLoyalty} onName={setCustomerName} onPhone={setCustomerPhone} onEmail={setCustomerEmail} onMarketingOptIn={setCustomerMarketingOptIn} onContinue={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'gift'); }} onSkip={() => { const ret = loyaltyReturnScreen; setLoyaltyReturnScreen(null); setScreen(ret || 'gift'); }} submitting={submitting} placeOrderLabel={labelPlaceOrder} earlySignIn={!!loyaltyReturnScreen} onCancel={resetSession} />}
       {/* v5.5.900: gift card / promo code step BEFORE payment (mirrors online ordering) —
           the old entry lived on the pay screen, which auto-starts the card reader on mount,
           so guests never saw it. */}
@@ -3383,7 +3396,7 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCred
 // and lists redeemable rewards. Customer taps a reward → the discount is staged
 // locally (apply-only); loyalty-redeem fires at submitOrder once the order exists.
 // ============================================================
-function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail, marketingOptIn, locationId, companyId, subtotal, cart, loyaltyRedemption, onLoyaltyRedeem, verifiedLoyalty, onVerifiedLoyalty, onName, onPhone, onEmail, onMarketingOptIn, onContinue, onSkip, submitting, placeOrderLabel, earlySignIn, onCancel }) {
+function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail, marketingOptIn, locationId, companyId, goodsTotal, dueMinor = 0, giftMinor = 0, cart, loyaltyRedemption, loyaltyCredit = 0, onLoyaltyRedeem, verifiedLoyalty, onVerifiedLoyalty, onName, onPhone, onEmail, onMarketingOptIn, onContinue, onSkip, submitting, placeOrderLabel, earlySignIn, onCancel }) {
   // Local field state mirrors props on mount; we lift back to parent on submit.
   const [name, setName] = useState(customerName || '');
   const [phone, setPhone] = useState(customerPhone || '');
@@ -3536,28 +3549,15 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
     setRedeemError('');
     try {
       const rv = reward.value || {};
-      let discountMinor = 0;
-      if (reward.type === 'discount_fixed') {
-        discountMinor = rv.amount_minor || 0;
-      } else if (reward.type === 'discount_percent') {
-        discountMinor = Math.round((subtotal || 0) * 100 * (rv.percent || 0) / 100);
-      } else if (reward.type === 'free_item') {
-        const eligibleIds = new Set((rv.eligible_items || []).map(ei => ei.id));
-        const matching = (cart || []).filter(l => eligibleIds.has(l.item?.id));
-        if (eligibleIds.size > 0 && matching.length === 0) {
-          const names = (rv.eligible_items || []).map(ei => ei.name).filter(Boolean).join(', ');
-          throw new Error(names
-            ? `Add ${names} to your order first — the reward makes it free.`
-            : 'Add the eligible item to your order first.');
-        }
-        if (matching.length > 0) {
-          const cheapest = matching.reduce((a, b) => ((a.linePrice || 0) < (b.linePrice || 0) ? a : b));
-          discountMinor = Math.round((cheapest.linePrice || 0) * 100);
-        }
-      }
-      // free_delivery / custom → no automatic line discount.
-      // Don't discount more than the subtotal
-      discountMinor = Math.min(discountMinor, Math.round((subtotal || 0) * 100));
+      // lib/kioskLoyaltyReward.js: the same functions the parent uses for the live credit, on
+      // goods AFTER auto-discounts (before tax + tip) and with the SAME gift card cap, so tap and
+      // pay show the same figure. A reward that takes nothing off, or that a staged gift card
+      // would cut down, is REFUSED, never staged: staging it used to commit the redemption and
+      // spend the points for 0p (loyalty-otp sent no reward_value; an early sign-in has an empty
+      // basket; free_delivery / custom have no kiosk money off), or spend them for part of it.
+      const goodsMinor = Math.round((goodsTotal || 0) * 100);
+      const { discountMinor, error } = kioskRewardTapCheck(reward.type, rv, { cart, goodsMinor, dueMinor, giftMinor });
+      if (error) throw new Error(error);
 
       onLoyaltyRedeem({
         reward_id: reward.stamp ? null : reward.id,
@@ -3566,6 +3566,9 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
         reward_name: reward.label,
         points_deducted: reward.stamp ? 0 : (reward.pointsCost || 0),
         discount_type: reward.type,
+        // type + value ride along so the parent recomputes the credit against the live basket.
+        reward_type: reward.type,
+        reward_value: rv,
         discount_value: discountMinor,
         idempotency_key: null,
         balance_after: null,
@@ -3614,8 +3617,8 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
   const pointsEnabled = customerLookup?.pointsEnabled !== false;
   const stampsEnabled = customerLookup?.stampsEnabled !== false;
 
-  // v5.5.219: Calculate applied loyalty credit for display
-  const loyaltyCredit = loyaltyRedemption?.discount_value ? loyaltyRedemption.discount_value / 100 : 0;
+  // loyaltyCredit (prop) is the parent's LIVE figure (lib/kioskLoyaltyReward.js), the same
+  // number the pay screen takes off, so this screen can never show a different amount.
 
   return (
     <div style={{ ...fullScreen(), display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '4vh 4vw' }}>
@@ -3966,7 +3969,9 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
             {/* v5.5.885: rewards list shows whenever the member HAS rewards — the old
                 pointsEnabled gate hid earned STAMP rewards on stamps-only venues. The rewards
                 array already contains only what's redeemable (stamp + affordable points). */}
-            {hasRewards && !loyaltyRedemption && (
+            {/* A staged reward worth 0p on the live basket is not in use (and will not be
+                committed), so the list comes back and the applied banner stays hidden. */}
+            {hasRewards && !(loyaltyRedemption && loyaltyCredit > 0) && (
               <div style={{ marginTop: 12 }}>
                 <div style={{
                   fontSize: 'clamp(11px, 1.3vw, 13px)',
@@ -4051,7 +4056,7 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
             )}
 
             {/* v5.5.219: Show applied reward */}
-            {pointsEnabled && loyaltyRedemption && (
+            {pointsEnabled && loyaltyRedemption && loyaltyCredit > 0 && (
               <div style={{
                 marginTop: 12,
                 padding: 'clamp(10px, 1.4vw, 14px)',
