@@ -22,6 +22,7 @@ import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
 import { resolveQuickItems } from '../lib/quickRank';
 import ProductModal, { AllergenModal } from '../components/ProductModal';
 import InlineItemFlow from '../components/InlineItemFlow';
+import { isOptionOnlyItem } from '../lib/menuRules';
 import CheckoutModal from './CheckoutModal';
 import CustomerModal from '../components/CustomerModal';
 import VoidModal from '../components/VoidModal';
@@ -249,10 +250,7 @@ export default function POSSurface() {
   const rawItems = storeMenuItems || SEED_MENU_ITEMS;
   const { getItemPrice } = useStore.getState();
   const MENU_ITEMS = useMemo(() => rawItems
-    .filter(i => {
-      if (i.type === 'subitem' && !i.soldAlone) return false;
-      return true;
-    }) // filter soldAlone
+    .filter(i => !isOptionOnlyItem(i)) // lib/menuRules.js rule 1: option only sub items are never products
     .map(i => ({
       ...i,
       name: i.menuName || i.name,
@@ -281,7 +279,7 @@ export default function POSSurface() {
   const directCountByCat = useMemo(() => {
     const m = new Map();
     for (const i of MENU_ITEMS) {
-      if (i.archived || i.parentId || (i.type === 'subitem' && !i.soldAlone)) continue;
+      if (i.archived || i.parentId || isOptionOnlyItem(i)) continue;
       m.set(i.cat, (m.get(i.cat) || 0) + 1);
     }
     return m;
@@ -575,7 +573,7 @@ export default function POSSurface() {
     if (cat === 'quick') return quickItems;
     // v5.6.97: itemInAllowedCats keeps the grid honest if the selected cat goes
     // out-of-menu mid-session (e.g. a profile change pins a different menu).
-    const base = MENU_ITEMS.filter(i => !i.archived && (i.type !== 'subitem' || i.soldAlone) && !i.parentId && itemInAllowedCats(i, allowedCatIds))
+    const base = MENU_ITEMS.filter(i => !i.archived && !isOptionOnlyItem(i) && !i.parentId && itemInAllowedCats(i, allowedCatIds))
       .slice().sort((a,b) => (a.sortOrder??999) - (b.sortOrder??999));
     const inCat = (i, id) => i.cat === id || (i.cats||[]).includes(id);
     let items;
@@ -604,7 +602,7 @@ export default function POSSurface() {
     // v5.6.97: search respects the device's assigned menu — items outside it
     // must not surface here when the rail already hides their categories.
     return MENU_ITEMS.filter(i =>
-      !i.archived && (i.type !== 'subitem' || i.soldAlone) && !i.parentId &&
+      !i.archived && !isOptionOnlyItem(i) && !i.parentId &&
       itemInAllowedCats(i, allowedCatIds) &&
       ((i.menuName||i.name||'').toLowerCase().includes(q) || i.description?.toLowerCase().includes(q))
     );
@@ -665,7 +663,7 @@ export default function POSSurface() {
     openFlow(item);
   };
   const openFlow = (item) => {
-    if (item.type === 'subitem' && !item.soldAlone) return;
+    if (isOptionOnlyItem(item)) return;
 
     // Variant parent: detected by type OR by having linked children
     const variantChildren = MENU_ITEMS

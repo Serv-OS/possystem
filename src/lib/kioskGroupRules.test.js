@@ -81,21 +81,25 @@ test('modifierAssignments reads ids and overrides like the modal', () => {
   assert.deepEqual(modifierAssignments(undefined), []);
 });
 
-test('groupRequired applies the item overrides', () => {
+test('groupRequired reads the group only; a copy saved on the item is ignored, like the till', () => {
   assert.equal(groupRequired({ selection_type: 'single', min: 0, max: 1 }), false);
   assert.equal(groupRequired({ selection_type: 'single', min: 1, max: 1 }), true);
-  assert.equal(groupRequired({ selection_type: 'single', min: 1, max: 1 }, { min: 0 }), false);
-  assert.equal(groupRequired({ selection_type: 'multiple', min: 0, max: 3 }, { min: 2 }), true);
+  // Milk (live): min 1 on the group, "min 0" on the Latte sizes. Required.
+  assert.equal(groupRequired({ selection_type: 'single', min: 1, max: 1, min_select: 0, max_select: 1 }, { min: 0 }), true);
+  assert.equal(groupRequired({ selection_type: 'multiple', min: 0, max: 3 }, { min: 2 }), false);
   assert.equal(groupRequired({ selection_type: 'quantity', max: 3 }), true);
-  assert.equal(groupRequired({ selection_type: 'multiple', min: 2, max: 3 }, { max: 0 }), false);
+  assert.equal(groupRequired({ selection_type: 'multiple', min: 2, max: 3 }, { max: 0 }), true);
   assert.equal(groupRequired(null), false);
 });
 
-test('instruction groups are required unless the assignment sets min 0', () => {
-  assert.equal(instructionAssignmentRequired('ig1'), true);
-  assert.equal(instructionAssignmentRequired({ groupId: 'ig1' }), true);
-  assert.equal(instructionAssignmentRequired({ groupId: 'ig1', min: null }), true);
+test('instruction groups are required only when the item or the group sets a min, like the till', () => {
+  assert.equal(instructionAssignmentRequired('ig1'), false);
+  assert.equal(instructionAssignmentRequired({ groupId: 'ig1' }), false);
+  assert.equal(instructionAssignmentRequired({ groupId: 'ig1', min: null }), false);
   assert.equal(instructionAssignmentRequired({ groupId: 'ig1', min: 0 }), false);
+  assert.equal(instructionAssignmentRequired({ groupId: 'ig1', min: 1 }), true);
+  assert.equal(instructionAssignmentRequired('ig1', { id: 'ig1', min: 1 }), true);
+  assert.equal(instructionAssignmentRequired({ groupId: 'ig1', min: 0 }, { id: 'ig1', min: 1 }), false);
   assert.equal(instructionAssignmentId('ig1'), 'ig1');
   assert.equal(instructionAssignmentId({ id: 'ig2' }), 'ig2');
   assert.equal(instructionAssignmentId({ groupId: 'ig3', id: 'x' }), 'ig3');

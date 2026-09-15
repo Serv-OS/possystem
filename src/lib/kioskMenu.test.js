@@ -108,17 +108,20 @@ test('add mode: optional groups are one tap with extras', () => {
   assert.deepEqual(kioskAddMode(item('a', 'x', { assigned_modifier_groups: ['optional'] }), ctx()), { mode: 'quick', hasExtras: true });
 });
 
-test('add mode: a required group, a quantity group or a min override opens the sheet', () => {
+test('add mode: a required group or a quantity group opens the sheet; an item\'s min copy is ignored', () => {
   const req = { mode: 'sheet', reason: 'required' };
   assert.deepEqual(kioskAddMode(item('a', 'x', { assigned_modifier_groups: ['optional', 'required'] }), ctx()), req);
   assert.deepEqual(kioskAddMode(item('a', 'x', { assigned_modifier_groups: ['box'] }), ctx()), req);
-  assert.deepEqual(kioskAddMode(item('a', 'x', { assigned_modifier_groups: [{ groupId: 'optional', min: 1 }] }), ctx()), req);
-  assert.deepEqual(kioskAddMode(item('a', 'x', { assigned_modifier_groups: [{ groupId: 'required', min: 0 }] }), ctx()), { mode: 'quick', hasExtras: true });
+  // The group decides, as on the till (menuRules rule 3).
+  assert.deepEqual(kioskAddMode(item('a', 'x', { assigned_modifier_groups: [{ groupId: 'optional', min: 1 }] }), ctx()), { mode: 'quick', hasExtras: true });
+  assert.deepEqual(kioskAddMode(item('a', 'x', { assigned_modifier_groups: [{ groupId: 'required', min: 0 }] }), ctx()), req);
 });
 
-test('add mode: instruction groups are required by default, optional with min 0, skipped when missing', () => {
+test('add mode: instruction groups are optional unless the item or group sets a min, skipped when missing', () => {
   const defs = [{ id: 'cook', name: 'Cooking', options: ['Rare', 'Well done'] }];
-  assert.deepEqual(kioskAddMode(item('a', 'x', { assigned_instruction_groups: ['cook'] }), ctx({ instructionDefs: defs })), { mode: 'sheet', reason: 'required' });
+  assert.deepEqual(kioskAddMode(item('a', 'x', { assigned_instruction_groups: ['cook'] }), ctx({ instructionDefs: defs })), { mode: 'quick', hasExtras: false });
+  assert.deepEqual(kioskAddMode(item('a', 'x', { assigned_instruction_groups: [{ groupId: 'cook', min: 1 }] }), ctx({ instructionDefs: defs })), { mode: 'sheet', reason: 'required' });
+  assert.deepEqual(kioskAddMode(item('a', 'x', { assigned_instruction_groups: ['cook'] }), ctx({ instructionDefs: [{ ...defs[0], min: 1 }] })), { mode: 'sheet', reason: 'required' });
   assert.deepEqual(kioskAddMode(item('a', 'x', { assigned_instruction_groups: [{ groupId: 'cook', min: 0 }] }), ctx({ instructionDefs: defs })), { mode: 'quick', hasExtras: false });
   assert.deepEqual(kioskAddMode(item('a', 'x', { assigned_instruction_groups: ['gone'] }), ctx({ instructionDefs: defs })), { mode: 'quick', hasExtras: false });
 });

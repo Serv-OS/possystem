@@ -107,15 +107,18 @@ test('the sheet reads the parent\'s and every offered size\'s groups in one quer
 
 test('Latte: the picked size\'s own groups; the parent\'s leftover groups are not shown', () => {
   const sizes = [L_SMALL, L_MEDIUM, L_LARGE];
-  // Before a pick: only what every size shows. Milk is on every size (same override); the
-  // parent's Syrup is NOT shown (every size has its own groups, so the till ignores the parent's).
+  // Before a pick: only what every size shows. Milk is on every size; the parent's Syrup is
+  // NOT shown (every size has its own groups, so the till ignores the parent's). Milk is
+  // REQUIRED, as its group says: the sizes' old "min 0, max 1" copies are ignored, like the till
+  // (Peter, 15 Sep: "milk is a forced modifier not optional but on the kiosk its optional").
   const before = sheet(LATTE, sizes, null);
-  assert.deepEqual(shown(before.groups), [['__variants__', 1, 1], [MILK_ID, 0, 1]]);
+  assert.deepEqual(shown(before.groups), [['__variants__', 1, 1], [MILK_ID, 1, 1]]);
   // Medium: the same groups.
   assert.deepEqual(shown(sheet(LATTE, sizes, L_MEDIUM.id).groups), shown(before.groups));
-  // Small: its own two groups in its own order, with its override on Milk.
+  // Small: its own two groups in its own order, each with its group's own rule.
   const small = sheet(LATTE, sizes, L_SMALL.id);
-  assert.deepEqual(shown(small.groups), [['__variants__', 1, 1], [EXTRA_ID, 0, 1], [MILK_ID, 0, 1]]);
+  assert.deepEqual(shown(small.groups), [['__variants__', 1, 1], [EXTRA_ID, 1, 1], [MILK_ID, 1, 1]]);
+  assert.equal(validateSelections(small.groups, { __variants__: [L_SMALL.id], [EXTRA_ID]: ['o-plain'] }, {}, {}), 'Pick a Milk');
   assert.deepEqual(small.plan.modifiers, [{ id: EXTRA_ID, min: 0, max: 1 }, { id: MILK_ID, min: 0, max: 1 }]);
   // The parent alone (no sizes) keeps its own groups and the Milk row's own rule (required).
   assert.deepEqual(shown(sheet(LATTE, [], null).groups), [[MILK_ID, 1, 1], [SYRUP_ID, 0, 2]]);
@@ -169,19 +172,23 @@ test('instruction groups follow the same rule, each kind on its own', () => {
   const sizes = [small, big];
   const opts = { defs: DEFS };
   assert.deepEqual(kioskInstructionAssignments(small.assigned_instruction_groups), [{ id: 'ig-temp', min: 0 }, { id: 'ig-lid', min: null }]);
-  // Before a pick: both sizes agree on min 0 for Temperature; Lid only on Small.
+  // Before a pick: Temperature on both sizes; Lid only on Small. An instruction group is optional
+  // unless the item or the group sets a min (the till's rule; the kiosk used to require them all).
   assert.deepEqual(shown(sheet(parent, sizes, null, opts).groups), [['__variants__', 1, 1], ['__instr__ig-temp', 0, 1]]);
-  assert.deepEqual(shown(sheet(parent, sizes, 'tea-s', opts).groups), [['__variants__', 1, 1], ['__instr__ig-temp', 0, 1], ['__instr__ig-lid', 1, 1]]);
+  assert.deepEqual(shown(sheet(parent, sizes, 'tea-s', opts).groups), [['__variants__', 1, 1], ['__instr__ig-temp', 0, 1], ['__instr__ig-lid', 0, 1]]);
+  const reqLid = { ...small, id: 'tea-r', assigned_instruction_groups: [{ groupId: 'ig-lid', min: 1 }] };
+  assert.deepEqual(shown(sheet(parent, [reqLid], 'tea-r', opts).groups), [['__variants__', 1, 1], ['__instr__ig-lid', 1, 1]]);
+  assert.deepEqual(shown(sheet(parent, [reqLid], 'tea-r', { defs: DEFS.map(d => ({ ...d, min: 1 })) }).groups), [['__variants__', 1, 1], ['__instr__ig-lid', 1, 1]]);
   assert.deepEqual(shown(sheet(parent, sizes, 'tea-l', opts).groups), [['__variants__', 1, 1], ['__instr__ig-temp', 0, 1]]);
   // Built as before: single choice, 0 priced options, flagged as an instruction.
   const lid = sheet(parent, sizes, 'tea-s', opts).groups[2];
   assert.equal(lid.__isInstructionGroup, true);
   assert.deepEqual(lid.options, [{ id: 'instr-ig-lid-0', name: 'Lid', price: 0 }, { id: 'instr-ig-lid-1', name: 'No lid', price: 0 }]);
   // A missing definition is skipped.
-  assert.deepEqual(shown(sheet({ assigned_instruction_groups: ['gone', 'ig-lid'] }, [], null, opts).groups), [['__instr__ig-lid', 1, 1]]);
+  assert.deepEqual(shown(sheet({ assigned_instruction_groups: ['gone', 'ig-lid'] }, [], null, opts).groups), [['__instr__ig-lid', 0, 1]]);
   // A size with no instruction groups uses the parent's, even when it has its own modifiers.
   const bare = { id: 'tea-b', parent_id: 'tea', assigned_modifier_groups: [SYRUP_ID] };
-  assert.deepEqual(shown(sheet(parent, [bare], 'tea-b', opts).groups), [['__variants__', 1, 1], ['__instr__ig-temp', 1, 1], [SYRUP_ID, 0, 2]]);
+  assert.deepEqual(shown(sheet(parent, [bare], 'tea-b', opts).groups), [['__variants__', 1, 1], ['__instr__ig-temp', 0, 1], [SYRUP_ID, 0, 2]]);
 });
 
 test('option_group_order: the parent\'s, as on the till; the Size group always first', () => {
@@ -223,11 +230,10 @@ test('a picked size that is not offered counts as no pick; an unknown group is s
   assert.deepEqual(kioskOptionGroupPlan({ parent: { assigned_modifier_groups: [SYRUP_ID, { groupId: SYRUP_ID, max: 1 }] } }).modifiers, [{ id: SYRUP_ID, min: null, max: null }]);
 });
 
-test('a plain item (no sizes) gets exactly its own groups, as the kiosk always built them', () => {
+test('a plain item (no sizes) gets its own groups, each with the group\'s own rule (an item copy is ignored)', () => {
   const pizza = { id: 'pz', assigned_modifier_groups: [SYRUP_ID, { groupId: MILK_ID, min: 0 }] };
   const { groups } = sheet(pizza, [], null);
-  const legacy = [SYRUP, { ...MILK, min: 0 }].map(normalizeGroup);
-  assert.deepEqual(groups, legacy);
+  assert.deepEqual(groups, [SYRUP, MILK].map(normalizeGroup));
 });
 
 // ── Size change: picks kept, dropped and validated ──────────────────────────
@@ -351,7 +357,8 @@ test('the selection helpers are the word for word copy from KioskProductModal at
   const block = src.slice(i, j).replace(/^export function /gm, 'function ');
   assert.equal(block.length, 5424);
   assert.equal(crypto.createHash('sha256').update(block).digest('hex'), '5573676cea75256430672016e1f9ec0f376b7189c8887b7f5e6de71847c9455a');
-  assert.ok(!/^import /m.test(src), 'kioskOptionGroups.js must stay import free');
+  const imports = src.match(/^import .*$/gm) || [];
+  assert.deepEqual(imports, ["import { sizeOrMainOptions, instructionGroupMin } from './menuRules.js';"], 'only the shared menu rules may be imported');
   const modal = fs.readFileSync(new URL('../surfaces/KioskProductModal.jsx', import.meta.url), 'utf8');
   for (const fn of ['collectNestedOccurrences', 'validateSelections', 'priceDelta', 'buildModsArray', 'summarizeForDisplay']) {
     assert.ok(!modal.includes(`function ${fn}(`), `the modal must import ${fn}, not keep a second copy`);

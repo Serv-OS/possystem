@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.70',
+    date: '15 Sep 2026',
+    items: [
+      'One set of menu rules for the till, bar, kiosk and online ordering (lib/menuRules.js), with a test that fails if a screen writes its own copy again. The kiosk had kept its own copy since April, which is why it disagreed with the till.',
+      'Kiosk: Milk and every other modifier group is required or optional exactly as the group says in Modifier groups, like the till. The kiosk used to read an old "min 0" copy saved on some sizes, so Milk was optional.',
+      'Kiosk: Cooking preference and other instruction groups are only required when the item or the group is set to required, like the till. The kiosk used to require them all.',
+      'Back Office: options can no longer be saved on the main product of an item with sizes. The Flow tab "Add to flow" box used to save there. Adding a size to an item that still has options on its main product now moves them onto the sizes, and so does cloning.',
+      'Back Office: an item that still has options on its main product shows them on the Flow tab with a "Move options onto the sizes" button.',
+      'Needs a database update (moves the options already saved on 7 main products onto their sizes). Refresh Back Office after it, then Push to POS.',
+    ],
+  },
+  {
     v: '5.8.69',
     date: '15 Sep 2026',
     items: [

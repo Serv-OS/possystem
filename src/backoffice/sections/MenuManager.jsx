@@ -44,6 +44,7 @@ import { orderOptionFlow } from '../../lib/optionFlow';
 // can never disagree about a dish's margin.
 import { fetchRecipes, buildCostingCtx, costRecipeWith } from '../../lib/stock/recipes';
 import { resolveTaxRate, netOf } from '../../lib/tax';
+import { isOptionOnlyItem, moveMainProductOptions } from '../../lib/menuRules';
 
 // Dietary tags — stored on menu_items.tags (jsonb). The tag id is what the print
 // menu + digital menu board map to a GF/V/VG/DF badge (see printMenu.js DIET map),
@@ -54,6 +55,31 @@ const DIET_TAGS = [
   { id:'gluten-free', label:'Gluten-free',badge:'GF', icon:'🌾' },
   { id:'dairy-free',  label:'Dairy-free', badge:'DF', icon:'🥛' },
 ];
+
+// ── Add a size (v5.8.70) ──────────────────────────────────────────────────────
+// Options only ever live on SIZES (lib/menuRules.js rule 5). Adding a size to an item that
+// still has options on its main product (set before it had sizes) moves them: the new size and
+// every size with none get a copy, and the main product is cleared. Before v5.8.70 the options
+// stayed on the main product, hidden in the Modifiers tab, and the kiosk read them wrongly.
+// Every add a size button below goes through here.
+function addSizeTo(main, sizeFields, menuItems, addMenuItem, updateMenuItem) {
+  if (!main) return addMenuItem(sizeFields);
+  const NEW = '__new_size__';
+  const liveSizes = (menuItems || []).filter(c => c.parentId === main.id && !c.archived);
+  const move = moveMainProductOptions(main, [...liveSizes, { id: NEW }]);
+  const forNew = move?.sizePatches.find(p => p.id === NEW)?.patch || {};
+  const created = addMenuItem({
+    ...sizeFields,
+    parentId: main.id,
+    assignedModifierGroups: forNew.assignedModifierGroups || sizeFields.assignedModifierGroups || [],
+    assignedInstructionGroups: forNew.assignedInstructionGroups || sizeFields.assignedInstructionGroups || [],
+  });
+  if (move) {
+    for (const { id, patch } of move.sizePatches) if (id !== NEW) updateMenuItem(id, patch);
+    updateMenuItem(main.id, move.mainPatch);
+  }
+  return created;
+}
 
 // ── Clone item helper ─────────────────────────────────────────────────────────
 async function cloneItem(item, menuItems, addMenuItem, updateMenuItem, markBOChange, showToast, setSelItemId) {
@@ -72,6 +98,11 @@ async function cloneItem(item, menuItems, addMenuItem, updateMenuItem, markBOCha
     return;
   }
 
+  const liveSizesOfSource = item.type === 'variants'
+    ? menuItems.filter(c => c.parentId === item.id && !c.archived) : [];
+  const sizeMove = moveMainProductOptions(item, liveSizesOfSource);
+  const movedFor = (child) => sizeMove?.sizePatches.find(p => p.id === child.id)?.patch || {};
+
   // Clone the parent item — strip id, parentId, keep everything else
   const newItem = addMenuItem({
     name, menuName: name, receiptName: name, kitchenName: name,
@@ -83,8 +114,10 @@ async function cloneItem(item, menuItems, addMenuItem, updateMenuItem, markBOCha
     pricing:                  item.pricing ? { ...item.pricing } : { base: item.price || 0 },
     allergens:                [...(item.allergens || [])],
     tags:                     [...(item.tags || [])],
-    assignedModifierGroups:   [...(item.assignedModifierGroups || [])],
-    assignedInstructionGroups:[...(item.assignedInstructionGroups || [])],
+    // v5.8.70: a clone of an item with sizes never copies options onto its main product; they
+    // go onto the cloned sizes (lib/menuRules.js rule 5, sizeMove below).
+    assignedModifierGroups:   sizeMove ? [] : [...(item.assignedModifierGroups || [])],
+    assignedInstructionGroups:sizeMove ? [] : [...(item.assignedInstructionGroups || [])],
     optionGroupOrder:         Array.isArray(item.optionGroupOrder) ? [...item.optionGroupOrder] : null,   // v5.5.948 combined flow order
     modifierGroups:           item.modifierGroups ? [...item.modifierGroups] : undefined,
     visibility:               { ...(item.visibility || { pos:true, kiosk:true, online:true }) },
@@ -121,7 +154,8 @@ async function cloneItem(item, menuItems, addMenuItem, updateMenuItem, markBOCha
           pricing: child.pricing ? { ...child.pricing } : { base: child.price || 0 },
           allergens: [...(child.allergens || [])],
           tags: [...(child.tags || [])],
-          assignedModifierGroups: [...(child.assignedModifierGroups || [])],
+          assignedModifierGroups: [...(movedFor(child).assignedModifierGroups || child.assignedModifierGroups || [])],
+          assignedInstructionGroups: [...(movedFor(child).assignedInstructionGroups || child.assignedInstructionGroups || [])],
           sortOrder: i,
         });
       });
@@ -453,7 +487,7 @@ function MenuTab() {
     const subs  = menuCategories.filter(c=>c.parentId===selCatId).map(c=>c.id);
     const inCat = i => i.cat===selCatId || subs.includes(i.cat) || (i.cats||[]).includes(selCatId) || (i.cats||[]).some(c=>subs.includes(c));
     return menuItems
-      .filter(i=>!i.archived && (i.type!=='subitem' || i.soldAlone) && !i.parentId && inCat(i))
+      .filter(i=>!i.archived && !isOptionOnlyItem(i) && !i.parentId && inCat(i))
       .sort((a,b)=>(a.sortOrder??999)-(b.sortOrder??999));
   },[selCatId, menuCategories, menuItems]);
 
@@ -1017,7 +1051,7 @@ function MenuTab() {
             const catItemIds = new Set(displayItems.map(i=>i.id));
             const q = addSearch.toLowerCase().trim();
             const notInCat = menuItems.filter(i =>
-              !i.archived && !i.parentId && (i.type!=='subitem'||i.soldAlone) &&
+              !i.archived && !i.parentId && !isOptionOnlyItem(i) &&
               i.cat !== selCat.id && !(i.cats||[]).includes(selCat.id) &&
               (q==='' || (i.menuName||i.name||'').toLowerCase().includes(q) || (i.description||'').toLowerCase().includes(q))
             ).sort((a,b)=>(a.menuName||a.name||'').localeCompare(b.menuName||b.name||''));
@@ -1227,8 +1261,8 @@ function MenuTab() {
                               );
                             })}
                             <button onClick={e=>{e.stopPropagation();
-                              addMenuItem({name:'New size', menuName:'New size', type:'simple', parentId:item.id, cat:item.cat,
-                                allergens:[], pricing:{base:0}, assignedModifierGroups:[], cats:[]});
+                              addSizeTo(item, {name:'New size', menuName:'New size', type:'simple', parentId:item.id, cat:item.cat,
+                                allergens:[], pricing:{base:0}, assignedModifierGroups:[], cats:[]}, menuItems, addMenuItem, updateMenuItem);
                               markBOChange(); showToast('Variant added','success');
                             }} style={{ display:'flex', alignItems:'center', justifyContent:'center', padding:'8px', borderRadius:10, cursor:'pointer', fontFamily:'inherit',
                               border:`1.5px dashed ${catColor}55`, background:'transparent', color:catColor, fontSize:20, minWidth:44, opacity:.6 }}>+</button>
@@ -1632,9 +1666,9 @@ function ItemsLibrary() {
   };
 
   const addVariant = (parentId, cat, allergens, count) => {
-    addMenuItem({ name:'New size', menuName:'New size', receiptName:'New size', kitchenName:'New size',
+    addSizeTo((menuItems || []).find(i => i.id === parentId), { name:'New size', menuName:'New size', receiptName:'New size', kitchenName:'New size',
       type:'simple', parentId, cat, allergens:[...allergens], pricing:{base:0},
-      assignedModifierGroups:[], assignedInstructionGroups:[], sortOrder:count });
+      assignedModifierGroups:[], assignedInstructionGroups:[], sortOrder:count }, menuItems, addMenuItem, updateMenuItem);
     markBOChange();
     setTimeout(()=>{ const last=useStore.getState().menuItems.slice(-1)[0]; if(last) setSelItemId(last.id); }, 30);
   };
@@ -2226,10 +2260,10 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
   const isParent = variants.length > 0;
 
   const addVariant = () => {
-    addMenuItem({ name:'New size', menuName:'New size', receiptName:'New size', kitchenName:'New size',
+    addSizeTo(item, { name:'New size', menuName:'New size', receiptName:'New size', kitchenName:'New size',
       type:'simple', parentId:item.id, cat:item.cat, allergens:[...item.allergens||[]],
       pricing:{ base:0, dineIn:null, takeaway:null, collection:null, delivery:null },
-      assignedModifierGroups:[], assignedInstructionGroups:[], sortOrder:variants.length });
+      assignedModifierGroups:[], assignedInstructionGroups:[], sortOrder:variants.length }, menuItems, addMenuItem, updateMenuItem);
     if (item.type !== 'variants') onUpdate({ type:'variants' });
     markBOChange();
   };
@@ -2581,6 +2615,26 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
               </div>
             )}
 
+            {/* v5.8.70: options saved on the main product of an item with sizes (from before it had
+                sizes, or the old Add to flow box). A size with none of its own still shows them, so
+                they are listed below; Move puts them on the sizes (lib/menuRules.js rule 5). */}
+            {isParent && (assignedMods.length > 0 || assignedInst.length > 0) && (
+              <div style={{ padding:'12px 14px', marginBottom:14, background:'var(--acc-d)', border:'1.5px solid var(--acc-b)', borderRadius:10 }}>
+                <div style={{ fontSize:12, fontWeight:700, color:'var(--acc)', marginBottom:4 }}>These options are saved on the main product</div>
+                <div style={{ fontSize:11, color:'var(--t2)', lineHeight:1.5, marginBottom:8 }}>
+                  An item with sizes keeps its options on each size. Move them so every size without its own gets a copy. What the till, kiosk and online show stays the same.
+                </div>
+                <button onClick={()=>{
+                  const move = moveMainProductOptions(item, variants);
+                  if (!move) return;
+                  for (const { id, patch } of move.sizePatches) updateMenuItem(id, patch);
+                  onUpdate(move.mainPatch);
+                  markBOChange();
+                  showToast?.('Options moved onto the sizes', 'success');
+                }} style={{ padding:'6px 12px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:11, fontWeight:700 }}>Move options onto the sizes</button>
+              </div>
+            )}
+
             {/* STEPS — v5.5.948: ONE combined list. Cooking preferences sit AMONG the
                 modifier groups and drag anywhere; the order saves to optionGroupOrder
                 and every surface (POS/kiosk/online/MPOS) renders it identically. */}
@@ -2663,7 +2717,13 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
               </div>
             )}
 
-            {/* Add modifier/instruction quick-add */}
+            {/* Add modifier/instruction quick-add. v5.8.70: never on the main product of an item
+                with sizes (this box used to save there, the hole behind the kiosk's wrong options). */}
+            {isParent ? (
+              <div style={{ marginTop:8, padding:'10px 12px', background:'var(--bg3)', borderRadius:10, border:'1px solid var(--bdr)', fontSize:11, color:'var(--t3)', lineHeight:1.5 }}>
+                To add options, open each size from the item list and use its Modifiers tab.
+              </div>
+            ) : (
             <div style={{ marginTop:8, padding:'10px 12px', background:'var(--bg3)', borderRadius:10, border:'1px solid var(--bdr)' }}>
               <div style={{ fontSize:10, fontWeight:700, color:'var(--t3)', textTransform:'uppercase', letterSpacing:'.07em', marginBottom:8 }}>Add to flow</div>
               <div style={{ position:'relative', marginBottom:6 }}>
@@ -2678,6 +2738,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                 </div>
               ))}
             </div>
+            )}
           </div>
         )}
 
@@ -3610,7 +3671,7 @@ function QuickScreenManager() {
   const SLOTS = 16;
   const slots = Array.from({ length: SLOTS }, (_, i) => quickScreenIds[i] || null);
 
-  const allItems = menuItems.filter(i => !i.archived && (i.type !== 'subitem' || i.soldAlone) && !i.parentId);
+  const allItems = menuItems.filter(i => !i.archived && !isOptionOnlyItem(i) && !i.parentId);
   const roots    = menuCategories.filter(c => !c.parentId && !c.isSpecial).sort((a,b)=>(a.sortOrder||0)-(b.sortOrder||0));
 
   const listItems = allItems

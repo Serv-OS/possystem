@@ -2,12 +2,13 @@
  * kioskGroupRules.js: modifier group rules shared by the kiosk item screen
  * (KioskProductModal) and the new kiosk design's one tap add rule (kioskMenu.js).
  *
- * Pure: NO imports, so node:test can load it (kioskGroupRules.test.js).
+ * Pure: only imports lib/menuRules.js (itself import free), so node:test can load it.
  *
  * normalizeGroup was moved here WORD FOR WORD from KioskProductModal.jsx (new kiosk
  * design build, stage B), so both places read a group's min, max and selection type
  * exactly the same way. Do not change it without checking the kiosk item screen.
  */
+import { instructionGroupMin } from './menuRules.js';
 
 export function normalizeGroup(group) {
   // v5.5.33: read both selection_type (DB column) and selectionType (camelCase
@@ -56,26 +57,24 @@ export function modifierAssignments(assignments) {
 }
 
 /**
- * True when a modifier group row, with the item's own overrides, needs at least one pick
- * before the item can be added (the kiosk item screen blocks Add until it has one).
- * The overrides are applied exactly as KioskProductModal applies them.
+ * True when a modifier group row needs at least one pick before the item can be added (the
+ * kiosk item screen blocks Add until it has one). Read from the GROUP only, like the till and
+ * Back Office (lib/menuRules.js rule 3): a { min, max } copy saved on an item is ignored. Before
+ * v5.8.70 the kiosk applied those copies, so Milk (required) was optional on the Latte sizes.
  */
-export function groupRequired(row, override = {}) {
+export function groupRequired(row) {
   if (!row || typeof row !== 'object') return false;
-  const merged = { ...row };
-  if (override && override.min !== null && override.min !== undefined) merged.min = override.min;
-  if (override && override.max !== null && override.max !== undefined) merged.max = override.max;
-  return normalizeGroup(merged)._min >= 1;
+  return normalizeGroup(row)._min >= 1;
 }
 
 /**
- * True when an instruction group assignment (menu_items.assigned_instruction_groups) needs
- * a pick. KioskProductModal builds these as single choice groups with min 1 unless the
- * assignment sets its own min.
+ * True when an instruction group assignment (menu_items.assigned_instruction_groups) needs a
+ * pick: the assignment's min when it sets one, else the group definition's, else optional
+ * (lib/menuRules.js rule 4, the till's and Back Office's rule). Before v5.8.70 the kiosk made
+ * every instruction group required unless the item said otherwise.
  */
-export function instructionAssignmentRequired(assignment) {
-  const minOverride = (assignment && typeof assignment === 'object' && assignment.min !== undefined) ? assignment.min : null;
-  return normalizeGroup({ selection_type: 'single', min: minOverride !== null ? minOverride : 1, max: 1 })._min >= 1;
+export function instructionAssignmentRequired(assignment, definition = null) {
+  return instructionGroupMin(assignment, definition) >= 1;
 }
 
 /**
