@@ -45,6 +45,11 @@ import { kioskLoyaltyCreditMinor, kioskRewardTapCheck } from '../lib/kioskLoyalt
 import { money, stripeCurrency } from '../lib/currency';
 import { getLocationProcessor } from '../lib/payments/processor';
 import { findPaxTerminal, dispatchTerminalJob, pollTerminalJob, cancelTerminalJob, buildCheckKey } from '../lib/payments/terminalJobs';
+import KioskV2Root from './kiosk/KioskV2Root';
+import KioskV2Status from './kiosk/KioskV2Status';
+import { kioskNewDesignOn, kioskResetAllowed } from '../lib/kioskFlow';
+import KioskCardScreen from './kiosk/KioskCardScreen';
+import { kioskLineKeyV2 } from '../lib/kioskBasket';
 // networkReader import removed — kiosk payment now uses server-side edge function directly
 // v5.5.871: card payment is processor-aware — Stripe reader (edge fn) OR Ryft PAX
 // terminal (the same "send to terminal" job path the POS/Table-Pay use).
@@ -641,6 +646,22 @@ export default function KioskApp({ kioskId, onUnpair }) {
   // A line with a size counts the size and its parent (lib/kioskLine.js).
   const cartItemUsage = useMemo(() => kioskCartUsage(cart), [cart]);
 
+  // New kiosk design flag (lib/kioskFlow.js). A plain const with no hooks, worked out before
+  // the loading gates so the ref below always mirrors it. The ref lets addToCart pick the
+  // new design's basket key without changing addToCart's dependencies; with the design off
+  // it stays false and addToCart behaves exactly as before.
+  // The same ref gates the new design's reset and idle pause rules below (D1, D2).
+  const newDesign = kioskNewDesignOn(profile);
+  const newDesignRef = useRef(false);
+  useEffect(() => { newDesignRef.current = newDesign; }, [newDesign]);
+
+  // New kiosk design only (build spec D2): the card screen pauses the idle timer while the
+  // reader is live, the order is saving or staff are needed (lib/kioskFlow.js
+  // kioskIdlePaused). A ref, so pausing never re-renders or restarts the timer. Today's
+  // kiosk never sets it, and the tick ignores it unless the new design is on.
+  const idlePausedRef = useRef(false);
+  const setIdlePaused = useCallback((v) => { idlePausedRef.current = !!v; }, []);
+
   // ─── Idle timer ───
   const lastActivityRef = useRef(Date.now());
   const [idleWarning, setIdleWarning] = useState(false);
@@ -652,13 +673,18 @@ export default function KioskApp({ kioskId, onUnpair }) {
       const idle = (Date.now() - lastActivityRef.current) / 1000;
       // Don't show idle warning on attract screen — that's its resting state
       if (screen === 'attract') return;
+      if (newDesignRef.current && idlePausedRef.current) {
+        lastActivityRef.current = Date.now();
+        if (idleWarning) { setIdleWarning(false); setWarningCountdown(10); }
+        return;
+      }
       if (!idleWarning && idle > idleTimeoutSec) {
         setIdleWarning(true); setWarningCountdown(10);
       } else if (idleWarning) {
         setWarningCountdown(c => {
           if (c <= 1) {
             // Reset session
-            resetSession();
+            resetSession('idle');
             return 10;
           }
           return c - 1;
@@ -669,7 +695,10 @@ export default function KioskApp({ kioskId, onUnpair }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screen, idleWarning, idleTimeoutSec]);
 
-  const resetSession = useCallback(() => {
+  const resetSession = useCallback((reason) => {
+    // New kiosk design only (D1): a reset with no reason is submitOrder's uncleared 30s
+    // timer, which could wipe the next customer's basket. Today's kiosk resets as before.
+    if (!kioskResetAllowed(reason, newDesignRef.current)) return;
     setScreen('attract');
     setOrderType(null);
     setTableNumber('');
@@ -718,7 +747,11 @@ export default function KioskApp({ kioskId, onUnpair }) {
     if (instructions && instructions.trim()) {
       modsArray.push({ label: instructions.trim(), price: 0, groupLabel: 'Note', _instruction: true });
     }
-    const key = kioskLineKey(item, variant, selectedMods);
+    // The new kiosk design merges lines on item, size and picks including the note
+    // (lib/kioskBasket.js); the current kiosk keeps its own key.
+    const key = newDesignRef.current
+      ? kioskLineKeyV2({ item, variant, mods: modsArray })
+      : kioskLineKey(item, variant, selectedMods);
     setCart(prev => {
       const existing = prev.find(l => l.key === key);
       if (existing) {
@@ -1080,9 +1113,12 @@ export default function KioskApp({ kioskId, onUnpair }) {
 
   // ─── Loading + error gates ───
   if (profLoading || menuLoading) {
+    // New design: the same words on the cream screen, so the old look never flashes up.
+    if (newDesign) return <KioskV2Status profile={profile} title="Loading…" />;
     return <div style={pageStyle()}><div style={{ color: 'var(--kFg)', fontSize: 18 }}>Loading…</div></div>;
   }
   if (profError || menuError || !device || !profile) {
+    if (newDesign) return <KioskV2Status profile={profile} title="Kiosk not configured" detail={profError || menuError || 'Profile not found. Please ask staff.'} onUnpair={onUnpair} />;
     return <div style={pageStyle()}>
       <div style={{ color: 'var(--kFg)', textAlign: 'center', padding: 40, maxWidth: 480 }}>
         <div style={{ fontSize: 48, marginBottom: 16 }}>⚠️</div>
@@ -1091,6 +1127,33 @@ export default function KioskApp({ kioskId, onUnpair }) {
         <button onClick={onUnpair} style={btnGhostLight()}>Unpair</button>
       </div>
     </div>;
+  }
+
+  // ─── New kiosk design (device_profiles.kiosk_new_design, lib/kioskFlow.js) ───
+  // Off, which is the default for every profile (and for a profile row from before the
+  // migration), renders today's kiosk below exactly as before. On hands the SAME state and functions to the
+  // new screens (src/surfaces/kiosk/). Nothing here changes a hook, a total or submitOrder.
+  if (newDesign) {
+    const engine = {
+      kioskId, deviceName: device?.name || '', profile, locationId, companyId, kioskTz,
+      items, visibleCategories, railCategories, activeMenuId, eightySixIds, dailyCounts,
+      screen, setScreen, orderType, setOrderType, tableNumber, setTableNumber,
+      selectedCategoryId, setSelectedCategoryId, selectedItem, setSelectedItem,
+      allergenFilter, setAllergenFilter,
+      cart, setCart, addToCart, updateCartQty, cartItemCount, cartItemUsage,
+      subtotal, autoDiscounts, autoDiscountTotal, discountedSubtotal, taxBreakdown, exclusiveTax,
+      total, tip, setTip,
+      loyaltyRedemption, setLoyaltyRedemption, verifiedLoyalty, setVerifiedLoyalty,
+      giftCardPayment, setGiftCardPayment, promoApplied, setPromoApplied,
+      loyaltyCredit, giftCardCredit, promoCredit, grandTotal,
+      customerPhone, setCustomerPhone,
+      checkIdRef, orderNumber, submitting, submitError, setSubmitError, submitOrder,
+      brandName, brandLogoUrl, attractVideoUrl, avgWaitMinutes, tableMode, loyaltyEnabled,
+      categoryPhotos, categoryPhotoOrigin, idleTimeoutSec, lang,
+      resetIdle, resetSession, idleWarning, warningCountdown,
+      setIdlePaused, deviceLocationId: device?.location_id || null,
+    };
+    return <KioskV2Root engine={engine} ScreenPay={ScreenPay} />;
   }
 
   // ─── Render ───
@@ -3025,7 +3088,7 @@ function ScreenGiftPromo({ brandColor, total, loyaltyCredit, giftCardCredit, pro
 // ============================================================
 // SCREEN: PAY
 // ============================================================
-function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCredit = 0, promoApplied = null, locationId, kioskId, cart, submitting, error, onPaid, onBack, loyaltyRedemption, onCancel }) {
+function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCredit = 0, promoApplied = null, locationId, kioskId, cart, submitting, error, onPaid, onBack, loyaltyRedemption, onCancel, look, v2 }) {
   const [cardState, setCardState] = useState('idle'); // idle | processing | collecting | success | error | declined
   const [cardError, setCardError] = useState(null);
   const [cardStatusMsg, setCardStatusMsg] = useState('');
@@ -3271,6 +3334,21 @@ function ScreenPay({ brandColor, total, loyaltyCredit, giftCardCredit, promoCred
 
   const cardDueAmount = total;
   const fullyPaid = total <= 0;
+
+  // New kiosk design (build spec D3): the SAME state and the SAME handlers as below, drawn as
+  // the README 7 card screen. Nothing above this line changes. Try again and back are offered
+  // only after a settled decline; an error shows "ask a member of staff" (lib/kioskPay.js).
+  if (look === 'v2') return (
+    <KioskCardScreen
+      cardState={cardState} cardError={cardError} total={total}
+      submitting={submitting} submitError={error}
+      onRetry={() => { setCardState('idle'); setTimeout(startCardPayment, 100); }}
+      onBack={() => { pollAbortRef.current = true; cancelReaderAction(); onBack(); }}
+      onCancel={() => { pollAbortRef.current = true; cancelReaderAction(); onCancel(); }}
+      onPlaceOrder={onPaid}
+      {...v2}
+    />
+  );
 
   return (
     <div style={fullScreen()}>

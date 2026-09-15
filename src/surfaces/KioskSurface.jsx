@@ -17,11 +17,21 @@ import { supabase, ensureAuthToken } from '../lib/supabase';
 import KioskApp from './KioskApp';
 import { getLocationConfig } from '../lib/locationTime';
 import { isOpenNow, nextOpensAt, formatHoursPreview } from '../lib/openingHours';
+import KioskV2Preview from './kiosk/preview/KioskV2Preview';
 
 const LS_KIOSK_ID = 'rpos-kiosk-id';
 const LS_KIOSK_TOKEN = 'rpos-kiosk-token';
 
+// DEV only: /?mode=kiosk&kioskPreview=1 shows the new kiosk design on sample data, with no
+// pairing and no database. In a production build import.meta.env.DEV is false, so this is
+// false and the preview is left out of the bundle.
+const PREVIEW = import.meta.env.DEV && new URLSearchParams(window.location.search).has('kioskPreview');
+
 export default function KioskSurface() {
+  return PREVIEW ? <KioskV2Preview /> : <KioskSurfaceInner />;
+}
+
+function KioskSurfaceInner() {
   const [paired, setPaired] = useState(() => !!localStorage.getItem(LS_KIOSK_ID));
   const [kiosk, setKiosk] = useState(null);
   const [code, setCode] = useState('');

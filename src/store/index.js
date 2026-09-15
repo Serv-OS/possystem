@@ -43,6 +43,26 @@ import { bookingsSlice } from './bookingsSlice';
 import { reportSave } from '../lib/saveHealth';
 import { bumpChallenge21 } from '../lib/challenge21Counter';
 import { shouldKeepPaidOrderInQueue, markQueueEntryPaid, paidQueueRefToClearOnRefund } from '../lib/orderScreen/keepPaidOrder';
+import { alcoholCategorySet, orderHasAlcohol, kioskTicketLabels, kioskTableForTicket } from '../lib/kioskStaffFlags';
+
+// Kiosk ticket flags (table, CHECK ID): reads made after routeKioskOrderPrints has claimed an
+// order must never hold its ticket. A plain function timer, never a timer called as an object
+// method (the v5.8.56 "Illegal invocation" outage). Resolves the fallback on a hang or an error.
+function kioskFlagRead(promise, ms, fallback) {
+  return new Promise((resolve) => {
+    let done = false;
+    const timer = setTimeout(() => { if (!done) { done = true; resolve(fallback); } }, ms);
+    Promise.resolve(promise).then(
+      (v) => { if (!done) { done = true; clearTimeout(timer); resolve(v); } },
+      () => { if (!done) { done = true; clearTimeout(timer); resolve(fallback); } },
+    );
+  });
+}
+const KIOSK_FLAG_READ_MS = 3000;
+// A minute: the kiosk reads Challenge 21 fresh for the customer's message, so CHECK ID on the
+// staff ticket follows a manager switching it on or off within a minute.
+const KIOSK_C21_MAX_AGE_MS = 60 * 1000;
+let _kioskC21LoadedAt = 0;
 
 // v5.5.944: terminal jobs whose closed_check upsert failed and were flagged to the
 // activity feed — once per job per boot, so the 8s retry loop doesn't spam the feed.
@@ -3485,6 +3505,13 @@ export const useStore = create((set, get) => ({
     if (isTrainingMode()) return null;
     if (!customer?.phone || !orderRecord) {
       console.warn('[attributeOrderToCustomer] skipped — missing customer.phone or orderRecord');
+      return null;
+    }
+    // New kiosk design with points switched off (decision 9): the number was given only for the
+    // ready text, so no CRM customer, no points and no welcome text. Only the new design sets
+    // this policy (surfaces/kiosk/kioskApi.js setAttributionPolicy); every other path is unchanged.
+    if (orderRecord.source === 'kiosk' && get().kioskV2AttributionPolicy === 'off') {
+      console.log('[attributeOrderToCustomer] skipped — new kiosk design, number given for the ready text only');
       return null;
     }
     try {
@@ -7122,10 +7149,56 @@ export const useStore = create((set, get) => ({
       // the previous "Kiosk" wording when source is unknown.
       const SRC_LABEL = { kiosk: 'Kiosk', online: 'Online', qr: 'QR', hubrise: 'HubRise', catering: 'Catering' };
       const srcLabel = SRC_LABEL[order.source] || 'Kiosk';
-      const tableLabel = order.source === 'qr' && order.tableLabel
-        ? `Table ${order.tableLabel}`
-        : `${srcLabel} ${order.ref}`;
-      const serverName = order.customer?.name || `${srcLabel} ${order.ref}`;
+      // Kiosk orders: the table the customer picked (closed_checks.kiosk_table_number, the only
+      // place a kiosk table is stored) and CHECK ID when the order has alcohol (the Challenge 21
+      // categories, only while Challenge 21 is switched on). Both best effort and capped at 3s
+      // each, so a slow read can never hold a claimed ticket: a failed or slow read just leaves
+      // the table and CHECK ID off. Every other channel's labels are exactly as before
+      // (lib/kioskStaffFlags.js).
+      let kioskTable = null;
+      let idCheck = false;
+      if (order.source === 'kiosk') {
+        const [kc, c21] = await Promise.all([
+          kioskFlagRead(
+            supabase.from('closed_checks').select('kiosk_table_number')
+              .eq('location_id', locId).eq('ref', order.ref).eq('source', 'kiosk')
+              .order('closed_at', { ascending: false }).limit(1).maybeSingle(),
+            KIOSK_FLAG_READ_MS, null,
+          ),
+          (async () => {
+            const stale = !get().challenge21Config || Date.now() - _kioskC21LoadedAt > KIOSK_C21_MAX_AGE_MS;
+            if (stale && get().loadChallenge21Config) {
+              const before = get().challenge21Config;
+              await kioskFlagRead(get().loadChallenge21Config(), KIOSK_FLAG_READ_MS, null);
+              // Stamped only when the read really replaced the config (loadChallenge21Config
+              // returns without setting it on an error, a timeout or no location), so a failed
+              // read is tried again on the next kiosk order instead of trusting an old copy.
+              if (get().challenge21Config !== before) _kioskC21LoadedAt = Date.now();
+            }
+            return get().challenge21Config || null;
+          })().catch(() => null),
+        ]);
+        // Eat in only: today's kiosk can save a table on a take away order (a table typed
+        // before the customer went Back and picked Take away), which must never reach staff.
+        kioskTable = kioskTableForTicket(kc?.data?.kiosk_table_number, typeKey);
+        try {
+          if (c21?.enabled) {
+            idCheck = orderHasAlcohol(
+              order.items,
+              alcoholCategorySet(c21.alcoholCategoryIds || [], get().menuCategories || []),
+              new Map(allMenuItems.map(m => [m.id, m])),
+            );
+          }
+        } catch (e) { console.warn('[routeKioskOrderPrints] alcohol check failed:', e?.message || e); }
+      }
+      // ONE label rule for the kitchen screen, its rows without meta and the paper ticket
+      // (lib/kioskStaffFlags.js kioskTicketLabels): a kiosk ticket carries its short number,
+      // never a name in place of it (decision 8), its table as a table ticket, and CHECK ID.
+      // Every other channel gets exactly today's labels and today's paper.
+      const { tableLabel, serverName, printTableLabel, printServerName, isTable: ticketIsTable, flagNote } = kioskTicketLabels({
+        source: order.source, ref: order.ref, srcLabel, qrTableLabel: order.tableLabel,
+        kioskTable, orderType: typeKey, customerName: order.customer?.name, idCheck,
+      });
 
       // v5.5.850: operator signal for unknown channel refs — the item still prints (per-item
       // fallback above) but the master till is told the published catalog is out of sync.
@@ -7178,15 +7251,18 @@ export const useStore = create((set, get) => ({
       // POS name is the CHANNEL (Kiosk, Online, QR, Deliveroo), never this device's name:
       // this runs on the master till, not on the kiosk or phone that took the order.
       // A delivery app order shows the app's own code (#8455) when it has one (Peter).
+      // isTable is QR at a table for every channel but kiosk (the same test as before), and a
+      // kiosk order with a table (its label, "Table 12 · #47", is then the headline). A kiosk
+      // CHECK ID leads the note; with no flag the note is the order's own notes, as before.
       const _kdsMeta = buildTicketMeta({
         channel: order.source || 'kiosk',
         orderType: typeKey,
-        isTable: order.source === 'qr' && !!order.tableLabel,
+        isTable: ticketIsTable,
         customerName: order.customer?.name,
         orderRef: order.ref,
         appCode: order.source === 'hubrise' ? order.customer?.collectionCode : null,
         source: order.source === 'hubrise' ? (order.customer?.channel || srcLabel) : srcLabel,
-        note: order.customer?.notes,
+        note: flagNote ? joinNotes(flagNote, order.customer?.notes) : order.customer?.notes,
       });
       const tickets = Object.entries(byCentre).map(([centreId, items]) => ({
         id: `kds-${sentAt}-${centreId}-${Math.random().toString(36).slice(2,6)}`,
@@ -7246,8 +7322,10 @@ export const useStore = create((set, get) => ({
         get().routePrintJob({
           centreId,
           printerName: getCentrePrinter(centreId),
-          tableLabel,
-          server: serverName,
+          // Paper is read by people only: a kiosk ticket shows the short number (and CHECK ID).
+          // For every other channel these are the same strings as the kds_tickets row.
+          tableLabel: printTableLabel,
+          server: printServerName,
           covers: 1,
           course: 1,
           items: items.map(i => ({
@@ -7262,6 +7340,30 @@ export const useStore = create((set, get) => ({
       });
 
       console.log('[routeKioskOrderPrints] routed', order.ref, 'to', Object.keys(byCentre).length, 'centres');
+
+      // Order screens (OrdersHub) read the kiosk table and CHECK ID from order_queue.customer.
+      // Written AFTER the ticket and print jobs, fire and forget, so it can never delay or block
+      // them. The row's customer is read again just before the write and only kioskTable and
+      // idCheck are added, so a change staff made meanwhile (tab closed, paid) is kept. Named
+      // kioskTable and idCheck, never tableLabel (QR flows read that). Status is untouched, so
+      // no trigger fires.
+      if (order.source === 'kiosk' && (kioskTable || idCheck)) {
+        (async () => {
+          try {
+            const cur = await kioskFlagRead(
+              supabase.from('order_queue').select('customer').eq('ref', order.ref).eq('location_id', locId).maybeSingle(),
+              KIOSK_FLAG_READ_MS, null,
+            );
+            if (!cur || cur.error || !cur.data) return;
+            const base = cur.data.customer && typeof cur.data.customer === 'object' && !Array.isArray(cur.data.customer) ? cur.data.customer : {};
+            if ((!kioskTable || base.kioskTable === kioskTable) && (!idCheck || base.idCheck === true)) return;
+            const { error: kqErr } = await supabase.from('order_queue')
+              .update({ customer: { ...base, ...(kioskTable ? { kioskTable } : {}), ...(idCheck ? { idCheck: true } : {}) } })
+              .eq('ref', order.ref).eq('location_id', locId);
+            if (kqErr) console.warn('[routeKioskOrderPrints] kiosk flags update failed:', kqErr.message || kqErr);
+          } catch (e) { console.warn('[routeKioskOrderPrints] kiosk flags update failed:', e?.message || e); }
+        })();
+      }
       // v5.5.129: when zero centres matched, log WHY so the operator can
       // see what's mis-configured (no centres at all? no cats on items?
       // routing config not loaded yet?). One of these is almost always

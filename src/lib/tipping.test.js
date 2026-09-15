@@ -74,3 +74,64 @@ test('a service charge on the bill means No tip is pre-selected', () => {
   assert.equal(tipInitialKeyFor(rule, { serviceCharge: 4.5 }), '0');
   assert.equal(tipInitialKeyFor(rule, { serviceCharge: 0 }), '10');
 });
+
+// ── The new kiosk design: tipping_config.kiosk ──────────────────────────────
+import fs from 'node:fs';
+import {
+  TIP_MODULES, KIOSK_TIP_MAX_PCT, normaliseKioskTipRule, kioskTipRule, mergeTippingConfig, buildKioskTipPatch, sameKioskTipRule,
+} from './tipping.js';
+
+test('kiosk is a tipping module with No tip pre-selected and no custom amount', () => {
+  assert.ok(TIP_MODULES.includes('kiosk'));
+  assert.deepEqual(TIP_DEFAULTS.kiosk, { on: true, pct: [10, 12.5, 15], default: null, custom: false });
+  assert.equal(KIOSK_TIP_MAX_PCT, 3);
+});
+
+test('kiosk rule: three lowest percentages, custom forced off, default must be a chip', () => {
+  const r = normaliseKioskTipRule({ on: true, pct: [20, 5, 10, 15], default: 20, custom: true });
+  assert.deepEqual(r, { on: true, pct: [5, 10, 15], default: null, custom: false });
+  assert.equal(normaliseKioskTipRule({ on: true, pct: [5, 10], default: 10 }).default, 10);
+  assert.equal(normaliseKioskTipRule({ on: false }).on, false);
+  assert.deepEqual(normaliseKioskTipRule(null).pct, [10, 12.5, 15]);
+});
+
+test('kiosk rule reads the venue rule, else the profile presets', () => {
+  const venue = { tipping_config: { kiosk: { on: false, pct: [5, 10], default: null, custom: false } } };
+  assert.deepEqual(kioskTipRule(venue, { kiosk_tip_presets: [18, 20, 25] }), { on: false, pct: [5, 10], default: null, custom: false });
+  assert.deepEqual(kioskTipRule({ tipping_config: { online: {} } }, { kiosk_tip_presets: [0, 12, 15, 18] }), { on: true, pct: [12, 15, 18], default: null, custom: false });
+  assert.deepEqual(kioskTipRule(null, null), { on: true, pct: [10, 12.5, 15], default: null, custom: false });
+  assert.deepEqual(kioskTipRule({ tipping_config: 'x' }, { kiosk_tip_presets: [0, 0, 0] }).pct, [10, 12.5, 15]);
+});
+
+test('saving one module keeps the others', () => {
+  const cur = { online: { on: true }, qr: { on: false } };
+  assert.deepEqual(mergeTippingConfig(cur, { kiosk: { on: true } }), { online: { on: true }, qr: { on: false }, kiosk: { on: true } });
+  assert.deepEqual(mergeTippingConfig(cur, { online: { on: false } }), { online: { on: false }, qr: { on: false } });
+  assert.equal(mergeTippingConfig(cur, null), null);
+  assert.deepEqual(mergeTippingConfig(null, { qr: { on: true } }), { qr: { on: true } });
+});
+
+test('the kiosk tipping patch always carries the stored online and qr rules', () => {
+  const stored = { online: { on: true, pct: [5], default: null, custom: true }, qr: { on: true, pct: [10], default: 10, custom: false }, kiosk: { on: true } };
+  const patch = buildKioskTipPatch(stored, { on: true, pct: [10, 15], default: 15 });
+  assert.deepEqual(patch, {
+    tipping_config: {
+      online: stored.online,
+      qr: stored.qr,
+      kiosk: { on: true, pct: [10, 15], default: 15, custom: false },
+    },
+  });
+  assert.deepEqual(Object.keys(buildKioskTipPatch(null, { on: false }).tipping_config), ['kiosk']);
+});
+
+test('the save check compares normalised rules', () => {
+  assert.equal(sameKioskTipRule({ on: true, pct: [15, 10], default: null }, { on: true, pct: [10, 15], default: null, custom: false }), true);
+  assert.equal(sameKioskTipRule({ on: true, pct: [10] }, { on: false, pct: [10] }), false);
+  assert.equal(sameKioskTipRule(undefined, { on: true }), false);
+});
+
+test('location-admin keeps the kiosk module and merges tipping_config', () => {
+  const src = fs.readFileSync(new URL('../../supabase/functions/location-admin/index.ts', import.meta.url), 'utf8');
+  assert.ok(src.includes("for (const mod of ['online', 'qr', 'kiosk'])"), 'module list');
+  assert.ok(src.includes('row.tipping_config = {'), 'merge before update');
+});

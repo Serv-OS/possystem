@@ -118,6 +118,51 @@ async function sendEmail(to: string, subject: string, html: string, sender: Send
   }
 }
 
+// ── New kiosk design (device_profiles.kiosk_new_design, 20260915_OPS_kiosk_redesign.sql) ──
+// "Text me when it's ready" on the new kiosk sends the READY text only, with the short order
+// number and no name. Mirrored and tested in src/lib/kioskNotify.js (keep the wording in step).
+const KIOSK_READY_ONLY = 'kiosk new design sends the ready text only';
+
+// db.js shortOrderRef: "R1247" -> "47", "R7" -> "7".
+function shortRef(ref: string): string {
+  const m = /^R(\d+)$/.exec(ref);
+  if (!m) return ref;
+  return m[1].length > 2 ? m[1].slice(-2) : m[1];
+}
+
+// True only for an order placed on a kiosk whose profile has the new design switched on.
+// closed_checks is written before order_queue, so the kiosk id is there by the time the
+// INSERT trigger calls us. Any error, a missing row or a missing column reads as false,
+// which keeps today's behaviour.
+async function kioskNewDesign(order: Record<string, unknown>): Promise<boolean> {
+  try {
+    if (String(order.source || '') !== 'kiosk') return false;
+    const { data: cc } = await opsAdmin
+      .from('closed_checks')
+      .select('kiosk_id')
+      .eq('location_id', String(order.location_id || ''))
+      .eq('ref', String(order.ref || ''))
+      .eq('source', 'kiosk')
+      .order('closed_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const kioskId = (cc as Record<string, unknown> | null)?.kiosk_id;
+    if (!kioskId) return false;
+    const { data: dev } = await opsAdmin.from('devices').select('profile_id').eq('id', String(kioskId)).maybeSingle();
+    const profileId = (dev as Record<string, unknown> | null)?.profile_id;
+    if (!profileId) return false;
+    const { data: prof, error } = await opsAdmin
+      .from('device_profiles')
+      .select('kiosk_new_design')
+      .eq('id', String(profileId))
+      .maybeSingle();
+    if (error) return false;
+    return (prof as Record<string, unknown> | null)?.kiosk_new_design === true;
+  } catch {
+    return false;
+  }
+}
+
 // Is this channel explicitly disabled in the Messages editor? (resolveAndRender falls back to
 // the DEFAULT when a custom row is disabled — but the toggle means "do not send at all".)
 async function channelDisabled(companyId: string, messageType: string, channel: string): Promise<boolean> {
@@ -157,6 +202,15 @@ Deno.serve(async (req) => {
   if (source === 'hubrise') return json({ ok: true, skipped: '3rd-party channel' });
   if (event === 'confirmed' && source === 'catering') return json({ ok: true, skipped: 'catering has its own confirmation' });
   if (event === 'ready' && String(order.type || '') === 'delivery') return json({ ok: true, skipped: 'delivery uses courier tracking' });
+
+  // New kiosk design: the ready text only. Nothing is claimed for the skipped event.
+  // The three design lookups run only for a kiosk order that has a phone or an email: with no
+  // contact there is nothing to skip or send, and the flow below is exactly today's.
+  const orderContact = (order.customer || {}) as Record<string, unknown>;
+  const kioskHasContact = source === 'kiosk'
+    && !!(normalisePhone(String(orderContact.phone || '')) || String(orderContact.email || '').trim());
+  const kioskV2 = kioskHasContact ? await kioskNewDesign(order) : false;
+  if (event === 'confirmed' && kioskV2) return json({ ok: true, skipped: KIOSK_READY_ONLY });
 
   // ── v5.5.952 replay guards (live incident 30 Jul: a stale POS re-inserted week-old
   // order_queue rows; fresh rows had null claim stamps, so five 23 Jul orders sent
@@ -275,7 +329,8 @@ Deno.serve(async (req) => {
   const firstName = String(customer.name || '').trim().split(' ')[0] || 'there';
   const mergeData: Record<string, string> = {
     customer_name: firstName,
-    order_number: ref,
+    // A new design kiosk order is called by its short number (decision 8).
+    order_number: kioskV2 ? shortRef(ref) : ref,
     venue_name: venueName,
     order_total: moneyFor(currency, Number(order.total || 0)),
     // The order already carries the time the customer was quoted, uplift and
@@ -308,7 +363,9 @@ Deno.serve(async (req) => {
       if (!smsBody) {
         smsBody = event === 'confirmed'
           ? `Thanks ${firstName}! Order #${ref} confirmed at ${venueName}. Total: ${mergeData.order_total}.`
-          : `Hi ${firstName}, your order #${ref} is ready for collection at ${venueName}!`;
+          : kioskV2
+            ? `Your order ${shortRef(ref)} is ready to collect at ${venueName}.`
+            : `Hi ${firstName}, your order #${ref} is ready for collection at ${venueName}!`;
       }
       result.sms = await sendSmsViaFn(phone, smsBody, locationId, messageType);
     }

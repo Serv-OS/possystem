@@ -12,7 +12,45 @@
  */
 import { tileAccentColor, tileSlot } from '../../lib/categoryPhoto';
 
-export default function KioskCategoryTile({ cat, active, mode, brandColor, photoOrigin = null, onSelect }) {
+export default function KioskCategoryTile({ cat, active, mode, brandColor, photoOrigin = null, onSelect, look }) {
+  // New kiosk design (README 2 rail tile, plain design px). Any other look keeps the
+  // current tile below, untouched.
+  if (look === 'design') {
+    const slot = tileSlot(cat, mode, brandColor, photoOrigin);
+    return (
+      <button
+        type="button"
+        onClick={onSelect}
+        aria-pressed={!!active}
+        style={{
+          display: 'flex', flexDirection: 'column', gap: 10, padding: 12, borderRadius: 24, width: '100%',
+          border: `3px solid ${active ? 'var(--k2PrimaryLine)' : 'transparent'}`,
+          background: active ? '#FFFFFF' : 'rgba(255,255,255,.55)',
+          textAlign: 'left', cursor: 'pointer', flex: 'none', minHeight: 64, justifyContent: 'center',
+        }}
+      >
+        {slot ? (
+          <div style={{ height: 104, borderRadius: 16, overflow: 'hidden', flex: 'none', background: slot.background }}>
+            {slot.url && (
+              <img
+                src={slot.url}
+                alt=""
+                loading="lazy"
+                draggable={false}
+                style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                onError={e => { e.currentTarget.style.display = 'none'; }}
+              />
+            )}
+          </div>
+        ) : null}
+        <span style={{
+          fontSize: 22, fontWeight: 700, lineHeight: 1.2, padding: '0 4px 4px',
+          color: active ? '#14110F' : '#3A332C', overflowWrap: 'anywhere',
+        }}>{cat.label}</span>
+      </button>
+    );
+  }
+
   if (mode !== 'photo') {
     return (
       <button

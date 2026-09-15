@@ -246,6 +246,11 @@ const TENANT_FENCE_KEEP = new Set([
   'rpos-theme',
   'rpos-device',
   'rpos-mbscreen',   // menu-board screen pairing record (its own device identity; no rpos-device)
+  // Self order kiosk pairing and its customer language (KioskSurface.jsx, i18n.js). A kiosk
+  // has no rpos-device, so without these a location switch would unpair it.
+  'rpos-kiosk-id',
+  'rpos-kiosk-token',
+  'rpos-kiosk-lang',
 ]);
 
 /**

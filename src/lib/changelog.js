@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.68',
+    date: '15 Sep 2026',
+    items: [
+      'New kiosk design, switched on per kiosk in Back Office under Kiosks, Settings. It takes a customer from start to paid in five screens: start with eat in or take away, menu with a basket, one Review and pay screen, card, and done. It is off by default, and a kiosk with it off works exactly as before.',
+      'Review and pay holds everything on one screen: tip, points by mobile number with no code, rewards spent after a text code, a box for a gift card and a promo code, Text me when it is ready, the allergen confirmation when your venue asks for it, and the total.',
+      'Kitchen tickets from every kiosk now show the table and the short order number, like Table 12 · #47, and CHECK ID when there is alcohol and Challenge 21 is on.',
+      'Kiosk tipping now lives with your venue tipping settings. The new design offers No tip plus three percentages.',
+      'Needs a database update to be run first.',
+    ],
+  },
+  {
     v: '5.8.67',
     date: '14 Sep 2026',
     items: [

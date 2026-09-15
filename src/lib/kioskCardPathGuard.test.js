@@ -1,0 +1,169 @@
+// CARD PATH GUARD for the new kiosk design build (owner rule, non negotiable).
+//
+// The new screens CALL KioskApp's existing money and order code; they must never change it.
+// This test fingerprints the blocks that move money, as they are at v5.8.67, and fails if
+// any character inside them changes:
+//   submitOrder (idempotency key, gift commit order, PGRST204 retry, stock paths)
+//   ScreenPay's logic (processor branch, reader start, cancel, polling)
+//   the credits (loyalty, gift, promo, grandTotal)
+//   the totals (subtotal, auto discounts, tax, total)
+//   updateCartQty
+//
+// If this fails, the change touched the card path. Undo it, or get the owner's explicit
+// sign off and a hardware test before updating a fingerprint here.
+//
+// FINGERPRINT HISTORY
+//   v5.8.65 (the redesign's base): submitOrder 16561 chars d1761dd3..., credits 508 chars
+//     919382064c... starting at `const loyaltyCredit = loyaltyRedemption?.discount_value ? ...`.
+//   v5.8.67 (kiosk points rewards fix, 8e86b0ed, shipped on develop before the redesign landed).
+//   Only these lines moved; ScreenPay, the totals and updateCartQty are byte for byte v5.8.65:
+//     credits: the frozen `loyaltyRedemption?.discount_value / 100` became the LIVE figure
+//       const loyaltyDiscountMinor = kioskLoyaltyCreditMinor(loyaltyRedemption, { cart,
+//         goodsMinor: Math.round(discountedSubtotal * 100), dueMinor: Math.round(total * 100),
+//         giftMinor: giftCardPayment?.applied || 0 });
+//       const loyaltyCredit = loyaltyDiscountMinor / 100;
+//     submitOrder, three code changes plus two comments:
+//       closed_checks.loyalty is written only when `loyaltyRedemption && loyaltyDiscountMinor > 0`,
+//         and its discount_value is `loyaltyDiscountMinor` (was loyaltyRedemption.discount_value);
+//       the loyalty commitRedemption runs only when `loyaltyDiscountMinor > 0 && ...` (the
+//         v5.8.67 rule: a reward worth 0p never spends points);
+//       the useCallback dependency list gains `loyaltyDiscountMinor` after loyaltyCredit.
+//     The gift commit order, the idempotency key (checkIdRef), the PGRST204 retry, both stock
+//     paths, the order_queue insert and the 30 second reset are unchanged.
+
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import crypto from 'node:crypto';
+
+const SRC = fs.readFileSync(new URL('../surfaces/KioskApp.jsx', import.meta.url), 'utf8');
+
+const BLOCKS = [
+  {
+    name: 'submitOrder',
+    start: 'const submitOrder = useCallback(async (nameOverride, phoneOverride) => {',
+    end: 'tableNumber, resetSession]);',
+    length: 16899,
+    sha256: '45281c7c3ec5bf9ba1e93fb690d6388c08b1aa5db760437c845ec4647f7f116b',
+  },
+  {
+    name: 'ScreenPay logic',
+    start: "const [cardState, setCardState] = useState('idle');",
+    end: 'const cardDueAmount = total;',
+    length: 10819,
+    sha256: '982913b1fe89bc3d1691d85fbd2f9bfc91f1f664012188c62adbeae5e625f141',
+  },
+  {
+    name: 'credits',
+    start: 'const loyaltyDiscountMinor = kioskLoyaltyCreditMinor(loyaltyRedemption, {',
+    end: 'const grandTotal = Math.max(0, total - loyaltyCredit - giftCardCredit - promoCredit);',
+    length: 687,
+    sha256: '0056f0f9a617810559d280e64eb9e50e7d6ab508eb822db45a1797e45212690a',
+  },
+  {
+    name: 'totals',
+    start: 'const subtotal = useMemo(() => cart.reduce((a, l) => a + l.lineTotal, 0), [cart]);',
+    end: 'const total = useMemo(() => discountedSubtotal + exclusiveTax + tip, [discountedSubtotal, exclusiveTax, tip]);',
+    length: 2452,
+    sha256: 'cfd0783e0cad200d327448496e83b83b06f548b447229397548103e59f74a209',
+  },
+  {
+    name: 'updateCartQty',
+    start: 'const updateCartQty = useCallback((key, delta) => {',
+    end: '}, [resetIdle, dailyCounts]);',
+    length: 575,
+    sha256: 'df4f5929597f9d8cee8f46fd4b1a28371142b8626264c58165914a0dcfa8c02b',
+  },
+];
+
+const count = (hay, needle) => hay.split(needle).length - 1;
+
+for (const b of BLOCKS) {
+  test(`card path guard: ${b.name} is unchanged since v5.8.67`, () => {
+    const i = SRC.indexOf(b.start);
+    assert.ok(i >= 0, `${b.name}: start marker not found`);
+    const j = SRC.indexOf(b.end, i);
+    assert.ok(j > i, `${b.name}: end marker not found after the start`);
+    const block = SRC.slice(i, j + b.end.length);
+    // The whole block exists exactly once, and the end marker is not repeated, so the
+    // fingerprint cannot be satisfied by a stale copy while the live code changed.
+    assert.equal(count(SRC, block), 1, `${b.name}: block must appear exactly once`);
+    assert.equal(count(SRC, b.end), 1, `${b.name}: end marker must appear exactly once`);
+    assert.equal(block.length, b.length, `${b.name}: length changed`);
+    assert.equal(crypto.createHash('sha256').update(block).digest('hex'), b.sha256, `${b.name}: content changed`);
+  });
+}
+
+test('card path guard: the start markers are unique', () => {
+  for (const b of BLOCKS) {
+    assert.equal(count(SRC, b.start), 1, `${b.name}: start marker must appear exactly once`);
+  }
+});
+
+test('card path guard: the v5.8.67 reward rule is in submitOrder, and only there', () => {
+  const i = SRC.indexOf(BLOCKS[0].start);
+  const submit = SRC.slice(i, SRC.indexOf(BLOCKS[0].end, i));
+  for (const line of [
+    // a reward is recorded on the check only when it took money off, with the live figure
+    'loyalty: (loyaltyRedemption && loyaltyDiscountMinor > 0) ? {',
+    'discount_value: loyaltyDiscountMinor,',
+    // and committed (points or a stamp card spent) only when it took money off
+    'if (loyaltyDiscountMinor > 0 && loyaltyRedemption?.pending_commit && (loyaltyRedemption.stampProgramId || loyaltyRedemption.reward_id)) {',
+  ]) {
+    assert.equal(count(submit, line), 1, `submitOrder must keep: ${line}`);
+    assert.equal(count(SRC, line), 1, `only submitOrder may have: ${line}`);
+  }
+});
+
+test('card path guard: ONE reward money implementation (lib/kioskLoyaltyReward.js)', () => {
+  // KioskApp (the live credit and the old flow's tap) and the new design both use it.
+  assert.equal(count(SRC, "import { kioskLoyaltyCreditMinor, kioskRewardTapCheck } from '../lib/kioskLoyaltyReward';"), 1);
+  const checkout = fs.readFileSync(new URL('./kioskCheckout.js', import.meta.url), 'utf8');
+  assert.ok(checkout.includes("from './kioskLoyaltyReward.js';"), 'kioskCheckout.js must stage rewards through kioskLoyaltyReward.js');
+  assert.ok(checkout.includes('kioskRewardTapCheck(reward.type, rv, ctx)'), 'the new design taps through the same check');
+  // Nothing else turns a reward's value into money: no second copy of the fixed, percent or
+  // free item maths in the new design's rules or screens (fixture data aside).
+  const dir = new URL('../surfaces/kiosk/', import.meta.url);
+  const files = [
+    ['src/lib/kioskCheckout.js', checkout],
+    ...fs.readdirSync(dir, { recursive: true })
+      .filter(f => /\.(js|jsx)$/.test(f) && !f.endsWith('kioskFixtures.js'))
+      .map(f => [`src/surfaces/kiosk/${f}`, fs.readFileSync(new URL(f, dir), 'utf8')]),
+  ];
+  for (const [name, text] of files) {
+    assert.ok(!/amount_minor|\.percent\b|discount_value\s*\//.test(text), `${name} must not work out reward money itself`);
+  }
+});
+
+test('card path guard: the old kiosk still charges through the same ScreenPay call', () => {
+  // The old flow's pay screen line, unchanged: submitOrder with the customer name and phone.
+  assert.equal(count(SRC, 'onPaid={() => submitOrder(customerName, customerPhone)}'), 1);
+  // The new design is gated by the flag helper, once.
+  assert.equal(count(SRC, 'const newDesign = kioskNewDesignOn(profile);'), 1);
+});
+
+test('card path guard: the new card screen calls ScreenPay\'s own handlers, word for word', () => {
+  // D3: exactly one look === 'v2' branch, placed after the logic block, before the old screen.
+  assert.equal(count(SRC, "if (look === 'v2') return ("), 1);
+  const v2At = SRC.indexOf("if (look === 'v2') return (");
+  assert.ok(v2At > SRC.indexOf('const fullyPaid = total <= 0;'));
+  assert.ok(v2At < SRC.indexOf("<ScreenHeader title={fullyPaid ? 'Order fully covered!'"));
+  const branch = SRC.slice(v2At, SRC.indexOf(');', SRC.indexOf('/>', v2At)));
+  // Retry, back and cancel are the same expressions the old card screen uses.
+  for (const expr of [
+    "() => { setCardState('idle'); setTimeout(startCardPayment, 100); }",
+    '() => { pollAbortRef.current = true; cancelReaderAction(); onBack(); }',
+    '() => { pollAbortRef.current = true; cancelReaderAction(); onCancel(); }',
+  ]) {
+    assert.ok(branch.includes(expr), `v2 branch must use: ${expr}`);
+    assert.ok(count(SRC, expr) >= 2, `old screen must still use: ${expr}`);
+  }
+  assert.ok(branch.includes('onPlaceOrder={onPaid}'));
+});
+
+test('card path guard: the new design reset and idle rules only apply when the design is on', () => {
+  assert.equal(count(SRC, 'if (!kioskResetAllowed(reason, newDesignRef.current)) return;'), 1);
+  assert.equal(count(SRC, 'if (newDesignRef.current && idlePausedRef.current) {'), 1);
+  // submitOrder's own 30 second reset is untouched (inside the fingerprinted block).
+  assert.equal(count(SRC, 'setTimeout(() => resetSession(), 30000);'), 1);
+});

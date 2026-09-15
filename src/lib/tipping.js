@@ -1,9 +1,10 @@
 // src/lib/tipping.js
 //
 // One shape for "how do we ask this customer for a tip", used by online
-// ordering, QR and catering. Kiosk keeps device_profiles.kiosk_tip_presets and
-// the card reader keeps location_reader_settings; both pre-date this and the
-// reader one is pushed to hardware, so neither is re-pointed here.
+// ordering, QR, catering and the NEW kiosk design (tipping_config.kiosk, one rule
+// for every kiosk at the venue). Kiosks on the current design keep
+// device_profiles.kiosk_tip_presets, and the card reader keeps
+// location_reader_settings (pushed to hardware), so neither is re-pointed here.
 //
 //   { on: bool, pct: number[], default: number|null, custom: bool }
 //
@@ -11,12 +12,18 @@
 // That is deliberate: a pre-ticked gratuity the operator cannot switch off is
 // a Tipping Act 2023 problem, and QR shipped exactly that for months.
 
-export const TIP_MODULES = ['online', 'qr'];
+export const TIP_MODULES = ['online', 'qr', 'kiosk'];
 
 export const TIP_DEFAULTS = Object.freeze({
   online: Object.freeze({ on: false, pct: [5, 10, 12.5, 15], default: null, custom: true }),
   qr:     Object.freeze({ on: true,  pct: [5, 10, 12.5, 15], default: null, custom: true }),
+  // The new kiosk design: No tip plus up to three percentages, no custom amount (there is
+  // no keyboard on the review screen). Same values as the old kiosk presets.
+  kiosk:  Object.freeze({ on: true,  pct: [10, 12.5, 15], default: null, custom: false }),
 });
+
+// The kiosk tip card has four columns: No tip and at most three percentages.
+export const KIOSK_TIP_MAX_PCT = 3;
 
 const clampPct = (n) => {
   const x = Number(n);
@@ -116,4 +123,67 @@ export function tipBasisMinor({ goodsMinor = 0, discountsMinor = 0 } = {}) {
 export function tipInitialKeyFor(rule, { serviceCharge = 0 } = {}) {
   if (Number(serviceCharge) > 0) return '0';
   return tipInitialKey(rule);
+}
+
+// ── The new kiosk design (tipping_config.kiosk) ─────────────────────────────
+
+const isPlainObject = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
+
+/** A kiosk rule: the three lowest percentages, custom always off, default one of the chips. */
+export function normaliseKioskTipRule(raw, fallback = TIP_DEFAULTS.kiosk) {
+  const r = normaliseTipRule(raw, fallback);
+  const pct = r.pct.slice(0, KIOSK_TIP_MAX_PCT);
+  return {
+    on: r.on,
+    pct,
+    default: r.default !== null && pct.includes(r.default) ? r.default : null,
+    custom: false,
+  };
+}
+
+/**
+ * The tip rule for a new design kiosk.
+ *   location: the platform.locations row (tipping_config), or null.
+ *   profile:  the kiosk's device_profiles row, used only when the venue has no kiosk rule
+ *             saved yet (its kiosk_tip_presets, as today's kiosk uses).
+ */
+export function kioskTipRule(location, profile) {
+  const cfg = location?.tipping_config;
+  if (isPlainObject(cfg) && isPlainObject(cfg.kiosk)) return normaliseKioskTipRule(cfg.kiosk);
+  const presets = Array.isArray(profile?.kiosk_tip_presets) ? profile.kiosk_tip_presets : TIP_DEFAULTS.kiosk.pct;
+  return normaliseKioskTipRule({ on: true, pct: presets, default: null, custom: false });
+}
+
+/**
+ * Mirror of location-admin save_location for tipping_config: the patch is merged into the
+ * stored object one module at a time, so saving one module never wipes another.
+ * null clears everything, as before.
+ */
+export function mergeTippingConfig(current, patch) {
+  if (patch === null) return null;
+  if (!isPlainObject(patch)) return isPlainObject(current) ? { ...current } : {};
+  return { ...(isPlainObject(current) ? current : {}), ...patch };
+}
+
+/**
+ * The saveLocation patch for the kiosk tipping editor. It always carries the stored online
+ * and qr rules as they are, because a location-admin that has not been updated yet replaces
+ * the whole object and would otherwise wipe online and QR tipping.
+ */
+export function buildKioskTipPatch(storedConfig, rule) {
+  const cfg = isPlainObject(storedConfig) ? storedConfig : {};
+  const out = {};
+  if (isPlainObject(cfg.online)) out.online = cfg.online;
+  if (isPlainObject(cfg.qr)) out.qr = cfg.qr;
+  out.kiosk = normaliseKioskTipRule(rule);
+  return { tipping_config: out };
+}
+
+/** True when two kiosk rules are the same once normalised (the save check). */
+export function sameKioskTipRule(a, b) {
+  if (!isPlainObject(a) || !isPlainObject(b)) return false;
+  const x = normaliseKioskTipRule(a);
+  const y = normaliseKioskTipRule(b);
+  return x.on === y.on && x.default === y.default && x.custom === y.custom
+    && x.pct.length === y.pct.length && x.pct.every((v, i) => v === y.pct[i]);
 }

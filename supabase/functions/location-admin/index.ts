@@ -253,22 +253,25 @@ async function coerce(key: string, v: unknown, opsLocationId: string): Promise<{
       return TIME_RE.test(s) ? { value: s } : { err: 'expected HH:MM' };
     }
     case 'tipping_config': {
-      // {online:{on,pct[],default,custom}, qr:{...}}. Keys beyond the two
-      // modules are dropped; pct is capped at 12 values in (0,100].
+      // {online:{on,pct[],default,custom}, qr:{...}, kiosk:{...}}. Keys beyond the
+      // three modules are dropped; pct is capped at 12 values in (0,100].
+      // kiosk (the new kiosk design, src/lib/tipping.js normaliseKioskTipRule): at most
+      // the three lowest percentages and never a custom amount.
       if (v === null) return { value: null };
       if (!isPlainObject(v)) return { err: 'expected an object keyed by module' };
       const out: Record<string, unknown> = {};
-      for (const mod of ['online', 'qr']) {
+      for (const mod of ['online', 'qr', 'kiosk']) {
         const r = (v as Record<string, unknown>)[mod];
         if (!isPlainObject(r)) continue;
         const pctRaw = Array.isArray(r.pct) ? r.pct.slice(0, 12) : [];
-        const pct = [...new Set(pctRaw.map(Number).filter(n => Number.isFinite(n) && n > 0 && n <= 100).map(n => Math.round(n * 100) / 100))].sort((a, b) => a - b);
+        const cleaned = [...new Set(pctRaw.map(Number).filter(n => Number.isFinite(n) && n > 0 && n <= 100).map(n => Math.round(n * 100) / 100))].sort((a, b) => a - b);
+        const pct = mod === 'kiosk' ? cleaned.slice(0, 3) : cleaned;
         const def = Number(r.default);
         out[mod] = {
           on: r.on === true,
           pct,
           default: Number.isFinite(def) && pct.includes(def) ? def : null,
-          custom: r.custom !== false,
+          custom: mod === 'kiosk' ? false : r.custom !== false,
         };
       }
       return { value: out };
@@ -436,6 +439,19 @@ Deno.serve(async (req) => {
         return json({ error: 'invalid_value', field: k, detail: got.err }, 400);
       }
       row[k] = got.value;
+    }
+
+    // tipping_config is MERGED one module at a time into what is stored, so the kiosk
+    // tipping editor and Online Ordering can never wipe each other's modules (mirrored in
+    // src/lib/tipping.js mergeTippingConfig). null still clears everything.
+    if (isPlainObject(row.tipping_config)) {
+      const { data: cur } = await platformAdmin.from('locations')
+        .select('tipping_config').eq('id', loc.id).maybeSingle();
+      const stored = (cur as Record<string, unknown> | null)?.tipping_config;
+      row.tipping_config = {
+        ...(isPlainObject(stored) ? stored : {}),
+        ...(row.tipping_config as Record<string, unknown>),
+      };
     }
 
     // .select() forces a round-trip on the actual mutated row: a PostgREST

@@ -380,6 +380,68 @@ button { font-family: inherit; }
   --kSurfaceCheckoutBar: #18181c;
 }
 
+/* New kiosk design (device_profiles.kiosk_new_design). Only KioskV2Root sets
+   data-kiosk-theme="design", so kiosks on the current design never see these.
+   The --k2* tokens are the design README colours and are mirrored in
+   src/lib/kioskTheme.js DESIGN_TOKENS (kioskTheme.test.js checks they agree).
+   The venue colour (--k2Primary, --k2PrimaryDeep, --k2PrimaryTint, --k2OnPrimary)
+   is set inline on the shell from kioskThemeVars(). The --k* values below bridge
+   shared kiosk pieces (the input rule underneath, KioskCategoryTile) onto the design. */
+[data-kiosk-theme="design"] {
+  --k2Ground: #EFE4D9;
+  --k2GroundDeep: #E5D8CA;
+  --k2Surface: #FFFFFF;
+  --k2Sunken: #FBF8F4;
+  --k2Muted: #F7F4F0;
+  --k2Neutral: #F1ECE6;
+  --k2Ink: #14110F;
+  --k2InkBody: #2A241E;
+  --k2InkMuted: #5B5348;
+  --k2InkSubtle: #7A6F63;
+  --k2InkOnDark: #9C9388;
+  --k2Hairline: #E7DFD6;
+  --k2Divider: #F1ECE6;
+  --k2WarnBorder: #E2C88A;
+  --k2WarnFill: #FCF4E2;
+  --k2WarnInk: #8A6A1E;
+  --k2Scrim: rgba(20,17,15,.45);
+  --k2Danger: #B3261E;
+  --k2DangerFill: #FBEAE8;
+  --k2Disabled: #E2DDD6;
+  --kFg: #14110F;
+  --kFgMuted: #7A6F63;
+  --kFgFaint: #9C9388;
+  --kSurface1: rgba(255,255,255,.55);
+  --kSurface2: #F1ECE6;
+  --kSurfaceRaised: #FFFFFF;
+  --kSurfaceShell: #EFE4D9;
+  --kBorder1: rgba(0,0,0,.07);
+  --kBorder2: #E7DFD6;
+  --kOverlay: rgba(20,17,15,.45);
+  --kAllergen-bg: #FCF4E2;
+  --kAllergen-border: #E2C88A;
+  --kAllergen-fg: #8A6A1E;
+  --kError-fg: #B3261E;
+  --kSurfaceCheckoutBar: #14110F;
+  font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+[data-kiosk-theme="design"] button,
+[data-kiosk-theme="design"] input,
+[data-kiosk-theme="design"] textarea {
+  font-family: inherit;
+}
+/* The only two animations in the new kiosk design (README: nothing else animates). */
+@keyframes kfade {
+  from { opacity: 0; transform: translateY(24px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes kpulse {
+  0% { transform: scale(1); opacity: .9; }
+  70% { transform: scale(1.35); opacity: 0; }
+  100% { transform: scale(1.35); opacity: 0; }
+}
+
 /* Kiosk inputs/textareas pick up theme — keeps things readable in light mode */
 [data-kiosk-theme] input,
 [data-kiosk-theme] textarea {
