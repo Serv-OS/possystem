@@ -40,6 +40,16 @@ export async function getLocationProcessor(locationId) {
   return (await getLocationProcessorInfo(locationId)).processor;
 }
 
+/**
+ * v5.8.75: the ONE rule for "does this venue take card payments on a paired card machine through
+ * a terminal job" (the POS CheckoutModal, SplitModal and the kiosk). Ryft and Adyen do; Stripe
+ * uses its own reader call. The kiosk had its own copy that only knew Ryft, so an Adyen venue's
+ * kiosk (Provo, 15 Sep 2026) fell through to the Stripe reader call and never reached its reader.
+ */
+export function takesCardsOnTerminal(processor) {
+  return processor === 'ryft' || processor === 'adyen';
+}
+
 export function clearProcessorCache(locationId) {
   if (locationId) _cache.delete(locationId); else _cache.clear();
 }

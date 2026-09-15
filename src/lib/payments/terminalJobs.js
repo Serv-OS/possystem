@@ -184,9 +184,12 @@ export function terminalIsOnline(t) {
  * Terminals with "Send from POS" switched off in Back Office are excluded before
  * any of that. `modes` absent (migration not yet applied) means all modes on.
  */
-export async function findPaxTerminal({ posDeviceId } = {}) {
+export async function findPaxTerminal({ posDeviceId, locationId: explicitLocationId = null } = {}) {
   if (isMock || !supabase) return { terminal: null, reason: null };
-  const locationId = getActiveLocationSync();
+  // v5.8.75: a kiosk passes its own venue. A kiosk is paired through rpos-kiosk-id, not
+  // rpos-device, so getActiveLocationSync() had no venue for it (or another venue's, on a browser
+  // that was once a till). Tills pass nothing and keep reading their paired device's venue.
+  const locationId = explicitLocationId || getActiveLocationSync();
   if (!locationId || locationId === 'loc-demo') return { terminal: null, reason: null };
   try {
     await ensureAuthToken();
@@ -277,7 +280,7 @@ export async function dispatchTerminalJob(p) {
     throw e;
   }
 
-  const locationId = getActiveLocationSync();
+  const locationId = p?.locationId || getActiveLocationSync();   // v5.8.75: a kiosk passes its own venue
   if (!locationId || locationId === 'loc-demo') throw new Error('no location resolved');
   if (!p?.targetTerminalId) throw new Error('no terminal to send to');
   if (!(p.dueMinor > 0)) throw new Error('nothing for the card to take');

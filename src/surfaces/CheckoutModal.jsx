@@ -10,7 +10,7 @@ import {
   getAssignedNetworkReader,
 } from '../lib/networkReader';
 import { getActiveLocationSync, supabase, ensureAuthToken, isMock } from '../lib/supabase';
-import { getLocationProcessor, getLocationProcessorInfo } from '../lib/payments/processor';
+import { getLocationProcessor, getLocationProcessorInfo, takesCardsOnTerminal } from '../lib/payments/processor';
 import { chargeRyftTerminal } from '../lib/payments/ryftTerminal';
 import { fetchCustomerByPhone } from '../lib/customerLookup';
 import { redeemLoyaltyReward } from '../lib/loyaltyRedeem';
@@ -1984,7 +1984,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     //
     // paxLookupDone gates the race: a press before the lookup lands must NOT
     // silently take the old path and produce a different tip on the same bill.
-    if (paxLookupDone && (cardProcessor === 'ryft' || cardProcessor === 'adyen') && paxTarget) { startTerminalJob(); return; }
+    if (paxLookupDone && takesCardsOnTerminal(cardProcessor) && paxTarget) { startTerminalJob(); return; }
 
     // Tipping is only offered on Ryft when there is a customer-facing screen.
     // Without a screen there is nowhere for the customer to choose (Ryft's
@@ -2377,7 +2377,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
                   {/* v5.5.172: tip prompt is ON THE READER (Stripe). v5.5.808: Ryft terminals have no reader tip prompt — tip is picked on screen first.
                       v5.5.837: with a paired PAX the whole thing (amount, tip, card) happens on the terminal in the customer's hand. */}
                   <div style={{ fontSize:compact?10:11, color:'var(--card-sub)', textAlign:'center' }}>{
-                    (paxLookupDone && (cardProcessor === 'ryft' || cardProcessor === 'adyen') && paxTarget)
+                    (paxLookupDone && takesCardsOnTerminal(cardProcessor) && paxTarget)
                       ? `Send to ${paxTarget.label || 'the card machine'} · tip on the terminal`
                       : cardProcessor === 'ryft' ? 'Tap, chip, contactless · tip added on screen'
                       : 'Tap, chip, contactless · tip prompt on reader'

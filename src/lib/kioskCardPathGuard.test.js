@@ -30,6 +30,16 @@
 //       the useCallback dependency list gains `loyaltyDiscountMinor` after loyaltyCredit.
 //     The gift commit order, the idempotency key (checkIdRef), the PGRST204 retry, both stock
 //     paths, the order_queue insert and the 30 second reset are unchanged.
+//   v5.8.75 (Peter, 15 Sep 2026, owner sign off "we only use adyen", hardware test on the Provo
+//   kiosk's Adyen reader "Counter" before rollout). ScreenPay logic 10819 -> 10964 chars, 3 lines:
+//     the processor branch: `if (processor === 'ryft')` became `if (takesCardsOnTerminal(processor))`
+//       (lib/payments/processor.js: ryft OR adyen, the POS CheckoutModal rule), plus one comment
+//       line. An Adyen venue fell through to the Stripe reader call ("No network reader is
+//       assigned") and never reached its paired reader.
+//     findPaxTerminal and dispatchTerminalJob are given the kiosk's own `locationId` (a kiosk is
+//       paired through rpos-kiosk-id, so getActiveLocationSync() had no venue for it).
+//     The job fields (check key, amounts, suppressTip, closed check id, source), polling, cancel,
+//     the Stripe branch and every outcome are unchanged.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -50,8 +60,8 @@ const BLOCKS = [
     name: 'ScreenPay logic',
     start: "const [cardState, setCardState] = useState('idle');",
     end: 'const cardDueAmount = total;',
-    length: 10819,
-    sha256: '982913b1fe89bc3d1691d85fbd2f9bfc91f1f664012188c62adbeae5e625f141',
+    length: 10964,
+    sha256: '0975f4b933039dcdd81b9bce90375ec98829e4dedff71033b579cd6f2cb6d6e9',
   },
   {
     name: 'credits',
@@ -166,4 +176,20 @@ test('card path guard: the new design reset and idle rules only apply when the d
   assert.equal(count(SRC, 'if (newDesignRef.current && idlePausedRef.current) {'), 1);
   // submitOrder's own 30 second reset is untouched (inside the fingerprinted block).
   assert.equal(count(SRC, 'setTimeout(() => resetSession(), 30000);'), 1);
+});
+
+test('card path guard: every card surface decides "card machine or Stripe reader" with one rule', () => {
+  const proc = fs.readFileSync(new URL('./payments/processor.js', import.meta.url), 'utf8');
+  assert.match(proc, /export function takesCardsOnTerminal\(processor\) \{\n  return processor === 'ryft' \|\| processor === 'adyen';\n\}/);
+  assert.match(SRC, /if \(takesCardsOnTerminal\(processor\)\) \{ await startRyftTerminalPayment\(\); return; \}/);
+  assert.match(SRC, /findPaxTerminal\(\{ posDeviceId: kioskId, locationId \}\)/);
+  for (const rel of ['../surfaces/CheckoutModal.jsx', '../components/SplitModal.jsx']) {
+    const other = fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
+    assert.match(other, /takesCardsOnTerminal\(/, rel);
+    assert.doesNotMatch(other, /=== 'ryft' \|\| [\w.]+ === 'adyen'/, rel);
+  }
+  assert.doesNotMatch(SRC, /processor === 'ryft'\) \{ await startRyftTerminalPayment/);
+  const jobs = fs.readFileSync(new URL('./payments/terminalJobs.js', import.meta.url), 'utf8');
+  assert.match(jobs, /const locationId = explicitLocationId \|\| getActiveLocationSync\(\);/);
+  assert.match(jobs, /const locationId = p\?\.locationId \|\| getActiveLocationSync\(\);/);
 });
