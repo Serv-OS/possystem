@@ -89,3 +89,32 @@ export function itemInAllowedCats(item, allowed) {
   const cats = item.cats;
   return Array.isArray(cats) && cats.some((id) => allowed.has(id));
 }
+
+// v5.8.73 (Coffee Boy Barnsley, 15 Sep 2026): a category with NO menu (no menu_id and no link) is
+// on no menu. Tills with a menu picked never showed it, but Back Office listed it under EVERY
+// menu, so a shared category at a venue with no menu looked like it was on all of them. Back
+// Office now uses categoryVisibleInMenu like the tills, and lists these separately.
+/** Top level categories that are on no menu at all (no menu_id and no link row). */
+export function categoriesOnNoMenu(categories, links) {
+  const linked = new Set((links || []).filter(Boolean).map((l) => l.category_id));
+  return (categories || []).filter((c) => c && !(c.parentId || c.parent_id) && !(c.isSpecial || c.is_special)
+    && !(c.menuId || c.menu_id) && !linked.has(c.id));
+}
+
+/**
+ * Which menu a SHARED category joins at another venue (lib/db.js setMenuCategoryScope).
+ *   peerMenus       that venue's menus rows (id, is_default, sort_order)
+ *   sourceMenuName  the name of the menu the category came from, when known
+ * Returns { useId } for the venue's default menu (else its first), or, when the venue has no
+ * menu at all, { create: { name } } named like the menu it came from (else "Main menu").
+ */
+export function peerMenuPlan(peerMenus, sourceMenuName) {
+  const list = (Array.isArray(peerMenus) ? peerMenus : []).filter((x) => x && x.id);
+  if (list.length) {
+    const sorted = list.slice().sort((a, b) => (Number(a.sort_order ?? a.sortOrder ?? 0) - Number(b.sort_order ?? b.sortOrder ?? 0)));
+    const def = sorted.find((x) => x.is_default === true || x.isDefault === true);
+    return { useId: (def || sorted[0]).id };
+  }
+  const name = String(sourceMenuName || '').trim();
+  return { create: { name: name || 'Main menu' } };
+}

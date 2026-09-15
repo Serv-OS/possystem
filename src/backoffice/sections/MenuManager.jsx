@@ -45,6 +45,7 @@ import { orderOptionFlow } from '../../lib/optionFlow';
 import { fetchRecipes, buildCostingCtx, costRecipeWith } from '../../lib/stock/recipes';
 import { resolveTaxRate, netOf } from '../../lib/tax';
 import { isOptionOnlyItem, moveMainProductOptions } from '../../lib/menuRules';
+import { categoryVisibleInMenu, categoriesOnNoMenu } from '../../lib/menuMembership';
 
 // Dietary tags — stored on menu_items.tags (jsonb). The tag id is what the print
 // menu + digital menu board map to a GF/V/VG/DF badge (see printMenu.js DIET map),
@@ -440,6 +441,12 @@ function MenuTab() {
     if (result.ok) {
       setCategoryLinks(prev => [...prev, { menu_id: selMenuId, category_id: catId, sort_order: menuCategories.length }]);
       const cat = menuCategories.find(c => c.id === catId);
+      // v5.8.73: a category that was on no menu makes this menu its home too (and its sub
+      // categories that had none), so it belongs to this menu and not to every menu.
+      if (cat && !cat.menuId) {
+        updateCategory(cat.id, { menuId: selMenuId });
+        for (const sub of menuCategories) if (sub.parentId === cat.id && !sub.menuId) updateCategory(sub.id, { menuId: selMenuId });
+      }
       showToast(`"${cat?.label || 'Category'}" linked to this menu`, 'success');
       markBOChange();
     } else {
@@ -477,7 +484,11 @@ function MenuTab() {
     return new Set((categoryLinks||[]).filter(l => l.menu_id === selMenuId).map(l => l.category_id));
   }, [categoryLinks, selMenuId]);
   // v5.5.950: label tiebreak — sortOrder ties must never shuffle between renders/loads.
-  const roots     = useMemo(()=>menuCategories.filter(c=>!c.parentId&&!c.isSpecial&&(!c.menuId||c.menuId===selMenuId||linkedCatIdsForMenu.has(c.id))).sort((a,b)=>((a.sortOrder||0)-(b.sortOrder||0)) || String(a.label||'').localeCompare(String(b.label||''))),[menuCategories,selMenuId,linkedCatIdsForMenu]);
+  // v5.8.73: the tills' membership rule (lib/menuMembership.js). A category on NO menu used to be
+  // listed under EVERY menu here (Coffee Boy Barnsley: a shared Coffee category showed on a new
+  // test menu too), while tills with a menu picked never showed it. Those are listed separately
+  // (categoriesOnNoMenu) so they are never lost. With no menu picked, everything shows as before.
+  const roots     = useMemo(()=>menuCategories.filter(c=>!c.parentId&&!c.isSpecial&&categoryVisibleInMenu(c, selMenuId, linkedCatIdsForMenu)).sort((a,b)=>((a.sortOrder||0)-(b.sortOrder||0)) || String(a.label||'').localeCompare(String(b.label||''))),[menuCategories,selMenuId,linkedCatIdsForMenu]);
   const selCat    = menuCategories.find(c=>c.id===selCatId);
   const selItem   = menuItems.find(i=>i.id===selItemId);
 
@@ -843,6 +854,19 @@ function MenuTab() {
             </div>
           </div>
         )}
+
+        {/* v5.8.73: categories on no menu are not shown under any menu (the tills do not show them
+            either). Say so, so they are never lost. */}
+        {!addingCat && selMenuId && (() => {
+          const onNoMenu = categoriesOnNoMenu(menuCategories, categoryLinks);
+          if (!onNoMenu.length) return null;
+          return (
+            <div style={{ padding:'8px 10px', borderBottom:'1px solid var(--bdr)', background:'var(--acc-d)', fontSize:11, lineHeight:1.45, color:'var(--t2)', flexShrink:0 }}>
+              <div style={{ fontWeight:700, color:'var(--acc)', marginBottom:2 }}>{onNoMenu.length === 1 ? '1 category is not on any menu' : `${onNoMenu.length} categories are not on any menu`}</div>
+              <div>{onNoMenu.map(c => c.label).join(', ')}. Use Link existing category to put {onNoMenu.length === 1 ? 'it' : 'them'} on this menu.</div>
+            </div>
+          );
+        })()}
 
         {/* v4.7.5: Link existing category */}
         {!addingCat && selMenuId && (

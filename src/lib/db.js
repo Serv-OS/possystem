@@ -17,6 +17,7 @@ import { reportSave } from './saveHealth';
 import { describeMenuChange } from './menuDiff';
 import { money } from './currency';
 import { categoryImageField, categoryPhotoUrl, checkPhotoFile, categoryPhotoPath, peerPhotoTargets, isMissingImageColumn } from './categoryPhoto';
+import { peerMenuPlan } from './menuMembership';
 
 // ── Order number generation ──────────────────────────────────────────────────
 // The order number is the order's IDENTITY: unique per location and unlimited.
@@ -1147,6 +1148,42 @@ const resolvePeerDefaultMenu = async (peerLocId) => {
   return (def || menus[0]).id;
 };
 
+// v5.8.73 (Coffee Boy Barnsley, 15 Sep 2026): sharing to a venue with NO menu used to leave the
+// shared categories on no menu (resolvePeerDefaultMenu gave null), so tills with a menu picked
+// never showed them and Back Office showed them under every menu. Now the venue gets a menu,
+// named like the menu the category came from (lib/menuMembership.js peerMenuPlan). One creation
+// per venue at a time, so sharing several categories at once never makes duplicate menus.
+const _peerMenuCreation = new Map();   // peerLocId -> Promise<menu id | null>
+const ensurePeerMenu = async (peerLocId, sourceMenuId, orgId) => {
+  if (isMock || !supabase || !peerLocId) return null;
+  if (_peerMenuCreation.has(peerLocId)) return _peerMenuCreation.get(peerLocId);
+  const run = (async () => {
+    const { data: menus, error } = await supabase
+      .from('menus').select('id, is_default, sort_order').eq('location_id', peerLocId);
+    if (error) { console.warn('[ensurePeerMenu] menus read failed', error.message); return null; }
+    let sourceName = '';
+    if (!(menus || []).length && sourceMenuId) {
+      const { data: src } = await supabase.from('menus').select('name').eq('id', sourceMenuId).maybeSingle();
+      sourceName = src?.name || '';
+    }
+    const plan = peerMenuPlan(menus, sourceName);
+    if (plan.useId) return plan.useId;
+    const id = `menu-${Date.now()}-${String(peerLocId).slice(-8)}`;
+    const { error: insErr } = await supabase.from('menus').insert({
+      id, location_id: peerLocId, name: plan.create.name, description: '',
+      is_default: true, is_active: true, sort_order: 0, schedule: null, priority: 0,
+      scope: 'local', org_id: orgId ?? null, updated_at: new Date().toISOString(),
+    });
+    if (insErr) {
+      reportSave('menu', insErr);
+      return resolvePeerDefaultMenu(peerLocId);   // made by someone else meanwhile, or null
+    }
+    return id;
+  })();
+  _peerMenuCreation.set(peerLocId, run);
+  try { return await run; } finally { _peerMenuCreation.delete(peerLocId); }
+};
+
 /**
  * v5.5.877 (Bug 3) — Copy a set of modifier groups, plus everything they
  * transitively reference (nested sub-groups via option.subGroupId, and the
@@ -1653,6 +1690,16 @@ export const setMenuCategoryScope = async (cat, newScope, _visited = new Set()) 
       } catch (e) { console.warn('[setMenuCategoryScope] parent promote threw:', e?.message || e); }
     }
 
+    // The menu the category comes from (a sub category with none uses its parent's), used to
+    // name the menu a venue with no menu gets.
+    let sourceMenuId = cat.menu_id ?? cat.menuId ?? null;
+    if (!sourceMenuId && srcParentId) {
+      try {
+        const { data: p } = await supabase.from('menu_categories').select('menu_id').eq('id', srcParentId).maybeSingle();
+        sourceMenuId = p?.menu_id || null;
+      } catch { sourceMenuId = null; }
+    }
+
     const baseRow = {
       label: cat.label,
       icon: cat.icon ?? null,
@@ -1683,7 +1730,8 @@ export const setMenuCategoryScope = async (cat, newScope, _visited = new Set()) 
       // BOTH menu_id and a link row: read paths accept either, so writing both is
       // robust to convention drift. parent_id is rewritten to the peer parent so
       // sub-categories stay nested rather than flattening to roots.
-      const peerMenuId = await resolvePeerDefaultMenu(peerLocId);
+      // v5.8.73: a venue with no menu gets one (ensurePeerMenu), never a category on no menu.
+      const peerMenuId = await ensurePeerMenu(peerLocId, sourceMenuId, org_id);
       const peerParentId = parentMasterId ? `${parentMasterId}_${peerSuffix}` : null;
       const peerRow = { ...baseRow, id: peerId, location_id: peerLocId, menu_id: peerMenuId, parent_id: peerParentId };
       // v5.8.65: sharing again (local, then shared) reuses the same peer ids. A peer venue
