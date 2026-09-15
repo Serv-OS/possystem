@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.73',
+    date: '15 Sep 2026',
+    items: [
+      'Sharing to a site with no menu now creates a menu there, named like the menu the categories came from, and puts the shared categories on it. Before, they landed on no menu: tills never showed them and Back Office showed them under every menu.',
+      'Back Office: a category only shows under the menus it is on, the same rule the tills use. A category on no menu is no longer listed under every menu; a note at the top of the list names any that are not on a menu.',
+      'Back Office: linking a category that is on no menu makes that menu its home, so it does not appear on other menus.',
+      'Needs a database update that puts the Coffee Boy Barnsley categories on CB Barnsley.',
+    ],
+  },
+  {
     v: '5.8.72',
     date: '15 Sep 2026',
     items: [
