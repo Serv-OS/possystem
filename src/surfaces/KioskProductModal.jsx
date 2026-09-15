@@ -41,151 +41,24 @@ import { money } from '../lib/currency';
 import { orderOptionFlow } from '../lib/optionFlow';
 import { resolveItemPrice, variantChildren, variantFromPrice } from '../lib/menuPricing';
 import { normalizeGroup, kioskSheetGroupHint } from '../lib/kioskGroupRules';
+import {
+  kioskOptionGroupPlan, kioskSheetGroupIds, kioskSheetInstructionIds, kioskSheetGroups,
+  kioskPruneSelections, kioskPruneNestedSelections,
+  validateSelections, priceDelta, buildModsArray, summarizeForDisplay,
+} from '../lib/kioskOptionGroups';
 import KioskItemSheet from './kiosk/KioskItemSheet';
 
 // ============================================================
 // VALIDATION HELPERS (pure)
 // ============================================================
+// collectNestedOccurrences, validateSelections, priceDelta, buildModsArray and
+// summarizeForDisplay moved word for word to lib/kioskOptionGroups.js, with the rule for
+// which groups a sized item shows (parent groups plus the picked size's groups, like the till).
 
-// Walks all selected occurrences of options-with-subGroupId and returns
-// the parent option occurrences that need a nested pick.
-function collectNestedOccurrences(groups, selections) {
-  const out = [];
-  for (const g of groups) {
-    if (g.__isVariantGroup) continue;
-    const picked = selections[g.id] || [];
-    const occCounts = {};
-    picked.forEach(optId => {
-      const opt = (g.options || []).find(o => o.id === optId);
-      if (!opt || !opt.subGroupId) return;
-      const idx = occCounts[optId] || 0;
-      occCounts[optId] = idx + 1;
-      out.push({ groupId: g.id, optionId: optId, occurrenceIdx: idx, option: opt, parentGroup: g });
-    });
-  }
-  return out;
-}
-
-function validateSelections(groups, selections, nestedSelections, subGroupsCache) {
-  // Top-level group min/max
-  for (const g of groups) {
-    const picked = selections[g.id] || [];
-    if (picked.length < g._min) {
-      return g._min === 1 ? 'Pick a ' + g.name : 'Pick at least ' + g._min + ' from ' + g.name;
-    }
-    if (picked.length > g._max) {
-      return 'Too many in ' + g.name + ' (max ' + g._max + ')';
-    }
-  }
-  // Nested sub-group min/max for each occurrence of an option with subGroupId
-  const nested = collectNestedOccurrences(groups, selections);
-  for (const n of nested) {
-    const sub = subGroupsCache[n.option.subGroupId];
-    if (!sub) continue; // sub-group not loaded — soft skip
-    const key = n.groupId + ':' + n.optionId + ':' + n.occurrenceIdx;
-    const subSel = (nestedSelections[key] && nestedSelections[key][sub.id]) || [];
-    if (subSel.length < sub._min) {
-      return sub._min === 1 ? 'Pick a ' + sub.name + ' for ' + n.option.name : 'Pick ' + sub._min + ' from ' + sub.name;
-    }
-    if (subSel.length > sub._max) {
-      return 'Too many in ' + sub.name + ' (max ' + sub._max + ')';
-    }
-  }
-  return null;
-}
-
-function priceDelta(groups, selections, nestedSelections, subGroupsCache) {
-  let delta = 0;
-  for (const g of groups) {
-    if (g.__isVariantGroup) continue;
-    const picked = selections[g.id] || [];
-    for (const optId of picked) {
-      const opt = (g.options || []).find(o => o.id === optId);
-      if (opt && typeof opt.price === 'number') delta += opt.price;
-    }
-  }
-  // Nested option prices
-  const nested = collectNestedOccurrences(groups, selections);
-  for (const n of nested) {
-    const sub = subGroupsCache[n.option.subGroupId];
-    if (!sub) continue;
-    const key = n.groupId + ':' + n.optionId + ':' + n.occurrenceIdx;
-    const subSel = (nestedSelections[key] && nestedSelections[key][sub.id]) || [];
-    for (const subOptId of subSel) {
-      const subOpt = (sub.options || []).find(o => o.id === subOptId);
-      if (subOpt && typeof subOpt.price === 'number') delta += subOpt.price;
-    }
-  }
-  return delta;
-}
-
-function buildModsArray(groups, selections, nestedSelections, subGroupsCache) {
-  const mods = [];
-  for (const g of groups) {
-    if (g.__isVariantGroup) continue;
-    const isInstrGroup = g.__isInstructionGroup;
-    const picked = selections[g.id] || [];
-    const occCounts = {};
-    for (const optId of picked) {
-      const opt = (g.options || []).find(o => o.id === optId);
-      if (!opt) continue;
-      mods.push({
-        label: opt.name,
-        price: typeof opt.price === 'number' ? opt.price : 0,
-        groupLabel: g.name,
-        ...(opt.itemId ? { itemId: opt.itemId } : {}),
-        ...(isInstrGroup ? { _instruction: true } : {}),
-      });
-      // If this option has nested config, emit the nested picks tagged with parent
-      if (opt.subGroupId) {
-        const idx = occCounts[optId] || 0;
-        occCounts[optId] = idx + 1;
-        const sub = subGroupsCache[opt.subGroupId];
-        if (sub) {
-          const key = g.id + ':' + optId + ':' + idx;
-          const subSel = (nestedSelections[key] && nestedSelections[key][sub.id]) || [];
-          for (const subOptId of subSel) {
-            const subOpt = (sub.options || []).find(o => o.id === subOptId);
-            if (!subOpt) continue;
-            mods.push({
-              label: subOpt.name,
-              price: typeof subOpt.price === 'number' ? subOpt.price : 0,
-              groupLabel: opt.name + ' → ' + sub.name,
-            });
-          }
-        }
-      }
-    }
-  }
-  return mods;
-}
-
-function summarizeForDisplay(groups, selections, nestedSelections, subGroupsCache) {
-  const parts = [];
-  for (const g of groups) {
-    const picked = selections[g.id] || [];
-    if (picked.length === 0) continue;
-    const counts = {};
-    for (const id of picked) counts[id] = (counts[id] || 0) + 1;
-    const labels = Object.entries(counts).map(([id, n]) => {
-      const name = (g.options || []).find(o => o.id === id)?.name;
-      if (!name) return null;
-      return n > 1 ? (name + ' ×' + n) : name;
-    }).filter(Boolean);
-    if (labels.length > 0) parts.push(labels.join(', '));
-  }
-  // Append nested labels
-  const nested = collectNestedOccurrences(groups, selections);
-  for (const n of nested) {
-    const sub = subGroupsCache[n.option.subGroupId];
-    if (!sub) continue;
-    const key = n.groupId + ':' + n.optionId + ':' + n.occurrenceIdx;
-    const subSel = (nestedSelections[key] && nestedSelections[key][sub.id]) || [];
-    const subNames = subSel.map(id => (sub.options || []).find(o => o.id === id)?.name).filter(Boolean);
-    if (subNames.length > 0) parts.push(n.option.name + ': ' + subNames.join(', '));
-  }
-  return parts.join(' · ');
-}
+// Stable empties, so the group memo below does not rebuild on every render.
+const NO_GROUPS = [];
+const NO_SIZES = [];
+const NO_DEFS = [];
 
 // ============================================================
 // MAIN COMPONENT
@@ -211,7 +84,7 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
   // Subscribe to language changes so t() strings re-render if the customer
   // switches language while the modal is open.
   useKioskLang();
-  const allInstructionDefs = useStore(s => s.instructionGroupDefs) || [];
+  const allInstructionDefs = useStore(s => s.instructionGroupDefs) || NO_DEFS;
 
   // v5.5.285: Stock enforcement — cap qty selector and modifier selections
   // to the remaining stock minus what's already in the customer's cart.
@@ -221,7 +94,11 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
   // (v5.5.27/28 sub-item lookup + diagnostic moved below state declarations to avoid TDZ.)
 
 
-  const [groups, setGroups] = useState([]);
+  // Loaded once when the item opens (the effect below): the synthesised Size group (null when
+  // the item has no sizes) and every modifier_groups row the item AND its offered sizes use
+  // ({ [id]: row }, null until loaded).
+  const [sizeGroup, setSizeGroup] = useState(null);
+  const [groupRows, setGroupRows] = useState(null);
   const [subGroupsCache, setSubGroupsCache] = useState({}); // { [subGroupId]: normalizedGroup }
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -231,6 +108,33 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
   const [showError, setShowError] = useState(false);
   const [stockErr, setStockErr] = useState(null);   // v5.6.69 — "Only N × X left" commit refusal
   const [instructions, setInstructions] = useState('');
+
+  // ── The groups on screen (lib/kioskOptionGroups.js, the till's rule) ──
+  // A sized item shows the PICKED SIZE's own groups, and the parent's only when that size has
+  // none (the till's InlineItemFlow rule), for modifier and instruction groups each on their
+  // own, in the parent's option_group_order, with the Size group first. Before a size is
+  // picked: only the groups every offered size would show, so they do not jump in when a size
+  // is tapped. Every row was read when the item opened, so this is worked out on the spot: no
+  // read, no loading flash, no reset of the picks. A plain item shows its own groups as before.
+  const pickedSizeId = sizeGroup ? ((selections[sizeGroup.id] || [])[0] ?? null) : null;
+  const offeredSizes = useMemo(() => {
+    if (!sizeGroup) return NO_SIZES;
+    const byId = new Map((allItems || []).filter(Boolean).map(i => [i.id, i]));
+    return (sizeGroup.options || []).map(o => byId.get(o.id)).filter(Boolean);
+  }, [sizeGroup, allItems]);
+  const groupPlan = useMemo(
+    () => kioskOptionGroupPlan({ parent: item, sizes: offeredSizes, pickedSizeId, groupRows, instructionDefs: allInstructionDefs }),
+    [item, offeredSizes, pickedSizeId, groupRows, allInstructionDefs],
+  );
+  // Two sizes that show the same groups keep the same group objects (Regular to Large).
+  const groupPlanKey = JSON.stringify([groupPlan.modifiers, groupPlan.instructions, groupPlan.order]);
+  const groups = useMemo(() => {
+    if (!groupRows) return NO_GROUPS;
+    return kioskSheetGroups({
+      plan: groupPlan, sizeGroup, groupRows, instructionDefs: allInstructionDefs, normalizeGroup, orderOptionFlow,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupPlanKey, sizeGroup, groupRows, allInstructionDefs]);
 
   // v5.5.285: Calculate max qty for the main item based on stock
   const itemStock = dailyCounts[item?.id] || null;
@@ -354,11 +258,14 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
   }, [groups, selections, dailyCounts, cartItemUsage, subitemByName]);
   const lineMaxQty = Math.min(maxQty, modMaxQty);
 
-  // Load top-level groups + variants, then pre-fetch any sub-groups referenced by option.subGroupId
+  // Load the Size group and every modifier group row the item and its offered sizes use (ONE
+  // read), then pre-fetch any sub-groups referenced by option.subGroupId. Which rows show is
+  // worked out above from the picked size.
   useEffect(() => {
     let alive = true;
     (async () => {
-      let result = [];
+      let sg = null;
+      let offered = [];
 
       // ── Synthesize 'Size' group for a variant parent ──
       // A parent is any item with live child rows (parent_id), typed
@@ -374,6 +281,7 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
         const soldOut = (c) => eightySixIds.includes(c.id)
           || (dailyCounts[c.id] && Number(dailyCounts[c.id].remaining) <= 0);
         const sizes = variantChildren(item, allItems).filter(c => !soldOut(c));
+        offered = sizes;
         if (sizes.length > 0) {
           // Each size priced by the shared resolver (menu tier, channel, base),
           // the same number the kiosk card and the cart line use for that child.
@@ -383,7 +291,7 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
           // unpriced sizes, as the card and online do.
           const childPrice = (c) => resolveItemPrice(c, orderType, activeMenuId);
           const cheapestPrice = variantFromPrice(item, sizes, orderType, activeMenuId) || 0;
-          result.push(normalizeGroup({
+          sg = normalizeGroup({
             id: '__variants__',
             name: 'Size',
             selection_type: 'single',
@@ -397,18 +305,14 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
               price: 0,
               __absolutePrice: childPrice(c),
             })),
-          }));
+          });
         }
       }
 
-      // ── Load assigned_modifier_groups ──
-      const assignments = item?.assigned_modifier_groups;
-      if (Array.isArray(assignments) && assignments.length > 0) {
-        const idsAndOverrides = assignments.map(a => {
-          if (typeof a === 'string') return { id: a, min: null, max: null };
-          return { id: a.groupId || a.id, min: a.min ?? null, max: a.max ?? null };
-        }).filter(x => x.id);
-        const ids = idsAndOverrides.map(x => x.id);
+      // ── Load assigned_modifier_groups: the parent's and every offered size's ──
+      const ids = kioskSheetGroupIds(item, offered);
+      const rows = {};
+      if (ids.length > 0) {
         try {
           const { data, error } = await (fetchGroups ? fetchGroups(ids) : supabase
             .from('modifier_groups')
@@ -416,61 +320,30 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
             .in('id', ids));
           if (error) throw error;
           if (!alive) return;
-          const ordered = idsAndOverrides
-            .map(({ id, min, max }) => {
-              const g = (data || []).find(x => x.id === id);
-              if (!g) {
-                console.warn('[kiosk] modifier group not found:', id, '(referenced by item ' + (item?.name || item?.id) + ')');
-                return null;
-              }
-              const merged = { ...g };
-              if (min !== null && min !== undefined) merged.min = min;
-              if (max !== null && max !== undefined) merged.max = max;
-              return normalizeGroup(merged);
-            })
-            .filter(Boolean);
-          result.push(...ordered);
+          for (const g of (data || [])) {
+            if (g && g.id != null && ids.includes(g.id)) rows[g.id] = g;
+          }
+          // A group row that is not found is skipped when the groups are built.
+          for (const id of ids) {
+            if (!rows[id]) console.warn('[kiosk] modifier group not found:', id, '(referenced by item ' + (item?.name || item?.id) + ')');
+          }
         } catch (e) {
           if (alive) setError(e?.message || 'Failed to load options');
         }
       }
 
       // ── Instruction groups ──
-      // v5.5.948: ONE ordered flow (lib/optionFlow.js) — the Back Office Flow tab's
-      // drag order interleaves instruction + modifier groups; with no saved order,
-      // instructions come first (the v5.5.947 rule).
-      const instrAssignments = item?.assigned_instruction_groups;
-      const instrGroups = [];
-      if (Array.isArray(instrAssignments) && instrAssignments.length > 0) {
-        for (const a of instrAssignments) {
-          const igId = typeof a === 'string' ? a : (a.groupId || a.id);
-          const minOverride = (typeof a === 'object' && a.min !== undefined) ? a.min : null;
-          const def = allInstructionDefs.find(g => g.id === igId);
-          if (!def) { console.warn('[kiosk] instruction group not found:', igId); continue; }
-          instrGroups.push(normalizeGroup({
-            id: '__instr__' + def.id,
-            name: def.name,
-            selection_type: 'single',
-            min: minOverride !== null ? minOverride : 1,
-            max: 1,
-            __isInstructionGroup: true,
-            options: (def.options || []).map((label, idx) => ({
-              id: 'instr-' + def.id + '-' + idx,
-              name: label,
-              price: 0,
-            })),
-          }));
-        }
+      // Built with the modifier groups above from the store's definitions. v5.5.948: ONE
+      // ordered flow (lib/optionFlow.js): the Back Office Flow tab's drag order interleaves
+      // instruction + modifier groups; with no saved order, instructions come first (the
+      // v5.5.947 rule). A missing definition is skipped.
+      for (const igId of kioskSheetInstructionIds(item, offered)) {
+        if (!allInstructionDefs.some(g => g && g.id === igId)) console.warn('[kiosk] instruction group not found:', igId);
       }
-      // Kiosk instruction group ids carry the '__instr__' prefix; the saved order
-      // stores RAW group ids, so strip it when matching.
-      const flowOrder = item?.option_group_order ?? item?.optionGroupOrder ?? null;
-      result = orderOptionFlow(flowOrder, result, instrGroups,
-        (g) => String(g.id || '').replace('__instr__', '')).map(e => e.g);
 
       // ── Pre-fetch all sub-groups referenced by option.subGroupId ──
       const subGroupIds = new Set();
-      for (const g of result) {
+      for (const g of Object.values(rows)) {
         for (const opt of (g.options || [])) {
           if (opt && opt.subGroupId) subGroupIds.add(opt.subGroupId);
         }
@@ -484,8 +357,8 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
             .in('id', Array.from(subGroupIds)));
           if (error) throw error;
           if (!alive) return;
-          for (const sg of (data || [])) {
-            subCache[sg.id] = normalizeGroup(sg);
+          for (const row of (data || [])) {
+            subCache[row.id] = normalizeGroup(row);
           }
         } catch (e) {
           console.warn('[kiosk] failed to pre-fetch sub-groups:', e?.message);
@@ -493,13 +366,25 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
       }
 
       if (alive) {
-        setGroups(result);
+        setSizeGroup(sg);
+        setGroupRows(rows);
         setSubGroupsCache(subCache);
         setLoading(false);
       }
     })();
     return () => { alive = false; };
   }, [item, allItems, orderType, activeMenuId, fetchGroups]);
+
+  // A size change can hide a group that only the old size carried: its picks and nested picks
+  // are dropped, so nothing hidden reaches the basket line or its merge key. Picks in groups
+  // still shown are kept. Validation below runs on the new groups, so a required group on the
+  // new size blocks Add until it is answered. Both prune helpers return the same object when
+  // nothing changes, so this never loops.
+  useEffect(() => {
+    if (loading) return;
+    setSelections(prev => kioskPruneSelections(groups, prev));
+    setNestedSelections(prev => kioskPruneNestedSelections(groups, prev));
+  }, [groups, loading]);
 
   // ── Derived state ──
   const validation = useMemo(

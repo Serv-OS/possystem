@@ -50,6 +50,7 @@ import KioskV2Status from './kiosk/KioskV2Status';
 import { kioskNewDesignOn, kioskResetAllowed } from '../lib/kioskFlow';
 import KioskCardScreen from './kiosk/KioskCardScreen';
 import { kioskLineKeyV2 } from '../lib/kioskBasket';
+import { kioskCardEligible, itemInCategory, kioskLegacyCategoryShown } from '../lib/kioskMenu';
 // networkReader import removed — kiosk payment now uses server-side edge function directly
 // v5.5.871: card payment is processor-aware — Stripe reader (edge fn) OR Ryft PAX
 // terminal (the same "send to terminal" job path the POS/Table-Pay use).
@@ -577,19 +578,30 @@ export default function KioskApp({ kioskId, onUnpair }) {
   const visibleItems = useMemo(() => {
     if (!selectedCategoryId) return [];
     return items
-      // v5.3.1: hide variant children — kiosk shows parent, modal handles size selection
-      .filter(i => !i.parent_id)
-      .filter(i => (i.visibility?.kiosk !== false))
-      .filter(i => i.cat === selectedCategoryId || (Array.isArray(i.cats) && i.cats.includes(selectedCategoryId)))
+      // One card rule for both kiosk designs (lib/kioskMenu.js kioskCardEligible): v5.3.1 hides
+      // variant children (the modal handles the size), visibility.kiosk false stays hidden, and
+      // a sub item that is only sold as an option ("No Ice") is never a card, like the till.
+      .filter(kioskCardEligible)
+      .filter(i => itemInCategory(i, selectedCategoryId))
       .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
   }, [items, selectedCategoryId]);
 
-  // Auto-pick first cat when menu loads
+  // Today's kiosk side list: a category that only held option sub items is left out, since
+  // it has nothing to order now (lib/kioskMenu.js kioskLegacyCategoryShown). The new design
+  // keeps visibleCategories and drops empty rail tiles itself (kioskRailRoots).
+  const legacyCategories = useMemo(
+    () => visibleCategories.filter(c => kioskLegacyCategoryShown(c.id, items)),
+    [visibleCategories, items],
+  );
+
+  // Auto-pick first cat when menu loads. The first category the old side list shows, so it
+  // never lands on a category that was left out; the new design's rail maps any id to its
+  // own tile (kioskActiveRoot).
   useEffect(() => {
     if (!selectedCategoryId && visibleCategories.length > 0) {
-      setSelectedCategoryId(visibleCategories[0].id);
+      setSelectedCategoryId((legacyCategories[0] || visibleCategories[0]).id);
     }
-  }, [visibleCategories, selectedCategoryId]);
+  }, [visibleCategories, legacyCategories, selectedCategoryId]);
 
   // ─── Cart totals ───
   const subtotal = useMemo(() => cart.reduce((a, l) => a + l.lineTotal, 0), [cart]);
@@ -1169,7 +1181,7 @@ export default function KioskApp({ kioskId, onUnpair }) {
         else setScreen('menu');
       }} onBack={() => setScreen('attract')} onCancel={resetSession} />}
       {screen === 'tableNumber' && <ScreenTableNumber brandColor={brandColor} locationId={locationId} value={tableNumber} onChange={setTableNumber} onContinue={() => setScreen('menu')} onBack={() => setScreen('orderType')} onCancel={resetSession} />}
-      {screen === 'menu' && <ScreenMenu brandColor={brandColor} brandAccent={brandAccent} categoryPhotos={categoryPhotos} categoryPhotoOrigin={categoryPhotoOrigin} railCategories={railCategories} categories={visibleCategories} items={visibleItems} allItems={items} selectedCategoryId={selectedCategoryId} onSelectCategory={setSelectedCategoryId} onSelectItem={(item) => { setSelectedItem(item); setScreen('item'); }} cartItemCount={cartItemCount} subtotal={subtotal} onCart={() => setScreen('cart')} orderType={orderType} activeMenuId={activeMenuId} banner={bannerFor('menu')} allergenFilter={allergenFilter} onShowAllergenPicker={() => setShowAllergenPicker(true)} eightySixIds={eightySixIds} dailyCounts={dailyCounts} onBack={() => setScreen('orderType')} onCancel={resetSession} />}
+      {screen === 'menu' && <ScreenMenu brandColor={brandColor} brandAccent={brandAccent} categoryPhotos={categoryPhotos} categoryPhotoOrigin={categoryPhotoOrigin} railCategories={railCategories} categories={legacyCategories} items={visibleItems} allItems={items} selectedCategoryId={selectedCategoryId} onSelectCategory={setSelectedCategoryId} onSelectItem={(item) => { setSelectedItem(item); setScreen('item'); }} cartItemCount={cartItemCount} subtotal={subtotal} onCart={() => setScreen('cart')} orderType={orderType} activeMenuId={activeMenuId} banner={bannerFor('menu')} allergenFilter={allergenFilter} onShowAllergenPicker={() => setShowAllergenPicker(true)} eightySixIds={eightySixIds} dailyCounts={dailyCounts} onBack={() => setScreen('orderType')} onCancel={resetSession} />}
       {screen === 'item' && selectedItem && (
         <KioskProductModal
           item={selectedItem}

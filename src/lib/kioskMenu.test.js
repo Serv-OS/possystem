@@ -3,9 +3,11 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import {
   kioskRailRoots, kioskActiveRoot, kioskMenuSections, kioskSectionItemCount, kioskItemSoldOut,
   kioskAvailableSizes, kioskLowStock, kioskAddMode, kioskGroupIds, kioskCardEligible, kioskCardButton,
+  kioskOptionOnlySubitem, kioskLegacyCategoryShown,
 } from './kioskMenu.js';
 
 const cat = (id, parent_id = null, sort_order = 0, label = id) => ({ id, parent_id, sort_order, label });
@@ -176,4 +178,77 @@ test('card button: an unsafe item says Add only when there is nothing to choose'
   assert.equal(kioskCardButton({ mode: 'sheet', reason: 'sizes' }), 'chooseSize');
   assert.equal(kioskCardButton({ mode: 'sheet', reason: 'unknown' }), 'choose');
   assert.equal(kioskCardButton({ mode: 'quick', hasExtras: false }), 'add');
+});
+
+// ── Sub items that are only sold as an option (Provo, 14 Sep) ───────────────
+// The live rows: "No Ice" and "No Lemon" are the option rows behind Soft Drinks Options,
+// type 'subitem', sold_alone FALSE, in the Soft Drinks category. The kiosk drew them as
+// "+ Add · £0.00" product cards. The till hides type 'subitem' && !soldAlone.
+const SOFT = 'cat-1776803885509';
+const liveRow = (extra) => ({ cats: null, parent_id: null, sort_order: 0, visibility: { kiosk: true }, allergens: [], ...extra });
+const PEPSI_MAX = liveRow({ id: 'm-impmo951ym5-0', name: 'Pepsi Max', type: 'variants', sold_alone: true, cat: SOFT, assigned_modifier_groups: [] });
+const PM_REGULAR = liveRow({ id: 'm-impmo951ym5-1', name: 'Regular', type: 'simple', parent_id: 'm-impmo951ym5-0', cat: SOFT, pricing: { base: 3 }, assigned_modifier_groups: [{ groupId: 'mgd-1776807157339' }] });
+const PM_LARGE = liveRow({ id: 'm-impmo951ym5-2', name: 'Large', type: 'simple', parent_id: 'm-impmo951ym5-0', cat: SOFT, pricing: { base: 4.5 }, assigned_modifier_groups: [{ groupId: 'mgd-1776807157339' }] });
+const NO_ICE = liveRow({ id: 'm-1776807172397', name: 'No Ice', type: 'subitem', sold_alone: false, cat: SOFT, cats: [SOFT] });
+const NO_LEMON = liveRow({ id: 'm-1776807202338', name: 'No Lemon', type: 'subitem', sold_alone: false, cat: SOFT, cats: [SOFT] });
+const LIVE = [PEPSI_MAX, PM_REGULAR, PM_LARGE, NO_ICE, NO_LEMON];
+
+test('card eligibility: sub items that are not sold alone are never cards (the live rows)', () => {
+  assert.equal(kioskCardEligible(PEPSI_MAX), true);
+  assert.equal(kioskCardEligible(PM_REGULAR), false);          // a size row, as before
+  assert.equal(kioskCardEligible(NO_ICE), false);
+  assert.equal(kioskCardEligible(NO_LEMON), false);
+  assert.equal(kioskOptionOnlySubitem(NO_ICE), true);
+  // sold_alone must be exactly true; the store shape (soldAlone) is read too.
+  assert.equal(kioskCardEligible({ ...NO_ICE, sold_alone: true }), true);
+  assert.equal(kioskCardEligible({ ...NO_ICE, sold_alone: null }), false);
+  assert.equal(kioskCardEligible({ ...NO_ICE, sold_alone: undefined }), false);
+  assert.equal(kioskCardEligible({ ...NO_ICE, sold_alone: undefined, soldAlone: true }), true);
+  assert.equal(kioskCardEligible({ ...NO_ICE, sold_alone: undefined, soldAlone: false }), false);
+  // Only type 'subitem': simple and variants items are never hidden by the sold alone flag.
+  assert.equal(kioskCardEligible({ ...PEPSI_MAX, sold_alone: false }), true);
+  assert.equal(kioskCardEligible(liveRow({ id: 's', type: 'simple', sold_alone: false, cat: SOFT })), true);
+  assert.equal(kioskCardEligible(liveRow({ id: 'n', cat: SOFT })), true);   // no type at all
+  // Every existing rule still applies to a sold alone sub item.
+  assert.equal(kioskCardEligible({ ...NO_ICE, sold_alone: true, visibility: { kiosk: false } }), false);
+  assert.equal(kioskCardEligible({ ...NO_ICE, sold_alone: true, parent_id: 'p' }), false);
+  assert.equal(kioskCardEligible(null), false);
+});
+
+test('new design: the Soft Drinks list shows Pepsi Max, not No Ice or No Lemon', () => {
+  const cats = [cat(SOFT, null, 0, 'Soft Drinks'), cat('mixers', null, 1, 'Mixers'), cat('empty', null, 2, 'Empty')];
+  const items = [...LIVE, liveRow({ id: 'ice-only', type: 'subitem', sold_alone: false, cat: 'mixers' })];
+  const sections = kioskMenuSections({ rootId: SOFT, visibleCategories: cats, items });
+  assert.deepEqual(sections.map(sec => sec.items.map(i => i.name)), [['Pepsi Max']]);
+  assert.equal(kioskSectionItemCount(sections), 1);
+  // A category whose only rows are option sub items has no tile; the rail never shows it.
+  assert.deepEqual(kioskRailRoots(cats, items).map(c => c.id), [SOFT]);
+  assert.equal(kioskActiveRoot(kioskRailRoots(cats, items), cats, 'mixers'), SOFT);
+});
+
+test('old design: a category that only held option sub items is left out, nothing else changes', () => {
+  const items = [...LIVE, liveRow({ id: 'ice-only', type: 'subitem', sold_alone: false, cats: ['mixers'] }),
+    liveRow({ id: 'hidden', cat: 'secret', visibility: { kiosk: false } }), liveRow({ id: 'kid', cat: 'sizesonly', parent_id: 'x' })];
+  assert.equal(kioskLegacyCategoryShown(SOFT, items), true);        // Pepsi Max is a card
+  assert.equal(kioskLegacyCategoryShown('mixers', items), false);   // only option rows, now empty
+  assert.equal(kioskLegacyCategoryShown('empty', items), true);     // already empty: as before
+  assert.equal(kioskLegacyCategoryShown('secret', items), true);    // only hidden rows: as before
+  assert.equal(kioskLegacyCategoryShown('sizesonly', items), true); // only size rows: as before
+  assert.equal(kioskLegacyCategoryShown('mixers', null), true);
+});
+
+test('both designs use ONE card rule: KioskApp visibleItems filters with kioskCardEligible', () => {
+  const app = fs.readFileSync(new URL('../surfaces/KioskApp.jsx', import.meta.url), 'utf8');
+  const i = app.indexOf('const visibleItems = useMemo(() => {');
+  const block = app.slice(i, app.indexOf('}, [items, selectedCategoryId]);', i));
+  assert.ok(i > 0 && block.includes('.filter(kioskCardEligible)'), 'the old grid must use kioskCardEligible');
+  assert.ok(block.includes('.filter(i => itemInCategory(i, selectedCategoryId))'));
+  // No second copy of the old inline rules left behind.
+  assert.ok(!block.includes('!i.parent_id') && !block.includes('i.visibility?.kiosk'));
+  assert.ok(app.includes("import { kioskCardEligible, itemInCategory, kioskLegacyCategoryShown } from '../lib/kioskMenu';"));
+  assert.ok(app.includes('categories={legacyCategories} items={visibleItems}'));
+  // The old grid, run on the live rows, gives the same cards as the new design's list.
+  const oldGrid = LIVE.filter(kioskCardEligible).filter(it => it.cat === SOFT || (Array.isArray(it.cats) && it.cats.includes(SOFT)));
+  const newList = kioskMenuSections({ rootId: SOFT, visibleCategories: [cat(SOFT)], items: LIVE }).flatMap(sec => sec.items);
+  assert.deepEqual(oldGrid.map(i => i.id), newList.map(i => i.id));
 });

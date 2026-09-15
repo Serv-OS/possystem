@@ -11,6 +11,8 @@
  *                      the sheet"; decision 10: sizes always open the sheet)
  *   kioskCardButton    what the card's button says
  *   kioskGroupIds      every modifier group id the menu uses (for the rules read)
+ *   kioskCardEligible  which rows are product cards, for BOTH kiosk designs (sub items that
+ *                      are only sold as an option are never cards, like the till)
  */
 import { variantChildren } from './menuPricing.js';
 import {
@@ -21,9 +23,42 @@ import { isUnsafe } from './kioskAllergens.js';
 const parentOf = (c) => c?.parent_id ?? c?.parentId ?? null;
 const orderOf = (c) => Number(c?.sort_order ?? c?.sortOrder ?? 0) || 0;
 
-/** A menu item that belongs on a kiosk card list: not a size row, not hidden from the kiosk. */
+/**
+ * A sub item that is not sold alone: the option row behind a modifier group ("No Ice" in
+ * Soft Drinks Options), never a product. The till hides these from every menu
+ * (POSSurface: type === 'subitem' && !soldAlone). Reads both the raw row (sold_alone) and
+ * the store shape (soldAlone). Only type 'subitem' counts: a 'simple' or 'variants' item is
+ * never hidden by this rule, whatever its sold alone flag says.
+ */
+export function kioskOptionOnlySubitem(item) {
+  if (!item || item.type !== 'subitem') return false;
+  return (item.sold_alone ?? item.soldAlone) !== true;
+}
+
+/**
+ * A menu item that belongs on a kiosk card list: not a size row, not hidden from the kiosk,
+ * and not a sub item that is only sold as an option. Both kiosk designs use this one rule
+ * (the new design's rail and item list here, today's KioskApp visibleItems).
+ */
 export function kioskCardEligible(item) {
-  return !!item && !item.parent_id && item.visibility?.kiosk !== false;
+  return !!item && !item.parent_id && item.visibility?.kiosk !== false && !kioskOptionOnlySubitem(item);
+}
+
+/**
+ * Today's kiosk (design off) side list: a category is left out only when it holds rows the
+ * old list would have drawn as cards (not size rows, not hidden from the kiosk) and every one
+ * of them is a sub item that is only sold as an option. Those categories showed nothing but
+ * option rows, so they are empty now. Every other category stays exactly as before,
+ * including one that was already empty.
+ */
+export function kioskLegacyCategoryShown(categoryId, items) {
+  let rows = 0;
+  for (const it of (Array.isArray(items) ? items : [])) {
+    if (!it || it.parent_id || it.visibility?.kiosk === false || !itemInCategory(it, categoryId)) continue;
+    if (kioskCardEligible(it)) return true;
+    rows++;
+  }
+  return rows === 0;
 }
 
 /** True when the item sits in the category through cat or cats. */

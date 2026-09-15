@@ -431,6 +431,27 @@ button { font-family: inherit; }
 [data-kiosk-theme="design"] textarea {
   font-family: inherit;
 }
+/* Focus ring for the new kiosk design. The browser's own ring is blue (Chromium draws
+   rgb(0,95,204) on a focused button), which the design never uses: the owner saw it round a
+   size tile in the item sheet. Keyboard focus keeps a ring, in the venue line colour (the
+   design green by default); a tap or click shows none.
+   Three rules, in this order:
+   1. any focus gets the design ring. Only this one works on an old WebView without
+      :focus-visible (it used to draw the blue ring on every tap), so there the ring is at least
+      the design colour and keyboard focus is still visible.
+   2. focus from a tap or click (not :focus-visible) has no ring.
+   3. keyboard focus (:focus-visible) has the design ring. */
+[data-kiosk-theme="design"] :focus {
+  outline: 3px solid var(--k2PrimaryLine, #4E7B27);
+  outline-offset: 2px;
+}
+[data-kiosk-theme="design"] :focus:not(:focus-visible) {
+  outline: none;
+}
+[data-kiosk-theme="design"] :focus-visible {
+  outline: 3px solid var(--k2PrimaryLine, #4E7B27);
+  outline-offset: 2px;
+}
 /* The only two animations in the new kiosk design (README: nothing else animates). */
 @keyframes kfade {
   from { opacity: 0; transform: translateY(24px); }
