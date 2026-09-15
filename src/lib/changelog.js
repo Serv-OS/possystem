@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.80',
+    date: '15 Sep 2026',
+    items: [
+      'New kiosk design: the phone number and table number keypads now take a keyboard too. Type the numbers, Backspace deletes one, Enter confirms. Before, only tapping the on screen keys worked, so a kiosk opened in a laptop browser looked broken.',
+    ],
+  },
+  {
     v: '5.8.79',
     date: '15 Sep 2026',
     items: [

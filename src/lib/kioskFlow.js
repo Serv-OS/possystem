@@ -128,6 +128,18 @@ export function keypadNext(value, key, maxLength) {
 }
 
 /**
+ * v5.8.80: a physical keyboard key for the keypad: '0' to '9', 'del' (Backspace or Delete),
+ * 'enter' (Enter), or null for anything else. Numpad digits arrive as the same e.key values.
+ */
+export function keypadKeyFromKeyboard(key) {
+  if (typeof key !== 'string') return null;
+  if (/^[0-9]$/.test(key)) return key;
+  if (key === 'Backspace' || key === 'Delete') return 'del';
+  if (key === 'Enter') return 'enter';
+  return null;
+}
+
+/**
  * Viewport tracking for the canvas. maxVh is the tallest height seen at this width while
  * the customer is typing, so the on screen keyboard never shrinks the layout. A width
  * change (rotation) or a resize while not typing starts again from the current height.

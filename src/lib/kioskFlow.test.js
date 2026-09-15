@@ -14,6 +14,7 @@ import {
   nextAfterStart,
   kioskTableStatus,
   keypadNext,
+  keypadKeyFromKeyboard,
   nextViewport,
   kioskCanvasSize,
   kioskStartFooterKey,
@@ -271,4 +272,19 @@ test('the new design shows the Menu screen hero banner at the top of the menu, a
   const settings = fs.readFileSync(new URL('../backoffice/sections/KioskSettings.jsx', import.meta.url), 'utf8');
   assert.doesNotMatch(settings, /Banners and button wording are not used by the new kiosk design/);
   assert.match(settings, /title="Hero banner" desc="A promo image at the top of the menu\./);
+});
+
+test('the keypad takes a physical keyboard too: digits, Backspace or Delete, Enter', () => {
+  for (const d of '0123456789') assert.equal(keypadKeyFromKeyboard(d), d);
+  assert.equal(keypadKeyFromKeyboard('Backspace'), 'del');
+  assert.equal(keypadKeyFromKeyboard('Delete'), 'del');
+  assert.equal(keypadKeyFromKeyboard('Enter'), 'enter');
+  for (const k of ['a', '+', ' ', 'Tab', 'Escape', '12', '', null, undefined, 5]) assert.equal(keypadKeyFromKeyboard(k), null, String(k));
+  // Typed digits go through the same rule as the on screen keys (length cap).
+  let v = '';
+  for (const k of '077009001234') v = keypadNext(v, keypadKeyFromKeyboard(k), 11);
+  assert.equal(v, '07700900123');
+  const pad = fs.readFileSync(new URL('../surfaces/kiosk/KioskKeypad.jsx', import.meta.url), 'utf8');
+  assert.match(pad, /window\.addEventListener\('keydown', onKey\)/);
+  assert.match(pad, /if \(tag === 'input' \|\| tag === 'textarea'/);
 });

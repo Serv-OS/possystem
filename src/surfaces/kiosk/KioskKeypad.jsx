@@ -3,9 +3,14 @@
  * Used for the table number fallback now and the phone number later.
  * Digits only; the value lives with the caller. placeholderMono draws the placeholder in
  * the display face (the phone "07 . . ." pattern); otherwise it is plain words.
+ *
+ * v5.8.80 (Peter, 15 Sep 2026: the phone number worked on one screen and not on his laptop): a
+ * physical keyboard works too. Number keys type, Backspace or Delete removes one, Enter confirms
+ * when the button would. A key pressed while a real text box has focus is left to that box.
  */
+import { useEffect, useRef } from 'react';
 import { t } from '../../lib/i18n';
-import { keypadNext } from '../../lib/kioskFlow';
+import { keypadNext, keypadKeyFromKeyboard } from '../../lib/kioskFlow';
 import { DeleteKeyIcon } from './KioskIcons';
 
 const KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'clear', '0', 'del'];
@@ -14,6 +19,30 @@ export default function KioskKeypad({ value = '', onChange, maxLength, placehold
   const digits = typeof value === 'string' ? value : '';
   const shown = digits ? (typeof format === 'function' ? format(digits) : digits) : '';
   const enabled = canConfirm === undefined ? digits.length > 0 : !!canConfirm;
+
+  // The latest props for the keyboard listener, so it is added once and never reads stale values.
+  const live = useRef({ digits, maxLength, onChange, onConfirm, enabled, confirmLabel });
+  live.current = { digits, maxLength, onChange, onConfirm, enabled, confirmLabel };
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const onKey = (e) => {
+      const el = e.target;
+      const tag = el && el.tagName ? el.tagName.toLowerCase() : '';
+      if (tag === 'input' || tag === 'textarea' || (el && el.isContentEditable)) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const k = keypadKeyFromKeyboard(e.key);
+      if (!k) return;
+      const cur = live.current;
+      e.preventDefault();
+      if (k === 'enter') {
+        if (cur.confirmLabel && cur.enabled) cur.onConfirm?.(cur.digits);
+        return;
+      }
+      cur.onChange?.(keypadNext(cur.digits, k, cur.maxLength));
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
