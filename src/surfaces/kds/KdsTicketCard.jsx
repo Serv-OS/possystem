@@ -20,6 +20,7 @@
 
 import { memo, useLayoutEffect, useRef, useSyncExternalStore } from 'react';
 import { identityParts, formatElapsed, statusOf } from '../../lib/kds/kdsTicket';
+import { kdsVisibleNote } from '../../lib/kioskStaffFlags';
 import { scaled, breakableWords, fitFontSize } from '../../lib/kds/kdsFit';
 import { C, SANS, MONO, LATE_PULSE } from './kdsStyles';
 
@@ -263,6 +264,8 @@ export const KdsTicketCard = memo(function KdsTicketCard({ view, mins, settings,
   const { ident, meta } = headParts(view, settings);
   const timer = timerProps(view, mins, settings, mode);
   const canTick = mode === 'live' && !held;
+  // CHECK ID (a kiosk order with alcohol) shows even with Kitchen notes switched off.
+  const note = kdsVisibleNote(view.note, show.notes);
 
   return (
     <div style={{
@@ -303,7 +306,7 @@ export const KdsTicketCard = memo(function KdsTicketCard({ view, mins, settings,
             ))}
           </div>
         ))}
-        {show.notes && view.note && <NoteBlock note={view.note} big={false} z={z} />}
+        {note && <NoteBlock note={note} big={false} z={z} />}
       </div>
 
       <div style={{ marginTop: 'auto', padding: `0 ${z.footPad}px ${z.footPad}px`, display: 'flex', gap: 8 }}>
@@ -352,6 +355,7 @@ export function KdsTicketModal({ view, mins, settings, mode = 'live', onClose, o
   const { ident, meta } = headParts(view, settings);
   const timer = timerProps(view, mins, settings, mode);
   const canTick = mode === 'live' && !held;
+  const note = kdsVisibleNote(view.note, show.notes);
 
   return (
     <div onClick={onClose} style={{
@@ -378,7 +382,7 @@ export function KdsTicketModal({ view, mins, settings, mode = 'live', onClose, o
         </div>
 
         <div style={{ flex: 1, minHeight: 0, overflow: 'auto', padding: '22px 32px', display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {show.notes && view.note && <NoteBlock note={view.note} big z={z} />}
+          {note && <NoteBlock note={note} big z={z} />}
           {view.groups.map(g => (
             <div key={g.course} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               {show.course && <CourseChip label={g.label} accent={accent} font={z.course} big />}

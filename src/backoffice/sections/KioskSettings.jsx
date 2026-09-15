@@ -16,12 +16,23 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase, getLocationId } from '../../lib/supabase';
 import { CATEGORY_PHOTO_COPY } from '../../lib/categoryPhoto';
+import { KIOSK_NEW_DESIGN_READY } from '../../lib/kioskFlow';
+import { kioskPrimary, kioskPalette, parseCssColor, contrastWithWhite, DESIGN_GREEN, OLD_DEFAULT_BRAND } from '../../lib/kioskTheme';
+import KioskTipping from './KioskTipping';
 
 const TABLE_MODES = [
   { v: 'either',   label: 'Either — customer chooses',     desc: 'Allow customer to enter their table OR take a number' },
   { v: 'enter',    label: 'Enter their table number',       desc: 'Customer types their table number on the kiosk' },
   { v: 'dispense', label: 'Dispense a number',              desc: 'Customer takes a number card and grabs any table' },
   { v: 'none',     label: 'Takeaway only',                   desc: 'No dine-in option — counter pickup only' },
+];
+
+// The same four table modes, worded for the new kiosk design.
+const TABLE_MODES_V2 = [
+  { v: 'either',   label: 'Table or sit anywhere', desc: 'Customers pick their table, or sit anywhere and we call their number.' },
+  { v: 'enter',    label: 'Table number needed',   desc: 'Customers must pick or type their table number.' },
+  { v: 'dispense', label: 'Sit anywhere',          desc: 'Customers sit anywhere and we call their order number.' },
+  { v: 'none',     label: 'Take away only',        desc: 'No eat in option.' },
 ];
 
 export default function KioskSettings({ kioskId, onBack }) {
@@ -80,6 +91,8 @@ export default function KioskSettings({ kioskId, onBack }) {
           kiosk_avg_wait_minutes:  prof?.kiosk_avg_wait_minutes  ?? 8,
           kiosk_banners:           prof?.kiosk_banners           ?? [],
           kiosk_category_photos:   prof?.kiosk_category_photos   ?? true,
+          kiosk_new_design:        prof?.kiosk_new_design        ?? false,
+          kiosk_sms_enabled:       prof?.kiosk_sms_enabled       ?? false,
         });
       }
 
@@ -98,6 +111,14 @@ export default function KioskSettings({ kioskId, onBack }) {
   // v5.8.65: the category photo switch exists only once the 20260914 migration has
   // run. The loaded row is select('*'), so the key is present exactly when the column is.
   const photoSwitchReady = !!profile && Object.prototype.hasOwnProperty.call(profile, 'kiosk_category_photos');
+  // The new kiosk design switch and the ready text switch exist only once
+  // 20260915_OPS_kiosk_redesign.sql has run, and the design switch only in a build whose new
+  // design is finished (KIOSK_NEW_DESIGN_READY). Until then neither shows and neither is sent.
+  const designColumn = !!profile && Object.prototype.hasOwnProperty.call(profile, 'kiosk_new_design');
+  const designReady = KIOSK_NEW_DESIGN_READY && designColumn;
+  const smsReady = !!profile && Object.prototype.hasOwnProperty.call(profile, 'kiosk_sms_enabled');
+  // The page shows the new design's settings only while this profile uses it.
+  const v2 = designReady && draft.kiosk_new_design === true;
 
   // ─── Save handler ───
   const save = async () => {
@@ -126,6 +147,8 @@ export default function KioskSettings({ kioskId, onBack }) {
         kiosk_avg_wait_minutes:  draft.kiosk_avg_wait_minutes  ?? 8,
         kiosk_banners:           draft.kiosk_banners           || [],
         kiosk_category_photos:   draft.kiosk_category_photos !== false,
+        kiosk_new_design:        draft.kiosk_new_design === true,
+        kiosk_sms_enabled:       draft.kiosk_sms_enabled === true,
       };
       // v5.7.9: an omitted column keeps its DB value, so a stale tab saving a
       // branding tweak can never clobber the kiosk's menu pin.
@@ -133,6 +156,9 @@ export default function KioskSettings({ kioskId, onBack }) {
       // v5.8.65: same touched-only rule for the category photo switch, and never sent
       // before the migration adds the column (PGRST204 would fail the whole save).
       if (!photoSwitchReady || !touchedRef.current.has('kiosk_category_photos')) delete patch.kiosk_category_photos;
+      // Same rule for the new design switches: only when the column exists and was changed here.
+      if (!designReady || !touchedRef.current.has('kiosk_new_design')) delete patch.kiosk_new_design;
+      if (!smsReady || !touchedRef.current.has('kiosk_sms_enabled')) delete patch.kiosk_sms_enabled;
       const { error } = await supabase.from('device_profiles').update(patch).eq('id', profile.id);
       if (error) throw error;
       setSuccess('Saved. Refresh the kiosk to see changes.');
@@ -244,8 +270,71 @@ export default function KioskSettings({ kioskId, onBack }) {
         {/* LEFT — settings */}
         <div>
 
+          {/* ── New kiosk design switch (visible only in a build whose new design is finished) ── */}
+          {KIOSK_NEW_DESIGN_READY ? (
+            <SectionLg title="Kiosk design">
+              {designColumn ? (
+                <>
+                  <LargeToggleRow
+                    checked={draft.kiosk_new_design === true}
+                    onChange={v => setField('kiosk_new_design', v)}
+                    title="New kiosk design"
+                    desc="A cream and green look with five steps: start, menu, review and pay, card and done. Turn it off to go back to the current kiosk."
+                  />
+                  <div style={{ fontSize: 15, color: 'var(--t3)', lineHeight: 1.45 }}>Refresh the kiosk after you save.</div>
+                </>
+              ) : (
+                <div style={{ fontSize: 15, color: 'var(--t3)', lineHeight: 1.45 }}>The new kiosk design needs a database update before this switch appears.</div>
+              )}
+            </SectionLg>
+          ) : null}
+
+          {v2 ? (
+            <SectionLg title="Look" desc="How the new kiosk design looks at this kiosk.">
+              <div style={{ fontSize: 15, color: 'var(--t3)', lineHeight: 1.45, marginBottom: 14 }}>The new design always uses the cream look. The light or dark theme setting only applies to the current design.</div>
+              <FieldLg label="Main colour" hint="Buttons and highlights use this colour. Leave it on the design green if you have no brand colour. The old default orange (#f97316) shows as the design green, so for that orange pick a shade one step away, for example #f97416.">
+                <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <span aria-hidden="true" style={{ width: 40, height: 40, borderRadius: 10, background: kioskPrimary(draft), border: '1px solid var(--bdr)', flexShrink: 0 }} />
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center', background: 'var(--bg2)', border: '1px solid var(--bdr)', borderRadius: 6, padding: 4, width: 220 }}>
+                    <input type="color" aria-label="Main colour" value={lookColourShown(draft)} onChange={e => setField('kiosk_brand_color', e.target.value)}
+                      style={{ width: 32, height: 32, border: 0, padding: 0, background: 'transparent', cursor: 'pointer' }} />
+                    <input type="text" aria-label="Main colour code" value={lookColourText(draft)} onChange={e => setField('kiosk_brand_color', e.target.value)}
+                      style={{ flex: 1, background: 'transparent', border: 0, color: 'var(--t1)', fontSize: 15, fontFamily: 'ui-monospace, monospace', outline: 'none', minWidth: 0 }} />
+                  </div>
+                  <button type="button" onClick={() => setField('kiosk_brand_color', DESIGN_GREEN)} style={Object.assign({}, btnGhost(), { fontSize: 15 })}>Use the design green</button>
+                </div>
+                {lookColourIsLight(draft) ? (
+                  <div style={{ fontSize: 15, color: 'var(--t2)', marginTop: 8, lineHeight: 1.45 }}>This colour is very light. Text and highlights will use a darker shade so customers can read them.</div>
+                ) : null}
+              </FieldLg>
+              <FieldLg label="Brand name" hint="Shown when there is no logo.">
+                <input value={draft.kiosk_brand_name || ''} onChange={e => setField('kiosk_brand_name', e.target.value)} placeholder={device.name} style={Object.assign({}, inp(), { fontSize: 15 })} />
+              </FieldLg>
+              <FieldLg label="Logo" hint="Shown at the top of the start screen. A square PNG works best.">
+                <FileSlot
+                  currentUrl={draft.kiosk_brand_logo_url}
+                  onUpload={onLogoUpload}
+                  onClear={() => setField('kiosk_brand_logo_url', '')}
+                  accept="image/*"
+                  uploading={uploadingFor === 'logo'}
+                  kind="image"
+                />
+              </FieldLg>
+              <FieldLg label="Attract video" hint="Plays on the tap to start screen. Use an MP4 file up to 30MB. It plays without sound.">
+                <FileSlot
+                  currentUrl={draft.kiosk_attract_video_url}
+                  onUpload={onVideoUpload}
+                  onClear={() => setField('kiosk_attract_video_url', '')}
+                  accept="video/mp4"
+                  uploading={uploadingFor === 'video'}
+                  kind="video"
+                />
+              </FieldLg>
+            </SectionLg>
+          ) : null}
+
           {/* ── Theme + button labels ── */}
-          <Section title="Theme & wording" desc="Pick light or dark surface. Customise key buttons with your brand voice.">
+          {!v2 && <Section title="Theme & wording" desc="Pick light or dark surface. Customise key buttons with your brand voice.">
             <Field label="Theme" hint="Dark = white text on dark bg. Light = dark text on light bg. Brand colours still apply on top.">
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                 {[
@@ -273,10 +362,10 @@ export default function KioskSettings({ kioskId, onBack }) {
             <Field label="Place order button" hint="Default: Place order. Shown after loyalty step.">
               <input value={draft.kiosk_label_place_order || ''} onChange={e => setField('kiosk_label_place_order', e.target.value)} placeholder="Place order" maxLength={24} style={inp()} />
             </Field>
-          </Section>
+          </Section>}
 
           {/* ── Branding ── */}
-          <Section title="Brand" desc="This is the customer's first impression. Make it count.">
+          {!v2 && <Section title="Brand" desc="This is the customer's first impression. Make it count.">
             <Field label="Brand name" hint="Shown on the attract screen">
               <input value={draft.kiosk_brand_name || ''} onChange={e => setField('kiosk_brand_name', e.target.value)} placeholder={device.name} style={inp()} />
             </Field>
@@ -310,10 +399,14 @@ export default function KioskSettings({ kioskId, onBack }) {
                 kind="video"
               />
             </Field>
-          </Section>
+          </Section>}
 
           {/* ── Hero banners ── */}
-          <Section title="Hero banners" desc="Promo images that appear at the top of menu screens. Optional.">
+          {v2 ? (
+            <SectionLg title="Hero banners">
+              <div style={{ fontSize: 15, color: 'var(--t3)', lineHeight: 1.45 }}>Banners and button wording are not used by the new kiosk design.</div>
+            </SectionLg>
+          ) : <Section title="Hero banners" desc="Promo images that appear at the top of menu screens. Optional.">
             {(draft.kiosk_banners || []).length === 0 && (
               <div style={{ padding: 18, fontSize: 12.5, color: 'var(--t3)', textAlign: 'center', background: 'var(--bg2)', borderRadius: 8, border: '1px dashed var(--bdr)' }}>No banners yet.</div>
             )}
@@ -340,7 +433,7 @@ export default function KioskSettings({ kioskId, onBack }) {
               </div>
             ))}
             <button onClick={addBanner} style={Object.assign({}, btnGhost(), { width: '100%', borderStyle: 'dashed' })}>+ Add banner</button>
-          </Section>
+          </Section>}
 
           {/* ── Menu ── */}
           <Section title="Menu" desc="Which menu the kiosk shows. Leave on Auto for time-of-day to drive it (timed menus).">
@@ -369,7 +462,18 @@ export default function KioskSettings({ kioskId, onBack }) {
 
           {/* ── Customer flow ── */}
           <Section title="Customer flow" desc="How customers move through ordering.">
-            <Field label="Eat-in / table mode">
+            {v2 ? (
+              <FieldLg label="Eat in and tables">
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {TABLE_MODES_V2.map(opt => (
+                    <label key={opt.v} style={{ display: 'flex', gap: 10, padding: '10px 12px', background: 'var(--bg2)', border: '1.5px solid ' + (draft.kiosk_table_mode === opt.v ? 'var(--acc)' : 'var(--bdr)'), borderRadius: 8, cursor: 'pointer' }}>
+                      <input type="radio" checked={draft.kiosk_table_mode === opt.v} onChange={() => setField('kiosk_table_mode', opt.v)} />
+                      <div><div style={{ fontSize: 16, fontWeight: 600 }}>{opt.label}</div><div style={{ fontSize: 15, color: 'var(--t3)' }}>{opt.desc}</div></div>
+                    </label>
+                  ))}
+                </div>
+              </FieldLg>
+            ) : <Field label="Eat-in / table mode">
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 {TABLE_MODES.map(opt => (
                   <label key={opt.v} style={{ display: 'flex', gap: 10, padding: '10px 12px', background: 'var(--bg2)', border: '1.5px solid ' + (draft.kiosk_table_mode === opt.v ? 'var(--acc)' : 'var(--bdr)'), borderRadius: 8, cursor: 'pointer' }}>
@@ -378,9 +482,9 @@ export default function KioskSettings({ kioskId, onBack }) {
                   </label>
                 ))}
               </div>
-            </Field>
+            </Field>}
 
-            <Field label="Tip presets (%)" hint="Customer sees these as quick-pick buttons before pay">
+            {v2 ? <KioskTipping opsLocationId={device.location_id} /> : <Field label="Tip presets (%)" hint="Customer sees these as quick-pick buttons before pay">
               <div style={{ display: 'flex', gap: 10 }}>
                 {[0, 1, 2].map(i => (
                   <input key={i} type="number" step="0.5" min="0" max="100"
@@ -391,7 +495,7 @@ export default function KioskSettings({ kioskId, onBack }) {
                   />
                 ))}
               </div>
-            </Field>
+            </Field>}
 
             <Field label="Average wait time" hint="Shown to customer on attract & order-done screens">
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -415,18 +519,48 @@ export default function KioskSettings({ kioskId, onBack }) {
               </div>
             </Field>
 
-            <ToggleRow
-              checked={!!draft.kiosk_loyalty_enabled}
-              onChange={v => setField('kiosk_loyalty_enabled', v)}
-              title="Loyalty sign-in & rewards"
-              desc="Customers can sign in with their phone before paying to earn points/stamps, redeem rewards and use linked gift cards. Turning this OFF removes the whole loyalty step from the kiosk."
-            />
-            <ToggleRow
-              checked={!!draft.kiosk_allergen_required}
-              onChange={v => setField('kiosk_allergen_required', v)}
-              title="Force allergen acknowledgement"
-              desc="Customer must confirm allergen warning when adding flagged items (UK Natasha's Law)"
-            />
+            {v2 ? (
+              <>
+                <LargeToggleRow
+                  checked={!!draft.kiosk_loyalty_enabled}
+                  onChange={v => setField('kiosk_loyalty_enabled', v)}
+                  title="Collect points"
+                  desc="Customers can add their mobile number to collect points with no code. Spending a reward needs a text code."
+                />
+                {smsReady ? (
+                  <LargeToggleRow
+                    checked={draft.kiosk_sms_enabled === true}
+                    onChange={v => setField('kiosk_sms_enabled', v)}
+                    title="Text me when it's ready"
+                    desc="Customers who collect their order (take away, or eat in with no table number) can add their mobile number to get one text when it is ready. This is separate from points."
+                  />
+                ) : null}
+                <LargeToggleRow
+                  checked={!!draft.kiosk_allergen_required}
+                  onChange={v => setField('kiosk_allergen_required', v)}
+                  title="Force allergen acknowledgement"
+                  desc="Customers must tick that they have checked the allergens before paying. They also confirm when adding an item that contains an allergen they asked to avoid."
+                />
+                <div style={{ fontSize: 15, color: 'var(--t3)', lineHeight: 1.45 }}>
+                  Alcohol means the categories ticked on the Challenge 21 page. Orders with alcohol are marked Check ID for staff.
+                </div>
+              </>
+            ) : (
+              <>
+                <ToggleRow
+                  checked={!!draft.kiosk_loyalty_enabled}
+                  onChange={v => setField('kiosk_loyalty_enabled', v)}
+                  title="Loyalty sign-in & rewards"
+                  desc="Customers can sign in with their phone before paying to earn points/stamps, redeem rewards and use linked gift cards. Turning this OFF removes the whole loyalty step from the kiosk."
+                />
+                <ToggleRow
+                  checked={!!draft.kiosk_allergen_required}
+                  onChange={v => setField('kiosk_allergen_required', v)}
+                  title="Force allergen acknowledgement"
+                  desc="Customer must confirm allergen warning when adding flagged items (UK Natasha's Law)"
+                />
+              </>
+            )}
           </Section>
 
           {/* ── Card terminal ── */}
@@ -440,14 +574,14 @@ export default function KioskSettings({ kioskId, onBack }) {
         <div>
           <div style={{ position: 'sticky', top: 20 }}>
             <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>Live preview</div>
-            <div style={{ borderRadius: 16, overflow: 'hidden', border: '1px solid var(--bdr)', background: draft.kiosk_brand_bg_color || '#0e0e10', aspectRatio: '9 / 16' }}>
+            {v2 ? <DesignPreview draft={draft} deviceName={device.name} /> : <div style={{ borderRadius: 16, overflow: 'hidden', border: '1px solid var(--bdr)', background: draft.kiosk_brand_bg_color || '#0e0e10', aspectRatio: '9 / 16' }}>
               <div style={{ height: '100%', background: 'linear-gradient(135deg, ' + (draft.kiosk_brand_color || '#f97316') + ', ' + (draft.kiosk_brand_accent_color || '#fbbf24') + ')', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 16, color: '#fff' }}>
                 {draft.kiosk_brand_logo_url && <img src={draft.kiosk_brand_logo_url} alt="" style={{ maxWidth: 80, maxHeight: 80, marginBottom: 14 }} />}
                 <div style={{ fontSize: 20, fontWeight: 800, textAlign: 'center', letterSpacing: '-0.02em', marginBottom: 4 }}>{draft.kiosk_brand_name || device.name || 'Order here'}</div>
                 <div style={{ fontSize: 10, opacity: 0.85, marginBottom: 18, textAlign: 'center' }}>~{draft.kiosk_avg_wait_minutes || 8} min wait</div>
                 <div style={{ background: '#fff', color: draft.kiosk_brand_color || '#f97316', padding: '10px 22px', borderRadius: 100, fontSize: 12, fontWeight: 800 }}>TAP TO ORDER</div>
               </div>
-            </div>
+            </div>}
             <div style={{ marginTop: 8, fontSize: 10.5, color: 'var(--t3)', textAlign: 'center' }}>Approximate · Refresh kiosk after Save to apply</div>
           </div>
         </div>
@@ -468,6 +602,74 @@ function Section({ title, desc, children }) {
         {desc && <div style={{ fontSize: 11.5, color: 'var(--t3)' }}>{desc}</div>}
       </div>
       {children}
+    </div>
+  );
+}
+
+// New design settings: Back Office sized text (title 17px, description 15px).
+function SectionLg({ title, desc, children }) {
+  return (
+    <div style={{ background: 'var(--bg1)', border: '1px solid var(--bdr)', borderRadius: 12, padding: 18, marginBottom: 14 }}>
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 2 }}>{title}</div>
+        {desc && <div style={{ fontSize: 15, color: 'var(--t3)', lineHeight: 1.45 }}>{desc}</div>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function FieldLg({ label, hint, children }) {
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>{label}</div>
+      {children}
+      {hint && <div style={{ fontSize: 15, color: 'var(--t3)', marginTop: 6, lineHeight: 1.45 }}>{hint}</div>}
+    </div>
+  );
+}
+
+// A small start screen in the new design: cream, the logo or name, a headline and two tiles
+// in the main colour.
+// The Look section's colour boxes show the colour the kiosk will really use: an empty colour or
+// the old untouched orange default is the design green, so the picker, the code box and the
+// swatch always agree.
+function lookColourIsDefault(draft) {
+  const c = String(draft?.kiosk_brand_color || '').trim().toLowerCase();
+  return !c || c === OLD_DEFAULT_BRAND;
+}
+function lookColourText(draft) {
+  return lookColourIsDefault(draft) ? DESIGN_GREEN : (draft.kiosk_brand_color || '');
+}
+function lookColourShown(draft) {
+  const c = lookColourText(draft);
+  return /^#[0-9a-f]{6}$/i.test(c) ? c : DESIGN_GREEN;
+}
+// White text reads under 3:1 on it, so the kiosk darkens it for text and highlights.
+function lookColourIsLight(draft) {
+  const rgb = parseCssColor(kioskPrimary(draft));
+  return !!rgb && contrastWithWhite(rgb) < 3;
+}
+
+function DesignPreview({ draft, deviceName }) {
+  const primary = kioskPrimary(draft);
+  const onPrimary = kioskPalette(primary).onPrimary;
+  const tile = { background: '#fff', borderRadius: 12, padding: '14px 8px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, boxShadow: '0 3px 9px rgba(0,0,0,.06)' };
+  return (
+    <div style={{ borderRadius: 16, overflow: 'hidden', border: '1px solid var(--bdr)', background: '#EFE4D9', aspectRatio: '9 / 16', padding: 16, display: 'flex', flexDirection: 'column', color: '#14110F', fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif" }}>
+      <div style={{ height: 40, display: 'flex', alignItems: 'center' }}>
+        {draft.kiosk_brand_logo_url
+          ? <div style={{ background: '#fff', borderRadius: 6, padding: 4, height: 36 }}><img src={draft.kiosk_brand_logo_url} alt="" style={{ height: 28, width: 'auto', maxWidth: 120, objectFit: 'contain', display: 'block' }} /></div>
+          : <div style={{ fontSize: 15, fontWeight: 800 }}>{draft.kiosk_brand_name || deviceName || 'Order here'}</div>}
+      </div>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 14 }}>
+        <div style={{ fontSize: 20, fontWeight: 800, lineHeight: 1.05, letterSpacing: '-0.03em' }}>Where are you eating today?</div>
+        <div style={{ display: 'grid', gridTemplateColumns: draft.kiosk_table_mode === 'none' ? '1fr' : '1fr 1fr', gap: 8 }}>
+          {draft.kiosk_table_mode !== 'none' ? <div style={tile}><span style={{ width: 22, height: 22, borderRadius: 999, border: `2px solid ${primary}` }} /><span style={{ fontSize: 15, fontWeight: 800 }}>Eat in</span></div> : null}
+          <div style={tile}><span style={{ width: 22, height: 22, borderRadius: 6, border: `2px solid ${primary}` }} /><span style={{ fontSize: 15, fontWeight: 800 }}>Take away</span></div>
+        </div>
+      </div>
+      <div style={{ background: primary, color: onPrimary, borderRadius: 999, padding: '8px 0', textAlign: 'center', fontSize: 15, fontWeight: 800 }}>Tap to start</div>
     </div>
   );
 }

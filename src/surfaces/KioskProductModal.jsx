@@ -34,48 +34,18 @@
 import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
 import { useStore } from '../store';
-import { t, useKioskLang } from '../lib/i18n';
+import { t, tf, useKioskLang } from '../lib/i18n';
 import { displayName } from '../lib/itemDisplay';
 import { kioskLineNeed } from '../lib/kioskLine';
 import { money } from '../lib/currency';
 import { orderOptionFlow } from '../lib/optionFlow';
 import { resolveItemPrice, variantChildren, variantFromPrice } from '../lib/menuPricing';
+import { normalizeGroup, kioskSheetGroupHint } from '../lib/kioskGroupRules';
+import KioskItemSheet from './kiosk/KioskItemSheet';
 
 // ============================================================
 // VALIDATION HELPERS (pure)
 // ============================================================
-
-function normalizeGroup(group) {
-  // v5.5.33: read both selection_type (DB column) and selectionType (camelCase
-  // legacy/store-normalized) to defensively cover any data shape. POS data is
-  // normalized to camelCase via SyncBridge; the kiosk reads raw Supabase rows
-  // so it sees snake_case. Either should resolve correctly here.
-  const selType = group.selection_type ?? group.selectionType ?? 'single';
-  const isSingle = selType === 'single';
-  const isQuantity = selType === 'quantity';
-  // min/max are plain field names in both shapes — read defensively from
-  // both possible aliases just in case.
-  const rawMinExplicit = group.min ?? group.min_select ?? group.minSelect;
-  const rawMin = Math.max(rawMinExplicit ?? 0, 0);
-  const rawMax = group.max ?? group.max_select ?? group.maxSelect ?? null;
-  const max = rawMax != null ? rawMax : (isSingle ? 1 : (group.options?.length || 99));
-  // v5.5.34: For quantity-mode groups (e.g. "Box of 3" / "Box of 6") where the
-  // customer must pick a fixed number of items, default min to max when the
-  // operator hasn't explicitly set min. Quantity mode semantically means
-  // "container of N" — leaving with fewer than N defeats the purpose. This
-  // protects against legacy BO data where min was left at 0 by accident.
-  // Operators who genuinely want "between 1 and max" can still set min
-  // explicitly to a non-null value below max. Going forward, the BO
-  // selection-mode picker auto-sets min=max on quantity-mode click so this
-  // defensive default rarely fires for new data.
-  let min = rawMin;
-  if (isQuantity && (rawMinExplicit == null || rawMinExplicit === 0) && max > 1) {
-    min = max;
-  }
-  // Clamp min to never exceed max (defensive against bad BO writes).
-  const safeMin = Math.min(min, max);
-  return { ...group, _min: safeMin, _max: max, _isSingle: isSingle, _selectionType: selType };
-}
 
 // Walks all selected occurrences of options-with-subGroupId and returns
 // the parent option occurrences that need a nested pick.
@@ -226,7 +196,18 @@ function summarizeForDisplay(groups, selections, nestedSelections, subGroupsCach
 // card and the cart line (src/lib/menuPricing.js). Without them a variant child
 // with a menu tier showed and charged base here while the board and online
 // showed the tier.
-export default function KioskProductModal({ item, allItems = [], brandColor, brandAccent, basePrice, addLabel, onAdd, onCancel, dailyCounts = {}, cartItemUsage = {}, orderType = 'dineIn', activeMenuId = null }) {
+// New kiosk design (stage B): look="sheet" draws the same item, groups, rules, stock gates
+// and add path as the README bottom sheet (./kiosk/KioskItemSheet.jsx). Every hook, state
+// value and handler below is shared; only the drawing differs. With look unset (today's
+// kiosk) nothing changes.
+//   avoidAllergens  : the allergens the customer asked to avoid (the kiosk's allergenFilter)
+//   ackRequired     : the venue makes the customer tick that they understand before Add works
+//                     (the sheet asks only when the item, its size or a pick has one of them)
+//   onPickAllergens : (ids) called just before Add with the allergens of the picked options,
+//                     so the new design's allergen check can count them on the basket line
+//   fetchGroups : optional (ids) => Promise<{ data, error }> for the modifier_groups read;
+//                 unset reads Supabase exactly as before (the DEV preview passes sample data)
+export default function KioskProductModal({ item, allItems = [], brandColor, brandAccent, basePrice, addLabel, onAdd, onCancel, dailyCounts = {}, cartItemUsage = {}, orderType = 'dineIn', activeMenuId = null, look, avoidAllergens = null, ackRequired = false, onPickAllergens, fetchGroups }) {
   // Subscribe to language changes so t() strings re-render if the customer
   // switches language while the modal is open.
   useKioskLang();
@@ -429,10 +410,10 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
         }).filter(x => x.id);
         const ids = idsAndOverrides.map(x => x.id);
         try {
-          const { data, error } = await supabase
+          const { data, error } = await (fetchGroups ? fetchGroups(ids) : supabase
             .from('modifier_groups')
             .select('*')
-            .in('id', ids);
+            .in('id', ids));
           if (error) throw error;
           if (!alive) return;
           const ordered = idsAndOverrides
@@ -497,10 +478,10 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
       let subCache = {};
       if (subGroupIds.size > 0) {
         try {
-          const { data, error } = await supabase
+          const { data, error } = await (fetchGroups ? fetchGroups(Array.from(subGroupIds)) : supabase
             .from('modifier_groups')
             .select('*')
-            .in('id', Array.from(subGroupIds));
+            .in('id', Array.from(subGroupIds)));
           if (error) throw error;
           if (!alive) return;
           for (const sg of (data || [])) {
@@ -518,7 +499,7 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
       }
     })();
     return () => { alive = false; };
-  }, [item, allItems, orderType, activeMenuId]);
+  }, [item, allItems, orderType, activeMenuId, fetchGroups]);
 
   // ── Derived state ──
   const validation = useMemo(
@@ -744,6 +725,57 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
   // per-group: id, name, raw stored values, normalized _min/_max, selection
   // type. Fires once after groups load and again if they change. Remove once
   // the group-rules-not-respected issue is confirmed resolved.
+
+  // The new design's sheet says a range in words ("pick 1 to 3"): no dash in customer text.
+  // Today's modal below keeps buildHint exactly as it was.
+  const buildSheetHint = (min, max) => buildHint(min, max).replace('–', ' to ');
+
+  if (look === 'sheet') {
+    // The sheet's guidance line in the customer's language ("Choose at least 1 from Extras"),
+    // never today's English "Pick a " + group name. A nested choice keeps validation's text.
+    const sheetHint = isValid ? null : kioskSheetGroupHint(groups, selections);
+    return (
+      <KioskItemSheet
+        item={item}
+        loading={loading}
+        error={error}
+        groups={groups}
+        subGroupsCache={subGroupsCache}
+        selections={selections}
+        nestedSelections={nestedSelections}
+        showError={showError}
+        stockErr={stockErr}
+        qty={qty}
+        setQty={setQty}
+        lineMaxQty={lineMaxQty}
+        instructions={instructions}
+        setInstructions={setInstructions}
+        validation={sheetHint ? tf(sheetHint.key, sheetHint.vars) : validation}
+        isValid={isValid}
+        variantGroup={variantGroup}
+        pickedVariantOpt={pickedVariantOpt}
+        totalPriceEach={totalPriceEach}
+        totalPrice={totalPrice}
+        basePrice={basePrice}
+        brandColor={brandColor}
+        incOption={incOption}
+        decOption={decOption}
+        setNestedPick={setNestedPick}
+        tryAdd={tryAdd}
+        resolveOpt={resolveOpt}
+        resolveOptItemId={resolveOptItemId}
+        getOptionStock={getOptionStock}
+        eightySixIds={eightySixIds}
+        dailyCounts={dailyCounts}
+        buildHint={buildSheetHint}
+        onCancel={onCancel}
+        allItems={allItems}
+        avoidAllergens={avoidAllergens}
+        ackRequired={ackRequired}
+        onPickAllergens={onPickAllergens}
+      />
+    );
+  }
 
   if (loading) {
     return (
