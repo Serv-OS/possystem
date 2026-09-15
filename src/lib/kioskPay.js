@@ -143,7 +143,9 @@ export function kioskStaffReference({ checkId = null, now = 0 } = {}) {
 
 /**
  * The staff only activity event for a card screen that needs staff (the README's
- * staff only diagnostic). Tills show and chime urgent events (lib/activity.js).
+ * staff only diagnostic). Tills keep a kiosk_payment event on screen until staff tap OK
+ * (components/KioskStaffAlert.jsx). The till reads this body back (lib/kioskStaffAlertView.js
+ * parseKioskAlertBody, with a round trip test), so keep the format in step with it.
  * amountText is already formatted (money()). raw is the technical message.
  */
 export function kioskStaffAlert({ deviceName = '', amountText = '', reference = '', cause = '', raw = '' } = {}) {

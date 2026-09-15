@@ -102,6 +102,7 @@ import { fetchMenuCategoryLinks } from './lib/db';
 import { normaliseMenuRow, assembleTaxProfiles } from './lib/rowMapping';
 import MasterOfflineModal from './components/MasterOfflineModal';
 import ActivityFeed from './components/ActivityFeed';
+import KioskStaffAlert from './components/KioskStaffAlert';
 import ConfigSyncBanner from './components/ConfigSyncBanner';
 import OrdersHub from './surfaces/OrdersHub';
 import useSupabaseInit from './lib/useSupabaseInit';
@@ -315,7 +316,8 @@ export default function App() {
   // MPOS — phone-shaped POS for servers/runners. Reuses the same store + sync
   // layer as ?mode=pos but with a portrait, single-column UI. Phase 1A: walk-in
   // only, cash + REST card. Phase 1B will add Stripe Tap to Pay native bridges.
-  if (deviceMode === 'mpos') return <><SyncBridge onSyncPulse={handleSyncPulse}/><MposDeviceProfileSync pairedDevice={pairedDevice}/><MPOSSurface /></>;
+  // Kiosk card problems stay on screen until staff tap OK (components/KioskStaffAlert.jsx).
+  if (deviceMode === 'mpos') return <><SyncBridge onSyncPulse={handleSyncPulse}/><MposDeviceProfileSync pairedDevice={pairedDevice}/><MPOSSurface /><KioskStaffAlert /></>;
 
   // Time Clock — dedicated second-tablet surface for staff to clock in/out + breaks.
   // Pairs to a location like a POS; punches write server-side via workforce-clock.
@@ -990,6 +992,12 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
     );
   }
 
+  // Kiosk card problems park over EVERY staff body here (PIN screen, till shell, MPOS profile,
+  // KDS) until staff tap OK (components/KioskStaffAlert.jsx). Never on a till running the kiosk
+  // surface: that screen faces customers. It sits in its own fixed slot after {body}, so signing
+  // in or out never remounts it and an alert on the PIN screen is still there after sign in.
+  const showKioskStaffAlert = !(surface === 'kiosk' || deviceConfig?.defaultSurface === 'kiosk');
+
   // The bridge is ALWAYS child 0 of this Fragment. React keeps a child in a fixed slot
   // mounted across re-renders, so only {body} is torn down and rebuilt when the
   // operator signs in or out.
@@ -997,6 +1005,7 @@ function ValidatedPOSApp({ pairedDevice, staff, surface, setSurface, toast, shif
     <>
       <SyncBridge onSyncPulse={handleSyncPulse}/>
       {body}
+      {showKioskStaffAlert && <KioskStaffAlert />}
     </>
   );
 }

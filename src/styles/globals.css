@@ -770,6 +770,11 @@ button { font-family: inherit; }
   border-radius:22px;
 }
 
+/* While a kiosk card problem alert covers the till (components/KioskStaffAlert.jsx, z-index
+   100020), other toasts draw above it, so a Temperature breach or a booking alert that arrives
+   then is still readable. */
+body[data-kiosk-staff-alert-open] .toast{ z-index:100030; }
+
 /* ---- Toast ---- */
 [data-skin="servos"] .toast{
   background-color:var(--bg2); background-image:var(--glass-bg);
