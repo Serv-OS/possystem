@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.71',
+    date: '15 Sep 2026',
+    items: [
+      'Tills: when a kiosk card payment needs staff, the alert now stays on screen until someone taps OK, in plain words with the order amount and the reference the customer reads out. OK on one till clears it on every till. It used to be a beep and a 3 second pop up.',
+      'The alert only tells staff the card was not charged when that is certain (for example no card reader set up for the kiosk). If the kiosk lost its connection or the reader did not answer, it says to check the reader or the payments list before taking payment again.',
+      'MPOS: the alert waits while the phone is on the tip, card or receipt screen, so a customer never sees it.',
+      'Training tills: OK only closes the alert on that till, never on the live tills.',
+      'A till that restarts or reconnects shows alerts from the last 15 minutes that nobody has cleared. An OK tapped while offline is sent when the till is back online.',
+      'Never shown on kiosks, online ordering, QR, menu boards, order screens or Back Office.',
+    ],
+  },
+  {
     v: '5.8.70',
     date: '15 Sep 2026',
     items: [

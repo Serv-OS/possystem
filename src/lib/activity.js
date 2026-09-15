@@ -55,6 +55,32 @@ export async function fetchRecentActivity(locationId, limit = 60) {
   return (data || []).map(rowToEvent);
 }
 
+const realLocation = (id) => !!id && id !== 'loc-demo';
+
+/**
+ * Unacknowledged events of one ref_type created since sinceIso: the NEWEST `limit` of them,
+ * returned oldest first (the live queue also keeps the newest). The tills use it
+ * for kiosk card problem alerts, so a till that restarted or lost its realtime connection still
+ * shows an open problem (lib/kioskStaffAlerts.js). Rows come back as database rows.
+ */
+export async function fetchOpenActivityByRefType(locationId, refType, { sinceIso, limit = 20 } = {}) {
+  if (isMock || !supabase || !realLocation(locationId) || !refType || !sinceIso) return [];
+  const { data, error } = await supabase.from('activity_events').select('*')
+    .eq('location_id', locationId).eq('ref_type', refType).is('acked_at', null)
+    .gte('created_at', sinceIso).order('created_at', { ascending: false }).limit(limit);
+  if (error) { console.warn('[activity] open fetch failed', error.message); return []; }
+  return (data || []).slice().reverse();
+}
+
+/** id + acked_at for these event ids (to clear alerts acknowledged while a till was offline). */
+export async function fetchActivityAckState(ids = []) {
+  const list = (ids || []).filter(Boolean);
+  if (isMock || !supabase || !list.length) return [];
+  const { data, error } = await supabase.from('activity_events').select('id, acked_at').in('id', list);
+  if (error) { console.warn('[activity] ack state fetch failed', error.message); return []; }
+  return data || [];
+}
+
 /** Acknowledge an action item (clears it from "needs action"). */
 export async function ackActivity(id, who = null) {
   if (isMock || !supabase || !id) return { ok: false };

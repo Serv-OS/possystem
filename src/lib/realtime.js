@@ -14,6 +14,7 @@ import { applyWaitlistRealtimeEvent } from '../sync/WaitlistSync';
 import { reassertSession } from '../sync/SessionSync';
 import { isSessionClosed } from '../sync/sessionClosure';
 import { playOrderChime } from './orderChime';
+import { receiveKioskAlertRow, kioskAlertsRealtimeStarted, kioskAlertsRealtimeStopped, restoreKioskAlerts } from './kioskStaffAlerts';
 import { isHubriseAutoReceipt } from './hubrise';
 // v5.6.83: the same prepend-only ceiling the store applies. Cross-device inserts and
 // refund echoes land here, so capping only the local sale paths would still let a busy
@@ -694,12 +695,16 @@ export function startRealtime(store, locationId = LOCATION_ID) {
 
   // ── Activity feed → toast + chime on the tills for action/urgent items (nudges, alerts, …) ──
   // (The bell/panel UI subscribes separately for the full feed; this is just the live alert.)
+  // Kiosk card problems (ref_type kiosk_payment) are the exception: on a till they STAY on screen
+  // until staff tap OK (lib/kioskStaffAlerts.js + components/KioskStaffAlert.jsx, which chimes),
+  // so they skip the short toast there. Every other event keeps the toast exactly as before.
   const activityChannel = supabase
     .channel(`activity:${locationId}`)
     .on('postgres_changes', {
       event: 'INSERT', schema: 'public', table: 'activity_events', filter: `location_id=eq.${locationId}`,
     }, ({ new: a }) => {
       try {
+        if (receiveKioskAlertRow(store, a)) return;                               // shown on screen until OK
         if (a.severity !== 'action' && a.severity !== 'urgent') return;          // info items: feed only, no toast
         if (a.created_at && Date.now() - new Date(a.created_at).getTime() > 60000) return; // ignore backfill on reconnect
         const msg = [a.title, a.body].filter(Boolean).join(' · ');
@@ -707,8 +712,18 @@ export function startRealtime(store, locationId = LOCATION_ID) {
         playOrderChime();
       } catch { /* noop */ }
     })
-    .subscribe();
+    .on('postgres_changes', {
+      event: 'UPDATE', schema: 'public', table: 'activity_events', filter: `location_id=eq.${locationId}`,
+    }, ({ new: a }) => {
+      // An OK on another till acknowledges the kiosk alert: clear it here too.
+      try { receiveKioskAlertRow(store, a); } catch { /* noop */ }
+    })
+    .subscribe((status) => {
+      // (Re)subscribed: pick up kiosk alerts written while this till was not listening.
+      if (status === 'SUBSCRIBED') restoreKioskAlerts();
+    });
   channels.push(activityChannel);
+  kioskAlertsRealtimeStarted(store, locationId);
 
   // Single teardown path (resets _rtLocation too) so a later startRealtime re-subscribes cleanly.
   return stopRealtime;
@@ -742,4 +757,5 @@ export function stopRealtime() {
   channels.forEach(ch => supabase.removeChannel(ch));
   channels = [];
   _rtLocation = null;
+  kioskAlertsRealtimeStopped();
 }

@@ -206,6 +206,14 @@ function MPOSRouter() {
   // flow.screen: null | 'newOrder' | 'covers' | 'tableView' | 'menu' | 'item' | 'cart'
   // flow.context carries flow-specific state (selected table, item, etc.)
   const [flow, setFlow] = useState({ screen: null });
+  // The phone is in the customer's hands on these screens (tip pass, card, receipt). A kiosk card
+  // problem alert waits until the phone is back on a staff screen (components/KioskStaffAlert.jsx),
+  // so the customer never sees staff instructions (review finding, 15 Sep 2026).
+  const customerHoldsPhone = flow.screen === 'tender' || flow.screen === 'card' || flow.screen === 'receipt';
+  useEffect(() => {
+    useStore.setState({ tillCustomerFacing: customerHoldsPhone });
+    return () => { useStore.setState({ tillCustomerFacing: false }); };
+  }, [customerHoldsPhone]);
 
   // v5.5.977 — the two failures the server must never be able to walk past.
   // closeFailure: the card was APPROVED and the sale did not record (money gone,

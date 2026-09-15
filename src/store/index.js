@@ -7629,6 +7629,16 @@ export const useStore = create((set, get) => ({
   },
   dismissOrderAlert: () => set({ orderAlert: null }),
 
+  // ── Kiosk card problem alerts ─────────────
+  // Waiting kiosk_payment activity events, oldest first (lib/kioskStaffAlertView.js shape).
+  // Fed ONLY by lib/kioskStaffAlerts.js (realtime insert/update + the restore on till start);
+  // components/KioskStaffAlert.jsx shows the first one over any till surface until staff tap
+  // OK, which acknowledges it for every till.
+  kioskStaffAlerts: [],
+  // True while a till screen faces the customer (MPOS tip pass, card and receipt screens). The
+  // kiosk alert waits while it is true.
+  tillCustomerFacing: false,
+
   // v5.5.561: Accept / Reject an incoming order by ref, from anywhere (the new-order
   // popup or the Orders Hub). Looks the order up in the live queue so callers only
   // need the ref. Mirrors OrdersHub's acceptHubrise/rejectHubrise so the logic lives
