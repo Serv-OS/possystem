@@ -7,6 +7,25 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.85',
+    date: '16 Sep 2026',
+    items: [
+      'No change for venues. The printer byte for byte test is pinned to one clock zone, so it passes on the build server as well as on a Mac.',
+    ],
+  },
+  {
+    v: '5.8.84',
+    date: '16 Sep 2026',
+    items: [
+      'Every printer model in Back Office now gets the commands it understands. Star TSP654II, TSP700II, TSP800II, mC-Print2, mC-Print3 and TSP143IV get Star Line Mode text (their factory setting). The Star TSP143III gets the receipt as graphics, because it has no text mode. Sunmi, Epson, Bixolon, Citizen, Xprinter and generic printers get ESC/POS exactly as before, byte for byte.',
+      'The cash drawer pulse now matches the printer model too, so a drawer wired to a Star printer opens. Nothing changed for Sunmi and Epson drawers.',
+      'Back Office, Printers: each model shows a short note saying what mode the printer must be in and what we send. The Star TSP100 ECO / futurePRNT entry is retired: those units are USB only and cannot print over Wi-Fi; use a TSP143III LAN or TSP143IV. A printer saved as TSP100 earlier still prints as a TSP143III.',
+      'The printer test page now prints the printer name, model, the command set used, the IP address, paper width, where it was sent from and the app version, so a photo of it tells support which path printed it.',
+      'The terminal status drawer no longer says "Agent not responding". It says what is wrong: the printer did not answer, this iPad build cannot print (update in TestFlight), or a browser has no printer connection. A one line "Printing: direct from this device" indicator sits above the printers.',
+      '58mm printers now get 32 column receipts and tickets instead of 42 column lines that wrapped.',
+    ],
+  },
+  {
     v: '5.8.83',
     date: '16 Sep 2026',
     items: [

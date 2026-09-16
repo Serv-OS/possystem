@@ -3,42 +3,21 @@ import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import { useStore } from '../../store';
 import { reportSave } from '../../lib/saveHealth';
 import { printService } from '../../lib/printer';
+import { PRINTER_MODELS, modelSetupNote, paperOptionsFor, resolvePrinterSpec } from '../../lib/printerDialects';
+import { printEnvironment, printFailureWords } from '../../lib/printPathWords';
 
-const MODELS = [
-  // ── Sunmi ──────────────────────────────────────────────────────────────────
-  { id:'sunmi-nt311',     label:'Sunmi NT311',              icon:'🖨', desc:'80mm cloud printer — WiFi/LAN', brand:'Sunmi' },
-  { id:'sunmi-nt310',     label:'Sunmi NT310',              icon:'🖨', desc:'58mm cloud printer — WiFi/LAN', brand:'Sunmi' },
-  // ── Epson TM series ────────────────────────────────────────────────────────
-  { id:'epson-tm-t88',    label:'Epson TM-T88V / VI / VII', icon:'🖨', desc:'80mm LAN — industry standard',   brand:'Epson' },
-  { id:'epson-tm-t20',    label:'Epson TM-T20 II / III',    icon:'🖨', desc:'80mm LAN — budget option',       brand:'Epson' },
-  { id:'epson-tm-m30',    label:'Epson TM-m30 / m30II',     icon:'🖨', desc:'80mm LAN — compact/tablet',      brand:'Epson' },
-  { id:'epson-tm-t82',    label:'Epson TM-T82 III',         icon:'🖨', desc:'80mm LAN — entry level',          brand:'Epson' },
-  { id:'epson-tm-t70',    label:'Epson TM-T70 II',          icon:'🖨', desc:'80mm LAN — under-counter',        brand:'Epson' },
-  // ── Star TSP / mC-Print ────────────────────────────────────────────────────
-  { id:'star-tsp143',     label:'Star TSP143III LAN',       icon:'🖨', desc:'80mm LAN — popular modern',       brand:'Star' },
-  { id:'star-tsp100',     label:'Star TSP100 ECO / futurePRNT', icon:'🖨', desc:'80mm LAN — very common',      brand:'Star' },
-  { id:'star-tsp654',     label:'Star TSP654II LAN',        icon:'🖨', desc:'80mm LAN — kitchen workhorse',    brand:'Star' },
-  { id:'star-tsp700',     label:'Star TSP700II LAN',        icon:'🖨', desc:'80mm LAN — two-colour capable',   brand:'Star' },
-  { id:'star-tsp800',     label:'Star TSP800II LAN',        icon:'🖨', desc:'112mm LAN — wider labels',        brand:'Star' },
-  { id:'star-mcprint3',   label:'Star mC-Print3',           icon:'🖨', desc:'80mm LAN — newest Star',          brand:'Star' },
-  { id:'star-mcprint2',   label:'Star mC-Print2',           icon:'🖨', desc:'58mm LAN',                         brand:'Star' },
-  // ── Bixolon ────────────────────────────────────────────────────────────────
-  { id:'bixolon-srp350',  label:'Bixolon SRP-350III',       icon:'🖨', desc:'80mm LAN',                         brand:'Bixolon' },
-  { id:'bixolon-srpq300', label:'Bixolon SRP-Q300',         icon:'🖨', desc:'80mm LAN — compact',               brand:'Bixolon' },
-  // ── Citizen ────────────────────────────────────────────────────────────────
-  { id:'citizen-cts310',  label:'Citizen CT-S310II',        icon:'🖨', desc:'80mm LAN',                         brand:'Citizen' },
-  { id:'citizen-cte351',  label:'Citizen CT-E351',          icon:'🖨', desc:'80mm LAN',                         brand:'Citizen' },
-  // ── Budget / generic ──────────────────────────────────────────────────────
-  { id:'xprinter-xp80',   label:'Xprinter XP-T80 / N160II', icon:'🖨', desc:'80mm LAN — budget ESC/POS',        brand:'Xprinter' },
-  { id:'generic',         label:'Other / Generic ESC/POS',  icon:'🖨', desc:'Any ESC/POS printer on TCP 9100',  brand:'Generic' },
-];
+// v5.8.84: the model list lives in lib/printerDialects.js next to the bytes each model
+// gets (ESC/POS, Star Line Mode, Star raster) and the plain words note about the mode the
+// physical printer must be in. `unavailable` models (the USB only TSP100 ECO) stay listed
+// so a row saved earlier still shows and prints, but cannot be picked for a new printer.
+const MODELS = PRINTER_MODELS.map(m => ({ ...m, icon:'🖨' }));
 
 // Only network is currently supported end-to-end (Android NetworkPrinter.java + iOS NetworkPrinter.swift).
-// Bluetooth and USB require additional native bridges — mark as disabled until built.
+// Bluetooth and USB require additional native bridges, so they stay disabled until built.
 const CONN_TYPES = [
-  { id:'network',   label:'WiFi / Ethernet', icon:'🌐', placeholder:'192.168.1.100',              enabled:true,  note:'Recommended — works on all supported printers' },
-  { id:'bluetooth', label:'Bluetooth',       icon:'🔵', placeholder:'e.g. AA:BB:CC:DD:EE:FF',     enabled:false, note:'Coming soon — native BT bridge not yet built' },
-  { id:'usb',       label:'USB',             icon:'🔌', placeholder:'Auto-detected',              enabled:false, note:'Coming soon — requires device-specific driver' },
+  { id:'network',   label:'WiFi / Ethernet', icon:'🌐', placeholder:'192.168.1.100',              enabled:true,  note:'Recommended. Works on all supported printers.' },
+  { id:'bluetooth', label:'Bluetooth',       icon:'🔵', placeholder:'e.g. AA:BB:CC:DD:EE:FF',     enabled:false, note:'Coming soon. The native Bluetooth bridge is not built yet.' },
+  { id:'usb',       label:'USB',             icon:'🔌', placeholder:'Auto-detected',              enabled:false, note:'Coming soon. Needs a device specific driver.' },
 ];
 
 const ROLES = [
@@ -49,10 +28,7 @@ const ROLES = [
   { id:'general',    label:'General purpose', icon:'🖨' },
 ];
 
-const PAPER = [
-  { id:80, label:'80mm' },
-  { id:58, label:'58mm' },
-];
+const PAPER_LABEL = { 80:'80mm', 58:'58mm', 112:'112mm' };
 
 const EMPTY = { name:'', model:'sunmi-nt311', connectionType:'network', address:'', paperWidth:80, roles:['receipt'], location:'', cashDrawerAttached:false };
 
@@ -123,6 +99,12 @@ function PrinterForm({ initial, onSave, onCancel }) {
   const f = (k, v) => setForm(p => ({ ...p, [k]: v }));
   const model = MODELS.find(m => m.id === form.model) || MODELS[0];
   const conn  = CONN_TYPES.find(c => c.id === form.connectionType) || CONN_TYPES[0];
+  const paperOptions = paperOptionsFor(model.id);
+  // A model that only comes in one paper size (TSP800II 112mm, NT310 58mm) fixes the width.
+  const setModel = (id) => {
+    const allowed = paperOptionsFor(id);
+    setForm(p => ({ ...p, model: id, paperWidth: allowed.includes(p.paperWidth) ? p.paperWidth : allowed[0] }));
+  };
 
   const toggleRole = (rid) => {
     f('roles', form.roles?.includes(rid) ? form.roles.filter(r => r !== rid) : [...(form.roles || []), rid]);
@@ -153,9 +135,9 @@ function PrinterForm({ initial, onSave, onCancel }) {
           const currentBrand = model.brand;
           const modelsForBrand = MODELS.filter(m => m.brand === currentBrand);
           const onBrandChange = (newBrand) => {
-            // Pick first model in the new brand
-            const firstInBrand = MODELS.find(m => m.brand === newBrand);
-            if (firstInBrand) f('model', firstInBrand.id);
+            // Pick the first model in the new brand that can still be chosen
+            const firstInBrand = MODELS.find(m => m.brand === newBrand && !m.unavailable);
+            if (firstInBrand) setModel(firstInBrand.id);
           };
           const selectStyle = { ...S.input, cursor:'pointer', appearance:'none', WebkitAppearance:'none',
             backgroundImage:`url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%23888' d='M6 8L0 0h12z'/%3E%3C/svg%3E")`,
@@ -165,13 +147,23 @@ function PrinterForm({ initial, onSave, onCancel }) {
               <select value={currentBrand} onChange={e => onBrandChange(e.target.value)} style={selectStyle}>
                 {brands.map(b => <option key={b} value={b}>{b}</option>)}
               </select>
-              <select value={form.model} onChange={e => f('model', e.target.value)} style={selectStyle}>
-                {modelsForBrand.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+              <select value={form.model} onChange={e => setModel(e.target.value)} style={selectStyle}>
+                {modelsForBrand.map(m => (
+                  <option key={m.id} value={m.id} disabled={!!m.unavailable}>
+                    {m.unavailable ? `${m.label} (USB only, no Wi-Fi)` : m.label}
+                  </option>
+                ))}
               </select>
             </div>
           );
         })()}
         <div style={{ fontSize:11, color:'var(--t3)', marginTop:8 }}>{model.desc}</div>
+        {/* v5.8.84: what the physical printer must be set to and what we send it. */}
+        <div style={{ fontSize:11, marginTop:6, padding:'8px 10px', borderRadius:8, lineHeight:1.6,
+          background: model.unavailable ? 'var(--red-d)' : 'var(--bg3)', border:`1px solid ${model.unavailable ? 'var(--red-b)' : 'var(--bdr)'}`,
+          color: model.unavailable ? 'var(--red)' : 'var(--t2)' }}>
+          {modelSetupNote(model.id)}
+        </div>
       </div>
 
       {/* Connection type */}
@@ -212,7 +204,7 @@ function PrinterForm({ initial, onSave, onCancel }) {
             <label style={S.label}>{form.connectionType === 'bluetooth' ? 'Bluetooth address' : 'IP address'}</label>
             <input style={S.input} value={form.address} onChange={e=>f('address',e.target.value)} placeholder={conn.placeholder}/>
             {form.connectionType === 'network' && (
-              <div style={{ fontSize:11, color:'var(--t4)', marginTop:4 }}>Standard ESC/POS port 9100 is used automatically</div>
+              <div style={{ fontSize:11, color:'var(--t4)', marginTop:4 }}>Port 9100 is used automatically</div>
             )}
           </div>
         )}
@@ -222,13 +214,13 @@ function PrinterForm({ initial, onSave, onCancel }) {
       <div style={{ marginBottom:14 }}>
         <label style={S.label}>Paper width</label>
         <div style={{ display:'flex', gap:6 }}>
-          {PAPER.map(p => (
-            <button key={p.id} onClick={() => f('paperWidth', p.id)} style={{
+          {paperOptions.map(w => (
+            <button key={w} onClick={() => f('paperWidth', w)} style={{
               padding:'7px 16px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', fontSize:12, fontWeight:600,
-              background: form.paperWidth === p.id ? 'var(--acc-d)' : 'var(--bg3)',
-              border: `1.5px solid ${form.paperWidth === p.id ? 'var(--acc)' : 'var(--bdr)'}`,
-              color: form.paperWidth === p.id ? 'var(--acc)' : 'var(--t2)',
-            }}>{p.label}</button>
+              background: form.paperWidth === w ? 'var(--acc-d)' : 'var(--bg3)',
+              border: `1.5px solid ${form.paperWidth === w ? 'var(--acc)' : 'var(--bdr)'}`,
+              color: form.paperWidth === w ? 'var(--acc)' : 'var(--t2)',
+            }}>{PAPER_LABEL[w] || `${w}mm`}</button>
           ))}
         </div>
       </div>
@@ -260,7 +252,7 @@ function PrinterForm({ initial, onSave, onCancel }) {
           <div>
             <div style={{ fontSize:13, fontWeight:700, color: form.cashDrawerAttached ? 'var(--acc)' : 'var(--t2)' }}>Cash drawer is wired to this printer</div>
             <div style={{ fontSize:11, color:'var(--t4)', marginTop:2 }}>
-              Ejects the drawer on every cash payment (ESC p pulse). You can also pulse it manually from the POS.
+              Opens the drawer on every cash payment, using the pulse this printer model understands. You can also open it from the POS.
             </div>
           </div>
         </label>
@@ -338,7 +330,17 @@ export default function PrinterRegistry() {
     try {
       const result = await printService.printTestPage(printer);
       const jobId = result?.jobId;
-      if (jobId && printService.watchJob) {
+      if (result?.ok === false) {
+        // v5.8.84: a direct print that failed used to show as queued. Say what happened.
+        const err = result.error || printFailureWords(printEnvironment());
+        await printService.recordPrinterHealth(printer.id, 'error', err);
+        persist(printers.map(p => p.id === printer.id ? { ...p, status:'offline' } : p));
+        setTestResult(r => ({ ...r, [printer.id]: 'error', error: err }));
+      } else if (result?.transport === 'native' || result?.transport === 'idempotent') {
+        await printService.recordPrinterHealth(printer.id, 'online');
+        persist(printers.map(p => p.id === printer.id ? { ...p, status:'online', lastSeen:Date.now() } : p));
+        setTestResult(r => ({ ...r, [printer.id]: 'online' }));
+      } else if (jobId && printService.watchJob) {
         setTestResult(r => ({ ...r, [printer.id]: 'queued' }));
         await new Promise((resolve) => {
           const unsub = printService.watchJob(jobId, async (updated) => {
@@ -357,7 +359,7 @@ export default function PrinterRegistry() {
           });
           setTimeout(() => {
             unsub();
-            // Timeout — agent not responding. Don't mark offline yet — job may still be in queue
+            // Timeout: nothing picked the job up. Not marked offline yet, the job is still queued.
             setTestResult(r => ({ ...r, [printer.id]: 'timeout' }));
             resolve();
           }, 20000);
@@ -387,7 +389,7 @@ export default function PrinterRegistry() {
           <div style={{ fontSize:36, marginBottom:12 }}>🖨</div>
           <div style={{ fontSize:15, fontWeight:700, color:'var(--t2)', marginBottom:6 }}>No printers added yet</div>
           <div style={{ fontSize:13, color:'var(--t3)', marginBottom:20, lineHeight:1.7 }}>
-            Add your Sunmi NT311 or other ESC/POS printers here.<br/>
+            Add your receipt and kitchen printers here (Sunmi, Epson, Star, Bixolon, Citizen and more).<br/>
             Once added, you can assign them to production centres and devices.
           </div>
           <button onClick={() => setShowForm(true)} style={{ ...S.btn, background:'var(--acc)', color:'#fff', padding:'10px 24px' }}>+ Add first printer</button>
@@ -397,6 +399,7 @@ export default function PrinterRegistry() {
       {printers.map(printer => {
         const model = MODELS.find(m => m.id === printer.model) || MODELS[0];
         const conn  = CONN_TYPES.find(c => c.id === printer.connectionType) || CONN_TYPES[0];
+        const spec  = resolvePrinterSpec(printer);
         const isEditing = editId === printer.id;
         const result = testResult[printer.id];
 
@@ -420,8 +423,13 @@ export default function PrinterRegistry() {
                     <span style={{ margin:'0 6px', opacity:.4 }}>·</span>
                     <span>{conn.icon} {printer.address || 'USB'}{printer.connectionType === 'network' && printer.port !== 9100 ? `:${printer.port}` : ''}</span>
                     <span style={{ margin:'0 6px', opacity:.4 }}>·</span>
-                    <span>{printer.paperWidth || 80}mm</span>
+                    <span>{spec.paper}mm, {spec.cols} columns</span>
+                    <span style={{ margin:'0 6px', opacity:.4 }}>·</span>
+                    <span title={modelSetupNote(model.id)}>{spec.dialectLabel}</span>
                   </div>
+                  {model.unavailable && (
+                    <div style={{ fontSize:11, color:'var(--red)', marginTop:4 }}>{modelSetupNote(model.id)}</div>
+                  )}
                   {printer.roles?.length > 0 && (
                     <div style={{ display:'flex', gap:4, marginTop:5 }}>
                       {printer.roles.map(rid => {
@@ -433,15 +441,15 @@ export default function PrinterRegistry() {
                   {result && (
                     <div style={{ fontSize:11, marginTop:5, fontWeight:600,
                       color: result === 'online' ? 'var(--grn)' : result === 'queued' ? 'var(--acc)' : result === 'timeout' ? 'var(--acc)' : 'var(--red)' }}>
-                      {result === 'online'       && '✓ Printed successfully — printer is online'}
-                      {result === 'queued'       && '⏳ Job queued — waiting for print agent…'}
-                      {result === 'timeout'      && '⚠ Job queued but no response yet — check the print agent is running on your LAN machine'}
-                      {result === 'agent-failed' && `✗ Agent reached printer but failed — ${testResult[printer.id]?.error || 'check printer cable, paper, and power'}`}
-                      {result === 'error'        && `✗ Could not queue job — ${testResult[printer.id]?.error || 'check Supabase connection'}`}
+                      {result === 'online'       && '✓ Test page sent. Check it came out of the printer.'}
+                      {result === 'queued'       && '⏳ Job queued, waiting for a till to print it…'}
+                      {result === 'timeout'      && `⚠ ${printFailureWords(printEnvironment())}`}
+                      {result === 'agent-failed' && `✗ The printer was reached but reported a fault: ${testResult[printer.id]?.error || 'check paper and power'}`}
+                      {result === 'error'        && `✗ Could not print: ${testResult[printer.id]?.error || 'check the connection'}`}
                     </div>
                   )}
                   {testing[printer.id] && result === 'queued' && (
-                    <div style={{ fontSize:10, color:'var(--t4)', marginTop:3 }}>Waiting for print agent to deliver…</div>
+                    <div style={{ fontSize:10, color:'var(--t4)', marginTop:3 }}>Waiting for a till on the venue Wi-Fi to print it…</div>
                   )}
                 </div>
               </div>
