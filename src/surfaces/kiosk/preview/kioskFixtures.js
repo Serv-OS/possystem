@@ -184,3 +184,20 @@ export function fixtureVerifyReply(phone) {
     gift_cards: [{ id: 'linked', last4: '9999', balance: 5000 }],
   };
 }
+
+// Menu translations (v5.8.82): a few Spanish rows, the shape menu_translations holds, so the
+// preview shows venue text following the language pill. Real venues get every row from the
+// menu-translate edge function.
+export const FIXTURE_MENU_TRANSLATIONS = {
+  es: [
+    { entity_type: 'category', entity_id: 'pizza', text: { name: 'Pizza al horno de piedra', en: 'Stone baked pizza' } },
+    { entity_type: 'category', entity_id: 'plates', text: { name: 'Raciones', en: 'Small plates' } },
+    { entity_type: 'category', entity_id: 'salads', text: { name: 'Ensaladas', en: 'Salads' } },
+    { entity_type: 'category', entity_id: 'draught', text: { name: 'De barril', en: 'Draught' } },
+    { entity_type: 'item', entity_id: 'p1', text: { name: 'Margherita', description: 'Fior di latte, albahaca, San Marzano', en: 'Margherita' } },
+    { entity_type: 'item', entity_id: 'p2', text: { name: 'Diavola', description: 'Salami picante, guindilla, orégano', en: 'Diavola' } },
+    { entity_type: 'item', entity_id: 'p3', text: { name: 'Funghi', description: 'Setas variadas, tomillo, taleggio', en: 'Funghi' } },
+    { entity_type: 'modifier_group', entity_id: 'mg-milk', text: { name: 'Leche', en: 'Milk' } },
+    { entity_type: 'modifier_option', entity_id: 'o-oat', text: { name: 'Leche de avena', en: 'Oat milk' } },
+  ],
+};

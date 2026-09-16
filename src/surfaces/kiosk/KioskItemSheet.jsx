@@ -18,7 +18,7 @@
 import { useMemo, useState } from 'react';
 import { t, tf } from '../../lib/i18n';
 import { money } from '../../lib/currency';
-import { displayName } from '../../lib/itemDisplay';
+import { itemName, itemDescription, groupName, optionName, useMenuText } from '../../lib/menuText';
 import { itemAllergenIds, kioskAllergenLabels, allergenIdsOfLists, sheetUnsafeIds } from '../../lib/kioskAllergens';
 import { KioskCloseButton, KioskPhoto } from './KioskChrome';
 import { MinusIcon, PlusIcon, TickIcon, WarningIcon } from './KioskIcons';
@@ -107,7 +107,7 @@ export default function KioskItemSheet(props) {
       <div
         role="dialog"
         aria-modal="true"
-        aria-label={displayName(item)}
+        aria-label={itemName(item)}
         style={{
           background: '#FFFFFF', borderRadius: '40px 40px 0 0', padding: '40px 40px 44px', display: 'flex',
           flexDirection: 'column', gap: 26, maxHeight: 'calc(100% - 140px)', animation: 'kfade .22s ease', minHeight: 0,
@@ -117,9 +117,9 @@ export default function KioskItemSheet(props) {
         <div style={{ display: 'flex', alignItems: 'flex-start', gap: 24, flex: 'none' }}>
           <KioskPhoto image={item?.image} color={brandColor} width={150} height={150} radius={24} />
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 42, fontWeight: 800, color: 'var(--k2Ink)', lineHeight: 1.1, overflowWrap: 'anywhere' }}>{displayName(item)}</div>
-            {item?.description ? (
-              <div style={{ fontSize: 21, color: 'var(--k2InkSubtle)', marginTop: 6, lineHeight: 1.35 }}>{item.description}</div>
+            <div style={{ fontSize: 42, fontWeight: 800, color: 'var(--k2Ink)', lineHeight: 1.1, overflowWrap: 'anywhere' }}>{itemName(item)}</div>
+            {itemDescription(item) ? (
+              <div style={{ fontSize: 21, color: 'var(--k2InkSubtle)', marginTop: 6, lineHeight: 1.35 }}>{itemDescription(item)}</div>
             ) : null}
             <div style={{ fontSize: 26, fontWeight: 800, color: 'var(--k2AccentInk, var(--k2PrimaryInk))', marginTop: 10, fontVariantNumeric: 'tabular-nums' }}>{priceLine}</div>
             {allergenLabels.length > 0 ? (
@@ -271,6 +271,7 @@ function optionState(g, opt, props) {
 }
 
 function GroupBlock({ g, ...props }) {
+  useMenuText();   // venue text in the customer's language
   const { showError, buildHint, resolveOpt, subGroupsCache, nestedSelections, setNestedPick } = props;
   const picked = props.selections[g.id] || [];
   const invalid = showError && (picked.length < g._min || picked.length > g._max);
@@ -296,7 +297,7 @@ function GroupBlock({ g, ...props }) {
               }}
             >
               <span style={{ display: 'flex', alignItems: 'baseline', gap: 10, fontSize: 28, fontWeight: 700, lineHeight: 1.1 }}>
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{opt.name}</span>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{optionName(g, opt)}</span>
                 <span style={{ fontSize: 20, fontWeight: 600, color: 'var(--k2InkSubtle)', flex: 'none' }}>{priceText(opt, true)}</span>
               </span>
               <StockNote st={st} />
@@ -333,7 +334,7 @@ function GroupBlock({ g, ...props }) {
         nested.push(
           <div key={parentKey} style={{ background: 'var(--k2PrimaryTint)', borderLeft: '3px solid var(--k2PrimaryLine)', borderRadius: 20, padding: 20 }}>
             <div style={{ fontSize: 21, fontWeight: 700, color: 'var(--k2Ink)' }}>
-              {opt.name}{count > 1 ? ` #${occ + 1}` : ''} · {sub.name}
+              {optionName(g, opt)}{count > 1 ? ` #${occ + 1}` : ''} · {groupName(sub)}
             </div>
             <div style={{ fontSize: 19, color: subInvalid ? 'var(--k2Danger)' : 'var(--k2InkSubtle)', fontWeight: subInvalid ? 700 : 500, margin: '4px 0 14px' }}>
               {buildHint(sub._min, sub._max)}
@@ -369,7 +370,7 @@ function GroupBlock({ g, ...props }) {
   return (
     <div data-mod-group={g.id}>
       <div style={{ display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: '4px 14px', marginBottom: 12 }}>
-        <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--k2InkMuted)' }}>{isSize ? t('k2.sheet.size') : g.name}</div>
+        <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--k2InkMuted)' }}>{isSize ? t('k2.sheet.size') : groupName(g)}</div>
         <div style={{ fontSize: 19, color: invalid ? 'var(--k2Danger)' : 'var(--k2InkSubtle)', fontWeight: invalid ? 700 : 500 }}>
           {buildHint(g._min, g._max)}
         </div>
@@ -387,7 +388,7 @@ function OptionPill({ g, opt, ...props }) {
   const text = (
     <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2, minWidth: 0, textAlign: 'left' }}>
       <span style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
-        <span>{opt.name}</span>
+        <span>{optionName(g, opt)}</span>
         {price ? <span style={{ fontSize: 20, fontWeight: 600, color: 'var(--k2InkSubtle)' }}>{price}</span> : null}
       </span>
       <AllergenNote list={eff.allergens} />
@@ -399,12 +400,12 @@ function OptionPill({ g, opt, ...props }) {
   if (!g._isSingle && st.count > 0) {
     return (
       <div style={{ ...pillBase(true, false), padding: '4px 6px', gap: 14, cursor: 'default' }}>
-        <SmallStep label={`${t('k2.common.less')}: ${opt.name}`} onClick={() => props.decOption(g, opt.id)}>
+        <SmallStep label={`${t('k2.common.less')}: ${optionName(g, opt)}`} onClick={() => props.decOption(g, opt.id)}>
           <MinusIcon size={24} />
         </SmallStep>
         {text}
         <span style={{ fontSize: 24, fontWeight: 800, minWidth: 28, textAlign: 'center', fontVariantNumeric: 'tabular-nums' }}>{st.count}</span>
-        <SmallStep label={`${t('k2.common.more')}: ${opt.name}`} primary disabled={st.atCap || st.soldOut} onClick={() => props.incOption(g, opt.id)}>
+        <SmallStep label={`${t('k2.common.more')}: ${optionName(g, opt)}`} primary disabled={st.atCap || st.soldOut} onClick={() => props.incOption(g, opt.id)}>
           <PlusIcon size={24} />
         </SmallStep>
       </div>
@@ -446,18 +447,18 @@ function OptionCard({ g, opt, ...props }) {
         {eff.image ? <img src={eff.image} alt="" draggable={false} style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} /> : null}
       </div>
       <div style={{ padding: '0 4px', display: 'flex', flexDirection: 'column', gap: 2 }}>
-        <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--k2Ink)', lineHeight: 1.2 }}>{opt.name}</div>
+        <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--k2Ink)', lineHeight: 1.2 }}>{optionName(g, opt)}</div>
         {price ? <div style={{ fontSize: 20, fontWeight: 600, color: 'var(--k2InkSubtle)' }}>{price}</div> : null}
         <AllergenNote list={eff.allergens} />
         <StockNote st={st} />
       </div>
       {stepper ? (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'var(--k2Muted)', borderRadius: 999, padding: 0 }}>
-          <SmallStep label={`${t('k2.common.less')}: ${opt.name}`} onClick={() => props.decOption(g, opt.id)}>
+          <SmallStep label={`${t('k2.common.less')}: ${optionName(g, opt)}`} onClick={() => props.decOption(g, opt.id)}>
             <MinusIcon size={24} />
           </SmallStep>
           <span style={{ fontSize: 24, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>{st.count}</span>
-          <SmallStep label={`${t('k2.common.more')}: ${opt.name}`} primary disabled={st.atCap || st.soldOut} onClick={() => props.incOption(g, opt.id)}>
+          <SmallStep label={`${t('k2.common.more')}: ${optionName(g, opt)}`} primary disabled={st.atCap || st.soldOut} onClick={() => props.incOption(g, opt.id)}>
             <PlusIcon size={24} />
           </SmallStep>
         </div>

@@ -226,10 +226,26 @@ export async function attributePointsOrder({ customer, orderRecord }) {
   }
 }
 
+/**
+ * The venue's menu translations for one language (lib/menuText.js). The rows are public
+ * reads like menu_items. null on any failure, and the kiosk then stays in English for the
+ * venue text while the screen text still follows the picked language.
+ */
+export async function loadMenuTranslations(locationId, lang) {
+  if (!locationId || !lang || lang === 'en') return [];
+  const res = await withTimeout(
+    supabase.from('menu_translations').select('entity_type,entity_id,text').eq('location_id', locationId).eq('lang', lang),
+    READ_TIMEOUT_MS,
+    null,
+  );
+  if (!res || res.error || !Array.isArray(res.data)) return null;
+  return res.data;
+}
+
 // No loadModifierGroups here: on a real kiosk the item sheet reads modifier_groups itself,
 // exactly as today's item screen does. The DEV preview passes one with sample data.
 const kioskApi = {
-  loadCurrency, loadTables, loadGroupRules, loadTipping, loadAlcoholCategoryIds,
+  loadCurrency, loadTables, loadGroupRules, loadTipping, loadAlcoholCategoryIds, loadMenuTranslations,
   sendOtp, verifyOtp, lookupGift, validatePromo,
   logStaffAlert, adoptLocation, attributePointsOrder, setAttributionPolicy,
 };

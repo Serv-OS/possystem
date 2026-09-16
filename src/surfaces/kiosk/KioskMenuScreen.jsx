@@ -16,6 +16,7 @@ import { t, tf, tn } from '../../lib/i18n';
 import { resolveItemPrice, variantFromPrice, variantChildren } from '../../lib/menuPricing';
 import { railTileMode } from '../../lib/categoryPhoto';
 import { kioskModeLabels } from '../../lib/kioskFlow';
+import { categoryLabel, useMenuText } from '../../lib/menuText';
 import {
   kioskRailRoots, kioskActiveRoot, kioskMenuSections, kioskSectionItemCount, kioskAddMode,
   kioskAvailableSizes, kioskLowStock, kioskCardButton,
@@ -74,6 +75,7 @@ export default function KioskMenuScreen({
   );
   const count = kioskSectionItemCount(sections);
 
+  useMenuText();   // venue text in the customer's language
   const labels = kioskModeLabels({ orderType, tableNumber });
   const marked = allergenFilter instanceof Set ? allergenFilter.size : 0;
   const addCtx = { items, eightySixIds, dailyCounts, allergenFilter, instructionDefs, groupRules };
@@ -128,7 +130,7 @@ export default function KioskMenuScreen({
           <div key={rootId || 'none'} style={{ flex: 1, minWidth: 0, overflowY: 'auto', padding: '26px 28px 220px' }}>
             <KioskMenuBanner banner={menuBanner} />
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 14, marginBottom: 22, flexWrap: 'wrap' }}>
-              <div style={{ fontSize: 40, fontWeight: 800, color: 'var(--k2Ink)', lineHeight: 1.1 }}>{root?.label || ''}</div>
+              <div style={{ fontSize: 40, fontWeight: 800, color: 'var(--k2Ink)', lineHeight: 1.1 }}>{root ? categoryLabel(root) : ''}</div>
               <div style={{ fontSize: 19, color: 'var(--k2InkSubtle)' }}>{tn('k2.items', count)}</div>
             </div>
             {sections.length === 0 ? (
@@ -136,7 +138,7 @@ export default function KioskMenuScreen({
             ) : sections.map((sec, si) => (
               <div key={sec.category.id}>
                 {sec.heading ? (
-                  <div style={{ fontSize: 30, fontWeight: 800, color: 'var(--k2Ink)', margin: si === 0 ? '0 0 16px' : '34px 0 16px' }}>{sec.heading}</div>
+                  <div style={{ fontSize: 30, fontWeight: 800, color: 'var(--k2Ink)', margin: si === 0 ? '0 0 16px' : '34px 0 16px' }}>{categoryLabel(sec.category)}</div>
                 ) : null}
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 22 }}>
                   {sec.items.map(it => {

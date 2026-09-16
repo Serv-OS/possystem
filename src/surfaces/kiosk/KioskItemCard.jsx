@@ -10,7 +10,7 @@
  */
 import { t, tf } from '../../lib/i18n';
 import { money } from '../../lib/currency';
-import { displayName } from '../../lib/itemDisplay';
+import { itemName, itemDescription, useMenuText } from '../../lib/menuText';
 import { kioskCardLabelSize } from '../../lib/kioskFlow';
 import { KioskPhoto } from './KioskChrome';
 import { PlusIcon } from './KioskIcons';
@@ -24,6 +24,7 @@ import { PlusIcon } from './KioskIcons';
  * lowStock  : number left for the low stock badge, or null
  */
 export default function KioskItemCard({ item, addMode, button, price, fromPrice = null, unsafe = false, lowStock = null, primary, onOpen, onQuickAdd }) {
+  useMenuText();   // re-render when the customer's language changes the venue text
   const soldOut = addMode.mode === 'soldout';
   const quick = addMode.mode === 'quick';
 
@@ -46,7 +47,7 @@ export default function KioskItemCard({ item, addMode, button, price, fromPrice 
         type="button"
         onClick={onTop}
         disabled={soldOut}
-        aria-label={displayName(item)}
+        aria-label={itemName(item)}
         style={{ border: 0, background: 'transparent', padding: 0, textAlign: 'left', cursor: soldOut ? 'default' : 'pointer', display: 'flex', flexDirection: 'column', gap: 12, color: 'inherit', flex: 1 }}
       >
         <KioskPhoto image={item.image} color={primary} width="100%" height={210} radius={20} dim={opacity}>
@@ -57,11 +58,11 @@ export default function KioskItemCard({ item, addMode, button, price, fromPrice 
           ) : null}
         </KioskPhoto>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4, width: '100%', opacity }}>
-          <div style={{ fontSize: 28, fontWeight: 800, color: 'var(--k2Ink)', lineHeight: 1.15, overflowWrap: 'anywhere' }}>{displayName(item)}</div>
+          <div style={{ fontSize: 28, fontWeight: 800, color: 'var(--k2Ink)', lineHeight: 1.15, overflowWrap: 'anywhere' }}>{itemName(item)}</div>
           <div style={{
             fontSize: 18, color: 'var(--k2InkSubtle)', lineHeight: 1.35, minHeight: 48,
             display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden',
-          }}>{item.description || ''}</div>
+          }}>{itemDescription(item)}</div>
           {quick && addMode.hasExtras ? (
             <div style={{ fontSize: 17, fontWeight: 600, color: 'var(--k2AccentInk, var(--k2PrimaryInk))', marginTop: 2 }}>{t('k2.menu.tapForExtras')}</div>
           ) : null}

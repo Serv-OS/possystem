@@ -35,6 +35,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
 import { useStore } from '../store';
 import { t, tf, useKioskLang } from '../lib/i18n';
+import { translateEnglish, useMenuText } from '../lib/menuText';
 import { displayName } from '../lib/itemDisplay';
 import { kioskLineNeed } from '../lib/kioskLine';
 import { money } from '../lib/currency';
@@ -84,6 +85,7 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
   // Subscribe to language changes so t() strings re-render if the customer
   // switches language while the modal is open.
   useKioskLang();
+  useMenuText();   // the sheet's venue text follows the picked language (no effect on today's modal)
   const allInstructionDefs = useStore(s => s.instructionGroupDefs) || NO_DEFS;
 
   // v5.5.285: Stock enforcement — cap qty selector and modifier selections
@@ -578,8 +580,8 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
           const mi = (allItems || []).find(i => i.id === rid);
           const nm = mi?.menuName || mi?.menu_name || mi?.name || t('k2.sheet.thatItem');
           setStockErr(avail <= 0
-            ? tf('k2.sheet.stockSoldOut', { name: nm })
-            : tf('k2.sheet.stockOnlyLeft', { n: Math.max(0, avail), name: nm }));
+            ? tf('k2.sheet.stockSoldOut', { name: translateEnglish(nm) })
+            : tf('k2.sheet.stockOnlyLeft', { n: Math.max(0, avail), name: translateEnglish(nm) }));
           return;
         }
       }
@@ -627,8 +629,13 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
     // "Choose 1 from Milk for Latte"), never today's English "Pick a " + group name.
     const sheetHint = isValid ? null
       : (kioskSheetGroupHint(groups, selections) || kioskSheetNestedHint(groups, selections, nestedSelections, subGroupsCache));
-    // groupKey: the made up Size group, said in the customer's language.
-    const sheetVars = sheetHint?.groupKey ? { ...sheetHint.vars, group: t(sheetHint.groupKey) } : sheetHint?.vars;
+    // groupKey: the made up Size group, said in the customer's language. A venue's group and
+    // option names go through the venue's translations (lib/menuText.js), English when none.
+    const sheetVars = !sheetHint ? null : {
+      ...sheetHint.vars,
+      group: sheetHint.groupKey ? t(sheetHint.groupKey) : translateEnglish(sheetHint.vars.group),
+      ...(sheetHint.vars.option != null ? { option: translateEnglish(sheetHint.vars.option) } : {}),
+    };
     return (
       <KioskItemSheet
         item={item}

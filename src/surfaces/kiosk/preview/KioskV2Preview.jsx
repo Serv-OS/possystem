@@ -22,7 +22,7 @@ import KioskCardScreen from '../KioskCardScreen';
 import {
   FIXTURE_LOCATION_ID, FIXTURE_COMPANY_ID, FIXTURE_CATEGORIES, FIXTURE_ITEMS, FIXTURE_TABLE_STATES,
   FIXTURE_LOGO_URL, FIXTURE_MODIFIER_GROUPS, FIXTURE_DAILY_COUNTS, FIXTURE_EIGHTY_SIX, fixtureProfile,
-  FIXTURE_ALCOHOL_CATEGORY_IDS, FIXTURE_TIPPING, FIXTURE_GIFT_CARDS, FIXTURE_PROMOS, FIXTURE_OTP_CODE, fixtureVerifyReply,
+  FIXTURE_ALCOHOL_CATEGORY_IDS, FIXTURE_TIPPING, FIXTURE_MENU_TRANSLATIONS, FIXTURE_GIFT_CARDS, FIXTURE_PROMOS, FIXTURE_OTP_CODE, fixtureVerifyReply,
 } from './kioskFixtures';
 
 const TABLE_MODES = ['either', 'enter', 'dispense', 'none'];
@@ -66,6 +66,7 @@ export default function KioskV2Preview() {
     loadModifierGroups: async (ids) => ({ data: FIXTURE_MODIFIER_GROUPS.filter(g => ids.includes(g.id)), error: null }),
     loadTipping: async () => FIXTURE_TIPPING[opts.tipping],
     loadAlcoholCategoryIds: async () => FIXTURE_ALCOHOL_CATEGORY_IDS,
+    loadMenuTranslations: async (_loc, lang) => FIXTURE_MENU_TRANSLATIONS[lang] || [],
     // The same result shapes as kioskApi, from sample codes. network 'down' fails every call.
     sendOtp: async () => { await wait(400); return opts.network === 'down' ? { errorKey: 'k2.otp.failed' } : { ok: true }; },
     verifyOtp: async ({ phone, code }) => {

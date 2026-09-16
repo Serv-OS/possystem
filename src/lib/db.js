@@ -9,6 +9,7 @@
  */
 
 import { supabase, isMock, getLocationId, getActiveLocationSync } from './supabase';
+import { scheduleMenuTranslate } from './menuTranslateTrigger';
 import { logActivity } from './activity';
 import { VERSION } from './version';
 import { getTodayStartFallback } from './locationTime';
@@ -218,6 +219,7 @@ export const upsertMenuCategory = async (cat, locationId = null) => {
     result = await supabase.from('menu_categories').upsert(row);
   }
   reportSave('category', result.error);   // v5.5.951 — loud, not console-only
+  if (!result.error) scheduleMenuTranslate(locationId);   // kiosk translations follow the English (v5.8.82)
   return result;
 };
 
@@ -305,6 +307,7 @@ export const upsertMenuItem = async (item, locationId = null) => {
   };
 
   const result = await supabase.from('menu_items').upsert(dbItem, { onConflict: 'id' });
+  if (!result.error) scheduleMenuTranslate(locationId);   // kiosk translations follow the English (v5.8.82)
   reportSave('item', result.error);   // v5.5.951
   return result;
 };
@@ -362,6 +365,7 @@ export const upsertModifierGroup = async (group, locationId = null) => {
     sort_order:     group.sortOrder ?? group.sort_order ?? 0,
   };
   const result = await supabase.from('modifier_groups').upsert(row, { onConflict: 'id' });
+  if (!result.error) scheduleMenuTranslate(locationId);   // kiosk translations follow the English (v5.8.82)
   reportSave('modifier group', result.error);   // v5.5.951
   return result;
 };

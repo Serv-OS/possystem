@@ -10,9 +10,12 @@
  * The photo is decorative (alt=""): the label is the accessible name.
  * photoOrigin: the app's Supabase URL. A photo URL on any other host is never shown.
  */
+import { categoryLabel, useMenuText } from '../../lib/menuText';
 import { tileAccentColor, tileSlot } from '../../lib/categoryPhoto';
 
 export default function KioskCategoryTile({ cat, active, mode, brandColor, photoOrigin = null, onSelect, look }) {
+  useMenuText();   // the label in the customer's language
+  const label = categoryLabel(cat);
   // New kiosk design (README 2 rail tile, plain design px). Any other look keeps the
   // current tile below, untouched.
   if (look === 'design') {
@@ -46,7 +49,7 @@ export default function KioskCategoryTile({ cat, active, mode, brandColor, photo
         <span style={{
           fontSize: 22, fontWeight: 700, lineHeight: 1.2, padding: '0 4px 4px',
           color: active ? '#14110F' : '#3A332C', overflowWrap: 'anywhere',
-        }}>{cat.label}</span>
+        }}>{label}</span>
       </button>
     );
   }
@@ -70,7 +73,7 @@ export default function KioskCategoryTile({ cat, active, mode, brandColor, photo
           lineHeight: 1.2,
           transition: 'background 0.1s',
         }}
-      >{cat.label}</button>
+      >{label}</button>
     );
   }
 
@@ -120,7 +123,7 @@ export default function KioskCategoryTile({ cat, active, mode, brandColor, photo
         letterSpacing: '-0.01em',
         padding: '0 4px 4px',
         overflowWrap: 'anywhere',   // a long one word name wraps instead of being cut off
-      }}>{cat.label}</span>
+      }}>{label}</span>
     </button>
   );
 }

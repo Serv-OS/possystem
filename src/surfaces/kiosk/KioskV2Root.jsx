@@ -25,6 +25,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { getLang, setLang } from '../../lib/i18n';
 import { KIOSK_START_LANGUAGE } from '../../lib/kioskFlow';
 import { kioskThemeVars } from '../../lib/kioskTheme';
+import { setMenuTranslations, clearMenuTranslations } from '../../lib/menuText';
 import { kioskGroupIds } from '../../lib/kioskMenu';
 import { kioskTipRule } from '../../lib/tipping';
 import { getActiveCurrencyCode } from '../../lib/currency';
@@ -79,6 +80,25 @@ export default function KioskV2Root({ engine, api = kioskApi, ScreenPay = null }
     document.documentElement.lang = lang;
     return () => { document.documentElement.lang = KIOSK_START_LANGUAGE; };
   }, [lang]);
+
+  // The venue's own text (items, descriptions, categories, options) in the picked language:
+  // menu_translations rows written by the menu-translate edge function. English needs no
+  // rows. A failed read leaves the venue text in English; the screen text still translates.
+  useEffect(() => {
+    if (!lang || lang === KIOSK_START_LANGUAGE || typeof api.loadMenuTranslations !== 'function') {
+      clearMenuTranslations();
+      return undefined;
+    }
+    // English until this language's rows land: a customer who taps Spanish then French
+    // never sees Spanish venue text under French buttons.
+    clearMenuTranslations();
+    let alive = true;
+    Promise.resolve(api.loadMenuTranslations(locationId, lang))
+      .then((rows) => { if (alive) { if (Array.isArray(rows)) setMenuTranslations(lang, rows); else clearMenuTranslations(); } })
+      .catch(() => { if (alive) clearMenuTranslations(); });
+    return () => { alive = false; };
+  }, [api, locationId, lang]);
+  useEffect(() => () => clearMenuTranslations(), []);
 
   // The venue currency, so money() shows the venue's own symbol and the phone keypad uses the
   // right number rules (UK or US). Seeded from the stored currency until the venue read lands.

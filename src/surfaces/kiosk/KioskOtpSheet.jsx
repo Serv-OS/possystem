@@ -14,6 +14,7 @@
 import { useState } from 'react';
 import { t, tf, tn } from '../../lib/i18n';
 import { kioskRewardsFromVerify, stageKioskReward } from '../../lib/kioskCheckout';
+import { translateEnglish, useMenuText } from '../../lib/menuText';
 import { KioskBottomSheet, KioskSheetHead } from './KioskChrome';
 import { StarIcon } from './KioskIcons';
 import KioskKeypad from './KioskKeypad';
@@ -24,6 +25,7 @@ export default function KioskOtpSheet({
   api, phoneE164, masked, companyId, locationId, verifiedLoyalty, onVerified,
   rewardCtx, onUse, onClose,
 }) {
+  useMenuText();   // item names in the customer's language
   const [step, setStep] = useState(verifiedLoyalty ? 'rewards' : 'send');
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
@@ -130,7 +132,7 @@ export default function KioskOtpSheet({
               const staged = stageKioskReward(reward, { ...rewardCtx, customerId });
               const note = staged.ok ? null
                 : staged.reason === 'needsItem' && staged.items?.length
-                  ? tf('k2.reward.needsItem', { items: staged.items.join(', ') })
+                  ? tf('k2.reward.needsItem', { items: staged.items.map(translateEnglish).join(', ') })
                   : staged.reason === 'giftFirst'
                     ? t('k2.reward.giftFirst')
                     : t('k2.reward.cannotUse');
