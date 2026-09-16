@@ -8,7 +8,7 @@
 // Snapshots carry the full `menuItems` array (see PushToPOSButton in BackOfficeApp.jsx). Variants
 // are SEPARATE menu-item rows (own id + own price), so a variant/size price change is caught like
 // any other item — no special-casing needed. A price is `pricing.base` plus the per-order-type
-// overrides (dineIn / takeaway / collection / delivery), so a takeaway-only change still counts.
+// overrides (dineIn / takeaway / collection / delivery / driveThru), so a takeaway-only change still counts.
 
 const num = (v) => (v === null || v === undefined || v === '' ? null : (typeof v === 'number' ? v : Number(v)));
 
@@ -31,13 +31,13 @@ function menuTiersSig(it) {
   }).join('|');
 }
 
-// Stable signature of every price on an item: base + the four order-type overrides + per-menu tiers.
+// Stable signature of every price on an item: base + the five order-type overrides + per-menu tiers.
 // Two items with the same signature have identical pricing; any difference is a genuine price change.
 function priceSig(it) {
   const p = it?.pricing || {};
   return JSON.stringify([
     basePrice(it),
-    num(p.dineIn), num(p.takeaway), num(p.collection), num(p.delivery),
+    num(p.dineIn), num(p.takeaway), num(p.collection), num(p.delivery), num(p.driveThru),
     menuTiersSig(it),
   ]);
 }
@@ -65,7 +65,7 @@ const gbp = (n) => `£${(Number(n) || 0).toFixed(2)}`;
 export function priceDelta(prev, next, fmt = gbp) {
   const pb = basePrice(prev), nb = basePrice(next);
   if (pb !== nb) return `${nameOf(next)} ${fmt(pb)} → ${fmt(nb)}`;
-  const fields = [['dineIn', 'dine-in'], ['takeaway', 'takeaway'], ['collection', 'collection'], ['delivery', 'delivery']];
+  const fields = [['dineIn', 'dine-in'], ['takeaway', 'takeaway'], ['collection', 'collection'], ['delivery', 'delivery'], ['driveThru', 'drive thru']];
   for (const [k, label] of fields) {
     const a = num(prev?.pricing?.[k]), b = num(next?.pricing?.[k]);
     if (a !== b) return `${nameOf(next)} (${label} ${a == null ? '—' : fmt(a)} → ${b == null ? '—' : fmt(b)})`;

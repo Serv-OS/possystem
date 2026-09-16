@@ -30,15 +30,15 @@ test('collected, scheduled and bar-tab never keep', () => {
 test('a ready order paid on collection is removed as before, never kept', () => {
   // Pay later flow: staff tap Ready, the customer arrives, staff take payment. The
   // customer leaves with the food, so the row must go and the screen shows Collected.
-  for (const orderType of ['dine-in', 'takeaway', 'collection', 'delivery']) {
+  for (const orderType of ['dine-in', 'takeaway', 'collection', 'delivery', 'drive-thru']) {
     assert.equal(shouldKeepPaidOrderInQueue({ enabled: true, orderType, entry: posEntry({ status: 'ready' }) }), false, orderType);
     assert.equal(shouldKeepPaidOrderInQueue({ enabled: true, orderType, entry: posEntry({ status: 'ready', source: 'pos' }) }), false, `${orderType} pos`);
   }
 });
 
-test('a till entry in received or prep keeps for every collectable type', () => {
+test('a till entry in received or prep keeps for every collectable type, drive thru included', () => {
   for (const status of ['received', 'prep']) {
-    for (const orderType of ['dine-in', 'takeaway', 'collection', 'delivery']) {
+    for (const orderType of ['dine-in', 'takeaway', 'collection', 'delivery', 'drive-thru']) {
       assert.equal(shouldKeepPaidOrderInQueue({ enabled: true, orderType, entry: posEntry({ status }) }), true, `${status} ${orderType}`);
       assert.equal(shouldKeepPaidOrderInQueue({ enabled: true, orderType, entry: posEntry({ status, source: 'pos' }) }), true, `${status} ${orderType} pos`);
     }

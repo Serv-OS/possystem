@@ -22,6 +22,8 @@ import { lineAppliesToOrderType } from './costing.js';
  * `orderType` scopes which recipe lines deplete — a takeaway latte depletes its disposable cup
  * while a dine-in latte (reusable mug) does not. Untagged lines deplete for every order type; a
  * missing order type defaults to the dine-in/base recipe (see lineAppliesToOrderType).
+ * The recipe's own lines go along as context: a drive thru latte with a takeaway cup AND a
+ * drive-thru tray depletes the tray only, matching costing.js and the stock-deplete edge function.
  */
 export function explodeMenuItem(menuItemId, qty, ctx, out = {}, orderType = null) {
   const mr = ctx?.menuRecipes?.[String(menuItemId)];
@@ -30,7 +32,7 @@ export function explodeMenuItem(menuItemId, qty, ctx, out = {}, orderType = null
   if (n <= 0) return out;
   const mult = n * (Number(mr.portion) || 1) * (1 + (Number(mr.wastagePct) || 0) / 100);
   for (const line of mr.lines || []) {
-    if (!lineAppliesToOrderType(line, orderType)) continue;
+    if (!lineAppliesToOrderType(line, orderType, mr.lines)) continue;
     const comp = ctx.itemsById?.[line.componentItemId];
     if (!comp) continue;
     let qtyBase;

@@ -6,7 +6,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { netOf, resolveTaxRate, purchaseNet, calculateOrderTax } from './tax.js';
+import { netOf, resolveTaxRate, purchaseNet, calculateOrderTax, taxOverrideFor } from './tax.js';
 
 const near = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} ≈ ${b}`);
 
@@ -159,4 +159,85 @@ test('a mixed inclusive+exclusive check charges ONLY the exclusive share on top'
   const r = calculateOrderTax(items, rates, 'dine-in');
   assert.equal(r.exclusiveTax, 0.89);                 // 0.8875 → half-up → 0.89, NEVER + the £2 VAT
   near(r.totalTax, 2 + 0.8875, 1e-9);                 // records still carry the full tax picture
+});
+
+// ── Drive thru (16 Sep 2026): takeaway by another door ───────────────────────
+// An explicit taxOverrides['drive-thru'] wins; else the takeaway override applies to a
+// drive-thru sale; else the item's own rate (then the venue default). Every other order
+// type reads exactly its own key, so a venue that never enables drive thru sees no change.
+
+const DT_RATES = [
+  { id: 'vat20', rate: 0.20, type: 'inclusive', active: true, isDefault: true },
+  { id: 'vat5',  rate: 0.05, type: 'inclusive', active: true, isDefault: false },
+  { id: 'zero',  rate: 0,    type: 'inclusive', active: true, isDefault: false },
+];
+const OTHER_TYPES = ['dine-in', 'takeaway', 'collection', 'delivery', 'bar', 'counter', 'bar-tab'];
+
+test('drive-thru: an explicit drive-thru override beats the takeaway override', () => {
+  const item = { taxRateId: 'vat20', taxOverrides: { takeaway: 'zero', 'drive-thru': 'vat5' } };
+  assert.equal(taxOverrideFor(item, 'drive-thru'), 'vat5');
+  assert.equal(resolveTaxRate(item, DT_RATES, 'drive-thru').id, 'vat5');
+  assert.equal(resolveTaxRate(item, DT_RATES, 'takeaway').id, 'zero');   // takeaway keeps its own
+});
+
+test('drive-thru: with no override of its own it takes the takeaway override', () => {
+  const item = { taxRateId: 'vat20', taxOverrides: { takeaway: 'zero' } };
+  assert.equal(taxOverrideFor(item, 'drive-thru'), 'zero');
+  assert.equal(resolveTaxRate(item, DT_RATES, 'drive-thru').id, 'zero');
+  assert.equal(resolveTaxRate(item, DT_RATES, 'dine-in').id, 'vat20');
+});
+
+test('drive-thru: with neither override it takes the item rate, then the venue default', () => {
+  assert.equal(taxOverrideFor({ taxRateId: 'vat5', taxOverrides: {} }, 'drive-thru'), undefined);
+  assert.equal(taxOverrideFor({ taxRateId: 'vat5' }, 'drive-thru'), undefined);
+  assert.equal(resolveTaxRate({ taxRateId: 'vat5', taxOverrides: { delivery: 'zero' } }, DT_RATES, 'drive-thru').id, 'vat5');
+  assert.equal(resolveTaxRate({ taxRateId: null }, DT_RATES, 'drive-thru').id, 'vat20');            // "Use default"
+  assert.equal(resolveTaxRate({ taxRateId: '__not_in_menu__' }, DT_RATES, 'drive-thru'), null);   // channel opt-out holds
+});
+
+test('drive-thru: an explicit null drive-thru override means the venue default, like any other null override', () => {
+  // The item editor writes null for "Use default" on an override. It is a real override.
+  const item = { taxRateId: 'vat5', taxOverrides: { takeaway: 'zero', 'drive-thru': null } };
+  assert.equal(taxOverrideFor(item, 'drive-thru'), null);
+  assert.equal(resolveTaxRate(item, DT_RATES, 'drive-thru').id, 'vat20');
+  // the same null semantics takeaway has always had, and a null takeaway override reaches drive-thru the same way
+  assert.equal(resolveTaxRate({ taxRateId: 'vat5', taxOverrides: { takeaway: null } }, DT_RATES, 'takeaway').id, 'vat20');
+  assert.equal(resolveTaxRate({ taxRateId: 'vat5', taxOverrides: { takeaway: null } }, DT_RATES, 'drive-thru').id, 'vat20');
+});
+
+test('drive-thru: no other order type reads the drive-thru key, and nothing else changes', () => {
+  const withDt = { taxRateId: 'vat20', taxOverrides: { takeaway: 'zero', 'drive-thru': 'vat5', delivery: 'vat5' } };
+  const without = { taxRateId: 'vat20', taxOverrides: { takeaway: 'zero', delivery: 'vat5' } };
+  for (const ot of OTHER_TYPES) {
+    assert.equal(taxOverrideFor(withDt, ot), taxOverrideFor(without, ot), ot);
+    assert.equal(resolveTaxRate(withDt, DT_RATES, ot)?.id, resolveTaxRate(without, DT_RATES, ot)?.id, ot);
+  }
+  assert.equal(resolveTaxRate(withDt, DT_RATES, 'dine-in').id, 'vat20');
+  assert.equal(resolveTaxRate(withDt, DT_RATES, 'collection').id, 'vat20');   // never the takeaway override
+  assert.equal(resolveTaxRate(withDt, DT_RATES, 'delivery').id, 'vat5');
+  // a drive-thru only override never leaks to takeaway
+  assert.equal(resolveTaxRate({ taxRateId: 'vat20', taxOverrides: { 'drive-thru': 'zero' } }, DT_RATES, 'takeaway').id, 'vat20');
+  // the shapes with no overrides at all still give undefined
+  assert.equal(taxOverrideFor({ taxRateId: 'vat20', taxOverrides: null }, 'drive-thru'), undefined);
+  assert.equal(taxOverrideFor({ taxRateId: 'vat20' }, 'takeaway'), undefined);
+  assert.equal(taxOverrideFor(null, 'drive-thru'), undefined);
+});
+
+test('drive-thru: an order with only takeaway overrides taxes exactly like the same takeaway order', () => {
+  const rates = [
+    { id: 'vat20', rate: 0.20, type: 'inclusive', active: true, is_default: true },
+    { id: 'zero',  rate: 0,    type: 'inclusive', active: true, is_default: false },
+  ];
+  const items = [
+    { price: 4.50, qty: 2, taxRateId: 'vat20', taxOverrides: { takeaway: 'zero' } },   // cold food: zero rated to go
+    { price: 3.20, qty: 1, taxRateId: 'vat20' },                                        // hot drink: 20% however it leaves
+    { price: 9.95, qty: 1, taxRateId: null },                                           // "Use default"
+  ];
+  assert.deepEqual(calculateOrderTax(items, rates, 'drive-thru'), calculateOrderTax(items, rates, 'takeaway'));
+  assert.notDeepEqual(calculateOrderTax(items, rates, 'drive-thru'), calculateOrderTax(items, rates, 'dine-in'));
+  assert.equal(calculateOrderTax(items, rates, 'drive-thru').exclusiveTax, 0);   // the UK lock holds
+  // a drive-thru override of its own moves only drive-thru
+  const own = items.map(i => (i.taxOverrides ? { ...i, taxOverrides: { ...i.taxOverrides, 'drive-thru': 'vat20' } } : i));
+  assert.deepEqual(calculateOrderTax(own, rates, 'takeaway'), calculateOrderTax(items, rates, 'takeaway'));
+  assert.deepEqual(calculateOrderTax(own, rates, 'drive-thru'), calculateOrderTax(items, rates, 'dine-in'));
 });

@@ -1256,7 +1256,8 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   const pointsEnabled = loyaltyData?.points_enabled !== false;
 
   const isBarTab = orderType==='bar-tab';
-  const skipTip  = isBarTab || orderType==='takeaway' || orderType==='collection';
+  // Drive thru (16 Sep 2026) skips the tip prompt like takeaway.
+  const skipTip  = isBarTab || orderType==='takeaway' || orderType==='collection' || orderType==='drive-thru';
 
   // v5.5.808: resolve the venue's card processor at modal level too — the card
   // press, split card legs and the terminal flow all dispatch by this. Defaults
@@ -2026,9 +2027,12 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
   const hideCourses = (deviceConfig?.hiddenFeatures || []).includes('courses');
   const showCourses = !hideCourses && courseNums.length > 1;
 
+  // The label prints the raw key, capitalised by CSS ('Takeaway'). A hyphenated key would
+  // read 'Drive-thru', so only drive thru is mapped; nothing else changes.
+  const orderTypeLabel = orderType === 'drive-thru' ? 'Drive thru' : orderType;
   const contextLabel = isBarTab ? `Bar tab · ${tabName}`
-    : tableId ? `${tableId.replace(/^[tbp]/,'')} · ${orderType}${covers>1?` · ${covers} covers`:''}`
-    : orderType;
+    : tableId ? `${tableId.replace(/^[tbp]/,'')} · ${orderTypeLabel}${covers>1?` · ${covers} covers`:''}`
+    : orderTypeLabel;
 
   const SCREENS = {
     review:'Checkout',

@@ -199,7 +199,7 @@ export default function MenuImportModal({ menuId, onClose }) {
             type: 'variants',
             cat: realCat,
             allergens: it.allergens || [],
-            pricing: { base: 0, dineIn:null, takeaway:null, collection:null, delivery:null },
+            pricing: { base: 0, dineIn:null, takeaway:null, collection:null, delivery:null, driveThru:null },
           });
           for (const v of it.variants) {
             addMenuItem({
@@ -210,7 +210,7 @@ export default function MenuImportModal({ menuId, onClose }) {
               parentId,
               cat: realCat,
               allergens: it.allergens || [],
-              pricing: { base: Number(v.price) || 0, dineIn:null, takeaway:null, collection:null, delivery:null },
+              pricing: { base: Number(v.price) || 0, dineIn:null, takeaway:null, collection:null, delivery:null, driveThru:null },
             });
           }
         } else {
@@ -222,7 +222,7 @@ export default function MenuImportModal({ menuId, onClose }) {
             type: 'simple',
             cat: realCat,
             allergens: it.allergens || [],
-            pricing: { base: Number(it.price) || 0, dineIn:null, takeaway:null, collection:null, delivery:null },
+            pricing: { base: Number(it.price) || 0, dineIn:null, takeaway:null, collection:null, delivery:null, driveThru:null },
           });
         }
       }

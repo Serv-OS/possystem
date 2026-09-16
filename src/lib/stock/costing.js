@@ -23,18 +23,26 @@ import { toBase } from './uom.js';
  * Canonical order types a recipe line can be scoped to. Matches closed_checks.order_type and the
  * per-menu price-tier dimension. A line with no order_types (null/[]) applies to ALL of them.
  */
-export const RECIPE_ORDER_TYPES = ['dine-in', 'takeaway', 'collection', 'delivery'];
-export const ORDER_TYPE_LABELS = { 'dine-in': 'Dine-in', takeaway: 'Takeaway', collection: 'Collection', delivery: 'Delivery' };
+export const RECIPE_ORDER_TYPES = ['dine-in', 'takeaway', 'collection', 'delivery', 'drive-thru'];
+export const ORDER_TYPE_LABELS = { 'dine-in': 'Dine-in', takeaway: 'Takeaway', collection: 'Collection', delivery: 'Delivery', 'drive-thru': 'Drive thru' };
 
-// Map the various order-type spellings seen across the app onto the 4 canonical recipe types.
+// Map the various order-type spellings seen across the app onto the 5 canonical recipe types.
 // counter/bar collapse to dine-in (they already persist as dine-in on closed_checks); kiosk's
 // 'dineIn' / HubRise 'eat_in' also fold to dine-in. Guards against a caller silently under-depleting
-// packaging because it passed a non-canonical value.
-const ORDER_TYPE_ALIASES = { dinein: 'dine-in', eatin: 'dine-in', counter: 'dine-in', bar: 'dine-in' };
+// packaging because it passed a non-canonical value. Drive thru: 'drivethru', 'drive_thru',
+// 'driveThru' and 'drive-through' all fold to 'drive-thru' (the separators are stripped first).
+// MIRRORED in supabase/functions/stock-deplete/index.ts: change both together.
+const ORDER_TYPE_ALIASES = { dinein: 'dine-in', eatin: 'dine-in', counter: 'dine-in', bar: 'dine-in', drivethru: 'drive-thru', drivethrough: 'drive-thru' };
 export function normaliseOrderType(orderType) {
   if (!orderType) return 'dine-in';
   const lower = String(orderType).trim().toLowerCase();
   return ORDER_TYPE_ALIASES[lower.replace(/[\s_-]/g, '')] || lower;
+}
+
+/** True when any line of the recipe is tagged with this (canonical) order type. */
+export function recipeNamesOrderType(recipeLines, orderType) {
+  if (!Array.isArray(recipeLines)) return false;
+  return recipeLines.some(l => Array.isArray(l?.orderTypes) && l.orderTypes.includes(orderType));
 }
 
 /**
@@ -43,11 +51,23 @@ export function normaliseOrderType(orderType) {
  *   • tagged line → applies only to the listed types
  * With no order-type context we default to 'dine-in' (the base), so costing/depletion of a
  * legacy or untyped sale never double-counts order-type-specific packaging.
+ *
+ * Drive thru (16 Sep 2026) is takeaway by another door: a line tagged 'takeaway' also applies
+ * to a drive-thru sale, UNLESS some line on the same recipe names 'drive-thru', in which case
+ * the recipe has its own drive-thru packaging and only lines tagged 'drive-thru' (or untagged)
+ * apply. Pass the recipe's lines as `recipeLines` for that check; with no recipe context (a
+ * single line asked on its own) the takeaway line applies. Only the literal 'drive-thru'
+ * order type takes this branch; every other type reads exactly its own tag, and a
+ * 'drive-thru' tag never reaches a takeaway sale.
+ * MIRRORED in supabase/functions/stock-deplete/index.ts: change both together.
  */
-export function lineAppliesToOrderType(line, orderType) {
+export function lineAppliesToOrderType(line, orderType, recipeLines = null) {
   const ot = line?.orderTypes;
   if (!Array.isArray(ot) || ot.length === 0) return true;
-  return ot.includes(normaliseOrderType(orderType));
+  const key = normaliseOrderType(orderType);
+  if (ot.includes(key)) return true;
+  if (key === 'drive-thru' && ot.includes('takeaway')) return !recipeNamesOrderType(recipeLines, 'drive-thru');
+  return false;
 }
 
 /**
@@ -160,7 +180,7 @@ export function computeRecipe(recipe, outputItem, ctx, stack = new Set(), orderT
     // tagged takeaway/collection/delivery is excluded from the dine-in plate cost). Untagged lines
     // apply to all. Only the top-level dish recipe is filtered; nested PREP roll-ups pass no order
     // type (their untagged lines always apply), so a prep's cost is order-type-agnostic.
-    if (!lineAppliesToOrderType(line, orderType)) continue;
+    if (!lineAppliesToOrderType(line, orderType, recipe.lines)) continue;
     const comp = ctx.itemsById?.[line.componentItemId];
     if (!comp) throw new Error(`computeRecipe: line references unknown item "${line.componentItemId}"`);
     const qtyBase = toBase(Number(line.qty), line.unit, comp);
@@ -254,7 +274,7 @@ function walk(recipe, outputItem, ctx, orderType, scale, out, stack) {
   const lines = [];
   let raw = 0;
   for (const line of recipe.lines || []) {
-    if (!lineAppliesToOrderType(line, orderType)) continue;
+    if (!lineAppliesToOrderType(line, orderType, recipe.lines)) continue;
     const comp = ctx.itemsById?.[line.componentItemId];
     if (!comp) throw new Error(`costBreakdownByPurchasedItem: line references unknown item "${line.componentItemId}"`);
     const qtyBase = toBase(Number(line.qty), line.unit, comp);

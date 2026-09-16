@@ -29,12 +29,29 @@
  * the legacy engine's order-level `exclusiveTax` rounding (v5.7.31).
  */
 
-/** Does this profile line apply to the given order type? */
-export function lineAppliesToOrderType(profileLine, orderType) {
+/** True when any ACTIVE line of the profile is tagged with this order type (mirrors costing.js recipeNamesOrderType). */
+export function profileNamesOrderType(profileLines, orderType) {
+  if (!Array.isArray(profileLines)) return false;
+  return profileLines.some(pl => pl && pl.active !== false && Array.isArray(pl.orderTypes) && pl.orderTypes.includes(orderType));
+}
+
+/**
+ * Does this profile line apply to the given order type?
+ * Drive thru (16 Sep 2026) is takeaway by another door: a line tagged 'drive-thru' applies
+ * to a drive-thru sale, and so does a line tagged 'takeaway' UNLESS an active line on the
+ * same profile names 'drive-thru', in which case the profile has its own drive thru line and
+ * only lines tagged 'drive-thru' (or 'all') apply. Pass the profile's lines as `profileLines`
+ * for that check; with no profile context (a single line asked on its own) the takeaway line
+ * applies. Lines tagged 'all' apply as they always have. Only the literal 'drive-thru' order
+ * type takes this branch; every other order type reads exactly its own tag, and a 'drive-thru'
+ * tag never reaches takeaway. Same rule as costing.js lineAppliesToOrderType for recipe lines.
+ */
+export function lineAppliesToOrderType(profileLine, orderType, profileLines = null) {
   const types = profileLine.orderTypes;
   if (!Array.isArray(types) || types.length === 0) return true;
   if (types.includes('all')) return true;
-  return types.includes(orderType);
+  if (types.includes(orderType)) return true;
+  return orderType === 'drive-thru' && types.includes('takeaway') && !profileNamesOrderType(profileLines, 'drive-thru');
 }
 
 /**
@@ -105,8 +122,11 @@ export function makeCascadeResolver({
     // 2. item legacy rate (same override semantics as resolveTaxRate in tax.js:
     //    an override present for this order type wins even when null/falsy -
     //    falsy falls through the cascade, truthy must map or the line is untaxed)
+    //    Mirrors taxOverrideFor in tax.js (this module imports nothing): a drive-thru
+    //    sale with no override of its own takes the takeaway override. Change both together.
     const legacy = orderLine.legacy || {};
-    const overrideId = legacy.taxOverrides?.[orderType];
+    let overrideId = legacy.taxOverrides?.[orderType];
+    if (overrideId === undefined && orderType === 'drive-thru') overrideId = legacy.taxOverrides?.takeaway;
     const rateId = overrideId !== undefined ? overrideId : legacy.taxRateId;
     if (rateId) {
       return legacyRateToProfileId[rateId] || null;   // unmapped SET id = NO tax, cascade stops
@@ -178,7 +198,7 @@ export function computeTax({
 
     // Process this profile's lines in sort_order - compounding depends on it.
     const plines = [...(profile.lines || [])]
-      .filter(pl => pl && pl.active !== false && lineAppliesToOrderType(pl, orderType))
+      .filter(pl => pl && pl.active !== false && lineAppliesToOrderType(pl, orderType, profile.lines))
       .sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
 
     const qty = ol.qty || 1;

@@ -11,6 +11,10 @@ import { breakdownLabel, breakdownIsExclusive } from '../lib/receiptTax';
 
 // ── Receipt display & print ───────────────────────────────────────────────────
 export function ReceiptModal({ items, subtotal, service, total, checkDiscount, orderType, tableLabel, server, covers, customer, ref: checkRef, method, tip, onClose }) {
+  // On screen the walk in header shows the raw key ('takeaway'); drive thru (16 Sep 2026)
+  // is the one key with a hyphen, so only it is mapped. The check object handed to the
+  // printer keeps the raw key, as every type does.
+  const orderTypeLabel = orderType === 'drive-thru' ? 'Drive thru' : orderType;
   const { location, showToast } = useStore();
   const now = new Date();
   const nonVoided = items.filter(i => !i.voided);
@@ -68,7 +72,7 @@ export function ReceiptModal({ items, subtotal, service, total, checkDiscount, o
       </head><body>
       <div class="center bold big">Serv OS</div>
       <div class="center muted" style="margin:4px 0 8px">
-        ${tableLabel ? tableLabel : customer?.name ? customer.name : orderType}<br>
+        ${tableLabel ? tableLabel : customer?.name ? customer.name : orderTypeLabel}<br>
         ${server ? `Server: ${server}` : ''}${covers>1 ? ` · ${covers} covers` : ''}<br>
         ${now.toLocaleString('en-GB')}
       </div>
@@ -127,7 +131,7 @@ export function ReceiptModal({ items, subtotal, service, total, checkDiscount, o
           <div style={{textAlign:'center',marginBottom:12}}>
             <div style={{fontSize:14,fontWeight:700,color:'var(--t1)'}}>Serv OS</div>
             <div style={{fontSize:11,color:'var(--t3)',marginTop:3}}>
-              {tableLabel || orderType}{server?` · ${server}`:''}{covers>1?` · ${covers} covers`:''}
+              {tableLabel || orderTypeLabel}{server?` · ${server}`:''}{covers>1?` · ${covers} covers`:''}
             </div>
             <div style={{fontSize:11,color:'var(--t3)'}}>{now.toLocaleString('en-GB')}</div>
           </div>

@@ -13,6 +13,8 @@
 //   - source 'hubrise' (3rd-party channels handle their own customer messaging)
 //   - source 'catering' for 'confirmed' only (catering sends its own branded confirmation email)
 //   - 'ready' is skipped for delivery orders (they get courier tracking SMS instead)
+//   - 'ready' for a drive-thru order (a till type, 16 Sep 2026; it rarely carries a phone) says
+//     the order is ready at the drive thru window, and collection_point reads the same
 //
 // Honors the Messages editor: a custom template's enabled=false SKIPS that channel entirely;
 // otherwise the operator's custom wording (or the default) renders via resolveAndRender.
@@ -202,6 +204,8 @@ Deno.serve(async (req) => {
   if (source === 'hubrise') return json({ ok: true, skipped: '3rd-party channel' });
   if (event === 'confirmed' && source === 'catering') return json({ ok: true, skipped: 'catering has its own confirmation' });
   if (event === 'ready' && String(order.type || '') === 'delivery') return json({ ok: true, skipped: 'delivery uses courier tracking' });
+  // Drive thru (16 Sep 2026): keyed on the literal type, so every other order reads exactly as before.
+  const driveThru = String(order.type || '') === 'drive-thru';
 
   // New kiosk design: the ready text only. Nothing is claimed for the skipped event.
   // The three design lookups run only for a kiosk order that has a phone or an email: with no
@@ -345,7 +349,7 @@ Deno.serve(async (req) => {
     // Day-aware: "Tomorrow 12:45" for a pre-order, "12:45" for today.
     collection_time: collectionLabel((order.customer as Record<string, unknown>)?.collection_at || order.collection_time, venueTz) || 'shortly',
     order_items: itemsText(order.items),
-    collection_point: 'the counter',
+    collection_point: driveThru ? 'the drive thru window' : 'the counter',
   };
 
   const messageType = event === 'confirmed' ? 'order_confirmation' : 'order_ready';
@@ -365,7 +369,9 @@ Deno.serve(async (req) => {
           ? `Thanks ${firstName}! Order #${ref} confirmed at ${venueName}. Total: ${mergeData.order_total}.`
           : kioskV2
             ? `Your order ${shortRef(ref)} is ready to collect at ${venueName}.`
-            : `Hi ${firstName}, your order #${ref} is ready for collection at ${venueName}!`;
+            : driveThru
+              ? `Hi ${firstName}, your order #${ref} is ready at the ${venueName} drive thru window!`
+              : `Hi ${firstName}, your order #${ref} is ready for collection at ${venueName}!`;
       }
       result.sms = await sendSmsViaFn(phone, smsBody, locationId, messageType);
     }

@@ -7,16 +7,23 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {
-  KDS_TYPES, buildTicketMeta, parseLegacyTicket, ticketMeta, needsTypeLookup, fallbackTypeForChannel,
+  KDS_TYPES, KDS_STATUS, buildTicketMeta, parseLegacyTicket, ticketMeta, needsTypeLookup, fallbackTypeForChannel,
   kdsTypeKey, ticketHeadline, identityLine, ticketLine, courseGroups, minutesSince, formatElapsed,
   statusOf, sortTickets, typeCounts, rollUp, shortRef, joinNotes, normaliseOrderType, applyQueueLookup, ticketView, identityParts, venueBusinessDayStart,
 } from './kdsTicket.js';
 
-test('five types, delivery is pink and red stays the LATE colour only', () => {
-  assert.deepEqual(Object.keys(KDS_TYPES), ['dineinName', 'dineinTable', 'takeaway', 'collection', 'delivery']);
+test('six types, delivery is pink, drive thru is blue and red stays the LATE colour only', () => {
+  assert.deepEqual(Object.keys(KDS_TYPES), ['dineinName', 'dineinTable', 'takeaway', 'collection', 'delivery', 'drivethru']);
   assert.equal(KDS_TYPES.delivery.c, '#F472B6');
   assert.equal(KDS_TYPES.delivery.label, 'DELIVERY');
+  assert.equal(KDS_TYPES.drivethru.label, 'DRIVE THRU');
+  assert.equal(KDS_TYPES.drivethru.legend, 'Drive thru');
   assert.ok(!Object.values(KDS_TYPES).some(t => t.c === '#FF6B6B'));
+  // Drive thru is its own colour: not one of the other five types, not a time status colour.
+  const others = Object.values(KDS_TYPES).filter(t => t.key !== 'drivethru').map(t => t.c.toUpperCase());
+  const status = Object.values(KDS_STATUS).map(s => s.c.toUpperCase());
+  assert.ok(!others.includes(KDS_TYPES.drivethru.c.toUpperCase()));
+  assert.ok(!status.includes(KDS_TYPES.drivethru.c.toUpperCase()));
 });
 
 test('shortRef matches shortOrderRef in db.js exactly (the receipt number)', () => {
@@ -37,6 +44,25 @@ test('normaliseOrderType accepts the spellings the app and channels write', () =
   assert.equal(normaliseOrderType('pickup'), 'collection');
   assert.equal(normaliseOrderType('delivery'), 'delivery');
   assert.equal(normaliseOrderType('bar'), null);
+  // Drive thru (16 Sep 2026): every spelling the till, the pricing jsonb and a person might write.
+  for (const s of ['drive-thru', 'Drive thru', 'drive_thru', 'driveThru', 'drivethru', 'DRIVE THRU', 'drive-through', 'Drive Through']) {
+    assert.equal(normaliseOrderType(s), 'drive-thru', s);
+  }
+  assert.equal(normaliseOrderType('drive'), null);
+});
+
+test('drive thru: a till ticket lands on the DRIVE THRU board type with its number', () => {
+  const till = buildTicketMeta({ channel: 'till', orderType: 'drive-thru', customerName: 'Peter', orderRef: 'R32636', source: 'Till 1' });
+  assert.equal(till.orderType, 'drive-thru');
+  assert.equal(kdsTypeKey(till), 'drivethru');
+  assert.equal(till.orderNo, '36');
+  // Stamped meta reads back the same way.
+  assert.equal(kdsTypeKey(ticketMeta({ meta: till })), 'drivethru');
+  // A table is still a table whatever type the till had selected.
+  assert.equal(kdsTypeKey(buildTicketMeta({ channel: 'table', orderType: 'drive-thru', isTable: true })), 'dineinTable');
+  // Only the literal key: nothing else moves.
+  assert.equal(kdsTypeKey({ orderType: 'takeaway' }), 'takeaway');
+  assert.equal(kdsTypeKey({ orderType: null, channel: 'till' }), 'dineinName');
 });
 
 test('buildTicketMeta: tables and bar tabs never carry a number, tills carry the short one', () => {
@@ -79,6 +105,16 @@ test('legacy labels from live data parse to the right type, name and number', ()
     [{ table_label: 'T1', server: 'Peter Roberts' }, 'dineinTable', null, 'Peter Roberts'],
     [{ table_label: 'Table t1.2', server: 'Peter Roberts' }, 'dineinTable', null, 'Peter Roberts'],
     [{ table_label: 'Petes Office Desk', server: 'Peter' }, 'dineinTable', null, 'Peter'],
+    // Drive thru (16 Sep 2026): the till's label ("Drive thru · Name") and the hand typed spellings.
+    [{ table_label: 'Drive thru · Peter Roberts', server: 'Neil' }, 'drivethru', 'Peter Roberts', 'Neil'],
+    [{ table_label: 'Drive-thru · Peter', server: 'Peter' }, 'drivethru', 'Peter', 'Peter'],
+    [{ table_label: 'Drive through · Sam', server: 'Peter' }, 'drivethru', 'Sam', 'Peter'],
+    // A bare drive thru label with no meta is a TABLE. A till on new code always stamps meta
+    // for its bare "drive-thru", so a no meta row reading "Drive thru" is a table named after
+    // the lane, and a legacy venue with such a table keeps its table card.
+    [{ table_label: 'Drive thru', server: 'Peter' }, 'dineinTable', null, 'Peter'],
+    [{ table_label: 'drive-thru', server: 'Peter' }, 'dineinTable', null, 'Peter'],
+    [{ table_label: 'Drive thru bay 2', server: 'Peter' }, 'dineinTable', null, 'Peter'],
   ];
   for (const [row, type, name, staff] of cases) {
     const m = parseLegacyTicket(row);
@@ -184,6 +220,12 @@ test('typeCounts: All first, zero counts hidden unless active', () => {
   const tickets = [{ typeKey: 'takeaway' }, { typeKey: 'takeaway' }, { typeKey: 'delivery' }];
   assert.deepEqual(typeCounts(tickets).map(c => [c.key, c.count]), [['all', 3], ['takeaway', 2], ['delivery', 1]]);
   assert.deepEqual(typeCounts(tickets, 'collection').map(c => c.key), ['all', 'takeaway', 'collection', 'delivery']);
+  // Drive thru is a sixth pill, after delivery, with its own colour and legend.
+  const withDt = typeCounts([...tickets, { typeKey: 'drivethru' }]);
+  assert.deepEqual(withDt.map(c => [c.key, c.count]), [['all', 4], ['takeaway', 2], ['delivery', 1], ['drivethru', 1]]);
+  assert.equal(withDt.at(-1).label, 'Drive thru');
+  assert.equal(withDt.at(-1).c, KDS_TYPES.drivethru.c);
+  assert.deepEqual(typeCounts(tickets, 'drivethru').map(c => c.key), ['all', 'takeaway', 'delivery', 'drivethru']);
 });
 
 test('rollUp: split by modifiers, qty summed, held and ticked and unfired skipped', () => {
@@ -221,6 +263,40 @@ test('applyQueueLookup: a legacy HubRise ticket gets its type, app code and chan
   const kiosk = applyQueueLookup(parseLegacyTicket({ table_label: 'Kiosk R17', server: 'Peter' }), { type: 'takeaway', customer: { collectionCode: '9' } });
   assert.equal(kdsTypeKey(kiosk), 'takeaway');
   assert.equal(kiosk.orderNo, '17');
+  // An order_queue row typed drive-thru fills a legacy channel ticket the same way.
+  const dt = applyQueueLookup(parseLegacyTicket({ table_label: 'Online OL-DT1', server: 'Online OL-DT1' }), { type: 'drive-thru', customer: { name: 'Ava' } });
+  assert.equal(kdsTypeKey(dt), 'drivethru');
+  assert.equal(dt.customerName, 'Ava');
+});
+
+test('ticketView: a drive thru till ticket is a DRIVE THRU card, no meta or stamped', () => {
+  const stamped = ticketView({
+    id: 'k3', table: 'Drive-thru · Peter', covers: 1, firedCourses: [0, 1],
+    items: [{ qty: 2, name: 'Burger', course: 1 }],
+    meta: buildTicketMeta({ channel: 'till', orderType: 'drive-thru', customerName: 'Peter', orderRef: 'R32636', source: 'Till 1', staff: 'Neil' }),
+  });
+  assert.equal(stamped.typeKey, 'drivethru');
+  assert.equal(stamped.type.label, 'DRIVE THRU');
+  assert.equal(stamped.headline, 'Peter');
+  assert.equal(identityLine(stamped.meta, stamped.headline), 'Till 1  |  #36');
+
+  // No meta, the till's named label: still a drive thru card.
+  const legacy = ticketView({ id: 'k4', table: 'Drive thru · Peter', server: 'Neil', covers: 1, items: [] });
+  assert.equal(legacy.typeKey, 'drivethru');
+  assert.equal(legacy.headline, 'Peter');
+  assert.equal(legacy.meta.legacy, true);
+  // A bare "drive-thru" from a till on new code carries meta, and that is what types it.
+  const bare = ticketView({
+    id: 'k5', table: 'drive-thru', covers: 1, items: [],
+    meta: buildTicketMeta({ channel: 'till', orderType: 'drive-thru', orderRef: 'R32637', source: 'Till 1', staff: 'Peter' }),
+  });
+  assert.equal(bare.typeKey, 'drivethru');
+  assert.equal(bare.headline, '#37');
+  // A no meta row whose label is exactly "Drive thru" is a floor table of that name, not a walk in.
+  const named = ticketView({ id: 'k6', table: 'Drive thru', server: 'Peter', covers: 2, items: [] });
+  assert.equal(named.typeKey, 'dineinTable');
+  assert.equal(named.headline, 'Drive thru');
+  assert.equal(named.meta.legacy, true);
 });
 
 test('ticketView: a stamped till ticket with no name shows its receipt number big', () => {

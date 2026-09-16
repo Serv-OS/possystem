@@ -98,3 +98,43 @@ test('explodeBasket threads order type through to lines', () => {
   const out = explodeBasket([{ itemId: 'latte', qty: 2 }], otCtx, 'takeaway');
   near(out.cup, 2); near(out.milk, 480);
 });
+
+// Drive thru (16 Sep 2026): a recipe with its own drive-thru packaging depletes that, not the takeaway cup as well.
+// This is the till path (store closeCheck -> depleteForSale -> explodeBasket); costing.js and the
+// stock-deplete edge function already read the recipe this way, explode.js must agree.
+const dtCtx = {
+  itemsById: {
+    espresso: { baseUnit: 'g', itemConversions: [] },
+    cup: { baseUnit: 'each', itemConversions: [] },
+    tray: { baseUnit: 'each', itemConversions: [] },
+  },
+  menuRecipes: {
+    latte: { portion: 1, wastagePct: 0, lines: [
+      { componentItemId: 'espresso', qty: 27, unit: 'g', usablePct: 100 },                            // untagged → all types
+      { componentItemId: 'cup', qty: 1, unit: 'each', usablePct: 100, orderTypes: ['takeaway'] },     // takeaway packaging
+      { componentItemId: 'tray', qty: 1, unit: 'each', usablePct: 100, orderTypes: ['drive-thru'] },  // drive thru packaging
+    ] },
+    mocha: { portion: 1, wastagePct: 0, lines: [
+      { componentItemId: 'espresso', qty: 27, unit: 'g', usablePct: 100 },
+      { componentItemId: 'cup', qty: 1, unit: 'each', usablePct: 100, orderTypes: ['takeaway'] },     // no drive thru line
+    ] },
+  },
+};
+
+test('drive-thru basket depletes the drive-thru tray only when the recipe has one', () => {
+  const out = explodeBasket([{ itemId: 'latte', qty: 2 }], dtCtx, 'drive-thru');
+  near(out.espresso, 54); near(out.tray, 2);
+  assert.equal(out.cup, undefined);
+});
+
+test('takeaway basket still depletes the takeaway cup, never the drive-thru tray', () => {
+  const out = explodeBasket([{ itemId: 'latte', qty: 1 }], dtCtx, 'takeaway');
+  near(out.cup, 1);
+  assert.equal(out.tray, undefined);
+});
+
+test('a recipe with no drive-thru line depletes its takeaway cup for drive thru', () => {
+  const out = explodeMenuItem('mocha', 1, dtCtx, {}, 'drive-thru');
+  near(out.cup, 1);
+  assert.equal(out.tray, undefined);
+});

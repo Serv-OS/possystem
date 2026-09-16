@@ -17,6 +17,7 @@ import {
   makeCascadeResolver,
   validateProfile,
   lineAppliesToOrderType,
+  profileNamesOrderType,
 } from './taxEngine.js';
 import { buildLegacyProfiles, legacyProfileId } from './taxAdapter.js';
 import { calculateOrderTax } from './tax.js';
@@ -411,3 +412,120 @@ test('line id collisions across profiles stay separate lines', () => {
   assert.deepEqual(names, ['A', 'B']);
 });
 
+
+// ── Drive thru (16 Sep 2026): takeaway by another door, both engines agree ──
+
+test('drive-thru: lineAppliesToOrderType takes drive-thru and takeaway tags, nothing else', () => {
+  assert.equal(lineAppliesToOrderType(line({ orderTypes: ['drive-thru'] }), 'drive-thru'), true);
+  assert.equal(lineAppliesToOrderType(line({ orderTypes: ['takeaway'] }), 'drive-thru'), true);
+  assert.equal(lineAppliesToOrderType(line({ orderTypes: ['takeaway', 'collection'] }), 'drive-thru'), true);
+  assert.equal(lineAppliesToOrderType(line({ orderTypes: ['all'] }), 'drive-thru'), true);
+  assert.equal(lineAppliesToOrderType(line({ orderTypes: [] }), 'drive-thru'), true);
+  assert.equal(lineAppliesToOrderType(line({ orderTypes: ['dine-in'] }), 'drive-thru'), false);
+  assert.equal(lineAppliesToOrderType(line({ orderTypes: ['collection', 'delivery'] }), 'drive-thru'), false);
+  // a drive-thru tag never reaches any other type, and the takeaway tag still reaches only takeaway
+  for (const ot of ['dine-in', 'takeaway', 'collection', 'delivery', 'bar', 'counter']) {
+    assert.equal(lineAppliesToOrderType(line({ orderTypes: ['drive-thru'] }), ot), false, ot);
+    assert.equal(lineAppliesToOrderType(line({ orderTypes: ['takeaway'] }), ot), ot === 'takeaway', ot);
+  }
+});
+
+test('drive-thru: a takeaway scoped profile line charges a drive-thru sale like a takeaway sale', () => {
+  const p = profile('p', [
+    line({ id: 'sales', rate: 0.07, sortOrder: 0 }),
+    line({ id: 'bag', name: 'Takeout bag fee', lineType: 'per_unit', flatAmount: 0.10, orderTypes: ['takeaway'], sortOrder: 1 }),
+  ]);
+  const lines = [{ price: 10, qty: 2 }];
+  const dt = run(p, lines, 'drive-thru');
+  assert.deepEqual(dt, run(p, lines, 'takeaway'));
+  assert.equal(dt.exclusiveTaxTotal, 1.60);          // 1.40 sales + 0.20 bag
+  assert.equal(run(p, lines, 'dine-in').exclusiveTaxTotal, 1.40);
+  assert.equal(run(p, lines, 'collection').exclusiveTaxTotal, 1.40);
+  // a line tagged drive-thru applies to drive-thru only
+  const own = profile('own', [line({ id: 'w', name: 'Window fee', lineType: 'per_unit', flatAmount: 0.25, orderTypes: ['drive-thru'] })]);
+  assert.equal(run(own, lines, 'drive-thru').exclusiveTaxTotal, 0.50);
+  assert.equal(run(own, lines, 'takeaway').exclusiveTaxTotal, 0);
+  assert.equal(run(own, lines, 'dine-in').exclusiveTaxTotal, 0);
+});
+
+test('drive-thru: the cascade takes the takeaway legacy override unless the item has its own', () => {
+  const resolve = makeCascadeResolver({
+    legacyRateToProfileId: { r20: legacyProfileId('r20'), zero: legacyProfileId('zero'), r5: legacyProfileId('r5') },
+    legacyDefaultProfileId: legacyProfileId('r20'),
+  });
+  const takeawayOnly = { itemId: 'x', legacy: { taxRateId: null, taxOverrides: { takeaway: 'zero' } } };
+  assert.equal(resolve(takeawayOnly, 'drive-thru'), legacyProfileId('zero'));
+  assert.equal(resolve(takeawayOnly, 'takeaway'), legacyProfileId('zero'));
+  assert.equal(resolve(takeawayOnly, 'collection'), legacyProfileId('r20'));
+  const both = { itemId: 'x', legacy: { taxRateId: 'r20', taxOverrides: { takeaway: 'zero', 'drive-thru': 'r5' } } };
+  assert.equal(resolve(both, 'drive-thru'), legacyProfileId('r5'));
+  assert.equal(resolve(both, 'takeaway'), legacyProfileId('zero'));
+  assert.equal(resolve(both, 'dine-in'), legacyProfileId('r20'));
+  // an explicit null drive-thru override falls through the cascade, like any null override
+  const nulled = { itemId: 'x', legacy: { taxRateId: 'r5', taxOverrides: { takeaway: 'zero', 'drive-thru': null } } };
+  assert.equal(resolve(nulled, 'drive-thru'), legacyProfileId('r20'));
+  // a drive-thru only override never leaks to takeaway
+  const dtOnly = { itemId: 'x', legacy: { taxRateId: 'r20', taxOverrides: { 'drive-thru': 'zero' } } };
+  assert.equal(resolve(dtOnly, 'takeaway'), legacyProfileId('r20'));
+  assert.equal(resolve(dtOnly, 'drive-thru'), legacyProfileId('zero'));
+});
+
+test('parity: drive-thru through the adapter equals calculateOrderTax, and equals takeaway with no drive-thru override', () => {
+  const rates = [
+    { id: 'vat20', name: 'Standard Rate', rate: 0.20, type: 'inclusive', active: true, is_default: true },
+    { id: 'vat5', name: 'Reduced Rate', rate: 0.05, type: 'inclusive', active: true, is_default: false },
+    { id: 'zero', name: 'Zero Rate', rate: 0, type: 'inclusive', active: true, is_default: false },
+  ];
+  const items = [
+    { id: 'a', price: 12.00, qty: 1, taxRateId: 'vat20' },
+    { id: 'b', price: 4.00, qty: 2, taxRateId: 'vat20', taxOverrides: { takeaway: 'zero' } },
+    { id: 'c', price: 2.50, qty: 1, taxRateId: 'vat5', taxOverrides: { takeaway: 'zero', 'drive-thru': 'vat5' } },
+    { id: 'd', price: 9.95, qty: 1, taxRateId: null },
+    { id: 'e', price: 5.00, qty: 1, taxRateId: '__not_in_menu__' },
+  ];
+  const { eng, leg } = assertParity(items, rates, 'drive-thru');
+  assert.equal(eng.exclusiveTaxTotal, 0);   // still all inclusive: exactly 0 added on
+  // without any drive-thru override the two order types are one and the same, in both engines
+  const noOwn = items.map(i => (i.taxOverrides ? { ...i, taxOverrides: { takeaway: i.taxOverrides.takeaway } } : i));
+  assert.deepEqual(calculateOrderTax(noOwn, rates, 'drive-thru'), calculateOrderTax(noOwn, rates, 'takeaway'));
+  assert.deepEqual(runLegacy(noOwn, rates, 'drive-thru'), runLegacy(noOwn, rates, 'takeaway'));
+  // item c's own override books its 5% on drive-thru where takeaway books zero
+  assert.ok(leg.totalTax > calculateOrderTax(items, rates, 'takeaway').totalTax);
+  // US: an exclusive rate card charges the same penny on drive-thru as on takeaway
+  const us = [{ id: 'us', name: 'Sales Tax', rate: 0.08875, type: 'exclusive', active: true, is_default: true }];
+  const usItems = [{ id: 'a', price: 47.20, qty: 1, taxRateId: 'us' }];
+  assert.equal(assertParity(usItems, us, 'drive-thru').eng.exclusiveTaxTotal, 4.19);
+  assert.equal(assertParity(usItems, us, 'takeaway').eng.exclusiveTaxTotal, 4.19);
+});
+
+test('drive-thru: a profile with its own drive-thru line books that line only, the takeaway line stands down', () => {
+  const bag = () => line({ id: 'bag', name: 'Takeout bag fee', lineType: 'per_unit', flatAmount: 0.10, orderTypes: ['takeaway'], sortOrder: 0 });
+  const windowFee = () => line({ id: 'window', name: 'Window fee', lineType: 'per_unit', flatAmount: 0.25, orderTypes: ['drive-thru'], sortOrder: 1 });
+  const both = profile('both', [bag(), windowFee()]);
+  const lines = [{ price: 10, qty: 2 }];
+  const dt = run(both, lines, 'drive-thru');
+  assert.equal(dt.exclusiveTaxTotal, 0.50);                                   // window fee only, NOT 0.70
+  assert.deepEqual(dt.lines.map(l => l.name), ['Window fee']);
+  const ta = run(both, lines, 'takeaway');
+  assert.equal(ta.exclusiveTaxTotal, 0.20);                                   // bag only
+  assert.deepEqual(ta.lines.map(l => l.name), ['Takeout bag fee']);
+  assert.equal(run(both, lines, 'dine-in').exclusiveTaxTotal, 0);
+  assert.equal(run(both, lines, 'collection').exclusiveTaxTotal, 0);
+  // a profile with only the takeaway line still charges drive thru the bag fee
+  const bagOnly = profile('bagOnly', [bag()]);
+  assert.equal(run(bagOnly, lines, 'drive-thru').exclusiveTaxTotal, 0.20);
+  // an INACTIVE drive-thru line does not stand the takeaway line down
+  const inactive = profile('inactive', [bag(), line({ ...windowFee(), active: false })]);
+  assert.equal(run(inactive, lines, 'drive-thru').exclusiveTaxTotal, 0.20);
+  // the helper itself: two argument calls keep the old answer, three argument calls see the profile
+  assert.equal(lineAppliesToOrderType(bag(), 'drive-thru'), true);
+  assert.equal(lineAppliesToOrderType(bag(), 'drive-thru', both.lines), false);
+  assert.equal(lineAppliesToOrderType(bag(), 'drive-thru', bagOnly.lines), true);
+  assert.equal(lineAppliesToOrderType(windowFee(), 'drive-thru', both.lines), true);
+  assert.equal(lineAppliesToOrderType(bag(), 'takeaway', both.lines), true);
+  assert.equal(lineAppliesToOrderType(line({ orderTypes: ['all'] }), 'drive-thru', both.lines), true);
+  assert.equal(profileNamesOrderType(both.lines, 'drive-thru'), true);
+  assert.equal(profileNamesOrderType(bagOnly.lines, 'drive-thru'), false);
+  assert.equal(profileNamesOrderType(inactive.lines, 'drive-thru'), false);
+  assert.equal(profileNamesOrderType(null, 'drive-thru'), false);
+});

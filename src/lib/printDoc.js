@@ -117,7 +117,9 @@ export function buildCustomerReceiptDoc({ location, check, items, totals }, { co
   if (header?.show_server_name !== false) {
     b.twoCol(`Server: ${check?.server||''}`, check?.covers>1 && header?.show_covers !== false ? `${check.covers} covers` : '');
   }
-  b.twoCol(`${check?.tableLabel||check?.orderType||''}`, '');
+  // Drive thru (16 Sep 2026): the key prints as its label, matching the on screen receipt.
+  // Every other order type prints exactly as it did (the goldens pin that).
+  b.twoCol(`${check?.tableLabel||(check?.orderType === 'drive-thru' ? 'Drive thru' : check?.orderType)||''}`, '');
 
   // Delivery channel block (HubRise/Deliveroo etc.): the order number already printed above
   // as "ORDER #". Add channel + payment + the customer/address details from the platform.
@@ -277,7 +279,7 @@ export function buildMerchantTipSlipDoc({ location, check, totals }, { cols = 42
   b.bold(true).doubleHeight().center().line(`ORDER # ${shortOrderRef(check?.ref) || ''}`).normal().left();
   b.twoCol('Date', `${dateStr} ${timeStr}`);
   if (check?.server) b.twoCol(`Server: ${check.server}`, '');
-  if (check?.tableLabel || check?.orderType) b.twoCol(`${check?.tableLabel || check?.orderType}`, '');
+  if (check?.tableLabel || check?.orderType) b.twoCol(`${check?.tableLabel || (check?.orderType === 'drive-thru' ? 'Drive thru' : check?.orderType)}`, '');
 
   // Card-scheme block: masked PAN, scheme, auth code, entry/CVM, AID.
   const cardLines = cardReceiptLines(check);
@@ -319,8 +321,9 @@ export function buildKitchenTicketDoc({ table, server, covers, centreName, items
     // composed as "Takeaway . Sarah" / "Bar . Maria" etc and are self-describing.
     // v5.5.127: extended whitelist: kiosk / online / qr orders pass labels like
     // "Online OL-XXX" / "Kiosk K-XXX" / "Table T5" which are already self-describing.
+    // Drive thru (16 Sep 2026): a bare 'drive-thru' label (no customer name) is a lane, not a table.
     const isNonTableLabel = / . /.test(table)
-      || /^(takeaway|collection|delivery|counter)$/i.test(table)
+      || /^(takeaway|collection|delivery|counter|drive-thru)$/i.test(table)
       || /^(online|kiosk|qr|table|hubrise)\s/i.test(table);
     b.center().line(isNonTableLabel ? table : `TABLE ${table}`).left();
   } else {
@@ -427,7 +430,7 @@ export function buildFireCourseTicketDoc({ table, courseNum, centreName, sentAt 
   if (table) {
     // Same non-table-label heuristic as the kitchen ticket: "Takeaway · Sarah" prints as-is,
     // bare "T7" gets "TABLE " prefix.
-    const isNonTableLabel = / · /.test(table) || /^(takeaway|collection|delivery|counter)$/i.test(table);
+    const isNonTableLabel = / · /.test(table) || /^(takeaway|collection|delivery|counter|drive-thru)$/i.test(table);
     b.center().bold(true).doubleBoth().line(isNonTableLabel ? table : `TABLE ${table}`).normal();
   }
 

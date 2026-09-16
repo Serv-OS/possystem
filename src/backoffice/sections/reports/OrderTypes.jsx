@@ -1,5 +1,5 @@
 // v4.6.18: Order types trend report.
-// Shows channel mix (dine-in / takeaway / delivery / bar / counter / other) over the period.
+// Shows channel mix (dine-in / takeaway / delivery / bar / counter / drive-thru / other) over the period.
 //
 // Layout:
 //   - Top tiles: total revenue, dominant channel, fastest-growing vs previous period
@@ -19,6 +19,8 @@ const TYPE_STYLE = {
   'delivery':   { label:'Delivery',   color:'#3b82f6', icon:'🛵' },
   'bar':        { label:'Bar',        color:'#a78bfa', icon:'🍸' },
   'counter':    { label:'Counter',    color:'#f97316', icon:'🏷' },
+  // Drive thru (16 Sep 2026): pink, the one hue no other row here uses.
+  'drive-thru': { label:'Drive thru', color:'#ec4899', icon:'🚗' },
   'other':      { label:'Other',      color:'var(--t4)', icon:'?' },
 };
 

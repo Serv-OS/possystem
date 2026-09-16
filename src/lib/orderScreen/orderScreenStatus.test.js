@@ -121,6 +121,12 @@ test('orderTypeKey normalises spellings', () => {
   assert.equal(orderTypeKey('pickup'), 'collection');
   assert.equal(orderTypeKey('collection'), 'collection');
   assert.equal(orderTypeKey('delivery'), 'delivery');
+  assert.equal(orderTypeKey('drive-thru'), 'drive-thru');
+  assert.equal(orderTypeKey('Drive Thru'), 'drive-thru');
+  assert.equal(orderTypeKey('drive_thru'), 'drive-thru');
+  assert.equal(orderTypeKey('driveThru'), 'drive-thru');
+  assert.equal(orderTypeKey('drive-through'), 'drive-thru');
+  assert.equal(orderTypeKey('drivethrough'), 'drive-thru');
   assert.equal(orderTypeKey('bar-tab'), null);
   assert.equal(orderTypeKey(null), null);
 });
@@ -680,4 +686,54 @@ test('default settings take a collected order off the screen at once', () => {
   const lingering = evaluateOrder(order({ status: 'collected', statusChangedAt: NOW - 1000 }), allDisplay({ lingerMinutes: 2 }), NOW);
   assert.equal(lingering.visible, true);
   assert.equal(lingering.row.bucket, 'collected');
+});
+
+// ── Drive thru (16 Sep 2026): the fifth order type ────────────────────────────
+
+test('ORDER_TYPES: drive thru is the fifth type, keyed drive-thru, labelled Drive thru', () => {
+  assert.deepEqual(ORDER_TYPES.map(t => t.key), ['dine-in', 'takeaway', 'collection', 'delivery', 'drive-thru']);
+  assert.equal(ORDER_TYPES.find(t => t.key === 'drive-thru').label, 'Drive thru');
+  for (const t of ORDER_TYPES) assert.ok(!t.label.includes('-'), `${t.label} carries no hyphen`);
+});
+
+test('formatOrderName: drive thru typed as the customer name shows the number, a real name still shows', () => {
+  for (const n of ['Drive thru', 'drive-thru', 'DRIVE THRU', 'drive through', 'Drive-Through', 'drivethru', ' drive  thru ']) {
+    assert.equal(formatOrderName(n, 'short'), null, n);
+    assert.equal(formatOrderName(n, 'full'), null, n);
+  }
+  assert.equal(formatOrderName('Drive Thruman', 'short'), 'Drive T');
+  assert.equal(formatOrderName('Sam Taylor', 'short'), 'Sam T');
+});
+
+test('sections: drive thru is a valid order type tick and survives normalisation', () => {
+  const raw = { name: 'D', sections: [{ id: 'dt', title: 'Drive thru', channels: ['till'], orderTypes: ['drive-thru', 'nonsense'], statuses: ['ready'] }] };
+  assert.deepEqual(normaliseDisplay(raw).sections[0].orderTypes, ['drive-thru']);
+  assert.deepEqual(validateDisplay(raw), []);
+  // the default template is unchanged: a venue ticks drive thru into a section itself
+  assert.ok(!newDisplayTemplate().sections.some(s => s.orderTypes.includes('drive-thru')));
+});
+
+test('evaluateOrder: a drive thru order lands only in a section that ticks drive thru', () => {
+  const NOWX = Date.parse('2026-09-16T12:00:00Z');
+  const display = { name: 'D', settings: { ...DEFAULT_SETTINGS }, sections: [
+    { id: 'eat', title: 'Eat in', channels: ['till', 'kiosk'], orderTypes: ['dine-in', 'takeaway'], statuses: [...STEPS], nameFormat: 'short' },
+    { id: 'dt', title: 'Drive thru', channels: ['till'], orderTypes: ['drive-thru'], statuses: [...STEPS], nameFormat: 'short' },
+  ] };
+  const order = { ref: 'R1090', source: 'pos', type: 'drive-thru', status: 'prep', customer: { name: 'Sam Taylor' },
+    createdAt: NOWX - 60000, statusChangedAt: NOWX - 30000, firstSeenAt: NOWX - 60000 };
+  const r = evaluateOrder(order, display, NOWX);
+  assert.equal(r.visible, true);
+  assert.equal(r.row.sectionId, 'dt');
+  assert.equal(r.row.bucket, 'preparing');
+  assert.equal(r.row.orderType, 'drive-thru');
+  assert.equal(r.row.name, 'Sam T');
+  assert.equal(r.row.number, '90');
+  // the till's own spelling of the type is normalised the same way
+  assert.equal(evaluateOrder({ ...order, type: 'Drive Thru' }, display, NOWX).row.sectionId, 'dt');
+  // a display with no drive thru section hides it, like any unticked type
+  assert.equal(evaluateOrder(order, { ...display, sections: [display.sections[0]] }, NOWX).reason, 'no_section');
+  // a takeaway order never lands in the drive thru section
+  assert.equal(evaluateOrder({ ...order, type: 'takeaway' }, display, NOWX).row.sectionId, 'eat');
+  // a till that typed the type as the name shows the number
+  assert.equal(evaluateOrder({ ...order, customer: { name: 'Drive thru' } }, display, NOWX).row.name, null);
 });

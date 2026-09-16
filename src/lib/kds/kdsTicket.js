@@ -11,6 +11,10 @@
 //   "Bar · Neil"                  bar tab round (addRoundToTab)
 //   "Kiosk R17" / "Online OL-X" / "HubRise HR-x" / "QR R4"  (routeKioskOrderPrints)
 //   "Catering CA-5BEPG"           (catering-release edge function)
+//   "Drive thru · Peter"          drive thru walk in with a name (16 Sep 2026, same writer).
+//                                 A bare "drive-thru" (no name) is typed from meta ONLY: a
+//                                 till on new code always stamps it, and a floor table can
+//                                 be named "Drive thru", which must stay a table card.
 //   "T1" / "Table t1.2" / "Petes Office Desk"   a table
 // The writers now also stamp kds_tickets.meta (see buildTicketMeta). A row with no
 // meta (written before the column existed, by a till still running old code, or
@@ -21,13 +25,18 @@
 
 import { resolveLocalDateTime } from '../openingHours.js';
 
-/** Order type colours and labels. Delivery is Peter's fifth type (14 Sep 2026). */
+/**
+ * Order type colours and labels. Delivery is Peter's fifth type (14 Sep 2026), drive thru
+ * the sixth (16 Sep 2026). Drive thru is blue: nothing else on the board is blue, so it
+ * reads apart from the five type colours and from the green / orange / red time status.
+ */
 export const KDS_TYPES = {
   dineinName:  { key: 'dineinName',  label: 'DINE-IN',    c: '#4ADE80', legend: 'Dine-in — name' },
   dineinTable: { key: 'dineinTable', label: 'DINE-IN',    c: '#2DD4BF', legend: 'Dine-in — table' },
   takeaway:    { key: 'takeaway',    label: 'TAKEAWAY',   c: '#F5A524', legend: 'Takeaway' },
   collection:  { key: 'collection',  label: 'COLLECTION', c: '#B08BFA', legend: 'Collection' },
   delivery:    { key: 'delivery',    label: 'DELIVERY',   c: '#F472B6', legend: 'Delivery' },
+  drivethru:   { key: 'drivethru',   label: 'DRIVE THRU', c: '#60A5FA', legend: 'Drive thru' },
 };
 export const KDS_TYPE_KEYS = Object.keys(KDS_TYPES);
 
@@ -52,13 +61,18 @@ const cleanNote = (v) => {
   return s || null;
 };
 
-/** 'Dine in' / 'eat_in' / 'TAKEOUT' / 'pickup' → the four order type keys, else null. */
+/**
+ * 'Dine in' / 'eat_in' / 'TAKEOUT' / 'pickup' / 'drive_thru' → the five order type keys, else null.
+ * Everything but letters is stripped first, so 'drive-thru', 'drive thru', 'drive_thru',
+ * 'driveThru' and 'drivethru' all land on the same case, and 'drive-through' on the next.
+ */
 export function normaliseOrderType(type) {
   switch (String(type ?? '').toLowerCase().replace(/[^a-z]/g, '')) {
     case 'dinein': case 'eatin': case 'counter': return 'dine-in';
     case 'takeaway': case 'takeout': return 'takeaway';
     case 'collection': case 'collect': case 'pickup': return 'collection';
     case 'delivery': return 'delivery';
+    case 'drivethru': case 'drivethrough': return 'drive-thru';
     default: return null;
   }
 }
@@ -124,10 +138,15 @@ export function parseLegacyTicket(row) {
   const label = clean(row?.table_label ?? row?.table) || '';
   const server = clean(row?.server);
 
-  let m = /^(takeaway|collection|delivery|dine[- ]?in|eat[- ]?in|counter)\s*·\s*(.+)$/i.exec(label);
+  // The till writes the type label and a name ("Takeaway · Sam", "Drive thru · Peter"); a
+  // hand typed "Drive-thru · Peter" or "Drive through · Peter" reads the same way.
+  let m = /^(takeaway|collection|delivery|dine[- ]?in|eat[- ]?in|counter|drive[- ]?thru|drive[- ]?through)\s*·\s*(.+)$/i.exec(label);
   if (m) {
     return { ...buildTicketMeta({ channel: 'till', orderType: m[1], customerName: m[2], staff: server }), legacy: true };
   }
+  // Bare labels with no name. Drive thru is NOT here on purpose: a till on new code always
+  // stamps meta for its bare "drive-thru", so a no meta row reading "Drive thru" is a floor
+  // table of that name and must stay a table card.
   m = /^(takeaway|collection|delivery|dine[- ]?in|eat[- ]?in)$/i.exec(label);
   if (m) {
     return { ...buildTicketMeta({ channel: 'till', orderType: m[1], staff: server }), legacy: true };
@@ -175,13 +194,14 @@ export function fallbackTypeForChannel(channel) {
   return 'dine-in';
 }
 
-/** Five board types from an order type and whether it is a table. */
+/** Six board types from an order type and whether it is a table. */
 export function kdsTypeKey(meta) {
   if (meta?.isTable) return 'dineinTable';
   switch (meta?.orderType || fallbackTypeForChannel(meta?.channel)) {
     case 'takeaway': return 'takeaway';
     case 'collection': return 'collection';
     case 'delivery': return 'delivery';
+    case 'drive-thru': return 'drivethru';
     default: return 'dineinName';
   }
 }

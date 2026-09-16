@@ -1108,7 +1108,7 @@ const SOURCE_META = [
   { key:'catering', label:'Catering',        color:'#14b8a6' },
   { key:'delivery', label:'Delivery apps',   color:'#ef4444' },
 ];
-const ORDER_TYPE_LABEL = { 'dine-in':'Dine-in', takeaway:'Takeaway', collection:'Collection', delivery:'Delivery', 'bar-tab':'Bar tab', counter:'Counter' };
+const ORDER_TYPE_LABEL = { 'dine-in':'Dine-in', takeaway:'Takeaway', collection:'Collection', delivery:'Delivery', 'bar-tab':'Bar tab', counter:'Counter', 'drive-thru':'Drive thru' };
 function payBucket(method) {
   const m = (method || '').toLowerCase();
   if (m.includes('split'))   return 'Split';

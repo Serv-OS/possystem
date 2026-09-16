@@ -49,8 +49,9 @@ test('normaliseCentreOrderTypes: returns the canonical order, not the saved orde
   assert.deepEqual(normaliseCentreOrderTypes(['collection', 'dine-in']), ['dine-in', 'collection']);
 });
 
-test('normaliseCentreOrderTypes: all four ticked collapses back to All', () => {
+test('normaliseCentreOrderTypes: every type ticked collapses back to All', () => {
   assert.deepEqual(normaliseCentreOrderTypes([...ORDER_TYPE_KEYS]), []);
+  assert.equal(ORDER_TYPE_KEYS.length, 5);
 });
 
 test('normaliseCentreOrderTypes: a non array means all order types', () => {
@@ -365,7 +366,7 @@ test('nextCentreOrderTypes: unticking the last type brings All back', () => {
   assert.deepEqual(nextCentreOrderTypes(['takeaway'], 'takeaway', false), []);
 });
 
-test('nextCentreOrderTypes: ticking all four normalises back to All', () => {
+test('nextCentreOrderTypes: ticking every type normalises back to All', () => {
   let list = [];
   for (const key of ORDER_TYPE_KEYS) list = nextCentreOrderTypes(list, key, true);
   assert.deepEqual(list, []);
@@ -377,4 +378,83 @@ test('nextCentreOrderTypes: unticking while All is on changes nothing', () => {
 
 test('nextCentreOrderTypes: an unknown key is ignored', () => {
   assert.deepEqual(nextCentreOrderTypes(['takeaway'], 'bar-tab', true), ['takeaway']);
+});
+
+// ── Drive thru (16 Sep 2026): the fifth key ─────────────────────────────────
+
+test('drive-thru: a fifth key, honoured in every spelling, with its own label', () => {
+  assert.deepEqual(ORDER_TYPE_KEYS, ['dine-in', 'takeaway', 'collection', 'delivery', 'drive-thru']);
+  assert.equal(orderTypeLabelOf('drive-thru'), 'Drive thru');
+  assert.deepEqual(normaliseCentreOrderTypes(['drive-thru']), ['drive-thru']);
+  assert.deepEqual(normaliseCentreOrderTypes(['drive_thru', 'Drive Thru', 'drive-through']), ['drive-thru']);
+  assert.deepEqual(normaliseCentreOrderTypes(['drive-thru', 'dine-in']), ['dine-in', 'drive-thru']);
+  assert.equal(describeCentreOrderTypes({ orderTypes: ['drive-thru', 'takeaway'] }), 'Takeaway, Drive thru');
+  assert.equal(resolveOrderTypeKey({ type: 'drive-thru' }), 'drive-thru');
+  assert.equal(resolveOrderTypeKey({ type: 'Drive thru' }), 'drive-thru');
+  assert.match(orderTypeFallbackMessage('drive-thru'), /Drive thru/);
+  assert.deepEqual(nextCentreOrderTypes([], 'drive-thru', true), ['drive-thru']);
+  assert.deepEqual(nextCentreOrderTypes(['takeaway'], 'drive-thru', true), ['takeaway', 'drive-thru']);
+});
+
+// A centre saved with the old four explicit ticks is no longer "every type", so it does not take
+// drive thru; the safety rule below still routes the order. Back Office always collapsed four
+// ticks to [] (All), and live routing rows are all null, so no existing centre is in this state.
+test('drive-thru: a centre narrowed to other types does not take it; All and the old four ticks behave as pinned', () => {
+  assert.equal(centreTakesOrderType({ orderTypes: ['takeaway'] }, 'drive-thru'), false);
+  assert.equal(centreTakesOrderType({ orderTypes: ['drive-thru'] }, 'drive-thru'), true);
+  assert.equal(centreTakesOrderType({ orderTypes: ['drive-thru'] }, 'takeaway'), false);
+  assert.equal(centreTakesOrderType({ orderTypes: [] }, 'drive-thru'), true);
+  assert.equal(centreTakesOrderType(undefined, 'drive-thru'), true);
+  const oldFour = ['dine-in', 'takeaway', 'collection', 'delivery'];
+  assert.deepEqual(normaliseCentreOrderTypes(oldFour), oldFour);
+  assert.equal(centreTakesOrderType({ orderTypes: oldFour }, 'drive-thru'), false);
+  for (const key of oldFour) assert.equal(centreTakesOrderType({ orderTypes: oldFour }, key), true, key);
+});
+
+test('drive-thru: routes to a drive thru centre, and to the safety fallback when no centre takes it', () => {
+  const config = { centres: [{ id: 'dine' }, { id: 'window' }], routing: {
+    dine: { assignedCategories: ['coffee'], orderTypes: ['dine-in'] },
+    window: { assignedCategories: ['coffee'], orderTypes: ['drive-thru', 'takeaway'] },
+  } };
+  const out = resolveCentresForItem(COFFEE, config, { ...CTX, orderType: 'drive-thru' });
+  assert.deepEqual(out.centreIds, ['window']);
+  assert.equal(out.usedTypeFallback, false);
+  assert.equal(out.typeKey, 'drive-thru');
+  assert.deepEqual(resolveCentresForItem(COFFEE, config, { ...CTX, orderType: 'dine-in' }).centreIds, ['dine']);
+  // no centre takes drive thru: the food still goes to every centre the category matched
+  const fb = resolveCentresForItem(COFFEE, COFFEE_CONFIG, { ...CTX, orderType: 'drive-thru' });
+  assert.deepEqual(fb.centreIds, ['dine', 'togo']);
+  assert.equal(fb.usedTypeFallback, true);
+  assert.equal(fb.typeKey, 'drive-thru');
+  // the window takes drive thru for the coffee, so the Back Office warning has no drive thru gap
+  assert.deepEqual(fallbackOrderTypesForCentre('dine', config.centres, config.routing), ['collection', 'delivery']);
+});
+
+// The Back Office gap warning names drive thru only once some centre's saved order types do.
+// A venue that never ticked drive thru on a till reads "No center takes Takeaway, Collection
+// or Delivery ..." exactly as it did before the type existed.
+test('drive-thru: the gap warning stays silent on drive thru until a centre names it', () => {
+  // no centre names it: byte identical to the pre drive thru list
+  assert.deepEqual(fallbackOrderTypesForCentre('dine', COFFEE_CONFIG.centres, COFFEE_CONFIG.routing), ['collection', 'delivery']);
+  // a centre names it but serves a different category: the gap is real and is named
+  const elsewhere = { centres: [{ id: 'dine' }, { id: 'window' }], routing: {
+    dine: { assignedCategories: ['coffee'], orderTypes: ['dine-in'] },
+    window: { assignedCategories: ['drinks'], orderTypes: ['drive-thru'] },
+  } };
+  assert.deepEqual(fallbackOrderTypesForCentre('dine', elsewhere.centres, elsewhere.routing), ['takeaway', 'collection', 'delivery', 'drive-thru']);
+  // the naming centre may have no categories at all: it still says the venue runs drive thru
+  const empty = { centres: [{ id: 'k' }, { id: 'empty' }], routing: {
+    k: { assignedCategories: ['c1'], orderTypes: ['dine-in'] },
+    empty: { assignedCategories: [], orderTypes: ['drive-thru'] },
+  } };
+  assert.deepEqual(fallbackOrderTypesForCentre('k', empty.centres, empty.routing), ['takeaway', 'collection', 'delivery', 'drive-thru']);
+  // a hand typed spelling counts as naming it
+  const spelled = { centres: [{ id: 'k' }, { id: 'w' }], routing: {
+    k: { assignedCategories: ['c1'], orderTypes: ['dine-in'] },
+    w: { assignedCategories: ['c2'], orderTypes: ['drive_thru'] },
+  } };
+  assert.deepEqual(fallbackOrderTypesForCentre('k', spelled.centres, spelled.routing), ['takeaway', 'collection', 'delivery', 'drive-thru']);
+  // All order types on every centre still warns about nothing
+  const all = { centres: [{ id: 'k' }], routing: { k: { assignedCategories: ['c1'], orderTypes: [] } } };
+  assert.deepEqual(fallbackOrderTypesForCentre('k', all.centres, all.routing), []);
 });

@@ -61,6 +61,15 @@ const TYPES = [
     desc: 'Delivered to the customer — name and address required',
     shortDesc: 'Delivery',
   },
+  // Drive thru (16 Sep 2026): the only entry here gated by the device profile (see visibleTypes).
+  {
+    id: 'drive-thru',
+    label: 'Drive thru',
+    icon: '🚗',
+    color: '#ec4899',
+    desc: 'Handed over at the drive thru window, name or car only',
+    shortDesc: 'Drive thru',
+  },
 ];
 
 const inp = {
@@ -78,7 +87,12 @@ const inp = {
 };
 
 export default function OrderTypeModal({ items, onClose, onComplete }) {
-  const { tables, tabs, seatTableWithItems, mergeItemsToTable, splitTableCheck, openTab, showToast, staff, takeawayCustomerDetails } = useStore();
+  const { tables, tabs, seatTableWithItems, mergeItemsToTable, splitTableCheck, openTab, showToast, staff, takeawayCustomerDetails, deviceConfig } = useStore();
+  // Drive thru shows only when Back Office ticks it for this till (device_profiles
+  // .enabled_order_types). The six older types stay ungated here, as they always were,
+  // so a venue that never ticks drive thru sees exactly the list it had.
+  const enabledOrderTypes = deviceConfig?.enabledOrderTypes || [];
+  const visibleTypes = TYPES.filter(t => t.id !== 'drive-thru' || enabledOrderTypes.includes('drive-thru'));
   const [step, setStep] = useState('type');       // type | details | table_pick | tab_pick
   const [selectedType, setSelectedType] = useState(null);
   const [form, setForm] = useState({ name: '', phone: '', time: '', address: '', isASAP: false, tabName: '' });
@@ -103,7 +117,7 @@ export default function OrderTypeModal({ items, onClose, onComplete }) {
     setSelectedType(type);
     if (type.id === 'dine-in') { setStep('table_pick'); return; }
     if (type.id === 'bar')     { setStep('tab_pick');   return; }
-    if ((type.id === 'takeaway' || type.id === 'collection') && takeawayMode === 'none') {
+    if ((type.id === 'takeaway' || type.id === 'collection' || type.id === 'drive-thru') && takeawayMode === 'none') {
       // Straight to kitchen — the order carries its short ref like an unnamed walk-in.
       onComplete({ type: type.id, name: '', phone: '', time: '', isASAP: true, orderType: type.id, channel: type.id });
       return;
@@ -121,6 +135,12 @@ export default function OrderTypeModal({ items, onClose, onComplete }) {
   const confirmTakeaway = () => {
     if (!form.name.trim()) { showToast('Customer name required', 'error'); return; }
     onComplete({ type: selectedType.id, name: form.name.trim(), phone: form.phone, time: form.time, isASAP: form.isASAP, orderType: selectedType.id, channel: selectedType.id });
+  };
+
+  // Drive thru: name (or the car) only. No phone, no slot: the car is at the window now.
+  const confirmDriveThru = () => {
+    if (!form.name.trim()) { showToast('Customer name required', 'error'); return; }
+    onComplete({ type: 'drive-thru', name: form.name.trim(), phone: '', time: '', isASAP: true, orderType: 'drive-thru', channel: 'drive-thru' });
   };
 
   const confirmDelivery = () => {
@@ -178,7 +198,7 @@ export default function OrderTypeModal({ items, onClose, onComplete }) {
           {/* ── Step 1: Type picker ── */}
           {step === 'type' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {TYPES.map(type => (
+              {visibleTypes.map(type => (
                 <button key={type.id} onClick={() => handleTypeSelect(type)} style={{
                   padding: '14px 16px', borderRadius: 13, cursor: 'pointer', fontFamily: 'inherit',
                   textAlign: 'left', border: `1.5px solid ${type.color}33`,
@@ -246,6 +266,21 @@ export default function OrderTypeModal({ items, onClose, onComplete }) {
               </div>
               <button onClick={confirmTakeaway} disabled={!form.name.trim()} style={{ ...sendBtn(selectedType.color), opacity: form.name.trim() ? 1 : .4 }}>
                 Send {selectedType.icon} →
+              </button>
+            </div>
+          )}
+
+          {/* Step 2d: Drive thru, name or car only */}
+          {step === 'details' && selectedType?.id === 'drive-thru' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 800, color: 'var(--t4)', textTransform: 'uppercase', letterSpacing: '.1em', marginBottom: 6 }}>Customer name or car *</div>
+                <input ref={nameRef} style={inp} value={form.name} onChange={e => setField('name', e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && confirmDriveThru()}
+                  placeholder="Name or car, e.g. Sam or red Golf" autoFocus />
+              </div>
+              <button onClick={confirmDriveThru} disabled={!form.name.trim()} style={{ ...sendBtn(selectedType.color), opacity: form.name.trim() ? 1 : .4 }}>
+                Confirm drive thru 🚗 →
               </button>
             </div>
           )}

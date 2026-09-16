@@ -8,10 +8,12 @@ import { assembleTaxProfiles } from '../../lib/rowMapping';
 // maths on a sample item; no till or customer page computes with the engine yet.
 import { computeTax, validateProfile } from '../../lib/taxEngine';
 
-const ORDER_TYPES = ['dine-in', 'takeaway', 'delivery', 'bar', 'counter'];
+const ORDER_TYPES = ['dine-in', 'takeaway', 'delivery', 'bar', 'counter', 'drive-thru'];
 // Profile lines know about every channel, including collection (scope of the
 // profiles engine, wider than the legacy applies_to list above).
-const PROFILE_ORDER_TYPES = ['dine-in', 'takeaway', 'delivery', 'collection', 'bar', 'counter'];
+// Drive thru (16 Sep 2026): a line tagged 'drive-thru' applies to it; with no such line on the
+// profile, a line tagged 'takeaway' applies to drive thru too (src/lib/taxEngine.js).
+const PROFILE_ORDER_TYPES = ['dine-in', 'takeaway', 'delivery', 'collection', 'bar', 'counter', 'drive-thru'];
 
 const EMPTY = { name:'', code:'', rate:'', type:'inclusive', applies_to:['all'], is_default:false, active:true };
 

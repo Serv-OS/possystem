@@ -135,7 +135,7 @@ export default function MCartSheet({ onClose, onSend, onSendAndPay, onAddMore })
       };
     }
     const labelMap = {
-      'takeaway':'Takeaway', 'collection':'Collection', 'delivery':'Delivery', 'dine-in':'Counter',
+      'takeaway':'Takeaway', 'collection':'Collection', 'delivery':'Delivery', 'dine-in':'Counter', 'drive-thru':'Drive thru',
     };
     return {
       kind:'walkin', label: labelMap[orderType] || 'New order', sub: walkInOrder?.customer?.name || '',

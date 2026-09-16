@@ -244,8 +244,9 @@ function MPOSRouter() {
     // through the customer-capture screen first — like the counter POS, they
     // need at least a name + phone before the menu (kitchen ticket, queue row,
     // receipt). v5.5.341: takeaway was previously skipping capture.
+    // Drive thru (16 Sep 2026) captures a name only; MCustomerCapture drops the phone rule for it.
     useStore.setState({ walkInOrder: null, customer: null, activeTableId: null });
-    if (type === 'collection' || type === 'delivery' || type === 'takeaway') {
+    if (type === 'collection' || type === 'delivery' || type === 'takeaway' || type === 'drive-thru') {
       setFlow({ screen: 'customerCapture' });
     } else {
       setFlow({ screen: 'menu', context: { source: 'walkin' } });
@@ -699,7 +700,7 @@ function MPOSRouter() {
     return (
       <MMenu
         headerTitle={headerTitle}
-        headerSub={tableId ? null : (orderType || '').toUpperCase()}
+        headerSub={tableId ? null : orderType === 'drive-thru' ? 'DRIVE THRU' : (orderType || '').toUpperCase()}
         categoryLinks={categoryLinks}
         onPickItem={goItem}
         onOpenCart={goCart}

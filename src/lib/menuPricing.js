@@ -7,8 +7,8 @@
 //
 // Stored shape (written by MenuManager + PerMenuPricingTiers):
 //   pricing = {
-//     base, dineIn, takeaway, collection, delivery,
-//     menus?: { [menuId]: { all?, base?, dineIn?, takeaway?, collection?, delivery? } }
+//     base, dineIn, takeaway, collection, delivery, driveThru?,
+//     menus?: { [menuId]: { all?, base?, dineIn?, takeaway?, collection?, delivery?, driveThru? } }
 //   }
 // MenuManager mirrors pricing.base onto the legacy scalar item.price.
 //
@@ -29,10 +29,16 @@
 // the same number everywhere. Catering is the one deliberate exception (its own
 // base rule, see CateringSurface).
 //
-// Channel keys are dineIn, takeaway, collection, delivery. The till passes
-// 'dine-in', the kiosk passes 'dineIn'; both (and 'dine_in') map to dineIn.
-// Anything unknown (including null before an online customer picks a type)
-// falls back to dineIn, exactly as the store always has.
+// Channel keys are dineIn, takeaway, collection, delivery and driveThru. The till
+// passes 'dine-in', the kiosk passes 'dineIn'; both (and 'dine_in') map to dineIn.
+// The till's 'drive-thru' (and 'drive_thru', 'driveThru', 'drive-through') map to
+// driveThru. Anything unknown (including null before an online customer picks a
+// type) falls back to dineIn, exactly as the store always has.
+//
+// Drive thru (16 Sep 2026) is the one channel with a fallback of its own: at
+// every level where a channel price is read, driveThru falls to takeaway when
+// it is not set, so a venue that never types a drive thru price charges its
+// takeaway price. Every other channel reads exactly one key, as before.
 
 const CHANNEL_MAP = {
   dineIn: 'dineIn',
@@ -41,9 +47,20 @@ const CHANNEL_MAP = {
   takeaway: 'takeaway',
   collection: 'collection',
   delivery: 'delivery',
+  driveThru: 'driveThru',
+  'drive-thru': 'driveThru',
+  drive_thru: 'driveThru',
+  'drive-through': 'driveThru',
 };
 
 export const channelKey = (channel) => CHANNEL_MAP[channel] || 'dineIn';
+
+// The pricing keys a channel reads, in order. Only driveThru has a second key.
+const CHANNEL_FALLBACK = { driveThru: ['driveThru', 'takeaway'] };
+const channelKeys = (channel) => {
+  const key = channelKey(channel);
+  return CHANNEL_FALLBACK[key] || [key];
+};
 
 const isSet = (v) => v !== null && v !== undefined;
 const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
@@ -58,8 +75,7 @@ export function menuTierPrice(item, channel, menuId) {
   if (!p || !menuId || !p.menus) return null;
   const tier = p.menus[menuId];
   if (!tier) return null;
-  const key = channelKey(channel);
-  if (isSet(tier[key])) return num(tier[key]);
+  for (const key of channelKeys(channel)) if (isSet(tier[key])) return num(tier[key]);
   if (isSet(tier.all)) return num(tier.all);
   if (isSet(tier.base)) return num(tier.base);
   return null;
@@ -72,8 +88,7 @@ export function resolveItemPrice(item, channel = 'dineIn', menuId = null) {
   if (!p) return num(item?.price);
   const tier = menuTierPrice(item, channel, menuId);
   if (tier !== null) return tier;
-  const key = channelKey(channel);
-  if (isSet(p[key])) return num(p[key]);
+  for (const key of channelKeys(channel)) if (isSet(p[key])) return num(p[key]);
   return num(p.base);
 }
 

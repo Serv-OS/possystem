@@ -23,7 +23,10 @@
 
 import { ORDER_TYPES, orderTypeKey } from './orderScreen/orderScreenStatus.js';
 
-/** The four order types anything in this codebase writes: dine-in, takeaway, collection, delivery. */
+/**
+ * The order types anything in this codebase writes: dine-in, takeaway, collection, delivery
+ * and drive-thru. The list is ORDER_TYPES in orderScreenStatus.js; nothing here counts them.
+ */
 export const ORDER_TYPE_KEYS = ORDER_TYPES.map(t => t.key);
 
 const LABEL_BY_KEY = ORDER_TYPES.reduce((acc, t) => { acc[t.key] = t.label; return acc; }, {});
@@ -36,7 +39,7 @@ export function orderTypeLabelOf(key) {
 /**
  * Clean a centre's saved order types.
  * Anything that is not an array of known keys becomes [], which means ALL order types.
- * All four ticked also collapses to [], so "every box ticked" and "All" are one state.
+ * Every type ticked also collapses to [], so "every box ticked" and "All" are one state.
  */
 export function normaliseCentreOrderTypes(value) {
   if (!Array.isArray(value)) return [];
@@ -137,9 +140,9 @@ export function resolveCentresForItem(item, config, ctx) {
 
 /**
  * The Back Office tick boxes, as a pure rule.
- * While All order types is on the four boxes show unticked, so one tick narrows to that
+ * While All order types is on the boxes show unticked, so one tick narrows to that
  * type. Unticking the last remaining type returns to [], so All comes back on and a
- * centre can never be saved serving nothing. Ticking all four also returns to [].
+ * centre can never be saved serving nothing. Ticking every type also returns to [].
  */
 export function nextCentreOrderTypes(current, key, ticked) {
   const list = normaliseCentreOrderTypes(current);
@@ -190,6 +193,10 @@ export function describeCentreOrderTypes(routingEntry) {
  *               as serving its children (optional, defaults to no hierarchy)
  * A centre with no categories ticked returns []: it receives nothing anyway, and the
  * screen says so separately.
+ *
+ * Drive thru (16 Sep 2026) is named only once some centre's saved order types name it.
+ * A venue that never ticked it on a till has no drive thru orders to fall back, and its
+ * warning must read "Takeaway, Collection or Delivery" exactly as it did before.
  */
 export function fallbackOrderTypesForCentre(centreId, centres, routing, parentMap) {
   const cats = routing?.[centreId]?.assignedCategories || [];
@@ -197,7 +204,10 @@ export function fallbackOrderTypesForCentre(centreId, centres, routing, parentMa
   const configured = (centres || []).filter(c => routing?.[c?.id]?.assignedCategories?.length);
   const serves = (centre, catId) =>
     catOrAncestorMatches(catId, new Set(routing[centre.id].assignedCategories), parentMap || {});
-  return ORDER_TYPE_KEYS.filter(key => cats.some(catId =>
+  const namesDriveThru = (centres || []).some(c =>
+    normaliseCentreOrderTypes(routing?.[c?.id]?.orderTypes).includes('drive-thru'));
+  const keys = namesDriveThru ? ORDER_TYPE_KEYS : ORDER_TYPE_KEYS.filter(k => k !== 'drive-thru');
+  return keys.filter(key => cats.some(catId =>
     !configured.some(c => serves(c, catId) && centreTakesOrderType(routing[c.id], key))
   ));
 }

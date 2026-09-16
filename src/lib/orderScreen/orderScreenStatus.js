@@ -4,10 +4,11 @@
 // NO imports, so node:test can load it and the Back Office preview and the TV share it.
 //
 // This file MIRRORS supabase/migrations/20260911_OPS_order_status_displays.sql, with the
-// feed as 20260911c_OPS_order_screen_names_follow_the_section.sql replaces it:
+// feed as 20260911c_OPS_order_screen_names_follow_the_section.sql replaces it, and the type
+// key and name helpers as 20260917_OPS_drive_thru_order_screens.sql replaces them:
 //   channelKeyOf      = _osd_channel_key
-//   orderTypeKey      = _osd_type_key
-//   formatOrderName   = _osd_name
+//   orderTypeKey      = _osd_type_key   (20260917 adds drive thru)
+//   formatOrderName   = _osd_name       (20260917 adds drive thru to the placeholder names)
 //   orderNumberOf     = _osd_number
 //   evaluateOrder     = the judged, bucketed and visible CTEs of order_status_feed
 //   parseIntLike      = _osd_int
@@ -31,17 +32,20 @@ export const CHANNELS = [
   { key: 'ezcater', label: 'ezCater', group: 'apps' },
 ];
 
-// The four order types anything writes to order_queue.type / store.orderType.
+// The five order types anything writes to order_queue.type / store.orderType.
 // src/lib/productionRouting.js reuses this list for the production centre ticks, where
 // an EMPTY orderTypes list means ALL order types (a centre with nothing saved keeps
 // taking everything). Here an empty `orderTypes` on an order screen section matches
 // NOTHING and is a validation error. Two opposite conventions, both deliberate: do not
 // unify them, or every existing production centre stops printing.
+// Drive thru (16 Sep 2026) is written only by a till whose device profile enables it, so
+// a venue that never ticks it never sees it here beyond the tick box.
 export const ORDER_TYPES = [
   { key: 'dine-in', label: 'Eat in' },
   { key: 'takeaway', label: 'Takeaway' },
   { key: 'collection', label: 'Collection' },
   { key: 'delivery', label: 'Delivery' },
+  { key: 'drive-thru', label: 'Drive thru' },
 ];
 
 export const STEPS = ['received', 'preparing', 'ready'];
@@ -77,8 +81,9 @@ export const DEFAULT_THEME = {
   uppercase: true,
 };
 
-// Exactly the regex source inside _osd_name. The SQL test asserts it appears verbatim.
-export const NAME_PLACEHOLDER_PATTERN = '^(order\\s*#?\\s*\\d+|hubrise customer|ezcater customer|guest|customer|walk\\s*-?\\s*in|counter|dine\\s*-?\\s*in|eat\\s*-?\\s*in|take\\s*-?\\s*away|collection|delivery|table\\s*\\S+)$';
+// Exactly the regex source inside _osd_name (as 20260917_OPS_drive_thru_order_screens.sql
+// defines it). The SQL test asserts it appears verbatim.
+export const NAME_PLACEHOLDER_PATTERN = '^(order\\s*#?\\s*\\d+|hubrise customer|ezcater customer|guest|customer|walk\\s*-?\\s*in|counter|dine\\s*-?\\s*in|eat\\s*-?\\s*in|take\\s*-?\\s*away|collection|delivery|drive\\s*-?\\s*thru|drive\\s*-?\\s*through|table\\s*\\S+)$';
 const NAME_PLACEHOLDER_RE = new RegExp(NAME_PLACEHOLDER_PATTERN, 'i');
 // Exactly the contact detail regex inside _osd_name: an @ or any digit anywhere means a phone
 // number, an email, a flat or a table number was typed into the name field, so the row shows
@@ -168,6 +173,7 @@ export function orderTypeKey(type) {
     case 'takeaway': case 'takeout': return 'takeaway';
     case 'collection': case 'pickup': return 'collection';
     case 'delivery': return 'delivery';
+    case 'drivethru': case 'drivethrough': return 'drive-thru';
     default: return null;
   }
 }

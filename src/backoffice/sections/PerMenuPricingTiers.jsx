@@ -9,6 +9,8 @@
 * Resolution order in resolver: menu+channel -> menu.all -> menu.base -> channel default -> base
 * (menu.base is the Base field below. It was written but never read before the
 * shared resolver, see menuTierPrice.)
+* Drive thru (16 Sep 2026): driveThru falls to takeaway at each level before the
+* next level, so the placeholder below shows the takeaway price when set.
 *
 * Empty input clears the channel. If all channels for a menu are empty,
 * the menu key is removed from pricing.menus.
@@ -46,6 +48,7 @@ const CHANNELS = [
   { k: 'takeaway',   label: 'Takeaway',              fb: 'takeaway' },
   { k: 'collection', label: 'Collection',            fb: 'collection' },
   { k: 'delivery',   label: 'Delivery',              fb: 'delivery' },
+  { k: 'driveThru',  label: 'Drive thru',            fb: ['driveThru', 'takeaway'] },
 ];
 
 export default function PerMenuPricingTiers({ item, onUpdate }) {
@@ -138,7 +141,9 @@ export default function PerMenuPricingTiers({ item, onUpdate }) {
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
                   {CHANNELS.map(({ k, label, fb }) => {
                     const v = tier[k];
-                    const fallbackValue = !fb ? '' : (p[fb] != null ? p[fb] : (p.base != null ? p.base : ''));
+                    // fb is one key, or a list read in order (driveThru, then takeaway), then base.
+                    const fbHit = !fb ? null : [].concat(fb).find(key => p[key] != null);
+                    const fallbackValue = !fb ? '' : (fbHit ? p[fbHit] : (p.base != null ? p.base : ''));
                     const placeholder = k === 'all' ? '—' : (fallbackValue !== '' ? Number(fallbackValue).toFixed(2) : '0.00');
                     return (
                       <div key={k} style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>

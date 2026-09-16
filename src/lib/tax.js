@@ -14,13 +14,32 @@ import { money } from './currency.js';
  */
 
 /**
+ * The per order type override an item carries for this order type, or undefined when it
+ * has none (undefined means "no override", so the caller falls to the item's own rate; an
+ * explicit null is a real override that means the venue default, as the item editor writes it).
+ *
+ * Drive thru (16 Sep 2026) is takeaway by another door: an explicit taxOverrides['drive-thru']
+ * wins, else the takeaway override applies to a drive-thru sale, else the item's own rate.
+ * Every other order type reads exactly its own key, as before. taxEngine.makeCascadeResolver
+ * mirrors this rule (it is a pure module and cannot import it): change both together.
+ */
+export function taxOverrideFor(item, orderType) {
+  const overrides = item?.taxOverrides;
+  if (!overrides) return undefined;
+  const own = overrides[orderType];
+  if (own !== undefined) return own;
+  if (orderType === 'drive-thru') return overrides.takeaway;
+  return undefined;
+}
+
+/**
  * Resolve which tax rate applies to an item for a given order type.
  * Checks per-order-type overrides first, then falls back to the item's default rate.
  */
 export function resolveTaxRate(item, taxRates = [], orderType = 'dine-in') {
   if (!item || !taxRates.length) return null;
   // Check for order-type specific override (e.g. takeaway = zero-rated)
-  const overrideId = item.taxOverrides?.[orderType];
+  const overrideId = taxOverrideFor(item, orderType);
   const rateId = overrideId !== undefined ? overrideId : item.taxRateId;
   // v5.5.857: no rate set = the item editor's "Use default" — which the engine NEVER
   // honoured: it returned null and the line booked £0 VAT (live repro: a £36 ribeye on
