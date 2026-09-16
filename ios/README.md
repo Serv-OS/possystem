@@ -18,7 +18,7 @@ iPad-first WebView wrappers around the PROD web app, mirroring the Android wrapp
 **Live host (since 11 Sep 2026 builds):** every target opens `app.serv-os.app`, the live web app on git main. `possystem-liard.vercel.app` and `dev.serv-os.app` serve git develop (test cards only) and must not ship in an App Store build. The host a target opens is always treated as internal by `Config.isInternalHost`, so repointing `RPOSAppURL` can never bounce the app's own start page to Safari.
 
 - **No .xcodeproj in git.** `xcodegen generate` builds it from `project.yml` (XcodeGen 2.46.0 installed).
-- **No hardware bridges in v1.** `window.RposPrinter` is left undefined on purpose, so printing falls back to the Supabase `print_jobs` queue and the LAN print agent. The shell injects `window.RposIOS = { platform: 'ios', version: '<marketing version>' }` so the web app can detect it.
+- **Printing (POS build 5, v5.8.83).** The POS target sets `RPOSAllowsPrinting: true`, so `ServOSPOS/PrinterBridge.swift` injects `window.RposPrinter` and the iPad prints straight to receipt printers over the venue Wi-Fi (TCP 9100), exactly like the Android till. `NSLocalNetworkUsageDescription` is required with it: iOS asks the user once for local network access. Every other target leaves `window.RposPrinter` undefined, so its prints fall back to the Supabase `print_jobs` queue and the LAN print agent. Before build 5 the POS did that too, and a venue with no agent printed nothing (UK test, 16 Sep 2026). The shell injects `window.RposIOS = { platform: 'ios', version: '<marketing version>' }` so the web app can detect it.
 
 ## Per-app Info.plist keys (the contract)
 

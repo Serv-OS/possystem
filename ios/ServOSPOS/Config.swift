@@ -15,6 +15,11 @@ import Foundation
 ///                                          (default false; a target setting
 ///                                          true must ALSO declare
 ///                                          NSLocationWhenInUseUsageDescription)
+///   RPOSAllowsPrinting (Bool, optional)  — expose window.RposPrinter (direct
+///                                          TCP printing on the venue Wi-Fi;
+///                                          default false; a target setting true
+///                                          must ALSO declare
+///                                          NSLocalNetworkUsageDescription)
 ///
 /// Shared, non-app-specific configuration stays as constants below.
 enum Config {
@@ -50,6 +55,16 @@ enum Config {
     /// NSLocationWhenInUseUsageDescription or iOS terminates the app on request.
     static let allowsLocation: Bool =
         (Bundle.main.object(forInfoDictionaryKey: "RPOSAllowsLocation") as? Bool) ?? false
+
+    /// Whether this app exposes the native printer bridge (window.RposPrinter) so
+    /// receipts and tickets go straight to the venue's receipt printers over the
+    /// venue Wi-Fi, as on the Android till. POS: true (v5.8.83, build 5: until
+    /// then the iPad queued every print for a LAN agent, and a venue with no
+    /// agent printed nothing). Every other target: false, no bridge, no local
+    /// network prompt. A target setting true MUST also declare
+    /// NSLocalNetworkUsageDescription or iOS blocks the connection.
+    static let allowsPrinting: Bool =
+        (Bundle.main.object(forInfoDictionaryKey: "RPOSAllowsPrinting") as? Bool) ?? false
 
     /// The app's user-facing name (used by native UI like ReconnectingView).
     static var displayName: String {

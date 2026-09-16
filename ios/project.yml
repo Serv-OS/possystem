@@ -7,6 +7,8 @@
 #   - Every target compiles the same Swift files in ServOSPOS/.
 #   - App-specific behaviour comes from that target's generated Info.plist:
 #       RPOSAppURL       (String) — the web app URL the shell hosts
+#       RPOSAllowsPrinting (Bool) — expose window.RposPrinter (POS); must also
+#                                   declare NSLocalNetworkUsageDescription
 #       RPOSAllowsCamera (Bool)   — grant camera to our origin (POS QR scan);
 #                                   targets setting true must ALSO declare
 #                                   NSCameraUsageDescription. Absent/false =
@@ -42,7 +44,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: co.posup.rpos.pos
         PRODUCT_NAME: ServOS POS
         MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: "4"
+        CURRENT_PROJECT_VERSION: "5"
         # Signing stays Automatic. The team is chosen in Xcode by the owner.
         # After first signing, record the 10-character team id here as
         # DEVELOPMENT_TEAM so `xcodegen generate` does not wipe the choice.
@@ -64,6 +66,10 @@ targets:
         # Camera is used by the web app's QR scanning (getUserMedia).
         # Microphone is deliberately NOT requested; the shell denies it.
         NSCameraUsageDescription: "ServOS POS uses the camera to scan QR codes for table ordering, loyalty and gift cards."
+        # Build 5 (v5.8.83): direct printing to receipt printers on the venue
+        # Wi-Fi (PrinterBridge.swift). iOS asks for local network access once.
+        RPOSAllowsPrinting: true
+        NSLocalNetworkUsageDescription: "ServOS POS sends receipts and kitchen tickets to your receipt printers on the venue Wi-Fi."
         # App Transport Security stays at the secure default (https only).
         # The POS URL is https; no arbitrary-loads exception is added.
         UILaunchScreen:

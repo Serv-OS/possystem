@@ -12,12 +12,14 @@ final class ConnectionState: ObservableObject {
 /// gesture (order chime), internal hosts stay in-app, external links go to
 /// Safari, and a 5 second retry loop on navigation failure.
 ///
-/// Hardware bridges are intentionally ABSENT in v1. The Android app injects
-/// RposPrinter / RposBiometric / RposNfc; here `window.RposPrinter` stays
-/// undefined so src/lib/printer.js's isNativeBridgeAvailable() returns false
-/// and every print falls back to the Supabase print_jobs queue (LAN print
-/// agent, transport 'queued'). Do NOT stub a fake RposPrinter object: the
-/// web app feature-detects the bridge by truthiness.
+/// Hardware bridges: the printer bridge (window.RposPrinter, PrinterBridge.swift)
+/// is injected on targets with RPOSAllowsPrinting (POS), so receipts go straight
+/// to the venue's printers over Wi-Fi as on the Android till. On every other
+/// target `window.RposPrinter` stays undefined, so src/lib/printer.js's
+/// isNativeBridgeAvailable() returns false and a print falls back to the Supabase
+/// print_jobs queue (LAN print agent). Do NOT stub a fake RposPrinter object: the
+/// web app feature-detects the bridge by truthiness. RposBiometric / RposNfc
+/// (Android) are still absent here.
 struct POSWebView: UIViewRepresentable {
     @ObservedObject var connection: ConnectionState
 
@@ -102,6 +104,7 @@ struct POSWebView: UIViewRepresentable {
         userContent.addUserScript(Self.shellMarkerScript)
         userContent.addUserScript(Self.selectionSuppressionScript)
         if Config.allowsLocation { userContent.addUserScript(Self.locationBridgeScript) }
+        if Config.allowsPrinting { userContent.addUserScript(PrinterBridge.injectionScript) }
         configuration.userContentController = userContent
 
         let webView = WKWebView(frame: .zero, configuration: configuration)
@@ -133,6 +136,14 @@ struct POSWebView: UIViewRepresentable {
             userContent.add(bridge, name: LocationBridge.handlerName)
         }
 
+        // Direct printing over the venue Wi-Fi (POS target). Retained by the
+        // coordinator for the same reason as the location bridge.
+        if Config.allowsPrinting {
+            let bridge = PrinterBridge(webView: webView)
+            context.coordinator.printerBridge = bridge
+            userContent.add(bridge, name: PrinterBridge.handlerName)
+        }
+
         webView.load(URLRequest(url: Config.appURL))
         return webView
     }
@@ -154,6 +165,7 @@ struct POSWebView: UIViewRepresentable {
         /// handler weakly, so without this the bridge deallocates and every
         /// location request silently never answers.
         var locationBridge: LocationBridge?
+        var printerBridge: PrinterBridge?
         private var retryTimer: Timer?
 
         init(connection: ConnectionState) {
