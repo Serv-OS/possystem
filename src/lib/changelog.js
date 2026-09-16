@@ -7,13 +7,20 @@
 
 export const CHANGELOG = [
   {
-    v: '5.8.88',
+    v: '5.8.90',
     date: '16 Sep 2026',
     items: [
       'New order type: Drive thru. Switch it on per till in Back Office, Device Profiles, enabled order types. Off until ticked, so nothing changes for a venue that does not use it.',
       'On the till it sits next to Dine in, Takeaway and Collect. Picking it asks for a name or car only (no phone), the kitchen ticket reads "Drive thru · Name", the KDS shows a DRIVE THRU card, the Orders Hub has a Drive thru tab, and the receipt says Drive thru. MPOS has the same flow.',
       'Price and tax: a Drive thru price can be set per item and per menu tier; where none is set the takeaway price applies, then base. Tax uses the drive thru rate where set, otherwise the takeaway rate, otherwise the item default, in both tax engines. Recipe costing and stock work the same way.',
       'Order status TVs need one migration run by hand (supabase/migrations/20260917_OPS_drive_thru_order_screens.sql) before a drive thru order appears on a screen. The order-notify and stock-deplete functions need a redeploy.',
+    ],
+  },
+  {
+    v: '5.8.89',
+    date: '16 Sep 2026',
+    items: [
+      'Back Office: the left menu scrolls again, so the last entries in a long group (Print menu under Channels) are no longer hidden behind the footer.',
     ],
   },
   {
