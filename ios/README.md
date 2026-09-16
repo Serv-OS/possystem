@@ -65,7 +65,7 @@ No Swift changes needed. Do not add per-app constants to `Config.swift`; add a p
 ## Before App Store submission
 
 - **KDS app icon** is a derived placeholder. Export the real KDS mark from the Brand Guidelines before public release.
-- **Version bumps**: `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` live per target in `project.yml` (11 Sep 2026: POS 1.0.0 build 4, every other target 1.0.0 build 3). Bump there, regenerate, archive.
+- **Version bumps**: `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` live per target in `project.yml` (16 Sep 2026: POS 1.0.0 build 6 and KDS 1.0.0 build 4, both iPad only for the App Store; every other target 1.0.0 build 3). Bump there, regenerate, archive.
 
 ## Later automation
 

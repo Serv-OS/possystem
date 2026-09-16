@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.86',
+    date: '16 Sep 2026',
+    items: [
+      'No change on the web. The ServOS POS and ServOS KDS apps are now iPad only, ready for App Store review (POS build 6, KDS build 4).',
+    ],
+  },
+  {
     v: '5.8.85',
     date: '16 Sep 2026',
     items: [
