@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.82',
+    date: '16 Sep 2026',
+    items: [
+      'New kiosk design: your menu is translated too. When a customer picks a language, item names, descriptions, categories, option groups, options and instruction choices change with the screens. The kitchen, the receipt and the order keep the English.',
+      'The translations are made for you in the background by Claude, within 10 minutes of a change and shortly after a menu save, for every venue with a kiosk on the new design. Needs the Anthropic API key added to the Supabase edge functions once.',
+      'Back Office, Kiosks, Settings, Menu languages: see every line in each language, fix any of them (your wording is kept), or press Translate now. Needs the database update 20260916_OPS_menu_translations.',
+      'The kiosk languages are now English, Spanish, French and Chinese, the languages of our market. German, Italian and Portuguese come off the button but keep their text.',
+      'Chinese (Simplified) added to every kiosk screen.',
+      'Fix: "Enter the number on your flag" on the old kiosk design was English in every language.',
+    ],
+  },
+  {
     v: '5.8.81',
     date: '15 Sep 2026',
     items: [

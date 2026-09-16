@@ -5,9 +5,11 @@
  */
 import { t, tf } from '../../lib/i18n';
 import { kioskAllergenLabels } from '../../lib/kioskAllergens';
+import { translateEnglish, useMenuText } from '../../lib/menuText';
 import { WarningIcon } from './KioskIcons';
 
 export default function KioskAllergenSummarySheet({ list, onClose }) {
+  useMenuText();   // item names in the customer's language
   return (
     <div onClick={onClose} style={{ position: 'absolute', inset: 0, background: 'var(--k2Scrim)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 56, zIndex: 30 }}>
       <div
@@ -24,7 +26,7 @@ export default function KioskAllergenSummarySheet({ list, onClose }) {
             <div key={id} style={{ display: 'flex', alignItems: 'flex-start', gap: 14, background: 'var(--k2WarnFill)', border: '2px solid var(--k2WarnBorder)', borderRadius: 18, padding: '18px 22px', fontSize: 22, color: 'var(--k2Ink)' }}>
               <span style={{ color: 'var(--k2WarnInk)', flex: 'none', marginTop: 2 }}><WarningIcon size={26} /></span>
               <span style={{ overflowWrap: 'anywhere' }}>
-                {tf('k2.allergenAck.contains', { allergen: kioskAllergenLabels([id], t)[0] || id, items: names.join(', ') })}
+                {tf('k2.allergenAck.contains', { allergen: kioskAllergenLabels([id], t)[0] || id, items: names.map(translateEnglish).join(', ') })}
               </span>
             </div>
           ))}

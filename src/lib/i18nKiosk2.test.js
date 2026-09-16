@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { t, tf, tn, englishKeys, languageKeys, LANGUAGES } from './i18n.js';
+import { t, tf, tn, englishKeys, languageKeys, startupLanguage, LANGUAGES, RETIRED_LANGUAGES } from './i18n.js';
 import { KIOSK_LANGUAGE_PICKER, KIOSK_START_LANGUAGE } from './kioskFlow.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -24,16 +24,21 @@ test('every k2 key has non empty English text', () => {
 });
 
 // v5.8.81: the language pill is on, so every language must have every line. A key that fell
-// back to English would give a customer a half translated screen.
-const OTHER_LANGUAGES = LANGUAGES.map(L => L.code).filter(c => c !== 'en');
+// back to English would give a customer a half translated screen. v5.8.82: the button offers
+// Spanish, French and Chinese (the market); German, Italian and Portuguese keep their complete
+// blocks and are checked too, so they can come back without a gap.
+const OFFERED = LANGUAGES.map(L => L.code).filter(c => c !== 'en');
+const OTHER_LANGUAGES = [...OFFERED, ...RETIRED_LANGUAGES];
 const markers = (s) => (String(s).match(/\{[A-Za-z0-9]+\}/g) || []).sort();
 const ownKeys = (lang) => languageKeys(lang);
 const ownText = (lang, k) => (languageKeys(lang, k).includes(k) ? t(k, lang) : undefined);
 
-test('the language pill is on and all five languages are offered', () => {
+test('the language pill is on and the market languages are offered', () => {
   assert.equal(KIOSK_LANGUAGE_PICKER, true);
   assert.equal(KIOSK_START_LANGUAGE, 'en');
-  assert.deepEqual(OTHER_LANGUAGES, ['es', 'fr', 'de', 'it', 'pt']);
+  assert.deepEqual(OFFERED, ['es', 'fr', 'zh']);
+  assert.deepEqual(RETIRED_LANGUAGES, ['de', 'it', 'pt']);
+  assert.equal(LANGUAGES.find(L => L.code === 'zh').nativeName, '中文');
 });
 
 test('every k2 key is translated in every language, with the same {markers}', () => {
@@ -79,7 +84,7 @@ test('translated lines fill values and plurals', () => {
 });
 
 test('no k2 text uses a dash as punctuation, in any language', () => {
-  for (const L of LANGUAGES) {
+  for (const L of [...LANGUAGES, ...RETIRED_LANGUAGES.map(code => ({ code }))]) {
     for (const k of englishKeys('k2.')) {
       const v = t(k, L.code);
       assert.ok(!/[—–]/.test(v), `${L.code} ${k} has an em or en dash: ${v}`);
@@ -140,4 +145,22 @@ test('every k2 key named in the kiosk screens and kiosk rules exists', () => {
     }
   }
   assert.deepEqual(missing, []);
+});
+
+test('the old kiosk keys are translated in every offered language too', () => {
+  const old = englishKeys('').filter(k => !k.startsWith('k2.'));
+  assert.ok(old.length > 50);
+  for (const lang of OFFERED) {
+    const missing = old.filter(k => !languageKeys(lang).includes(k));
+    assert.deepEqual(missing, [], lang);
+  }
+});
+
+test('a kiosk that stored a retired language starts in English after the update', () => {
+  assert.equal(startupLanguage('de'), 'en');
+  assert.equal(startupLanguage('it'), 'en');
+  assert.equal(startupLanguage('es'), 'es');
+  assert.equal(startupLanguage('zh'), 'zh');
+  assert.equal(startupLanguage('xx'), 'en');
+  assert.equal(startupLanguage(null), 'en');
 });

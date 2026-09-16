@@ -10,6 +10,7 @@
 import { t, tf } from '../../lib/i18n';
 import { money } from '../../lib/currency';
 import { kioskLineDetailParts } from '../../lib/kioskFlow';
+import { itemName, lineChoices, useMenuText } from '../../lib/menuText';
 import { KioskPhoto } from './KioskChrome';
 import { MinusIcon, PlusIcon } from './KioskIcons';
 
@@ -22,23 +23,27 @@ const SIZES = {
 
 export default function KioskLineRow({ line, size = 'sheet', primary, canAdd = true, onLess, onMore, first = false }) {
   const s = SIZES[size] || SIZES.sheet;
-  const { choices, note } = kioskLineDetailParts(line);
+  useMenuText();   // venue text in the customer's language
+  const { note } = kioskLineDetailParts(line);
+  // English exactly as today with no translations loaded; rebuilt with translated choices otherwise.
+  const choices = lineChoices(line);
   const detail = [choices, note ? tf('k2.line.note', { note }) : ''].filter(Boolean).join(' · ');
+  const name = line.item ? itemName(line.item) : line.name;
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 18, padding: s.rowPad, borderTop: first ? 0 : '1px solid var(--k2Divider)' }}>
       <KioskPhoto image={line.item?.image} color={primary} width={72} height={72} radius={16} />
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: s.name, fontWeight: 700, color: 'var(--k2Ink)', lineHeight: 1.2, overflowWrap: 'anywhere' }}>{line.name}</div>
+        <div style={{ fontSize: s.name, fontWeight: 700, color: 'var(--k2Ink)', lineHeight: 1.2, overflowWrap: 'anywhere' }}>{name}</div>
         {detail ? (
           <div style={{ fontSize: s.detail, color: 'var(--k2InkSubtle)', lineHeight: 1.3, overflowWrap: 'anywhere' }}>{detail}</div>
         ) : null}
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 0, background: 'var(--k2Muted)', borderRadius: 999, padding: 0, flex: 'none' }}>
-        <button type="button" aria-label={`${t('k2.common.less')}: ${line.name}`} onClick={onLess} style={stepTap(s.button)}>
+        <button type="button" aria-label={`${t('k2.common.less')}: ${name}`} onClick={onLess} style={stepTap(s.button)}>
           <span style={stepCircle(s.button, false, false)}><MinusIcon size={s.icon} /></span>
         </button>
         <div style={{ width: s.countBox, textAlign: 'center', fontSize: s.count, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>{line.qty}</div>
-        <button type="button" aria-label={`${t('k2.common.more')}: ${line.name}`} onClick={onMore} disabled={!canAdd} style={stepTap(s.button, !canAdd)}>
+        <button type="button" aria-label={`${t('k2.common.more')}: ${name}`} onClick={onMore} disabled={!canAdd} style={stepTap(s.button, !canAdd)}>
           <span style={stepCircle(s.button, true, !canAdd)}><PlusIcon size={s.icon} /></span>
         </button>
       </div>

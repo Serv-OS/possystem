@@ -393,7 +393,10 @@ test('a nested choice gives a translation key, with the same checks as validateS
   // The made up Size group keeps its English name (today's modal shows "Pick a Size", and the
   // checks read names), and only the new sheet says it in the customer's language.
   assert.ok(modal.includes("name: 'Size',"));
-  assert.ok(modal.includes("sheetHint?.groupKey ? { ...sheetHint.vars, group: t(sheetHint.groupKey) } : sheetHint?.vars"));
+  // v5.8.82: the Size word comes from k2.sheet.size; a venue's group and option names go through
+  // the venue's translations (lib/menuText.js translateEnglish), English when there are none.
+  assert.ok(modal.includes("group: sheetHint.groupKey ? t(sheetHint.groupKey) : translateEnglish(sheetHint.vars.group),"));
+  assert.ok(modal.includes("option: translateEnglish(sheetHint.vars.option)"));
   assert.ok(!modal.includes("' to '"));
   assert.ok(!modal.includes('has sold out'));
 });

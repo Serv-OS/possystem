@@ -19,6 +19,7 @@ import { CATEGORY_PHOTO_COPY } from '../../lib/categoryPhoto';
 import { KIOSK_NEW_DESIGN_READY } from '../../lib/kioskFlow';
 import { kioskPrimary, kioskPalette, parseCssColor, contrastWithWhite, DESIGN_GREEN, OLD_DEFAULT_BRAND, kioskAccent, kioskBackground, kioskBackgroundTooDark, OLD_DEFAULT_ACCENT, OLD_DEFAULT_BG } from '../../lib/kioskTheme';
 import KioskTipping from './KioskTipping';
+import MenuTranslations from './MenuTranslations';
 
 // v5.8.76 (Peter, 15 Sep 2026): one eat in mode per kiosk, in plain words, the same for both kiosk
 // designs. The stored values are unchanged (lib/kioskFlow.js kioskStartModel explains each).
@@ -32,6 +33,7 @@ const TABLE_MODES_V2 = TABLE_MODES;
 
 export default function KioskSettings({ kioskId, onBack }) {
   const [device, setDevice] = useState(null);
+  const [showTranslations, setShowTranslations] = useState(false);   // v5.8.82 menu languages
   const [profile, setProfile] = useState(null);
   const [menus, setMenus] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -259,6 +261,7 @@ export default function KioskSettings({ kioskId, onBack }) {
 
       {error && <div style={alertStyle('error')}>{error}</div>}
       {success && <div style={alertStyle('success')}>{success}</div>}
+      {showTranslations ? <MenuTranslations locationId={device.location_id} onClose={() => setShowTranslations(false)} /> : null}
 
       {/* Live preview */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 280px', gap: 24, marginTop: 8 }}>
@@ -281,6 +284,15 @@ export default function KioskSettings({ kioskId, onBack }) {
               ) : (
                 <div style={{ fontSize: 15, color: 'var(--t3)', lineHeight: 1.45 }}>The new kiosk design needs a database update before this switch appears.</div>
               )}
+            </SectionLg>
+          ) : null}
+
+          {v2 ? (
+            <SectionLg title="Menu languages" desc="Customers can pick Spanish, French or Chinese on the start screen. The screens are translated already; your menu (items, descriptions, categories and options) is translated for you in the background and you can fix any line.">
+              <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+                <button type="button" onClick={() => setShowTranslations(true)} style={btnGhost()}>Menu translations</button>
+                <div style={{ fontSize: 15, color: 'var(--t3)', lineHeight: 1.45 }}>Runs every 10 minutes and after a menu save. Open it to check a line or translate now.</div>
+              </div>
             </SectionLg>
           ) : null}
 
