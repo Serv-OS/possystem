@@ -76,6 +76,18 @@ async function loadImage(url, timeoutMs = 2000) {
  * @returns {Promise<Uint8Array>}
  */
 export async function imageUrlToEscPosRaster(url, targetWidthDots = 384) {
+  const { bits, width, height } = await imageUrlToBitmap(url, targetWidthDots);
+  return buildGsV0(bits, width, height);
+}
+
+/**
+ * v5.8.84: the same fetch + dither, returned as a packed 1 bit bitmap so the Star Line
+ * Mode and Star raster encoders (printerDialects.js) can use it too. imageUrlToEscPosRaster
+ * above is exactly this plus the GS v 0 header, byte for byte.
+ *
+ * @returns {Promise<{ width:number, height:number, bits:Uint8Array }>}
+ */
+export async function imageUrlToBitmap(url, targetWidthDots = 384) {
   if (typeof document === 'undefined') {
     throw new Error('imageUrlToEscPosRaster requires a DOM (canvas)');
   }
@@ -126,7 +138,7 @@ export async function imageUrlToEscPosRaster(url, targetWidthDots = 384) {
     }
   }
 
-  return buildGsV0(bits, widthDots, heightDots);
+  return { width: widthDots, height: heightDots, bits };
 }
 
 // ───────────────────────────────────────────────────────────────────────────

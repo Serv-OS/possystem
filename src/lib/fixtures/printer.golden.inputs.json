@@ -1,0 +1,59 @@
+{
+  "receipt_uk": {
+    "location": { "id": "loc-1", "name": "The Kings Arms", "address": "12 High Street\nBristol BS1 4DJ", "currency": "GBP", "receiptFooter": "See you again soon",
+      "receipt_branding": { "header": { "business_name": "The King’s Arms", "address_lines": ["12 High Street", "Bristol BS1 4DJ"], "phone": "0117 123 4567", "tax_id": "VAT GB123456789", "show_server_name": true, "show_covers": true }, "footer": { "message": "Thank you — see you again soon", "qr": { "enabled": false } } } },
+    "check": { "ref": "R1234567", "server": "Jane", "covers": 3, "tableLabel": "Table 12", "orderType": "dine_in", "method": "card",
+      "discounts": [ { "label": "Happy hour 10%", "amount": 2.4 } ],
+      "cardReceipt": { "brand": "visa", "last4": "4242", "auth_code": "12345A", "read_method": "contactless_emv", "cvm": "none", "aid": "A0000000031010", "application_name": "VISA CREDIT" } },
+    "items": [
+      { "name": "Fish & Chips", "price": 14.5, "qty": 2, "mods": ["Mushy peas", "No salt"], "notes": "Allergy: gluten" },
+      { "name": "House Lager Pint", "receiptName": "Lager", "price": 5.2, "qty": 1, "mods": "Lime · Extra ice" },
+      { "name": "Very Long Item Name That Goes On And On Forever And Ever", "price": 999.99, "qty": 3 },
+      { "name": "Voided thing", "price": 1, "qty": 1, "voided": true }
+    ],
+    "totals": { "subtotal": 34.2, "service": 3.42, "tip": 1, "grand": 38.62,
+      "taxBreakdown": { "hasExclusiveTax": false, "subtotal": 34.2, "breakdown": [ { "name": "VAT", "rate": 0.2, "tax": 5.7 }, { "name": "Zero", "rate": 0, "tax": 0 } ] } }
+  },
+  "receipt_us": {
+    "location": { "id": "loc-2", "name": "Provo Diner", "address": "1 Center St, Provo UT", "currency": "USD" },
+    "check": { "ref": "R42", "server": "Bob", "covers": 1, "tableLabel": "Takeaway", "method": "cash", "customer": { "delivery_fee": 3 } },
+    "items": [ { "name": "Burger", "price": 9.99, "qty": 1 } ],
+    "totals": { "subtotal": 9.99, "service": 0, "tip": 0, "grand": 13.74,
+      "taxBreakdown": { "hasExclusiveTax": true, "subtotal": 9.99, "breakdown": [ { "name": "State tax", "rate": 0.0485, "tax": 0.48 }, { "name": "County", "rate": 0.0275, "tax": 0.27 } ],
+        "taxV2": { "source": "profiles", "lines": [ { "lineId": "p1", "name": "Utah sales tax", "rate": 0.0485, "mode": "exclusive", "amount": 0.48 }, { "lineId": "p2", "name": "Bottle fee", "rate": null, "mode": "exclusive", "amount": 0.27 } ] } } }
+  },
+  "receipt_delivery": {
+    "location": { "id": "loc-1", "name": "Pizza Place", "currency": "GBP" },
+    "check": { "ref": "HR-889", "server": "", "tableLabel": "Deliveroo #4471",
+      "delivery": { "channel": "Deliveroo", "serviceType": "delivery", "paid": false, "paidAmount": 5, "due": 12.5, "expected": "19:45", "name": "Sam Smith", "phone": "07700 900123", "address": ["Flat 2", "3 Park Road", "Bristol BS8 1AA"], "notes": "Ring twice", "deliveryFee": 2.5 },
+      "customer": { "payments": [ { "name": "Deliveroo", "amount": 5, "ref": "DR1" }, { "name": "Card", "amount": 12.5 } ] } },
+    "items": [ { "name": "Margherita", "price": 8.75, "qty": 2 } ],
+    "totals": { "subtotal": 17.5, "grand": 17.5 }
+  },
+  "tip_slip": {
+    "location": { "id": "loc-2", "name": "Provo Diner", "currency": "USD", "receipt_branding": { "header": { "business_name": "Provo Diner", "address_lines": ["1 Center St", "Provo UT 84601"], "phone": "801 555 0100" } } },
+    "check": { "ref": "R77", "server": "Bob", "tableLabel": "Table 4", "cardReceipt": { "brand": "mastercard", "last4": "1111", "auth_code": "9Z8Y7X" }, "total": 45.1 },
+    "totals": { "grand": 45.1 }
+  },
+  "kitchen": {
+    "table": "T7", "server": "Jane", "covers": 4, "centreName": "Main Kitchen", "sentAt": 1789570351722,
+    "items": [
+      { "name": "Fish & Chips", "qty": 2, "course": 1, "fired": true, "mods": ["Mushy peas", "No salt"], "notes": "Allergy: gluten", "seat": 2 },
+      { "name": "Steak Frites Extra Long Name Here", "kitchenName": "STEAK MR", "qty": 1, "course": 2, "mods": "Rare · Peppercorn" },
+      { "name": "Package line", "qty": 1, "course": 1, "noKitchen": true },
+      { "name": "Sticky Toffee", "qty": 1, "course": 3 }
+    ]
+  },
+  "kitchen_delivery": {
+    "table": "Deliveroo #4471", "server": "System", "covers": 1, "centreName": "Pizza Oven", "sentAt": 1789570351722, "reprint": true,
+    "items": [ { "name": "Margherita", "qty": 2, "course": 1, "fired": true } ],
+    "delivery": { "channel": "Deliveroo", "collectionCode": "4471", "serviceType": "delivery", "paid": false, "paidAmount": 5, "due": 12.5, "expected": "19:45", "name": "Sam Smith", "phone": "07700 900123", "address": { "line1": "Flat 2", "line2": "3 Park Road", "city": "Bristol", "postcode": "BS8 1AA" }, "deliveryFee": 2.5, "charges": [ { "name": "Service", "amount": 0.5 } ], "discounts": [ { "name": "PROMO10", "amount": 1.75 } ], "notes": "Ring twice" }
+  },
+  "kitchen_sticker": {
+    "table": "Takeaway . Sarah", "centreName": "Coffee", "sentAt": 1789570351722, "itemLabel": "ITEM 1 OF 2",
+    "items": [ { "name": "Flat White", "qty": 1, "course": 1, "fired": true, "mods": ["Oat milk"] } ]
+  },
+  "fire_course": { "table": "T7", "courseNum": 2, "centreName": "Main Kitchen", "sentAt": 1789570351722 },
+  "transfer": { "fromTable": "T7", "toTable": "T12", "centreName": "Main Kitchen", "server": "Jane", "sentAt": 1789570351722,
+    "items": [ { "name": "Fish & Chips", "qty": 2, "mods": ["Mushy peas", { "label": "No salt" }] }, { "name": "Lager", "qty": 1 } ] }
+}

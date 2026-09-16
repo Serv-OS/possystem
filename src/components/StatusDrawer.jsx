@@ -3,6 +3,8 @@ import { useStore } from '../store';
 import { supabase, getLocationId } from '../lib/supabase';
 import { printService } from '../lib/printer';
 import { VERSION } from '../lib/version';
+import { printEnvironment, printFailureWords, printPathIndicator } from '../lib/printPathWords';
+import { resolvePrinterSpec } from '../lib/printerDialects';
 import StatusDrawerCardReaders from './StatusDrawerCardReaders';
 
 const ONLINE_THRESHOLD_MS = 15 * 60 * 1000; // 15 min last_seen threshold
@@ -149,15 +151,28 @@ export default function StatusDrawer({ onClose }) {
     return () => supabase.removeChannel(ch);
   }, [loadJobs]);
 
+  // Which print path this device has: the native bridge, an iPad build without one, or a
+  // browser. Every failure message below says what that means in plain words.
+  const printEnv = printEnvironment();
+
   // Test printer
   const testPrinter = async (printer) => {
     setTestState(s => ({ ...s, [printer.id]: 'testing' }));
-    setTestMsg(m => ({ ...m, [printer.id]: 'Sending test job…' }));
+    setTestMsg(m => ({ ...m, [printer.id]: 'Sending test page…' }));
     try {
       const result = await printService.printTestPage(printer);
       const jobId = result?.jobId;
-      if (jobId) {
-        setTestMsg(m => ({ ...m, [printer.id]: 'Waiting for agent (20s)…' }));
+      if (result?.ok === false) {
+        // v5.8.84: a direct print that failed used to show "Job queued". Say what happened.
+        setTestState(s => ({ ...s, [printer.id]: 'failed' }));
+        setTestMsg(m => ({ ...m, [printer.id]: `✗ ${result.error || printFailureWords(printEnv)}` }));
+        setStatuses(prev => ({ ...prev, [printer.id]: 'offline' }));
+      } else if (result?.transport === 'native' || result?.transport === 'idempotent') {
+        setTestState(s => ({ ...s, [printer.id]: 'ok' }));
+        setTestMsg(m => ({ ...m, [printer.id]: '✓ Sent to the printer. Check the page came out.' }));
+        setStatuses(prev => ({ ...prev, [printer.id]: 'online' }));
+      } else if (jobId) {
+        setTestMsg(m => ({ ...m, [printer.id]: 'Waiting for the printer (20s)…' }));
         await new Promise(resolve => {
           const unsub = printService.watchJob(jobId, (updated) => {
             if (updated.status === 'done') {
@@ -172,7 +187,7 @@ export default function StatusDrawer({ onClose }) {
               unsub(); resolve();
             }
           });
-          setTimeout(() => { unsub(); setTestState(s => ({ ...s, [printer.id]: 'timeout' })); setTestMsg(m => ({ ...m, [printer.id]: '✗ Agent not responding — is it running?' })); setStatuses(prev => ({ ...prev, [printer.id]: 'offline' })); resolve(); }, 20000);
+          setTimeout(() => { unsub(); setTestState(s => ({ ...s, [printer.id]: 'timeout' })); setTestMsg(m => ({ ...m, [printer.id]: `✗ ${printFailureWords(printEnv)}` })); setStatuses(prev => ({ ...prev, [printer.id]: 'offline' })); resolve(); }, 20000);
         });
       } else {
         setTestState(s => ({ ...s, [printer.id]: 'ok' }));
@@ -308,14 +323,18 @@ export default function StatusDrawer({ onClose }) {
 
           {/* Printers */}
           <Section label="Printers">
+            <div style={{ fontSize:11, fontWeight:600, color: printEnv === 'native' ? 'var(--grn)' : 'var(--red)', marginBottom:8 }}>
+              {printPathIndicator(printEnv)}
+            </div>
             {printers.length === 0 ? (
-              <div style={{ fontSize:11, color:'var(--t4)', padding:'4px 0' }}>No printers configured — add in Back Office → Printers</div>
+              <div style={{ fontSize:11, color:'var(--t4)', padding:'4px 0' }}>No printers configured. Add one in Back Office, Printers.</div>
             ) : (
               <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
                 {printers.map(printer => {
                   const st = statuses[printer.id] || 'unknown';
                   const ts = testState[printer.id];
                   const msg = testMsg[printer.id];
+                  const spec = resolvePrinterSpec(printer);
                   return (
                     <div key={printer.id} style={{ padding:'11px 14px', borderRadius:12, border:`1px solid ${sbdr(st)}`, background:sbg(st) }}>
                       <div style={{ display:'flex', alignItems:'center', gap:10 }}>
@@ -325,7 +344,7 @@ export default function StatusDrawer({ onClose }) {
                             {printer.name}
                             {(printer.roles||[]).map(r => <span key={r} style={{ fontSize:8, padding:'1px 5px', borderRadius:4, background:'var(--bg4)', color:'var(--t4)', border:'1px solid var(--bdr)', fontWeight:700 }}>{r}</span>)}
                           </div>
-                          <div style={{ fontSize:10, color:'var(--t4)', marginTop:1 }}>{printer.model?.toUpperCase()} · {printer.address}</div>
+                          <div style={{ fontSize:10, color:'var(--t4)', marginTop:1 }}>{spec.modelLabel} · {spec.dialectLabel} · {printer.address}</div>
                         </div>
                         <div style={{ display:'flex', flexDirection:'column', alignItems:'flex-end', gap:4 }}>
                           <div style={{ display:'flex', alignItems:'center', gap:4 }}>
@@ -417,7 +436,7 @@ export default function StatusDrawer({ onClose }) {
                           <div style={{ fontSize:10, color:'var(--t4)', marginTop:1 }}>
                             {timeSince(job.created_at)}
                             {attemptsText && <span style={{ marginLeft:6, color:'var(--t3)' }}>· {attemptsText}</span>}
-                            {(errMsg || isStale) && <span style={{ color:'var(--red)', marginLeft:6 }}>· {errMsg || 'Agent not responding'}</span>}
+                            {(errMsg || isStale) && <span style={{ color:'var(--red)', marginLeft:6 }}>· {errMsg || printFailureWords(printEnv)}</span>}
                           </div>
                         </div>
                         <span style={{ fontSize:10, fontWeight:700, color:jsc, textTransform:'uppercase', flexShrink:0 }}>{permanent ? 'FAILED' : effectiveStatus}</span>

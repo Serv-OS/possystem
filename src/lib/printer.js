@@ -13,556 +13,101 @@
 
 import { supabase, getLocationId } from './supabase';
 import { shortOrderRef } from './db.js';
-import { loadLocationBranding, mergeBrandingIntoLocation, invalidateBrandingCache } from './receiptBranding';
+import { loadLocationBranding, mergeBrandingIntoLocation } from './receiptBranding';
 import { money } from './currency.js';
-import { v2ReceiptLines, taxLineLabel, breakdownLabel, breakdownIsExclusive } from './receiptTax.js';
+import { breakdownLabel, breakdownIsExclusive } from './receiptTax.js';
 import { consolidateReceiptLines } from './receiptLines.js';
 import { cardReceiptLines } from './cardReceipt.js';
+import {
+  buildCustomerReceiptDoc, buildMerchantTipSlipDoc, buildKitchenTicketDoc, buildFireCourseTicketDoc,
+  buildTransferNoticeTicketDoc, buildTestPageDoc, docHasCut, docHasDrawer,
+} from './printDoc.js';
+import {
+  EscPosBuilder, resolvePrinterSpec, encodeEscPos, encodeStarLine, encodeStarRaster, cashDrawerBytes,
+  DIALECT_STAR_LINE, DIALECT_STAR_RASTER,
+} from './printerDialects.js';
+import { printEnvironment, printSentFromWords } from './printPathWords.js';
+import { VERSION } from './version.js';
 
-// ─── ESC/POS builder ──────────────────────────────────────────────────────────
-const ESC = 0x1b, GS = 0x1d, LF = 0x0a;
+// ─── Builders ─────────────────────────────────────────────────────────────────
+// v5.8.84: the CONTENT of every document lives in printDoc.js (one source of truth for
+// every printer model) and the BYTES per model in printerDialects.js: ESC/POS (Sunmi,
+// Epson, Bixolon, Citizen, Xprinter, generic), Star Line Mode (TSP650II/700II/800II,
+// mC-Print, TSP143IV) and Star raster graphics (TSP143III, which has no text mode).
+// The exported builders keep their old signatures: with no printer they return ESC/POS
+// bytes at 42 columns, byte identical to the v4 builders (printer.golden.test.js).
+// A Star raster printer needs the canvas renderer, so PrintService always encodes through
+// encodeDocForPrinter (async); the sync builders below are for ESC/POS and Star Line only.
 
-// v4.6.5 follow-up: transliterate common Unicode punctuation to ASCII so em
-// dashes, curly quotes, bullets, middle dots, emoji etc. don't print as '?'.
-// Anything still outside Latin-1 after this falls back to '?' in text().
-function _t(s) {
-  if (s == null) return '';
-  return String(s)
-    .replace(/[\u2010-\u2015\u2212]/g, '-')
-    .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
-    .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
-    .replace(/\u00A0/g, ' ')
-    .replace(/[\u00B7\u2022]/g, '-')
-    .replace(/\u2026/g, '...')
-    .replace(/\u2122/g, '(TM)')
-    .replace(/\u00A9/g, '(c)')
-    .replace(/\u00AE/g, '(R)')
-    .replace(/\u00B0/g, ' deg')
-    .replace(/\u20AC/g, 'EUR')
-    .replace(/[\uD800-\uDFFF]/g, '');
+/** Encode a document for one printer row: ESC/POS or Star Line (sync), Star raster (canvas). */
+export async function encodeDocForPrinter(doc, printer) {
+  const spec = resolvePrinterSpec(printer);
+  if (spec.dialect === DIALECT_STAR_RASTER) {
+    const { renderDocToBitmap } = await import('./printerRaster.js');
+    const bitmap = await renderDocToBitmap(doc, spec);
+    return encodeStarRaster(bitmap, { cut: docHasCut(doc), drawer: docHasDrawer(doc) });
+  }
+  return encodeTextDoc(doc, printer, spec);
 }
 
-class EscPosBuilder {
-  constructor(charWidth = 42) { this.bytes = []; this.charWidth = charWidth; }
-
-  _push(...args) {
-    for (const a of args) {
-      if (a instanceof Uint8Array) { for (let i = 0; i < a.length; i++) this.bytes.push(a[i]); }
-      else if (Array.isArray(a)) this.bytes.push(...a);
-      else if (typeof a === 'string') {
-        for (let i = 0; i < a.length; i++) this.bytes.push(a.charCodeAt(i) & 0xff);
-      }
-      else this.bytes.push(a);
-    }
-    return this;
-  }
-  /** Append raw ESC/POS bytes (from rasteriser, QR helper, etc.). */
-  raw(bytes) { return this._push(bytes); }
-
-  init()             { return this._push([ESC,0x40]); }
-  cut()              { return this._push([GS,0x56,0x42,0x00]); }
-  cashDrawer()       { return this._push([ESC,0x70,0x00,0x19,0x19]); }
-  lf(n=1)            { for(let i=0;i<n;i++) this._push(LF); return this; }
-  bold(on=true)      { return this._push([ESC,0x45,on?1:0]); }
-  center()           { return this._push([ESC,0x61,0x01]); }
-  left()             { return this._push([ESC,0x61,0x00]); }
-  doubleHeight()     { return this._push([ESC,0x21,0x10]); }
-  doubleBoth()       { return this._push([ESC,0x21,0x30]); }
-  normal()           { return this._push([ESC,0x21,0x00],[ESC,0x45,0x00],[ESC,0x61,0x00]); }
-  underline(on)      { return this._push([ESC,0x2d,on?1:0]); }
-  fontB()            { return this._push([ESC,0x4d,0x01]); }
-  fontA()            { return this._push([ESC,0x4d,0x00]); }
-  red()              { return this._push([ESC,0x72,0x01]); }  // ESC r 1 = red ink
-  black()            { return this._push([ESC,0x72,0x00]); }  // ESC r 0 = black ink
-
-  text(str) { return this._push(_t(str||'').replace(/[^\x00-\xff]/g,'?')); }
-  line(str='') { return this.text(str).lf(); }
-  divider(c='-') { return this.line(c.repeat(this.charWidth)); }
-
-  twoCol(left, right) {
-    const l=String(left||''), r=String(right||'');
-    const pad=Math.max(1, this.charWidth-l.length-r.length);
-    return this.line(l+' '.repeat(pad)+r);
-  }
-
-  centeredLine(str) {
-    const s=String(str||'');
-    const pad=Math.max(0,Math.floor((this.charWidth-s.length)/2));
-    return this.line(' '.repeat(pad)+s);
-  }
-
-  toBytes() { return new Uint8Array(this.bytes); }
-  toBase64() { return btoa(String.fromCharCode(...this.bytes)); }
+function encodeTextDoc(doc, printer, spec = resolvePrinterSpec(printer)) {
+  if (spec.dialect === DIALECT_STAR_LINE) return encodeStarLine(doc, spec);
+  return encodeEscPos(doc, spec);
 }
 
-// ─── Receipt templates ────────────────────────────────────────────────────────
-// buildCustomerReceipt is async because it may await image rasterisation
-// (header logo, footer QR image mode). The native QR path is synchronous.
-// All branding is optional: a location with no receipt_branding falls back
-// to the legacy text-only receipt unchanged.
-export async function buildCustomerReceipt({ location, check, items, totals }) {
-  // Defensive: callers historically passed { subtotal, tip, total } instead of
-  // { subtotal, service, tip, grand }. Normalise so totals.grand.toFixed() etc
-  // never crashes, and the receipt prints with sensible numbers either way.
-  totals = {
-    subtotal: Number(totals?.subtotal ?? check?.subtotal ?? 0) || 0,
-    service:  Number(totals?.service  ?? check?.service  ?? 0) || 0,
-    tip:      Number(totals?.tip      ?? check?.tip      ?? 0) || 0,
-    grand:    Number(totals?.grand    ?? totals?.total   ?? check?.total ?? 0) || 0,
-    taxBreakdown: totals?.taxBreakdown,
-  };
-  // v5.7.34: venue currency. money(n, code) falls back to the device's active
-  // currency then GBP, so the output is byte-identical to the old `\xA3${...}`
-  // strings on every GBP venue and prints $ at USD venues.
-  const mny = (n) => money(n, location?.currency);
-  const b = new EscPosBuilder(42);
-  const now = new Date();
-  const timeStr = now.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
-  const dateStr = now.toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'});
-
-  const branding = location?.receipt_branding || null;
-  const header = branding?.header || null;
-  const footer = branding?.footer || null;
-
-  b.init();
-
-  // ── Header logo (raster) ────────────────────────────────────────────────
+// The receipt logo and an uploaded footer QR are fetched here as 1 bit bitmaps before the
+// pure builder runs, exactly where the old builders awaited the rasteriser. Either failing
+// (missing, slow CDN, no DOM) just leaves it off the paper, as before.
+async function loadReceiptAssets(location, { qr = true } = {}) {
+  const header = location?.receipt_branding?.header || null;
+  const footer = location?.receipt_branding?.footer || null;
+  const assets = {};
   if (header?.logo_url) {
     try {
-      const { imageUrlToEscPosRaster } = await import('./receiptRaster.js');
-      const rasterBytes = await imageUrlToEscPosRaster(
-        header.logo_url,
-        header.logo_width_dots || 384,
-      );
-      b.center().raw(rasterBytes).lf();
+      const { imageUrlToBitmap } = await import('./receiptRaster.js');
+      assets.logo = await imageUrlToBitmap(header.logo_url, header.logo_width_dots || 384);
     } catch (e) {
-      // Never let a missing/slow logo block the receipt — just skip it.
+      // Never let a missing/slow logo block the receipt: just skip it.
       console.warn('[Print] Logo rasterise failed, skipping:', e.message);
     }
   }
-
-  // ── Business name / address / phone / tax id ────────────────────────────
-  const businessName = header?.business_name || location?.name || 'Restaurant';
-  b.center().bold(true).doubleBoth().text(businessName).lf().normal().center();
-
-  const addressLines = header?.address_lines?.length
-    ? header.address_lines.filter(Boolean)
-    : (location?.address ? String(location.address).split('\n') : []);
-  addressLines.forEach(line => b.line(line));
-
-  if (header?.phone)  b.line(header.phone);
-  if (header?.tax_id) b.fontB().line(header.tax_id).fontA();
-
-  b.lf().divider().left();
-
-  // ── Check header ────────────────────────────────────────────────────────
-  // Order number — prominent, centered, double-height so it's impossible to miss.
-  // Short display form: the number staff call out, matching the kiosk reveal and
-  // the collection board. The full ref stays the identity everywhere else.
-  b.bold(true).doubleHeight().center().line(`ORDER # ${shortOrderRef(check?.ref)||''}`).normal().left();
-  b.twoCol('Date', `${dateStr} ${timeStr}`);
-  if (header?.show_server_name !== false) {
-    b.twoCol(`Server: ${check?.server||''}`, check?.covers>1 && header?.show_covers !== false ? `${check.covers} covers` : '');
-  }
-  b.twoCol(`${check?.tableLabel||check?.orderType||''}`, '');
-
-  // Delivery-channel block (HubRise/Deliveroo etc.): the order number already printed above
-  // as "ORDER #". Add channel + payment + the customer/address details from the platform.
-  if (check?.delivery) {
-    const d = check.delivery;
-    b.divider();
-    if (d.channel) b.bold(true).line(String(d.channel).toUpperCase() + (d.serviceType ? `  ·  ${String(d.serviceType).toUpperCase()}` : '')).bold(false);
-    // v5.5.850: 3-state — a partial channel payment prints the amount still to collect.
-    b.line(d.paid ? 'PAID online' : (Number(d.paidAmount) > 0 ? `PART-PAID ${mny(+d.paidAmount)} — COLLECT ${mny(+d.due)}` : 'UNPAID — collect on delivery'));
-    if (d.expected) b.fontB().line(`Wanted: ${d.expected}`).fontA();
-    if (d.name) b.line(d.name);
-    if (d.phone) b.line(d.phone);
-    (Array.isArray(d.address) ? d.address : []).filter(Boolean).forEach(l => b.line(l));
-    if (d.notes) b.fontB().line(`Note: ${d.notes}`).fontA();
-  }
-
-  b.divider().bold(true).line('ITEMS').bold(false);
-
-  consolidateReceiptLines(items).forEach(item=>{
-    const linePrice=mny(item.price*item.qty);
-    // Triple-naming: receipts print the item's explicit receipt name when the
-    // line carries one (snapshotted at add time), else the POS line name.
-    const printName=item.receiptName||item.name;
-    const nameStr=item.qty>1?`${item.qty}x ${printName}`:printName;
-    b.twoCol(nameStr.substring(0,42-linePrice.length-1), linePrice);
-    const modLines = Array.isArray(item.mods) ? item.mods : (item.mods ? item.mods.split(' · ') : []);
-    modLines.forEach(m => b.fontB().line(`  ${typeof m === 'string' ? m : (m.label||'')}`).fontA());
-    if(item.notes) b.fontB().line(`  Note: ${item.notes}`).fontA();
-  });
-
-  b.divider();
-  if(totals.subtotal!==totals.grand) b.twoCol('Subtotal',mny(totals.subtotal));
-  // v5.5.853: itemised discount lines (POS manual/auto + channel promos) — the customer
-  // could see a Subtotal→TOTAL drop with no explanation. Named, one line each.
-  (Array.isArray(check?.discounts) ? check.discounts : []).forEach(d => {
-    const amt = Number(d.amount ?? d.value) || 0;
-    if (amt > 0) b.twoCol((d.label || d.name || 'Discount').substring(0, 34), `-${mny(amt)}`);
-  });
-  if(totals.service>0) b.twoCol('Service',mny(totals.service));
-  if(totals.tip>0) b.twoCol('Tip',mny(totals.tip));
-  // v5.5.657: delivery fee line (online/POS/catering delivery orders)
-  const _delFee = Number(check?.customer?.delivery_fee ?? check?.delivery?.deliveryFee ?? check?.deliveryFee ?? 0) || 0;
-  if(_delFee>0) b.twoCol('Delivery',mny(_delFee));
-
-  // Tax breakdown — v5.7.34: NAMED LINES from the check's v2 record, but ONLY
-  // when the check actually needs them (an exclusive/per_unit component, or a
-  // real non-mirror profile — the gate lives in receiptTax.shouldRenderV2).
-  // Every pure inclusive legacy-shaped check — every UK VAT check — takes the
-  // legacy branch below, whose output is BYTE-identical to the pre-cutover
-  // builder. Per-unit v2 lines print name + amount with no percent.
-  {
-    const _tb = totals.taxBreakdown;
-    const _v2 = v2ReceiptLines(_tb);
-    if (_v2) {
-      const excl = _v2.filter(l => l.exclusive);
-      const incl = _v2.filter(l => !l.exclusive);
-      if (excl.length) {
-        // US: show net + added-on tax lines above the total
-        if (_tb?.subtotal != null) b.twoCol('Subtotal (ex. tax)', mny(_tb.subtotal));
-        excl.forEach(l => b.twoCol(taxLineLabel(l).substring(0, 30), mny(l.amount)));
-      }
-      // UK-style 'of which' lines for tax already inside the price
-      incl.forEach(l => b.fontB().twoCol(`  of which ${taxLineLabel(l)}`.substring(0, 34), mny(l.amount)).fontA());
-    } else if (_tb?.breakdown?.length) {
-      const hasExcl = _tb.hasExclusiveTax;
-      if(hasExcl) {
-        // US: show net + tax lines (rate-null guard: per-unit entries print
-        // the line name + amount, no percent, via breakdownLabel)
-        b.twoCol('Subtotal (ex. tax)',mny(_tb.subtotal));
-        _tb.breakdown.forEach(br => {
-          b.twoCol(breakdownLabel(br, 1),mny(br.tax));
-        });
-      } else {
-        // UK: show 'of which VAT' lines under total — byte-identical to the
-        // pre-cutover output (breakdownLabel reproduces the exact pct string)
-        _tb.breakdown.forEach(br => {
-          if(br.tax > 0) {
-            b.fontB().twoCol(`  of which ${breakdownLabel(br, 1)}`,mny(br.tax)).fontA();
-          }
-        });
-      }
-    }
-  }
-
-  b.bold(true).doubleHeight()
-   .twoCol('TOTAL',mny(totals.grand))
-   .normal();
-
-  // v5.5.853: channel orders can be paid in legs (part on the platform, balance at the
-  // till) — print each decoded payment so the receipt tells the whole money story.
-  const _chPays = Array.isArray(check?.customer?.payments) ? check.customer.payments.filter(p => Number(p.amount)) : [];
-  if (_chPays.length) {
-    b.divider();
-    _chPays.forEach(p => b.twoCol(`${p.name || 'Payment'}${p.ref ? ` (${p.ref})` : ''}`.substring(0, 30), mny(Number(p.amount))));
-    b.twoCol('Status','PAID');
-  } else if(check?.method) b.divider().twoCol('Payment',check.method.toUpperCase()).twoCol('Status','PAID');
-
-  // ── Card-scheme block (UK receipt rules: masked PAN, scheme, auth code, entry/CVM, AID) ──
-  const cardLines = cardReceiptLines(check);
-  if (cardLines.length) {
-    b.divider();
-    for (const [label, value] of cardLines) b.twoCol(label, String(value));
-    b.line('Please retain this receipt');
-  }
-
-  // ── Footer message ─────────────────────────────────────────────────────
-  const footerMsg = footer?.message || location?.receiptFooter || 'Thank you for dining with us!';
-  b.lf().center().line(footerMsg);
-
-  // ── Footer QR code ─────────────────────────────────────────────────────
-  const qr = footer?.qr;
-  if (qr?.enabled) {
+  if (qr && footer?.qr?.enabled && footer.qr.mode === 'upload' && footer.qr.image_url) {
     try {
-      if (qr.mode === 'url' && qr.url_value) {
-        // Native ESC/POS QR — crisp at any paper width, no image fetch
-        const { qrTextToEscPosBytes } = await import('./receiptRaster.js');
-        const moduleSize = Math.max(1, Math.min(16, Math.round((qr.size_dots || 160) / 25)));
-        b.lf().center().raw(qrTextToEscPosBytes(qr.url_value, moduleSize, 'M')).lf();
-      } else if (qr.mode === 'upload' && qr.image_url) {
-        // Uploaded QR as a rasterised image
-        const { imageUrlToEscPosRaster } = await import('./receiptRaster.js');
-        const rasterBytes = await imageUrlToEscPosRaster(qr.image_url, qr.size_dots || 160);
-        b.lf().center().raw(rasterBytes).lf();
-      }
-      if (qr.caption) b.fontB().center().line(qr.caption).fontA();
+      const { imageUrlToBitmap } = await import('./receiptRaster.js');
+      assets.qrImage = await imageUrlToBitmap(footer.qr.image_url, footer.qr.size_dots || 160);
     } catch (e) {
       console.warn('[Print] Footer QR render failed, skipping:', e.message);
     }
   }
-
-  b.fontB().line('Powered by Serv OS').fontA()
-   .lf(4).cut();
-
-  return b.toBytes();
+  return assets;
 }
 
-// ── v5.7.5 Merchant tip slip (US signature flow) ─────────────────────────────
-// Printed alongside the customer receipt on a tip-on-receipt venue: the card
-// authorised WITHOUT capturing, the guest writes a tip and signs, staff type it
-// into History → Add tip. Same branding as the customer receipt (logo, business
-// name, address), then the card-scheme block, then the write-in lines.
-// No items - this is the signature voucher, not the bill.
-export async function buildMerchantTipSlip({ location, check, totals }) {
-  const b = new EscPosBuilder(42);
-  const now = new Date();
-  const timeStr = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
-  const dateStr = now.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
-  const branding = location?.receipt_branding || null;
-  const header = branding?.header || null;
-
-  b.init();
-
-  // Header logo - identical pattern to the customer receipt; never blocks.
-  if (header?.logo_url) {
-    try {
-      const { imageUrlToEscPosRaster } = await import('./receiptRaster.js');
-      const rasterBytes = await imageUrlToEscPosRaster(header.logo_url, header.logo_width_dots || 384);
-      b.center().raw(rasterBytes).lf();
-    } catch (e) {
-      console.warn('[Print] Tip slip logo rasterise failed, skipping:', e.message);
-    }
-  }
-
-  const businessName = header?.business_name || location?.name || 'Restaurant';
-  b.center().bold(true).doubleBoth().text(businessName).lf().normal().center();
-  const addressLines = header?.address_lines?.length
-    ? header.address_lines.filter(Boolean)
-    : (location?.address ? String(location.address).split('\n') : []);
-  addressLines.forEach(line => b.line(line));
-  if (header?.phone) b.line(header.phone);
-
-  b.lf().divider().left();
-  b.bold(true).doubleHeight().center().line(`ORDER # ${shortOrderRef(check?.ref) || ''}`).normal().left();
-  b.twoCol('Date', `${dateStr} ${timeStr}`);
-  if (check?.server) b.twoCol(`Server: ${check.server}`, '');
-  if (check?.tableLabel || check?.orderType) b.twoCol(`${check?.tableLabel || check?.orderType}`, '');
-
-  // Card-scheme block - masked PAN, scheme, auth code, entry/CVM, AID.
-  const cardLines = cardReceiptLines(check);
-  if (cardLines.length) {
-    b.divider();
-    for (const [label, value] of cardLines) b.twoCol(label, String(value));
-  }
-
-  // The money: the authorised amount, then the guest's write-in lines.
-  const grand = Number(totals?.grand ?? check?.total ?? 0) || 0;
-  b.divider();
-  b.bold(true).doubleHeight().twoCol('AMOUNT', money(grand, location?.currency)).normal();
-  b.lf();
-  b.bold(true).line('TIP:   ____________________').lf();
-  b.line('TOTAL: ____________________').bold(false).lf();
-  b.lf();
-  b.line('X ________________________________');
-  b.fontB().line('  SIGNATURE').fontA();
-  b.lf().center().bold(true).line('* MERCHANT COPY *').bold(false);
-  b.fontB().center().line('Guest keeps the printed receipt').fontA();
-  b.lf(4).cut();
-  return b.toBytes();
+export async function buildCustomerReceipt(args, printer = null) {
+  const spec = resolvePrinterSpec(printer);
+  const assets = await loadReceiptAssets(args?.location);
+  return encodeDocForPrinter(buildCustomerReceiptDoc(args, { cols: spec.cols, assets }), printer);
 }
 
-export function buildKitchenTicket({ table, server, covers, course, centreName, items, sentAt, delivery, itemLabel, reprint }) {
-  const b = new EscPosBuilder(42);
-  const time = new Date(sentAt||Date.now()).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
-
-  b.init().center().bold(true).doubleBoth().text(centreName||'Kitchen').lf()
-   .normal().center().line(time).divider('=')
-   .left().bold(true).doubleBoth();
-
-  // Use native ESC center (not space-padded centeredLine) — centeredLine pads to
-  // full charWidth (42) which overflows when doubleBoth is active: spaces print
-  // double-wide too, so 42 cols of padded content becomes ~50 physical cols and wraps.
-  // Result looked like the table number was right-aligned and on two lines.
-  if(table) {
-    // v4.6.5 follow-up: only prepend "TABLE" for actual table labels. Non-table
-    // labels are composed as "Takeaway . Sarah" / "Bar . Maria" etc and are
-    // self-describing — printing "TABLE Takeaway . Sarah" looked absurd.
-    // v5.5.127: extended whitelist — kiosk / online / qr orders pass labels
-    // like "Online OL-XXX" / "Kiosk K-XXX" / "Table T5" which are already
-    // self-describing. Prepending "TABLE Online OL-XXX" looks absurd. The
-    // ` . ` separator catches the existing "Takeaway . Sarah" pattern.
-    const isNonTableLabel = / . /.test(table)
-      || /^(takeaway|collection|delivery|counter)$/i.test(table)
-      || /^(online|kiosk|qr|table|hubrise)\s/i.test(table);
-    b.center().line(isNonTableLabel ? table : `TABLE ${table}`).left();
-  } else {
-    b.center().line('WALK-IN').left();
-  }
-
-  // v5.7.72: duplicate docket requested from the till — still in doubleBoth so it
-  // prints BIG. The kitchen must not read this as a new order.
-  if (reprint) b.center().line('** REPRINT **').left();
-
-  // Coffee-shop "sticker" mode: one ticket per item, numbered ITEM X OF Y.
-  if (itemLabel) b.center().bold(true).line(itemLabel).bold(false).left();
-
-  b.normal();
-
-  // v5.5.547: HubRise / delivery-channel context block. Only present for HubRise
-  // orders (delivery passed in); all other tickets are unchanged. Gives the kitchen
-  // + packer the channel, paid status, handover code, customer/address and ETA.
-  if (delivery) {
-    b.divider();
-    // Channel + big handover/order number front-and-centre (what staff + driver quote).
-    if (delivery.channel) b.center().bold(true).line(String(delivery.channel).toUpperCase()).bold(false).left();
-    if (delivery.collectionCode) b.center().bold(true).doubleBoth().line(`#${delivery.collectionCode}`).normal().left();
-    const st = delivery.serviceType === 'delivery' ? 'DELIVERY'
-      : delivery.serviceType === 'collection' ? 'COLLECTION'
-      : delivery.serviceType === 'eat_in' ? 'EAT IN' : 'ORDER';
-    // v5.5.850: 3-state — partial channel payments show what's paid vs what to collect.
-    b.bold(true).line(`${st}  ·  ${delivery.paid ? 'PAID' : (Number(delivery.paidAmount) > 0 ? `PART ${money(+delivery.paidAmount)} — COLLECT ${money(+delivery.due)}` : 'UNPAID — COLLECT')}`).bold(false);
-    if (delivery.expected) b.fontB().line(`Wanted: ${delivery.expected}`).fontA();
-    if (delivery.name) b.line(delivery.name);
-    if (delivery.phone) b.line(delivery.phone);
-    if (delivery.address) {
-      const a = delivery.address;
-      [a.line1, a.line2, [a.city, a.postcode].filter(Boolean).join(' ')].filter(Boolean).forEach(l => b.line(l));
-    }
-    if (delivery.deliveryFee != null && Number(delivery.deliveryFee) > 0) b.fontB().line(`Delivery fee: ${money(Number(delivery.deliveryFee))}`).fontA();
-    // v5.5.847: channel charges + discounts (Deliveroo/UberEats/JustEat via HubRise).
-    // The order total already nets these — printing them means the packer sees the same
-    // breakdown the customer saw, and a promo order no longer looks mispriced.
-    (delivery.charges || []).forEach(ch => {
-      const amt = Number(ch.amount) || 0;
-      if (amt !== 0) b.fontB().line(`${ch.name || 'Charge'}: ${money(amt)}`).fontA();
-    });
-    (delivery.discounts || []).forEach(d => {
-      const amt = Number(d.amount) || 0;
-      if (amt !== 0) b.fontB().bold(true).line(`${d.name || 'Discount'}: -${money(amt)}`).bold(false).fontA();
-    });
-    if (delivery.notes) b.red().bold(true).underline(true).line(delivery.notes).underline(false).bold(false).black();
-    b.divider();
-  }
-
-  if(server) b.fontB().line(`Server: ${server}`).fontA();
-  if(covers>1) b.fontB().line(`Covers: ${covers}`).fontA();
-  // v4.6.9: no more single-course header line. Per-course headers below handle it
-  // so multi-course tickets are unambiguous and single-course tickets still get a
-  // labelled FIRING/HOLD banner.
-  b.divider().bold(true).lf();
-
-  // v4.6.9: group items by course with FIRING/HOLD headers, mirroring the KDS layout.
-  // Peter's spec: every course prints on the initial docket, separated like the KDS
-  // groups them; a later fireCourse() call emits a separate minimal "FIRE COURSE N"
-  // marker docket (see buildFireCourseTicket). item.fired is set in createKdsTickets
-  // from FIRED_ON_SEND so every item in the same course has a consistent flag.
-  const byCourse = {};
-  // v5.7.28: noKitchen lines (the prepaid booking package revenue line) never
-  // print on a kitchen docket — second guard behind createKdsTickets' filter,
-  // covering any job builder that passes raw session items through.
-  (items||[]).filter(i => !i?.noKitchen).forEach(i => {
-    const c = i.course ?? 1;
-    if (!byCourse[c]) byCourse[c] = [];
-    byCourse[c].push(i);
-  });
-  const courseNums = Object.keys(byCourse).map(Number).sort((a,b)=>a-b);
-
-  courseNums.forEach((courseN, idx) => {
-    const courseItems = byCourse[courseN];
-    const isFired = courseItems.some(i => i.fired);
-    if (idx > 0) b.lf();
-    b.normal().bold(true)
-     .center().line(`COURSE ${courseN} -- ${isFired ? 'FIRING' : 'HOLD'}`)
-     .left().bold(false).divider();
-
-    courseItems.forEach(item=>{
-      b.doubleBoth();
-      const qty=item.qty>1?`${item.qty}x `:'';
-      // Triple-naming: kitchen tickets print the item's explicit kitchen name
-      // when the line carries one (most job builders pre-resolve it into
-      // `name`; the kiosk/online path passes kitchenName through raw).
-      b.text(qty+(item.kitchenName||item.name||'').toUpperCase().substring(0,22)).lf();
-      b.normal();
-      if(item.seat) b.fontB().line(`  Seat ${item.seat}`).fontA();
-      // Each mod/instruction on its own red line
-      const modLines = Array.isArray(item.mods) ? item.mods : (item.mods ? item.mods.split(' · ') : []);
-      modLines.forEach(m => {
-        const text = (typeof m === 'string' ? m : (m.label||'')).trim();
-        if (!text) return;
-        b.red().bold(true).line(`  ${text}`).bold(false).black();
-      });
-      if(item.notes) b.red().bold(true).underline(true).line(`  ${item.notes}`).bold(false).underline(false).black();
-      b.lf();
-    });
-  });
-
-  b.divider('=').lf(3).cut();
-  return b.toBytes();
+export async function buildMerchantTipSlip(args, printer = null) {
+  const spec = resolvePrinterSpec(printer);
+  const assets = await loadReceiptAssets(args?.location, { qr: false });
+  return encodeDocForPrinter(buildMerchantTipSlipDoc(args, { cols: spec.cols, assets }), printer);
 }
 
-export function buildFireCourseTicket({ table, courseNum, centreName, sentAt }) {
-  const b = new EscPosBuilder(42);
-  const time = new Date(sentAt||Date.now()).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
-
-  b.init().center().bold(true).doubleBoth().text(centreName||'Kitchen').lf()
-   .normal().center().line(time).divider('=');
-
-  if (table) {
-    // Same non-table-label heuristic as buildKitchenTicket — "Takeaway · Sarah" prints as-is,
-    // bare "T7" gets "TABLE " prefix.
-    const isNonTableLabel = / · /.test(table) || /^(takeaway|collection|delivery|counter)$/i.test(table);
-    b.center().bold(true).doubleBoth().line(isNonTableLabel ? table : `TABLE ${table}`).normal();
-  }
-
-  b.lf().center().bold(true).doubleBoth().line(`FIRE COURSE ${courseNum}`).normal();
-
-  b.divider('=').lf(3).cut();
-  return b.toBytes();
+export function buildKitchenTicket(ticketData, printer = null) {
+  return encodeTextDoc(buildKitchenTicketDoc(ticketData, { cols: resolvePrinterSpec(printer).cols }), printer);
 }
 
-
-export function buildTransferNoticeTicket({ fromTable, toTable, centreName, items, server, sentAt }) {
-  // v4.6.28: kitchen alert docket fired when a table is moved/combined so the
-  // expo/kitchen sees that previously-sent items now sit at a different table.
-  // Format mirrors buildFireCourseTicket: bold centre header, time, large notice.
-  const b = new EscPosBuilder(42);
-  const time = new Date(sentAt||Date.now()).toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
-  b.init().center().bold(true).doubleBoth().text(centreName||'Kitchen').lf()
-   .normal().center().line(time).divider('=');
-  b.lf().center().bold(true).doubleBoth().line('** TABLE MOVED **').normal();
-  b.lf().center().bold(true).doubleBoth().line(`${fromTable||'?'}  \u2192  ${toTable||'?'}`).normal();
-  if (server) b.lf().center().line(`Server: ${server}`);
-  b.lf().divider('-');
-  // List every item that's now at the new location. This is the already-sent
-  // items from the source session — kitchen/expo needs to know what food is
-  // where, not just that a move happened.
-  b.left().bold(true).line('Items now at ' + (toTable||'?') + ':').bold(false);
-  (items||[]).forEach(it => {
-    const qty = it.qty || 1;
-    const name = it.name || '';
-    b.line(`${qty} \u00d7 ${name}`);
-    if (Array.isArray(it.mods) && it.mods.length) {
-      it.mods.forEach(m => {
-        const t = typeof m === 'string' ? m : (m?.label || m?.name || '');
-        if (t) b.line(`  \u00b7 ${t}`);
-      });
-    }
-  });
-  b.divider('=').lf(3).cut();
-  return b.toBytes();
+export function buildFireCourseTicket(ticketData, printer = null) {
+  return encodeTextDoc(buildFireCourseTicketDoc(ticketData, { cols: resolvePrinterSpec(printer).cols }), printer);
 }
-export function buildTestPage() {
-  const b = new EscPosBuilder(42);
-  b.init()
-   .center().bold(true).doubleBoth().text('RESTAURANT OS').lf()
-   .normal().center().line('Print agent connected').divider()
-   .left().bold(true).line('ESC/POS test:').bold(false)
-   .line('Normal text')
-   .bold(true).line('Bold text').bold(false)
-   .doubleBoth().line('Large').normal()
-   .divider()
-   .twoCol('Subtotal', money(12.50))
-   .twoCol('Service',  money(1.56))
-   .bold(true).doubleHeight().twoCol('TOTAL',money(14.06)).normal()
-   .divider()
-   .center().bold(true).line('Connection OK \u2713').bold(false)
-   .fontB().line(new Date().toLocaleString()).fontA()
-   .lf(4).cut();
-  return b.toBytes();
+
+export function buildTransferNoticeTicket(ticketData, printer = null) {
+  return encodeTextDoc(buildTransferNoticeTicketDoc(ticketData, { cols: resolvePrinterSpec(printer).cols }), printer);
+}
+
+export function buildTestPage(info = null, printer = null) {
+  return encodeTextDoc(buildTestPageDoc(info, { cols: resolvePrinterSpec(printer).cols }), printer);
 }
 
 // ─── HTML fallback builders ───────────────────────────────────────────────────
@@ -1240,7 +785,7 @@ class PrintService {
         }
         markReceiptPrinted(guardKey);
       }
-      const bytes = await buildCustomerReceipt({ location: locationWithBranding, check, items, totals });
+      const bytes = await buildCustomerReceipt({ location: locationWithBranding, check, items, totals }, printer);
       return this._submitJob(printer, 'receipt', bytes, {
         idempotencyKey: opts.idempotencyKey || (check?.ref ? `receipt-${check.ref}-${Date.now()}` : undefined),
         metadata: { ref: check?.ref, total: totals?.grand, tableLabel: check?.tableLabel, orderType: check?.orderType, server: check?.server, routedBy: src },
@@ -1300,7 +845,7 @@ class PrintService {
       }
       markReceiptPrinted(guardKey);
     }
-    const bytes = await buildMerchantTipSlip({ location: locationWithBranding, check, totals });
+    const bytes = await buildMerchantTipSlip({ location: locationWithBranding, check, totals }, printer);
     return this._submitJob(printer, 'receipt', bytes, {
       idempotencyKey: opts.idempotencyKey || (check?.ref ? `tipslip-${check.ref}-${Date.now()}` : undefined),
       metadata: { ref: check?.ref, total: totals?.grand, tableLabel: check?.tableLabel, type: 'merchant-tip-slip', routedBy: src },
@@ -1311,7 +856,9 @@ class PrintService {
   async printKitchenTicket(ticketData, printerId = null, opts = {}) {
     const printer = this._printerForRole('kitchen', printerId);
     if (printer?.address) {
-      const bytes = buildKitchenTicket(ticketData);   // ticketData.delivery (if set) renders the channel block
+      // ticketData.delivery (if set) renders the channel block. Encoded for THIS printer's
+      // dialect (ESC/POS, Star Line Mode, or Star raster via the canvas renderer).
+      const bytes = await encodeDocForPrinter(buildKitchenTicketDoc(ticketData, { cols: resolvePrinterSpec(printer).cols }), printer);
       return this._submitJob(printer, 'kitchen', bytes, {
         idempotencyKey: opts.idempotencyKey,
         metadata: { tableLabel: ticketData.table, server: ticketData.server, covers: ticketData.covers, course: ticketData.course, centreName: ticketData.centreName },
@@ -1324,7 +871,7 @@ class PrintService {
   async printFireCourseTicket(ticketData, printerId = null, opts = {}) {
     const printer = this._printerForRole('kitchen', printerId);
     if (printer?.address) {
-      const bytes = buildFireCourseTicket(ticketData);
+      const bytes = await encodeDocForPrinter(buildFireCourseTicketDoc(ticketData, { cols: resolvePrinterSpec(printer).cols }), printer);
       return this._submitJob(printer, 'kitchen', bytes, {
         idempotencyKey: opts.idempotencyKey,
         metadata: { tableLabel: ticketData.table, courseNum: ticketData.courseNum, centreName: ticketData.centreName, type: 'fire-marker' },
@@ -1340,7 +887,7 @@ class PrintService {
     // the centre, same routing as a normal ticket, different builder.
     const printer = this._printerForRole('kitchen', printerId);
     if (printer?.address) {
-      const bytes = buildTransferNoticeTicket(ticketData);
+      const bytes = await encodeDocForPrinter(buildTransferNoticeTicketDoc(ticketData, { cols: resolvePrinterSpec(printer).cols }), printer);
       return this._submitJob(printer, 'kitchen', bytes, {
         idempotencyKey: opts.idempotencyKey,
         metadata: {
@@ -1356,9 +903,15 @@ class PrintService {
   }
   async printTestPage(printer) {
     if (!printer?.address) throw new Error('No printer address');
-    const bytes = buildTestPage();
+    // v5.8.84: the page describes itself (model, dialect, address, paper, where it was
+    // sent from, app version) so a photo of it tells us which path printed it.
+    const spec = resolvePrinterSpec(printer);
+    const env = printEnvironment();
+    const doc = buildTestPageDoc({ printer, spec, version: VERSION, sentFrom: printSentFromWords(env) }, { cols: spec.cols });
+    const bytes = await encodeDocForPrinter(doc, printer);
     return this._submitJob(printer, 'test', bytes, {
       label: `Test print → ${printer.name}`,
+      metadata: { model: spec.model, dialect: spec.dialect, paper: spec.paper, env, version: VERSION },
     });
   }
 
@@ -1378,9 +931,11 @@ class PrintService {
              || this._drawerPrinter();
     }
     if (!printer?.address) throw new Error('No printer with cash drawer configured');
-    const b = new EscPosBuilder();
-    b.init().cashDrawer();
-    return this._submitJob(printer, 'cash_drawer', b.toBytes());
+    // v5.8.84: the pulse in the printer's own dialect (ESC p on ESC/POS, unchanged; ESC BEL
+    // + BEL on Star Line Mode; ESC * r D on a Star raster printer), sent through the normal
+    // print path. The native bridges' openCashDrawer (a fixed ESC p) is no longer called.
+    const bytes = cashDrawerBytes(resolvePrinterSpec(printer));
+    return this._submitJob(printer, 'cash_drawer', bytes, { metadata: { dialect: resolvePrinterSpec(printer).dialect } });
   }
 
   // Watch a job's status in Supabase (for feedback in the UI)
