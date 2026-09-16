@@ -4,10 +4,12 @@
  *
  * Minus at 1 removes the line (KioskApp's updateCartQty drops a line at 0). Plus is
  * disabled when the line's stock has no room left across the whole basket.
- * line.mods already holds the size, the choices and "Note: ...".
+ * line.mods already holds the size, the choices and an English "Note: ..." (it goes to the
+ * kitchen too); the note is shown in the customer's language (kioskLineDetailParts).
  */
-import { t } from '../../lib/i18n';
+import { t, tf } from '../../lib/i18n';
 import { money } from '../../lib/currency';
+import { kioskLineDetailParts } from '../../lib/kioskFlow';
 import { KioskPhoto } from './KioskChrome';
 import { MinusIcon, PlusIcon } from './KioskIcons';
 
@@ -20,13 +22,15 @@ const SIZES = {
 
 export default function KioskLineRow({ line, size = 'sheet', primary, canAdd = true, onLess, onMore, first = false }) {
   const s = SIZES[size] || SIZES.sheet;
+  const { choices, note } = kioskLineDetailParts(line);
+  const detail = [choices, note ? tf('k2.line.note', { note }) : ''].filter(Boolean).join(' · ');
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 18, padding: s.rowPad, borderTop: first ? 0 : '1px solid var(--k2Divider)' }}>
       <KioskPhoto image={line.item?.image} color={primary} width={72} height={72} radius={16} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: s.name, fontWeight: 700, color: 'var(--k2Ink)', lineHeight: 1.2, overflowWrap: 'anywhere' }}>{line.name}</div>
-        {line.mods ? (
-          <div style={{ fontSize: s.detail, color: 'var(--k2InkSubtle)', lineHeight: 1.3, overflowWrap: 'anywhere' }}>{line.mods}</div>
+        {detail ? (
+          <div style={{ fontSize: s.detail, color: 'var(--k2InkSubtle)', lineHeight: 1.3, overflowWrap: 'anywhere' }}>{detail}</div>
         ) : null}
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 0, background: 'var(--k2Muted)', borderRadius: 999, padding: 0, flex: 'none' }}>

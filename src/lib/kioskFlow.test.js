@@ -25,6 +25,8 @@ import {
   nextCountdown,
   kioskDoneModel,
   kioskPointsOnlyAttribution,
+  kioskCardLabelSize,
+  kioskLineDetailParts,
 } from './kioskFlow.js';
 
 test('the build is ready, but only a profile switched on gets the new design', () => {
@@ -287,4 +289,31 @@ test('the keypad takes a physical keyboard too: digits, Backspace or Delete, Ent
   const pad = fs.readFileSync(new URL('../surfaces/kiosk/KioskKeypad.jsx', import.meta.url), 'utf8');
   assert.match(pad, /window\.addEventListener\('keydown', onKey\)/);
   assert.match(pad, /if \(tag === 'input' \|\| tag === 'textarea'/);
+});
+
+// v5.8.81: a translated item card button stays on one line (measured at 26px/700 in the card:
+// "Hinzufügen · £11.50" is 245px beside the plus icon with 244px of room).
+test('card button labels: English keeps 26px, a long translation is set smaller, never below 20', () => {
+  for (const [label, withIcon] of [['Add · £11.50', true], ['Add · £112.50', true], ['Options · £12.00', false], ['Sizes from £12.50', false], ['Choose size', false], ['Sold out', false]]) {
+    assert.equal(kioskCardLabelSize(label, { withIcon }), 26, label);
+  }
+  const de = kioskCardLabelSize('Hinzufügen · £11.50', { withIcon: true });
+  assert.ok(de < 26 && de >= 20, String(de));
+  assert.ok(245 * de / 26 <= 244, 'the German add label fits beside the icon');
+  const pt = kioskCardLabelSize('Tamanhos desde £12.50', { withIcon: false });
+  assert.ok(305 * pt / 26 <= 282, 'the Portuguese sizes label fits');
+  assert.equal(kioskCardLabelSize('x'.repeat(80), { withIcon: true }), 20);
+  assert.equal(kioskCardLabelSize(null), 26);
+});
+
+test('a basket line shows its note apart from the English "Note: " the kitchen gets', () => {
+  assert.deepEqual(kioskLineDetailParts({ mods: 'Large · Oat · Note: no ice', instructions: 'no ice ' }), { choices: 'Large · Oat', note: 'no ice' });
+  assert.deepEqual(kioskLineDetailParts({ mods: 'Note: extra hot', instructions: 'extra hot' }), { choices: '', note: 'extra hot' });
+  assert.deepEqual(kioskLineDetailParts({ mods: 'Large', instructions: '' }), { choices: 'Large', note: '' });
+  // Text that does not end with this line's note is left exactly as it is.
+  assert.deepEqual(kioskLineDetailParts({ mods: 'Note: other', instructions: 'no ice' }), { choices: 'Note: other', note: '' });
+  assert.deepEqual(kioskLineDetailParts({}), { choices: '', note: '' });
+  // KioskApp still writes the English note into mods (the kitchen reads it).
+  const app = fs.readFileSync(new URL('../surfaces/KioskApp.jsx', import.meta.url), 'utf8');
+  assert.ok(app.includes("'Note: ' + instructions.trim()"));
 });

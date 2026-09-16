@@ -1,12 +1,14 @@
-// New kiosk design text (lib/i18n.js k2.* keys): English filled in, other languages fall
-// back to English, no dashes as punctuation, and every key the screens use exists.
+// New kiosk design text (lib/i18n.js k2.* keys): English filled in, every other language
+// fully translated with the same {markers}, no dashes as punctuation, and every key the
+// screens use exists.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { t, tf, tn, englishKeys, LANGUAGES } from './i18n.js';
+import { t, tf, tn, englishKeys, languageKeys, LANGUAGES } from './i18n.js';
+import { KIOSK_LANGUAGE_PICKER, KIOSK_START_LANGUAGE } from './kioskFlow.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -21,18 +23,75 @@ test('every k2 key has non empty English text', () => {
   }
 });
 
-test('other languages fall back to the English text', () => {
-  for (const k of englishKeys('k2.')) {
-    for (const L of LANGUAGES) assert.equal(t(k, L.code), t(k, 'en'), `${k} in ${L.code}`);
+// v5.8.81: the language pill is on, so every language must have every line. A key that fell
+// back to English would give a customer a half translated screen.
+const OTHER_LANGUAGES = LANGUAGES.map(L => L.code).filter(c => c !== 'en');
+const markers = (s) => (String(s).match(/\{[A-Za-z0-9]+\}/g) || []).sort();
+const ownKeys = (lang) => languageKeys(lang);
+const ownText = (lang, k) => (languageKeys(lang, k).includes(k) ? t(k, lang) : undefined);
+
+test('the language pill is on and all five languages are offered', () => {
+  assert.equal(KIOSK_LANGUAGE_PICKER, true);
+  assert.equal(KIOSK_START_LANGUAGE, 'en');
+  assert.deepEqual(OTHER_LANGUAGES, ['es', 'fr', 'de', 'it', 'pt']);
+});
+
+test('every k2 key is translated in every language, with the same {markers}', () => {
+  const problems = [];
+  for (const lang of OTHER_LANGUAGES) {
+    for (const k of englishKeys('k2.')) {
+      const own = ownText(lang, k);
+      if (typeof own !== 'string' || !own.trim()) { problems.push(`${lang} ${k}: missing`); continue; }
+      if (markers(own).join() !== markers(t(k, 'en')).join()) problems.push(`${lang} ${k}: markers ${markers(own)} vs ${markers(t(k, 'en'))}`);
+    }
+  }
+  assert.deepEqual(problems, []);
+});
+
+test('no language has a k2 key that English does not', () => {
+  const english = new Set(englishKeys('k2.'));
+  for (const lang of OTHER_LANGUAGES) {
+    const extra = ownKeys(lang).filter(k => k.startsWith('k2.') && !english.has(k));
+    assert.deepEqual(extra, [], lang);
   }
 });
 
-test('no k2 text uses a dash as punctuation', () => {
+test('all caps labels stay all caps in every language', () => {
   for (const k of englishKeys('k2.')) {
-    const v = t(k, 'en');
-    assert.ok(!/[—–]/.test(v), `${k} has an em or en dash: ${v}`);
-    assert.ok(!/\s-\s/.test(v), `${k} has a spaced hyphen: ${v}`);
+    const en = t(k, 'en');
+    if (!/[A-Z]/.test(en) || en !== en.toUpperCase()) continue;
+    for (const lang of OTHER_LANGUAGES) {
+      const v = t(k, lang);
+      assert.equal(v, v.toUpperCase(), `${lang} ${k}: ${v}`);
+    }
   }
+});
+
+test('translated lines fill values and plurals', () => {
+  assert.equal(tf('k2.menu.table', { table: '12' }, 'es'), 'Mesa 12');
+  assert.equal(tn('k2.items', 1, {}, 'it'), '1 articolo');
+  assert.equal(tn('k2.items', 3, {}, 'it'), '3 articoli');
+  assert.equal(tn('k2.items', 3, {}, 'pt'), '3 artigos');
+  for (const lang of OTHER_LANGUAGES) {
+    assert.ok(!tf('k2.card.reference', { ref: 'AB12' }, lang).includes('{'), lang);
+    assert.notEqual(t('k2.attract.tap', lang), t('k2.attract.tap', 'en'), lang);
+  }
+});
+
+test('no k2 text uses a dash as punctuation, in any language', () => {
+  for (const L of LANGUAGES) {
+    for (const k of englishKeys('k2.')) {
+      const v = t(k, L.code);
+      assert.ok(!/[—–]/.test(v), `${L.code} ${k} has an em or en dash: ${v}`);
+      assert.ok(!/\s-\s/.test(v), `${L.code} ${k} has a spaced hyphen: ${v}`);
+    }
+  }
+});
+
+test('each new customer starts in English (KioskV2Root resets on every new session)', () => {
+  const src = fs.readFileSync(path.join(here, '../surfaces/kiosk/KioskV2Root.jsx'), 'utf8');
+  assert.match(src, /setLang\(KIOSK_START_LANGUAGE\)/);
+  assert.match(src, /\}, \[sessionKey\]\);/);
 });
 
 test('tf fills values and keeps unknown markers visible', () => {

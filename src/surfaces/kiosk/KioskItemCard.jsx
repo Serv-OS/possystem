@@ -11,6 +11,7 @@
 import { t, tf } from '../../lib/i18n';
 import { money } from '../../lib/currency';
 import { displayName } from '../../lib/itemDisplay';
+import { kioskCardLabelSize } from '../../lib/kioskFlow';
 import { KioskPhoto } from './KioskChrome';
 import { PlusIcon } from './KioskIcons';
 
@@ -78,9 +79,9 @@ export default function KioskItemCard({ item, addMode, button, price, fromPrice 
         }}
       >
         {showPlus ? <PlusIcon size={26} /> : null}
-        {/* The copy is kept short so it sits on one line at 26px/700 in the 358px card ("Options · £12.00",
-            "Sizes from £3.20"). Only a very long translation or price wraps to a second line. */}
-        <span style={{ overflow: 'hidden', maxHeight: 60 }}>{label}</span>
+        {/* One line at 26px/700 in the 358px card ("Options · £12.00", "Sizes from £3.20"). A longer
+            translation is set smaller (kioskCardLabelSize); only an extreme one wraps to a second line. */}
+        <span style={{ overflow: 'hidden', maxHeight: 60, fontSize: kioskCardLabelSize(label, { withIcon: showPlus }) }}>{label}</span>
       </button>
     </div>
   );

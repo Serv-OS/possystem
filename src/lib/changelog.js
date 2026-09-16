@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.81',
+    date: '15 Sep 2026',
+    items: [
+      'New kiosk design: the language button is back on the start screen. Customers can pick Spanish, French, German, Italian or Portuguese, and every screen changes, from the start screen to the card screen and the done screen.',
+      'Every line was translated and then checked by a separate reviewer for each language. German uses the polite Sie form, the same as the German lines the old kiosk already had.',
+      'Each new customer starts in English, so the next person never finds the kiosk in the last customer\'s language.',
+      'Also translated: the size group name, "pick 1 to 3", sold out messages on the item screen, choices inside a choice, the note on a basket line and promo labels such as 10% off. The kitchen still gets the note in English.',
+      'Long translated labels on the item buttons are set a little smaller so they stay on one line. English looks exactly the same.',
+      'Still in English on purpose: the details for staff after a card problem, the loading screen before the first customer, and the text messages sent to phones.',
+    ],
+  },
+  {
     v: '5.8.80',
     date: '15 Sep 2026',
     items: [

@@ -252,11 +252,47 @@ export function kioskPromoResult(code, reply) {
         offer_id: body.offer?.id || null,
         label: body.discount?.label || body.offer?.name || 'Promo code',
         amount: num(body.discount?.amount),
+        // Display only (kioskPromoLabel): the order still records label as the server sent it.
+        ...(body.discount?.type ? { discountType: String(body.discount.type), discountValue: num(body.discount.value) } : {}),
       },
     };
   }
   if (body.reason === 'min_spend') return { errorKey: 'k2.code.minSpend', vars: { amount: num(body.min_spend) } };
   return { notValid: true };
+}
+
+/**
+ * The applied promo chip's label, in the customer's language where it can be.
+ * promo-redeem (supabase/functions/_shared/promo.ts computeDiscount) sends the offer's own
+ * reward_label, or else an English label it built: "10% off", "£5.00 off", "Free item",
+ * "Free delivery", "3 bonus points", "Offer". Only a label that is exactly the one the server
+ * would build for that type and value becomes a key; a venue's own wording shows as written.
+ * Resolves { key, vars, plural?, money? } or { text }. `money` names the var to format as money.
+ */
+export function kioskPromoLabel(promo) {
+  const label = String(promo?.label ?? '').trim();
+  const v = num(promo?.discountValue);
+  switch (promo?.discountType) {
+    case 'percent':
+      if (label === `${v}% off`) return { key: 'k2.code.promoPercentOff', vars: { pct: v } };
+      break;
+    case 'amount':
+      if (label === `£${v.toFixed(2)} off`) return { key: 'k2.code.promoAmountOff', vars: { amount: v }, money: 'amount' };
+      if (label === 'Offer') return { key: 'k2.code.promoOffer', vars: {} };
+      break;
+    case 'free_item':
+      if (label === 'Free item') return { key: 'k2.code.promoFreeItem', vars: {} };
+      break;
+    case 'free_delivery':
+      if (label === 'Free delivery') return { key: 'k2.code.promoFreeDelivery', vars: {} };
+      break;
+    case 'points_bonus':
+      if (label === `${v} bonus points`) return { key: 'k2.code.promoBonusPoints', vars: { n: v }, plural: true };
+      break;
+    default:
+      break;
+  }
+  return { text: label };
 }
 
 /**

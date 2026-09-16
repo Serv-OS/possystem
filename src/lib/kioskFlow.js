@@ -18,10 +18,43 @@
 // new design on: with kiosk_new_design off or missing, every kiosk keeps today's design.
 export const KIOSK_NEW_DESIGN_READY = true;
 
-// Decision 17: every new line is set up for translation, the kiosk LAUNCHES IN ENGLISH and is
-// translated after. Until the k2 keys are translated the new design hides the language pill
-// (a picked language would give screens that are half translated) and starts in English.
-export const KIOSK_LANGUAGE_PICKER = false;
+// Decision 17: every new line is set up for translation. v5.8.81 translated every k2 key into
+// Spanish, French, German, Italian and Portuguese, so the language pill shows on the start
+// screen (i18nKiosk2.test.js fails if a k2 key is missing in any language).
+export const KIOSK_LANGUAGE_PICKER = true;
+
+// Every new customer starts in this language: the one before them may have picked another.
+export const KIOSK_START_LANGUAGE = 'en';
+
+/**
+ * Font size (design px) for the item card button label. The card button has room for 244px of
+ * text beside the plus icon, 282px without it, at 26px/700. English labels fit at 26 ("Add ·
+ * £11.50", "Sizes from £12.50"); some translations do not ("Hinzufügen · £11.50", "Tamanhos
+ * desde £12.50"), so a label estimated wider than the room is set smaller, never below 20.
+ * The estimate is 15px a character at 26px, a little over the widest measured translation.
+ */
+export function kioskCardLabelSize(label, { withIcon = false } = {}) {
+  const room = withIcon ? 244 : 282;
+  const estimate = String(label ?? '').length * 15;
+  if (estimate <= room) return 26;
+  return Math.max(20, Math.floor((26 * room) / estimate));
+}
+
+/**
+ * A basket line's detail text split for display: { choices, note }.
+ * KioskApp's addToCart writes "size, choices · Note: <what they typed>" into line.mods, in
+ * English, because the same text goes to the kitchen. The screens show the note in the
+ * customer's language (k2.line.note), so the English "Note: ..." ending is taken off here.
+ * A mods text that does not end with this line's own note is left exactly as it is.
+ */
+export function kioskLineDetailParts(line) {
+  const mods = String(line?.mods ?? '');
+  const note = String(line?.instructions ?? '').trim();
+  if (!note) return { choices: mods, note: '' };
+  const ending = 'Note: ' + note;
+  if (!mods.endsWith(ending)) return { choices: mods, note: '' };
+  return { choices: mods.slice(0, mods.length - ending.length).replace(/ · $/, ''), note };
+}
 
 // The design canvas, in design px (portrait kiosk).
 export const KIOSK_CANVAS_WIDTH = 1080;

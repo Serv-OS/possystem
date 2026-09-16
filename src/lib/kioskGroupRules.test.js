@@ -105,3 +105,12 @@ test('instruction groups are required only when the item or the group sets a min
   assert.equal(instructionAssignmentId({ groupId: 'ig3', id: 'x' }), 'ig3');
   assert.equal(instructionAssignmentId(null), null);
 });
+
+// v5.8.81: the sheet says the made up Size group in the customer's language, and only that group.
+test('the size group hint carries the k2.sheet.size key, a venue group carries its own name', () => {
+  const size = normalizeGroup({ id: '__variants__', name: 'Size', selection_type: 'single', min: 1, max: 1, __isVariantGroup: true, options: [{ id: 's1', name: 'Regular' }] });
+  const milk = normalizeGroup({ id: 'g-milk', name: 'Milk', selection_type: 'single', min: 1, max: 1, options: [{ id: 'o-oat', name: 'Oat' }] });
+  assert.deepEqual(kioskSheetGroupHint([size], {}), { key: 'k2.sheet.pickOne', vars: { group: 'Size' }, groupKey: 'k2.sheet.size' });
+  assert.deepEqual(kioskSheetGroupHint([milk], {}), { key: 'k2.sheet.pickOne', vars: { group: 'Milk' } });
+  assert.equal(kioskSheetGroupHint([size, milk], { __variants__: ['s1'], 'g-milk': ['o-oat'] }), null);
+});

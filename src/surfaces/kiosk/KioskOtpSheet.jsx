@@ -12,7 +12,7 @@
  * lib/kioskLoyaltyReward.js kioskRewardTapCheck, the same check today's kiosk uses).
  */
 import { useState } from 'react';
-import { t, tf } from '../../lib/i18n';
+import { t, tf, tn } from '../../lib/i18n';
 import { kioskRewardsFromVerify, stageKioskReward } from '../../lib/kioskCheckout';
 import { KioskBottomSheet, KioskSheetHead } from './KioskChrome';
 import { StarIcon } from './KioskIcons';
@@ -140,7 +140,7 @@ export default function KioskOtpSheet({
                   <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
                     <span style={{ fontSize: 25, fontWeight: 700, color: 'var(--k2Ink)', overflowWrap: 'anywhere' }}>{reward.label}</span>
                     <span style={{ fontSize: 19, color: 'var(--k2InkSubtle)' }}>
-                      {reward.stamp ? t('k2.reward.stamp') : tf('k2.reward.points', { n: reward.pointsCost })}
+                      {reward.stamp ? t('k2.reward.stamp') : tn('k2.reward.points', Number(reward.pointsCost) || 0)}
                     </span>
                     {note ? <span style={{ fontSize: 19, color: 'var(--k2WarnInk)', fontWeight: 600 }}>{note}</span> : null}
                   </span>

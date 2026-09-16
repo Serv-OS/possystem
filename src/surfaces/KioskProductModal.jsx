@@ -44,7 +44,7 @@ import { normalizeGroup, kioskSheetGroupHint } from '../lib/kioskGroupRules';
 import {
   kioskOptionGroupPlan, kioskSheetGroupIds, kioskSheetInstructionIds, kioskSheetGroups,
   kioskPruneSelections, kioskPruneNestedSelections,
-  validateSelections, priceDelta, buildModsArray, summarizeForDisplay,
+  validateSelections, priceDelta, buildModsArray, summarizeForDisplay, kioskSheetNestedHint,
 } from '../lib/kioskOptionGroups';
 import KioskItemSheet from './kiosk/KioskItemSheet';
 
@@ -293,6 +293,9 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
           const cheapestPrice = variantFromPrice(item, sizes, orderType, activeMenuId) || 0;
           sg = normalizeGroup({
             id: '__variants__',
+            // English, like every other group name the checks and today's modal read (translating
+            // it here would give today's modal "Pick a Tamaño"). The new sheet heads this group
+            // with k2.sheet.size and kioskSheetGroupHint hands back the same key for its guidance.
             name: 'Size',
             selection_type: 'single',
             min: 1, max: 1, min_select: 1, max_select: 1,
@@ -573,8 +576,10 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
             : Infinity;
         if (want > avail) {
           const mi = (allItems || []).find(i => i.id === rid);
-          const nm = mi?.menuName || mi?.menu_name || mi?.name || 'that item';
-          setStockErr(avail <= 0 ? `${nm} has sold out` : `Only ${Math.max(0, avail)} × ${nm} left`);
+          const nm = mi?.menuName || mi?.menu_name || mi?.name || t('k2.sheet.thatItem');
+          setStockErr(avail <= 0
+            ? tf('k2.sheet.stockSoldOut', { name: nm })
+            : tf('k2.sheet.stockOnlyLeft', { n: Math.max(0, avail), name: nm }));
           return;
         }
       }
@@ -611,14 +616,19 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
   // type. Fires once after groups load and again if they change. Remove once
   // the group-rules-not-respected issue is confirmed resolved.
 
-  // The new design's sheet says a range in words ("pick 1 to 3"): no dash in customer text.
-  // Today's modal below keeps buildHint exactly as it was.
-  const buildSheetHint = (min, max) => buildHint(min, max).replace('–', ' to ');
+  // The new design's sheet says a range in words ("pick 1 to 3", k2.sheet.range): no dash in
+  // customer text. Today's modal below keeps buildHint exactly as it was.
+  const buildSheetHint = (min, max) => (min > 0 && max > min
+    ? t('product.required') + ' · ' + t('product.pick') + ' ' + tf('k2.sheet.range', { min, max })
+    : buildHint(min, max));
 
   if (look === 'sheet') {
-    // The sheet's guidance line in the customer's language ("Choose at least 1 from Extras"),
-    // never today's English "Pick a " + group name. A nested choice keeps validation's text.
-    const sheetHint = isValid ? null : kioskSheetGroupHint(groups, selections);
+    // The sheet's guidance line in the customer's language ("Choose at least 1 from Extras",
+    // "Choose 1 from Milk for Latte"), never today's English "Pick a " + group name.
+    const sheetHint = isValid ? null
+      : (kioskSheetGroupHint(groups, selections) || kioskSheetNestedHint(groups, selections, nestedSelections, subGroupsCache));
+    // groupKey: the made up Size group, said in the customer's language.
+    const sheetVars = sheetHint?.groupKey ? { ...sheetHint.vars, group: t(sheetHint.groupKey) } : sheetHint?.vars;
     return (
       <KioskItemSheet
         item={item}
@@ -635,7 +645,7 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
         lineMaxQty={lineMaxQty}
         instructions={instructions}
         setInstructions={setInstructions}
-        validation={sheetHint ? tf(sheetHint.key, sheetHint.vars) : validation}
+        validation={sheetHint ? tf(sheetHint.key, sheetVars) : validation}
         isValid={isValid}
         variantGroup={variantGroup}
         pickedVariantOpt={pickedVariantOpt}
