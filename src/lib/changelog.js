@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.85',
+    date: '16 Sep 2026',
+    items: [
+      'No change for venues. The printer byte for byte test is pinned to one clock zone, so it passes on the build server as well as on a Mac.',
+    ],
+  },
+  {
     v: '5.8.84',
     date: '16 Sep 2026',
     items: [

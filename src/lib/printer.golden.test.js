@@ -5,7 +5,7 @@
  * fixtures/printer.golden.bytes.json was captured from the UNTOUCHED v5.8.83 src/lib/printer.js
  * (its EscPosBuilder and template functions, with the Supabase imports stubbed) for the
  * inputs in fixtures/printer.golden.inputs.json, with the clock frozen at the timestamp
- * below. The new path (printDoc.js + printerDialects.js, escpos dialect, 42 columns) must
+ * below and the zone pinned below. The new path (printDoc.js + printerDialects.js, escpos dialect, 42 columns) must
  * produce exactly those bytes: that is what Provo's Sunmi NT311 and every Epson receive.
  * Run: `npm test`.
  */
@@ -22,6 +22,12 @@ import {
 import { encodeEscPos, cashDrawerBytes, resolvePrinterSpec, EscPosBuilder } from './printerDialects.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+
+// The golden bytes carry the receipt's printed date and time, which the builders format in the
+// LOCAL zone. They were captured on the Mac (America/Los_Angeles); the CI runner is UTC, where
+// the same frozen instant prints a different time. Pin the zone so the comparison is the same
+// everywhere (Node applies a TZ change at runtime, and every Date here is made inside a test).
+process.env.TZ = 'America/Los_Angeles';
 const GOLDEN = JSON.parse(fs.readFileSync(path.join(here, 'fixtures/printer.golden.bytes.json'), 'utf8'));
 const INPUTS = JSON.parse(fs.readFileSync(path.join(here, 'fixtures/printer.golden.inputs.json'), 'utf8'));
 
