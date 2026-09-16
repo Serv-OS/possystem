@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.83',
+    date: '16 Sep 2026',
+    items: [
+      'iPad app (TestFlight build 5): the till now prints straight to receipt printers on the venue Wi-Fi, exactly like the Android till. Before this the iPad queued every print for a "print agent" on the network, and a venue with no agent printed nothing ("Agent not responding").',
+      'iOS asks once for local network access the first time the app reaches a printer. Tap Allow.',
+      'Web app unchanged: receipts, kitchen tickets, cash drawer and the printer Test button all use the direct path once the new build is installed.',
+    ],
+  },
+  {
     v: '5.8.82',
     date: '16 Sep 2026',
     items: [
