@@ -5,13 +5,14 @@ import { subscribeToSessions, scheduleFlush, flushSessions, teardown as teardown
 // v5.6.27: ReservationSync RETIRED — bookings replaced the thin per-table reservation
 // (table_reservations). The Tables screen now derives 'reserved' from the bookings
 // slice; nothing loads, flushes or subscribes to table_reservations any more.
-import { loadQueues, scheduleQueueFlush, teardownQueueSync } from './QueueSync';
+import { loadQueues, scheduleQueueFlush, teardownQueueSync, noteQueueRemovals, noteTabRemovals, captureQueueBoot, hasNewUnsentRows } from './QueueSync';
 import { loadWaitlistSync, scheduleWaitlistFlush, teardownWaitlistSync } from './WaitlistSync';
 import { initOfflineQueue } from './OfflineQueue';
 import { isMock, supabase, getActiveLocationSync, ensureAuthToken } from '../lib/supabase';
 import { retryPendingRedemptions } from '../lib/commitRedemptions';
 import { fetchMenuCategoryLinks } from '../lib/db';
 import { startSessionReconciler, stopSessionReconciler } from './SessionReconciler';
+import { startQueueReconciler, stopQueueReconciler } from './QueueReconciler';
 import { startTerminalJobReconciler, stopTerminalJobReconciler } from './TerminalJobReconciler';
 // v4.6.27: static import per ADR-008. Dynamic imports inside callbacks silently
 // fail in production bundles and have caused multiple data-loss bugs.
@@ -189,6 +190,9 @@ export default function SyncBridge({ onSyncPulse }) {
           // is then superseded by the Supabase read a moment later.
         }
         useStore.setState(parsed);
+        // v5.8.86: remember which saved orders and tabs carry no server stamp. Only those can
+        // ever be judged an old copy; anything created from now on is always sent.
+        if (!isMock) captureQueueBoot();
         isApplyingRef.current = false;
       }
     } catch {}
@@ -1015,7 +1019,13 @@ export default function SyncBridge({ onSyncPulse }) {
     // sync across devices the same way table sessions already do.
     const unsubQueues = !isMock ? useStore.subscribe((state, prev) => {
       if (state.orderQueue !== prev.orderQueue || state.tabs !== prev.tabs) {
-        scheduleQueueFlush();
+        // v5.8.86: a row that leaves the store is recorded as finished now, so a reconcile
+        // in the 500 ms before the flush sends its delete cannot adopt it back.
+        const removed = noteQueueRemovals(prev.orderQueue, state.orderQueue) + noteTabRemovals(prev.tabs, state.tabs);
+        // A change applied from another browser tab is flushed by that tab, except a removal:
+        // its delete is idempotent and must not depend on that tab staying open.
+        if (isApplyingRef.current && !removed) return;
+        scheduleQueueFlush(hasNewUnsentRows(prev.orderQueue, state.orderQueue, prev.tabs, state.tabs));
       }
     }) : () => {};
 
@@ -1023,6 +1033,8 @@ export default function SyncBridge({ onSyncPulse }) {
     // so they follow the same one-per-location latch. The rows they load are still in
     // the store on a remount; only the network read is skipped.
     if (!isMock && !skipBoot) loadQueues();
+    // v5.8.86: and keep them the same as the server's every 15 s (see QueueReconciler.js).
+    if (!isMock) startQueueReconciler();
 
     // Tables Ready — live waitlist board syncs across devices the same way the order queue does.
     const unsubWaitlist = !isMock ? useStore.subscribe((state, prev) => {
@@ -1075,7 +1087,7 @@ export default function SyncBridge({ onSyncPulse }) {
       clearTimeout(timer);
       channelInstance?.close(); channelInstance = null;
       unsub(); unsubSessions(); unsubQueues(); unsubWaitlist(); unsubReservations();
-      stopSessionReconciler(); stopTerminalJobReconciler();
+      stopSessionReconciler(); stopQueueReconciler(); stopTerminalJobReconciler();
       // v5.6.83: these two were leaked on every teardown — see the notes above each.
       window.removeEventListener('online', onBackOnline);
       clearInterval(window._rposPeriodicTimer); window._rposPeriodicTimer = null;
