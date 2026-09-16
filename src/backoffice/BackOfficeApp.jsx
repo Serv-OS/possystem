@@ -643,7 +643,9 @@ export default function BackOfficeApp() {
         </div>
 
         {/* Nav — ServOS 10-section collapsible IA */}
-        <div style={{ flex:1, overflowY:'auto', padding:'10px 8px', display:'flex', flexDirection:'column', gap:2 }}>
+        {/* minHeight:0 lets this flex child shrink and scroll; without it the list grew to its
+            content and the footer covered the last entries (Print menu). */}
+        <div style={{ flex:1, minHeight:0, overflowY:'auto', padding:'10px 8px', display:'flex', flexDirection:'column', gap:2 }}>
           {NAV_IA.map(sec => {
             if (sec.single) {
               const active = section === sec.single;
