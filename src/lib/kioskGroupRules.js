@@ -90,12 +90,16 @@ export function kioskSheetGroupHint(groups, selections) {
     if (!g) continue;
     const picked = (selections && selections[g.id]) || [];
     const group = String(g.name ?? '').trim();
+    // The size group is the one group the kiosk makes up, and its name is English ('Size') so
+    // today's modal and the checks read as before. groupKey tells the caller to put the
+    // customer's own word for Size in {group}. A venue's own group names are never translated.
+    const sizeKey = g.__isVariantGroup ? { groupKey: 'k2.sheet.size' } : null;
     if (picked.length < g._min) {
-      if (g._min === 1 && g._max === 1) return { key: 'k2.sheet.pickOne', vars: { group } };
-      if (g._min === g._max) return { key: 'k2.sheet.pickExactly', vars: { group, n: g._min } };
-      return { key: 'k2.sheet.pickAtLeast', vars: { group, n: g._min } };
+      if (g._min === 1 && g._max === 1) return { key: 'k2.sheet.pickOne', vars: { group }, ...sizeKey };
+      if (g._min === g._max) return { key: 'k2.sheet.pickExactly', vars: { group, n: g._min }, ...sizeKey };
+      return { key: 'k2.sheet.pickAtLeast', vars: { group, n: g._min }, ...sizeKey };
     }
-    if (picked.length > g._max) return { key: 'k2.sheet.pickTooMany', vars: { group, n: g._max } };
+    if (picked.length > g._max) return { key: 'k2.sheet.pickTooMany', vars: { group, n: g._max }, ...sizeKey };
   }
   return null;
 }

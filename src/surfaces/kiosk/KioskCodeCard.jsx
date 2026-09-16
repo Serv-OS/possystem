@@ -7,8 +7,9 @@
  * kiosk). Nothing is debited or redeemed until submitOrder (lib/kioskCheckout.js).
  */
 import { useState } from 'react';
-import { t, tf } from '../../lib/i18n';
+import { t, tf, tn } from '../../lib/i18n';
 import { money } from '../../lib/currency';
+import { kioskPromoLabel } from '../../lib/kioskCheckout';
 import { TickIcon } from './KioskIcons';
 
 export default function KioskCodeCard({ giftCardPayment, giftCardCredit, promoApplied, promoCredit, onApply, onRemoveGift, onRemovePromo }) {
@@ -107,13 +108,22 @@ export default function KioskCodeCard({ giftCardPayment, giftCardCredit, promoAp
       ) : null}
       {promoApplied ? (
         <AppliedChip
-          label={tf('k2.code.promoApplied', { label: promoApplied.label || '', code: promoApplied.code })}
+          label={tf('k2.code.promoApplied', { label: promoLabelText(promoApplied), code: promoApplied.code })}
           amount={promoCredit}
           onRemove={() => { setStatus(null); onRemovePromo(); }}
         />
       ) : null}
     </div>
   );
+}
+
+/** The promo chip label: the server's own English labels in the customer's language (kioskPromoLabel). */
+function promoLabelText(promo) {
+  const l = kioskPromoLabel(promo);
+  if (!l.key) return l.text || '';
+  if (l.plural) return tn(l.key, l.vars.n);
+  const vars = l.money ? { ...l.vars, [l.money]: money(l.vars[l.money]) } : l.vars;
+  return tf(l.key, vars);
 }
 
 function AppliedChip({ label, amount, onRemove }) {

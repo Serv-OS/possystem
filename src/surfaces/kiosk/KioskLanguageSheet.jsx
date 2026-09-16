@@ -1,7 +1,6 @@
 /**
  * KioskLanguageSheet: pick the kiosk language, as a README bottom sheet.
- * New design text is English for now and falls back to English in every language
- * (decision 17); switching still translates the lines that already have translations.
+ * Every new design line is translated into each language in LANGUAGES (v5.8.81).
  */
 import { t, LANGUAGES } from '../../lib/i18n';
 import { KioskCloseButton } from './KioskChrome';

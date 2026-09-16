@@ -23,7 +23,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { getLang, setLang } from '../../lib/i18n';
-import { KIOSK_LANGUAGE_PICKER } from '../../lib/kioskFlow';
+import { KIOSK_START_LANGUAGE } from '../../lib/kioskFlow';
 import { kioskThemeVars } from '../../lib/kioskTheme';
 import { kioskGroupIds } from '../../lib/kioskMenu';
 import { kioskTipRule } from '../../lib/tipping';
@@ -37,12 +37,6 @@ const NO_IDS = [];
 export default function KioskV2Root({ engine, api = kioskApi, ScreenPay = null }) {
   const { locationId, profile, resetIdle, items } = engine;
   const themeVars = useMemo(() => kioskThemeVars(profile), [profile]);
-
-  // Decision 17: the new design launches in English (the language pill is hidden until the
-  // new lines are translated), so a language a customer picked on today's kiosk is reset.
-  useEffect(() => {
-    if (!KIOSK_LANGUAGE_PICKER && getLang() !== 'en') setLang('en');
-  }, []);
 
   // Decision 9: a number given only for "Text me when it's ready" is not a CRM or loyalty sign
   // up. With points switched off at this kiosk, the store's attributeOrderToCustomer skips new
@@ -70,6 +64,21 @@ export default function KioskV2Root({ engine, api = kioskApi, ScreenPay = null }
     sessionKey = engine.screen === 'attract' ? session.key + 1 : session.key;
     setSession({ screen: engine.screen, key: sessionKey });
   }
+
+  // Each new customer starts in English (KIOSK_START_LANGUAGE): the customer before may have
+  // picked another language on the start screen. Runs at mount too, so a language picked on
+  // today's kiosk design does not carry over.
+  useEffect(() => {
+    if (getLang() !== KIOSK_START_LANGUAGE) setLang(KIOSK_START_LANGUAGE);
+  }, [sessionKey]);
+
+  // The page language follows the picked language, so a screen reader reads the words right.
+  const { lang } = engine;
+  useEffect(() => {
+    if (typeof document === 'undefined' || !lang) return undefined;
+    document.documentElement.lang = lang;
+    return () => { document.documentElement.lang = KIOSK_START_LANGUAGE; };
+  }, [lang]);
 
   // The venue currency, so money() shows the venue's own symbol and the phone keypad uses the
   // right number rules (UK or US). Seeded from the stored currency until the venue read lands.

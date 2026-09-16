@@ -13,7 +13,7 @@ import crypto from 'node:crypto';
 import {
   kioskModifierAssignments, kioskInstructionAssignments, kioskOptionGroupPlan, kioskSheetGroupIds,
   kioskSheetInstructionIds, kioskSheetGroups, kioskPruneSelections, kioskPruneNestedSelections,
-  validateSelections, priceDelta, buildModsArray, summarizeForDisplay,
+  validateSelections, priceDelta, buildModsArray, summarizeForDisplay, kioskSheetNestedHint,
 } from './kioskOptionGroups.js';
 import { normalizeGroup, kioskSheetGroupHint } from './kioskGroupRules.js';
 import { orderOptionFlow } from './optionFlow.js';
@@ -366,4 +366,34 @@ test('the selection helpers are the word for word copy from KioskProductModal at
   // The modal builds its groups through this file, for both kiosk designs.
   assert.ok(modal.includes('kioskOptionGroupPlan({ parent: item, sizes: offeredSizes, pickedSizeId, groupRows, instructionDefs: allInstructionDefs })'));
   assert.ok(modal.includes('kioskSheetGroupIds(item, offered)'));
+});
+
+// v5.8.81: the new item sheet says a nested choice in the customer's language. validateSelections
+// keeps its English text for today's modal; kioskSheetNestedHint runs the same nested checks.
+test('a nested choice gives a translation key, with the same checks as validateSelections', () => {
+  const parent = normalizeGroup({ id: 'g-base', name: 'Babyccino', selection_type: 'single', min: 0, max: 2, options: [{ id: 'o-choc', name: 'Chocolate dust', price: 0, subGroupId: 'mg-sprinkle' }] });
+  const one = normalizeGroup({ id: 'mg-sprinkle', name: 'Sprinkle', selection_type: 'single', min: 1, max: 1, options: [{ id: 'o-sp', name: 'Rainbow', price: 0 }, { id: 'o-gold', name: 'Gold', price: 0 }] });
+  const sel = { 'g-base': ['o-choc'] };
+  const key = 'g-base:o-choc:0';
+  assert.equal(validateSelections([parent], sel, {}, { 'mg-sprinkle': one }), 'Pick a Sprinkle for Chocolate dust');
+  assert.deepEqual(kioskSheetNestedHint([parent], sel, {}, { 'mg-sprinkle': one }), { key: 'k2.sheet.nestedPickOne', vars: { group: 'Sprinkle', option: 'Chocolate dust' } });
+  assert.equal(kioskSheetNestedHint([parent], sel, { [key]: { 'mg-sprinkle': ['o-sp'] } }, { 'mg-sprinkle': one }), null);
+  const two = normalizeGroup({ ...one, selection_type: 'multiple', min: 2, max: 2 });
+  assert.deepEqual(kioskSheetNestedHint([parent], sel, {}, { 'mg-sprinkle': two }), { key: 'k2.sheet.nestedPickExactly', vars: { group: 'Sprinkle', option: 'Chocolate dust', n: 2 } });
+  const atLeast = normalizeGroup({ ...one, selection_type: 'multiple', min: 1, max: 3 });
+  assert.deepEqual(kioskSheetNestedHint([parent], sel, {}, { 'mg-sprinkle': atLeast }), { key: 'k2.sheet.nestedPickAtLeast', vars: { group: 'Sprinkle', option: 'Chocolate dust', n: 1 } });
+  const upTo = normalizeGroup({ ...one, selection_type: 'multiple', min: 0, max: 1 });
+  assert.deepEqual(kioskSheetNestedHint([parent], sel, { [key]: { 'mg-sprinkle': ['o-sp', 'o-gold'] } }, { 'mg-sprinkle': upTo }), { key: 'k2.sheet.nestedPickTooMany', vars: { group: 'Sprinkle', option: 'Chocolate dust', n: 1 } });
+  // A sub group not loaded yet is skipped, like validateSelections.
+  assert.equal(kioskSheetNestedHint([parent], sel, {}, {}), null);
+  assert.equal(kioskSheetNestedHint(null, null, null, null), null);
+  // Both kiosk designs still get the English validation; only the sheet swaps in the key.
+  const modal = fs.readFileSync(new URL('../surfaces/KioskProductModal.jsx', import.meta.url), 'utf8');
+  assert.ok(modal.includes('kioskSheetGroupHint(groups, selections) || kioskSheetNestedHint(groups, selections, nestedSelections, subGroupsCache)'));
+  // The made up Size group keeps its English name (today's modal shows "Pick a Size", and the
+  // checks read names), and only the new sheet says it in the customer's language.
+  assert.ok(modal.includes("name: 'Size',"));
+  assert.ok(modal.includes("sheetHint?.groupKey ? { ...sheetHint.vars, group: t(sheetHint.groupKey) } : sheetHint?.vars"));
+  assert.ok(!modal.includes("' to '"));
+  assert.ok(!modal.includes('has sold out'));
 });

@@ -421,3 +421,27 @@ export function summarizeForDisplay(groups, selections, nestedSelections, subGro
   }
   return parts.join(' · ');
 }
+
+/**
+ * The new item sheet's guidance for a NESTED choice, as a translation key: the same checks, in
+ * the same order, as validateSelections' nested loop, whose English text ("Pick a Milk for
+ * Latte") stays for today's modal. Top level groups are kioskSheetGroupHint's (kioskGroupRules).
+ * Returns { key, vars: { group, option, n? } } or null.
+ */
+export function kioskSheetNestedHint(groups, selections, nestedSelections, subGroupsCache) {
+  const nested = collectNestedOccurrences(Array.isArray(groups) ? groups : [], selections || {});
+  for (const n of nested) {
+    const sub = (subGroupsCache || {})[n.option.subGroupId];
+    if (!sub) continue;
+    const key = n.groupId + ':' + n.optionId + ':' + n.occurrenceIdx;
+    const subSel = (nestedSelections && nestedSelections[key] && nestedSelections[key][sub.id]) || [];
+    const vars = { group: String(sub.name ?? '').trim(), option: String(n.option.name ?? '').trim() };
+    if (subSel.length < sub._min) {
+      if (sub._min === 1 && sub._max === 1) return { key: 'k2.sheet.nestedPickOne', vars };
+      if (sub._min === sub._max) return { key: 'k2.sheet.nestedPickExactly', vars: { ...vars, n: sub._min } };
+      return { key: 'k2.sheet.nestedPickAtLeast', vars: { ...vars, n: sub._min } };
+    }
+    if (subSel.length > sub._max) return { key: 'k2.sheet.nestedPickTooMany', vars: { ...vars, n: sub._max } };
+  }
+  return null;
+}

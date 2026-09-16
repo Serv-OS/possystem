@@ -459,3 +459,28 @@ test('a promo can still be added after a gift card covers the order (decision 6)
     { errorKey: 'k2.code.nothingToPay' },
   );
 });
+
+// v5.8.81: the promo chip shows the server's own English fallback labels in the customer's
+// language (supabase/functions/_shared/promo.ts computeDiscount builds them).
+import { kioskPromoLabel } from './kioskCheckout.js';
+
+test('promo chip labels: server fallbacks become keys, a venue label shows as written', () => {
+  const r = kioskPromoResult('SAVE10', { httpOk: true, body: { valid: true, code_id: 'c', offer: { id: 'o', name: 'Autumn' }, discount: { type: 'percent', value: 10, amount: 2, label: '10% off' } } });
+  assert.deepEqual(r.promo, { code: 'SAVE10', code_id: 'c', offer_id: 'o', label: '10% off', amount: 2, discountType: 'percent', discountValue: 10 });
+  assert.deepEqual(kioskPromoLabel(r.promo), { key: 'k2.code.promoPercentOff', vars: { pct: 10 } });
+  assert.deepEqual(kioskPromoLabel({ label: '12.5% off', discountType: 'percent', discountValue: 12.5 }), { key: 'k2.code.promoPercentOff', vars: { pct: 12.5 } });
+  assert.deepEqual(kioskPromoLabel({ label: '£5.00 off', discountType: 'amount', discountValue: 5 }), { key: 'k2.code.promoAmountOff', vars: { amount: 5 }, money: 'amount' });
+  assert.deepEqual(kioskPromoLabel({ label: 'Offer', discountType: 'amount', discountValue: 0 }), { key: 'k2.code.promoOffer', vars: {} });
+  assert.deepEqual(kioskPromoLabel({ label: 'Free item', discountType: 'free_item', discountValue: 0 }), { key: 'k2.code.promoFreeItem', vars: {} });
+  assert.deepEqual(kioskPromoLabel({ label: 'Free delivery', discountType: 'free_delivery', discountValue: 0 }), { key: 'k2.code.promoFreeDelivery', vars: {} });
+  assert.deepEqual(kioskPromoLabel({ label: '50 bonus points', discountType: 'points_bonus', discountValue: 50 }), { key: 'k2.code.promoBonusPoints', vars: { n: 50 }, plural: true });
+  // A venue's own reward label, or a label that does not match the type and value, stays as written.
+  assert.deepEqual(kioskPromoLabel({ label: 'Happy hour 2 for 1', discountType: 'percent', discountValue: 50 }), { text: 'Happy hour 2 for 1' });
+  assert.deepEqual(kioskPromoLabel({ label: '20% off', discountType: 'percent', discountValue: 10 }), { text: '20% off' });
+  // An older promo object with no type (or none at all) shows its label.
+  assert.deepEqual(kioskPromoLabel({ label: '£5 off' }), { text: '£5 off' });
+  assert.deepEqual(kioskPromoLabel(null), { text: '' });
+  // The fallbacks here are the ones the server builds.
+  const server = fs.readFileSync(new URL('../../supabase/functions/_shared/promo.ts', import.meta.url), 'utf8');
+  for (const s of ['`${v}% off`', '`£${v.toFixed(2)} off`', "'Free item'", "'Free delivery'", '`${v} bonus points`', "'Offer'"]) assert.ok(server.includes(s), s);
+});
