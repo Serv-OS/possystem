@@ -7,6 +7,19 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.87',
+    date: '16 Sep 2026',
+    items: [
+      'Open orders and bar tabs now match on every till. Each till re-checks the server every 15 seconds, when it comes back online, when it is brought back to the front and at every start.',
+      'The rule: an order taken on a till that never reached the server is kept and sent, never lost. An order another till has collected or cleared is removed from every till. Where both have it and this till has nothing unsent, the server\'s copy wins; a change made here that has not been sent yet is sent instead.',
+      'Fix: a till that had missed a change kept old orders for ever, and after a restart uploaded them back to the server, so orders another till had cleared came back. That is why two tills could show different counts.',
+      'A bar tab closed, or an order taken, while a till was offline still reaches the server when it reconnects, and a till only drops a buffered write for a row it had itself deleted or found already gone.',
+      'Old copies of orders that the server no longer has (saved by the previous version, with no unsent write waiting) are cleared at the first check instead of being sent back. Every order and tab taken on a till is sent and saved to disk the moment it is created, and is never treated as an old copy.',
+      'A change to an order the server already has is now an update, never a re insert, so an edit on one till can never bring back an order another till has collected. A bar tab given a round on one till while another till closed it is kept and flagged on the first till, never silently lost.',
+      'The Sunmi and iPad at Provo will agree within 15 seconds of getting this version. Old test orders still open on the server show on both; collect or clear them once and they stay gone.',
+    ],
+  },
+  {
     v: '5.8.86',
     date: '16 Sep 2026',
     items: [

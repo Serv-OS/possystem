@@ -657,6 +657,7 @@ export default function BarSurface() {
                       <span>{tab.rounds.length} round{tab.rounds.length!==1?'s':''}</span>
                     </div>
                     {tab.note&&<div style={{ fontSize:10,color:'#f97316',marginTop:3,fontStyle:'italic',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap' }}>📝 {tab.note}</div>}
+                    {tab._orphan&&<div style={{ fontSize:10,fontWeight:700,color:'#ef4444',marginTop:3 }}>Closed on another till. Unsent changes here: check before charging.</div>}
                   </div>
                 </div>
                 <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginTop:8 }}>

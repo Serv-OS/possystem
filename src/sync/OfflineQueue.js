@@ -121,6 +121,37 @@ export async function queueWrite(op) {
 // ── Replay queue when back online ─────────────────────────────────────────────
 let _replaying = false;
 
+// v5.8.86: a replay guard, registered by QueueReconciler. `before` runs once at the start of a
+// replay (it re-checks the server, so a row another till cleared while this one was offline is
+// dropped here first); `keep(item)` then decides per buffered STATE write whether it still
+// describes a row this till holds. Without it a buffered order_queue upsert replayed after a
+// reconnect re-created an order every other till had already cleared.
+let _guard = null;
+export function setReplayGuard(guard) { _guard = guard && typeof guard === 'object' ? guard : null; }
+
+/**
+ * Keys (ref for order_queue, id for bar_tabs) with a buffered state write in IndexedDB: proof
+ * the row was sent from this till and is still in flight or was refused (a refused or stale
+ * quarantined write still counts: the row is not an old copy, it is unconfirmed). Only a
+ * dismissed item is no evidence. Returns null when the store cannot be read in time, so the
+ * caller judges nothing on that pass instead of treating "unknown" as "nothing buffered".
+ */
+export async function bufferedUpsertKeys(table) {
+  const out = new Set();
+  let timer;
+  const timeout = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('IndexedDB read timed out')), 5000); });
+  try {
+    const items = await Promise.race([dbGetAll(), timeout]);
+    for (const it of items) {
+      if ((it?.type !== 'upsert' && it?.type !== 'update') || it.table !== table || it.status === 'dismissed') continue;
+      const k = table === 'order_queue' ? it.payload?.ref : it.payload?.id;
+      if (k != null) out.add(String(k));
+    }
+  } catch (e) { console.warn('[OfflineQueue] bufferedUpsertKeys:', e?.message || e); return null; }
+  finally { clearTimeout(timer); }
+  return out;
+}
+
 // Replay ONE buffered write with the original per-item error attribution (attempts →
 // retry_pending → permanent after MAX_AUTO_RETRIES). Used directly for deletes and as the
 // per-item fallback when a batched statement errors.
@@ -131,6 +162,14 @@ async function replayItem(supabase, item) {
       if (error) throw error;
     } else if (item.type === 'insert') {
       const { error } = await supabase.from(item.table).insert(item.payload);
+      if (error) throw error;
+    } else if (item.type === 'update') {
+      // v5.8.86: a change to a row the server already confirmed. An update of a row the
+      // server has since removed touches nothing, so it can never re-create it.
+      let q = supabase.from(item.table).update(item.payload);
+      for (const [k, v] of Object.entries(item.match || {})) q = q.eq(k, v);
+      for (const [k, v] of Object.entries(item.notMatch || {})) q = q.neq(k, v);   // e.g. a bar tab: never re-open a closed one
+      const { error } = await q;
       if (error) throw error;
     } else if (item.type === 'delete') {
       let q = supabase.from(item.table).delete();
@@ -164,6 +203,15 @@ export async function replayQueue(supabase) {
   _replaying = true;
 
   try {
+    // The guard re-checks the server first. If that could not complete (offline again, a hung
+    // read, the reconciler not ready) the order and bar tab STATE writes stay queued for the
+    // next replay, in order; everything else (sales, tickets) replays as before.
+    let reconciled = true;
+    if (_guard?.before) {
+      try { reconciled = (await _guard.before()) !== false; }
+      catch (e) { reconciled = false; console.warn('[OfflineQueue] replay guard before() failed:', e?.message || e); }
+    }
+    const isStateWrite = (it) => it.table === 'order_queue' || it.table === 'bar_tabs';
     const items = await dbGetAll();
     // Only replay items that aren't permanently failed or dismissed
     const candidates = items.filter(it => !it.permanentFailure && it.status !== 'dismissed');
@@ -187,6 +235,18 @@ export async function replayQueue(supabase) {
     const isSessionDelete = (it) => it.type === 'delete' && it.table === 'active_sessions';
     const live = [];
     for (const it of candidates) {
+      if (_guard && !reconciled && isStateWrite(it)) continue;   // left queued, order preserved
+      if (_guard?.keep && (it.type === 'upsert' || it.type === 'update') && isStateWrite(it)) {
+        let keep = true;
+        try { keep = _guard.keep(it) !== false; } catch { keep = true; }
+        if (!keep) {
+          // This till deleted the row, or the server had already removed it: replaying the write
+          // would bring it back on every till. Drop the buffered write; nothing is lost.
+          try { await dbDelete(it.id); } catch {}
+          console.warn(`[OfflineQueue] dropped buffered ${it.table} upsert for a row this till finished with:`, it.payload?.ref || it.payload?.id);
+          continue;
+        }
+      }
       if (isSessionDelete(it)) {
         const dage = it.ts ? now - it.ts : Infinity;   // ts-less session-delete → treat as stale
         if (dage > SESSION_DELETE_MAX_AGE_MS) {
@@ -231,6 +291,7 @@ export async function replayQueue(supabase) {
     const opKind = (it) =>
       it.type === 'upsert' ? `u|${it.table}|${it.onConflict || 'id'}`
       : it.type === 'insert' ? `i|${it.table}`
+      : it.type === 'update' ? `x|${it.table}`
       : `d|${it.table}`;
 
     const runs = [];
@@ -242,6 +303,11 @@ export async function replayQueue(supabase) {
     }
 
     for (const run of runs) {
+      if (run.type === 'update') {
+        // Updates replay one by one in queue order (two updates of one row must land in order).
+        for (const it of run.items) await replayItem(supabase, it);
+        continue;
+      }
       if (run.type === 'delete') {
         // Deletes within a run are mutually independent (different keys) or idempotent (same key
         // twice) — safe to fire concurrently. Varied match shapes make a single batched delete unsafe.
