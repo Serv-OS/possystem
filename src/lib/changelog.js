@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.89',
+    date: '16 Sep 2026',
+    items: [
+      'Back Office: the left menu scrolls again, so the last entries in a long group (Print menu under Channels) are no longer hidden behind the footer.',
+    ],
+  },
+  {
     v: '5.8.87',
     date: '16 Sep 2026',
     items: [
