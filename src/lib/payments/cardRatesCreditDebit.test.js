@@ -24,7 +24,7 @@ import {
   COMMISSION_TIERS, DEBIT_TIER_BASE, DEBIT_TIERS, RATE_CARD_TIER_ORDER, FUNDING_POLICY,
   PREPAID_CARDS_PAY, DEFERRED_DEBIT_CARDS_PAY, CHARGE_CARDS_PAY, KEYED_DEBIT_PAYS, BUSINESS_DEBIT_PAYS,
   debitFundingSources, debitTiersApart, tieredCommissionRules, buildTieredProfile, profileTiers, tiersMatch,
-  profileMatchesRules, ratesOnAdyen, ratesChangePreview, rateCardLine, rateCardProblems, tiersFromResolved, unpricedTiers,
+  profileMatchesRules, ratesOnAdyen, ratesChangePreview, planFingerprint, rateCardLine, rateCardProblems, tiersFromResolved, unpricedTiers,
   RATE_ROW_LABELS,
 } from './adyenLink.js';
 
@@ -360,6 +360,54 @@ test('ratesChangePreview: what Send would change, in short plain lines, and noth
   for (const x of [p, same, none, lacking, foreign]) for (const l of x.lines) { assert.doesNotMatch(l, /[–—]|commission/i, l); assert.ok(l.length < 120, l); }
 });
 
+test('planFingerprint: what was previewed is what is sent, and any change to the plan changes it', () => {
+  const plan = (tiers, balanceAccountId = 'BA1') => [
+    { method: 'POST', api: 'management', path: '/merchants/FranPOS_UK/splitConfigurations', body: buildTieredProfile({ description: 'ServOS Provo rates', currency: 'GBP', tiers }) },
+    { method: 'PATCH', api: 'management', path: '/merchants/FranPOS_UK/stores/ST1', body: { splitConfiguration: { splitConfigurationId: 'the id Adyen gives the new rules', balanceAccountId } } },
+  ];
+  const card = { ...FOUR, card_present_debit: { percent: 0.9, fixedPence: 3 } };
+  const a = planFingerprint(plan(card));
+  assert.match(a, /^[0-9a-f]{9,}$/);
+  // the same rates again: the same fingerprint (the send is accepted)
+  assert.equal(planFingerprint(plan({ ...card })), a);
+  // a debit rate edited by one penny, a credit rate edited, the money account changed: a different one (the send is refused)
+  assert.notEqual(planFingerprint(plan({ ...card, card_present_debit: { percent: 0.9, fixedPence: 4 } })), a);
+  assert.notEqual(planFingerprint(plan({ ...card, card_present: { percent: 1.41, fixedPence: 5 } })), a);
+  assert.notEqual(planFingerprint(plan(FOUR)), a);
+  assert.notEqual(planFingerprint(plan(card, 'BA2')), a);
+  // junk never throws
+  assert.equal(typeof planFingerprint(undefined), 'string');
+  const loop = {}; loop.self = loop;
+  assert.equal(typeof planFingerprint(loop), 'string');
+});
+
+test('THE DRY RUN IS EXACT: planSplitOnStore names the very requests createSplitOnStore sends, and sends nothing', async (t) => {
+  const payouts = await load(t, '../../../supabase/functions/_shared/adyenPayouts.ts'); if (!payouts) return;
+  const profile = buildTieredProfile({ description: 'ServOS Provo rates', currency: 'GBP', tiers: { ...FOUR, card_present_debit: { percent: 0.9, fixedPence: 3 } } });
+  const opts = { merchant: 'FranPOS UK', storeId: 'ST 1', balanceAccountId: 'BA1', profile };
+  const planned = payouts.planSplitOnStore(opts);
+  assert.deepEqual(planned, [
+    { method: 'POST', api: 'management', path: '/merchants/FranPOS%20UK/splitConfigurations', body: profile },
+    { method: 'PATCH', api: 'management', path: '/merchants/FranPOS%20UK/stores/ST%201', body: { splitConfiguration: { splitConfigurationId: payouts.NEW_SPLIT_ID_PLACEHOLDER, balanceAccountId: 'BA1' } } },
+  ]);
+  assert.equal(planned[0].body.rules.length, 8);
+  // the real send, against a pretend Adyen that records what it is sent
+  const calls = [];
+  const api = {
+    mgmt: async (method, path, body) => { calls.push({ method, path, body }); return method === 'POST' ? { ok: true, status: 200, data: { splitConfigurationId: 'SC_NEW' } } : { ok: true, status: 200, data: {} }; },
+    bcl: async () => { throw new Error('the split never touches the balance platform'); },
+  };
+  const out = await payouts.createSplitOnStore(api, { ...opts, previousProfileId: 'SC_OLD' });
+  assert.equal(out.ok, true);
+  assert.equal(calls.length, 2);
+  // the same two requests, the placeholder replaced by the id Adyen gave
+  assert.deepEqual(calls[0], { method: planned[0].method, path: planned[0].path, body: planned[0].body });
+  assert.deepEqual(calls[1], { method: planned[1].method, path: planned[1].path, body: { splitConfiguration: { splitConfigurationId: 'SC_NEW', balanceAccountId: 'BA1' } } });
+  // the old profile is handed back for the log and never deleted
+  assert.equal(out.previousProfileId, 'SC_OLD');
+  assert.equal(calls.some((c) => c.method === 'DELETE'), false);
+});
+
 test('labels, the one line summary and the 5 percent and 50 pence guard cover the debit rows', () => {
   assert.deepEqual([...COMMISSION_TIERS], TODAY_TIERS);
   assert.deepEqual([...DEBIT_TIERS], ['card_present_debit', 'card_not_present_debit']);
@@ -490,6 +538,8 @@ test('TS mirror: the debit rules, the reads and the preview answer exactly as th
       assert.deepEqual(ts.ratesChangePreview(null, card, currency), ratesChangePreview(null, card, currency));
       assert.equal(ts.rateCardLine(card, currency), rateCardLine(card, currency));
       assert.deepEqual(ts.debitTiersApart(card), debitTiersApart(card));
+      // the screen never works a fingerprint out, but the two copies must not drift
+      assert.equal(ts.planFingerprint(profile), planFingerprint(profile));
     }
   }
   assert.deepEqual([...ts.RATE_CARD_TIER_ORDER], [...RATE_CARD_TIER_ORDER]);

@@ -914,6 +914,9 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
       rulesNow: Number(p.rulesNow) || 0, rulesNext: Number(p.rulesNext) || 0,
       overLimit: lines(r.overLimit), live: r.live === true, unread: r.profileUnread === true,
       requests: Array.isArray(r.requests) ? r.requests : [],
+      // Handed back on Send: the server works it out again from the rates as
+      // they are then, so what is sent is what was shown here.
+      fingerprint: str(r.fingerprint),
     });
     setOpenId('payouts');
     return { stop: true };
@@ -932,6 +935,7 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
     const confirmOver = !!splitOver || ratePreview.overLimit.length > 0;
     const r = await callAdmin('set_split', {
       environment: target,
+      preview_fingerprint: ratePreview.fingerprint,
       ...(confirmOver ? { over_limit: true } : {}),
       ...(sendNeedsTyped ? { confirm_live: 'LIVE' } : {}),
     });
@@ -941,6 +945,9 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
         setOpenId('payouts');
         return { stop: true };
       }
+      // The rates moved since the preview (or there was none): that preview
+      // is of rates that no longer exist, so it goes and Preview comes back.
+      if (r.changed || r.needs_preview) { setRatePreview(null); setSendTyped(''); setShowSent(false); }
       setSplitOver(null);
       setProblem({ text: str(r.error) || 'The rates could not be sent to Adyen.', detail: str(r.detail) || null });
       return { stop: true };
@@ -1766,7 +1773,7 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
                                 <Btn busy={btnBusy('preview')} disabled={anyBusy} onClick={previewSplit}>Preview</Btn>
                               )}
                               {part.action === 'set_split' && ratePreview && !ratePreview.same && ratePreview.canSend && (
-                                <Primary busy={busy === 'split'} disabled={anyBusy || !sendTypedOk} live={ratePreview.live} onClick={setSplit}>{splitOver ? 'Send these rates anyway' : 'Send rates to Adyen'}</Primary>
+                                <Primary busy={busy === 'split'} disabled={anyBusy || !sendTypedOk || !ratePreview.fingerprint} live={ratePreview.live} onClick={setSplit}>{splitOver ? 'Send these rates anyway' : 'Send rates to Adyen'}</Primary>
                               )}
                               {part.action === 'set_split' && ratePreview && (
                                 <Secondary busy={anyBusy} onClick={() => { setRatePreview(null); setSendTyped(''); setShowSent(false); setSplitOver(null); }}>Not now</Secondary>

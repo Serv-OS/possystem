@@ -239,7 +239,7 @@ import {
   capabilityList, blockedCapabilityNames, buildGoliveSteps, goliveProblems,
   summariseCapabilities, findPushSweep, pickPayoutInstrument, PAYOUT_CAPABILITY,
   buildTieredProfile, tieredCommissionRules, tiersFromResolved, unpricedTiers, tierRowList, rateCardLine, ratesOnAdyen,
-  rateCardProblems, rateTierLabel, ratesChangePreview,
+  rateCardProblems, rateTierLabel, ratesChangePreview, planFingerprint,
   liableBalanceAccountSecretName, liableBalanceAccountSecretNames, ADYEN_LIABLE_BALANCE_ACCOUNT_COLUMN,
   ADYEN_PLATFORM_SETTINGS_TABLE, ADYEN_ROW_BALANCE_PLATFORM_COLUMN,
   platformSettingsKey, platformSettingsPatch, platformSettingsMissingMessage,
@@ -3316,6 +3316,17 @@ Deno.serve(async (req) => {
       }
       const profile = buildTieredProfile({ description: `ServOS ${loc.name ?? 'venue'} rates`, currency: stepCurrency, tiers });
       if (!profile) return json({ ok: false, error: 'No rate is set for any payment type. Set the venue rate card in Processing first.' }, 200);
+      // The exact requests, and their fingerprint. The preview hands the
+      // fingerprint out; the send must hand the SAME one back, worked out
+      // again here from the rates as they are NOW. So what is sent is what
+      // was previewed, and nothing is ever sent without a preview.
+      const requests = planSplitOnStore({ merchant: useMerchant, storeId, balanceAccountId, profile });
+      const fingerprint = planFingerprint(requests);
+      if (!dryRun) {
+        const given = String(body.preview_fingerprint ?? '').trim();
+        if (!given) return json({ ok: false, needs_preview: true, error: 'Press Preview first, then send the rates.' }, 200);
+        if (given !== fingerprint) return json({ ok: false, changed: true, error: 'The rates changed since the preview. Press Preview again.' }, 200);
+      }
       // THE DRY RUN STOPS HERE. Everything above is a check or a GET; the
       // profile the STORE carries now is read (one more GET) and set against
       // what would be sent. Nothing is created, patched, stamped or deleted.
@@ -3329,7 +3340,6 @@ Deno.serve(async (req) => {
           profileUnread = pr.error;
         }
         const preview = ratesChangePreview(profileNow, rateTiers, stepCurrency);
-        const requests = planSplitOnStore({ merchant: useMerchant, storeId, balanceAccountId, profile });
         logLink('preview_split', loc.id, { environment: env, region, merchant: useMerchant, storeId, balanceAccountId, profileIdNow, rulesNow: preview.rulesNow, rulesNext: preview.rulesNext, same: preview.same });
         return json({
           ok: true, dry_run: true, sent: false,
@@ -3341,7 +3351,7 @@ Deno.serve(async (req) => {
           preview: profileUnread ? { ...preview, same: false, lines: ['The rates on Adyen now could not be read, so what changes cannot be shown.'] } : preview,
           overLimit: checked.overLimit.map((e) => e.text),
           tiers: rateTiers, line: rateCardLine(rateTiers, stepCurrency),
-          requests,
+          requests, fingerprint,
         });
       }
       const previousProfileId = String(maa?.split_profile_id ?? '').trim() || storeNow?.splitConfigurationId || null;

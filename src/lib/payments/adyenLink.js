@@ -1576,6 +1576,25 @@ export function ratesChangePreview(profileNow, venueTiers, currency = 'GBP') {
   return { same: on.matches, canSend: next.rules.length > 0, rulesNow: on.rules, rulesNext: next.rules.length, rows, lines };
 }
 
+// WHAT WAS PREVIEWED IS WHAT IS SENT (17 Sep 2026). The dry run answers a
+// short fingerprint of the exact requests it showed; the send must hand the
+// same one back, and the server works it out again from the rates as they are
+// at that moment. A rate edited between the preview and the send (another
+// admin, another tab) changes the fingerprint, so the send is refused in
+// plain words instead of writing rates nobody looked at. It also means a send
+// is only possible after a preview. Not a secret and not security: FNV-1a over
+// the JSON, with the length, only to tell two plans apart.
+export function planFingerprint(plan) {
+  let text;
+  try { text = JSON.stringify(plan ?? null) ?? 'null'; } catch { text = 'unreadable'; }
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return `${h.toString(16).padStart(8, '0')}${text.length.toString(16)}`;
+}
+
 // The line for a found store AND a found business account that the venue row
 // does not name yet (link_all, 10 Sep 2026): one click saves every id.
 export const DETAILS_NOT_SAVED_DETAIL = 'Adyen holds the venue’s details, they are not saved on the venue yet.';
