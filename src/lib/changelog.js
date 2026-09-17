@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.1',
+    date: '17 Sep 2026',
+    items: [
+      'You can now connect ezCater yourself. Back Office, Channels, 3rd Party orders has a Connect ezCater card: paste the code ezCater gave you, then pick which of their caterer locations belongs to this venue.',
+      'Each caterer has its own switches for taking orders automatically and for being active, and there is a place to record that ezCater have switched accept and reject on for you.',
+      'Testing first: leave the API address box empty for the real ezCater. If they gave you a test (sandbox) address, paste it in and the connection is labelled Sandbox in amber so it is never mistaken for the live one.',
+      'The address we listen on for their orders is shown with a copy button, so you can give it to ezCater if they ask.',
+    ],
+  },
+  {
     v: '5.9.0',
     date: '17 Sep 2026',
     items: [
