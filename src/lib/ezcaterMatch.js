@@ -24,10 +24,18 @@
 //
 // What ezCater sends on a line, and how much of it we can trust as a key:
 //
-//   posItemId          STABLE, but only ever set when somebody pushed a menu
-//                      through menuCreate. On a Partner Portal menu it is null.
-//                      When it IS set it already names our item, so it needs no
-//                      link row at all.
+//   posItemId          STABLE, because it is OUR id as ezCater holds it. It
+//                      carries whatever was put on their side against that
+//                      product: our menu item id, or our own short ITEM CODE
+//                      (menu_items.item_code, FLATWHITE, CAESARSAL). Either
+//                      already names our item, so it needs no link row at all,
+//                      and a code is the one a person could enter by hand.
+//                      HOW IT GETS THERE IS NOT SETTLED. The only documented
+//                      writer is the Menus API menuCreate, which we do not have
+//                      permission for; whether a venue can type one into the
+//                      Partner Portal is documented nowhere and only ezCater
+//                      can answer. On a Partner Portal menu it is null today,
+//                      so nothing here may require it.
 //   uuid               the ORDER LINE, not the product. Different per order.
 //                      Never a match key.
 //   menuItemSizeId     ezCater's own menu side id. Every doc placeholder for it
@@ -479,6 +487,74 @@ export function indexLinks(links) {
 }
 
 // ----------------------------------------------------------------------------
+// Item codes. Our own short id, come back to us on their line.
+// ----------------------------------------------------------------------------
+
+/**
+ * The comparing form of an item code: trimmed and upper case, nothing else.
+ *
+ * Case and stray spaces are the only differences forgiven. Punctuation is NOT
+ * stripped, because this runs against text a partner typed: dropping it could
+ * make their "M-123" equal our "M123", and a wrong match here routes the wrong
+ * food. src/lib/itemCode.js itemCodeKey is the same rule for the app side.
+ */
+export function itemCodeKey(value) {
+  if (value === null || value === undefined) return '';
+  return String(value).trim().toUpperCase();
+}
+
+/**
+ * Our items indexed by their item code: Map('FLATWHITE' -> { itemId, code }).
+ *
+ * Takes our menu (itemCode or item_code on each row) or an index already built,
+ * which is how the option arm gets one without holding the item list.
+ *
+ * A code that somehow names TWO of our items is dropped from the index
+ * entirely. The database has a unique index that makes that impossible, so if
+ * it ever happens something is wrong, and "certain" is exactly what such a code
+ * is not: the line falls through to the ordinary rules and a person decides.
+ */
+export function indexItemCodes(ourItems) {
+  if (ourItems instanceof Map) return ourItems;
+  const idx = new Map();
+  const clash = [];
+  for (const it of Array.isArray(ourItems) ? ourItems : []) {
+    if (!it) continue;
+    const id = it.id != null ? String(it.id) : '';
+    const raw = it.itemCode !== undefined && it.itemCode !== null ? it.itemCode : it.item_code;
+    const key = itemCodeKey(raw);
+    if (!id || !key) continue;
+    const prev = idx.get(key);
+    if (prev) {
+      if (prev.itemId !== id) clash.push(key);
+      continue;
+    }
+    idx.set(key, { itemId: id, code: key });
+  }
+  for (const k of clash) idx.delete(k);
+  return idx;
+}
+
+/**
+ * The item one of their ids names, when that id is one of our codes. Returns
+ * { itemId, code } or null. An unknown code is simply null: it changes nothing
+ * and the line goes on to the ordinary rules.
+ */
+export function findItemCodeMatch(codes, value) {
+  const key = itemCodeKey(value);
+  if (!key) return null;
+  const idx = codes instanceof Map ? codes : indexItemCodes(codes);
+  const hit = idx.get(key);
+  return hit ? { itemId: hit.itemId, code: hit.code } : null;
+}
+
+/** Their posItemId on a line or a customization, as a string, or ''. */
+function theirPosId(line) {
+  if (!line || typeof line !== 'object') return '';
+  return line.itemId != null ? String(line.itemId) : '';
+}
+
+// ----------------------------------------------------------------------------
 // autoLinkDecision
 // ----------------------------------------------------------------------------
 
@@ -538,10 +614,15 @@ function sizeClash(theirName, ourItem) {
  *   none     nothing close enough to offer
  *
  * The order is the whole point:
+ *   0. their posItemId IS ONE OF OUR ITEM CODES. Certain, and it outranks
+ *      everything below, including a saved link: a code only comes back because
+ *      it was put on their side against that product, which is a more direct
+ *      answer than a link guessed from a name months ago. An unknown code is
+ *      not a refusal, it is simply not a match, and rule 1 carries on.
  *   1. an existing link wins. A person already decided, or we already decided
  *      and nobody corrected it.
  *   2. a posItemId that names a real item of ours wins next. That id is only
- *      ever there because we put it there through menuCreate.
+ *      ever there because somebody put it there, through menuCreate or by hand.
  *   3. ONE exact normalised name, and no other exact name, auto links.
  *   4. anything else only suggests.
  *
@@ -556,11 +637,24 @@ export function autoLinkDecision(theirLine, ourItems, existingLinks, opts) {
   const minScore = Number.isFinite(o.minScore) ? o.minScore : DEFAULT_MIN_SCORE;
   const list = Array.isArray(ourItems) ? ourItems : [];
 
-  if (kind === 'option') return autoLinkOption(theirLine, list, existingLinks, minScore);
+  if (kind === 'option') {
+    return autoLinkOption(theirLine, list, existingLinks, minScore, o.itemCodes);
+  }
 
   const their = theirParts(theirLine);
   const known = idsOf(list);
   let stale = false;
+
+  // 0. their posItemId is one of our item codes. Nothing outranks this.
+  const coded = findItemCodeMatch(o.itemCodes !== undefined ? o.itemCodes : list, theirPosId(theirLine));
+  if (coded) {
+    return {
+      action: 'linked',
+      itemId: coded.itemId,
+      reason: 'their menu has our item code',
+      source: 'itemCode',
+    };
+  }
 
   // 1. an existing link. Today's key first, then the older size-dropping key,
   // so work saved before the key kept the size still routes.
@@ -701,8 +795,18 @@ export function matchOptions(theirMod, ourGroups, opts) {
   }));
 }
 
-/** The option arm of autoLinkDecision. Same four rules, option ids instead. */
-function autoLinkOption(theirMod, ourGroups, existingLinks, minScore) {
+/**
+ * The option arm of autoLinkDecision. Same rules, option ids instead.
+ *
+ * itemCodes has to be handed in here: this arm is given our modifier GROUPS,
+ * not our menu items, so it cannot build the code index itself.
+ *
+ * A customization carries an id of its own, posCustomizationId, which the
+ * mapper puts on the same itemId field as a line's posItemId. When it holds one
+ * of our codes, the option is matched to that product, and to one of our
+ * options as well if an option points at it.
+ */
+function autoLinkOption(theirMod, ourGroups, existingLinks, minScore, itemCodes) {
   const their = theirParts(theirMod);
   const flat = flattenOptions(ourGroups);
   const byId = new Map();
@@ -711,6 +815,30 @@ function autoLinkOption(theirMod, ourGroups, existingLinks, minScore) {
 
   const hit = findLink(indexLinks(existingLinks), theirMod, 'option');
   const link = hit ? hit.link : null;
+
+  // 0. their id is one of our item codes. Certain, and it outranks the link.
+  const coded = findItemCodeMatch(itemCodes, theirPosId(theirMod));
+  if (coded) {
+    let owner = null;
+    for (const e of flat) {
+      if (e.option && e.option.itemId != null && String(e.option.itemId) === coded.itemId) { owner = e; break; }
+    }
+    // The code names the PRODUCT. When one of our options points at it, that is
+    // the option. When none does, an option a person already chose is kept:
+    // knowing which product it is does not unknow which option it is.
+    const savedOption = link && link.optionId ? String(link.optionId) : null;
+    const optionId = owner ? owner.optionId : savedOption;
+    const inMenu = optionId ? byId.get(optionId) : null;
+    return {
+      action: 'linked',
+      optionId: optionId || null,
+      groupId: owner ? owner.groupId : (inMenu ? inMenu.groupId : null),
+      itemId: coded.itemId,
+      reason: 'their menu has our item code',
+      source: 'itemCode',
+    };
+  }
+
   if (link && link.optionId) {
     const id = String(link.optionId);
     const hit = byId.get(id);
@@ -771,6 +899,7 @@ function autoLinkOption(theirMod, ourGroups, existingLinks, minScore) {
  * Fill itemId in on mapped ezCater lines from saved links, and say per line
  * whether it matched and where the match came from.
  *
+ *   source 'itemCode'  their id is one of our item codes
  *   source 'manual'    a person linked it
  *   source 'auto'      we linked it and nobody corrected it
  *   source 'posItemId' ezCater already carried our id on the line
@@ -778,14 +907,19 @@ function autoLinkOption(theirMod, ourGroups, existingLinks, minScore) {
  *
  * A link BEATS posItemId, the same order autoLinkDecision uses: a person who
  * corrected a bad id must not have their correction quietly overruled on the
- * next order.
+ * next order. AN ITEM CODE BEATS BOTH, also the same order: the code came back
+ * because it was set against that product on their side.
+ *
+ * itemCodes is optional. Without it there is no code rule, which is exactly how
+ * this behaved before codes existed.
  *
  * Does not mutate the lines it is given. Does not know our menu, so it cannot
  * tell that a linked item was since deleted; autoLinkDecision is where that is
  * checked, with the menu in hand.
  */
-export function applyLinks(lines, links) {
+export function applyLinks(lines, links, itemCodes) {
   const idx = indexLinks(links);
+  const codes = indexItemCodes(itemCodes);
   const list = Array.isArray(lines) ? lines : [];
 
   return list.map((line) => {
@@ -798,6 +932,11 @@ export function applyLinks(lines, links) {
     if (link && link.menuItemId) {
       itemId = String(link.menuItemId);
       source = link.source === 'auto' ? 'auto' : 'manual';
+    }
+    const coded = findItemCodeMatch(codes, theirPosId(src));
+    if (coded) {
+      itemId = coded.itemId;
+      source = 'itemCode';
     }
 
     const mods = (Array.isArray(src.mods) ? src.mods : []).map((mod) => {
@@ -812,6 +951,14 @@ export function applyLinks(lines, links) {
         if (mLink.optionId) mOptionId = String(mLink.optionId);
         if (mLink.menuItemId) mItemId = String(mLink.menuItemId);
         mSource = mLink.source === 'auto' ? 'auto' : 'manual';
+      }
+      // A code on a customization names one of our PRODUCTS, which is what
+      // stock and 86 key on. Any option id a saved link gave is kept: knowing
+      // which of our options it is does not contradict knowing the product.
+      const mCoded = findItemCodeMatch(codes, theirPosId(m));
+      if (mCoded) {
+        mItemId = mCoded.itemId;
+        mSource = 'itemCode';
       }
 
       return {

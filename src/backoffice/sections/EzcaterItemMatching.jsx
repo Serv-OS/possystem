@@ -27,6 +27,9 @@ import {
   ourItemsFrom, ourGroupsFrom, suggestionsFor, searchOurItems,
   matchedLabel, saveBody, applySaved, isMatchingOff,
 } from '../../lib/ezcaterItemRows';
+// v5.8.100: hand the venue's item codes over, so ezCater can put them on their
+// side and this screen stops having anything to ask about.
+import { itemCodeRows, itemCodesText, isMissingItemCodeColumn } from '../../lib/itemCode';
 
 // Same vocabulary as HubRise.jsx, the section this sits inside. No new tokens.
 const S = {
@@ -151,9 +154,38 @@ export default function EzcaterItemMatching({ locationId }) {
   const [tab, setTab] = useState('item');
   const [busy, setBusy] = useState('');
   const [msg, setMsg] = useState(null);
+  const [codesOn, setCodesOn] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   const ourItems = useMemo(() => ourItemsFrom(rawItems), [rawItems]);
   const ourGroups = useMemo(() => ourGroupsFrom(rawGroups), [rawGroups]);
+  // Straight off the table rows, not ourItems: the codes live on the raw rows.
+  const codeRows = useMemo(() => (codesOn ? itemCodeRows(rawItems) : []), [codesOn, rawItems]);
+
+  const copyCodes = useCallback(async () => {
+    const text = itemCodesText(rawItems);
+    if (!text) return;
+    let ok = false;
+    try {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    } catch {
+      // A locked down browser or WebView refuses the clipboard API. The old way
+      // still works there, and a failed copy must say so rather than look done.
+      try {
+        const box = document.createElement('textarea');
+        box.value = text;
+        box.style.position = 'fixed';
+        box.style.opacity = '0';
+        document.body.appendChild(box);
+        box.select();
+        ok = document.execCommand('copy');
+        document.body.removeChild(box);
+      } catch { ok = false; }
+    }
+    if (ok) { setCopied(true); setTimeout(() => setCopied(false), 2000); }
+    else setMsg({ kind: 'err', text: 'We could not copy that. Select the codes in the item editor instead.' });
+  }, [rawItems]);
 
   const load = useCallback(async (id) => {
     if (!id) { setLoading(false); return; }
@@ -171,11 +203,22 @@ export default function EzcaterItemMatching({ locationId }) {
       // column that does not exist fails the WHOLE select, which is how this
       // picker shipped empty with every matched row reading "Deleted from our
       // menu". ourItemsFrom turns pricing into the number the matcher wants.
-      const [links, itemsRes, groupsRes] = await Promise.all([
+      // item_code may not exist yet (its migration is run by hand), and a select
+      // naming a column that does not exist fails the WHOLE select. So it is
+      // asked for, and asked for again without it if that is why it failed.
+      const readItems = (columns) => supabase.from('menu_items').select(columns).eq('location_id', id);
+      const [links, firstItems, groupsRes] = await Promise.all([
         ezcaterItemsList(id),
-        supabase.from('menu_items').select('id,name,menu_name,pricing,archived').eq('location_id', id),
+        readItems('id,name,menu_name,pricing,archived,item_code'),
         supabase.from('modifier_groups').select('id,name,options').eq('location_id', id),
       ]);
+      let itemsRes = firstItems;
+      let haveCodes = !firstItems?.error;
+      if (firstItems?.error && isMissingItemCodeColumn(firstItems.error)) {
+        haveCodes = false;
+        itemsRes = await readItems('id,name,menu_name,pricing,archived');
+      }
+      setCodesOn(haveCodes);
       if (links && links.enabled === false) { setEnabled(false); setRows([]); }
       else { setEnabled(true); setRows(rowsFrom(links?.links)); }
       setRawItems(itemsRes?.data || []);
@@ -256,6 +299,29 @@ export default function EzcaterItemMatching({ locationId }) {
       ) : (
         <>
           {msg && <div style={S.note(msg.kind)}>{msg.text}</div>}
+
+          {/* v5.8.100: hand the codes over. Nothing here is required: an item
+              with no code still arrives, it just has to be matched by name. */}
+          {codesOn && (
+            <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--bdr)' }}>
+              <div style={S.row}>
+                <button
+                  style={{ ...S.btnGhost, ...(codeRows.length ? {} : { opacity: 0.5, cursor: 'default' }) }}
+                  disabled={!codeRows.length}
+                  onClick={copyCodes}>
+                  {copied ? 'Copied' : 'Copy item codes'}
+                </button>
+                <span style={{ fontSize: 12.5, color: 'var(--t3)' }}>
+                  {codeRows.length === 1 ? '1 product has a code' : codeRows.length + ' products have a code'}
+                </span>
+              </div>
+              <div style={{ ...S.sub, marginTop: 6 }}>
+                {codeRows.length
+                  ? 'Send this list to ezCater and ask them to put each code on that item as its POS id. Their orders then name the product for us and there is nothing left to match by hand.'
+                  : 'Give a product a code first: Menu, open the item, Item code. Then send the list to ezCater to put on their side.'}
+              </div>
+            </div>
+          )}
 
           <div style={{ ...S.row, marginTop: 14 }}>
             <button style={S.tab(tab === 'item')} onClick={() => setTab('item')}>

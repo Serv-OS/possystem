@@ -43,6 +43,10 @@ create table if not exists menu_items (
   menu_name text,
   receipt_name text,
   kitchen_name text,
+  -- Short code we give a partner for this product (ezCater POS id), unique per
+  -- location. Added to live databases by 20260917_OPS_menu_item_code.sql, which
+  -- also carries the unique index. Optional everywhere.
+  item_code text,
   description text default '',
   type text default 'simple',
   cat text,

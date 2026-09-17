@@ -49,6 +49,11 @@ import { categoryVisibleInMenu, categoriesOnNoMenu } from '../../lib/menuMembers
 // Price boxes select their whole value on the first click or Tab, so typing
 // replaces the number instead of landing next to the 0.
 import { selectOnFocus } from '../../lib/selectOnFocus';
+// v5.8.100: the short code we give ezCater and other partners for a product.
+import {
+  ITEM_CODE_MAX, ITEM_CODE_HELP, checkItemCode, codeOf, loadItemCodes,
+  suggestItemCode, takenItemCodes,
+} from '../../lib/itemCode';
 
 // Dietary tags — stored on menu_items.tags (jsonb). The tag id is what the print
 // menu + digital menu board map to a GF/V/VG/DF badge (see printMenu.js DIET map),
@@ -220,6 +225,57 @@ async function archiveVariantRow(id) {
 // the item default, so a venue that never sets one taxes drive thru as takeaway.
 const ORDER_TYPES_TAX = ['dine-in', 'takeaway', 'delivery', 'bar', 'counter', 'drive-thru'];
 const ORDER_TYPE_TAX_LABEL = { 'dine-in':'Dine-in', takeaway:'Takeaway', delivery:'Delivery', bar:'Bar', counter:'Counter', 'drive-thru':'Drive thru' };
+
+// ── Item codes (v5.8.100) ────────────────────────────────────────────────────
+// Every product's code at this venue, read once and shared by every editor that
+// opens. Two reasons it is read from the table rather than taken off the store:
+//
+//   1. FEATURE DETECT. menu_items.item_code does not exist until Peter runs
+//      20260917_OPS_menu_item_code.sql by hand. If the read says the column is
+//      missing, the field is simply not rendered and nothing else changes.
+//   2. ARCHIVED PRODUCTS STILL HOLD THEIR CODE. The database's unique index
+//      does not care that a product was archived, and the store only holds live
+//      ones, so a duplicate check against the store alone would accept a code
+//      the database then refuses.
+let _itemCodes = { locId: null, at: 0, supported: null, codes: new Map() };
+const ITEM_CODES_TTL_MS = 60000;
+
+function useItemCodes() {
+  const [state, setState] = useState(() => ({ supported: _itemCodes.supported, codes: _itemCodes.codes }));
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      // Local dev has no Supabase at all, so there is nothing to detect.
+      if (isMock || !supabase) { if (!cancelled) setState({ supported: false, codes: new Map() }); return; }
+      const locId = getActiveLocationSync();
+      if (!locId) { if (!cancelled) setState({ supported: false, codes: new Map() }); return; }
+      const fresh = _itemCodes.locId === locId
+        && _itemCodes.supported !== null
+        && (Date.now() - _itemCodes.at) < ITEM_CODES_TTL_MS;
+      if (fresh) { if (!cancelled) setState({ supported: _itemCodes.supported, codes: _itemCodes.codes }); return; }
+      const r = await loadItemCodes(supabase, locId);
+      if (cancelled) return;
+      _itemCodes = { locId, at: Date.now(), supported: r.supported, codes: r.codes };
+      setState({ supported: r.supported, codes: r.codes });
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // What we just saved, so the next editor opened in this session sees it. The
+  // cache is also marked stale, because the database is the real answer: if it
+  // refused the code as a duplicate the save kept everything else, and the next
+  // read shows the truth rather than our optimistic copy.
+  const remember = useCallback((id, code) => {
+    if (!id) return;
+    if (code) _itemCodes.codes.set(String(id), code);
+    else _itemCodes.codes.delete(String(id));
+    _itemCodes = { ..._itemCodes, at: 0, codes: new Map(_itemCodes.codes) };
+    setState({ supported: _itemCodes.supported, codes: _itemCodes.codes });
+  }, []);
+
+  return { supported: state.supported === true, codes: state.codes, remember };
+}
 
 function TaxSection({ item, onUpdate, markBOChange }) {
   const { taxRates, taxProfiles } = useStore();
@@ -2303,6 +2359,42 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
     setNameDraft(null);
   };
 
+  // ── Item code (v5.8.100) ───────────────────────────────────────────────────
+  // The code we give ezCater for this product. Draft buffered like
+  // the name above: committed on blur or Enter, so a duplicate is refused with
+  // one plain line instead of a write per keystroke. RENAMING A PRODUCT NEVER
+  // TOUCHES THE CODE. It is only ever written from this box.
+  const { supported: codesOn, codes: codesById, remember: rememberCode } = useItemCodes();
+  // The table first, the item in memory second: a product loaded from an older
+  // config snapshot can carry a stale code, and the read is the truth.
+  const savedCode = codesById.get(String(item.id)) || codeOf(item) || '';
+  const [codeDraft, setCodeDraft] = useState(null);
+  const [codeMsg, setCodeMsg] = useState(null);
+  useEffect(() => { setCodeDraft(null); setCodeMsg(null); }, [item.id]);
+
+  const applyCode = (raw) => {
+    const checked = checkItemCode(raw, { items: menuItems, codesById, itemId: item.id });
+    if (checked.error) { setCodeDraft(raw); setCodeMsg(checked.error); return; }
+    const next = checked.code || '';
+    if (next === savedCode) { setCodeDraft(null); setCodeMsg(null); return; }
+    f('itemCode', checked.code);
+    rememberCode(item.id, checked.code);
+    setCodeDraft(null);
+    setCodeMsg(null);
+  };
+
+  const commitCode = () => { if (codeDraft != null) applyCode(codeDraft); };
+
+  // Suggest SAVES as well as fills. Pressing it blurs the box, so a suggestion
+  // that only filled it would sit there unsaved until the operator clicked back
+  // in and out again, which nobody would do.
+  const suggestCode = () => {
+    const taken = takenItemCodes(menuItems, codesById);
+    const picked = suggestItemCode(item.menuName || item.name, taken, item.id);
+    if (!picked) { setCodeMsg('Name the product first, then press Suggest.'); return; }
+    applyCode(picked);
+  };
+
   // ── Variants ───────────────────────────────────────────────────────────────
   const variants = menuItems.filter(c => c.parentId===item.id && !c.archived)
     .sort((a,b) => (a.sortOrder??999)-(b.sortOrder??999));
@@ -2470,6 +2562,34 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
               <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
                 <div><span style={lbl}>Receipt name</span><input style={inp} value={item.receiptName||''} onChange={e=>f('receiptName',e.target.value)} placeholder="Same as above"/></div>
                 <div><span style={lbl}>Kitchen / KDS</span><input style={inp} value={item.kitchenName||''} onChange={e=>f('kitchenName',e.target.value)} placeholder="Same as above"/></div>
+              </div>
+            )}
+
+            {/* v5.8.100: Item code. Hidden entirely until the column exists. */}
+            {codesOn && (
+              <div>
+                <span style={lbl}>Item code</span>
+                <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+                  <input
+                    style={{ ...inp, flex:1, letterSpacing:'.06em', fontWeight:700,
+                      ...(codeMsg ? { border:'1.5px solid var(--red-b)' } : {}) }}
+                    value={codeDraft ?? savedCode}
+                    maxLength={ITEM_CODE_MAX}
+                    onChange={e=>{ setCodeDraft(e.target.value.toUpperCase()); setCodeMsg(null); }}
+                    onBlur={commitCode}
+                    onKeyDown={e=>{ if (e.key==='Enter') e.currentTarget.blur(); }}
+                    placeholder="e.g. FLATWHITE"
+                    aria-label="Item code"/>
+                  <button onClick={suggestCode}
+                    style={{ padding:'8px 12px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', fontSize:11, fontWeight:700,
+                      border:'1px solid var(--bdr2)', background:'var(--bg3)', color:'var(--t1)', flexShrink:0 }}>
+                    Suggest
+                  </button>
+                </div>
+                <div style={{ fontSize:11, color:'var(--t4)', marginTop:4, lineHeight:1.4 }}>{ITEM_CODE_HELP}</div>
+                {codeMsg && (
+                  <div style={{ fontSize:11, color:'var(--red)', marginTop:4, fontWeight:600 }}>{codeMsg}</div>
+                )}
               </div>
             )}
 

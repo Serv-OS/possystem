@@ -266,6 +266,25 @@ test('line items carry customizations, posItemId, quantities and instructions', 
   assert.deepEqual(lunch.mods, []);
 });
 
+test('a customization id is posCustomizationId, and posItemId is still read', () => {
+  // OrderItemCustomization has exactly six fields and posItemId is NOT one of
+  // them: the id on a customization is posCustomizationId, "POS ID
+  // corresponding with a specific customization in the caterer's menu". Both
+  // spellings are read, so the code rule works whichever one a query brings
+  // back, and neither means null, exactly as before.
+  const [line] = orderItemsToLines([{
+    uuid: 'oi-9', name: 'Pizza', quantity: 1, totalInSubunits: money(1000),
+    customizations: [
+      { customizationId: 'ez-c-1', name: 'Parmigiano', customizationTypeName: 'Cheese', quantity: 1, posCustomizationId: 'CHEESE1' },
+      { customizationId: 'ez-c-2', name: 'Old Shape', customizationTypeName: 'Cheese', quantity: 1, posItemId: 'OLD1' },
+      { customizationId: 'ez-c-3', name: 'Nothing', customizationTypeName: 'Cheese', quantity: 1 },
+    ],
+  }]);
+  assert.equal(line.mods[0].itemId, 'CHEESE1');
+  assert.equal(line.mods[1].itemId, 'OLD1');
+  assert.equal(line.mods[2].itemId, null, 'no id is the ordinary case and must stay null');
+});
+
 test('orderItemsToLines survives a missing or empty cart', () => {
   assert.deepEqual(orderItemsToLines(undefined), []);
   assert.deepEqual(orderItemsToLines(null), []);

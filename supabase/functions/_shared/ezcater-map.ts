@@ -220,7 +220,13 @@ export function orderItemsToLines(orderItems: any): any[] {
         return {
           label: String(c?.name || 'Option'),
           groupLabel: c?.customizationTypeName ? String(c.customizationTypeName) : null,
-          itemId: c?.posItemId ? String(c.posItemId) : null,
+          // v5.8.100: a CUSTOMIZATION's own id is posCustomizationId in the
+          // schema ("POS ID corresponding with a specific customization in the
+          // caterer's menu"), not posItemId. Both are read so this is right
+          // whichever one the query brings back, and null when neither does,
+          // which is the same as today.
+          itemId: c?.posCustomizationId ? String(c.posCustomizationId)
+            : (c?.posItemId ? String(c.posItemId) : null),
           ezItemId: c?.uuid ? String(c.uuid) : null,
           qty: cQty,
           price: cMoney.unit,
