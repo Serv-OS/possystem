@@ -116,6 +116,33 @@ Because orders sit for days they must be excluded from the live queue by the exi
 
 ---
 
+## Item matching (no Menus API)
+
+We have the Orders API but **not** the Menus API, so the venue builds its ezCater menu by hand in the Partner Portal and their order lines arrive with `posItemId = null`. `itemId` is what KDS routing, 86, stock depletion and product reporting key on, so an unmatched line is a plain text ticket: no station, no stock, no product mix.
+
+**The key is the normalised name.** Nothing else on a line can carry a link:
+
+| field | can it key a link |
+|---|---|
+| `posItemId` | stable, but only ever set by `menuCreate`, which we do not have. When it IS set it already names our item. |
+| `orderItems[].uuid` | the order LINE, not the product. New every order. **Never a key.** |
+| `menuItemSizeId` | ezCater's menu side id. Every doc placeholder is written `ezcater-menu-version-...` and a publish returns a new `menuUuid`, so it looks scoped to a menu VERSION. Unpromised, so unsafe. |
+| `name` | free text the venue typed. Stable until they retype it. **This is the key.** |
+
+The cost is visible: rename the item on ezCater and the match must be made again. `ez_name` and `ez_group` keep the venue's own spelling verbatim so a screen can show what was actually seen.
+
+**The rules** live in `src/lib/ezcaterMatch.js`, mirrored for the edge function in `supabase/functions/_shared/ezcaterMatch.ts`, held together by `src/lib/ezcaterMatchParity.test.js`:
+
+- `normaliseItemName`: lower case, no punctuation, no bracketed suffix, no catering noise (`per person`, `serves 10`), no trailing size or container word (`Large`, `Half Pan`, `Full Tray`). Never strips a name away to nothing.
+- `scoreMatch` / `suggestMatches`: a ranked shortlist for a person to pick from, with a short plain reason ("same name", "3 of 4 words match"). Deterministic, ties broken by name.
+- `autoLinkDecision`: four rules in order: an existing link wins, then a `posItemId` that names a real item of ours, then ONE exact normalised name with no other exact match. **It never guesses between two items that match equally well**, which is the "Caesar Salad Small" and "Caesar Salad Large" case.
+- `matchOptions`: the same against our modifier options, their `customizationTypeName` against our group name.
+- `buildLinkKey` / `applyLinks` / `countMatches`: the read path both the app and the webhook share.
+
+**Table:** `ezcater_item_links`, keyed `(location_id, kind, ez_key)`, service role only like the rest. Migration `supabase/migrations/20260917_OPS_ezcater_item_links.sql`, Peter runs it by hand. The app works before it runs: a missing table reads as "no links", which is exactly today's behaviour.
+
+---
+
 ## Phases
 
 - **Phase 0, commercial.** Get an API user, a token, confirmation that accept and reject is enabled for the brand, and an answer on test access. Nothing is testable without this.
@@ -143,3 +170,6 @@ Because orders sit for days they must be excluded from the live queue by the exi
 10. Actual commission, and what `pointOfSaleIntegrationFee` represents.
 11. **Get the tax position in writing:** confirm the operator treats `salesTax` minus `salesTaxRemittance` as their own liability, that we should not recompute, and get the current facilitator state list since it changes.
 12. Is there a per settlement tax statement we can reconcile against, API or portal only?
+13. **Can a venue type our item id into the Partner Portal by hand,** so `posItemId` arrives on a menu we never pushed? Nothing in 78 doc pages says either way. A yes removes the need for name matching entirely.
+14. **Is `menuItemSizeId` stable across a menu republish,** or is it scoped to the menu version the placeholders suggest? A yes gives us a proper id to key links on instead of the name.
+15. Does `orderItems[].uuid` change when a customer modifies an order? Undocumented, and it decides whether a line can be diffed across modifications.
