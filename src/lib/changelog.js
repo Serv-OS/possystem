@@ -7,6 +7,20 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.95',
+    date: '17 Sep 2026',
+    items: [
+      'Sub items no longer switch Sold alone on by themselves. Every save used to write Sold alone as on for an item that had never been set, so after a refresh a sub item showed as its own product on the till, kiosk and online. A new sub item now stays off until someone turns it on. Turning an item into a sub item turns Sold alone off; turning it back turns it on so it still sells online. Nothing already saved was changed.',
+      'The sub item editor now has its own Sold alone switch. When a sub item is sold alone, a plain line says it will show as its own product, so a wrong one is easy to spot.',
+      'Allergens on kiosk options now come from every sub item with that name, not only sold alone ones, so a new option only sub item still warns about its allergens. 86 and stock on kiosk, online and MPOS options work the same way. Pictures and descriptions still come only from sold alone sub items.',
+      'Sharing a product to another venue now carries its Sold alone setting. Before, a shared product arrived switched off at the other venue and was hidden from online ordering and the delivery apps.',
+      'Price boxes in Back Office select their contents when you click or tab into them, so typing replaces the 0 instead of making 05. A second click places the cursor as normal. An emptied Base price shows empty with a grey 0.00 and still saves as free, as before.',
+      'Printer errors now say what to do. "Host is down" and similar messages become plain steps: the printer address that was tried, check it is a network (LAN or Wi-Fi) model because Bluetooth and USB models cannot print over the network, print its self test page to confirm the address, check this device is on the same network, and on an iPad that Local Network is switched on for ServOS POS. The original message stays underneath for support.',
+      'Daily Trading (P&L): a new vs forecast column shows how far sales were above or below the forecast as a percentage, per day and in the total, and the Net sales tile shows it too.',
+      'Rota and P&L: a day that has a wage cost but no sales now says no sales instead of a dash, so it is clear why there is no labour percentage.',
+    ],
+  },
+  {
     v: '5.8.94',
     date: '17 Sep 2026',
     items: [
