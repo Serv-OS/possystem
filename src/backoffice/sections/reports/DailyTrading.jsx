@@ -184,7 +184,9 @@ export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
                 <td style={S.td}>{money(r.actual_sales)}</td>
                 <td style={S.td}>{money(r.labour_actual)}<span style={{ color: 'var(--t4)' }}> / {money(r.labour_theo)}</span></td>
                 <td style={{ ...S.td, ...(over(pct1(r.labour_theo, r.forecast)) ? S.neg : null) }}>{pct1(r.labour_theo, r.forecast) != null ? `${pct1(r.labour_theo, r.forecast)}%` : '—'}</td>
-                <td style={{ ...S.td, ...(over(r.labour_pct_actual) ? S.neg : null) }}>{r.labour_pct_actual != null ? `${r.labour_pct_actual}%` : '—'}</td>
+                <td style={{ ...S.td, ...(over(r.labour_pct_actual) || (r.labour_pct_actual == null && r.labour_actual > 0) ? S.neg : null) }}
+                  title={r.labour_pct_actual == null && r.labour_actual > 0 ? 'There is a wage cost for this day but no sales, so there is nothing to work a % from.' : undefined}>
+                  {r.labour_pct_actual != null ? `${r.labour_pct_actual}%` : (r.labour_actual > 0 ? 'no sales' : '—')}</td>
                 <td style={S.td}>{money(r.cogs_actual)}</td>
                 <td style={{ ...S.td, color: r.waste > 0 ? 'var(--red)' : 'var(--t3)' }}>{money(r.waste || 0)}</td>
                 <td style={{ ...S.td, ...sign(r.op_actual) }}>{money(r.op_actual)}</td>
