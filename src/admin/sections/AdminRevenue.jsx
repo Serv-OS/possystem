@@ -25,6 +25,11 @@ import { supabase } from '../../lib/supabase';
 // Check a payment (10 Sep 2026): one card payment proven from Adyen's own
 // records, where the money went and what ServOS made on it.
 import PaymentCheck from '../components/PaymentCheck';
+// 17 Sep 2026, credit and debit priced apart: the ledger can stamp two debit
+// categories. The table keeps one column per channel, so a debit category's
+// count, volume and earnings are added into its channel's column
+// (foldDebitCategories) and the tooltip says how many were debit.
+import { foldDebitCategories } from '../../lib/payments/rateCard';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
@@ -134,7 +139,7 @@ export default function AdminRevenue() {
     ];
     const lines = [header.map(esc).join(',')];
     for (const r of rows) {
-      const bc = r.by_category || {};
+      const bc = foldDebitCategories(r.by_category);
       lines.push([
         r.name, r.currency || cur, r.payments_count, p2(r.volume_minor), p2(r.refunds_minor),
         ...TIERS.flatMap(t => {
@@ -254,7 +259,7 @@ export default function AdminRevenue() {
                   <tr><td colSpan={8 + TIERS.length} style={{ ...S.td, textAlign: 'center', color: 'var(--t3)', padding: 28 }}>No payments or SaaS fees recorded for {month}.</td></tr>
                 )}
                 {rows.map((r) => {
-                  const bc = r.by_category || {};
+                  const bc = foldDebitCategories(r.by_category);
                   const rcur = r.currency || cur;
                   return (
                     <tr key={r.location_id ?? 'unmatched'}>
@@ -283,7 +288,7 @@ export default function AdminRevenue() {
                         const c = bc[t.id] || {};
                         return (
                           <td key={t.id} style={{ ...S.td, color: c.count ? 'var(--t2)' : 'var(--t4)' }}
-                            title={c.count ? `${c.count} payment${c.count === 1 ? '' : 's'} · ${money(c.volume_minor, rcur)} volume · ${money(c.commission_minor, rcur)} commission` : 'No payments of this type'}>
+                            title={c.count ? `${c.count} payment${c.count === 1 ? '' : 's'}${c.debit_count ? ` (${c.debit_count} debit)` : ''} · ${money(c.volume_minor, rcur)} volume · ${money(c.commission_minor, rcur)} commission` : 'No payments of this type'}>
                             {c.count ? `${money(c.volume_minor, rcur)} (${c.count})` : '—'}
                           </td>
                         );

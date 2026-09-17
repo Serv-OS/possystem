@@ -55,16 +55,23 @@ function statusOf(p) {
 }
 
 // Venue-facing names for the four pricing tiers — never internal ids.
+// 17 Sep 2026: a payment is stamped In person debit or Online debit only when
+// Adyen told us the card was a debit card; without that it keeps In person
+// or Online, as before.
 const TYPE_LABELS = {
   card_present: 'In person',
+  card_present_debit: 'In person debit',
   card_not_present: 'Online',
+  card_not_present_debit: 'Online debit',
   amex: 'Amex & business',
   keyed: 'Keyed',
 };
 const TYPE_FILTERS = [
   { id: '', label: 'All types' },
   { id: 'card_present', label: 'In person' },
+  { id: 'card_present_debit', label: 'In person debit' },
   { id: 'card_not_present', label: 'Online' },
+  { id: 'card_not_present_debit', label: 'Online debit' },
   { id: 'amex', label: 'Amex & business' },
   { id: 'keyed', label: 'Manually keyed' },
 ];
@@ -89,6 +96,8 @@ export default function AdyenPayments() {
   const [includeTest, setIncludeTest] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [seenDebit, setSeenDebit] = useState(false);
+  const typeFilters = TYPE_FILTERS.filter((t) => !/_debit$/.test(t.id) || seenDebit);
 
   const load = async (p = page, tf = typeFilter, it = includeTest) => {
     setLoading(true); setError('');
@@ -109,6 +118,10 @@ export default function AdyenPayments() {
       const j = await res.json();
       if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
       setData(j); setPage(p);
+      // The two debit filters appear once this venue HAS a debit payment. A
+      // venue with none never sees an empty choice, and a server from before
+      // debit pricing (which ignores a filter it does not know) is never asked.
+      if ((j.payments || []).some((row) => /_debit$/.test(String(row?.rate_category || '')))) setSeenDebit(true);
     } catch (e) { setError(e.message || 'Failed to load'); }
     finally { setLoading(false); }
   };
@@ -194,7 +207,7 @@ export default function AdyenPayments() {
               onChange={(e) => { setTypeFilter(e.target.value); load(0, e.target.value); }}
               style={{ padding: '6px 10px', borderRadius: 8, background: 'var(--bg3)', border: '1px solid var(--bdr)', color: 'var(--t2)', fontSize: 12, fontWeight: 700, fontFamily: 'inherit', cursor: 'pointer' }}
             >
-              {TYPE_FILTERS.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+              {typeFilters.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
             </select>
           )}
           {payments.length > 0 && <ExportBtn onClick={exportCsv} />}

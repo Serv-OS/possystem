@@ -711,7 +711,8 @@ test('referenceSearchView: once the id is known there is no box at all, Find on 
   assert.equal(v.platformLine, null);
 });
 
-test('rateCardRows: four big rows, Payment type, Rate, Per payment, one grey source word', () => {
+test('rateCardRows: six big rows (credit and debit apart), Payment type, Rate, Per payment, one grey source word', () => {
+  // an OLDER server sends four tiers: each debit row reads its credit row, in grey
   const rates = {
     currency: 'GBP',
     tiers: {
@@ -722,20 +723,31 @@ test('rateCardRows: four big rows, Payment type, Rate, Per payment, one grey sou
     },
   };
   assert.deepEqual(rateCardRows(rates), [
-    { id: 'card_present', label: 'In person', rate: '1.4%', perPayment: '5p', source: 'venue', unpriced: false },
-    { id: 'card_not_present', label: 'Online', rate: '1.9%', perPayment: '10p', source: 'platform default', unpriced: false },
-    { id: 'amex', label: 'Amex and business cards', rate: '0%', perPayment: '0p', source: 'venue', unpriced: false },
-    { id: 'keyed', label: 'Keyed in', rate: 'not set', perPayment: '', source: null, unpriced: true },
+    { id: 'card_present', label: 'In person credit', rate: '1.4%', perPayment: '5p', source: 'venue', unpriced: false, inherited: false },
+    { id: 'card_present_debit', label: 'In person debit', rate: '1.4%', perPayment: '5p', source: 'same as In person credit', unpriced: false, inherited: true },
+    { id: 'card_not_present', label: 'Online credit', rate: '1.9%', perPayment: '10p', source: 'platform default', unpriced: false, inherited: false },
+    { id: 'card_not_present_debit', label: 'Online debit', rate: '1.9%', perPayment: '10p', source: 'same as Online credit', unpriced: false, inherited: true },
+    { id: 'amex', label: 'Amex and business cards', rate: '0%', perPayment: '0p', source: 'venue', unpriced: false, inherited: false },
+    { id: 'keyed', label: 'Keyed in', rate: 'not set', perPayment: '', source: null, unpriced: true, inherited: false },
   ]);
+  // the server resolved the debit tiers: one inherited (said by the server), one priced apart
+  const apart = rateCardRows({ currency: 'GBP', tiers: {
+    ...rates.tiers,
+    card_present_debit: { percent: 1.4, fixedPence: 5, source: 'venue', inheritedFrom: 'card_present' },
+    card_not_present_debit: { percent: 1.1, fixedPence: 9, source: 'venue', inheritedFrom: null },
+  } });
+  assert.deepEqual(apart[1], { id: 'card_present_debit', label: 'In person debit', rate: '1.4%', perPayment: '5p', source: 'same as In person credit', unpriced: false, inherited: true });
+  assert.deepEqual(apart[3], { id: 'card_not_present_debit', label: 'Online debit', rate: '1.1%', perPayment: '9p', source: 'venue', unpriced: false, inherited: false });
   // US venues read cents; a percent with no pence reads 0c
   const us = rateCardRows({ currency: 'USD', tiers: { amex: { percent: 2.5 } } });
-  assert.equal(us[2].perPayment, '0c');
-  assert.equal(us[2].rate, '2.5%');
-  // the rate card's own spelling is read too, and nothing at all is four unpriced rows
-  assert.equal(rateCardRows({ tiers: { keyed: { percent: 2.9, fixed_pence: 15 } } })[3].perPayment, '15p');
-  assert.deepEqual(rateCardRows(null).map((r) => r.unpriced), [true, true, true, true]);
+  assert.equal(us[4].perPayment, '0c');
+  assert.equal(us[4].rate, '2.5%');
+  // the rate card's own spelling is read too, and nothing at all is six unpriced rows
+  assert.equal(rateCardRows({ tiers: { keyed: { percent: 2.9, fixed_pence: 15 } } })[5].perPayment, '15p');
+  assert.deepEqual(rateCardRows(null).map((r) => r.unpriced), [true, true, true, true, true, true]);
+  assert.deepEqual(rateCardRows(null).map((r) => r.inherited), [false, false, false, false, false, false]);
   // a negative number is no price, as the step builder reads it
-  assert.equal(rateCardRows({ tiers: { amex: { percent: -1, fixedPence: -5 } } })[2].unpriced, true);
+  assert.equal(rateCardRows({ tiers: { amex: { percent: -1, fixedPence: -5 } } })[4].unpriced, true);
   // the two sentences above the table: plain, short, no dashes, never the word commission
   assert.equal(RATES_LEDE.length, 2);
   for (const l of RATES_LEDE) {
