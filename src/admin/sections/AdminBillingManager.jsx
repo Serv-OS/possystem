@@ -56,6 +56,7 @@ import RateCardRows from '../components/RateCardRows';
 import { adyenVenueStatus, stripeVenueStatus, matchesVenueSearch } from '../../lib/payments/adyenAdminRows';
 import { RATE_CARD_TIERS, emptyCard, cardToState, stateToCard, cardsEqual, fmtRate } from '../../lib/payments/rateCard';
 import { rateCardProblems } from '../../lib/payments/adyenLink';
+import { selectOnFocus } from '../../lib/selectOnFocus';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
@@ -759,7 +760,7 @@ function NumField({ label, value, onChange }) {
   return (
     <div>
       <label style={S.label}>{label}</label>
-      <input type="number" step="0.01" min="0" max="100" value={value} onChange={e => onChange(e.target.value)} style={{ ...S.input, ...S.inputMono }} />
+      <input type="number" step="0.01" min="0" max="100" {...selectOnFocus} value={value} onChange={e => onChange(e.target.value)} style={{ ...S.input, ...S.inputMono }} />
     </div>
   );
 }
@@ -1477,7 +1478,7 @@ function MarkupField({ label, value, onChange, effective, isOverride, def, muted
     <div>
       <label style={S.label}>{label}</label>
       <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-        <input type="number" step={isPence ? '1' : '0.01'} min="0" max={isPence ? '1000' : '100'}
+        <input type="number" step={isPence ? '1' : '0.01'} min="0" max={isPence ? '1000' : '100'} {...selectOnFocus}
           placeholder={`default ${isPence ? Math.round(Number(def ?? 0)) : Number(def ?? 0).toFixed(2)}`}
           value={value} onChange={e => onChange(e.target.value)}
           style={{ ...S.input, ...S.inputMono, ...(muted ? { opacity: 0.92 } : null) }} />

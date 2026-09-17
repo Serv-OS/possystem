@@ -12,6 +12,7 @@
  */
 import { useState, useRef } from 'react';
 import { useStore } from '../../store';
+import { selectOnFocus } from '../../lib/selectOnFocus';
 
 const ACCEPTED_MIME = [
   'application/pdf',
@@ -416,7 +417,7 @@ function ReviewPanel({ draft, meta, updateCat, removeCat, updateItem, removeItem
                       <input style={{ ...inp, flex:1, fontWeight:600 }}
                         value={item.name} onChange={e=>updateItem(item.id, { name: e.target.value })} />
                       {!hasVariants && (
-                        <input type="number" step="0.01" style={{ ...inp, width:90, textAlign:'right' }}
+                        <input type="number" step="0.01" {...selectOnFocus} style={{ ...inp, width:90, textAlign:'right' }}
                           value={item.price} onChange={e=>updateItem(item.id, { price: parseFloat(e.target.value)||0 })} />
                       )}
                       <button onClick={()=>removeItem(item.id)} style={{ ...inp, cursor:'pointer', color:'var(--red)', background:'transparent' }}>✕</button>
@@ -436,7 +437,7 @@ function ReviewPanel({ draft, meta, updateCat, removeCat, updateItem, removeItem
                                 next[vi] = { ...v, name: e.target.value };
                                 updateItem(item.id, { variants: next });
                               }} />
-                            <input type="number" step="0.01" style={{ ...inp, width:80, textAlign:'right' }}
+                            <input type="number" step="0.01" {...selectOnFocus} style={{ ...inp, width:80, textAlign:'right' }}
                               value={v.price}
                               onChange={e=>{
                                 const next = [...item.variants];
