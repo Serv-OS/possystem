@@ -133,10 +133,23 @@ export function ezLifecycle(order: any): string {
  * Split an ezCater event timestamp into the venue local calendar date and clock
  * time the kitchen actually needs to see.
  *
- * Three cases, in order of trust:
- *   1. the ISO string carries an explicit non Z offset, so the wall clock part
- *      IS already local. Read it verbatim, same trick as HubRise's hrTimeLabel.
- *   2. no offset but an IANA identifier is supplied, so format in that zone.
+ * THE IANA ZONE WINS WHENEVER THERE IS ONE. Event.timestamp and
+ * Event.catererHandoffFoodTime are both typed UTCTimestamp in ezCater's schema:
+ * "The UTC timestamp indicating when the customer expects to receive food", and
+ * every sample is a Z string next to a separate timeZoneIdentifier. So the wall
+ * clock inside the string is NOT the venue's wall clock, whatever suffix it
+ * carries, and timeZoneIdentifier is the only thing that says what the kitchen
+ * should see. An earlier version preferred an explicit offset over the zone,
+ * which is right for HubRise (where the offset IS the venue's) and wrong here:
+ * the day ezCater sends +00:00 instead of Z, or an offset from anywhere but the
+ * venue, every catering ticket would have shown the wrong time on the wrong day.
+ *
+ * Cases, in order:
+ *   1. an IANA identifier is supplied, so format the instant in that zone.
+ *      Offset or Z in the string makes no difference, both parse to the same
+ *      instant and the zone decides the rest.
+ *   2. no usable zone but the string carries an explicit offset, so read the
+ *      wall clock verbatim and call it local. Same trick as HubRise's hrTimeLabel.
  *   3. neither, so read the literal wall clock out of the string and flag it.
  *
  * Deliberately NOT a device clock read. The venue clock invariant says business
@@ -151,7 +164,7 @@ export function eventTimeParts(iso: unknown, timeZone?: unknown): { date: string
   const hasOffset = /[+-]\d{2}:?\d{2}$/.test(s);
   const tz = typeof timeZone === 'string' && timeZone.trim() ? timeZone.trim() : null;
 
-  if (!hasOffset && tz) {
+  if (tz) {
     const t = new Date(s);
     if (!Number.isNaN(t.getTime())) {
       try {
@@ -203,12 +216,48 @@ const asQty = (v: unknown): number => {
  * counted twice: once folded into the line and once as a mod price. Every
  * ezCater ticket with a paid option would have been over the real figure.
  *
- * lineSubunits is kept so reporting can rebuild the exact pennies without
- * touching the rounded pounds.
+ * THE LINE TOTAL IS THE AUTHORITY, NEVER price * qty. The division does not
+ * come back out evenly: 1000 subunits over a qty of 3 rounds to a unit price of
+ * 3.33, and 3.33 * 3 is 9.99, a cent under the 10.00 ezCater charged. On a
+ * catering order with a dozen such lines that is a ticket that does not match
+ * the remittance, so price exists for display only and every sum runs off
+ * lineSubunits. See lineSubunitsOf and ticketSubunits below.
+ *
+ * lineSubunits is kept on EVERY line so reporting can rebuild the exact pennies
+ * without touching the rounded pounds.
  */
 function lineMoney(node: any, qty: number): { unit: number; total: number; subunits: number } {
   const totalSub = subunitsToNumber(node?.totalInSubunits);
   return { unit: +(totalSub / qty / 100).toFixed(2), total: +(totalSub / 100).toFixed(2), subunits: totalSub };
+}
+
+/**
+ * The exact pennies on one mapped line.
+ *
+ * lineSubunits first, because it is the figure ezCater actually sent. lineTotal
+ * is the same number rounded and is only a fallback for a line that came from
+ * somewhere else. price * qty is the LAST resort and is the very thing that
+ * drifts, so it is reached only when a line carries no total at all.
+ */
+export function lineSubunitsOf(line: any): number {
+  const sub = line?.lineSubunits;
+  if (typeof sub === 'number' && Number.isFinite(sub)) return Math.round(sub);
+  const total = Number(line?.lineTotal);
+  if (Number.isFinite(total)) return Math.round(total * 100);
+  const price = Number(line?.price);
+  const qty = Number(line?.qty);
+  if (Number.isFinite(price) && Number.isFinite(qty)) return Math.round(price * qty * 100);
+  return 0;
+}
+
+/** Exact pennies across a whole ticket. Integers all the way, so nothing drifts. */
+export function ticketSubunits(lines: any): number {
+  return (Array.isArray(lines) ? lines : []).reduce((s: number, l: any) => s + lineSubunitsOf(l), 0);
+}
+
+/** The same figure in major units. The one number anything summing a ticket should read. */
+export function ticketTotal(lines: any): number {
+  return +(ticketSubunits(lines) / 100).toFixed(2);
 }
 
 /**
@@ -330,6 +379,11 @@ export function orderToQueueRow(
   const status = ezStatusToQueueStatus(lifecycle);
 
   const items = orderItemsToLines(cart?.orderItems);
+  // The exact pennies across the lines, summed as integers. Recorded so nothing
+  // downstream ever has to reach for price * qty, which loses a cent on any
+  // quantity the line total does not divide into evenly.
+  const itemsSubunits = ticketSubunits(items);
+  const itemsTotal = +(itemsSubunits / 100).toFixed(2);
 
   // ── Money. Every component is kept, nothing is inferred. ──────────────────
   // subTotal has a capital T. The lower case spelling is accepted only as a
@@ -354,7 +408,14 @@ export function orderToQueueRow(
   // commission. Fall back to subtotal plus tax only when it is missing, so a
   // ticket never shows 0.00 for a real order. Every component stays in
   // customer.totals so phase 4 reporting can rebuild whichever view it needs.
-  const total = catererTotalDue > 0 ? catererTotalDue : +(subtotal + salesTax).toFixed(2);
+  //
+  // The last resort is the LINE SUM, in exact subunits, for the case where
+  // catererTotalDue and Order.totals are both absent but there are real lines on
+  // the cart. It is deliberately the line total sum and never price * qty.
+  const lineFallback = +((itemsSubunits + subunitsToNumber(totals?.salesTax)) / 100).toFixed(2);
+  const total = catererTotalDue > 0
+    ? catererTotalDue
+    : (subtotal > 0 ? +(subtotal + salesTax).toFixed(2) : lineFallback);
 
   // ── Tax, verbatim. See the banner at the top of this file. ────────────────
   // taxableAddress hangs off the ORDER, not off totals.
@@ -457,6 +518,10 @@ export function orderToQueueRow(
       pointOfSaleIntegrationFee: posIntegrationFee,
       customerTotalDue,
       catererTotalDue, currency,
+      // The sum of the LINE TOTALS, exact. Anything that has to total the food
+      // on this ticket reads these two and never multiplies the unit price,
+      // which is a rounded display figure. See ticketSubunits.
+      itemsTotal, itemsSubunits,
       // Every fee and discount ezCater applied, verbatim and named, because the
       // weekly statement has to be reconciled line by line and a discount only
       // ever appears here. Discounts arrive negative and stay negative.

@@ -31,18 +31,24 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
 import {
   orderToQueueRow, orderItemsToLines, ezStatusToQueueStatus, ezLifecycle,
   eventTimeParts, queuePayload, feeRows, feeTotal, EZ_ORDER_TYPE_TO_QUEUE,
+  lineSubunitsOf, ticketSubunits, ticketTotal,
 } from '../../supabase/functions/_shared/ezcater-map.ts';
 import {
   subunitsToNumber, moneyToAmount, dollarsToNumber, moneyCurrency,
   verifyEzcaterSignature, ORDER_QUERY, ACCEPT_ORDER_MUTATION, REJECT_ORDER_MUTATION,
   CATERERS_QUERY, CREATE_SUBSCRIBER_MUTATION, CREATE_SUBSCRIPTION_MUTATION,
-  DELETE_SUBSCRIPTIONS_MUTATION, SUBSCRIBERS_QUERY, EZ_EVENTS, EZ_FEE_TYPES,
+  UPDATE_SUBSCRIBER_MUTATION, deleteSubscriptionsMutation, SUBSCRIBERS_QUERY,
+  EZ_EVENTS, EZ_FEE_TYPES, EZ_PERMANENT_STATUSES, firstStatusCode,
   EzcaterError, isSchemaError, isPermanent, allMessages,
 } from '../../supabase/functions/_shared/ezcater.ts';
+
+// A caterer id is an RFC 4122 UUID, which is what deleteSubscriptions inlines.
+const CATERER_UUID = '3593ce70-7227-4fd4-8a78-9591083d0674';
 
 const LOC = 'loc-cabin-boston';
 
@@ -485,6 +491,10 @@ test('MONEY: every total component survives into the row', () => {
     customerTotalDue: 450,
     catererTotalDue: 412.75,
     currency: 'USD',
+    // The sum of the LINE TOTALS, exact. Recorded so nothing downstream ever
+    // reaches for price * qty, which loses a cent on an uneven quantity.
+    itemsTotal: 380,
+    itemsSubunits: 38000,
     feesAndDiscounts: [
       { name: 'Delivery Fee', amount: 25, subunits: 2500 },
       { name: 'Preferred Caterer Program', amount: -11.99, subunits: -1199 },
@@ -741,7 +751,8 @@ test('SIGNATURE: the digest is compared case insensitively but exactly', async (
 test('every ezCater operation is NAMED and balanced', () => {
   const ops = {
     ORDER_QUERY, ACCEPT_ORDER_MUTATION, REJECT_ORDER_MUTATION, CATERERS_QUERY,
-    CREATE_SUBSCRIBER_MUTATION, CREATE_SUBSCRIPTION_MUTATION, DELETE_SUBSCRIPTIONS_MUTATION,
+    CREATE_SUBSCRIBER_MUTATION, CREATE_SUBSCRIPTION_MUTATION, UPDATE_SUBSCRIBER_MUTATION,
+    DELETE_SUBSCRIPTIONS_MUTATION: deleteSubscriptionsMutation(CATERER_UUID),
     SUBSCRIBERS_QUERY,
   };
   for (const [label, doc] of Object.entries(ops)) {
@@ -827,9 +838,17 @@ test('the mutations match their documented argument shapes', () => {
   assert.match(CREATE_SUBSCRIBER_MUTATION, /webhookSecret/);
   assert.match(CREATE_SUBSCRIPTION_MUTATION, /\$subscriptionParams: CreateSubscriptionFields!/);
 
-  // Deletion is scoped to the CATERER, and returns success.
-  assert.match(DELETE_SUBSCRIPTIONS_MUTATION, /parentEntity: Caterer, parentId: \$parentId/);
-  assert.match(DELETE_SUBSCRIPTIONS_MUTATION, /success/);
+  // updateSubscriber takes the id and a separate Fields input, and its payload
+  // is a Subscriber, which has NO webhookSecret. See the dedicated test below.
+  assert.match(UPDATE_SUBSCRIBER_MUTATION, /\$subscriberId: ID!/);
+  assert.match(UPDATE_SUBSCRIBER_MUTATION, /\$subscriberParams: UpdateSubscriberFields!/);
+  assert.match(UPDATE_SUBSCRIBER_MUTATION, /updateSubscriber\(subscriberId: \$subscriberId, subscriberParams: \$subscriberParams\)/);
+
+  // Deletion is scoped to the CATERER, and returns success. The id is INLINE
+  // because ezCater never publishes the type of subscriptionsParams. See below.
+  const del = deleteSubscriptionsMutation(CATERER_UUID);
+  assert.match(del, /parentEntity: Caterer, parentId: "3593ce70-7227-4fd4-8a78-9591083d0674"/);
+  assert.match(del, /success/);
 
   // Caterer has no brandName.
   assert.equal(/brandName/.test(CATERERS_QUERY), false);
@@ -1049,4 +1068,342 @@ test('an order with nothing on it still produces a writable row', () => {
   assert.equal(row.customer.tax.engine, 'ezcater');
   assert.equal(row.customer.tax.operatorRemits, 0);
   assert.equal(link.ez_order_id, 'ord-bare');
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+//  THE SIX LIVE SCHEMA REVIEW FINDINGS
+//
+//  Each of these fails against the code as it was before the fix. They are the
+//  reason the fix exists, so they are quoted against the doc page that settles
+//  the question rather than against what the code happens to do.
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── 1. a reused subscriber keeps its OLD webhook URL ────────────────────────
+//
+// ezCater allows ONE subscriber per API user. On a reconnect createSubscriber
+// fails, we fall back to the existing subscriber, and if that subscriber was
+// created against another project or an older deploy it is still pointing at
+// that webhook. Back Office then says connected and not one order arrives.
+//
+// "Updating Subscribers" publishes the way out:
+//   updateSubscriber(subscriberId: ID!, subscriberParams: UpdateSubscriberFields!)
+//   UpdateSubscriberFields is { name: String, webhookUrl: String }
+
+test('SUBSCRIBER: updateSubscriber is the documented repoint, and it cannot move the secret', () => {
+  assert.match(UPDATE_SUBSCRIBER_MUTATION.trim(), /^mutation ServOsEzUpdateSubscriber/);
+  assert.match(UPDATE_SUBSCRIBER_MUTATION, /\$subscriberId: ID!/);
+  assert.match(UPDATE_SUBSCRIBER_MUTATION, /\$subscriberParams: UpdateSubscriberFields!/);
+  assert.match(UPDATE_SUBSCRIBER_MUTATION, /subscriber \{[^}]*webhookUrl/);
+
+  // THE SECRET. UpdateSubscriberPayload returns a Subscriber, and Subscriber is
+  // id, name, subscriptions and webhookUrl. webhookSecret is on NewSubscriber
+  // and only createSubscriber ever returns one, and the docs say webhook
+  // secrets cannot be changed at present. Asking for it here would be an
+  // unknown field and would fail the whole mutation, taking the repoint with it.
+  assert.equal(/webhookSecret/.test(UPDATE_SUBSCRIBER_MUTATION), false);
+});
+
+test('SUBSCRIBER: a reused subscriber pointing elsewhere is repointed, not accepted', () => {
+  // ezcater-connect is a Deno edge function (Deno.serve, service role client),
+  // so the connect path is guarded at the source the way kioskCardPathGuard
+  // guards the kiosk card path. What matters is that all four things happen.
+  const src = fs.readFileSync(
+    new URL('../../supabase/functions/ezcater-connect/index.ts', import.meta.url), 'utf8',
+  );
+
+  // it imports the repoint
+  assert.match(src, /\bupdateSubscriber\b[^\n]*from '\.\.\/_shared\/ezcater\.ts'|updateSubscriber,/);
+  // it COMPARES the subscriber's own URL with ours, and only on the reused path
+  assert.match(src, /reused && subscriberId && webhookUrl !== WEBHOOK_URL/);
+  // it CALLS the repoint with our URL
+  assert.match(src, /await updateSubscriber\(token, subscriberId, WEBHOOK_URL/);
+  // it records the URL ezCater ACTUALLY has, never WEBHOOK_URL regardless.
+  // Writing our own URL unconditionally into the post-subscribe patch is what
+  // made a misdirected subscriber look healthy in Back Office. (The insert on
+  // connect_token may still state our intended URL: subscribe() corrects it.)
+  const patch = src.slice(src.indexOf('const patch: any = {'), src.indexOf('return { subscriberId'));
+  assert.ok(patch.length > 0 && patch.length < 1200, 'the subscribe patch block moved');
+  assert.equal(/webhook_url: WEBHOOK_URL,/.test(patch), false);
+  assert.match(patch, /webhook_url: webhookUrl \|\| WEBHOOK_URL/);
+  // a FAILED repoint is not a connection. It must land as an error, because
+  // every notification is still going somewhere else.
+  assert.match(src, /if \(repointError\) \{[\s\S]*?status = 'error'/);
+  assert.match(src, /webhook_repoint_error: sub\.repointError/);
+});
+
+// ── 2. extensions.statusCode, the 403 and 404 hiding inside a 200 ───────────
+//
+// Quoted from ezCater's own failure samples (Courier Assign, Courier Event
+// Create, Subscriber Update). The HTTP answer is 200 and the code is the
+// catch-all DOWNSTREAM_SERVICE_ERROR, so the ONLY thing that says this will
+// never succeed is extensions.statusCode. Without reading it the webhook 503s
+// on a deleted order for as long as ezCater keeps retrying.
+
+const downstream = (statusCode, message = 'Delivery not found') => ([{
+  message,
+  path: ['courierAssign'],
+  extensions: {
+    type: 'request',
+    ...(statusCode == null ? {} : { statusCode }),
+    serviceName: 'delivery-public',
+    code: 'DOWNSTREAM_SERVICE_ERROR',
+  },
+}]);
+
+const asThrown = (errors) => new EzcaterError(
+  200, errors[0]?.extensions?.code ?? null, allMessages(errors), { errors }, firstStatusCode(errors),
+);
+
+test('ERRORS: extensions.statusCode is read, so a real 403 or 404 stops the retry loop', () => {
+  assert.equal(firstStatusCode(downstream(404)), 404);
+  assert.equal(firstStatusCode(downstream(403)), 403);
+  assert.equal(firstStatusCode(downstream(null)), null);
+  assert.equal(firstStatusCode('not an array'), null);
+  assert.equal(firstStatusCode([]), null);
+
+  // The four that no retry can turn into a success.
+  for (const code of [400, 401, 403, 404]) {
+    const e = asThrown(downstream(code));
+    assert.equal(e.gqlStatus, code);
+    assert.equal(e.code, 'DOWNSTREAM_SERVICE_ERROR');
+    assert.equal(e.status, 200, 'ezCater answers these as an HTTP 200');
+    assert.equal(isPermanent(e), true, `statusCode ${code} must be permanent`);
+  }
+});
+
+test('ERRORS: a genuine 5xx and a bare DOWNSTREAM_SERVICE_ERROR both stay retryable', () => {
+  // The whole point of reading the status code is to keep the retry for the
+  // failures a retry actually fixes.
+  for (const code of [500, 502, 503, 504]) {
+    assert.equal(isPermanent(asThrown(downstream(code))), false, `statusCode ${code} must stay retryable`);
+  }
+  // No statusCode at all. That is the Subscriber Update failure sample, and it
+  // says nothing about whether coming back later would work, so we come back.
+  assert.equal(isPermanent(asThrown(downstream(null, 'Subscriber could not be updated.'))), false);
+  // A network failure is not an EzcaterError at all.
+  assert.equal(isPermanent(new Error('connection reset')), false);
+  // The set is exactly the four, so nobody widens it to 5xx by accident.
+  assert.deepEqual([...EZ_PERMANENT_STATUSES].sort((a, b) => a - b), [400, 401, 403, 404]);
+});
+
+test('ERRORS: the status code reaches the message, so a live log names it', () => {
+  assert.match(asThrown(downstream(404)).message, /statusCode 404/);
+});
+
+// ── 3. event.timestamp is UTC, so the IANA zone always wins ─────────────────
+//
+// Event.timestamp and Event.catererHandoffFoodTime are both UTCTimestamp in the
+// Order Schema Reference: "The UTC timestamp indicating when the customer
+// expects to receive food". The wall clock in the string is therefore NOT the
+// venue's, and timeZoneIdentifier is the only thing that says what the kitchen
+// should read.
+
+test('TIME: the IANA zone wins even when the string carries an explicit offset', () => {
+  // 16:30Z in New York is 12:30, and it must not be read as 16:30 simply
+  // because the string were written with an offset instead of a Z.
+  assert.deepEqual(
+    eventTimeParts('2026-09-04T16:30:00+00:00', 'America/New_York'),
+    { date: '2026-09-04', time: '12:30', local: true },
+  );
+  // The same instant, three ways of writing it, one answer.
+  const z = eventTimeParts('2026-09-04T16:30:00Z', 'America/New_York');
+  assert.deepEqual(eventTimeParts('2026-09-04T16:30:00+00:00', 'America/New_York'), z);
+  assert.deepEqual(eventTimeParts('2026-09-04T12:30:00-04:00', 'America/New_York'), z);
+
+  // An offset from somewhere that is NOT the venue. Reading the wall clock
+  // verbatim would have put this catering order on the wrong DAY.
+  assert.deepEqual(
+    eventTimeParts('2026-09-05T02:30:00+09:00', 'America/Los_Angeles'),
+    { date: '2026-09-04', time: '10:30', local: true },
+  );
+});
+
+test('TIME: with no zone the old behaviour is untouched', () => {
+  // An explicit offset and nothing to convert into: read the wall clock and
+  // call it local, exactly as before.
+  assert.deepEqual(
+    eventTimeParts('2026-09-04T11:30:00-04:00', null),
+    { date: '2026-09-04', time: '11:30', local: true },
+  );
+  // Neither: the literal wall clock, flagged as not proven local.
+  assert.deepEqual(
+    eventTimeParts('2026-09-04T15:30:00Z', ''),
+    { date: '2026-09-04', time: '15:30', local: false },
+  );
+  // A zone no runtime knows must not throw, it falls through to the literal.
+  assert.deepEqual(
+    eventTimeParts('2026-09-04T15:30:00-04:00', 'Mars/Olympus_Mons'),
+    { date: '2026-09-04', time: '15:30', local: true },
+  );
+});
+
+test('TIME: the order row and the handoff both go through the venue zone', () => {
+  // The whole reason this matters: an order stamped in UTC with a zone beside
+  // it has to reach the kitchen as the kitchen's own clock.
+  const utcOrder = {
+    ...TAKEOUT_ORDER,
+    event: {
+      ...TAKEOUT_ORDER.event,
+      timestamp: '2026-09-04T16:30:00Z',
+      catererHandoffFoodTime: '2026-09-04T16:15:00Z',
+      timeZoneIdentifier: 'America/New_York',
+      timeZoneOffset: '-04:00',
+    },
+  };
+  const { row } = orderToQueueRow(utcOrder, LOC);
+  assert.equal(row.collection_time, '12:30');
+  assert.equal(row.event_date, '2026-09-04');
+  assert.equal(row.customer.handoff_time, '12:15');
+  assert.equal(row.customer.eventTimeIsLocal, true);
+});
+
+// ── 4. 'rejected' has to be subscribed or the till ticket never dies ────────
+
+test('EVENTS: rejected is subscribed, so a Partner Portal rejection cancels the ticket', () => {
+  // Documented EventKey: "An Order entity event indicating an order has been
+  // rejected by a caterer or on behalf of a caterer through a partner
+  // integration". A modification on an API-accepted order can ONLY be rejected
+  // in the Partner Portal, so this is the common case, not the rare one.
+  assert.ok(EZ_EVENTS.includes('rejected'), 'rejected must be subscribed');
+
+  // The rest of the chain was already there and was dead without it.
+  assert.equal(ezStatusToQueueStatus('rejected'), 'cancelled');
+  const rejected = { ...TAKEOUT_ORDER, lifecycle: { orderIsCurrently: 'rejected' } };
+  assert.equal(orderToQueueRow(rejected, LOC).row.status, 'cancelled');
+
+  // Every key we send is one ezCater publishes for the Order entity.
+  const documented = ['submitted', 'accepted', 'rejected', 'cancelled', 'uncancelled', 'relish_finalized'];
+  for (const k of EZ_EVENTS) assert.ok(documented.includes(k), `${k} is not a documented Order EventKey`);
+  // uncancelled is still out: subscribable, never fires.
+  assert.equal(EZ_EVENTS.includes('uncancelled'), false);
+});
+
+// ── 5. deleteSubscriptions: the id goes inline, because the type is unpublished
+
+test('DELETE: the caterer id is inline exactly as the docs show, with no invented type', () => {
+  const doc = deleteSubscriptionsMutation(CATERER_UUID);
+
+  // The documented form. Everything inside subscriptionsParams is literal.
+  assert.match(doc, /deleteSubscriptions\(subscriptionsParams: \{ parentEntity: Caterer, parentId: "3593ce70-7227-4fd4-8a78-9591083d0674" \}\)/);
+  assert.match(doc, /success/);
+
+  // NO variable declaration, and in particular no $parentId: UUID! against an
+  // input object ezCater never publishes. Their Subscription API lists exactly
+  // three input objects (CreateSubscriberFields, CreateSubscriptionFields,
+  // UpdateSubscriberFields) and no delete input among them. A wrong variable
+  // type fails the whole document, which would make every deleteSubscriptions
+  // call a no-op that still looked like it worked.
+  assert.equal(/\$parentId/.test(doc), false, 'the id must not travel as an undeclarable variable');
+  assert.equal(/UUID!/.test(doc), false, 'the type of subscriptionsParams is not published, so it must not be guessed');
+  assert.equal(/\(\$/.test(doc), false, 'the operation takes no variables at all');
+
+  // Still a NAMED operation. ezCater rejects anonymous ones outright.
+  assert.match(doc.trim(), /^mutation ServOsEzDeleteSubscriptions \{/);
+
+  // The introspection query that would settle the type is named in the source,
+  // so the next person does not have to guess either.
+  const shared = fs.readFileSync(
+    new URL('../../supabase/functions/_shared/ezcater.ts', import.meta.url), 'utf8',
+  );
+  assert.match(shared, /__type\(name: "Mutation"\)/);
+});
+
+test('DELETE: an id that is not a caterer UUID never reaches the document', () => {
+  // The id is part of the document text, so it is checked rather than trusted.
+  for (const bad of ['', '   ', null, undefined, 'not-a-uuid', '3593ce70-7227-4fd4-8a78', 42,
+    '3593ce70-7227-4fd4-8a78-9591083d0674" } ) { success } } mutation x { deleteSubscriptions(subscriptionsParams: { parentEntity: Caterer, parentId: "']) {
+    assert.throws(() => deleteSubscriptionsMutation(bad), /caterer UUID/, `${String(bad)} must be refused`);
+  }
+  // Case does not matter, RFC 4122 hex is hex.
+  assert.match(deleteSubscriptionsMutation(CATERER_UUID.toUpperCase()), /parentId: "3593CE70-7227-4FD4-8A78-9591083D0674"/);
+});
+
+// ── 6. the line total is the authority, never price * qty ───────────────────
+//
+// An ezCater order item has NO unit price. totalInSubunits is "Total cost of
+// item, including customizations, in currency sub-units", so the unit price is
+// a DIVISION we do, and on a quantity that does not divide evenly it does not
+// come back out. price is for display; every sum reads lineSubunits.
+
+test('MONEY: a qty 3 line does not drift, because the ticket sums lineSubunits', () => {
+  // 1000 subunits over 3. The unit price rounds to 3.33 and 3.33 * 3 is 9.99,
+  // a cent under the 10.00 ezCater charged.
+  const order = {
+    ...TAKEOUT_ORDER,
+    catererCart: {
+      ...TAKEOUT_ORDER.catererCart,
+      totals: { catererTotalDue: null },
+      orderItems: [
+        { uuid: 'oi-3', name: 'Sandwich platter', quantity: 3, totalInSubunits: money(1000), customizations: [] },
+        // A second awkward one, so the drift would compound rather than cancel.
+        { uuid: 'oi-7', name: 'Cookie box', quantity: 7, totalInSubunits: money(2000), customizations: [] },
+      ],
+    },
+  };
+  const { row } = orderToQueueRow(order, LOC);
+  const [platter, cookies] = row.items;
+
+  // The line totals are exact, straight from subunits.
+  assert.equal(platter.lineSubunits, 1000);
+  assert.equal(platter.lineTotal, 10);
+  assert.equal(cookies.lineSubunits, 2000);
+  assert.equal(cookies.lineTotal, 20);
+
+  // The unit price is the rounded display figure, and it DOES drift. Pinned so
+  // nobody mistakes it for money.
+  assert.equal(platter.price, 3.33);
+  assert.equal(+(platter.price * platter.qty).toFixed(2), 9.99);
+  assert.equal(cookies.price, 2.86);
+  assert.equal(+(cookies.price * cookies.qty).toFixed(2), 20.02);
+
+  // THE TICKET IS EXACT. Summing price * qty would give 30.01, a penny over.
+  assert.equal(ticketSubunits(row.items), 3000);
+  assert.equal(ticketTotal(row.items), 30);
+  assert.equal(row.customer.totals.itemsSubunits, 3000);
+  assert.equal(row.customer.totals.itemsTotal, 30);
+  const byUnitPrice = +row.items.reduce((s, l) => s + l.price * l.qty, 0).toFixed(2);
+  assert.notEqual(byUnitPrice, 30);
+  assert.equal(byUnitPrice, 30.01);
+
+  // Every line carries the exact pennies, so nothing downstream has to divide.
+  for (const l of row.items) assert.equal(typeof l.lineSubunits, 'number');
+});
+
+test('MONEY: a ticket with no caterer total and no subtotal falls back to the LINE SUM', () => {
+  // The last resort, and it is the line total sum in exact subunits, never
+  // price * qty. Without Order.totals a real order would otherwise show 0.00.
+  const order = {
+    uuid: 'ord-lines-only',
+    event: { orderType: 'TAKEOUT' },
+    catererCart: {
+      orderItems: [
+        { uuid: 'a', name: 'Tray', quantity: 3, totalInSubunits: money(1000) },
+        { uuid: 'b', name: 'Tray', quantity: 3, totalInSubunits: money(1000) },
+        { uuid: 'c', name: 'Tray', quantity: 3, totalInSubunits: money(1000) },
+      ],
+    },
+  };
+  const { row } = orderToQueueRow(order, LOC);
+  assert.equal(row.total, 30);              // not 29.97
+  assert.equal(row.customer.totals.itemsTotal, 30);
+});
+
+test('MONEY: the real ezCater totals still win over the line sum', () => {
+  // The fallback must never quietly replace a figure ezCater actually stated.
+  const { row } = orderToQueueRow(DELIVERY_ORDER, LOC);
+  assert.equal(row.total, row.customer.totals.catererTotalDue);
+  assert.ok(row.customer.totals.itemsTotal > 0);
+  assert.notEqual(row.total, row.customer.totals.itemsTotal);
+});
+
+test('MONEY: lineSubunitsOf prefers the exact pennies and degrades in order', () => {
+  assert.equal(lineSubunitsOf({ lineSubunits: 1000, lineTotal: 9.99, price: 3.33, qty: 3 }), 1000);
+  // No subunits: the rounded line total, which is still the line and not a product.
+  assert.equal(lineSubunitsOf({ lineTotal: 10, price: 3.33, qty: 3 }), 1000);
+  // Neither: price * qty, the only one that drifts, and the last resort.
+  assert.equal(lineSubunitsOf({ price: 3.33, qty: 3 }), 999);
+  assert.equal(lineSubunitsOf({}), 0);
+  assert.equal(lineSubunitsOf(null), 0);
+  assert.equal(ticketSubunits(null), 0);
+  assert.equal(ticketTotal([]), 0);
 });

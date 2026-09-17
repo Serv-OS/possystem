@@ -53,13 +53,26 @@ export const EZCATER_CLIENT_VERSION = '2.0.0';
 export class EzcaterError extends Error {
   status: number;
   code: string | null;
+  /**
+   * extensions.statusCode off the GraphQL error, when there is one.
+   *
+   * THE REASON THIS FIELD EXISTS. ezCater answers a real 403 or 404 as an HTTP
+   * 200 carrying code DOWNSTREAM_SERVICE_ERROR, and that code alone says only
+   * "something behind the gateway said no". The HTTP status of the answer is
+   * 200 and the code is not in EZ_PERMANENT_CODES, so without reading
+   * extensions.statusCode the webhook calls a missing order transient and 503s
+   * for as long as ezCater keeps retrying. The real status is in the extensions
+   * and nowhere else, so it is carried on the error.
+   */
+  gqlStatus: number | null;
   errors: unknown;
   body: unknown;
-  constructor(status: number, code: string | null, errors: unknown, body?: unknown) {
-    super(`ezCater ${status}${code ? ` ${code}` : ''}: ${typeof errors === 'string' ? errors : JSON.stringify(errors)}`);
+  constructor(status: number, code: string | null, errors: unknown, body?: unknown, gqlStatus: number | null = null) {
+    super(`ezCater ${status}${code ? ` ${code}` : ''}${gqlStatus ? ` (statusCode ${gqlStatus})` : ''}: ${typeof errors === 'string' ? errors : JSON.stringify(errors)}`);
     this.name = 'EzcaterError';
     this.status = status;
     this.code = code;
+    this.gqlStatus = gqlStatus;
     this.errors = errors;
     this.body = body;
   }
@@ -77,12 +90,26 @@ export const EZ_PERMANENT_CODES = new Set([
   'GRAPHQL_VALIDATION_FAILED',
 ]);
 
+/**
+ * Answers that no retry can turn into a success, whether they arrive as the
+ * HTTP status or as extensions.statusCode inside a 200.
+ *
+ * 400 we asked wrongly, 401 the token is bad, 403 the feature or the caterer is
+ * not ours, 404 the thing is not there. Everything else, and in particular every
+ * genuine 5xx and every network failure, stays retryable: the sender should come
+ * back and the phase 3 reconciler will pick up whatever was missed.
+ */
+export const EZ_PERMANENT_STATUSES = new Set([400, 401, 403, 404]);
+
 /** True when retrying will never help, so the caller should surface it to the operator. */
 export function isPermanent(e: unknown): boolean {
   if (!(e instanceof EzcaterError)) return false;
   if (e.code && EZ_PERMANENT_CODES.has(e.code)) return true;
   if (isSchemaError(e)) return true;
-  return e.status === 400 || e.status === 401 || e.status === 403 || e.status === 404;
+  // The documented DOWNSTREAM_SERVICE_ERROR shape. Read before e.status,
+  // because on these the HTTP status is 200 and says nothing at all.
+  if (e.gqlStatus != null && EZ_PERMANENT_STATUSES.has(e.gqlStatus)) return true;
+  return EZ_PERMANENT_STATUSES.has(e.status);
 }
 
 /**
@@ -110,6 +137,26 @@ function firstCode(errors: any): string | null {
   for (const e of errors) {
     const c = e?.extensions?.code ?? e?.code ?? null;
     if (c) return String(c);
+  }
+  return null;
+}
+
+/**
+ * The HTTP status ezCater's own gateway saw, out of extensions.statusCode.
+ *
+ * Their published failure samples for courierAssign, courierEventCreate and
+ * friends are an HTTP 200 whose error carries
+ *   { type: 'request', statusCode: 404, code: 'DOWNSTREAM_SERVICE_ERROR' }
+ * so this number, not the HTTP status and not the code, is the only thing that
+ * says whether a retry has any chance. Exported for the tests.
+ */
+export function firstStatusCode(errors: any): number | null {
+  if (!Array.isArray(errors)) return null;
+  for (const e of errors) {
+    const raw = e?.extensions?.statusCode ?? e?.statusCode ?? null;
+    if (raw == null) continue;
+    const n = typeof raw === 'number' ? raw : Number(String(raw).trim());
+    if (Number.isInteger(n) && n >= 100 && n <= 599) return n;
   }
   return null;
 }
@@ -163,10 +210,11 @@ export async function ez<T = any>(
   try { body = text ? JSON.parse(text) : null; } catch { body = text; }
 
   if (!res.ok) {
-    throw new EzcaterError(res.status, firstCode(body?.errors), allMessages(body?.errors ?? text), body);
+    throw new EzcaterError(res.status, firstCode(body?.errors), allMessages(body?.errors ?? text), body, firstStatusCode(body?.errors));
   }
   if (body?.errors?.length) {
-    throw new EzcaterError(200, firstCode(body.errors), allMessages(body.errors), body);
+    // 200 with errors. firstStatusCode is what tells a real 404 from a blip.
+    throw new EzcaterError(200, firstCode(body.errors), allMessages(body.errors), body, firstStatusCode(body.errors));
   }
   return body?.data as T;
 }
@@ -318,6 +366,23 @@ mutation ServOsEzCreateSubscriber($subscriberParams: CreateSubscriberFields!) {
   }
 }`;
 
+// updateSubscriber(subscriberId: ID!, subscriberParams: UpdateSubscriberFields!).
+// UpdateSubscriberFields is name and webhookUrl, both optional Strings, and the
+// payload has ONE field, subscriber.
+//
+// THE SECRET DOES NOT COME BACK. UpdateSubscriberPayload returns a Subscriber,
+// and Subscriber is id, name, subscriptions and webhookUrl only. webhookSecret
+// lives on NewSubscriber, which only createSubscriber ever returns, and the docs
+// say plainly that webhook secrets cannot be changed at present. So repointing
+// the URL moves where the events go and leaves the signing secret exactly as it
+// was: still valid, still unreadable by us.
+export const UPDATE_SUBSCRIBER_MUTATION = `
+mutation ServOsEzUpdateSubscriber($subscriberId: ID!, $subscriberParams: UpdateSubscriberFields!) {
+  updateSubscriber(subscriberId: $subscriberId, subscriberParams: $subscriberParams) {
+    subscriber { id name webhookUrl }
+  }
+}`;
+
 // Listing exists so we can tell "already has a subscriber" from "token is bad".
 // Subscriber (unlike NewSubscriber) does NOT expose webhookSecret.
 export const SUBSCRIBERS_QUERY = `
@@ -339,15 +404,55 @@ mutation ServOsEzCreateSubscription($subscriptionParams: CreateSubscriptionField
   }
 }`;
 
-// Deletion is scoped to the CATERER, not to the subscriber, and returns success.
-// parentEntity is an enum literal, so it is written inline exactly as the docs
-// show it; only the caterer id travels as a variable.
-export const DELETE_SUBSCRIPTIONS_MUTATION = `
-mutation ServOsEzDeleteSubscriptions($parentId: UUID!) {
-  deleteSubscriptions(subscriptionsParams: { parentEntity: Caterer, parentId: $parentId }) {
+/**
+ * Deletion is scoped to the CATERER, not to the subscriber, and returns success.
+ *
+ * WHY THIS ONE IS BUILT RATHER THAN DECLARED. Every other operation here takes
+ * its arguments as typed variables, which is the safer habit. This one cannot,
+ * because a variable has to be DECLARED with a type and ezCater never publishes
+ * the type of subscriptionsParams. Their Subscription API lists exactly three
+ * input objects, CreateSubscriberFields, CreateSubscriptionFields and
+ * UpdateSubscriberFields, and there is no delete input among them. The only
+ * thing the docs give is the whole argument written inline:
+ *
+ *   mutation deleteSubscription {
+ *     deleteSubscriptions(subscriptionsParams: {
+ *       parentEntity: Caterer,
+ *       parentId: "{{StoreUUID}}"
+ *     }) { success }
+ *   }
+ *
+ * The previous version declared $parentId: UUID! against that unpublished input
+ * type. UUID is a real ezCater scalar, but the field it feeds may not be typed
+ * UUID, and GraphQL fails the whole document on a type mismatch, so the guess
+ * could have made every deleteSubscriptions call a no-op that still looked fine.
+ * So the id goes inline exactly as documented.
+ *
+ * ONE INTROSPECTION CALL SETTLES IT, and then this can become a variable again:
+ *
+ *   query ezDeleteInput {
+ *     __type(name: "Mutation") {
+ *       fields { name args { name type { kind name ofType { kind name } } } }
+ *     }
+ *   }
+ *
+ * Inlining means the id is part of the document text, so it is validated as an
+ * RFC 4122 UUID (which is what a caterer id is, and what the docs' UUID scalar
+ * says) and never interpolated unchecked. Anything else throws here rather than
+ * travelling to ezCater inside a mutation.
+ */
+export function deleteSubscriptionsMutation(catererUuid: string): string {
+  const id = String(catererUuid ?? '').trim();
+  if (!/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(id)) {
+    throw new Error(`ezCater deleteSubscriptions needs a caterer UUID, got ${JSON.stringify(catererUuid)}`);
+  }
+  return `
+mutation ServOsEzDeleteSubscriptions {
+  deleteSubscriptions(subscriptionsParams: { parentEntity: Caterer, parentId: ${JSON.stringify(id)} }) {
     success
   }
 }`;
+}
 
 // The lifecycle events worth subscribing to.
 //
@@ -361,10 +466,19 @@ mutation ServOsEzDeleteSubscriptions($parentId: UUID!) {
 export const EZ_EVENTS = [
   'accepted',           // also arrives a SECOND time for a modification, there is no modified event
   'submitted',
+  'rejected',           // see below. Without it a rejected order keeps its till ticket forever
   'cancelled',
   'relish_finalized',   // Meal Program orders arrive ONLY through this
   // 'uncancelled',     // subscribable, never fires. Do not enable.
 ];
+
+// WHY 'rejected' IS IN THAT LIST. ezCater documents it as an Order event key
+// meaning the order "has been rejected by a caterer or on behalf of a caterer",
+// and the Partner Portal is where an operator rejects, because a modification
+// on an API-accepted order CANNOT be rejected through the API at all. Without
+// this subscription that rejection never reaches us: ezStatusToQueueStatus
+// already maps rejected to cancelled and EZ_TERMINAL already holds it, and both
+// were dead code, so the kitchen kept cooking an order nobody was paying for.
 
 // ────────────────────────────────────────────────────────────────────────────
 // Typed wrappers
@@ -416,6 +530,29 @@ export async function createSubscriber(token: string, url: string, name: string)
   return data?.createSubscriber?.subscriber ?? null;
 }
 
+/**
+ * Repoint the one subscriber this API user is allowed to have.
+ *
+ * Needed because ezCater refuses a second subscriber, so on a reconnect we are
+ * handed the existing one and it may still be pointing at a webhook URL from a
+ * previous project or a previous deploy. Nothing else in the API can move it.
+ *
+ * Returns the updated Subscriber, which is id, name and webhookUrl. It does NOT
+ * return webhookSecret and cannot: only createSubscriber ever issues one, and
+ * ezCater state that webhook secrets cannot be changed. So the secret on the
+ * repointed subscriber is unchanged and still the one issued at creation.
+ */
+export async function updateSubscriber(
+  token: string, subscriberId: string, url: string, name?: string | null,
+): Promise<any> {
+  const subscriberParams: Record<string, unknown> = { webhookUrl: url };
+  if (name) subscriberParams.name = name;
+  const data = await ez<any>(token, 'ServOsEzUpdateSubscriber', UPDATE_SUBSCRIBER_MUTATION, {
+    subscriberId, subscriberParams,
+  });
+  return data?.updateSubscriber?.subscriber ?? null;
+}
+
 /** The subscriber this API user already has, if any. Only one is ever allowed. */
 export async function subscribers(token: string): Promise<any[]> {
   const data = await ez<any>(token, 'ServOsEzSubscribers', SUBSCRIBERS_QUERY, {});
@@ -442,11 +579,13 @@ export async function createSubscription(
   return data?.createSubscription?.subscription ?? null;
 }
 
-/** Remove every subscription for ONE caterer. Scoped by caterer, not by subscriber. */
+/**
+ * Remove every subscription for ONE caterer. Scoped by caterer, not by subscriber.
+ * The whole argument is inline in the document, so there are no variables to send.
+ * See deleteSubscriptionsMutation for why.
+ */
 export async function deleteSubscriptions(token: string, catererUuid: string): Promise<any> {
-  const data = await ez<any>(token, 'ServOsEzDeleteSubscriptions', DELETE_SUBSCRIPTIONS_MUTATION, {
-    parentId: catererUuid,
-  });
+  const data = await ez<any>(token, 'ServOsEzDeleteSubscriptions', deleteSubscriptionsMutation(catererUuid), {});
   return data?.deleteSubscriptions ?? null;
 }
 

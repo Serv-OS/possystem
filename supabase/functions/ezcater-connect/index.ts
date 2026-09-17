@@ -25,7 +25,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import {
-  caterers as listCaterers, subscribers as listSubscribers, createSubscriber,
+  caterers as listCaterers, subscribers as listSubscribers, createSubscriber, updateSubscriber,
   createSubscription, deleteSubscriptions, EZ_EVENTS, EzcaterError, isSchemaError,
 } from '../_shared/ezcater.ts';
 
@@ -130,10 +130,27 @@ async function catererUuidsFor(connectionId: string): Promise<string[]> {
  * allows one subscriber per API user, so on a reconnect we reuse the existing
  * one and CANNOT read its secret again: that is when EZCATER_SIGNING_SECRET has
  * to be set by hand, and it is said out loud rather than failing quietly.
+ *
+ * THE REUSED SUBSCRIBER IS ALSO POINTING SOMEWHERE ELSE. That is the part that
+ * used to be missed. A subscriber created against an older project, an older
+ * deploy or a colleague's test box keeps ITS webhookUrl, and reusing it without
+ * looking left Back Office saying "connected" while every single notification
+ * went to the old address and no order ever arrived. So the URL is compared and
+ * repointed with updateSubscriber when it differs.
+ *
+ * Repointing does NOT touch the signing secret. UpdateSubscriberPayload returns
+ * a Subscriber, which has no webhookSecret field, and ezCater state that webhook
+ * secrets cannot be changed at present. So the secret stays exactly the one
+ * issued at creation: still the right key, still not readable by us, still to be
+ * set by hand as EZCATER_SIGNING_SECRET. Repointing fixes WHERE the events go,
+ * never how they are signed.
  */
 async function subscribe(
   connectionId: string, token: string, catererUuids: string[], label: string | null,
-): Promise<{ subscriberId: string | null; secret: string | null; events: string[]; caterers: number; reused: boolean }> {
+): Promise<{
+  subscriberId: string | null; secret: string | null; events: string[]; caterers: number;
+  reused: boolean; repointed: boolean; webhookUrl: string | null; repointError: string | null;
+}> {
   const name = `ServOS-${label || 'ezCater'}`.slice(0, 120);
 
   let subscriber: any = null;
@@ -151,6 +168,29 @@ async function subscribe(
 
   const subscriberId = subscriber?.id ? String(subscriber.id) : null;
   const secret = subscriber?.webhookSecret ? String(subscriber.webhookSecret) : null;
+
+  // ── Repoint a reused subscriber that is aimed at the wrong webhook ────────
+  let repointed = false;
+  let repointError: string | null = null;
+  let webhookUrl = subscriber?.webhookUrl ? String(subscriber.webhookUrl) : null;
+  if (reused && subscriberId && webhookUrl !== WEBHOOK_URL) {
+    try {
+      const updated = await updateSubscriber(token, subscriberId, WEBHOOK_URL, name);
+      webhookUrl = updated?.webhookUrl ? String(updated.webhookUrl) : WEBHOOK_URL;
+      repointed = true;
+      console.warn('[ezcater-connect] reused subscriber', subscriberId,
+        'was pointing at a different webhook. Repointed to ours. The signing secret is unchanged,',
+        'ezCater only ever issues it at creation and cannot change it, so EZCATER_SIGNING_SECRET still has to match that original secret.');
+    } catch (e) {
+      // Do NOT claim a working connection. Every notification is still going to
+      // the old address and the operator has to know that is why nothing arrives.
+      repointError = e instanceof Error ? e.message : String(e);
+      console.error('[ezcater-connect] could not repoint the reused subscriber', subscriberId,
+        'away from its old webhook. NO ORDER WILL ARRIVE until this is fixed:', repointError);
+    }
+  } else if (!reused) {
+    webhookUrl = WEBHOOK_URL;
+  }
 
   const done = new Set<string>();
   let wired = 0;
@@ -174,15 +214,22 @@ async function subscribe(
 
   const patch: any = {
     subscriber_id: subscriberId,
-    webhook_url: WEBHOOK_URL,
+    // The URL ezCater ACTUALLY has, not the one we wish it had. Writing
+    // WEBHOOK_URL here regardless is what made a misdirected subscriber look
+    // healthy in Back Office.
+    webhook_url: webhookUrl || WEBHOOK_URL,
     subscribed_events: [...done],
     updated_at: new Date().toISOString(),
   };
   // Never overwrite a working secret with the null a reused subscriber gives us.
   if (secret) patch.signing_secret = secret;
+  if (repointError) {
+    patch.status = 'error';
+    patch.last_error = `Subscriber ${subscriberId} is still pointing at ${webhookUrl || 'an unknown webhook'}. No order can arrive. ${repointError}`;
+  }
   await sb.from('ezcater_connections').update(patch).eq('id', connectionId);
 
-  return { subscriberId, secret, events: [...done], caterers: wired, reused };
+  return { subscriberId, secret, events: [...done], caterers: wired, reused, repointed, webhookUrl, repointError };
 }
 
 Deno.serve(async (req) => {
@@ -274,6 +321,15 @@ Deno.serve(async (req) => {
           // True means we could not read a fresh webhook secret, because ezCater
           // only ever issues one at creation. Say so plainly in Back Office.
           reused_subscriber: sub.reused,
+          // True means that reused subscriber was aimed at someone else's
+          // webhook and we moved it to ours. The signing secret is UNCHANGED by
+          // that move (ezCater cannot change one), so EZCATER_SIGNING_SECRET
+          // must still be the secret issued when the subscriber was created.
+          webhook_repointed: sub.repointed,
+          webhook_url: sub.webhookUrl,
+          // Non null means the subscriber is STILL pointing elsewhere. Back
+          // Office must not show this as connected: no order will arrive.
+          webhook_repoint_error: sub.repointError,
         });
       }
 
@@ -361,6 +417,10 @@ Deno.serve(async (req) => {
         const sub = await subscribe(conn.id, conn.api_token, uuids, conn.label || null);
         return json({
           ok: true, subscriber_id: sub.subscriberId, subscribed: sub.events, subscribed_caterers: sub.caterers,
+          reused_subscriber: sub.reused,
+          webhook_repointed: sub.repointed,
+          webhook_url: sub.webhookUrl,
+          webhook_repoint_error: sub.repointError,
         });
       }
 
