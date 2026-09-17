@@ -803,11 +803,10 @@ export default function BackOfficeApp() {
             {NAV.find(n => n.id === section)?.label || (section?.startsWith('wf-') ? 'Workforce' : '')}
           </div>
           <div style={{ display:'flex', alignItems:'center', gap:12 }}>
-            {/* Quick nav — POS / Office / Admin segmented (Office active) */}
+            {/* Quick nav: POS / Office segmented (Office active) */}
             <div style={{ display:'inline-flex', gap:2, padding:3, borderRadius:11, background:'var(--inset)', border:'1px solid var(--inset-border)' }}>
               <a href="?mode=pos" onClick={() => { localStorage.removeItem('rpos-device'); localStorage.removeItem('rpos-device-config'); }} style={{ padding:'6px 12px', borderRadius:8, color:'var(--t3)', fontSize:12, fontWeight:600, cursor:'pointer', fontFamily:'inherit', textDecoration:'none', display:'inline-flex', alignItems:'center', gap:6 }}><Icon name="pos" size={14}/>POS</a>
               <a href="?mode=office" style={{ padding:'6px 12px', borderRadius:8, background:'var(--glass-bg)', boxShadow:'var(--glass-hi)', color:'var(--t1)', fontSize:12, fontWeight:600, cursor:'pointer', fontFamily:'inherit', textDecoration:'none', display:'inline-flex', alignItems:'center', gap:6 }}><Icon name="office" size={14}/>Office</a>
-              <a href="?mode=admin" style={{ padding:'6px 12px', borderRadius:8, color:'var(--t3)', fontSize:12, fontWeight:600, cursor:'pointer', fontFamily:'inherit', textDecoration:'none', display:'inline-flex', alignItems:'center', gap:6 }}><Icon name="settings" size={14}/>Admin</a>
             </div>
             {/* Push to POS button */}
             <PushToPOSButton />

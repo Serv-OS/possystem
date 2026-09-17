@@ -1250,19 +1250,6 @@ function Sidebar({ surface, setSurface }) {
         {!deviceConfig && <div style={{ position:'absolute', top:6, right:8, width:7, height:7, borderRadius:'50%', background:'var(--red)', boxShadow:'0 0 6px var(--red)' }}/>}
       </button>
 
-      {/* Back Office button */}
-      <button onClick={() => { window.location.href = "?mode=office"; }} title="Back Office" style={{
-        width:46, height:46, borderRadius:10, cursor:'pointer',
-        display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:2,
-        background:'transparent', border:'1px solid transparent',
-        color:'var(--t3)', transition:'all .15s', fontFamily:'inherit',
-      }}
-      onMouseEnter={e=>{e.currentTarget.style.background='var(--bg3)';e.currentTarget.style.color='var(--t1)';}}
-      onMouseLeave={e=>{e.currentTarget.style.background='transparent';e.currentTarget.style.color='var(--t3)';}}>
-        <Icon name="office" size={20} />
-        <span style={{ fontSize:9, fontWeight:700, letterSpacing:'.04em' }}>Office</span>
-      </button>
-
       {/* Support chat button */}
       <button onClick={() => setShowSupport(true)} title="Support" style={{
         width:46, height:46, borderRadius:10, cursor:'pointer',
