@@ -14,6 +14,29 @@ Researched 25 Aug 2026 against the official docs at `https://api.ezcater.io` (al
 
 ---
 
+## THE FIELD NAMES, corrected 17 Sep 2026
+
+The first build guessed at field names. **GraphQL throws the WHOLE query away over one wrong field**, and answers 200 while doing it, so the first real order would have fetched nothing and never reached the till. These are now copied from the schema reference, not inferred.
+
+- **Lifecycle** is `lifecycle { orderIsCurrently }`. There is no `value`.
+- **Money lives in three places.** `Order.totals` has `subTotal` (capital T), `salesTax`, `salesTaxRemittance`, `tip`, `customerTotalDue`, `pointOfSaleIntegrationFee`. `catererCart.totals` has `catererTotalDue` ALONE, and it is a float in dollars.
+- **Delivery fee is not a field.** It is `catererCart.feesAndDiscounts(types: [DELIVERY_FEE])`, a list of `{ name, cost }`.
+- **taxableAddress** is on `Order`, not on totals.
+- **A line has no unit price.** `totalInSubunits` is the line total and it already includes the options.
+- **A customization has no money at all.** Only `customizationId`, `customizationTypeId`, `customizationTypeName`, `name`, `posCustomizationId`, `quantity`.
+- **Address has no latitude or longitude.** It does have `street3` and `stateName`.
+- **EventContact is name and phone only.** No email anywhere on an order. `OrderCustomer` is `firstName`, `lastName`, `fullName`.
+- **Event has no orderNotes.** It has `customerProvidedName` and `catererHandoffFoodTime`.
+- **Order has no isModified and no createdAt.**
+- **rejectOrder takes one input object**, `rejectOrderInput: RejectOrderInput!`. Accept and reject payloads have no `errors` field.
+- **A subscription is per caterer per event.** `parentId` is the caterer uuid. There is no account wide subscription.
+- **Caterer has no brandName.** It has `storeNumber` and `live`.
+- **createSubscriber returns `id` and `webhookSecret`**, and the secret is issued ONCE, at creation, never again.
+
+**Settle any future question with introspection**, which the "Using GraphQL" page documents against the live token: `query { __type(name: "Order") { fields { name } } }`.
+
+---
+
 ## THE TAX DECISION, read this first
 
 **ezCater calculates, charges and in most states remits the sales tax itself.** Our tax profiles engine must NOT recompute it.
