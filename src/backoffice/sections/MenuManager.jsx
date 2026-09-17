@@ -44,7 +44,7 @@ import { orderOptionFlow } from '../../lib/optionFlow';
 // can never disagree about a dish's margin.
 import { fetchRecipes, buildCostingCtx, costRecipeWith } from '../../lib/stock/recipes';
 import { resolveTaxRate, netOf } from '../../lib/tax';
-import { isOptionOnlyItem, moveMainProductOptions } from '../../lib/menuRules';
+import { isOptionOnlyItem, moveMainProductOptions, resolveSoldAlone } from '../../lib/menuRules';
 import { categoryVisibleInMenu, categoriesOnNoMenu } from '../../lib/menuMembership';
 
 // Dietary tags — stored on menu_items.tags (jsonb). The tag id is what the print
@@ -122,7 +122,10 @@ async function cloneItem(item, menuItems, addMenuItem, updateMenuItem, markBOCha
     optionGroupOrder:         Array.isArray(item.optionGroupOrder) ? [...item.optionGroupOrder] : null,   // v5.5.948 combined flow order
     modifierGroups:           item.modifierGroups ? [...item.modifierGroups] : undefined,
     visibility:               { ...(item.visibility || { pos:true, kiosk:true, online:true }) },
-    soldAlone:                item.soldAlone ?? true,
+    // The copy keeps the source's choice. With none, a sub item is not sold alone and every
+    // other type is (lib/menuRules.js rule 6). This was "?? true", which made every cloned
+    // sub item a product.
+    soldAlone:                resolveSoldAlone(item),
     centreId:                 item.centreId || null,
     sortOrder:                (item.sortOrder ?? 0) + 1,
   });
@@ -2027,6 +2030,7 @@ function ItemsLibrary() {
                         {item.cat && <span style={{ fontSize:10, fontWeight:600, color:'var(--grn)' }}>✓ Will show on POS</span>}
                       </div>
                     )}
+                    <SoldAloneNote item={item} style={{ flexBasis:'100%' }} />
                   </div>
                 )}
                 {/* Variant children — always visible */}
@@ -2240,6 +2244,19 @@ function ItemImageUpload({ item, onUpdate, markBOChange, showToast }) {
           <input type="file" accept="image/*" style={{ display:'none' }} onChange={handleFile} disabled={uploading} />
         </label>
       )}
+    </div>
+  );
+}
+
+// A sub item with Sold alone ON is a product in its own right. One plain line under the switch
+// says so, so a wrong one is easy to spot (Sold alone used to switch itself on for new sub
+// items, lib/menuRules.js rule 6). Saved data is never changed for the person.
+const SOLD_ALONE_NOTE = 'This shows as its own product on the till, kiosk and online. Only an option? Turn it off.';
+function SoldAloneNote({ item, style }) {
+  if (item?.type !== 'subitem' || isOptionOnlyItem(item)) return null;
+  return (
+    <div data-sold-alone-note style={{ fontSize:11, lineHeight:1.45, fontWeight:600, color:'var(--t2)', background:'var(--acc-d)', border:'1px solid var(--acc-b)', borderRadius:8, padding:'6px 9px', ...style }}>
+      {SOLD_ALONE_NOTE}
     </div>
   );
 }
@@ -2593,6 +2610,22 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
               <div style={{ display:'flex', flexDirection:'column', gap:10 }}>
                 <div style={{ padding:'8px 10px', background:'var(--bg3)', borderRadius:8, fontSize:11, color:'var(--t3)', lineHeight:1.5 }}>
                   Sub items are modifier options — e.g. Whole Milk, Oat Milk, Chips. Assign them to modifier groups in the Modifier groups tab.
+                </div>
+                {/* Sold alone: the same switch as the Items list, shown here too because this is
+                    where the "Sub item" chip is tapped. */}
+                <div>
+                  <span style={lbl}>Sold alone</span>
+                  <button onClick={()=>f('soldAlone', !item.soldAlone)} aria-pressed={!!item.soldAlone}
+                    style={{ display:'flex', alignItems:'center', gap:8, background:'none', border:'none', cursor:'pointer', padding:0, fontFamily:'inherit' }}>
+                    <div style={{ width:36, height:20, borderRadius:10, background:item.soldAlone?'var(--grn)':'var(--bg5)', border:`1.5px solid ${item.soldAlone?'var(--grn)':'var(--bdr2)'}`, position:'relative', transition:'all .2s', flexShrink:0 }}>
+                      <div style={{ width:14, height:14, borderRadius:'50%', background:'#fff', position:'absolute', top:2, left:item.soldAlone?18:2, transition:'left .2s', boxShadow:'0 1px 3px #0003' }}/>
+                    </div>
+                    <span style={{ fontSize:12, fontWeight:700, color:item.soldAlone?'var(--grn)':'var(--t3)' }}>{item.soldAlone ? 'On' : 'Off'}</span>
+                  </button>
+                  <SoldAloneNote item={item} style={{ marginTop:6 }} />
+                  {!item.soldAlone && (
+                    <div style={{ fontSize:10, color:'var(--t4)', marginTop:4 }}>Only an option. It is not a product on the till, kiosk or online.</div>
+                  )}
                 </div>
                 <div>
                   <span style={lbl}>Group tag</span>

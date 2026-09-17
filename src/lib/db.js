@@ -19,6 +19,7 @@ import { describeMenuChange } from './menuDiff';
 import { money } from './currency';
 import { categoryImageField, categoryPhotoUrl, checkPhotoFile, categoryPhotoPath, peerPhotoTargets, isMissingImageColumn } from './categoryPhoto';
 import { peerMenuPlan } from './menuMembership';
+import { resolveSoldAlone } from './menuRules';
 
 // ── Order number generation ──────────────────────────────────────────────────
 // The order number is the order's IDENTITY: unique per location and unlimited.
@@ -285,7 +286,10 @@ export const upsertMenuItem = async (item, locationId = null) => {
     ...(item.optionGroupOrder !== undefined || item.option_group_order !== undefined
       ? { option_group_order: item.optionGroupOrder ?? item.option_group_order ?? null } : {}),
     visibility:   item.visibility  || { pos: true, kiosk: true, online: true },
-    sold_alone:   item.soldAlone   ?? item.sold_alone   ?? true,
+    // A real choice is kept. When nobody chose: a sub item is NOT sold alone, every other type is
+    // (lib/menuRules.js rule 6). This used to be "?? true", which switched Sold alone ON for
+    // every new sub item on its next save. _type is passed so the rule sees the type we write.
+    sold_alone:   resolveSoldAlone({ ...item, type: _type }),
     archived:     item.archived    ?? false,
     centre_id:    item.centreId    || item.centre_id    || null,
     tax_rate_id:  item.taxRateId   || item.tax_rate_id  || null,
@@ -1255,7 +1259,8 @@ const shareModifierGroupsToLocation = async (groupIds, sourceLocId, peerLocId, o
       assigned_modifier_groups: rewriteAssigned(si.assigned_modifier_groups),
       sort_order: si.sort_order ?? 999,
       image: si.image ?? null,
-      sold_alone: si.sold_alone ?? true,
+      // The copy keeps the source's choice. With none, a sub item is not sold alone (rule 6).
+      sold_alone: resolveSoldAlone({ sold_alone: si.sold_alone, type: si.type ?? 'subitem' }),
       visibility: si.visibility ?? { pos: true, kiosk: true, online: true },
       tax_rate_id: si.tax_rate_id ?? null,
       scope: scope || 'shared',
