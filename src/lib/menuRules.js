@@ -150,3 +150,26 @@ export function soldAlonePatchForTypeChange(current, patch) {
   if (wasSub === isSub) return {};
   return { soldAlone: !isSub };
 }
+
+/**
+ * Rule 8. A name index of sub items for modifier options that are not linked by id.
+ * Keyed on every name alias (name, menu, receipt, kitchen), lower case, first match wins.
+ *   soldAloneOnly true   only sub items that are also sold alone (pictures and descriptions:
+ *                        a sub item that is only an option is not curated for customers)
+ *   soldAloneOnly false  every sub item (allergens, 86 and stock: these must apply to an
+ *                        option whatever its Sold alone switch says)
+ * Archived rows are skipped. Reads camelCase and snake_case shapes.
+ */
+export function subitemNameIndex(items, { soldAloneOnly = false } = {}) {
+  const map = new Map();
+  for (const it of (items || [])) {
+    if (!it || it.archived || it.type !== 'subitem') continue;
+    if (soldAloneOnly && !resolveSoldAlone(it)) continue;
+    for (const raw of [it.name, it.menuName, it.menu_name, it.receiptName, it.receipt_name, it.kitchenName, it.kitchen_name]) {
+      if (!raw) continue;
+      const key = String(raw).trim().toLowerCase();
+      if (key && !map.has(key)) map.set(key, it);
+    }
+  }
+  return map;
+}

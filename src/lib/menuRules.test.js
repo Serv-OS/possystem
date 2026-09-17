@@ -2,10 +2,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  isOptionOnlyItem, assignmentGroupId, sizeOrMainOptions, modifierGroupMin, modifierGroupRequired,
-  instructionGroupMin, moveMainProductOptions, resolveSoldAlone, soldAlonePatchForTypeChange,
-} from './menuRules.js';
+import { isOptionOnlyItem, assignmentGroupId, sizeOrMainOptions, modifierGroupMin, modifierGroupRequired, instructionGroupMin, moveMainProductOptions, resolveSoldAlone, soldAlonePatchForTypeChange, subitemNameIndex } from './menuRules.js';
 
 // Live rows (Ops DB, Provo).
 const NO_ICE = { id: 'm-1776807172397', name: 'No Ice', type: 'subitem', sold_alone: false, cat: 'cat-1776803885509' };
@@ -240,4 +237,24 @@ test('7. a wrong tap on the chip is undone by tapping back: the product is on sa
   // A sub item turned into a plain product goes on sale: only sub items have the switch.
   assert.deepEqual(soldAlonePatchForTypeChange({ type: 'subitem', soldAlone: false }, { type: 'modifiable' }), { soldAlone: true });
   assert.deepEqual(soldAlonePatchForTypeChange({ type: 'subitem' }, { type: 'simple' }), { soldAlone: true });
+});
+
+test('rule 8: sub item name index, allergens and 86 see every sub item, pictures only sold alone ones', () => {
+  const items = [
+    { id: 'm1', type: 'subitem', name: 'Pistachio milk', soldAlone: false, allergens: ['nuts'], image: 'p.jpg' },
+    { id: 'm2', type: 'subitem', name: 'Oat milk', menuName: 'Oat', sold_alone: true, allergens: ['gluten'] },
+    { id: 'm3', type: 'subitem', name: 'Soy milk', archived: true, soldAlone: true },
+    { id: 'b1', type: 'simple', name: 'Pistachio milk' },
+    { id: 'm4', type: 'subitem', name: 'Rice milk' },   // flag missing: a sub item defaults to not sold alone
+  ];
+  const any = subitemNameIndex(items);
+  const sold = subitemNameIndex(items, { soldAloneOnly: true });
+  assert.equal(any.get('pistachio milk').id, 'm1', 'an option only sub item is found for allergens and 86');
+  assert.deepEqual(any.get('pistachio milk').allergens, ['nuts']);
+  assert.equal(sold.get('pistachio milk'), undefined, 'its picture is not shown to customers');
+  assert.equal(sold.get('oat').id, 'm2', 'aliases are indexed, snake case flag read');
+  assert.equal(any.has('soy milk'), false, 'archived rows are skipped');
+  assert.equal(any.get('rice milk').id, 'm4');
+  assert.equal(sold.has('rice milk'), false);
+  assert.equal(subitemNameIndex(null).size, 0);
 });

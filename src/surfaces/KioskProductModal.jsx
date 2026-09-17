@@ -48,6 +48,7 @@ import {
   validateSelections, priceDelta, buildModsArray, summarizeForDisplay, kioskSheetNestedHint,
 } from '../lib/kioskOptionGroups';
 import KioskItemSheet from './kiosk/KioskItemSheet';
+import { subitemNameIndex } from '../lib/menuRules';
 
 // ============================================================
 // VALIDATION HELPERS (pure)
@@ -184,41 +185,22 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
   // Precedence: explicit fields on the modifier option win over inherited
   // sub-item fields, matching POS behavior in InlineItemFlow.
   // ============================================================
-  const subitemByName = useMemo(() => {
-    const map = new Map();
-    for (const it of (allItems || [])) {
-      if (!it || it.archived) continue;
-      if (it.type !== 'subitem') continue;
-      // Read both camelCase (store) and snake_case (raw Supabase) shapes.
-      const soldAlone = it.soldAlone ?? it.sold_alone;
-      if (!soldAlone) continue;
-      // Index under every name field this row carries — short option names
-      // ("Bueno Filled") need to match longer sub-item display names
-      // ("Bueno Filled Donut") via menuName/kitchenName/receiptName aliases.
-      const candidates = [
-        it.name,
-        it.menuName, it.menu_name,
-        it.receiptName, it.receipt_name,
-        it.kitchenName, it.kitchen_name,
-      ];
-      for (const raw of candidates) {
-        if (!raw) continue;
-        const key = String(raw).trim().toLowerCase();
-        if (key && !map.has(key)) map.set(key, it);
-      }
-    }
-    return map;
-  }, [allItems]);
+  // Pictures and descriptions come only from sold alone sub items. Allergens, 86 and stock
+  // come from EVERY sub item: since v5.8.95 a new option only sub item is saved as not sold
+  // alone, and its allergens must still reach the customer (lib/menuRules subitemNameIndex).
+  const subitemByName = useMemo(() => subitemNameIndex(allItems, { soldAloneOnly: true }), [allItems]);
+  const anySubitemByName = useMemo(() => subitemNameIndex(allItems), [allItems]);
 
   const resolveOpt = (opt) => {
     const key = String(opt?.name || '').trim().toLowerCase();
     const match = key ? subitemByName.get(key) : null;
+    const anyMatch = key ? (match || anySubitemByName.get(key)) : null;
     return {
       image: opt?.image || match?.image || null,
       description: opt?.description || match?.description || null,
       allergens: (Array.isArray(opt?.allergens) && opt.allergens.length > 0)
         ? opt.allergens
-        : (Array.isArray(match?.allergens) ? match.allergens : []),
+        : (Array.isArray(anyMatch?.allergens) ? anyMatch.allergens : []),
     };
   };
 
@@ -230,7 +212,7 @@ export default function KioskProductModal({ item, allItems = [], brandColor, bra
   const resolveOptItemId = (opt) => {
     if (opt?.itemId || opt?.item_id) return opt.itemId || opt.item_id;
     const key = String(opt?.name || '').trim().toLowerCase();
-    const match = key ? subitemByName.get(key) : null;
+    const match = key ? (subitemByName.get(key) || anySubitemByName.get(key)) : null;
     return match?.id || null;
   };
 

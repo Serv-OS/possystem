@@ -100,7 +100,8 @@ test('no writer defaults Sold alone by itself: they call resolveSoldAlone', () =
   // sub item copy. Every sold_alone it writes comes from the rule, with the type it writes.
   const db = read('lib/db.js');
   const dbWrites = db.split('\n').filter(l => /^\s*sold_alone\s*:/.test(l));
-  assert.equal(dbWrites.length, 2);
+  // upsertMenuItem, the shared sub item copy, and setMenuItemScope base and variant rows (v5.8.95)
+  assert.equal(dbWrites.length, 4);
   for (const l of dbWrites) assert.match(l, /sold_alone:\s+resolveSoldAlone\(/, l);
   assert.ok(/sold_alone:\s+resolveSoldAlone\(\{ \.\.\.item, type: _type \}\)/.test(db), 'upsertMenuItem passes the type it writes');
   assert.ok(db.includes("import { resolveSoldAlone } from './menuRules'"), 'db.js imports the rule with a static import');
@@ -137,4 +138,18 @@ test('the store applies the Sold alone type change rule, and Back Office shows t
   assert.ok(note);
   assert.match(note[1], /its own product on the till, kiosk and online/);
   assert.doesNotMatch(note[1], /[\u2013\u2014]/);   // no dashes in copy
+});
+
+test('sharing a product to another venue carries Sold alone, and option lookups use the shared index', () => {
+  const read = (rel) => fs.readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
+  const db = read('./db.js');
+  assert.ok(db.includes('sold_alone: resolveSoldAlone(item),'), 'setMenuItemScope base row carries sold_alone');
+  assert.ok(db.includes('sold_alone: resolveSoldAlone(v),'), 'setMenuItemScope variant row carries sold_alone');
+  const kiosk = read('../surfaces/KioskProductModal.jsx');
+  assert.ok(kiosk.includes('subitemNameIndex(allItems, { soldAloneOnly: true })') && kiosk.includes('subitemNameIndex(allItems)'), 'kiosk: pictures from sold alone, allergens and 86 from all');
+  assert.ok(kiosk.includes('anySubitemByName.get(key)'), 'kiosk allergen and item id lookups fall back to every sub item');
+  const online = read('../surfaces/online/OnlineItemSheet.jsx');
+  assert.ok(online.includes('(subitemByName.get(key) || anySubitemByName.get(key))?.id'), 'online 86 and stock see every sub item');
+  const mpos = read('../surfaces/mpos/MItemDetail.jsx');
+  assert.ok(mpos.includes('subitemNameIndex(menuItems)') && !mpos.includes('soldAloneOnly'), 'MPOS 86 sees every sub item');
 });

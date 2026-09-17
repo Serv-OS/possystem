@@ -1488,6 +1488,9 @@ export const setMenuItemScope = async (item, newScope, _depth = 0) => {
       // v4.7.1 fix: 'price' column does NOT exist on menu_items — only 'pricing' jsonb.
       // Including it caused PGRST204 "column not found" error which silently failed every promote.
       allergens: item.allergens ?? [],
+      // v5.8.95: carry Sold alone to the peer. Without it a first share inserted the peer row at
+      // the column default false, which hides a normal product from online ordering and HubRise.
+      sold_alone: resolveSoldAlone(item),
       // assigned_modifier_groups is rewritten per-peer below (Bug 3) — not here.
       sort_order: item.sortOrder ?? item.sort_order ?? 999,
       image: item.image ?? null,
@@ -1560,6 +1563,7 @@ export const setMenuItemScope = async (item, newScope, _depth = 0) => {
           cats: [],
           pricing: v.pricing ?? { base: 0 },
           allergens: v.allergens ?? [],
+          sold_alone: resolveSoldAlone(v),
           // v5.5.877 (Bug 3): variants can carry their own modifier groups — repoint them too.
           assigned_modifier_groups: rewriteAssigned(v.assigned_modifier_groups),
           sort_order: v.sort_order ?? 999,
