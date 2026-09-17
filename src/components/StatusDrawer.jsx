@@ -4,8 +4,10 @@ import { supabase, getLocationId } from '../lib/supabase';
 import { printService } from '../lib/printer';
 import { VERSION } from '../lib/version';
 import { printEnvironment, printFailureWords, printPathIndicator } from '../lib/printPathWords';
+import { printerErrorGuidance, printerViewingDevice } from '../lib/printerErrorWords';
 import { resolvePrinterSpec } from '../lib/printerDialects';
 import StatusDrawerCardReaders from './StatusDrawerCardReaders';
+import PrinterErrorHelp from './PrinterErrorHelp';
 
 const ONLINE_THRESHOLD_MS = 15 * 60 * 1000; // 15 min last_seen threshold
 
@@ -30,6 +32,9 @@ export default function StatusDrawer({ onClose }) {
   // Test state: id → 'idle'|'testing'|'ok'|'timeout'|'failed'
   const [testState, setTestState] = useState({});
   const [testMsg, setTestMsg] = useState({});
+  // Last failed printer test: id → { raw, device }. The raw text from the till is kept as it
+  // is and turned into plain steps when it is drawn (lib/printerErrorWords.js).
+  const [testErr, setTestErr] = useState({});
 
   // Reload printers when config syncs
   useEffect(() => {
@@ -159,13 +164,16 @@ export default function StatusDrawer({ onClose }) {
   const testPrinter = async (printer) => {
     setTestState(s => ({ ...s, [printer.id]: 'testing' }));
     setTestMsg(m => ({ ...m, [printer.id]: 'Sending test page…' }));
+    setTestErr(e => ({ ...e, [printer.id]: null }));
     try {
       const result = await printService.printTestPage(printer);
       const jobId = result?.jobId;
       if (result?.ok === false) {
         // v5.8.84: a direct print that failed used to show "Job queued". Say what happened.
         setTestState(s => ({ ...s, [printer.id]: 'failed' }));
-        setTestMsg(m => ({ ...m, [printer.id]: `✗ ${result.error || printFailureWords(printEnv)}` }));
+        // This device tried the printer itself, so the words can name this device.
+        setTestMsg(m => ({ ...m, [printer.id]: null }));
+        setTestErr(e => ({ ...e, [printer.id]: { raw: result.error || '', device: printerViewingDevice() } }));
         setStatuses(prev => ({ ...prev, [printer.id]: 'offline' }));
       } else if (result?.transport === 'native' || result?.transport === 'idempotent') {
         setTestState(s => ({ ...s, [printer.id]: 'ok' }));
@@ -174,20 +182,27 @@ export default function StatusDrawer({ onClose }) {
       } else if (jobId) {
         setTestMsg(m => ({ ...m, [printer.id]: 'Waiting for the printer (20s)…' }));
         await new Promise(resolve => {
+          // The 20 second timer is cleared once the job answers. It used to fire anyway and
+          // turn a printed test into "did not answer" 20 seconds later.
+          let timer = null;
           const unsub = printService.watchJob(jobId, (updated) => {
             if (updated.status === 'done') {
+              clearTimeout(timer);
               setTestState(s => ({ ...s, [printer.id]: 'ok' }));
               setTestMsg(m => ({ ...m, [printer.id]: '✓ Printed successfully' }));
               setStatuses(prev => ({ ...prev, [printer.id]: 'online' }));
               unsub(); resolve();
             } else if (updated.status === 'failed') {
+              clearTimeout(timer);
               setTestState(s => ({ ...s, [printer.id]: 'failed' }));
-              setTestMsg(m => ({ ...m, [printer.id]: `✗ Failed: ${updated.error || 'printer error'}` }));
+              // Another till printed this job, so only the text itself says which device tried.
+              setTestMsg(m => ({ ...m, [printer.id]: null }));
+              setTestErr(e => ({ ...e, [printer.id]: { raw: updated.error_message || updated.error || 'Printer error. Check paper and power.', device: null } }));
               setStatuses(prev => ({ ...prev, [printer.id]: 'offline' }));
               unsub(); resolve();
             }
           });
-          setTimeout(() => { unsub(); setTestState(s => ({ ...s, [printer.id]: 'timeout' })); setTestMsg(m => ({ ...m, [printer.id]: `✗ ${printFailureWords(printEnv)}` })); setStatuses(prev => ({ ...prev, [printer.id]: 'offline' })); resolve(); }, 20000);
+          timer = setTimeout(() => { unsub(); setTestState(s => ({ ...s, [printer.id]: 'timeout' })); setTestMsg(m => ({ ...m, [printer.id]: `✗ ${printFailureWords(printEnv)}` })); setStatuses(prev => ({ ...prev, [printer.id]: 'offline' })); resolve(); }, 20000);
         });
       } else {
         setTestState(s => ({ ...s, [printer.id]: 'ok' }));
@@ -195,7 +210,8 @@ export default function StatusDrawer({ onClose }) {
       }
     } catch (err) {
       setTestState(s => ({ ...s, [printer.id]: 'failed' }));
-      setTestMsg(m => ({ ...m, [printer.id]: `✗ ${err.message}` }));
+      setTestMsg(m => ({ ...m, [printer.id]: null }));
+      setTestErr(e => ({ ...e, [printer.id]: { raw: err?.message || '', device: printerViewingDevice() } }));
       setStatuses(prev => ({ ...prev, [printer.id]: 'offline' }));
     }
   };
@@ -275,6 +291,21 @@ export default function StatusDrawer({ onClose }) {
   const printerForId = (id) => printers.find(p => p.id === id);
   const hasIssues = [...printers, ...kdsDevices].some(d => statuses[d.id] === 'offline') || printJobs.some(j => j.status === 'failed');
 
+  // Plain words for each print queue row. The steps are listed once per printer and fault,
+  // on the newest row, so five failed tickets do not repeat the same list five times.
+  const jobHelp = {};
+  const helpListed = new Set();
+  printJobs.forEach(job => {
+    const raw = job.error_message || job.error || '';
+    const isStale = job.status === 'pending' && Date.now() - new Date(job.created_at).getTime() > 30000;
+    if (!raw && !isStale) return;
+    const printer = printerForId(job.printer_id);
+    const help = printerErrorGuidance(raw, { ip: job.printer_ip || printer?.address, port: printer?.port || 9100, env: printEnv });
+    const key = `${job.printer_id || job.printer_ip}:${help.kind}`;
+    jobHelp[job.id] = { ...help, listSteps: help.steps.length > 0 && !helpListed.has(key) };
+    helpListed.add(key);
+  });
+
   const TestBtn = ({ id, onTest, icon }) => {
     const ts = testState[id];
     return (
@@ -334,6 +365,7 @@ export default function StatusDrawer({ onClose }) {
                   const st = statuses[printer.id] || 'unknown';
                   const ts = testState[printer.id];
                   const msg = testMsg[printer.id];
+                  const err = testErr[printer.id];
                   const spec = resolvePrinterSpec(printer);
                   return (
                     <div key={printer.id} style={{ padding:'11px 14px', borderRadius:12, border:`1px solid ${sbdr(st)}`, background:sbg(st) }}>
@@ -354,7 +386,11 @@ export default function StatusDrawer({ onClose }) {
                           <TestBtn id={printer.id} onTest={() => testPrinter(printer)} icon="🖨"/>
                         </div>
                       </div>
-                      {msg && (
+                      {err ? (
+                        <div style={{ marginTop:6, paddingTop:6, borderTop:'1px solid var(--bdr)' }}>
+                          <PrinterErrorHelp guidance={printerErrorGuidance(err.raw, { ip: printer.address, port: printer.port || 9100, device: err.device, env: printEnv })}/>
+                        </div>
+                      ) : msg && (
                         <div style={{ fontSize:10, marginTop:6, color:tc(ts), fontWeight:600, paddingTop:6, borderTop:'1px solid var(--bdr)' }}>{msg}</div>
                       )}
                     </div>
@@ -422,7 +458,7 @@ export default function StatusDrawer({ onClose }) {
                   const permanent = effectiveStatus === 'failed_permanent';
                   const jsc = permanent ? 'var(--red)' : { done:'var(--grn)', failed:'var(--red)', pending:'var(--acc)', claimed:'var(--acc)', sending:'var(--acc)', printing:'var(--acc)' }[effectiveStatus] || 'var(--t4)';
                   const borderColor = permanent ? 'var(--red)' : effectiveStatus === 'failed' ? 'var(--red-b)' : 'var(--bdr)';
-                  const errMsg = job.error_message || job.error;
+                  const help = jobHelp[job.id];
                   const attemptsText = job.attempts ? `attempt ${job.attempts}${job.max_attempts ? `/${job.max_attempts}` : ''}` : null;
                   return (
                     <div key={job.id} style={{ padding:'9px 12px', borderRadius:10, background: permanent ? 'rgba(239,68,68,0.08)' : 'var(--bg3)', border:`1px solid ${borderColor}` }}>
@@ -436,7 +472,7 @@ export default function StatusDrawer({ onClose }) {
                           <div style={{ fontSize:10, color:'var(--t4)', marginTop:1 }}>
                             {timeSince(job.created_at)}
                             {attemptsText && <span style={{ marginLeft:6, color:'var(--t3)' }}>· {attemptsText}</span>}
-                            {(errMsg || isStale) && <span style={{ color:'var(--red)', marginLeft:6 }}>· {errMsg || printFailureWords(printEnv)}</span>}
+                            {help && <span style={{ color:'var(--red)', marginLeft:6 }}>· {help.title}</span>}
                           </div>
                         </div>
                         <span style={{ fontSize:10, fontWeight:700, color:jsc, textTransform:'uppercase', flexShrink:0 }}>{permanent ? 'FAILED' : effectiveStatus}</span>
@@ -449,6 +485,11 @@ export default function StatusDrawer({ onClose }) {
                           </>
                         )}
                       </div>
+                      {help && (help.listSteps || help.raw) && (
+                        <div style={{ marginTop:6, paddingTop:6, borderTop:'1px solid var(--bdr)' }}>
+                          <PrinterErrorHelp guidance={help} showTitle={false} showSteps={help.listSteps} size={10}/>
+                        </div>
+                      )}
                     </div>
                   );
                 })}

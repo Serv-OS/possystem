@@ -16,6 +16,7 @@ import { useStore } from '../../store';
 import { Sx, money } from './MShellStyles';
 import { flowOrderedMods } from '../../lib/optionFlow';
 import { resolveItemPrice, planCartLine } from '../../lib/menuPricing';
+import { subitemNameIndex } from '../../lib/menuRules';
 
 export default function MItemDetail({ item, onClose, onAdded }) {
   const { addItem, modifierGroupDefs = [], instructionGroupDefs = [], eightySixIds = [], menuItems = [], dailyCounts = {}, orderType, activeMenuId } = useStore();
@@ -58,19 +59,8 @@ export default function MItemDetail({ item, onClose, onAdded }) {
   // out of stock if its linked item — or a sold-alone sub-item with the same
   // name — is 86'd. Without this, 86'd items (e.g. Bueno) stayed selectable in
   // modifier groups (Box of 3).
-  const subitemByName = useMemo(() => {
-    const map = new Map();
-    for (const it of (menuItems || [])) {
-      if (!it || it.archived || it.type !== 'subitem') continue;
-      if (!(it.soldAlone ?? it.sold_alone)) continue;
-      for (const raw of [it.name, it.menuName, it.menu_name, it.receiptName, it.receipt_name, it.kitchenName, it.kitchen_name]) {
-        if (!raw) continue;
-        const key = String(raw).trim().toLowerCase();
-        if (key && !map.has(key)) map.set(key, it);
-      }
-    }
-    return map;
-  }, [menuItems]);
+  // 86 applies to every sub item, sold alone or not (lib/menuRules subitemNameIndex).
+  const subitemByName = useMemo(() => subitemNameIndex(menuItems), [menuItems]);
   const resolveOptItemId = (opt) => {
     if (opt?.itemId || opt?.item_id) return opt.itemId || opt.item_id;
     const key = String(opt?.name || opt?.label || '').trim().toLowerCase();

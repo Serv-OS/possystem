@@ -44,6 +44,7 @@ import { reportSave } from '../lib/saveHealth';
 import { bumpChallenge21 } from '../lib/challenge21Counter';
 import { shouldKeepPaidOrderInQueue, markQueueEntryPaid, paidQueueRefToClearOnRefund } from '../lib/orderScreen/keepPaidOrder';
 import { alcoholCategorySet, orderHasAlcohol, kioskTicketLabels, kioskTableForTicket } from '../lib/kioskStaffFlags';
+import { resolveSoldAlone, soldAlonePatchForTypeChange } from '../lib/menuRules';
 
 // Kiosk ticket flags (table, CHECK ID): reads made after routeKioskOrderPrints has claimed an
 // order must never hold its ticket. A plain function timer, never a timer called as an object
@@ -320,26 +321,9 @@ const sbDeleteCategory = async (id) => {
   const { error } = await supabase.from('menu_categories').delete().eq('id', id).eq('location_id', locationId);
   reportSave('category delete', error);   // v5.5.951
 };
-const sbUpsertMenuItem = async (item) => {
-  if (isMock) return;
-  const locationId = getActiveLocationSync() || await getLocationId();
-  if (!locationId) return console.warn('[Supabase] no location ID — item not saved');
-  const { error } = await supabase.from('menu_items').upsert({
-    id: item.id, location_id: locationId, name: item.menuName||item.menu_name||item.name||'Item',
-    menu_name: item.menuName||item.menu_name||item.name||'Item', receipt_name: item.receiptName||item.name,
-    kitchen_name: item.kitchenName||item.name, description: item.description||'',
-    type: item.type||'simple', cat: item.cat||null, cats: item.cats||[],
-    parent_id: item.parentId||null, sort_order: item.sortOrder||0,
-    pricing: item.pricing||{base:0}, allergens: item.allergens||[], tags: item.tags||[],
-    assigned_modifier_groups: item.assignedModifierGroups||[],
-    // v5.5.948: combined flow order — conditional so this path can't clobber a saved order.
-    ...(item.optionGroupOrder !== undefined ? { option_group_order: item.optionGroupOrder } : {}),
-    visibility: item.visibility||{pos:true,kiosk:true,online:true},
-    sold_alone: item.soldAlone||false, archived: item.archived||false,
-    updated_at: new Date().toISOString()
-  });
-  reportSave('item', error);   // v5.5.951 — this writer previously didn't even LOOK at the result
-};
+// Menu items have ONE writer: upsertMenuItem in lib/db.js. A second, unused copy lived here
+// (sbUpsertMenuItem) with its own sold_alone default. Removed 17 Sep 2026 so the two can
+// never disagree (menuRulesUsage.test.js checks this file never writes sold_alone).
 import { INITIAL_KDS, SHIFT, MENU_ITEMS, CATEGORIES, STAFF as STAFF_SEED, QUICK_IDS, ALLERGENS as ALLERGEN_DEFS } from '../data/seed';
 import { money } from '../lib/currency';
 import { orderCollectionLabel } from '../lib/collectionLabel';
@@ -1370,7 +1354,10 @@ export const useStore = create((set, get) => ({
       }
       let items = s.menuItems.map(item => {
         if (item.id !== id) return item;
-        const updated = { ...item, ...patch };
+        // Sold alone follows a real change of type into or out of 'subitem', unless this same
+        // edit set it (lib/menuRules.js rule 7). An item that already is a sub item, and any
+        // edit that does not change the type, is never touched.
+        const updated = { ...item, ...patch, ...soldAlonePatchForTypeChange(item, patch) };
         if (patch.modifierGroups !== undefined && !['subitem','variants','combo','pizza'].includes(updated.type)) {
           updated.type = patch.modifierGroups?.length > 0 ? 'modifiable' : 'simple';
         }
@@ -1540,6 +1527,11 @@ export const useStore = create((set, get) => ({
     if (!newItem.parentId && (newItem.type || 'simple') === 'simple' && (newItem.assignedModifierGroups?.length > 0)) {
       newItem.type = 'modifiable';
     }
+    // Sold alone is stamped at birth, so what Back Office shows and what is saved agree from
+    // the first save (lib/menuRules.js rule 6: the caller's choice is kept; with none, a sub
+    // item is not sold alone and every other type is). It used to be left undefined here while
+    // the save wrote true, so the switch read OFF until a refresh and then ON.
+    newItem.soldAlone = resolveSoldAlone(newItem);
     // v5.5.961: new products are born with the venue's default tax rate stamped on
     // (same resolution as lib/tax.js), so pricing before/after setting up tax rates
     // never leaves items untaxed. An explicit taxRateId from the caller wins.

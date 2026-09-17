@@ -44,8 +44,11 @@ import { orderOptionFlow } from '../../lib/optionFlow';
 // can never disagree about a dish's margin.
 import { fetchRecipes, buildCostingCtx, costRecipeWith } from '../../lib/stock/recipes';
 import { resolveTaxRate, netOf } from '../../lib/tax';
-import { isOptionOnlyItem, moveMainProductOptions } from '../../lib/menuRules';
+import { isOptionOnlyItem, moveMainProductOptions, resolveSoldAlone } from '../../lib/menuRules';
 import { categoryVisibleInMenu, categoriesOnNoMenu } from '../../lib/menuMembership';
+// Price boxes select their whole value on the first click or Tab, so typing
+// replaces the number instead of landing next to the 0.
+import { selectOnFocus } from '../../lib/selectOnFocus';
 
 // Dietary tags — stored on menu_items.tags (jsonb). The tag id is what the print
 // menu + digital menu board map to a GF/V/VG/DF badge (see printMenu.js DIET map),
@@ -122,7 +125,10 @@ async function cloneItem(item, menuItems, addMenuItem, updateMenuItem, markBOCha
     optionGroupOrder:         Array.isArray(item.optionGroupOrder) ? [...item.optionGroupOrder] : null,   // v5.5.948 combined flow order
     modifierGroups:           item.modifierGroups ? [...item.modifierGroups] : undefined,
     visibility:               { ...(item.visibility || { pos:true, kiosk:true, online:true }) },
-    soldAlone:                item.soldAlone ?? true,
+    // The copy keeps the source's choice. With none, a sub item is not sold alone and every
+    // other type is (lib/menuRules.js rule 6). This was "?? true", which made every cloned
+    // sub item a product.
+    soldAlone:                resolveSoldAlone(item),
     centreId:                 item.centreId || null,
     sortOrder:                (item.sortOrder ?? 0) + 1,
   });
@@ -1492,7 +1498,7 @@ function ListItemView({ items, menuItems, selItemId, setSelItemId, catColor, add
                       <span style={{ fontSize:10, color:'var(--t4)' }}>size</span>
                       <div style={{ display:'flex', alignItems:'center', gap:2 }}>
                         <span style={{ fontSize:11, color:'var(--t4)', fontWeight:700 }}>£</span>
-                        <input type="number" step="0.01" min="0"
+                        <input type="number" step="0.01" min="0" {...selectOnFocus}
                           style={{ fontSize:12, fontWeight:700, color:catColor, background:'transparent', border:'none', outline:'none', width:55, fontFamily:'inherit', cursor:'text' }}
                           value={vp.base!==undefined?vp.base:''}
                           onClick={e=>e.stopPropagation()}
@@ -2027,6 +2033,7 @@ function ItemsLibrary() {
                         {item.cat && <span style={{ fontSize:10, fontWeight:600, color:'var(--grn)' }}>✓ Will show on POS</span>}
                       </div>
                     )}
+                    <SoldAloneNote item={item} style={{ flexBasis:'100%' }} />
                   </div>
                 )}
                 {/* Variant children — always visible */}
@@ -2240,6 +2247,19 @@ function ItemImageUpload({ item, onUpdate, markBOChange, showToast }) {
           <input type="file" accept="image/*" style={{ display:'none' }} onChange={handleFile} disabled={uploading} />
         </label>
       )}
+    </div>
+  );
+}
+
+// A sub item with Sold alone ON is a product in its own right. One plain line under the switch
+// says so, so a wrong one is easy to spot (Sold alone used to switch itself on for new sub
+// items, lib/menuRules.js rule 6). Saved data is never changed for the person.
+const SOLD_ALONE_NOTE = 'This shows as its own product on the till, kiosk and online. Only an option? Turn it off.';
+function SoldAloneNote({ item, style }) {
+  if (item?.type !== 'subitem' || isOptionOnlyItem(item)) return null;
+  return (
+    <div data-sold-alone-note style={{ fontSize:11, lineHeight:1.45, fontWeight:600, color:'var(--t2)', background:'var(--acc-d)', border:'1px solid var(--acc-b)', borderRadius:8, padding:'6px 9px', ...style }}>
+      {SOLD_ALONE_NOTE}
     </div>
   );
 }
@@ -2594,6 +2614,22 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                 <div style={{ padding:'8px 10px', background:'var(--bg3)', borderRadius:8, fontSize:11, color:'var(--t3)', lineHeight:1.5 }}>
                   Sub items are modifier options — e.g. Whole Milk, Oat Milk, Chips. Assign them to modifier groups in the Modifier groups tab.
                 </div>
+                {/* Sold alone: the same switch as the Items list, shown here too because this is
+                    where the "Sub item" chip is tapped. */}
+                <div>
+                  <span style={lbl}>Sold alone</span>
+                  <button onClick={()=>f('soldAlone', !item.soldAlone)} aria-pressed={!!item.soldAlone}
+                    style={{ display:'flex', alignItems:'center', gap:8, background:'none', border:'none', cursor:'pointer', padding:0, fontFamily:'inherit' }}>
+                    <div style={{ width:36, height:20, borderRadius:10, background:item.soldAlone?'var(--grn)':'var(--bg5)', border:`1.5px solid ${item.soldAlone?'var(--grn)':'var(--bdr2)'}`, position:'relative', transition:'all .2s', flexShrink:0 }}>
+                      <div style={{ width:14, height:14, borderRadius:'50%', background:'#fff', position:'absolute', top:2, left:item.soldAlone?18:2, transition:'left .2s', boxShadow:'0 1px 3px #0003' }}/>
+                    </div>
+                    <span style={{ fontSize:12, fontWeight:700, color:item.soldAlone?'var(--grn)':'var(--t3)' }}>{item.soldAlone ? 'On' : 'Off'}</span>
+                  </button>
+                  <SoldAloneNote item={item} style={{ marginTop:6 }} />
+                  {!item.soldAlone && (
+                    <div style={{ fontSize:10, color:'var(--t4)', marginTop:4 }}>Only an option. It is not a product on the till, kiosk or online.</div>
+                  )}
+                </div>
                 <div>
                   <span style={lbl}>Group tag</span>
                   <input style={inp} value={item.subGroup||''} onChange={e=>f('subGroup',e.target.value)} placeholder="e.g. Milks, Sauces, Proteins…"/>
@@ -2633,7 +2669,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                         <input style={{ ...inp, fontSize:13, fontWeight:600 }} value={v.menuName||v.name||''} onChange={e=>updVariant(v.id,{menuName:e.target.value,name:e.target.value,receiptName:e.target.value,kitchenName:e.target.value})} placeholder={`Size ${vi+1}`}/>
                         <div style={{ position:'relative' }}>
                           <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:12, color:'var(--t4)', fontWeight:700 }}>£</span>
-                          <input type="number" step="0.01" min="0" style={{ ...inp, paddingLeft:20, fontSize:13, fontWeight:700, color:'var(--acc)' }} value={vp.base!==undefined?vp.base:''} placeholder="0.00" onChange={e=>updVariant(v.id,{pricing:{...vp,base:parseFloat(e.target.value)||0},price:parseFloat(e.target.value)||0})}/>
+                          <input type="number" step="0.01" min="0" {...selectOnFocus} style={{ ...inp, paddingLeft:20, fontSize:13, fontWeight:700, color:'var(--acc)' }} value={vp.base!==undefined?vp.base:''} placeholder="0.00" onChange={e=>updVariant(v.id,{pricing:{...vp,base:parseFloat(e.target.value)||0},price:parseFloat(e.target.value)||0})}/>
                         </div>
                         <button onClick={()=>removeVariant(v.id)} style={{ width:32,height:34,borderRadius:7,border:'1px solid var(--red-b)',background:'var(--red-d)',color:'var(--red)',cursor:'pointer',fontSize:15,display:'flex',alignItems:'center',justifyContent:'center' }}>×</button>
                       </div>
@@ -2802,7 +2838,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                     <input style={{ ...inp, fontSize:13, fontWeight:600 }} value={v.menuName||v.name||''} onChange={e=>updVariant(v.id,{menuName:e.target.value,name:e.target.value,receiptName:e.target.value,kitchenName:e.target.value})} placeholder={`${item.variantLabel||'Size'} ${vi+1}`}/>
                     <div style={{ position:'relative' }}>
                       <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:12, color:'var(--t4)', fontWeight:700 }}>£</span>
-                      <input type="number" step="0.01" min="0" style={{ ...inp, paddingLeft:20, fontSize:13, fontWeight:700, color:'var(--acc)' }} value={vp.base!==undefined?vp.base:''} placeholder="0.00" onChange={e=>updVariant(v.id,{pricing:{...vp,base:parseFloat(e.target.value)||0},price:parseFloat(e.target.value)||0})}/>
+                      <input type="number" step="0.01" min="0" {...selectOnFocus} style={{ ...inp, paddingLeft:20, fontSize:13, fontWeight:700, color:'var(--acc)' }} value={vp.base!==undefined?vp.base:''} placeholder="0.00" onChange={e=>updVariant(v.id,{pricing:{...vp,base:parseFloat(e.target.value)||0},price:parseFloat(e.target.value)||0})}/>
                     </div>
                     <button onClick={()=>removeVariant(v.id)} style={{ width:32, height:34, borderRadius:7, border:'1px solid var(--red-b)', background:'var(--red-d)', color:'var(--red)', cursor:'pointer', fontSize:15, display:'flex', alignItems:'center', justifyContent:'center' }}>×</button>
                   </div>
@@ -2960,6 +2996,9 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
         {sec==='pricing' && (
           <div style={{ display:'flex', flexDirection:'column', gap:12 }}>
             {isParent && <div style={{ padding:'8px 10px', background:'var(--bg3)', borderRadius:8, fontSize:11, color:'var(--t3)' }}>This item has size variants — set prices on each size in the Sizes tab.</div>}
+            {/* Base price shows EMPTY once it has been cleared (it used to force a 0 back in,
+                so the next digit landed beside it: 05). What an empty box saves is unchanged:
+                fp stores base null and price 0. A real 0 still shows as 0. */}
             {[
               { k:'base',         label:'Base price',     hint:'Used when no channel override is set', accent:true },
               { k:'dineIn',       label:'Dine-in',        hint:'Leave blank to use base price' },
@@ -2976,7 +3015,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                 </div>
                 <div style={{ position:'relative' }}>
                   <span style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)', fontSize:accent?16:13, color:accent?'var(--acc)':'var(--t4)', fontWeight:700 }}>£</span>
-                  <input type="number" step="0.01" min="0" style={{ ...inp, paddingLeft:26, fontSize:accent?16:13, fontWeight:accent?800:400, color:accent?'var(--acc)':'var(--t1)' }} value={k==='base'?(p.base||0):(p[k]!==null&&p[k]!==undefined?p[k]:'')} placeholder={k==='base'?'':(k==='driveThru'&&p.takeaway!==null&&p.takeaway!==undefined)?`${p.takeaway} (takeaway)`:`${p.base||0} (base)`} onChange={e=>fp(k,e.target.value)}/>
+                  <input type="number" step="0.01" min="0" {...selectOnFocus} style={{ ...inp, paddingLeft:26, fontSize:accent?16:13, fontWeight:accent?800:400, color:accent?'var(--acc)':'var(--t1)' }} value={k==='base'?((p.base||p.base===0)?p.base:''):(p[k]!==null&&p[k]!==undefined?p[k]:'')} placeholder={k==='base'?'0.00':(k==='driveThru'&&p.takeaway!==null&&p.takeaway!==undefined)?`${p.takeaway} (takeaway)`:`${p.base||0} (base)`} onChange={e=>fp(k,e.target.value)}/>
                   {k!=='base'&&p[k]!==null&&p[k]!==undefined&&<button onClick={()=>fp(k,'')} style={{ position:'absolute', right:8, top:'50%', transform:'translateY(-50%)', background:'none', border:'none', color:'var(--t4)', cursor:'pointer', fontSize:14 }}>×</button>}
                 </div>
               </div>
@@ -3101,7 +3140,7 @@ function PizzaBuilder({ item, onUpdate, markBOChange }) {
             <input value={s.name} onChange={e=>updateSize(s.id,{name:e.target.value})} style={{ ...inp, fontSize:12, fontWeight:600 }} placeholder={`Size ${i+1}`}/>
             <div style={{ position:'relative' }}>
               <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:11, color:'var(--t4)', fontWeight:700 }}>£</span>
-              <input type="number" step="0.01" min="0" value={s.basePrice||''} onChange={e=>updateSize(s.id,{basePrice:parseFloat(e.target.value)||0})} style={{ ...inp, paddingLeft:20, fontSize:13, fontWeight:700, color:'var(--acc)' }} placeholder="0.00"/>
+              <input type="number" step="0.01" min="0" {...selectOnFocus} value={s.basePrice||''} onChange={e=>updateSize(s.id,{basePrice:parseFloat(e.target.value)||0})} style={{ ...inp, paddingLeft:20, fontSize:13, fontWeight:700, color:'var(--acc)' }} placeholder="0.00"/>
             </div>
             <button onClick={()=>removeSize(s.id)} style={{ width:32, height:34, borderRadius:7, border:'1px solid var(--red-b)', background:'var(--red-d)', color:'var(--red)', cursor:'pointer', fontSize:15, display:'flex', alignItems:'center', justifyContent:'center' }}>×</button>
           </div>
@@ -3111,7 +3150,7 @@ function PizzaBuilder({ item, onUpdate, markBOChange }) {
           <input value={newSizeName} onChange={e=>setNewSizeName(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addSize()} style={{ ...inp, fontSize:12 }} placeholder={'Size name e.g. Medium 11"'}/>
           <div style={{ position:'relative' }}>
             <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:11, color:'var(--t4)', fontWeight:700 }}>£</span>
-            <input type="number" step="0.01" min="0" value={newSizePrice} onChange={e=>setNewSizePrice(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addSize()} style={{ ...inp, paddingLeft:20, fontSize:12 }} placeholder="0.00"/>
+            <input type="number" step="0.01" min="0" {...selectOnFocus} value={newSizePrice} onChange={e=>setNewSizePrice(e.target.value)} onKeyDown={e=>e.key==='Enter'&&addSize()} style={{ ...inp, paddingLeft:20, fontSize:12 }} placeholder="0.00"/>
           </div>
           <button onClick={addSize} disabled={!newSizeName.trim()} style={{ padding:'7px 12px', borderRadius:8, cursor:'pointer', fontFamily:'inherit', background:'var(--acc)', border:'none', color:'#0b0c10', fontSize:12, fontWeight:700, opacity:newSizeName.trim()?1:.4 }}>+ Add</button>
         </div>
@@ -3393,7 +3432,7 @@ function ModifiersTab() {
                   <input style={{ ...inp, fontSize:13, fontWeight:600 }} value={opt.name} onChange={e=>updOpt(opt.id,{name:e.target.value})} placeholder="Option name"/>
                   <div style={{ position:'relative' }}>
                     <span style={{ position:'absolute', left:8, top:'50%', transform:'translateY(-50%)', fontSize:11, color:'var(--t4)', fontWeight:700 }}>£</span>
-                    <input type="number" step="0.01" min="0" style={{ ...inp, paddingLeft:20, fontSize:12, color:'var(--acc)' }} value={opt.price||''} placeholder="0.00" onChange={e=>updOpt(opt.id,{price:parseFloat(e.target.value)||0})}/>
+                    <input type="number" step="0.01" min="0" {...selectOnFocus} style={{ ...inp, paddingLeft:20, fontSize:12, color:'var(--acc)' }} value={opt.price||''} placeholder="0.00" onChange={e=>updOpt(opt.id,{price:parseFloat(e.target.value)||0})}/>
                   </div>
                   <button onClick={()=>delOpt(opt.id)} style={{ width:28,height:34,borderRadius:7,border:'1px solid var(--red-b)',background:'var(--red-d)',color:'var(--red)',cursor:'pointer',fontSize:14,display:'flex',alignItems:'center',justifyContent:'center' }}>×</button>
                 </div>

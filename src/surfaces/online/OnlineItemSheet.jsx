@@ -8,7 +8,7 @@ import { supabase } from '../../lib/supabase';
 import { money } from '../../lib/currency';
 import { dietaryBadges, DIET_LABELS } from '../../lib/dietary';
 import { orderOptionFlow, flowOrderedMods } from '../../lib/optionFlow';
-import { sizeOrMainOptions } from '../../lib/menuRules';
+import { sizeOrMainOptions, subitemNameIndex } from '../../lib/menuRules';
 
 // priceFor: the surface's own unit price rule, so the sheet total is the same
 // number the card shows and the cart line charges. Defaults to the plain base
@@ -83,21 +83,9 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
   // or name-match against sold-alone sub-items) — ported from the kiosk. Needed
   // so an 86'd item can't be ordered online via a modifier group, and so the
   // modifier's stock actually decrements (decrementOnlineStock keys on itemId).
-  const subitemByName = useMemo(() => {
-    const map = new Map();
-    for (const it of (allItems || [])) {
-      if (!it || it.archived) continue;
-      if (it.type !== 'subitem') continue;
-      const soldAlone = it.soldAlone ?? it.sold_alone;
-      if (!soldAlone) continue;
-      for (const raw of [it.name, it.menuName, it.menu_name, it.receiptName, it.receipt_name, it.kitchenName, it.kitchen_name]) {
-        if (!raw) continue;
-        const key = String(raw).trim().toLowerCase();
-        if (key && !map.has(key)) map.set(key, it);
-      }
-    }
-    return map;
-  }, [allItems]);
+  const subitemByName = useMemo(() => subitemNameIndex(allItems, { soldAloneOnly: true }), [allItems]);
+  // 86 and stock apply to every sub item, not only sold alone ones (lib/menuRules subitemNameIndex).
+  const anySubitemByName = useMemo(() => subitemNameIndex(allItems), [allItems]);
   // v5.7.81: modifier options inherit the picture of the sold-alone sub-item of
   // the same name, so "Box of 3" shows the actual donuts. The kiosk has done
   // this since v5.5.30; online never did, so the same menu looked rich on the
@@ -117,7 +105,7 @@ export default function OnlineItemSheet({ item, theme, allItems, instGroupDefs =
   const resolveOptItemId = (opt) => {
     if (opt?.itemId || opt?.item_id) return opt.itemId || opt.item_id;
     const key = String(opt?.name || opt?.label || '').trim().toLowerCase();
-    return (key ? subitemByName.get(key)?.id : null) || null;
+    return (key ? (subitemByName.get(key) || anySubitemByName.get(key))?.id : null) || null;
   };
   const optIs86 = (opt) => {
     const id = resolveOptItemId(opt);

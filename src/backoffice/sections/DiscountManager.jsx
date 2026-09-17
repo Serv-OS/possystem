@@ -6,6 +6,7 @@ import { reportSave } from '../../lib/saveHealth';
 // old try/catch around it swallowed that too (CLAUDE.md: static imports only).
 import { upsertDiscount, deleteDiscount, upsertDiscountRule, deleteDiscountRule } from '../../lib/db';
 import { money, currencySymbol } from '../../lib/currency';
+import { selectOnFocus } from '../../lib/selectOnFocus';
 
 /* ── Style constants (match TaxManager / LocationSettings pattern) ────────── */
 const S = {
@@ -160,7 +161,7 @@ function DiscountForm({ discount, categories, onSave, onCancel }) {
       <div style={S.row}>
         <div>
           <label style={S.label}>Value</label>
-          <input style={S.input} type="number" min="0" value={form.value}
+          <input style={S.input} type="number" min="0" {...selectOnFocus} value={form.value}
             onChange={e => f('value', e.target.value)}
             placeholder={form.type === 'percent' ? 'e.g. 20' : 'e.g. 5.00'} />
         </div>
@@ -386,7 +387,7 @@ function RuleForm({ rule, categories, onSave, onCancel }) {
             {form.rewardType !== 'free' && (
               <div>
                 <label style={S.label}>{form.rewardType === 'percent' ? 'Percentage' : 'Amount'}</label>
-                <input style={S.input} type="number" min="0" value={form.rewardValue}
+                <input style={S.input} type="number" min="0" {...selectOnFocus} value={form.rewardValue}
                   onChange={e => f('rewardValue', e.target.value)}
                   placeholder={form.rewardType === 'percent' ? '50' : '5.00'} />
               </div>
@@ -416,7 +417,7 @@ function RuleForm({ rule, categories, onSave, onCancel }) {
           </div>
           <div style={{ maxWidth:200 }}>
             <label style={S.label}>Fixed price (£)</label>
-            <input style={S.input} type="number" min="0" step="0.01" value={form.rewardValue}
+            <input style={S.input} type="number" min="0" step="0.01" {...selectOnFocus} value={form.rewardValue}
               onChange={e => f('rewardValue', e.target.value)} placeholder="e.g. 15.00" />
           </div>
         </div>

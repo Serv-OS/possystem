@@ -5,6 +5,8 @@ import { reportSave } from '../../lib/saveHealth';
 import { printService } from '../../lib/printer';
 import { PRINTER_MODELS, modelSetupNote, paperOptionsFor, resolvePrinterSpec } from '../../lib/printerDialects';
 import { printEnvironment, printFailureWords } from '../../lib/printPathWords';
+import { printerErrorGuidance, printerViewingDevice } from '../../lib/printerErrorWords';
+import PrinterErrorHelp from '../../components/PrinterErrorHelp';
 
 // v5.8.84: the model list lives in lib/printerDialects.js next to the bytes each model
 // gets (ESC/POS, Star Line Mode, Star raster) and the plain words note about the mode the
@@ -276,6 +278,11 @@ export default function PrinterRegistry() {
   const [editId, setEditId] = useState(null);
   const [testing, setTesting] = useState({});
   const [testResult, setTestResult] = useState({});
+  // Last failed test per printer: id → { raw, device }. The raw text from the till is kept
+  // as it is and turned into plain steps when it is drawn (lib/printerErrorWords.js). It
+  // used to be stored as testResult.error and read back as testResult[id].error, which is
+  // undefined on a string, so the real error never reached the screen.
+  const [testError, setTestError] = useState({});
 
   useEffect(() => {
     loadPrintersFromDB().then(list => { setPrinters(list); setLoading(false); });
@@ -327,6 +334,7 @@ export default function PrinterRegistry() {
   const handleTest = async (printer) => {
     setTesting(t => ({ ...t, [printer.id]: true }));
     setTestResult(r => ({ ...r, [printer.id]: null }));
+    setTestError(e => ({ ...e, [printer.id]: null }));
     try {
       const result = await printService.printTestPage(printer);
       const jobId = result?.jobId;
@@ -335,7 +343,9 @@ export default function PrinterRegistry() {
         const err = result.error || printFailureWords(printEnvironment());
         await printService.recordPrinterHealth(printer.id, 'error', err);
         persist(printers.map(p => p.id === printer.id ? { ...p, status:'offline' } : p));
-        setTestResult(r => ({ ...r, [printer.id]: 'error', error: err }));
+        // This device tried the printer itself, so the words can name this device.
+        setTestError(e => ({ ...e, [printer.id]: { raw: result.error || '', device: printerViewingDevice() } }));
+        setTestResult(r => ({ ...r, [printer.id]: 'error' }));
       } else if (result?.transport === 'native' || result?.transport === 'idempotent') {
         await printService.recordPrinterHealth(printer.id, 'online');
         persist(printers.map(p => p.id === printer.id ? { ...p, status:'online', lastSeen:Date.now() } : p));
@@ -343,21 +353,28 @@ export default function PrinterRegistry() {
       } else if (jobId && printService.watchJob) {
         setTestResult(r => ({ ...r, [printer.id]: 'queued' }));
         await new Promise((resolve) => {
+          // The 20 second timer is cleared once the job answers. It used to fire anyway and
+          // turn a printed test into a warning 20 seconds later.
+          let timer = null;
           const unsub = printService.watchJob(jobId, async (updated) => {
             if (updated.status === 'done') {
+              clearTimeout(timer);
               await printService.recordPrinterHealth(printer.id, 'online');
               persist(printers.map(p => p.id === printer.id ? { ...p, status:'online', lastSeen:Date.now() } : p));
               setTestResult(r => ({ ...r, [printer.id]: 'online' }));
               unsub(); resolve();
             } else if (updated.status === 'failed') {
+              clearTimeout(timer);
               const err = updated.error_message || 'Agent reported failure';
               await printService.recordPrinterHealth(printer.id, 'error', err);
               persist(printers.map(p => p.id === printer.id ? { ...p, status:'offline' } : p));
-              setTestResult(r => ({ ...r, [printer.id]: 'agent-failed', error: err }));
+              // A till printed this job, so only the text itself says which device tried.
+              setTestError(e => ({ ...e, [printer.id]: { raw: updated.error_message || updated.error || 'The printer reported a fault. Check paper and power.', device: null } }));
+              setTestResult(r => ({ ...r, [printer.id]: 'agent-failed' }));
               unsub(); resolve();
             }
           });
-          setTimeout(() => {
+          timer = setTimeout(() => {
             unsub();
             // Timeout: nothing picked the job up. Not marked offline yet, the job is still queued.
             setTestResult(r => ({ ...r, [printer.id]: 'timeout' }));
@@ -370,7 +387,8 @@ export default function PrinterRegistry() {
     } catch (err) {
       await printService.recordPrinterHealth(printer.id, 'error', err.message);
       persist(printers.map(p => p.id === printer.id ? { ...p, status:'offline' } : p));
-      setTestResult(r => ({ ...r, [printer.id]: 'error', error: err.message }));
+      setTestError(e => ({ ...e, [printer.id]: { raw: err?.message || '', device: printerViewingDevice() } }));
+      setTestResult(r => ({ ...r, [printer.id]: 'error' }));
     }
     setTesting(t => ({ ...t, [printer.id]: false }));
   };
@@ -402,6 +420,10 @@ export default function PrinterRegistry() {
         const spec  = resolvePrinterSpec(printer);
         const isEditing = editId === printer.id;
         const result = testResult[printer.id];
+        const failed = result === 'agent-failed' || result === 'error';
+        const help = failed
+          ? printerErrorGuidance(testError[printer.id]?.raw, { ip: printer.address, port: printer.port || 9100, device: testError[printer.id]?.device, env: printEnvironment() })
+          : null;
 
         if (isEditing) {
           return <PrinterForm key={printer.id} initial={printer} onSave={handleSave} onCancel={() => setEditId(null)}/>;
@@ -438,14 +460,18 @@ export default function PrinterRegistry() {
                       })}
                     </div>
                   )}
-                  {result && (
+                  {result && !failed && (
                     <div style={{ fontSize:11, marginTop:5, fontWeight:600,
                       color: result === 'online' ? 'var(--grn)' : result === 'queued' ? 'var(--acc)' : result === 'timeout' ? 'var(--acc)' : 'var(--red)' }}>
                       {result === 'online'       && '✓ Test page sent. Check it came out of the printer.'}
                       {result === 'queued'       && '⏳ Job queued, waiting for a till to print it…'}
                       {result === 'timeout'      && `⚠ ${printFailureWords(printEnvironment())}`}
-                      {result === 'agent-failed' && `✗ The printer was reached but reported a fault: ${testResult[printer.id]?.error || 'check paper and power'}`}
-                      {result === 'error'        && `✗ Could not print: ${testResult[printer.id]?.error || 'check the connection'}`}
+                    </div>
+                  )}
+                  {help && (
+                    // Plain words first, what to check next, then the raw text from the till for support.
+                    <div style={{ marginTop:6, maxWidth:560 }}>
+                      <PrinterErrorHelp guidance={help} size={12} prefix={help.kind === 'unknown' ? '✗ Could not print: ' : '✗ '}/>
                     </div>
                   )}
                   {testing[printer.id] && result === 'queued' && (
