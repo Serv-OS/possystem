@@ -7,6 +7,19 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.0',
+    date: '17 Sep 2026',
+    items: [
+      'ezCater orders now work. We were asking ezCater for information their system does not have, and their API answers such a request by sending nothing at all while still looking healthy, so a real order would never have reached the till. The order, the money, the tax, the customer, the address and the status are all read from the right places now, and an order rejected on ezCater cancels the ticket here.',
+      'A paid option on an ezCater line was counted twice in the ticket total. The line total ezCater sends is now the figure we use.',
+      'New: ezCater item matching. Their menu is typed in by hand on their side, so their orders arrive as plain text with nothing linking them to your products. Each item is now matched to one of yours, once, and remembered, so the order routes to the right kitchen screen, takes stock and shows in product reports.',
+      'Back Office, Channels, 3rd party orders: an Item matching card lists the items ezCater has sent, how many orders each has been on, and either what it is matched to or a picker with the closest products first. There is a Not on our menu option for things like Utensils.',
+      'An item we cannot match still arrives and still prints, exactly as before. Matching never holds up or refuses an order.',
+      'New: an Item code on every product, with a Suggest button and a Copy item codes list, ready for any partner that lets you put your own code against their menu item.',
+      'If ezCater ever changes their API again, the log names the exact field and keeps the order so it can be replayed, instead of going quiet.',
+    ],
+  },
+  {
     v: '5.8.99',
     date: '17 Sep 2026',
     items: [

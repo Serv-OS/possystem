@@ -295,7 +295,9 @@ export function orderItemsToLines(orderItems: any): any[] {
       mods: (Array.isArray(oi?.customizations) ? oi.customizations : []).map((c: any) => ({
         label: String(c?.name || 'Option'),
         groupLabel: c?.customizationTypeName ? String(c.customizationTypeName) : null,
-        itemId: c?.posCustomizationId ? String(c.posCustomizationId) : null,
+        // posCustomizationId is the documented field. posItemId is read too, so the code rule
+        // works whichever spelling a query brings back; neither means null, as before.
+        itemId: c?.posCustomizationId ? String(c.posCustomizationId) : (c?.posItemId ? String(c.posItemId) : null),
         ezItemId: c?.customizationId ? String(c.customizationId) : null,
         ezGroupId: c?.customizationTypeId ? String(c.customizationTypeId) : null,
         qty: asQty(c?.quantity),
