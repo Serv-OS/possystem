@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.98',
+    date: '17 Sep 2026',
+    items: [
+      'Till options: on a group where you can pick more than one, the minus button and the count now sit inside the option, lined up in the middle. When one option in the row had a longer name, they slipped below the edge and the count looked as if it was outside.',
+    ],
+  },
+  {
     v: '5.8.97',
     date: '17 Sep 2026',
     items: [
