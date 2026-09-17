@@ -1068,6 +1068,30 @@ export async function saveForecast(dateIso, amount, locationId, orgId) {
   checkWrite('sales forecast', error);
 }
 /** Actual revenue per day (YYYY-MM-DD → £) from closed_checks (excludes voids). */
+/**
+ * Daily sales totals over a long range (the learned forecast reads 8 weeks). Paged: one
+ * request returns at most 1000 checks, and a busy venue closes far more than that in 8 weeks.
+ */
+export async function loadSalesHistory(locationId, fromIso, toIso) {
+  if (isMock || !supabase || !locationId) return {};
+  const m = {}; const PAGE = 1000;
+  for (let from = 0; from < 80000; from += PAGE) {
+    const { data, error } = await supabase.from('closed_checks')
+      .select('total, closed_at, status')
+      .eq('location_id', String(locationId))
+      .gte('closed_at', `${fromIso}T00:00:00`).lte('closed_at', `${toIso}T23:59:59`)
+      .neq('status', 'voided').order('closed_at', { ascending: true }).range(from, from + PAGE - 1);
+    if (error) { console.warn('[wf] loadSalesHistory:', error.message); break; }
+    (data || []).forEach(c => {
+      const d = new Date(c.closed_at);
+      const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      m[iso] = (m[iso] || 0) + (Number(c.total) || 0);
+    });
+    if (!data || data.length < PAGE) break;
+  }
+  return m;
+}
+
 export async function loadActualSales(locationId, fromIso, toIso) {
   if (isMock || !supabase || !locationId) return {};
   const { data, error } = await supabase.from('closed_checks')
