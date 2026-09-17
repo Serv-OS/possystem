@@ -20,6 +20,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { getActiveLocationSync, isMock, supabase } from '../../lib/supabase';
+import { money } from '../../lib/currency';
 import { ezcaterItemsList, ezcaterItemsSave } from '../../lib/ezcater';
 import {
   rowsFrom, ofKind, countRows, outstandingLine, seenLine,
@@ -106,6 +107,8 @@ function MatchRow({ row, ourItems, ourGroups, suggestions, busy, onSave }) {
               {choices.map((c) => (
                 <button key={c.id} style={S.btnPick} disabled={!!busy} onClick={() => pick(c)}>
                   {c.name}
+                  {/* Only when we HAVE one. No price is quieter than a false 0.00. */}
+                  {typeof c.price === 'number' ? <span style={S.why}>{'  · ' + money(c.price)}</span> : null}
                   {c.note ? <span style={S.why}>{'  · ' + c.note}</span> : null}
                   {c.why ? <span style={S.why}>{'  · ' + c.why}</span> : null}
                 </button>
@@ -158,19 +161,30 @@ export default function EzcaterItemMatching({ locationId }) {
     // the same answer as "not switched on yet", not a red error to stare at.
     if (isMock || !supabase) { setEnabled(false); setLoading(false); return; }
     setLoading(true);
+    setMsg(null);
     try {
       // Our own menu is readable straight from the browser (the same select
       // HubRise's ref export uses). Only the link rows have to come through the
       // edge function, because that table is service role only.
+      // menu_items has NO price column: the price is in the `pricing` jsonb,
+      // the same shape MenuManager and lib/menuPricing.js read. Selecting a
+      // column that does not exist fails the WHOLE select, which is how this
+      // picker shipped empty with every matched row reading "Deleted from our
+      // menu". ourItemsFrom turns pricing into the number the matcher wants.
       const [links, itemsRes, groupsRes] = await Promise.all([
         ezcaterItemsList(id),
-        supabase.from('menu_items').select('id,name,menu_name,price,archived').eq('location_id', id),
+        supabase.from('menu_items').select('id,name,menu_name,pricing,archived').eq('location_id', id),
         supabase.from('modifier_groups').select('id,name,options').eq('location_id', id),
       ]);
       if (links && links.enabled === false) { setEnabled(false); setRows([]); }
       else { setEnabled(true); setRows(rowsFrom(links?.links)); }
       setRawItems(itemsRes?.data || []);
       setRawGroups(groupsRes?.data || []);
+      // An empty picker must never look like an empty menu. Say it out loud
+      // instead, because the silent version of this cost the whole screen.
+      if (itemsRes?.error || groupsRes?.error) {
+        setMsg({ kind: 'err', text: 'We could not read your menu, so there is nothing to pick from. Try again in a moment.' });
+      }
     } catch (e) {
       // Not switched on yet is not an error. Anything else is, and must say so:
       // a venue staring at "not switched on yet" while their orders quietly

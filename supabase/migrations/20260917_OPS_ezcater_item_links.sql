@@ -6,11 +6,16 @@
 -- Idempotent: create table if not exists, create index if not exists, and a
 -- drop/add for each constraint. Safe to run twice.
 --
--- IF YOU ALREADY RAN AN EARLIER COPY OF THIS FILE, RUN IT AGAIN. The target
--- check below was widened so a SEEN BUT UNMATCHED item can be stored at all
--- (see the comment on it). Every constraint here is dropped before it is added,
--- so a second run simply replaces the old check with the new one and repairs
--- the table in place. Nothing is lost and no row needs editing.
+-- ############################################################################
+-- IF YOU ALREADY RAN AN EARLIER COPY OF THIS FILE, RUN IT AGAIN.
+-- ############################################################################
+-- The target check below was WIDENED so a SEEN BUT UNMATCHED item can be stored
+-- at all (see the comment on it). That row, with nothing on our side of it, is
+-- what the Back Office "Item matching" screen lists; under the earlier narrower
+-- check the webhook could not write one and the screen would be empty forever.
+-- Every constraint here is dropped before it is added, so a second run simply
+-- replaces the old check with the new one and repairs the table in place.
+-- Nothing is lost and no row needs editing.
 --
 -- THE APP WORKS BEFORE THIS FILE RUNS. A missing table (Postgres 42P01, or
 -- PostgREST PGRST205) reads as "no links saved", which is the same answer as an
@@ -61,9 +66,16 @@
 -- name in front of it). The rule lives in src/lib/ezcaterMatch.js, mirrored in
 -- supabase/functions/_shared/ezcaterMatch.ts, held together by
 -- src/lib/ezcaterMatchParity.test.js: lower case, no punctuation, no bracketed
--- suffix, no catering noise ("per person", "serves 10"), no trailing size or
--- container word ("Large", "Half Pan", "Full Tray"). So
--- "Caesar Salad (Serves 10)" and "CAESAR SALAD, half pan" are ONE key.
+-- suffix, no catering noise ("per person", "serves 10"), no trailing container
+-- word ("Tray", "Pan", "Size"). So "Caesar Salad (Serves 10)" and
+-- "CAESAR SALAD, half pan, serves 10" are ONE key.
+--
+-- THE SIZE WORD STAYS IN THE KEY. "Caesar Salad Half Tray" and "Caesar Salad
+-- Full Tray" are TWO rows here, because they are two products to a kitchen:
+-- different stock, different money, and one manual match must never route both.
+-- The SCORER still ignores the size when it compares names, so both rows still
+-- find our one "Caesar Salad" to suggest. normaliseKeyName builds the key,
+-- normaliseItemName does the comparing.
 --
 -- The cost is honest and visible: if the venue RENAMES the item on ezCater, the
 -- key changes and the match must be made again. That is why ez_name and

@@ -187,6 +187,26 @@ test('buildLinkKey agrees for items and for options', () => {
   }
 });
 
+test('the key form, the old key form and the fallback lookup all agree', () => {
+  for (const n of NAMES) {
+    assert.equal(ts.normaliseKeyName(n), js.normaliseKeyName(n), 'normaliseKeyName: ' + n);
+  }
+  for (const line of THEIR_LINES) {
+    assert.equal(ts.legacyLinkKey(line), js.legacyLinkKey(line));
+    assert.deepEqual(ts.linkKeyCandidates(line), js.linkKeyCandidates(line));
+    for (const links of LINK_SETS) {
+      assert.deepEqual(ts.findLink(ts.indexLinks(links), line, 'item'), js.findLink(js.indexLinks(links), line, 'item'));
+    }
+  }
+  for (const mod of THEIR_MODS) {
+    assert.equal(ts.legacyLinkKey(mod, 'option'), js.legacyLinkKey(mod, 'option'));
+    assert.deepEqual(ts.linkKeyCandidates(mod, 'option'), js.linkKeyCandidates(mod, 'option'));
+    for (const links of LINK_SETS) {
+      assert.deepEqual(ts.findLink(ts.indexLinks(links), mod, 'option'), js.findLink(js.indexLinks(links), mod, 'option'));
+    }
+  }
+});
+
 test('autoLinkDecision agrees for every line against every link set', () => {
   for (const line of THEIR_LINES) {
     for (const links of LINK_SETS) {

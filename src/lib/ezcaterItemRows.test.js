@@ -18,13 +18,14 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
 import {
   ABSENT_CODES, isMatchingOff,
   toRow, rowsFrom, sortRows, ofKind, countRows,
   outstandingLine, seenLine,
   ourItemsFrom, ourGroupsFrom, suggestionsFor, searchOurItems, matchedLabel,
-  saveBody, applySaved,
+  itemPriceOf, saveBody, applySaved,
 } from './ezcaterItemRows.js';
 
 import { applyLinks, buildLinkKey } from './ezcaterMatch.js';
@@ -206,6 +207,52 @@ test('the grey line under a row says how many orders it has been on', () => {
 test('archived items are never offered as a match', () => {
   assert.ok(!OUR_ITEMS.some((i) => i.id === 'm-old'));
   assert.ok(OUR_ITEMS.some((i) => i.id === 'm-caesar'));
+});
+
+// ── the price lives in `pricing`, and there is NO price column ──────────────
+
+test('THE SCREEN READS menu_items.pricing, because there is no price column', () => {
+  // Selecting a column that does not exist fails the WHOLE select, which left
+  // this picker permanently empty and every matched row reading "Deleted from
+  // our menu". The column names in the query are load bearing.
+  const jsx = fs.readFileSync(new URL('../backoffice/sections/EzcaterItemMatching.jsx', import.meta.url), 'utf8');
+  const sel = jsx.match(/from\('menu_items'\)\s*\.select\('([^']+)'\)/);
+  assert.ok(sel, 'the menu_items select is gone');
+  const cols = sel[1].split(',').map((c) => c.trim());
+  assert.ok(cols.includes('pricing'), 'the price is in the pricing jsonb');
+  assert.ok(!cols.includes('price'), 'menu_items has no price column, see db.js');
+  assert.deepEqual(cols, ['id', 'name', 'menu_name', 'pricing', 'archived']);
+});
+
+test('itemPriceOf reads pricing.base, then the older pricing.price, then the scalar', () => {
+  assert.equal(itemPriceOf({ pricing: { base: 12.5 } }), 12.5);
+  assert.equal(itemPriceOf({ pricing: { price: 7 } }), 7);
+  assert.equal(itemPriceOf({ pricing: { base: 0 } }), 0, 'free is a real price');
+  assert.equal(itemPriceOf({ price: 9 }), 9, 'rows already in memory carry the scalar');
+  assert.equal(itemPriceOf({ pricing: { base: 4 }, price: 99 }), 4, 'pricing wins');
+  // No price is null, never zero: a made up zero would claim it agrees with an
+  // ezCater line that costs nothing and hand out a price bonus it did not earn.
+  assert.equal(itemPriceOf({ pricing: null }), null);
+  assert.equal(itemPriceOf({ pricing: { base: 'lots' } }), null);
+  assert.equal(itemPriceOf({}), null);
+  assert.equal(itemPriceOf(null), null);
+});
+
+test('our menu reads with the price on it, so the picker can show one', () => {
+  const rows = [
+    { id: 'm-a', name: 'Caesar Salad', pricing: { base: 38 }, archived: false },
+    { id: 'm-b', name: 'Cola', pricing: {}, archived: false },
+  ];
+  const items = ourItemsFrom(rows);
+  assert.equal(items.length, 2, 'a row without a price is still a row we can match to');
+  assert.equal(items[0].price, 38);
+  assert.equal(items[1].price, undefined, 'no price means no price');
+
+  const s = suggestionsFor(row({ ez_name: 'Caesar Salad' }), items, [], { limit: 4 });
+  assert.equal(s[0].id, 'm-a');
+  assert.equal(s[0].price, 38, 'the screen shows this next to the name');
+  const c = searchOurItems('cola', items, [], 'item');
+  assert.equal(c[0].price, null, 'and shows nothing at all when there is none');
 });
 
 test('a modifier group with no options is not offered', () => {

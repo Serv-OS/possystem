@@ -226,6 +226,34 @@ export function seenLine(row) {
 // The picker
 // ----------------------------------------------------------------------------
 
+/**
+ * A menu_items row's price.
+ *
+ * THERE IS NO `price` COLUMN ON menu_items. The price lives in the `pricing`
+ * jsonb, the same place MenuManager and src/lib/menuPricing.js read it from
+ * (pricing.base, with the older pricing.price as a fallback). The screen used
+ * to select a `price` column that does not exist, which failed the whole select
+ * and left the picker permanently empty with every matched row reading "Deleted
+ * from our menu".
+ *
+ * The scalar `it.price` is still read last, because rows already in memory from
+ * the store carry it and a test fixture may too.
+ *
+ * Returns null when there is no price. Null is "no price", never zero: a zero
+ * would claim an agreement with an ezCater line that costs nothing and hand out
+ * a price bonus it did not earn.
+ */
+export function itemPriceOf(it) {
+  const p = (it && it.pricing) || null;
+  const candidates = [p ? p.base : null, p ? p.price : null, it ? it.price : null];
+  for (const v of candidates) {
+    if (v === null || v === undefined || v === '') continue;
+    const n = Number(v);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
 /** Our menu items in the shape scoreMatch wants, archived ones dropped. */
 export function ourItemsFrom(list) {
   const out = [];
@@ -236,11 +264,12 @@ export function ourItemsFrom(list) {
     const name = it.name != null ? String(it.name) : '';
     const menuName = (it.menu_name != null ? it.menu_name : it.menuName);
     if (!name && !menuName) continue;
+    const price = itemPriceOf(it);
     out.push({
       id,
       name,
       menuName: menuName != null ? String(menuName) : undefined,
-      price: it.price != null ? Number(it.price) : undefined,
+      price: price === null ? undefined : price,
     });
   }
   return out;
@@ -267,13 +296,30 @@ export function ourGroupsFrom(list) {
 }
 
 /**
+ * Our price per item id, for the picker. null means we have no price for it,
+ * and the screen then shows none rather than a made up zero.
+ */
+function pricesById(ourItems) {
+  const m = new Map();
+  for (const it of Array.isArray(ourItems) ? ourItems : []) {
+    if (!it || it.id == null) continue;
+    const n = Number(it.price);
+    m.set(String(it.id), Number.isFinite(n) ? n : null);
+  }
+  return m;
+}
+
+/**
  * The shortlist under an unmatched row, already in the one shape the screen
  * renders, whichever tab it is on.
  *
- * Each entry: { id, name, note, why, score }
- *   id    what gets saved: our menu item id, or our option id
- *   note  the group an option came from, so two options called "Large" are
- *         told apart without the operator opening anything
+ * Each entry: { id, name, note, why, score, price }
+ *   id     what gets saved: our menu item id, or our option id
+ *   note   the group an option came from, so two options called "Large" are
+ *          told apart without the operator opening anything
+ *   price  our price, or null when we have none. The screen shows it only when
+ *          it is a number, because it is there to tell two same named items
+ *          apart and a false zero would do the opposite.
  */
 export function suggestionsFor(row, ourItems, ourGroups, opts) {
   if (!row || !row.ezName) return [];
@@ -287,17 +333,20 @@ export function suggestionsFor(row, ourItems, ourGroups, opts) {
       note: s.groupLabel || '',
       why: s.why,
       score: s.score,
+      price: null,
       optionId: s.optionId,
       menuItemId: s.itemId || null,
     }));
   }
 
+  const prices = pricesById(ourItems);
   return suggestMatches({ name: row.ezName }, ourItems, { limit }).map((s) => ({
     id: s.itemId,
     name: s.name,
     note: '',
     why: s.why,
     score: s.score,
+    price: prices.has(s.itemId) ? prices.get(s.itemId) : null,
     optionId: null,
     menuItemId: s.itemId,
   }));
@@ -344,6 +393,7 @@ export function searchOurItems(query, ourItems, ourGroups, kind, opts) {
           note: displayNameOf(g),
           why: '',
           score: 0,
+          price: null,
           optionId: oid,
           menuItemId: o.itemId != null ? String(o.itemId) : null,
         });
@@ -353,7 +403,17 @@ export function searchOurItems(query, ourItems, ourGroups, kind, opts) {
     for (const it of Array.isArray(ourItems) ? ourItems : []) {
       const id = it && it.id != null ? String(it.id) : '';
       if (!id) continue;
-      hit({ id, name: displayNameOf(it), note: '', why: '', score: 0, optionId: null, menuItemId: id });
+      const n = Number(it.price);
+      hit({
+        id,
+        name: displayNameOf(it),
+        note: '',
+        why: '',
+        score: 0,
+        price: Number.isFinite(n) ? n : null,
+        optionId: null,
+        menuItemId: id,
+      });
     }
   }
 

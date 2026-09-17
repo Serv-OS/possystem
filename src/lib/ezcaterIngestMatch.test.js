@@ -24,8 +24,11 @@ import fs from 'node:fs';
 import {
   menuItemsForMatch, modifierGroupsForMatch, linkSeenCounts, planLineMatches,
   readMatchInputs, saveLinkWrites, matchQueueRow,
-  MAX_LINK_WRITES, MENU_PAGE_SIZE,
+  MAX_LINK_WRITES, MENU_PAGE_SIZE, MENU_MAX_PAGES, MATCH_BUDGET_MS,
 } from '../../supabase/functions/_shared/ezcater-match-ingest.ts';
+// The Back Office screen's own view model, so the rows the webhook writes are
+// checked against the shape the screen actually reads them back in.
+import { toRow, countRows } from './ezcaterItemRows.js';
 import {
   ezMatchSummary, withMatchedItems, orderItemsToLines, orderToQueueRow, queuePayload,
   EZ_MATCH_MAX_NAMES,
@@ -147,7 +150,7 @@ test('one of our items has exactly that name: linked, and a link is SAVED', () =
   assert.deepEqual(p.bumps, []);
 });
 
-test('two of our items normalise to that name: NEVER guesses, nothing saved', () => {
+test('two of our items normalise to that name: NEVER guesses, and the row has no target', () => {
   const ours = menuItemsForMatch([
     { id: 'm-c-small', name: 'Caesar Salad Small', pricing: { base: 22 } },
     { id: 'm-c-large', name: 'Caesar Salad Large', pricing: { base: 38 } },
@@ -155,7 +158,13 @@ test('two of our items normalise to that name: NEVER guesses, nothing saved', ()
   const p = plan([line({ name: 'Caesar Salad' })], { ourItems: ours });
   assert.equal(p.lines[0].itemId, null, 'wrong food to the wrong station is worse than no station');
   assert.equal(p.lines[0].match.matched, false);
-  assert.deepEqual(p.writes, []);
+  // It IS written down, with nothing on our side of it, because that is the row
+  // the Back Office screen lists so a person can answer it.
+  assert.equal(p.writes.length, 1);
+  assert.equal(p.writes[0].ez_key, 'caesar salad');
+  assert.equal(p.writes[0].menu_item_id, null);
+  assert.equal(p.writes[0].option_id, null);
+  assert.equal(p.writes[0].matched_by, null, 'null is "seen, nobody has decided yet"');
 });
 
 test('a saved link wins and is BUMPED, never rewritten', () => {
@@ -239,13 +248,46 @@ test('an option we cannot match keeps whatever the line already carried', () => 
   const m = p.lines[0].mods[0];
   assert.equal(m.itemId, 'ez-mod-id');
   assert.equal(m.match.source, 'posItemId');
-  assert.deepEqual(p.writes.filter((w) => w.kind === 'option'), []);
+  // Nothing of ours matched it by name, so the row goes down with no target and
+  // the screen asks. The id on the line is kept either way.
+  const w = p.writes.filter((r) => r.kind === 'option');
+  assert.equal(w.length, 1);
+  assert.equal(w[0].ez_name, 'Something We Do Not Sell');
+  assert.equal(w[0].option_id, null);
+  assert.equal(w[0].menu_item_id, null);
 });
 
 test('the same name twice in one order is ONE row with seen_count 2', () => {
-  const p = plan([line({ name: 'Caesar Salad' }), line({ name: 'CAESAR SALAD, half pan' })]);
+  const p = plan([line({ name: 'Caesar Salad' }), line({ name: 'CAESAR SALAD, tray' })]);
   assert.equal(p.writes.length, 1);
   assert.equal(p.writes[0].seen_count, 2);
+});
+
+test('THEIR TWO SIZES ARE TWO ROWS, so one match cannot route both', () => {
+  // The venue sells a half tray and a full tray of the same salad. Both are our
+  // one Caesar Salad today, but they are two products: two rows, two keys, and
+  // a person can send the full tray somewhere else tomorrow.
+  const p = plan([
+    line({ name: 'Caesar Salad Half Tray' }),
+    line({ name: 'Caesar Salad Full Tray' }),
+  ]);
+  assert.equal(p.writes.length, 2, 'one row for both would be one stock count for both');
+  assert.deepEqual(p.writes.map((w) => w.ez_key).sort(), ['caesar salad full', 'caesar salad half']);
+  assert.deepEqual(p.writes.map((w) => w.ez_name).sort(), ['Caesar Salad Full Tray', 'Caesar Salad Half Tray']);
+  // Both still route to the salad we do have.
+  assert.equal(p.lines[0].itemId, 'm-caesar');
+  assert.equal(p.lines[1].itemId, 'm-caesar');
+});
+
+test('a link saved under the older key still routes and is bumped under ITS key', () => {
+  const links = [{
+    kind: 'item', ez_key: 'caesar salad', ez_name: 'Caesar Salad Half Tray',
+    menu_item_id: 'm-brownie', option_id: null, source: 'manual', seen_count: 2,
+  }];
+  const p = plan([line({ name: 'Caesar Salad Half Tray' })], { links });
+  assert.equal(p.lines[0].itemId, 'm-brownie', "the venue's earlier work still routes");
+  assert.deepEqual(p.writes, [], 'and no second row is written beside it');
+  assert.deepEqual(p.bumps, [{ kind: 'item', ezKey: 'caesar salad', times: 1, seenCount: 3 }]);
 });
 
 test('the same saved link twice in one order is ONE bump of two', () => {
@@ -268,12 +310,20 @@ test('every written row satisfies the migration check constraints', () => {
   const p = plan([
     line({ name: 'Caesar Salad', mods: [mod({ label: 'Cola' }), mod({ label: 'Still Water', groupLabel: 'Drinks' })] }),
     line({ name: 'Brownie Tray' }),
+    line({ name: 'Something We Have Never Heard Of' }),   // a sighting, no target
   ]);
-  assert.ok(p.writes.length >= 3);
+  assert.ok(p.writes.length >= 4);
   for (const w of p.writes) {
     assert.ok(['item', 'option'].includes(w.kind));
     assert.ok(['auto', 'manual'].includes(w.source));
     assert.ok(w.ez_key.trim().length > 0 && w.ez_name.trim().length > 0);
+    // The WIDENED target check: no target at all is allowed and is how a seen
+    // but unmatched item is stored. A row that DOES name one of ours has to
+    // name the right kind of thing.
+    if (!w.menu_item_id && !w.option_id) {
+      assert.equal(w.matched_by, null, 'a row with no target must not claim it was matched');
+      continue;
+    }
     if (w.kind === 'item') {
       assert.ok(w.menu_item_id, 'kind item needs menu_item_id');
       assert.equal(w.option_id, null, 'kind item must not carry option_id');
@@ -322,6 +372,96 @@ test('no locationId means nothing is ever written against a wrong venue', () => 
   const p = plan([line({ name: 'Caesar Salad' })], { locationId: '' });
   assert.deepEqual(p.writes, []);
   assert.deepEqual(p.bumps, []);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+//  2b. SEEN BUT UNMATCHED. The rows the Back Office screen is built to list.
+// ════════════════════════════════════════════════════════════════════════════
+
+test('EVERY name on an order is written down, matched or not', () => {
+  const p = plan([
+    line({ name: 'Caesar Salad' }),                                   // ours
+    line({ name: 'Veggie Platter' }),                                 // not ours
+    line({ name: 'Mystery Box', mods: [mod({ label: 'Pickles', groupLabel: 'Extras' })] }),
+  ]);
+  const keys = p.writes.map((w) => w.kind + ':' + w.ez_key).sort();
+  assert.deepEqual(keys, ['item:caesar salad', 'item:mystery box', 'item:veggie platter', 'option:extras|pickles']);
+
+  const seen = p.writes.find((w) => w.ez_key === 'veggie platter');
+  assert.equal(seen.ez_name, 'Veggie Platter', "their own spelling, for the screen to show");
+  assert.equal(seen.menu_item_id, null);
+  assert.equal(seen.option_id, null);
+  assert.equal(seen.matched_by, null);
+  assert.equal(seen.source, 'auto');
+  assert.equal(seen.seen_count, 1);
+  assert.equal(seen.last_seen_at, NOW);
+
+  const opt = p.writes.find((w) => w.kind === 'option');
+  assert.equal(opt.ez_group, 'Extras', 'the group they typed, so two Larges are told apart');
+});
+
+test('a seen row carries every column toRow() reads, so the screen can list it', () => {
+  // The screen derives its three states from these columns and nothing else.
+  const p = plan([line({ name: 'Veggie Platter' })]);
+  const w = p.writes[0];
+  for (const col of ['location_id', 'kind', 'ez_key', 'ez_name', 'ez_group', 'menu_item_id', 'option_id', 'source', 'matched_by', 'seen_count', 'last_seen_at', 'updated_at']) {
+    assert.ok(col in w, 'missing column ' + col);
+  }
+  const shown = toRow(w);
+  assert.equal(shown.state, 'unmatched', 'this is the row the screen lists as outstanding');
+  assert.equal(shown.ezName, 'Veggie Platter');
+  assert.equal(shown.seenCount, 1);
+  assert.equal(countRows([shown]).outstanding, 1);
+});
+
+test('a name seen again bumps its row instead of writing a second one', () => {
+  const links = [{
+    kind: 'item', ez_key: 'veggie platter', ez_name: 'Veggie Platter',
+    menu_item_id: null, option_id: null, source: 'auto', seen_count: 4,
+  }];
+  const p = plan([line({ name: 'Veggie Platter' }), line({ name: 'Veggie Platter (Serves 10)' })], { links });
+  assert.deepEqual(p.writes, []);
+  assert.deepEqual(p.bumps, [{ kind: 'item', ezKey: 'veggie platter', times: 2, seenCount: 6 }]);
+  assert.deepEqual(p.upgrades, [], 'nothing of ours matches it, so there is nothing to fill in');
+});
+
+test('a bare sighting is filled in once our menu has the item, and never otherwise', () => {
+  // Order 1 saw "Brownie Tray" before the venue added it. Now we have it.
+  // 'tray' is a container word, so the key of "Brownie Tray" is 'brownie'.
+  const bare = { kind: 'item', ez_key: 'brownie', ez_name: 'Brownie Tray', menu_item_id: null, option_id: null, source: 'auto', seen_count: 3 };
+  const p = plan([line({ name: 'Brownie Tray' })], { links: [bare] });
+  assert.deepEqual(p.upgrades, [{ kind: 'item', ezKey: 'brownie', menuItemId: 'm-brownie', optionId: null }]);
+  assert.deepEqual(p.writes, [], 'the row exists, so it is updated in place, never duplicated');
+
+  // A person who said "Not on our menu" is never overruled.
+  const ignored = { ...bare, source: 'manual', matched_by: 'ignored' };
+  assert.deepEqual(plan([line({ name: 'Brownie Tray' })], { links: [ignored] }).upgrades, []);
+
+  // Nor is a person's own match.
+  const theirs = { ...bare, source: 'manual', menu_item_id: 'm-cola' };
+  assert.deepEqual(plan([line({ name: 'Brownie Tray' })], { links: [theirs] }).upgrades, []);
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+//  2c. A PARTLY READ MENU IS NOT A MENU
+// ════════════════════════════════════════════════════════════════════════════
+
+test('menuOk false: saved links only, and NOT ONE new row', () => {
+  // Half the menu came back. "We do not sell a Brownie Tray" is a claim about
+  // the half we never saw, and an auto link written from it would be wrong on
+  // every later order, silently.
+  const links = [{ kind: 'item', ez_key: 'cola', ez_name: 'Cola', menu_item_id: 'm-cola', source: 'manual', seen_count: 1 }];
+  const p = plan([line({ name: 'Brownie Tray' }), line({ name: 'Cola' })], { menuOk: false, links });
+  assert.equal(p.lines[0].itemId, null, 'no guessing from a piece of the menu');
+  assert.equal(p.lines[1].itemId, 'm-cola', 'the saved link still does its job');
+  assert.deepEqual(p.writes, []);
+  assert.deepEqual(p.bumps, []);
+  assert.deepEqual(p.upgrades, []);
+
+  // With the whole menu it links and writes, which is the difference.
+  const whole = plan([line({ name: 'Brownie Tray' })], { links });
+  assert.equal(whole.lines[0].itemId, 'm-brownie');
+  assert.equal(whole.writes.length, 1);
 });
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -425,7 +565,10 @@ test('orderItemsToLines output feeds the planner unchanged', () => {
   const lines = orderItemsToLines(PORTAL_ORDER.catererCart.orderItems);
   const p = plan(lines);
   assert.equal(p.lines.length, lines.length);
-  assert.equal(p.writes.filter((w) => w.kind === 'item').length, 1);
+  // One row per line: the Caesar matched, the veggie platter seen and waiting.
+  const items = p.writes.filter((w) => w.kind === 'item');
+  assert.equal(items.length, 2);
+  assert.equal(items.filter((w) => w.menu_item_id).length, 1);
   assert.equal(p.writes.filter((w) => w.kind === 'option').length, 1);
 });
 
@@ -435,22 +578,26 @@ test('orderItemsToLines output feeds the planner unchanged', () => {
 
 /**
  * The smallest Supabase client that answers the calls this module makes:
- * select/eq/order/range, upsert with ignoreDuplicates, update/eq.
+ * select/eq/is/order/range, upsert with ignoreDuplicates, update/eq/is.
  * `fail` maps a table name, or 'table:op', to the error it should return.
  * `boom` makes .from() itself throw, which is the network dying mid call.
+ * `hang` makes every call never resolve, which is the read that never comes back.
  */
-function fakeSb(tables, { fail = {}, boom = false } = {}) {
+function fakeSb(tables, { fail = {}, boom = false, hang = false } = {}) {
   const calls = [];
   const store = JSON.parse(JSON.stringify(tables));
   const from = (name) => {
     if (boom) throw new Error('socket hang up');
-    const state = { op: 'select', filters: {}, range: null, rows: null, patch: null, opts: null };
+    const state = { op: 'select', filters: {}, nulls: {}, range: null, rows: null, patch: null, opts: null };
+    // `.is(col, null)` is a real filter here, because the sighting fill leans on
+    // it: the update must not touch a row a person has answered.
+    const matches = (r) => Object.entries(state.filters).every(([k, v]) => String(r[k] ?? '') === String(v))
+      && Object.entries(state.nulls).every(([k, v]) => (v === null ? (r[k] ?? null) === null : (r[k] ?? null) === v));
     const run = () => {
       const err = fail[name + ':' + state.op] || fail[name];
       if (err) return { data: null, error: err };
       if (state.op === 'select') {
-        let rows = (store[name] || []).filter((r) => Object.entries(state.filters)
-          .every(([k, v]) => String(r[k] ?? '') === String(v)));
+        let rows = (store[name] || []).filter(matches);
         if (state.range) rows = rows.slice(state.range[0], state.range[1] + 1);
         return { data: rows, error: null };
       }
@@ -465,21 +612,23 @@ function fakeSb(tables, { fail = {}, boom = false } = {}) {
         }
         return { data: null, error: null };
       }
-      calls.push({ op: 'update', table: name, patch: state.patch, filters: { ...state.filters } });
-      for (const r of store[name] || []) {
-        if (Object.entries(state.filters).every(([k, v]) => String(r[k] ?? '') === String(v))) Object.assign(r, state.patch);
-      }
+      calls.push({ op: 'update', table: name, patch: state.patch, filters: { ...state.filters }, nulls: { ...state.nulls } });
+      for (const r of store[name] || []) if (matches(r)) Object.assign(r, state.patch);
       return { data: null, error: null };
     };
     const b = {
       select() { state.op = 'select'; return b; },
       eq(col, val) { state.filters[col] = val; return b; },
+      is(col, val) { state.nulls[col] = val; return b; },
       order() { return b; },
       range(a, z) { state.range = [a, z]; return b; },
       upsert(rows, opts) { state.op = 'upsert'; state.rows = rows; state.opts = opts; return b; },
       update(patch) { state.op = 'update'; state.patch = patch; return b; },
       maybeSingle() { return b; },
-      then(ok, no) { return Promise.resolve().then(run).then(ok, no); },
+      then(ok, no) {
+        if (hang) return new Promise(() => {});      // never settles, ever
+        return Promise.resolve().then(run).then(ok, no);
+      },
     };
     return b;
   };
@@ -509,9 +658,17 @@ test('matchQueueRow: the happy path fills itemId, saves a link and stamps the su
   assert.equal(out.matched, 1);
 
   const written = sb.store.ezcater_item_links;
-  assert.equal(written.length, 2, 'one item link and one option link');
+  assert.equal(written.length, 3, 'the matched item, its option, and the one we could not match');
   assert.ok(written.every((r) => r.source === 'auto' && r.location_id === 'loc-1'));
   assert.ok(written.every((r) => r.last_seen_at === NOW));
+
+  // The unmatched one is a real row with no target, which is what the Back
+  // Office screen lists. Without it that screen ships empty.
+  const seen = written.find((r) => r.ez_name === 'Veggie Platter');
+  assert.ok(seen, 'their unmatched item was never written down');
+  assert.equal(seen.menu_item_id, null);
+  assert.equal(seen.matched_by, null);
+  assert.equal(toRow(seen).state, 'unmatched');
 });
 
 test('matchQueueRow: the second order uses the saved link and bumps seen_count', async () => {
@@ -615,6 +772,68 @@ test('a menu bigger than one PostgREST page is read whole', async () => {
   const sb = fakeSb({ menu_items: big, modifier_groups: [], ezcater_item_links: [] });
   const inputs = await readMatchInputs(sb, 'loc-1');
   assert.equal(inputs.ourItems.length, MENU_PAGE_SIZE + 5);
+  assert.equal(inputs.menuOk, true, 'read whole means whole');
+});
+
+test('A PARTLY READ MENU IS NOT A MENU: menuOk goes false, and nothing is written', async () => {
+  // Cut short at MENU_MAX_PAGES with a full page still in hand. What we hold is
+  // a piece of the menu, and "nothing of ours has that name" is a claim about
+  // the piece we never saw.
+  const huge = [];
+  for (let i = 0; i < MENU_PAGE_SIZE * MENU_MAX_PAGES + 1; i++) {
+    huge.push({ id: 'm-' + i, name: 'Dish Number ' + i, pricing: { base: 1 }, location_id: 'loc-1' });
+  }
+  const cut = await readMatchInputs(fakeSb({ menu_items: huge, modifier_groups: [], ezcater_item_links: [] }), 'loc-1');
+  assert.equal(cut.menuOk, false, 'a truncated read must not read as the whole menu');
+
+  // The modifier groups failing counts too: options are half the matching.
+  const groupsDown = await readMatchInputs(
+    fakeSb(TABLES(), { fail: { modifier_groups: { message: 'timeout' } } }), 'loc-1',
+  );
+  assert.equal(groupsDown.menuOk, false);
+  assert.ok(groupsDown.ourItems.length > 0, 'the items we did read are still returned');
+
+  // End to end: a half read menu writes NO link at all, and the order still goes.
+  const sb = fakeSb(TABLES(), { fail: { modifier_groups: { message: 'timeout' } } });
+  const out = await matchQueueRow(sb, 'loc-1', orderRow([line({ name: 'Caesar Salad' })]), { nowIso: NOW });
+  assert.equal(out.ran, true);
+  assert.equal(out.inserted, 0, 'a wrong auto link outlives the order that wrote it');
+  assert.deepEqual(sb.store.ezcater_item_links, []);
+  assert.equal(out.row.items[0].itemId, null, 'saved links only, and there are none');
+});
+
+test('the sighting fill updates in place, and only while nobody has answered it', async () => {
+  const bare = {
+    location_id: 'loc-1', kind: 'item', ez_key: 'brownie', ez_name: 'Brownie Tray',
+    menu_item_id: null, option_id: null, source: 'auto', matched_by: null, seen_count: 3,
+  };
+  const sb = fakeSb({ ...TABLES(), ezcater_item_links: [{ ...bare }] });
+  await matchQueueRow(sb, 'loc-1', orderRow([line({ name: 'Brownie Tray' })]), { nowIso: NOW });
+  const row = sb.store.ezcater_item_links[0];
+  assert.equal(sb.store.ezcater_item_links.length, 1, 'updated in place, never duplicated');
+  assert.equal(row.menu_item_id, 'm-brownie');
+  assert.equal(row.matched_by, 'name');
+  assert.equal(row.seen_count, 4, 'and it is still counted as seen');
+
+  // A person answered it a moment ago. The where clause refuses the update.
+  const answered = { ...bare, source: 'manual', menu_item_id: 'm-cola', matched_by: 'user-1' };
+  const sb2 = fakeSb({ ...TABLES(), ezcater_item_links: [{ ...answered }] });
+  await matchQueueRow(sb2, 'loc-1', orderRow([line({ name: 'Brownie Tray' })]), { nowIso: NOW });
+  assert.equal(sb2.store.ezcater_item_links[0].menu_item_id, 'm-cola', "a person's answer is never overruled");
+  assert.equal(sb2.store.ezcater_item_links[0].matched_by, 'user-1');
+});
+
+test('THE ORDER ALWAYS WINS: a read that never comes back cannot delay it', async () => {
+  const sb = fakeSb(TABLES(), { hang: true });
+  const row = orderRow([line({ name: 'Caesar Salad' })]);
+  const began = Date.now();
+  const out = await matchQueueRow(sb, 'loc-1', row, { nowIso: NOW, budgetMs: 25 });
+  const took = Date.now() - began;
+  assert.equal(out.ran, false);
+  assert.equal(out.row, row, 'the mapper row goes to the kitchen, unchanged');
+  assert.equal(out.row.customer.ezMatch, undefined);
+  assert.ok(took < 2000, 'it waited ' + took + 'ms, which an order cannot afford');
+  assert.ok(MATCH_BUDGET_MS > 0 && MATCH_BUDGET_MS <= 10000, 'the default budget has to be a real one');
 });
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -660,13 +879,26 @@ test('every impure export in the ingest module is wrapped', () => {
   for (const fn of ['readMatchInputs', 'saveLinkWrites', 'matchQueueRow']) {
     const at = INGEST.indexOf('export async function ' + fn);
     assert.ok(at > 0, fn + ' is missing');
-    const body = INGEST.slice(at, at + 3000);
+    // To the next export, or the end of the file. A fixed window would go green
+    // or red on how long the function happens to be.
+    const rest = INGEST.slice(at + 10);
+    const next = rest.indexOf('\nexport ');
+    const body = next === -1 ? rest : rest.slice(0, next);
     assert.ok(body.includes('try {'), fn + ' has no try');
     assert.ok(body.includes('} catch'), fn + ' has no catch');
   }
   // The fallback is the whole promise of this file, so it is named in the code.
   assert.ok(INGEST.includes('return bailed;'));
   assert.ok(/NO ORDER IS EVER REFUSED/.test(INGEST));
+});
+
+test('the webhook puts a clock on matching, and the order is what it protects', () => {
+  assert.ok(WEBHOOK.includes('budgetMs: MATCH_BUDGET_MS'), 'the call has no budget on it');
+  assert.ok(INGEST.includes('export const MATCH_BUDGET_MS'));
+  // The budget is checked between reads AND raced, because a hung read never
+  // resolves and a deadline alone would wait for it forever.
+  assert.ok(INGEST.includes('Promise.race('));
+  assert.ok(INGEST.includes('clearTimeout('), 'a timer left running holds the isolate open');
 });
 
 test('no em dash or en dash anywhere in the files this change owns', () => {
