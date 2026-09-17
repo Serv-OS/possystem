@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.93',
+    date: '17 Sep 2026',
+    items: [
+      'Rota: the labour target now sits at the top of the rota. Four tiles show the target %, the labour budget it gives this week from your forecast, the planned rota cost against that budget, and the actual timesheet cost against the target. A new Labour budget row shows the budget per day and goes red where the scheduled wage is over it.',
+      'Daily Trading (P&L): shows the labour target, predicted labour (rota cost on the forecast) and actual labour (timesheets on net sales) side by side, per day and in total. Red means over your target. It used a fixed 35% line before.',
+      'The target itself is still set in Workforce settings.',
+    ],
+  },
+  {
     v: '5.8.92',
     date: '16 Sep 2026',
     items: [

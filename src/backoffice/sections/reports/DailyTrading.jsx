@@ -8,6 +8,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../../lib/supabase';
+import { loadSettings as loadWfSettings } from '../../../staff/wfData';
 
 const toYmd = (v) => { try { return new Intl.DateTimeFormat('en-CA').format(new Date(v)); } catch { return null; } };
 const dow = (d) => new Date(d + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short' });
@@ -49,6 +50,7 @@ export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
   const [locId, setLocId] = useState(null);
   const [data, setData] = useState(null);   // { rows, totals, settings }
   const [loading, setLoading] = useState(true);
+  const [labourTarget, setLabourTarget] = useState(null);   // Workforce settings labour target (0..1)
   const [err, setErr] = useState('');
   const [cogs, setCogs] = useState('');
   const [ovh, setOvh] = useState('');
@@ -69,6 +71,7 @@ export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
     try {
       const id = locId || await getActiveLocationSync();
       setLocId(id);
+      if (id) loadWfSettings(id).then(st => setLabourTarget(st?.labourTargetPct ?? null)).catch(() => {});
       if (!supabase || !id || !from || !to) { setLoading(false); return; }
       const { data: d, error } = await supabase.functions.invoke('trading-report', { body: { action: 'get', ops_location_id: id, from, to } });
       if (error) { let b = null; try { b = await error.context?.json?.(); } catch {} throw new Error(b?.error || error.message); }
@@ -95,6 +98,12 @@ export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
   if (!data) return <div style={S.empty}>No data.</div>;
 
   const { rows, totals } = data;
+  // Labour against the Workforce target: predicted = rota cost on the forecast, actual = timesheets on net sales.
+  const tgt = labourTarget != null ? Math.round(labourTarget * 1000) / 10 : null;
+  const labourPred = rows.reduce((a, r) => a + (Number(r.labour_theo) || 0), 0);
+  const pct1 = (num, den) => (den > 0 ? Math.round((num / den) * 1000) / 10 : null);
+  const predPct = pct1(labourPred, totals.forecast);
+  const over = (p) => p != null && p > (tgt != null ? tgt : 35);
   const sign = (n) => (n > 0 ? S.pos : n < 0 ? S.neg : null);
 
   return (
@@ -141,8 +150,12 @@ export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
           <div style={{ fontSize: 12, fontWeight: 700, ...sign(totals.actual_sales - totals.forecast) }}>{totals.actual_sales - totals.forecast >= 0 ? '+' : ''}{money(totals.actual_sales - totals.forecast)} vs forecast</div></div>
         <div style={S.kpi}><div style={S.kLab}>VAT (to HMRC)</div><div style={S.kVal}>{money(totals.vat)}</div>
           <div style={{ fontSize: 12, color: 'var(--t3)', fontWeight: 700 }}>gross {money(totals.gross_sales)}</div></div>
+        <div style={S.kpi}><div style={S.kLab}>Labour target</div><div style={S.kVal}>{tgt != null ? `${tgt}%` : '—'}</div>
+          <div style={{ fontSize: 12, color: 'var(--t3)', fontWeight: 700 }}>{tgt != null && totals.forecast > 0 ? `budget ${money(totals.forecast * tgt / 100)} on forecast` : 'set in Workforce settings'}</div></div>
+        <div style={S.kpi}><div style={S.kLab}>Labour (predicted)</div><div style={S.kVal}>{money(labourPred)}</div>
+          <div style={{ fontSize: 12, fontWeight: 700, ...(over(predPct) ? S.neg : predPct != null ? S.pos : { color: 'var(--t3)' }) }}>{predPct != null ? `${predPct}% of forecast` : 'needs a forecast'}</div></div>
         <div style={S.kpi}><div style={S.kLab}>Labour (actual)</div><div style={S.kVal}>{money(totals.labour_actual)}</div>
-          <div style={{ fontSize: 12, color: 'var(--t3)', fontWeight: 700 }}>{totals.labour_pct_actual != null ? `${totals.labour_pct_actual}% of net` : '—'}</div></div>
+          <div style={{ fontSize: 12, fontWeight: 700, ...(over(totals.labour_pct_actual) ? S.neg : totals.labour_pct_actual != null ? S.pos : { color: 'var(--t3)' }) }}>{totals.labour_pct_actual != null ? `${totals.labour_pct_actual}% of net${tgt != null ? ` (target ${tgt}%)` : ''}` : '—'}</div></div>
         <div style={S.kpi}><div style={S.kLab}>Operating profit</div><div style={{ ...S.kVal, ...sign(totals.op_actual) }}>{money(totals.op_actual)}</div>
           <div style={{ fontSize: 12, color: 'var(--t3)', fontWeight: 700 }}>forecast {money(totals.op_theo)}</div></div>
       </div>
@@ -153,7 +166,7 @@ export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
           <thead><tr>
             <th style={{ ...S.th, ...S.thL }}>Day</th>
             <th style={S.th}>Forecast</th><th style={S.th}>Gross (inc VAT)</th><th style={S.th}>VAT</th><th style={S.th}>Net sales</th>
-            <th style={S.th}>Labour (act)</th><th style={S.th}>Labour %</th>
+            <th style={S.th}>Labour (act / pred)</th><th style={S.th}>Labour % pred</th><th style={S.th}>Labour % act</th>
             <th style={S.th}>COGS</th><th style={S.th}>Waste</th><th style={S.th}>Op. profit</th>
           </tr></thead>
           <tbody>
@@ -170,7 +183,8 @@ export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
                 <td style={{ ...S.td, color: 'var(--t3)' }}>{money(r.vat)}</td>
                 <td style={S.td}>{money(r.actual_sales)}</td>
                 <td style={S.td}>{money(r.labour_actual)}<span style={{ color: 'var(--t4)' }}> / {money(r.labour_theo)}</span></td>
-                <td style={{ ...S.td, ...(r.labour_pct_actual > 35 ? S.neg : null) }}>{r.labour_pct_actual != null ? `${r.labour_pct_actual}%` : '—'}</td>
+                <td style={{ ...S.td, ...(over(pct1(r.labour_theo, r.forecast)) ? S.neg : null) }}>{pct1(r.labour_theo, r.forecast) != null ? `${pct1(r.labour_theo, r.forecast)}%` : '—'}</td>
+                <td style={{ ...S.td, ...(over(r.labour_pct_actual) ? S.neg : null) }}>{r.labour_pct_actual != null ? `${r.labour_pct_actual}%` : '—'}</td>
                 <td style={S.td}>{money(r.cogs_actual)}</td>
                 <td style={{ ...S.td, color: r.waste > 0 ? 'var(--red)' : 'var(--t3)' }}>{money(r.waste || 0)}</td>
                 <td style={{ ...S.td, ...sign(r.op_actual) }}>{money(r.op_actual)}</td>
@@ -184,7 +198,8 @@ export default function DailyTrading({ rangeFrom, rangeTo, fmt }) {
             <td style={{ ...S.td, color: 'var(--t3)' }}>{money(totals.vat)}</td>
             <td style={S.td}>{money(totals.actual_sales)}</td>
             <td style={S.td}>{money(totals.labour_actual)}</td>
-            <td style={S.td}>{totals.labour_pct_actual != null ? `${totals.labour_pct_actual}%` : '—'}</td>
+            <td style={{ ...S.td, ...(over(predPct) ? S.neg : null) }}>{predPct != null ? `${predPct}%` : '—'}</td>
+            <td style={{ ...S.td, ...(over(totals.labour_pct_actual) ? S.neg : null) }}>{totals.labour_pct_actual != null ? `${totals.labour_pct_actual}%` : '—'}</td>
             <td style={S.td}>{money(totals.cogs_actual)}</td>
             <td style={{ ...S.td, color: totals.waste > 0 ? 'var(--red)' : 'var(--t3)' }}>{money(totals.waste || 0)}</td>
             <td style={{ ...S.td, ...sign(totals.op_actual) }}>{money(totals.op_actual)}</td>

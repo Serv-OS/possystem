@@ -794,6 +794,49 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   if (loading) return <LoadingCard label="Loading the rota…" />;
 
   // ── week switcher + view toggle + publish (shared header) ──────────────────
+  // ── Labour target strip (v5.8.93): the target, the budget it gives this week, and how the
+  // plan and the actuals sit against it. It was only ever two grey footer rows before.
+  const _sum = (m) => wk.days.reduce((a, d) => a + (Number(m[d.iso]) || 0), 0);
+  const weekForecast = _sum(forecast);
+  const weekActualSales = _sum(actual);
+  const weekPlanWage = _sum(wageByIso);
+  const weekActualWage = _sum(actualWageByIso);
+  const weekBudget = weekForecast * targetPct;
+  const weekPlanPct = labourPct(weekPlanWage, weekForecast || weekActualSales);
+  const weekActualPct = labourPct(weekActualWage, weekActualSales);
+  const tile = { flex: '1 1 170px', border: '1px solid var(--bdr)', borderRadius: 12, background: 'var(--bg1)', padding: '10px 14px' };
+  const tLab = { fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.04em' };
+  const tVal = { fontSize: 20, fontWeight: 800, color: 'var(--t1)', marginTop: 2 };
+  const tSub = { fontSize: 12, fontWeight: 700, marginTop: 2 };
+  const LabourStrip = (
+    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', margin: '4px 0 14px' }}>
+      <div style={tile}>
+        <div style={tLab}>Labour target</div>
+        <div style={tVal}>{(targetPct * 100).toFixed(0)}%</div>
+        <div style={{ ...tSub, color: 'var(--t3)' }}>Change it in Workforce settings</div>
+      </div>
+      <div style={tile}>
+        <div style={tLab}>Labour budget this week</div>
+        <div style={tVal}>{weekForecast > 0 ? money(weekBudget) : 'No forecast yet'}</div>
+        <div style={{ ...tSub, color: 'var(--t3)' }}>{weekForecast > 0 ? `${(targetPct * 100).toFixed(0)}% of ${money(weekForecast)} forecast` : 'Type a sales forecast per day below'}</div>
+      </div>
+      <div style={tile}>
+        <div style={tLab}>Planned (rota)</div>
+        <div style={tVal}>{money(weekPlanWage)}{(weekForecast || weekActualSales) > 0 && weekPlanWage > 0 ? ` · ${(weekPlanPct * 100).toFixed(0)}%` : ''}</div>
+        <div style={{ ...tSub, color: weekForecast > 0 ? (weekPlanWage > weekBudget ? 'var(--red)' : 'var(--grn, #22c55e)') : 'var(--t3)' }}>
+          {weekForecast > 0 ? (weekPlanWage > weekBudget ? `${money(weekPlanWage - weekBudget)} over budget` : `${money(weekBudget - weekPlanWage)} under budget`) : 'Needs a forecast to compare'}
+        </div>
+      </div>
+      <div style={tile}>
+        <div style={tLab}>Actual (timesheets)</div>
+        <div style={tVal}>{money(weekActualWage)}{weekActualSales > 0 && weekActualWage > 0 ? ` · ${(weekActualPct * 100).toFixed(0)}%` : ''}</div>
+        <div style={{ ...tSub, color: weekActualSales > 0 && weekActualWage > 0 ? (weekActualPct > targetPct ? 'var(--red)' : 'var(--grn, #22c55e)') : 'var(--t3)' }}>
+          {weekActualSales > 0 && weekActualWage > 0 ? (weekActualPct > targetPct ? 'Over target' : 'On target') + ` on ${money(weekActualSales)} sales` : 'No actuals yet'}
+        </div>
+      </div>
+    </div>
+  );
+
   const Header = (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12, marginBottom: 14 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
@@ -865,6 +908,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       <Card>
         {Header}
         {Modals}
+        {LabourStrip}
         {secs.length === 0 && !unassignedCount
           ? <EmptyState icon="floor" title="No sections yet" body="Create sections (Bar, Floor, Kitchen…) in Settings to track coverage per area. Then assign each shift to a section and we'll flag any day that's understaffed." />
           : (
@@ -963,6 +1007,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
     <>
       <Card>
         {Header}
+        {LabourStrip}
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}>
             <thead><tr><th style={{ ...th, minWidth: 160 }}>Team</th>{dayCols}</tr></thead>
@@ -1012,6 +1057,18 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
                     <span className="mono" style={{ fontSize: 12, color: actualWageByIso[d.iso] > 0 ? 'var(--t1)' : 'var(--t4)' }}>{actualWageByIso[d.iso] > 0 ? money(actualWageByIso[d.iso]) : '–'}</span>
                   </td>
                 ))}
+              </FooterRow>
+
+              <FooterRow label="Labour budget (target)" tint="grey">
+                {wk.days.map(d => {
+                  const budget = (forecast[d.iso] || 0) * targetPct;
+                  const wage = wageByIso[d.iso] || 0;
+                  return (
+                    <td key={d.iso} style={{ ...td, textAlign: 'center' }}>
+                      {budget > 0 ? <span className="mono" style={{ fontSize: 12, color: wage > budget ? 'var(--red)' : 'var(--t1)' }}>{money(budget)}</span> : <span style={{ fontSize: 12, color: 'var(--t4)' }}>–</span>}
+                    </td>
+                  );
+                })}
               </FooterRow>
 
               <FooterRow label="Labour % (plan)" tint="grey">
