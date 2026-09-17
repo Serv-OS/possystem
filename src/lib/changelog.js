@@ -7,6 +7,14 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.91',
+    date: '16 Sep 2026',
+    items: [
+      'The Office button is gone from the till side rail on every device app. Back Office is opened from its own address, not from the till.',
+      'The Admin link is gone from the Back Office top bar.',
+    ],
+  },
+  {
     v: '5.8.89',
     date: '16 Sep 2026',
     items: [
