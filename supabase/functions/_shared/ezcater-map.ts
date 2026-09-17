@@ -237,6 +237,67 @@ export function orderItemsToLines(orderItems: any): any[] {
 
 const str = (v: unknown): string => (v == null ? '' : String(v).trim());
 
+// ────────────────────────────────────────────────────────────────────────────
+// The ezMatch stamp
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * How many unmatched names ride on the order row. A 300 line catering order
+ * with an unmatched menu would otherwise put 300 strings in a jsonb column that
+ * every Orders Hub poll then reads. The count is never truncated: lines minus
+ * matched is always the true number, whatever the list shows.
+ */
+export const EZ_MATCH_MAX_NAMES = 25;
+
+/**
+ * The small summary the Orders Hub and the matching screen read off the order,
+ * so neither has to walk the lines or make a second query:
+ *
+ *   ezMatch { lines: 5, matched: 3, unmatched: ['Veggie Platter', 'Brownies'] }
+ *
+ * Names are the venue's own ezCater spelling, deduped (the same product on two
+ * lines is one thing to fix, not two) and capped.
+ *
+ * A line counts as matched when it has an itemId from ANY source: a saved link,
+ * an auto link, or a posItemId ezCater already carried. itemId is what routing
+ * and stock key on, so that is the only question worth answering here.
+ */
+export function ezMatchSummary(lines: any, maxNames: number = EZ_MATCH_MAX_NAMES): { lines: number; matched: number; unmatched: string[] } {
+  const list = Array.isArray(lines) ? lines : [];
+  const cap = Number.isFinite(maxNames) && maxNames > 0 ? Math.floor(maxNames) : EZ_MATCH_MAX_NAMES;
+  let matched = 0;
+  const unmatched: string[] = [];
+  const seen = new Set<string>();
+  for (const line of list) {
+    const ok = !!(line && line.match ? line.match.matched : (line && line.itemId));
+    if (ok) { matched++; continue; }
+    const name = str(line?.name) || 'Item';
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (unmatched.length < cap) unmatched.push(name);
+  }
+  return { lines: list.length, matched, unmatched };
+}
+
+/**
+ * Put the matched lines back on an order_queue row and stamp the summary into
+ * the customer jsonb, which is where everything ezCater sends that order_queue
+ * has no column for already lives.
+ *
+ * Returns a NEW row. Does not mutate the one it was given, because the caller
+ * keeps the original as its fallback if anything downstream goes wrong.
+ */
+export function withMatchedItems(row: any, lines: any): any {
+  if (!row) return row;
+  const items = Array.isArray(lines) ? lines : [];
+  return {
+    ...row,
+    items,
+    customer: { ...(row.customer || {}), ezMatch: ezMatchSummary(items) },
+  };
+}
+
 /**
  * Map one ezCater order onto an order_queue row plus an ezcater_order_links row.
  *
