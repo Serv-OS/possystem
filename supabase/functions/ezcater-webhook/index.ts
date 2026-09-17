@@ -106,6 +106,23 @@ async function verifyBody(raw: string, header: string | null): Promise<{ ok: boo
   return { ok: false, connectionId: null };
 }
 
+/**
+ * The token, and the API address to use it against.
+ *
+ * READ DEFENSIVELY. api_url arrives with 20260917_OPS_ezcater_api_url.sql, which
+ * Peter runs by hand, and PostgREST fails the WHOLE select when it is asked for
+ * a column that is not there. So it is asked for, and asked for again without it
+ * if that is why it failed, exactly as the item matching screen does for
+ * menu_items.item_code. Before that file runs, every order fetch still goes to
+ * the live ezCater API, which is where it went before any of this existed.
+ */
+async function readConnection(connId: string): Promise<any | null> {
+  const first = await sb.from('ezcater_connections').select('id, api_token, api_url').eq('id', connId).maybeSingle();
+  if (!first.error) return first.data || null;
+  const again = await sb.from('ezcater_connections').select('id, api_token').eq('id', connId).maybeSingle();
+  return again.data || null;
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return ok();
@@ -202,9 +219,7 @@ Deno.serve(async (req) => {
     // Guard the id before querying: a bare '' against a uuid column is a
     // Postgres type error, not an empty result.
     const connId = cat.connection_id || verified.connectionId || null;
-    const { data: conn } = connId
-      ? await sb.from('ezcater_connections').select('id, api_token').eq('id', connId).maybeSingle()
-      : { data: null };
+    const conn = connId ? await readConnection(connId) : null;
     const token = conn?.api_token || '';
     if (!token) {
       // Not strictly transient, but a retry costs nothing and self heals the
@@ -215,7 +230,9 @@ Deno.serve(async (req) => {
 
     let order: any = null;
     try {
-      order = await getOrder(token, entityId);
+      // api_url is the sandbox address when the operator typed one, and null
+      // (so, the live ezCater API) for every other connection.
+      order = await getOrder(token, entityId, conn?.api_url ?? null);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
 
