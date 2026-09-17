@@ -172,7 +172,29 @@ export const ensureAuthToken = async () => {
  * time (read from the still-open devices row) so later boots re-claim without needing to
  * read the (Stage-3-locked) devices table. Best-effort — never throws into the boot path.
  */
-export const claimPairedDeviceOnBoot = async () => {
+/**
+ * v5.8.99: the claim is a PROMISE now. Writes that RLS gates on the device link (a shift, a cash
+ * drawer) can await it, because the claim is a network round trip and the staff PIN arrives
+ * within a second of boot. Before this, the first shift of the day was often refused with
+ * "new row violates row-level security policy" and the save health bar told staff their work
+ * was not saving (Peter, 17 Sep 2026).
+ */
+let _claimPromise = null;
+
+/** Resolves true when the device claim finished, false when it is not applicable or too slow. */
+export const whenDeviceClaimed = (waitMs = 4000) => {
+  if (!_claimPromise) return Promise.resolve(false);
+  let timer;
+  const timeout = new Promise((res) => { timer = setTimeout(() => res(false), waitMs); });
+  return Promise.race([_claimPromise.then(() => true).catch(() => false), timeout]).finally(() => clearTimeout(timer));
+};
+
+export const claimPairedDeviceOnBoot = () => {
+  _claimPromise = _claimDevice();
+  return _claimPromise;
+};
+
+const _claimDevice = async () => {
   if (!supabase) return;
   let dev; try { dev = JSON.parse(localStorage.getItem('rpos-device') || 'null'); } catch { return; }
   if (!dev || !dev.id || dev.id === 'admin' || dev.adminMode || !dev.locationId) return;
