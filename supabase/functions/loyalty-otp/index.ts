@@ -348,22 +348,37 @@ Deno.serve(async (req) => {
     if (existing) {
       customer = existing;
     } else {
-      // Create new customer record
-      const { data: newCust } = await opsAdmin
+      // Create new customer record. customers.name is NOT NULL, so a new sign up is stored with an
+      // empty name until they complete registration (the portal treats an empty name exactly like no
+      // name). Inserting null here refused EVERY new loyalty registration (17 Sep 2026).
+      const { data: newCust, error: insErr } = await opsAdmin
         .from('customers')
         .insert({
           org_id: orgId,
           phone,
-          name: null,
+          name: '',
           email: null,
         })
         .select('id, name, email, phone, birthday, marketing_opt_in')
         .single();
-      customer = newCust;
+      if (insErr) {
+        // Lost a race with a second tab or device creating the same phone: read the winner.
+        const { data: again } = await opsAdmin
+          .from('customers')
+          .select('id, name, email, phone, birthday, marketing_opt_in')
+          .eq('org_id', orgId)
+          .eq('phone', phone)
+          .is('deleted_at', null)
+          .maybeSingle();
+        if (!again) console.error('[loyalty-otp] create customer failed:', insErr.code, insErr.message);
+        customer = again;
+      } else {
+        customer = newCust;
+      }
     }
 
     if (!customer) {
-      return json({ error: 'Failed to resolve customer' }, 500);
+      return json({ error: 'We could not set up your account. Please try again.' }, 500);
     }
 
     // ── Get/create loyalty membership ────────────────────────────────
@@ -704,7 +719,8 @@ Deno.serve(async (req) => {
 
     // All profile data lives on the customers table (single source of truth)
     const updates: Record<string, unknown> = {};
-    if (typeof body.name === 'string') updates.name = body.name.trim() || null;
+    // customers.name is NOT NULL: a cleared name is stored empty, never null (a null refused the whole save).
+    if (typeof body.name === 'string') updates.name = body.name.trim();
     if (typeof body.email === 'string') updates.email = body.email.trim() || null;
     if (typeof body.birthday === 'string') updates.birthday = body.birthday || null;
     if (typeof body.marketing_opt_in === 'boolean') updates.marketing_opt_in = body.marketing_opt_in;
