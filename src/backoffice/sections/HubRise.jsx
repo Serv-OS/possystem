@@ -12,6 +12,7 @@ import {
   hubriseDisconnect, hubrisePushCatalog, hubriseResyncStock,
   setHubriseConnected, setHubriseAutoReceipt,
 } from '../../lib/hubrise';
+import EzcaterItemMatching from './EzcaterItemMatching';
 
 const S = {
   wrap: { maxWidth: 760, display: 'flex', flexDirection: 'column', gap: 16 },
@@ -276,6 +277,20 @@ export default function HubRise() {
           {status.last_error && <div style={S.note('err')}>Last error: {status.last_error}</div>}
         </div>
       )}
+
+      {/* ezCater is the other pipe on this page. It is orders only: we have
+          their Orders API but NOT their Menus API, so nobody can push our menu
+          to them and their order lines arrive with no id of ours on them. That
+          is what the matching card below is for, and it is the only ezCater
+          setting that lives in Back Office. It hides itself cleanly until the
+          migration is run. */}
+      <div style={{ marginTop: 8 }}>
+        <h1 style={S.h1}>🍽 ezCater</h1>
+        <div style={S.sub}>
+          ezCater sends us orders but not their menu. Match their items to yours once, here.
+        </div>
+      </div>
+      <EzcaterItemMatching locationId={locId} />
     </div>
   );
 }

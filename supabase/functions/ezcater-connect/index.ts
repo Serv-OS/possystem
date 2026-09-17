@@ -11,6 +11,10 @@
 //     set_policy     -> per caterer auto_accept, per connection feature flags
 //     resubscribe    -> tear down and recreate the event subscriptions
 //     disconnect     -> delete the subscriptions and drop the connection
+//     items_list     -> the ezCater item names seen on this venue, and what
+//                       each one is matched to
+//     items_save     -> match one of their names to one of ours, silence it, or
+//                       clear it back to unmatched
 //
 // There is NO OAuth. ezCater issues a static token by email request, generated
 // once in the Partner Portal, and it CANNOT be recovered if lost. So unlike
@@ -28,6 +32,7 @@ import {
   caterers as listCaterers, createSubscriber, createSubscription,
   deleteSubscriptions, EZ_EVENTS, EzcaterError,
 } from '../_shared/ezcater.ts';
+import { buildLinkKey } from '../_shared/ezcaterMatch.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -40,6 +45,22 @@ const sb = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { autoRefreshToken: 
 // caterers, so the webhook resolves the location from the notification's
 // parent_id instead of from its own URL.
 const WEBHOOK_URL = `${SUPABASE_URL}/functions/v1/ezcater-webhook`;
+
+/**
+ * "That table is not there yet" rather than "that broke".
+ *
+ * 42P01 is Postgres undefined_table. PGRST205 is PostgREST failing to find the
+ * table in its schema cache, which is also what a brand new table looks like
+ * until the cache reloads. Both mean the operator has not run
+ * 20260917_OPS_ezcater_item_links.sql yet, and the answer is an empty screen
+ * with one plain line on it, not an error.
+ */
+function isAbsentTable(err: any): boolean {
+  const code = String(err?.code || '');
+  if (code === '42P01' || code === 'PGRST205') return true;
+  const msg = String(err?.message || '').toLowerCase();
+  return /relation .*does not exist/.test(msg) || msg.includes('could not find the table');
+}
 
 /** Signed in Ops user with access to this location, or super_admin. Same fence as hubrise-connect. */
 async function requireAccess(req: Request, opsLocationId: string): Promise<{ ok: true; userId: string } | { ok: false; res: Response }> {
@@ -308,6 +329,89 @@ Deno.serve(async (req) => {
           await sb.from('ezcater_connections').delete().eq('id', conn.id);
         }
         return json({ ok: true });
+      }
+
+      // ── Item matching ───────────────────────────────────────────────────
+      // ezcater_item_links is service role only (RLS on, no policies, revoked
+      // from anon and authenticated), the same fence as ezcater_order_links.
+      // These rows decide where food is routed and what stock is taken, so Back
+      // Office reads and writes them HERE and never straight off the table.
+      //
+      // Both actions answer { enabled: false } when the table is not there,
+      // because Peter runs 20260917_OPS_ezcater_item_links.sql by hand and the
+      // screen has to work before he does.
+
+      case 'items_list': {
+        const { data, error } = await sb.from('ezcater_item_links')
+          .select('kind, ez_key, ez_name, ez_group, menu_item_id, option_id, source, matched_by, seen_count, last_seen_at')
+          .eq('location_id', opsLocationId)
+          .order('last_seen_at', { ascending: false, nullsFirst: false })
+          .limit(1000);
+        if (error) {
+          if (isAbsentTable(error)) return json({ ok: true, enabled: false, links: [] });
+          return json({ error: error.message }, 500);
+        }
+        return json({ ok: true, enabled: true, links: data || [] });
+      }
+
+      case 'items_save': {
+        const kind = body?.kind === 'option' ? 'option' : 'item';
+        const ezName = String(body?.ez_name || '').trim();
+        const ezGroup = kind === 'option' ? (String(body?.ez_group || '').trim() || null) : null;
+        if (!ezName) return json({ error: 'ez_name required' }, 400);
+
+        // The key is rebuilt from the name with the SAME rules the matcher uses
+        // at read time, never taken from the client. A key that did not agree
+        // with its own name would be a row nothing ever looks up again.
+        const ezKey = buildLinkKey({ name: ezName, groupLabel: ezGroup || '' }, kind);
+        if (!ezKey) return json({ error: 'that name cannot be matched' }, 400);
+
+        const ignored = body?.ignored === true;
+        const menuItemId = ignored ? null : (String(body?.menu_item_id || '').trim() || null);
+        const optionId = ignored ? null : (String(body?.option_id || '').trim() || null);
+        if (kind === 'item' && optionId) return json({ error: 'an item cannot be matched to an option' }, 400);
+
+        // Verify the target is really ours AND really on this venue, so a bad
+        // or stale id cannot be saved as a match that silently routes nothing.
+        if (menuItemId) {
+          // `not archived is true` and not `archived = false`: archived is null
+          // on older rows and those are live items, not hidden ones.
+          const { data: mi } = await sb.from('menu_items')
+            .select('id').eq('location_id', opsLocationId).eq('id', menuItemId)
+            .not('archived', 'is', true).maybeSingle();
+          if (!mi) return json({ error: 'that item is not on this menu' }, 400);
+        }
+        if (optionId) {
+          const { data: groups } = await sb.from('modifier_groups')
+            .select('options').eq('location_id', opsLocationId);
+          const found = (groups || []).some((g: any) =>
+            (Array.isArray(g?.options) ? g.options : []).some((o: any) => o && String(o.id) === optionId));
+          if (!found) return json({ error: 'that option is not on this menu' }, 400);
+        }
+
+        // matched_by carries WHO, and doubles as the "Not on our menu" marker.
+        // A cleared row goes back to null, which is the same shape the webhook
+        // writes when it first sees a name.
+        const matchedBy = ignored ? 'ignored'
+          : ((menuItemId || optionId) ? (access.userId === 'service' ? 'service' : access.userId) : null);
+
+        const { error } = await sb.from('ezcater_item_links').upsert({
+          location_id: opsLocationId,
+          kind,
+          ez_key: ezKey,
+          ez_name: ezName,
+          ez_group: ezGroup,
+          menu_item_id: menuItemId,
+          option_id: optionId,
+          source: 'manual',          // a person did this, so a later auto pass must not overrule it
+          matched_by: matchedBy,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'location_id,kind,ez_key' });
+        if (error) {
+          if (isAbsentTable(error)) return json({ ok: true, enabled: false });
+          return json({ error: error.message }, 500);
+        }
+        return json({ ok: true, enabled: true, ez_key: ezKey });
       }
 
       default:

@@ -89,3 +89,22 @@ test('service role only, the same fence as ezcater_order_links', () => {
 test('no foreign key onto menu_items, so a deleted item cannot cascade the work away', () => {
   assert.ok(!code.includes('references public.menu_items'));
 });
+
+test('a row with NO target is allowed, because that is how an unmatched item is recorded', () => {
+  // The Back Office matching screen lists their items we have SEEN and does not
+  // know yet. Those rows have no menu_item_id and no option_id. If the target
+  // check rejected them the webhook could not write one and the screen would be
+  // permanently empty.
+  assert.ok(code.includes('when menu_item_id is null and option_id is null then true'));
+  // And "Not on our menu" is the same shape, told apart by matched_by, so it
+  // needs no extra column and no extra constraint arm.
+  assert.ok(lower.includes("matched_by = 'ignored'"));
+});
+
+test('the widened check is still a drop-then-add, so re-running repairs an earlier run', () => {
+  const i = code.indexOf('drop constraint if exists ezcater_item_links_target_check');
+  const j = code.indexOf('add constraint ezcater_item_links_target_check');
+  assert.ok(i !== -1 && j !== -1 && i < j);
+  // Peter may already have run the narrower version. The header has to tell him.
+  assert.ok(lower.includes('if you already ran an earlier copy of this file, run it again'));
+});
