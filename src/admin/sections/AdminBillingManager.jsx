@@ -54,7 +54,7 @@ import AdyenEnvironmentControls from '../components/AdyenEnvironmentControls';
 import AdyenGoLiveFlow from '../components/AdyenGoLiveFlow';
 import RateCardRows from '../components/RateCardRows';
 import { adyenVenueStatus, stripeVenueStatus, matchesVenueSearch } from '../../lib/payments/adyenAdminRows';
-import { RATE_CARD_TIERS, emptyCard, cardToState, stateToCard, cardsEqual, fmtRate } from '../../lib/payments/rateCard';
+import { RATE_CARD_TIERS, emptyCard, cardToState, stateToCard, cardsEqual, fmtRate, rowView, serverKnowsDebit } from '../../lib/payments/rateCard';
 import { rateCardProblems } from '../../lib/payments/adyenLink';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
@@ -261,6 +261,9 @@ export default function AdminBillingManager({ authUser }) {
         merged.default_adyen_markup_fixed_pence = adyenDef.defaults.default_markup_fixed_pence;
         merged.default_adyen_rate_card = adyenDef.defaults.rate_card ?? null;
         merged.adyen_rate_card_ready = adyenDef.rate_card_ready !== false;
+        // Can the server keep a debit rate (17 Sep 2026)? An older deploy
+        // would drop the two debit rows in silence, so they stay read only.
+        merged.adyen_debit_ready = serverKnowsDebit(adyenDef);
       }
       if (Object.keys(merged).length) setPlatformDefaults(prev => ({ ...prev, ...merged }));
 
@@ -520,11 +523,12 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
   };
 
   const pct = (v) => `${Number(v ?? 0).toFixed(2)}%`;
+  // What the SAVED default card resolves to per row, the same walk the editor
+  // and the server do (a blank debit row reads its credit row's rate).
+  const savedDefaultState = cardToState(defaults.default_adyen_rate_card);
   const resolvedDefault = (tierId) => {
-    const row = defaults.default_adyen_rate_card?.[tierId];
-    if (row && (row.percent != null || row.fixed_pence != null)) return { pct: row.percent, fix: row.fixed_pence };
-    if (tierId === 'card_present' && hasLegacy) return { pct: legacyPct, fix: legacyFix };
-    return { pct: null, fix: null };
+    const view = rowView(savedDefaultState, tierId, fallbackFor);
+    return { pct: view.effPct, fix: view.effFix, typed: view.typed };
   };
 
   const bpRows = Array.isArray(known?.rows) ? known.rows : [];
@@ -592,7 +596,7 @@ function PlatformDefaultsPanel({ defaults, onSave, authUserId, onError }) {
               </div>
               <div>
                 <div style={TITLE}>Standard card rates: what a venue pays per payment type</div>
-                <RateCardRows big value={drc} onChange={(v) => { setDrc(v); setOverLimit(null); }} fallbackFor={fallbackFor} />
+                <RateCardRows big value={drc} onChange={(v) => { setDrc(v); setOverLimit(null); }} fallbackFor={fallbackFor} debitReady={defaults.adyen_debit_ready === true} />
                 {drcCheck.errors.map((e) => <div key={e.text} style={{ ...PLAIN, color: 'var(--red)', marginTop: 6 }}>{e.text}</div>)}
                 {Array.isArray(overLimit) && overLimit.length > 0 && (
                   <div style={{ marginTop: 8 }}>
@@ -1087,7 +1091,7 @@ function AdyenBlock({ location, venueCode, adyenRow, defaults, onError, onRowCha
         {acct?.error && <ErrorNote text="The rates could not be read. Try again in a moment." detail={acct.error} />}
         {acct && !acct.error && (
           <>
-            <RateCardRows big value={rc} onChange={(v) => { setRc(v); setRateOver(null); }} fallbackFor={fallbackFor} currency={currency} />
+            <RateCardRows big value={rc} onChange={(v) => { setRc(v); setRateOver(null); }} fallbackFor={fallbackFor} currency={currency} debitReady={serverKnowsDebit(acct)} />
             {rcCheck.errors.map((e) => <div key={e.text} style={{ ...PLAIN, color: 'var(--red)', marginTop: 6 }}>{e.text}</div>)}
             {Array.isArray(rateOver) && rateOver.length > 0 && (
               <div style={{ marginTop: 8 }}>
@@ -1113,7 +1117,7 @@ function AdyenBlock({ location, venueCode, adyenRow, defaults, onError, onRowCha
               </div>
             )}
             <div style={{ ...QUIET, margin: '10px 0 12px' }}>
-              The venue sees these rates read only in Back Office, under Card payments. Step 5 of the flow applies them on Adyen.
+              The venue sees these rates read only in Back Office, under Card payments. Saving does not change what Adyen takes. Step 5 of the flow sends the rates to Adyen.
             </div>
             <SaveRow busy={busy} dirty={dirty && rcCheck.errors.length === 0} savedAt={savedAt}
               label="Save the rates" busyLabel="Saving"

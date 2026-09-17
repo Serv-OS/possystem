@@ -27,6 +27,7 @@
 import { useEffect, useState } from 'react';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import { getLocationProcessor } from '../../lib/payments/processor';
+import { venueRateRows } from '../../lib/payments/rateCard';
 import AdyenPayments from './reports/AdyenPayments';
 import AdyenDisputes from './reports/AdyenDisputes';
 import AdyenPayouts from './reports/AdyenPayouts';
@@ -168,14 +169,13 @@ function Chip({ on, label }) {
 // Rates are set by ServOS (the platform admin) as part of the venue's
 // agreement — there is deliberately no editing here. A tier with no agreed
 // rate shows an honest dash; no rates at all keeps the honest empty state.
-// Older server deploys return only the flat rate — that single-rate view is
-// kept as the fallback so the tab never breaks on deploy order.
-const RATE_ROWS = [
-  { id: 'card_present', label: 'Card-present (credit & debit)' },
-  { id: 'card_not_present', label: 'Card-not-present (online)' },
-  { id: 'amex', label: 'American Express & business cards' },
-  { id: 'keyed', label: 'Manually keyed' },
-];
+// Older server deploys return only the flat rate, and that single rate view
+// is kept as the fallback so the tab never breaks on deploy order.
+// 17 Sep 2026: credit and debit share one row until the venue's debit rate is
+// priced apart from its credit rate; then each gets its own row
+// (src/lib/payments/rateCard.js venueRateRows, so a row never claims
+// "credit and debit" over a rate that only credit pays).
+const RATE_ROW_IDS = ['card_present', 'card_not_present', 'amex', 'keyed'];
 
 function SettingsTab({ status }) {
   const [data, setData] = useState(null);   // null = loading, {error} or settings payload
@@ -214,7 +214,8 @@ function SettingsTab({ status }) {
   const active = status?.ok && status?.merchant;
   const rates = data?.rates;
   const rateCard = data?.rate_card;
-  const hasTiered = rateCard && RATE_ROWS.some(r => rateCard[r.id]);
+  const hasTiered = rateCard && RATE_ROW_IDS.some(id => rateCard[id]);
+  const rateRows = venueRateRows(rateCard);
   const hasFlat = rates && (rates.percent != null || rates.fixed_pence != null);
   const hasRate = hasTiered || hasFlat;
   // "1.4% + 5p", trimming trailing zeros on the percent.
@@ -239,8 +240,8 @@ function SettingsTab({ status }) {
               <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.04em', padding: '12px 16px 8px' }}>
                 What you pay per card payment
               </div>
-              {RATE_ROWS.map((row, i) => {
-                const t = rateCard[row.id];
+              {rateRows.map((row, i) => {
+                const t = row.rate;
                 return (
                   <div key={row.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 12, padding: '10px 16px', borderTop: i === 0 ? 'none' : '1px solid var(--bdr)' }}>
                     <span style={{ fontSize: 13, color: 'var(--t2)' }}>{row.label}</span>

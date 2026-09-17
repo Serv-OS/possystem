@@ -120,6 +120,16 @@
 // saved through payments-admin adyen_pricing. No two box flat path, no typed
 // CONFIRM, and never the word commission on screen.
 //
+// PREVIEW, THEN SEND (17 Sep 2026, credit and debit priced apart). The table
+// has six rows now (a blank debit row reads "same as In person credit"), and
+// the one primary is "Preview": preview_split is a dry run that sends NOTHING
+// and answers what would change and the exact requests. Only then is "Send
+// rates to Adyen" offered (set_split), and on a venue taking real cards it
+// needs the typed word LIVE, the same ask as turning on live payments. A
+// server from before today answers "unknown action" to the preview, so
+// nothing can be sent from this screen until the function is deployed.
+// Saving a rate never touches Adyen: only Send does.
+//
 // Props:
 //   location    the platform locations row (id, name, address)
 //   venueCode   ops locations.venue_code, for the empty state line
@@ -145,7 +155,7 @@ import {
   goliveProblemBox, PLATFORM_SETTINGS_WAITING_LINE, RATES_LEDE, rateCardRows, PLATFORM_ID_LINE,
 } from '../../lib/payments/adyenAdminRows';
 import { isPlatformSettingsMissingWarning, rateCardProblems } from '../../lib/payments/adyenLink';
-import { cardToState, stateToCard, cardsEqual } from '../../lib/payments/rateCard';
+import { cardToState, stateToCard, cardsEqual, serverKnowsDebit } from '../../lib/payments/rateCard';
 import RateCardRows from './RateCardRows';
 
 const CHIP = {
@@ -324,22 +334,23 @@ function Problem({ problem, tone = 'bad' }) {
   );
 }
 
-// THE CARD RATES TABLE (10 Sep 2026): four rows, big type, Payment type,
-// Rate, Per payment, and one grey source word per row (rateCardRows). Read
-// only: Edit rates opens the editor under it.
+// THE CARD RATES TABLE (10 Sep 2026): big type, Payment type, Rate, Per
+// payment, and one grey source word per row (rateCardRows). Read only: Edit
+// rates opens the editor under it. 17 Sep 2026: six rows, and a debit row
+// that only follows its credit row is drawn grey ("same as In person credit").
 function RatesTable({ rows }) {
   const head = { fontSize: 15, fontWeight: 700, color: 'var(--t3)' };
   const cell = { fontSize: 17, lineHeight: 1.4, color: 'var(--t1)' };
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(150px, 1.4fr) 1fr 1.4fr', gap: '8px 14px', maxWidth: 520, margin: '4px 0 0', alignItems: 'baseline' }}>
+    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(150px, 1.3fr) .8fr 2fr', gap: '8px 14px', maxWidth: 620, margin: '4px 0 0', alignItems: 'baseline' }}>
       <span style={head}>Payment type</span>
       <span style={head}>Rate</span>
       <span style={head}>Per payment</span>
       {rows.map((r) => (
         <Fragment key={r.id}>
           <span style={{ ...cell, fontWeight: 700 }}>{r.label}</span>
-          <span style={{ ...cell, fontWeight: 800, color: r.unpriced ? 'var(--orn, #e8a020)' : 'var(--t1)' }}>{r.rate}</span>
-          <span style={cell}>
+          <span style={{ ...cell, fontWeight: 800, color: r.unpriced ? 'var(--orn, #e8a020)' : r.inherited ? 'var(--t3)' : 'var(--t1)' }}>{r.rate}</span>
+          <span style={r.inherited ? { ...cell, color: 'var(--t3)' } : cell}>
             {r.perPayment}
             {r.source && <span style={{ ...S.aside, marginLeft: r.perPayment ? 8 : 0 }}>{r.source}</span>}
           </span>
@@ -369,7 +380,8 @@ function whatFailed(key) {
   if (key === 'save_store') return 'The payments location could not be saved on the venue';
   if (key === 'save_holder') return 'The business account could not be saved on the venue';
   if (key === 'save_all') return 'The Adyen details could not be saved on the venue';
-  if (key === 'split') return 'The rates could not be applied on Adyen';
+  if (key === 'split') return 'The rates could not be sent to Adyen';
+  if (key === 'preview') return 'The rates could not be previewed';
   if (key === 'platform') return 'The Adyen platform name could not be saved';
   if (key === 'rates_read') return 'The rates could not be read';
   if (key === 'rates') return 'The rates could not be saved';
@@ -465,6 +477,13 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
   // Apply these rates on Adyen answered over_limit (a rate above the usual
   // limit, 14 typed for 1.4): { lines }. The next press sends over_limit.
   const [splitOver, setSplitOver] = useState(null);
+  // PREVIEW, THEN SEND (17 Sep 2026): what preview_split answered ({ lines,
+  // rows, same, canSend, overLimit, requests, live, unread }, null = no
+  // preview yet, so Send is not offered), the typed word for a live venue, and
+  // whether the exact requests are unfolded.
+  const [ratePreview, setRatePreview] = useState(null);
+  const [sendTyped, setSendTyped] = useState('');
+  const [showSent, setShowSent] = useState(false);
   const pickRef = useRef(pick);
   pickRef.current = pick;
   const envRef = useRef(lookTest);
@@ -499,7 +518,9 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
   // An open editor holds the card as it was when it opened, so it closes
   // rather than save that old card over the newer one (10 Sep 2026); the
   // server refuses a stale save as well (expected_rate_card).
-  useEffect(() => { setRateEdit(null); setSplitOver(null); }, [refreshKey]);
+  // A preview is of the card as it was: any save drops it, so Send is only
+  // ever offered on a preview of the rates as they are now.
+  useEffect(() => { setRateEdit(null); setSplitOver(null); setRatePreview(null); setSendTyped(''); setShowSent(false); }, [refreshKey, lookTest]);
 
   const view = useMemo(() => goliveFlowView(state, openId), [state, openId]);
   const open = view.steps.find((x) => x.open) || null;
@@ -864,11 +885,56 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
   // NO NUMBERS leave this screen (10 Sep 2026): the server applies the card
   // as it resolves (venue, else platform default) and refuses in plain words
   // naming any tier with no price.
+  //
+  // PREVIEW FIRST (17 Sep 2026). preview_split is the dry run: the server
+  // runs every check and read the send runs, then answers what would change
+  // and the exact requests, and sends NOTHING. It is its own action name, so
+  // a server from before today refuses it ("unknown action") where a flag on
+  // set_split would have been ignored and the rates written.
+  const previewSplit = () => act('preview', async () => {
+    setRatePreview(null); setSendTyped(''); setShowSent(false); setSplitOver(null);
+    let r;
+    try {
+      r = await callAdmin('preview_split', { environment: target });
+    } catch (e) {
+      if (/unknown action/i.test(`${str(e?.data?.error)} ${str(e?.message)}`)) {
+        setProblem({ text: 'Preview needs a server update first. Nothing was sent.', detail: 'Deploy the adyen-terminal-admin function, then press Preview again.' });
+        return { stop: true };
+      }
+      throw e;
+    }
+    // Only an answer that SAYS it was a dry run is a preview.
+    if (r?.ok === false || r?.dry_run !== true || r?.sent !== false) {
+      setProblem({ text: str(r?.error) || 'The rates could not be previewed.', detail: str(r?.detail) || null });
+      return { stop: true };
+    }
+    const p = r.preview && typeof r.preview === 'object' ? r.preview : {};
+    setRatePreview({
+      lines: lines(p.lines), same: p.same === true, canSend: p.canSend !== false,
+      rulesNow: Number(p.rulesNow) || 0, rulesNext: Number(p.rulesNext) || 0,
+      overLimit: lines(r.overLimit), live: r.live === true, unread: r.profileUnread === true,
+      requests: Array.isArray(r.requests) ? r.requests : [],
+    });
+    setOpenId('payouts');
+    return { stop: true };
+  });
+
+  // SEND: only ever offered under a preview, and on a venue taking real cards
+  // only once the word LIVE is typed (the server asks for it as well).
+  // The server's own word on the preview decides (it names the account the
+  // send acts on); the venue's environment as read stands in before one.
+  const sendNeedsTyped = ratePreview ? ratePreview.live === true : venueEnv === 'live';
+  const sendTypedOk = !sendNeedsTyped || sendTyped.trim().toUpperCase() === 'LIVE';
   const setSplit = () => act('split', async () => {
-    // A rate above the usual limit is refused once (over_limit) and said in
-    // plain words under the table; pressing Apply again sends over_limit.
-    const confirmOver = !!splitOver;
-    const r = await callAdmin('set_split', { environment: target, ...(confirmOver ? { over_limit: true } : {}) });
+    if (!ratePreview || !sendTypedOk) return { stop: true };
+    // A rate above the usual limit was shown in the preview, in plain words;
+    // pressing Send is the confirmation, so over_limit rides with it.
+    const confirmOver = !!splitOver || ratePreview.overLimit.length > 0;
+    const r = await callAdmin('set_split', {
+      environment: target,
+      ...(confirmOver ? { over_limit: true } : {}),
+      ...(sendNeedsTyped ? { confirm_live: 'LIVE' } : {}),
+    });
     if (r?.ok === false) {
       if (r.over_limit && !confirmOver) {
         setSplitOver({ lines: lines(r.lines).length ? lines(r.lines) : [str(r.error)] });
@@ -876,10 +942,10 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
         return { stop: true };
       }
       setSplitOver(null);
-      setProblem({ text: str(r.error) || 'The rates could not be applied on Adyen.', detail: str(r.detail) || null });
+      setProblem({ text: str(r.error) || 'The rates could not be sent to Adyen.', detail: str(r.detail) || null });
       return { stop: true };
     }
-    setSplitOver(null);
+    setSplitOver(null); setRatePreview(null); setSendTyped(''); setShowSent(false);
     return {
       notice: {
         text: 'Adyen holds these rates now.',
@@ -898,7 +964,10 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
     if (!callPayments) return { stop: true };
     const r = await callPayments('adyen_pricing', { location_id: locId });
     const value = cardToState(r?.account?.rate_card);
-    setRateEdit({ value, saved: value, defaults: r?.defaults || {}, account: r?.account || {}, ready: r?.rate_card_ready !== false, overLimit: null });
+    // debitReady: the server names the debit rows it can keep. An older one
+    // would drop them in silence, so the editor holds them read only.
+    setRateEdit({ value, saved: value, defaults: r?.defaults || {}, account: r?.account || {}, ready: r?.rate_card_ready !== false, debitReady: serverKnowsDebit(r), overLimit: null });
+    setRatePreview(null); setSendTyped(''); setShowSent(false);
     setOpenId('payouts');
     return { stop: true };
   });
@@ -936,8 +1005,9 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
       throw e;
     }
     setRateEdit(null);
+    setRatePreview(null); setSendTyped(''); setShowSent(false);
     return {
-      notice: { text: 'The venue rates are saved.' },
+      notice: { text: 'The venue rates are saved. Adyen does not change until you send them.' },
       problem: str(r?.warning) ? { text: 'They are saved. The server said something else as well.', tone: 'warn', detail: str(r.warning) } : null,
       changed: true,
     };
@@ -1650,12 +1720,56 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
                             {splitOver && part.action === 'set_split' && (
                               <div style={{ margin: '14px 0 0', maxWidth: MEASURE }}>
                                 {splitOver.lines.map((l) => <p key={l} style={{ ...S.say, color: 'var(--orn, #e8a020)', margin: '0 0 6px' }}>{l}</p>)}
-                                <p style={S.quiet}>Press Apply again to use these rates.</p>
+                                <p style={S.quiet}>Press Send again to use these rates.</p>
+                              </div>
+                            )}
+                            {/* PREVIEW, THEN SEND (17 Sep 2026). The preview is
+                                a dry run: what would change in plain lines,
+                                the exact requests behind a toggle, and only
+                                then Send. A venue taking real cards needs the
+                                typed word, as turning on live payments does. */}
+                            {ratePreview && part.action === 'set_split' && (
+                              <div style={{ margin: '16px 0 0', padding: '14px 16px', borderRadius: 12, maxWidth: MEASURE, border: `1px solid ${ratePreview.live ? 'var(--red-b, var(--red))' : 'var(--bdr2)'}`, background: ratePreview.live ? 'var(--red-d, rgba(255,90,74,.1))' : 'var(--bg3, rgba(127,127,127,.08))' }}>
+                                <p style={{ ...S.say, fontWeight: 700, margin: '0 0 8px' }}>{ratePreview.same ? 'Nothing to send' : 'What sending will change'}</p>
+                                {ratePreview.lines.map((l) => <p key={l} style={{ ...S.say, margin: '0 0 6px' }}>{l}</p>)}
+                                {ratePreview.overLimit.map((l) => <p key={l} style={{ ...S.say, color: 'var(--orn, #e8a020)', margin: '0 0 6px' }}>{l}</p>)}
+                                <p style={{ ...S.quiet, margin: '8px 0 0' }}>
+                                  {ratePreview.live ? 'This venue takes real cards. ' : 'This venue is on test cards. '}
+                                  Nothing has been sent yet. New payments use the new rates from the moment you send. Past payments do not change.
+                                </p>
+                                <button type="button" style={{ ...S.link, marginTop: 8 }} onClick={() => setShowSent((v) => !v)}>
+                                  {showSent ? 'Hide what is sent to Adyen' : 'Show what is sent to Adyen'}
+                                </button>
+                                {showSent && (
+                                  <pre style={{ ...S.idValue, whiteSpace: 'pre-wrap', margin: '8px 0 0', maxHeight: 320, overflow: 'auto' }}>{JSON.stringify(ratePreview.requests, null, 2)}</pre>
+                                )}
+                                {sendNeedsTyped && !ratePreview.same && ratePreview.canSend && (
+                                  <div style={{ marginTop: 14, maxWidth: 320 }}>
+                                    <label style={S.field}>
+                                      <span style={{ ...S.fieldLabel, color: 'var(--t1)' }}>Type LIVE to confirm.</span>
+                                      <input
+                                        style={{ ...S.input, ...S.mono, letterSpacing: '.1em' }}
+                                        value={sendTyped}
+                                        onChange={(e) => setSendTyped(e.target.value)}
+                                        placeholder="LIVE"
+                                        autoCapitalize="characters"
+                                        autoComplete="off"
+                                        spellCheck={false}
+                                      />
+                                    </label>
+                                  </div>
+                                )}
                               </div>
                             )}
                             <div style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap', marginTop: 16 }}>
-                              {part.action === 'set_split' && (
-                                <Btn busy={btnBusy('split')} disabled={anyBusy} onClick={setSplit}>{splitOver ? 'Apply these rates anyway' : 'Apply these rates on Adyen'}</Btn>
+                              {part.action === 'set_split' && !ratePreview && (
+                                <Btn busy={btnBusy('preview')} disabled={anyBusy} onClick={previewSplit}>Preview</Btn>
+                              )}
+                              {part.action === 'set_split' && ratePreview && !ratePreview.same && ratePreview.canSend && (
+                                <Primary busy={busy === 'split'} disabled={anyBusy || !sendTypedOk} live={ratePreview.live} onClick={setSplit}>{splitOver ? 'Send these rates anyway' : 'Send rates to Adyen'}</Primary>
+                              )}
+                              {part.action === 'set_split' && ratePreview && (
+                                <Secondary busy={anyBusy} onClick={() => { setRatePreview(null); setSendTyped(''); setShowSent(false); setSplitOver(null); }}>Not now</Secondary>
                               )}
                               {part.action === 'edit_rates' && callPayments && (
                                 <Btn busy={btnBusy('rates_read')} disabled={anyBusy} onClick={openRates}>Edit rates</Btn>
@@ -1681,6 +1795,7 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
                               onChange={(v) => setRateEdit((e) => ({ ...e, value: v, overLimit: null }))}
                               fallbackFor={rateFallback}
                               currency={str(rates.currency) || 'GBP'}
+                              debitReady={rateEdit.debitReady === true}
                             />
                             {editCheck.errors.length > 0 && (
                               <div style={{ marginTop: 10, maxWidth: MEASURE }}>

@@ -599,6 +599,28 @@ test('ruleForTier: the same mapping profileTiers reads, in the payment currency'
   assert.equal(venueRateLine({ percent: 0, fixedMinor: 0 }, 'GBP'), '0%');
 });
 
+test('ruleForTier: credit and debit priced apart (17 Sep 2026), a funding source rule is never one of the four', () => {
+  const four = { card_present: { percent: 0.8, fixedPence: 5 }, card_not_present: { percent: 1.5, fixedPence: 20 }, amex: { percent: 2.5, fixedPence: 10 }, keyed: { percent: 2.9, fixedPence: 15 } };
+  const card = { ...four, card_present_debit: { percent: 0.4, fixedPence: 2 }, card_not_present_debit: { percent: 1.1, fixedPence: 9 } };
+  const written = tieredCommissionRules('GBP', card).rules;
+  // whatever order Adyen hands the rules back in
+  for (const rules of [written, [...written].reverse()]) {
+    const profile = { rules };
+    assert.deepEqual(ruleRate(ruleForTier(profile, 'card_present', 'GBP')), { percent: 0.8, fixedMinor: 5 });
+    assert.deepEqual(ruleRate(ruleForTier(profile, 'card_not_present', 'GBP')), { percent: 1.5, fixedMinor: 20 });
+    assert.deepEqual(ruleRate(ruleForTier(profile, 'keyed', 'GBP')), { percent: 2.9, fixedMinor: 15 });
+    assert.deepEqual(ruleRate(ruleForTier(profile, 'card_present_debit', 'GBP')), { percent: 0.4, fixedMinor: 2 });
+    assert.deepEqual(ruleRate(ruleForTier(profile, 'card_not_present_debit', 'GBP')), { percent: 1.1, fixedMinor: 9 });
+    assert.equal(ruleForTier(profile, 'card_present_debit', 'GBP').fundingSource, 'debit');
+    assert.equal(ruleForTier(profile, 'card_present', 'GBP').fundingSource, 'ANY');
+  }
+  // a profile with no debit rule charged a debit payment on the credit tier's rule
+  const old = { rules: tieredCommissionRules('GBP', four).rules };
+  assert.equal(ruleForTier(old, 'card_present_debit', 'GBP'), ruleForTier(old, 'card_present', 'GBP'));
+  assert.equal(ruleForTier(old, 'card_not_present_debit', 'GBP'), ruleForTier(old, 'card_not_present', 'GBP'));
+  assert.equal(ruleForTier(old, 'card_present_debit', 'USD'), null);
+});
+
 test('every word on screen: plain, no dashes, sentences under 120 characters, never commission', () => {
   for (const s of [...Object.values(BREAKDOWN_LABELS), ...Object.values(SOURCE_WORDS), WAITING_SENTENCE, INCOMPLETE_SENTENCE]) {
     noDash(s);
@@ -666,8 +688,9 @@ test('TS mirror: every export answers exactly as the JS copy, on every input the
   for (const card of cards) assert.equal(ts.paymentCardLabel(card), paymentCardLabel(card));
   const profile = { rules: tieredCommissionRules('GBP', { card_present: { percent: 0.8, fixedPence: 5 }, card_not_present: { percent: 1.5, fixedPence: 20 }, amex: { percent: 2.5, fixedPence: 10 }, keyed: { percent: 2.9, fixedPence: 15 } }).rules };
   const amexOnly = { rules: [{ currency: 'GBP', paymentMethod: 'amex', shopperInteraction: 'Ecommerce' }] };
-  for (const p of [profile, amexOnly, null, { rules: [PROVO_RULE] }]) {
-    for (const tier of ['card_present', 'card_not_present', 'amex', 'keyed', 'x']) {
+  const debitProfile = { rules: [...tieredCommissionRules('GBP', { card_present: { percent: 0.8, fixedPence: 5 }, card_not_present: { percent: 1.5, fixedPence: 20 }, amex: { percent: 2.5, fixedPence: 10 }, keyed: { percent: 2.9, fixedPence: 15 }, card_present_debit: { percent: 0.4, fixedPence: 2 }, card_not_present_debit: { percent: 1.1, fixedPence: 9 } }).rules].reverse() };
+  for (const p of [profile, debitProfile, amexOnly, null, { rules: [PROVO_RULE] }]) {
+    for (const tier of ['card_present', 'card_present_debit', 'card_not_present', 'card_not_present_debit', 'amex', 'keyed', 'x']) {
       for (const cur of ['GBP', 'USD']) {
         assert.deepEqual(ts.ruleForTier(p, tier, cur), ruleForTier(p, tier, cur));
         assert.deepEqual(ts.ruleRate(ruleForTier(p, tier, cur)), ruleRate(ruleForTier(p, tier, cur)));

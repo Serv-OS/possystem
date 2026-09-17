@@ -48,7 +48,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import {
-  lemBase, balancePlatformBase, managementBase, RATE_TIERS, resolveAdyenRateCard, adyenConfig, adyenEnvForLocation, adyenSecretName,
+  lemBase, balancePlatformBase, managementBase, BASE_RATE_TIERS, resolveAdyenRateCard, adyenConfig, adyenEnvForLocation, adyenSecretName,
   assertAdyenConfigured, effectiveMerchantAccount, parseAdyenRegion, isAdyenRegionCheckError, adyenRegionMigrationMessage, upsertAdyenAccountRow,
   type AdyenConfig,
 } from '../_shared/adyen.ts';
@@ -194,8 +194,10 @@ const tierLabel = (t: string) => TIER_LABELS[t] ?? t;
 
 // A tier "has a rate" when it resolves to a non-zero percent or pence — a
 // zero/zero tier would mean a 0% commission rule, which is refused on purpose.
+// The four BASE tiers only (17 Sep 2026): a debit tier is never "lacking", a
+// blank one takes its credit tier's rate.
 const tiersLackingRates = (cards: Record<string, any>): string[] =>
-  (RATE_TIERS as readonly string[]).filter((t) => {
+  (BASE_RATE_TIERS as readonly string[]).filter((t) => {
     const c = cards[t];
     return !c || ((c.percent == null || Number(c.percent) <= 0) && (c.fixed_pence == null || Number(c.fixed_pence) <= 0));
   });

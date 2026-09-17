@@ -1319,6 +1319,10 @@ export function cardFromWebhookAdditionalData(ad: Record<string, any> | undefine
     applicationName: ad['applicationLabel'] ?? null,
     cvm: ad['cardHolderVerificationMethodResults'] ?? null,
     readMethod: ad['posEntryMode'] ?? ad['shopperInteraction'] ?? null,
+    // 17 Sep 2026: what Adyen said the card is (CREDIT, DEBIT, PREPAID and so
+    // on), kept as sent so the ledger shows WHY a payment was stamped debit.
+    // Null until "Include Funding Source" is ticked on the standard webhook.
+    fundingSource: ad['fundingSource'] ?? null,
   };
 }
 

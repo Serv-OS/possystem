@@ -16,7 +16,7 @@
  */
 
 import { adyenEnvFromRow, adyenRegionFromRow } from './adyenEnv.js';
-import { worstVerificationStatus, LINK_ID_FIELDS, storeStillNeeded, conflictsMoveMoney, COMMISSION_TIERS, RATE_ROW_LABELS } from './adyenLink.js';
+import { worstVerificationStatus, LINK_ID_FIELDS, storeStillNeeded, conflictsMoveMoney, RATE_CARD_TIER_ORDER, DEBIT_TIER_BASE, RATE_ROW_LABELS } from './adyenLink.js';
 import { registrationLines } from './adyenOrigins.js';
 
 const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -703,23 +703,35 @@ export const RATES_LEDE = Object.freeze([
 // The row words are adyenLink's RATE_ROW_LABELS, so step 5's sentence naming
 // an unpriced tier reads the same words as these rows. A negative number is
 // no price, as adyenLink reads it.
+// 17 Sep 2026, credit and debit apart: SIX rows. A debit row with no price of
+// its own (the server says inheritedFrom, or an older server sent no debit
+// tier at all) shows its credit row's numbers, drawn grey (`inherited`), and
+// its source reads "same as In person credit". It is never "not set" on its
+// own: it is unpriced only when its credit row is.
 export function rateCardRows(rates) {
   const r = isObj(rates) ? rates : {};
   const tiers = isObj(r.tiers) ? r.tiers : {};
   const minor = str(r.currency).toUpperCase() === 'USD' ? 'c' : 'p';
   const num = (v) => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) || Number(v) < 0 ? null : Number(v));
-  return COMMISSION_TIERS.map((id) => {
+  const read = (id) => {
     const t = isObj(tiers[id]) ? tiers[id] : {};
-    const pct = num(t.percent);
-    const fix = num(t.fixedPence ?? t.fixed_pence);
+    return { t, pct: num(t.percent), fix: num(t.fixedPence ?? t.fixed_pence) };
+  };
+  return RATE_CARD_TIER_ORDER.map((id) => {
+    const base = DEBIT_TIER_BASE[id] || null;
+    let { t, pct, fix } = read(id);
+    const ownPrice = pct !== null || fix !== null;
+    const inherited = !!base && (!ownPrice || str(t.inheritedFrom) === base);
+    if (base && !ownPrice) ({ t, pct, fix } = read(base));
     const unpriced = pct === null && fix === null;
     return {
       id,
       label: RATE_ROW_LABELS[id],
       rate: unpriced ? 'not set' : `${String(Number(Number(pct ?? 0).toFixed(4)))}%`,
       perPayment: unpriced ? '' : `${Math.round(fix ?? 0)}${minor}`,
-      source: str(t.source) || null,
+      source: inherited && !unpriced ? `same as ${RATE_ROW_LABELS[base]}` : (str(t.source) || null),
       unpriced,
+      inherited: inherited && !unpriced,
     };
   });
 }

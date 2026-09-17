@@ -85,7 +85,14 @@
 //                  rates are set per payment type in Processing. A tier with
 //                  no price refuses in plain words naming the tiers. The row
 //                  is written only after Adyen accepted the profile and the
-//                  store PATCH, and NEVER the legacy markup columns
+//                  store PATCH, and NEVER the legacy markup columns.
+//                  17 Sep 2026: on a LIVE venue it needs { confirm_live:
+//                  'LIVE' } (the typed word), and the profile carries debit
+//                  and prepaid rules when a debit rate is priced apart
+//   preview_split → ADMIN. { environment? } the DRY RUN of set_split: the
+//                  same checks and reads, then the exact requests that WOULD
+//                  be sent plus what would change against the profile on the
+//                  store now. GET calls only. Nothing is sent or saved
 //   set_balance_platform → ADMIN. { balancePlatformId, environment? } the
 //                  balance platform id for the venue's region, once
 //                  (FranPOS_UK or a BP id), checked with GET /balancePlatforms/{id}
@@ -232,7 +239,7 @@ import {
   capabilityList, blockedCapabilityNames, buildGoliveSteps, goliveProblems,
   summariseCapabilities, findPushSweep, pickPayoutInstrument, PAYOUT_CAPABILITY,
   buildTieredProfile, tieredCommissionRules, tiersFromResolved, unpricedTiers, tierRowList, rateCardLine, ratesOnAdyen,
-  rateCardProblems, rateTierLabel,
+  rateCardProblems, rateTierLabel, ratesChangePreview,
   liableBalanceAccountSecretName, liableBalanceAccountSecretNames, ADYEN_LIABLE_BALANCE_ACCOUNT_COLUMN,
   ADYEN_PLATFORM_SETTINGS_TABLE, ADYEN_ROW_BALANCE_PLATFORM_COLUMN,
   platformSettingsKey, platformSettingsPatch, platformSettingsMissingMessage,
@@ -241,7 +248,7 @@ import {
   type MerchantSummary, type MerchantMismatch, type AccountHolderCandidate, type CapabilityRow, type GoliveStep, type GoliveReader,
   type PlatformSettingsLearned,
 } from '../_shared/adyenLink.ts';
-import { createSplitOnStore, ensurePushSweep, type AdyenApi } from '../_shared/adyenPayouts.ts';
+import { createSplitOnStore, planSplitOnStore, ensurePushSweep, type AdyenApi } from '../_shared/adyenPayouts.ts';
 import { resellerRateFor, resellerRateLine } from '../_shared/resellerRate.ts';
 import { buildPaymentBreakdown, paymentCardLabel, ruleForTier, ruleRate, venueRateLine } from '../_shared/paymentBreakdown.ts';
 
@@ -3217,7 +3224,27 @@ Deno.serve(async (req) => {
     // names, and its own merchant is the one both calls use) and the balance
     // account is read (it must belong to the venue's own account holder), so
     // money is never routed to another company's account.
-    if (action === 'set_split') {
+    //
+    // PREVIEW, THEN SEND (17 Sep 2026, credit and debit priced apart).
+    //   preview_split   the DRY RUN. It runs every check and every read that
+    //                   set_split runs and then STOPS: it answers the exact
+    //                   requests that would go to Adyen (`requests`) and a
+    //                   plain summary of what would change against the profile
+    //                   on the store now (`preview`, ratesChangePreview). It
+    //                   makes GET calls only and writes nothing on Adyen or
+    //                   on the venue row (one audit line is kept, as for
+    //                   every step). It is a NEW ACTION NAME on purpose:
+    //                   a deploy from before today answers "unknown action",
+    //                   where a dry_run flag on set_split would have been
+    //                   ignored and the rates WRITTEN.
+    //   set_split       the send. On a LIVE venue it needs confirm_live 'LIVE'
+    //                   (the word the admin types on the screen, the same ask
+    //                   as turning on live payments), or it refuses.
+    // Both are super_admin only, act on the venue's OWN environment (envGuard)
+    // and are never called by anything but an admin's click: no payment
+    // function, no webhook and no schedule reaches them.
+    if (action === 'set_split' || action === 'preview_split') {
+      const dryRun = action === 'preview_split';
       if (!isServosAdmin) return adminOnly();
       const wrongEnv = envGuard();
       if (wrongEnv) return wrongEnv;
@@ -3256,8 +3283,15 @@ Deno.serve(async (req) => {
       if (checked.errors.length) {
         return json({ ok: false, invalid: true, error: `${checked.errors[0].text} Nothing was applied on Adyen.`, detail: checked.errors.map((e) => e.text).join(' ') }, 200);
       }
-      if (checked.overLimit.length && body.over_limit !== true) {
+      // A preview never refuses on the usual limit: it SHOWS the sentences
+      // (overLimit below), and the send that follows asks as it always has.
+      if (!dryRun && checked.overLimit.length && body.over_limit !== true) {
         return json({ ok: false, over_limit: true, error: checked.overLimit[0].text, lines: checked.overLimit.map((e) => e.text) }, 200);
+      }
+      // A LIVE VENUE TAKES REAL MONEY: the send needs the typed word. Asked
+      // before any Adyen call, so a missing word costs nothing.
+      if (!dryRun && env === 'live' && String(body.confirm_live ?? '').trim().toUpperCase() !== 'LIVE') {
+        return json({ ok: false, needs_confirm: true, error: 'This venue takes real cards. Press Preview, then type LIVE to send the rates.' }, 200);
       }
       // The store, as it is now: on which merchant, and what it carries.
       const storeRead = await mgmt<Dict>(cfg, 'GET', `/stores/${encodeURIComponent(storeId)}`);
@@ -3282,6 +3316,34 @@ Deno.serve(async (req) => {
       }
       const profile = buildTieredProfile({ description: `ServOS ${loc.name ?? 'venue'} rates`, currency: stepCurrency, tiers });
       if (!profile) return json({ ok: false, error: 'No rate is set for any payment type. Set the venue rate card in Processing first.' }, 200);
+      // THE DRY RUN STOPS HERE. Everything above is a check or a GET; the
+      // profile the STORE carries now is read (one more GET) and set against
+      // what would be sent. Nothing is created, patched, stamped or deleted.
+      if (dryRun) {
+        const profileIdNow = String(storeNow?.splitConfigurationId ?? '').trim() || null;
+        let profileNow: Dict | null = null;
+        let profileUnread: string | null = null;
+        if (profileIdNow) {
+          const pr = await readProfileRates(cfg, useMerchant, profileIdNow);
+          profileNow = pr.raw;
+          profileUnread = pr.error;
+        }
+        const preview = ratesChangePreview(profileNow, rateTiers, stepCurrency);
+        const requests = planSplitOnStore({ merchant: useMerchant, storeId, balanceAccountId, profile });
+        logLink('preview_split', loc.id, { environment: env, region, merchant: useMerchant, storeId, balanceAccountId, profileIdNow, rulesNow: preview.rulesNow, rulesNext: preview.rulesNext, same: preview.same });
+        return json({
+          ok: true, dry_run: true, sent: false,
+          environment: env, live: env === 'live', region, currency: stepCurrency,
+          merchant: useMerchant, storeId, balanceAccountId, profileIdNow,
+          // The profile on the store could not be read: the requests are
+          // still exact, but what changes cannot be said, so the screen says so.
+          profileUnread: profileUnread ? true : false, profileUnreadDetail: profileUnread,
+          preview: profileUnread ? { ...preview, same: false, lines: ['The rates on Adyen now could not be read, so what changes cannot be shown.'] } : preview,
+          overLimit: checked.overLimit.map((e) => e.text),
+          tiers: rateTiers, line: rateCardLine(rateTiers, stepCurrency),
+          requests,
+        });
+      }
       const previousProfileId = String(maa?.split_profile_id ?? '').trim() || storeNow?.splitConfigurationId || null;
       const split = await createSplitOnStore(payoutApi, { merchant: useMerchant, storeId, balanceAccountId, profile, previousProfileId });
       logLink('set_split', loc.id, {

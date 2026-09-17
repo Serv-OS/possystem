@@ -298,6 +298,12 @@ Deno.serve(async (req) => {
   //      card_not_present  online orders
   //      amex              American Express + business/commercial cards
   //      keyed             manually keyed in (MOTO)
+  //    17 Sep 2026, credit and debit apart: card_present and card_not_present
+  //    are the credit price, and two more keys ride in the same jsonb,
+  //    card_present_debit and card_not_present_debit. Blank, they resolve to
+  //    their credit tier (resolveAdyenRateCard), so a card nobody edited is
+  //    charged as before. SAVING HERE NEVER TOUCHES ADYEN: the rates reach
+  //    Adyen only through adyen-terminal-admin set_split, pressed by an admin.
   //    Scopes (all back-compatible with the v5.7.0 flat client):
   //      { }                                → defaults (flat + rate card)
   //      { location_id }                    → venue row + defaults + resolved card
@@ -438,7 +444,10 @@ Deno.serve(async (req) => {
       default_markup_fixed_pence: ps?.default_adyen_markup_fixed_pence ?? null,
       rate_card: (ps as Record<string, unknown> | null)?.default_adyen_rate_card ?? null,
     };
-    if (!location_id) return json({ ok: true, defaults, rate_card_ready: rateCardLive });
+    // rate_tiers (17 Sep 2026): the rows this deploy can KEEP. The editor
+    // holds the two debit rows read only until it sees them named here,
+    // because a deploy from before debit pricing drops them in silence.
+    if (!location_id) return json({ ok: true, defaults, rate_card_ready: rateCardLive, rate_tiers: RATE_TIERS });
 
     const aLoc = await resolveLocation(location_id);
     if (!aLoc) return json({ error: 'location not found in platform DB' }, 404);
@@ -459,6 +468,7 @@ Deno.serve(async (req) => {
       ok: true,
       defaults,
       rate_card_ready: rateCardLive,
+      rate_tiers: RATE_TIERS,
       account: {
         exists: !!acct,
         markup_percent: acct?.markup_percent ?? null,
