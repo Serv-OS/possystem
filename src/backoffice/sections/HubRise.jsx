@@ -12,6 +12,7 @@ import {
   hubriseDisconnect, hubrisePushCatalog, hubriseResyncStock,
   setHubriseConnected, setHubriseAutoReceipt,
 } from '../../lib/hubrise';
+import EzcaterSettings from './EzcaterSettings';
 import EzcaterItemMatching from './EzcaterItemMatching';
 
 const S = {
@@ -280,16 +281,18 @@ export default function HubRise() {
 
       {/* ezCater is the other pipe on this page. It is orders only: we have
           their Orders API but NOT their Menus API, so nobody can push our menu
-          to them and their order lines arrive with no id of ours on them. That
-          is what the matching card below is for, and it is the only ezCater
-          setting that lives in Back Office. It hides itself cleanly until the
-          migration is run. */}
+          to them and their order lines arrive with no id of ours on them. Two
+          cards, in the order an operator meets them: connect the account and
+          say which ezCater location this venue is, then match their item names
+          to ours. Both hide themselves cleanly until the tables are there. */}
       <div style={{ marginTop: 8 }}>
         <h1 style={S.h1}>🍽 ezCater</h1>
         <div style={S.sub}>
-          ezCater sends us orders but not their menu. Match their items to yours once, here.
+          Connect your ezCater account to take their catering orders here. ezCater sends us orders
+          but not their menu, so you also match their items to yours once.
         </div>
       </div>
+      <EzcaterSettings locationId={locId} />
       <EzcaterItemMatching locationId={locId} />
     </div>
   );

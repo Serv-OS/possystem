@@ -42,6 +42,44 @@
 
 export const EZCATER_API = 'https://api.ezcater.com/graphql';
 
+/** The one host ezCater publish. Anything else is somebody's sandbox. */
+export const EZCATER_LIVE_HOST = 'api.ezcater.com';
+
+/**
+ * Which address this connection talks to.
+ *
+ * ezCater publish ONE endpoint and no sandbox address at all, so an owner with a
+ * sandbox account is given theirs by email and the only way we can know it is
+ * for the operator to paste it into Back Office. It is stored on the connection
+ * as api_url, and null there means the live API: every connection made before
+ * that column existed keeps behaving exactly as it did.
+ *
+ * https ONLY. The API token travels in a header on every single call, so a plain
+ * http address would put it on the wire in clear. A stored value that is not
+ * https THROWS rather than falling back to production: silently sending sandbox
+ * credentials to the live API, or a live order to a sandbox, is worse than a
+ * call that stops and says so. The bad address is not echoed, in case somebody
+ * has put credentials in it.
+ */
+export function resolveEzcaterApi(apiUrl?: string | null): string {
+  const raw = String(apiUrl ?? '').trim();
+  if (!raw) return EZCATER_API;
+  let parsed: URL | null = null;
+  try { parsed = new URL(raw); } catch { parsed = null; }
+  if (!parsed) throw new Error('The stored ezCater API address is not a web address. Fix it in Back Office, Channels, 3rd Party orders.');
+  if (parsed.protocol !== 'https:') {
+    throw new Error('The stored ezCater API address is not https, so we will not send the API token to it. Fix it in Back Office, Channels, 3rd Party orders.');
+  }
+  return raw;
+}
+
+/** True when this connection is pointed somewhere other than the live API. */
+export function isSandboxApi(apiUrl?: string | null): boolean {
+  const raw = String(apiUrl ?? '').trim();
+  if (!raw) return false;
+  try { return new URL(raw).hostname.toLowerCase() !== EZCATER_LIVE_HOST; } catch { return true; }
+}
+
 // Sent on every request. ezCater asks integrators to identify themselves with
 // the Apollo client headers so they can attribute traffic and contact us about
 // a bad deploy. Keep the name stable, bump the version when the query shapes change.
@@ -186,14 +224,19 @@ export function allMessages(errors: any): string {
  * every example in the ezCater docs shows and there is no counter example, but
  * it is unusual enough to be worth confirming with integrations@ezcater.com
  * before go live. If it turns out to need "Bearer ", this is the only line to change.
+ *
+ * endpoint is the connection's api_url, or null / absent for the live API. It is
+ * resolved through resolveEzcaterApi, so every caller behaves exactly as it did
+ * before that column existed. The token is never logged with it, or at all.
  */
 export async function ez<T = any>(
   token: string,
   operationName: string,
   query: string,
   variables: Record<string, unknown> = {},
+  endpoint?: string | null,
 ): Promise<T> {
-  const res = await fetch(EZCATER_API, {
+  const res = await fetch(resolveEzcaterApi(endpoint), {
     method: 'POST',
     headers: {
       'Authorization': token, // RAW token, no Bearer prefix. CONFIRM with ezCater.
@@ -485,8 +528,8 @@ export const EZ_EVENTS = [
 // ────────────────────────────────────────────────────────────────────────────
 
 /** Fetch one order. The webhook gives us a pointer, this is the second leg. */
-export async function getOrder(token: string, orderId: string): Promise<any> {
-  const data = await ez<any>(token, 'ServOsEzOrder', ORDER_QUERY, { id: orderId, types: EZ_FEE_TYPES });
+export async function getOrder(token: string, orderId: string, endpoint?: string | null): Promise<any> {
+  const data = await ez<any>(token, 'ServOsEzOrder', ORDER_QUERY, { id: orderId, types: EZ_FEE_TYPES }, endpoint);
   return data?.order ?? null;
 }
 
@@ -499,23 +542,25 @@ export async function getOrder(token: string, orderId: string): Promise<any> {
  * the API and the customer then edits, the modification CANNOT be accepted
  * through the API at all. The operator is pushed back into the Partner Portal.
  */
-export async function acceptOrder(token: string, orderId: string, acceptModification = false): Promise<any> {
-  const data = await ez<any>(token, 'ServOsEzAcceptOrder', ACCEPT_ORDER_MUTATION, { orderId, acceptModification });
+export async function acceptOrder(token: string, orderId: string, acceptModification = false, endpoint?: string | null): Promise<any> {
+  const data = await ez<any>(token, 'ServOsEzAcceptOrder', ACCEPT_ORDER_MUTATION, { orderId, acceptModification }, endpoint);
   return data?.acceptOrder ?? null;
 }
 
 /** Reject an order with one of ezCater's RejectionReasonEnum values plus free text. */
-export async function rejectOrder(token: string, orderId: string, reason: string, explanation?: string | null): Promise<any> {
+export async function rejectOrder(
+  token: string, orderId: string, reason: string, explanation?: string | null, endpoint?: string | null,
+): Promise<any> {
   const data = await ez<any>(token, 'ServOsEzRejectOrder', REJECT_ORDER_MUTATION, {
     orderId,
     rejectOrderInput: { reason, explanation: explanation || null },
-  });
+  }, endpoint);
   return data?.rejectOrder ?? null;
 }
 
 /** Every caterer this API user can see. Drives the Back Office mapping screen. */
-export async function caterers(token: string): Promise<any[]> {
-  const data = await ez<any>(token, 'ServOsEzCaterers', CATERERS_QUERY, {});
+export async function caterers(token: string, endpoint?: string | null): Promise<any[]> {
+  const data = await ez<any>(token, 'ServOsEzCaterers', CATERERS_QUERY, {}, endpoint);
   return Array.isArray(data?.caterers) ? data.caterers : [];
 }
 
@@ -523,10 +568,10 @@ export async function caterers(token: string): Promise<any[]> {
  * Create the single subscriber for this API user. Returns { id, webhookSecret }.
  * name follows ezCater's documented convention, <provider>-<brand>.
  */
-export async function createSubscriber(token: string, url: string, name: string): Promise<any> {
+export async function createSubscriber(token: string, url: string, name: string, endpoint?: string | null): Promise<any> {
   const data = await ez<any>(token, 'ServOsEzCreateSubscriber', CREATE_SUBSCRIBER_MUTATION, {
     subscriberParams: { name, webhookUrl: url },
-  });
+  }, endpoint);
   return data?.createSubscriber?.subscriber ?? null;
 }
 
@@ -543,19 +588,19 @@ export async function createSubscriber(token: string, url: string, name: string)
  * repointed subscriber is unchanged and still the one issued at creation.
  */
 export async function updateSubscriber(
-  token: string, subscriberId: string, url: string, name?: string | null,
+  token: string, subscriberId: string, url: string, name?: string | null, endpoint?: string | null,
 ): Promise<any> {
   const subscriberParams: Record<string, unknown> = { webhookUrl: url };
   if (name) subscriberParams.name = name;
   const data = await ez<any>(token, 'ServOsEzUpdateSubscriber', UPDATE_SUBSCRIBER_MUTATION, {
     subscriberId, subscriberParams,
-  });
+  }, endpoint);
   return data?.updateSubscriber?.subscriber ?? null;
 }
 
 /** The subscriber this API user already has, if any. Only one is ever allowed. */
-export async function subscribers(token: string): Promise<any[]> {
-  const data = await ez<any>(token, 'ServOsEzSubscribers', SUBSCRIBERS_QUERY, {});
+export async function subscribers(token: string, endpoint?: string | null): Promise<any[]> {
+  const data = await ez<any>(token, 'ServOsEzSubscribers', SUBSCRIBERS_QUERY, {}, endpoint);
   return Array.isArray(data?.subscribers) ? data.subscribers : [];
 }
 
@@ -565,7 +610,7 @@ export async function subscribers(token: string): Promise<any[]> {
  * receives nothing, however healthy the subscriber looks.
  */
 export async function createSubscription(
-  token: string, subscriberId: string, catererUuid: string, eventKey: string,
+  token: string, subscriberId: string, catererUuid: string, eventKey: string, endpoint?: string | null,
 ): Promise<any> {
   const data = await ez<any>(token, 'ServOsEzCreateSubscription', CREATE_SUBSCRIPTION_MUTATION, {
     subscriptionParams: {
@@ -575,7 +620,7 @@ export async function createSubscription(
       parentId: catererUuid,
       subscriberId,
     },
-  });
+  }, endpoint);
   return data?.createSubscription?.subscription ?? null;
 }
 
@@ -584,8 +629,8 @@ export async function createSubscription(
  * The whole argument is inline in the document, so there are no variables to send.
  * See deleteSubscriptionsMutation for why.
  */
-export async function deleteSubscriptions(token: string, catererUuid: string): Promise<any> {
-  const data = await ez<any>(token, 'ServOsEzDeleteSubscriptions', deleteSubscriptionsMutation(catererUuid), {});
+export async function deleteSubscriptions(token: string, catererUuid: string, endpoint?: string | null): Promise<any> {
+  const data = await ez<any>(token, 'ServOsEzDeleteSubscriptions', deleteSubscriptionsMutation(catererUuid), {}, endpoint);
   return data?.deleteSubscriptions ?? null;
 }
 
