@@ -7,6 +7,18 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.97',
+    date: '17 Sep 2026',
+    items: [
+      'Admin, card rates: credit and debit can now be priced separately. The rate card has six rows: In person credit, In person debit, Online credit, Online debit, Amex and business cards, and Keyed in. A blank debit row follows its credit row, so every venue is charged exactly what it is charged today until someone types a debit price.',
+      'Send rates to Adyen: Preview shows exactly what would change on Adyen, then Send writes the split rules. Debit prices become their own Adyen rules for in person and online, placed so Amex and keyed in cards keep their own prices. A live venue still needs LIVE typed. Nothing is sent automatically.',
+      'Prepaid cards pay the debit price. Deferred debit and charge cards pay the credit price. A keyed in debit card stays on the Keyed in price.',
+      'Preview now also offers Send when Adyen sends the rest of each sale to the wrong account or to none, even if the rates already match.',
+      'Card payments report: the In person and Online filters keep showing debit payments once Adyen starts telling us which cards are debit.',
+      'For our own records to show debit payments at the debit rate, Include Funding Source must be ticked on the Adyen standard webhook. Until then Adyen takes the right rate but our reports show debit at the credit rate, and Preview warns about it.',
+    ],
+  },
+  {
     v: '5.8.96',
     date: '17 Sep 2026',
     items: [

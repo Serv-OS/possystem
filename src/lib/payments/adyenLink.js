@@ -1045,18 +1045,114 @@ const TIER_RULES = Object.freeze([
   ['keyed', 'ANY', 'Moto'],
   ['card_present', 'ANY', 'ANY'],
 ]);
-export function tieredCommissionRules(currency, tiers) {
+
+// ── CREDIT AND DEBIT PRICED APART (17 Sep 2026, OWNER RULE) ──────────────────
+// The four tiers above keep their meaning: card_present and card_not_present
+// are the CREDIT price and the price of every card until a debit price is
+// typed. Two DEBIT tiers sit on top of them and inherit from them when blank
+// (_shared/adyen.ts resolveAdyenRateCard), so a card nobody has edited writes
+// EXACTLY the six rules it writes today and charges what it charges today.
+// A debit rule is written ONLY where the debit price differs from the rule
+// that would otherwise catch the payment, just ahead of that ANY fallback:
+//   in person debit   fundingSource debit + shopperInteraction POS
+//   online debit      fundingSource debit + shopperInteraction Ecommerce
+// Adyen's priority between matching rules (docs.adyen.com, automatic split
+// configuration, read 17 Sep 2026): currency, payment method, card usage
+// type, card region, funding source, shopper interaction. So the three amex
+// rules still win for an Amex card (payment method outranks funding source),
+// and a debit rule is written PER INTERACTION because "debit + ANY" would
+// outrank "ANY + Moto" and take a keyed debit card off the Keyed in price.
+// fundingSource on the Management API v3 rule is one of credit, debit,
+// prepaid, deferred_debit, charged, ANY; shopperInteraction one of Ecommerce,
+// ContAuth, Moto, POS, ANY.
+export const DEBIT_TIER_BASE = Object.freeze({ card_present_debit: 'card_present', card_not_present_debit: 'card_not_present' });
+export const DEBIT_TIERS = Object.freeze(Object.keys(DEBIT_TIER_BASE));
+// Every row of the rate card, in the order every screen lists them.
+export const RATE_CARD_TIER_ORDER = Object.freeze(['card_present', 'card_present_debit', 'card_not_present', 'card_not_present_debit', 'amex', 'keyed']);
+const DEBIT_RULE_INTERACTION = Object.freeze({ card_present_debit: 'POS', card_not_present_debit: 'Ecommerce' });
+
+// ORCHESTRATOR DEFAULTS, for the owner to confirm. One constant each, so a
+// decision is one word to flip. KEEP IN SYNC with _shared/adyen.ts (the same
+// five names stamp the ledger) and _shared/adyenLink.ts.
+//   prepaid cards                  the DEBIT price
+//   deferred debit cards           the CREDIT price
+//   charge cards                   the CREDIT price
+//   a debit card keyed in by hand  the KEYED IN price (keyed wins)
+//   a business debit card          the BUSINESS price. Adyen's rule has no
+//                                  business card condition on the API, so on
+//                                  Adyen a business card follows its channel
+//                                  as it always has; this one steers the
+//                                  ledger only
+export const PREPAID_CARDS_PAY = 'debit';
+export const DEFERRED_DEBIT_CARDS_PAY = 'credit';
+export const CHARGE_CARDS_PAY = 'credit';
+export const KEYED_DEBIT_PAYS = 'keyed';
+export const BUSINESS_DEBIT_PAYS = 'business';
+export const FUNDING_POLICY = Object.freeze({
+  prepaid: PREPAID_CARDS_PAY, deferredDebit: DEFERRED_DEBIT_CARDS_PAY, charged: CHARGE_CARDS_PAY,
+  keyedDebit: KEYED_DEBIT_PAYS, businessDebit: BUSINESS_DEBIT_PAYS,
+});
+// Adyen's fundingSource values that pay the debit price under a policy. The
+// credit side needs no rule: it is the ANY fallback's price.
+export function debitFundingSources(policy = FUNDING_POLICY) {
+  const p = isObj(policy) ? policy : FUNDING_POLICY;
+  return [
+    'debit',
+    ...(p.prepaid === 'debit' ? ['prepaid'] : []),
+    ...(p.deferredDebit === 'debit' ? ['deferred_debit'] : []),
+    ...(p.charged === 'debit' ? ['charged'] : []),
+  ];
+}
+
+// Two prices say the same thing: basis points and whole pence, empty is 0.
+function samePrice(a, b) {
+  const x = isObj(a) ? a : {};
+  const y = isObj(b) ? b : {};
+  return Math.round((tierPercent(x) ?? 0) * 100) === Math.round((tierPercent(y) ?? 0) * 100) && (tierFixed(x) ?? 0) === (tierFixed(y) ?? 0);
+}
+// A debit tier's own price, or null when it has none (it then IS the base).
+function debitOwnPrice(tiers, debitTier) {
+  const c = tierOf(tiers, debitTier);
+  return tierPercent(c) === null && tierFixed(c) === null ? null : c;
+}
+// What a debit card pays on a tier: its own price, else the base tier's.
+function debitEffective(tiers, debitTier) {
+  return debitOwnPrice(tiers, debitTier) ?? tierOf(tiers, DEBIT_TIER_BASE[debitTier]);
+}
+// The debit tiers priced APART from their base: the only ones that need a
+// rule on Adyen. Empty for every card nobody has typed a debit price on, and
+// for a debit price typed the same as the credit one.
+export function debitTiersApart(tiers) {
+  return DEBIT_TIERS.filter((d) => {
+    const own = debitOwnPrice(tiers, d);
+    return !!own && !samePrice(own, tierOf(tiers, DEBIT_TIER_BASE[d]));
+  });
+}
+
+export function tieredCommissionRules(currency, tiers, policy = FUNDING_POLICY) {
   const t = isObj(tiers) ? tiers : {};
-  const commissionOf = (tier) => {
-    const c = isObj(t[tier]) ? t[tier] : {};
-    return commissionFromRates(c.percent, c.fixedPence ?? c.fixed_pence) ?? { variablePercentage: 0 };
-  };
+  const p = isObj(policy) ? policy : FUNDING_POLICY;
+  const commissionFor = (c) => commissionFromRates(c.percent, c.fixedPence ?? c.fixed_pence) ?? { variablePercentage: 0 };
+  const commissionOf = (tier) => commissionFor(isObj(t[tier]) ? t[tier] : {});
   const lacking = unpricedTiers(t);
   if (lacking.length) return { rules: [], lacking };
-  return {
-    rules: TIER_RULES.map(([tier, paymentMethod, shopperInteraction]) => splitRule({ currency, paymentMethod, shopperInteraction, commission: commissionOf(tier) })),
-    lacking: [],
-  };
+  const apart = debitTiersApart(t);
+  const funding = debitFundingSources(p);
+  const rules = [];
+  for (const [tier, paymentMethod, shopperInteraction] of TIER_RULES) {
+    // The debit rules sit just ahead of the ANY fallback they outrank.
+    const debitTier = paymentMethod === 'ANY' ? DEBIT_TIERS.find((d) => DEBIT_TIER_BASE[d] === tier) : null;
+    if (debitTier && apart.includes(debitTier)) {
+      for (const fundingSource of funding) rules.push(splitRule({ currency, shopperInteraction: DEBIT_RULE_INTERACTION[debitTier], fundingSource, commission: commissionOf(debitTier) }));
+    }
+    // FLIPPED ONLY (keyedDebit 'debit'): a keyed debit card pays the in
+    // person debit price, written when that differs from the keyed price.
+    if (tier === 'keyed' && p.keyedDebit === 'debit' && !samePrice(debitEffective(t, 'card_present_debit'), tierOf(t, 'keyed'))) {
+      for (const fundingSource of funding) rules.push(splitRule({ currency, shopperInteraction: 'Moto', fundingSource, commission: commissionFor(debitEffective(t, 'card_present_debit')) }));
+    }
+    rules.push(splitRule({ currency, paymentMethod, shopperInteraction, commission: commissionOf(tier) }));
+  }
+  return { rules, lacking: [] };
 }
 
 // The profile the go live flow and configure_splits both write: one rule per
@@ -1160,8 +1256,9 @@ export function commissionLine(percent, fixedPence, currency) {
 //   ratesOnAdyen       what Adyen holds against what the venue pays
 //   rateCardLine       the four rates in one line for a collapsed step
 
-// Plain words for each tier. Amex keeps its capital everywhere.
-export const RATE_TIER_LABELS = Object.freeze({ card_present: 'In person', card_not_present: 'Online', amex: 'Amex', keyed: 'Keyed' });
+// Plain words for each tier. Amex keeps its capital everywhere. The two debit
+// tiers are only ever named when they are priced apart (rateCardLine).
+export const RATE_TIER_LABELS = Object.freeze({ card_present: 'In person', card_not_present: 'Online', amex: 'Amex', keyed: 'Keyed', card_present_debit: 'In person debit', card_not_present_debit: 'Online debit' });
 export function rateTierLabel(tier, { lower: lc = false } = {}) {
   const label = RATE_TIER_LABELS[str(tier)] || str(tier);
   return lc && label !== 'Amex' ? label.charAt(0).toLowerCase() + label.slice(1) : label;
@@ -1197,9 +1294,13 @@ export function tierRateLine(percent, fixedPence, currency) {
 
 // The four rates in one line, for a collapsed step or a log line:
 // "In person 1.4% + 5p, online 1.9% + 10p, Amex 2.5% + 10p, keyed 2.9% + 15p".
-// A tier with no price reads "not set".
+// A tier with no price reads "not set". A debit tier is named only when it is
+// priced apart from its credit tier (debitTiersApart), right after it:
+// "In person 1.6% + 5p, in person debit 0.9% + 5p, online 1.9% + 10p, ...".
 export function rateCardLine(tiers, currency) {
-  return COMMISSION_TIERS.map((tier, i) => {
+  const apart = debitTiersApart(tiers);
+  const order = RATE_CARD_TIER_ORDER.filter((tier) => !DEBIT_TIER_BASE[tier] || apart.includes(tier));
+  return order.map((tier, i) => {
     const c = tierOf(tiers, tier);
     return `${rateTierLabel(tier, { lower: i > 0 })} ${tierRateLine(tierPercent(c), tierFixed(c), currency) || 'not set'}`;
   }).join(', ');
@@ -1209,16 +1310,24 @@ export function rateCardLine(tiers, currency) {
 // as the screen reads it: { tier: { percent, fixedPence, source } } with the
 // source as one grey word, "venue" or "platform default" (the legacy flat
 // columns count as whichever side they sit on), or null for no price.
+// A DEBIT tier rides only when the server resolved one (a server from before
+// 17 Sep 2026 does not), and carries inheritedFrom: the credit tier its whole
+// price came from when no debit price is typed anywhere, else null.
 export function tiersFromResolved(cards) {
   const out = {};
+  const sourceWord = (c) => {
+    const src = lower(c.source);
+    return src === 'venue' || src === 'legacy_venue' ? 'venue' : src === 'platform' || src === 'legacy_platform' ? 'platform default' : null;
+  };
   for (const tier of COMMISSION_TIERS) {
     const c = tierOf(cards, tier);
-    const src = lower(c.source);
-    out[tier] = {
-      percent: tierPercent(c),
-      fixedPence: tierFixed(c),
-      source: src === 'venue' || src === 'legacy_venue' ? 'venue' : src === 'platform' || src === 'legacy_platform' ? 'platform default' : null,
-    };
+    out[tier] = { percent: tierPercent(c), fixedPence: tierFixed(c), source: sourceWord(c) };
+  }
+  for (const tier of DEBIT_TIERS) {
+    if (!isObj(cards) || !isObj(cards[tier])) continue;
+    const c = cards[tier];
+    const from = str(c.inherited_from ?? c.inheritedFrom);
+    out[tier] = { percent: tierPercent(c), fixedPence: tierFixed(c), source: sourceWord(c), inheritedFrom: from === DEBIT_TIER_BASE[tier] ? from : null };
   }
   return out;
 }
@@ -1240,8 +1349,14 @@ export function tierListWords(tiers) {
 
 // The row names every rate table and editor uses (the Card rates table in
 // step 5, RateCardRows), so a sentence naming tiers reads the SAME words as
-// the rows under it: "No rate is set yet for: Online, Keyed in."
-export const RATE_ROW_LABELS = Object.freeze({ card_present: 'In person', card_not_present: 'Online', amex: 'Amex and business cards', keyed: 'Keyed in' });
+// the rows under it: "No rate is set yet for: Online credit, Keyed in."
+// 17 Sep 2026: six rows, credit and debit apart. card_present and
+// card_not_present are the credit rows (and the price a blank debit row uses).
+export const RATE_ROW_LABELS = Object.freeze({
+  card_present: 'In person credit', card_present_debit: 'In person debit',
+  card_not_present: 'Online credit', card_not_present_debit: 'Online debit',
+  amex: 'Amex and business cards', keyed: 'Keyed in',
+});
 export function tierRowList(tiers) {
   return (Array.isArray(tiers) ? tiers : []).map((t) => RATE_ROW_LABELS[str(t)] || str(t)).filter(Boolean).join(', ');
 }
@@ -1265,7 +1380,8 @@ export function rateCardProblems(card, { currency, verb = null } = {}) {
   const errors = [];
   const overLimit = [];
   const empty = (v) => v === null || v === undefined || v === '';
-  for (const tier of COMMISSION_TIERS) {
+  // Every row, the two debit rows included: the same guard on all six.
+  for (const tier of RATE_CARD_TIER_ORDER) {
     const row = isObj(c[tier]) ? c[tier] : {};
     const label = RATE_ROW_LABELS[tier];
     const pRaw = row.percent;
@@ -1300,6 +1416,14 @@ export function rateCardProblems(card, { currency, verb = null } = {}) {
 // Moto is keyed, the catch all rule is in person. A rule with no commission
 // block is a tier priced at 0% and 0p. Null when the profile has no rules;
 // a tier with no rule is null inside the answer.
+// 17 Sep 2026: a rule that names a FUNDING SOURCE is never one of the four
+// (it used to be read as its channel's tier, so a debit rule listed first
+// would have been shown as the online rate). fundingSource debit with POS is
+// the in person debit tier and with Ecommerce the online debit tier; those
+// two keys are in the answer ONLY when the profile holds such a rule, so a
+// profile written before debit pricing reads back exactly as it always did.
+// The prepaid (and any other funding) rules only follow the debit one, the
+// way the amex per interaction rules follow amex ANY.
 export function profileTiers(profile) {
   const rules = (Array.isArray(profile?.rules) ? profile.rules : []).filter(isObj);
   if (!rules.length) return null;
@@ -1309,7 +1433,9 @@ export function profileTiers(profile) {
   for (const r of rules) {
     const pm = lower(r.paymentMethod);
     const si = lower(r.shopperInteraction);
+    const fs = lower(r.fundingSource);
     const tier = pm === 'amex' ? 'amex'
+      : !any(fs) ? (any(pm) && fs === 'debit' ? (DEBIT_TIERS.find((d) => lower(DEBIT_RULE_INTERACTION[d]) === si) ?? null) : null)
       : any(pm) && si === 'ecommerce' ? 'card_not_present'
       : any(pm) && si === 'moto' ? 'keyed'
       : any(pm) && any(si) ? 'card_present'
@@ -1334,8 +1460,12 @@ export function profileTiers(profile) {
 // side is 0 on the other (a rule with no fixedAmount reads back as 0), a
 // tier with no price on either side never matches, and percents compare in
 // basis points so 1.4 and 1.4000001 agree.
+// The two debit tiers compare by what a debit card PAYS on each side: a side
+// with no debit price (no debit rule on Adyen, a blank debit row on the card)
+// pays its credit tier's price, so "no debit rule" matches "debit left blank"
+// and matches "debit typed the same as credit", and nothing else.
 export function tiersMatch(a, b) {
-  return COMMISSION_TIERS.every((tier) => {
+  const four = COMMISSION_TIERS.every((tier) => {
     const x = tierOf(a, tier);
     const y = tierOf(b, tier);
     const xp = tierPercent(x); const yp = tierPercent(y);
@@ -1343,6 +1473,7 @@ export function tiersMatch(a, b) {
     if ((xp === null && xf === null) || (yp === null && yf === null)) return false;
     return Math.round((xp ?? 0) * 100) === Math.round((yp ?? 0) * 100) && (xf ?? 0) === (yf ?? 0);
   });
+  return four && DEBIT_TIERS.every((d) => samePrice(debitEffective(a, d), debitEffective(b, d)));
 }
 
 // THE WHOLE PROFILE, NOT JUST THE NUMBERS (10 Sep 2026). A profile that holds
@@ -1399,6 +1530,69 @@ export function ratesOnAdyen(profile, venueTiers, currency = 'GBP') {
   const expected = tieredCommissionRules(str(currency) || 'GBP', venueTiers).rules;
   const matches = !missing && tiersMatch(tiers, venueTiers) && profileMatchesRules(profile, expected);
   return { tiers, matches, missing, remainder: pc.remainder, rules: pc.rules };
+}
+
+// ── PREVIEW BEFORE SENDING (17 Sep 2026) ─────────────────────────────────────
+// What sending the venue's rates to Adyen WOULD change, against the profile on
+// the store now. Pure and read only: set_split's dry run answers it and the
+// screen draws it, and nothing is sent until the admin presses Send.
+//   profileNow   GET /merchants/{m}/splitConfigurations/{id}, or null for none
+//   venueTiers   the venue's resolved tiers (tiersFromResolved)
+// Answers { same, canSend, rulesNow, rulesNext, rows, lines }:
+//   same     Adyen already holds exactly what would be sent (ratesOnAdyen)
+//   canSend  every payment type has a price, so there is something to send
+//   rows     one per rate card row { tier, label, now, next, changed }, now
+//            and next as plain rates ("1.4% + 5p") or null. A debit row with
+//            no price of its own shows its credit row's price, on both sides
+//   lines    short plain sentences for the screen, only the rows that change
+export function ratesChangePreview(profileNow, venueTiers, currency = 'GBP') {
+  const cur = str(currency).toUpperCase() || 'GBP';
+  const next = tieredCommissionRules(cur, venueTiers);
+  const nowTiers = profileTiers(profileNow);
+  const on = ratesOnAdyen(profileNow, venueTiers, cur);
+  const priceLine = (tiers, tier) => {
+    if (!isObj(tiers)) return null;
+    const c = DEBIT_TIER_BASE[tier] ? debitEffective(tiers, tier) : tierOf(tiers, tier);
+    return tierRateLine(tierPercent(c), tierFixed(c), cur);
+  };
+  const rows = RATE_CARD_TIER_ORDER.map((tier) => {
+    const now = priceLine(nowTiers, tier);
+    const after = priceLine(venueTiers, tier);
+    return { tier, label: RATE_ROW_LABELS[tier], now, next: after, changed: now !== after };
+  });
+  const lines = [];
+  if (!next.rules.length) {
+    lines.push(`No rate is set yet for: ${tierRowList(next.lacking)}. Nothing can be sent.`);
+  } else if (on.matches) {
+    lines.push('Adyen already holds these rates. Sending changes nothing.');
+  } else {
+    if (!nowTiers) lines.push('Adyen holds no rates for this venue yet.');
+    for (const r of rows.filter((x) => x.changed)) {
+      const after = r.next || 'not set';
+      lines.push(!nowTiers ? `${r.label}: ${after}.` : r.now ? `${r.label}: ${r.now} now, ${after} after.` : `${r.label}: not on Adyen now, ${after} after.`);
+    }
+    if (nowTiers && !rows.some((x) => x.changed)) lines.push('The rates are the same, but the rules on Adyen are not the ones ServOS writes. Sending puts that right.');
+  }
+  return { same: on.matches, canSend: next.rules.length > 0, rulesNow: on.rules, rulesNext: next.rules.length, rows, lines };
+}
+
+// WHAT WAS PREVIEWED IS WHAT IS SENT (17 Sep 2026). The dry run answers a
+// short fingerprint of the exact requests it showed; the send must hand the
+// same one back, and the server works it out again from the rates as they are
+// at that moment. A rate edited between the preview and the send (another
+// admin, another tab) changes the fingerprint, so the send is refused in
+// plain words instead of writing rates nobody looked at. It also means a send
+// is only possible after a preview. Not a secret and not security: FNV-1a over
+// the JSON, with the length, only to tell two plans apart.
+export function planFingerprint(plan) {
+  let text;
+  try { text = JSON.stringify(plan ?? null) ?? 'null'; } catch { text = 'unreadable'; }
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i += 1) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return `${h.toString(16).padStart(8, '0')}${text.length.toString(16)}`;
 }
 
 // The line for a found store AND a found business account that the venue row
@@ -1907,7 +2101,7 @@ function buildPayoutsStep(x) {
   } else if (!priced) {
     // A tier with no price cannot go to Adyen: name the tiers in the table's
     // own row words and offer the editor. 0% and 0p is a price; empty is not.
-    split = part('split', { state: 'attention', detail: `No rate is set yet for: ${tierRowList(unpriced)}.`, action: 'edit_rates', hint: 'Set every payment type, then apply the rates on Adyen.' });
+    split = part('split', { state: 'attention', detail: `No rate is set yet for: ${tierRowList(unpriced)}.`, action: 'edit_rates', hint: 'Set every payment type, then send the rates to Adyen.' });
   } else if (str(x.store.splitConfigurationId)) {
     // DONE needs all of these (9 and 10 Sep 2026): the store names an account
     // for the rest of each sale, it is the venue's own, the profile was READ,
@@ -1917,15 +2111,15 @@ function buildPayoutsStep(x) {
     // is never shown as done: its rates are not checked.
     const storeBa = str(x.store.balanceAccountId);
     if (!storeBa) {
-      split = part('split', { state: 'attention', detail: 'The rates on Adyen name no account for the rest of each sale.', action: 'set_split', hint: 'Apply the rates again to point them at the venue.' });
+      split = part('split', { state: 'attention', detail: 'The rates on Adyen name no account for the rest of each sale.', action: 'set_split', hint: 'Send the rates again to point them at the venue.' });
     } else if (storeBa !== rowBa) {
-      split = part('split', { state: 'attention', detail: 'The rates on Adyen send the rest of each sale to a different account, not the venue’s.', action: 'set_split', hint: 'Apply the rates again to point them at the venue.' });
+      split = part('split', { state: 'attention', detail: 'The rates on Adyen send the rest of each sale to a different account, not the venue’s.', action: 'set_split', hint: 'Send the rates again to point them at the venue.' });
     } else if (!profileRead) {
       split = part('split', { state: 'attention', detail: 'Adyen’s rates could not be read, so they are not checked yet.', action: 'check_rates', hint: null });
     } else if (lower(remainder) !== lower(REMAINDER_TO_VENUE)) {
-      split = part('split', { state: 'attention', detail: 'The rates on Adyen do not send the rest of each sale to the venue.', action: 'set_split', hint: 'Apply the rates again to point them at the venue.' });
+      split = part('split', { state: 'attention', detail: 'The rates on Adyen do not send the rest of each sale to the venue.', action: 'set_split', hint: 'Send the rates again to point them at the venue.' });
     } else if (onAdyen.matches !== true) {
-      split = part('split', { state: 'attention', detail: 'Adyen holds different rates. Apply again.', action: 'set_split', hint: shortLine });
+      split = part('split', { state: 'attention', detail: 'Adyen holds different rates. Send them again.', action: 'set_split', hint: shortLine });
     } else {
       split = part('split', { state: 'done', detail: 'Adyen holds these rates.', hint: shortLine });
     }

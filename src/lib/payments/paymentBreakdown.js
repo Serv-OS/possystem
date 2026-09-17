@@ -145,30 +145,45 @@ export function paymentCardLabel(card) {
 //   keyed             paymentMethod ANY, shopperInteraction Moto
 //   card_present      paymentMethod ANY, shopperInteraction ANY
 // Null when the profile has no rule for that tier in that currency.
+// 17 Sep 2026, credit and debit priced apart: a rule that names a FUNDING
+// SOURCE is never one of the four tiers (a debit Ecommerce rule listed first
+// used to be handed back as the online rule). The two debit tiers are the
+// fundingSource debit rules (POS in person, Ecommerce online); a profile
+// with no debit rule charged that debit payment on its credit tier's rule,
+// so that rule is the answer then.
+const DEBIT_TIER_RULE = Object.freeze({
+  card_present_debit: { base: 'card_present', interaction: 'pos' },
+  card_not_present_debit: { base: 'card_not_present', interaction: 'ecommerce' },
+});
 export function ruleForTier(profile, tier, currency) {
   const rules = (Array.isArray(profile?.rules) ? profile.rules : []).filter(isObj);
   const any = (v) => !str(v) || lower(v) === 'any';
   const cur = curOf(currency);
-  const t = lower(tier);
-  let pick = null;
-  for (const r of rules) {
-    if (str(r.currency) && str(r.currency).toUpperCase() !== cur) continue;
-    const pm = lower(r.paymentMethod);
-    const si = lower(r.shopperInteraction);
-    const ruleTier = pm === 'amex' ? 'amex'
-      : any(pm) && si === 'ecommerce' ? 'card_not_present'
-      : any(pm) && si === 'moto' ? 'keyed'
-      : any(pm) && any(si) ? 'card_present'
-      : null;
-    if (ruleTier !== t) continue;
-    if (t === 'amex') {
-      if (any(si)) return r;
-      if (!pick) pick = r;
-      continue;
+  const find = (t) => {
+    let pick = null;
+    for (const r of rules) {
+      if (str(r.currency) && str(r.currency).toUpperCase() !== cur) continue;
+      const pm = lower(r.paymentMethod);
+      const si = lower(r.shopperInteraction);
+      const fs = lower(r.fundingSource);
+      const ruleTier = pm === 'amex' ? 'amex'
+        : !any(fs) ? (any(pm) && fs === 'debit' ? (Object.keys(DEBIT_TIER_RULE).find((d) => DEBIT_TIER_RULE[d].interaction === si) ?? null) : null)
+        : any(pm) && si === 'ecommerce' ? 'card_not_present'
+        : any(pm) && si === 'moto' ? 'keyed'
+        : any(pm) && any(si) ? 'card_present'
+        : null;
+      if (ruleTier !== t) continue;
+      if (t === 'amex') {
+        if (any(si)) return r;
+        if (!pick) pick = r;
+        continue;
+      }
+      return r;
     }
-    return r;
-  }
-  return pick;
+    return pick;
+  };
+  const t = lower(tier);
+  return find(t) ?? (DEBIT_TIER_RULE[t] ? find(DEBIT_TIER_RULE[t].base) : null);
 }
 
 // The venue rate a rule holds: { percent, fixedMinor } (0 for a missing part).

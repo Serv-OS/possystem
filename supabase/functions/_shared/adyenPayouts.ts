@@ -68,6 +68,25 @@ export interface SplitOutcome {
   orphanDeleted: boolean | null;
 }
 
+// The two paths and the store body, in ONE place, so the dry run
+// (planSplitOnStore) shows exactly what createSplitOnStore sends.
+const splitCreatePath = (merchant: string): string => `/merchants/${enc(merchant)}/splitConfigurations`;
+const splitStorePath = (merchant: string, storeId: string): string => (merchant ? `/merchants/${enc(merchant)}/stores/${enc(storeId)}` : `/stores/${enc(storeId)}`);
+const splitStoreBody = (splitConfigurationId: string, balanceAccountId: string): Dict => ({ splitConfiguration: { splitConfigurationId, balanceAccountId } });
+
+// THE DRY RUN (17 Sep 2026): the requests createSplitOnStore WOULD send, in
+// order, and nothing sent. The store PATCH names the id Adyen hands back for
+// the new profile, which does not exist yet, so a plain placeholder stands in
+// for it. Pure: no Adyen call is made here.
+export const NEW_SPLIT_ID_PLACEHOLDER = 'the id Adyen gives the new rules';
+export interface PlannedAdyenRequest { method: string; api: 'management'; path: string; body: Dict }
+export function planSplitOnStore(opts: { merchant: string; storeId: string; balanceAccountId: string; profile: Dict }): PlannedAdyenRequest[] {
+  return [
+    { method: 'POST', api: 'management', path: splitCreatePath(opts.merchant), body: opts.profile },
+    { method: 'PATCH', api: 'management', path: splitStorePath(opts.merchant, opts.storeId), body: splitStoreBody(NEW_SPLIT_ID_PLACEHOLDER, opts.balanceAccountId) },
+  ];
+}
+
 // Create the profile on the merchant and point the store at it and at the
 // venue balance account, in that order. A refused PATCH deletes the profile
 // just made (best effort) and answers stage 'patch' with its id, so the
@@ -78,13 +97,12 @@ export async function createSplitOnStore(api: AdyenApi, opts: {
 }): Promise<SplitOutcome> {
   const m = enc(opts.merchant);
   const previousProfileId = String(opts.previousProfileId ?? '').trim() || null;
-  const created = await api.mgmt('POST', `/merchants/${m}/splitConfigurations`, opts.profile);
+  const created = await api.mgmt('POST', splitCreatePath(opts.merchant), opts.profile);
   const id = String((created.data as Dict | null)?.splitConfigurationId ?? '').trim();
   if (!created.ok || !id) {
     return { ok: false, stage: 'create', status: created.status, splitConfigurationId: null, created: created.data ?? null, patched: null, previousProfileId, orphanDeleted: null };
   }
-  const storePath = opts.merchant ? `/merchants/${m}/stores/${enc(opts.storeId)}` : `/stores/${enc(opts.storeId)}`;
-  const patched = await api.mgmt('PATCH', storePath, { splitConfiguration: { splitConfigurationId: id, balanceAccountId: opts.balanceAccountId } });
+  const patched = await api.mgmt('PATCH', splitStorePath(opts.merchant, opts.storeId), splitStoreBody(id, opts.balanceAccountId));
   if (!patched.ok) {
     let orphanDeleted: boolean | null = null;
     try {

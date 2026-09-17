@@ -119,30 +119,45 @@ export function paymentCardLabel(card: unknown): string {
 // The split profile's rule for a payment's rate tier and currency, with the
 // SAME mapping adyenLink.ts profileTiers reads the profile with. Null when
 // the profile has no rule for that tier in that currency.
+// 17 Sep 2026, credit and debit priced apart: a rule that names a FUNDING
+// SOURCE is never one of the four tiers (a debit Ecommerce rule listed first
+// used to be handed back as the online rule). The two debit tiers are the
+// fundingSource debit rules (POS in person, Ecommerce online); a profile
+// with no debit rule charged that debit payment on its credit tier's rule,
+// so that rule is the answer then.
+const DEBIT_TIER_RULE: Readonly<Record<string, { base: string; interaction: string }>> = Object.freeze({
+  card_present_debit: { base: 'card_present', interaction: 'pos' },
+  card_not_present_debit: { base: 'card_not_present', interaction: 'ecommerce' },
+});
 export function ruleForTier(profile: unknown, tier: unknown, currency: unknown): Dict | null {
   const rules: Dict[] = (Array.isArray((profile as Dict)?.rules) ? ((profile as Dict).rules as unknown[]) : []).filter(isObj);
   const any = (v: unknown): boolean => !str(v) || lower(v) === 'any';
   const cur = curOf(currency);
-  const t = lower(tier);
-  let pick: Dict | null = null;
-  for (const r of rules) {
-    if (str(r.currency) && str(r.currency).toUpperCase() !== cur) continue;
-    const pm = lower(r.paymentMethod);
-    const si = lower(r.shopperInteraction);
-    const ruleTier = pm === 'amex' ? 'amex'
-      : any(pm) && si === 'ecommerce' ? 'card_not_present'
-      : any(pm) && si === 'moto' ? 'keyed'
-      : any(pm) && any(si) ? 'card_present'
-      : null;
-    if (ruleTier !== t) continue;
-    if (t === 'amex') {
-      if (any(si)) return r;
-      if (!pick) pick = r;
-      continue;
+  const find = (t: string): Dict | null => {
+    let pick: Dict | null = null;
+    for (const r of rules) {
+      if (str(r.currency) && str(r.currency).toUpperCase() !== cur) continue;
+      const pm = lower(r.paymentMethod);
+      const si = lower(r.shopperInteraction);
+      const fs = lower(r.fundingSource);
+      const ruleTier = pm === 'amex' ? 'amex'
+        : !any(fs) ? (any(pm) && fs === 'debit' ? (Object.keys(DEBIT_TIER_RULE).find((d) => DEBIT_TIER_RULE[d].interaction === si) ?? null) : null)
+        : any(pm) && si === 'ecommerce' ? 'card_not_present'
+        : any(pm) && si === 'moto' ? 'keyed'
+        : any(pm) && any(si) ? 'card_present'
+        : null;
+      if (ruleTier !== t) continue;
+      if (t === 'amex') {
+        if (any(si)) return r;
+        if (!pick) pick = r;
+        continue;
+      }
+      return r;
     }
-    return r;
-  }
-  return pick;
+    return pick;
+  };
+  const t = lower(tier);
+  return find(t) ?? (DEBIT_TIER_RULE[t] ? find(DEBIT_TIER_RULE[t].base) : null);
 }
 
 // The venue rate a rule holds: { percent, fixedMinor } (0 for a missing part).
