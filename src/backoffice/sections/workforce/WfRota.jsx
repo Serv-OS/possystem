@@ -1165,7 +1165,9 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
                   const pct = labourPct(wage, sales); const over = pct > targetPct;
                   return (
                     <td key={d.iso} style={{ ...td, textAlign: 'center' }}>
-                      {sales > 0 && wage > 0 ? <Badge tone={over ? 'red' : 'green'}>{(pct * 100).toFixed(0)}%</Badge> : <span style={{ fontSize: 12, color: 'var(--t4)' }}>–</span>}
+                      {sales > 0 && wage > 0 ? <Badge tone={over ? 'red' : 'green'}>{(pct * 100).toFixed(0)}%</Badge>
+                        : wage > 0 ? <span title="There is a wage cost for this day but no sales yet, so there is nothing to work a % from." style={{ fontSize: 11, fontWeight: 700, color: 'var(--red)' }}>no sales</span>
+                        : <span style={{ fontSize: 12, color: 'var(--t4)' }}>–</span>}
                     </td>
                   );
                 })}
