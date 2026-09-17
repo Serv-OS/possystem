@@ -914,6 +914,9 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
       rulesNow: Number(p.rulesNow) || 0, rulesNext: Number(p.rulesNext) || 0,
       overLimit: lines(r.overLimit), live: r.live === true, unread: r.profileUnread === true,
       requests: Array.isArray(r.requests) ? r.requests : [],
+      // A debit rate is priced apart and Adyen has not yet sent us a debit or
+      // credit flag for this venue: said before the send, never a block.
+      ledgerWarning: str(r.ledgerWarning),
       // Handed back on Send: the server works it out again from the rates as
       // they are then, so what is sent is what was shown here.
       fingerprint: str(r.fingerprint),
@@ -1740,6 +1743,7 @@ export default function AdyenGoLiveFlow({ location, venueCode, callAdmin, callPa
                                 <p style={{ ...S.say, fontWeight: 700, margin: '0 0 8px' }}>{ratePreview.same ? 'Nothing to send' : 'What sending will change'}</p>
                                 {ratePreview.lines.map((l) => <p key={l} style={{ ...S.say, margin: '0 0 6px' }}>{l}</p>)}
                                 {ratePreview.overLimit.map((l) => <p key={l} style={{ ...S.say, color: 'var(--orn, #e8a020)', margin: '0 0 6px' }}>{l}</p>)}
+                                {ratePreview.ledgerWarning && !ratePreview.same && <p style={{ ...S.say, color: 'var(--orn, #e8a020)', margin: '0 0 6px' }}>{ratePreview.ledgerWarning}</p>}
                                 <p style={{ ...S.quiet, margin: '8px 0 0' }}>
                                   {ratePreview.live ? 'This venue takes real cards. ' : 'This venue is on test cards. '}
                                   Nothing has been sent yet. New payments use the new rates from the moment you send. Past payments do not change.

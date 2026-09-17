@@ -239,7 +239,7 @@ import {
   capabilityList, blockedCapabilityNames, buildGoliveSteps, goliveProblems,
   summariseCapabilities, findPushSweep, pickPayoutInstrument, PAYOUT_CAPABILITY,
   buildTieredProfile, tieredCommissionRules, tiersFromResolved, unpricedTiers, tierRowList, rateCardLine, ratesOnAdyen,
-  rateCardProblems, rateTierLabel, ratesChangePreview, planFingerprint,
+  rateCardProblems, rateTierLabel, ratesChangePreview, planFingerprint, debitTiersApart,
   liableBalanceAccountSecretName, liableBalanceAccountSecretNames, ADYEN_LIABLE_BALANCE_ACCOUNT_COLUMN,
   ADYEN_PLATFORM_SETTINGS_TABLE, ADYEN_ROW_BALANCE_PLATFORM_COLUMN,
   platformSettingsKey, platformSettingsPatch, platformSettingsMissingMessage,
@@ -3340,6 +3340,25 @@ Deno.serve(async (req) => {
           profileUnread = pr.error;
         }
         const preview = ratesChangePreview(profileNow, rateTiers, stepCurrency);
+        // CAN OUR LEDGER TELL DEBIT FROM CREDIT YET? Adyen can the moment the
+        // rules land, but adyen-webhook only stamps a debit category when the
+        // event carries additionalData.fundingSource ("Include Funding Source"
+        // on the standard webhook). With a debit rate priced apart and no
+        // payment of this venue on this environment ever seen with one, the
+        // ledger would book debit payments at the credit rate while Adyen
+        // takes the debit rate, so the preview says so BEFORE the send. A
+        // read that fails says nothing (null), it never blocks.
+        let ledgerWarning: string | null = null;
+        if (debitTiersApart(rateTiers).length) {
+          try {
+            const { data: seen, error: seenErr } = await platformAdmin.from('adyen_payments')
+              .select('psp_reference').eq('location_id', loc.id).eq('live', env === 'live')
+              .not('card->>fundingSource', 'is', null).limit(1);
+            if (!seenErr && (seen ?? []).length === 0) {
+              ledgerWarning = 'Adyen has not told ServOS which cards are debit for this venue yet. Until it does, our own records will show debit payments at the credit rate.';
+            }
+          } catch { ledgerWarning = null; }
+        }
         logLink('preview_split', loc.id, { environment: env, region, merchant: useMerchant, storeId, balanceAccountId, profileIdNow, rulesNow: preview.rulesNow, rulesNext: preview.rulesNext, same: preview.same });
         return json({
           ok: true, dry_run: true, sent: false,
@@ -3350,6 +3369,7 @@ Deno.serve(async (req) => {
           profileUnread: profileUnread ? true : false, profileUnreadDetail: profileUnread,
           preview: profileUnread ? { ...preview, same: false, lines: ['The rates on Adyen now could not be read, so what changes cannot be shown.'] } : preview,
           overLimit: checked.overLimit.map((e) => e.text),
+          ledgerWarning,
           tiers: rateTiers, line: rateCardLine(rateTiers, stepCurrency),
           requests, fingerprint,
         });
