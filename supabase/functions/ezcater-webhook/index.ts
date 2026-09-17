@@ -27,6 +27,14 @@
 //       503  transient. The sender should retry, and the phase 3 reconciler
 //            replays from ezcater_events regardless.
 //
+// ITEM MATCHING (step 6). We have no Menus API, so the venue types its ezCater
+// menu into the Partner Portal by hand and the lines arrive with posItemId =
+// null. _shared/ezcater-match-ingest.ts matches them to our menu by name before
+// the order_queue write, so the ticket routes to a station, depletes stock and
+// shows up in product mix. It can never fail an order: on any problem, including
+// the window before Peter runs the 20260917 migration, the mapper's own row goes
+// through unchanged and the ticket is plain text, exactly as it was before.
+//
 // Lifecycle quirks handled here:
 //   * a MODIFICATION arrives as a SECOND accepted notification for the same
 //     order id, because there is no modified event. accepted_count on
@@ -38,8 +46,9 @@
 //     event like any other here.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { verifyEzcaterSignature, getOrder, isPermanent } from '../_shared/ezcater.ts';
+import { verifyEzcaterSignature, getOrder, isPermanent, isSchemaError } from '../_shared/ezcater.ts';
 import { orderToQueueRow, queuePayload, ezLifecycle, EZ_TERMINAL } from '../_shared/ezcater-map.ts';
+import { matchQueueRow, MATCH_BUDGET_MS } from '../_shared/ezcater-match-ingest.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -209,6 +218,21 @@ Deno.serve(async (req) => {
       order = await getOrder(token, entityId);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+
+      // THE UNKNOWN FIELD ALARM. GraphQL throws the WHOLE query away over one
+      // field it does not have, and answers 200 while doing it, so this failure
+      // reads as "no orders" unless it is named out loud. The raw notification
+      // is already in ezcater_events from step 2, so nothing is lost: fix the
+      // query, replay the row, and the order still reaches the kitchen.
+      if (isSchemaError(e)) {
+        console.error(
+          '[ezcater-webhook] EZCATER SCHEMA MISMATCH. The order query asks for a field ezCater does not have,',
+          'so NOTHING was fetched. Order', entityId, 'is held in ezcater_events for replay. ezCater said:', msg,
+        );
+        await failEvent(`SCHEMA MISMATCH, order query rejected: ${msg}`, 'error');
+        return ok();   // retrying the same bad query forever helps nobody
+      }
+
       await failEvent(`order fetch failed: ${msg}`, 'error');
       // 404 / 403 / feature_not_enabled will never succeed on a retry. Ack so
       // ezCater stops, and leave the row for a human or the reconciler.
@@ -245,7 +269,34 @@ Deno.serve(async (req) => {
         `- accepted seen ${link.accepted_count} times. Accepting this needs acceptModification: true.`);
     }
 
-    // 6) Upsert. onConflict is (location_id, ref): order_queue's primary key has
+    // 6) ITEM MATCHING. ezCater gave us no Menus API, so a Partner Portal line
+    // arrives with posItemId = null and itemId null means no station routing, no
+    // stock, no product mix. This fills itemId in from the venue's saved links
+    // and, where one of our items has exactly that name and nothing else does,
+    // saves a new link so the next order is instant.
+    //
+    // IT CANNOT FAIL THE ORDER, AND IT CANNOT DELAY IT. matchQueueRow swallows
+    // everything, including the window before the 20260917_OPS_ezcater_item_links
+    // migration is run, and returns the mapper's own row. It is also on a clock:
+    // past MATCH_BUDGET_MS a slow menu read is abandoned and the order goes
+    // through unmatched, which is a plain text ticket and exactly today. This
+    // try is the second guard, not the first.
+    let queueRow = row;
+    try {
+      const m = await matchQueueRow(sb, locationId, row, { budgetMs: MATCH_BUDGET_MS });
+      queueRow = m.row;
+      if (m.ran) {
+        console.log('[ezcater-webhook] items matched on', row.ref,
+          `- ${m.matched}/${m.lines} lines, ${m.inserted} new links, ${m.bumped} seen`);
+      }
+    } catch (e) {
+      // Unreachable by construction. Here so it stays unreachable.
+      console.warn('[ezcater-webhook] item matching threw, order continues unmatched:',
+        e instanceof Error ? e.message : String(e));
+      queueRow = row;
+    }
+
+    // 7) Upsert. onConflict is (location_id, ref): order_queue's primary key has
     // spanned both since 20260806k and a bare 'ref' throws 42P10, which is how
     // inbound channel orders got dropped on the floor once already.
     const { data: existing } = await sb.from('order_queue')
@@ -257,7 +308,7 @@ Deno.serve(async (req) => {
       : row.status;
 
     const { error: qErr } = await sb.from('order_queue')
-      .upsert(queuePayload({ ...row, status }, !existing, new Date().toISOString()), { onConflict: 'location_id,ref' });
+      .upsert(queuePayload({ ...queueRow, status }, !existing, new Date().toISOString()), { onConflict: 'location_id,ref' });
     if (qErr) {
       await failEvent(`order_queue upsert failed: ${qErr.message}`, 'error');
       return retry('queue write failed');

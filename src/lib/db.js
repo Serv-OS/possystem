@@ -18,6 +18,7 @@ import { reportSave } from './saveHealth';
 import { describeMenuChange } from './menuDiff';
 import { money } from './currency';
 import { categoryImageField, categoryPhotoUrl, checkPhotoFile, categoryPhotoPath, peerPhotoTargets, isMissingImageColumn } from './categoryPhoto';
+import { itemCodeForSave, isMissingItemCodeColumn, isDuplicateItemCodeError } from './itemCode';
 import { peerMenuPlan } from './menuMembership';
 import { resolveSoldAlone } from './menuRules';
 
@@ -300,6 +301,13 @@ export const upsertMenuItem = async (item, locationId = null) => {
     // value; a caller holding a pre-profile row leaves the column alone.
     ...(item.taxProfileId !== undefined || item.tax_profile_id !== undefined
       ? { tax_profile_id: item.taxProfileId ?? item.tax_profile_id ?? null } : {}),
+    // v5.8.100: the short code we give ezCater and other partners for this
+    // product (menu_items.item_code, 20260917_OPS_menu_item_code.sql).
+    // CONDITIONAL, the same touched-fields discipline as tax_profile_id: an
+    // item loaded before the column existed carries no field, and a save from
+    // that path must leave the column alone rather than null a venue's code.
+    ...(item.itemCode !== undefined || item.item_code !== undefined
+      ? { item_code: itemCodeForSave(item.itemCode ?? item.item_code) } : {}),
     image:        item.image || null,
     // v4.6.3: ownership / sharing fields (added by v4.6.0 schema migration)
     scope:           item.scope          || item.ownership_scope || 'local',
@@ -310,7 +318,25 @@ export const upsertMenuItem = async (item, locationId = null) => {
     updated_at:   new Date().toISOString(),
   };
 
-  const result = await supabase.from('menu_items').upsert(dbItem, { onConflict: 'id' });
+  let result = await supabase.from('menu_items').upsert(dbItem, { onConflict: 'id' });
+
+  // v5.8.100: NEVER LOSE A MENU SAVE OVER THE ITEM CODE. Two ways the code
+  // alone can be refused, and both end the same way: write the item again
+  // without it, so the name, price and everything else the person just typed is
+  // saved. The code is the only thing lost, and the caller is told.
+  //
+  //   1. the column is not there yet (the migration is run by hand)
+  //   2. another product at this venue already holds that code. The editor
+  //      checks first, so this is the race, or a clash with an ARCHIVED product
+  if (result.error && 'item_code' in dbItem
+      && (isMissingItemCodeColumn(result.error) || isDuplicateItemCodeError(result.error))) {
+    const duplicate = isDuplicateItemCodeError(result.error);
+    const retry = { ...dbItem };
+    delete retry.item_code;
+    result = await supabase.from('menu_items').upsert(retry, { onConflict: 'id' });
+    if (!result.error) result = { ...result, itemCodeRejected: duplicate ? 'duplicate' : 'missing-column' };
+  }
+
   if (!result.error) scheduleMenuTranslate(locationId);   // kiosk translations follow the English (v5.8.82)
   reportSave('item', result.error);   // v5.5.951
   return result;

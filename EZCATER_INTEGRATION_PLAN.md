@@ -14,6 +14,29 @@ Researched 25 Aug 2026 against the official docs at `https://api.ezcater.io` (al
 
 ---
 
+## THE FIELD NAMES, corrected 17 Sep 2026
+
+The first build guessed at field names. **GraphQL throws the WHOLE query away over one wrong field**, and answers 200 while doing it, so the first real order would have fetched nothing and never reached the till. These are now copied from the schema reference, not inferred.
+
+- **Lifecycle** is `lifecycle { orderIsCurrently }`. There is no `value`.
+- **Money lives in three places.** `Order.totals` has `subTotal` (capital T), `salesTax`, `salesTaxRemittance`, `tip`, `customerTotalDue`, `pointOfSaleIntegrationFee`. `catererCart.totals` has `catererTotalDue` ALONE, and it is a float in dollars.
+- **Delivery fee is not a field.** It is `catererCart.feesAndDiscounts(types: [DELIVERY_FEE])`, a list of `{ name, cost }`.
+- **taxableAddress** is on `Order`, not on totals.
+- **A line has no unit price.** `totalInSubunits` is the line total and it already includes the options.
+- **A customization has no money at all.** Only `customizationId`, `customizationTypeId`, `customizationTypeName`, `name`, `posCustomizationId`, `quantity`.
+- **Address has no latitude or longitude.** It does have `street3` and `stateName`.
+- **EventContact is name and phone only.** No email anywhere on an order. `OrderCustomer` is `firstName`, `lastName`, `fullName`.
+- **Event has no orderNotes.** It has `customerProvidedName` and `catererHandoffFoodTime`.
+- **Order has no isModified and no createdAt.**
+- **rejectOrder takes one input object**, `rejectOrderInput: RejectOrderInput!`. Accept and reject payloads have no `errors` field.
+- **A subscription is per caterer per event.** `parentId` is the caterer uuid. There is no account wide subscription.
+- **Caterer has no brandName.** It has `storeNumber` and `live`.
+- **createSubscriber returns `id` and `webhookSecret`**, and the secret is issued ONCE, at creation, never again.
+
+**Settle any future question with introspection**, which the "Using GraphQL" page documents against the live token: `query { __type(name: "Order") { fields { name } } }`.
+
+---
+
 ## THE TAX DECISION, read this first
 
 **ezCater calculates, charges and in most states remits the sales tax itself.** Our tax profiles engine must NOT recompute it.
@@ -116,6 +139,66 @@ Because orders sit for days they must be excluded from the live queue by the exi
 
 ---
 
+## Item matching (no Menus API)
+
+We have the Orders API but **not** the Menus API, so the venue builds its ezCater menu by hand in the Partner Portal and their order lines arrive with `posItemId = null`. `itemId` is what KDS routing, 86, stock depletion and product reporting key on, so an unmatched line is a plain text ticket: no station, no stock, no product mix.
+
+**The key is the normalised name.** Nothing else on a line can carry a link:
+
+| field | can it key a link |
+|---|---|
+| `posItemId` | stable, but only ever set by `menuCreate`, which we do not have. When it IS set it already names our item. |
+| `orderItems[].uuid` | the order LINE, not the product. New every order. **Never a key.** |
+| `menuItemSizeId` | ezCater's menu side id. Every doc placeholder is written `ezcater-menu-version-...` and a publish returns a new `menuUuid`, so it looks scoped to a menu VERSION. Unpromised, so unsafe. |
+| `name` | free text the venue typed. Stable until they retype it. **This is the key.** |
+
+The cost is visible: rename the item on ezCater and the match must be made again. `ez_name` and `ez_group` keep the venue's own spelling verbatim so a screen can show what was actually seen.
+
+**The rules** live in `src/lib/ezcaterMatch.js`, mirrored for the edge function in `supabase/functions/_shared/ezcaterMatch.ts`, held together by `src/lib/ezcaterMatchParity.test.js`:
+
+- `normaliseItemName`: the **comparing** form. Lower case, no punctuation, no bracketed suffix, no catering noise (`per person`, `serves 10`), no trailing size or container word (`Large`, `Half Pan`, `Full Tray`). Never strips a name away to nothing.
+- `normaliseKeyName`: the **key** form. The same, except the size word stays and only the container word (`Tray`, `Pan`, `Size`) is dropped. Their "Half Tray" and "Full Tray" are two link rows, because they are two products to a kitchen: different stock, different money, and one manual match must never route both. The scorer still ignores the size, so both rows still find our one "Caesar Salad". Rows saved before this are read back under the old short key (`legacyLinkKey`), so no venue's work is lost.
+- `scoreMatch` / `suggestMatches`: a ranked shortlist for a person to pick from, with a short plain reason ("same name", "3 of 4 words match"). Deterministic, ties broken by name.
+- `autoLinkDecision`: four rules in order: an existing link wins, then a `posItemId` that names a real item of ours, then ONE exact normalised name with no other exact match **and no size clash**. It never guesses between two items that match equally well, which is the "Caesar Salad Small" and "Caesar Salad Large" case, and it never links their "Large" to our "Small" when only one of ours is left: both name a size, the sizes differ, so a person picks.
+- `matchOptions`: the same against our modifier options, their `customizationTypeName` against our group name.
+- `buildLinkKey` / `applyLinks` / `countMatches`: the read path both the app and the webhook share.
+
+**Table:** `ezcater_item_links`, keyed `(location_id, kind, ez_key)`, service role only like the rest. Migration `supabase/migrations/20260917_OPS_ezcater_item_links.sql`, Peter runs it by hand. The app works before it runs: a missing table reads as "no links", which is exactly today's behaviour.
+
+**The table is a sightings list first and a link table second.** A row is written the first time ezCater sends a name, with nothing on the other side of it, and a person says later what it is. So a row is in one of three states, all derived from the columns and none of them stored in a state column:
+
+| state | columns | means |
+|---|---|---|
+| unmatched | no `menu_item_id`, no `option_id`, `matched_by` null | seen, nobody has decided |
+| matched | `menu_item_id` or `option_id` set | routes, depletes stock, reports |
+| ignored | no target, `matched_by = 'ignored'` | a person pressed "Not on our menu" |
+
+The original target check only allowed the middle row, so an unmatched item could not be recorded at all. It was widened on 17 Sep. **If the migration was already run, run it again**: every constraint is a drop then an add, so a second run repairs the table in place.
+
+### The screen
+
+**Back Office, Channels, 3rd Party orders, "Item matching"** (`src/backoffice/sections/EzcaterItemMatching.jsx`, rendered at the bottom of `HubRise.jsx`, which is that section).
+
+- Two tabs, **Items** and **Options**, each with the outstanding count on it.
+- One plain line at the top: "4 of their items are not matched yet."
+- Unmatched first, newest seen first. The newest unmatched item is the order sitting on the pass as a plain text ticket right now.
+- Each row: their name verbatim, their option group, how many orders it has been on, then either what it is matched to with **Change**, or the picker.
+- The picker is the matcher's top suggestions (with a short reason, "same name", "3 of 4 words match") and a search box for everything else. Search is plain substring, not the matcher: "cae" is not a whole token and scores zero.
+- **Not on our menu** silences an item the venue never wants matched, for things like "Delivery Fee" and "Utensils".
+- **Change** opens the picker over an already matched row without clearing it first. A mis-click must never leave an item routing nowhere.
+
+**Data path.** `ezcater_item_links` is service role only, so Back Office never touches it directly: `ezcater-connect` gained `items_list` and `items_save`, wrapped in `src/lib/ezcater.js`. `items_save` rebuilds `ez_key` from the name with the shared rules and verifies the target really is on that venue's menu. Our own menu is read straight from the browser, so the matcher runs client side.
+
+**Before the migration, and before the edge function is deployed,** the screen shows one line, "Item matching is not switched on yet", and nothing else. All three ways to be in that state are one check, `isMatchingOff()` in `src/lib/ezcaterItemRows.js`. That file is the whole view model and is tested in `ezcaterItemRows.test.js`; the screen is a shell over it.
+
+**The webhook writes the sightings.** On every order, one row per line and per customization: the key, their spelling, their group, `seen_count` and `last_seen_at`, with **no target** when nothing of ours matched. That no-target row is what the screen lists. A row that already exists is only ever bumped, never rewritten, with one narrow exception: a row that is still a bare sighting (no target, no `matched_by`, `source` `'auto'`) gets its target filled in once our menu has the item, under a `where` clause that repeats every one of those conditions, so a person saving at the same moment always wins.
+
+**A partly read menu is not a menu.** If any page of `menu_items` or `modifier_groups` fails or the read is cut short, the saved links are the whole answer and **no new link is written at all**: "nothing of ours has that name" would be a claim about the half we never read, and a wrong auto link outlives the order that wrote it.
+
+**Matching is on a clock.** `MATCH_BUDGET_MS` (4s) caps the whole job, checked between reads and raced against a timer, because a read that never comes back would otherwise hold up the `order_queue` write. Past the budget the order goes through unmatched, which is a plain text ticket and exactly today.
+
+---
+
 ## Phases
 
 - **Phase 0, commercial.** Get an API user, a token, confirmation that accept and reject is enabled for the brand, and an answer on test access. Nothing is testable without this.
@@ -143,3 +226,6 @@ Because orders sit for days they must be excluded from the live queue by the exi
 10. Actual commission, and what `pointOfSaleIntegrationFee` represents.
 11. **Get the tax position in writing:** confirm the operator treats `salesTax` minus `salesTaxRemittance` as their own liability, that we should not recompute, and get the current facilitator state list since it changes.
 12. Is there a per settlement tax statement we can reconcile against, API or portal only?
+13. **Can a venue type our item id into the Partner Portal by hand,** so `posItemId` arrives on a menu we never pushed? Nothing in 78 doc pages says either way. A yes removes the need for name matching entirely.
+14. **Is `menuItemSizeId` stable across a menu republish,** or is it scoped to the menu version the placeholders suggest? A yes gives us a proper id to key links on instead of the name.
+15. Does `orderItems[].uuid` change when a customer modifies an order? Undocumented, and it decides whether a line can be diffed across modifications.
