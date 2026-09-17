@@ -1322,17 +1322,39 @@ export function cardFromWebhookAdditionalData(ad: Record<string, any> | undefine
   };
 }
 
-// ── Tiered rate card (v5.7.3) ───────────────────────────────────────────────
-// The four-tier ServOS Payments pricing model (migration 20260821b):
-//   card_present      in-person credit AND debit — one fee
-//   card_not_present  online orders (ecommerce)
+// ── Tiered rate card (v5.7.3, credit and debit apart 17 Sep 2026) ────────────
+// The ServOS Payments pricing model (migration 20260821b). The four BASE
+// tiers keep the exact meaning they have always had:
+//   card_present      in person. The CREDIT price, and the price of every
+//                     in person card until a debit price is typed
+//   card_not_present  online orders (ecommerce). Same rule: the credit price,
+//                     and every online card until a debit price is typed
 //   amex              American Express + business/commercial cards
 //   keyed             manually keyed in (MOTO)
+// and two DEBIT tiers sit on top of them (17 Sep 2026, OWNER RULE: credit and
+// debit are priced apart):
+//   card_present_debit      in person debit cards
+//   card_not_present_debit  online debit cards
 // Stored as jsonb {tier: {percent, fixed_pence}} on merchant_adyen_accounts
 // .rate_card (venue) and platform_settings.default_adyen_rate_card (default).
+// Both columns are jsonb, so the two new keys need NO migration.
+//
+// INHERITANCE IS THE SAFETY RULE. A card that has never been edited holds no
+// debit key anywhere, and a blank debit tier resolves through its base tier
+// AT THE SAME LEVEL before it falls to the next level:
+//   venue debit, venue base, platform debit, platform base, legacy flat
+// With no debit key that is exactly the base tier's own chain, so an unedited
+// card charges every payment what it charges today. A venue with its own in
+// person price never picks up a platform debit default by surprise.
 
-export const RATE_TIERS = ['card_present', 'card_not_present', 'amex', 'keyed'] as const;
+export const BASE_RATE_TIERS = ['card_present', 'card_not_present', 'amex', 'keyed'] as const;
+export const RATE_TIERS = ['card_present', 'card_present_debit', 'card_not_present', 'card_not_present_debit', 'amex', 'keyed'] as const;
 export type RateTier = typeof RATE_TIERS[number];
+// debit tier: the base tier it inherits from when blank.
+export const DEBIT_TIER_BASE: Readonly<Record<string, RateTier>> = Object.freeze({
+  card_present_debit: 'card_present',
+  card_not_present_debit: 'card_not_present',
+});
 
 export interface TierRate {
   percent: number | null;
@@ -1341,6 +1363,10 @@ export interface TierRate {
   // card, the venue's legacy flat markup, the platform's legacy flat default,
   // or null when nothing is configured for the tier.
   source: 'venue' | 'platform' | 'legacy_venue' | 'legacy_platform' | null;
+  // DEBIT TIERS ONLY: the base tier the WHOLE price came from when no debit
+  // price is typed at any level (so the screen can say "same as In person
+  // credit"), else null. Never present on a base tier.
+  inherited_from?: RateTier | null;
 }
 
 const tierField = (card: any, tier: string, field: string): number | null => {
@@ -1354,6 +1380,8 @@ const tierField = (card: any, tier: string, field: string): number | null => {
 // number) counts as the card_present tier ONLY — the other tiers stay null
 // until someone prices them, so configure_splits and the commission stamp
 // never silently reuse the in-person rate for online / Amex / keyed traffic.
+// A DEBIT tier walks venue debit, venue base, platform debit, platform base,
+// then (in person only) the legacy flat columns: the safety rule above.
 export function resolveAdyenRateCard(
   account: { rate_card?: any; markup_percent?: unknown; markup_fixed_pence?: unknown } | null | undefined,
   settings: { default_adyen_rate_card?: any; default_adyen_markup_percent?: unknown; default_adyen_markup_fixed_pence?: unknown } | null | undefined,
@@ -1363,26 +1391,155 @@ export function resolveAdyenRateCard(
   const legacyPlatform = { percent: numOrNull(settings?.default_adyen_markup_percent), fixed_pence: numOrNull(settings?.default_adyen_markup_fixed_pence) };
   const out = {} as Record<RateTier, TierRate>;
   for (const tier of RATE_TIERS) {
-    const pick = (field: 'percent' | 'fixed_pence'): { value: number | null; source: TierRate['source'] } => {
+    const base = DEBIT_TIER_BASE[tier] ?? null;
+    // The legacy flat columns mean in person, and in person debit through it.
+    const legacyApplies = (base ?? tier) === 'card_present';
+    const pick = (field: 'percent' | 'fixed_pence'): { value: number | null; source: TierRate['source']; own: boolean } => {
       const venue = tierField(account?.rate_card, tier, field);
-      if (venue !== null) return { value: venue, source: 'venue' };
-      const def = tierField(settings?.default_adyen_rate_card, tier, field);
-      if (def !== null) return { value: def, source: 'platform' };
-      if (tier === 'card_present') {
-        if (legacyVenue[field] !== null) return { value: legacyVenue[field], source: 'legacy_venue' };
-        if (legacyPlatform[field] !== null) return { value: legacyPlatform[field], source: 'legacy_platform' };
+      if (venue !== null) return { value: venue, source: 'venue', own: true };
+      if (base) {
+        const venueBase = tierField(account?.rate_card, base, field);
+        if (venueBase !== null) return { value: venueBase, source: 'venue', own: false };
       }
-      return { value: null, source: null };
+      const def = tierField(settings?.default_adyen_rate_card, tier, field);
+      if (def !== null) return { value: def, source: 'platform', own: true };
+      if (base) {
+        const defBase = tierField(settings?.default_adyen_rate_card, base, field);
+        if (defBase !== null) return { value: defBase, source: 'platform', own: false };
+      }
+      if (legacyApplies) {
+        if (legacyVenue[field] !== null) return { value: legacyVenue[field], source: 'legacy_venue', own: false };
+        if (legacyPlatform[field] !== null) return { value: legacyPlatform[field], source: 'legacy_platform', own: false };
+      }
+      return { value: null, source: null, own: false };
     };
     const pct = pick('percent');
     const fix = pick('fixed_pence');
+    const priced = pct.value !== null || fix.value !== null;
     out[tier] = {
       percent: pct.value,
       fixed_pence: fix.value === null ? null : Math.round(fix.value),
       source: pct.source ?? fix.source,
+      ...(base ? { inherited_from: priced && !pct.own && !fix.own ? base : null } : {}),
     };
   }
   return out;
+}
+
+// ── WHICH PRICE A CARD'S FUNDING SOURCE PAYS (17 Sep 2026) ───────────────────
+// ORCHESTRATOR DEFAULTS, for the owner to confirm. One constant each, so a
+// decision is one word to flip. KEEP IN SYNC with _shared/adyenLink.ts and
+// src/lib/payments/adyenLink.js (FUNDING_POLICY there writes the Adyen rules;
+// this side stamps the ledger, and the two must charge the same).
+//   prepaid cards                  the DEBIT price
+//   deferred debit cards           the CREDIT price
+//   charge cards                   the CREDIT price
+//   a debit card keyed in by hand  the KEYED IN price (keyed wins)
+//   a business debit card          the BUSINESS price (Amex and business wins)
+export const PREPAID_CARDS_PAY: 'debit' | 'credit' = 'debit';
+export const DEFERRED_DEBIT_CARDS_PAY: 'debit' | 'credit' = 'credit';
+export const CHARGE_CARDS_PAY: 'debit' | 'credit' = 'credit';
+export const KEYED_DEBIT_PAYS: 'keyed' | 'debit' = 'keyed';
+export const BUSINESS_DEBIT_PAYS: 'business' | 'debit' = 'business';
+
+// The funding source Adyen reports on a payment, as the price side it pays:
+// 'debit', 'credit', or null when Adyen did not say (or said something we do
+// not know). NULL IS NEVER GUESSED: the ledger then keeps today's category.
+// The standard webhook carries additionalData.fundingSource only once
+// "Include Funding Source" is ticked on the webhook in the Customer Area; its
+// values are CHARGED, CREDIT, DEBIT, PREPAID, DEFFERED_DEBIT (Adyen's own
+// spelling), PREPAID_RELOADABLE and PREPAID_NONRELOADABLE. The Management API
+// spells the same things credit, debit, prepaid, deferred_debit and charged.
+export function fundingSide(fundingSource: unknown): 'debit' | 'credit' | null {
+  const fs = String(fundingSource ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (!fs) return null;
+  if (fs === 'debit') return 'debit';
+  if (fs === 'credit') return 'credit';
+  if (fs === 'prepaid' || fs === 'prepaid_reloadable' || fs === 'prepaid_nonreloadable') return PREPAID_CARDS_PAY;
+  if (fs === 'deferred_debit' || fs === 'deffered_debit') return DEFERRED_DEBIT_CARDS_PAY;
+  if (fs === 'charged' || fs === 'charge') return CHARGE_CARDS_PAY;
+  return null;
+}
+
+// ── v5.7.3 payment-type classification → adyen_payments.rate_category ───────
+// (moved here from adyen-webhook on 17 Sep 2026 so node can test it; the two
+// halves below are the webhook's classifier line for line, in the same order)
+//
+// Keyed on the fields REAL stored events carry (inspected in ops adyen_events,
+// 19 Aug 2026, 44 stored AUTHORISATIONs):
+//   · every item: top-level paymentMethod ('visa') + additionalData
+//     { paymentMethod, cardSummary, authCode, expiryDate, networkTxReference }
+//   · TERMINAL payments (tj-/tabhold- refs) additionally carry
+//     additionalData.paymentMethodVariant ('visa' on the test cards; business
+//     cards arrive as variants like visacommercialcredit / visacorporate /
+//     visabusiness / mccorporate)
+//   · ECOMMERCE payments (OL-/bkpay- refs) additionally carry
+//     additionalData['checkout.cardAddedBrand'], isCardCommercial ('unknown'
+//     on the test cards), issuerCountry and threeds2.cardEnrolled, none of
+//     which appear on terminal payments
+//   · NO stored event carries shopperInteraction, posEntryMode, fundingSource
+//     or store in additionalData, so the channel signal is the ledger channel
+//     (merchantReference prefix) plus the ecommerce-only additionalData keys.
+//     shopperInteraction/posEntryMode stay in as belt-and-braces for events
+//     that may carry them later (e.g. a future MOTO flow).
+//
+// Priority: amex/business outranks channel (Amex is its own fee wherever the
+// card is used), keyed outranks card_not_present (MOTO is ecommerce-shaped at
+// Adyen), card_present is the default for POS/terminal payments.
+
+// The card family that outranks the channel: 'amex' (a real Amex card),
+// 'business' (a business or commercial card on another scheme, priced on the
+// amex tier), 'keyed', or null for an ordinary card.
+function cardFamily(item: any): 'amex' | 'business' | 'keyed' | null {
+  const ad = item?.additionalData ?? {};
+  const brand = String(ad.paymentMethod ?? item?.paymentMethod ?? '').toLowerCase();
+  const variant = String(ad.paymentMethodVariant ?? '').toLowerCase();
+  const added = String(ad['checkout.cardAddedBrand'] ?? '').toLowerCase();
+  if (brand.includes('amex') || variant.includes('amex') || added.includes('amex')) return 'amex';
+  const commercial = String(ad.isCardCommercial ?? '').toLowerCase();
+  if (commercial === 'true' || commercial === 'yes') return 'business';
+  if (/(business|corporate|commercial|purchasing|fleet)/.test(variant)) return 'business';
+  const si = String(ad.shopperInteraction ?? item?.shopperInteraction ?? '').toLowerCase();
+  if (si === 'moto') return 'keyed';
+  const entry = String(ad.posEntryMode ?? '').toLowerCase();
+  if (entry.includes('key') || entry.includes('manual')) return 'keyed';
+  return null;
+}
+// The tier the CHANNEL alone gives: online or in person.
+function channelTier(item: any, channel: string | null): 'card_present' | 'card_not_present' {
+  const ad = item?.additionalData ?? {};
+  const si = String(ad.shopperInteraction ?? item?.shopperInteraction ?? '').toLowerCase();
+  const ch = String(channel ?? '').toLowerCase();
+  if (['online', 'booking', 'qr', 'gift', 'web', 'ecommerce'].includes(ch)) return 'card_not_present';
+  if (si === 'ecommerce') return 'card_not_present';
+  if ('checkout.cardAddedBrand' in ad || 'threeds2.cardEnrolled' in ad || 'isCardCommercial' in ad || 'scaExemptionRequested' in ad) return 'card_not_present';
+  return 'card_present';
+}
+// TODAY'S CATEGORY: one of the four base tiers, exactly as the webhook has
+// always answered. Funding source plays no part in it.
+export function classifyBaseRateCategory(item: any, channel: string | null): 'card_present' | 'card_not_present' | 'amex' | 'keyed' {
+  const family = cardFamily(item);
+  if (family === 'amex' || family === 'business') return 'amex';
+  if (family === 'keyed') return 'keyed';
+  return channelTier(item, channel);
+}
+// THE LEDGER CATEGORY (17 Sep 2026): today's category, moved to its DEBIT
+// tier when, and only when, Adyen said the card pays the debit price
+// (fundingSide). Unknown funding source and credit cards keep today's
+// category. A real Amex card always stays amex (on Adyen the payment method
+// outranks the funding source, so the amex rule wins there too). A business
+// debit card and a keyed debit card stay where they are unless their
+// constant above is flipped; flipped, they land on the channel's debit tier.
+export function classifyRateCategory(item: any, channel: string | null): string {
+  const base = classifyBaseRateCategory(item, channel);
+  const ad = item?.additionalData ?? {};
+  if (fundingSide(ad.fundingSource ?? item?.fundingSource) !== 'debit') return base;
+  const debitOf = (tier: string): string => Object.keys(DEBIT_TIER_BASE).find((d) => DEBIT_TIER_BASE[d] === tier) ?? tier;
+  if (base === 'card_present' || base === 'card_not_present') return debitOf(base);
+  const family = cardFamily(item);
+  if (family === 'business' && (BUSINESS_DEBIT_PAYS as string) === 'debit') return debitOf(channelTier(item, channel));
+  if (family === 'keyed' && (KEYED_DEBIT_PAYS as string) === 'debit') return debitOf('card_present');
+  return base;
 }
 
 // Validate + normalise a rate card arriving from the admin UI. Unknown tiers

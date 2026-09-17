@@ -26,6 +26,9 @@
 // classifyRateCategory) and stamped with rate_category + commission_minor
 // (the venue's resolved tier rate applied to the amount). Both recompute on
 // every apply, so the backfill re-stamps them idempotently.
+// 17 Sep 2026: two debit tiers (card_present_debit, card_not_present_debit)
+// are stamped when the event carries additionalData.fundingSource and it pays
+// the debit price. Without it the category is today's, never a guess.
 //
 // BACKFILL: POST .../adyen-webhook?backfill=1 with a SERVICE-ROLE bearer reruns
 // every stored adyen_events row (received_at order) through the same parsing
@@ -71,7 +74,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import {
-  verifyNotificationItem, cardFromWebhookAdditionalData, resolveAdyenRateCard, commissionForAmount, adyenFetch, checkoutBase,
+  verifyNotificationItem, cardFromWebhookAdditionalData, resolveAdyenRateCard, commissionForAmount, classifyRateCategory, adyenFetch, checkoutBase,
   adyenConfig, isUnknownColumnError, ADYEN_LIVE_FAIL_CLOSED, webhookKeysFor, webhookAuthPairsFor, adyenAccountForLocation,
   adyenSecretName, ADYEN_REGIONS, adyenRegionForMerchantAccount, type AdyenConfig, type AdyenRegion, type WebhookKeyCandidate,
 } from '../_shared/adyen.ts';
@@ -315,47 +318,12 @@ function inferChannel(merchantReference: string, hasJob: boolean): string | null
 const isMissingColumn = (msg: unknown) => /does not exist|42703/i.test(String(msg ?? ''));
 
 // ── v5.7.3 payment-type classification → adyen_payments.rate_category ───────
-//
-// Keyed on the fields REAL stored events carry (inspected in ops adyen_events,
-// 19 Aug 2026 — 44 stored AUTHORISATIONs):
-//   · every item: top-level paymentMethod ('visa') + additionalData
-//     { paymentMethod, cardSummary, authCode, expiryDate, networkTxReference }
-//   · TERMINAL payments (tj-/tabhold- refs) additionally carry
-//     additionalData.paymentMethodVariant ('visa' on the test cards; business
-//     cards arrive as variants like visacommercialcredit / visacorporate /
-//     visabusiness / mccorporate)
-//   · ECOMMERCE payments (OL-/bkpay- refs) additionally carry
-//     additionalData['checkout.cardAddedBrand'], isCardCommercial ('unknown'
-//     on the test cards), issuerCountry and threeds2.cardEnrolled — none of
-//     which appear on terminal payments
-//   · NO stored event carries shopperInteraction, posEntryMode, fundingSource
-//     or store in additionalData — so the channel signal is the ledger channel
-//     (merchantReference prefix) plus the ecommerce-only additionalData keys.
-//     shopperInteraction/posEntryMode stay in as belt-and-braces for events
-//     that may carry them later (e.g. a future MOTO flow).
-//
-// Priority: amex/business outranks channel (Amex is its own fee wherever the
-// card is used), keyed outranks card_not_present (MOTO is ecommerce-shaped at
-// Adyen), card_present is the default for POS/terminal payments.
-function classifyRateCategory(item: any, channel: string | null): string {
-  const ad = item?.additionalData ?? {};
-  const brand = String(ad.paymentMethod ?? item?.paymentMethod ?? '').toLowerCase();
-  const variant = String(ad.paymentMethodVariant ?? '').toLowerCase();
-  const added = String(ad['checkout.cardAddedBrand'] ?? '').toLowerCase();
-  if (brand.includes('amex') || variant.includes('amex') || added.includes('amex')) return 'amex';
-  const commercial = String(ad.isCardCommercial ?? '').toLowerCase();
-  if (commercial === 'true' || commercial === 'yes') return 'amex';
-  if (/(business|corporate|commercial|purchasing|fleet)/.test(variant)) return 'amex';
-  const si = String(ad.shopperInteraction ?? item?.shopperInteraction ?? '').toLowerCase();
-  if (si === 'moto') return 'keyed';
-  const entry = String(ad.posEntryMode ?? '').toLowerCase();
-  if (entry.includes('key') || entry.includes('manual')) return 'keyed';
-  const ch = String(channel ?? '').toLowerCase();
-  if (['online', 'booking', 'qr', 'gift', 'web', 'ecommerce'].includes(ch)) return 'card_not_present';
-  if (si === 'ecommerce') return 'card_not_present';
-  if ('checkout.cardAddedBrand' in ad || 'threeds2.cardEnrolled' in ad || 'isCardCommercial' in ad || 'scaExemptionRequested' in ad) return 'card_not_present';
-  return 'card_present';
-}
+// classifyRateCategory lives in _shared/adyen.ts since 17 Sep 2026 (so node
+// can test it). It answers today's four categories line for line as it did
+// here, and moves a payment to card_present_debit or card_not_present_debit
+// ONLY when Adyen's additionalData.fundingSource says the card pays the debit
+// price. No funding source on the event (the setting "Include Funding Source"
+// is off on the webhook) means today's category, never a guess.
 
 // Venue tier rates, cached briefly so the backfill loop does not re-read
 // platform_settings and the account row for every one of a venue's events.

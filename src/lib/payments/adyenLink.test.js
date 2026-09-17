@@ -1531,23 +1531,23 @@ test('buildGoliveSteps: step 5a, the card rates on the store (10 Sep 2026)', () 
   // present, read, DIFFERENT rates on Adyen: attention, apply again
   const differs = buildGoliveSteps({ ...READY, rates: { ...READY.rates, onAdyen: { ...READY.rates.onAdyen, matches: false } } }, { target: 'live' });
   assert.equal(byId(differs, 'payouts').parts[0].state, 'attention');
-  assert.equal(byId(differs, 'payouts').parts[0].detail, 'Adyen holds different rates. Apply again.');
+  assert.equal(byId(differs, 'payouts').parts[0].detail, 'Adyen holds different rates. Send them again.');
   assert.equal(byId(differs, 'payouts').parts[0].action, 'set_split');
   assert.equal(byId(differs, 'payouts').parts[0].hint, RATES_LINE);
   // present, read, a tier with no rule at all (an old one rule profile): the same
   const fewer = buildGoliveSteps({ ...READY, rates: { ...READY.rates, onAdyen: { ...READY.rates.onAdyen, matches: false, missing: true, rules: 1 } } }, { target: 'live' });
-  assert.equal(byId(fewer, 'payouts').parts[0].detail, 'Adyen holds different rates. Apply again.');
+  assert.equal(byId(fewer, 'payouts').parts[0].detail, 'Adyen holds different rates. Send them again.');
   // A TIER WITH NO PRICE: attention naming the tiers, and the editor is the button
   const unpriced = buildGoliveSteps({ ...READY, store: noSplit, row: SAVED_ROW, rates: { currency: 'GBP', tiers: { ...tiers, amex: { percent: null, fixedPence: null }, keyed: {} } } }, { target: 'live' });
   assert.equal(byId(unpriced, 'payouts').parts[0].state, 'attention');
   assert.equal(byId(unpriced, 'payouts').parts[0].detail, 'No rate is set yet for: Amex and business cards, Keyed in.');
   assert.equal(byId(unpriced, 'payouts').parts[0].action, 'edit_rates');
-  assert.equal(byId(unpriced, 'payouts').parts[0].hint, 'Set every payment type, then apply the rates on Adyen.');
+  assert.equal(byId(unpriced, 'payouts').parts[0].hint, 'Set every payment type, then send the rates to Adyen.');
   assert.equal(byId(unpriced, 'payouts').action, 'edit_rates');
   // ...even when Adyen already holds a profile: the card must be whole first
-  assert.equal(byId(buildGoliveSteps({ ...READY, rates: { currency: 'GBP', tiers: { card_present: tiers.card_present } } }, { target: 'live' }), 'payouts').parts[0].detail, 'No rate is set yet for: Online, Amex and business cards, Keyed in.');
-  // nothing priced anywhere: all four named
-  assert.equal(byId(buildGoliveSteps({ ...READY, store: noSplit, row: SAVED_ROW, rates: { currency: 'GBP', tiers: {} } }, { target: 'live' }), 'payouts').parts[0].detail, 'No rate is set yet for: In person, Online, Amex and business cards, Keyed in.');
+  assert.equal(byId(buildGoliveSteps({ ...READY, rates: { currency: 'GBP', tiers: { card_present: tiers.card_present } } }, { target: 'live' }), 'payouts').parts[0].detail, 'No rate is set yet for: Online credit, Amex and business cards, Keyed in.');
+  // nothing priced anywhere: all four named (a debit row is never "not set": blank, it uses its credit row)
+  assert.equal(byId(buildGoliveSteps({ ...READY, store: noSplit, row: SAVED_ROW, rates: { currency: 'GBP', tiers: {} } }, { target: 'live' }), 'payouts').parts[0].detail, 'No rate is set yet for: In person credit, Online credit, Amex and business cards, Keyed in.');
   // a tier priced 0% and 0p IS priced
   const free = buildGoliveSteps({ ...READY, store: noSplit, row: SAVED_ROW, rates: { currency: 'GBP', tiers: { ...tiers, amex: { percent: 0, fixedPence: 0 } } } }, { target: 'live' });
   assert.equal(byId(free, 'payouts').parts[0].action, 'set_split');
@@ -2022,7 +2022,7 @@ const RESOLVED = {
 const FOUR = { card_present: { percent: 1.4, fixedPence: 5 }, card_not_present: { percent: 1.9, fixedPence: 10 }, amex: { percent: 2.5, fixedPence: 10 }, keyed: { percent: 2.9, fixedPence: 15 } };
 
 test('rateTierLabel and tierListWords: plain words, Amex keeps its capital', () => {
-  assert.deepEqual(RATE_TIER_LABELS, { card_present: 'In person', card_not_present: 'Online', amex: 'Amex', keyed: 'Keyed' });
+  assert.deepEqual(RATE_TIER_LABELS, { card_present: 'In person', card_not_present: 'Online', amex: 'Amex', keyed: 'Keyed', card_present_debit: 'In person debit', card_not_present_debit: 'Online debit' });
   assert.equal(rateTierLabel('card_present'), 'In person');
   assert.equal(rateTierLabel('card_present', { lower: true }), 'in person');
   assert.equal(rateTierLabel('amex', { lower: true }), 'Amex');
@@ -2177,8 +2177,12 @@ test('plainAdyenProblem: no screen line ever says commission, and the ambiguous 
 });
 
 test('tierRowList: the table’s own row words, so a sentence reads like the rows under it', () => {
-  assert.deepEqual(RATE_ROW_LABELS, { card_present: 'In person', card_not_present: 'Online', amex: 'Amex and business cards', keyed: 'Keyed in' });
-  assert.equal(tierRowList(['card_not_present', 'keyed']), 'Online, Keyed in');
+  assert.deepEqual(RATE_ROW_LABELS, {
+    card_present: 'In person credit', card_present_debit: 'In person debit',
+    card_not_present: 'Online credit', card_not_present_debit: 'Online debit',
+    amex: 'Amex and business cards', keyed: 'Keyed in',
+  });
+  assert.equal(tierRowList(['card_not_present', 'keyed']), 'Online credit, Keyed in');
   assert.equal(tierRowList([]), '');
   assert.equal(tierRowList(null), '');
 });
@@ -2190,16 +2194,16 @@ test('rateCardProblems: impossible values are errors, values above the usual lim
   const slip = rateCardProblems({ card_not_present: { percent: 14, fixed_pence: 10 }, keyed: { percent: 1, fixedPence: 60 } }, { verb: 'saved' });
   assert.deepEqual(slip.errors, []);
   assert.deepEqual(slip.overLimit.map((x) => x.tier), ['card_not_present', 'keyed']);
-  assert.equal(slip.overLimit[0].text, 'Online is 14% + 10p. That is above the usual limit, so it was not saved.');
+  assert.equal(slip.overLimit[0].text, 'Online credit is 14% + 10p. That is above the usual limit, so it was not saved.');
   assert.equal(rateCardProblems({ keyed: { percent: 1, fixed_pence: 60 } }, { currency: 'USD' }).overLimit[0].text, 'Keyed in is 1% + 60c. That is above the usual limit.');
   assert.equal(RATE_PERCENT_LIMIT, 5);
   assert.equal(RATE_PENCE_LIMIT, 50);
   // 140 typed for 1.40 is never silently blanked: it is an error naming the row
   const bad = rateCardProblems({ card_present: { percent: 140, fixed_pence: 5 }, amex: { percent: -1 }, keyed: { percent: 'x', fixed_pence: 4.6 }, card_not_present: { percent: 1.255, fixed_pence: 20000 } });
   assert.deepEqual(bad.errors.map((e) => e.text), [
-    'In person rate must be between 0 and 100.',
-    'Online rate can have at most two decimals.',
-    'Online per payment must be between 0 and 10000.',
+    'In person credit rate must be between 0 and 100.',
+    'Online credit rate can have at most two decimals.',
+    'Online credit per payment must be between 0 and 10000.',
     'Amex and business cards rate must be between 0 and 100.',
     'Keyed in rate must be a number.',
     'Keyed in per payment must be a whole number.',
