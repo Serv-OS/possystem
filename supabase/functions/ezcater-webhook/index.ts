@@ -48,7 +48,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { verifyEzcaterSignature, getOrder, isPermanent } from '../_shared/ezcater.ts';
 import { orderToQueueRow, queuePayload, ezLifecycle, EZ_TERMINAL } from '../_shared/ezcater-map.ts';
-import { matchQueueRow } from '../_shared/ezcater-match-ingest.ts';
+import { matchQueueRow, MATCH_BUDGET_MS } from '../_shared/ezcater-match-ingest.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -260,12 +260,15 @@ Deno.serve(async (req) => {
     // and, where one of our items has exactly that name and nothing else does,
     // saves a new link so the next order is instant.
     //
-    // IT CANNOT FAIL THE ORDER. matchQueueRow swallows everything, including the
-    // window before the 20260917_OPS_ezcater_item_links migration is run, and
-    // returns the mapper's own row. This try is the second guard, not the first.
+    // IT CANNOT FAIL THE ORDER, AND IT CANNOT DELAY IT. matchQueueRow swallows
+    // everything, including the window before the 20260917_OPS_ezcater_item_links
+    // migration is run, and returns the mapper's own row. It is also on a clock:
+    // past MATCH_BUDGET_MS a slow menu read is abandoned and the order goes
+    // through unmatched, which is a plain text ticket and exactly today. This
+    // try is the second guard, not the first.
     let queueRow = row;
     try {
-      const m = await matchQueueRow(sb, locationId, row);
+      const m = await matchQueueRow(sb, locationId, row, { budgetMs: MATCH_BUDGET_MS });
       queueRow = m.row;
       if (m.ran) {
         console.log('[ezcater-webhook] items matched on', row.ref,

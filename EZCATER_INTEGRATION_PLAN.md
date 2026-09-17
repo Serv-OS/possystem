@@ -133,9 +133,10 @@ The cost is visible: rename the item on ezCater and the match must be made again
 
 **The rules** live in `src/lib/ezcaterMatch.js`, mirrored for the edge function in `supabase/functions/_shared/ezcaterMatch.ts`, held together by `src/lib/ezcaterMatchParity.test.js`:
 
-- `normaliseItemName`: lower case, no punctuation, no bracketed suffix, no catering noise (`per person`, `serves 10`), no trailing size or container word (`Large`, `Half Pan`, `Full Tray`). Never strips a name away to nothing.
+- `normaliseItemName`: the **comparing** form. Lower case, no punctuation, no bracketed suffix, no catering noise (`per person`, `serves 10`), no trailing size or container word (`Large`, `Half Pan`, `Full Tray`). Never strips a name away to nothing.
+- `normaliseKeyName`: the **key** form. The same, except the size word stays and only the container word (`Tray`, `Pan`, `Size`) is dropped. Their "Half Tray" and "Full Tray" are two link rows, because they are two products to a kitchen: different stock, different money, and one manual match must never route both. The scorer still ignores the size, so both rows still find our one "Caesar Salad". Rows saved before this are read back under the old short key (`legacyLinkKey`), so no venue's work is lost.
 - `scoreMatch` / `suggestMatches`: a ranked shortlist for a person to pick from, with a short plain reason ("same name", "3 of 4 words match"). Deterministic, ties broken by name.
-- `autoLinkDecision`: four rules in order: an existing link wins, then a `posItemId` that names a real item of ours, then ONE exact normalised name with no other exact match. **It never guesses between two items that match equally well**, which is the "Caesar Salad Small" and "Caesar Salad Large" case.
+- `autoLinkDecision`: four rules in order: an existing link wins, then a `posItemId` that names a real item of ours, then ONE exact normalised name with no other exact match **and no size clash**. It never guesses between two items that match equally well, which is the "Caesar Salad Small" and "Caesar Salad Large" case, and it never links their "Large" to our "Small" when only one of ours is left: both name a size, the sizes differ, so a person picks.
 - `matchOptions`: the same against our modifier options, their `customizationTypeName` against our group name.
 - `buildLinkKey` / `applyLinks` / `countMatches`: the read path both the app and the webhook share.
 
@@ -167,7 +168,11 @@ The original target check only allowed the middle row, so an unmatched item coul
 
 **Before the migration, and before the edge function is deployed,** the screen shows one line, "Item matching is not switched on yet", and nothing else. All three ways to be in that state are one check, `isMatchingOff()` in `src/lib/ezcaterItemRows.js`. That file is the whole view model and is tested in `ezcaterItemRows.test.js`; the screen is a shell over it.
 
-**Still owed:** nothing writes a sighting row yet. `ezcater-webhook` has to upsert one per line and per customization as it maps an order, bumping `seen_count` and `last_seen_at`, and it must never overwrite a row whose `source` is `'manual'`.
+**The webhook writes the sightings.** On every order, one row per line and per customization: the key, their spelling, their group, `seen_count` and `last_seen_at`, with **no target** when nothing of ours matched. That no-target row is what the screen lists. A row that already exists is only ever bumped, never rewritten, with one narrow exception: a row that is still a bare sighting (no target, no `matched_by`, `source` `'auto'`) gets its target filled in once our menu has the item, under a `where` clause that repeats every one of those conditions, so a person saving at the same moment always wins.
+
+**A partly read menu is not a menu.** If any page of `menu_items` or `modifier_groups` fails or the read is cut short, the saved links are the whole answer and **no new link is written at all**: "nothing of ours has that name" would be a claim about the half we never read, and a wrong auto link outlives the order that wrote it.
+
+**Matching is on a clock.** `MATCH_BUDGET_MS` (4s) caps the whole job, checked between reads and raced against a timer, because a read that never comes back would otherwise hold up the `order_queue` write. Past the budget the order goes through unmatched, which is a plain text ticket and exactly today.
 
 ---
 

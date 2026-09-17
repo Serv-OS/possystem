@@ -22,9 +22,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  normaliseItemName, nameTokens, sizeWordOf,
+  normaliseItemName, normaliseKeyName, nameTokens, sizeWordOf,
   scoreMatch, suggestMatches, autoLinkDecision, matchOptions,
-  buildLinkKey, indexLinks, applyLinks, countMatches, displayNameOf,
+  buildLinkKey, legacyLinkKey, linkKeyCandidates, findLink,
+  indexLinks, applyLinks, countMatches, displayNameOf,
   SIZE_WORDS, CONTAINER_WORDS, TRAILING_DROP, WEIGHTS,
   DEFAULT_MIN_SCORE, DEFAULT_LIMIT,
 } from './ezcaterMatch.js';
@@ -282,6 +283,51 @@ test('autoLink rule 3: one exact name and nothing else exact links itself', () =
   assert.equal(d.source, 'auto');
 });
 
+test('autoLink NEVER links across a size clash: their Large is not our Small', () => {
+  // The names normalise equal because the scorer drops the size on purpose, so
+  // this was one exact name, nothing else exact, linked. Their Large tray of
+  // salad would have routed as our Small and taken the wrong stock.
+  const ours = [{ id: 'm-small', name: 'Caesar Salad Small', price: 22 }];
+  const d = autoLinkDecision({ name: 'Caesar Salad Large' }, ours, []);
+  assert.equal(d.action, 'suggest', 'the wrong size is the wrong food');
+  assert.equal(d.reason, 'different size, check it');
+  assert.equal(d.itemId, undefined);
+  // The scorer already docks it, so it is still offered to a person.
+  assert.ok(scoreMatch('Caesar Salad Large', ours[0]).why.includes('different size'));
+  assert.equal(suggestMatches({ name: 'Caesar Salad Large' }, ours)[0].itemId, 'm-small');
+
+  // Same size still links, and one side with no size at all is not a clash.
+  assert.equal(autoLinkDecision({ name: 'Caesar Salad Small' }, ours, []).action, 'linked');
+  assert.equal(autoLinkDecision({ name: 'Caesar Salad Large' }, OUR_ITEMS, []).itemId, 'm-caesar');
+
+  // Half against Full is the catering version of the same clash.
+  const trays = [{ id: 'm-half', name: 'Lasagne Half Tray' }];
+  assert.equal(autoLinkDecision({ name: 'Lasagne Full Tray' }, trays, []).action, 'suggest');
+});
+
+test('autoLink options never link across a size clash either', () => {
+  // Their "Fries Large" against our "Fries Small": the scorer drops the
+  // trailing size, so both are "fries" and this used to link itself.
+  const groups = [{ id: 'g-fries', name: 'Sides', options: [{ id: 'o-small', name: 'Fries Small' }] }];
+  const d = autoLinkDecision({ label: 'Fries Large', groupLabel: 'Sides' }, groups, [], { kind: 'option' });
+  assert.equal(d.action, 'suggest');
+  assert.equal(d.reason, 'different size, check it');
+  assert.equal(d.optionId, undefined);
+  assert.equal(
+    autoLinkDecision({ label: 'Fries Small', groupLabel: 'Sides' }, groups, [], { kind: 'option' }).optionId,
+    'o-small',
+  );
+});
+
+test('a saved link still wins over a size clash, because a person decided it', () => {
+  const ours = [{ id: 'm-small', name: 'Caesar Salad Small' }];
+  const links = [{ kind: 'item', ez_key: 'caesar salad large', ez_name: 'Caesar Salad Large', menu_item_id: 'm-small', source: 'manual' }];
+  const d = autoLinkDecision({ name: 'Caesar Salad Large' }, ours, links);
+  assert.equal(d.action, 'linked');
+  assert.equal(d.itemId, 'm-small');
+  assert.equal(d.source, 'manual');
+});
+
 test('autoLink rule 4: it NEVER guesses between two items that match equally', () => {
   const items = [
     { id: 'm-small', name: 'Caesar Salad Small' },
@@ -394,13 +440,74 @@ test('autoLink kind option: an existing option link wins', () => {
 // 6. buildLinkKey, indexLinks, applyLinks
 // ────────────────────────────────────────────────────────────────────────────
 
-test('buildLinkKey: an item keys on the normalised name alone', () => {
+test('buildLinkKey: an item keys on the name with the container word dropped', () => {
   assert.equal(buildLinkKey({ name: 'Caesar Salad (Serves 10)' }), 'caesar salad');
-  assert.equal(buildLinkKey({ name: 'CAESAR SALAD, half pan' }), 'caesar salad');
+  assert.equal(buildLinkKey({ name: 'CAESAR SALAD, tray' }), 'caesar salad');
   // Which is the point: two spellings of one product are ONE link.
   assert.equal(
     buildLinkKey({ name: 'Caesar Salad (Serves 10)' }),
-    buildLinkKey({ name: 'CAESAR SALAD, half pan' }),
+    buildLinkKey({ name: 'CAESAR SALAD, tray' }),
+  );
+});
+
+test('THE SIZE STAYS IN THE KEY: Half Tray and Full Tray are two rows', () => {
+  // A venue sells both. They are two products to a kitchen: different stock,
+  // different money. One key for both means one manual match routes both, and
+  // the screen cannot even show them apart.
+  const half = buildLinkKey({ name: 'Caesar Salad Half Tray' });
+  const full = buildLinkKey({ name: 'Caesar Salad Full Tray' });
+  assert.equal(half, 'caesar salad half');
+  assert.equal(full, 'caesar salad full');
+  assert.notEqual(half, full);
+
+  // The container word is still noise, so their own two spellings of the SAME
+  // half tray are still one row.
+  assert.equal(buildLinkKey({ name: 'Caesar Salad, half pan' }), half);
+
+  // And the SCORER still ignores the size, so both still find our one salad.
+  assert.equal(normaliseItemName('Caesar Salad Half Tray'), 'caesar salad');
+  assert.equal(normaliseItemName('Caesar Salad Full Tray'), 'caesar salad');
+  assert.equal(scoreMatch('Caesar Salad Half Tray', { id: 'm-caesar', name: 'Caesar Salad' }).score, 1);
+});
+
+test('normaliseKeyName keeps a size and drops a container, and never empties a name', () => {
+  assert.equal(normaliseKeyName('Caesar Salad Large'), 'caesar salad large');
+  assert.equal(normaliseKeyName('Caesar Salad Large Tray'), 'caesar salad large');
+  assert.equal(normaliseKeyName('Large'), 'large');
+  assert.equal(normaliseKeyName('Tray'), 'tray');
+  assert.equal(normaliseKeyName('!!!'), '');
+});
+
+test('a key saved under the OLD rule still resolves, so saved work keeps routing', () => {
+  // Rows written before the size stayed in the key are under the short key.
+  // Nothing new is ever written there, but every lookup falls back to it.
+  const line = { name: 'Caesar Salad Half Tray' };
+  assert.equal(legacyLinkKey(line), 'caesar salad');
+  assert.deepEqual(linkKeyCandidates(line), ['caesar salad half', 'caesar salad']);
+
+  const oldRows = [{ kind: 'item', ez_key: 'caesar salad', ez_name: 'Caesar Salad Half Tray', menu_item_id: 'm-cookies', source: 'manual' }];
+  const hit = findLink(indexLinks(oldRows), line, 'item');
+  assert.equal(hit.key, 'caesar salad', 'bumped under the key it is really stored with');
+  assert.equal(hit.link.menuItemId, 'm-cookies');
+
+  // Both the reader and the decision use the fallback.
+  assert.equal(applyLinks([line], oldRows)[0].itemId, 'm-cookies');
+  assert.equal(autoLinkDecision(line, OUR_ITEMS, oldRows).itemId, 'm-cookies');
+
+  // Today's key wins when both exist.
+  const both = oldRows.concat([{ kind: 'item', ez_key: 'caesar salad half', ez_name: 'Caesar Salad Half Tray', menu_item_id: 'm-mac', source: 'manual' }]);
+  assert.equal(findLink(indexLinks(both), line, 'item').key, 'caesar salad half');
+  assert.equal(applyLinks([line], both)[0].itemId, 'm-mac');
+});
+
+test('an option key keeps the size too, and still falls back to the old one', () => {
+  const small = buildLinkKey({ label: 'Small Fries', groupLabel: 'Sides' }, 'option');
+  const large = buildLinkKey({ label: 'Large Fries', groupLabel: 'Sides' }, 'option');
+  assert.equal(small, 'sides|small fries');
+  assert.notEqual(small, large);
+  assert.deepEqual(
+    linkKeyCandidates({ label: 'Fries Large', groupLabel: 'Sides' }, 'option'),
+    ['sides|fries large', 'sides|fries'],
   );
 });
 
