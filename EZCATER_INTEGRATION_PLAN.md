@@ -141,6 +141,26 @@ The cost is visible: rename the item on ezCater and the match must be made again
 
 **Table:** `ezcater_item_links`, keyed `(location_id, kind, ez_key)`, service role only like the rest. Migration `supabase/migrations/20260917_OPS_ezcater_item_links.sql`, Peter runs it by hand. The app works before it runs: a missing table reads as "no links", which is exactly today's behaviour.
 
+### Matching at ingest
+
+`supabase/functions/_shared/ezcater-match-ingest.ts`, called once by `ezcater-webhook` between the mapper and the `order_queue` upsert. Every order goes through it:
+
+1. **Read** the venue's saved links, its `menu_items` (archived filtered in JS, because `archived` is nullable and a server side filter would drop the rows that predate the column) and its `modifier_groups`.
+2. **Apply** the saved links. That alone is the answer when the menu could not be read.
+3. **Decide** the rest with `autoLinkDecision`, which with the menu in hand also refuses a link whose item is gone and a `posItemId` that names nothing of ours.
+4. **Save** what was learned: a new row with `source = 'auto'` so the next order is instant, and `seen_count` plus `last_seen_at` on every row this order used.
+5. **Stamp** `customer.ezMatch = { lines, matched, unmatched: [names] }` on the order row, so the Orders Hub and the matching screen need no second query.
+
+**Three rules the ingest path holds to:**
+
+- **No order is ever refused, delayed or changed because matching failed.** A missing table, a failed read, a failed write, a thrown error: all of it is swallowed and the mapper's own row goes through with `itemId` null, which is a working plain text ticket. When neither the links nor the menu could be read, no `ezMatch` is stamped at all, because "we could not check" must not read as "we checked and matched none of it".
+- **Ingest never overwrites a link row.** It inserts rows that are absent (on conflict do nothing) and bumps counters on rows it saw. A link whose item is archived or deleted is left completely alone rather than repaired, so a venue archiving an item for a week cannot eat a manual match.
+- **It never writes a link for a `posItemId`,** because that id already names our item, and never for a name it cannot normalise, because one empty key would collapse every unnamed line onto one row.
+
+`seen_count` is read then written, so two orders in the same instant can lose one increment. It is a Back Office counter, never routing and never money, and the alternative was an RPC that has to be deployed before any of this can work.
+
+Tests: `src/lib/ezcaterIngestMatch.test.js` (46), including the "migration is not run yet" case and a source check that the guards are still in the webhook.
+
 ---
 
 ## Phases
