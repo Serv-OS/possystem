@@ -7,6 +7,13 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.99',
+    date: '17 Sep 2026',
+    items: [
+      'Fixed the warning bar that said your changes were not saving when you first signed in. Opening the first shift of the day could be refused because the till had not finished linking itself to the venue. The till now waits for that link, and tries once more if it is still refused, so the shift opens and nothing is lost.',
+    ],
+  },
+  {
     v: '5.8.98',
     date: '17 Sep 2026',
     items: [

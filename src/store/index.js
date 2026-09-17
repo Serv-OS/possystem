@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { supabase, platformSupabase, isMock, getLocationId, ensureAuthToken, getActiveLocationSync, isHostStandMode } from '../lib/supabase';
+import { supabase, platformSupabase, isMock, getLocationId, ensureAuthToken, getActiveLocationSync, isHostStandMode, whenDeviceClaimed, claimPairedDeviceOnBoot } from '../lib/supabase';
 import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
 import { resolveServiceCharge } from '../lib/serviceCharge';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
@@ -4743,7 +4743,16 @@ export const useStore = create((set, get) => ({
         opened_by_staff_id: staffId || get().staff?.id || null,
         status: 'open',
       };
-      const { data, error } = await supabase.from('shifts').insert(row).select().single();
+      // The shifts policy needs this device linked to the location (pos_can_access). The link is
+      // made by claim_device at boot, and the staff PIN often lands first, so wait for it.
+      await whenDeviceClaimed();
+      let { data, error } = await supabase.from('shifts').insert(row).select().single();
+      if (error?.code === '42501') {
+        // Refused by row level security: claim the device again and try once more, rather than
+        // telling staff their work is not saving.
+        try { await claimPairedDeviceOnBoot(); } catch { /* best effort */ }
+        ({ data, error } = await supabase.from('shifts').insert(row).select().single());
+      }
       if (error) {
         // Unique constraint means another device beat us — reload and use theirs
         if (error.code === '23505') {
