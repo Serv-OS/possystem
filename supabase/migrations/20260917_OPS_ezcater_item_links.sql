@@ -6,11 +6,27 @@
 -- Idempotent: create table if not exists, create index if not exists, and a
 -- drop/add for each constraint. Safe to run twice.
 --
--- THE APP WORKS BEFORE THIS FILE RUNS. Nothing in this commit reads the table
--- yet. When a reader is added it must treat a missing table (Postgres 42P01) as
--- "no links saved", which is the same answer as an empty table, and the pure
--- rules in src/lib/ezcaterMatch.js already behave correctly on an empty list:
--- lines keep itemId = null and land as a plain text ticket, exactly as today.
+-- IF YOU ALREADY RAN AN EARLIER COPY OF THIS FILE, RUN IT AGAIN. The target
+-- check below was widened so a SEEN BUT UNMATCHED item can be stored at all
+-- (see the comment on it). Every constraint here is dropped before it is added,
+-- so a second run simply replaces the old check with the new one and repairs
+-- the table in place. Nothing is lost and no row needs editing.
+--
+-- THE APP WORKS BEFORE THIS FILE RUNS. A missing table (Postgres 42P01, or
+-- PostgREST PGRST205) reads as "no links saved", which is the same answer as an
+-- empty table, and the pure rules in src/lib/ezcaterMatch.js already behave
+-- correctly on an empty list: lines keep itemId = null and land as a plain text
+-- ticket, exactly as today.
+--
+-- The readers, and what each does before this file runs:
+--   supabase/functions/ezcater-connect  items_list / items_save answer
+--                                       { enabled: false } instead of failing
+--   src/backoffice/sections/EzcaterItemMatching.jsx  shows one plain line,
+--                                       "Item matching is not switched on yet",
+--                                       and renders nothing else
+--   src/lib/ezcaterItemRows.js          isMatchingOff() is the single test for
+--                                       that, and it also covers the edge
+--                                       function not being deployed yet
 --
 -- ────────────────────────────────────────────────────────────────────────────
 -- WHY THIS TABLE EXISTS
@@ -116,14 +132,33 @@ alter table public.ezcater_item_links drop constraint if exists ezcater_item_lin
 alter table public.ezcater_item_links add constraint ezcater_item_links_key_check
   check (length(btrim(ez_key)) > 0 and length(btrim(ez_name)) > 0);
 
--- A link must actually name something of ours, or it is a row that looks like a
--- match and routes nothing.
+-- A row that DOES name one of ours must name the right kind of thing, or it is
+-- a row that looks like a match and routes nothing.
+--
+-- A row with NO target is allowed, and is the state most rows start in. The
+-- table is a sightings list first and a link table second: the webhook writes a
+-- row the first time ezCater sends a name, with nothing on the other side of
+-- it, and Back Office, Channels, 3rd Party orders, "Item matching" is the
+-- screen where a person says what it is. Without this, an unmatched ezCater
+-- item could not be recorded at all and that screen would have nothing to list.
+--
+-- Two no-target states, told apart by matched_by:
+--   matched_by is null        seen, nobody has decided yet   -> "not matched yet"
+--   matched_by = 'ignored'    a person pressed "Not on our menu", stop asking
+--
+-- Derived, never stored as its own column, so this file stays the only schema
+-- this feature needs. src/lib/ezcaterItemRows.js toRow() is the one place that
+-- reads the three states back out.
 alter table public.ezcater_item_links drop constraint if exists ezcater_item_links_target_check;
 alter table public.ezcater_item_links add constraint ezcater_item_links_target_check
   check (
-    (kind = 'item'   and menu_item_id is not null and option_id is null)
-    or
-    (kind = 'option' and (option_id is not null or menu_item_id is not null))
+    case
+      -- seen, or silenced: no target on either side, whatever the kind
+      when menu_item_id is null and option_id is null then true
+      when kind = 'item'   then menu_item_id is not null and option_id is null
+      when kind = 'option' then option_id is not null or menu_item_id is not null
+      else false
+    end
   );
 
 -- By location, newest seen first: the Back Office list of what ezCater has been

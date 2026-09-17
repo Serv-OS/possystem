@@ -141,25 +141,33 @@ The cost is visible: rename the item on ezCater and the match must be made again
 
 **Table:** `ezcater_item_links`, keyed `(location_id, kind, ez_key)`, service role only like the rest. Migration `supabase/migrations/20260917_OPS_ezcater_item_links.sql`, Peter runs it by hand. The app works before it runs: a missing table reads as "no links", which is exactly today's behaviour.
 
-### Matching at ingest
+**The table is a sightings list first and a link table second.** A row is written the first time ezCater sends a name, with nothing on the other side of it, and a person says later what it is. So a row is in one of three states, all derived from the columns and none of them stored in a state column:
 
-`supabase/functions/_shared/ezcater-match-ingest.ts`, called once by `ezcater-webhook` between the mapper and the `order_queue` upsert. Every order goes through it:
+| state | columns | means |
+|---|---|---|
+| unmatched | no `menu_item_id`, no `option_id`, `matched_by` null | seen, nobody has decided |
+| matched | `menu_item_id` or `option_id` set | routes, depletes stock, reports |
+| ignored | no target, `matched_by = 'ignored'` | a person pressed "Not on our menu" |
 
-1. **Read** the venue's saved links, its `menu_items` (archived filtered in JS, because `archived` is nullable and a server side filter would drop the rows that predate the column) and its `modifier_groups`.
-2. **Apply** the saved links. That alone is the answer when the menu could not be read.
-3. **Decide** the rest with `autoLinkDecision`, which with the menu in hand also refuses a link whose item is gone and a `posItemId` that names nothing of ours.
-4. **Save** what was learned: a new row with `source = 'auto'` so the next order is instant, and `seen_count` plus `last_seen_at` on every row this order used.
-5. **Stamp** `customer.ezMatch = { lines, matched, unmatched: [names] }` on the order row, so the Orders Hub and the matching screen need no second query.
+The original target check only allowed the middle row, so an unmatched item could not be recorded at all. It was widened on 17 Sep. **If the migration was already run, run it again**: every constraint is a drop then an add, so a second run repairs the table in place.
 
-**Three rules the ingest path holds to:**
+### The screen
 
-- **No order is ever refused, delayed or changed because matching failed.** A missing table, a failed read, a failed write, a thrown error: all of it is swallowed and the mapper's own row goes through with `itemId` null, which is a working plain text ticket. When neither the links nor the menu could be read, no `ezMatch` is stamped at all, because "we could not check" must not read as "we checked and matched none of it".
-- **Ingest never overwrites a link row.** It inserts rows that are absent (on conflict do nothing) and bumps counters on rows it saw. A link whose item is archived or deleted is left completely alone rather than repaired, so a venue archiving an item for a week cannot eat a manual match.
-- **It never writes a link for a `posItemId`,** because that id already names our item, and never for a name it cannot normalise, because one empty key would collapse every unnamed line onto one row.
+**Back Office, Channels, 3rd Party orders, "Item matching"** (`src/backoffice/sections/EzcaterItemMatching.jsx`, rendered at the bottom of `HubRise.jsx`, which is that section).
 
-`seen_count` is read then written, so two orders in the same instant can lose one increment. It is a Back Office counter, never routing and never money, and the alternative was an RPC that has to be deployed before any of this can work.
+- Two tabs, **Items** and **Options**, each with the outstanding count on it.
+- One plain line at the top: "4 of their items are not matched yet."
+- Unmatched first, newest seen first. The newest unmatched item is the order sitting on the pass as a plain text ticket right now.
+- Each row: their name verbatim, their option group, how many orders it has been on, then either what it is matched to with **Change**, or the picker.
+- The picker is the matcher's top suggestions (with a short reason, "same name", "3 of 4 words match") and a search box for everything else. Search is plain substring, not the matcher: "cae" is not a whole token and scores zero.
+- **Not on our menu** silences an item the venue never wants matched, for things like "Delivery Fee" and "Utensils".
+- **Change** opens the picker over an already matched row without clearing it first. A mis-click must never leave an item routing nowhere.
 
-Tests: `src/lib/ezcaterIngestMatch.test.js` (46), including the "migration is not run yet" case and a source check that the guards are still in the webhook.
+**Data path.** `ezcater_item_links` is service role only, so Back Office never touches it directly: `ezcater-connect` gained `items_list` and `items_save`, wrapped in `src/lib/ezcater.js`. `items_save` rebuilds `ez_key` from the name with the shared rules and verifies the target really is on that venue's menu. Our own menu is read straight from the browser, so the matcher runs client side.
+
+**Before the migration, and before the edge function is deployed,** the screen shows one line, "Item matching is not switched on yet", and nothing else. All three ways to be in that state are one check, `isMatchingOff()` in `src/lib/ezcaterItemRows.js`. That file is the whole view model and is tested in `ezcaterItemRows.test.js`; the screen is a shell over it.
+
+**Still owed:** nothing writes a sighting row yet. `ezcater-webhook` has to upsert one per line and per customization as it maps an order, bumping `seen_count` and `last_seen_at`, and it must never overwrite a row whose `source` is `'manual'`.
 
 ---
 
