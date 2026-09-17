@@ -109,11 +109,19 @@ export function ezStatusToQueueStatus(lifecycleValue: unknown): string {
 export const EZ_TERMINAL = new Set(['rejected', 'cancelled', 'canceled', 'cancelled_for_replacement']);
 
 /**
- * Pull the lifecycle value off an order, tolerating the three shapes the field
- * could plausibly take, because the docs show it in prose rather than SDL.
+ * Pull the lifecycle value off an order.
+ *
+ * The real field is lifecycle { orderIsCurrently }. It is read FIRST because an
+ * earlier version of this file read lifecycle.value, which does not exist: the
+ * order query failed outright, and had it not, every order would have mapped to
+ * 'received' and a cancelled order would have gone to the kitchen.
+ *
+ * The other shapes stay as a safety net only. They must never be the reason a
+ * wrong field name looks like it is working.
  */
 export function ezLifecycle(order: any): string {
-  const raw = order?.lifecycle?.value ?? order?.lifecycleValue ?? order?.lifecycle ?? order?.status ?? '';
+  const raw = order?.lifecycle?.orderIsCurrently
+    ?? order?.lifecycle?.value ?? order?.lifecycleValue ?? order?.lifecycle ?? order?.status ?? '';
   return typeof raw === 'string' ? raw.trim().toLowerCase() : '';
 }
 
@@ -178,18 +186,28 @@ const asQty = (v: unknown): number => {
 };
 
 /**
- * Resolve a line's money. ezCater's documented field is totalInSubunits, which
- * is the LINE total for the whole quantity, so the per unit price is derived.
- * An explicit unit price field is preferred if one turns out to exist, because
- * dividing a line total by the quantity loses a penny on 3 for 10.00.
+ * Resolve a line's money.
+ *
+ * AN ORDER ITEM HAS NO UNIT PRICE. totalInSubunits is the only money on a line
+ * and ezCater's own words for it are "Total cost of item, INCLUDING
+ * customizations, in currency sub-units". So:
+ *
+ *   lineTotal is the truth, straight from subunits.
+ *   price is lineTotal / qty, and it is the price of one unit WITH its options
+ *   on it, not the price of the bare product. That is flagged on the line as
+ *   priceIncludesOptions so nothing downstream adds an option price on top.
+ *
+ * The old code guessed at priceInSubunits / unitPriceInSubunits. Neither field
+ * exists, so it always fell through to the division, and because it also
+ * divided each CUSTOMIZATION's own total the same way, a paid option was
+ * counted twice: once folded into the line and once as a mod price. Every
+ * ezCater ticket with a paid option would have been over the real figure.
+ *
+ * lineSubunits is kept so reporting can rebuild the exact pennies without
+ * touching the rounded pounds.
  */
 function lineMoney(node: any, qty: number): { unit: number; total: number; subunits: number } {
-  const unitNode = node?.priceInSubunits ?? node?.unitPriceInSubunits ?? null;
-  if (unitNode != null) {
-    const unitSub = subunitsToNumber(unitNode);
-    return { unit: +(unitSub / 100).toFixed(2), total: +((unitSub * qty) / 100).toFixed(2), subunits: unitSub * qty };
-  }
-  const totalSub = subunitsToNumber(node?.totalInSubunits ?? node?.total ?? node?.price ?? null);
+  const totalSub = subunitsToNumber(node?.totalInSubunits);
   return { unit: +(totalSub / qty / 100).toFixed(2), total: +(totalSub / 100).toFixed(2), subunits: totalSub };
 }
 
@@ -198,10 +216,15 @@ function lineMoney(node: any, qty: number): { unit: number; total: number; subun
  * KDS and print routing already read on a HubRise order.
  *
  * posItemId is ezCater's field for OUR menu item id, set when the menu was
- * created through the Menus API or typed into the Partner Portal. It lands on
- * itemId, which is what KDS station routing and 86 both key on. It is very
- * often null, because a Partner Portal menu built by hand has nothing to link
- * to, so nothing downstream may assume it is present.
+ * created through the Menus API. It lands on itemId, which is what KDS station
+ * routing and 86 both key on. It is very often null, because a Partner Portal
+ * menu built by hand has nothing to link to, so nothing downstream may assume
+ * it is present.
+ *
+ * A CUSTOMIZATION HAS NO MONEY AT ALL. OrderItemCustomization is exactly
+ * customizationId, customizationTypeId, customizationTypeName, name,
+ * posCustomizationId and quantity. Its price is therefore null, meaning "not
+ * priced separately", never 0, which would read as "free".
  */
 export function orderItemsToLines(orderItems: any): any[] {
   return (Array.isArray(orderItems) ? orderItems : []).map((oi: any) => {
@@ -210,25 +233,52 @@ export function orderItemsToLines(orderItems: any): any[] {
     return {
       itemId: oi?.posItemId ? String(oi.posItemId) : null,
       ezItemId: oi?.uuid ? String(oi.uuid) : null,
+      // ezCater's own menu ids. Menu side, not line side, so they are the ones
+      // that survive a customer editing the order.
+      ezSizeId: oi?.menuItemSizeId ? String(oi.menuItemSizeId) : null,
+      sizeName: oi?.menuItemSizeName ? String(oi.menuItemSizeName) : null,
       name: String(oi?.name || 'Item'),
       qty,
       price: money.unit,
       lineTotal: money.total,
-      mods: (Array.isArray(oi?.customizations) ? oi.customizations : []).map((c: any) => {
-        const cQty = asQty(c?.quantity);
-        const cMoney = lineMoney(c, cQty);
-        return {
-          label: String(c?.name || 'Option'),
-          groupLabel: c?.customizationTypeName ? String(c.customizationTypeName) : null,
-          itemId: c?.posItemId ? String(c.posItemId) : null,
-          ezItemId: c?.uuid ? String(c.uuid) : null,
-          qty: cQty,
-          price: cMoney.unit,
-        };
-      }),
+      lineSubunits: money.subunits,
+      priceIncludesOptions: true,
+      mods: (Array.isArray(oi?.customizations) ? oi.customizations : []).map((c: any) => ({
+        label: String(c?.name || 'Option'),
+        groupLabel: c?.customizationTypeName ? String(c.customizationTypeName) : null,
+        itemId: c?.posCustomizationId ? String(c.posCustomizationId) : null,
+        ezItemId: c?.customizationId ? String(c.customizationId) : null,
+        ezGroupId: c?.customizationTypeId ? String(c.customizationTypeId) : null,
+        qty: asQty(c?.quantity),
+        // Already inside the parent line's total. Never priced again here.
+        price: null,
+      })),
       notes: String(oi?.specialInstructions || ''),
+      // The caterer only note, e.g. "12 inch thin crust". Kitchen wants it.
+      kitchenNote: String(oi?.noteToCaterer || ''),
+      // Who the tray is for, on an order split between named people.
+      labelFor: oi?.labelFor ? String(oi.labelFor) : null,
     };
   });
+}
+
+/**
+ * catererCart.feesAndDiscounts[] to plain rows. There is no deliveryFee field:
+ * a fee is a LineItem of { name, cost }, and the TYPE is not echoed back in the
+ * response, which is why the query asks for the DELIVERY_FEE ones under their
+ * own alias rather than matching on the display name.
+ */
+export function feeRows(list: any): Array<{ name: string; amount: number; subunits: number }> {
+  return (Array.isArray(list) ? list : []).map((f: any) => ({
+    name: String(f?.name || 'Fee'),
+    amount: moneyToAmount(f?.cost),
+    subunits: subunitsToNumber(f?.cost),
+  }));
+}
+
+/** Total of a fee list, in major units. Discounts are negative and stay negative. */
+export function feeTotal(list: any): number {
+  return +(feeRows(list).reduce((s, f) => s + f.subunits, 0) / 100).toFixed(2);
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -264,7 +314,12 @@ export function orderToQueueRow(
   const ref = `EZ-${uuid}`;
   const ev = order?.event || {};
   const cart = order?.catererCart || {};
-  const totals = cart?.totals || {};
+  // THREE DIFFERENT TOTALS OBJECTS. Order.totals is the money (OrderTotals),
+  // catererCart.totals holds catererTotalDue and nothing else (CatererTotals),
+  // and the fees are a list, not a field. Reading the caterer cart for salesTax
+  // is what silently zeroed every tax figure before this fix.
+  const totals = order?.totals || {};
+  const catererTotals = cart?.totals || {};
 
   const orderType = str(ev?.orderType).toUpperCase();
   const type = EZ_ORDER_TYPE_TO_QUEUE[orderType] || 'collection';
@@ -277,15 +332,22 @@ export function orderToQueueRow(
   const items = orderItemsToLines(cart?.orderItems);
 
   // ── Money. Every component is kept, nothing is inferred. ──────────────────
-  const subtotal = moneyToAmount(totals?.subtotal);
+  // subTotal has a capital T. The lower case spelling is accepted only as a
+  // belt and braces read, because a silent 0 here becomes a wrong tax filing.
+  const subtotalMoney = totals?.subTotal ?? totals?.subtotal;
+  const subtotal = moneyToAmount(subtotalMoney);
   const salesTax = moneyToAmount(totals?.salesTax);
   const salesTaxRemittance = moneyToAmount(totals?.salesTaxRemittance);
   const tip = moneyToAmount(totals?.tip);
-  const deliveryFee = moneyToAmount(totals?.deliveryFee ?? totals?.catererDeliveryFee);
   const posIntegrationFee = moneyToAmount(totals?.pointOfSaleIntegrationFee);
+  const customerTotalDue = moneyToAmount(totals?.customerTotalDue);
+  // Fees and discounts are a LIST on the caterer cart. deliveryFees is the same
+  // list filtered to DELIVERY_FEE by the query, so no name matching is needed.
+  const fees = feeRows(cart?.feesAndDiscounts);
+  const deliveryFee = feeTotal(cart?.deliveryFees);
   // catererTotalDue is a float in DOLLARS, not a subunits object. See dollarsToNumber.
-  const catererTotalDue = dollarsToNumber(totals?.catererTotalDue);
-  const currency = moneyCurrency(totals?.subtotal ?? totals?.salesTax, 'USD');
+  const catererTotalDue = dollarsToNumber(catererTotals?.catererTotalDue);
+  const currency = moneyCurrency(subtotalMoney ?? totals?.salesTax, 'USD');
 
   // order_queue.total on a PREPAID channel order is the number the venue banks,
   // and catererTotalDue is ezCater's own statement of exactly that, net of
@@ -295,7 +357,8 @@ export function orderToQueueRow(
   const total = catererTotalDue > 0 ? catererTotalDue : +(subtotal + salesTax).toFixed(2);
 
   // ── Tax, verbatim. See the banner at the top of this file. ────────────────
-  const taxableAddress = totals?.taxableAddress || null;
+  // taxableAddress hangs off the ORDER, not off totals.
+  const taxableAddress = order?.taxableAddress || null;
   const taxableState = str(taxableAddress?.state).toUpperCase() || null;
   const tax = {
     engine: 'ezcater',                 // NEVER our tax_profiles cascade on this source
@@ -308,47 +371,75 @@ export function orderToQueueRow(
     operatorRemits: +(salesTax - salesTaxRemittance).toFixed(2),
     taxableState,
     taxableAddress: taxableAddress || null,   // kept whole, destination sourcing means the address IS the evidence
+    // ezCater's own flag. A tax exempt buyer (a school, a charity) is why a
+    // real order can show a zero tax line and still be right.
+    taxExempt: order?.isTaxExempt === true,
     currency,
   };
 
   // ── Timing ────────────────────────────────────────────────────────────────
   const when = eventTimeParts(ev?.timestamp, ev?.timeZoneIdentifier);
+  // When the food must be HANDED OVER, which on a delivery is earlier than the
+  // time the customer expects it. This is the kitchen's real deadline.
+  const handoff = eventTimeParts(ev?.catererHandoffFoodTime, ev?.timeZoneIdentifier);
 
   // ── Contact and address ───────────────────────────────────────────────────
+  // EventContact is name and phone ONLY, and OrderCustomer is firstName,
+  // lastName and fullName ONLY. There is no email and no phone extension
+  // anywhere on an ezCater order, so nothing pretends otherwise here.
   const contact = ev?.contact || {};
   const addr = ev?.address || {};
-  const lat = addr?.latitude ?? null;
-  const lng = addr?.longitude ?? null;
-  const name = str(contact?.name) || str(order?.orderCustomer?.name) || 'ezCater customer';
+  const buyer = order?.orderCustomer || {};
+  const buyerName = str(buyer?.fullName)
+    || [str(buyer?.firstName), str(buyer?.lastName)].filter(Boolean).join(' ');
+  // The on-site contact is who the driver or the collector actually meets, so
+  // that name leads. The buyer is kept separately, they are often different people.
+  const name = str(contact?.name) || buyerName || 'ezCater customer';
 
   const customer: any = {
     name,
-    phone: str(contact?.phone) || str(order?.orderCustomer?.phone) || '',
-    phoneExtension: str(contact?.phoneExtension) || null,
-    email: str(contact?.email) || str(order?.orderCustomer?.email) || '',
+    phone: str(contact?.phone),
+    email: '',
     address: type === 'delivery'
       ? {
           line1: str(addr?.street),
           line2: str(addr?.street2),
+          line3: str(addr?.street3),
           city: str(addr?.city),
           state: str(addr?.state),
+          stateName: str(addr?.stateName),
           postcode: str(addr?.zip),
           country: 'US',
           name: str(addr?.name),
           instructions: str(addr?.deliveryInstructions),
-          ...(lat != null && lng != null ? { gps: { lat: Number(lat), lng: Number(lng) } } : {}),
         }
       : null,
-    notes: str(ev?.orderNotes),
+    // An ezCater order carries no order level note. The nearest thing a customer
+    // can type that the kitchen must see is the tableware instruction, so it is
+    // labelled rather than dropped. Per line notes live on the line.
+    notes: str(cart?.tableware?.specialInstructions)
+      ? `Tableware: ${str(cart.tableware.specialInstructions)}`
+      : '',
 
     // Catering specifics the kitchen needs on the ticket.
     headcount: Number.isFinite(Number(ev?.headcount)) ? Number(ev.headcount) : null,
+    eventName: str(ev?.customerProvidedName) || null,
+    buyerName: buyerName || null,
     event_date: when ? when.date : null,
     event_time: when ? when.time : null,
     eventTimeZone: str(ev?.timeZoneIdentifier) || null,
+    eventTimeOffset: str(ev?.timeZoneOffset) || null,
     // false means we could not resolve the venue local wall clock and are
     // showing the raw timestamp. Worth surfacing rather than quietly trusting.
     eventTimeIsLocal: when ? when.local : null,
+    handoff_time: handoff ? handoff.time : null,
+    handoffAt: str(ev?.catererHandoffFoodTime) || null,
+
+    // Plates, napkins and cups ezCater has promised the customer. The kitchen
+    // packs these, so they belong on the ticket.
+    tableware: (Array.isArray(cart?.tableware?.tablewareChoices) ? cart.tableware.tablewareChoices : [])
+      .filter((t: any) => t?.isIncluded !== false)
+      .map((t: any) => ({ name: str(t?.name), count: Number(t?.itemCount) || 0 })),
 
     channel: 'ezCater',
     source_label: str(order?.orderSourceType) || 'ezCater',
@@ -364,7 +455,12 @@ export function orderToQueueRow(
     totals: {
       subtotal, salesTax, salesTaxRemittance, tip, deliveryFee,
       pointOfSaleIntegrationFee: posIntegrationFee,
+      customerTotalDue,
       catererTotalDue, currency,
+      // Every fee and discount ezCater applied, verbatim and named, because the
+      // weekly statement has to be reconciled line by line and a discount only
+      // ever appears here. Discounts arrive negative and stay negative.
+      feesAndDiscounts: fees,
     },
     tax,
 
@@ -379,6 +475,9 @@ export function orderToQueueRow(
     ezcater_order_id: uuid,
     ezcater_order_number: str(order?.orderNumber) || null,
     ezcater_caterer_id: str(order?.caterer?.uuid) || null,
+    ezcater_caterer_name: str(order?.caterer?.name) || null,
+    ezcater_store_number: str(order?.caterer?.storeNumber) || null,
+    ezcater_delivery_id: str(order?.deliveryId) || null,
     ezcater_lifecycle: lifecycle || null,
   };
 
@@ -409,7 +508,9 @@ export function orderToQueueRow(
     collection_time: when ? when.time : null,
     event_date: when ? when.date : null,
     paid: true,
-    created_at: str(order?.createdAt) || null,
+    // An ezCater Order has NO createdAt. queuePayload stamps the row's own
+    // arrival time instead, which is the only honest answer we have.
+    created_at: null,
     // The raw event instant, kept on the row so queuePayload can stamp sent_at
     // with a real point in time rather than a reassembled local string.
     fire_at: str(ev?.timestamp) || null,

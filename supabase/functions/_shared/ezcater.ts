@@ -15,13 +15,30 @@
 //  3. Orders arrive as a POINTER. The webhook body carries "payload": null, so
 //     the caller has to come back here with getOrder() to see anything at all.
 //
-// SCHEMA CONFIDENCE. The plan is doc verified on the endpoint, the headers, the
-// signature scheme, the money shape and the field names quoted in the selection
-// sets below. It is NOT verified on argument shapes for the mutations, because
-// the public docs show prose signatures rather than SDL. Anything marked
-// UNVERIFIED needs one introspection call against a real token to confirm, and
-// is deliberately kept as a single editable constant so confirming it is a one
-// line change rather than a rewrite. See the final report for the list.
+// SCHEMA CONFIDENCE. Every field, argument and input object in this file is now
+// copied from ezCater's own published schema reference and sample queries:
+//
+//   Order Schema Reference        https://api.ezcater.io/order-schema-reference
+//   Viewing Order Details         https://api.ezcater.io/order-details
+//   Caterer Schema Reference      https://api.ezcater.io/caterer-schema-reference
+//   Viewing Caterers              https://api.ezcater.io/viewing-caterers
+//   Subscription Schema Reference https://api.ezcater.io/subscription-schema-reference
+//   Accepting Orders              https://api.ezcater.io/accepting-orders
+//   Rejecting Orders              https://api.ezcater.io/rejecting-orders
+//   Creating Subscribers          https://api.ezcater.io/creating-subscribers
+//   Creating Subscriptions        https://api.ezcater.io/creating-subscriptions
+//   Deleting Subscriptions        https://api.ezcater.io/deleting-subscriptions
+//   Using GraphQL                 https://api.ezcater.io/building-a-request
+//
+// The previous version of this file guessed at field names, and the guesses were
+// wrong. GraphQL fails the WHOLE query on ONE unknown field, so a guess does not
+// degrade, it returns nothing at all. If a field ever has to be added back on a
+// hunch, put it behind its own small query, never inside the order query.
+//
+// The Using GraphQL page documents __schema and __type introspection against the
+// live token, which is the way to settle any future question in one call:
+//   query fullschema { __schema { types { name kind fields { name } } } }
+//   query { __type(name: "Order") { name fields { name } } }
 
 export const EZCATER_API = 'https://api.ezcater.com/graphql';
 
@@ -29,7 +46,9 @@ export const EZCATER_API = 'https://api.ezcater.com/graphql';
 // the Apollo client headers so they can attribute traffic and contact us about
 // a bad deploy. Keep the name stable, bump the version when the query shapes change.
 export const EZCATER_CLIENT_NAME = 'servos-pos';
-export const EZCATER_CLIENT_VERSION = '1.0.0';
+// 2.0.0: every selection set rebuilt from the published schema reference. The
+// 1.x shapes asked for fields ezCater does not have and fetched nothing.
+export const EZCATER_CLIENT_VERSION = '2.0.0';
 
 export class EzcaterError extends Error {
   status: number;
@@ -53,13 +72,35 @@ export const EZ_PERMANENT_CODES = new Set([
   'not_found',
   'forbidden',
   'unauthorized',
+  // We asked for something their schema does not have. Retrying the same query
+  // forever cannot fix that, only a code change can. See isSchemaError.
+  'GRAPHQL_VALIDATION_FAILED',
 ]);
 
 /** True when retrying will never help, so the caller should surface it to the operator. */
 export function isPermanent(e: unknown): boolean {
   if (!(e instanceof EzcaterError)) return false;
   if (e.code && EZ_PERMANENT_CODES.has(e.code)) return true;
+  if (isSchemaError(e)) return true;
   return e.status === 400 || e.status === 401 || e.status === 403 || e.status === 404;
+}
+
+/**
+ * THE UNKNOWN FIELD ALARM.
+ *
+ * GraphQL rejects the whole document when one field, argument or type name is
+ * wrong, and answers 200 with an errors array rather than a 4xx. That failure
+ * looks exactly like "no orders today" unless something names it, which is how
+ * a whole integration can be dead and quiet at the same time.
+ *
+ * Every caller that can reach a kitchen ticket checks this and logs the full
+ * error text, so the first bad live call says WHICH field we invented.
+ */
+export function isSchemaError(e: unknown): boolean {
+  if (!(e instanceof EzcaterError)) return false;
+  if (e.code === 'GRAPHQL_VALIDATION_FAILED') return true;
+  const text = typeof e.errors === 'string' ? e.errors : JSON.stringify(e.errors ?? '');
+  return /cannot query field|unknown argument|unknown type|doesn'?t exist|is not defined|did you mean|field .* is required|expected type/i.test(text);
 }
 
 // Pull a machine readable code out of the GraphQL errors array. ezCater puts it
@@ -72,9 +113,21 @@ function firstCode(errors: any): string | null {
   }
   return null;
 }
-function firstMessage(errors: any): string {
+
+/**
+ * EVERY error message, not just the first. A validation failure lists one entry
+ * per bad field, and reporting only the first turns a five field mistake into
+ * five deploys. The path is included because "Cannot query field 'deliveryFee'"
+ * is only useful once you know which selection set it was in.
+ */
+export function allMessages(errors: any): string {
+  if (typeof errors === 'string') return errors;
   if (!Array.isArray(errors) || !errors.length) return 'unknown error';
-  return String(errors[0]?.message ?? errors[0]);
+  return errors.map((e: any) => {
+    const msg = String(e?.message ?? JSON.stringify(e));
+    const path = Array.isArray(e?.path) ? ` at ${e.path.join('.')}` : '';
+    return `${msg}${path}`;
+  }).join(' | ');
 }
 
 /**
@@ -110,10 +163,10 @@ export async function ez<T = any>(
   try { body = text ? JSON.parse(text) : null; } catch { body = text; }
 
   if (!res.ok) {
-    throw new EzcaterError(res.status, firstCode(body?.errors), body?.errors ?? text, body);
+    throw new EzcaterError(res.status, firstCode(body?.errors), allMessages(body?.errors ?? text), body);
   }
   if (body?.errors?.length) {
-    throw new EzcaterError(200, firstCode(body.errors), firstMessage(body.errors), body);
+    throw new EzcaterError(200, firstCode(body.errors), allMessages(body.errors), body);
   }
   return body?.data as T;
 }
@@ -126,129 +179,173 @@ export async function ez<T = any>(
 // same value as a string, which is the one to read (see subunitsToNumber).
 const MONEY = '{ subunits subunitsV2 currency }';
 
-// The order selection set. Field names quoted in EZCATER_INTEGRATION_PLAN.md are
-// doc verified: uuid, event.orderType, catererCart.orderItems, customizations,
-// posItemId, specialInstructions, totals.salesTax, totals.salesTaxRemittance,
-// totals.catererTotalDue, totals.pointOfSaleIntegrationFee, taxableAddress.
-//
-// UNVERIFIED and flagged inline: orderNumber, event.timestamp, event.headcount,
-// event.address, event.contact, orderCustomer, lifecycle. GraphQL fails the
-// WHOLE query on one unknown field, so if the first live call 400s, prune from
-// here downward rather than hunting through the mapper.
+// An address, everywhere one appears. Address has NO latitude and NO longitude:
+// asking for them was killing the whole order query.
+const ADDRESS = `{ name street street2 street3 city state stateName zip deliveryInstructions }`;
+
+/**
+ * The order selection set, field for field from ezCater's "Viewing Order
+ * Details" sample query. Nothing here is inferred.
+ *
+ * WHERE THE MONEY ACTUALLY LIVES, because it is split across three places and
+ * getting it wrong silently zeroes a venue's tax figures:
+ *
+ *   Order.totals (OrderTotals)  subTotal (capital T), salesTax,
+ *                               salesTaxRemittance, tip, customerTotalDue,
+ *                               pointOfSaleIntegrationFee. All Money objects.
+ *   catererCart.totals          catererTotalDue ONLY, and it is a FLOAT IN
+ *                               DOLLARS, not a Money object.
+ *   catererCart.feesAndDiscounts  the delivery fee and every promo, as
+ *                               [{ name, cost }]. There is no deliveryFee field.
+ *
+ * The delivery fee is asked for twice on purpose. `deliveryFees` is the same
+ * resolver filtered to DELIVERY_FEE, so the fee can be read without guessing
+ * from a display name, and the unfiltered list keeps every fee and discount
+ * verbatim for the weekly statement.
+ *
+ * taxableAddress is on Order, NOT on totals.
+ */
 export const ORDER_QUERY = `
-query ServOsEzOrder($id: ID!) {
+query ServOsEzOrder($id: ID!, $types: [FeeOrDiscountType!]) {
   order(id: $id) {
     uuid
-    orderNumber                       # UNVERIFIED
-    orderSourceType                   # UNVERIFIED, distinguishes MARKETPLACE / EZORDERING / DIRECT_ENTRY
-    isModified                        # UNVERIFIED, the only non inferential modification signal if it exists
-    lifecycle { value }               # UNVERIFIED shape, may be a plain enum field
+    orderNumber
+    orderSourceType
+    deliveryId
+    isTaxExempt
+    lifecycle { orderIsCurrently }
+    caterer { uuid name storeNumber live }
     event {
       orderType
-      timestamp                       # UNVERIFIED, the instant the food is needed
-      timeZoneIdentifier              # UNVERIFIED, IANA tz for the delivery / pickup address
-      headcount                       # UNVERIFIED
-      thirdPartyDeliveryPartner       # UNVERIFIED
-      address {                       # UNVERIFIED
-        name street street2 city state zip
-        latitude longitude
-        deliveryInstructions
-      }
-      contact { name phone phoneExtension }   # UNVERIFIED
-      orderNotes                      # UNVERIFIED
+      timestamp
+      catererHandoffFoodTime
+      timeZoneIdentifier
+      timeZoneOffset
+      headcount
+      customerProvidedName
+      thirdPartyDeliveryPartner
+      address ${ADDRESS}
+      contact { name phone }
     }
-    caterer { uuid name }             # UNVERIFIED
+    orderCustomer { firstName lastName fullName }
+    taxableAddress ${ADDRESS}
+    totals {
+      customerTotalDue ${MONEY}
+      subTotal ${MONEY}
+      salesTax ${MONEY}
+      salesTaxRemittance ${MONEY}
+      tip ${MONEY}
+      pointOfSaleIntegrationFee ${MONEY}
+    }
     catererCart {
-      totals {
-        catererTotalDue               # a float in DOLLARS, not subunits. ezCater is inconsistent here.
-        subtotal ${MONEY}
-        salesTax ${MONEY}
-        salesTaxRemittance ${MONEY}
-        tip ${MONEY}
-        deliveryFee ${MONEY}
-        pointOfSaleIntegrationFee ${MONEY}
-        taxableAddress { street city state zip }
+      totals { catererTotalDue }
+      deliveryFees: feesAndDiscounts(types: [DELIVERY_FEE]) { name cost ${MONEY} }
+      feesAndDiscounts(types: $types) { name cost ${MONEY} }
+      tableware {
+        specialInstructions
+        tablewareChoices { choiceUuid isIncluded itemCount name }
       }
       orderItems {
         uuid
         name
         quantity
+        menuItemSizeId
+        menuItemSizeName
         posItemId
+        labelFor
+        noteToCaterer
         specialInstructions
         totalInSubunits ${MONEY}
         customizations {
-          uuid
+          customizationId
+          customizationTypeId
+          customizationTypeName
           name
+          posCustomizationId
           quantity
-          posItemId
-          customizationTypeName       # UNVERIFIED, the modifier group label
-          totalInSubunits ${MONEY}
         }
       }
     }
   }
 }`;
 
-// UNVERIFIED argument shape. The docs describe it in prose as
-// acceptOrder(orderId, acceptModification: Boolean = false).
+/** Every fee and discount type ezCater defines. Sent on every order fetch. */
+export const EZ_FEE_TYPES = ['ADJUSTMENT', 'DELIVERY_FEE', 'DISCOUNT', 'MISC_FEE'];
+
+// acceptOrder(orderId: ID!, acceptModification: Boolean = false).
 // Accepting a MODIFICATION without acceptModification: true returns
 // invalid_state_transition, which is why the flag is always sent explicitly.
+// AcceptOrderPayload has ONE field, order. There is no errors field on it.
 export const ACCEPT_ORDER_MUTATION = `
-mutation ServOsEzAcceptOrder($orderId: ID!, $acceptModification: Boolean!) {
+mutation ServOsEzAcceptOrder($orderId: ID!, $acceptModification: Boolean) {
   acceptOrder(orderId: $orderId, acceptModification: $acceptModification) {
-    order { uuid lifecycle { value } }
-    errors { message }
+    order { uuid lifecycle { orderIsCurrently } }
   }
 }`;
 
-// UNVERIFIED argument shape. Docs: rejectOrder(orderId, {reason, explanation}).
-// 23 reason values exist, including AT_DAILY_CAPACITY, STAFF_SHORTAGE and
-// LACK_OF_INVENTORY. The reason is an enum so it is interpolated as a variable
-// of an unverified enum type name.
+// rejectOrder takes ONE input object, rejectOrderInput: RejectOrderInput!,
+// holding reason (a RejectionReasonEnum, e.g. AT_DAILY_CAPACITY) and a free text
+// explanation. It is NOT two loose arguments, and RejectOrderPayload has no
+// errors field either.
 export const REJECT_ORDER_MUTATION = `
-mutation ServOsEzRejectOrder($orderId: ID!, $reason: String!, $explanation: String) {
-  rejectOrder(orderId: $orderId, reason: $reason, explanation: $explanation) {
-    order { uuid lifecycle { value } }
-    errors { message }
+mutation ServOsEzRejectOrder($orderId: ID!, $rejectOrderInput: RejectOrderInput!) {
+  rejectOrder(orderId: $orderId, rejectOrderInput: $rejectOrderInput) {
+    order { uuid lifecycle { orderIsCurrently } }
   }
 }`;
 
-// UNVERIFIED selection set. Used by ezcater-connect to list what this API user
-// can see, so the operator can map each caterer to a ServOS location.
+// Caterer has uuid, name, storeNumber, live and address. There is no brandName.
 export const CATERERS_QUERY = `
 query ServOsEzCaterers {
   caterers {
     uuid
     name
-    brandName                         # UNVERIFIED
-    address { street city state zip } # UNVERIFIED
+    storeNumber
+    live
+    address ${ADDRESS}
   }
 }`;
 
-// UNVERIFIED argument shapes for the subscription trio. ezCater allows ONE
-// subscriber per API user, covering many caterers, which is why the webhook URL
-// cannot carry a location the way HubRise's ?loc= does.
+// ezCater allows ONE subscriber per API user, covering many caterers, which is
+// why the webhook URL cannot carry a location the way HubRise's ?loc= does.
+//
+// webhookSecret is returned ONLY by createSubscriber, never again, so a failure
+// to store it here means tearing the subscriber down and starting over.
 export const CREATE_SUBSCRIBER_MUTATION = `
-mutation ServOsEzCreateSubscriber($url: String!) {
-  createSubscriber(url: $url) {
-    subscriber { uuid url signingSecret }
-    errors { message }
+mutation ServOsEzCreateSubscriber($subscriberParams: CreateSubscriberFields!) {
+  createSubscriber(subscriberParams: $subscriberParams) {
+    subscriber { id name webhookUrl webhookSecret }
   }
 }`;
 
+// Listing exists so we can tell "already has a subscriber" from "token is bad".
+// Subscriber (unlike NewSubscriber) does NOT expose webhookSecret.
+export const SUBSCRIBERS_QUERY = `
+query ServOsEzSubscribers {
+  subscribers {
+    id
+    name
+    webhookUrl
+    subscriptions { eventEntity eventKey parentEntity parentId subscriberId }
+  }
+}`;
+
+// A subscription is PER CATERER PER EVENT. parentId is the caterer uuid, and
+// without it ezCater has no idea which location's orders to send.
 export const CREATE_SUBSCRIPTION_MUTATION = `
-mutation ServOsEzCreateSubscription($subscriberId: ID!, $event: String!) {
-  createSubscription(subscriberId: $subscriberId, event: $event) {
-    subscription { uuid event }
-    errors { message }
+mutation ServOsEzCreateSubscription($subscriptionParams: CreateSubscriptionFields!) {
+  createSubscription(subscriptionParams: $subscriptionParams) {
+    subscription { eventEntity eventKey parentEntity parentId subscriberId }
   }
 }`;
 
+// Deletion is scoped to the CATERER, not to the subscriber, and returns success.
+// parentEntity is an enum literal, so it is written inline exactly as the docs
+// show it; only the caterer id travels as a variable.
 export const DELETE_SUBSCRIPTIONS_MUTATION = `
-mutation ServOsEzDeleteSubscriptions($subscriberId: ID!) {
-  deleteSubscriptions(subscriberId: $subscriberId) {
-    deletedCount
-    errors { message }
+mutation ServOsEzDeleteSubscriptions($parentId: UUID!) {
+  deleteSubscriptions(subscriptionsParams: { parentEntity: Caterer, parentId: $parentId }) {
+    success
   }
 }`;
 
@@ -275,7 +372,7 @@ export const EZ_EVENTS = [
 
 /** Fetch one order. The webhook gives us a pointer, this is the second leg. */
 export async function getOrder(token: string, orderId: string): Promise<any> {
-  const data = await ez<any>(token, 'ServOsEzOrder', ORDER_QUERY, { id: orderId });
+  const data = await ez<any>(token, 'ServOsEzOrder', ORDER_QUERY, { id: orderId, types: EZ_FEE_TYPES });
   return data?.order ?? null;
 }
 
@@ -293,10 +390,11 @@ export async function acceptOrder(token: string, orderId: string, acceptModifica
   return data?.acceptOrder ?? null;
 }
 
-/** Reject an order with one of ezCater's 23 reason enums plus free text. */
+/** Reject an order with one of ezCater's RejectionReasonEnum values plus free text. */
 export async function rejectOrder(token: string, orderId: string, reason: string, explanation?: string | null): Promise<any> {
   const data = await ez<any>(token, 'ServOsEzRejectOrder', REJECT_ORDER_MUTATION, {
-    orderId, reason, explanation: explanation || null,
+    orderId,
+    rejectOrderInput: { reason, explanation: explanation || null },
   });
   return data?.rejectOrder ?? null;
 }
@@ -307,21 +405,48 @@ export async function caterers(token: string): Promise<any[]> {
   return Array.isArray(data?.caterers) ? data.caterers : [];
 }
 
-/** Create the single subscriber for this API user. Returns {uuid, signingSecret}. */
-export async function createSubscriber(token: string, url: string): Promise<any> {
-  const data = await ez<any>(token, 'ServOsEzCreateSubscriber', CREATE_SUBSCRIBER_MUTATION, { url });
+/**
+ * Create the single subscriber for this API user. Returns { id, webhookSecret }.
+ * name follows ezCater's documented convention, <provider>-<brand>.
+ */
+export async function createSubscriber(token: string, url: string, name: string): Promise<any> {
+  const data = await ez<any>(token, 'ServOsEzCreateSubscriber', CREATE_SUBSCRIBER_MUTATION, {
+    subscriberParams: { name, webhookUrl: url },
+  });
   return data?.createSubscriber?.subscriber ?? null;
 }
 
-/** Subscribe that subscriber to one lifecycle event. */
-export async function createSubscription(token: string, subscriberId: string, event: string): Promise<any> {
-  const data = await ez<any>(token, 'ServOsEzCreateSubscription', CREATE_SUBSCRIPTION_MUTATION, { subscriberId, event });
+/** The subscriber this API user already has, if any. Only one is ever allowed. */
+export async function subscribers(token: string): Promise<any[]> {
+  const data = await ez<any>(token, 'ServOsEzSubscribers', SUBSCRIBERS_QUERY, {});
+  return Array.isArray(data?.subscribers) ? data.subscribers : [];
+}
+
+/**
+ * Subscribe to one event for ONE caterer. There is no account wide subscription:
+ * parentId is the caterer uuid, so a venue with no subscription rows of its own
+ * receives nothing, however healthy the subscriber looks.
+ */
+export async function createSubscription(
+  token: string, subscriberId: string, catererUuid: string, eventKey: string,
+): Promise<any> {
+  const data = await ez<any>(token, 'ServOsEzCreateSubscription', CREATE_SUBSCRIPTION_MUTATION, {
+    subscriptionParams: {
+      eventEntity: 'Order',
+      eventKey,
+      parentEntity: 'Caterer',
+      parentId: catererUuid,
+      subscriberId,
+    },
+  });
   return data?.createSubscription?.subscription ?? null;
 }
 
-/** Remove every subscription for a subscriber. Used on disconnect. */
-export async function deleteSubscriptions(token: string, subscriberId: string): Promise<any> {
-  const data = await ez<any>(token, 'ServOsEzDeleteSubscriptions', DELETE_SUBSCRIPTIONS_MUTATION, { subscriberId });
+/** Remove every subscription for ONE caterer. Scoped by caterer, not by subscriber. */
+export async function deleteSubscriptions(token: string, catererUuid: string): Promise<any> {
+  const data = await ez<any>(token, 'ServOsEzDeleteSubscriptions', DELETE_SUBSCRIPTIONS_MUTATION, {
+    parentId: catererUuid,
+  });
   return data?.deleteSubscriptions ?? null;
 }
 

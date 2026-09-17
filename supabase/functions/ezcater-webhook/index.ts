@@ -38,7 +38,7 @@
 //     event like any other here.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { verifyEzcaterSignature, getOrder, isPermanent } from '../_shared/ezcater.ts';
+import { verifyEzcaterSignature, getOrder, isPermanent, isSchemaError } from '../_shared/ezcater.ts';
 import { orderToQueueRow, queuePayload, ezLifecycle, EZ_TERMINAL } from '../_shared/ezcater-map.ts';
 
 const cors = {
@@ -209,6 +209,21 @@ Deno.serve(async (req) => {
       order = await getOrder(token, entityId);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+
+      // THE UNKNOWN FIELD ALARM. GraphQL throws the WHOLE query away over one
+      // field it does not have, and answers 200 while doing it, so this failure
+      // reads as "no orders" unless it is named out loud. The raw notification
+      // is already in ezcater_events from step 2, so nothing is lost: fix the
+      // query, replay the row, and the order still reaches the kitchen.
+      if (isSchemaError(e)) {
+        console.error(
+          '[ezcater-webhook] EZCATER SCHEMA MISMATCH. The order query asks for a field ezCater does not have,',
+          'so NOTHING was fetched. Order', entityId, 'is held in ezcater_events for replay. ezCater said:', msg,
+        );
+        await failEvent(`SCHEMA MISMATCH, order query rejected: ${msg}`, 'error');
+        return ok();   // retrying the same bad query forever helps nobody
+      }
+
       await failEvent(`order fetch failed: ${msg}`, 'error');
       // 404 / 403 / feature_not_enabled will never succeed on a retry. Ack so
       // ezCater stops, and leave the row for a human or the reconciler.

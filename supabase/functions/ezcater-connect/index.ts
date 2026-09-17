@@ -25,8 +25,8 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import {
-  caterers as listCaterers, createSubscriber, createSubscription,
-  deleteSubscriptions, EZ_EVENTS, EzcaterError,
+  caterers as listCaterers, subscribers as listSubscribers, createSubscriber,
+  createSubscription, deleteSubscriptions, EZ_EVENTS, EzcaterError, isSchemaError,
 } from '../_shared/ezcater.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
@@ -111,29 +111,78 @@ const catererRow = (c: any) => ({
   mapped_at: c.mapped_at,
 });
 
-/** Create the subscriber and subscribe it to every event we actually want. */
-async function subscribe(connectionId: string, token: string): Promise<{ subscriberId: string | null; secret: string | null; events: string[] }> {
-  const subscriber = await createSubscriber(token, WEBHOOK_URL);
-  const subscriberId = subscriber?.uuid ? String(subscriber.uuid) : null;
-  const secret = subscriber?.signingSecret ? String(subscriber.signingSecret) : null;
-  const done: string[] = [];
+/** Every caterer uuid known for this connection. A subscription needs one. */
+async function catererUuidsFor(connectionId: string): Promise<string[]> {
+  const { data } = await sb.from('ezcater_caterers').select('caterer_uuid').eq('connection_id', connectionId);
+  return (data || []).map((c: any) => String(c.caterer_uuid || '')).filter(Boolean);
+}
+
+/**
+ * Create the subscriber and subscribe it to every event we want, FOR EVERY
+ * CATERER.
+ *
+ * A subscription is per caterer per event: CreateSubscriptionFields takes
+ * eventEntity, eventKey, parentEntity and parentId, and parentId is the caterer
+ * uuid. There is no account wide subscription, so a caterer with no rows of its
+ * own sends nothing at all however healthy the subscriber looks.
+ *
+ * webhookSecret is returned ONLY when the subscriber is first created. ezCater
+ * allows one subscriber per API user, so on a reconnect we reuse the existing
+ * one and CANNOT read its secret again: that is when EZCATER_SIGNING_SECRET has
+ * to be set by hand, and it is said out loud rather than failing quietly.
+ */
+async function subscribe(
+  connectionId: string, token: string, catererUuids: string[], label: string | null,
+): Promise<{ subscriberId: string | null; secret: string | null; events: string[]; caterers: number; reused: boolean }> {
+  const name = `ServOS-${label || 'ezCater'}`.slice(0, 120);
+
+  let subscriber: any = null;
+  let reused = false;
+  try {
+    subscriber = await createSubscriber(token, WEBHOOK_URL, name);
+  } catch (e) {
+    const existing = await listSubscribers(token).catch(() => [] as any[]);
+    subscriber = existing[0] || null;
+    if (!subscriber) throw e;
+    reused = true;
+    console.warn('[ezcater-connect] this API user already has a subscriber,', subscriber.id,
+      '- reusing it. Its webhook secret is only ever issued at creation, so set EZCATER_SIGNING_SECRET by hand.');
+  }
+
+  const subscriberId = subscriber?.id ? String(subscriber.id) : null;
+  const secret = subscriber?.webhookSecret ? String(subscriber.webhookSecret) : null;
+
+  const done = new Set<string>();
+  let wired = 0;
   if (subscriberId) {
-    for (const ev of EZ_EVENTS) {
-      // One failed event must not cost us the others. relish_finalized in
-      // particular is the ONLY event a Meal Program order ever sends, so losing
-      // it silently loses every Meal Program order.
-      try { await createSubscription(token, subscriberId, ev); done.push(ev); }
-      catch (e) { console.warn('[ezcater-connect] subscribe', ev, 'failed:', e instanceof Error ? e.message : String(e)); }
+    for (const catererUuid of catererUuids) {
+      let any = false;
+      for (const ev of EZ_EVENTS) {
+        // One failed event must not cost us the others. relish_finalized in
+        // particular is the ONLY event a Meal Program order ever sends, so losing
+        // it silently loses every Meal Program order.
+        try { await createSubscription(token, subscriberId, catererUuid, ev); done.add(ev); any = true; }
+        catch (e) { console.warn('[ezcater-connect] subscribe', ev, 'for caterer', catererUuid, 'failed:', e instanceof Error ? e.message : String(e)); }
+      }
+      if (any) wired++;
     }
   }
-  await sb.from('ezcater_connections').update({
+  if (!catererUuids.length) {
+    console.warn('[ezcater-connect] subscriber created but there are no caterers to subscribe for.',
+      'No order will ever arrive until list_caterers finds one.');
+  }
+
+  const patch: any = {
     subscriber_id: subscriberId,
-    signing_secret: secret,
     webhook_url: WEBHOOK_URL,
-    subscribed_events: done,
+    subscribed_events: [...done],
     updated_at: new Date().toISOString(),
-  }).eq('id', connectionId);
-  return { subscriberId, secret, events: done };
+  };
+  // Never overwrite a working secret with the null a reused subscriber gives us.
+  if (secret) patch.signing_secret = secret;
+  await sb.from('ezcater_connections').update(patch).eq('id', connectionId);
+
+  return { subscriberId, secret, events: [...done], caterers: wired, reused };
 }
 
 Deno.serve(async (req) => {
@@ -188,28 +237,43 @@ Deno.serve(async (req) => {
         try {
           seen = await listCaterers(apiToken);
         } catch (e) {
+          const detail = e instanceof Error ? e.message : String(e);
           await sb.from('ezcater_connections')
-            .update({ status: 'error', last_error: e instanceof Error ? e.message : String(e) }).eq('id', conn.id);
-          return json({ error: `ezCater rejected the token: ${e instanceof Error ? e.message : String(e)}` }, 400);
+            .update({ status: 'error', last_error: detail }).eq('id', conn.id);
+          // Do not blame the operator's token for our own bad query.
+          if (isSchemaError(e)) {
+            console.error('[ezcater-connect] EZCATER SCHEMA MISMATCH on the caterers query:', detail);
+            return json({ error: 'We asked ezCater for something their system does not have. This is our bug, not your token.', code: 'schema_mismatch' }, 400);
+          }
+          return json({ error: `ezCater rejected the token: ${detail}` }, 400);
         }
 
+        // Caterer has uuid, name, storeNumber, live and address. There is no
+        // brandName, so brand_name is left alone rather than written as null.
         for (const c of seen) {
           await sb.from('ezcater_caterers').upsert({
             caterer_uuid: String(c?.uuid || ''),
             connection_id: conn.id,
             caterer_name: c?.name || null,
-            brand_name: c?.brandName || null,
             updated_at: new Date().toISOString(),
           }, { onConflict: 'caterer_uuid' });
         }
 
-        const sub = await subscribe(conn.id, apiToken);
+        const sub = await subscribe(
+          conn.id, apiToken, seen.map((c: any) => String(c?.uuid || '')).filter(Boolean), label,
+        );
         const { data: fresh } = await sb.from('ezcater_connections').select('*').eq('id', conn.id).maybeSingle();
         return json({
           ok: true,
           status: publicStatus(fresh),
-          caterers: seen.map((c: any) => ({ caterer_uuid: c?.uuid, caterer_name: c?.name, brand_name: c?.brandName })),
+          caterers: seen.map((c: any) => ({
+            caterer_uuid: c?.uuid, caterer_name: c?.name, store_number: c?.storeNumber, live: c?.live,
+          })),
           subscribed: sub.events,
+          subscribed_caterers: sub.caterers,
+          // True means we could not read a fresh webhook secret, because ezCater
+          // only ever issues one at creation. Say so plainly in Back Office.
+          reused_subscriber: sub.reused,
         });
       }
 
@@ -222,7 +286,6 @@ Deno.serve(async (req) => {
             caterer_uuid: String(c?.uuid || ''),
             connection_id: conn.id,
             caterer_name: c?.name || null,
-            brand_name: c?.brandName || null,
             updated_at: new Date().toISOString(),
           }, { onConflict: 'caterer_uuid' });
         }
@@ -288,18 +351,25 @@ Deno.serve(async (req) => {
       case 'resubscribe': {
         const conn = await connectionForLocation(opsLocationId);
         if (!conn?.api_token) return json({ error: 'not connected' }, 400);
-        if (conn.subscriber_id) {
-          await deleteSubscriptions(conn.api_token, conn.subscriber_id).catch((e: unknown) =>
-            console.warn('[ezcater-connect] deleteSubscriptions:', e instanceof Error ? e.message : String(e)));
+        // Deletion is scoped to the CATERER, not to the subscriber, so it has to
+        // walk the caterers. Passing a subscriber id here deleted nothing.
+        const uuids = await catererUuidsFor(conn.id);
+        for (const catererUuid of uuids) {
+          await deleteSubscriptions(conn.api_token, catererUuid).catch((e: unknown) =>
+            console.warn('[ezcater-connect] deleteSubscriptions', catererUuid, ':', e instanceof Error ? e.message : String(e)));
         }
-        const sub = await subscribe(conn.id, conn.api_token);
-        return json({ ok: true, subscriber_id: sub.subscriberId, subscribed: sub.events });
+        const sub = await subscribe(conn.id, conn.api_token, uuids, conn.label || null);
+        return json({
+          ok: true, subscriber_id: sub.subscriberId, subscribed: sub.events, subscribed_caterers: sub.caterers,
+        });
       }
 
       case 'disconnect': {
         const conn = await connectionForLocation(opsLocationId);
-        if (conn?.api_token && conn?.subscriber_id) {
-          await deleteSubscriptions(conn.api_token, conn.subscriber_id).catch(() => {});
+        if (conn?.api_token && conn?.id) {
+          for (const catererUuid of await catererUuidsFor(conn.id)) {
+            await deleteSubscriptions(conn.api_token, catererUuid).catch(() => {});
+          }
         }
         if (conn?.id) {
           // Cascades ezcater_caterers. ezcater_events and ezcater_order_links are
@@ -315,6 +385,16 @@ Deno.serve(async (req) => {
     }
   } catch (e) {
     if (e instanceof EzcaterError) {
+      // A field we ask for is not in their schema. Nothing the operator can do,
+      // and nothing a retry can fix, so name it as ours in plain words and log
+      // the field ezCater objected to for whoever fixes the query.
+      if (isSchemaError(e)) {
+        console.error('[ezcater-connect] EZCATER SCHEMA MISMATCH:', e.message);
+        return json({
+          error: 'We asked ezCater for something their system does not have. This is our bug, not your setup. Nothing was changed.',
+          code: 'schema_mismatch',
+        }, 400);
+      }
       // feature_not_enabled is the one an operator will actually hit. Accept and
       // reject is gated per brand by ezCater and no amount of retrying opens it,
       // so say that rather than showing a generic failure.
