@@ -106,3 +106,70 @@ export function moveMainProductOptions(main, sizes) {
   }
   return { mainPatch: { assignedModifierGroups: [], assignedInstructionGroups: [] }, sizePatches };
 }
+
+const isFlag = (v) => v === true || v === false;
+
+/**
+ * 6. SOLD ALONE WHEN NOBODY CHOSE. A real true or false is a person's choice and is returned
+ * untouched (the store shape first, then the raw row). When the flag is missing or null the
+ * answer comes from the type: a sub item is NOT sold alone, every other type IS.
+ *
+ * WHY (17 Sep 2026): every writer used "?? true". Back Office makes a sub item by adding a
+ * plain item and then tapping the "Sub item" chip, so the flag was never set in memory, the
+ * full row save wrote sold_alone = true, and after a refresh "Sold alone" looked like it had
+ * switched itself on (the sub item became a product on the till, kiosk and online).
+ * The answer can NOT be false for everything: online ordering and the HubRise catalog hide ANY
+ * item whose sold_alone is false, whatever its type, so a plain product must stay true.
+ * Every writer of menu_items.sold_alone calls this. menuRulesUsage.test.js checks that.
+ */
+export function resolveSoldAlone(item) {
+  if (isFlag(item?.soldAlone)) return item.soldAlone;
+  if (isFlag(item?.sold_alone)) return item.sold_alone;
+  return item?.type !== 'subitem';
+}
+
+/**
+ * 7. SOLD ALONE WHEN THE TYPE CHANGES. Only a real change of type INTO or OUT OF 'subitem'
+ * counts, and only when the same edit did not set Sold alone itself (a choice always wins).
+ *   into sub item    Sold alone goes OFF. It is then an option only, hidden from the till,
+ *                    kiosk, online and the delivery apps, like any other sub item.
+ *   out of sub item  Sold alone goes ON. Only sub items have a Sold alone switch, so a plain
+ *                    product left at false would be hidden online with no way to fix it.
+ *                    This also undoes a wrong tap on the "Sub item" chip.
+ * An item that already is a sub item is never touched by a save. Visibility and category are
+ * left alone: there is no screen to put visibility back.
+ * current  the item as it is now (store shape or raw row)
+ * patch    the edit about to be applied
+ * Returns the fields to add to the edit: { soldAlone } or {}.
+ */
+export function soldAlonePatchForTypeChange(current, patch) {
+  if (!current || !patch || typeof patch !== 'object' || !('type' in patch)) return {};
+  if (isFlag(patch.soldAlone) || isFlag(patch.sold_alone)) return {};
+  const wasSub = current.type === 'subitem';
+  const isSub = patch.type === 'subitem';
+  if (wasSub === isSub) return {};
+  return { soldAlone: !isSub };
+}
+
+/**
+ * Rule 8. A name index of sub items for modifier options that are not linked by id.
+ * Keyed on every name alias (name, menu, receipt, kitchen), lower case, first match wins.
+ *   soldAloneOnly true   only sub items that are also sold alone (pictures and descriptions:
+ *                        a sub item that is only an option is not curated for customers)
+ *   soldAloneOnly false  every sub item (allergens, 86 and stock: these must apply to an
+ *                        option whatever its Sold alone switch says)
+ * Archived rows are skipped. Reads camelCase and snake_case shapes.
+ */
+export function subitemNameIndex(items, { soldAloneOnly = false } = {}) {
+  const map = new Map();
+  for (const it of (items || [])) {
+    if (!it || it.archived || it.type !== 'subitem') continue;
+    if (soldAloneOnly && !resolveSoldAlone(it)) continue;
+    for (const raw of [it.name, it.menuName, it.menu_name, it.receiptName, it.receipt_name, it.kitchenName, it.kitchen_name]) {
+      if (!raw) continue;
+      const key = String(raw).trim().toLowerCase();
+      if (key && !map.has(key)) map.set(key, it);
+    }
+  }
+  return map;
+}
