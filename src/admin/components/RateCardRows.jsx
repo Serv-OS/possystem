@@ -21,6 +21,7 @@
 //                pass it; the small size is kept only for any older caller
 
 import { RATE_CARD_TIERS, fmtRate } from '../../lib/payments/rateCard';
+import { selectOnFocus } from '../../lib/selectOnFocus';
 
 const GRID = 'minmax(180px, 1.4fr) 1fr 1fr minmax(150px, 1.2fr)';
 
@@ -60,14 +61,14 @@ export default function RateCardRows({ value, onChange, fallbackFor, currency = 
               {t.note && <span style={{ display: 'block', fontSize: big ? 15 : 11, color: 'var(--t3)', fontWeight: 400 }}>{t.note}</span>}
             </span>
             <input
-              type="number" step="0.01" min="0" max="100" value={row.percent}
+              type="number" step="0.01" min="0" max="100" {...selectOnFocus} value={row.percent}
               aria-label={`${t.label} rate percent`}
               placeholder={fbPct.value == null ? 'none' : Number(fbPct.value).toFixed(2)}
               onChange={(e) => setField(t.id, 'percent', e.target.value)}
               style={input}
             />
             <input
-              type="number" step="1" min="0" max="10000" value={row.fixed_pence}
+              type="number" step="1" min="0" max="10000" {...selectOnFocus} value={row.fixed_pence}
               aria-label={`${t.label} ${minor} per payment`}
               placeholder={fbFix.value == null ? 'none' : String(Math.round(Number(fbFix.value)))}
               onChange={(e) => setField(t.id, 'fixed_pence', e.target.value)}

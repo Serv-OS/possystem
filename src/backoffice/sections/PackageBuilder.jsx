@@ -14,6 +14,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../store';
 import { money } from '../../lib/currency';
+import { selectOnFocus } from '../../lib/selectOnFocus';
 import { CUSTOMER_ROOT } from '../../lib/env';
 import { platformSupabase, getLocationId } from '../../lib/supabase';
 import { countUpcomingBookingsForPackage } from '../../lib/bookings/bookingsData';
@@ -276,7 +277,7 @@ export default function PackageBuilder() {
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'stretch' }}>
                 <Metric label="Price" flex="1 1 210px">
                   <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                    <input type="number" min="0" step="0.5" style={{ ...S.inp, flex: '1 1 96px', minWidth: 0, fontFamily: MONO, fontWeight: 700 }}
+                    <input type="number" min="0" step="0.5" {...selectOnFocus} style={{ ...S.inp, flex: '1 1 96px', minWidth: 0, fontFamily: MONO, fontWeight: 700 }}
                       value={draft.price ?? 0} onChange={e => upd({ price: e.target.value === '' ? 0 : Number(e.target.value) })} />
                     <select style={{ ...S.inp, flex: '1.2 1 120px', minWidth: 0, paddingRight: 26 }} value={draft.priceUnit}
                       onChange={e => upd({ priceUnit: e.target.value })}>
@@ -297,7 +298,7 @@ export default function PackageBuilder() {
                     </select>
                     {draft.paymentModel === 'deposit' && (
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                        <input type="number" min="0" step="0.5" style={{ ...S.inp, width: 90, fontFamily: MONO }}
+                        <input type="number" min="0" step="0.5" {...selectOnFocus} style={{ ...S.inp, width: 90, fontFamily: MONO }}
                           value={draft.depositPerCover ?? 0}
                           onChange={e => upd({ depositPerCover: e.target.value === '' ? 0 : Number(e.target.value) })} />
                         <span style={{ fontSize: 11, color: 'var(--t3)' }}>deposit per cover</span>
@@ -432,7 +433,7 @@ export default function PackageBuilder() {
                               onClick={() => updLine(i, { course: v })}>{lab}</button>
                           ))}
                         </span>
-                        <input type="number" min="0" step="0.5" style={{ ...S.inp, width: 92, fontFamily: MONO }}
+                        <input type="number" min="0" step="0.5" {...selectOnFocus} style={{ ...S.inp, width: 92, fontFamily: MONO }}
                           value={l.priceOverride == null ? '' : l.priceOverride}
                           placeholder={draft.paymentModel === 'prepay' ? '0.00 (included)' : (linked ? money(linked.price) : 'inherit')}
                           onChange={e => updLine(i, { priceOverride: e.target.value === '' ? null : Number(e.target.value) })}
