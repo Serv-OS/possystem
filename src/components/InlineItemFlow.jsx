@@ -674,7 +674,11 @@ function ModifierStep({ modGroups, instGroups, flowOrder = null, allModDefs, men
                   const optDisabled = opt86 || optFull || (atMax && !isSel);
 
                   return (
-                    <div key={id} style={{ position:'relative' }}>
+                    /* display:flex + the button's height:100% make the pill fill its grid cell.
+                       The cell stretches to the tallest option in the row, and the stepper is
+                       centred on the CELL, so on a short option it used to hang over the bottom
+                       edge (17 Sep 2026). */
+                    <div key={id} style={{ position:'relative', display:'flex' }}>
                       <button
                         onClick={() => {
                           if (opt86 || optFull) return; // 86'd or no stock left for another pick
@@ -685,10 +689,10 @@ function ModifierStep({ modGroups, instGroups, flowOrder = null, allModDefs, men
                           }
                         }}
                         style={{
-                          width:'100%', display:'flex', alignItems:'center', gap:10,
+                          width:'100%', height:'100%', display:'flex', alignItems:'center', gap:10,
                           padding: optImage ? '8px 14px' : '10px 14px',
                           // reserve the right edge for the absolute qty stepper so a long name never runs under it
-                          paddingRight: isSel && isMulti ? 56 : 14,
+                          paddingRight: isSel && isMulti ? 62 : 14,
                           borderRadius:12,
                           cursor: optDisabled ? 'not-allowed' : 'pointer',
                           fontFamily:'inherit', textAlign:'left', transition:'all .1s',
@@ -722,7 +726,7 @@ function ModifierStep({ modGroups, instGroups, flowOrder = null, allModDefs, men
                       </button>
                       {/* Qty badge + minus for multi — absolute, with paddingRight above keeping content clear */}
                       {isSel && isMulti && (
-                        <div style={{ position:'absolute', right:8, top:'50%', transform:'translateY(-50%)', display:'flex', alignItems:'center', gap:3 }}>
+                        <div style={{ position:'absolute', right:10, top:'50%', transform:'translateY(-50%)', display:'flex', alignItems:'center', gap:4 }}>
                           <button
                             onClick={e => { e.stopPropagation(); const all=(cur||[]).filter(o=>(o.id||o.label)===id); onRemoveMulti(group.id, all[all.length-1]?._uid); }}
                             style={{ width:24, height:24, borderRadius:6, border:'1.5px solid var(--acc)', background:'var(--acc-d)', color:'var(--acc)', cursor:'pointer', fontFamily:'inherit', fontSize:15, fontWeight:800, display:'flex', alignItems:'center', justifyContent:'center', lineHeight:1, flexShrink:0 }}>−</button>
