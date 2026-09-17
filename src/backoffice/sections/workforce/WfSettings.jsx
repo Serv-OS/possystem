@@ -59,6 +59,8 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
 
   // Venue form fields (whole-number percentages for the inputs)
   const [labourTarget, setLabourTarget] = useState('');
+  const [maxDaysInRow, setMaxDaysInRow] = useState('5');     // AI rota rule (settings.rotaRules)
+  const [minRestHours, setMinRestHours] = useState('11');    // AI rota rule (settings.rotaRules)
   const [accrualRate, setAccrualRate] = useState('');
   const [currency, setCurrency] = useState('GBP');
   const [salesSource, setSalesSource] = useState('pos');
@@ -94,6 +96,8 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
   // Seed venue form from props.settings
   useEffect(() => {
     setLabourTarget(String(pct(settings?.labourTargetPct ?? 0.28)));
+    setMaxDaysInRow(String(settings?.settings?.rotaRules?.maxDaysInRow ?? 5));
+    setMinRestHours(String(settings?.settings?.rotaRules?.minRestHours ?? 11));
     setAccrualRate(String(pct(settings?.accrualRate ?? 0.1207)));
     setCurrency(settings?.currency || 'GBP');
     setSalesSource(settings?.salesSource || 'pos');
@@ -161,6 +165,11 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
       premiums: settings?.premiums || {},
       settings: {
         ...(settings?.settings || {}),
+        // AI rota rules: a built rota never breaks these (staff/rotaRules.js).
+        rotaRules: {
+          maxDaysInRow: Math.min(7, Math.max(1, parseInt(maxDaysInRow, 10) || 5)),
+          minRestHours: Math.min(24, Math.max(0, Number(minRestHours) || 11)),
+        },
         // Pay DATE policy. Lives here rather than in its own column — same home
         // as the other venue policy knobs (COGS%, overhead, break policy).
         payDayMonthOffset: Math.min(1, Math.max(0, parseInt(payDayMonthOffset, 10) || 0)),
@@ -247,6 +256,16 @@ export default function WfSettings({ ctx, staff, roles, sections, settings, week
               type="number" min="0" max="100" step="0.1" inputMode="decimal"
               value={labourTarget} onChange={e => setLabourTarget(e.target.value)} disabled={savingVenue}
             />
+          </div>
+          <div>
+            <label style={labelStyle}>AI rota: max days in a row</label>
+            <input style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} type="number" min="1" max="7" step="1" inputMode="numeric"
+              value={maxDaysInRow} onChange={e => setMaxDaysInRow(e.target.value)} disabled={savingVenue} />
+          </div>
+          <div>
+            <label style={labelStyle}>AI rota: min rest between shifts (hours)</label>
+            <input style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }} type="number" min="0" max="24" step="0.5" inputMode="decimal"
+              value={minRestHours} onChange={e => setMinRestHours(e.target.value)} disabled={savingVenue} />
           </div>
           <div>
             <label style={labelStyle}>Holiday accrual rate %</label>

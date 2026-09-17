@@ -13,6 +13,8 @@ import { buildWeek, addWeeks, weekRangeLabel, ymd } from '../../../staff/wfWeek'
 import { bucketShiftsBySection, UNASSIGNED } from '../../../staff/rotaSections.js';
 import { caseDone, missingSteps, normalizeCase } from './WfOnboarding';
 import { hoursOf, resolveRate, resolveRateOn, labourPct, venueBreakPolicy } from '../../../staff/labour';
+import { checkProposed, fillCoverage, suggestForecast, openWindowsOn, DEFAULT_RULES } from '../../../staff/rotaRules';
+import { getLocationConfig } from '../../../lib/locationTime';
 // Clash logic (shift overlap = hard block; approved leave / unavailable day =
 // soft warning, place anyway) is pure + unit-tested in wfClash.js.
 import { findClash, clashWarnings } from '../../../staff/wfClash';
@@ -315,6 +317,9 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   const [saving, setSaving] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);     // AI rota generation in progress
+  const [aiReport, setAiReport] = useState(null);   // what the last build did: accepted, filled, rejected reasons, gaps
+  const [openingHours, setOpeningHours] = useState(null);   // locations.opening_hours (rota rules)
+  const [history, setHistory] = useState({});       // { iso: sales } for the 8 weeks before this week (learned forecast)
   const [view, setView] = useState('staff');       // 'staff' | 'section'
   const [secs, setSecs] = useState(sections || []); // sections loaded fresh (Settings may have changed them)
   const [timesheets, setTimesheets] = useState([]); // for actual wage cost
@@ -330,6 +335,24 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   const targetPct = settings?.labourTargetPct ?? 0.3;
   // Standard shifts (venue presets) live on wf_venue_settings.settings jsonb.
   const templates = settings?.settings?.shiftTemplates || [];
+
+  // Opening hours feed the rota rules (a shift outside them is rejected).
+  useEffect(() => {
+    let alive = true;
+    getLocationConfig(ctx.locationId).then(c => { if (alive) setOpeningHours(c?.opening_hours || null); }).catch(() => {});
+    return () => { alive = false; };
+  }, [ctx.locationId]);
+  // Learned forecast: the 8 weeks of sales before the visible week.
+  useEffect(() => {
+    if (!wk?.startIso) return undefined;
+    let alive = true;
+    const end = new Date(wk.startIso + 'T00:00:00'); end.setDate(end.getDate() - 1);
+    const start = new Date(end); start.setDate(start.getDate() - 55);
+    const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    wf.loadSalesHistory(ctx.locationId, iso(start), iso(end)).then(h => { if (alive) setHistory(h || {}); }).catch(() => {});
+    return () => { alive = false; };
+  }, [ctx.locationId, wk?.startIso]);
+  const suggested = useMemo(() => suggestForecast(history, (wk?.days || []).map(d => d.iso)), [history, wk]);
 
   async function reload(w) {
     setLoading(true);
@@ -716,72 +739,95 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
     if (!staff.length) return;
     setAiBusy(true);
     try {
-      const availability = await wf.loadAvailability(ctx.locationId).catch(() => []);
-      const avByStaff = {};
-      (availability || []).forEach(a => { avByStaff[a.staffId] = (avByStaff[a.staffId] || []).concat(a.perDay || []); });
-      const staffInfo = staff.map(s => {
+      const rules = { ...DEFAULT_RULES, ...(settings?.settings?.rotaRules || {}) };
+      const dates = wk.days.map(d => d.iso);
+      const secName = (id) => (secs || []).find(x => x.id === id)?.name || null;
+      const staffInfo = staff.filter(s => !onboardingBlock(s.id)).map(s => {
         const role = roles.map[s.role] || {};
-        // AI generation plans the VISIBLE week — cost with that week's rates
+        // AI generation plans the VISIBLE week, so cost with that week's rates
         const { rate } = resolveRateOn(s, role, wk?.days?.[0]?.iso, rateChanges);
+        const av = (avail || []).find(a => a.staffId === s.id);
         return {
           staffId: s.id, name: s.name, position: role.lbl || s.role, section: GRP_SECTION[role.grp] || role.grp || 'Floor',
           rate: Math.round((rate || 0) * 100) / 100, maxWeeklyHours: s.weeklyHoursTarget || s.contractedWeek || null,
-          availability: avByStaff[s.id] && avByStaff[s.id].length ? avByStaff[s.id] : 'flexible',
+          availability: av?.perDay?.length ? av.perDay : 'flexible',
+          approvedLeave: (timeOff || []).filter(l => l.staffId === s.id && l.status === 'approved' && l.endDate >= wk.startIso && l.startDate <= wk.endIso).map(l => ({ from: l.startDate, to: l.endDate })),
         };
       });
-      const sectionReq = (secs || []).map(sec => ({ section: sec.name, minCoverage: sec.minCoverage }));
-      const days = wk.days.map(d => ({ date: d.iso, day: d.label, forecastSales: Math.round(forecast[d.iso] || 0) }));
+      const tpls = templates.map(t => ({ name: t.name, start: t.start, finish: t.finish, breakMins: Number(t.breakMins) || 0, section: secName(t.sectionId) }));
+      const existing = shifts.map(x => ({ staffId: x.staffId, date: x.date, start: x.start, finish: x.finish, breakMins: x.breakMins || 0, section: x.section || secName(x.sectionId) }));
+      const sectionReq = (secs || []).map(sec => ({ name: sec.name, minCoverage: sec.minCoverage }));
+      const hhmm = (m) => `${String(Math.floor((m % 1440) / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+      const days = wk.days.map(d => {
+        const w = openWindowsOn(openingHours, d.iso);
+        return {
+          date: d.iso, day: d.label,
+          forecastSales: Math.round(forecast[d.iso] || suggested[d.iso]?.amount || 0),
+          open: w === null ? 'not set' : (w.length ? w.map(x => `${hhmm(x[0])} to ${hhmm(x[1])}`).join(', ') : 'CLOSED'),
+        };
+      });
       const targetPctNum = Math.round((settings?.labourTargetPct ?? 0.28) * 100);
       const userMsg =
         `Build a one-week rota.\n` +
         `Week: ${weekRangeLabel(wk)} (use these exact dates).\n` +
-        `Days + sales forecast (£): ${JSON.stringify(days)}\n` +
+        `Days, opening hours and sales forecast: ${JSON.stringify(days)}\n` +
+        `Standard shifts (use only these times when any are listed): ${JSON.stringify(tpls)}\n` +
         `Staff (use staffId verbatim): ${JSON.stringify(staffInfo)}\n` +
         `Section minimum coverage: ${JSON.stringify(sectionReq)}\n` +
+        `Shifts already on the rota: ${JSON.stringify(existing)}\n` +
+        `maxDaysInRow: ${rules.maxDaysInRow}. minRestHours: ${rules.minRestHours}.\n` +
         `Target labour cost: ${targetPctNum}% of each day's forecast sales.\n` +
         `Return ONLY the JSON array of shifts.`;
-      const resp = await wf.callAI([{ role: 'user', content: userMsg }], 'rota');
-      const text = (resp?.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
-      const m = text.match(/\[[\s\S]*\]/);
-      if (!m) throw new Error('the AI did not return a usable rota — try again');
-      let proposed;
-      try { proposed = JSON.parse(m[0]); } catch { throw new Error('could not read the AI rota — try again'); }
-      if (!Array.isArray(proposed) || !proposed.length) throw new Error('the AI returned no shifts');
 
-      const valid = new Set(staff.map(s => s.id));
-      const weekDates = new Set(wk.days.map(d => d.iso));
-      // Clash guard: against existing shifts AND the batch as it grows — this
-      // is what previously let repeated AI runs pile duplicates onto the week.
-      const working = [...shifts];
-      let skippedClash = 0;
-      const toInsert = [];
-      for (const p of proposed) {
-        if (!valid.has(p.staffId) || !weekDates.has(p.date) || !p.start || !p.finish) continue;
-        if (findClash(working, p.staffId, p.date, p.start, p.finish)) { skippedClash++; continue; }
+      // The model PROPOSES. If it is down or returns rubbish the rota is still built below.
+      let proposed = [];
+      let aiNote = '';
+      try {
+        const resp = await wf.callAI([{ role: 'user', content: userMsg }], 'rota');
+        const text = (resp?.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n');
+        const m = text.match(/\[[\s\S]*\]/);
+        if (m) { const j = JSON.parse(m[0]); if (Array.isArray(j)) proposed = j; }
+        if (!proposed.length) aiNote = 'The AI returned nothing usable, so the rota was built from your standard shifts and minimum cover.';
+      } catch (e) {
+        aiNote = 'The AI was unavailable, so the rota was built from your standard shifts and minimum cover.';
+      }
+
+      // The RULES decide (staff/rotaRules.js): opening hours, standard shifts, leave, availability,
+      // overlap, rest, days in a row, weekly hours. Then minimum cover is topped up.
+      const ruleCtx = { dates, staff: staffInfo, openingHours, templates: tpls, availability: avail, timeOff, rules };
+      const checked = checkProposed({ ...ruleCtx, proposed, existing });
+      const filled = fillCoverage({ ...ruleCtx, existing, accepted: checked.accepted, sections: sectionReq });
+      const finalShifts = [...checked.accepted, ...filled.added];
+
+      const toInsert = finalShifts.map(p => {
         const s = staff.find(x => x.id === p.staffId);
         const role = roles.map[s.role];
         const { rate, source } = resolveRateOn(s, role, p.date, rateChanges);
         const breakMins = Number(p.breakMins) || 0;
         const hours = Math.max(0, hoursOf(p.start, p.finish) - breakMins / 60);
-        const shift = {
+        const section = p.section || (GRP_SECTION[role?.grp] || null);
+        return {
           staffId: s.id, roleKey: s.role, date: p.date, start: p.start, finish: p.finish, breakMins,
-          section: p.section || (GRP_SECTION[role?.grp] || null), status: 'draft',
+          section, sectionId: (secs || []).find(x => String(x.name || '').toLowerCase() === String(section || '').toLowerCase())?.id || null, status: 'draft',
           effectiveRate: rate, rateSource: source,
           computedHours: Math.round(hours * 100) / 100, computedCost: Math.round(hours * rate * 100) / 100,
         };
-        working.push(shift); // future proposals clash-check against this one too
-        toInsert.push(shift);
-      }
-      // ONE bulk insert instead of N sequential saves — a 30-shift week is a
-      // single round-trip rather than 30.
+      });
+      // ONE bulk insert instead of N sequential saves.
       let added = 0;
       if (toInsert.length) {
         const saved = await wf.saveShiftsBulk(toInsert, ctx.locationId, ctx.orgId);
         added = saved.length;
       }
       await reload(wk);
-      const skipNote = skippedClash ? ` (${skippedClash} skipped — clashed with shifts already on the rota)` : '';
-      showToast(added ? `AI added ${added} draft shift${added === 1 ? '' : 's'}${skipNote} — review, tweak, then publish` : `AI produced no new shifts${skipNote || ' — try adding availability/forecast'}`, added ? 'success' : 'info');
+      const reasons = {};
+      checked.rejected.forEach(r => { reasons[r.reason] = (reasons[r.reason] || 0) + 1; });
+      setAiReport({
+        added, fromAi: checked.accepted.length, filled: filled.added.length, note: aiNote,
+        rejected: Object.entries(reasons).map(([reason, n]) => ({ reason, n })),
+        gaps: filled.gaps, rules,
+      });
+      showToast(added ? `Built ${added} draft shift${added === 1 ? '' : 's'}. Review, tweak, then publish` : 'No new shifts could be placed. See the note above the rota', added ? 'success' : 'info');
     } catch (e) {
       showToast('AI rota: ' + (e.message || 'failed'), 'error');
     } finally { setAiBusy(false); }
@@ -808,6 +854,19 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
   const tLab = { fontSize: 11, fontWeight: 700, color: 'var(--t3)', textTransform: 'uppercase', letterSpacing: '.04em' };
   const tVal = { fontSize: 20, fontWeight: 800, color: 'var(--t1)', marginTop: 2 };
   const tSub = { fontSize: 12, fontWeight: 700, marginTop: 2 };
+  const AiReport = aiReport ? (
+    <div style={{ border: '1px solid var(--bdr)', borderRadius: 12, background: 'var(--bg1)', padding: '10px 14px', margin: '0 0 14px', fontSize: 12.5, color: 'var(--t2)', lineHeight: 1.55 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+        <b style={{ color: 'var(--t1)' }}>Last AI build: {aiReport.added} draft shift{aiReport.added === 1 ? '' : 's'} ({aiReport.fromAi} from the AI, {aiReport.filled} added to reach minimum cover)</b>
+        <button className="btn btn-ghost btn-xs" onClick={() => setAiReport(null)}>Dismiss</button>
+      </div>
+      {aiReport.note && <div>{aiReport.note}</div>}
+      <div>Rules applied: inside opening hours, standard shifts, availability, approved leave, no more than {aiReport.rules.maxDaysInRow} days in a row, at least {aiReport.rules.minRestHours} hours rest, weekly hours.</div>
+      {!!aiReport.rejected.length && <div>AI suggestions discarded: {aiReport.rejected.map(r => `${r.n} ${r.reason}`).join(' · ')}.</div>}
+      {!!aiReport.gaps.length && <div style={{ color: 'var(--red)', fontWeight: 700 }}>Still short of minimum cover: {aiReport.gaps.slice(0, 8).map(g => `${g.section} ${g.date.slice(5)} (${g.short})`).join(' · ')}{aiReport.gaps.length > 8 ? ` and ${aiReport.gaps.length - 8} more` : ''}. Nobody eligible was free.</div>}
+    </div>
+  ) : null;
+
   const LabourStrip = (
     <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', margin: '4px 0 14px' }}>
       <div style={tile}>
@@ -859,7 +918,12 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
         <button className="btn btn-ghost btn-sm" disabled={saving || !shifts.length} onClick={() => setCopyWeekOpen(true)} title="Copy this week's shifts to another week as drafts">
           <Icon name="clipboard" size={14} /> Copy week
         </button>
-        <button className="btn btn-ghost btn-sm" disabled={aiBusy || publishing} onClick={buildWithAI} title="Generate a draft rota from availability, forecast and your target labour %">
+        <button className="btn btn-ghost btn-sm" disabled={!Object.keys(suggested).length}
+          onClick={async () => { for (const d of wk.days) { if (!(Number(forecast[d.iso]) > 0) && suggested[d.iso]) await saveForecastCell(d.iso, String(suggested[d.iso].amount)); } }}
+          title="Fill every empty day with the forecast learned from the last 8 weeks of sales. You can type over any day.">
+          <Icon name="sparkle" size={14} /> AI forecast
+        </button>
+        <button className="btn btn-ghost btn-sm" disabled={aiBusy || publishing} onClick={buildWithAI} title="Builds a draft rota inside your opening hours, from your standard shifts, respecting availability, approved leave, rest and days in a row, to your labour target">
           <Icon name="sparkle" size={14} /> {aiBusy ? 'Building…' : 'Build with AI'}
         </button>
         <button className="btn btn-acc btn-sm" disabled={publishing || !draftIds.length} onClick={publish}>
@@ -909,6 +973,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
         {Header}
         {Modals}
         {LabourStrip}
+        {AiReport}
         {secs.length === 0 && !unassignedCount
           ? <EmptyState icon="floor" title="No sections yet" body="Create sections (Bar, Floor, Kitchen…) in Settings to track coverage per area. Then assign each shift to a section and we'll flag any day that's understaffed." />
           : (
@@ -1008,6 +1073,7 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
       <Card>
         {Header}
         {LabourStrip}
+        {AiReport}
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}>
             <thead><tr><th style={{ ...th, minWidth: 160 }}>Team</th>{dayCols}</tr></thead>
@@ -1025,12 +1091,20 @@ export default function WfRota({ ctx, staff, roles, sections, settings, week, sh
                 {wk.days.map(d => (
                   <td key={d.iso} style={{ ...td, textAlign: 'center', borderTop: '1px solid var(--glass-border)' }}>
                     <input
+                      key={`${d.iso}:${forecast[d.iso] ?? ''}`}
                       defaultValue={forecast[d.iso] != null ? forecast[d.iso] : ''}
                       placeholder="–" inputMode="numeric"
                       onBlur={e => { const v = e.target.value.trim(); if (v !== '' && Number(v) !== forecast[d.iso]) saveForecastCell(d.iso, v); }}
                       className="mono"
                       style={{ width: 64, textAlign: 'center', background: 'transparent', border: '1px solid var(--bdr)', borderRadius: 8, padding: '4px 6px', fontSize: 12, color: 'var(--t1)', outline: 'none' }}
                     />
+                    {suggested[d.iso] && Number(forecast[d.iso] || 0) !== suggested[d.iso].amount && (
+                      <div title={`Learned from the last ${suggested[d.iso].samples} ${d.label}s. Click to use it; type over it any time.`}
+                        onClick={() => saveForecastCell(d.iso, String(suggested[d.iso].amount))}
+                        style={{ marginTop: 3, fontSize: 10, fontWeight: 700, color: 'var(--acc)', cursor: 'pointer' }}>
+                        AI {money(suggested[d.iso].amount)}
+                      </div>
+                    )}
                   </td>
                 ))}
               </FooterRow>

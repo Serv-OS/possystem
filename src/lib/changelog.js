@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.94',
+    date: '17 Sep 2026',
+    items: [
+      'Build with AI now follows your rules. The AI proposes shifts and every one is checked before it lands: inside your opening hours (an hour of setup and close down allowed), your standard shifts only, never on approved leave or an unavailable day, no overlaps, at least 11 hours rest between working days, no more than 5 days in a row, and never over a person\'s weekly hours. Anything that breaks a rule is discarded and listed above the rota.',
+      'Minimum cover is guaranteed where possible. After the AI, each section is topped up to its minimum from your standard shifts, using people from that section with the fewest hours first. If nobody eligible is free, the rota says which section and day is short instead of inventing a shift. If the AI is unavailable the rota is still built this way.',
+      'AI forecast. The rota learns your sales from the last 8 weeks: the same weekday, recent weeks weighted more, closed days ignored, nudged by the recent trend. Each day shows the learned figure under the forecast box; click it to use it, or press AI forecast to fill every empty day. You can still type over any day, and the labour budget follows.',
+      'Two new settings in Workforce settings: max days in a row (default 5) and minimum rest between shifts (default 11 hours).',
+    ],
+  },
+  {
     v: '5.8.93',
     date: '17 Sep 2026',
     items: [
