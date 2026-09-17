@@ -4,7 +4,10 @@
 //
 //   POST { action, ops_location_id }:
 //     status         -> scrubbed connection status + the caterers on this location
-//     connect_token  -> store the API token, create the subscriber, subscribe
+//     connect_token  -> store the API token, create the subscriber, subscribe.
+//                       api_url is optional: the sandbox address ezCater gave
+//                       the owner. Empty, and every older connection, is the
+//                       live API.
 //     list_caterers  -> ask ezCater what this API user can see, cache it
 //     map_caterer    -> point one caterer uuid at one ServOS location
 //     unmap_caterer  -> clear that mapping
@@ -31,6 +34,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import {
   caterers as listCaterers, subscribers as listSubscribers, createSubscriber, updateSubscriber,
   createSubscription, deleteSubscriptions, EZ_EVENTS, EzcaterError, isSchemaError,
+  isSandboxApi, resolveEzcaterApi,
 } from '../_shared/ezcater.ts';
 import { buildLinkKey } from '../_shared/ezcaterMatch.ts';
 
@@ -60,6 +64,21 @@ function isAbsentTable(err: any): boolean {
   if (code === '42P01' || code === 'PGRST205') return true;
   const msg = String(err?.message || '').toLowerCase();
   return /relation .*does not exist/.test(msg) || msg.includes('could not find the table');
+}
+
+/**
+ * "That COLUMN is not there yet", the same story one level down.
+ *
+ * 42703 is Postgres undefined_column and PGRST204 is PostgREST failing to find
+ * the column in its schema cache. Both mean 20260917_OPS_ezcater_api_url.sql has
+ * not been run, and naming that column in a write fails the WHOLE write, so it
+ * is only ever named when the operator actually typed an address.
+ */
+function isAbsentColumn(err: any, column: string): boolean {
+  const code = String(err?.code || '');
+  const msg = String(err?.message || '').toLowerCase();
+  if (code === '42703' || code === 'PGRST204') return true;
+  return msg.includes(`column "${column}"`) || msg.includes(`'${column}' column`);
 }
 
 /** Signed in Ops user with access to this location, or super_admin. Same fence as hubrise-connect. */
@@ -112,6 +131,12 @@ function publicStatus(c: any) {
     // plainly rather than offering a button that always fails.
     accept_enabled: c.accept_enabled,
     menus_enabled: c.menus_enabled,
+    // Which ezCater this venue is talking to. null is the live API, which is
+    // also what every connection made before the api_url column existed reads
+    // as. Back Office labels anything else Sandbox, in amber, so a test
+    // connection can never sit there looking live.
+    api_url: c.api_url ?? null,
+    sandbox: isSandboxApi(c.api_url ?? null),
     last_event_at: c.last_event_at,
     last_reconcile_at: c.last_reconcile_at,
     last_error: c.last_error,
@@ -168,6 +193,7 @@ async function catererUuidsFor(connectionId: string): Promise<string[]> {
  */
 async function subscribe(
   connectionId: string, token: string, catererUuids: string[], label: string | null,
+  endpoint: string | null = null,
 ): Promise<{
   subscriberId: string | null; secret: string | null; events: string[]; caterers: number;
   reused: boolean; repointed: boolean; webhookUrl: string | null; repointError: string | null;
@@ -177,9 +203,9 @@ async function subscribe(
   let subscriber: any = null;
   let reused = false;
   try {
-    subscriber = await createSubscriber(token, WEBHOOK_URL, name);
+    subscriber = await createSubscriber(token, WEBHOOK_URL, name, endpoint);
   } catch (e) {
-    const existing = await listSubscribers(token).catch(() => [] as any[]);
+    const existing = await listSubscribers(token, endpoint).catch(() => [] as any[]);
     subscriber = existing[0] || null;
     if (!subscriber) throw e;
     reused = true;
@@ -196,7 +222,7 @@ async function subscribe(
   let webhookUrl = subscriber?.webhookUrl ? String(subscriber.webhookUrl) : null;
   if (reused && subscriberId && webhookUrl !== WEBHOOK_URL) {
     try {
-      const updated = await updateSubscriber(token, subscriberId, WEBHOOK_URL, name);
+      const updated = await updateSubscriber(token, subscriberId, WEBHOOK_URL, name, endpoint);
       webhookUrl = updated?.webhookUrl ? String(updated.webhookUrl) : WEBHOOK_URL;
       repointed = true;
       console.warn('[ezcater-connect] reused subscriber', subscriberId,
@@ -222,7 +248,7 @@ async function subscribe(
         // One failed event must not cost us the others. relish_finalized in
         // particular is the ONLY event a Meal Program order ever sends, so losing
         // it silently loses every Meal Program order.
-        try { await createSubscription(token, subscriberId, catererUuid, ev); done.add(ev); any = true; }
+        try { await createSubscription(token, subscriberId, catererUuid, ev, endpoint); done.add(ev); any = true; }
         catch (e) { console.warn('[ezcater-connect] subscribe', ev, 'for caterer', catererUuid, 'failed:', e instanceof Error ? e.message : String(e)); }
       }
       if (any) wired++;
@@ -290,20 +316,42 @@ Deno.serve(async (req) => {
         if (!apiToken) return json({ error: 'api_token required' }, 400);
         const label = String(body?.label || '').trim() || null;
 
-        const { data: conn, error } = await sb.from('ezcater_connections').insert({
+        // The API address, only when the operator typed one. Empty is the live
+        // ezCater API and is what everyone gets by default.
+        const apiUrl = String(body?.api_url || '').trim() || null;
+        if (apiUrl) {
+          // Refuse here as well as in the browser: this function is the fence,
+          // and an https-only rule enforced only in the UI is not a rule. The
+          // address is never logged, in case somebody pasted credentials in it.
+          try { resolveEzcaterApi(apiUrl); }
+          catch { return json({ error: 'The API address has to start with https://, because your ezCater token travels with every call. Leave it empty to use the live ezCater API.' }, 400); }
+        }
+
+        const row: Record<string, unknown> = {
           api_token: apiToken,
           label,
           webhook_url: WEBHOOK_URL,
           status: 'connected',
           connected_by: access.userId === 'service' ? null : access.userId,
-        }).select('id').single();
-        if (error || !conn?.id) return json({ error: error?.message || 'could not store connection' }, 500);
+        };
+        if (apiUrl) row.api_url = apiUrl;
+
+        const { data: conn, error } = await sb.from('ezcater_connections').insert(row).select('id').single();
+        if (error || !conn?.id) {
+          // Naming a column that is not there fails the WHOLE insert. Say which
+          // file fixes it rather than quietly dropping the address and pointing
+          // a sandbox token at the live API.
+          if (apiUrl && isAbsentColumn(error, 'api_url')) {
+            return json({ error: 'This database cannot store an API address yet. Run 20260917_OPS_ezcater_api_url.sql, or leave the API address empty to use the live ezCater API.' }, 400);
+          }
+          return json({ error: error?.message || 'could not store connection' }, 500);
+        }
 
         // Prove the token before we claim success. A bad token here is the most
         // common setup failure and it is silent otherwise.
         let seen: any[] = [];
         try {
-          seen = await listCaterers(apiToken);
+          seen = await listCaterers(apiToken, apiUrl);
         } catch (e) {
           const detail = e instanceof Error ? e.message : String(e);
           await sb.from('ezcater_connections')
@@ -328,7 +376,7 @@ Deno.serve(async (req) => {
         }
 
         const sub = await subscribe(
-          conn.id, apiToken, seen.map((c: any) => String(c?.uuid || '')).filter(Boolean), label,
+          conn.id, apiToken, seen.map((c: any) => String(c?.uuid || '')).filter(Boolean), label, apiUrl,
         );
         const { data: fresh } = await sb.from('ezcater_connections').select('*').eq('id', conn.id).maybeSingle();
         return json({
@@ -357,7 +405,7 @@ Deno.serve(async (req) => {
       case 'list_caterers': {
         const conn = await connectionForLocation(opsLocationId);
         if (!conn?.api_token) return json({ error: 'not connected' }, 400);
-        const seen = await listCaterers(conn.api_token);
+        const seen = await listCaterers(conn.api_token, conn.api_url ?? null);
         for (const c of seen) {
           await sb.from('ezcater_caterers').upsert({
             caterer_uuid: String(c?.uuid || ''),
@@ -432,10 +480,10 @@ Deno.serve(async (req) => {
         // walk the caterers. Passing a subscriber id here deleted nothing.
         const uuids = await catererUuidsFor(conn.id);
         for (const catererUuid of uuids) {
-          await deleteSubscriptions(conn.api_token, catererUuid).catch((e: unknown) =>
+          await deleteSubscriptions(conn.api_token, catererUuid, conn.api_url ?? null).catch((e: unknown) =>
             console.warn('[ezcater-connect] deleteSubscriptions', catererUuid, ':', e instanceof Error ? e.message : String(e)));
         }
-        const sub = await subscribe(conn.id, conn.api_token, uuids, conn.label || null);
+        const sub = await subscribe(conn.id, conn.api_token, uuids, conn.label || null, conn.api_url ?? null);
         return json({
           ok: true, subscriber_id: sub.subscriberId, subscribed: sub.events, subscribed_caterers: sub.caterers,
           reused_subscriber: sub.reused,
@@ -449,7 +497,7 @@ Deno.serve(async (req) => {
         const conn = await connectionForLocation(opsLocationId);
         if (conn?.api_token && conn?.id) {
           for (const catererUuid of await catererUuidsFor(conn.id)) {
-            await deleteSubscriptions(conn.api_token, catererUuid).catch(() => {});
+            await deleteSubscriptions(conn.api_token, catererUuid, conn.api_url ?? null).catch(() => {});
           }
         }
         if (conn?.id) {
