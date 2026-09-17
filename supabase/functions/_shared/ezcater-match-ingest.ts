@@ -31,11 +31,19 @@
 //  order that never reaches the kitchen costs a customer.
 // ════════════════════════════════════════════════════════════════════════════
 //
+// WHAT IT WRITES
+//   EVERY name ezCater sends gets a row: the key, their spelling, their group,
+//   how many lines have used it and when it was last seen. A row with NO target
+//   is the normal first state and is what Back Office, Channels, 3rd Party
+//   orders, "Item matching" lists for a person to answer. Without these rows
+//   that screen has nothing to show.
+//
 // WHAT IT NEVER DOES
-//   * it never OVERWRITES a link row that already exists. A person's decision,
-//     or an earlier auto decision somebody has since corrected, is never
-//     clobbered by an order arriving. Ingest only inserts rows that are absent
-//     (on conflict do nothing) and bumps counters on rows it saw.
+//   * it never OVERWRITES a decision. A person's match, a person's "Not on our
+//     menu", or a target we filled in earlier, is never clobbered by an order
+//     arriving. Ingest inserts rows that are absent (on conflict do nothing),
+//     bumps counters on rows it saw, and fills the target in on a row that is
+//     still a bare sighting: no target, nobody has touched it, source 'auto'.
 //   * it never writes a link for a posItemId. That id only exists because we
 //     put it there through menuCreate, so it already names our item and a row
 //     would add nothing.
@@ -46,7 +54,7 @@
 //     suggests instead, and the line stays unmatched until a person picks.
 
 import {
-  applyLinks, autoLinkDecision, buildLinkKey, indexLinks,
+  applyLinks, autoLinkDecision, buildLinkKey, findLink, indexLinks,
 } from './ezcaterMatch.ts';
 // The ezMatch stamp lives with the rest of the customer jsonb shape, in the
 // mapper, not here.
@@ -64,6 +72,16 @@ export const MENU_MAX_PAGES = 5;
 export const MAX_LINK_WRITES = 200;
 /** seen_count updates issued for one order. Counters, never routing. */
 export const MAX_LINK_BUMPS = 200;
+/**
+ * How long the whole matching job may take before the order goes without it.
+ *
+ * Matching is best effort and the ORDER ALWAYS WINS. A slow menu read on a big
+ * venue, or a Postgres that is thinking about something else, must never hold
+ * up the order_queue write: past this the webhook gets the mapper's own row
+ * back, the ticket prints as plain text exactly as it does today, and the next
+ * order matches normally.
+ */
+export const MATCH_BUDGET_MS = 4000;
 
 // ────────────────────────────────────────────────────────────────────────────
 // Reading our menu into the shape the matcher wants
@@ -181,6 +199,13 @@ export interface MatchPlan {
   writes: any[];
   /** Existing rows this order used: { kind, ezKey, times, seenCount }. */
   bumps: { kind: string; ezKey: string; times: number; seenCount: number }[];
+  /**
+   * Bare sightings we can now answer: a row already on the table with no target
+   * that nobody has touched, and an auto match for it today. Applied with a
+   * where clause that re-checks all of that, so a person saving at the same
+   * moment always wins.
+   */
+  upgrades: { kind: string; ezKey: string; menuItemId: string | null; optionId: string | null }[];
 }
 
 /**
@@ -198,6 +223,13 @@ export interface MatchPlan {
  *      whose item is gone is not reused, and a posItemId naming nothing of ours
  *      is not trusted.
  *
+ * A PARTLY READ MENU IS NOT A MENU. menuOk false means a page of menu_items or
+ * modifier_groups failed, or the read was cut short at MENU_MAX_PAGES. What we
+ * hold is then a piece of the venue's menu, and "no item of ours has that name"
+ * is a claim we cannot make from a piece: it would auto link the wrong product
+ * or, worse, write that wrong link down for every later order. So the saved
+ * links are the whole answer and nothing is written at all.
+ *
  * nowIso is an ARGUMENT, not a clock read, so the same input always gives the
  * same output and the tests can pin it.
  */
@@ -208,6 +240,8 @@ export function planLineMatches(input: {
   links?: any;
   locationId: string;
   nowIso: string;
+  /** false when what we hold is only part of the menu. Default true. */
+  menuOk?: boolean;
 }): MatchPlan {
   const lines = Array.isArray(input.lines) ? input.lines : [];
   const ourItems = Array.isArray(input.ourItems) ? input.ourItems : [];
@@ -215,17 +249,22 @@ export function planLineMatches(input: {
   const links = input.links || [];
   const locationId = text(input.locationId);
   const nowIso = text(input.nowIso) || new Date(0).toISOString();
+  const menuOk = input.menuOk !== false;
 
-  // Pass 1. Also the whole answer when there is no menu to check against.
+  // Pass 1. Also the whole answer when there is no menu to check against, or
+  // when what we read of it is only part.
   const applied = applyLinks(lines, links);
   const haveItems = ourItems.length > 0;
   const haveGroups = ourGroups.length > 0;
-  if (!locationId || (!haveItems && !haveGroups)) return { lines: applied, writes: [], bumps: [] };
+  if (!locationId || !menuOk || (!haveItems && !haveGroups)) {
+    return { lines: applied, writes: [], bumps: [], upgrades: [] };
+  }
 
   const idx = indexLinks(links);
   const counts = linkSeenCounts(links);
   const times = new Map<string, number>();          // existing rows: how many lines used them
   const fresh = new Map<string, any>();             // rows to insert, deduped by key
+  const fill = new Map<string, any>();              // bare sightings we can answer
 
   const sawExisting = (kind: string, key: string) => {
     const k = kind + ':' + key;
@@ -239,15 +278,41 @@ export function planLineMatches(input: {
     fresh.set(k, { ...row, seen_count: 1 });
   };
 
+  /** A row that is still only a sighting: no target, and nobody has touched it. */
+  const isBareSighting = (link: any) =>
+    !!link && !link.menuItemId && !link.optionId && String(link.source || '') === 'auto';
+
   // One key, one decision, one bookkeeping entry. kind switches which arm of
   // autoLinkDecision runs and which id column a new row fills.
   const record = (kind: 'item' | 'option', src: any, d: any) => {
     const key = buildLinkKey(src, kind);
     if (!key) return;                               // unnameable: never written
-    if (idx.has(kind + ':' + key)) { sawExisting(kind, key); return; }
-    if (d.action !== 'linked' || d.source !== 'auto') return;
     const name = rawName(src);
     if (!name) return;                              // backstop for the check constraint
+
+    // ezCater already carried our id on this line, so there is nothing for a
+    // person to decide and a row would only go stale. Today's rule, kept.
+    if (d.action === 'linked' && d.source === 'posItemId') return;
+
+    // A target only when we are confident on our own: one exact name of ours,
+    // no size clash, nothing else exact. Otherwise the row is a sighting and
+    // the Back Office screen asks a person.
+    const linked = d.action === 'linked' && d.source === 'auto';
+    const menuItemId = linked && d.itemId != null ? String(d.itemId) : null;
+    const optionId = linked && kind === 'option' && d.optionId != null ? String(d.optionId) : null;
+
+    const hit = findLink(idx, src, kind);
+    if (hit) {
+      sawExisting(kind, hit.key);
+      // The row was written the first time we saw this name, before the venue
+      // had the product. Now we can answer it, so fill it in rather than leave
+      // the screen asking forever about something we match on every order.
+      if ((menuItemId || optionId) && isBareSighting(hit.link)) {
+        fill.set(kind + ':' + hit.key, { kind, ezKey: hit.key, menuItemId, optionId });
+      }
+      return;
+    }
+
     const group = kind === 'option' ? rawGroup(src) : '';
     sawFresh(kind, key, {
       location_id: locationId,
@@ -255,10 +320,11 @@ export function planLineMatches(input: {
       ez_key: key,
       ez_name: name,
       ez_group: group || null,
-      menu_item_id: d.itemId != null ? String(d.itemId) : null,
-      option_id: kind === 'option' && d.optionId != null ? String(d.optionId) : null,
+      menu_item_id: menuItemId,
+      option_id: optionId,
       source: 'auto',
-      matched_by: 'name',
+      // null is "seen, nobody has decided yet", which is what the screen lists.
+      matched_by: (menuItemId || optionId) ? 'name' : null,
       last_seen_at: nowIso,
       updated_at: nowIso,
     });
@@ -311,8 +377,9 @@ export function planLineMatches(input: {
     const ezKey = k.slice(cut + 1);
     return { kind, ezKey, times: n, seenCount: (counts.get(k) || 0) + n };
   });
+  const upgrades = Array.from(fill.values()).slice(0, MAX_LINK_BUMPS);
 
-  return { lines: outLines, writes, bumps };
+  return { lines: outLines, writes, bumps, upgrades };
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -325,22 +392,44 @@ export interface MatchInputs {
   ourGroups: any[];
   /** false when the links table could not be read, so nothing may be written. */
   linksOk: boolean;
-  /** false when the menu could not be read, so saved links are the whole answer. */
+  /**
+   * true only when we hold the WHOLE menu: every page of menu_items AND of
+   * modifier_groups read, and neither cut short. false means saved links are
+   * the whole answer and no new link may be written.
+   */
   menuOk: boolean;
 }
 
-/** Page through a table so a menu over 1000 rows is not silently truncated. */
-async function readPaged(run: (from: number, to: number) => any): Promise<{ rows: any[]; ok: boolean }> {
+/** True once the budget is spent. No deadline means never. */
+export function outOfTime(deadline?: number | null, nowMs?: number): boolean {
+  if (deadline == null || !Number.isFinite(deadline)) return false;
+  const now = Number.isFinite(nowMs as number) ? (nowMs as number) : Date.now();
+  return now >= (deadline as number);
+}
+
+/**
+ * Page through a table so a menu over 1000 rows is not silently truncated.
+ *
+ * `complete` is the one that matters to the caller: false means a page failed,
+ * the budget ran out, or the read hit MENU_MAX_PAGES with a full page in hand,
+ * so what came back is PART of the menu and cannot be reasoned about as if it
+ * were all of it.
+ */
+async function readPaged(
+  run: (from: number, to: number) => any,
+  deadline?: number | null,
+): Promise<{ rows: any[]; ok: boolean; complete: boolean }> {
   const rows: any[] = [];
   for (let page = 0; page < MENU_MAX_PAGES; page++) {
+    if (outOfTime(deadline)) return { rows, ok: true, complete: false };
     const from = page * MENU_PAGE_SIZE;
     const { data, error } = await run(from, from + MENU_PAGE_SIZE - 1);
-    if (error) return { rows, ok: false };
+    if (error) return { rows, ok: false, complete: false };
     const batch = Array.isArray(data) ? data : [];
     rows.push(...batch);
-    if (batch.length < MENU_PAGE_SIZE) break;
+    if (batch.length < MENU_PAGE_SIZE) return { rows, ok: true, complete: true };
   }
-  return { rows, ok: true };
+  return { rows, ok: true, complete: false };
 }
 
 /**
@@ -352,9 +441,14 @@ async function readPaged(run: (from: number, to: number) => any): Promise<{ rows
  * from an empty venue except through linksOk / menuOk, and that is deliberate:
  * both mean "match with what you have".
  */
-export async function readMatchInputs(sb: any, locationId: string): Promise<MatchInputs> {
+export async function readMatchInputs(
+  sb: any,
+  locationId: string,
+  opts: { deadline?: number | null } = {},
+): Promise<MatchInputs> {
   const out: MatchInputs = { links: [], ourItems: [], ourGroups: [], linksOk: false, menuOk: false };
   if (!sb || !locationId) return out;
+  const deadline = opts.deadline == null ? null : opts.deadline;
 
   // 1) Saved links. 42P01 (table missing, the migration is run by hand) is the
   // expected failure here and reads the same as "no links saved yet".
@@ -372,15 +466,20 @@ export async function readMatchInputs(sb: any, locationId: string): Promise<Matc
     console.warn('[ezcater-match] links read threw:', e instanceof Error ? e.message : String(e));
   }
 
-  // 2) The menu. Items and groups are independent: one failing does not stop
-  // the other, it only narrows what can be matched.
+  // 2) The menu. BOTH tables have to come back whole. A partly read menu is
+  // worse than no menu: "nothing of ours has that name" would be a lie told
+  // about the half we did not see, and an auto link written from it is wrong
+  // for every later order, silently.
+  let itemsWhole = false;
+  let groupsWhole = false;
+
   try {
     const items = await readPaged((from: number, to: number) => sb.from('menu_items')
       .select('id, name, menu_name, pricing, archived')
-      .eq('location_id', locationId).order('id', { ascending: true }).range(from, to));
+      .eq('location_id', locationId).order('id', { ascending: true }).range(from, to), deadline);
     out.ourItems = menuItemsForMatch(items.rows);
-    out.menuOk = items.ok;
-    if (!items.ok) console.warn('[ezcater-match] menu items read failed, matching only by saved links');
+    itemsWhole = items.ok && items.complete;
+    if (!itemsWhole) console.warn('[ezcater-match] menu items read incomplete, matching only by saved links');
   } catch (e) {
     console.warn('[ezcater-match] menu items read threw:', e instanceof Error ? e.message : String(e));
   }
@@ -388,13 +487,15 @@ export async function readMatchInputs(sb: any, locationId: string): Promise<Matc
   try {
     const groups = await readPaged((from: number, to: number) => sb.from('modifier_groups')
       .select('id, name, options')
-      .eq('location_id', locationId).order('id', { ascending: true }).range(from, to));
+      .eq('location_id', locationId).order('id', { ascending: true }).range(from, to), deadline);
     out.ourGroups = modifierGroupsForMatch(groups.rows);
-    if (!groups.ok) console.warn('[ezcater-match] modifier groups read failed, options left unmatched');
+    groupsWhole = groups.ok && groups.complete;
+    if (!groupsWhole) console.warn('[ezcater-match] modifier groups read incomplete, matching only by saved links');
   } catch (e) {
     console.warn('[ezcater-match] modifier groups read threw:', e instanceof Error ? e.message : String(e));
   }
 
+  out.menuOk = itemsWhole && groupsWhole;
   return out;
 }
 
@@ -408,6 +509,10 @@ export async function readMatchInputs(sb: any, locationId: string): Promise<Matc
  *   bumps   seen_count and last_seen_at, by primary key, touching those two
  *           columns only, so a concurrent edit to menu_item_id or source is
  *           never overwritten by a counter update.
+ *   upgrades a row that is still a bare sighting gets the target we can now
+ *           prove. The where clause repeats every condition (no menu_item_id,
+ *           no option_id, no matched_by, source 'auto'), so Postgres itself
+ *           refuses the update if a person answered it a moment ago.
  *
  * seen_count is read then written, so two orders landing in the same instant
  * can lose one increment. It is a "how often does ezCater send this" counter on
@@ -422,8 +527,9 @@ export async function saveLinkWrites(
   writes: any[],
   bumps: { kind: string; ezKey: string; seenCount: number }[],
   nowIso: string,
-): Promise<{ inserted: number; bumped: number }> {
-  const done = { inserted: 0, bumped: 0 };
+  upgrades: { kind: string; ezKey: string; menuItemId: string | null; optionId: string | null }[] = [],
+): Promise<{ inserted: number; bumped: number; filled: number }> {
+  const done = { inserted: 0, bumped: 0, filled: 0 };
   if (!sb || !locationId) return done;
 
   try {
@@ -452,6 +558,29 @@ export async function saveLinkWrites(
     console.warn('[ezcater-match] seen_count bump threw:', e instanceof Error ? e.message : String(e));
   }
 
+  try {
+    const list = (Array.isArray(upgrades) ? upgrades : []).slice(0, MAX_LINK_BUMPS)
+      .filter((u) => u && u.ezKey && (u.menuItemId || u.optionId));
+    const results = await Promise.all(list.map((u) => sb.from('ezcater_item_links')
+      .update({
+        menu_item_id: u.menuItemId || null,
+        option_id: u.optionId || null,
+        matched_by: 'name',
+        updated_at: nowIso,
+      })
+      .eq('location_id', locationId).eq('kind', u.kind).eq('ez_key', u.ezKey)
+      // Still a bare sighting, or this update does nothing at all. A person who
+      // answered it in the meantime keeps their answer.
+      .eq('source', 'auto').is('menu_item_id', null).is('option_id', null).is('matched_by', null)
+      .then((r: any) => r, (e: any) => ({ error: e }))));
+    for (const r of results) {
+      if (r && r.error) console.warn('[ezcater-match] sighting fill failed:', r.error.message || r.error);
+      else done.filled++;
+    }
+  } catch (e) {
+    console.warn('[ezcater-match] sighting fill threw:', e instanceof Error ? e.message : String(e));
+  }
+
   return done;
 }
 
@@ -463,57 +592,91 @@ export async function saveLinkWrites(
  * ON ANY FAILURE IT RETURNS THE ROW IT WAS GIVEN, UNTOUCHED. No ezMatch stamp,
  * itemId exactly as the mapper left it, which is today's behaviour and a
  * working plain text ticket. Nothing here can stop an order reaching a kitchen.
+ *
+ * AND IT IS ON A CLOCK. budgetMs (default MATCH_BUDGET_MS) caps the whole job.
+ * The deadline is checked between reads, and the job is raced against a timer
+ * as well, so even a read that never comes back cannot delay the order: past
+ * the budget the caller gets the mapper's row and writes it. Pass budgetMs 0 to
+ * turn the clock off.
  */
 export async function matchQueueRow(
   sb: any,
   locationId: string,
   row: any,
-  opts: { nowIso?: string } = {},
+  opts: { nowIso?: string; budgetMs?: number } = {},
 ): Promise<{ row: any; matched: number; lines: number; inserted: number; bumped: number; ran: boolean }> {
   const lines = Array.isArray(row?.items) ? row.items : [];
   const bailed = { row, matched: 0, lines: lines.length, inserted: 0, bumped: 0, ran: false };
   if (!sb || !locationId || !lines.length) return bailed;
 
-  try {
-    const nowIso = opts.nowIso || new Date().toISOString();
-    const input = await readMatchInputs(sb, locationId);
+  const budgetMs = Number.isFinite(opts.budgetMs as number) ? Number(opts.budgetMs) : MATCH_BUDGET_MS;
+  const deadline = budgetMs > 0 ? Date.now() + budgetMs : null;
+  // The clock. A hung read resolves nothing, so a deadline checked between
+  // awaits is not enough on its own: the race below is what guarantees the
+  // order goes through.
+  let timer: any = null;
+  const timedOut = Symbol('ezcater-match-timeout');
 
-    // Both reads failed, so we know nothing: not the links, not the menu. Stamping
-    // ezMatch here would tell a screen "we checked and matched none of it", which
-    // is a different and worse thing than "we could not check". Hand back the
-    // mapper's row untouched instead.
-    if (!input.linksOk && !input.menuOk) {
-      console.warn('[ezcater-match] neither links nor menu could be read, order continues unmatched');
+  try {
+    const work = async () => {
+      const nowIso = opts.nowIso || new Date().toISOString();
+      const input = await readMatchInputs(sb, locationId, { deadline });
+
+      // Both reads failed, so we know nothing: not the links, not the menu. Stamping
+      // ezMatch here would tell a screen "we checked and matched none of it", which
+      // is a different and worse thing than "we could not check". Hand back the
+      // mapper's row untouched instead.
+      if (!input.linksOk && !input.menuOk) {
+        console.warn('[ezcater-match] neither links nor menu could be read, order continues unmatched');
+        return bailed;
+      }
+
+      const plan = planLineMatches({
+        lines,
+        ourItems: input.ourItems,
+        ourGroups: input.ourGroups,
+        links: input.links,
+        locationId,
+        nowIso,
+        menuOk: input.menuOk,
+      });
+
+      // Only write when the links table answered a read. If it did not, an insert
+      // would fail too, and guessing at that is not worth a second error line.
+      // And never spend more time writing than the order can afford to wait.
+      let saved = { inserted: 0, bumped: 0, filled: 0 };
+      if (input.linksOk && !outOfTime(deadline)) {
+        saved = await saveLinkWrites(sb, locationId, plan.writes, plan.bumps, nowIso, plan.upgrades);
+      } else if (input.linksOk) {
+        console.warn('[ezcater-match] out of time before saving, this order still routes');
+      }
+
+      const next = withMatchedItems(row, plan.lines);
+      const summary = next?.customer?.ezMatch || { lines: plan.lines.length, matched: 0 };
+      return {
+        row: next,
+        matched: Number(summary.matched) || 0,
+        lines: Number(summary.lines) || plan.lines.length,
+        inserted: saved.inserted,
+        bumped: saved.bumped,
+        ran: true,
+      };
+    };
+
+    const onTime = deadline == null ? null : new Promise((resolve) => {
+      timer = setTimeout(() => resolve(timedOut), Math.max(1, (deadline as number) - Date.now()));
+    });
+    const result: any = onTime ? await Promise.race([work(), onTime]) : await work();
+    if (result === timedOut) {
+      console.warn('[ezcater-match] matching took too long, order goes through unmatched');
       return bailed;
     }
-
-    const plan = planLineMatches({
-      lines,
-      ourItems: input.ourItems,
-      ourGroups: input.ourGroups,
-      links: input.links,
-      locationId,
-      nowIso,
-    });
-
-    // Only write when the links table answered a read. If it did not, an insert
-    // would fail too, and guessing at that is not worth a second error line.
-    let saved = { inserted: 0, bumped: 0 };
-    if (input.linksOk) saved = await saveLinkWrites(sb, locationId, plan.writes, plan.bumps, nowIso);
-
-    const next = withMatchedItems(row, plan.lines);
-    const summary = next?.customer?.ezMatch || { lines: plan.lines.length, matched: 0 };
-    return {
-      row: next,
-      matched: Number(summary.matched) || 0,
-      lines: Number(summary.lines) || plan.lines.length,
-      inserted: saved.inserted,
-      bumped: saved.bumped,
-      ran: true,
-    };
+    return result;
   } catch (e) {
     console.warn('[ezcater-match] matching skipped, order continues unmatched:',
       e instanceof Error ? e.message : String(e));
     return bailed;
+  } finally {
+    if (timer !== null) { clearTimeout(timer); timer = null; }
   }
 }

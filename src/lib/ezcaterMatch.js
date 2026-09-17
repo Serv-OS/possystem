@@ -42,6 +42,12 @@
 // that survives a menu republish. The cost is honest and visible: rename the
 // item on ezCater and the link needs making again, which is why ez_name is
 // stored verbatim next to it and the screen can show what was seen.
+//
+// THE KEY KEEPS THE SIZE WORD. "Half Tray" and "Full Tray" are two rows, two
+// matches and two products, because they are two products to a kitchen. Only
+// the container word ("tray", "pan", "size") is dropped from a key. The SCORER
+// still ignores the size, so both still find our one "Caesar Salad" to suggest.
+// normaliseKeyName is the key form, normaliseItemName is the comparing form.
 // ============================================================================
 
 // ----------------------------------------------------------------------------
@@ -144,17 +150,41 @@ function rawTokens(value) {
 }
 
 /**
- * The match key form of a name: lower case, no punctuation, no bracketed
+ * Drop the trailing words in `drop`, never emptying the name. A name that is
+ * nothing but dropped words keeps its first word, because on a modifier option
+ * that single word IS the product.
+ */
+function dropTrailing(tokens, drop) {
+  let end = tokens.length;
+  while (end > 1 && drop.indexOf(tokens[end - 1]) !== -1) end--;
+  return tokens.slice(0, end).join(' ');
+}
+
+/**
+ * The COMPARING form of a name: lower case, no punctuation, no bracketed
  * suffix, no catering noise, no trailing size or container word.
  *
- * Never strips a name away to nothing. "Large" stays "large", because on a
- * modifier option that single word IS the product.
+ * This is what the scorer works in, so "Caesar Salad Half Tray" and "Caesar
+ * Salad" still recognise each other as the same product.
  */
 export function normaliseItemName(value) {
-  const tokens = rawTokens(value);
-  let end = tokens.length;
-  while (end > 1 && TRAILING_DROP.indexOf(tokens[end - 1]) !== -1) end--;
-  return tokens.slice(0, end).join(' ');
+  return dropTrailing(rawTokens(value), TRAILING_DROP);
+}
+
+/**
+ * The KEY form of a name. Same as normaliseItemName EXCEPT that the size word
+ * stays: only the container word ("tray", "pan", "size") is dropped.
+ *
+ * WHY THE KEY KEEPS THE SIZE AND THE SCORER DOES NOT.
+ * A venue sells "Caesar Salad Half Tray" and "Caesar Salad Full Tray" on
+ * ezCater. Both are the same dish to a scorer, so both should still find our
+ * "Caesar Salad" when we look for something to suggest. But they are TWO
+ * products to a kitchen, with different stock and different money, so they must
+ * be two link ROWS: one manual match must never route both, and the Back Office
+ * screen has to be able to show them apart.
+ */
+export function normaliseKeyName(value) {
+  return dropTrailing(rawTokens(value), CONTAINER_WORDS);
 }
 
 /** Distinct words of a normalised name, in first seen order. */
@@ -343,14 +373,32 @@ export function suggestMatches(theirLine, ourItems, opts) {
 // ----------------------------------------------------------------------------
 
 /**
- * The key a link row is stored under: the normalised name, and for an option
- * the normalised group name in front of it so "Large" under Size and "Large"
- * under Drink are two different things.
+ * The key a link row is stored under: the key form of the name (the size word
+ * kept, see normaliseKeyName), and for an option the key form of the group name
+ * in front of it so "Large" under Size and "Large" under Drink are two
+ * different things.
  *
  * Returns '' when there is no usable name. A caller must never write a link
  * with an empty key.
  */
 export function buildLinkKey(line, kind) {
+  const k = kind || (line && line.kind) || 'item';
+  const their = theirParts(line);
+  const name = normaliseKeyName(their.name);
+  if (k === 'option') {
+    const group = normaliseKeyName(their.group);
+    return name ? group + '|' + name : '';
+  }
+  return name;
+}
+
+/**
+ * The key this name WOULD have had under the older rule, which dropped the size
+ * word as well. Rows saved before the size was kept are stored under this, so
+ * every lookup falls back to it and a venue's earlier matching work keeps
+ * routing. Nothing NEW is ever written under it.
+ */
+export function legacyLinkKey(line, kind) {
   const k = kind || (line && line.kind) || 'item';
   const their = theirParts(line);
   const name = normaliseItemName(their.name);
@@ -359,6 +407,32 @@ export function buildLinkKey(line, kind) {
     return name ? group + '|' + name : '';
   }
   return name;
+}
+
+/** Every key a saved row for this line could be under, today's first. */
+export function linkKeyCandidates(line, kind) {
+  const k = kind || (line && line.kind) || 'item';
+  const out = [];
+  const now = buildLinkKey(line, k);
+  if (now) out.push(now);
+  const old = legacyLinkKey(line, k);
+  if (old && old !== now) out.push(old);
+  return out;
+}
+
+/**
+ * The saved row for one line, today's key first and the older key second.
+ * Returns { key, link } so a caller can bump the row UNDER THE KEY IT IS
+ * ACTUALLY STORED WITH, or null when there is none.
+ */
+export function findLink(idx, line, kind) {
+  if (!idx || typeof idx.get !== 'function') return null;
+  const k = kind || (line && line.kind) || 'item';
+  for (const key of linkKeyCandidates(line, k)) {
+    const link = idx.get(k + ':' + key);
+    if (link) return { key, link };
+  }
+  return null;
 }
 
 const pick = (row, snake, camel) => {
@@ -431,6 +505,32 @@ const idsOf = (list) => {
 };
 
 /**
+ * True when BOTH sides name a size and the sizes are not the same.
+ *
+ * The names normalise equal (the scorer drops the size on purpose), so without
+ * this their "Large" auto links to our "Small": one exact name, nothing else
+ * exact, linked. The scorer already docks such a pair; an auto link must refuse
+ * it outright and let a person pick, because the wrong size is the wrong food,
+ * the wrong stock and the wrong money.
+ *
+ * One side with no size at all is NOT a clash: our plain "Caesar Salad" is the
+ * right answer for their "Caesar Salad Large" when it is the only Caesar we
+ * sell.
+ */
+function sizeClash(theirName, ourItem) {
+  const theirSize = sizeWordOf(theirName);
+  if (!theirSize) return false;
+  // The same candidate the scorer reads a size from: the first name of ours
+  // that carries one.
+  let ourSize = null;
+  for (const cand of ourNames(ourItem)) {
+    const s = sizeWordOf(cand);
+    if (s) { ourSize = s; break; }
+  }
+  return !!ourSize && ourSize !== theirSize;
+}
+
+/**
  * What to do with one ezCater line, with no human in the loop.
  *
  *   linked   we are confident enough to fill itemId in ourselves
@@ -459,12 +559,13 @@ export function autoLinkDecision(theirLine, ourItems, existingLinks, opts) {
   if (kind === 'option') return autoLinkOption(theirLine, list, existingLinks, minScore);
 
   const their = theirParts(theirLine);
-  const key = buildLinkKey(theirLine, 'item');
   const known = idsOf(list);
   let stale = false;
 
-  // 1. an existing link
-  const link = key ? indexLinks(existingLinks).get('item:' + key) : null;
+  // 1. an existing link. Today's key first, then the older size-dropping key,
+  // so work saved before the key kept the size still routes.
+  const hit = findLink(indexLinks(existingLinks), theirLine, 'item');
+  const link = hit ? hit.link : null;
   if (link && link.menuItemId) {
     const id = String(link.menuItemId);
     // An empty menu means we cannot prove anything is gone, so trust the link.
@@ -483,9 +584,14 @@ export function autoLinkDecision(theirLine, ourItems, existingLinks, opts) {
     return out;
   }
 
-  // 3. exactly one exact name
+  // 3. exactly one exact name, and no size clash with it
   const exact = exactNameMatches(their.name, list);
   if (exact.length === 1) {
+    if (sizeClash(their.name, exact[0])) {
+      const out = { action: 'suggest', reason: 'different size, check it' };
+      if (stale) out.stale = true;
+      return out;
+    }
     const out = { action: 'linked', itemId: String(exact[0].id), reason: 'same name', source: 'auto' };
     if (stale) out.stale = true;
     return out;
@@ -598,13 +704,13 @@ export function matchOptions(theirMod, ourGroups, opts) {
 /** The option arm of autoLinkDecision. Same four rules, option ids instead. */
 function autoLinkOption(theirMod, ourGroups, existingLinks, minScore) {
   const their = theirParts(theirMod);
-  const key = buildLinkKey(theirMod, 'option');
   const flat = flattenOptions(ourGroups);
   const byId = new Map();
   for (const e of flat) byId.set(e.optionId, e);
   let stale = false;
 
-  const link = key ? indexLinks(existingLinks).get('option:' + key) : null;
+  const hit = findLink(indexLinks(existingLinks), theirMod, 'option');
+  const link = hit ? hit.link : null;
   if (link && link.optionId) {
     const id = String(link.optionId);
     const hit = byId.get(id);
@@ -627,6 +733,11 @@ function autoLinkOption(theirMod, ourGroups, existingLinks, minScore) {
   const exact = target ? flat.filter((e) => normaliseItemName(displayNameOf(e.option)) === target) : [];
   if (exact.length === 1) {
     const e = exact[0];
+    if (sizeClash(their.name, e.option)) {
+      const out = { action: 'suggest', reason: 'different size, check it' };
+      if (stale) out.stale = true;
+      return out;
+    }
     const out = {
       action: 'linked',
       optionId: e.optionId,
@@ -679,8 +790,8 @@ export function applyLinks(lines, links) {
 
   return list.map((line) => {
     const src = line || {};
-    const key = buildLinkKey(src, 'item');
-    const link = key ? idx.get('item:' + key) : null;
+    const hit = findLink(idx, src, 'item');
+    const link = hit ? hit.link : null;
 
     let itemId = src.itemId != null ? String(src.itemId) : null;
     let source = itemId ? 'posItemId' : null;
@@ -691,8 +802,8 @@ export function applyLinks(lines, links) {
 
     const mods = (Array.isArray(src.mods) ? src.mods : []).map((mod) => {
       const m = mod || {};
-      const mKey = buildLinkKey(m, 'option');
-      const mLink = mKey ? idx.get('option:' + mKey) : null;
+      const mHit = findLink(idx, m, 'option');
+      const mLink = mHit ? mHit.link : null;
 
       let mItemId = m.itemId != null ? String(m.itemId) : null;
       let mOptionId = m.optionId != null ? String(m.optionId) : null;

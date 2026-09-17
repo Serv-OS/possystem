@@ -13,7 +13,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
-import { buildLinkKey, normaliseItemName } from './ezcaterMatch.js';
+import { buildLinkKey, normaliseItemName, normaliseKeyName } from './ezcaterMatch.js';
 
 const sql = fs.readFileSync(
   new URL('../../supabase/migrations/20260917_OPS_ezcater_item_links.sql', import.meta.url),
@@ -52,12 +52,20 @@ test('idempotent: re-runnable table, indexes and constraints', () => {
 
 test('the primary key is (location_id, kind, ez_key), which is what the matcher keys on', () => {
   assert.ok(code.includes('primary key (location_id, kind, ez_key)'));
-  // One venue, one kind, one normalised name is ONE row. These two spellings of
-  // the same product collapse onto that one row, which is the whole point.
+  // One venue, one kind, one key is ONE row. Two spellings of the same product
+  // collapse onto that one row, which is the whole point.
   assert.equal(
     buildLinkKey({ name: 'Caesar Salad (Serves 10)' }),
-    buildLinkKey({ name: 'CAESAR SALAD, half pan' }),
+    buildLinkKey({ name: 'CAESAR SALAD, tray' }),
   );
+  // And two SIZES do not, because they are two products. The file has to say
+  // so, because Peter reads it before he runs it.
+  assert.notEqual(
+    buildLinkKey({ name: 'Caesar Salad Half Tray' }),
+    buildLinkKey({ name: 'Caesar Salad Full Tray' }),
+  );
+  assert.ok(lower.includes('the size word stays in the key'));
+  assert.equal(normaliseKeyName('Caesar Salad Half Tray'), 'caesar salad half');
 });
 
 test('the two kinds and the two sources are exactly what the JS writes', () => {
@@ -105,6 +113,11 @@ test('the widened check is still a drop-then-add, so re-running repairs an earli
   const i = code.indexOf('drop constraint if exists ezcater_item_links_target_check');
   const j = code.indexOf('add constraint ezcater_item_links_target_check');
   assert.ok(i !== -1 && j !== -1 && i < j);
-  // Peter may already have run the narrower version. The header has to tell him.
-  assert.ok(lower.includes('if you already ran an earlier copy of this file, run it again'));
+  // Peter may already have run the narrower version. The header has to tell him,
+  // IN CAPITALS, because a venue on the old check writes no sightings at all and
+  // the Item matching screen is then empty forever with no error anywhere.
+  assert.ok(sql.includes('IF YOU ALREADY RAN AN EARLIER COPY OF THIS FILE, RUN IT AGAIN.'));
+  const at = sql.indexOf('IF YOU ALREADY RAN AN EARLIER COPY OF THIS FILE, RUN IT AGAIN.');
+  assert.ok(at < sql.indexOf('create table if not exists public.'), 'it has to be in the header, not buried');
+  assert.ok(sql.includes('WIDENED'));
 });
