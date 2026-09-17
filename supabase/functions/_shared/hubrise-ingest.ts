@@ -186,7 +186,8 @@ export async function upsertChannelCustomer(
       org_id: orgId,
       phone: phone || null, phone_raw: phoneRaw,
       email: email || null,
-      name, first_name: firstName, last_name: lastName,
+      // customers.name is NOT NULL: a delivery order with no customer name was refused here.
+      name: name || '', first_name: firstName, last_name: lastName,
       source, sources: [source],
       marketing_opt_in: optIn, marketing_opt_in_at: optIn ? nowIso : null,
     }).select('id').single();

@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.8.96',
+    date: '17 Sep 2026',
+    items: [
+      'Loyalty sign up works again. The code was accepted but the new customer record was refused because it had no name yet, so the screen said Failed to resolve customer and nothing was saved. New sign ups now start with an empty name, and the portal asks for it as before. Existing members were never affected.',
+      'Saving a loyalty profile with the name box cleared no longer fails.',
+      'Delivery app orders (Deliveroo, Uber Eats, Just Eat) that arrive with no customer name now still create the customer record.',
+    ],
+  },
+  {
     v: '5.8.95',
     date: '17 Sep 2026',
     items: [
