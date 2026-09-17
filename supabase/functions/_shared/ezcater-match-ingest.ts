@@ -44,9 +44,9 @@
 //     arriving. Ingest inserts rows that are absent (on conflict do nothing),
 //     bumps counters on rows it saw, and fills the target in on a row that is
 //     still a bare sighting: no target, nobody has touched it, source 'auto'.
-//   * it never writes a link for a posItemId. That id only exists because we
-//     put it there through menuCreate, so it already names our item and a row
-//     would add nothing.
+//   * it never writes a link for a posItemId, or for one of our item codes.
+//     Either already names our item, so a row would add nothing and would only
+//     go stale.
 //   * it never writes a link for a name it could not normalise. An empty key
 //     would collapse every unnamed line onto one row and point them all at one
 //     product. The migration has a check constraint as the backstop.
@@ -54,7 +54,7 @@
 //     suggests instead, and the line stays unmatched until a person picks.
 
 import {
-  applyLinks, autoLinkDecision, buildLinkKey, findLink, indexLinks,
+  applyLinks, autoLinkDecision, buildLinkKey, findLink, indexItemCodes, indexLinks,
 } from './ezcaterMatch.ts';
 // The ezMatch stamp lives with the rest of the customer jsonb shape, in the
 // mapper, not here.
@@ -104,12 +104,15 @@ function basePrice(pricing: any): number | null {
 
 /**
  * menu_items rows (snake_case, straight off the table) to the camelCase shape
- * scoreMatch reads: { id, name, menuName, price }.
+ * scoreMatch reads: { id, name, menuName, price, itemCode }.
  *
  * ARCHIVED IS FILTERED HERE, NOT IN THE QUERY. `archived` is nullable, and in
  * Postgres `archived = false` and `archived <> true` both drop a NULL row, so a
  * server side filter would silently hide every item written before the column
  * had a default. Reading the flag and testing it in JS keeps those items.
+ *
+ * itemCode is null on every row until 20260917_OPS_menu_item_code.sql is run by
+ * hand, and null for every product nobody gave a code to. Both are ordinary.
  */
 export function menuItemsForMatch(rows: any): any[] {
   const out: any[] = [];
@@ -122,6 +125,7 @@ export function menuItemsForMatch(rows: any): any[] {
       name: text(r.name),
       menuName: text(r.menu_name) || null,
       price: basePrice(r.pricing),
+      itemCode: text(r.item_code) || null,
     });
   }
   return out;
@@ -251,9 +255,18 @@ export function planLineMatches(input: {
   const nowIso = text(input.nowIso) || new Date(0).toISOString();
   const menuOk = input.menuOk !== false;
 
+  // Our item codes, from whatever menu we hold.
+  //
+  // A PARTLY READ MENU IS STILL SAFE FOR CODES, and it is the one thing here
+  // that is. Every other rule can be wrong on half a menu ("nothing of ours has
+  // that name" is a claim about the half we did not read). A code either names a
+  // row we are holding, which is certain, or it names nothing, which changes
+  // nothing. So codes are used even when menuOk is false.
+  const codes = indexItemCodes(ourItems);
+
   // Pass 1. Also the whole answer when there is no menu to check against, or
   // when what we read of it is only part.
-  const applied = applyLinks(lines, links);
+  const applied = applyLinks(lines, links, codes);
   const haveItems = ourItems.length > 0;
   const haveGroups = ourGroups.length > 0;
   if (!locationId || !menuOk || (!haveItems && !haveGroups)) {
@@ -290,9 +303,10 @@ export function planLineMatches(input: {
     const name = rawName(src);
     if (!name) return;                              // backstop for the check constraint
 
-    // ezCater already carried our id on this line, so there is nothing for a
-    // person to decide and a row would only go stale. Today's rule, kept.
-    if (d.action === 'linked' && d.source === 'posItemId') return;
+    // ezCater already carried our id, or our item code, on this line: there is
+    // nothing for a person to decide and a row would only go stale. Today's
+    // rule, kept, and now it covers the code the venue typed themselves.
+    if (d.action === 'linked' && (d.source === 'posItemId' || d.source === 'itemCode')) return;
 
     // A target only when we are confident on our own: one exact name of ours,
     // no size clash, nothing else exact. Otherwise the row is a sighting and
@@ -336,7 +350,9 @@ export function planLineMatches(input: {
     let source = appliedLine.match ? appliedLine.match.source : null;
 
     if (haveItems) {
-      const d = autoLinkDecision(src, ourItems, links, { kind: 'item' });
+      // codes is passed in rather than rebuilt per line: one index for the
+      // whole order, and the option arm cannot build one at all.
+      const d = autoLinkDecision(src, ourItems, links, { kind: 'item', itemCodes: codes });
       itemId = d.action === 'linked' && d.itemId != null ? String(d.itemId) : null;
       source = d.action === 'linked' ? (d.source || null) : null;
       // A stale link (its item is gone, or archived today) is left completely
@@ -349,13 +365,13 @@ export function planLineMatches(input: {
     const mods = (Array.isArray(appliedLine.mods) ? appliedLine.mods : []).map((appliedMod: any, j: number) => {
       if (!haveGroups) return appliedMod;
       const srcMod = srcMods[j] || {};
-      const d = autoLinkDecision(srcMod, ourGroups, links, { kind: 'option' });
+      const d = autoLinkDecision(srcMod, ourGroups, links, { kind: 'option', itemCodes: codes });
       if (!d.stale) record('option', srcMod, d);
-      // The option arm has no posItemId rule of its own (ezCater's customization
-      // shape has no field for one), so when it cannot link, pass 1 stays the
-      // authority and whatever the line already carried is kept. That is the one
-      // place options differ from lines, where an id naming nothing of ours is
-      // dropped.
+      // The option arm has no plain posItemId rule of its own (an id there that
+      // is not one of our codes is not checked against our menu), so when it
+      // cannot link, pass 1 stays the authority and whatever the line already
+      // carried is kept. That is the one place options differ from lines, where
+      // an id naming nothing of ours is dropped.
       if (d.action !== 'linked') return appliedMod;
       const mItemId = d.itemId != null ? String(d.itemId) : null;
       const mOptionId = d.optionId != null ? String(d.optionId) : null;
@@ -418,18 +434,38 @@ export function outOfTime(deadline?: number | null, nowMs?: number): boolean {
 async function readPaged(
   run: (from: number, to: number) => any,
   deadline?: number | null,
-): Promise<{ rows: any[]; ok: boolean; complete: boolean }> {
+): Promise<{ rows: any[]; ok: boolean; complete: boolean; error: any }> {
   const rows: any[] = [];
   for (let page = 0; page < MENU_MAX_PAGES; page++) {
-    if (outOfTime(deadline)) return { rows, ok: true, complete: false };
+    if (outOfTime(deadline)) return { rows, ok: true, complete: false, error: null };
     const from = page * MENU_PAGE_SIZE;
     const { data, error } = await run(from, from + MENU_PAGE_SIZE - 1);
-    if (error) return { rows, ok: false, complete: false };
+    if (error) return { rows, ok: false, complete: false, error };
     const batch = Array.isArray(data) ? data : [];
     rows.push(...batch);
-    if (batch.length < MENU_PAGE_SIZE) return { rows, ok: true, complete: true };
+    if (batch.length < MENU_PAGE_SIZE) return { rows, ok: true, complete: true, error: null };
   }
-  return { rows, ok: true, complete: false };
+  return { rows, ok: true, complete: false, error: null };
+}
+
+/** The menu_items columns the matcher needs. item_code is the optional one. */
+export const MENU_ITEM_COLUMNS = 'id, name, menu_name, pricing, archived';
+export const MENU_ITEM_COLUMNS_WITH_CODE = MENU_ITEM_COLUMNS + ', item_code';
+
+/**
+ * True when a read failed because menu_items.item_code is not there yet
+ * (20260917_OPS_menu_item_code.sql is run by hand, so this window is real).
+ *
+ * Selecting a column that does not exist fails the WHOLE select, so without
+ * this the matcher would read no menu at all and every ezCater line would come
+ * in unmatched. Mirrors isMissingItemCodeColumn in src/lib/itemCode.js.
+ */
+export function isMissingItemCodeColumn(err: any): boolean {
+  if (!err) return false;
+  const code = String(err.code || '');
+  const msg = String(err.message || err.details || err.hint || '');
+  if (!/item_code/i.test(msg)) return false;
+  return code === 'PGRST204' || code === '42703' || /column/i.test(msg);
 }
 
 /**
@@ -474,9 +510,17 @@ export async function readMatchInputs(
   let groupsWhole = false;
 
   try {
-    const items = await readPaged((from: number, to: number) => sb.from('menu_items')
-      .select('id, name, menu_name, pricing, archived')
+    const readItems = (columns: string) => readPaged((from: number, to: number) => sb.from('menu_items')
+      .select(columns)
       .eq('location_id', locationId).order('id', { ascending: true }).range(from, to), deadline);
+    let items = await readItems(MENU_ITEM_COLUMNS_WITH_CODE);
+    // The column is not there yet. Read the menu again without it rather than
+    // lose the whole menu over an optional field: no codes simply means the
+    // name rules do all the work, which is how this shipped.
+    if (!items.ok && isMissingItemCodeColumn(items.error)) {
+      console.warn('[ezcater-match] menu_items.item_code is not there yet, matching by name only');
+      items = await readItems(MENU_ITEM_COLUMNS);
+    }
     out.ourItems = menuItemsForMatch(items.rows);
     itemsWhole = items.ok && items.complete;
     if (!itemsWhole) console.warn('[ezcater-match] menu items read incomplete, matching only by saved links');

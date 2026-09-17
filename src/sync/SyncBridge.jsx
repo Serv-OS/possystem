@@ -466,6 +466,11 @@ export default function SyncBridge({ onSyncPulse }) {
             optionGroupOrder: item.option_group_order ?? item.optionGroupOrder ?? null,   // v5.5.948 combined flow order
             image: item.image ?? null,
             tags: Array.isArray(item.tags) ? item.tags : [],   // dietary tags (V/VG/GF/DF)
+            // v5.8.100: the partner portal code (menu_items.item_code). CONDITIONAL:
+            // before 20260917_OPS_menu_item_code.sql runs the column is not in the
+            // row at all, and the item must then carry no field, so upsertMenuItem
+            // leaves the column alone instead of failing every menu save on it.
+            ...(item.item_code !== undefined ? { itemCode: item.item_code ?? null } : {}),
           }));
 
           // Sync any local-only items that failed to save previously (e.g. before schema was ready)

@@ -26,6 +26,7 @@ import {
   scoreMatch, suggestMatches, autoLinkDecision, matchOptions,
   buildLinkKey, legacyLinkKey, linkKeyCandidates, findLink,
   indexLinks, applyLinks, countMatches, displayNameOf,
+  itemCodeKey, indexItemCodes, findItemCodeMatch,
   SIZE_WORDS, CONTAINER_WORDS, TRAILING_DROP, WEIGHTS,
   DEFAULT_MIN_SCORE, DEFAULT_LIMIT,
 } from './ezcaterMatch.js';
@@ -583,6 +584,113 @@ test('applyLinks: a saved link BEATS posItemId, because a person corrected it', 
   );
   assert.equal(out[0].itemId, 'm-caesar');
   assert.equal(out[0].match.source, 'manual');
+});
+
+// ── item codes (v5.8.100) ──────────────────────────────────────────────────
+
+const CODED_ITEMS = OUR_ITEMS.map((i) => (
+  i.id === 'm-caesar' ? { ...i, itemCode: 'CAESARSAL' } : i
+)).concat([{ id: 'm-cola', name: 'Cola', price: 2, item_code: 'COLA1' }]);
+
+test('itemCodeKey forgives case and stray spaces, and NOTHING else', () => {
+  assert.equal(itemCodeKey(' flatwhite '), 'FLATWHITE');
+  assert.equal(itemCodeKey('FlatWhite'), 'FLATWHITE');
+  // Punctuation is kept, so their "M-123" can never become our "M123".
+  assert.equal(itemCodeKey('M-123'), 'M-123');
+  for (const junk of [null, undefined, '']) assert.equal(itemCodeKey(junk), '');
+});
+
+test('indexItemCodes reads either spelling and drops a code that names two items', () => {
+  const idx = indexItemCodes(CODED_ITEMS);
+  assert.deepEqual(idx.get('CAESARSAL'), { itemId: 'm-caesar', code: 'CAESARSAL' });
+  assert.deepEqual(idx.get('COLA1'), { itemId: 'm-cola', code: 'COLA1' });
+  assert.equal(idx.size, 2, 'items with no code are not in the index at all');
+
+  // The database's unique index makes this impossible. If it happens anyway,
+  // the code is exactly what it is not: certain.
+  const dupes = indexItemCodes([
+    { id: 'a', name: 'A', itemCode: 'DUPE' },
+    { id: 'b', name: 'B', itemCode: 'dupe' },
+  ]);
+  assert.equal(dupes.get('DUPE'), undefined);
+});
+
+test('findItemCodeMatch: an unknown or empty code is null, never a guess', () => {
+  const idx = indexItemCodes(CODED_ITEMS);
+  assert.deepEqual(findItemCodeMatch(idx, 'caesarsal'), { itemId: 'm-caesar', code: 'CAESARSAL' });
+  assert.equal(findItemCodeMatch(idx, 'NEVERSEEN'), null);
+  assert.equal(findItemCodeMatch(idx, ''), null);
+  assert.equal(findItemCodeMatch(idx, null), null);
+  assert.equal(findItemCodeMatch(null, 'CAESARSAL'), null, 'no index at all is simply no match');
+});
+
+test('autoLinkDecision: an item code is CERTAIN and outranks a saved link', () => {
+  const links = [{ kind: 'item', ez_key: 'their own words', menu_item_id: 'm-cookies', source: 'manual' }];
+  const d = autoLinkDecision({ name: 'Their Own Words', itemId: 'CAESARSAL' }, CODED_ITEMS, links);
+  assert.equal(d.action, 'linked');
+  assert.equal(d.itemId, 'm-caesar');
+  assert.equal(d.source, 'itemCode');
+});
+
+test('autoLinkDecision: an UNKNOWN code changes nothing, the name rules still run', () => {
+  const d = autoLinkDecision({ name: 'Caesar Salad', itemId: 'NOSUCHCODE' }, CODED_ITEMS, []);
+  assert.equal(d.action, 'linked');
+  assert.equal(d.itemId, 'm-caesar');
+  assert.equal(d.source, 'auto', 'matched by name, exactly as if no code had been sent');
+
+  const none = autoLinkDecision({ name: 'Lobster Thermidor', itemId: 'NOSUCHCODE' }, CODED_ITEMS, []);
+  assert.equal(none.action, 'none', 'and an unknown code never invents a match either');
+});
+
+test('autoLinkDecision: our raw menu item id on their line still works', () => {
+  const d = autoLinkDecision({ name: 'Mystery', itemId: 'm-cookies' }, CODED_ITEMS, []);
+  assert.equal(d.itemId, 'm-cookies');
+  assert.equal(d.source, 'posItemId', 'the id path is untouched by the code path');
+});
+
+test('autoLink kind option: a code names our product, and our option that points at it', () => {
+  const d = autoLinkDecision(
+    { label: 'Their Word', groupLabel: 'Drinks', itemId: ' cola1 ' },
+    OUR_GROUPS, [], { kind: 'option', itemCodes: CODED_ITEMS },
+  );
+  assert.equal(d.action, 'linked');
+  assert.equal(d.itemId, 'm-cola');
+  assert.equal(d.optionId, 'o-cola');
+  assert.equal(d.source, 'itemCode');
+});
+
+test('autoLink kind option: a code with no option of ours behind it still names the product', () => {
+  const d = autoLinkDecision(
+    { label: 'Their Word', itemId: 'CAESARSAL' },
+    OUR_GROUPS, [], { kind: 'option', itemCodes: CODED_ITEMS },
+  );
+  assert.equal(d.itemId, 'm-caesar');
+  assert.equal(d.optionId, null, 'no option of ours points at it, so there is no option to claim');
+});
+
+test('applyLinks: an item code beats a saved link AND a posItemId', () => {
+  const out = applyLinks(
+    [{ name: 'Their Own Words', itemId: 'caesarsal', mods: [] }],
+    [{ kind: 'item', ez_key: 'their own words', menu_item_id: 'm-cookies', source: 'manual' }],
+    CODED_ITEMS,
+  );
+  assert.equal(out[0].itemId, 'm-caesar');
+  assert.equal(out[0].match.source, 'itemCode');
+});
+
+test('applyLinks: with no codes passed it behaves exactly as it always did', () => {
+  const lines = [{ name: 'Caesar Salad', itemId: 'm-wrong', mods: [] }];
+  const links = [{ kind: 'item', ez_key: 'caesar salad', menu_item_id: 'm-caesar', source: 'manual' }];
+  assert.deepEqual(applyLinks(lines, links), applyLinks(lines, links, []));
+  assert.deepEqual(applyLinks(lines, links), applyLinks(lines, links, null));
+});
+
+test('applyLinks: an unknown code on a line leaves the line exactly as it was', () => {
+  const lines = [{ name: 'Caesar Salad', itemId: 'GHOSTCODE', mods: [] }];
+  const plain = applyLinks(lines, []);
+  const coded = applyLinks(lines, [], CODED_ITEMS);
+  assert.deepEqual(coded, plain);
+  assert.equal(coded[0].itemId, 'GHOSTCODE', 'kept, the same as any other id we cannot check here');
 });
 
 test('applyLinks does not mutate what it is given', () => {

@@ -216,12 +216,20 @@ test('THE SCREEN READS menu_items.pricing, because there is no price column', ()
   // this picker permanently empty and every matched row reading "Deleted from
   // our menu". The column names in the query are load bearing.
   const jsx = fs.readFileSync(new URL('../backoffice/sections/EzcaterItemMatching.jsx', import.meta.url), 'utf8');
-  const sel = jsx.match(/from\('menu_items'\)\s*\.select\('([^']+)'\)/);
-  assert.ok(sel, 'the menu_items select is gone');
-  const cols = sel[1].split(',').map((c) => c.trim());
-  assert.ok(cols.includes('pricing'), 'the price is in the pricing jsonb');
-  assert.ok(!cols.includes('price'), 'menu_items has no price column, see db.js');
-  assert.deepEqual(cols, ['id', 'name', 'menu_name', 'pricing', 'archived']);
+  assert.ok(/from\('menu_items'\)\s*\.select\(/.test(jsx), 'the menu_items select is gone');
+
+  // Every column list the screen asks menu_items for, in the order it asks.
+  const lists = (jsx.match(/'id,name,menu_name[^']*'/g) || []).map((s) => s.slice(1, -1).split(',').map((c) => c.trim()));
+  assert.equal(lists.length, 2, 'one list with the item code, one without');
+  for (const cols of lists) {
+    assert.ok(cols.includes('pricing'), 'the price is in the pricing jsonb');
+    assert.ok(!cols.includes('price'), 'menu_items has no price column, see db.js');
+  }
+  // v5.8.100: item_code is asked for FIRST, and asked for again without it when
+  // the column is not there yet. Same trap as the price column, same cure.
+  assert.deepEqual(lists[0], ['id', 'name', 'menu_name', 'pricing', 'archived', 'item_code']);
+  assert.deepEqual(lists[1], ['id', 'name', 'menu_name', 'pricing', 'archived']);
+  assert.ok(jsx.includes('isMissingItemCodeColumn'), 'nothing falls back without the test for it');
 });
 
 test('itemPriceOf reads pricing.base, then the older pricing.price, then the scalar', () => {

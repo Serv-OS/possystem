@@ -85,15 +85,18 @@ test('menuItemsForMatch: archived out, archived-null IN, ids required', () => {
   assert.equal(ids.filter((i) => !i).length, 0, 'a row with no id cannot be linked to');
 });
 
-test('menuItemsForMatch: menu_name to menuName, pricing.base to price', () => {
+test('menuItemsForMatch: menu_name to menuName, pricing.base to price, item_code to itemCode', () => {
   const rows = menuItemsForMatch([
     { id: 'x', name: 'Raw', menu_name: 'On The Menu', pricing: { base: 12.5 } },
     { id: 'y', name: 'No Price', pricing: null },
     { id: 'z', name: 'Legacy', pricing: { price: 7 } },
+    { id: 'c', name: 'Coded', pricing: { base: 3 }, item_code: 'FLATWHITE' },
   ]);
-  assert.deepEqual(rows[0], { id: 'x', name: 'Raw', menuName: 'On The Menu', price: 12.5 });
+  assert.deepEqual(rows[0], { id: 'x', name: 'Raw', menuName: 'On The Menu', price: 12.5, itemCode: null });
   assert.equal(rows[1].price, null, 'a missing price is a missing bonus, never an error');
   assert.equal(rows[2].price, 7);
+  assert.equal(rows[0].itemCode, null, 'no code is the ordinary state, before and after the migration');
+  assert.equal(rows[3].itemCode, 'FLATWHITE');
 });
 
 test('modifierGroupsForMatch: options need an id, groups need an option', () => {
@@ -207,6 +210,95 @@ test('a posItemId that names nothing of ours is dropped WHEN we hold the menu', 
   assert.equal(noMenu.lines[0].itemId, 'ez-junk-id');
   assert.deepEqual(noMenu.writes, []);
   assert.deepEqual(noMenu.bumps, []);
+});
+
+// ── item codes (v5.8.100) ──────────────────────────────────────────────────
+// The venue types one of our codes into ezCater's POS id field, and ezCater
+// sends it straight back on posItemId. Peter asked for exactly two things: the
+// code should work, and a MISSING code must change nothing at all.
+
+const CODED_ROWS = MENU_ROWS.map((r) => {
+  if (r.id === 'm-caesar') return { ...r, item_code: 'CAESARSAL' };
+  if (r.id === 'm-cola') return { ...r, item_code: 'COLA1' };
+  return r;
+});
+const CODED_ITEMS = menuItemsForMatch(CODED_ROWS);
+const codedPlan = (lines, over = {}) => plan(lines, { ourItems: CODED_ITEMS, ...over });
+
+test('their posItemId is one of our item codes: certain, and NOTHING is saved', () => {
+  const p = codedPlan([line({ name: 'Whatever They Call It', itemId: 'CAESARSAL' })]);
+  assert.equal(p.lines[0].itemId, 'm-caesar');
+  assert.equal(p.lines[0].match.source, 'itemCode');
+  // The code already names our item, so a link row would add nothing and would
+  // only go stale. Same rule the plain posItemId has always had.
+  assert.deepEqual(p.writes, []);
+  assert.deepEqual(p.bumps, []);
+});
+
+test('an item code is case insensitive and trimmed, and nothing else', () => {
+  for (const sent of ['caesarsal', '  CaesarSal  ', 'CAESARSAL']) {
+    const p = codedPlan([line({ name: 'Whatever', itemId: sent })]);
+    assert.equal(p.lines[0].itemId, 'm-caesar', 'sent as: ' + JSON.stringify(sent));
+  }
+  // Punctuation is NOT forgiven: "CAESAR-SAL" is a different string, and
+  // guessing there would let their "M-123" become our "M123".
+  const p = codedPlan([line({ name: 'Whatever', itemId: 'CAESAR-SAL' })]);
+  assert.equal(p.lines[0].itemId, null);
+});
+
+test('an item code OUTRANKS a saved link, because it is the venue saying so', () => {
+  const links = [{
+    kind: 'item', ez_key: 'whatever', ez_name: 'Whatever', menu_item_id: 'm-brownie',
+    source: 'manual', seen_count: 4,
+  }];
+  const p = codedPlan([line({ name: 'Whatever', itemId: 'CAESARSAL' })], { links });
+  assert.equal(p.lines[0].itemId, 'm-caesar', 'the code they typed today beats a link from a name');
+  assert.equal(p.lines[0].match.source, 'itemCode');
+});
+
+test('AN UNKNOWN CODE BLOCKS NOTHING: the order arrives and the name rules run', () => {
+  // The whole point of Peter's request. A code we have never seen is not an
+  // error, not a refusal and not a delay: it is simply not a match.
+  const p = codedPlan([line({ name: 'Caesar Salad', itemId: 'SOMETHINGELSE' })]);
+  assert.equal(p.lines[0].itemId, 'm-caesar', 'matched by name, exactly as if no code had been sent');
+  assert.equal(p.lines[0].match.source, 'auto');
+  assert.equal(p.writes.length, 1, 'and the link is written as usual');
+  assert.equal(p.writes[0].menu_item_id, 'm-caesar');
+
+  // An unknown code on a name we do not sell either is still just a sighting.
+  const q = codedPlan([line({ name: 'Lobster Thermidor', itemId: 'NOSUCHCODE' })]);
+  assert.equal(q.lines[0].itemId, null);
+  assert.equal(q.writes.length, 1);
+  assert.equal(q.writes[0].menu_item_id, null);
+  assert.equal(q.writes[0].matched_by, null);
+});
+
+test('no codes anywhere behaves exactly as it did before codes existed', () => {
+  const withCodes = codedPlan([line({ name: 'Caesar Salad' })]);
+  const without = plan([line({ name: 'Caesar Salad' })]);
+  assert.deepEqual(withCodes.lines, without.lines);
+  assert.deepEqual(withCodes.writes, without.writes);
+});
+
+test('a code on a customization names our product, and our option that points at it', () => {
+  const p = codedPlan([line({ name: 'Caesar Salad', mods: [mod({ label: 'Their Own Word', itemId: 'cola1' })] })]);
+  const m = p.lines[0].mods[0];
+  assert.equal(m.itemId, 'm-cola', 'stock and 86 key on the product behind the option');
+  assert.equal(m.optionId, 'o-cola', 'and our option points at that product');
+  assert.equal(m.match.source, 'itemCode');
+  assert.deepEqual(p.writes.filter((w) => w.kind === 'option'), [], 'a code needs no link row');
+});
+
+test('two of our products with the same code: no code match, the ordinary rules decide', () => {
+  // The database cannot hold this (unique index), so if it ever happens
+  // something is wrong, and "certain" is what such a code is not.
+  const ours = menuItemsForMatch([
+    { id: 'm-a', name: 'Alpha', pricing: { base: 1 }, item_code: 'DUPE' },
+    { id: 'm-b', name: 'Beta', pricing: { base: 2 }, item_code: 'dupe' },
+  ]);
+  const p = plan([line({ name: 'Alpha', itemId: 'DUPE' })], { ourItems: ours });
+  assert.equal(p.lines[0].itemId, 'm-a', 'matched by its name, not by the ambiguous code');
+  assert.equal(p.lines[0].match.source, 'auto');
 });
 
 test('a stale link (its item is gone or archived today) is left completely alone', () => {
@@ -583,17 +675,22 @@ test('orderItemsToLines output feeds the planner unchanged', () => {
  * `boom` makes .from() itself throw, which is the network dying mid call.
  * `hang` makes every call never resolve, which is the read that never comes back.
  */
-function fakeSb(tables, { fail = {}, boom = false, hang = false } = {}) {
+function fakeSb(tables, { fail = {}, boom = false, hang = false, noItemCodeColumn = false } = {}) {
   const calls = [];
   const store = JSON.parse(JSON.stringify(tables));
   const from = (name) => {
     if (boom) throw new Error('socket hang up');
-    const state = { op: 'select', filters: {}, nulls: {}, range: null, rows: null, patch: null, opts: null };
+    const state = { op: 'select', cols: '*', filters: {}, nulls: {}, range: null, rows: null, patch: null, opts: null };
     // `.is(col, null)` is a real filter here, because the sighting fill leans on
     // it: the update must not touch a row a person has answered.
     const matches = (r) => Object.entries(state.filters).every(([k, v]) => String(r[k] ?? '') === String(v))
       && Object.entries(state.nulls).every(([k, v]) => (v === null ? (r[k] ?? null) === null : (r[k] ?? null) === v));
     const run = () => {
+      // Postgres fails the WHOLE select when one named column does not exist.
+      // This is the window before 20260917_OPS_menu_item_code.sql is run.
+      if (noItemCodeColumn && state.op === 'select' && /item_code/.test(String(state.cols || ''))) {
+        return { data: null, error: { code: '42703', message: 'column menu_items.item_code does not exist' } };
+      }
       const err = fail[name + ':' + state.op] || fail[name];
       if (err) return { data: null, error: err };
       if (state.op === 'select') {
@@ -617,7 +714,7 @@ function fakeSb(tables, { fail = {}, boom = false, hang = false } = {}) {
       return { data: null, error: null };
     };
     const b = {
-      select() { state.op = 'select'; return b; },
+      select(cols) { state.op = 'select'; state.cols = cols || '*'; return b; },
       eq(col, val) { state.filters[col] = val; return b; },
       is(col, val) { state.nulls[col] = val; return b; },
       order() { return b; },
@@ -702,6 +799,41 @@ test('THE MIGRATION IS NOT RUN YET: no table, no crash, the order still goes thr
   assert.equal(out.bumped, 0);
   assert.equal(sb.calls.filter((c) => c.op !== 'select').length, 0);
   assert.deepEqual(out.row.customer.ezMatch, { lines: 1, matched: 1, unmatched: [] });
+});
+
+test('menu_items.item_code DOES NOT EXIST YET: the menu is read again without it', async () => {
+  // Naming a column that does not exist fails the WHOLE select, so without the
+  // second read there would be no menu at all and every line would arrive
+  // unmatched. This is the window before Peter runs the item code migration.
+  const sb = fakeSb(TABLES(), { noItemCodeColumn: true });
+  const out = await matchQueueRow(sb, 'loc-1', orderRow([line({ name: 'Caesar Salad' })]), { nowIso: NOW });
+
+  assert.equal(out.ran, true);
+  assert.equal(out.row.items[0].itemId, 'm-caesar', 'the name rules still match the whole menu');
+  assert.equal(out.row.items[0].match.source, 'auto');
+  assert.deepEqual(out.row.customer.ezMatch, { lines: 1, matched: 1, unmatched: [] });
+});
+
+test('with the column there, a code the venue typed matches end to end', async () => {
+  const sb = fakeSb({ ...TABLES(), menu_items: at(CODED_ROWS) });
+  const lines = [line({ name: 'Their Name For It', itemId: 'caesarsal ' })];
+  const out = await matchQueueRow(sb, 'loc-1', orderRow(lines), { nowIso: NOW });
+
+  assert.equal(out.row.items[0].itemId, 'm-caesar');
+  assert.equal(out.row.items[0].match.source, 'itemCode');
+  assert.deepEqual(out.row.customer.ezMatch, { lines: 1, matched: 1, unmatched: [] });
+  assert.deepEqual(sb.store.ezcater_item_links, [], 'a code needs no link row');
+});
+
+test('an unknown code never delays an order: same work, same writes, same row', async () => {
+  const sb = fakeSb({ ...TABLES(), menu_items: at(CODED_ROWS) });
+  const out = await matchQueueRow(sb, 'loc-1', orderRow([line({ name: 'Veggie Platter', itemId: 'GHOSTCODE' })]), { nowIso: NOW });
+
+  assert.equal(out.ran, true, 'nothing about an unknown code stops the job running');
+  assert.equal(out.row.items[0].itemId, null, 'we do not sell it, so it is a plain text ticket');
+  assert.deepEqual(out.row.customer.ezMatch, { lines: 1, matched: 0, unmatched: ['Veggie Platter'] });
+  assert.equal(sb.store.ezcater_item_links.length, 1, 'and it is written down for a person to answer');
+  assert.equal(sb.store.ezcater_item_links[0].menu_item_id, null);
 });
 
 test('the menu read failing leaves the order exactly as the mapper built it', async () => {

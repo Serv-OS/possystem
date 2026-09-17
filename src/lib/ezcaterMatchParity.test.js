@@ -262,3 +262,84 @@ test('displayNameOf agrees', () => {
   for (const item of OUR_ITEMS) assert.equal(ts.displayNameOf(item), js.displayNameOf(item));
   for (const n of NAMES) assert.equal(ts.displayNameOf(n), js.displayNameOf(n));
 });
+
+// ── item codes (v5.8.100) ──────────────────────────────────────────────────
+// The code rule outranks everything, so the two mirrors disagreeing about it
+// would send the food somewhere the Back Office screen never showed.
+
+const CODED_ITEMS = [
+  { id: 'm-caesar', name: 'Caesar Salad', price: 38, itemCode: 'CAESARSAL' },
+  { id: 'm-cola', name: 'Cola', price: 2, item_code: 'cola1' },
+  { id: 'm-cookies', name: 'Chocolate Chip Cookies', price: 24 },
+  { id: 'm-dupe-a', name: 'Alpha', itemCode: 'DUPE' },
+  { id: 'm-dupe-b', name: 'Beta', itemCode: 'dupe' },
+  { id: '', name: 'No Id', itemCode: 'NOID' },
+  { name: 'No Id At All', itemCode: 'NOID2' },
+  null,
+];
+
+const CODE_VALUES = [
+  'CAESARSAL', 'caesarsal', '  CaesarSal  ', 'COLA1', 'cola1', 'DUPE',
+  'CAESAR-SAL', 'M-123', 'NOSUCHCODE', '', '   ', null, undefined, 42,
+];
+
+const CODED_LINES = [
+  { name: 'Their Own Words', itemId: 'CAESARSAL', mods: [] },
+  { name: 'Their Own Words', itemId: 'caesarsal', mods: [{ label: 'Their Word', itemId: 'cola1' }] },
+  { name: 'Caesar Salad', itemId: 'NOSUCHCODE', mods: [] },
+  { name: 'Caesar Salad', itemId: 'm-cookies', mods: [] },
+  { name: 'Lobster Thermidor', itemId: 'DUPE', mods: [] },
+  { name: 'Caesar Salad', mods: [{ label: 'Cola', groupLabel: 'Drinks', itemId: 'GHOST' }] },
+];
+
+test('itemCodeKey agrees on every value', () => {
+  for (const v of CODE_VALUES) assert.equal(ts.itemCodeKey(v), js.itemCodeKey(v), 'itemCodeKey: ' + v);
+});
+
+test('indexItemCodes builds the identical index, clashes dropped alike', () => {
+  const a = ts.indexItemCodes(CODED_ITEMS);
+  const b = js.indexItemCodes(CODED_ITEMS);
+  assert.deepEqual([...a.keys()].sort(), [...b.keys()].sort());
+  for (const k of a.keys()) assert.deepEqual(a.get(k), b.get(k));
+  for (const junk of [null, undefined, 'nope', 42, {}, []]) {
+    assert.deepEqual([...ts.indexItemCodes(junk).keys()], [...js.indexItemCodes(junk).keys()]);
+  }
+});
+
+test('findItemCodeMatch agrees on every value against the same index', () => {
+  const a = ts.indexItemCodes(CODED_ITEMS);
+  const b = js.indexItemCodes(CODED_ITEMS);
+  for (const v of CODE_VALUES) {
+    assert.deepEqual(ts.findItemCodeMatch(a, v), js.findItemCodeMatch(b, v), 'findItemCodeMatch: ' + v);
+  }
+});
+
+test('autoLinkDecision agrees with codes in play, items and options alike', () => {
+  for (const line of CODED_LINES) {
+    for (const links of LINK_SETS) {
+      assert.deepEqual(
+        ts.autoLinkDecision(line, CODED_ITEMS, links),
+        js.autoLinkDecision(line, CODED_ITEMS, links),
+      );
+      assert.deepEqual(
+        ts.autoLinkDecision(line, OUR_GROUPS, links, { kind: 'option', itemCodes: CODED_ITEMS }),
+        js.autoLinkDecision(line, OUR_GROUPS, links, { kind: 'option', itemCodes: CODED_ITEMS }),
+      );
+      // And with no codes at all, which is every venue before they type one.
+      assert.deepEqual(
+        ts.autoLinkDecision(line, OUR_ITEMS, links),
+        js.autoLinkDecision(line, OUR_ITEMS, links),
+      );
+    }
+  }
+});
+
+test('applyLinks agrees with codes, and without them behaves as it always did', () => {
+  for (const links of LINK_SETS) {
+    const a = ts.applyLinks(CODED_LINES, links, CODED_ITEMS);
+    const b = js.applyLinks(CODED_LINES, links, CODED_ITEMS);
+    assert.deepEqual(a, b);
+    assert.deepEqual(ts.countMatches(a), js.countMatches(b));
+    assert.deepEqual(ts.applyLinks(CODED_LINES, links), js.applyLinks(CODED_LINES, links));
+  }
+});
