@@ -166,3 +166,18 @@ test('first push with only modifier defs (no menuItems) still diffs on next push
   const b = { menuItems: [], modifierGroupDefs: mods([{ id: 'o1', name: 'Cheese', price: 1.5 }]) };
   assert.equal(describeMenuChange(a, b).title, '1 price updated');
 });
+
+test('drive thru price only → still a real price change, named as drive thru', () => {
+  const a = snap([item('1', 3, { name: 'Latte', pricing: { base: 3, takeaway: 2.5, driveThru: 2.5 } })]);
+  const b = snap([item('1', 3, { name: 'Latte', pricing: { base: 3, takeaway: 2.5, driveThru: 2.9 } })]);
+  const ev = describeMenuChange(a, b);
+  assert.equal(ev.title, '1 price updated');
+  assert.match(ev.body, /drive thru/);
+  assert.match(ev.body, /£2\.50 → £2\.90/);
+});
+
+test('a drive thru key that never moves is not a change', () => {
+  const a = snap([item('1', 3, { name: 'Latte', pricing: { base: 3, driveThru: null } })]);
+  const b = snap([item('1', 3, { name: 'Latte', pricing: { base: 3, driveThru: null } })]);
+  assert.equal(describeMenuChange(a, b), null);
+});

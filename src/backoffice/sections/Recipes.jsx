@@ -304,6 +304,8 @@ export default function Recipes() {
                     <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 7 }}>
                       {otView === 'all'
                         ? 'Editing the base recipe — these items apply to every order type. Pick an order type above to add items just for it (e.g. a disposable cup for takeaway).'
+                        : otView === 'drive-thru'
+                        ? 'Showing Drive thru: shared base items, plus the Takeaway items (drive thru uses them until an item is tagged Drive thru), plus any added just for Drive thru. New items you add here apply to Drive thru only.'
                         : `Showing ${ORDER_TYPE_LABELS[otView]}: shared base items plus any added just for ${ORDER_TYPE_LABELS[otView]}. New items you add here apply to ${ORDER_TYPE_LABELS[otView]} only — widen them with the “Applies to” control.`}
                     </div>
                   </div>
@@ -314,9 +316,11 @@ export default function Recipes() {
                   {(() => {
                     // In a specific order-type view, show base (untagged) lines + lines scoped to that
                     // type; in "all" view show everything. Keep each line's ORIGINAL index for edits.
+                    // Drive thru also shows the takeaway lines until a line is tagged Drive thru, the
+                    // same rule costing and depletion use (draft.lines is that recipe context).
                     const visible = draft.lines
                       .map((l, i) => ({ l, i }))
-                      .filter(({ l }) => draft.recipeType !== 'MENU' || otView === 'all' || lineAppliesToOrderType(l, otView));
+                      .filter(({ l }) => draft.recipeType !== 'MENU' || otView === 'all' || lineAppliesToOrderType(l, otView, draft.lines));
                     if (visible.length === 0) {
                       return <div style={{ fontSize: 12, color: 'var(--t3)' }}>{draft.lines.length === 0
                         ? 'No ingredients yet — add stock items below (e.g. the Heineken keg, used 0.5 pt).'
@@ -406,7 +410,7 @@ function RecipeStats({ draft, cost, menuPrice, viewType }) {
 }
 
 // "Applies to" selector for a recipe line — which order types it counts toward. No selection (or
-// all four) = the shared base recipe (stored as null), so the line applies to every order type.
+// every type) = the shared base recipe (stored as null), so the line applies to every order type.
 function AppliesTo({ value, onChange }) {
   const [open, setOpen] = useState(false);
   const sel = Array.isArray(value) && value.length ? value : null;

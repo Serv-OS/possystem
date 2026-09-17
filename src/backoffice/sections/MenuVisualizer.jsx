@@ -468,12 +468,12 @@ function ItemQuickEdit({ item, onClose, menuItems, menuCategories, modifierGroup
             <div style={{ padding:'8px 10px', background:'var(--bg3)', borderRadius:8, fontSize:11, color:'var(--t3)', marginBottom:4 }}>
               Scope: <strong>{item.scope||'local'}</strong> — {item.scope==='global'?'one price everywhere':item.scope==='shared'?'pricing inherited from shared rule':'price set on this item only'}
             </div>
-            {[{k:'base',label:'Base price',accent:true},{k:'dineIn',label:'Dine-in'},{k:'takeaway',label:'Takeaway'},{k:'collection',label:'Collection'},{k:'delivery',label:'Delivery'}].map(({k,label,accent})=>(
+            {[{k:'base',label:'Base price',accent:true},{k:'dineIn',label:'Dine-in'},{k:'takeaway',label:'Takeaway'},{k:'collection',label:'Collection'},{k:'delivery',label:'Delivery'},{k:'driveThru',label:'Drive thru'}].map(({k,label,accent})=>(
               <div key={k}>
                 <span style={lbl}>{label}</span>
                 <div style={{ position:'relative' }}>
                   <span style={{ position:'absolute',left:10,top:'50%',transform:'translateY(-50%)',fontSize:accent?15:13,color:accent?'var(--acc)':'var(--t4)',fontWeight:700 }}>£</span>
-                  <input type="number" step="0.01" min="0" style={{...inp,paddingLeft:26,fontSize:accent?15:13,fontWeight:accent?800:400,color:accent?'var(--acc)':'var(--t1)'}} value={k==='base'?(p.base||0):(p[k]!==null&&p[k]!==undefined?p[k]:'')} placeholder={k!=='base'?`${p.base||0} (base)`:''} onChange={e=>fp(k,e.target.value)}/>
+                  <input type="number" step="0.01" min="0" style={{...inp,paddingLeft:26,fontSize:accent?15:13,fontWeight:accent?800:400,color:accent?'var(--acc)':'var(--t1)'}} value={k==='base'?(p.base||0):(p[k]!==null&&p[k]!==undefined?p[k]:'')} placeholder={k==='base'?'':(k==='driveThru'&&p.takeaway!==null&&p.takeaway!==undefined)?`${p.takeaway} (takeaway)`:`${p.base||0} (base)`} onChange={e=>fp(k,e.target.value)}/>
                 </div>
               </div>
             ))}

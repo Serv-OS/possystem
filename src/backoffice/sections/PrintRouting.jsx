@@ -198,7 +198,7 @@ function OrderTypeRouter({ centreId, centreName, routing, setRouting, centres, c
       <p style={OT.help}>An item needs a <strong>ticked category</strong> and a <strong>ticked order type</strong> to reach this center.</p>
       <div style={OT.checkWrap}>
         {/* Disabled while it is on: a centre can never be saved serving nothing, so
-            unticking All is meaningless. Narrowing happens by ticking one of the four. */}
+            unticking All is meaningless. Narrowing happens by ticking one of the types. */}
         <Check checked={takesAll} disabled={takesAll} onChange={() => write([])} label="All order types" />
         {ORDER_TYPES.map(t => (
           <Check
@@ -217,7 +217,7 @@ function OrderTypeRouter({ centreId, centreName, routing, setRouting, centres, c
       {hasCats && (
         <div style={OT.status}>
           {takesAll
-            ? 'This center takes every order type. Ticking all four is the same as All order types.'
+            ? 'This center takes every order type. Ticking every type is the same as All order types.'
             : `${centreName} takes ${joinList(list.map(orderTypeLabelOf))}.`}
         </div>
       )}

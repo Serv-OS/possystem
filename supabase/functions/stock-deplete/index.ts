@@ -86,16 +86,30 @@ async function buildCtx(sb: any, loc: string) {
 
 // A line with no order_types (null/[]) applies to every order type; a tagged line only to the
 // listed types. No order type → default to dine-in/base (mirror src/lib/stock/costing.js).
-const ORDER_TYPE_ALIASES: Record<string, string> = { dinein: 'dine-in', eatin: 'dine-in', counter: 'dine-in', bar: 'dine-in' };
+// Drive thru (16 Sep 2026): 'drivethru', 'drive_thru', 'driveThru' and 'drive-through' fold to
+// 'drive-thru' (separators are stripped first). A line tagged 'takeaway' also applies to a
+// drive-thru sale UNLESS some line on the same recipe names 'drive-thru', in which case the
+// recipe has its own drive-thru packaging and only lines tagged 'drive-thru' (or untagged)
+// apply. Only the literal 'drive-thru' order type takes that branch; every other type reads
+// exactly its own tag. Same logic as costing.js normaliseOrderType, recipeNamesOrderType and
+// lineAppliesToOrderType: change both together. This function needs a REDEPLOY to pick it up.
+const ORDER_TYPE_ALIASES: Record<string, string> = { dinein: 'dine-in', eatin: 'dine-in', counter: 'dine-in', bar: 'dine-in', drivethru: 'drive-thru', drivethrough: 'drive-thru' };
 function normaliseOrderType(orderType: string | null): string {
   if (!orderType) return 'dine-in';
   const lower = String(orderType).trim().toLowerCase();
   return ORDER_TYPE_ALIASES[lower.replace(/[\s_-]/g, '')] || lower;
 }
-function lineAppliesToOrderType(line: any, orderType: string | null): boolean {
+function recipeNamesOrderType(recipeLines: any[] | null, orderType: string): boolean {
+  if (!Array.isArray(recipeLines)) return false;
+  return recipeLines.some((l: any) => Array.isArray(l?.orderTypes) && l.orderTypes.includes(orderType));
+}
+function lineAppliesToOrderType(line: any, orderType: string | null, recipeLines: any[] | null = null): boolean {
   const ot = line?.orderTypes;
   if (!Array.isArray(ot) || ot.length === 0) return true;
-  return ot.includes(normaliseOrderType(orderType));
+  const key = normaliseOrderType(orderType);
+  if (ot.includes(key)) return true;
+  if (key === 'drive-thru' && ot.includes('takeaway')) return !recipeNamesOrderType(recipeLines, 'drive-thru');
+  return false;
 }
 
 function explode(items: { itemId: string; qty: number }[], ctx: any, orderType: string | null = null): Record<string, number> {
@@ -107,7 +121,7 @@ function explode(items: { itemId: string; qty: number }[], ctx: any, orderType: 
     if (n <= 0) continue;
     const mult = n * (Number(mr.portion) || 1) * (1 + (Number(mr.wastagePct) || 0) / 100);
     for (const line of mr.lines || []) {
-      if (!lineAppliesToOrderType(line, orderType)) continue;
+      if (!lineAppliesToOrderType(line, orderType, mr.lines)) continue;
       const comp = ctx.itemsById[line.componentItemId];
       if (!comp) continue;
       let qtyBase: number;

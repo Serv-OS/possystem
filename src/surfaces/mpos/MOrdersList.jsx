@@ -11,11 +11,16 @@ const FILTERS = [
   { id:'takeaway',  label:'Takeaway' },
   { id:'collection',label:'Collection' },
   { id:'delivery',  label:'Delivery' },
+  // Drive thru (16 Sep 2026): chip shown only where the profile enables it or an order carries it.
+  { id:'drive-thru',label:'Drive thru' },
   { id:'kiosk',     label:'Kiosk' },
 ];
 
 export default function MOrdersList({ onOpenOrder }) {
-  const { staff, tables = [], orderQueue = [], closedChecks = [] } = useStore();
+  const { staff, tables = [], orderQueue = [], closedChecks = [], deviceConfig } = useStore();
+  const driveThruOn = (deviceConfig?.enabledOrderTypes || []).includes('drive-thru')
+    || orderQueue.some(o => o.type === 'drive-thru');
+  const visibleFilters = driveThruOn ? FILTERS : FILTERS.filter(f => f.id !== 'drive-thru');
   const myName = staff?.name?.toLowerCase();
   const [filter, setFilter] = useState('all');
   const [search, setSearch] = useState('');
@@ -100,7 +105,7 @@ export default function MOrdersList({ onOpenOrder }) {
 
       {/* Filter chips */}
       <div style={{ padding:'4px 14px 8px', display:'flex', gap:6, overflowX:'auto', flexShrink:0, WebkitOverflowScrolling:'touch' }}>
-        {FILTERS.map(f => {
+        {visibleFilters.map(f => {
           const active = filter === f.id;
           return (
             <button key={f.id} onClick={() => setFilter(f.id)} style={{

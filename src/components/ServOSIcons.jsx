@@ -22,6 +22,8 @@ const PATHS = {
   takeaway:  '<path d="M6 8h12l-1 12H7z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/>',
   collect:   '<rect x="3" y="7" width="18" height="13" rx="2"/><path d="M3 12h18M8 7V5a4 4 0 0 1 8 0v2"/>',
   delivery:  '<path d="M3 13h11V6H3zM14 9h4l3 3v4h-7"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/>',
+  // Drive thru (16 Sep 2026): a car side on, cabin over body over two wheels, same weight as delivery.
+  drivethru: '<path d="M5 13l1.7-4.3A2 2 0 0 1 8.6 7.5h6.8a2 2 0 0 1 1.9 1.2L19 13"/><rect x="3" y="13" width="18" height="4" rx="1.2"/><circle cx="7" cy="18.5" r="2"/><circle cx="17" cy="18.5" r="2"/>',
 
   // ── Back-office section icons ──
   home:      '<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M3 9h18M9 21V9"/>',

@@ -133,7 +133,7 @@ export default function CollectionQueue({ onClose }) {
             const sm = STATUS_META[order.status];
             const urgency = getUrgency(order);
             const uc = urgencyColor[urgency];
-            const typeIcon = order.type === 'collection' ? '📦' : '🥡';
+            const typeIcon = order.type === 'collection' ? '📦' : order.type === 'drive-thru' ? '🚗' : '🥡';
             const waitMins = order.collectionISO
               ? Math.round((new Date(order.collectionISO) - now) / 60000)
               : null;
@@ -162,7 +162,7 @@ export default function CollectionQueue({ onClose }) {
                       {money(order.total)}
                     </div>
                     <div style={{ fontSize: 11, color: 'var(--t3)', marginTop: 1 }}>
-                      {order.type === 'collection' ? 'Collection' : 'Takeaway'}
+                      {order.type === 'collection' ? 'Collection' : order.type === 'drive-thru' ? 'Drive thru' : 'Takeaway'}
                     </div>
                   </div>
                 </div>

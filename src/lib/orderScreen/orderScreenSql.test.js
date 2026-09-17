@@ -12,20 +12,27 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { Buffer } from 'node:buffer';
-import { CHANNELS, NAME_PLACEHOLDER_PATTERN, NAME_CONTACT_PATTERN, CUSTOMER_TYPED_SOURCES } from './orderScreenStatus.js';
+import { CHANNELS, ORDER_TYPES, NAME_PLACEHOLDER_PATTERN, NAME_CONTACT_PATTERN, CUSTOMER_TYPED_SOURCES } from './orderScreenStatus.js';
 
 const sql = fs.readFileSync(new URL('../../../supabase/migrations/20260911_OPS_order_status_displays.sql', import.meta.url), 'utf8');
 const lower = sql.toLowerCase();
 
+// 20260917 replaces _osd_type_key and _osd_name for drive thru. The JS mirror follows that file;
+// 20260911 shipped the placeholder pattern without this alternative and is unchanged on disk.
+const sqlDrive = fs.readFileSync(new URL('../../../supabase/migrations/20260917_OPS_drive_thru_order_screens.sql', import.meta.url), 'utf8');
+const DRIVE_ALT = '|drive\\s*-?\\s*thru|drive\\s*-?\\s*through';
+
 // The text of one function, from `create or replace function public.<name>(` to its closing $$.
-function fnText(name) {
-  const start = lower.indexOf(`create or replace function public.${name}(`);
+function fnTextIn(text, name) {
+  const low = text.toLowerCase();
+  const start = low.indexOf(`create or replace function public.${name}(`);
   assert.ok(start >= 0, `function ${name} is defined`);
-  const open = sql.indexOf('$$', start);
-  const close = sql.indexOf('$$', open + 2);
+  const open = text.indexOf('$$', start);
+  const close = text.indexOf('$$', open + 2);
   assert.ok(open > start && close > open, `function ${name} has a body`);
-  return sql.slice(start, close + 2);
+  return text.slice(start, close + 2);
 }
+const fnText = (name) => fnTextIn(sql, name);
 
 test('the feed is revoked from public and anon', () => {
   assert.ok(sql.includes('revoke all on function public.order_status_feed(uuid) from public, anon;'));
@@ -77,8 +84,11 @@ test('every channel key appears in quotes', () => {
   for (const c of CHANNELS) assert.ok(sql.includes(`'${c.key}'`), c.key);
 });
 
-test('the name placeholder pattern matches the JS mirror verbatim', () => {
-  assert.ok(sql.includes(NAME_PLACEHOLDER_PATTERN));
+test('the name placeholder pattern matches the JS mirror verbatim (20260917 owns it; 20260911 shipped it without drive thru)', () => {
+  assert.ok(sqlDrive.includes(NAME_PLACEHOLDER_PATTERN));
+  assert.ok(NAME_PLACEHOLDER_PATTERN.includes(DRIVE_ALT));
+  assert.ok(!sql.includes(NAME_PLACEHOLDER_PATTERN));
+  assert.ok(sql.includes(NAME_PLACEHOLDER_PATTERN.replace(DRIVE_ALT, '')));
 });
 
 test('names: contact details never show and only letters survive (mirrors formatOrderName)', () => {
@@ -247,4 +257,55 @@ test('20260911c: every other line of the feed is the shipped definition', () => 
   const next = feedCode(sqlFollow);
   assert.deepEqual(base.filter(x => x.trim() !== 'when not v_names then null'), next);
   assert.equal(base.length - next.length, 1);
+});
+
+// ── 20260917: drive thru on the order status TVs ─────────────────────────────────────
+// Two functions replaced with the shipped 20260911 bodies plus the drive thru mapping. These
+// pin the file byte for byte against 20260911, so a hand edit to either body cannot drift.
+
+test('20260917: the type key maps drivethru and drivethrough to drive-thru and nothing else moves', () => {
+  const next = fnTextIn(sqlDrive, '_osd_type_key');
+  assert.ok(next.includes("when 'drivethru' then 'drive-thru'"));
+  assert.ok(next.includes("when 'drivethrough' then 'drive-thru'"));
+  const base = fnText('_osd_type_key');
+  const expected = base.replace(
+    "    when 'delivery' then 'delivery'\n",
+    "    when 'delivery' then 'delivery'\n    when 'drivethru' then 'drive-thru'\n    when 'drivethrough' then 'drive-thru'\n",
+  );
+  assert.notEqual(expected, base, 'the shipped body has the delivery line to insert after');
+  assert.equal(next, expected);
+  // every JS order type key, drive thru included, is a value the SQL function can return
+  for (const t of ORDER_TYPES) assert.ok(next.includes(`'${t.key}'`), t.key);
+});
+
+test('20260917: _osd_name carries the JS pattern in both checks and is otherwise the shipped body', () => {
+  const next = fnTextIn(sqlDrive, '_osd_name');
+  assert.equal(next.split('drive\\s*-?\\s*thru').length - 1, 2, 'both regex checks carry drive thru');
+  assert.equal(next.split('drive\\s*-?\\s*through').length - 1, 2, 'both regex checks carry drive through');
+  const base = fnText('_osd_name');
+  assert.equal(next, base.replaceAll('|delivery|table', `|delivery${DRIVE_ALT}|table`));
+  assert.ok(next.includes(`n ~ '${NAME_CONTACT_PATTERN}'`), 'contact pattern verbatim');
+  assert.ok(next.includes("'[^[:alpha:][:space:]''’-]'"), 'letters, spaces, apostrophes and hyphens only');
+});
+
+test('20260917: replaces two functions and nothing else, idempotent, guarded, no dashes', () => {
+  const l = sqlDrive.toLowerCase();
+  assert.equal((l.match(/create or replace function/g) || []).length, 2);
+  assert.ok(l.includes('create or replace function public._osd_type_key(p_type text)'));
+  assert.ok(l.includes('create or replace function public._osd_name(p_name text, p_format text)'));
+  for (const word of ['drop table', 'drop function', 'alter table', 'create table', 'create policy', 'drop policy', 'grant ', 'create trigger', 'create or replace trigger', 'insert into', 'update public', 'delete from', 'alter publication']) {
+    assert.equal(l.includes(word), false, `the file must not contain ${word}`);
+  }
+  assert.ok(sqlDrive.includes('revoke all on function public._osd_type_key(text) from public, anon;'));
+  assert.ok(sqlDrive.includes('revoke all on function public._osd_name(text, text) from public, anon;'));
+  assert.ok(sqlDrive.includes("raise exception 'Wrong database."));
+  assert.ok(sqlDrive.includes("to_regclass('public.order_status_displays') is null"));
+  assert.ok(sqlDrive.includes('tbetcegmszzotrwdtqhi'));
+  assert.ok(l.includes('by hand'), 'the header says Peter runs it by hand');
+  assert.ok(!sqlDrive.includes(String.fromCharCode(0x2014)) && !sqlDrive.includes(String.fromCharCode(0x2013)), 'no dashes');
+  assert.ok(sqlDrive.includes('comment on column public.recipe_lines.order_types'));
+  assert.ok(sqlDrive.includes('comment on column public.print_routing.routing'));
+  assert.ok(sqlDrive.includes("'drivethru'") && sqlDrive.includes("'drive-thru'"));
+  const firstStatement = sqlDrive.split('\n').find(x => x.trim() && !x.trim().startsWith('--'));
+  assert.equal(firstStatement, "set lock_timeout = '3s';");
 });

@@ -13,7 +13,9 @@
 // NO imports, so node:test can load it.
 
 const KEEP_STATUSES = ['received', 'prep'];
-const KEEP_TYPES = ['dine-in', 'takeaway', 'collection', 'delivery'];
+// drive-thru (16 Sep 2026): a drive thru order is collected at the window, so a paid one
+// stays queued until staff tap Collected, exactly like takeaway.
+const KEEP_TYPES = ['dine-in', 'takeaway', 'collection', 'delivery', 'drive-thru'];
 
 const isTillEntry = (entry) => !!entry && typeof entry === 'object' && (!entry.source || entry.source === 'pos');
 

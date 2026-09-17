@@ -648,3 +648,104 @@ test('repriceCartLines: a line whose item is no longer in items is left unchange
   assert.deepEqual(repriceCartLines(null, ALL, 'delivery', null), []);
   assert.equal(repriceCartLines([orphan], null, 'delivery', null)[0], orphan);
 });
+
+// ── Drive thru (16 Sep 2026): the takeaway price by another door ─────────────
+// The till passes 'drive-thru'. It reads pricing.driveThru, else pricing.takeaway,
+// else base, at every level (menu tier too). Every other channel reads exactly
+// one key, so a venue that never enables drive thru charges exactly what it did.
+
+test('channelKey: every drive thru spelling maps to driveThru, nothing else does', () => {
+  for (const c of ['drive-thru', 'drive_thru', 'driveThru', 'drive-through']) assert.equal(channelKey(c), 'driveThru', c);
+  assert.equal(channelKey('drivethru'), 'dineIn');     // no fuzzy match: unknown stays the dineIn fallback
+  assert.equal(channelKey('Drive thru'), 'dineIn');
+});
+
+test('drive thru: driveThru, else takeaway, else base (never dineIn, collection or delivery)', () => {
+  assert.equal(resolveItemPrice(burger({ base: 10.5, takeaway: 9, driveThru: 8 }), 'drive-thru'), 8);
+  assert.equal(resolveItemPrice(burger({ base: 10.5, takeaway: 9 }), 'drive-thru'), 9);
+  assert.equal(resolveItemPrice(burger({ base: 10.5 }), 'drive-thru'), 10.5);
+  assert.equal(resolveItemPrice(burger({ base: 10.5, takeaway: null, driveThru: null }), 'drive-thru'), 10.5);
+  assert.equal(resolveItemPrice(burger({ base: 10.5, takeaway: undefined, driveThru: undefined }), 'drive-thru'), 10.5);
+  assert.equal(resolveItemPrice(burger({ base: 10.5, dineIn: 11, collection: 12, delivery: 13 }), 'drive-thru'), 10.5);
+  assert.equal(resolveItemPrice(burger({ base: 10.5, takeaway: 9, driveThru: 0 }), 'drive-thru'), 0);       // explicit 0 is a price
+  assert.equal(resolveItemPrice(burger({ base: 10.5, takeaway: 0 }), 'drive-thru'), 0);                     // takeaway 0 is a price too
+  assert.equal(resolveItemPrice(burger({ base: 10.5, takeaway: 9, driveThru: '8.25' }), 'drive-thru'), 8.25);
+  assert.equal(resolveItemPrice({ price: 4.25 }, 'drive-thru'), 4.25);                                       // legacy scalar
+  assert.equal(resolveItemPrice({ price: 4.25, pricing: { base: null } }, 'drive-thru'), 0);
+  for (const alias of ['drive-thru', 'drive_thru', 'driveThru', 'drive-through']) {
+    assert.equal(resolveItemPrice(burger({ base: 10.5, takeaway: 9, driveThru: 8 }), alias), 8, alias);
+    assert.equal(resolveItemPrice(burger({ base: 10.5, takeaway: 9 }), alias), 9, alias);
+  }
+});
+
+test('drive thru: a menu tier reads driveThru, then takeaway, then all, then base, then the item keys', () => {
+  const full = burger({ base: 10.5, takeaway: 9, driveThru: 8, menus: { [LUNCH]: { driveThru: 6, takeaway: 6.5, all: 7, base: 7.5 } } });
+  assert.equal(resolveItemPrice(full, 'drive-thru', LUNCH), 6);
+  assert.equal(menuTierPrice(full, 'drive-thru', LUNCH), 6);
+  assert.equal(resolveItemPrice(burger({ base: 10.5, takeaway: 9, driveThru: 8, menus: { [LUNCH]: { takeaway: 6.5, all: 7, base: 7.5 } } }), 'drive-thru', LUNCH), 6.5);
+  assert.equal(resolveItemPrice(burger({ base: 10.5, takeaway: 9, driveThru: 8, menus: { [LUNCH]: { all: 7, base: 7.5 } } }), 'drive-thru', LUNCH), 7);
+  assert.equal(resolveItemPrice(burger({ base: 10.5, takeaway: 9, driveThru: 8, menus: { [LUNCH]: { base: 7.5 } } }), 'drive-thru', LUNCH), 7.5);
+  assert.equal(resolveItemPrice(burger({ base: 10.5, takeaway: 9, driveThru: 8, menus: { [LUNCH]: { dineIn: 5 } } }), 'drive-thru', LUNCH), 8);   // a dineIn tier is not ours
+  assert.equal(resolveItemPrice(burger({ base: 10.5, takeaway: 9, menus: { [LUNCH]: { dineIn: 5 } } }), 'drive-thru', LUNCH), 9);
+  assert.equal(resolveItemPrice(full, 'drive-thru', 'menu-other'), 8);
+  assert.equal(resolveItemPrice(full, 'drive-thru', null), 8);
+  // a tier drive thru price is that menu's only, and takeaway on the same menu keeps its own tier
+  assert.equal(resolveItemPrice(full, 'takeaway', LUNCH), 6.5);
+  assert.equal(resolveItemPrice(full, 'dineIn', LUNCH), 7);
+  // explicit tier zero is a price, an unset tier key is not
+  assert.equal(resolveItemPrice(burger({ base: 10.5, menus: { [LUNCH]: { driveThru: 0, takeaway: 6.5 } } }), 'drive-thru', LUNCH), 0);
+  assert.equal(menuTierPrice(burger({ base: 10.5, menus: { [LUNCH]: { driveThru: null } } }), 'drive-thru', LUNCH), null);
+});
+
+test('drive thru: every other channel is byte for byte unchanged by a driveThru key anywhere in pricing', () => {
+  const vals = [undefined, null, 0, 2.5];
+  const OTHERS = ['dine-in', 'dineIn', 'dine_in', 'takeaway', 'collection', 'delivery', 'bar', null, undefined];
+  let checked = 0;
+  for (const base of [undefined, 0, 10.5]) for (const takeaway of vals) for (const dineIn of vals)
+    for (const tierAll of vals) for (const tierTk of vals) for (const dt of [0, 8]) {
+      const plain = { base, dineIn, takeaway, collection: null, delivery: 12, menus: { [LUNCH]: { all: tierAll, takeaway: tierTk } } };
+      const withDt = { ...plain, driveThru: dt, menus: { [LUNCH]: { ...plain.menus[LUNCH], driveThru: 6 } } };
+      for (const ch of OTHERS) for (const menuId of [null, LUNCH, 'menu-other']) {
+        const tag = JSON.stringify({ withDt, ch, menuId });
+        assert.equal(resolveItemPrice({ pricing: withDt }, ch, menuId), resolveItemPrice({ pricing: plain }, ch, menuId), tag);
+        assert.equal(menuTierPrice({ pricing: withDt }, ch, menuId), menuTierPrice({ pricing: plain }, ch, menuId), tag);
+        assert.equal(cartUnitPrice({ pricing: withDt }, ch, menuId, 21, 2), cartUnitPrice({ pricing: plain }, ch, menuId, 21, 2), tag);
+        checked++;
+      }
+      assert.equal(resolveBoardPrice({ pricing: withDt }, LUNCH), resolveBoardPrice({ pricing: plain }, LUNCH));
+      assert.equal(resolveBoardPrice({ pricing: withDt }, null), resolveBoardPrice({ pricing: plain }, null));
+    }
+  assert.ok(checked > 5000, `grid too small: ${checked}`);
+});
+
+test('drive thru: cart, phone and storefront paths charge the drive thru price', () => {
+  const it = burger({ base: 10.5, takeaway: 9, driveThru: 8, menus: { [LUNCH]: { driveThru: 6 } } });
+  assert.equal(cartUnitPrice(it, 'drive-thru', null), 8);
+  assert.equal(cartUnitPrice(it, 'drive-thru', null, 10.5, 1), 8);            // quick add passes base, the drive thru price is charged
+  assert.equal(cartUnitPrice(it, 'drive-thru', null, 12.5, 1), 10);           // base + 2.00 mod stacks on it
+  assert.equal(cartUnitPrice(it, 'drive-thru', LUNCH), 6);
+  assert.equal(planCartLine(it, 'drive-thru', null).unitPrice, 8);
+  assert.equal(planCartLine(it, 'drive-thru', LUNCH, { modSurcharge: 0.5, qty: 2 }).unitPrice, 6.5);
+  const noDt = burger({ base: 10.5, takeaway: 9 });
+  assert.equal(cartUnitPrice(noDt, 'drive-thru', null), 9);
+  assert.equal(cartUnitPrice(noDt, 'drive-thru', null, 10.5, 1), 9);
+  assert.equal(planCartLine(noDt, 'drive-thru', null).unitPrice, 9);
+  // the store's setOrderType reprice for a cart outside the store
+  const cart = [{ uid: 'a', itemId: 'burger', price: 10.5, qty: 1, mods: [] }];
+  assert.equal(repriceCartLines(cart, [it], 'drive-thru', null)[0].price, 8);
+  assert.equal(repriceCartLines(cart, [noDt], 'drive-thru', null)[0].price, 9);
+  assert.equal(repriceCartLines(cart, [it], 'drive-thru', LUNCH)[0].price, 6);
+});
+
+test('Provo Heineken: drive thru reads the takeaway column until a drive thru price is set', () => {
+  assert.equal(resolveItemPrice(half, 'drive-thru', null), 3.01);   // Half takeaway 3.01
+  assert.equal(resolveItemPrice(pint, 'drive-thru', null), 3.85);   // Pint has no takeaway price: base
+  assert.equal(resolveItemPrice(half, 'drive-thru', BAR), 1.23);    // the Bar tier all still wins
+  assert.equal(variantFromPrice(heineken, ALL, 'drive-thru', null), 3.01);
+  assert.equal(variantFromPrice(heineken, ALL, 'drive-thru', BAR), 1.23);
+  const halfDt = { ...half, pricing: { ...half.pricing, driveThru: 2.95 } };
+  assert.equal(resolveItemPrice(halfDt, 'drive-thru', null), 2.95);
+  assert.equal(resolveItemPrice(halfDt, 'takeaway', null), 3.01);   // takeaway untouched
+  assert.equal(resolveItemPrice(halfDt, 'drive-thru', BAR), 1.23);
+  assert.equal(resolveItemPrice(heineken, 'drive-thru', null), 0);  // the parent is never a price
+});

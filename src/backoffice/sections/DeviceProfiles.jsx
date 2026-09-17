@@ -30,6 +30,9 @@ const ORDER_TYPES = [
   { id:'dine-in',    label:'Dine in',    icon:'🍽' },
   { id:'takeaway',   label:'Takeaway',   icon:'🥡' },
   { id:'collection', label:'Collection', icon:'📦' },
+  // Drive thru (16 Sep 2026): this tick IS the venue's switch. Off unless ticked, so a
+  // till that never ticks it never offers it. No new column: device_profiles.enabled_order_types.
+  { id:'drive-thru', label:'Drive thru', icon:'🚗' },
 ];
 
 // v4.5.1: trimmed to only the features actually wired in the codebase.

@@ -487,6 +487,12 @@ const buildCatParentMap = () => {
   } catch { return {}; }
 };
 
+// The word before ' · Name' on a walk in kitchen ticket and KDS card. Every key
+// capitalises as itself ('Takeaway · Sam'); drive thru (16 Sep 2026) would read
+// 'Drive-thru', so it alone is mapped. The KDS legacy label reader
+// (src/lib/kds/kdsTicket.js parseLegacyTicket) must accept what this returns.
+const walkInTypeLabel = (t) => t === 'drive-thru' ? 'Drive thru' : `${t.charAt(0).toUpperCase()}${t.slice(1)}`;
+
 // The whole routing decision is resolveCentresForItem, imported from
 // src/lib/productionRouting.js: category ticks AND order type ticks, both read from
 // print_routing.routing[centreId]. It returns { centreIds, byCategory, usedTypeFallback,
@@ -2767,7 +2773,7 @@ export const useStore = create((set, get) => ({
           const pendingItems = order.items.filter(i => i.status === 'pending' && !i.voided);
           if (!pendingItems.length) return;
           const label = customer?.name
-            ? `${orderType.charAt(0).toUpperCase()+orderType.slice(1)} · ${customer.name}`
+            ? `${walkInTypeLabel(orderType)} · ${customer.name}`
             : orderType;
           const ref = order.ref || getNextOrderRefLocal();
           const scheduledEntry = {
@@ -2801,7 +2807,7 @@ export const useStore = create((set, get) => ({
         }
       }
       const pendingItems = order.items.filter(isUnsentLine);
-      const label = customer?.name ? `${orderType.charAt(0).toUpperCase()+orderType.slice(1)} · ${customer.name}` : orderType;
+      const label = customer?.name ? `${walkInTypeLabel(orderType)} · ${customer.name}` : orderType;
       const wiFiredOnSend = computeFiredOnSend(order.items || []);
       // v5.8.66: the ref is taken HERE, before the tickets, so the KDS can show the receipt
       // number (#35). It was taken a few lines further down; the value and the single
@@ -7216,7 +7222,8 @@ export const useStore = create((set, get) => ({
       // tickets printed with no customer, address, or fee. Address is passed as the
       // {line1,postcode,...} object the kitchen-ticket builder expects.
       const _svcType = order.customer?.serviceType || order.type;
-      const _isDeliveryish = _svcType === 'delivery' || _svcType === 'collection' || order.source === 'hubrise';
+      // Drive thru (16 Sep 2026) joins so the customer name reaches the ticket.
+      const _isDeliveryish = _svcType === 'delivery' || _svcType === 'collection' || _svcType === 'drive-thru' || order.source === 'hubrise';
       const deliveryBlock = _isDeliveryish ? {
         channel: order.customer?.channel || (order.source && order.source !== 'hubrise' ? srcLabel : null),
         serviceType: _svcType,
@@ -7449,7 +7456,7 @@ export const useStore = create((set, get) => ({
       const check = {
         ref: c.collectionCode || order.ref,
         server: c.channel || 'HubRise',
-        orderType: c.serviceType === 'delivery' ? 'Delivery' : c.serviceType === 'collection' ? 'Collection' : 'Order',
+        orderType: c.serviceType === 'delivery' ? 'Delivery' : c.serviceType === 'collection' ? 'Collection' : c.serviceType === 'drive-thru' ? 'Drive thru' : 'Order',
         method: c.paid ? 'card' : null,
         delivery: {
           channel: c.channel, serviceType: c.serviceType, paid: !!c.paid,
@@ -7488,7 +7495,7 @@ export const useStore = create((set, get) => ({
       const check = {
         ref: c.collectionCode || order.ref,
         server: c.channel || SRC[order.source] || 'Order',
-        orderType: svcType === 'delivery' ? 'Delivery' : svcType === 'collection' ? 'Collection' : 'Order',
+        orderType: svcType === 'delivery' ? 'Delivery' : svcType === 'collection' ? 'Collection' : svcType === 'drive-thru' ? 'Drive thru' : 'Order',
         method: (c.paid || order.paid) ? (order.paymentMethod || 'card') : null,
         deliveryFee: deliveryFee || 0,   // so the receipt builder prints a Delivery line (printer.js)
         delivery: (svcType === 'delivery' || svcType === 'collection' || c.delivery_fee != null) ? {

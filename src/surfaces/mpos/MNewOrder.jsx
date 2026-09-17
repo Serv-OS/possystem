@@ -1,8 +1,8 @@
 // MNewOrder — bottom-sheet picker for the kind of order this is.
 // On pick:
 //   - dine-in → caller switches to the Tables tab and waits for a table tap.
-//   - takeaway / collection / delivery / bar → caller starts a fresh walk-in
-//     order and routes straight to MMenu.
+//   - takeaway / collection / delivery / drive-thru / bar → caller starts a fresh
+//     walk-in order and routes straight to MMenu.
 //
 // Profile-aware: only shows order types the device's profile has enabled
 // (deviceConfig.enabledOrderTypes). If only one type is enabled, that's
@@ -17,6 +17,8 @@ const TYPES = [
   { id:'takeaway',   label:'Takeaway',    icon:'🥡',  desc:'Customer takes the order with them now' },
   { id:'collection', label:'Collection',  icon:'📦',  desc:'Customer collects later — capture name + time' },
   { id:'delivery',   label:'Delivery',    icon:'🛵',  desc:'Sent out for delivery — capture address' },
+  // Drive thru (16 Sep 2026): off unless the profile ticks it, like every entry here.
+  { id:'drive-thru', label:'Drive thru',  icon:'🚗',  desc:'Handed over at the drive thru window, name or car only' },
 ];
 
 export default function MNewOrder({ onPick, onClose }) {

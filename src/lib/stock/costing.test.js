@@ -297,3 +297,82 @@ test('resolveItemSupplierId: falls back to the purchasing link when no default i
   assert.equal(resolveItemSupplierId({}), null);
   assert.equal(resolveItemSupplierId(null), null);
 });
+
+// ── Drive thru (16 Sep 2026): takeaway by another door ──────────────────────
+import { normaliseOrderType, recipeNamesOrderType, RECIPE_ORDER_TYPES, ORDER_TYPE_LABELS } from './costing.js';
+
+test('drive-thru: every spelling folds to drive-thru, the picker lists it, nothing else moved', () => {
+  for (const s of ['drive-thru', 'drive_thru', 'driveThru', 'drive-through', 'Drive Thru', 'DRIVE-THRU', 'drivethru', ' drive thru ']) {
+    assert.equal(normaliseOrderType(s), 'drive-thru', s);
+  }
+  assert.equal(normaliseOrderType('dineIn'), 'dine-in');
+  assert.equal(normaliseOrderType('eat_in'), 'dine-in');
+  assert.equal(normaliseOrderType('bar'), 'dine-in');
+  assert.equal(normaliseOrderType('takeaway'), 'takeaway');
+  assert.equal(normaliseOrderType(null), 'dine-in');
+  assert.equal(normaliseOrderType('bar-tab'), 'bar-tab');
+  assert.deepEqual(RECIPE_ORDER_TYPES, ['dine-in', 'takeaway', 'collection', 'delivery', 'drive-thru']);
+  assert.equal(ORDER_TYPE_LABELS['drive-thru'], 'Drive thru');
+});
+
+test('drive-thru: a takeaway line applies unless the recipe names drive-thru; other types unchanged', () => {
+  const cup = { componentItemId: 'cup', orderTypes: ['takeaway', 'collection', 'delivery'] };
+  const tray = { componentItemId: 'tray', orderTypes: ['drive-thru'] };
+  const milk = { componentItemId: 'milk', orderTypes: null };
+  assert.equal(recipeNamesOrderType([cup, milk], 'drive-thru'), false);
+  assert.equal(recipeNamesOrderType([cup, tray, milk], 'drive-thru'), true);
+  assert.equal(recipeNamesOrderType(null, 'drive-thru'), false);
+  // no recipe context: the takeaway line applies to drive thru
+  assert.equal(lineAppliesToOrderType(cup, 'drive-thru'), true);
+  assert.equal(lineAppliesToOrderType(cup, 'drive-thru', [cup, milk]), true);
+  // the recipe has its own drive thru packaging: only that applies
+  assert.equal(lineAppliesToOrderType(cup, 'drive-thru', [cup, tray, milk]), false);
+  assert.equal(lineAppliesToOrderType(tray, 'drive-thru', [cup, tray, milk]), true);
+  assert.equal(lineAppliesToOrderType(milk, 'drive-thru', [cup, tray, milk]), true);
+  assert.equal(lineAppliesToOrderType(tray, 'drive_thru', [cup, tray]), true);
+  // a drive thru line never reaches any other type, and the cup keeps its own types
+  for (const ot of ['dine-in', 'takeaway', 'collection', 'delivery', 'dineIn', 'counter', null]) {
+    assert.equal(lineAppliesToOrderType(tray, ot, [cup, tray, milk]), false, String(ot));
+    assert.equal(lineAppliesToOrderType(cup, ot, [cup, tray, milk]), lineAppliesToOrderType(cup, ot), String(ot));
+  }
+  assert.equal(lineAppliesToOrderType(cup, 'takeaway', [cup, tray]), true);
+  assert.equal(lineAppliesToOrderType(cup, 'dine-in', [cup, tray]), false);
+  assert.equal(lineAppliesToOrderType({ orderTypes: ['dine-in'] }, 'drive-thru'), false);
+});
+
+test('drive-thru: a latte costs like a takeaway latte until the recipe gets its own drive thru line', () => {
+  const ctx = { itemsById: {
+    espresso: { id: 'espresso', kind: 'PURCHASED', baseUnit: 'g', currentCost: 15 / 1000, itemConversions: [] },
+    milk:     { id: 'milk', kind: 'PURCHASED', baseUnit: 'ml', currentCost: 2.85 / 1000, itemConversions: [] },
+    cup:      { id: 'cup', kind: 'PURCHASED', baseUnit: 'each', currentCost: 0.06, itemConversions: [] },
+    tray:     { id: 'tray', kind: 'PURCHASED', baseUnit: 'each', currentCost: 0.12, itemConversions: [] },
+  } };
+  const lines = [
+    { componentItemId: 'espresso', qty: 27, unit: 'g', usablePct: 100 },
+    { componentItemId: 'milk', qty: 240, unit: 'ml', usablePct: 100 },
+    { componentItemId: 'cup', qty: 1, unit: 'each', usablePct: 100, orderTypes: ['takeaway', 'collection', 'delivery'] },
+  ];
+  const recipe = { yieldQty: 1, yieldUnit: 'each', wastagePct: 0, lines };
+  const dineIn = recipeCost(recipe, ctx, 'dine-in').totalCost;
+  const takeaway = recipeCost(recipe, ctx, 'takeaway').totalCost;
+  near(takeaway, dineIn + 0.06);
+  near(recipeCost(recipe, ctx, 'drive-thru').totalCost, takeaway);
+  near(recipeCost(recipe, ctx, 'driveThru').totalCost, takeaway);
+  near(recipeCost(recipe, ctx, 'dine-in').totalCost, dineIn);   // unchanged
+  near(recipeCost(recipe, ctx).totalCost, dineIn);
+  // the venue adds a drive thru tray line: drive thru now costs its own packaging, not the cup
+  const own = { ...recipe, lines: [...lines, { componentItemId: 'tray', qty: 1, unit: 'each', usablePct: 100, orderTypes: ['drive-thru'] }] };
+  near(recipeCost(own, ctx, 'drive-thru').totalCost, dineIn + 0.12);
+  near(recipeCost(own, ctx, 'takeaway').totalCost, takeaway);
+  near(recipeCost(own, ctx, 'dine-in').totalCost, dineIn);
+  near(recipeCost(own, ctx, 'delivery').totalCost, takeaway);
+  // supplier attribution reconciles to the plate cost for every shape
+  for (const [r, ot] of [[recipe, 'drive-thru'], [own, 'drive-thru'], [own, 'takeaway'], [own, 'dine-in']]) {
+    const { byItem, total } = costBreakdownByPurchasedItem(r, ctx, ot);
+    near(total, recipeCost(r, ctx, ot).totalCost);
+    near(Object.values(byItem).reduce((a, b) => a + b, 0), total);
+  }
+  assert.equal(costBreakdownByPurchasedItem(own, ctx, 'drive-thru').byItem.cup, undefined);
+  near(costBreakdownByPurchasedItem(own, ctx, 'drive-thru').byItem.tray, 0.12);
+  near(costBreakdownByPurchasedItem(recipe, ctx, 'drive-thru').byItem.cup, 0.06);
+});

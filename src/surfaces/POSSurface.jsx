@@ -299,8 +299,14 @@ export default function POSSurface() {
   const allowedCatIds = useMemo(
     () => allowedCategoryIds(menuCategories, deviceMenuId, _categoryLinks),
     [menuCategories, deviceMenuId, _categoryLinks]);
-  const ALL_ORDER_TYPES = [['dine-in','🍽','Dine in'],['takeaway','🥡','Takeaway'],['collection','📦','Collect']];
+  // Drive thru (16 Sep 2026) shows only when the device profile ticks it, like every type here.
+  const ALL_ORDER_TYPES = [['dine-in','🍽','Dine in'],['takeaway','🥡','Takeaway'],['collection','📦','Collect'],['drive-thru','🚗','Drive thru']];
   const visibleOrderTypes = ALL_ORDER_TYPES.filter(([t]) => allowedOrderTypes.includes(t));
+  // The order header, reprint title and send toast print the raw key ('takeaway'), which
+  // reads fine until a key carries a hyphen. Only drive thru is mapped so no other venue
+  // sees a change.
+  const ORDER_TYPE_LABEL = { 'drive-thru': 'Drive thru' };
+  const orderTypeLabel = ORDER_TYPE_LABEL[orderType] || orderType;
 
   const [cat, setCat]             = useState('quick');
   const [subCat, setSubCat]       = useState(null);
@@ -620,7 +626,8 @@ export default function POSSurface() {
     if (t!=='dine-in') {
       // v5.5.799: quick-service venues — 'Not needed' skips the customer prompt on
       // takeaway/collection entirely; the order carries its short ref like an unnamed walk-in.
-      if (takeawayCustomerDetails === 'none' && (t === 'takeaway' || t === 'collection')) { setOrderType(t); return; }
+      // Drive thru follows takeaway here (16 Sep 2026).
+      if (takeawayCustomerDetails === 'none' && (t === 'takeaway' || t === 'collection' || t === 'drive-thru')) { setOrderType(t); return; }
       setPendingOrderType(t); setShowCustomerModal(true);
     }
     else { setOrderType('dine-in'); clearCustomer(); }
@@ -753,15 +760,15 @@ export default function POSSurface() {
       // v4.6.5 Bug 1: if user already picked takeaway/collection/delivery AND gave customer
       // details, skip the SendWithoutTableModal — it was forcing them to re-pick the type
       // and losing the original orderType (Bug 2 downstream).
-      const preSelected = (orderType === 'takeaway' || orderType === 'collection' || orderType === 'delivery');
+      const preSelected = (orderType === 'takeaway' || orderType === 'collection' || orderType === 'delivery' || orderType === 'drive-thru');
       // v5.5.799: 'Not needed' mode — takeaway/collection sends straight through with no
       // customer prompt. An empty-name customer means Orders Hub falls back to the short
       // order ref (R-number), matching unnamed walk-ins; delivery always needs details.
-      const skipDetails = takeawayCustomerDetails === 'none' && (orderType === 'takeaway' || orderType === 'collection');
+      const skipDetails = takeawayCustomerDetails === 'none' && (orderType === 'takeaway' || orderType === 'collection' || orderType === 'drive-thru');
       if (preSelected && (customer?.name || skipDetails)) {
         if (!customer?.name) setCustomer({ name: '', isASAP: true });
         const name = customer?.name;
-        const type = orderType;
+        const type = orderTypeLabel;
         setShowCheckout(false);
         sendToKitchen();
         // v4.6.5 follow-up: clear the POS after send, matching every OrderTypeModal branch
@@ -1296,7 +1303,7 @@ export default function POSSurface() {
               <div style={{display:'flex',gap:4,padding:4,borderRadius:13,background:'var(--inset)',border:'1px solid var(--inset-border)',marginBottom:orderType==='dine-in'?0:8}}>
                 {visibleOrderTypes.map(([t,ic,l])=>{
                   const on=orderType===t;
-                  const iconName=t==='dine-in'?'dinein':t==='takeaway'?'takeaway':t==='collection'?'collect':t==='delivery'?'delivery':'dinein';
+                  const iconName=t==='dine-in'?'dinein':t==='takeaway'?'takeaway':t==='collection'?'collect':t==='delivery'?'delivery':t==='drive-thru'?'drivethru':'dinein';
                   return (
                   <button key={t} onClick={()=>handleTypeChange(t)} style={{flex:1,padding:'9px 4px',borderRadius:9,cursor:'pointer',fontFamily:'inherit',border:'none',background:on?'var(--glass-bg)':'transparent',boxShadow:on?'var(--glass-hi)':'none',color:on?'var(--t1)':'var(--t3)',fontSize:12,fontWeight:600,display:'flex',alignItems:'center',justifyContent:'center',gap:6,letterSpacing:.01,transition:'all .14s'}}>
                     <Icon name={iconName} size={15} stroke={1.8} style={{color:on?'var(--acc)':'var(--t3)'}} />{l}
@@ -1335,7 +1342,7 @@ export default function POSSurface() {
         {/* Order label row */}
         <div style={{padding:'6px 12px 3px',display:'flex',alignItems:'center',justifyContent:'space-between',flexShrink:0}}>
           <span style={{fontSize:10,fontWeight:800,color:'var(--t4)',textTransform:'uppercase',letterSpacing:'.08em'}}>
-            {activeTable?`${activeTable.label}`:orderType} · {staff?.name}
+            {activeTable?`${activeTable.label}`:orderTypeLabel} · {staff?.name}
           </span>
           <div style={{display:'flex',alignItems:'center',gap:6}}>
             {items.length>0&&(
@@ -2015,7 +2022,7 @@ export default function POSSurface() {
       {showReprint&&(
         <ReprintModal
           items={items.filter(i=>i.status==='sent')}
-          tableLabel={activeTable?.label || orderType}
+          tableLabel={activeTable?.label || orderTypeLabel}
           onClose={()=>setShowReprint(false)}
           onReprint={(uids)=>{
             // v5.7.72: this handler was toast-only since the modal shipped — nothing
@@ -2075,7 +2082,7 @@ export default function POSSurface() {
               store.clearWalkIn();
               showToast(result.name ? `${result.name} — sent to kitchen` : 'Sent to kitchen', 'success');
 
-            } else if (result.type === 'takeaway' || result.type === 'collection') {
+            } else if (result.type === 'takeaway' || result.type === 'collection' || result.type === 'drive-thru') {
               store.setCustomer({ name: result.name, phone: result.phone, collectionTime: result.time, isASAP: result.isASAP });
               store.setOrderType(result.type);
               store.sendToKitchen();

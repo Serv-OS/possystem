@@ -82,10 +82,13 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
   const slots = getCollectionSlots(quotedLead, tz);
   const isCollection = orderType === 'collection';
   const isDelivery = orderType === 'delivery';
+  const isDriveThru = orderType === 'drive-thru';
   // v5.5.799: quick-service venues can relax takeaway/collection to a single name field
   // ('name' mode — and 'none' mode when this modal is opened explicitly via Add customer).
   // Dine-in loyalty attach and delivery always keep the full form.
-  const nameOnly = (orderType === 'takeaway' || isCollection) && takeawayCustomerDetails !== 'full' && !!takeawayCustomerDetails;
+  // Drive thru (16 Sep 2026) is name only whatever the setting says: the car is at the
+  // window, there is no one to phone. No slot, no address.
+  const nameOnly = isDriveThru || ((orderType === 'takeaway' || isCollection) && takeawayCustomerDetails !== 'full' && !!takeawayCustomerDetails);
 
   // Live phone/name search
   // v5.5.280: phone search starts at 6 digits (was 3) to reduce DB load at scale.
@@ -188,10 +191,10 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom: 20 }}>
           <div>
             <div style={{ fontSize: 18, fontWeight: 700, color: 'var(--t1)' }}>
-              {orderType === 'collection' ? '📦 Collection order' : orderType === 'dine-in' ? '👤 Add customer to table' : isDelivery ? '🚗 Delivery order' : '🥡 Takeaway order'}
+              {isDriveThru ? '🚗 Drive thru order' : orderType === 'collection' ? '📦 Collection order' : orderType === 'dine-in' ? '👤 Add customer to table' : isDelivery ? '🚗 Delivery order' : '🥡 Takeaway order'}
             </div>
             <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 3 }}>
-              {existing ? 'Editing customer details — update only what you need' : (orderType === 'collection' ? 'Customer collects from the counter' : orderType === 'dine-in' ? 'Attach a customer so this visit counts toward their loyalty' : isDelivery ? 'Delivery to the customer’s address' : 'Order to be taken away now')}
+              {existing ? 'Editing customer details: update only what you need' : (isDriveThru ? 'Name or car, so the order reaches the right window' : orderType === 'collection' ? 'Customer collects from the counter' : orderType === 'dine-in' ? 'Attach a customer so this visit counts toward their loyalty' : isDelivery ? 'Delivery to the customer’s address' : 'Order to be taken away now')}
             </div>
           </div>
           <button onClick={onCancel} style={{ background:'none', border:'none', color:'var(--t3)', cursor:'pointer', fontSize:22, lineHeight:1 }}>×</button>
@@ -234,7 +237,7 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
             <label style={{ display: 'block', fontSize: 11, fontWeight: 700, color: 'var(--t2)', textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 6 }}>
               Name <span style={{ color: 'var(--red)' }}>*</span>
             </label>
-            <input style={inputStyle} placeholder="Customer name" value={name} onChange={e => setName(e.target.value)}/>
+            <input style={inputStyle} placeholder={isDriveThru ? 'Name or car, e.g. Sam or red Golf' : 'Customer name'} value={name} onChange={e => setName(e.target.value)}/>
           </div>
           {/* v5.5.799: name-only mode — quick service takes just the name */}
           {!nameOnly && (<>
@@ -334,7 +337,7 @@ export default function CustomerModal({ orderType, existing, onConfirm, onCancel
         <div style={{ display: 'flex', gap: 8 }}>
           <button className="btn btn-ghost" style={{ flex: 1 }} onClick={onCancel}>Cancel</button>
           <button className="btn btn-acc" style={{ flex: 2, height: 46, fontSize: 15 }} onClick={handleConfirm}>
-            {orderType === 'dine-in' ? 'Attach to table' : isDelivery ? 'Confirm delivery →' : ('Confirm ' + (orderType === 'collection' ? 'collection' : 'takeaway') + ' →')}
+            {orderType === 'dine-in' ? 'Attach to table' : isDelivery ? 'Confirm delivery →' : isDriveThru ? 'Confirm drive thru →' : ('Confirm ' + (orderType === 'collection' ? 'collection' : 'takeaway') + ' →')}
           </button>
         </div>
       </div>

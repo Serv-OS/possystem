@@ -7,6 +7,7 @@
 //   • takeaway   → optional (legacy, customer just walks out with the bag)
 //   • collection → name + phone (so staff can call out the order); collection time
 //   • delivery   → name + phone + address; ASAP or scheduled time
+//   • drive-thru → name (or the car) only; no phone, no time (16 Sep 2026)
 //
 // Skips itself when the type is takeaway or dine-in (those don't need it).
 
@@ -59,9 +60,10 @@ export default function MCustomerCapture({ orderType, onContinue, onSkip, onBack
   const isDelivery = orderType === 'delivery';
   const isCollection = orderType === 'collection';
   const isTakeaway = orderType === 'takeaway';
+  const isDriveThru = orderType === 'drive-thru';
   // v5.5.341: takeaway now requires customer details too, matching the counter
   // POS (name + phone required for every walk-in order type).
-  const needsCustomer = isTakeaway || isCollection || isDelivery;
+  const needsCustomer = isTakeaway || isCollection || isDelivery || isDriveThru;
 
   // Validation — name + phone required for collection/delivery. Address only
   // for delivery. Time only required when not ASAP.
@@ -69,7 +71,8 @@ export default function MCustomerCapture({ orderType, onContinue, onSkip, onBack
     const e = {};
     if (needsCustomer) {
       if (!name.trim()) e.name = 'Customer name required';
-      if (!phone.trim()) e.phone = 'Phone required';
+      // Drive thru is name only: the car is at the window, there is no one to phone.
+      if (!isDriveThru && !phone.trim()) e.phone = 'Phone required';
     }
     if (isDelivery && !address.trim()) e.address = 'Delivery address required';
     if (!isASAP && (isCollection || isDelivery) && !time.trim()) e.time = 'Pick a time or tick ASAP';
@@ -96,7 +99,7 @@ export default function MCustomerCapture({ orderType, onContinue, onSkip, onBack
         <button onClick={onBack} style={Sx.iconBtn} aria-label="Back">←</button>
         <div style={{ flex:1, minWidth:0 }}>
           <div style={Sx.hTitle}>Customer details</div>
-          <div style={Sx.hSub}>{(orderType || '').toUpperCase()} order</div>
+          <div style={Sx.hSub}>{isDriveThru ? 'DRIVE THRU' : (orderType || '').toUpperCase()} order</div>
         </div>
         {!needsCustomer && (
           <button onClick={onSkip} style={{
@@ -112,12 +115,12 @@ export default function MCustomerCapture({ orderType, onContinue, onSkip, onBack
           <Field label="Customer name" required={needsCustomer} error={errors.name}>
             <input
               value={name} onChange={(e) => { setName(e.target.value); setSearchActive(true); }}
-              placeholder="e.g. James Wilson" autoComplete="name" autoCorrect="off"
+              placeholder={isDriveThru ? 'Name or car, e.g. Sam or red Golf' : 'e.g. James Wilson'} autoComplete="name" autoCorrect="off"
               style={inputStyle}/>
           </Field>
 
           {/* Phone */}
-          <Field label="Phone" required={needsCustomer} error={errors.phone}>
+          <Field label="Phone" required={needsCustomer && !isDriveThru} error={errors.phone}>
             <input
               value={phone} onChange={(e) => { setPhone(e.target.value); setSearchActive(true); }}
               placeholder="07700 900 123" type="tel" inputMode="tel" autoComplete="tel"

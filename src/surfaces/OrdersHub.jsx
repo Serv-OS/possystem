@@ -38,6 +38,9 @@ const FILTER_TABS = [
   { id:'takeaway',   label:'Takeaway',    icon:'🥡',  color:'#e8a020' },
   { id:'collection', label:'Collection',  icon:'📦',  color:'#22c55e' },
   { id:'delivery',   label:'Delivery',    icon:'🛵',  color:'#ef4444' },
+  // Drive thru (16 Sep 2026): pink, the one hue none of the six tabs above use. The tab is
+  // rendered only where the till's profile enables drive thru or a drive thru order exists.
+  { id:'drive-thru', label:'Drive thru',  icon:'🚗',  color:'#ec4899' },
 ];
 
 const SECTION_COLORS = {
@@ -47,6 +50,7 @@ const SECTION_COLORS = {
   takeaway:   '#e8a020',
   collection: '#22c55e',
   delivery:   '#ef4444',
+  'drive-thru': '#ec4899',
 };
 
 const Q_STATUS = {
@@ -98,7 +102,7 @@ export default function OrdersHub() {
     showToast, setSurface, setActiveTableId,
     acceptOrderByRef, acceptOrderByRefWithDelay, rejectOrderByRef,
     reprintOrderReceipt,
-    staff, menuItems,
+    staff, menuItems, deviceConfig,
   } = useStore();
 
   // v5.5.850: known menu-item ids — flags HubRise order lines whose sku_ref isn't in our
@@ -341,6 +345,12 @@ export default function OrdersHub() {
   }, [allOrders]);
 
   const totalActive = counts.all || 0;
+
+  // Drive thru tab: shown where this till's profile enables it, or where another till at
+  // the venue has already queued one. A venue that never turns it on sees the same tabs.
+  const driveThruOn = (deviceConfig?.enabledOrderTypes || []).includes('drive-thru')
+    || allOrders.some(o => o.channel === 'drive-thru');
+  const visibleTabs = driveThruOn ? FILTER_TABS : FILTER_TABS.filter(t => t.id !== 'drive-thru');
 
   // Actions
   const advance = (o) => {
@@ -991,7 +1001,7 @@ export default function OrdersHub() {
 
         {/* Filter tabs */}
         <div style={{ display:'flex', gap:2, overflowX:'auto' }}>
-          {FILTER_TABS.map(tab => {
+          {visibleTabs.map(tab => {
             const n = counts[tab.id] || 0;
             const active = filter === tab.id;
             const color = tab.color || 'var(--acc)';
@@ -1072,7 +1082,7 @@ export default function OrdersHub() {
               </Section>
             )}
             {queueOrders.length > 0 && (
-              <Section title="Walk-in / Takeaway / Delivery" icon="🏷" color="#22d3ee" count={queueOrders.length}>
+              <Section title={driveThruOn ? 'Walk-in / Takeaway / Drive thru / Delivery' : 'Walk-in / Takeaway / Delivery'} icon="🏷" color="#22d3ee" count={queueOrders.length}>
                 <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))', gap:10 }}>
                   {queueOrders.map(o => <OrderCard key={o.id} order={o} onAdvance={()=>advance(o)} onAccept={()=>acceptHubrise(o)} onAcceptDelay={(mins)=>acceptHubriseDelay(o, mins)} onReject={()=>rejectHubrise(o)} onOpen={()=>openOrder(o)} onForceClose={()=>forceCloseTab(o)} closingTab={closingTabRef === o.ref} knownIds={knownIds}/>)}
                 </div>

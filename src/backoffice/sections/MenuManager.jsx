@@ -209,7 +209,11 @@ async function archiveVariantRow(id) {
   return { error: err };
 }
 
-const ORDER_TYPES_TAX = ['dine-in', 'takeaway', 'delivery', 'bar', 'counter'];
+// Drive thru (16 Sep 2026): an explicit 'drive-thru' override wins. With none set, both tax
+// engines (src/lib/tax.js and src/lib/taxEngine.js) fall back to the takeaway override, then
+// the item default, so a venue that never sets one taxes drive thru as takeaway.
+const ORDER_TYPES_TAX = ['dine-in', 'takeaway', 'delivery', 'bar', 'counter', 'drive-thru'];
+const ORDER_TYPE_TAX_LABEL = { 'dine-in':'Dine-in', takeaway:'Takeaway', delivery:'Delivery', bar:'Bar', counter:'Counter', 'drive-thru':'Drive thru' };
 
 function TaxSection({ item, onUpdate, markBOChange }) {
   const { taxRates, taxProfiles } = useStore();
@@ -282,10 +286,11 @@ function TaxSection({ item, onUpdate, markBOChange }) {
         </span>
         <div style={{ fontSize:11, color:'var(--t4)', marginBottom:10, lineHeight:1.6 }}>
           Override the tax rate for specific order types. Common UK use: set takeaway to Zero Rate for food items.
+          Drive thru uses the takeaway override unless you set its own.
         </div>
         {ORDER_TYPES_TAX.map(ot => (
           <div key={ot} style={{ display:'grid', gridTemplateColumns:'100px 1fr', gap:8, alignItems:'center', marginBottom:6 }}>
-            <span style={{ fontSize:12, color:'var(--t2)', fontWeight:600, textTransform:'capitalize' }}>{ot}</span>
+            <span style={{ fontSize:12, color:'var(--t2)', fontWeight:600 }}>{ORDER_TYPE_TAX_LABEL[ot] || ot}</span>
             <select value={item.taxOverrides?.[ot] || ''}
               onChange={e => setOverride(ot, e.target.value)}
               style={{ padding:'6px 10px', borderRadius:8, border:'1px solid var(--bdr)', background:'var(--bg)', color:'var(--t1)', fontSize:12, fontFamily:'inherit', outline:'none' }}>
@@ -629,7 +634,7 @@ function MenuTab() {
     const freshName = (() => { let n='New item', i=2; while (findDuplicateProductName(menuItems, n)) n=`New item ${i++}`; return n; })();
     const created = addMenuItem({ name:freshName, menuName:freshName, receiptName:freshName, kitchenName:freshName,
       type, cat:selCatId||undefined, allergens:[],
-      pricing:{base:0,dineIn:null,takeaway:null,collection:null,delivery:null},
+      pricing:{base:0,dineIn:null,takeaway:null,collection:null,delivery:null,driveThru:null},
       assignedModifierGroups:[], assignedInstructionGroups:[], cats:[], });
     if (!created) { window.alert(`A product called "${freshName}" already exists — rename it before adding another.`); return; }
     markBOChange();
@@ -2286,7 +2291,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
   const addVariant = () => {
     addSizeTo(item, { name:'New size', menuName:'New size', receiptName:'New size', kitchenName:'New size',
       type:'simple', parentId:item.id, cat:item.cat, allergens:[...item.allergens||[]],
-      pricing:{ base:0, dineIn:null, takeaway:null, collection:null, delivery:null },
+      pricing:{ base:0, dineIn:null, takeaway:null, collection:null, delivery:null, driveThru:null },
       assignedModifierGroups:[], assignedInstructionGroups:[], sortOrder:variants.length }, menuItems, addMenuItem, updateMenuItem);
     if (item.type !== 'variants') onUpdate({ type:'variants' });
     markBOChange();
@@ -2961,6 +2966,8 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
               { k:'takeaway',     label:'Takeaway',       hint:'' },
               { k:'collection',   label:'Collection',     hint:'' },
               { k:'delivery',     label:'Delivery',       hint:'' },
+              // Drive thru (16 Sep 2026): the resolver reads driveThru, then takeaway, then base.
+              { k:'driveThru',    label:'Drive thru',     hint:'Leave blank to use the takeaway price' },
             ].map(({k,label,hint,accent}) => (
               <div key={k}>
                 <div style={{ display:'flex', alignItems:'baseline', gap:6, marginBottom:5 }}>
@@ -2969,7 +2976,7 @@ function ItemEditor({ item, allCategories, onUpdate, onArchive, onClone, onClose
                 </div>
                 <div style={{ position:'relative' }}>
                   <span style={{ position:'absolute', left:10, top:'50%', transform:'translateY(-50%)', fontSize:accent?16:13, color:accent?'var(--acc)':'var(--t4)', fontWeight:700 }}>£</span>
-                  <input type="number" step="0.01" min="0" style={{ ...inp, paddingLeft:26, fontSize:accent?16:13, fontWeight:accent?800:400, color:accent?'var(--acc)':'var(--t1)' }} value={k==='base'?(p.base||0):(p[k]!==null&&p[k]!==undefined?p[k]:'')} placeholder={k!=='base'?`${p.base||0} (base)`:''} onChange={e=>fp(k,e.target.value)}/>
+                  <input type="number" step="0.01" min="0" style={{ ...inp, paddingLeft:26, fontSize:accent?16:13, fontWeight:accent?800:400, color:accent?'var(--acc)':'var(--t1)' }} value={k==='base'?(p.base||0):(p[k]!==null&&p[k]!==undefined?p[k]:'')} placeholder={k==='base'?'':(k==='driveThru'&&p.takeaway!==null&&p.takeaway!==undefined)?`${p.takeaway} (takeaway)`:`${p.base||0} (base)`} onChange={e=>fp(k,e.target.value)}/>
                   {k!=='base'&&p[k]!==null&&p[k]!==undefined&&<button onClick={()=>fp(k,'')} style={{ position:'absolute', right:8, top:'50%', transform:'translateY(-50%)', background:'none', border:'none', color:'var(--t4)', cursor:'pointer', fontSize:14 }}>×</button>}
                 </div>
               </div>
