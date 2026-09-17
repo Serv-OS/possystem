@@ -27,6 +27,14 @@
 //       503  transient. The sender should retry, and the phase 3 reconciler
 //            replays from ezcater_events regardless.
 //
+// ITEM MATCHING (step 6). We have no Menus API, so the venue types its ezCater
+// menu into the Partner Portal by hand and the lines arrive with posItemId =
+// null. _shared/ezcater-match-ingest.ts matches them to our menu by name before
+// the order_queue write, so the ticket routes to a station, depletes stock and
+// shows up in product mix. It can never fail an order: on any problem, including
+// the window before Peter runs the 20260917 migration, the mapper's own row goes
+// through unchanged and the ticket is plain text, exactly as it was before.
+//
 // Lifecycle quirks handled here:
 //   * a MODIFICATION arrives as a SECOND accepted notification for the same
 //     order id, because there is no modified event. accepted_count on
@@ -40,6 +48,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { verifyEzcaterSignature, getOrder, isPermanent } from '../_shared/ezcater.ts';
 import { orderToQueueRow, queuePayload, ezLifecycle, EZ_TERMINAL } from '../_shared/ezcater-map.ts';
+import { matchQueueRow } from '../_shared/ezcater-match-ingest.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -245,7 +254,31 @@ Deno.serve(async (req) => {
         `- accepted seen ${link.accepted_count} times. Accepting this needs acceptModification: true.`);
     }
 
-    // 6) Upsert. onConflict is (location_id, ref): order_queue's primary key has
+    // 6) ITEM MATCHING. ezCater gave us no Menus API, so a Partner Portal line
+    // arrives with posItemId = null and itemId null means no station routing, no
+    // stock, no product mix. This fills itemId in from the venue's saved links
+    // and, where one of our items has exactly that name and nothing else does,
+    // saves a new link so the next order is instant.
+    //
+    // IT CANNOT FAIL THE ORDER. matchQueueRow swallows everything, including the
+    // window before the 20260917_OPS_ezcater_item_links migration is run, and
+    // returns the mapper's own row. This try is the second guard, not the first.
+    let queueRow = row;
+    try {
+      const m = await matchQueueRow(sb, locationId, row);
+      queueRow = m.row;
+      if (m.ran) {
+        console.log('[ezcater-webhook] items matched on', row.ref,
+          `- ${m.matched}/${m.lines} lines, ${m.inserted} new links, ${m.bumped} seen`);
+      }
+    } catch (e) {
+      // Unreachable by construction. Here so it stays unreachable.
+      console.warn('[ezcater-webhook] item matching threw, order continues unmatched:',
+        e instanceof Error ? e.message : String(e));
+      queueRow = row;
+    }
+
+    // 7) Upsert. onConflict is (location_id, ref): order_queue's primary key has
     // spanned both since 20260806k and a bare 'ref' throws 42P10, which is how
     // inbound channel orders got dropped on the floor once already.
     const { data: existing } = await sb.from('order_queue')
@@ -257,7 +290,7 @@ Deno.serve(async (req) => {
       : row.status;
 
     const { error: qErr } = await sb.from('order_queue')
-      .upsert(queuePayload({ ...row, status }, !existing, new Date().toISOString()), { onConflict: 'location_id,ref' });
+      .upsert(queuePayload({ ...queueRow, status }, !existing, new Date().toISOString()), { onConflict: 'location_id,ref' });
     if (qErr) {
       await failEvent(`order_queue upsert failed: ${qErr.message}`, 'error');
       return retry('queue write failed');
