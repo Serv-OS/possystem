@@ -3339,7 +3339,15 @@ Deno.serve(async (req) => {
           profileNow = pr.raw;
           profileUnread = pr.error;
         }
-        const preview = ratesChangePreview(profileNow, rateTiers, stepCurrency);
+        const basePreview = ratesChangePreview(profileNow, rateTiers, stepCurrency);
+        // THE RULES ARE NOT THE WHOLE STORY (review 17 Sep 2026): a store whose profile matches but
+        // which sends the rest of each sale to another account, or to none, still needs the send that
+        // points it at the venue. Without this the preview said "Nothing to send" and hid Send.
+        const storeBaNow = String(storeNow?.balanceAccountId ?? '').trim();
+        const wrongAccount = !!profileIdNow && storeBaNow !== balanceAccountId;
+        const preview = wrongAccount && basePreview.canSend
+          ? { ...basePreview, same: false, lines: [storeBaNow ? 'Adyen sends the rest of each sale to a different account. Sending points it at the venue.' : 'Adyen does not say where the rest of each sale goes. Sending points it at the venue.', ...basePreview.lines.filter((l) => !/already holds these rates/.test(l))] }
+          : basePreview;
         // CAN OUR LEDGER TELL DEBIT FROM CREDIT YET? Adyen can the moment the
         // rules land, but adyen-webhook only stamps a debit category when the
         // event carries additionalData.fundingSource ("Include Funding Source"

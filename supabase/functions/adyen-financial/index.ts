@@ -225,7 +225,7 @@ Deno.serve(async (req) => {
     const fromIso = isoOrNull(body.from);
     const toIso = isoOrNull(body.to);
 
-    // Optional payment-type filter (v5.7.3): one of the four pricing tiers.
+    // Optional payment-type filter (v5.7.3; debit tiers v5.8.97): one of the pricing tiers.
     // Applied to the tiles AND the list so both tell the same story.
     const typeFilter = (RATE_TIERS as readonly string[]).includes(String(body.rate_category ?? ''))
       ? String(body.rate_category) : null;
@@ -240,7 +240,13 @@ Deno.serve(async (req) => {
       // The window is on when the payment was taken (authorised_at, else
       // created_at), the same rule as the statement and payments-admin.
       if (fromIso || toIso) q = q.or(takenWindowOr(fromIso, toIso, 'lte'));
-      if (typeFilter) q = q.eq('rate_category', typeFilter);
+      // A base tier also matches its debit twin (review 17 Sep 2026): once the webhook carries the
+      // funding source, debit taps are stamped card_present_debit at EVERY venue, and the In person
+      // filter a venue already uses must not lose them. The debit filter itself stays exact.
+      if (typeFilter) {
+        const twins = typeFilter === 'card_present' || typeFilter === 'card_not_present' ? [typeFilter, `${typeFilter}_debit`] : [typeFilter];
+        q = twins.length > 1 ? q.in('rate_category', twins) : q.eq('rate_category', typeFilter);
+      }
       return q;
     };
 
