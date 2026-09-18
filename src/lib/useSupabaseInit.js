@@ -100,13 +100,9 @@ export default function useSupabaseInit() {
       // boot read (bootTables) is the one that retires tables and rebuilds tables for open orders.
       // Also fixes the old mapping here: `section: dbT.section_id`, a column floor_tables does not
       // have, so whenever this read landed last every table lost its section.
-      const fpRes = await refreshTablePlan({ locationId: locId, mode: 'upsertOnly', reason: 'init' });
-      const fpSections = fpRes?.sections;
-      if (fpSections?.length) {
-        useStore.setState({
-          locationSections: fpSections.map(s => ({ id:s.id, label:s.label, color:s.color, icon:s.icon }))
-        });
-      }
+      // Sections: refreshTablePlan applies the venue's saved list (store.applySavedSections, lib/
+      // sectionPlan.js). This used to map the rows here and dropped `hidden`.
+      await refreshTablePlan({ locationId: locId, mode: 'upsertOnly', reason: 'init' });
 
       // 86 list
       const { data: e86 } = await fetch86List();

@@ -1,7 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useStore } from '../../store';
-import { supabase, isMock, getLocationId } from '../../lib/supabase';
-import { saveFloorTableChecked, insertTableTombstone, fetchTableOpenOrders } from '../../lib/db';
+import { supabase, isMock, getLocationId, getActiveLocationSync } from '../../lib/supabase';
+import { saveFloorTableChecked, insertTableTombstone, fetchTableOpenOrders, saveLocationSections } from '../../lib/db';
+import { removeSectionRefusal, sectionsSignature, OTHER_SECTION, MIGRATION_TEXT, TILLS_TEXT } from '../../lib/sectionPlan';
 import { deleteRefusalReason, writeRefusal, loadPlanState, normaliseFloorRow, pickDef, num, nextSeq, baseOfRow, floorRowOf } from '../../lib/tablePlan';
 import { isSessionClosed } from '../../sync/sessionClosure';
 import { reportSave } from '../../lib/saveHealth';
@@ -12,6 +13,13 @@ const SECTION_PALETTE = ['#3b82f6','#e8a020','#22c55e','#a855f7','#ef4444','#22d
 // v5.9.4: one write at a time per table. A second edit waits for the first, so it is checked
 // against the updated_at (or columns) the first one produced, never against a stale base.
 const _writeChains = new Map();
+// Floor plan sections are saved straight away, the venue's WHOLE list each time (lib/sectionPlan.js).
+const SECTION_FAIL_TEXT = {
+  migration: MIGRATION_TEXT,
+  changed: 'Sections were changed on another screen, so your change was NOT saved. The latest sections are shown now, make your change again',
+  read: 'Could not check the saved sections, so your change was NOT saved. Check the connection and try again',
+  empty: 'Must keep at least one section',
+};
 const CONFLICT_TEXT = {
   changed: 'was changed on another screen, so your change was NOT saved. Reload Back Office to see the latest floor plan',
   deleted: 'was deleted on another screen, so your change was NOT saved. Reload Back Office to see the latest floor plan',
@@ -25,7 +33,7 @@ const CONFLICT_TEXT = {
 export default function FloorPlanBuilder() {
   const {
     tables, updateTableLayout, addTableToLayout, removeTableFromLayout,
-    locationSections, addSection, updateSection, removeSection, moveSection,
+    locationSections,
     showToast, bookingRules, updateBookingRules,
   } = useStore();
 
@@ -49,6 +57,8 @@ export default function FloorPlanBuilder() {
   const [editingSection, setEditingSection] = useState(null);
   const [saveStatus, setSaveStatus] = useState('saved'); // 'saved' | 'saving' | 'pushed' | 'failed'
   const saveTimer = useRef(null);
+  const sectionChain = useRef(Promise.resolve());   // one section save at a time
+  const [sectionNote, setSectionNote] = useState(null);   // a failed section save, until the next one works
   const canvasRef  = useRef(null);
   const dragStart  = useRef(null);   // pre-drag position, for reverting a rejected move
 
@@ -133,6 +143,45 @@ export default function FloorPlanBuilder() {
     return run;
   }, [markBOChange, showToast, activeLocationId]);
 
+  // Sections: every add, rename, colour or icon change, hide, reorder and remove writes the venue's
+  // WHOLE list to public.sections at once (db.saveLocationSections, checked against the list this
+  // tab last read). The screen changes first; a refused save puts it back and says why in plain
+  // words. The first save for a venue that only had the built in defaults writes every section on
+  // screen, so none of them vanish on reload and no table drops out of a section view.
+  const saveSections = useCallback((next, prev, doneText) => {
+    useStore.getState().setLocationSections(next);
+    const run = sectionChain.current.catch(() => {}).then(async () => {
+      setSaveStatus('saving');
+      markBOChange();
+      clearTimeout(saveTimer.current);
+      const loc = activeLocationId || getActiveLocationSync() || null;
+      const b = useStore.getState()._sectionsBase;
+      const base = b && b.loc === loc ? b.sig : undefined;
+      const res = await saveLocationSections(next, loc, { base }).catch(e => ({ ok: false, reason: 'error', error: e }));
+      reportSave('floor plan sections', res.ok ? null : (res.error || new Error('not saved')));
+      if (!res.ok) {
+        if (res.reason === 'changed' && res.latest) {
+          useStore.getState().applySavedSections(loc, res.latest);
+        } else if (sectionsSignature(useStore.getState().locationSections) === sectionsSignature(next)) {
+          useStore.getState().setLocationSections(prev);   // put back, unless a newer edit is on screen
+        }
+        const msg = SECTION_FAIL_TEXT[res.reason] || 'The section change was NOT saved, it has been put back';
+        setSectionNote(msg);
+        setSaveStatus('failed');
+        showToast(msg, 'error');
+        return false;
+      }
+      useStore.getState().markSectionsSaved(loc, next);
+      setSectionNote(null);
+      setSaveStatus('pushed');
+      saveTimer.current = setTimeout(() => setSaveStatus('saved'), 2500);
+      showToast(`${doneText}. ${TILLS_TEXT}`, 'success');
+      return true;
+    });
+    sectionChain.current = run;
+    return run;
+  }, [markBOChange, showToast, activeLocationId]);
+
   // v5.5.2: only show tables that belong to the active location. A table without a locationId
   // is a freshly-added one (stamped on save) and is OK to show. Pre-v5.5.2 data lacks
   // locationId entirely — those will appear at every location, but the cross-location guard
@@ -145,9 +194,42 @@ export default function FloorPlanBuilder() {
   // back into floor_tables. It is listed read only below the canvas instead.
   const tablesForThisLocation = tablesAtThisLocation.filter(t => !t.planRemoved);
   const retiredTables = tablesAtThisLocation.filter(t => t.planRemoved && !t.parentId);
+  // A table filed under a section that is not in the list (or none) is listed under Other, so it
+  // can always be reached and moved into a real section.
+  const sectionIds = new Set(locationSections.map(s => s.id));
+  const orphanTables = tablesForThisLocation.filter(t => !t.parentId && !sectionIds.has(t.section));
   const displayTables = tablesForThisLocation.filter(t =>
-    !t.parentId && (viewSection === 'all' || t.section === viewSection)
+    !t.parentId && (viewSection === 'all' || (viewSection === OTHER_SECTION ? !sectionIds.has(t.section) : t.section === viewSection))
   );
+
+  const addSectionSaved = (sec) => {
+    const prev = useStore.getState().locationSections || [];
+    const label = String(sec.label || '').trim();
+    return saveSections([...prev, { id: `sec-${Date.now()}`, ...sec, label }], prev, `Section “${label}” added`);
+  };
+  const updateSectionSaved = (id, patch) => {
+    const prev = useStore.getState().locationSections || [];
+    const label = String(patch.label || '').trim();
+    return saveSections(prev.map(x => (x.id === id ? { ...x, ...patch, label, hidden: !!patch.hidden } : x)), prev, `Section “${label}” saved`);
+  };
+  const moveSectionSaved = (id, direction) => {
+    const prev = useStore.getState().locationSections || [];
+    const i = prev.findIndex(x => x.id === id);
+    const j = direction === 'up' ? i - 1 : i + 1;
+    if (i < 0 || j < 0 || j >= prev.length) return;
+    const next = [...prev];
+    [next[i], next[j]] = [next[j], next[i]];
+    return saveSections(next, prev, 'Section order saved');
+  };
+  // Never hide a table: a section that still has tables (on the canvas, or off the plan with an
+  // open order on a till) cannot be removed. The person moves them first.
+  const removeSectionSaved = (sec) => {
+    const prev = useStore.getState().locationSections || [];
+    const why = removeSectionRefusal(sec, { tables: tablesAtThisLocation, sections: prev, locationId: activeLocationId });
+    if (why) { showToast(why, 'error'); return false; }
+    saveSections(prev.filter(x => x.id !== sec.id), prev, `Section “${sec.label}” removed`);
+    return true;
+  };
   const selectedTable = tablesForThisLocation.find(t => t.id === selected);
 
   // Drag handlers
@@ -369,6 +451,13 @@ export default function FloorPlanBuilder() {
             textAlign:'left', borderLeft:`2px solid ${viewSection==='all' ? 'var(--acc)' : 'transparent'}`,
           }}>All sections</button>
 
+          <div style={{ fontSize:10, color:'var(--t4)', lineHeight:1.4, margin:'2px 0 6px' }}>
+            Section changes save straight away. {TILLS_TEXT}.
+          </div>
+          {sectionNote && (
+            <div style={{ fontSize:11, color:'var(--red)', lineHeight:1.4, margin:'0 0 6px', fontWeight:700 }}>{sectionNote}</div>
+          )}
+
           {locationSections.map(sec => {
             const active = viewSection === sec.id;
             const count = tablesForThisLocation.filter(t => t.section === sec.id && !t.parentId).length;
@@ -390,12 +479,12 @@ export default function FloorPlanBuilder() {
                   )}
                 </button>
                 {/* v4.6.56: reorder buttons */}
-                <button onClick={(e) => { e.stopPropagation(); moveSection(sec.id, 'up'); }} style={{
+                <button onClick={(e) => { e.stopPropagation(); moveSectionSaved(sec.id, 'up'); }} style={{
                   width:18, height:22, borderRadius:5, border:'none', background:'transparent',
                   color:'var(--t4)', cursor:'pointer', fontFamily:'inherit', fontSize:11, padding:0,
                   display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0,
                 }} title="Move up">▲</button>
-                <button onClick={(e) => { e.stopPropagation(); moveSection(sec.id, 'down'); }} style={{
+                <button onClick={(e) => { e.stopPropagation(); moveSectionSaved(sec.id, 'down'); }} style={{
                   width:18, height:22, borderRadius:5, border:'none', background:'transparent',
                   color:'var(--t4)', cursor:'pointer', fontFamily:'inherit', fontSize:11, padding:0,
                   display:'flex', alignItems:'center', justifyContent:'center', flexShrink:0,
@@ -410,6 +499,18 @@ export default function FloorPlanBuilder() {
               </div>
             );
           })}
+          {orphanTables.length > 0 && (
+            <button onClick={() => setViewSection(OTHER_SECTION)} style={{
+              width:'100%', marginTop:2, padding:'6px 8px', borderRadius:8, cursor:'pointer', fontFamily:'inherit',
+              fontSize:12, fontWeight: viewSection === OTHER_SECTION ? 700 : 400, border:'none',
+              background: viewSection === OTHER_SECTION ? 'var(--acc-d)' : 'transparent',
+              color: viewSection === OTHER_SECTION ? 'var(--acc)' : 'var(--t2)', textAlign:'left',
+              display:'flex', alignItems:'center', justifyContent:'space-between',
+            }} title="Tables whose section is not in the list. Pick a section for each one.">
+              <span>Other (no section)</span>
+              <span style={{ fontSize:10, color:'var(--t4)' }}>{orphanTables.length}</span>
+            </button>
+          )}
         </div>
 
         {/* Add table button */}
@@ -469,6 +570,9 @@ export default function FloorPlanBuilder() {
                   borderRadius:8, padding:'6px 9px', color:'var(--t1)', fontSize:12,
                   fontFamily:'inherit', outline:'none', cursor:'pointer',
                 }}>
+                  {!sectionIds.has(selectedTable.section) && (
+                    <option value={selectedTable.section ?? ''}>{selectedTable.section ? `${selectedTable.section} (not in the list)` : 'No section'}</option>
+                  )}
                   {locationSections.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
                 </select>
               </div>
@@ -554,13 +658,13 @@ export default function FloorPlanBuilder() {
             {saveStatus === 'saving' && (
               <span style={{ display:'flex', alignItems:'center', gap:5, color:'var(--t3)' }}>
                 <div style={{ width:6, height:6, borderRadius:'50%', background:'var(--acc)', animation:'pulse 1s ease-in-out infinite' }}/>
-                Staging…
+                Saving…
               </span>
             )}
             {saveStatus === 'pushed' && (
               <span style={{ display:'flex', alignItems:'center', gap:5, color:'var(--acc)', fontWeight:700 }}>
                 <div style={{ width:6, height:6, borderRadius:'50%', background:'var(--acc)' }}/>
-                ✓ Staged — hit "Push to POS" to go live
+                ✓ Saved. Tills update on Push to POS or their next plan read
               </span>
             )}
             {saveStatus === 'failed' && (
@@ -570,7 +674,7 @@ export default function FloorPlanBuilder() {
               </span>
             )}
             {saveStatus === 'saved' && (
-              <span style={{ color:'var(--t4)' }}>Changes staged until you Push to POS</span>
+              <span style={{ color:'var(--t4)' }}>Changes save straight away. Push to POS updates tills now</span>
             )}
             <span style={{ color:'var(--bdr2)' }}>·</span>
             <span>{displayTables.length} table{displayTables.length !== 1 ? 's' : ''}</span>
@@ -652,7 +756,7 @@ export default function FloorPlanBuilder() {
       {showAddTable && (
         <AddTableModal
           sections={locationSections}
-          defaultSection={viewSection === 'all' ? locationSections[0]?.id : viewSection}
+          defaultSection={(viewSection === 'all' || viewSection === OTHER_SECTION) ? locationSections[0]?.id : viewSection}
           labelTaken={labelTaken}
           onClose={() => setShowAddTable(false)}
           onAdd={async table => {
@@ -679,7 +783,7 @@ export default function FloorPlanBuilder() {
       {showAddSection && (
         <SectionModal
           section={null}
-          onSave={sec => { addSection(sec); markChanged(); setShowAddSection(false); }}
+          onSave={sec => { addSectionSaved(sec); setShowAddSection(false); }}
           onClose={() => setShowAddSection(false)}
         />
       )}
@@ -688,11 +792,9 @@ export default function FloorPlanBuilder() {
       {editingSection && (
         <SectionModal
           section={editingSection}
-          onSave={sec => { updateSection(editingSection.id, sec); markChanged(); setEditingSection(null); }}
+          onSave={sec => { updateSectionSaved(editingSection.id, sec); setEditingSection(null); }}
           onDelete={() => {
-            if (locationSections.length <= 1) { showToast('Must keep at least one section', 'error'); return; }
-            removeSection(editingSection.id);
-            markChanged();
+            if (!removeSectionSaved(editingSection)) return;
             setEditingSection(null);
             setViewSection('all');
           }}

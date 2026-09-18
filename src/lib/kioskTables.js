@@ -44,7 +44,7 @@ export async function fetchKioskTables(locationId) {
 
   // allSettled, never all: a missing or blocked config push must not take the table
   // list down with it — the names are optional, the tables are not.
-  const [ftRes, cpRes] = await Promise.allSettled([
+  const [ftRes, cpRes, secRes] = await Promise.allSettled([
     supabase.from('floor_tables')
       .select('id,label,section,sort_order')
       .eq('location_id', locationId),
@@ -54,6 +54,10 @@ export async function fetchKioskTables(locationId) {
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle(),
+    // The venue's saved section names (lib/sectionPlan.js) win over the last push's.
+    supabase.from('sections')
+      .select('id,label')
+      .eq('location_id', locationId),
   ]);
 
   if (ftRes.status !== 'fulfilled' || ftRes.value?.error) {
@@ -74,6 +78,12 @@ export async function fetchKioskTables(locationId) {
   let sectionLabels = {};
   if (cpRes.status === 'fulfilled' && Array.isArray(cpRes.value?.data?.locationSections)) {
     for (const s of cpRes.value.data.locationSections) {
+      if (s?.id && s?.label) sectionLabels[String(s.id)] = String(s.label);
+    }
+  }
+  if (secRes.status === 'fulfilled' && !secRes.value?.error && Array.isArray(secRes.value?.data) && secRes.value.data.length) {
+    sectionLabels = {};
+    for (const s of secRes.value.data) {
       if (s?.id && s?.label) sectionLabels[String(s.id)] = String(s.label);
     }
   }

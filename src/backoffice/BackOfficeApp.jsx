@@ -13,6 +13,7 @@ import { normaliseMenuRow, assembleTaxProfiles } from '../lib/rowMapping';
 import { fetchTableTombstones, fetchFloorPlanVersioned } from '../lib/db';
 import { loadPlanState, mergeTombs, tombstonesFromRows, normaliseFloorRow, nextSeq } from '../lib/tablePlan';
 import { refreshTablePlan } from '../sync/TablePlanSync';
+import { normaliseSections } from '../lib/sectionPlan';
 import MenuManager from './sections/MenuManager';
 import FloorPlanBuilder from './sections/FloorPlanBuilder';
 import DeviceProfiles from './sections/DeviceProfiles';
@@ -987,6 +988,9 @@ function PushToPOSButton() {
     let pushTombstones = {};
     let pushTables = null;
     let pushPlan = { v: 2, fromRead: false, srvReadAt: 0 };
+    // Sections (lib/sectionPlan.js): the venue's SAVED list from the same fresh read when it has
+    // one, else this tab's list (a venue with nothing saved yet pushes what it always pushed).
+    let pushSections = locationSections;
     if (snapshotLocationId) {
       try {
         const readSeq = nextSeq();
@@ -1001,6 +1005,8 @@ function PushToPOSButton() {
         // compares them with each copy's updated_at.
         const inRead = new Set((Array.isArray(fp?.data?.tables) ? fp.data.tables : []).map(r => r.id));
         for (const [id, t] of Object.entries(tombs)) if (!t.srv && inRead.has(id)) delete tombs[id];
+        const savedSecs = normaliseSections(fp?.data?.sections);
+        if (savedSecs && savedSecs.length) pushSections = savedSecs;
         pushTombstones = Object.fromEntries(Object.entries(tombs).map(([id, t]) => [id, { at: t.at, srv: !!t.srv, ...(t.label ? { label: t.label } : {}) }]));
         if (Array.isArray(fp?.data?.tables) && fp.data.tables.length) {
           pushTables = fp.data.tables.map(r => {
@@ -1035,7 +1041,7 @@ function PushToPOSButton() {
       tables: pushTables,
       tablePlan: pushPlan,
       tableTombstones: pushTombstones,
-      locationSections,
+      locationSections: pushSections,
       menus,
       menuItems,
       menuCategories,
