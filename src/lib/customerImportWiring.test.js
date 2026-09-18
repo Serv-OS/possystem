@@ -268,7 +268,7 @@ test('the edge function strips every posted row before it checks it', () => {
 
 test('one row with three problems is one skipped row, not three', () => {
   const rows = [
-    { rowNumber: 2, name: 'Bad', phone: '07700 900123', stamps: '-3', rewards_unused: '-1', birthday: '31/02/2025' },
+    { rowNumber: 2, name: 'Bad', phone: '07700 900123', stamps: '-3', rewards_unused: '-1', opt_in_date: '31/02/2025' },
   ];
   const checked = validateRows(rows, OPTS);
   assert.ok(checked.errors.length >= 3, 'three separate complaints about one row');

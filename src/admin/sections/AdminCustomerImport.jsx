@@ -33,7 +33,7 @@
 // Peter is dyslexic and not technical. Short words, one idea a line, and never
 // a bare number without saying what it counts.
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { isMock } from '../../lib/supabase';
 import { ymdInTz } from '../../lib/locationTime';
 import {
@@ -73,6 +73,9 @@ import {
   previewRequestBody,
   importRequestBody,
   IMPORT_FUNCTION,
+  BATCH_TABLE_MISSING,
+  deletedCount,
+  deletedBeforeImport,
 } from '../../lib/customerImportScreen';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
@@ -210,6 +213,11 @@ export default function AdminCustomerImport({ orgs, sbFetch }) {
   const [verdicts, setVerdicts] = useState(null);      // the server's word on every row
   const [previewing, setPreviewing] = useState(false);
   const [previewNote, setPreviewNote] = useState('');
+  // Which preview is the current one. A preview still running for company A
+  // must never paint its answer over company B's file: every preview takes a
+  // number, anything that resets the file takes a new one, and an answer whose
+  // number is no longer current is thrown away.
+  const previewSeq = useRef(0);
 
   // 5. consent
   const [optInSource, setOptInSource] = useState('');
@@ -231,6 +239,7 @@ export default function AdminCustomerImport({ orgs, sbFetch }) {
   const companyName = ctx?.org_name || org?.name || '';
 
   const resetFile = () => {
+    previewSeq.current += 1;
     setFileName(''); setHead(null); setRaw([]); setChecked(null); setFileNote('');
     setVerdicts(null); setPreviewNote(''); setPreviewing(false);
     setConfirming(false); setResult(null); setSent(0); setRunNote('');
@@ -308,7 +317,14 @@ export default function AdminCustomerImport({ orgs, sbFetch }) {
     setRaw(parsed.rows);
     setChecked(checkedNow);
 
-    // The server's word on who is new. It writes nothing.
+    // The server's word on who is new. It writes nothing. The company and the
+    // venue pickers are locked while it runs, and the answer is only used if
+    // this is still the current preview (see previewSeq).
+    const mine = previewSeq.current + 1;
+    previewSeq.current = mine;
+    const current = () => previewSeq.current === mine;
+    const askVenue = venueId;
+    const askOrg = orgId;
     const toAsk = rowsToSend(parsed.rows, checkedNow);
     const parts = chunkRows(toAsk, PREVIEW_CHUNK_SIZE);
     const all = [];
@@ -316,15 +332,16 @@ export default function AdminCustomerImport({ orgs, sbFetch }) {
     try {
       for (let i = 0; i < parts.length; i++) {
         const answer = await callImportFunction(previewRequestBody({
-          opsLocationId: venueId, orgId, rows: parts[i], today: venueToday(), programId: programId || null,
+          opsLocationId: askVenue, orgId: askOrg, rows: parts[i], today: venueToday(), programId: programId || null,
         }));
+        if (!current()) return;
         for (const v of (Array.isArray(answer.verdicts) ? answer.verdicts : [])) all.push(v);
       }
-      setVerdicts(sameCustomerAcrossFile(all));
+      if (current()) setVerdicts(sameCustomerAcrossFile(all));
     } catch (e) {
-      setPreviewNote(e?.plain || 'We could not check who they already have. Nothing was sent. Pick the file again.');
+      if (current()) setPreviewNote(e?.plain || 'We could not check who they already have. Nothing was sent. Pick the file again.');
     } finally {
-      setPreviewing(false);
+      if (current()) setPreviewing(false);
     }
   };
 
@@ -353,7 +370,9 @@ export default function AdminCustomerImport({ orgs, sbFetch }) {
     busy,
     alreadyRan: finished,
     demo: isMock,
+    batchTable: ctx ? ctx.batch_table : undefined,
   });
+  const goneHere = deletedCount(verdicts);
 
   // ── the rows that did not go in, as a file to fix ─────────────────────────
   const downloadProblems = () => {
@@ -383,6 +402,12 @@ export default function AdminCustomerImport({ orgs, sbFetch }) {
     const chunks = chunkRows(toSend, CHUNK_SIZE);
     const startAt = Math.min(doneBatches, chunks.length);
     let acc = result || { created: 0, updated: 0, skipped: 0, stamped: 0, alreadyStamped: 0, failed: [], skippedRows: [], notes: [], batchId: null };
+    // People deleted here were left out at the preview and are never sent, so
+    // the run names them itself, once, at the start.
+    if (!result) {
+      const gone = deletedBeforeImport(verdicts, checked);
+      if (gone) acc = mergeResult(acc, gone);
+    }
 
     setBusy(true); setRunNote('');
     try {
@@ -433,14 +458,14 @@ export default function AdminCustomerImport({ orgs, sbFetch }) {
         <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', maxWidth: 720 }}>
           <div style={{ flex: '1 1 260px' }}>
             <label style={S.label} htmlFor="ci-org">Company</label>
-            <select id="ci-org" value={orgId} onChange={(e) => pickCompany(e.target.value)} disabled={busy} style={S.input}>
+            <select id="ci-org" value={orgId} onChange={(e) => pickCompany(e.target.value)} disabled={busy || previewing} style={S.input}>
               <option value="">Pick one</option>
               {orgList.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
             </select>
           </div>
           <div style={{ flex: '1 1 260px' }}>
             <label style={S.label} htmlFor="ci-venue">Venue</label>
-            <select id="ci-venue" value={venueId} onChange={(e) => { setVenueId(e.target.value); resetFile(); }} disabled={busy || !orgId} style={S.input}>
+            <select id="ci-venue" value={venueId} onChange={(e) => { setVenueId(e.target.value); resetFile(); }} disabled={busy || previewing || !orgId} style={S.input}>
               <option value="">{orgId ? 'Pick one' : 'Pick the company first'}</option>
               {venues.map((v) => <option key={v.id} value={v.id}>{v.name}{v.status && v.status !== 'active' ? ' (' + v.status + ')' : ''}</option>)}
             </select>
@@ -459,6 +484,12 @@ export default function AdminCustomerImport({ orgs, sbFetch }) {
               {ctx.sites > 1 ? count(ctx.sites, 'site') : 'One site'}. Venue picked: {ctx.venue_name || 'this venue'}.
             </div>
             <div style={{ ...S.body, marginTop: 4 }}>{countryLine(ctx.country, ctx.country_source)}</div>
+            {ctx.batch_table === false ? (
+              <div style={{ ...S.errorBox, marginTop: 12, marginBottom: 0 }}>
+                <strong>{BATCH_TABLE_MISSING}</strong> Every import keeps a record of who ran it and what it did, and that record has nowhere to go yet.
+                You can still check a file. Nothing can be imported until the migration has been run.
+              </div>
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -509,11 +540,12 @@ export default function AdminCustomerImport({ orgs, sbFetch }) {
                 ? <div>Stamps in this file: {count(summary.stampsTotal, 'stamp')} and {count(summary.rewardsTotal, 'free item')} already earned.</div>
                 : <div>No stamps in this file.</div>}
               {summary.notSaid > 0 ? <div>Marketing not answered for {count(summary.notSaid, 'person', 'people')}. They go in, and we never email them.</div> : null}
-              {summary.optedOut > 0 ? <div>Said no to marketing: {count(summary.optedOut, 'person', 'people')}. They still go in, and we never email them.</div> : null}
+              {summary.optedOut > 0 ? <div>Said no in the old system: {count(summary.optedOut, 'person', 'people')}. They still go in. A no in the file changes nothing here: anybody who already said yes here stays yes.</div> : null}
               {summary.phoneFixed > 0 ? <div>We put the 0 back on the front of {count(summary.phoneFixed, 'phone')}. That is what a spreadsheet does to a phone column.</div> : null}
               {summary.sharedPhone > 0 ? <div>{count(summary.sharedPhone, 'person', 'people')} share a phone with an earlier row. They go in by email only, and the phone stays with the first row. The rows say which. Fix the sheet if the phone belongs to the other one.</div> : null}
               {summary.sharedEmail > 0 ? <div>{count(summary.sharedEmail, 'person', 'people')} share an email with an earlier row. They go in by phone only, and the email stays with the first row.</div> : null}
-              {summary.blocked > 0 ? <div>{count(summary.blocked, 'row')} left out because they are somebody already here (the rows say who).</div> : null}
+              {summary.blocked - goneHere > 0 ? <div>{count(summary.blocked - goneHere, 'row')} left out because they are somebody already here (the rows say who).</div> : null}
+              {goneHere > 0 ? <div>{count(goneHere, 'row')} left out because they were deleted here. We never bring back somebody who was deleted.</div> : null}
               {summary.duplicates > 0 ? <div>The same person twice in the file: {count(summary.duplicates, 'row')} left out. We keep the first one.</div> : null}
               {head?.ignored?.length ? <div>Columns we did not use on purpose: {head.ignored.join(', ')}. Points are not stamps.</div> : null}
               {head?.unknown?.length ? <div>Columns we do not know, so we left them out: {head.unknown.join(', ')}.</div> : null}
@@ -616,8 +648,8 @@ export default function AdminCustomerImport({ orgs, sbFetch }) {
           </span>
         </label>
         <div style={{ ...S.body, marginTop: 10 }}>
-          We keep this on every person we bring in. Anyone whose row says no is still imported, and never emailed.
-          Anyone who has switched marketing off here stays off, whatever the file says.
+          We keep this on every person the file says yes for. A no in the file writes nothing, so it never switches off anybody who said yes here.
+          Anyone who is not opted in here, or has switched marketing off here, stays that way, whatever the file says.
         </div>
       </div>
 
@@ -667,6 +699,7 @@ export default function AdminCustomerImport({ orgs, sbFetch }) {
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
               <Tile n={result.created} label="Added" tone="good" />
               <Tile n={result.updated} label="Filled in" />
+              {result.upToDate > 0 ? <Tile n={result.upToDate} label="Already up to date" /> : null}
               <Tile n={result.skipped} label="Left out" />
               <Tile n={result.stamped || 0} label="Cards stamped" />
               {result.alreadyStamped > 0 ? <Tile n={result.alreadyStamped} label="Cards left alone" /> : null}

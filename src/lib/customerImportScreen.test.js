@@ -43,6 +43,9 @@ import {
   notesFromChunk,
   newBatchId,
   PREVIEW_CHUNK_SIZE,
+  BATCH_TABLE_MISSING,
+  deletedCount,
+  countrySourceWords,
 } from './customerImportScreen.js';
 
 const read = (rel) => fs.readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
@@ -607,4 +610,60 @@ test('B: the batch id the screen makes is a uuid the edge function accepts', () 
     assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/, id);
   }
   assert.match(newBatchId(), /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+});
+
+// ── round four ──────────────────────────────────────────────────────────────
+
+test('5: with no import_batches table the Import button is off, with the plain line', () => {
+  assert.equal(BATCH_TABLE_MISSING, 'Run the import_batches migration first.');
+  assert.equal(importBlockReason({ ...READY_STATE, batchTable: false }), BATCH_TABLE_MISSING);
+  assert.equal(importBlockReason({ ...READY_STATE, batchTable: true }), null);
+  assert.equal(importBlockReason({ ...READY_STATE }), null, 'an older server that does not say is left to the server, which refuses');
+  const SCREEN = read('../admin/sections/AdminCustomerImport.jsx');
+  assert.ok(SCREEN.includes('batchTable: ctx ? ctx.batch_table : undefined'), 'the screen passes what context said');
+  assert.ok(SCREEN.includes('{ctx.batch_table === false ? ('), 'and shows the blocking box');
+});
+
+test('6b: a preview still running for one company can never paint over another', () => {
+  const SCREEN = read('../admin/sections/AdminCustomerImport.jsx');
+  assert.ok(SCREEN.includes('const previewSeq = useRef(0);'), 'every preview takes a number');
+  assert.ok(/const resetFile = \(\) => \{\n\s+previewSeq\.current \+= 1;/.test(SCREEN), 'anything that resets the file makes the old preview stale');
+  assert.ok(SCREEN.includes('if (!current()) return;'), 'a stale answer is dropped');
+  assert.ok(SCREEN.includes('if (current()) setVerdicts(sameCustomerAcrossFile(all));'), 'only the current preview sets the tiles');
+  assert.ok(SCREEN.includes('disabled={busy || previewing} style={S.input}>'), 'the company picker is locked while it runs');
+  assert.ok(SCREEN.includes('disabled={busy || previewing || !orgId}'), 'and so is the venue picker');
+});
+
+test('6a: re-imported people with nothing to change are already up to date, never filled in', () => {
+  const r = mergeResult(null, { chunk: { created: 0, updated: 0, up_to_date: 200, skipped: 0 } });
+  const r2 = mergeResult(r, { chunk: { created: 0, updated: 1, up_to_date: 99, deleted: 2 } });
+  assert.equal(r2.upToDate, 299);
+  assert.equal(r2.updated, 1);
+  assert.equal(r2.deleted, 2);
+  assert.equal(resultLine({ created: 0, updated: 0, upToDate: 7973 }), '0 customers added, 7973 customers already up to date.');
+  assert.doesNotMatch(resultLine({ created: 0, updated: 0, upToDate: 5 }), /filled in/);
+});
+
+test('2: the preview keeps which rows are people deleted here', () => {
+  const v = sameCustomerAcrossFile([
+    { row_number: 2, verdict: 'blocked', reason: 'They were deleted here.', customer_id: null, deleted: true },
+    { row_number: 3, verdict: 'new', reason: '', customer_id: null },
+  ]);
+  assert.equal(v[0].deleted, true);
+  assert.equal(v[1].deleted, false);
+  assert.equal(deletedCount(v), 1);
+  assert.equal(deletedCount(null), 0);
+});
+
+test('4: a 403 says the server\'s own reason, so "switched off" is not mistaken for a sign in problem', () => {
+  const m = importErrorMessage(403, { error: 'Import is switched off: no staff emails configured.' });
+  assert.match(m, /not allowed/i);
+  assert.match(m, /switched off: no staff emails configured/);
+});
+
+test('6c: the country line says where the country came from, and flags the Ops default', () => {
+  assert.match(countryLine('US', 'platform_currency'), /the company's currency/);
+  assert.match(countryLine('GB', 'country'), /the venue's country/);
+  assert.match(countryLine('GB', 'ops_currency'), /may only be the default/);
+  assert.equal(countrySourceWords('nonsense'), '');
 });

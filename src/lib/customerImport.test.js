@@ -236,6 +236,13 @@ test('the country comes from locations.country, else the currency, and only GBP 
   assert.equal(countryFromVenue({ currency: 'USD' }).country, 'US');
   assert.equal(countryFromVenue({ currency: 'EUR' }).country, '', 'EUR says nothing about the phones');
   assert.equal(countryFromVenue(null).country, '');
+  // 6c: Ops locations.currency DEFAULTS to GBP, so it is read LAST. A US
+  // venue nobody updated in Ops is still read as the US.
+  assert.deepEqual(countryFromVenue({ platformCurrency: 'USD', opsCurrency: 'GBP' }), { country: 'US', source: 'platform_currency', label: 'United States' });
+  assert.deepEqual(countryFromVenue({ platformCountry: 'United States', opsCurrency: 'GBP' }), { country: 'US', source: 'platform_country', label: 'United States' });
+  assert.deepEqual(countryFromVenue({ opsCurrency: 'GBP' }), { country: 'GB', source: 'ops_currency', label: 'United Kingdom' }, 'the Ops currency is only a fallback, and says so');
+  assert.equal(countryFromVenue({ platformCurrency: 'EUR', opsCurrency: 'GBP' }).country, '', 'a EUR company is not read as GB off the Ops default');
+  assert.equal(countryFromVenue({ country: 'GB', platformCurrency: 'USD' }).source, 'country', 'a real country column beats any currency');
   assert.equal(normaliseCountry('uk'), 'GB');
   assert.equal(normaliseCountry('GBR'), 'GB');
   assert.equal(normaliseCountry('usa'), 'US');
@@ -413,20 +420,43 @@ test('H: a date that could be either is refused when we do not know the country'
   assert.equal(readDate('09/05/1984', { today: '2026-09-18', country: 'US' }).date, '1984-09-05', 'a US company reads month first');
 });
 
-test('H: a column a spreadsheet turned American refuses its dates that could be either', () => {
+test('6d: a birthday column a spreadsheet turned American drops only the birthdays that could be either', () => {
   const rows = [
     row({ rowNumber: 2, name: 'A', phone: '07700 900101', birthday: '12/25/1990' }),  // only month first
-    row({ rowNumber: 3, name: 'B', phone: '07700 900102', birthday: '05/09/1984' }),  // could be either
+    row({ rowNumber: 3, name: 'B', phone: '07700 900102', birthday: '05/09/1984', stamps: '4', rewards_unused: '1' }),  // could be either
     row({ rowNumber: 4, name: 'C', phone: '07700 900103', birthday: '25/12/1990' }),  // only day first
   ];
   const out = validateRows(rows, GB_OPTS);
-  assert.deepEqual(out.ready.map((r) => r.name), ['A', 'C']);
-  assert.equal(out.errors.length, 1);
-  assert.equal(out.errors[0].rowNumber, 3);
-  assert.match(out.errors[0].message, /Row 2 has a month first date/);
+  assert.deepEqual(out.ready.map((r) => r.name), ['A', 'B', 'C'], 'every person still goes in');
+  assert.deepEqual(out.errors, [], 'a birthday is never a reason to leave a person out');
+  const b = out.ready.find((r) => r.name === 'B');
+  assert.equal(b.birthday, null, 'the birthday we cannot trust is dropped');
+  assert.equal(b.stamps, 4, 'and the stamps stay');
+  assert.equal(b.rewardsUnused, 1, 'and so do the rewards');
+  assert.ok(out.warnings.some((w) => w.rowNumber === 3 && /We left the birthday out/.test(w.message) && /Row 2 has a month first date/.test(w.message)),
+    'said out loud, naming the row that made the column American');
   assert.ok(out.warnings.some((w) => w.rowNumber === 2 && /month first/.test(w.message)), 'row 2 itself is read, and said');
   // Without the American one in the column, the same date is read day first.
   assert.equal(validateRows([rows[1], rows[2]], GB_OPTS).ready[0].birthday, '1984-09-05');
+});
+
+test('6d: one US style birthday drops only the birthday, with a warning, and the row imports', () => {
+  for (const birthday of ['12/25/1990', '31/02/1990', '2031-01-01', '1850-01-01', 'last Tuesday', '33083']) {
+    const out = validateRows([{ rowNumber: 2, name: 'A', phone: '07700 900101', stamps: '7', birthday }], { today: '2026-09-18', country: '' });
+    assert.equal(out.ready.length, 1, birthday + ' still imports');
+    assert.deepEqual(out.errors, [], birthday);
+    assert.equal(out.ready[0].stamps, 7);
+    assert.ok(out.ready[0].birthday === null || /^\d{4}-\d{2}-\d{2}$/.test(out.ready[0].birthday), birthday);
+  }
+  // With no country a 12/25/1990 is unambiguous month first, so it reads.
+  // With no country an ambiguous one cannot be read: dropped, not refused.
+  const amb = validateRows([{ rowNumber: 2, name: 'A', phone: '+44 7700 900101', stamps: '3', birthday: '05/09/1984' }], { today: '2026-09-18', country: '' });
+  assert.equal(amb.ready.length, 1);
+  assert.equal(amb.ready[0].birthday, null);
+  assert.ok(amb.warnings.some((w) => /We left the birthday out/.test(w.message)));
+  // The OTHER dates still stop a row: an opt in date is about consent.
+  const optIn = validateRows([{ rowNumber: 2, name: 'A', phone: '07700 900101', marketing_opt_in: 'yes', opt_in_date: '31/02/2025' }], GB_OPTS);
+  assert.equal(optIn.ready.length, 0);
 });
 
 test('H: stamps a spreadsheet wrote as 2.0 or 2,0 are 2, and 2,5 is refused', () => {

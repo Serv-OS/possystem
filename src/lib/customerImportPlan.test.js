@@ -34,7 +34,9 @@ import {
   buildInsert, buildPatch, groupPatches, buildConsent, consentIsNew, consentDecision,
   stampPlan, stampsOwed, stampsSkipped, alreadyStampedLine, emptyProgress,
   collapsePatches, withheldLine, sameAsReason, skipRow, failRow, runNote, chunkAnswer,
-  staffVerdict, STAFF_EMAIL_DOMAINS, isBatchId, batchRecord,
+  staffVerdict, isBatchId, batchRecord,
+  withheldLines, deletedLine, DELETED_REASON, parseStaffEmails, STAFF_EMAILS_ENV, IMPORT_SWITCHED_OFF,
+  BATCH_TABLE_MISSING, batchTableGate, patchChanges, phoneRawFor, damagedPhoneRaw, emailIlikeFilter, EMAIL_READ_CHUNK,
 } from '../../supabase/functions/_shared/customerImportPlan.ts';
 import { sameAsReason as screenSameAsReason } from './customerImportScreen.js';
 
@@ -43,7 +45,7 @@ const read = (rel) => fs.readFileSync(fileURLToPath(new URL(rel, import.meta.url
 const BATCH = '7f0a2c1e-1111-4b2a-9c3d-abcdefabcdef';
 const ORG = 'cd97f0f0-4807-4e45-801e-56114b22128a';
 const NOW = '2026-09-18T09:00:00.000Z';
-const CTX = { orgId: ORG, batchId: BATCH, now: NOW };
+const CTX = { orgId: ORG, batchId: BATCH, now: NOW, country: 'GB' };
 const OPTS = { today: '2026-09-18', country: 'GB' };
 const GB = { country: 'GB' };
 
@@ -339,20 +341,31 @@ test('an import never overwrites what is already there', () => {
     birthday: '01/01/1980', notes: 'from the old system',
   }), existing, CTX);
 
-  assert.ok(patch, 'the run tag alone is a change');
-  for (const column of ['first_name', 'last_name', 'email', 'phone', 'phone_raw', 'birthday', 'notes', 'source']) {
-    assert.equal(column in patch, false, 'an import must not touch ' + column + ' when it is already set');
+  // Everything is already there, so there is nothing to write at all. The run
+  // tag on its own is not a change (6a).
+  assert.equal(patch, null, 'nothing real to change is no write');
+
+  // With one real blank to fill, the patch still touches NOTHING else.
+  const noBirthday = buildPatch(row({
+    name: 'JANE SMITH', first_name: 'Janey', last_name: 'Smith',
+    phone: '07700900123', email: 'old-system@example.com',
+    birthday: '01/01/1980', notes: 'from the old system',
+  }), { ...existing, birthday: null }, CTX);
+  for (const column of ['first_name', 'last_name', 'email', 'phone', 'phone_raw', 'notes', 'source']) {
+    assert.equal(column in noBirthday, false, 'an import must not touch ' + column + ' when it is already set');
   }
+  assert.equal(noBirthday.birthday, '1980-01-01');
   // `name` IS in every patch, because customers.name is NOT NULL with no
   // default and an upsert on conflict id is still an INSERT to Postgres: the
   // proposed tuple is constraint checked before the conflict is resolved, so a
   // patch with no name raised 23502 on every single bulk write. The value is
   // the name they ALREADY have, never the one in the file.
-  assert.equal(patch.name, 'Jane at the counter', 'the filler is their own name, never the file"s');
-  assert.deepEqual(patch.sources, ['pos', IMPORT_SOURCE, 'import:' + BATCH]);
-  assert.equal(patch.id, 'cust-1');
-  assert.equal(patch.org_id, ORG);
-  assert.equal(patch.updated_at, NOW);
+  assert.equal(noBirthday.name, 'Jane at the counter', 'the filler is their own name, never the file"s');
+  assert.deepEqual(noBirthday.sources, ['pos', IMPORT_SOURCE, 'import:' + BATCH], 'the run tag rides along with a real change');
+  assert.equal(noBirthday.id, 'cust-1');
+  assert.equal(noBirthday.org_id, ORG);
+  assert.equal(noBirthday.updated_at, NOW);
+  assert.deepEqual(patchChanges(noBirthday, { ...existing, birthday: null }), ['birthday'], 'and only the birthday counts as filled in');
 });
 
 test('every patch carries the columns a NOT NULL insert tuple needs', () => {
@@ -368,7 +381,7 @@ test('every patch carries the columns a NOT NULL insert tuple needs', () => {
   ];
   for (const existing of existings) {
     const patch = buildPatch(row({ name: 'Jane Smith', phone: '07700900123', email: 'jane@example.com' }), existing, CTX);
-    assert.ok(patch, 'there is always the run tag to add');
+    assert.ok(patch, 'each of these has a real blank to fill');
     assert.equal(typeof patch.name, 'string');
     assert.ok(patch.name.length > 0, 'never null, never empty');
     assert.equal(patch.org_id, ORG);
@@ -464,7 +477,7 @@ const CONSENT_ARGS = {
   now: NOW,
 };
 
-test('a yes and a no both get a consent row, a blank gets none', () => {
+test('1: a yes gets a consent row, and a no and a blank get NONE', () => {
   const yes = buildConsent(row({ name: 'A', phone: '07700900123', marketing_opt_in: 'yes' }), CONSENT_ARGS);
   assert.equal(yes.consented, true);
   assert.equal(yes.source, IMPORT_SOURCE);
@@ -475,8 +488,12 @@ test('a yes and a no both get a consent row, a blank gets none', () => {
   assert.equal(yes.privacy_version, '2026-01');
   assert.equal(typeof yes.location_id, 'string', 'customer_consents.location_id is text NOT NULL');
 
-  const no = buildConsent(row({ name: 'A', phone: '07700900123', marketing_opt_in: 'no' }), CONSENT_ARGS);
-  assert.equal(no.consented, false, 'a no is recorded, not thrown away');
+  // A no from another system means only that it holds no consent. A no row
+  // dated today would be the NEWEST ledger row and switch off a yes given here.
+  for (const noAnswer of ['no', 'N', 'FALSE', 'unsubscribed', 'opted out']) {
+    assert.equal(buildConsent(row({ name: 'A', phone: '07700900123', marketing_opt_in: noAnswer }), CONSENT_ARGS), null,
+      JSON.stringify(noAnswer) + ' never becomes a no row');
+  }
 
   for (const blankAnswer of ['', '   ', 'n/a', 'maybe']) {
     assert.equal(buildConsent(row({ name: 'A', phone: '07700900123', marketing_opt_in: blankAnswer }), CONSENT_ARGS), null,
@@ -545,12 +562,13 @@ test('a withdrawal OLDER than the file does not block the yes', () => {
   assert.equal(v.withheld, false);
 });
 
-test('a NO in the file is never withheld, and a blank is never a consent row', () => {
-  const no = consentDecision(row({ name: 'A', phone: '07700900123', marketing_opt_in: 'no' }), { priorConsents: [], suppressed: false, now: NOW });
-  assert.equal(no.write, true);
-  assert.equal(no.consented, false);
-  assert.equal(no.setFlag, false);
-  assert.equal(no.withheld, false, 'a no is a no, it is not something we hold back');
+test('1: a NO in the file writes nothing at all, and a blank is never a consent row', () => {
+  for (const currentFlag of [true, false, null]) {
+    const no = consentDecision(row({ name: 'A', phone: '07700900123', marketing_opt_in: 'no' }), { priorConsents: [], suppressed: false, currentFlag, now: NOW });
+    assert.equal(no.write, false, 'no consent row, whatever they said here (' + currentFlag + ')');
+    assert.equal(no.setFlag, false);
+    assert.equal(no.withheld, false, 'nothing held back, and nothing named');
+  }
   assert.equal(consentDecision(row({ name: 'A', phone: '07700900123' }), { priorConsents: [], suppressed: false, now: NOW }), null);
 });
 
@@ -710,30 +728,53 @@ test('G: every action, preview included, is ServOS staff only', () => {
   assert.ok(check < FN.indexOf("if (action === 'preview')"), 'before preview');
   assert.ok(check < FN.indexOf("from('locations')", FN.indexOf('Deno.serve')), 'before anything about the venue is even read');
   assert.ok(!FN.includes("from('user_locations')"), 'a user_locations row, which a venue owner has, is NOT enough any more');
-  assert.ok(FN.includes('staffVerdict({ user, role: prof?.role, domains: STAFF_DOMAINS })'), 'the rule is the pure one below');
+  assert.ok(FN.includes('staffVerdict({ user, role: prof?.role, allowlist: STAFF_EMAILS })'), 'the rule is the pure one below');
+  assert.ok(FN.includes('parseStaffEmails(Deno.env.get(STAFF_EMAILS_ENV)'), 'the list comes from the environment');
+  assert.equal(STAFF_EMAILS_ENV, 'SERVOS_IMPORT_STAFF_EMAILS');
+  assert.ok(!/SERVOS_STAFF_EMAIL_DOMAINS|STAFF_DOMAINS/.test(FN), 'the domain rule is gone');
+  assert.ok(FN.includes('if (!STAFF_EMAILS.length) return { ok: false, userId: null, reason: IMPORT_SWITCHED_OFF }'), 'no list, nobody but the service role');
   assert.ok(FN.includes('if (SERVICE_ROLE && token === SERVICE_ROLE)'), 'a service role bearer passes');
   assert.ok(FN.includes('if (!auth.ok) return json({ error: auth.reason'), 'anybody else is a 403');
 });
 
-test('G: the staff rule: service role, or a super_admin on a ServOS email', () => {
+test('4: the staff rule: service role, or a super_admin whose email is EXACTLY on the list', () => {
+  const LIST = ['peter@posup.co.uk'];
   const peter = { id: 'u1', email: 'peter@posup.co.uk', email_confirmed_at: '2026-01-01T00:00:00Z' };
-  assert.equal(staffVerdict({ serviceRole: true }).ok, true);
-  assert.equal(staffVerdict({ user: peter, role: 'super_admin' }).ok, true);
-  assert.equal(staffVerdict({ user: { ...peter, email: 'Someone@Serv-OS.app' }, role: 'super_admin' }).ok, true);
-  // The venue owner Peter wants kept out, however they got in.
+  assert.equal(staffVerdict({ serviceRole: true }).ok, true, 'the service role passes with no list at all');
+  assert.equal(staffVerdict({ user: peter, role: 'super_admin', allowlist: LIST }).ok, true);
+  assert.equal(staffVerdict({ user: { ...peter, email: 'PETER@PosUp.co.uk' }, role: 'super_admin', allowlist: LIST }).ok, true, 'case does not matter');
+  assert.equal(staffVerdict({ user: peter, role: 'super_admin', allowlist: 'Neil@posup.co.uk, peter@posup.co.uk ' }).ok, true, 'the raw variable reads too');
+
+  // No list: switched off for everybody but the service role, and said plainly.
+  for (const unset of [undefined, null, '', ' , ', []]) {
+    const v = staffVerdict({ user: peter, role: 'super_admin', allowlist: unset });
+    assert.equal(v.ok, false, 'unset list ' + JSON.stringify(unset));
+    assert.equal(v.reason, IMPORT_SWITCHED_OFF);
+  }
+  assert.match(IMPORT_SWITCHED_OFF, /import is switched off: no staff emails configured/i);
+
+  // Not a super_admin: refused even when on the list.
+  assert.equal(staffVerdict({ user: peter, role: 'owner', allowlist: LIST }).ok, false, 'the list alone is not enough');
+  assert.equal(staffVerdict({ user: peter, role: null, allowlist: LIST }).ok, false);
+
+  // A super_admin NOT on the list: refused. A ServOS domain proves nothing,
+  // because create-user lets a venue owner make a confirmed login for any
+  // address; only a named person on the list gets in.
+  for (const email of ['someone@serv-os.app', 'owner@posup.co.uk', 'peter@posup.co.uk.evil.com', 'xpeter@posup.co.uk', 'peter@posup.co']) {
+    assert.equal(staffVerdict({ user: { ...peter, email }, role: 'super_admin', allowlist: LIST }).ok, false, email);
+  }
   const owner = { id: 'u2', email: 'owner@coffeeboy.co.uk', email_confirmed_at: '2026-01-01T00:00:00Z' };
-  assert.equal(staffVerdict({ user: owner, role: 'owner' }).ok, false, 'an owner');
-  assert.equal(staffVerdict({ user: owner, role: 'super_admin' }).ok, false,
-    'an owner who made themselves super_admin through the 15 Sep gap is STILL refused: not a ServOS email');
-  assert.equal(staffVerdict({ user: peter, role: 'owner' }).ok, false, 'a ServOS email alone is not enough either');
-  assert.equal(staffVerdict({ user: { ...peter, email_confirmed_at: null }, role: 'super_admin' }).ok, false, 'an unconfirmed email proves nothing');
-  assert.equal(staffVerdict({ user: { ...peter, is_anonymous: true }, role: 'super_admin' }).ok, false);
-  assert.equal(staffVerdict({ user: { ...peter, email: 'peter@posup.co.uk.evil.com' }, role: 'super_admin' }).ok, false, 'the domain is the whole domain');
-  assert.equal(staffVerdict({ user: null, role: 'super_admin' }).ok, false);
+  assert.equal(staffVerdict({ user: owner, role: 'super_admin', allowlist: LIST }).ok, false, 'an owner who made themselves super_admin is still refused');
+
+  // Anonymous, signed out, unconfirmed.
+  assert.equal(staffVerdict({ user: { ...peter, is_anonymous: true }, role: 'super_admin', allowlist: LIST }).ok, false);
+  assert.equal(staffVerdict({ user: null, role: 'super_admin', allowlist: LIST }).ok, false);
+  assert.equal(staffVerdict({ user: { ...peter, email_confirmed_at: null }, role: 'super_admin', allowlist: LIST }).ok, false);
   assert.equal(staffVerdict({}).ok, false);
-  assert.equal(staffVerdict({ user: { ...peter, email: 'a@other.com' }, role: 'super_admin', domains: ['other.com'] }).ok, true, 'the list can be set');
-  assert.deepEqual(STAFF_EMAIL_DOMAINS, ['posup.co.uk', 'serv-os.app']);
-  for (const v of [staffVerdict({ user: owner, role: 'owner' }), staffVerdict({})]) assert.ok(v.reason.length > 0 && v.reason.length < 60);
+  for (const v of [staffVerdict({ user: owner, role: 'owner', allowlist: LIST }), staffVerdict({ allowlist: LIST })]) assert.ok(v.reason.length > 0 && v.reason.length < 60);
+
+  assert.deepEqual(parseStaffEmails(' Peter@PosUp.co.uk,,neil@posup.co.uk , peter@posup.co.uk, notanemail '), ['peter@posup.co.uk', 'neil@posup.co.uk']);
+  assert.deepEqual(parseStaffEmails(undefined), []);
 });
 
 test('G: the venue picked must be in the company picked', () => {
@@ -842,34 +883,63 @@ test('the batch table migration is idempotent and hand run by Peter', () => {
   }
 });
 
-test('the app works before the migration is applied', () => {
+test('5: no record, no import: the import refuses without the batch table, preview still works', () => {
+  assert.deepEqual(batchTableGate('import', false), { ok: false, message: BATCH_TABLE_MISSING });
+  assert.deepEqual(batchTableGate('import', undefined), { ok: false, message: BATCH_TABLE_MISSING }, 'not known is not there');
+  assert.equal(batchTableGate('import', true).ok, true);
+  assert.equal(batchTableGate('preview', false).ok, true, 'preview writes nothing, so it still runs');
+  assert.equal(batchTableGate('context', false).ok, true);
+  assert.equal(BATCH_TABLE_MISSING, 'Run the import_batches migration first.');
+
   assert.ok(FN.includes('function tableMissing'), 'a missing table is recognised');
   assert.ok(FN.includes("code === '42P01'") && FN.includes("code === 'PGRST205'"), 'both ways Postgres and PostgREST say it');
-  assert.ok(FN.includes('batchTable = false'), 'and it carries on');
-  assert.ok(FN.includes('batch_table: batchTable'), 'the screen is told, so it can say one plain line');
-  const missing = FN.indexOf('if (!tableMissing(error)) return json');
-  assert.ok(missing > 0, 'a real error still fails, only a missing table is shrugged off');
+  assert.ok(FN.includes('batch_table: batchTable'), 'context tells the screen');
+  // The refusal is BEFORE the first customer write, and after the preview return.
+  const refusal = FN.indexOf("if (!gate.ok) return json({ error: gate.message, code: 'batch_table' }, 409);");
+  assert.ok(refusal > 0, 'the import is refused with the plain line');
+  assert.ok(refusal > FN.indexOf("if (action === 'preview')"), 'preview has already answered by then');
+  assert.ok(refusal < FN.indexOf("from('customers').insert("), 'before any person is written');
+  assert.ok(refusal < FN.indexOf("from('customer_consents').insert("), 'before any consent');
+  assert.ok(refusal < FN.indexOf("from('stamp_transactions').insert("), 'before any stamp');
+  assert.ok(!/batchTable = false;\n\s+\}\s*else \{\n\s+\/\/ A batch id is a uuid/.test(FN), 'the old carry on without a record is gone');
 });
 
 // ── C: a withdrawal made HERE, through the only two paths this app has ───────
 
-test('C: an existing marketing_opt_in false is a withdrawal, and a file yes never overturns it', () => {
+test('C: an existing marketing_opt_in false holds a file yes back, and only a real withdrawal is called one', () => {
   // Back Office (staff untick Marketing) and the loyalty portal toggle write
-  // ONLY customers.marketing_opt_in = false. No ledger row, no suppression.
+  // ONLY customers.marketing_opt_in = false, and leave marketing_opt_in_at,
+  // which every path that switches somebody ON stamps. So false WITH a time is
+  // "was on, then switched off here".
   for (const fileDay of ['2025-04-12', '']) {
-    const v = consentDecision(yesRow({ opt_in_date: fileDay }), { priorConsents: [], suppressed: false, currentFlag: false, now: NOW });
+    const v = consentDecision(yesRow({ opt_in_date: fileDay }), { priorConsents: [], suppressed: false, currentFlag: false, currentFlagAt: '2025-01-01T00:00:00Z', now: NOW });
     assert.equal(v.withheld, true, 'held back, file dated ' + JSON.stringify(fileDay));
+    assert.equal(v.kind, 'withdrawn');
     assert.equal(v.setFlag, false, 'the flag stays off');
     assert.equal(v.write, false, 'and no yes row: marketing-send reads the ledger FIRST, so any yes row would switch them back on');
     assert.match(v.reason, /switched marketing off here/);
   }
+  // false with NO time is the column default: never opted in, never said stop.
+  for (const fileDay of ['2025-04-12', '']) {
+    const v = consentDecision(yesRow({ opt_in_date: fileDay }), { priorConsents: [], suppressed: false, currentFlag: false, currentFlagAt: null, now: NOW });
+    assert.equal(v.withheld, true, 'round three rule kept: still held back');
+    assert.equal(v.kind, 'not_opted_in');
+    assert.equal(v.setFlag, false);
+    assert.equal(v.write, false);
+    assert.doesNotMatch(v.reason, /switched|said stop/, 'we do not claim they said stop');
+    assert.match(v.reason, /Not opted in here, so the file's yes was not applied/);
+  }
+  // A ledger no or a suppression IS a withdrawal, whatever the flag says.
+  const ledgerNo = consentDecision(yesRow({}), { priorConsents: [{ consented: false, created_at: '2026-01-01T00:00:00Z' }], currentFlag: false, now: NOW });
+  assert.equal(ledgerNo.kind, 'withdrawn');
+  assert.equal(consentDecision(yesRow({}), { suppressed: true, currentFlag: null, now: NOW }).kind, 'withdrawn');
   // Somebody who never said anything (null) is not a withdrawal.
   const never = consentDecision(yesRow({ opt_in_date: '2025-04-12' }), { priorConsents: [], suppressed: false, currentFlag: null, now: NOW });
   assert.equal(never.setFlag, true);
-  // A no in the file for somebody switched off is simply recorded.
+  // A no in the file for somebody switched off writes nothing either.
   const no = consentDecision(row({ name: 'A', phone: '07700900123', marketing_opt_in: 'no' }), { priorConsents: [], currentFlag: false, now: NOW });
   assert.equal(no.withheld, false);
-  assert.equal(no.consented, false);
+  assert.equal(no.write, false);
 });
 
 test('C: the patch for a switched off customer never turns the flag back on', () => {
@@ -882,12 +952,21 @@ test('C: the patch for a switched off customer never turns the flag back on', ()
 test('C: the edge function hands the current flag to the rule and names the rows', () => {
   assert.ok(FN.includes("currentFlag: was ? (was.marketing_opt_in ?? null) : null"), 'the flag it already read is used');
   assert.ok(FN.includes('marketing_opt_in, marketing_opt_in_at'), 'and it is one of the columns read');
-  assert.ok(FN.includes('withheld.push({ rowNumber: d.rowNumber, name: d.row.name })'), 'by row and by name');
-  assert.ok(FN.includes('runNote(progress, withheldLine(withheld))'));
-  const line = withheldLine([{ rowNumber: 14, name: 'Jane Smith' }, { rowNumber: 20, name: 'Bob Jones' }]);
-  assert.match(line, /2 people/);
-  assert.match(line, /row 14 \(Jane Smith\)/);
-  assert.match(line, /row 20 \(Bob Jones\)/);
+  assert.ok(FN.includes("currentFlagAt: was ? (was.marketing_opt_in_at ?? null) : null"), 'and when it was switched on, which tells a withdrawal from a default');
+  assert.ok(FN.includes('withheld.push({ rowNumber: d.rowNumber, name: d.row.name, kind: verdict.kind })'), 'by row, by name and by kind');
+  assert.ok(FN.includes('for (const line of withheldLines(withheld)) runNote(progress, line);'));
+  const lines = withheldLines([
+    { rowNumber: 14, name: 'Jane Smith', kind: 'withdrawn' },
+    { rowNumber: 20, name: 'Bob Jones', kind: 'not_opted_in' },
+    { rowNumber: 21, name: 'Ann Lee', kind: 'not_opted_in' },
+  ]);
+  assert.equal(lines.length, 2);
+  assert.match(lines[0], /1 person who switched it off here/);
+  assert.match(lines[0], /row 14 \(Jane Smith\)/);
+  assert.doesNotMatch(lines[0], /Bob Jones/);
+  assert.match(lines[1], /^2 people are not opted in here, so the file's yes was not applied: row 20 \(Bob Jones\), row 21 \(Ann Lee\)\.$/);
+  assert.doesNotMatch(lines[1], /said stop|switched/, 'a default false is never called a stop');
+  assert.deepEqual(withheldLines([]), []);
   assert.equal(withheldLine([]), '');
 });
 
@@ -955,7 +1034,7 @@ test('B: the batch row is written on EVERY chunk, as an upsert on the id the scr
   assert.ok(FN.includes("{ onConflict: 'id', ignoreDuplicates: true }"), 'that never overwrites the row a first chunk made');
   assert.ok(FN.includes('userId: auth.userId'), 'recording the ServOS staff member who ran it');
   assert.ok(FN.includes('if (!isBatchId(batchId)) return json('), 'a batch id that is not a uuid is refused before anything is written');
-  assert.ok(FN.includes("if (mine && String(mine.org_id) !== orgId)"), 'another company\'s batch id is refused');
+  assert.ok(FN.includes("if (String(mine.org_id) !== orgId)"), 'another company\'s batch id is refused');
   const rec = batchRecord({ batchId: BATCH, orgId: ORG, companyId: 'co', programId: null, filename: 'coffeeboy.csv', userId: 'staff-1', consentText: 'Imported from 5Loyalty.' });
   assert.equal(rec.id, BATCH);
   assert.equal(rec.org_id, ORG);
@@ -972,4 +1051,140 @@ test('B: the totals update finds the row, because the row now exists', () => {
   const totals = FN.indexOf(".update(totals).eq('id', batchId).eq('org_id', orgId)");
   assert.ok(up > 0 && totals > up, 'written first, totalled last');
   assert.ok(FN.includes('We could not find the record of this import'), 'and if it is somehow not there, that is said, not swallowed');
+});
+
+// ── 2: erased people stay erased ────────────────────────────────────────────
+
+test('2: a row that is somebody deleted here is left out by name, on every key, and never made again', () => {
+  const gone = { id: 'cust-gone', name: 'Deleted Dan', phone: '+447700900123', phone_raw: '07700 900123', email: 'dan@example.com', deleted_at: '2026-08-01T10:00:00Z' };
+  const cases = [
+    { name: 'Dan', phone: '07700900123' },                        // by phone
+    { name: 'Dan', phone: '7.7009E9' },                            // (refused cell, so by email below)
+    { name: 'Dan', email: 'DAN@example.com' },                     // by email
+    { name: 'Dan', phone: '+44 7700 900123', email: 'new@example.com' }, // by phone, with a new email
+  ];
+  for (const fields of cases) {
+    const r = normaliseRow({ rowNumber: 7, ...fields }, OPTS);
+    if (r.problems.length) continue;
+    const [d] = decideRows([r], [gone], GB);
+    assert.equal(d.verdict, 'blocked', JSON.stringify(fields));
+    assert.equal(d.deleted, true);
+    assert.equal(d.customerId, null, 'nothing downstream can touch the deleted row');
+    assert.equal(d.reason, DELETED_REASON);
+  }
+  // By the typed phone_raw alone.
+  const rawOnly = decideRows([normaliseRow({ rowNumber: 8, name: 'Dan', phone: '07700 900123' }, OPTS)],
+    [{ ...gone, phone: null }], GB);
+  assert.equal(rawOnly[0].deleted, true);
+
+  // A deleted row never matches as an update, even when a live row shares nothing.
+  const live = { id: 'cust-live', name: 'Live Liz', phone: '+447700900999', email: 'liz@example.com' };
+  const ds = decideRows([
+    normaliseRow({ rowNumber: 2, name: 'Liz', phone: '07700 900999' }, OPTS),
+    normaliseRow({ rowNumber: 3, name: 'Dan', phone: '07700 900123' }, OPTS),
+    normaliseRow({ rowNumber: 4, name: 'Newbie', phone: '07700 900555' }, OPTS),
+  ], [live, gone], GB);
+  assert.deepEqual(ds.map((d) => d.verdict), ['update', 'blocked', 'new']);
+  assert.equal(ds[1].deleted, true);
+  assert.equal(ds[0].deleted, undefined);
+
+  assert.equal(deletedLine([{ rowNumber: 3, name: 'Deleted Dan' }, { rowNumber: 9, name: '' }]),
+    'Left out because they were deleted here: row 3 (Deleted Dan), row 9 (no name).');
+  assert.equal(deletedLine([]), '');
+});
+
+test('2: the edge function reads deleted customers too, and names them in the run note', () => {
+  const read = FN.slice(FN.indexOf('async function readExisting('), FN.indexOf('async function reReadOne('));
+  assert.ok(!read.includes("is('deleted_at', null)"), 'readExisting no longer hides deleted people from the matcher');
+  assert.ok(FN.includes('marketing_opt_in_at, deleted_at'), 'deleted_at is one of the columns read');
+  assert.ok(FN.includes('runNote(progress, deletedLine(gone));'), 'named in the run note');
+  assert.ok(FN.includes('deleted: d.deleted === true'), 'the preview says which rows are deleted people');
+  assert.ok(!/deleted_at\s*:\s*null/.test(FN), 'nothing ever un-deletes');
+});
+
+// ── 3: phone_raw is the repaired number ─────────────────────────────────────
+
+test('3: phone_raw is written as a clean number from a mangled cell, never the spreadsheet damage', () => {
+  for (const cell of ['7.954412324E9', '7954412324', "'+447954412324", '0044 7954 412324', '447954412324', '07954412324', '+44 (0)7954 412324', '7954412324.0']) {
+    const r = normaliseRow({ name: 'Jane', phone: cell }, OPTS);
+    assert.deepEqual(r.problems, [], cell);
+    const insert = buildInsert(r, CTX);
+    assert.equal(insert.phone, '+447954412324', cell);
+    assert.equal(insert.phone_raw, '07954 412324', cell + ' is written the way a person types it');
+    const patch = buildPatch(r, { id: 'c', name: 'Jane', phone: null, sources: [] }, CTX);
+    assert.equal(patch.phone_raw, '07954 412324', cell + ' on a patch too');
+  }
+  // Landlines and the US.
+  assert.equal(phoneRawFor(normaliseRow({ phone: '1614960000' }, OPTS), 'GB'), '0161 496 0000');
+  assert.equal(phoneRawFor(normaliseRow({ phone: '02079460100' }, OPTS), 'GB'), '020 7946 0100');
+  assert.equal(phoneRawFor(normaliseRow({ phone: '4155550123' }, { today: OPTS.today, country: 'US' }), 'US'), '(415) 555-0123');
+  assert.equal(phoneRawFor(normaliseRow({ phone: '+353 86 123 4567' }, OPTS), 'GB'), '+353861234567', 'not a UK number: the number we store');
+  assert.equal(phoneRawFor(normaliseRow({ email: 'a@b.com' }, OPTS), 'GB'), '', 'no phone, no phone_raw');
+});
+
+test('3: the damaged cell is still a MATCH key against a phone_raw typed that way', () => {
+  const r = normaliseRow({ rowNumber: 2, name: 'Jane', phone: '7.954412324E9' }, OPTS);
+  const keys = lookupKeys([r]);
+  assert.ok(keys.raws.includes('7.954412324E9'), 'the cell as the file wrote it');
+  assert.ok(keys.raws.includes('07954 412324'), 'and the clean form this importer writes');
+  const [d] = decideRows([r], [{ id: 'old', phone: null, phone_raw: '7.954412324E9', name: 'Jane' }], GB);
+  assert.equal(d.customerId, 'old');
+});
+
+test('3: a later import corrects a damaged phone_raw it wrote itself, and never one typed at the till', () => {
+  const r = normaliseRow({ name: 'Jane', phone: '07954 412324' }, OPTS);
+  const imported = { id: 'c', name: 'Jane', phone: '+447954412324', source: IMPORT_SOURCE, sources: [IMPORT_SOURCE] };
+  for (const damage of ['7.954412324E9', '7954412324', "'+447954412324", '0044 7954 412324', '447954412324']) {
+    assert.equal(damagedPhoneRaw(damage, r, 'GB'), true, damage);
+    const patch = buildPatch(r, { ...imported, phone_raw: damage }, CTX);
+    assert.equal(patch.phone_raw, '07954 412324', damage + ' is put right');
+    assert.deepEqual(patchChanges(patch, { ...imported, phone_raw: damage }), ['phone_raw']);
+  }
+  // Clean, or somebody else's typing, or a till customer: left exactly alone.
+  for (const kept of ['07954 412324', '07954412324', '+44 7954 412324']) {
+    assert.equal(buildPatch(r, { ...imported, phone_raw: kept }, CTX), null, kept + ' is clean');
+  }
+  assert.equal(buildPatch(r, { ...imported, source: 'pos', sources: ['pos'], phone_raw: '7954412324' }, CTX), null,
+    'a till customer\'s phone_raw is theirs, even when it looks odd');
+  assert.equal(damagedPhoneRaw('07700 900123', r, 'GB'), false, 'a different number is never "corrected"');
+});
+
+// ── 6a: filled in means filled in ───────────────────────────────────────────
+
+test('6a: a person whose only change would be the batch tag is already up to date, not filled in', () => {
+  const r = normaliseRow({ name: 'Jane', phone: '07700 900123', email: 'jane@example.com', marketing_opt_in: 'no' }, OPTS);
+  const had = { id: 'c', name: 'Jane', phone: '+447700900123', phone_raw: '07700 900123', email: 'jane@example.com', source: IMPORT_SOURCE, sources: [IMPORT_SOURCE, 'import:some-older-batch'], marketing_opt_in: false };
+  assert.equal(buildPatch(r, had, CTX), null, 'a NEW batch id alone is not a change');
+  assert.equal(buildPatch(r, { ...had, source: null, sources: [] }, CTX), null, 'nor is the source column');
+  assert.deepEqual(patchChanges(null), []);
+  assert.deepEqual(patchChanges({ id: 'c', org_id: ORG, updated_at: NOW, sources: ['x'], source: 'import', name: 'Jane' }, had), [],
+    'bookkeeping and the name read back are not changes');
+  assert.deepEqual(patchChanges({ id: 'c', name: 'Jane Smith' }, { id: 'c', name: '' }), ['name'], 'a blank name filled IS a change');
+  assert.ok(FN.includes('if (!patch || !patchChanges(patch, was).length) { progress.upToDate++; continue; }'), 'the writer counts them apart');
+  const p = emptyProgress();
+  assert.equal(p.upToDate, 0);
+  assert.equal(chunkAnswer(p).up_to_date, 0);
+});
+
+// ── 6c: the country ─────────────────────────────────────────────────────────
+
+test('6c: the edge function prefers the country and the Platform currency, and the Ops currency is last', () => {
+  const fn = FN.slice(FN.indexOf('async function venueCountry('), FN.indexOf('async function readExisting('));
+  assert.ok(fn.includes('countryFromVenue({ country, platformCountry, platformCurrency, opsCurrency })'));
+  assert.ok(FN.includes('country_source: country.source'), 'and the screen is told where it came from');
+});
+
+test('2: emails are read case blind, so a deleted Jane@Example.com is found by jane@example.com', () => {
+  assert.equal(emailIlikeFilter(['jane@example.com', 'Bob.Smith@Example.co.uk', '', null]),
+    'email.ilike."jane@example.com",email.ilike."bob.smith@example.co.uk"');
+  assert.equal(emailIlikeFilter(['a"b@x.com']), 'email.ilike."a\\"b@x.com"', 'a quote cannot break out of the value');
+  assert.equal(emailIlikeFilter(null), '');
+  assert.ok(EMAIL_READ_CHUNK <= 50, 'the URL stays short');
+  const read = FN.slice(FN.indexOf('async function readExisting('), FN.indexOf('async function reReadOne('));
+  assert.ok(read.includes('.or(emailIlikeFilter(slice))'), 'the email arm uses it');
+  assert.ok(!read.includes(".in('email', slice)"), 'and no longer compares exactly');
+  // And the matcher itself is case blind on what it reads back.
+  const r = normaliseRow({ rowNumber: 2, name: 'Jane', email: 'jane@example.com' }, OPTS);
+  const [d] = decideRows([r], [{ id: 'gone', name: 'Jane', email: 'Jane@Example.COM', deleted_at: '2026-08-01T00:00:00Z' }], GB);
+  assert.equal(d.deleted, true);
 });

@@ -11,8 +11,11 @@
 // and hiding a screen is not security, so EVERY action here, preview included,
 // refuses anybody who is not ServOS staff. See staffVerdict in
 // _shared/customerImportPlan.ts: the service role, or a super_admin whose
-// confirmed email is on a ServOS domain. A user_locations row for the venue,
-// which is what a venue owner has, is not enough.
+// email is EXACTLY one of SERVOS_IMPORT_STAFF_EMAILS. With that variable unset
+// the import is switched off for everybody but the service role. A
+// user_locations row for the venue, which is what a venue owner has, is not
+// enough, and neither is an email on a ServOS domain (create-user lets a venue
+// owner make a confirmed login for any address).
 //
 // Three actions, and only one of them writes.
 //
@@ -30,7 +33,9 @@
 //              chunk_index }
 //            Writes one slice. Up to 500 rows a call. Every call answers with
 //            the batch id, this chunk's numbers under `chunk`, and the running
-//            file totals under `totals`.
+//            file totals under `totals`. REFUSED, before anything is written,
+//            until the import_batches migration has been run: no record, no
+//            import. context says so (batch_table false) and preview still runs.
 //
 // THOSE KEY NAMES ARE THE CONTRACT. The screen builds these bodies in exactly
 // one place, src/lib/customerImportScreen.js, and
@@ -50,10 +55,13 @@
 //   1. Match on PHONE first, then email, under every shape that phone could
 //      already be on file in (see lookupKeys). The phone is the loyalty login.
 //   2. Fill blanks only. An import never overwrites what is there.
-//   3. Never clear a yes. marketing_opt_in is only ever set true. A no in the
-//      file is written to the customer_consents ledger.
+//   3. A file may only ever ADD a yes. marketing_opt_in is only ever set true,
+//      and a no in the file writes NOTHING (no consent row, no flag).
 //   4. Never undo a no. Somebody who switched marketing off here (the flag, a
-//      consent row, or a suppression) is not re-consented by a file.
+//      consent row, or a suppression) is not re-consented by a file, and nor
+//      is somebody simply not opted in here.
+//   8. Erased people stay erased. A row that is somebody deleted here is left
+//      out and named. Never un-deleted, never a twin.
 //   5. Never double a stamp. A customer who already carries any import earn row
 //      for the programme is skipped, whatever batch it came from, and we say so.
 //   6. Nothing off the wire is trusted. Every posted row is stripped back to the
@@ -73,8 +81,9 @@ import {
   batchTag, stampKey, STAMP_KEY_PREFIX,
   chunk, indexExisting, lookupKeys, decideRows, planCounts, needsProgramme,
   programmeCheck, buildInsert, buildPatch, groupPatches, buildConsent, consentIsNew,
-  consentDecision, withheldLine, stampPlan, stampsOwed, stampsSkipped, alreadyStampedLine,
+  consentDecision, stampPlan, stampsOwed, stampsSkipped, alreadyStampedLine,
   emptyProgress, skipRow, failRow, runNote, chunkAnswer, staffVerdict, isBatchId, batchRecord, sameAsReason,
+  withheldLines, deletedLine, emailIlikeFilter, EMAIL_READ_CHUNK, parseStaffEmails, STAFF_EMAILS_ENV, IMPORT_SWITCHED_OFF, batchTableGate, patchChanges,
 } from '../_shared/customerImportPlan.ts';
 import type { Decision, ExistingCustomer, Progress } from '../_shared/customerImportPlan.ts';
 import { generateMemberCode, generateReferralCode, getOrCreateConfig } from '../_shared/loyalty-utils.ts';
@@ -97,23 +106,25 @@ const platformAdmin = createClient(
   { auth: { autoRefreshToken: false, persistSession: false } },
 );
 
-// ServOS's own email domains, comma separated. Unset means the defaults in
-// STAFF_EMAIL_DOMAINS (posup.co.uk, serv-os.app).
-const STAFF_DOMAINS = (Deno.env.get('SERVOS_STAFF_EMAIL_DOMAINS') ?? '')
-  .split(',').map((d) => d.trim()).filter(Boolean);
+// The ServOS staff who may import, by EXACT email, comma separated. Unset or
+// empty switches the import off for everybody but the service role.
+const STAFF_EMAILS = parseStaffEmails(Deno.env.get(STAFF_EMAILS_ENV) ?? '');
 
-// The customer columns the matcher needs, and no more.
-const CUSTOMER_COLS = 'id, name, first_name, last_name, phone, phone_raw, email, birthday, notes, source, sources, marketing_opt_in, marketing_opt_in_at';
+// The customer columns the matcher needs, and no more. deleted_at is read so a
+// person deleted here is recognised and left out, never made again.
+const CUSTOMER_COLS = 'id, name, first_name, last_name, phone, phone_raw, email, birthday, notes, source, sources, marketing_opt_in, marketing_opt_in_at, deleted_at';
 
 // ── auth: ServOS staff only, for EVERY action ──────────────────────────────
 async function staffAuth(req: Request): Promise<{ ok: boolean; userId: string | null; reason: string }> {
   const token = (req.headers.get('Authorization') ?? '').replace('Bearer ', '').trim();
   if (!token) return { ok: false, userId: null, reason: 'Sign in first.' };
   if (SERVICE_ROLE && token === SERVICE_ROLE) return { ok: true, userId: null, reason: '' };
+  // Nobody on the list: say so before looking anybody up.
+  if (!STAFF_EMAILS.length) return { ok: false, userId: null, reason: IMPORT_SWITCHED_OFF };
   const { data: { user } } = await opsAdmin.auth.getUser(token);
   if (!user) return { ok: false, userId: null, reason: 'Sign in first.' };
   const { data: prof } = await opsAdmin.from('user_profiles').select('role').eq('id', user.id).maybeSingle();
-  const verdict = staffVerdict({ user, role: prof?.role, domains: STAFF_DOMAINS });
+  const verdict = staffVerdict({ user, role: prof?.role, allowlist: STAFF_EMAILS });
   return { ok: verdict.ok, userId: String(user.id), reason: verdict.reason };
 }
 
@@ -131,21 +142,32 @@ function isDuplicate(err: unknown): boolean {
   return String(e.code ?? '') === '23505' || /duplicate key value/i.test(String(e.message ?? ''));
 }
 
-// ── the venue's country: locations.country if that column exists, otherwise
-//    the currency, where GBP means GB. An unknown column is a 42703 and simply
-//    says nothing. ─────────────────────────────────────────────────────────
+// ── the venue's country. countryFromVenue decides the order: Ops
+//    locations.country, then Platform locations.country, then the PLATFORM
+//    currency, and only last the Ops currency, which defaults to 'GBP' and so
+//    would read a US venue nobody updated in Ops as GB. A column that does not
+//    exist is an error (42703) and simply says nothing. The source is sent to
+//    the screen, which says in words where the country came from. ─────────────
 async function venueCountry(opsLocationId: string, platformCurrency: unknown): Promise<CountryRead> {
   let country: unknown = null;
-  let currency: unknown = null;
+  let platformCountry: unknown = null;
+  let opsCurrency: unknown = null;
   const byCountry = await opsAdmin.from('locations').select('country').eq('id', opsLocationId).maybeSingle();
   if (!byCountry.error) country = (byCountry.data as Record<string, unknown> | null)?.country ?? null;
+  const byPlatformCountry = await platformAdmin.from('locations').select('country').eq('ops_location_id', opsLocationId).maybeSingle();
+  if (!byPlatformCountry.error) platformCountry = (byPlatformCountry.data as Record<string, unknown> | null)?.country ?? null;
   const byCurrency = await opsAdmin.from('locations').select('currency').eq('id', opsLocationId).maybeSingle();
-  if (!byCurrency.error) currency = (byCurrency.data as Record<string, unknown> | null)?.currency ?? null;
-  if (!currency) currency = platformCurrency ?? null;
-  return countryFromVenue({ country, currency });
+  if (!byCurrency.error) opsCurrency = (byCurrency.data as Record<string, unknown> | null)?.currency ?? null;
+  return countryFromVenue({ country, platformCountry, platformCurrency, opsCurrency });
 }
 
 // ── existing customers for one slice ────────────────────────────────────────
+//
+// DELETED PEOPLE ARE READ TOO. Back Office deletes by stamping deleted_at and
+// keeps the phone and the email, and both unique indexes skip deleted rows. If
+// this read skipped them as well, a person deleted here but still in a stale
+// export would be inserted again as a brand new customer. decideRows sees
+// deleted_at and leaves the row out by name. Never un-deleted, never a twin.
 async function readExisting(orgId: string, rows: ImportRow[]): Promise<ExistingCustomer[]> {
   const { phones, raws, emails } = lookupKeys(rows);
   const found = new Map<string, ExistingCustomer>();
@@ -158,7 +180,7 @@ async function readExisting(orgId: string, rows: ImportRow[]): Promise<ExistingC
   // importer, could have stored this number in.
   for (const slice of chunk(phones, READ_CHUNK)) {
     const { data } = await opsAdmin.from('customers').select(CUSTOMER_COLS)
-      .eq('org_id', orgId).in('phone', slice).is('deleted_at', null);
+      .eq('org_id', orgId).in('phone', slice);
     take(data);
   }
   // customers.phone_raw is TEXT AS TYPED ('0161 496 0000'). It is asked for
@@ -167,15 +189,15 @@ async function readExisting(orgId: string, rows: ImportRow[]): Promise<ExistingC
   // here and nowhere else, which is why this arm is worth having.
   for (const slice of chunk(raws, READ_CHUNK)) {
     const { data } = await opsAdmin.from('customers').select(CUSTOMER_COLS)
-      .eq('org_id', orgId).in('phone_raw', slice).is('deleted_at', null);
+      .eq('org_id', orgId).in('phone_raw', slice);
     take(data);
   }
-  // Emails are compared exactly. The unique index is on lower(email) and the
-  // rules lowercase every email they read. A mixed case email on file trips the
-  // unique index on insert and falls back to a match and an update.
-  for (const slice of chunk(emails, READ_CHUNK)) {
+  // Emails are read WHATEVER CASE they were stored in (see emailIlikeFilter).
+  // A deleted Jane@Example.com must be found by jane@example.com, because the
+  // unique index on lower(email) skips deleted rows and would let a twin in.
+  for (const slice of chunk(emails, EMAIL_READ_CHUNK)) {
     const { data } = await opsAdmin.from('customers').select(CUSTOMER_COLS)
-      .eq('org_id', orgId).in('email', slice).is('deleted_at', null);
+      .eq('org_id', orgId).or(emailIlikeFilter(slice));
     take(data);
   }
   return Array.from(found.values());
@@ -259,7 +281,10 @@ Deno.serve(async (req) => {
       country_source: country.source,
       country_label: country.label,
       programmes: Array.isArray(progs) ? progs : [],
+      // False until 20260918_OPS_customer_import_batches.sql has been run. The
+      // screen shows one blocking line and the import action refuses.
       batch_table: batchTable,
+      batch_table_message: batchTableGate('import', batchTable).message,
       max_rows: MAX_ROWS_PER_CALL,
     });
   }
@@ -313,6 +338,7 @@ Deno.serve(async (req) => {
         matched_on: d.matchedOn,
         customer_id: d.customerId,
         same_as: d.sameAs ?? null,
+        deleted: d.deleted === true,
       })),
       errors: checked.errors.map((e) => e.text),
       duplicates: checked.duplicatesInFile.map((d) => d.text),
@@ -327,8 +353,9 @@ Deno.serve(async (req) => {
   if (!programVerdict.ok) return json({ error: programVerdict.message, code: 'programme' }, 400);
 
   const consentText = String(body?.consent_text ?? '').trim();
-  const anyAnswer = ready.some((r) => r.marketingOptIn != null);
-  if (anyAnswer && !consentText) {
+  // Only a yes is ever written, so only a yes needs to say where it came from.
+  const anyYes = ready.some((r) => r.marketingOptIn === true);
+  if (anyYes && !consentText) {
     return json({ error: 'Say where these people opted in before we write anything.', code: 'consent_text' }, 400);
   }
   const privacyVersion = body?.privacy_version ? String(body.privacy_version) : null;
@@ -337,8 +364,25 @@ Deno.serve(async (req) => {
   const batchId = String(body?.batch_id ?? '').trim();
   if (!isBatchId(batchId)) return json({ error: 'batch_id must be the id the screen made for this file.', code: 'batch_id' }, 400);
 
+  // NO RECORD, NO IMPORT. The batch row is written FIRST, before any person,
+  // and a missing import_batches table refuses the whole call.
+  {
+    const { error } = await opsAdmin.from('import_batches')
+      .upsert(batchRecord({ batchId, orgId, companyId, programId: programId || null, filename: body?.filename, userId: auth.userId, consentText }),
+        { onConflict: 'id', ignoreDuplicates: true });
+    if (error) {
+      const gate = batchTableGate('import', !tableMissing(error));
+      if (!gate.ok) return json({ error: gate.message, code: 'batch_table' }, 409);
+      return json({ error: `Could not start the import: ${error.message}` }, 500);
+    }
+    // A batch id is a uuid the screen made, and it must be THIS company's.
+    const { data: mine } = await opsAdmin.from('import_batches').select('org_id').eq('id', batchId).maybeSingle();
+    if (!mine) return json({ error: 'We could not find the record of this import, so nothing was written.', code: 'batch_id' }, 500);
+    if (String(mine.org_id) !== orgId) return json({ error: 'That batch belongs to another company.', code: 'batch_id' }, 409);
+  }
+
   const now = new Date().toISOString();
-  const ctx = { orgId, batchId, now };
+  const ctx = { orgId, batchId, now, country: country.country };
   const progress: Progress = emptyProgress();
   progress.rows = rawRows.length;
 
@@ -348,23 +392,6 @@ Deno.serve(async (req) => {
   for (const e of checked.errors) complaints.set(e.rowNumber, (complaints.get(e.rowNumber) ? complaints.get(e.rowNumber) + ' ' : '') + e.message);
   for (const n of problemRowNumbers(checked)) skipRow(progress, n, complaints.get(n) ?? '');
   for (const d of checked.duplicatesInFile) skipRow(progress, d.rowNumber, d.message);
-
-  // ── the batch row, on EVERY chunk. An upsert on the id the screen gave us:
-  //    whichever chunk arrives first creates it, and nothing overwrites it. ──
-  let batchTable = true;
-  {
-    const { error } = await opsAdmin.from('import_batches')
-      .upsert(batchRecord({ batchId, orgId, companyId, programId: programId || null, filename: body?.filename, userId: auth.userId, consentText }),
-        { onConflict: 'id', ignoreDuplicates: true });
-    if (error) {
-      if (!tableMissing(error)) return json({ error: `Could not start the import: ${error.message}` }, 500);
-      batchTable = false;
-    } else {
-      // A batch id is a uuid the screen made, and it must be THIS company's.
-      const { data: mine } = await opsAdmin.from('import_batches').select('org_id').eq('id', batchId).maybeSingle();
-      if (mine && String(mine.org_id) !== orgId) return json({ error: 'That batch belongs to another company.', code: 'batch_id' }, 409);
-    }
-  }
 
   // ── 0. who has already said stop ──────────────────────────────────────────
   //
@@ -396,6 +423,10 @@ Deno.serve(async (req) => {
   // ── 1. new people ─────────────────────────────────────────────────────────
   const newOnes = decisions.filter((d) => d.verdict === 'new');
   for (const d of decisions) if (d.verdict === 'blocked') skipRow(progress, d.rowNumber, d.reason);
+  // Deleted here: left out, counted, and named in one line for the run.
+  const gone = decisions.filter((d) => d.deleted === true).map((d) => ({ rowNumber: d.rowNumber, name: d.row.name }));
+  progress.deleted = gone.length;
+  runNote(progress, deletedLine(gone));
 
   // A decision that starts as new can end up an update, when the insert trips a
   // unique index. Those move into this list and are patched like any other.
@@ -483,20 +514,21 @@ Deno.serve(async (req) => {
   }
 
   const consentOf = new Map<Decision, ReturnType<typeof consentDecision>>();
-  const withheld: Array<{ rowNumber: number; name: string }> = [];
+  const withheld: Array<{ rowNumber: number; name: string; kind: string }> = [];
   for (const d of touched) {
     const was = d.verdict === 'update' ? byId.get(String(d.customerId)) ?? null : null;
     const verdict = consentDecision(d.row, {
       priorConsents: priorByCustomer.get(String(d.customerId)) ?? [],
       suppressed: hasStopped(d),
       currentFlag: was ? (was.marketing_opt_in ?? null) : null,
+      currentFlagAt: was ? (was.marketing_opt_in_at ?? null) : null,
       now,
     });
     consentOf.set(d, verdict);
-    if (verdict && verdict.withheld) withheld.push({ rowNumber: d.rowNumber, name: d.row.name });
+    if (verdict && verdict.withheld) withheld.push({ rowNumber: d.rowNumber, name: d.row.name, kind: verdict.kind });
   }
   progress.consentWithheld = withheld.length;
-  runNote(progress, withheldLine(withheld));
+  for (const line of withheldLines(withheld)) runNote(progress, line);
 
   // ── 3. people we already have: blanks only ────────────────────────────────
   const patches: Record<string, unknown>[] = [];
@@ -507,8 +539,9 @@ Deno.serve(async (req) => {
     if (!was) continue;
     const verdict = consentOf.get(d);
     const patch = buildPatch(d.row, was, ctx, { allowOptIn: !verdict || verdict.setFlag });
-    // A match with nothing to change is a person we left exactly as they were.
-    if (!patch) continue;
+    // A match with nothing to change is a person we left exactly as they were:
+    // already up to date, never "filled in", and not written to at all.
+    if (!patch || !patchChanges(patch, was).length) { progress.upToDate++; continue; }
     patches.push(patch);
     const list = rowsOfPatch.get(String(patch.id)) ?? [];
     list.push(d.rowNumber);
@@ -532,7 +565,7 @@ Deno.serve(async (req) => {
     }
   }
 
-  // ── consent, a yes AND a no ───────────────────────────────────────────────
+  // ── consent: a yes only. A file's no writes nothing. ─────────────────────
   if (touchedIds.length) {
     const rows: Record<string, unknown>[] = [];
     for (const d of touched) {
@@ -677,6 +710,7 @@ Deno.serve(async (req) => {
   }
 
   // ── 6. the batch totals, so this run can be found again ───────────────────
+  let batchTable = true;
   let totals = {
     row_count: progress.rows,
     created_count: progress.created,

@@ -627,20 +627,37 @@ export function countryLabel(country: unknown): string {
 /**
  * The country a venue's phones and dates are read as, and where we got it.
  *
- * locations.country wins when the venue has one. Otherwise the currency
- * decides, and only GBP means GB (USD means US, which changes nothing about a
- * phone, it just says so). Anything else is '' and nothing is assumed: no zero
- * is put on a phone and no date is read day first.
+ * In this order, and the FIRST one that says something wins:
+ *   country           Ops locations.country, where that column exists
+ *   platform_country  Platform locations.country, where that column exists
+ *   platform_currency Platform locations.currency, which a person set when the
+ *                     venue was provisioned
+ *   currency          a currency with no source named (older callers)
+ *   ops_currency      Ops locations.currency, LAST, because it DEFAULTS to
+ *                     'GBP': a US venue nobody updated in Ops reads as GBP
  *
- * Returns { country, source, label }, source 'country', 'currency' or ''.
+ * Only GBP means GB and only USD means US. Anything else is '' and nothing is
+ * assumed: no zero is put on a phone and no date is read day first.
+ *
+ * Returns { country, source, label }, source one of the names above, or ''.
  */
 export function countryFromVenue(venue: unknown): CountryRead {
-  const v = (venue && typeof venue === 'object' ? venue : {}) as { country?: unknown; currency?: unknown };
-  const fromCountry = normaliseCountry(v.country);
-  if (fromCountry) return { country: fromCountry, source: 'country', label: countryLabel(fromCountry) };
-  const cur = String(v.currency == null ? '' : v.currency).trim().toUpperCase();
-  if (cur === 'GBP') return { country: 'GB', source: 'currency', label: countryLabel('GB') };
-  if (cur === 'USD') return { country: 'US', source: 'currency', label: countryLabel('US') };
+  const v = (venue && typeof venue === 'object' ? venue : {}) as Record<string, unknown>;
+  const named = [['country', v.country], ['platform_country', v.platformCountry]];
+  for (let i = 0; i < named.length; i++) {
+    const c = normaliseCountry(named[i][1]);
+    if (c) return { country: c, source: String(named[i][0]), label: countryLabel(c) };
+  }
+  const money = [['platform_currency', v.platformCurrency], ['currency', v.currency], ['ops_currency', v.opsCurrency]];
+  for (let i = 0; i < money.length; i++) {
+    const cur = String(money[i][1] == null ? '' : money[i][1]).trim().toUpperCase();
+    if (!cur) continue;
+    if (cur === 'GBP') return { country: 'GB', source: String(money[i][0]), label: countryLabel('GB') };
+    if (cur === 'USD') return { country: 'US', source: String(money[i][0]), label: countryLabel('US') };
+    // A currency that says nothing about phones stops the search: a EUR venue
+    // is not read as GB because Ops still holds its default.
+    return { country: '', source: '', label: countryLabel('') };
+  }
   return { country: '', source: '', label: countryLabel('') };
 }
 
@@ -982,6 +999,9 @@ export function readDate(raw: unknown, opts?: ReadOpts | null): DateRead {
 /** The date columns, which validateRows checks as a column as well as a cell. */
 const DATE_COLUMNS: string[] = ['opt_in_date', 'signed_up_date', 'birthday'];
 
+/** The words in front of the reason when a birthday is left out and the row still goes in. */
+export const BIRTHDAY_DROPPED = 'We left the birthday out. ';
+
 function looksNormalised(row: unknown): boolean {
   const r = row as ImportRow | null;
   return !!r && typeof r === 'object' && Array.isArray(r.problems) && Object.prototype.hasOwnProperty.call(r, 'phoneRaw');
@@ -1092,7 +1112,11 @@ export function normaliseRow(row: unknown, opts?: ReadOpts | null): ImportRow {
   for (let i = 0; i < DATE_COLUMNS.length; i++) {
     const col = DATE_COLUMNS[i];
     const r = reads[col];
-    if (!r.ok) say(problems, col, r.reason);
+    // A birthday is a nice to have. One that cannot be read is dropped, said
+    // out loud, and the row (with its stamps and rewards) still goes in, the
+    // same as a bad email. The two other dates still stop the row.
+    if (!r.ok && col === 'birthday') say(warnings, col, BIRTHDAY_DROPPED + r.reason);
+    else if (!r.ok) say(problems, col, r.reason);
     else if (r.unusual) say(warnings, col, country === 'US' ? 'We read that date as day first.' : 'We read that date as month first.');
     dateFlags[col] = r.ok && r.unusual ? 'unusual' : (r.ok && r.ambiguous ? 'ambiguous' : '');
   }
@@ -1204,7 +1228,14 @@ export function validateRows(rows: unknown, opts?: ReadOpts | null): Checked {
       const message = 'Row ' + (witness as { rowNumber: number }).rowNumber + ' has a ' + order + ' date in this column (' + shown + '), so we cannot trust this one. Write it as 1984-09-05.';
       const flags = { ...it.r.dateFlags };
       flags[col] = '';
-      it.r = { ...it.r, dateFlags: flags, problems: it.r.problems.concat([{ field: col, message }]) };
+      if (col === 'birthday') {
+        // The column rule can reach thousands of rows. For a birthday it drops
+        // the birthday only, never the person and their stamps.
+        const dropped = BIRTHDAY_DROPPED + message;
+        it.r = { ...it.r, birthday: null, dateFlags: flags, warnings: it.r.warnings.concat([{ field: col, message: dropped }]) };
+      } else {
+        it.r = { ...it.r, dateFlags: flags, problems: it.r.problems.concat([{ field: col, message }]) };
+      }
     }
   }
 

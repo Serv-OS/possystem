@@ -218,7 +218,9 @@ test('the country is read the same', () => {
     assert.equal(ts.normaliseCountry(v), js.normaliseCountry(v));
     assert.equal(ts.countryLabel(v), js.countryLabel(v));
   }
-  for (const venue of [{ country: 'GB' }, { currency: 'GBP' }, { currency: 'USD' }, { currency: 'EUR' }, { country: 'uk', currency: 'USD' }, null, {}]) {
+  for (const venue of [{ country: 'GB' }, { currency: 'GBP' }, { currency: 'USD' }, { currency: 'EUR' }, { country: 'uk', currency: 'USD' }, null, {},
+    { platformCurrency: 'USD', opsCurrency: 'GBP' }, { platformCountry: 'US', opsCurrency: 'GBP' }, { opsCurrency: 'GBP' },
+    { platformCurrency: 'EUR', opsCurrency: 'GBP' }, { country: 'GB', platformCurrency: 'USD' }]) {
     assert.deepEqual(ts.countryFromVenue(venue), js.countryFromVenue(venue));
   }
   for (const t of ['a,b;c', 'a;b;c', 'a\tb\tc', '"a;b",c', '', null]) assert.equal(ts.detectDelimiter(t), js.detectDelimiter(t));

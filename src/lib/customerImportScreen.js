@@ -76,11 +76,15 @@ export function count(n, one, many) {
  *   busy          an import is already running
  *   alreadyRan    this file has been sent already
  *   demo          this browser has no database behind it (local dev)
+ *   batchTable    what the server said about import_batches (false = missing)
  */
 export function importBlockReason(state) {
   const s = state || {};
   if (s.busy) return 'Importing. Please wait.';
   if (s.demo) return 'This is a demo screen. Nothing can be imported here.';
+  // No record, no import. The server refuses too; this says it before anybody
+  // spends ten minutes checking a file.
+  if (s.batchTable === false) return BATCH_TABLE_MISSING;
   // A second press on the same file would send it all over again. People are
   // safe from that, stamps are not, so the button goes off when a run finishes.
   if (s.alreadyRan) return 'This file has gone in. Pick another file to import more.';
@@ -101,6 +105,9 @@ export function importBlockReason(state) {
   return null;
 }
 
+/** The blocking line while migration 20260918_OPS_customer_import_batches.sql has not been run. */
+export const BATCH_TABLE_MISSING = 'Run the import_batches migration first.';
+
 /** The line under the stamp card picker when the company has no programmes. */
 export function noProgrammeLine(withStamps) {
   const n = Number(withStamps) || 0;
@@ -108,10 +115,23 @@ export function noProgrammeLine(withStamps) {
   return 'Stamps are waiting for ' + count(n, 'person', 'people') + ' in this file. Make a stamp card in Loyalty first, then come back and import.';
 }
 
+/** Where the country came from, in words. The Ops currency is said to be a
+ *  guess, because it defaults to GBP. */
+export function countrySourceWords(source) {
+  switch (String(source || '')) {
+    case 'country': return 'the venue\'s country';
+    case 'platform_country': return 'the company\'s country';
+    case 'platform_currency': return 'the company\'s currency';
+    case 'currency': return 'the venue\'s currency';
+    case 'ops_currency': return 'the till\'s currency, which may only be the default. Check it';
+    default: return '';
+  }
+}
+
 /** The line that says how phones and dates in the file are being read. */
 export function countryLine(country, source) {
   const c = String(country || '').toUpperCase();
-  const from = source === 'country' ? 'the venue\'s country' : source === 'currency' ? 'the venue\'s currency' : '';
+  const from = countrySourceWords(source);
   if (c === 'GB') {
     return 'Phones and dates are read as United Kingdom (from ' + (from || 'the venue') + '). A phone that lost its 0 gets it back, and 05/09/1984 is 5 September.';
   }
@@ -200,7 +220,7 @@ export function sameCustomerAcrossFile(verdicts) {
     if (!v || typeof v !== 'object') continue;
     const n = Number(v.row_number) || 0;
     const id = v.customer_id != null ? String(v.customer_id) : null;
-    const item = { row_number: n, verdict: String(v.verdict || ''), reason: String(v.reason || ''), customer_id: id };
+    const item = { row_number: n, verdict: String(v.verdict || ''), reason: String(v.reason || ''), customer_id: id, deleted: v.deleted === true };
     if (id && item.verdict === 'update') {
       const had = first.get(id);
       if (had !== undefined && had !== n) {
@@ -212,6 +232,37 @@ export function sameCustomerAcrossFile(verdicts) {
     out.push(item);
   }
   return out;
+}
+
+/**
+ * The run's opening words about people deleted here. The preview already left
+ * them out, so the screen never sends them and the server never sees them: the
+ * screen has to say it, in the SAME words the server uses (deletedLine in
+ * customerImportPlan.ts), by row and by name. Returned as a chunk shaped answer
+ * for mergeResult, or null when there are none.
+ */
+export function deletedBeforeImport(verdicts, checked) {
+  const list = Array.isArray(verdicts) ? verdicts : [];
+  const names = new Map();
+  const ready = checked && Array.isArray(checked.ready) ? checked.ready : [];
+  for (let i = 0; i < ready.length; i++) if (ready[i] && ready[i].rowNumber) names.set(ready[i].rowNumber, ready[i].name);
+  const named = [];
+  for (let i = 0; i < list.length; i++) {
+    const v = list[i];
+    if (!v || v.deleted !== true) continue;
+    const n = Number(v.row_number) || 0;
+    named.push('row ' + n + ' (' + (String(names.get(n) || '').trim() || 'no name') + ')');
+  }
+  if (!named.length) return null;
+  return { chunk: { deleted: named.length, notes: ['Left out because they were deleted here: ' + named.join(', ') + '.'] } };
+}
+
+/** How many rows the server left out because the person was deleted here. */
+export function deletedCount(verdicts) {
+  const list = Array.isArray(verdicts) ? verdicts : [];
+  let n = 0;
+  for (let i = 0; i < list.length; i++) if (list[i] && list[i].deleted === true) n++;
+  return n;
 }
 
 /**
@@ -469,6 +520,8 @@ export function mergeResult(sofar, next) {
     stamped: num(a.stamped) + num(c.stamped),
     enrolled: num(a.enrolled) + num(c.enrolled),
     alreadyStamped: num(a.alreadyStamped) + num(c.already_stamped) + num(c.alreadyStamped),
+    upToDate: num(a.upToDate) + num(c.up_to_date) + num(c.upToDate),
+    deleted: num(a.deleted) + num(c.deleted),
     consentWithheld: num(a.consentWithheld) + num(c.consent_withheld) + num(c.consentWithheld),
     failed,
     skippedRows,
@@ -504,7 +557,12 @@ export function importErrorMessage(status, body) {
   if (code === 404 || /not\s*found/i.test(text || '')) {
     return 'The import is not live on this site yet, so nothing was sent. Nothing has changed.';
   }
-  if (code === 401 || code === 403) return 'You are not allowed to import here. Only ServOS staff can. Sign in again with your ServOS login.';
+  if (code === 401 || code === 403) {
+    // The server's own words when it has them: "Import is switched off: no
+    // staff emails configured" is something to fix, not a sign in problem.
+    const why = body && typeof body === 'object' && typeof body.error === 'string' ? body.error.trim() : '';
+    return 'You are not allowed to import here. ' + (why ? why + ' ' : '') + 'Only named ServOS staff can import.';
+  }
   if (code === 409 && body && typeof body === 'object' && typeof body.error === 'string') return 'It stopped: ' + body.error;
   if (code === 413) return 'That was too much in one go. Split the file and try again.';
   if (code === 429) return 'The server asked us to slow down. Wait a minute and try again.';
@@ -520,6 +578,7 @@ export function resultLine(result) {
   const bits = [];
   bits.push(count(Number(r.created) || 0, 'customer') + ' added');
   if ((Number(r.updated) || 0) > 0) bits.push(count(Number(r.updated) || 0, 'customer') + ' filled in');
+  if ((Number(r.upToDate) || 0) > 0) bits.push(count(Number(r.upToDate) || 0, 'customer') + ' already up to date');
   if ((Number(r.skipped) || 0) > 0) bits.push(count(Number(r.skipped) || 0, 'row') + ' left out');
   const failed = Array.isArray(r.failed) ? r.failed.length : 0;
   if (failed > 0) bits.push(count(failed, 'row') + ' did not go in');

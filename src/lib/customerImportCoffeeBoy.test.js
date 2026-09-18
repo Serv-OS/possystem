@@ -28,19 +28,26 @@
 // (21000). What it cannot run is Deno and PostgREST themselves.
 //
 // And importing it TWICE must not double anybody's stamps, rewards or consent.
+//
+// Round four pins, each with its own test below:
+//   1. a file no never switches anybody off and never writes a no row
+//   2. somebody deleted here is left out by name and never made again
+//   3. phone_raw is the repaired number, never the spreadsheet's damage
+//   6a. the same file twice reports everybody as already up to date
+//   6d. a US style birthday drops only the birthday; the row, stamps and all, goes in
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { readCsv, validateRows, rawRowsOnly, rowsToSend, summarise, verdictsByRow, problemRowNumbers } from './customerImport.js';
 import {
-  CHUNK_SIZE, PREVIEW_CHUNK_SIZE, chunkRows, sameCustomerAcrossFile, mergeResult, resultLine,
+  CHUNK_SIZE, PREVIEW_CHUNK_SIZE, chunkRows, sameCustomerAcrossFile, mergeResult, resultLine, deletedBeforeImport,
 } from './customerImportScreen.js';
 import {
   lookupKeys, indexExisting, decideRows, buildInsert, buildPatch, groupPatches, buildConsent,
   consentIsNew, consentDecision, stampsOwed, stampsSkipped, stampPlan, stampKey, STAMP_KEY_PREFIX,
-  emptyProgress, skipRow, failRow, runNote, chunkAnswer, withheldLine, alreadyStampedLine,
-  batchRecord,
+  emptyProgress, skipRow, failRow, runNote, chunkAnswer, withheldLines, alreadyStampedLine,
+  batchRecord, deletedLine, patchChanges, DELETED_REASON,
 } from '../../supabase/functions/_shared/customerImportPlan.ts';
 
 const TODAY = '2026-09-18';
@@ -209,9 +216,11 @@ function newDb() {
   };
 }
 
+/** Both unique indexes are partial: WHERE deleted_at IS NULL. A deleted row clashes with nothing. */
 function uniqueClash(db, row, exceptId) {
   for (const c of db.customers) {
     if (c.id === exceptId) continue;
+    if (c.deleted_at) continue;
     if (row.phone && c.phone === row.phone) return true;
     if (row.email && c.email && String(c.email).toLowerCase() === String(row.email).toLowerCase()) return true;
   }
@@ -238,25 +247,27 @@ function upsertCustomers(db, slice) {
 
 // ── the server: one import call, in the order index.ts does it ──────────────
 
+/** Deleted people are read too, exactly as index.ts reads them. */
 function readExisting(db, ready) {
   const { phones, raws, emails } = lookupKeys(ready);
   const P = new Set(phones);
   const R = new Set(raws);
   const E = new Set(emails);
-  return db.customers.filter((c) => (c.phone && P.has(c.phone)) || (c.phone_raw && R.has(c.phone_raw)) || (c.email && E.has(c.email)));
+  // Emails case blind, as index.ts reads them with emailIlikeFilter.
+  return db.customers.filter((c) => (c.phone && P.has(c.phone)) || (c.phone_raw && R.has(c.phone_raw)) || (c.email && E.has(String(c.email).toLowerCase())));
 }
 
 function serverPreview(db, rows) {
   const checked = validateRows(rawRowsOnly(rows), OPTS);
   const existing = readExisting(db, checked.ready);
   return decideRows(checked.ready, indexExisting(existing, GB), GB)
-    .map((d) => ({ row_number: d.rowNumber, verdict: d.verdict, reason: d.reason, customer_id: d.customerId }));
+    .map((d) => ({ row_number: d.rowNumber, verdict: d.verdict, reason: d.reason, customer_id: d.customerId, deleted: d.deleted === true }));
 }
 
 function serverImport(db, body) {
   const now = '2026-09-18T09:00:00.000Z';
   const batchId = body.batch_id;
-  const ctx = { orgId: ORG, batchId, now };
+  const ctx = { orgId: ORG, batchId, now, country: 'GB' };
   const posted = rawRowsOnly(body.rows);
   const checked = validateRows(posted, OPTS);
   const ready = checked.ready;
@@ -273,6 +284,9 @@ function serverImport(db, body) {
   const hasStopped = (d) => addressesOf(d.row).some((a) => db.suppressions.has(a));
 
   for (const d of decisions) if (d.verdict === 'blocked') skipRow(progress, d.rowNumber, d.reason);
+  const gone = decisions.filter((d) => d.deleted === true).map((d) => ({ rowNumber: d.rowNumber, name: d.row.name }));
+  progress.deleted = gone.length;
+  runNote(progress, deletedLine(gone));
   const byId = new Map(existing.map((c) => [c.id, { ...c }]));
   for (const d of decisions.filter((x) => x.verdict === 'new')) {
     try {
@@ -306,13 +320,14 @@ function serverImport(db, body) {
       priorConsents: priorAll.filter((c) => c.customer_id === d.customerId),
       suppressed: hasStopped(d),
       currentFlag: was ? (was.marketing_opt_in ?? null) : null,
+      currentFlagAt: was ? (was.marketing_opt_in_at ?? null) : null,
       now,
     });
     consentOf.set(d, v);
-    if (v && v.withheld) withheld.push({ rowNumber: d.rowNumber, name: d.row.name });
+    if (v && v.withheld) withheld.push({ rowNumber: d.rowNumber, name: d.row.name, kind: v.kind });
   }
   progress.consentWithheld = withheld.length;
-  runNote(progress, withheldLine(withheld));
+  for (const line of withheldLines(withheld)) runNote(progress, line);
 
   const patches = [];
   for (const d of decisions) {
@@ -321,7 +336,8 @@ function serverImport(db, body) {
     if (!was) continue;
     const v = consentOf.get(d);
     const patch = buildPatch(d.row, was, ctx, { allowOptIn: !v || v.setFlag });
-    if (patch) patches.push(patch);
+    if (!patch || !patchChanges(patch, was).length) { progress.upToDate++; continue; }
+    patches.push(patch);
   }
   for (const group of groupPatches(patches)) {
     for (const slice of chunkRows(group, 100)) {
@@ -368,12 +384,14 @@ function runScreen(db, text) {
   const summary = summarise(checked, verdicts);
   const toSend = toAsk.filter((r) => (byRow.get(r.rowNumber)?.verdict || '') !== 'blocked');
   const batchId = '00000000-0000-4000-8000-' + String(++batchSeq).padStart(12, '0');
-  let acc = null;
+  // As AdminCustomerImport.jsx runImport: people deleted here were left out at
+  // the preview, never sent, and named by the screen at the start of the run.
+  let acc = mergeResult(null, deletedBeforeImport(verdicts, checked));
   const chunks = chunkRows(toSend, CHUNK_SIZE);
   for (let i = 0; i < chunks.length; i++) {
     acc = mergeResult(acc, serverImport(db, { rows: chunks[i], batch_id: batchId, chunk_index: i }));
   }
-  return { parsed, checked, summary, result: acc };
+  return { parsed, checked, summary, verdicts, result: acc };
 }
 
 /** What a customer looks like to the till, keyed by email, so two runs can be compared. */
@@ -458,7 +476,8 @@ test('the Coffee Boy file imports end to end, and a second run doubles nothing',
   assert.equal(db.customers.length, 7973);
   assert.equal(db.customers.filter((c) => c.phone).length, 6747 - 143, 'every usable phone, once');
   assert.equal(db.customers.filter((c) => c.marketing_opt_in === true).length, 2876);
-  assert.equal(db.consents.length, 7973, 'a yes or a no for everybody, all from the file');
+  assert.equal(db.consents.length, 2876, '1: a yes row for every yes, and NOTHING for a no');
+  assert.ok(db.consents.every((c) => c.consented === true), '1: never a no row');
   const withStamps = ROWS.filter((r) => Number(r.stamps) > 0 || Number(r.rewards_unused) > 0).length;
   assert.equal(db.cards.size, withStamps);
   assert.equal(db.stampTx.length, withStamps);
@@ -477,9 +496,13 @@ test('the Coffee Boy file imports end to end, and a second run doubles nothing',
   assert.equal(second.summary.newCustomers, 0);
   assert.equal(second.result.created, 0);
   assert.equal(second.result.failed.length, 0);
+  assert.equal(second.result.updated, 0, '6a: nobody is "filled in" by the same file twice');
+  assert.equal(second.result.upToDate, 7973, '6a: everybody is already up to date');
+  assert.match(resultLine(second.result), /7973 customers already up to date/);
   assert.equal(db.customers.length, 7973, 'nobody twice');
+  assert.ok(db.customers.every((c) => c.sources.length === 2), '6a: not even a second batch tag is written');
   assert.equal(db.stampTx.length, withStamps, 'no second stamp claim');
-  assert.equal(db.consents.length, 7973, 'no second consent row');
+  assert.equal(db.consents.length, 2876, 'no second consent row');
   assert.equal(second.result.alreadyStamped, withStamps, 'and the cards left alone are counted');
   assert.ok(second.result.notes.some((n) => /already imported stamps/.test(n)), 'and said');
   const after = snapshot(db);
@@ -500,10 +523,10 @@ test('the mangled copy lands the same people and cards, and on top of the clean 
   for (const [key, was] of a) {
     const now = b.get(key);
     assert.ok(now, 'the same person: ' + key);
-    // phone_raw is what the file said, and a note names the row in THAT file
-    // (the mangled one has blank rows in it), so both honestly differ.
-    // Everything the till uses is the same.
-    const same = (x) => ({ ...x, phone_raw: null, notes: String(x.notes || '').replace(/row \d+/g, 'row N') });
+    // A note names the row in THAT file (the mangled one has blank rows in
+    // it), so that honestly differs. phone_raw does NOT differ any more (3):
+    // it is the repaired number, not the cell. Everything else is the same.
+    const same = (x) => ({ ...x, notes: String(x.notes || '').replace(/row \d+/g, 'row N') });
     assert.deepEqual(same(now), same(was), key);
   }
 
@@ -528,7 +551,7 @@ test('C: somebody who switched marketing off here is not switched back on by the
   const run = runScreen(db, CLEAN);
   for (const c of yes) assert.equal(db.customers.find((x) => x.id === c.id).marketing_opt_in, false, c.name + ' stays off');
   assert.equal(run.result.consentWithheld, 3);
-  assert.ok(run.result.notes.some((n) => /We left marketing OFF for/.test(n) && yes.every((c) => n.includes(c.name))), 'named in the consent line');
+  assert.ok(run.result.notes.some((n) => /We left marketing OFF for 3 people who switched it off here/.test(n) && yes.every((c) => n.includes(c.name))), 'named in the consent line');
   assert.equal(db.consents.length, consentsBefore, 'and no yes row is written that would switch them back on');
 });
 
@@ -545,4 +568,109 @@ test('E: two file rows on one customer never reach Postgres as one statement tou
   assert.equal(run.summary.blocked, 1, 'the second row is left out');
   assert.equal(db.customers.length, 1, 'nobody new was made');
   assert.equal(db.stampTx.length, 1, 'one stamp claim, from the first row');
+});
+
+// ── round four ──────────────────────────────────────────────────────────────
+
+/** What marketing-send decides: the NEWEST ledger row first, else the flag. */
+function marketingSendAllows(db, id) {
+  const rows = db.consents.filter((c) => c.customer_id === id).sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+  if (rows.length) return rows[0].consented === true;
+  return db.customers.find((c) => c.id === id)?.marketing_opt_in === true;
+}
+
+test('1: a file no never switches anybody off and never writes a no row', () => {
+  const db = newDb();
+  // Three people who said YES here at the kiosk, the till and the portal, a
+  // week before the file lands. The file says no for all three.
+  const rows = ROWS.filter((r) => r.marketing_opt_in === 'no' && r.phone && /^07123 4/.test(r.phone)).slice(0, 3);
+  assert.equal(rows.length, 3);
+  const ids = rows.map((r, i) => {
+    const c = insertCustomer(db, { org_id: ORG, name: 'Kiosk ' + i, phone: '+44' + r.phone.replace(/\s/g, '').slice(1), phone_raw: r.phone, email: r.email, sources: ['kiosk'], source: 'kiosk', marketing_opt_in: true, marketing_opt_in_at: '2026-09-10T12:00:00.000Z' });
+    db.consents.push({ customer_id: c.id, consented: true, source: 'kiosk', created_at: '2026-09-10T12:00:00.000Z', consent_text: 'Kiosk' });
+    return c.id;
+  });
+  const before = db.consents.length;
+  const run = runScreen(db, cleanCsv(rows));
+  assert.equal(run.result.failed.length, 0);
+  for (const id of ids) {
+    const c = db.customers.find((x) => x.id === id);
+    assert.equal(c.marketing_opt_in, true, c.name + ' still says yes');
+    assert.equal(marketingSendAllows(db, id), true, c.name + ' is still emailed');
+  }
+  assert.equal(db.consents.length, before, 'not one consent row written for a no');
+  assert.ok(db.consents.every((c) => c.consented === true));
+  assert.equal(run.result.consentWithheld, 0, 'and nobody is named as held back, because a no holds nothing back');
+
+  // And across the whole file: 5,097 noes write nothing.
+  const whole = newDb();
+  runScreen(whole, CLEAN);
+  assert.equal(whole.consents.filter((c) => c.consented !== true).length, 0);
+});
+
+test('1: a file yes for somebody not opted in here is not applied, and they are not called a stop', () => {
+  const db = newDb();
+  const r = ROWS.find((x) => x.marketing_opt_in === 'yes' && x.phone && /^07123 4/.test(x.phone));
+  insertCustomer(db, { org_id: ORG, name: 'Till Tom', phone: '+44' + r.phone.replace(/\s/g, '').slice(1), phone_raw: r.phone, email: r.email, sources: ['pos'], source: 'pos', marketing_opt_in: false, marketing_opt_in_at: null });
+  const run = runScreen(db, cleanCsv([r]));
+  assert.equal(db.customers[0].marketing_opt_in, false);
+  assert.equal(db.consents.length, 0);
+  assert.ok(run.result.notes.some((n) => /1 person is not opted in here, so the file's yes was not applied: row 2 \(/.test(n)), run.result.notes.join(' | '));
+  assert.ok(!run.result.notes.some((n) => /switched it off|said stop/.test(n)));
+});
+
+test('2: somebody deleted here but still in the export is left out by name and never made again', () => {
+  const db = newDb();
+  const victim = ROWS.find((x) => x.phone && /^07123 4/.test(x.phone) && x.marketing_opt_in === 'yes' && Number(x.stamps) > 0);
+  const emailOnly = ROWS.find((x) => !x.phone && x.email !== victim.email && !/guest/i.test(x.email));
+  // Back Office soft delete: deleted_at stamped, phone and email KEPT.
+  insertCustomer(db, { org_id: ORG, name: 'Erased Ellie', phone: '+44' + victim.phone.replace(/\s/g, '').slice(1), phone_raw: victim.phone, email: victim.email, sources: ['pos'], source: 'pos', marketing_opt_in: false, deleted_at: '2026-08-01T10:00:00.000Z' });
+  insertCustomer(db, { org_id: ORG, name: 'Erased Eddie', phone: null, phone_raw: null, email: emailOnly.email.toUpperCase(), sources: ['pos'], source: 'pos', marketing_opt_in: false, deleted_at: '2026-08-02T10:00:00.000Z' });
+  const run = runScreen(db, CLEAN);
+  assert.equal(run.summary.blocked, 2, 'the preview leaves both out');
+  assert.equal(run.result.deleted, 2);
+  assert.equal(db.customers.length, 7973 - 2 + 2, 'nobody made again: the file less the two, plus the two deleted rows that were already there');
+  const samePhone = db.customers.filter((c) => c.phone === '+44' + victim.phone.replace(/\s/g, '').slice(1));
+  assert.equal(samePhone.length, 1, 'no twin');
+  assert.ok(samePhone[0].deleted_at, 'and the one there is still deleted');
+  assert.equal(db.customers.filter((c) => String(c.email).toLowerCase() === emailOnly.email.toLowerCase()).length, 1);
+  assert.ok(db.customers.every((c) => c.name !== 'Erased Ellie' || c.deleted_at), 'never un-deleted');
+  const note = run.result.notes.find((n) => /^Left out because they were deleted here: /.test(n));
+  assert.ok(note, 'named in the run note');
+  assert.ok(note.includes(victim.name) && note.includes(emailOnly.name), note);
+  assert.equal(run.verdicts.filter((v) => v.deleted && v.reason === DELETED_REASON).length, 2, "and each row says why, for the rows to fix file");
+  assert.equal(db.stampTx.some((t) => t.customer_id === samePhone[0].id), false, 'no stamps land on a deleted person');
+  assert.equal(db.consents.some((c) => c.customer_id === samePhone[0].id), false, 'and no consent');
+});
+
+test('3: phone_raw is written as a clean number from a mangled cell', () => {
+  const db = newDb();
+  runScreen(db, MANGLED);
+  const withPhone = db.customers.filter((c) => c.phone);
+  assert.ok(withPhone.length > 6000);
+  for (const c of withPhone) {
+    assert.match(c.phone_raw, /^0\d{2,4} \d{3,6}( \d{4})?$/, 'clean: ' + c.phone_raw);
+    assert.doesNotMatch(c.phone_raw, /[eE]|^'|\.0$|^00|^44|^\+/, 'no spreadsheet damage: ' + c.phone_raw);
+  }
+  assert.ok(withPhone.some((c) => c.phone_raw === '07123 401000' || /^07123 4\d{5}$/.test(c.phone_raw)));
+});
+
+test('6d: a US style birthday drops only the birthday, and the row, with its stamps, still imports', () => {
+  const db = newDb();
+  const rows = ROWS.slice(0, 40).map((r) => ({ ...r }));
+  rows[0].birthday = '12/25/1990';                    // makes the column American
+  rows[1].birthday = '05/09/1984';                    // could be either: dropped
+  rows[1].stamps = '6';
+  rows[2].birthday = '31/02/1990';                    // not a real day: dropped
+  rows[2].stamps = '3';
+  const run = runScreen(db, cleanCsv(rows));
+  assert.equal(run.checked.errors.length, 0, run.checked.errors.map((e) => e.text).join(' | '));
+  assert.equal(run.result.created, 40, 'every row goes in');
+  const byEmail = (e) => db.customers.find((c) => c.email === e);
+  assert.equal(byEmail(rows[1].email).birthday, null);
+  assert.equal(byEmail(rows[2].email).birthday, null);
+  assert.equal(db.cards.get(byEmail(rows[1].email).id).stamps_collected, 6, 'the stamps landed');
+  assert.equal(db.cards.get(byEmail(rows[2].email).id).stamps_collected, 3);
+  assert.ok(run.checked.warnings.some((w) => w.rowNumber === 3 && /We left the birthday out/.test(w.message)));
+  assert.ok(run.checked.warnings.some((w) => w.rowNumber === 4 && /We left the birthday out/.test(w.message)));
 });

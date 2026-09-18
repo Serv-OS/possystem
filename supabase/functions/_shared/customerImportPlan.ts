@@ -16,10 +16,14 @@
 //     (org_id, phone) is unique. Same order as hubrise-ingest and wifi-capture.
 //   - FILL BLANKS ONLY on a match. An import from another system never
 //     overwrites a name, email, phone, birthday or note that is already there.
-//   - NEVER CLEAR A YES. marketing_opt_in is only ever set to true, never to
-//     false. A "no" in the file is recorded in the customer_consents ledger,
-//     which is what marketing-send reads first, so the no still stops the email
-//     without destroying the record of the earlier yes.
+//   - A FILE MAY ONLY EVER ADD A YES. marketing_opt_in is only ever set to
+//     true, never to false, and a "no" in the file writes NOTHING: no consent
+//     row, no flag. A no from the old system means only "the old system holds
+//     no consent", and marketing-send reads the NEWEST ledger row first, so a
+//     no row dated today would silently switch off everybody who said yes here.
+//   - ERASED PEOPLE STAY ERASED. A row that matches a customer deleted here
+//     (Back Office soft delete, phone and email kept) is left out and named,
+//     never inserted again as a twin and never un-deleted.
 //   - NEVER DOUBLE A STAMP. Stamps are claimed by an idempotency key in Ops
 //     stamp_transactions, which is UNIQUE. A customer who already carries ANY
 //     import earn row for that programme is skipped, so running the same file
@@ -36,7 +40,7 @@
 //                      member_code, UNIQUE referral_code.
 //   Platform customer_stamp_cards   UNIQUE (customer_id, program_id, company_id).
 
-import { normaliseEmail, phoneKeys, rawPhoneKeys, normaliseCountry } from './customerImport.ts';
+import { normaliseEmail, phoneKeys, rawPhoneKeys, normaliseCountry, readPhone } from './customerImport.ts';
 import type { ImportRow } from './customerImport.ts';
 
 // ── sizes ───────────────────────────────────────────────────────────────────
@@ -66,6 +70,14 @@ export interface ExistingCustomer {
   sources?: string[] | null;
   marketing_opt_in?: boolean | null;
   marketing_opt_in_at?: string | null;
+  /** Set when Back Office deleted them. Their phone and email are kept. */
+  deleted_at?: string | null;
+}
+
+interface KeyMaps {
+  byPhone: Map<string, ExistingCustomer>;
+  byRaw: Map<string, ExistingCustomer>;
+  byEmail: Map<string, ExistingCustomer>;
 }
 
 export interface ExistingIndex {
@@ -74,6 +86,8 @@ export interface ExistingIndex {
   /** customers.phone_raw: the text as typed, and that text read as a phone. */
   byRaw: Map<string, ExistingCustomer>;
   byEmail: Map<string, ExistingCustomer>;
+  /** The same three keys for customers deleted here. Never matched, only refused. */
+  deleted: KeyMaps;
 }
 
 /** The company's country, which is how a phone cell is read. See countryFromVenue. */
@@ -92,6 +106,8 @@ export interface Decision {
   row: ImportRow;
   /** The earlier row this one is the same person as, when that is why it was left out. */
   sameAs?: number;
+  /** True when the row is somebody deleted here. See DELETED_REASON. */
+  deleted?: boolean;
 }
 
 export interface PlanCounts {
@@ -109,6 +125,8 @@ export interface WriteCtx {
   batchId: string;
   /** ISO timestamp. Passed in, never read off the clock in here. */
   now: string;
+  /** The company's country, which is how phone_raw is written. See phoneRawFor. */
+  country?: string | null;
 }
 
 export interface StampCard {
@@ -204,32 +222,41 @@ export function chunk<T>(list: T[], size: number): T[][] {
  */
 export function indexExisting(rows: unknown, opts?: MatchOpts | null): ExistingIndex {
   const country = normaliseCountry(opts?.country);
-  const byPhone = new Map<string, ExistingCustomer>();
-  const byRaw = new Map<string, ExistingCustomer>();
-  const byEmail = new Map<string, ExistingCustomer>();
-  const put = (map: Map<string, ExistingCustomer>, key: string, c: ExistingCustomer): void => {
-    if (key && !map.has(key)) map.set(key, c);
-  };
+  const live = emptyMaps();
+  const deleted = emptyMaps();
   const list: unknown[] = Array.isArray(rows) ? rows : [];
   for (let i = 0; i < list.length; i++) {
     const c = list[i] as ExistingCustomer;
     if (!c || typeof c !== 'object' || !c.id) continue;
-    put(byPhone, text(c.phone), c);
-    const forms = phoneKeys(c.phone, { country });
-    for (let j = 0; j < forms.length; j++) put(byPhone, forms[j], c);
-    const raws = rawPhoneKeys(c.phone_raw);
-    for (let j = 0; j < raws.length; j++) put(byRaw, 'r:' + raws[j], c);
-    const rawForms = phoneKeys(c.phone_raw, { country });
-    for (let j = 0; j < rawForms.length; j++) put(byRaw, 'p:' + rawForms[j], c);
-    const e = normaliseEmail(c.email);
-    if (e.email) put(byEmail, e.email, c);
+    // A deleted customer is indexed apart, so nothing can ever match onto them
+    // and patch them, and a row that IS them can be refused by name.
+    indexOne(text(c.deleted_at) ? deleted : live, c, country);
   }
-  return { byPhone, byRaw, byEmail };
+  return { ...live, deleted };
+}
+
+function emptyMaps(): KeyMaps {
+  return { byPhone: new Map(), byRaw: new Map(), byEmail: new Map() };
+}
+
+function indexOne(maps: KeyMaps, c: ExistingCustomer, country: string): void {
+  const put = (map: Map<string, ExistingCustomer>, key: string): void => {
+    if (key && !map.has(key)) map.set(key, c);
+  };
+  put(maps.byPhone, text(c.phone));
+  const forms = phoneKeys(c.phone, { country });
+  for (let j = 0; j < forms.length; j++) put(maps.byPhone, forms[j]);
+  const raws = rawPhoneKeys(c.phone_raw);
+  for (let j = 0; j < raws.length; j++) put(maps.byRaw, 'r:' + raws[j]);
+  const rawForms = phoneKeys(c.phone_raw, { country });
+  for (let j = 0; j < rawForms.length; j++) put(maps.byRaw, 'p:' + rawForms[j]);
+  const e = normaliseEmail(c.email);
+  if (e.email) put(maps.byEmail, e.email);
 }
 
 function asIndex(existing: unknown, opts?: MatchOpts | null): ExistingIndex {
   const maybe = existing as ExistingIndex | null;
-  if (maybe && maybe.byPhone instanceof Map && maybe.byEmail instanceof Map && maybe.byRaw instanceof Map) return maybe;
+  if (maybe && maybe.byPhone instanceof Map && maybe.byEmail instanceof Map && maybe.byRaw instanceof Map && maybe.deleted) return maybe;
   return indexExisting(existing, opts);
 }
 
@@ -237,6 +264,71 @@ function asIndex(existing: unknown, opts?: MatchOpts | null): ExistingIndex {
 function ukNationalForm(e164: string | null): string {
   const v = text(e164);
   return /^\+44\d{9,10}$/.test(v) ? '0' + v.slice(3) : '';
+}
+
+/**
+ * THE phone_raw WE WRITE: the repaired number, the way a person types it.
+ *
+ * phone_raw is what venue staff read in Back Office, in reports, in gift card
+ * lookup and in search. It is NOT the spreadsheet's cell: '7.954412324E9',
+ * '7954412324', "'+447954412324" and '0044 7954 412324' are all Excel damage,
+ * and writing them there put that damage in front of every till. So:
+ *   GB company, UK number   '07954 412324', '0161 496 0000', '020 7946 0100'
+ *   US company, 10 digits   '(415) 555-0123'
+ *   anything else           the number we write to customers.phone
+ * The raw cell is still used, with all its variants, as a MATCH key against
+ * the phone_raw already on file (see lookupKeys). It is simply never stored.
+ */
+export function phoneRawFor(row: ImportRow | null | undefined, country?: unknown): string {
+  const phone = text(row?.phone);
+  if (!phone) return '';
+  const c = normaliseCountry(country);
+  const e164 = text(row?.phoneE164);
+  if (c === 'GB') {
+    const national = ukNationalForm(e164) || ukNationalForm(/^\+44/.test(phone) ? phone : '') || (/^0\d{9,10}$/.test(phone) ? phone : '');
+    if (national) return ukSpaced(national);
+  }
+  if (c === 'US' && !/^\+(?!1)/.test(phone)) {
+    const d = phone.replace(/\D/g, '');
+    const ten = d.length === 11 && d.charAt(0) === '1' ? d.slice(1) : d;
+    if (ten.length === 10) return '(' + ten.slice(0, 3) + ') ' + ten.slice(3, 6) + '-' + ten.slice(6);
+  }
+  return phone;
+}
+
+/** A UK number with its 0, spaced the way it is said out loud. */
+function ukSpaced(n: string): string {
+  if (/^07\d{9}$/.test(n)) return n.slice(0, 5) + ' ' + n.slice(5);
+  if (/^02\d{9}$/.test(n)) return n.slice(0, 3) + ' ' + n.slice(3, 7) + ' ' + n.slice(7);
+  if (/^01\d1\d{7}$/.test(n) || /^011\d{8}$/.test(n)) return n.slice(0, 4) + ' ' + n.slice(4, 7) + ' ' + n.slice(7);
+  if (/^0[389]\d{9}$/.test(n)) return n.slice(0, 4) + ' ' + n.slice(4, 7) + ' ' + n.slice(7);
+  if (/^0\d{9,10}$/.test(n)) return n.slice(0, 5) + ' ' + n.slice(5);
+  return n;
+}
+
+/**
+ * True when a phone_raw on file is spreadsheet damage of THIS row's number:
+ * scientific notation, a trailing .0, a leading apostrophe, a 00 prefix, a UK
+ * 44 with no +, or a GB number missing its 0. Only such a value, on a customer
+ * an import brought in, may be corrected by a later import. A clean value
+ * somebody typed at the till is never touched.
+ */
+export function damagedPhoneRaw(value: unknown, row: ImportRow | null | undefined, country?: unknown): boolean {
+  const v = text(value);
+  if (!v || !row || !row.phone) return false;
+  const c = normaliseCountry(country);
+  if (v === phoneRawFor(row, c)) return false;
+  const read = readPhone(v, { country: c });
+  if (!read.ok || !read.phone) return false;
+  const same = read.phone === row.phone || (!!read.e164 && read.e164 === row.phoneE164);
+  if (!same) return false;
+  const bare = v.replace(/[\s()-]/g, '');
+  if (/^'/.test(v)) return true;
+  if (/[eE]\+?\d{1,2}$/.test(v)) return true;
+  if (/^\d+[.,]0+$/.test(v)) return true;
+  if (/^00/.test(bare)) return true;
+  if (read.assumed === true) return true;
+  return c === 'GB' && /^44\d{9,10}$/.test(bare);
 }
 
 /** The phone keys one row is looked up under. See phoneKeys. */
@@ -276,15 +368,45 @@ export function lookupKeys(rows: unknown): { phones: string[]; raws: string[]; e
     if (national) raws.add(national);
     const typed = rawPhoneKeys(r.phoneRaw);
     for (let j = 0; j < typed.length; j++) raws.add(typed[j]);
+    // And the clean form this importer WRITES, so a second run finds its own.
+    for (const c of ['GB', 'US']) {
+      const clean = phoneRawFor(r, c);
+      if (clean) raws.add(clean);
+    }
     const e = normaliseEmail(r.email);
     if (e.email) emails.add(e.email);
   }
   return { phones: Array.from(phones), raws: Array.from(raws), emails: Array.from(emails) };
 }
 
+/** Emails per case blind read. Each one is a whole ilike term in the URL. */
+export const EMAIL_READ_CHUNK = 50;
+
+/**
+ * A PostgREST `or` filter that finds these emails WHATEVER CASE they were
+ * stored in: email.ilike."a@b.com",email.ilike."c@d.com". An exact `in` read
+ * missed Jane@Example.com, which for a LIVE customer only cost a retry (the
+ * unique index on lower(email) refused the insert), but for a DELETED one let
+ * a twin in, because that index skips deleted rows. Each value is double
+ * quoted, so a dot or a comma in it is not read as syntax. `_` in an address
+ * is a one character wildcard to ILIKE, which can only ever find MORE rows;
+ * the matcher then compares the normalised email exactly, so it is harmless.
+ */
+export function emailIlikeFilter(emails: unknown): string {
+  const list: unknown[] = Array.isArray(emails) ? emails : [];
+  const out: string[] = [];
+  for (let i = 0; i < list.length; i++) {
+    const e = text(list[i]).toLowerCase();
+    if (!e) continue;
+    const quoted = e.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/%/g, '\\%');
+    out.push('email.ilike."' + quoted + '"');
+  }
+  return out.join(',');
+}
+
 /** The customer this row's phone already belongs to, if any: customers.phone
  *  first, then phone_raw as typed, then phone_raw read as a phone. */
-function findByPhone(row: ImportRow, index: ExistingIndex): ExistingCustomer | undefined {
+function findByPhone(row: ImportRow, index: KeyMaps): ExistingCustomer | undefined {
   const keys = rowPhoneKeys(row);
   for (let j = 0; j < keys.length; j++) {
     const c = index.byPhone.get(keys[j]);
@@ -355,6 +477,18 @@ export function decideRows(rows: unknown, existing: unknown, opts?: MatchOpts | 
     const rowNumber = typeof row.rowNumber === 'number' ? row.rowNumber : i + 2;
     const email = normaliseEmail(row.email).email;
 
+    // ERASED PEOPLE STAY ERASED. Somebody deleted here, still in a stale
+    // export, is left out by name. Checked FIRST, on every key, so they can
+    // neither be inserted again (both unique indexes skip deleted rows, so the
+    // database would let a twin in) nor land on a live row by their email.
+    const gone = (row.phone ? findByPhone(row, index.deleted) : undefined)
+      || findByRawOnly(row, index.deleted)
+      || (email ? index.deleted.byEmail.get(email) : undefined);
+    if (gone) {
+      out.push({ rowNumber, verdict: 'blocked', reason: DELETED_REASON, customerId: null, matchedOn: '', row, deleted: true });
+      continue;
+    }
+
     const byPhone = row.phone ? findByPhone(row, index) : undefined;
     if (byPhone) {
       out.push(claim({ rowNumber, verdict: 'update', reason: '', customerId: byPhone.id, matchedOn: 'phone', row }));
@@ -383,6 +517,27 @@ export function decideRows(rows: unknown, existing: unknown, opts?: MatchOpts | 
   }
 
   return out;
+}
+
+/** The typed phone of a row, against phone_raw, even when no phone could be written. */
+function findByRawOnly(row: ImportRow, maps: KeyMaps): ExistingCustomer | undefined {
+  const typed = rawPhoneKeys(row.phoneRaw);
+  for (let j = 0; j < typed.length; j++) {
+    const c = maps.byRaw.get('r:' + typed[j]);
+    if (c) return c;
+  }
+  return undefined;
+}
+
+/** The words for a row that is somebody deleted here. */
+export const DELETED_REASON = 'They were deleted here, so we left them out. We never bring back somebody who was deleted.';
+
+/** The run note naming them. Empty when there are none. */
+export function deletedLine(people: unknown): string {
+  const list: Array<{ rowNumber?: unknown; name?: unknown }> = Array.isArray(people) ? people : [];
+  if (!list.length) return '';
+  const named = list.map((p) => 'row ' + (Number(p?.rowNumber) || 0) + ' (' + (text(p?.name) || 'no name') + ')');
+  return 'Left out because they were deleted here: ' + named.join(', ') + '.';
 }
 
 /** The words for a row that is the same person as an earlier one. */
@@ -495,7 +650,7 @@ export function buildInsert(row: ImportRow, ctx: WriteCtx, opts?: { allowOptIn?:
     first_name: text(row?.firstName) || null,
     last_name: text(row?.lastName) || null,
     phone: row?.phone || null,
-    phone_raw: text(row?.phoneRaw) || null,
+    phone_raw: phoneRawFor(row, ctx?.country) || null,
     email: row?.email || null,
     birthday: row?.birthday || null,
     notes: text(row?.notes) || null,
@@ -506,6 +661,24 @@ export function buildInsert(row: ImportRow, ctx: WriteCtx, opts?: { allowOptIn?:
   };
 }
 
+/** A customer an import brought in: the only kind whose phone_raw an import may correct. */
+function importedHere(c: ExistingCustomer): boolean {
+  return text(c?.source) === IMPORT_SOURCE || listOf(c?.sources).indexOf(IMPORT_SOURCE) >= 0;
+}
+
+/** The columns a patch really changes: not the id, the org, the clock, the
+ *  batch tag, or the name read back unchanged to satisfy NOT NULL. */
+export function patchChanges(patch: Record<string, unknown> | null, existing?: ExistingCustomer | null): string[] {
+  if (!patch) return [];
+  const out: string[] = [];
+  for (const k of Object.keys(patch)) {
+    if (k === 'id' || k === 'org_id' || k === 'updated_at' || k === 'sources' || k === 'source') continue;
+    if (k === 'name' && existing && text(existing.name) === text(patch.name)) continue;
+    out.push(k);
+  }
+  return out.sort();
+}
+
 /**
  * The columns one matched customer may change, and no others.
  *
@@ -513,8 +686,9 @@ export function buildInsert(row: ImportRow, ctx: WriteCtx, opts?: { allowOptIn?:
  * have an email we keep their email. The only column that always moves is
  * `sources`, which gains this batch's tag so the run can be found again.
  *
- * Returns null when there is genuinely nothing to do, which is what a second
- * run of the same file under the same batch id looks like.
+ * Returns null when there is genuinely nothing to change. The batch tag in
+ * `sources` rides along with a real change and is never a change on its own,
+ * so a second run of the same file, under ANY batch id, writes nothing.
  *
  * `opts.allowOptIn` is false for somebody who has WITHDRAWN their consent here
  * since the file was exported. See consentDecision: a stale third party file
@@ -544,10 +718,25 @@ export function buildPatch(
   if (blank(existing.email) && row?.email) patch.email = row.email;
   if (blank(existing.phone) && row?.phone) {
     patch.phone = row.phone;
-    patch.phone_raw = text(row.phoneRaw) || row.phone;
+    patch.phone_raw = phoneRawFor(row, ctx?.country) || row.phone;
+  } else if (importedHere(existing) && damagedPhoneRaw(existing.phone_raw, row, ctx?.country)) {
+    // An earlier import wrote the spreadsheet's damage here. Put it right.
+    patch.phone_raw = phoneRawFor(row, ctx?.country);
   }
   if (blank(existing.birthday) && row?.birthday) patch.birthday = row.birthday;
   if (blank(existing.notes) && !blank(row?.notes)) patch.notes = text(row.notes);
+
+  // Only ever true. A no in the file writes nothing at all.
+  if (allowOptIn && row?.marketingOptIn === true && existing.marketing_opt_in !== true) {
+    patch.marketing_opt_in = true;
+    patch.marketing_opt_in_at = row?.optInDate ? row.optInDate : (ctx?.now ?? null);
+  }
+
+  // NOTHING REAL TO CHANGE IS NO WRITE AT ALL. The batch tag and the source
+  // are bookkeeping, never a change on their own: a second run of the same
+  // file must leave every person exactly as they were, and must count them as
+  // already up to date, not filled in.
+  if (!Object.keys(patch).length) return null;
   if (blank(existing.source)) patch.source = IMPORT_SOURCE;
 
   const sources = listOf(existing.sources);
@@ -557,14 +746,6 @@ export function buildPatch(
   if (tag && sources.indexOf(tag) < 0) wanted.push(tag);
   if (wanted.length) patch.sources = sources.concat(wanted);
 
-  // Only ever true. A no in the file goes to the consent ledger, which
-  // marketing-send reads first, and never wipes an earlier yes off the record.
-  if (allowOptIn && row?.marketingOptIn === true && existing.marketing_opt_in !== true) {
-    patch.marketing_opt_in = true;
-    patch.marketing_opt_in_at = row?.optInDate ? row.optInDate : (ctx?.now ?? null);
-  }
-
-  if (!Object.keys(patch).length) return null;
   if (patch.name === undefined) patch.name = text(existing.name) || text(row?.name) || 'Customer';
   patch.id = existing.id;
   patch.org_id = ctx?.orgId ?? null;
@@ -622,12 +803,13 @@ export function groupPatches(patches: unknown): Array<Record<string, unknown>[]>
 }
 
 /**
- * One consent row, for a yes AND for a no.
+ * One consent row, for a yes, and never for anything else.
  *
  * customer_consents is the append only ledger and is the real record of
  * permission; marketing_opt_in on the customer is the older flag.
- * marketing-send reads the ledger first and only falls back to the flag, so a
- * no here is what actually stops the email.
+ * marketing-send reads the NEWEST ledger row first and only falls back to the
+ * flag, which is exactly why a file's no must never be written: dated today it
+ * would outrank a yes given here at the kiosk, the till or the portal.
  *
  * `location_id` is text NOT NULL on this table (confirmed live), and carries the
  * ops location the operator was signed into when they ran the import.
@@ -644,7 +826,10 @@ export function buildConsent(row: ImportRow, args: {
   createdAt?: string | null;
 }): Record<string, unknown> | null {
   if (!args?.customerId) return null;
-  if (row?.marketingOptIn == null) return null; // nobody said. A blank column is not a yes and not a no.
+  // A YES ONLY. A blank is nobody saying, and a no from another system means
+  // only that it holds no consent: it never becomes a no row here, because the
+  // newest ledger row is what marketing-send obeys.
+  if (row?.marketingOptIn !== true) return null;
   return {
     customer_id: args.customerId,
     org_id: args.orgId ?? null,
@@ -652,7 +837,7 @@ export function buildConsent(row: ImportRow, args: {
     company_id: args.companyId ?? null,
     channel: 'both',
     purpose: 'marketing',
-    consented: row.marketingOptIn === true,
+    consented: true,
     source: IMPORT_SOURCE,
     method: 'imported_optin',
     consent_text: text(args.consentText) || null,
@@ -661,71 +846,78 @@ export function buildConsent(row: ImportRow, args: {
   };
 }
 
-// ── the mirror of "never clear a yes" ───────────────────────────────────────
+// ── consent: a file may only ever ADD a yes ─────────────────────────────────
 
 export interface ConsentVerdict {
-  /** Write a customer_consents row at all. */
+  /** Write a customer_consents row at all. Only ever a yes row. */
   write: boolean;
-  /** What that row says. */
+  /** What that row says. Always true when write is true. */
   consented: boolean;
-  /** created_at for it: the FILE's opt in date when the file gave one. */
+  /** created_at for it: the FILE's opt_in_date when the file gave one, else now. */
   createdAt: string;
   /** Turn customers.marketing_opt_in on. Never true for a withheld yes. */
   setFlag: boolean;
-  /** We held the yes back because they have since said stop. */
+  /** We held the yes back. */
   withheld: boolean;
+  /** Why, when withheld: they switched it off here, or they are simply not opted in here. */
+  kind: '' | 'withdrawn' | 'not_opted_in';
   /** Short plain words for the operator, empty unless withheld. */
   reason: string;
 }
 
 /**
- * NEVER CLEAR A YES has to have a mirror, or it is only half a rule.
+ * What a file's answer about marketing is allowed to do to one person.
  *
- * "Never clear a yes" stops an import erasing consent. Nothing stopped an
- * import RESTORING it. A stale export loaded after somebody opted out here
- * re-consented them, and the emails started again, which is the venue's fine.
+ * A FILE NO WRITES NOTHING. The real Coffee Boy file has 5,097 rows that say no
+ * and not one opt_in_date. A no row dated today would become the NEWEST ledger
+ * row, marketing-send obeys the newest row first, and everybody who said yes
+ * here (kiosk, till, portal, Back Office) would be switched off in silence
+ * while their flag still read true. A no from another system means only "the
+ * old system holds no consent". So: no consent row, no flag, nothing.
  *
- * THERE ARE THREE WAYS SOMEBODY SAYS STOP HERE, and every one of them holds a
- * yes in the file back:
- *  - customers.marketing_opt_in = false. The two live opt out paths write ONLY
- *    this: Back Office (staff untick Marketing because the customer asked,
- *    src/backoffice/sections/Customers.jsx) and the customer's own toggle in the
- *    loyalty portal (loyalty-otp update profile). Neither writes a consent row,
- *    so reading only the ledger missed both. An existing false is a withdrawal
- *    made here, and a file's yes never overturns it. (A person an earlier
- *    import brought in as a no reads the same way, which is the safe side:
- *    staff can switch them on by hand with the customer's say so.)
- *  - a customer_consents row saying no, newer than the file's own opt in date
- *  - a marketing_suppressions row (an unsubscribe click or a STOP text)
+ * A FILE YES may switch somebody ON only when nothing here says otherwise.
+ * It is held back when:
+ *  - they WITHDREW here, which is knowable three ways:
+ *      a customer_consents row saying no that is newer than the file's own
+ *        opt_in_date (or any no at all when the file has no date)
+ *      a marketing_suppressions row (an unsubscribe click or a STOP text)
+ *      customers.marketing_opt_in = false with a marketing_opt_in_at on it.
+ *        Every path that switches somebody on stamps that time, and Back
+ *        Office's untick and the loyalty portal toggle leave it there when
+ *        they switch them off, so false with a time means "was on, then off".
+ *  - they are NOT OPTED IN here: marketing_opt_in = false with no time. That
+ *    is the column's default, so most of these people never said stop. We
+ *    still keep round three's rule and leave them alone, but we do NOT claim
+ *    they said stop; the note says the file's yes was not applied.
  *
- * When a yes is held back the flag is left alone and the operator is told, by
- * row and name, which people. A consent row is written for it ONLY when the
- * ledger already holds a newer no, dated with the file's own day so it can
- * never jump that no. Against a flag only withdrawal a yes row of any date
- * would become the newest ledger row, and marketing-send reads the ledger
- * FIRST, so it would switch the emails back on. None is written.
+ * When a yes is held back the flag is left alone. A consent row is written for
+ * it ONLY when the ledger already holds a newer no and the file gave its own
+ * date, dated with that day so it can never jump the no. Against a flag only
+ * refusal, a yes row of any date would become the newest ledger row and turn
+ * the emails on, so none is written.
  *
- * A NO in the file is never held back. A no is always recorded.
+ * A yes that goes ahead is dated from the file's opt_in_date when it has one,
+ * and otherwise now.
  */
 export function consentDecision(row: ImportRow, args: {
   priorConsents?: unknown;
   suppressed?: boolean;
   /** customers.marketing_opt_in as it stands now, for somebody we already have. */
   currentFlag?: boolean | null;
+  /** customers.marketing_opt_in_at as it stands now. */
+  currentFlagAt?: string | null;
   now: string;
 }): ConsentVerdict | null {
   const answer = row?.marketingOptIn;
   if (answer == null) return null;
   const now = text(args?.now);
 
-  // A yes carries a date only when the old system gave us one. 5Loyalty do not
-  // expose opt_in_date at all, so the sign up date is the next best truth.
-  const fileDay = text(row?.optInDate) || text(row?.signedUpDate);
-  const fileAt = fileDay ? fileDay.slice(0, 10) + 'T00:00:00.000Z' : '';
-
-  if (answer === false) {
-    return { write: true, consented: false, createdAt: fileAt || now, setFlag: false, withheld: false, reason: '' };
+  if (answer !== true) {
+    return { write: false, consented: false, createdAt: '', setFlag: false, withheld: false, kind: '', reason: '' };
   }
+
+  const fileDay = text(row?.optInDate);
+  const fileAt = fileDay ? fileDay.slice(0, 10) + 'T00:00:00.000Z' : '';
 
   // The newest NO on file for this person, whoever wrote it.
   let newestNo = '';
@@ -739,34 +931,56 @@ export function consentDecision(row: ImportRow, args: {
   }
 
   const suppressed = args?.suppressed === true;
-  const switchedOff = args?.currentFlag === false;
   const staleYes = !!newestNo && (!fileAt || fileAt <= newestNo);
-  if (suppressed || staleYes || switchedOff) {
+  const flagOff = args?.currentFlag === false;
+  const flagWithdrawn = flagOff && !!text(args?.currentFlagAt);
+  const withdrawn = suppressed || staleYes || flagWithdrawn;
+
+  if (withdrawn) {
     return {
       write: !!fileAt && staleYes,
       consented: true,
       createdAt: fileAt || now,
       setFlag: false,
       withheld: true,
-      reason: switchedOff
-        ? 'They switched marketing off here, so we left it off.'
-        : 'They opted out here after this file was exported, so we left them opted out.',
+      kind: 'withdrawn',
+      reason: 'They switched marketing off here, so we left it off.',
+    };
+  }
+  if (flagOff) {
+    return {
+      write: false,
+      consented: true,
+      createdAt: fileAt || now,
+      setFlag: false,
+      withheld: true,
+      kind: 'not_opted_in',
+      reason: 'Not opted in here, so the file\'s yes was not applied.',
     };
   }
 
-  return { write: true, consented: true, createdAt: fileAt || now, setFlag: true, withheld: false, reason: '' };
+  return { write: true, consented: true, createdAt: fileAt || now, setFlag: true, withheld: false, kind: '', reason: '' };
 }
 
 /**
- * The line the operator reads about the people whose yes we held back, by row
- * and by name. Empty when there are none.
+ * The lines the operator reads about the people whose yes we held back, by row
+ * and by name, one line for each kind. Empty when there are none.
  */
+export function withheldLines(people: unknown): string[] {
+  const list: Array<{ rowNumber?: unknown; name?: unknown; kind?: unknown }> = Array.isArray(people) ? people : [];
+  const named = (xs: typeof list) => xs.map((p) => 'row ' + (Number(p?.rowNumber) || 0) + ' (' + (text(p?.name) || 'no name') + ')').join(', ');
+  const who = (n: number) => (n === 1 ? '1 person' : n + ' people');
+  const off = list.filter((p) => p && p.kind === 'withdrawn');
+  const notIn = list.filter((p) => p && p.kind !== 'withdrawn');
+  const out: string[] = [];
+  if (off.length) out.push('We left marketing OFF for ' + who(off.length) + ' who switched it off here, although the file says yes: ' + named(off) + '.');
+  if (notIn.length) out.push(who(notIn.length) + (notIn.length === 1 ? ' is' : ' are') + ' not opted in here, so the file\'s yes was not applied: ' + named(notIn) + '.');
+  return out;
+}
+
+/** withheldLines as one string, for callers that want a single line. */
 export function withheldLine(people: unknown): string {
-  const list: Array<{ rowNumber?: unknown; name?: unknown }> = Array.isArray(people) ? people : [];
-  if (!list.length) return '';
-  const who = list.length === 1 ? '1 person' : list.length + ' people';
-  const named = list.map((p) => 'row ' + (Number(p?.rowNumber) || 0) + ' (' + (text(p?.name) || 'no name') + ')');
-  return 'We left marketing OFF for ' + who + ' who said stop here, although the file says yes: ' + named.join(', ') + '.';
+  return withheldLines(people).join(' ');
 }
 
 /**
@@ -907,6 +1121,10 @@ export interface Progress {
   enrolled: number;
   /** People whose cards we left alone because an import already stamped them. */
   alreadyStamped: number;
+  /** People we already had, with nothing in the file to fill in. Never counted as updated. */
+  upToDate: number;
+  /** Rows left out because the person was deleted here. Also in skippedRows. */
+  deleted: number;
   /** People we would not re-consent, because they said stop here. */
   consentWithheld: number;
   /** Rows we left out on purpose (a problem, a repeat, a refusal), by row. */
@@ -919,7 +1137,7 @@ export interface Progress {
 
 export function emptyProgress(): Progress {
   return {
-    rows: 0, created: 0, updated: 0, skipped: 0, stamped: 0, enrolled: 0, alreadyStamped: 0, consentWithheld: 0,
+    rows: 0, created: 0, updated: 0, skipped: 0, stamped: 0, enrolled: 0, alreadyStamped: 0, upToDate: 0, deleted: 0, consentWithheld: 0,
     skippedRows: [], failed: [], notes: [],
   };
 }
@@ -956,6 +1174,8 @@ export function chunkAnswer(progress: Progress): Record<string, unknown> {
     stamped: progress.stamped,
     enrolled: progress.enrolled,
     already_stamped: progress.alreadyStamped,
+    up_to_date: progress.upToDate,
+    deleted: progress.deleted,
     consent_withheld: progress.consentWithheld,
     skipped_rows: rowList(progress.skippedRows),
     failed: rowList(progress.failed),
@@ -965,8 +1185,27 @@ export function chunkAnswer(progress: Progress): Record<string, unknown> {
 
 // ── who may run it ──────────────────────────────────────────────────────────
 
-/** ServOS's own email domains. Overridden with SERVOS_STAFF_EMAIL_DOMAINS. */
-export const STAFF_EMAIL_DOMAINS = ['posup.co.uk', 'serv-os.app'];
+/** The environment variable that lists the ServOS staff who may import. */
+export const STAFF_EMAILS_ENV = 'SERVOS_IMPORT_STAFF_EMAILS';
+
+/** What a signed in person is told while nobody is on the list. */
+export const IMPORT_SWITCHED_OFF = 'Import is switched off: no staff emails configured.';
+
+/**
+ * SERVOS_IMPORT_STAFF_EMAILS read into a list: comma separated, trimmed, lower
+ * case, blanks dropped, each one a whole email address. Unset or empty is an
+ * empty list, which switches the import off for everybody but the service role.
+ */
+export function parseStaffEmails(value: unknown): string[] {
+  const out: string[] = [];
+  const parts = text(value).split(',');
+  for (let i = 0; i < parts.length; i++) {
+    const e = parts[i].trim().toLowerCase();
+    if (!e || e.indexOf('@') < 1 || out.indexOf(e) >= 0) continue;
+    out.push(e);
+  }
+  return out;
+}
 
 /**
  * SERVOS STAFF ONLY. Peter, 18 Sep 2026: "I dont want customer able to mess
@@ -976,41 +1215,61 @@ export const STAFF_EMAIL_DOMAINS = ['posup.co.uk', 'serv-os.app'];
  *
  * A caller passes when:
  *  - it is the service role, or
- *  - it is a signed in, non anonymous user whose user_profiles.role is
- *    'super_admin' AND whose CONFIRMED email is on a ServOS domain.
+ *  - it is a signed in, NON anonymous user, AND their user_profiles.role is
+ *    'super_admin', AND their email is EXACTLY one of the addresses in
+ *    SERVOS_IMPORT_STAFF_EMAILS (compared without regard to case), AND that
+ *    email is confirmed.
  *
  * Having a user_locations row for the venue is NOT enough: that is exactly the
  * venue owner Peter wants kept out.
  *
- * Why the email as well as the role. Until migration
- * 20260915c_OPS_user_profiles_admin_guard.sql is live, any owner login can
- * delete its own user_profiles row and insert it again as super_admin. The
- * role alone would then let a venue owner in. A confirmed email on a ServOS
- * domain cannot be given to yourself: changing it needs the new address to
- * click the link. So the email half keeps this check shut whether or not that
- * migration has been run, and the role half keeps it shut to ServOS people who
- * are not admins.
+ * WHY AN EXACT LIST AND NOT A DOMAIN. An earlier version let in any confirmed
+ * email on posup.co.uk or serv-os.app, on the theory that such an email
+ * "cannot be given to yourself". That was false. create-user lets a venue
+ * owner or manager make a login for ANY email address with email_confirm true
+ * (no link is ever clicked), so a venue owner could mint a confirmed
+ * anything@serv-os.app login. A named list of real people cannot be minted.
+ * The super_admin half still matters: it means a name on the list is not
+ * enough on its own either.
+ *
+ * An EMPTY list refuses everybody except the service role, and says so plainly.
  */
 export function staffVerdict(args: {
   serviceRole?: boolean;
   user?: { id?: unknown; email?: unknown; email_confirmed_at?: unknown; is_anonymous?: unknown } | null;
   role?: unknown;
-  domains?: unknown;
+  allowlist?: unknown;
 }): { ok: boolean; reason: string } {
   if (args?.serviceRole === true) return { ok: true, reason: '' };
+  const allowed = Array.isArray(args?.allowlist)
+    ? parseStaffEmails((args.allowlist as unknown[]).map((v) => text(v)).join(','))
+    : parseStaffEmails(args?.allowlist);
+  if (!allowed.length) return { ok: false, reason: IMPORT_SWITCHED_OFF };
   const user = args?.user ?? null;
   if (!user || !text(user.id)) return { ok: false, reason: 'Sign in first.' };
   if (user.is_anonymous === true) return { ok: false, reason: 'Sign in first.' };
   if (text(args?.role) !== 'super_admin') return { ok: false, reason: 'Only ServOS staff can import customers.' };
   const email = text(user.email).toLowerCase();
-  const at = email.lastIndexOf('@');
-  const domain = at > 0 ? email.slice(at + 1) : '';
-  const listed = Array.isArray(args?.domains) && (args.domains as unknown[]).length
-    ? (args.domains as unknown[]).map((d) => text(d).toLowerCase()).filter(Boolean)
-    : STAFF_EMAIL_DOMAINS;
-  if (!domain || listed.indexOf(domain) < 0) return { ok: false, reason: 'Only ServOS staff can import customers.' };
+  if (!email || allowed.indexOf(email) < 0) return { ok: false, reason: 'Only ServOS staff can import customers.' };
   if (!text(user.email_confirmed_at)) return { ok: false, reason: 'Confirm your email first.' };
   return { ok: true, reason: '' };
+}
+
+// ── no record, no import ────────────────────────────────────────────────────
+
+/** What the screen and the server say while import_batches does not exist. */
+export const BATCH_TABLE_MISSING = 'Run the import_batches migration first.';
+
+/**
+ * Whether an action may go ahead, given whether the import_batches table is
+ * there. Every run has to leave a record of who ran it and what it did, so the
+ * IMPORT is refused until migration 20260918_OPS_customer_import_batches.sql
+ * has been run. context and preview write nothing, so they still work.
+ */
+export function batchTableGate(action: unknown, batchTable: unknown): { ok: boolean; message: string } {
+  if (text(action) !== 'import') return { ok: true, message: '' };
+  if (batchTable === true) return { ok: true, message: '' };
+  return { ok: false, message: BATCH_TABLE_MISSING };
 }
 
 // ── the batch row ───────────────────────────────────────────────────────────
