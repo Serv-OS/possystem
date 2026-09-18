@@ -22,6 +22,7 @@ import { itemCodeForSave, isMissingItemCodeColumn, isDuplicateItemCodeError } fr
 import { peerMenuPlan } from './menuMembership';
 import { resolveSoldAlone } from './menuRules';
 import { saveTableChecked, openOrdersFor, readFloorPlan } from './tablePlanDb';
+import { saveSectionsChecked } from './sectionPlan';
 
 // ── Order number generation ──────────────────────────────────────────────────
 // The order number is the order's IDENTITY: unique per location and unlimited.
@@ -543,6 +544,15 @@ export const saveFloorTableChecked = async (table, locationId = null) => {
   if (!supabase) return { ok: false, error: new Error('No database') };
   const loc = await resolveLoc(table?.locationId || locationId);
   return saveTableChecked(supabase, table, loc);
+};
+
+// Floor plan SECTIONS: the venue's whole list, checked (lib/sectionPlan.js saveSectionsChecked).
+// Before migration 20260918c the write fails with reason 'migration' and nothing is pretended.
+export const saveLocationSections = async (list, locationId, { base } = {}) => {
+  if (isMock) return { ok: true, sections: list };
+  if (!supabase) return { ok: false, reason: 'error', error: new Error('No database') };
+  const loc = await resolveLoc(locationId);
+  return saveSectionsChecked(supabase, loc, list, { base });
 };
 
 // Everything the Back Office delete guard must see (lib/tablePlanDb.js openOrdersFor).
