@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.5',
+    date: '18 Sep 2026',
+    items: [
+      'The table QR code downloads in Back Office, Online Ordering now work. Each JPEG button drew the code first and only then started the download, and Safari refuses a download that is not started straight from your click, so nothing happened. The codes are now drawn as soon as the section opens, so a click saves a finished file instantly.',
+      'Download all is now one PDF with every table\'s QR code, one per page, ready to print. It used to start a separate download for every table, which browsers block as a flood of files after the first one or two.',
+      'While the codes are being drawn the buttons say Preparing, and if a code cannot be drawn the section says which table and why.',
+    ],
+  },
+  {
     v: '5.9.4',
     date: '18 Sep 2026',
     items: [

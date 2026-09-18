@@ -13,7 +13,7 @@ import { platformSupabase, supabase, getLocationId } from '../../lib/supabase';
 import { saveLocation } from '../../lib/locationAdmin';
 import { CUSTOMER_ROOT, customerUrl, groupOrderUrl } from '../../lib/env';
 import { getVenueUberConfig } from '../../lib/delivery/deliveryConfig';
-import QRCode from 'qrcode';
+import { renderTableQrJpeg, qrFileName, saveHref, buildQrPdf, savePdf } from '../../lib/tableQr';
 import { prepMinutes } from '../../lib/prepTime';
 import { TIP_DEFAULTS, normaliseTipRule, parsePctList } from '../../lib/tipping';
 
@@ -595,53 +595,55 @@ function QrSettingsBlock({
     return customerUrl(slug, `/t/${encodeURIComponent(tParam)}`);
   };
 
-  const downloadOne = async (table) => {
-    const url = buildQrUrl(table);
-    // Render QR to a canvas, then composite a label + footer into a larger
-    // canvas, export as JPEG, trigger download.
-    const qrCanvas = document.createElement('canvas');
-    await QRCode.toCanvas(qrCanvas, url, { width: 720, margin: 2, errorCorrectionLevel: 'M' });
-    const W = 800, H = 1000;
-    const out = document.createElement('canvas');
-    out.width = W; out.height = H;
-    const ctx = out.getContext('2d');
-    // White background — easier to print
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, W, H);
-    // QR centered
-    ctx.drawImage(qrCanvas, (W - 720) / 2, 60, 720, 720);
-    // Label
-    ctx.fillStyle = '#000';
-    ctx.font = '700 28px -apple-system, system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('SCAN TO ORDER', W / 2, 830);
-    ctx.font = '900 84px -apple-system, system-ui, sans-serif';
-    ctx.fillText(`Table ${table.label || table.id || '?'}`, W / 2, 920);
-    ctx.font = '500 18px -apple-system, system-ui, sans-serif';
-    ctx.fillStyle = '#666';
-    ctx.fillText(slug ? `${slug}.${CUSTOMER_ROOT}` : CUSTOMER_ROOT, W / 2, 970);
-    // JPEG download
-    out.toBlob((blob) => {
-      if (!blob) return;
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = `qr-table-${(table.label || table.id || 'unknown').toString().replace(/[^a-z0-9-]+/gi, '_')}.jpg`;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-    }, 'image/jpeg', 0.92);
+  // v5.9.5: the JPEGs are drawn as soon as this section opens, so a click only
+  // saves a finished file, synchronously, inside the click (Safari drops a
+  // download started after an await). "Download all" is one PDF, not a burst of
+  // downloads every browser blocks. See lib/tableQr.js.
+  const footer = slug ? `${slug}.${CUSTOMER_ROOT}` : CUSTOMER_ROOT;
+  const qrTargets = tableMode === 'free'
+    ? [{ key: '__generic', label: 'Generic', url: buildQrUrl(null) }]
+    : tables.map((t) => ({ key: t.id, label: t.label || t.id || '?', url: buildQrUrl(t) }));
+  const qrSignature = JSON.stringify([footer, qrTargets.map((q) => [q.key, q.label, q.url])]);
+  const [qrImages, setQrImages] = useState({});
+  const [qrError, setQrError] = useState('');
+  useEffect(() => {
+    let cancelled = false;
+    setQrError('');
+    (async () => {
+      const next = {};
+      for (const q of qrTargets) {
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          next[q.key] = { dataUrl: await renderTableQrJpeg({ url: q.url, label: q.label, footer }), label: q.label };
+        } catch (e) {
+          if (!cancelled) setQrError(`Could not draw the QR for table ${q.label}: ${e?.message || e}`);
+        }
+        if (cancelled) return;
+      }
+      if (!cancelled) setQrImages(next);
+    })();
+    return () => { cancelled = true; };
+    // qrSignature captures every input that changes the artwork.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qrSignature]);
+  const qrReady = qrTargets.length > 0 && qrTargets.every((q) => qrImages[q.key]);
+
+  const downloadOne = (table) => {
+    const key = table && table.id ? table.id : '__generic';
+    const img = qrImages[key];
+    if (!img) return;
+    saveHref(img.dataUrl, qrFileName(img.label));
   };
 
-  const downloadAll = async () => {
+  const downloadAll = () => {
+    if (!qrReady) return;
     setDownloading(true);
     try {
-      for (const t of tables) {
-        // Slight delay between downloads so the browser doesn't block them
-        // as a "multiple files" dialog.
-        // eslint-disable-next-line no-await-in-loop
-        await downloadOne(t);
-        // eslint-disable-next-line no-await-in-loop
-        await new Promise(r => setTimeout(r, 250));
-      }
+      const items = qrTargets.map((q) => qrImages[q.key]);
+      const doc = buildQrPdf(items);
+      savePdf(doc, `qr-codes-${(slug || 'venue').replace(/[^a-z0-9-]+/gi, '_')}.pdf`);
+    } catch (e) {
+      setQrError(`Could not make the PDF: ${e?.message || e}`);
     } finally { setDownloading(false); }
   };
 
@@ -764,12 +766,16 @@ function QrSettingsBlock({
       <div style={{ marginTop: 18 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
           <div style={{ ...S.label, marginBottom: 0 }}>QR codes ({tables.length} table{tables.length === 1 ? '' : 's'})</div>
-          <button onClick={downloadAll} disabled={!tables.length || downloading || tableMode === 'free'}
+          <button onClick={downloadAll} disabled={!tables.length || downloading || tableMode === 'free' || !qrReady}
+            title="One PDF with every table's QR code, one per page, ready to print"
             style={{ ...S.btn, background: 'var(--bg3)', color: 'var(--t1)', fontSize: 12, padding: '8px 14px',
-              opacity: (!tables.length || downloading || tableMode === 'free') ? 0.4 : 1 }}>
-            {downloading ? 'Downloading…' : '⬇ Download all'}
+              opacity: (!tables.length || downloading || tableMode === 'free' || !qrReady) ? 0.4 : 1 }}>
+            {downloading ? 'Making PDF…' : (!qrReady && tables.length && tableMode !== 'free' ? 'Preparing…' : '⬇ Download all (PDF)')}
           </button>
         </div>
+        {qrError && (
+          <div role="alert" style={{ fontSize: 12, color: '#fca5a5', padding: '8px 12px', marginBottom: 8, background: '#7f1d1d33', borderRadius: 8, border: '1px solid #b91c1c' }}>{qrError}</div>
+        )}
         {tableMode === 'free' && (
           <div style={{ fontSize: 12, color: 'var(--t4)', padding: 12, background: 'var(--bg2)', borderRadius: 8, border: '1px solid var(--bdr2)' }}>
             Free-type mode: a single generic QR is enough — customers type their table number on arrival. <button onClick={() => downloadOne({ id: '', label: 'Generic' })} style={{ background: 'none', border: 'none', color: 'var(--acc)', cursor: 'pointer', textDecoration: 'underline', fontFamily: 'inherit', padding: 0, fontSize: 12 }}>Download generic QR</button>
@@ -812,10 +818,11 @@ function QrSettingsBlock({
                     fontFamily:'var(--font-mono)', lineHeight:1.4,
                   }}>{url}</a>
                   <div style={{ display:'flex', gap:6 }}>
-                    <button onClick={() => downloadOne(t)} style={{
+                    <button onClick={() => downloadOne(t)} disabled={!qrImages[t.id]} style={{
                       flex:1, padding:'6px 8px', borderRadius:6, fontSize:11, fontWeight:700,
-                      background:'var(--acc)', color:'#0b0c10', border:'none', cursor:'pointer',
-                    }}>⬇ JPEG</button>
+                      background:'var(--acc)', color:'#0b0c10', border:'none', cursor: qrImages[t.id] ? 'pointer' : 'wait',
+                      opacity: qrImages[t.id] ? 1 : 0.5,
+                    }}>{qrImages[t.id] ? '⬇ JPEG' : 'Preparing…'}</button>
                     <button onClick={() => { navigator.clipboard?.writeText(url); }} style={{
                       flex:1, padding:'6px 8px', borderRadius:6, fontSize:11, fontWeight:700,
                       background:'var(--bg3)', color:'var(--t2)', border:'1px solid var(--bdr2)', cursor:'pointer',
