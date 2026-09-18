@@ -13,7 +13,7 @@ import {
   type AuthorityMode, type LoyaltyAuthority,
 } from './loyalty-authority.ts';
 import { inspectSessionToken, memberTokenCoversCheck } from './loyalty-session.ts';
-import { decideStaffAccess } from './staffAccess.ts';
+import { decideStaffAccess, staffLocationKeys } from './staffAccess.ts';
 import { createAuthorityLogLimiter } from './authorityLogLimiter.ts';
 import { decideGiftStaffOnly } from './gift-authority.ts';
 
@@ -86,7 +86,7 @@ export async function callerHasStaffAccess(user: any, opsLocationId: string): Pr
 /**
  * Is this signed in, NON anonymous user staff for the location (or, with no location, for the
  * company)? The SAME rule as the database's user_accessible_locations(), which is user_locations
- * ONLY since 20260918c (lockdown step 1: user_profiles.location_id was self writable, so it is
+ * ONLY since 20260918d (lockdown step 1: user_profiles.location_id was self writable, so it is
  * never access), plus super_admin and a Platform user_company_roles row for the location's
  * company. The decision is decideStaffAccess
  * (_shared/staffAccess.ts, pure, parity tested against the SQL); this only gathers the facts.
@@ -101,18 +101,21 @@ export async function callerIsStaffFor(user: any, locationId: string | null, com
       opsAdmin.from('user_locations').select('location_id').eq('user_id', user.id).limit(1000),
       platformAdmin.from('user_company_roles').select('company_id').eq('user_id', user.id).limit(200),
     ]);
-    const locationKeys: string[] = [];
+    let locationKeys: string[] = [];
     let company = companyId ? String(companyId) : null;
     let companyOpsLocationIds: string[] = [];
     if (locationId) {
-      locationKeys.push(String(locationId));
-      const { data: pl } = await platformAdmin.from('locations')
+      // Round four (5a): ONLY the resolved Ops id is checked, never the raw id as well. For the
+      // drifted venues a Platform id is not an Ops id, and an Ops venue created with that id must
+      // not make its creator staff of the company. See staffLocationKeys (_shared/staffAccess.ts).
+      const { data: pls } = await platformAdmin.from('locations')
         .select('id, ops_location_id, company_id')
         .or(`id.eq.${uuidOr0(locationId)},ops_location_id.eq.${uuidOr0(locationId)}`)
-        .limit(1).maybeSingle();
-      if (pl?.ops_location_id && !locationKeys.includes(String(pl.ops_location_id))) locationKeys.push(String(pl.ops_location_id));
+        .limit(5);
+      const resolved = staffLocationKeys(String(locationId), pls || []);
+      locationKeys = resolved.keys;
       // A company role only counts for the location's OWN company, never one named by the caller.
-      company = pl?.company_id ? String(pl.company_id) : null;
+      company = resolved.companyId;
     } else if (company) {
       const { data: locs } = await platformAdmin.from('locations').select('ops_location_id').eq('company_id', company).limit(500);
       companyOpsLocationIds = (locs || []).map((r: any) => r.ops_location_id).filter(Boolean).map(String);

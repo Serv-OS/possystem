@@ -3,12 +3,12 @@
 // The ONE writer of a login's venue (user_profiles.location_id), company (org_id) and Back Office
 // access (bo_access), and the reader of a team member's email for the Staff screen.
 //
-// 18 Sep 2026, lockdown step 1. Migration 20260918c_OPS_profile_venue_lock.sql takes those three
+// 18 Sep 2026, lockdown step 1. Migration 20260918d_OPS_profile_venue_lock.sql takes those three
 // columns away from the browser and scopes user_profiles to the caller's own row, because any
 // login could point any profile at any venue and become staff there. The Back Office screens
 // that legitimately change them call this function instead; every decision is in
 // _shared/profileAdmin.ts (pure, tested). Service role writes, so it works before and after the
-// migration.
+// migration. A login "belongs to a venue" only through user_locations (never staff_members).
 //
 // POST { action, ... } with the Back Office user's own session (never an anonymous one):
 //   set_active_location { location_id }                 Back Office location switcher
@@ -17,14 +17,16 @@
 //   set_bo_access       { location_id, user_id, bo_access }   Staff: Back Office access switch
 //   team_profiles       { location_id, user_ids[] }     Staff: logins' email and access flag
 //   admin_set_location  { user_id, location_id|null }   Admin portal (super admin)
-// Every reply carries fn: 'profile-admin' (the client tells "not deployed yet" from a refusal).
+// Every reply carries fn: 'profile-admin'. It must be DEPLOYED before the app that calls it ships:
+// the gateway's 404 for a missing function has no CORS headers, so the browser only sees a
+// network error (src/lib/profileAdmin.js says so plainly and never falls back to a table write).
 //
 // verify_jwt = false; the caller is checked here.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import {
   decideSignedIn, decideSetActiveLocation, decideClaimOrg, decideAdoptLocation,
-  decideSetBoAccess, decideTeamRead, decideAdminSetLocation, type Decision,
+  decideSetBoAccess, decideTeamRead, decideAdminSetLocation, teamProfileIds, type Decision,
 } from '../_shared/profileAdmin.ts';
 
 const cors = {
@@ -146,15 +148,16 @@ Deno.serve(async (req) => {
     const locationId = id(body.location_id);
     const targetId = id(body.user_id);
     if (typeof body.bo_access !== 'boolean') return json({ error: 'bo_access must be true or false' }, 400);
-    const [{ data: myLink }, { data: target }, { data: tLink }, { data: tStaff }] = await Promise.all([
+    // Round four (5b): the target belongs to this venue only through a user_locations row, never
+    // through staff_members.auth_user_id (any login of any venue can write that column).
+    const [{ data: myLink }, { data: target }, { data: tLink }] = await Promise.all([
       locationId ? admin.from('user_locations').select('role').eq('user_id', caller.id).eq('location_id', locationId).maybeSingle() : Promise.resolve({ data: null }),
       targetId ? admin.from('user_profiles').select('id, role').eq('id', targetId).maybeSingle() : Promise.resolve({ data: null }),
       locationId && targetId ? admin.from('user_locations').select('id').eq('user_id', targetId).eq('location_id', locationId).maybeSingle() : Promise.resolve({ data: null }),
-      locationId && targetId ? admin.from('staff_members').select('id').eq('auth_user_id', targetId).eq('location_id', locationId).limit(1).maybeSingle() : Promise.resolve({ data: null }),
     ]);
     const d = decideSetBoAccess({
       caller, isSuperAdmin, callerRoleAtLocation: (myLink as any)?.role ?? null,
-      targetId: (target as any)?.id ?? null, targetLinkedToLocation: !!tLink || !!tStaff,
+      targetId: (target as any)?.id ?? null, targetLinkedToLocation: !!tLink,
       targetRole: (target as any)?.role ?? null,
     });
     if (!d.ok) return refuse(d);
@@ -172,15 +175,10 @@ Deno.serve(async (req) => {
     const d = decideTeamRead({ caller, isSuperAdmin, callerLinked: !!myLink && !!locationId });
     if (!d.ok) return refuse(d);
     if (!locationId || !wanted.length) return json({ ok: true, profiles: [] });
-    // Only logins that belong to THIS venue: linked to one of its staff, or linked to the venue.
-    const [{ data: st }, { data: ul }] = await Promise.all([
-      admin.from('staff_members').select('auth_user_id').eq('location_id', locationId).in('auth_user_id', wanted),
-      admin.from('user_locations').select('user_id').eq('location_id', locationId).in('user_id', wanted),
-    ]);
-    const allowed = new Set<string>([
-      ...(st || []).map((r: any) => String(r.auth_user_id)),
-      ...(ul || []).map((r: any) => String(r.user_id)),
-    ]);
+    // Only logins linked to THIS venue (user_locations). Round four (5b): a staff_members
+    // auth_user_id is not proof, any login of any venue can write that column.
+    const { data: ul } = await admin.from('user_locations').select('user_id').eq('location_id', locationId).in('user_id', wanted);
+    const allowed = new Set<string>(teamProfileIds(wanted, (ul || []).map((r: any) => String(r.user_id))));
     if (!allowed.size) return json({ ok: true, profiles: [] });
     const { data: profiles, error } = await admin.from('user_profiles')
       .select('id, email, bo_access').in('id', [...allowed]);

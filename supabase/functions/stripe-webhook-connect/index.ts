@@ -29,6 +29,9 @@ const OPS_SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 
 // A failure a later delivery can fix. Thrown by dispatch; the handler answers 503.
 const RETRYABLE_PREFIX = 'retryable:';
+// The checkout session events that can carry a paid gift card purchase (completed, and the
+// later async_payment_succeeded of a delayed payment method). Both are safe to process again.
+const GIFT_SESSION_EVENTS = new Set(['checkout.session.completed', 'checkout.session.async_payment_succeeded']);
 class RetryableWebhookError extends Error {}
 
 Deno.serve(async (req) => {
@@ -66,7 +69,7 @@ Deno.serve(async (req) => {
       .select('processed_at, processing_error').eq('id', event.id).maybeSingle();
     const again = !prior?.processed_at && (
       String(prior?.processing_error || '').startsWith(RETRYABLE_PREFIX)
-      || (!prior?.processing_error && event.type === 'checkout.session.completed'));
+      || (!prior?.processing_error && GIFT_SESSION_EVENTS.has(event.type)));
     if (!again) return new Response('ok (duplicate)', { status: 200 });
   }
 
@@ -131,8 +134,13 @@ async function dispatch(event: Stripe.Event, accountId: string | null) {
       }
       break;
     }
-    case 'checkout.session.completed': {
+    case 'checkout.session.completed':
+    case 'checkout.session.async_payment_succeeded': {
       // v5.5.196: Gift card purchase fulfillment.
+      // Review round four (6): a delayed payment method (bank debit, some wallets) completes the
+      // session unpaid and sends checkout.session.async_payment_succeeded when the money lands.
+      // That event runs this same branch, so the card is still issued (the Connect webhook
+      // endpoint must be subscribed to it in the Stripe dashboard).
       // When a Checkout Session completes and its metadata has type=gift_card_purchase,
       // call the gift-fulfill edge function to issue the card and email it.
       const session = event.data.object as Stripe.Checkout.Session;

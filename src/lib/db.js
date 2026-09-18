@@ -18,6 +18,7 @@ import { reportSave } from './saveHealth';
 import { describeMenuChange } from './menuDiff';
 import { money } from './currency';
 import { categoryImageField, categoryPhotoUrl, checkPhotoFile, categoryPhotoPath, peerPhotoTargets, isMissingImageColumn } from './categoryPhoto';
+import { mergeAccessibleLocations } from './accessibleLocations';
 import { itemCodeForSave, isMissingItemCodeColumn, isDuplicateItemCodeError } from './itemCode';
 import { peerMenuPlan } from './menuMembership';
 import { resolveSoldAlone } from './menuRules';
@@ -1162,43 +1163,20 @@ export const fetchAccessibleLocations = async () => {
   const userId = userData?.user?.id;
   if (!userId) return { data: [], error: new Error('No authenticated user') };
 
-  // v5.5.308: UNION the junction rows (user_locations) with the user's primary
-  // location (user_profiles.location_id). Previously this returned ONLY the
-  // junction rows when non-empty — so a user whose primary location wasn't in
-  // user_locations would have the BO header show their primary while the
-  // location switcher listed a different set (the junction). De-duped by id.
-  const byId = new Map();
-
+  // 18 Sep 2026 (lockdown step 1, round four): the database's rule, user_locations only, plus
+  // every venue for a super admin (lib/accessibleLocations.js). The profile venue used to be
+  // unioned in (v5.5.308); it was self writable, so it is only the venue Back Office opens on,
+  // and is listed here only for a super admin (the venue he last switched to).
   const junction = await supabase
     .from('user_locations')
     .select('role, location_id, locations(id, name, timezone)')
     .eq('user_id', userId);
-  if (!junction.error) {
-    for (const r of (junction.data || [])) {
-      if (r.locations) byId.set(r.locations.id, {
-        id: r.locations.id, name: r.locations.name, timezone: r.locations.timezone, role: r.role,
-      });
-    }
-  }
-
-  // Always include the user's primary location from user_profiles, even if it
-  // isn't in the junction table (legacy single-location setups, or a primary
-  // pointed at a location with no matching user_locations row).
   const profile = await supabase
     .from('user_profiles')
-    .select('location_id, locations(id, name, timezone)')
+    .select('role, location_id, locations(id, name, timezone)')
     .eq('id', userId)
     .single();
-  if (profile.data?.locations && !byId.has(profile.data.locations.id)) {
-    byId.set(profile.data.locations.id, {
-      id: profile.data.locations.id,
-      name: profile.data.locations.name,
-      timezone: profile.data.locations.timezone,
-      role: 'manager',
-    });
-  }
-
-  return { data: Array.from(byId.values()), error: null };
+  return { data: mergeAccessibleLocations(junction.error ? [] : junction.data, profile.data), error: null };
 };
 
 // Fetch closed checks across multiple locations in parallel. Each row is tagged

@@ -7,7 +7,7 @@
 // WHY (18 Sep 2026, lockdown step 1). Those three columns were written straight from the browser
 // and the table's policy was not row scoped, so any login could point ANY profile at ANY venue
 // and, through user_accessible_locations(), become staff there. Migration
-// 20260918c_OPS_profile_venue_lock.sql takes the columns away from the browser (and makes
+// 20260918d_OPS_profile_venue_lock.sql takes the columns away from the browser (and makes
 // user_locations the only access). The legitimate writers now come here:
 //   * set_active_location   Back Office location switcher: the venue Back Office opens on. Only a
 //                           venue the login is linked to (user_locations), or any for a super admin.
@@ -18,10 +18,11 @@
 //                           they just made, when it is unclaimed and in their company (the same
 //                           rule as the database's can_claim_location()).
 //   * set_bo_access         Staff screen switch: an owner or manager of a venue turns Back Office
-//                           access on or off for a login linked to THAT venue. Never a super admin
-//                           account, never their own.
-//   * team_profiles         Staff screen: email and access flag of the logins linked to the venue's
-//                           staff. Staff of the venue only.
+//                           access on or off for a login linked to THAT venue (a user_locations
+//                           row; a staff_members.auth_user_id is never proof, any venue login can
+//                           write it). Never a super admin account, never their own.
+//   * team_profiles         Staff screen: email and access flag of the logins linked (user_locations)
+//                           to the venue. Staff of the venue, or a super admin, only.
 //   * admin_set_location    Admin portal (super admin): set or clear a login's opening venue.
 //
 // PURE. No imports, so node tests load it directly.
@@ -107,4 +108,13 @@ export function decideAdminSetLocation(i: {
   // A login's opening venue is always one it is linked to (or none), so it can never read as access.
   if (i.locationId && !i.targetLinkedToLocation) return no(400, 'Link the user to that location first');
   return yes;
+}
+
+/**
+ * Which of the asked for logins the Staff screen may see: ONLY those with a user_locations row at
+ * the venue (review round four, 5b). Never a login that is merely named on a staff_members row.
+ */
+export function teamProfileIds(wanted: string[], linkedUserIds: string[]): string[] {
+  const linked = new Set((linkedUserIds || []).filter(Boolean).map(String));
+  return [...new Set((wanted || []).filter(Boolean).map(String))].filter((id) => linked.has(id));
 }

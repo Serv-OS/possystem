@@ -2,10 +2,13 @@
 //
 // Is this signed in user staff for a location (or a company)? The SAME rule the database uses.
 //
-// 18 Sep 2026, lockdown step 1: the database rule is user_locations ONLY. Migration
-// 20260918c_OPS_profile_venue_lock.sql redefines public.user_accessible_locations() as
+// 18 Sep 2026, lockdown step 1: the database rule is user_locations, plus every venue for a
+// verified super admin. Migration 20260918d_OPS_profile_venue_lock.sql redefines
+// public.user_accessible_locations() as
 //
 //     select location_id::text from user_locations where user_id = auth.uid()
+//     union
+//     select id::text from locations where is_super_admin()
 //
 // Round three had mirrored the OLD rule (user_locations UNION user_profiles.location_id), and
 // user_profiles.location_id was writable by the user (and, through a policy that was not row
@@ -32,8 +35,8 @@ export type StaffFacts = {
   /** Platform user_company_roles.company_id rows for the user. */
   companyRoleCompanyIds: string[];
   /**
-   * The location asked about, as every Ops id it may be (the id sent, and the Ops id a Platform
-   * location id maps to). Empty when the question is about a company.
+   * The location asked about, as its ONE resolved Ops id (staffLocationKeys below). Empty when
+   * the question is about a company.
    */
   locationKeys: string[];
   /** The company of that location, or the company asked about. */
@@ -75,4 +78,37 @@ export function decideStaffAccess(f: StaffFacts): StaffDecision {
     if (hasCompanyRole) return { ok: true, via: 'company_role' };
   }
   return no;
+}
+
+export type PlatformLocRow = { id?: string | null; ops_location_id?: string | null; company_id?: string | null };
+
+/**
+ * The Ops id to check a staff link against, for a location id that may be an Ops id or a
+ * Platform id, given the Platform rows whose id or ops_location_id equals it.
+ *
+ * WHY (18 Sep 2026, review round four item 5a). For three venues (Birmingham, Provo, San Mateo 1)
+ * the Platform id is NOT an Ops id. The old code checked BOTH the raw id sent and the mapped Ops
+ * id, so anyone who created an Ops venue whose id equals such a Platform id (Ops locations was
+ * world writable) and linked themselves to it became staff of that company. Only the RESOLVED
+ * Ops id counts:
+ *   * a Platform row maps the id: its ops_location_id (a row whose ops_location_id IS the id wins,
+ *     so an Ops id is never re-read as some other venue's Platform id);
+ *   * a Platform row has the id but no mapping: nothing (never the raw id);
+ *   * no Platform row at all: the id itself (an Ops only venue; its company is unknown, so only
+ *     a direct user_locations link on that exact Ops venue can match).
+ */
+export function staffLocationKeys(locationId: string | null, platformRows: PlatformLocRow[] | null | undefined): {
+  keys: string[]; companyId: string | null;
+} {
+  if (!locationId) return { keys: [], companyId: null };
+  const id = String(locationId);
+  const rows = (platformRows || []).filter(Boolean);
+  const byOps = rows.find((r) => r.ops_location_id != null && String(r.ops_location_id) === id);
+  if (byOps) return { keys: [id], companyId: byOps.company_id ? String(byOps.company_id) : null };
+  const byId = rows.find((r) => r.id != null && String(r.id) === id);
+  if (byId) {
+    const ops = byId.ops_location_id ? String(byId.ops_location_id) : null;
+    return { keys: ops ? [ops] : [], companyId: byId.company_id ? String(byId.company_id) : null };
+  }
+  return { keys: [id], companyId: null };
 }

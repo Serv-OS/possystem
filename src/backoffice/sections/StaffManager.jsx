@@ -98,24 +98,12 @@ export default function StaffManager() {
         const linkedIds = rows.map(r => r.auth_user_id).filter(Boolean);
         if (linkedIds.length > 0) {
           // 18 Sep 2026 (lockdown step 1): a login reads only its own profile now, so the team's
-          // emails come from profile-admin (staff of this venue only). The direct read is the
-          // fallback only while profile-admin is not deployed yet.
+          // emails come from profile-admin (staff of this venue, or a super admin; only logins
+          // with a venue link here). No direct read fallback: it would return only the caller's
+          // own row after 20260918d.
           let profiles = [];
           try {
-            const r = await profileAdmin('team_profiles', { location_id: locationId, user_ids: linkedIds }, async () => {
-              let { data, error: profErr } = await supabase
-                .from('user_profiles')
-                .select('id, email, bo_access')
-                .in('id', linkedIds);
-              // Defensive — fall back without bo_access if column missing
-              if (profErr && /bo_access|column.*not.*exist|PGRST204/i.test(profErr.message || '')) {
-                ({ data } = await supabase
-                  .from('user_profiles')
-                  .select('id, email')
-                  .in('id', linkedIds));
-              }
-              return { profiles: data || [] };
-            });
+            const r = await profileAdmin('team_profiles', { location_id: locationId, user_ids: linkedIds });
             profiles = r?.profiles || [];
           } catch (e) {
             console.warn('[StaffManager] team logins not loaded:', e?.message || e);
@@ -351,9 +339,13 @@ export default function StaffManager() {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       const { data: meProfile } = await supabase.from('user_profiles').select('org_id, location_id').eq('id', user.id).single();
-      const orgId = meProfile?.org_id;
-      const locId = meProfile?.location_id;
-      if (!orgId) { setGrantError('Your account is not linked to an org — cannot create users'); setGrantBusy(false); return; }
+      const orgId = meProfile?.org_id || null;
+      // Review round four (6): the venue this Staff screen is working on, never null. The new login
+      // gets a venue link (user_locations) for it, which is what makes it a login of this venue
+      // (profile-admin team_profiles and set_bo_access accept nothing else). create-user takes the
+      // company from this venue on the server.
+      const locId = staffLocationId || staffScreenLocation(meProfile, getActiveLocationSync());
+      if (!locId) { setGrantError('Choose a venue at the top of Back Office first'); setGrantBusy(false); return; }
 
       const auth = JSON.parse(localStorage.getItem('rpos-auth') || 'null');
       const member = staffMembers.find(s => s.id === staffId);
@@ -365,7 +357,7 @@ export default function StaffManager() {
           password: grantForm.password,
           fullName: member?.name || '',
           orgId,
-          locationId: locId || null,
+          locationId: locId,
           role: 'manager',
         }),
       });
@@ -411,14 +403,11 @@ export default function StaffManager() {
     if (!link) return;
     const next = !link.boAccess;
     // 18 Sep 2026 (lockdown step 1): bo_access is written by the server (profile-admin: an owner
-    // or manager of this venue, for a login linked to this venue). The direct write is only the
-    // fallback while profile-admin is not deployed yet.
+    // or manager of this venue, for a login linked to this venue). No browser fallback: the column
+    // is closed to the browser (20260918d).
     let error = null;
     try {
-      await profileAdmin('set_bo_access', { location_id: staffLocationId || getActiveLocationSync(), user_id: link.authUserId, bo_access: next }, async () => {
-        const r = await supabase.from('user_profiles').update({ bo_access: next }).eq('id', link.authUserId);
-        if (r.error) throw r.error;
-      });
+      await profileAdmin('set_bo_access', { location_id: staffLocationId || getActiveLocationSync(), user_id: link.authUserId, bo_access: next });
     } catch (e) { error = e; }
     if (error) {
       if (/bo_access|column.*not.*exist|PGRST204/i.test(error.message || '')) {

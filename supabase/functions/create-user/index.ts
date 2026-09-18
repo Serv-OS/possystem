@@ -55,6 +55,15 @@ Deno.serve(async (req) => {
       role = (RANK[wanted] && RANK[wanted] <= callerRank) ? wanted : 'manager';
     }
 
+    // 18 Sep 2026 (lockdown step 1, round four): a super admin granting access at a venue gets
+    // that VENUE's company, never their own. Peter works at customer venues he is not linked to;
+    // the body's orgId (his own profile org) would have filed the new login under his company.
+    if (isSuper && locationId) {
+      const { data: locRow } = await supabaseAdmin.from('locations').select('org_id').eq('id', locationId).maybeSingle();
+      if (!locRow) return new Response(JSON.stringify({ error: 'Unknown location' }), { status: 400, headers: corsHeaders });
+      if (locRow.org_id) orgId = locRow.org_id;
+    }
+
     if (!email || !password || !orgId) return new Response(JSON.stringify({ error: 'email, password and orgId required' }), { status: 400, headers: corsHeaders });
 
     const { data: newUser, error: createErr } = await supabaseAdmin.auth.admin.createUser({

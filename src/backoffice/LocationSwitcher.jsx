@@ -135,12 +135,9 @@ export default function LocationSwitcher({ onClose }) {
     try {
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
-        await profileAdmin('set_active_location', { location_id: opsLocId }, async () => {
-          const { data, error } = await supabase.from('user_profiles')
-            .update({ location_id: opsLocId }).eq('id', user.id).select('id');
-          if (error) throw error;
-          if (!data || data.length === 0) throw new Error('Profile update matched 0 rows — RLS may have blocked it');
-        });
+        // No browser fallback: the column is closed to the browser (20260918d), and profile-admin
+        // is deployed before this app ships.
+        await profileAdmin('set_active_location', { location_id: opsLocId });
       }
     } catch (e) {
       reportSave('location switch', e);

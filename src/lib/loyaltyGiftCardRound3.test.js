@@ -2,7 +2,7 @@
 // Pins every rule:
 //   A. the money holes, enforced now: an anonymous session cannot issue, import, bulk create,
 //      fulfil unpaid, reverse, void, configure or enrol; staff can, by the database's own rule
-//   B. staff = user_accessible_locations() (user_locations only since 20260918c),
+//   B. staff = user_accessible_locations() (user_locations plus the super admin arm since 20260918d),
 //      and a kiosk pairing code is cleared on the row so a second tablet cannot steal the link
 //   C. earn from the server's closed check; refund refuses a member token; the portal refresh
 //      passes under enforce; a bad member token falls back to the device arm; gift-redeem checks
@@ -69,13 +69,14 @@ test('staff: the same rule as user_accessible_locations() (user_locations only),
   assert.deepEqual([...accessibleLocations({ userLocationIds: ['a', 'b'], profileLocationId: 'c' })].sort(), ['a', 'b']);
 });
 
-test('staff parity: the SQL user_accessible_locations() that runs last (20260918c) is user_locations only, and callerIsStaffFor never reads the profile venue', () => {
-  const sql = read('../../supabase/migrations/20260918c_OPS_profile_venue_lock.sql');
+test('staff parity: the SQL user_accessible_locations() that runs last (20260918d) is user_locations plus the super admin arm, and callerIsStaffFor never reads the profile venue', () => {
+  const sql = read('../../supabase/migrations/20260918d_OPS_profile_venue_lock.sql');
   const i = sql.search(/create or replace function public\.user_accessible_locations\(\)/i);
   assert.ok(i >= 0);
   const body = sql.slice(i, sql.indexOf('$function$;', i)).toLowerCase();
-  assert.ok(/from\s+public\.user_locations\s+where\s+user_id\s*=\s*auth\.uid\(\)/.test(body), 'user_locations arm');
-  assert.ok(!/union/.test(body) && !/user_profiles/.test(body), 'no profile arm');
+  assert.ok(/from\s+public\.user_locations\s+ul\s+where\s+ul\.user_id\s*=\s*auth\.uid\(\)/.test(body), 'user_locations arm');
+  assert.ok(/union\s+select l\.id::text from public\.locations l where public\.is_super_admin\(\)/.test(body), 'the verified super admin reaches every venue');
+  assert.ok(!/user_profiles/.test(body), 'no profile arm');
   assert.ok(/returns setof text\s+language sql\s+stable/.test(body), 'same signature and stability');
   assert.ok(!/security definer/.test(body), 'still security invoker');
   assert.ok(!/profileLocationId/.test(read('../../supabase/functions/_shared/staffAccess.ts')), 'the pure rule has no profile arm');

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { VERSION } from '../lib/version';
 import { supabase } from '../lib/supabase';
 import { profileAdmin } from '../lib/profileAdminClient';
+import { usersWithAccess } from '../lib/accessibleLocations';
 import BOLogin from '../backoffice/BOLogin';
 import AdminBillingManager from './sections/AdminBillingManager';
 import AdminRevenue from './sections/AdminRevenue';
@@ -52,13 +53,10 @@ async function sbFetch(path, opts = {}) {
 }
 
 // A login's opening venue (user_profiles.location_id), through profile-admin (super admin only).
-// 18 Sep 2026 (lockdown step 1): the browser can no longer write that column. The direct PATCH is
-// the fallback only while profile-admin is not deployed yet.
+// 18 Sep 2026 (lockdown step 1): the browser can no longer write that column, so there is no
+// direct PATCH fallback (profile-admin is deployed before this app ships).
 async function setUserOpeningVenue(userId, locationId) {
-  return profileAdmin('admin_set_location', { user_id: userId, location_id: locationId }, async () => {
-    const { error } = await sbFetch(`user_profiles?id=eq.${userId}`, { method:'PATCH', body:{ location_id: locationId }, prefer:'' });
-    if (error) throw new Error(error.message);
-  });
+  return profileAdmin('admin_set_location', { user_id: userId, location_id: locationId });
 }
 
 // The venue's permanent public ID, click to copy. It exists so another system can
@@ -429,14 +427,11 @@ function AdminPanel({ authUser }) {
   };
 
   // v5.5.14: usersForLocation now derives from allUsers (which super_admin
-  // can fully see), not the per-org users array. A user appears in a
-  // location's "users with access" list if either:
-  //   - they have a user_locations row for that location, OR
-  //   - their user_profiles.location_id matches (legacy single-location setup)
-  const usersForLocation = (locId) => {
-    const source = allUsers.length > 0 ? allUsers : users;
-    return source.filter(u => u.location_id === locId || u.user_locations?.some(ul => ul.location_id === locId));
-  };
+  // can fully see), not the per-org users array. 18 Sep 2026 (lockdown step 1, round four): a user
+  // has access to a location ONLY through a user_locations row, the database's own rule
+  // (user_accessible_locations()). user_profiles.location_id is just the venue their Back Office
+  // opens on, so it no longer puts anyone on this list (see usersWithAccess in lib/accessibleLocations.js).
+  const usersForLocation = (locId) => usersWithAccess(allUsers.length > 0 ? allUsers : users, locId);
 
   const msgBg = { ok:{ bg:'#0d2e1a', border:'#166534', color:'#86efac' }, err:{ bg:'#2d0f0f', border:'#991b1b', color:'#fca5a5' } };
   const ms = msgBg[msg.type];

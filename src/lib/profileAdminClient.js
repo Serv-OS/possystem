@@ -7,10 +7,10 @@ import { callProfileAdmin } from './profileAdmin';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
-/** POST profile-admin { action, ...body } as the signed in Back Office user. */
-export function profileAdmin(action, body, legacy) {
+/** POST profile-admin { action, ...body } as the signed in Back Office user. No fallback. */
+export function profileAdmin(action, body) {
   return callProfileAdmin(action, body, {
     functionsUrl: FUNCTIONS_URL,
     getSession: () => supabase.auth.getSession(),
-  }, legacy);
+  });
 }

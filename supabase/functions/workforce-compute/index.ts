@@ -82,15 +82,17 @@ async function orgFor(loc: string): Promise<string | null> {
 }
 
 /** Enforce the tenant fence: caller must have access to the location (or be super_admin). */
-async function assertAccess(userId: string, loc: string): Promise<boolean> {
+// The same rule as the database's user_accessible_locations() (20260918d): a user_locations
+// row for the venue, or a super admin. Never the profile venue (user_profiles.location_id was
+// self writable; it is only the venue Back Office opens on), never an anonymous session.
+async function assertAccess(user: { id?: string; is_anonymous?: boolean } | null, loc: string): Promise<boolean> {
+  if (!user?.id || user.is_anonymous) return false;
   const [{ data: ul }, { data: prof }] = await Promise.all([
-    admin.from('user_locations').select('location_id').eq('user_id', userId),
-    admin.from('user_profiles').select('location_id, role').eq('id', userId).maybeSingle(),
+    admin.from('user_locations').select('location_id').eq('user_id', user.id).eq('location_id', loc).maybeSingle(),
+    admin.from('user_profiles').select('role').eq('id', user.id).maybeSingle(),
   ]);
   if (prof?.role === 'super_admin') return true;
-  const allowed = new Set<string>([...(ul ?? []).map((r: any) => String(r.location_id))]);
-  if (prof?.location_id) allowed.add(String(prof.location_id));
-  return allowed.has(String(loc));
+  return !!ul;
 }
 
 Deno.serve(async (req) => {
@@ -107,7 +109,7 @@ Deno.serve(async (req) => {
   const { action, location_id } = body;
   if (!action) return json({ error: 'action required' }, 400);
   if (!location_id) return json({ error: 'location_id required' }, 400);
-  if (!(await assertAccess(user.id, location_id))) return json({ error: 'forbidden' }, 403);
+  if (!(await assertAccess(user, String(location_id)))) return json({ error: 'forbidden' }, 403);
 
   const org = await orgFor(location_id);
 

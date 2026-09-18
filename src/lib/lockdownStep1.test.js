@@ -25,7 +25,7 @@ import {
   purchaseCardId, issueLedgerKey, proofReasonRetryable, processorErrorReason, fulfilResponseRetryable,
 } from '../../supabase/functions/_shared/giftFulfilPlan.ts';
 import { opsIdsOf, companyOrgIds, locationInCompany, customerInCompany } from '../../supabase/functions/_shared/orgScope.ts';
-import { callProfileAdmin, profileAdminMissing, backOfficeToken, staffScreenLocation } from './profileAdmin.js';
+import { callProfileAdmin, backOfficeToken, staffScreenLocation, PROFILE_ADMIN_UNREACHABLE } from './profileAdmin.js';
 import { purchasesFromGiftList } from './giftPurchasesRead.js';
 import { giftReversalFailedMessage } from './giftCommit.js';
 
@@ -42,23 +42,39 @@ const ORG = '66666666-6666-4666-8666-666666666666';
 const ORG2 = '77777777-7777-4777-8777-777777777777';
 
 // ── 1. The Ops migration ──────────────────────────────────────────────────────
-test('ops migration: backfill first, access is user_locations only, profiles own row only, venue columns server only', () => {
-  const raw = read('../../supabase/migrations/20260918c_OPS_profile_venue_lock.sql');
+test('ops migration: one transaction with a lock timeout, pinned backfill first, access is user_locations plus super admin, profiles own row only, venue columns server only', () => {
+  const raw = read('../../supabase/migrations/20260918d_OPS_profile_venue_lock.sql');
   const sql = sqlCode(raw).toLowerCase();
-  assert.ok(!/^\s*(begin|commit);/m.test(sql), 'no transaction wrapper (the SQL editor chokes on it)');
+  // One transaction, and it never queues behind a long lock (every till reads user_profiles).
+  const b = sql.search(/^begin;$/m);
+  const lt = sql.indexOf("set local lock_timeout = '5s';");
+  const c = sql.search(/^commit;$/m);
+  assert.ok(b >= 0 && lt > b && c > lt, 'begin; set local lock_timeout; ... commit;');
+  for (const k of ['create policy', 'drop policy', 'revoke ', 'create trigger', 'create or replace function', 'insert into public.user_locations', 'drop function']) {
+    assert.ok(sql.indexOf(k) > lt && sql.lastIndexOf(k) < c, `${k} inside the transaction, after the lock timeout`);
+  }
   assert.ok(sql.includes("to_regclass('public.billing_state') is not null"), 'refuses to run on the Platform DB');
 
-  // Backfill BEFORE the function stops reading the profile, non anonymous only, idempotent.
+  // Backfill BEFORE the function stops reading the profile, PINNED to the confirmed ids.
   const backfill = sql.indexOf('insert into public.user_locations (user_id, location_id, role)');
   const fn = sql.indexOf('create or replace function public.user_accessible_locations()');
   assert.ok(backfill > 0 && fn > backfill, 'the legacy owner keeps access: backfill runs first');
-  const bf = sql.slice(backfill, fn);
-  assert.ok(bf.includes('not coalesce(u.is_anonymous, false)'), 'real logins only');
-  assert.ok(bf.includes('on conflict (user_id, location_id) do nothing'), 'safe to run twice');
-  assert.ok(bf.includes("when p.role in ('owner', 'manager', 'staff', 'viewer') then p.role else 'manager'"), 'a role the check constraint accepts');
+  assert.ok(sql.includes('v_confirmed uuid[] := array[]::uuid[];'), 'ships with NO confirmed id: Peter pastes the one he checked');
+  assert.ok(sql.includes("coalesce(p.role, '') <> 'super_admin'"), 'a super admin is never a candidate');
+  assert.ok(sql.includes('not coalesce(u.is_anonymous, false)'), 'real logins only');
+  assert.ok(/where not \(user_id = any\(v_confirmed\)\);\s+if v_count > 0 then\s+raise exception 'stopped, nothing changed/.test(sql), 'an unconfirmed candidate stops everything');
+  assert.ok(sql.includes("raise exception 'stopped, nothing changed. these confirmed ids are not candidates"), 'a typo stops everything');
+  const ins = sql.slice(backfill, sql.indexOf('on conflict (user_id, location_id) do nothing;', backfill));
+  assert.ok(ins.includes('where k.user_id = any(v_confirmed)'), 'only confirmed ids are inserted');
+  assert.ok(raw.includes('supabase/queries/profile_venue_backfill_candidates.sql'), 'names the read only list to check first');
+  assert.ok(read('../../supabase/queries/profile_venue_backfill_candidates.sql').toLowerCase().includes("coalesce(p.role, '') <> 'super_admin'"), 'the list matches the migration');
 
-  // The blanket policy goes; own row (super admin reads all); column grants revoked; guards.
-  assert.ok(sql.includes('drop policy if exists "allow authenticated access" on public.user_profiles;'));
+  // Every historical permissive policy name goes, then anything else permissive that is live.
+  for (const name of ['"allow authenticated access"', '"allow all"', '"users read own profile"', '"users update own profile"',
+    'up_select_self', 'up_select_super_admin', 'up_update_self', 'up_update_super_admin', 'user_profiles_super_admin_select_all']) {
+    assert.ok(sql.includes(`drop policy if exists ${name} on public.user_profiles;`), name);
+  }
+  assert.ok(/tablename = 'user_profiles' and permissive = 'permissive'\s+and policyname not in \('up_select_own_or_super_admin', 'up_update_own', 'up_insert_super_admin', 'up_delete_super_admin'\)\s+loop\s+execute format\('drop policy %i on public\.user_profiles'/.test(sql), 'sweeps any other permissive policy');
   assert.ok(/create policy up_select_own_or_super_admin on public\.user_profiles\s+as permissive for select to public\s+using \(id = auth\.uid\(\) or public\.is_super_admin\(\)\)/.test(sql));
   assert.ok(/create policy up_update_own on public\.user_profiles\s+as permissive for update to public\s+using \(id = auth\.uid\(\)\)\s+with check \(id = auth\.uid\(\)\)/.test(sql));
   assert.ok(sql.includes('revoke update (location_id, org_id, bo_access) on table public.user_profiles from authenticated;'));
@@ -66,12 +82,25 @@ test('ops migration: backfill first, access is user_locations only, profiles own
   assert.ok(sql.includes('create trigger user_profiles_venue_guard') && sql.includes('before update on public.user_profiles'));
   assert.ok(sql.includes('create trigger user_locations_venue_guard') && sql.includes('before update on public.user_locations'));
   assert.ok(sql.includes("new.location_id is distinct from old.location_id or new.user_id is distinct from old.user_id"), 'a venue link can never be moved');
-  // The guards only look at API sessions: the service role (profile-admin, create-user) passes.
   assert.equal((sql.match(/if v_jwt_role not in \('authenticated', 'anon'\) then\s+return new;/g) || []).length, 2);
-  // It names what depends on the function, and it proves itself (rolled back).
+  // The stale same org RPC is gone.
+  assert.ok(sql.includes('drop function if exists public.set_bo_access(uuid, boolean);'));
+
+  // It proves itself, and ANY unexpected probe rolls the whole thing back.
   assert.ok(raw.includes('Through pos_can_access():') && raw.includes('Policies calling it directly:'));
   assert.ok(sql.includes("raise exception 'probe_rollback'"));
-  for (const k of ['owner_sets_own_venue', 'owner_edits_another_login', 'owner_reads_profiles', 'owner_moves_venue_link', 'owner_access', 'you_read_all_profiles', 'logins_with_venue_but_no_link']) {
+  assert.ok(sql.includes("raise exception 'self test failed, nothing was changed:%', v_fail;"), 'a failed probe raises');
+  const probe = sql.slice(sql.indexOf('do $probe$'), sql.indexOf('$probe$;'));
+  assert.ok(probe.indexOf("raise exception 'self test failed") > probe.lastIndexOf("perform set_config('servos.p_anon'"), 'raises after every probe ran');
+  for (const [flag, expected] of [['p_own_venue', 'blocked'], ['p_other_row', 'blocked'], ['p_read_others', 'only their own'],
+    ['p_own_name', 'still works'], ['p_move_link', 'blocked'], ['p_access', 'own venue only'], ['p_admin_reads', 'sees all'],
+    ['p_admin_far', 'reaches every venue'], ['p_anon', 'nothing']]) {
+    const at = probe.indexOf(`perform set_config('servos.${flag}', v_flag, false);`);
+    assert.ok(at > 0, flag);
+    assert.ok(probe.slice(at, at + 200).includes(`if v_flag <> '${expected}' then v_fail := v_fail`), `${flag} must be ${expected} or the migration raises`);
+  }
+  assert.ok(sql.indexOf('commit;') > sql.indexOf('$probe$;'), 'the self test runs before commit');
+  for (const k of ['owner_sets_own_venue', 'owner_edits_another_login', 'owner_reads_profiles', 'owner_moves_venue_link', 'owner_access', 'you_read_all_profiles', 'you_at_an_unlinked_venue', 'anonymous_session', 'logins_with_venue_but_no_link']) {
     assert.ok(sql.includes(`as ${k}`), k);
   }
 });
@@ -138,13 +167,14 @@ test('profile-admin wiring: every write after its decision, service role, and a 
     assert.ok(d > at && w > d, `${action}: decided before it writes`);
     assert.ok(src.indexOf('if (!d.ok) return refuse(d);', d) < w, `${action}: stops when refused`);
   }
-  // Team emails only for logins of THIS venue.
-  assert.ok(src.includes("admin.from('staff_members').select('auth_user_id').eq('location_id', locationId).in('auth_user_id', wanted)"));
+  // Team emails only for logins LINKED to this venue (user_locations), never via staff_members.
+  assert.ok(src.includes("admin.from('user_locations').select('user_id').eq('location_id', locationId).in('user_id', wanted)"));
+  assert.ok(!src.includes("from('staff_members')"), 'staff_members.auth_user_id is never proof a login belongs to a venue');
   assert.ok(src.includes("Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')"));
 });
 
 // ── 1. The browser side ──────────────────────────────────────────────────────
-test('the Back Office calls profile-admin with its OWN session; never mints one; old path only while undeployed', async () => {
+test('the Back Office calls profile-admin with its OWN session; never mints one; never falls back to a table write', async () => {
   const good = async () => ({ data: { session: { access_token: 'tok', user: { id: me.id, is_anonymous: false } } } });
   const anonSession = async () => ({ data: { session: { access_token: 'tok', user: { id: anon.id, is_anonymous: true } } } });
   await assert.rejects(backOfficeToken(async () => ({ data: { session: null } })), /Sign in to Back Office/);
@@ -155,34 +185,40 @@ test('the Back Office calls profile-admin with its OWN session; never mints one;
   const reply = (status, body) => async (url, init) => { calls.push({ url, init }); return { status, ok: status < 300, json: async () => body }; };
   const deps = (status, body) => ({ functionsUrl: 'https://x/functions/v1', getSession: good, fetchImpl: reply(status, body) });
 
-  const ok = await callProfileAdmin('set_active_location', { location_id: LOC }, deps(200, { fn: 'profile-admin', ok: true }), () => { throw new Error('legacy must not run'); });
+  const ok = await callProfileAdmin('set_active_location', { location_id: LOC }, deps(200, { fn: 'profile-admin', ok: true }));
   assert.equal(ok.ok, true);
   assert.equal(calls[0].url, 'https://x/functions/v1/profile-admin');
   assert.equal(calls[0].init.headers.authorization, 'Bearer tok');
   assert.deepEqual(JSON.parse(calls[0].init.body), { action: 'set_active_location', location_id: LOC });
 
-  // A refusal from profile-admin is final, even a 404 of ours: the old write never runs.
-  let legacyRan = false;
-  await assert.rejects(callProfileAdmin('set_active_location', {}, deps(403, { fn: 'profile-admin', error: 'You do not have access to that location' }), () => { legacyRan = true; }), /do not have access/);
-  await assert.rejects(callProfileAdmin('admin_set_location', {}, deps(404, { fn: 'profile-admin', error: 'Unknown user' }), () => { legacyRan = true; }), /Unknown user/);
-  assert.equal(legacyRan, false);
-  // Not deployed yet (the platform's own 404): the old write keeps the screen working until then.
-  assert.equal(await callProfileAdmin('set_active_location', {}, deps(404, { code: 'NOT_FOUND', message: 'Requested function was not found' }), async () => 'legacy'), 'legacy');
-  assert.equal(profileAdminMissing(404, null), true);
-  assert.equal(profileAdminMissing(404, { fn: 'profile-admin' }), false);
+  // A refusal from profile-admin is shown in its own words.
+  await assert.rejects(callProfileAdmin('set_active_location', {}, deps(403, { fn: 'profile-admin', error: 'You do not have access to that location' })), /do not have access/);
+  await assert.rejects(callProfileAdmin('admin_set_location', {}, deps(404, { fn: 'profile-admin', error: 'Unknown user' })), /Unknown user/);
+  // Not deployed: in a browser the gateway 404 has no CORS headers, so fetch itself throws. The
+  // screen says the server could not be reached and that nothing changed; no old write runs.
+  const cors404 = { functionsUrl: 'https://x/functions/v1', getSession: good, fetchImpl: async () => { throw new TypeError('Failed to fetch'); } };
+  await assert.rejects(callProfileAdmin('set_active_location', {}, cors404), (e) => e.message === PROFILE_ADMIN_UNREACHABLE);
+  // Seen from a non browser caller, the platform's own 404 is not our reply either.
+  await assert.rejects(callProfileAdmin('set_active_location', {}, deps(404, { code: 'NOT_FOUND', message: 'Requested function was not found' })), /Could not reach the server \(profile-admin\).*HTTP 404/);
+  assert.match(PROFILE_ADMIN_UNREACHABLE, /Nothing was changed/);
+  assert.equal(callProfileAdmin.length, 3, 'no fourth (fallback) argument');
 
   // The pure helper never imports the Supabase client (so it cannot sign anybody in).
   const helper = code(read('./profileAdmin.js'));
   assert.ok(!/ensureAuthToken|signIn/.test(helper));
-  assert.ok(!/ensureAuthToken|signIn/.test(code(read('./profileAdminClient.js'))));
+  assert.ok(!/legacy/.test(helper), 'no fallback path left');
+  const client = code(read('./profileAdminClient.js'));
+  assert.ok(!/ensureAuthToken|signIn/.test(client));
+  assert.ok(client.includes('export function profileAdmin(action, body) {'), 'the client takes no fallback');
 
-  assert.equal(staffScreenLocation({ location_id: LOC }, LOC2), LOC);
-  assert.equal(staffScreenLocation({ location_id: null }, LOC2), LOC2);
+  // The Staff screen works on the venue Back Office is ON (the switcher's choice), else the opening venue.
+  assert.equal(staffScreenLocation({ location_id: LOC }, LOC2), LOC2);
+  assert.equal(staffScreenLocation({ location_id: LOC }, null), LOC);
+  assert.equal(staffScreenLocation({ location_id: LOC }, 'loc-demo'), LOC);
   assert.equal(staffScreenLocation(null, 'loc-demo'), null);
 });
 
-test('every Back Office write of a venue, company or access flag goes through profile-admin', () => {
-  // [file, action, the old direct write that may only survive INSIDE that call's fallback]
+test('every Back Office write of a venue, company or access flag goes through profile-admin, with no direct write left', () => {
   const sites = [
     ['../backoffice/LocationSwitcher.jsx', 'set_active_location', ".update({ location_id: opsLocId })"],
     ['../backoffice/sections/CompanyAdmin.jsx', 'claim_org', ".update({ org_id: data.id })"],
@@ -194,18 +230,17 @@ test('every Back Office write of a venue, company or access flag goes through pr
     const src = code(read(file));
     const call = src.indexOf(`profileAdmin('${action}'`);
     assert.ok(call > 0, `${file}: calls ${action}`);
-    const legacyAt = src.indexOf(old);
-    if (legacyAt >= 0) {
-      assert.ok(legacyAt > call && legacyAt - call < 700, `${file}: the old write is only the undeployed fallback of ${action}`);
-      assert.equal(src.indexOf(old, legacyAt + 1), -1, `${file}: no second direct write`);
-    }
+    assert.equal(src.indexOf(old), -1, `${file}: the old direct write is gone`);
+    const args = src.slice(call, src.indexOf(');', call));
+    assert.ok(!/async \(\) =>/.test(args), `${file}: ${action} has no fallback closure`);
   }
-  // No other browser write of those columns is left anywhere in the app.
   const staff = code(read('../backoffice/sections/StaffManager.jsx'));
   assert.ok(!staff.includes(".update({ location_id: locationId }).eq('id', user.id)"), 'Staff no longer writes the profile venue');
-  assert.ok(staff.includes("profileAdmin('team_profiles'"), 'team emails come from the server');
+  assert.ok(staff.includes("profileAdmin('team_profiles', { location_id: locationId, user_ids: linkedIds });"), 'team emails come from the server only');
+  assert.ok(!/from\('user_profiles'\)\s*\.select\('id, email, bo_access'\)/.test(staff), 'no direct read of other logins');
   const admin = code(read('../admin/CompanyAdminApp.jsx'));
   assert.ok(!admin.includes("user_profiles?location_id=eq.${locId}`, { method:'PATCH'"), 'deleting a venue leaves the profile venue to ON DELETE SET NULL');
+  assert.ok(!admin.includes("sbFetch(`user_profiles?id=eq.${userId}`, { method:'PATCH'"), 'no admin portal PATCH of a profile venue');
 });
 
 // ── 2. Online gift card purchases: server only ───────────────────────────────
@@ -396,7 +431,11 @@ test('the authority report sees till earn (channel is the order type) and gift-r
 
 test('no em or en dashes in anything this step added', () => {
   for (const f of [
-    '../../supabase/migrations/20260918c_OPS_profile_venue_lock.sql',
+    '../../supabase/migrations/20260918d_OPS_profile_venue_lock.sql',
+    '../../supabase/migrations/20260918e_OPS_venues_write_fence.sql',
+    '../../supabase/queries/profile_venue_backfill_candidates.sql',
+    '../../supabase/queries/lockdown_step1_predeploy_checks.sql',
+    './accessibleLocations.js',
     '../../supabase/migrations/20260918_PLATFORM_gift_purchases_server_only.sql',
     '../../supabase/migrations/20260918b_PLATFORM_gift_purchases_clear_codes.sql',
     '../../supabase/functions/_shared/profileAdmin.ts',

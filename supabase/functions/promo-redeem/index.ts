@@ -15,7 +15,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { computeDiscount } from '../_shared/promo.ts';
-import { normalisePromoCode, escapeLike, pickPromoRow } from '../_shared/promoLookup.ts';
+import { normalisePromoCode, escapeLike, pickPromoRow, offerInOrg } from '../_shared/promoLookup.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -68,7 +68,9 @@ async function evaluate(codeStr: string, locationId: string, customerId: string 
   // customer instead of refusing. A DIFFERENT attached customer is still refused above.
   const effectiveCustomerId = customerId || row.customer_id || null;
 
-  const { data: offer } = await opsAdmin.from('offers').select('*').eq('id', row.offer_id).maybeSingle();
+  // Review round four (5c): the offer must be this org's too, never just "the offer with that id".
+  const { data: offerRow } = await opsAdmin.from('offers').select('*').eq('id', row.offer_id).eq('org_id', orgId).maybeSingle();
+  const offer = offerInOrg(offerRow, orgId) ? offerRow : null;
   if (!offer) return { reason: 'not_found' as const, row };
   if (!offer.active) return { reason: 'inactive' as const, row, offer };
   const nowMs = Date.now();
