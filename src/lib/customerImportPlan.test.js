@@ -31,8 +31,8 @@ import {
   MAX_ROWS_PER_CALL, READ_CHUNK, WRITE_CHUNK, IMPORT_SOURCE, STAMP_KEY_PREFIX,
   batchTag, stampKey, chunk,
   indexExisting, lookupKeys, decideRows, planCounts, needsProgramme, programmeCheck,
-  buildInsert, buildPatch, groupPatches, buildConsent, consentIsNew,
-  stampPlan, stampsOwed,
+  buildInsert, buildPatch, groupPatches, buildConsent, consentIsNew, consentDecision,
+  stampPlan, stampsOwed, stampsSkipped, alreadyStampedLine, emptyProgress,
 } from '../../supabase/functions/_shared/customerImportPlan.ts';
 
 const read = (rel) => fs.readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
@@ -92,19 +92,42 @@ test('existing customers are keyed the way the file will be read', () => {
     'nonsense',
   ]);
   assert.equal(index.byPhone.get('+447700900123').id, 'a');
+  assert.equal(index.byPhone.get('07700900123').id, 'a', 'and under the local shape too');
   assert.equal(index.byPhone.get('+447700900456').id, 'b', 'a stored 07 number is found by its international form');
   assert.equal(index.byEmail.get('jane@example.com').id, 'a', 'stored case does not matter');
   assert.equal(index.byEmail.get('bob@example.com').id, 'c');
-  assert.equal(index.byPhone.size, 2, 'a row with no id is not indexed');
+  assert.equal(index.byPhone.get('07700900999'), undefined, 'a row with no id is not indexed');
 });
 
-test('a lookup asks for each phone and each email once', () => {
+test('a landline on file the OLD way is still the same person', () => {
+  // The first version of this importer wrote every number as E.164, so a
+  // Manchester landline the till had as 01614960000 could be on file either
+  // way. Both shapes must find the one customer, or the second run of the file
+  // creates a duplicate with the stamps on the row the till cannot see.
+  for (const stored of ['01614960000', '+441614960000']) {
+    const index = indexExisting([{ id: 'cust-1', phone: stored, email: null }]);
+    const [d] = decideRows([row({ name: 'Jane', phone: '0161 496 0000' })], index);
+    assert.equal(d.verdict, 'update', 'stored as ' + stored);
+    assert.equal(d.customerId, 'cust-1');
+    assert.equal(d.matchedOn, 'phone');
+  }
+  // And phone_raw, which is whatever they typed at the till.
+  const index = indexExisting([{ id: 'cust-2', phone: null, phone_raw: '0161 496 0000', email: null }]);
+  const [d] = decideRows([row({ name: 'Jane', phone: '01614960000' })], index);
+  assert.equal(d.customerId, 'cust-2');
+});
+
+test('a lookup asks for every shape a phone could be on file in', () => {
   const keys = lookupKeys([
     row({ name: 'A', phone: '07700 900123', email: 'jane@example.com' }),
     row({ name: 'B', phone: '+44 7700 900123', email: 'JANE@EXAMPLE.COM' }),
-    row({ name: 'C', phone: '07700900456', email: '' }),
+    row({ name: 'C', phone: '0161 496 0000', email: '' }),
   ]);
-  assert.deepEqual(keys.phones, ['+447700900123', '+447700900456']);
+  assert.ok(keys.phones.includes('+447700900123'), 'the app shape for a mobile');
+  assert.ok(keys.phones.includes('07700900123'), 'and the local shape');
+  assert.ok(keys.phones.includes('01614960000'), 'the app shape for a landline');
+  assert.ok(keys.phones.includes('+441614960000'), 'and the shape the old importer wrote');
+  assert.equal(new Set(keys.phones).size, keys.phones.length, 'each one asked for once');
   assert.deepEqual(keys.emails, ['jane@example.com']);
   assert.deepEqual(lookupKeys(null), { phones: [], emails: [] });
 });
@@ -285,13 +308,40 @@ test('an import never overwrites what is already there', () => {
   }), existing, CTX);
 
   assert.ok(patch, 'the run tag alone is a change');
-  for (const column of ['name', 'first_name', 'last_name', 'email', 'phone', 'phone_raw', 'birthday', 'notes', 'source']) {
+  for (const column of ['first_name', 'last_name', 'email', 'phone', 'phone_raw', 'birthday', 'notes', 'source']) {
     assert.equal(column in patch, false, 'an import must not touch ' + column + ' when it is already set');
   }
+  // `name` IS in every patch, because customers.name is NOT NULL with no
+  // default and an upsert on conflict id is still an INSERT to Postgres: the
+  // proposed tuple is constraint checked before the conflict is resolved, so a
+  // patch with no name raised 23502 on every single bulk write. The value is
+  // the name they ALREADY have, never the one in the file.
+  assert.equal(patch.name, 'Jane at the counter', 'the filler is their own name, never the file"s');
   assert.deepEqual(patch.sources, ['pos', IMPORT_SOURCE, 'import:' + BATCH]);
   assert.equal(patch.id, 'cust-1');
   assert.equal(patch.org_id, ORG);
   assert.equal(patch.updated_at, NOW);
+});
+
+test('every patch carries the columns a NOT NULL insert tuple needs', () => {
+  // customers.name is NOT NULL with no default and customers.org_id is NOT
+  // NULL. Postgres runs ExecConstraints on the tuple an upsert PROPOSES, before
+  // ON CONFLICT is resolved, so both have to be on every patch or the whole
+  // bulk write is refused with 23502 and the file falls back to one request a
+  // customer, silently.
+  const existings = [
+    { id: 'c1', name: 'Jane at the counter', sources: ['pos'], source: 'pos', phone: '+447700900123' },
+    { id: 'c2', name: '', sources: [], phone: null },
+    { id: 'c3', name: null, sources: null, email: null },
+  ];
+  for (const existing of existings) {
+    const patch = buildPatch(row({ name: 'Jane Smith', phone: '07700900123', email: 'jane@example.com' }), existing, CTX);
+    assert.ok(patch, 'there is always the run tag to add');
+    assert.equal(typeof patch.name, 'string');
+    assert.ok(patch.name.length > 0, 'never null, never empty');
+    assert.equal(patch.org_id, ORG);
+    assert.equal(patch.id, existing.id);
+  }
 });
 
 test('an import fills in the blanks it finds', () => {
@@ -413,6 +463,85 @@ test('the same consent is not written twice, and a different one is', () => {
   assert.equal(consentIsNew(yes, [{ customer_id: 'cust-2', source: 'import', consented: true, consent_text: CONSENT_ARGS.consentText }]), true, 'somebody else entirely');
 });
 
+// ── never clear a yes has a mirror: never undo a no ─────────────────────────
+
+const yesRow = (fields) => row({ name: 'Jane', phone: '07700900123', marketing_opt_in: 'yes', ...fields });
+
+test('a yes out of the file is a yes when nobody has said stop', () => {
+  const v = consentDecision(yesRow({ opt_in_date: '2025-04-12' }), { priorConsents: [], suppressed: false, now: NOW });
+  assert.equal(v.write, true);
+  assert.equal(v.consented, true);
+  assert.equal(v.setFlag, true, 'marketing_opt_in goes on');
+  assert.equal(v.withheld, false);
+  assert.equal(v.createdAt.slice(0, 10), '2025-04-12', 'dated when they actually opted in, not now');
+});
+
+test('a stale file NEVER re-consents somebody who opted out here since', () => {
+  // The whole of finding 7. They pressed unsubscribe in June. The third party
+  // export was written in April. marketing-send takes the NEWEST consent row,
+  // so a yes written today would beat their withdrawal and the emails start
+  // again, which is the venue's fine.
+  const withdrawal = [{ customer_id: 'cust-1', consented: false, source: 'unsubscribe', created_at: '2026-06-01T10:00:00.000Z' }];
+  const v = consentDecision(yesRow({ opt_in_date: '2025-04-12' }), { priorConsents: withdrawal, suppressed: false, now: NOW });
+  assert.equal(v.setFlag, false, 'the flag is left exactly as it is');
+  assert.equal(v.withheld, true);
+  assert.ok(v.reason.length > 0 && v.reason.length < 120, 'plain words for the operator');
+  assert.equal(v.write, true, 'the ledger still records what the file said');
+  assert.equal(v.createdAt.slice(0, 10), '2025-04-12', 'dated with the FILE"s day, so it cannot jump the withdrawal');
+  assert.ok(v.createdAt < withdrawal[0].created_at, 'and it is genuinely older than the no');
+});
+
+test('a yes with NO date cannot prove it is newer, so the withdrawal wins', () => {
+  // 5Loyalty do not expose opt_in_date at all, which is exactly this case.
+  const withdrawal = [{ customer_id: 'cust-1', consented: false, source: 'unsubscribe', created_at: '2026-06-01T10:00:00.000Z' }];
+  const v = consentDecision(yesRow({}), { priorConsents: withdrawal, suppressed: false, now: NOW });
+  assert.equal(v.setFlag, false);
+  assert.equal(v.withheld, true);
+  assert.equal(v.write, false, 'and no row at all, because the only date we could put on it is now');
+});
+
+test('a marketing_suppressions row is a stop, whatever the consent ledger says', () => {
+  const v = consentDecision(yesRow({ opt_in_date: '2025-04-12' }), { priorConsents: [], suppressed: true, now: NOW });
+  assert.equal(v.setFlag, false);
+  assert.equal(v.withheld, true);
+});
+
+test('a withdrawal OLDER than the file does not block the yes', () => {
+  const old = [{ customer_id: 'cust-1', consented: false, source: 'unsubscribe', created_at: '2024-01-01T10:00:00.000Z' }];
+  const v = consentDecision(yesRow({ opt_in_date: '2025-04-12' }), { priorConsents: old, suppressed: false, now: NOW });
+  assert.equal(v.setFlag, true, 'they opted back in after the no, and the file proves it');
+  assert.equal(v.withheld, false);
+});
+
+test('a NO in the file is never withheld, and a blank is never a consent row', () => {
+  const no = consentDecision(row({ name: 'A', phone: '07700900123', marketing_opt_in: 'no' }), { priorConsents: [], suppressed: false, now: NOW });
+  assert.equal(no.write, true);
+  assert.equal(no.consented, false);
+  assert.equal(no.setFlag, false);
+  assert.equal(no.withheld, false, 'a no is a no, it is not something we hold back');
+  assert.equal(consentDecision(row({ name: 'A', phone: '07700900123' }), { priorConsents: [], suppressed: false, now: NOW }), null);
+});
+
+test('a withheld yes never turns the flag on, on an update OR on a new row', () => {
+  const r = yesRow({ opt_in_date: '2025-04-12' });
+  const patch = buildPatch(r, { id: 'cust-1', name: 'Jane', marketing_opt_in: false, sources: [] }, CTX, { allowOptIn: false });
+  assert.equal('marketing_opt_in' in (patch || {}), false, 'the flag is left exactly as it is');
+  const insert = buildInsert(r, CTX, { allowOptIn: false });
+  assert.equal(insert.marketing_opt_in, false, 'a brand new row for somebody on the stop list starts opted out');
+  assert.equal(insert.marketing_opt_in_at, null);
+  // And with nothing in the way, the yes lands as it always did.
+  assert.equal(buildInsert(r, CTX).marketing_opt_in, true);
+  assert.equal(buildPatch(r, { id: 'cust-1', name: 'Jane', marketing_opt_in: false, sources: [] }, CTX).marketing_opt_in, true);
+});
+
+test('the consent row carries the date the decision gave it', () => {
+  const v = consentDecision(yesRow({ opt_in_date: '2025-04-12' }), { priorConsents: [], suppressed: false, now: NOW });
+  const consent = buildConsent(yesRow({ opt_in_date: '2025-04-12' }), { ...CONSENT_ARGS, createdAt: v.createdAt });
+  assert.equal(consent.created_at, v.createdAt);
+  // And with no date given it is still now, which is what it always was.
+  assert.equal(buildConsent(yesRow({}), CONSENT_ARGS).created_at, NOW);
+});
+
 // ── stamps ──────────────────────────────────────────────────────────────────
 
 test('imported stamps are ADDED to the card, so a stamp earned in between is not lost', () => {
@@ -476,6 +605,49 @@ test('the same file twice adds the stamps once', () => {
   assert.equal(second.length, 0, 'no second helping of free coffee');
 });
 
+test('the stamps we did NOT give are handed back, never swallowed', () => {
+  // The guard is right. The SILENCE was the bug: a second, corrected export
+  // dropped every stamp for everybody already imported and reported success, so
+  // the operator had no way of knowing their fix had not landed.
+  const decisions = [
+    { rowNumber: 2, verdict: 'update', customerId: 'cust-1', row: row({ name: 'A', phone: '07700900123', stamps: '4' }) },
+    { rowNumber: 3, verdict: 'update', customerId: 'cust-2', row: row({ name: 'B', phone: '07700900456', stamps: '2' }) },
+    { rowNumber: 4, verdict: 'new', customerId: 'cust-3', row: row({ name: 'C', phone: '07700900789', stamps: '9' }) },
+    { rowNumber: 5, verdict: 'new', customerId: 'cust-9', row: row({ name: 'D', phone: '07700900321' }) },
+  ];
+  const done = new Set(['cust-1', 'cust-2']);
+
+  const owed = stampsOwed(decisions, done);
+  const left = stampsSkipped(decisions, done);
+  assert.deepEqual(owed.map((d) => d.customerId), ['cust-3']);
+  assert.deepEqual(left.map((d) => d.customerId), ['cust-1', 'cust-2'], 'named, so the screen can say how many');
+  assert.deepEqual(left.map((d) => d.rowNumber), [2, 3]);
+
+  // Nobody is in both lists, and nobody with no stamps is in either.
+  const both = owed.filter((d) => left.indexOf(d) >= 0);
+  assert.equal(both.length, 0);
+  assert.equal(owed.length + left.length, 3, 'the person with no stamps at all is in neither');
+
+  assert.equal(stampsSkipped(null, null).length, 0);
+});
+
+test('the line about the cards we left alone says the number out loud', () => {
+  assert.equal(alreadyStampedLine(0), '', 'nothing to say when nothing was skipped');
+  assert.equal(alreadyStampedLine(1), 'We already imported stamps for 1 of these people, so we left their cards alone.');
+  assert.equal(alreadyStampedLine(4), 'We already imported stamps for 4 of these people, so we left their cards alone.');
+  assert.ok(!/error|idempot|skip/i.test(alreadyStampedLine(4)), 'plain words, not database words');
+  assert.equal(alreadyStampedLine('rubbish'), '');
+});
+
+test('the writer counts and reports the cards it left alone', () => {
+  const src = read('../../supabase/functions/customer-import/index.ts');
+  assert.ok(src.includes('stampsSkipped(decisions, stamped)'), 'it works out who it skipped');
+  assert.ok(src.includes('alreadyStampedLine('), 'and turns that into a line');
+  assert.ok(src.includes('progress.notes.push(line)'), 'which comes back as a note, not as an error');
+  assert.ok(src.includes('already_stamped: progress.alreadyStamped'), 'and as a number the screen puts in a tile');
+  assert.equal(emptyProgress().alreadyStamped, 0);
+});
+
 test('the decisions never read a clock of their own', () => {
   // The venue clock invariant: business time is the venue's, so every time and
   // date is handed in. A server clock read in here would stamp a Leeds import
@@ -531,6 +703,27 @@ test('nothing is written when the stamp card is missing or somebody elses', () =
 
 test('the importer never deletes anything', () => {
   assert.ok(!FN.includes('.delete('), 'no import ever deletes a customer, a consent or a stamp');
+});
+
+test('a bulk patch that is refused is SAID, never quietly swallowed', () => {
+  // The bulk upsert used to raise 23502 on every group with no name in it,
+  // because customers.name is NOT NULL and Postgres constraint checks the
+  // tuple an upsert PROPOSES before ON CONFLICT is resolved. Every error was
+  // treated alike, so the whole file silently degraded to one request per
+  // customer and nobody ever saw why.
+  const bulk = FN.indexOf("from('customers').upsert(slice, { onConflict: 'id' })");
+  assert.ok(bulk > 0, 'the bulk write is still the fast path');
+  const after = FN.slice(bulk, bulk + 900);
+  assert.ok(/progress\.errors\.push\(/.test(after), 'a refused bulk write is reported before anything else');
+  assert.ok(after.indexOf('progress.errors.push(') < after.indexOf("from('customers').update("),
+    'the reason is said out loud FIRST, then we go row by row');
+  assert.ok(after.includes(".eq('id', id).eq('org_id', orgId)"), 'and the row by row path is a real update, fenced to this tenant');
+});
+
+test('the tenant fence is on the one at a time update, not carried in the row', () => {
+  const bulk = FN.indexOf("from('customers').upsert(slice, { onConflict: 'id' })");
+  const after = FN.slice(bulk, bulk + 900);
+  assert.ok(/org_id: _org/.test(after), 'org_id comes off the patch and goes into the where clause');
 });
 
 test('the importer never writes a no over an existing opt in', () => {

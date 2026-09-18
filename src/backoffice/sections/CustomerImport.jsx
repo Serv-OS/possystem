@@ -32,6 +32,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { supabase, platformSupabase, isMock, getLocationId, getActiveLocationSync } from '../../lib/supabase';
+import { ymdInTz } from '../../lib/locationTime';
 import {
   readCsv,
   validateRows,
@@ -59,6 +60,8 @@ import {
   progressPercent,
   importErrorMessage,
   resultLine,
+  importRequestBody,
+  IMPORT_FUNCTION,
 } from '../../lib/customerImportScreen';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
@@ -138,6 +141,10 @@ export default function CustomerImport({ setSection }) {
   const [loading, setLoading] = useState(true);
   const [loadNote, setLoadNote] = useState('');       // one plain line when a load did not work
   const [orgId, setOrgId] = useState(null);
+  // A date in the file is read against the VENUE clock, not the laptop's, so an
+  // opt in date typed today does not come back "in the future" for an operator
+  // sitting in another timezone.
+  const [timezone, setTimezone] = useState('');
   const [siteCount, setSiteCount] = useState(0);
   const [programmes, setProgrammes] = useState([]);
   const [programId, setProgramId] = useState('');
@@ -177,7 +184,8 @@ export default function CustomerImport({ setSection }) {
         const locId = getActiveLocationSync() || await getLocationId();
         if (!locId || locId === 'loc-demo') { if (alive) setLoading(false); return; }
 
-        const { data: thisLoc } = await supabase.from('locations').select('org_id').eq('id', locId).maybeSingle();
+        const { data: thisLoc } = await supabase.from('locations').select('org_id, timezone').eq('id', locId).maybeSingle();
+        if (alive && thisLoc?.timezone) setTimezone(String(thisLoc.timezone));
         if (alive && thisLoc?.org_id) {
           setOrgId(thisLoc.org_id);
           const { count: n } = await supabase
@@ -215,6 +223,9 @@ export default function CustomerImport({ setSection }) {
     })();
     return () => { alive = false; };
   }, []);
+
+  /** The venue's own day, which is what every date in the file is read against. */
+  const venueToday = () => ymdInTz(new Date(), timezone) || '';
 
   // ── the template ──────────────────────────────────────────────────────────
   const downloadTemplate = () => {
@@ -267,7 +278,9 @@ export default function CustomerImport({ setSection }) {
       return;
     }
 
-    const checkedNow = validateRows(parsed.rows);
+    // The venue's own day, the same one the writer is given, so the preview and
+    // the write can never disagree about what "in the future" means.
+    const checkedNow = validateRows(parsed.rows, { today: venueToday() });
     setHead(parsed);
     setRaw(parsed.rows);
     setChecked(checkedNow);
@@ -352,20 +365,18 @@ export default function CustomerImport({ setSection }) {
     if (!batchKey) setBatchKey(key);
     const chunks = chunkRows(toSend, CHUNK_SIZE);
     const startAt = Math.min(doneBatches, chunks.length);
-    let acc = result || { created: 0, updated: 0, skipped: 0, stamped: 0, failed: [], batchId: null };
+    let acc = result || { created: 0, updated: 0, skipped: 0, stamped: 0, alreadyStamped: 0, failed: [], notes: [], batchId: null };
 
     setBusy(true); setRunNote('');
     try {
       for (let i = startAt; i < chunks.length; i++) {
         const answer = await callImport({
-          batch_key: key,
-          batch_name: fileName || 'Customer import',
-          file_name: fileName || '',
-          chunk_index: i,
-          chunk_count: chunks.length,
-          program_id: programId || null,
-          consent_text: consentLine(optInSource),
-          opt_in_source: optInSource.trim(),
+          batchId: key,
+          filename: fileName || 'Customer import',
+          today: venueToday(),
+          chunkIndex: i,
+          programId: programId || null,
+          consentText: consentLine(optInSource),
           rows: chunks[i],
         });
         acc = mergeResult(acc, answer);
@@ -445,7 +456,7 @@ export default function CustomerImport({ setSection }) {
                 ? <div>Said no to marketing: {count(summary.optedOut, 'person', 'people')}. They still go in, and we never email them.</div>
                 : null}
               {summary.phoneFixed > 0
-                ? <div>We put the 0 back on the front of {count(summary.phoneFixed, 'phone')}. That is what a spreadsheet does to a phone column.</div>
+                ? <div>We put the 0 back on the front of {count(summary.phoneFixed, 'phone')}. That is what a spreadsheet does to a phone column. We never add a country code: a number from another country has to carry its own + and code.</div>
                 : null}
               {summary.duplicates > 0
                 ? <div>The same person twice in the file: {count(summary.duplicates, 'row')} left out. We keep the first one.</div>
@@ -604,8 +615,20 @@ export default function CustomerImport({ setSection }) {
               <Tile n={result.created} label="Added" tone="good" />
               <Tile n={result.updated} label="Filled in" />
               <Tile n={result.skipped} label="Skipped" />
+              <Tile n={result.stamped || 0} label="Cards stamped" />
+              {result.alreadyStamped > 0
+                ? <Tile n={result.alreadyStamped} label="Cards left alone" />
+                : null}
               <Tile n={(result.failed || []).length} label="Did not go in" tone={(result.failed || []).length ? 'bad' : undefined} />
             </div>
+            {/* Things we did NOT do, and why. A run that quietly drops stamps
+                for everybody already imported and still says success is how a
+                corrected second export gets thrown away without a word. */}
+            {(result.notes || []).length ? (
+              <div style={{ ...S.warnBox, marginTop: 14, marginBottom: 0 }}>
+                {(result.notes || []).map((n, i) => <div key={i}>{n}</div>)}
+              </div>
+            ) : null}
             <div style={{ ...S.body, marginTop: 14 }}>
               {partial
                 ? 'That part is in and safe. Press Carry on importing to send the rest. It picks up where it stopped, so nobody goes in twice.'
@@ -660,10 +683,15 @@ async function callImport(body) {
   const locationId = getActiveLocationSync();
   let res;
   try {
-    res = await fetch(`${FUNCTIONS_URL}/customers-import`, {
+    // IMPORT_FUNCTION is the DIRECTORY under supabase/functions. It used to say
+    // customers-import, which is not a function that exists, so every import
+    // 404ed and the screen read that back to the operator as "not live on this
+    // site yet". customerImportWiring.test.js now holds the name against the
+    // real directory.
+    res = await fetch(`${FUNCTIONS_URL}/${IMPORT_FUNCTION}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-      body: JSON.stringify({ ...body, location_id: body?.location_id || locationId }),
+      body: JSON.stringify(importRequestBody({ ...body, opsLocationId: body?.opsLocationId || locationId })),
     });
   } catch {
     const err = new Error('network');

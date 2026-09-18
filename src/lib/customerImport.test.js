@@ -26,14 +26,19 @@ import {
   mapHeaders,
   readCsv,
   readPhone,
+  appPhone,
+  phoneKeys,
   normalisePhoneUk,
   normaliseEmail,
   readWholeNumber,
   readYesNo,
   readDate,
   normaliseRow,
+  rawRowsOnly,
   validateRows,
   buildExistingKeys,
+  matchesExisting,
+  problemRowNumbers,
   summarise,
 } from './customerImport.js';
 
@@ -209,14 +214,64 @@ test('a UK phone comes back in the shape the whole app looks customers up by', (
   assert.equal(normalisePhoneUk('447700900123'), '+447700900123');
   assert.equal(normalisePhoneUk('00447700900123'), '+447700900123');
   assert.equal(normalisePhoneUk('+44 (0)7700 900123'), '+447700900123');
-  assert.equal(normalisePhoneUk('0113 496 0123'), '+441134960123', 'a landline is still a customer');
+});
+
+test('the phone we write is the phone the APP writes, character for character', () => {
+  // The three live copies of the rule (store/index.js _normalisePhone,
+  // customerLookup.js, loyalty-otp) hand a landline back as BARE DIGITS. An
+  // importer that wrote +441614960000 made a second customer the till could
+  // never find, with the stamps on the row nobody sees.
+  assert.equal(appPhone('01614960000'), '01614960000');
+  assert.equal(normalisePhoneUk('0161 496 0000'), '01614960000', 'a landline is stored the way the till stores it');
+  assert.equal(normalisePhoneUk('0113 496 0123'), '01134960123');
+  for (const typed of ['07700900123', '07700 900123', '+44 7700 900123', '447700900123', '0161 496 0000', '01614960000', '+353 86 123 4567']) {
+    assert.equal(normalisePhoneUk(typed), appPhone(normalisePhoneUk(typed)),
+      'the importer writes a value the app rule leaves alone: ' + typed);
+  }
+});
+
+test('a landline is found under BOTH shapes, so it is never imported twice', () => {
+  // The E.164 form is what the first version of this importer wrote. Those rows
+  // have to be found, not doubled.
+  const keys = phoneKeys('0161 496 0000');
+  assert.ok(keys.includes('01614960000'), 'what the app writes');
+  assert.ok(keys.includes('+441614960000'), 'what the old importer wrote');
+  const fromE164 = phoneKeys('+441614960000');
+  assert.ok(fromE164.includes('01614960000'));
+  assert.ok(fromE164.includes('+441614960000'));
+  // A customer already on file under EITHER shape is the same person.
+  for (const stored of ['01614960000', '+441614960000', '0161 496 0000']) {
+    const existing = buildExistingKeys([{ phone: stored, email: null }]);
+    const row = normaliseRow({ rowNumber: 2, name: 'Jane', phone: '0161 496 0000' }, OPTS);
+    assert.equal(matchesExisting(row, existing), true, 'stored as ' + stored);
+  }
+});
+
+test('phone_raw is a key too, because that is where what they typed lives', () => {
+  const existing = buildExistingKeys([{ phone: null, phone_raw: '07700 900123', email: null }]);
+  const row = normaliseRow({ rowNumber: 2, name: 'Jane', phone: '+44 7700 900123' }, OPTS);
+  assert.equal(matchesExisting(row, existing), true);
 });
 
 test('a spreadsheet eating the leading zero is put back, and says so', () => {
   const r = readPhone('7700900123');
-  assert.equal(r.phone, '+447700900123');
+  assert.equal(r.local, '07700900123', 'Peter: just insert a 0 in front of the number');
+  assert.equal(r.phone, '+447700900123', 'then the app rule decides what gets stored');
   assert.equal(r.assumed, true, 'the screen must be able to say how many it did this to');
   assert.equal(readPhone('07700900123').assumed, false);
+});
+
+test('a bare ten digit number NEVER gets a country code bolted on', () => {
+  // RPOS runs US venues. The old rule read every bare ten digit number as
+  // British, so a US list of 4155551234 came out as +444155551234 for every
+  // single row: a stranger's phone, and that person's loyalty login.
+  const us = readPhone('4155551234');
+  assert.equal(us.local, '04155551234', 'a zero on the front, and nothing else invented');
+  assert.equal(us.phone, '04155551234');
+  assert.ok(!String(us.phone).startsWith('+44'), 'we never guess a country');
+  assert.equal(readPhone('1614960000').phone, '01614960000', 'the same rule for a UK landline');
+  // A number that carries its own country code is kept exactly as it stands.
+  assert.equal(normalisePhoneUk('+1 415 555 1234'), '+14155551234');
 });
 
 test('a number already in full international form is left alone', () => {

@@ -248,17 +248,86 @@ export function chunkRows(rows, size) {
   return out;
 }
 
-/** Add one chunk's answer to what we have so far. */
+/** The function's name for this import. It is the DIRECTORY under
+ *  supabase/functions, and nothing else: a name that does not match is a 404
+ *  the screen dresses up as "not live on this site yet". */
+export const IMPORT_FUNCTION = 'customer-import';
+
+/**
+ * The body we post, exactly the keys index.ts reads and no others.
+ *
+ * This lived inline in the JSX and drifted from the function on FIVE keys at
+ * once: no `action` at all (400 'action required'), `location_id` where the
+ * function reads `ops_location_id`, and `batch_key` where it reads `batch_id`,
+ * which minted a fresh batch id for every chunk, so a 20,000 row file wrote 100
+ * import_batches rows and the "carry on" guard had nothing to recognise. It is
+ * a function here so a test can hold it against what index.ts actually reads.
+ */
+export function importRequestBody(args) {
+  const a = args || {};
+  return {
+    action: 'import',
+    ops_location_id: String(a.opsLocationId || ''),
+    rows: Array.isArray(a.rows) ? a.rows : [],
+    batch_id: String(a.batchId || ''),
+    filename: String(a.filename || ''),
+    today: String(a.today || ''),
+    program_id: a.programId || null,
+    consent_text: String(a.consentText || ''),
+    privacy_version: a.privacyVersion || null,
+    chunk_index: Number(a.chunkIndex) || 0,
+  };
+}
+
+/**
+ * The rows that did not go in, out of one chunk's answer.
+ *
+ * The writer reports them as plain lines, 'Row 44: we could not add this
+ * person.', because that is what the operator reads. We keep the line AND pull
+ * the row number back out of it, so the Download the rows to fix button can
+ * find that row in the file again.
+ */
+export function failedFromChunk(chunk) {
+  const c = chunk || {};
+  const out = [];
+  const lines = Array.isArray(c.errors) ? c.errors : [];
+  for (let i = 0; i < lines.length; i++) {
+    const text = String(lines[i] == null ? '' : lines[i]);
+    if (!text) continue;
+    const m = text.match(/^Row (\d+): ?(.*)$/);
+    out.push({ rowNumber: m ? Number(m[1]) : 0, reason: m ? m[2] : text, text });
+  }
+  return out;
+}
+
+/**
+ * Add one chunk's answer to what we have so far.
+ *
+ * The writer puts this chunk's numbers under `chunk` and the running file
+ * totals under `totals`. Reading the top level instead found nothing at all, so
+ * every count came back 0 and a run that worked perfectly reported "0 customers
+ * added" to the operator.
+ */
 export function mergeResult(sofar, next) {
   const a = sofar || {};
   const b = next || {};
+  const c = b.chunk && typeof b.chunk === 'object' ? b.chunk : b;
   const num = (x) => (Number.isFinite(Number(x)) ? Number(x) : 0);
+  const failed = (Array.isArray(a.failed) ? a.failed : [])
+    .concat(Array.isArray(b.failed) ? b.failed : [])
+    .concat(failedFromChunk(c));
+  const notes = (Array.isArray(a.notes) ? a.notes : [])
+    .concat(Array.isArray(c.notes) ? c.notes.map((n) => String(n)) : []);
   return {
-    created: num(a.created) + num(b.created),
-    updated: num(a.updated) + num(b.updated),
-    skipped: num(a.skipped) + num(b.skipped),
-    stamped: num(a.stamped) + num(b.stamped),
-    failed: (Array.isArray(a.failed) ? a.failed : []).concat(Array.isArray(b.failed) ? b.failed : []),
+    created: num(a.created) + num(c.created),
+    updated: num(a.updated) + num(c.updated),
+    skipped: num(a.skipped) + num(c.skipped),
+    stamped: num(a.stamped) + num(c.stamped),
+    enrolled: num(a.enrolled) + num(c.enrolled),
+    alreadyStamped: num(a.alreadyStamped) + num(c.already_stamped) + num(c.alreadyStamped),
+    consentWithheld: num(a.consentWithheld) + num(c.consent_withheld) + num(c.consentWithheld),
+    failed,
+    notes,
     batchId: b.batch_id || b.batchId || a.batchId || null,
   };
 }

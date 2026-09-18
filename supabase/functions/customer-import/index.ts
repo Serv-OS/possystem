@@ -6,15 +6,24 @@
 //
 // Two actions, and only one of them writes.
 //
-//   preview  { ops_location_id, rows, program_id? }
+//   preview  { action:'preview', ops_location_id, rows, today?, program_id? }
 //            Says who is new, who we already have, who we refuse to touch, and
 //            what the stamps would come to. Touches NOTHING.
 //
-//   import   { ops_location_id, rows, batch_id?, filename?, program_id?,
-//              consent_text, privacy_version?, chunk_index? }
+//   import   { action:'import', ops_location_id, rows, batch_id, filename,
+//              today, program_id, consent_text, privacy_version?, chunk_index }
 //            Writes one slice. Up to 500 rows a call, so a 20,000 row file is
 //            40 calls and the screen can show a bar. Every call answers with the
-//            batch id and the running totals.
+//            batch id, this chunk's numbers under `chunk`, and the running file
+//            totals under `totals`.
+//
+// THOSE KEY NAMES ARE THE CONTRACT. The screen builds this body in exactly one
+// place, src/lib/customerImportScreen.js importRequestBody, and
+// src/lib/customerImportWiring.test.js holds what it posts against what this
+// file reads, key for key, plus the function NAME against this directory. The
+// first version of the screen posted to `customers-import` with `location_id`
+// and `batch_key`, and every import 404ed while the screen said it was simply
+// "not live yet".
 //
 // Where things land:
 //   Ops       customers, customer_consents, stamp_transactions, import_batches
@@ -26,18 +35,27 @@
 // An imported customer needs no password and no invite: they sign in to loyalty
 // with their phone and a one time code (loyalty-otp). Their phone is the key.
 //
-// THE FOUR RULES, all of them somebody's account:
-//   1. Match on PHONE first, then email. Same order as hubrise-ingest and
-//      wifi-capture, because (org_id, phone) is unique and the phone is the
-//      loyalty login.
+// THE SIX RULES, all of them somebody's account:
+//   1. Match on PHONE first, then email, under EVERY shape that phone could
+//      already be on file in: what the app's own rule produces, the E.164 form
+//      the first version of this importer wrote, and phone_raw. (org_id, phone)
+//      is unique and the phone is the loyalty login.
 //   2. Fill blanks only. An import never overwrites a name, email, phone,
 //      birthday or note that is already there.
 //   3. Never clear a yes. marketing_opt_in is only ever set true. A no in the
 //      file is written to the customer_consents ledger, which marketing-send
 //      reads FIRST, so the no stops the email without erasing the earlier yes.
-//   4. Never double a stamp. Stamps are claimed by a UNIQUE idempotency key in
+//   4. AND NEVER UNDO A NO, which is rule 3's mirror. Somebody who unsubscribed
+//      here after the file was exported is NOT re-consented by it: the flag is
+//      left alone, the consent row is dated with the file's own opt in date so
+//      it cannot jump their withdrawal, and the operator is told which rows.
+//   5. Never double a stamp. Stamps are claimed by a UNIQUE idempotency key in
 //      Ops stamp_transactions, and a customer who already carries any import
-//      earn row for that programme is skipped, whatever batch it came from.
+//      earn row for that programme is skipped, whatever batch it came from. We
+//      SAY how many we skipped, so a corrected second export is not silently
+//      thrown away.
+//   6. Nothing off the wire is trusted to have been checked. Every posted row
+//      is stripped back to the raw template cells before validateRows sees it.
 //
 // The decisions live in _shared/customerImportPlan.ts and the file reading in
 // _shared/customerImport.ts, both pure and both under test. This file only
@@ -49,14 +67,14 @@
 // are never taken from the browser.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-import { validateRows } from '../_shared/customerImport.ts';
+import { validateRows, rawRowsOnly, problemRowNumbers } from '../_shared/customerImport.ts';
 import type { ImportRow } from '../_shared/customerImport.ts';
 import {
   MAX_ROWS_PER_CALL, READ_CHUNK, WRITE_CHUNK,
   batchTag, stampKey, STAMP_KEY_PREFIX,
   chunk, indexExisting, lookupKeys, decideRows, planCounts, needsProgramme,
   programmeCheck, buildInsert, buildPatch, groupPatches, buildConsent, consentIsNew,
-  stampPlan, stampsOwed, emptyProgress,
+  consentDecision, stampPlan, stampsOwed, stampsSkipped, alreadyStampedLine, emptyProgress,
 } from '../_shared/customerImportPlan.ts';
 import type { Decision, ExistingCustomer, Progress } from '../_shared/customerImportPlan.ts';
 import { generateMemberCode, generateReferralCode, getOrCreateConfig } from '../_shared/loyalty-utils.ts';
@@ -127,10 +145,20 @@ async function readExisting(orgId: string, rows: ImportRow[]): Promise<ExistingC
     for (let i = 0; i < arr.length; i++) if (arr[i]?.id) found.set(arr[i].id, arr[i]);
   };
 
+  // Both columns, because the same person's number can be on file as what the
+  // app's own rule produced (01614960000), as the E.164 form the first version
+  // of this importer wrote (+441614960000), or as whatever they typed, which is
+  // what phone_raw holds. lookupKeys hands over all of those shapes. Reading
+  // only customers.phone in one shape is how the importer made a SECOND
+  // customer out of somebody the till already had, with the stamps on the row
+  // nobody can find.
   for (const slice of chunk(phones, READ_CHUNK)) {
     const { data } = await opsAdmin.from('customers').select(CUSTOMER_COLS)
       .eq('org_id', orgId).in('phone', slice).is('deleted_at', null);
     take(data);
+    const { data: rawData } = await opsAdmin.from('customers').select(CUSTOMER_COLS)
+      .eq('org_id', orgId).in('phone_raw', slice).is('deleted_at', null);
+    take(rawData);
   }
   // Emails are compared exactly. The unique index is on lower(email) and the
   // rules file lowercases every email it reads, and there is not one mixed case
@@ -152,6 +180,13 @@ async function reReadOne(orgId: string, row: ImportRow): Promise<ExistingCustome
   if (row.phone) {
     const { data } = await opsAdmin.from('customers').select(CUSTOMER_COLS)
       .eq('org_id', orgId).eq('phone', row.phone).is('deleted_at', null).maybeSingle();
+    if (data) return data as ExistingCustomer;
+  }
+  if (row.phoneE164 && row.phoneE164 !== row.phone) {
+    // The shape the first version of this importer wrote. Finding that row is
+    // the difference between an update and a duplicate person.
+    const { data } = await opsAdmin.from('customers').select(CUSTOMER_COLS)
+      .eq('org_id', orgId).eq('phone', row.phoneE164).is('deleted_at', null).maybeSingle();
     if (data) return data as ExistingCustomer;
   }
   if (row.email) {
@@ -198,7 +233,15 @@ Deno.serve(async (req) => {
   // The venue's own day, passed in by the screen, so a date in the file is read
   // against the venue clock and not the server's.
   const today = body?.today ? String(body.today) : null;
-  const checked = validateRows(rawRows, { today });
+  // EVERY row is stripped back to the raw cells of the template before it is
+  // read. normaliseRow hands an already normalised row straight back, which is
+  // what makes validateRows safe to run twice, and it is also a hole: any
+  // signed in Back Office user of this venue could POST
+  // { problems: [], phoneRaw: null, stamps: 100000, marketingOptIn: true } and
+  // walk past validateRows, which is the ONLY guard this function has. Nothing
+  // off the wire is trusted to have been checked already.
+  const posted = rawRowsOnly(rawRows);
+  const checked = validateRows(posted, { today });
   const ready: ImportRow[] = checked.ready;
 
   // The stamp card this run lands on, if any. It must belong to this company.
@@ -259,7 +302,10 @@ Deno.serve(async (req) => {
   const ctx = { orgId, batchId, now };
   const progress: Progress = emptyProgress();
   progress.rows = rawRows.length;
-  progress.skipped = checked.errors.length + checked.duplicatesInFile.length;
+  // ROWS, not problems. validateRows pushes one entry per problem, so one row
+  // with a bad date AND a negative stamp count used to report as 2 skipped and
+  // the numbers never added up to the file.
+  progress.skipped = problemRowNumbers(checked).length + checked.duplicatesInFile.length;
   for (const e of checked.errors) progress.errors.push(e.text);
   for (const d of checked.duplicatesInFile) progress.errors.push(d.text);
 
@@ -286,6 +332,35 @@ Deno.serve(async (req) => {
     }
   }
 
+  // ── 0. who has already said stop ──────────────────────────────────────────
+  //
+  // A marketing_suppressions row is an unsubscribe click or a STOP text. It is
+  // keyed by ADDRESS, not by customer id, so it still catches somebody whose
+  // customer row is newer than their withdrawal, and it has to be read BEFORE
+  // the first insert: a new row written with marketing_opt_in true is the same
+  // wrong as an updated one. An older project may not have the table, which
+  // must not stop an import.
+  const suppressedAddresses = new Set<string>();
+  const addressSet = new Set<string>();
+  for (const r of ready) {
+    for (const a of [r.email, r.phone, r.phoneE164, r.phoneLocal]) if (a) addressSet.add(String(a));
+  }
+  for (const slice of chunk(Array.from(addressSet), READ_CHUNK)) {
+    const { data, error } = await opsAdmin.from('marketing_suppressions')
+      .select('address').eq('org_id', orgId).in('address', slice);
+    if (error) {
+      if (!tableMissing(error)) progress.errors.push('We could not check who has unsubscribed: ' + error.message);
+      break;
+    }
+    for (const s of (Array.isArray(data) ? data : []) as Array<{ address: string }>) suppressedAddresses.add(String(s.address));
+  }
+  const hasStopped = (d: Decision): boolean => {
+    for (const a of [d.row.email, d.row.phone, d.row.phoneE164, d.row.phoneLocal]) {
+      if (a && suppressedAddresses.has(String(a))) return true;
+    }
+    return false;
+  };
+
   // ── 1. new people ─────────────────────────────────────────────────────────
   const newOnes = decisions.filter((d) => d.verdict === 'new');
   const blocked = decisions.filter((d) => d.verdict === 'blocked');
@@ -299,7 +374,7 @@ Deno.serve(async (req) => {
   const asUpdate: Array<{ decision: Decision; existing: ExistingCustomer }> = [];
 
   for (const slice of chunk(newOnes, WRITE_CHUNK)) {
-    const payload = slice.map((d) => buildInsert(d.row, ctx));
+    const payload = slice.map((d) => buildInsert(d.row, ctx, { allowOptIn: !hasStopped(d) }));
     const { data, error } = await opsAdmin.from('customers').insert(payload).select('id, phone, email');
     if (!error) {
       // Each new id is matched back to its person by that person's OWN phone or
@@ -325,7 +400,7 @@ Deno.serve(async (req) => {
     // one at a time and only the row that is actually refused is named.
     for (const d of slice) {
       const { data: one, error: oneErr } = await opsAdmin.from('customers')
-        .insert(buildInsert(d.row, ctx)).select('id').maybeSingle();
+        .insert(buildInsert(d.row, ctx, { allowOptIn: !hasStopped(d) })).select('id').maybeSingle();
       if (!oneErr && one?.id) { d.customerId = String(one.id); progress.created++; continue; }
       if (oneErr && isDuplicate(oneErr)) {
         const found = await reReadOne(orgId, d.row);
@@ -336,50 +411,95 @@ Deno.serve(async (req) => {
     }
   }
 
-  // ── 2. people we already have: blanks only ────────────────────────────────
+  // Everybody this slice touched, new and old alike.
+  const touched = decisions.filter((d) => d.verdict !== 'blocked' && d.customerId);
+  const touchedIds = Array.from(new Set(touched.map((d) => String(d.customerId))));
+
+  // ── 2. what these people have already said about marketing ───────────────
+  //
+  // Read BEFORE anything is patched. "Never clear a yes" only ever had half a
+  // rule: nothing stopped a stale third party export RESTORING consent for
+  // somebody who has unsubscribed here since it was written. marketing-send
+  // takes the NEWEST customer_consents row, so a yes dated now beat their
+  // withdrawal and the emails started again. See consentDecision.
+  const priorByCustomer = new Map<string, Record<string, unknown>[]>();
+  const priorAll: Record<string, unknown>[] = [];
+  for (const slice of chunk(touchedIds, READ_CHUNK)) {
+    const { data } = await opsAdmin.from('customer_consents')
+      .select('customer_id, consented, consent_text, source, purpose, created_at')
+      .in('customer_id', slice);
+    for (const r of (Array.isArray(data) ? data : []) as Record<string, unknown>[]) {
+      const id = String(r.customer_id ?? '');
+      if (!id) continue;
+      const list = priorByCustomer.get(id) ?? [];
+      list.push(r);
+      priorByCustomer.set(id, list);
+      priorAll.push(r);
+    }
+  }
+
+  const consentOf = new Map<Decision, ReturnType<typeof consentDecision>>();
+  const withheldRows: number[] = [];
+  for (const d of touched) {
+    const verdict = consentDecision(d.row, {
+      priorConsents: priorByCustomer.get(String(d.customerId)) ?? [],
+      suppressed: hasStopped(d),
+      now,
+    });
+    consentOf.set(d, verdict);
+    if (verdict && verdict.withheld) withheldRows.push(d.rowNumber);
+  }
+  progress.consentWithheld = withheldRows.length;
+  if (withheldRows.length) {
+    const who = withheldRows.length === 1 ? '1 person' : withheldRows.length + ' people';
+    progress.notes.push('We left marketing switched OFF for ' + who + ' who opted out here after this file was exported. Rows: ' + withheldRows.join(', ') + '.');
+  }
+
+  // ── 3. people we already have: blanks only ────────────────────────────────
   const byId = new Map<string, ExistingCustomer>();
   for (const c of existing) byId.set(c.id, c);
 
   const patches: Record<string, unknown>[] = [];
-  const updated = new Set<string>();
   for (const d of decisions) {
     if (d.verdict !== 'update' || !d.customerId) continue;
-    updated.add(d.customerId);
     const was = byId.get(d.customerId) ?? asUpdate.find((u) => u.decision === d)?.existing ?? null;
     if (!was) continue;
-    const patch = buildPatch(d.row, was, ctx);
-    if (patch) patches.push(patch);
+    const verdict = consentOf.get(d);
+    const patch = buildPatch(d.row, was, ctx, { allowOptIn: !verdict || verdict.setFlag });
+    // COUNTED ONLY WHEN THERE IS SOMETHING TO DO. A match whose patch came back
+    // null is a person we looked at and left exactly as they were, and calling
+    // that "filled in" told the operator we had changed rows we had not.
+    if (!patch) continue;
+    patches.push(patch);
+    progress.updated++;
   }
-  progress.updated = updated.size;
 
   for (const group of groupPatches(patches)) {
     for (const slice of chunk(group, WRITE_CHUNK)) {
+      // Every patch carries `name` (see buildPatch), because an upsert on
+      // conflict id is still an INSERT to Postgres and ExecConstraints runs on
+      // the proposed tuple BEFORE the conflict is resolved: a patch without a
+      // name raised 23502 on EVERY group and this silently fell through to one
+      // request per customer for the whole file. If it still refuses, the
+      // reason is said out loud and only then do we go row by row.
       const { error } = await opsAdmin.from('customers').upsert(slice, { onConflict: 'id' });
       if (!error) continue;
+      progress.errors.push('We had to update ' + slice.length + ' of these people one at a time: ' + String(error.message ?? 'unknown problem') + '.');
       for (const one of slice) {
         const id = String(one.id);
-        const { id: _drop, ...fields } = one as Record<string, unknown> & { id: unknown };
+        const { id: _drop, org_id: _org, ...fields } = one as Record<string, unknown> & { id: unknown; org_id: unknown };
         const { error: oneErr } = await opsAdmin.from('customers').update(fields).eq('id', id).eq('org_id', orgId);
         if (oneErr) progress.errors.push('We could not update one of the people we already had: ' + oneErr.message);
       }
     }
   }
 
-  // Everybody this slice touched, new and old alike.
-  const touched = decisions.filter((d) => d.verdict !== 'blocked' && d.customerId);
-  const touchedIds = Array.from(new Set(touched.map((d) => String(d.customerId))));
-
-  // ── 3. consent, a yes AND a no ────────────────────────────────────────────
+  // ── consent, a yes AND a no ───────────────────────────────────────────────
   if (touchedIds.length) {
-    const already: Record<string, unknown>[] = [];
-    for (const slice of chunk(touchedIds, READ_CHUNK)) {
-      const { data } = await opsAdmin.from('customer_consents')
-        .select('customer_id, consented, consent_text, source')
-        .in('customer_id', slice).eq('source', 'import');
-      if (Array.isArray(data)) already.push(...(data as Record<string, unknown>[]));
-    }
     const rows: Record<string, unknown>[] = [];
     for (const d of touched) {
+      const verdict = consentOf.get(d);
+      if (!verdict || !verdict.write) continue;
       const consent = buildConsent(d.row, {
         customerId: String(d.customerId),
         orgId,
@@ -388,8 +508,11 @@ Deno.serve(async (req) => {
         consentText,
         privacyVersion,
         now,
+        // The FILE's own opt in date, never now, so a yes out of a stale export
+        // can never jump the queue in front of a later withdrawal.
+        createdAt: verdict.createdAt,
       });
-      if (consent && consentIsNew(consent, already)) rows.push(consent);
+      if (consent && consentIsNew(consent, priorAll)) rows.push(consent);
     }
     for (const slice of chunk(rows, WRITE_CHUNK)) {
       const { error } = await opsAdmin.from('customer_consents').insert(slice);
@@ -454,6 +577,15 @@ Deno.serve(async (req) => {
         .like('idempotency_key', STAMP_KEY_PREFIX + '%').in('customer_id', slice);
       for (const t of (Array.isArray(data) ? data : []) as Array<{ customer_id: string }>) stamped.add(String(t.customer_id));
     }
+
+    // The guard above stays. What was missing was saying so: a second,
+    // CORRECTED export is the other obvious human move, and silently dropping
+    // every stamp for everybody already imported, then reporting success, left
+    // the operator believing their fix had landed.
+    const leftAlone = stampsSkipped(decisions, stamped);
+    progress.alreadyStamped = leftAlone.length;
+    const line = alreadyStampedLine(leftAlone.length);
+    if (line) progress.notes.push(line);
 
     const owed = stampsOwed(decisions, stamped);
     if (owed.length) {
@@ -563,7 +695,10 @@ Deno.serve(async (req) => {
       skipped: progress.skipped,
       stamped: progress.stamped,
       enrolled: progress.enrolled,
+      already_stamped: progress.alreadyStamped,
+      consent_withheld: progress.consentWithheld,
       errors: progress.errors,
+      notes: progress.notes,
     },
     totals,
     counts,

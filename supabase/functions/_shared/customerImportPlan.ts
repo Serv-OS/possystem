@@ -36,7 +36,7 @@
 //                      member_code, UNIQUE referral_code.
 //   Platform customer_stamp_cards   UNIQUE (customer_id, program_id, company_id).
 
-import { normalisePhoneUk, normaliseEmail } from './customerImport.ts';
+import { normalisePhoneUk, normaliseEmail, phoneKeys } from './customerImport.ts';
 import type { ImportRow } from './customerImport.ts';
 
 // ── sizes ───────────────────────────────────────────────────────────────────
@@ -196,8 +196,13 @@ export function indexExisting(rows: unknown): ExistingIndex {
   for (let i = 0; i < list.length; i++) {
     const c = list[i] as ExistingCustomer;
     if (!c || typeof c !== 'object' || !c.id) continue;
-    const p = normalisePhoneUk(c.phone);
-    if (p && !byPhone.has(p)) byPhone.set(p, c);
+    // One person, every shape their number could be on file in: what the app's
+    // own rule produces (01614960000), the E.164 form an older run of this
+    // importer wrote (+441614960000), and phone_raw, which is whatever they
+    // typed. Index them ALL, or the same person is imported a second time with
+    // the stamps on the row the till cannot find.
+    const forms = phoneKeys(c.phone).concat(phoneKeys(c.phone_raw));
+    for (let j = 0; j < forms.length; j++) if (!byPhone.has(forms[j])) byPhone.set(forms[j], c);
     const e = normaliseEmail(c.email);
     if (e.email && !byEmail.has(e.email)) byEmail.set(e.email, c);
   }
@@ -210,7 +215,14 @@ function asIndex(existing: unknown): ExistingIndex {
   return indexExisting(existing);
 }
 
-/** The phones and emails a chunk needs to look up, deduped. */
+/**
+ * The phones and emails a chunk needs to look up, deduped.
+ *
+ * EVERY shape of each phone, not just the one we would write. The customer we
+ * are looking for may be on file under the app's shape, under the E.164 form an
+ * older run of this importer wrote, or under what they typed in phone_raw, and
+ * index.ts asks the database for all of them against both phone and phone_raw.
+ */
 export function lookupKeys(rows: unknown): { phones: string[]; emails: string[] } {
   const phones = new Set<string>();
   const emails = new Set<string>();
@@ -218,8 +230,8 @@ export function lookupKeys(rows: unknown): { phones: string[]; emails: string[] 
   for (let i = 0; i < list.length; i++) {
     const r = list[i] as ImportRow;
     if (!r || typeof r !== 'object') continue;
-    const p = normalisePhoneUk(r.phone);
-    if (p) phones.add(p);
+    const forms = phoneKeys(r.phone).concat(phoneKeys(r.phoneRaw));
+    for (let j = 0; j < forms.length; j++) phones.add(forms[j]);
     const e = normaliseEmail(r.email);
     if (e.email) emails.add(e.email);
   }
@@ -258,7 +270,11 @@ export function decideRows(rows: unknown, existing: unknown): Decision[] {
     const phone = normalisePhoneUk(row.phone);
     const email = normaliseEmail(row.email).email;
 
-    const byPhone = phone ? index.byPhone.get(phone) : undefined;
+    // Every shape this cell could already be filed under, so one person is
+    // never imported twice under two spellings of one number.
+    const forms = phoneKeys(row.phone).concat(phoneKeys(row.phoneRaw));
+    let byPhone: ExistingCustomer | undefined;
+    for (let j = 0; j < forms.length && !byPhone; j++) byPhone = index.byPhone.get(forms[j]);
     if (byPhone) {
       out.push({ rowNumber, verdict: 'update', reason: '', customerId: byPhone.id, matchedOn: 'phone', row });
       continue;
@@ -266,8 +282,10 @@ export function decideRows(rows: unknown, existing: unknown): Decision[] {
 
     const byEmail = email ? index.byEmail.get(email) : undefined;
     if (byEmail) {
+      const theirForms = phoneKeys(byEmail.phone).concat(phoneKeys(byEmail.phone_raw));
+      const sameNumber = forms.some((f) => theirForms.indexOf(f) >= 0);
       const theirPhone = normalisePhoneUk(byEmail.phone);
-      if (phone && theirPhone && theirPhone !== phone) {
+      if (phone && theirPhone && !sameNumber) {
         out.push({
           rowNumber,
           verdict: 'blocked',
@@ -377,11 +395,15 @@ export function programmeCheck(args: {
  * there is refused silently, which broke every loyalty sign up on 17 Sep. The
  * rules file already guarantees a name, and this belt goes over that brace.
  */
-export function buildInsert(row: ImportRow, ctx: WriteCtx): Record<string, unknown> {
+export function buildInsert(row: ImportRow, ctx: WriteCtx, opts?: { allowOptIn?: boolean }): Record<string, unknown> {
   const tag = batchTag(ctx?.batchId);
   const sources = [IMPORT_SOURCE];
   if (tag) sources.push(tag);
-  const saidYes = row?.marketingOptIn === true;
+  // A brand new customer row is still somebody who may have pressed unsubscribe
+  // at this venue before. `allowOptIn` is false when their email or their phone
+  // is on the suppression list.
+  const allowOptIn = !opts || opts.allowOptIn !== false;
+  const saidYes = allowOptIn && row?.marketingOptIn === true;
   return {
     org_id: ctx?.orgId ?? null,
     name: text(row?.name) || 'Customer',
@@ -408,10 +430,28 @@ export function buildInsert(row: ImportRow, ctx: WriteCtx): Record<string, unkno
  *
  * Returns null when there is genuinely nothing to do, which is what a second
  * run of the same file under the same batch id looks like.
+ *
+ * `opts.allowOptIn` is false for somebody who has WITHDRAWN their consent here
+ * since the file was exported. See consentDecision: a stale third party file
+ * must not re-consent a person who has since said stop.
+ *
+ * EVERY patch that goes out carries `name`, even when the name is not the thing
+ * we are changing. customers.name is NOT NULL with no default, and a bulk
+ * upsert on conflict id is still an INSERT to Postgres: ExecConstraints runs on
+ * the proposed tuple BEFORE the conflict is resolved, so a patch with no name
+ * raises 23502 every single time and the whole bulk write is refused. The
+ * filler is the name the customer ALREADY has, read back unchanged, so this is
+ * not the padding that quietly overwrites what somebody typed at the till.
  */
-export function buildPatch(row: ImportRow, existing: ExistingCustomer, ctx: WriteCtx): Record<string, unknown> | null {
+export function buildPatch(
+  row: ImportRow,
+  existing: ExistingCustomer,
+  ctx: WriteCtx,
+  opts?: { allowOptIn?: boolean },
+): Record<string, unknown> | null {
   if (!existing || !existing.id) return null;
   const patch: Record<string, unknown> = {};
+  const allowOptIn = !opts || opts.allowOptIn !== false;
 
   if (blank(existing.name) && !blank(row?.name)) patch.name = text(row.name);
   if (blank(existing.first_name) && !blank(row?.firstName)) patch.first_name = text(row.firstName);
@@ -434,12 +474,13 @@ export function buildPatch(row: ImportRow, existing: ExistingCustomer, ctx: Writ
 
   // Only ever true. A no in the file goes to the consent ledger, which
   // marketing-send reads first, and never wipes an earlier yes off the record.
-  if (row?.marketingOptIn === true && existing.marketing_opt_in !== true) {
+  if (allowOptIn && row?.marketingOptIn === true && existing.marketing_opt_in !== true) {
     patch.marketing_opt_in = true;
     patch.marketing_opt_in_at = row?.optInDate ? row.optInDate : (ctx?.now ?? null);
   }
 
   if (!Object.keys(patch).length) return null;
+  if (patch.name === undefined) patch.name = text(existing.name) || text(row?.name) || 'Customer';
   patch.id = existing.id;
   patch.org_id = ctx?.orgId ?? null;
   patch.updated_at = ctx?.now ?? null;
@@ -488,6 +529,8 @@ export function buildConsent(row: ImportRow, args: {
   consentText: string;
   privacyVersion?: string | null;
   now: string;
+  /** When the consent happened. Defaults to now; see consentDecision. */
+  createdAt?: string | null;
 }): Record<string, unknown> | null {
   if (!args?.customerId) return null;
   if (row?.marketingOptIn == null) return null; // nobody said. A blank column is not a yes and not a no.
@@ -503,8 +546,95 @@ export function buildConsent(row: ImportRow, args: {
     method: 'imported_optin',
     consent_text: text(args.consentText) || null,
     privacy_version: args.privacyVersion ?? null,
-    created_at: args.now ?? null,
+    created_at: args.createdAt || args.now || null,
   };
+}
+
+// ── the mirror of "never clear a yes" ───────────────────────────────────────
+
+export interface ConsentVerdict {
+  /** Write a customer_consents row at all. */
+  write: boolean;
+  /** What that row says. */
+  consented: boolean;
+  /** created_at for it: the FILE's opt in date when the file gave one. */
+  createdAt: string;
+  /** Turn customers.marketing_opt_in on. Never true for a withheld yes. */
+  setFlag: boolean;
+  /** We held the yes back because they have since said stop. */
+  withheld: boolean;
+  /** Short plain words for the operator, empty unless withheld. */
+  reason: string;
+}
+
+/**
+ * NEVER CLEAR A YES has to have a mirror, or it is only half a rule.
+ *
+ * "Never clear a yes" stops an import erasing consent. Nothing stopped an
+ * import RESTORING it. Somebody who unsubscribed at this venue (marketing_opt_in
+ * false plus a customer_consents row saying consented false, or a
+ * marketing_suppressions row) was re-consented the moment a stale third party
+ * export was loaded: buildPatch set the flag back to true and index.ts wrote a
+ * consent row dated NOW, which is newer than their withdrawal, and
+ * marketing-send's hasConsent takes the NEWEST row. The person who pressed
+ * unsubscribe starts getting the emails again, which is the venue's fine, not
+ * ours.
+ *
+ * So before a yes is written:
+ *  - a marketing_suppressions row, or a consent row saying no that is NEWER
+ *    than the file's own opt in date, holds the yes back. The flag is left
+ *    alone and the operator is told, by name, which rows we would not re-consent
+ *  - the consent row we do write is dated with the FILE's opt in date, not with
+ *    now, so it can never jump the queue in front of a later withdrawal
+ *  - a file that gives no date at all (5Loyalty export none) cannot prove it is
+ *    newer than anything, so a withdrawal always wins, and no row is written
+ *    for it, because the only date we could put on it is now
+ *
+ * A NO in the file is never held back. A no is always recorded.
+ */
+export function consentDecision(row: ImportRow, args: {
+  priorConsents?: unknown;
+  suppressed?: boolean;
+  now: string;
+}): ConsentVerdict | null {
+  const answer = row?.marketingOptIn;
+  if (answer == null) return null;
+  const now = text(args?.now);
+
+  // A yes carries a date only when the old system gave us one. 5Loyalty do not
+  // expose opt_in_date at all, so the sign up date is the next best truth.
+  const fileDay = text(row?.optInDate) || text(row?.signedUpDate);
+  const fileAt = fileDay ? fileDay.slice(0, 10) + 'T00:00:00.000Z' : '';
+
+  if (answer === false) {
+    return { write: true, consented: false, createdAt: fileAt || now, setFlag: false, withheld: false, reason: '' };
+  }
+
+  // The newest NO on file for this person, whoever wrote it.
+  let newestNo = '';
+  const list: unknown[] = Array.isArray(args?.priorConsents) ? (args.priorConsents as unknown[]) : [];
+  for (let i = 0; i < list.length; i++) {
+    const c = list[i] as { consented?: unknown; created_at?: unknown; purpose?: unknown };
+    if (!c || typeof c !== 'object') continue;
+    if (c.consented === true) continue;
+    const at = text(c.created_at);
+    if (at > newestNo) newestNo = at;
+  }
+
+  const suppressed = args?.suppressed === true;
+  const staleYes = !!newestNo && (!fileAt || fileAt <= newestNo);
+  if (suppressed || staleYes) {
+    return {
+      write: !!fileAt,       // dated with the file's own day, so it cannot jump the withdrawal
+      consented: true,
+      createdAt: fileAt || now,
+      setFlag: false,
+      withheld: true,
+      reason: 'They opted out here after this file was exported, so we left them opted out.',
+    };
+  }
+
+  return { write: true, consented: true, createdAt: fileAt || now, setFlag: true, withheld: false, reason: '' };
 }
 
 /**
@@ -594,6 +724,43 @@ export function stampsOwed(decisions: unknown, alreadyStamped: unknown): Decisio
   return out;
 }
 
+/**
+ * The other half of stampsOwed: the people whose stamps we did NOT give,
+ * because an import has already stamped them for this programme.
+ *
+ * The guard is right and it stays. What was wrong was the silence. A second,
+ * CORRECTED export is the other obvious human move, and the first version of
+ * this dropped every stamp for everybody already imported and reported the run
+ * as a success, so the operator had no way of knowing their fix had not landed.
+ * Now we hand the ids back and the screen says so out loud next to the stamp
+ * tile.
+ */
+export function stampsSkipped(decisions: unknown, alreadyStamped: unknown): Decision[] {
+  const list: Decision[] = Array.isArray(decisions) ? (decisions as Decision[]) : [];
+  const done: Set<string> = alreadyStamped instanceof Set
+    ? (alreadyStamped as Set<string>)
+    : new Set((Array.isArray(alreadyStamped) ? alreadyStamped : []).map((v) => String(v)));
+  const out: Decision[] = [];
+  for (let i = 0; i < list.length; i++) {
+    const d = list[i];
+    if (!d || !d.row || d.verdict === 'blocked' || !d.customerId) continue;
+    const stamps = Number(d.row.stamps) || 0;
+    const rewards = Number(d.row.rewardsUnused) || 0;
+    if (stamps <= 0 && rewards <= 0) continue;
+    if (!done.has(String(d.customerId))) continue;
+    out.push(d);
+  }
+  return out;
+}
+
+/** The line the operator reads when we left cards alone. Empty when none. */
+export function alreadyStampedLine(count: unknown): string {
+  const n = Math.max(0, Math.floor(Number(count) || 0));
+  if (n < 1) return '';
+  const people = n === 1 ? '1 of these people' : n + ' of these people';
+  return 'We already imported stamps for ' + people + ', so we left their cards alone.';
+}
+
 // ── progress ────────────────────────────────────────────────────────────────
 
 export interface Progress {
@@ -603,9 +770,15 @@ export interface Progress {
   skipped: number;
   stamped: number;
   enrolled: number;
+  /** People whose cards we left alone because an import already stamped them. */
+  alreadyStamped: number;
+  /** People we would not re-consent, because they opted out here since. */
+  consentWithheld: number;
   errors: string[];
+  /** Named lines the screen shows on their own, not as errors. */
+  notes: string[];
 }
 
 export function emptyProgress(): Progress {
-  return { rows: 0, created: 0, updated: 0, skipped: 0, stamped: 0, enrolled: 0, errors: [] };
+  return { rows: 0, created: 0, updated: 0, skipped: 0, stamped: 0, enrolled: 0, alreadyStamped: 0, consentWithheld: 0, errors: [], notes: [] };
 }

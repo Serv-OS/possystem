@@ -36,22 +36,37 @@
 //    (org_id, lower(email)), both where not deleted. Two shapes of one phone
 //    both insert and the person exists twice.
 //
-// So this file normalises to E.164 (+447700900123) and REFUSES anything it
-// cannot make sense of. A refused row is shown to the operator with its row
-// number, and nothing is written for it. We never guess a phone into the
-// database: a wrong number is a stranger's phone.
+// So this file writes a phone in THE SHAPE THE APP ITSELF PRODUCES, which is
+// what `appPhone` below is: a character for character copy of the rule in
+// store/index.js, customerLookup.js and loyalty-otp. A leading + is kept, 07
+// plus eleven digits becomes +44..., 44... becomes +44..., and everything else
+// is the bare digits exactly as typed. A Manchester landline the till stored as
+// 01614960000 is written back as 01614960000, not as +441614960000, because the
+// second one is a customer nobody can find.
 //
-// The one inference we DO make is named and flagged. Excel eats the leading
-// zero off 07700900123 and hands back 7700900123, which is not a rare accident,
-// it is what happens to nearly every phone column a shop opens in a spreadsheet
-// before sending it. A bare 10 digit number is read as a UK number with the
-// trunk zero lost, and `assumed` comes back true so the screen can say how many
-// rows it did that to. Anything shorter stays an error, because a 9 digit
+// And we look a person up under EVERY shape they could already be filed under:
+// what the app produces, the E.164 form the first version of this importer
+// wrote, and phone_raw. See `phoneKeys`.
+//
+// Anything we cannot make sense of is REFUSED. A refused row is shown to the
+// operator with its row number, and nothing is written for it. We never guess a
+// phone into the database: a wrong number is a stranger's phone.
+//
+// The one inference we DO make is named and flagged, and it adds nothing but a
+// zero. Excel eats the leading zero off 07700900123 and hands back 7700900123,
+// which is not a rare accident, it is what happens to nearly every phone column
+// a shop opens in a spreadsheet before sending it. Peter, 17 Sep 2026: "dont
+// worry about country code it should always start with a 0 just insert a 0 in
+// front of the number." So a bare 10 digit number gets its zero back, `assumed`
+// comes back true so the screen can say how many rows it did that to, and no
+// country code is invented. Anything shorter stays an error, because a 9 digit
 // fragment could be anything.
 //
-// Nothing here is UK-only except normalisePhoneUk, which says so in its name.
-// A number already written in full international form (+353..., +1...) is kept
-// as it stands, because that is not a guess, it is already E.164.
+// NOTHING HERE ASSUMES A COUNTRY. The old rule read every bare 10 digit number
+// as British, so a US list of 4155551234 came out as +444155551234 for every
+// single row, which is somebody else's phone and their loyalty login. RPOS runs
+// US venues. A number already written in full international form (+353..., +1...)
+// is kept as it stands, because that is not a guess.
 //
 // A PHONE WE CANNOT READ STOPS THE ROW. A BAD EMAIL DOES NOT. That asymmetry is
 // deliberate. The phone is the login and the till's search key, so a person
@@ -79,7 +94,7 @@
 // words, what is in it and what is wrong with it.
 // ============================================================================
 
-export interface PhoneRead { phone: string | null; ok: boolean; empty: boolean; assumed: boolean; reason: string }
+export interface PhoneRead { phone: string | null; local: string | null; e164: string | null; ok: boolean; empty: boolean; assumed: boolean; reason: string }
 export interface EmailRead { email: string | null; ok: boolean; empty: boolean; reason: string }
 export interface NumberRead { value: number; ok: boolean; empty: boolean; reason: string }
 export interface YesNoRead { value: boolean | null; ok: boolean; empty: boolean; reason: string }
@@ -106,6 +121,8 @@ export interface ImportRow {
   firstName: string;
   lastName: string;
   phone: string | null;
+  phoneLocal: string | null;
+  phoneE164: string | null;
   phoneRaw: string | null;
   phoneAssumed: boolean;
   email: string | null;
@@ -502,60 +519,124 @@ function isBlankWord(text: string): boolean {
 }
 
 /**
- * A UK phone number to E.164, or null with a reason.
+ * The app's OWN phone rule, character for character.
  *
- * Returns { phone, ok, empty, assumed, reason }.
- *  - phone   '+447700900123' or null
+ * There are three identical copies of it live already, and every one of them
+ * is a place a customer is looked up or written:
+ *   src/store/index.js          _normalisePhone   (the till)
+ *   src/lib/customerLookup.js   normalisePhone    (kiosk and online)
+ *   supabase/functions/loyalty-otp/index.ts       (the loyalty login)
+ *
+ * It keeps a leading +, turns 07 plus eleven digits into +44..., turns 44...
+ * into +44..., and hands EVERYTHING ELSE back as the bare digits exactly as
+ * typed. So a Manchester landline sits in customers.phone as 01614960000, not
+ * as +441614960000, and an importer that writes the E.164 form creates a second
+ * customer the till can never find, with the stamps on the row nobody sees.
+ *
+ * This is a copy on purpose: an edge function cannot import out of src/, and
+ * this file is mirrored into supabase/functions/_shared. Do NOT change the
+ * shape here without changing the three above, which is a different job.
+ */
+export function appPhone(raw: unknown): string | null {
+  if (!raw) return null;
+  const digits = String(raw).replace(/[^\d+]/g, '');
+  if (!digits) return null;
+  if (digits.startsWith('+')) return digits;
+  if (digits.startsWith('07') && digits.length === 11) return '+44' + digits.slice(1);
+  if (digits.startsWith('44')) return '+' + digits;
+  return digits;
+}
+
+/**
+ * One phone cell read, or refused with a reason.
+ *
+ * Returns { phone, local, e164, ok, empty, assumed, reason }.
+ *  - phone   what we WRITE: the cell put through the app's own rule above, so
+ *            the till finds the person it already knows. '+447700900123' for a
+ *            mobile, '01614960000' for a landline, '+353861234567' for a number
+ *            that already carried its own country code.
+ *  - local   the number the way the operator would key it in, leading zero and
+ *            all, or null when the cell was already international.
+ *  - e164    the full international form, kept as a SECOND key to look under,
+ *            because the first version of this importer wrote that shape and
+ *            those rows have to be found, not doubled.
  *  - empty   true when the cell was blank (not an error on its own)
  *  - assumed true when we put back a leading zero a spreadsheet ate
  *  - reason  short plain words for the operator when ok is false
  *
- * Already international (+353..., +1...) is kept as it stands. A UK number is
- * accepted as 07..., 447..., +447..., 00447..., with spaces, brackets, dots or
- * dashes anywhere. Anything else is an error, never a guess.
+ * Peter, 17 Sep 2026: "dont worry about country code it should always start
+ * with a 0 just insert a 0 in front of the number." So a bare ten digit number
+ * gets its zero back and then goes through the same rule as every other number.
+ * We never bolt a country code onto a number that did not carry one: the old
+ * rule read every bare ten digit number as British, and a US list of
+ * 4155551234 came out as +444155551234, which is a stranger's phone and their
+ * loyalty login. A number that DOES carry its own + is kept as it stands,
+ * because that is not a guess.
  */
 export function readPhone(raw: unknown): PhoneRead {
   const text = cleanText(raw);
-  if (!text || isBlankWord(text)) return { phone: null, ok: true, empty: true, assumed: false, reason: '' };
-  if (/[a-z]/i.test(text)) return { phone: null, ok: false, empty: false, assumed: false, reason: 'We cannot read that phone number.' };
+  const no = (reason: string): PhoneRead => ({ phone: null, local: null, e164: null, ok: false, empty: false, assumed: false, reason });
+  if (!text || isBlankWord(text)) return { phone: null, local: null, e164: null, ok: true, empty: true, assumed: false, reason: '' };
+  if (/[a-z]/i.test(text)) return no('We cannot read that phone number.');
 
   let s = text.replace(/[\s()\-.\u2010-\u2015/\\]/g, '');
   if (s.startsWith('00')) s = '+' + s.slice(2);
   const plus = s.startsWith('+');
   const digits = plus ? s.slice(1) : s;
-  if (!digits || !/^\d+$/.test(digits)) {
-    return { phone: null, ok: false, empty: false, assumed: false, reason: 'We cannot read that phone number.' };
-  }
+  if (!digits || !/^\d+$/.test(digits)) return no('We cannot read that phone number.');
 
-  // A UK national number: 9 or 10 digits, never starting with 0.
-  const uk = (national: string, assumed: boolean): PhoneRead => {
-    if (national.length < 9) return { phone: null, ok: false, empty: false, assumed: false, reason: 'That phone number is too short.' };
-    if (national.length > 10) return { phone: null, ok: false, empty: false, assumed: false, reason: 'That phone number is too long.' };
-    if (national.charAt(0) === '0') return { phone: null, ok: false, empty: false, assumed: false, reason: 'We cannot read that phone number.' };
-    return { phone: '+44' + national, ok: true, empty: false, assumed, reason: '' };
+  // A number with no country code on it: 9 or 10 digits once the trunk zero is
+  // off. We put the zero back and let the app's rule say what gets stored.
+  const dialled = (national: string, assumed: boolean): PhoneRead => {
+    if (national.length < 9) return no('That phone number is too short.');
+    if (national.length > 10) return no('That phone number is too long.');
+    if (national.charAt(0) === '0') return no('We cannot read that phone number.');
+    const local = '0' + national;
+    return { phone: appPhone(local), local, e164: '+44' + national, ok: true, empty: false, assumed, reason: '' };
   };
 
   if (digits.startsWith('44')) {
     let national = digits.slice(2);
     if (national.charAt(0) === '0') national = national.slice(1);
-    return uk(national, false);
+    return dialled(national, false);
   }
   if (plus) {
-    if (digits.length < 8) return { phone: null, ok: false, empty: false, assumed: false, reason: 'That phone number is too short.' };
-    if (digits.length > 15) return { phone: null, ok: false, empty: false, assumed: false, reason: 'That phone number is too long.' };
-    return { phone: '+' + digits, ok: true, empty: false, assumed: false, reason: '' };
+    if (digits.length < 8) return no('That phone number is too short.');
+    if (digits.length > 15) return no('That phone number is too long.');
+    return { phone: '+' + digits, local: null, e164: '+' + digits, ok: true, empty: false, assumed: false, reason: '' };
   }
-  if (digits.charAt(0) === '0') return uk(digits.slice(1), false);
-  // Excel ate the leading zero. Ten digits is a whole UK national number.
-  if (digits.length === 10) return uk(digits, true);
-  if (digits.length < 10) return { phone: null, ok: false, empty: false, assumed: false, reason: 'That phone number is too short.' };
-  return { phone: null, ok: false, empty: false, assumed: false, reason: 'We cannot read that phone number. Put + and the country code on the front.' };
+  if (digits.charAt(0) === '0') return dialled(digits.slice(1), false);
+  // Excel ate the leading zero off the phone column, which is what happens to
+  // nearly every list a shop opens in a spreadsheet. Put it back. Nine digits
+  // or fewer stays an error, because a short fragment could be anything.
+  if (digits.length === 10) return dialled(digits, true);
+  if (digits.length < 10) return no('That phone number is too short.');
+  return no('We cannot read that phone number. Put + and the country code on the front.');
 }
 
 /** The phone in the shape the whole app looks customers up by, or null. */
 export function normalisePhoneUk(raw: unknown): string | null {
   const r = readPhone(raw);
   return r.ok ? r.phone : null;
+}
+
+/**
+ * Every shape one phone can already be sitting in the database under.
+ *
+ * A person's number can be on file three ways at once: what the app's rule
+ * produced when the till saved them (01614960000), the E.164 form an earlier
+ * run of this importer wrote (+441614960000), and phone_raw, which is whatever
+ * somebody typed. Matching on only one of them is how one customer becomes two,
+ * with the stamps on the row the till cannot find. So we look under all of
+ * them, and we write only the one the app itself produces.
+ */
+export function phoneKeys(raw: unknown): string[] {
+  const out: string[] = [];
+  const add = (v: string | null) => { if (v && out.indexOf(v) < 0) out.push(v); };
+  const r = readPhone(raw);
+  if (r.ok) { add(r.phone); add(r.e164); add(r.local); }
+  add(appPhone(raw));
+  return out;
 }
 
 /**
@@ -684,6 +765,36 @@ function looksNormalised(row: unknown): boolean {
 }
 
 /**
+ * Rows stripped back to the raw cells of the template and nothing else.
+ *
+ * normaliseRow hands an ALREADY normalised row straight back, which is the only
+ * reason validateRows is safe to run on its own output. That passthrough is a
+ * hole the moment the rows came off the wire: any signed in Back Office user of
+ * the venue could POST { problems: [], phoneRaw: null, stamps: 100000,
+ * marketingOptIn: true } and walk straight past validateRows, which is the edge
+ * function's single guard, into a hundred thousand free coffees.
+ *
+ * So anything arriving from a browser goes through here first. Every key that
+ * is not a template column is dropped, every cell becomes a string, and the
+ * rules then run on the cells instead of on somebody's idea of the answer.
+ */
+export function rawRowsOnly(rows: unknown): Record<string, unknown>[] {
+  const list: unknown[] = Array.isArray(rows) ? rows : [];
+  const out: Record<string, unknown>[] = [];
+  for (let i = 0; i < list.length; i++) {
+    const src = (list[i] && typeof list[i] === 'object' ? list[i] : {}) as Record<string, unknown>;
+    const row: Record<string, unknown> = { rowNumber: typeof src.rowNumber === 'number' ? src.rowNumber : i + 2 };
+    for (let c = 0; c < TEMPLATE_COLUMNS.length; c++) {
+      const col = TEMPLATE_COLUMNS[c];
+      const cell = src[col];
+      row[col] = cell == null ? '' : String(cell);
+    }
+    out.push(row);
+  }
+  return out;
+}
+
+/**
  * One raw row from readCsv into the shape we would write, with everything that
  * is wrong with it listed in plain words.
  *
@@ -752,6 +863,8 @@ export function normaliseRow(row: unknown, opts?: ReadOpts | null): ImportRow {
     firstName,
     lastName,
     phone: p.phone,
+    phoneLocal: p.local,
+    phoneE164: p.e164,
     phoneRaw: phoneRaw || null,
     phoneAssumed: !!p.assumed,
     email: e.email,
@@ -847,7 +960,7 @@ export function buildExistingKeys(source: unknown): Set<string> {
   if (!source) return keys;
   if (source instanceof Set) return buildExistingKeys(Array.from(source));
 
-  const addPhone = (v: unknown): void => { const n = normalisePhoneUk(v); if (n) keys.add('p:' + n); };
+  const addPhone = (v: unknown): void => { const list = phoneKeys(v); for (let i = 0; i < list.length; i++) keys.add('p:' + list[i]); };
   const addEmail = (v: unknown): void => { const n = normaliseEmail(v); if (n.email) keys.add('e:' + n.email); };
 
   if (Array.isArray(source)) {
@@ -859,8 +972,10 @@ export function buildExistingKeys(source: unknown): Set<string> {
         else if (item.indexOf('@') >= 0) addEmail(item);
         else addPhone(item);
       } else if (typeof item === 'object') {
-        const c = item as { phone?: unknown; email?: unknown };
+        const c = item as { phone?: unknown; phone_raw?: unknown; phoneRaw?: unknown; email?: unknown };
         addPhone(c.phone);
+        addPhone(c.phone_raw);
+        addPhone(c.phoneRaw);
         addEmail(c.email);
       }
     }
@@ -876,6 +991,35 @@ export function buildExistingKeys(source: unknown): Set<string> {
     for (let i = 0; i < em.length; i++) addEmail(em[i]);
   }
   return keys;
+}
+
+/**
+ * True when this row is somebody the venue already has.
+ *
+ * Checked against EVERY shape of their phone, not just the one we would write,
+ * because the same person can be on file under the app's shape or under the
+ * E.164 form an older run of this importer wrote.
+ */
+export function matchesExisting(row: unknown, keys: unknown): boolean {
+  const r = row as ImportRow | null;
+  const set = keys as Set<string> | null;
+  if (!r || !set || typeof set.has !== 'function') return false;
+  const forms = [r.phone, r.phoneE164, r.phoneLocal];
+  for (let i = 0; i < forms.length; i++) if (forms[i] && set.has('p:' + forms[i])) return true;
+  return !!(r.email && set.has('e:' + r.email));
+}
+
+/** Distinct row numbers with something wrong with them. One row with three
+ *  problems is ONE row, not three. */
+export function problemRowNumbers(checked: unknown): number[] {
+  const c = (checked || {}) as Checked;
+  const errors = Array.isArray(c.errors) ? c.errors : [];
+  const seen = new Set<number>();
+  for (let i = 0; i < errors.length; i++) {
+    const n = errors[i] && errors[i].rowNumber;
+    if (n) seen.add(n);
+  }
+  return Array.from(seen).sort((a, b) => a - b);
 }
 
 /**
@@ -908,8 +1052,7 @@ export function summarise(rows: unknown, existingKeys?: unknown, opts?: ReadOpts
 
   for (let i = 0; i < checked.ready.length; i++) {
     const r = checked.ready[i];
-    const known = (r.phone && keys.has('p:' + r.phone)) || (r.email && keys.has('e:' + r.email));
-    if (known) alreadyKnown++; else newCustomers++;
+    if (matchesExisting(r, keys)) alreadyKnown++; else newCustomers++;
     if (r.stamps > 0 || r.rewardsUnused > 0) withStamps++;
     stampsTotal += r.stamps;
     rewardsTotal += r.rewardsUnused;
@@ -921,8 +1064,7 @@ export function summarise(rows: unknown, existingKeys?: unknown, opts?: ReadOpts
     if (r.phoneAssumed) phoneFixed++;
   }
 
-  const problemRows = new Set<number>();
-  for (let i = 0; i < checked.errors.length; i++) problemRows.add(checked.errors[i].rowNumber);
+  const problemRows = problemRowNumbers(checked);
 
   return {
     ready: checked.ready.length,
@@ -936,8 +1078,8 @@ export function summarise(rows: unknown, existingKeys?: unknown, opts?: ReadOpts
     optedOut,
     notSaid,
     phoneFixed,
-    problems: problemRows.size,
+    problems: problemRows.length,
     duplicates: checked.duplicatesInFile.length,
-    total: checked.ready.length + problemRows.size + checked.duplicatesInFile.length,
+    total: checked.ready.length + problemRows.length + checked.duplicatesInFile.length,
   };
 }
