@@ -54,7 +54,7 @@
 //     suggests instead, and the line stays unmatched until a person picks.
 
 import {
-  applyLinks, autoLinkDecision, buildLinkKey, findLink, indexItemCodes, indexLinks, linkKeyCandidates,
+  applyLinks, autoLinkDecision, buildLinkKey, findLink, indexItemCodes, indexLinks, linkKeyCandidates, normaliseKeyName,
 } from './ezcaterMatch.ts';
 // The ezMatch stamp lives with the rest of the customer jsonb shape, in the
 // mapper, not here.
@@ -269,11 +269,80 @@ const SIZE_SEP = '#';
 export const isSizeRowKey = (key: unknown): boolean => text(key).includes(SIZE_SEP);
 
 /**
- * A person's "no": a row staff saved with no target (a cleared match, or Not on our menu).
- * Review round 4: a clear is a DECISION, and nothing automatic ever matches over it.
+ * A size's part of a size row key: its key form, else a plain fold (a size can be only noise).
+ * Lives here (not in ezcaterMenuSync.ts, which re-exports it) so an order line can find its size
+ * row by name and size with exactly the rule the sync wrote it under.
  */
-export const personSaidNo = (link: any): boolean =>
-  !!link && text(link.source) === 'manual' && !text(link.menuItemId) && !text(link.optionId);
+export function sizeKeyPart(size: unknown): string {
+  const k = normaliseKeyName(size);
+  if (k) return k;
+  return String(size == null ? '' : size).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+/**
+ * matched_by on a row a person CLEARED with the screen from this deploy on (review round 5).
+ * Rows cleared BEFORE this deploy were written as source 'manual', no target, matched_by null,
+ * and orders still auto linked them by exact name; they keep doing exactly that. Only a clear
+ * recorded with this mark is a permanent no.
+ */
+export const CLEARED_MARK = 'cleared';
+
+/**
+ * A person's "no": a row staff saved with no target AND marked it: a clear made after this deploy
+ * (matched_by 'cleared'), or Not on our menu (matched_by 'ignored'). Nothing automatic matches
+ * over it. An old unmarked clear is not a no (review round 5: yesterday's routing keeps working).
+ */
+export const personSaidNo = (link: any): boolean => {
+  if (!link || text(link.source) !== 'manual' || text(link.menuItemId) || text(link.optionId)) return false;
+  const by = text(link.matchedBy != null ? link.matchedBy : link.matched_by);
+  return by === CLEARED_MARK || by === 'ignored';
+};
+
+/** The raw link rows, whatever shape they came in (array, Map or object keyed by ez_key). */
+function linkRowsOf(links: any): any[] {
+  if (Array.isArray(links)) return links.filter(Boolean);
+  const out: any[] = [];
+  if (links instanceof Map) { for (const [k, r] of links) if (r) out.push({ ez_key: k, ...r }); return out; }
+  if (links && typeof links === 'object') for (const k of Object.keys(links)) if (links[k]) out.push({ ez_key: k, ...links[k] });
+  return out;
+}
+
+/**
+ * indexLinks, plus each row's matched_by (as matchedBy), which personSaidNo needs to tell a
+ * marked clear from an old one. PURE.
+ */
+export function indexLinksWithMarks(links: any): Map<string, any> {
+  const idx = indexLinks(links);
+  for (const r of linkRowsOf(links)) {
+    const key = text(r.ez_key) || text(r.ezKey);
+    const hit = key ? idx.get((text(r.kind) || 'item') + ':' + key) : null;
+    if (hit) hit.matchedBy = text(r.matched_by != null ? r.matched_by : r.matchedBy) || null;
+  }
+  return idx;
+}
+
+/**
+ * The item name keys that have a size row still ON ezCater's menu (current published ids, or no
+ * id column read at all, which can only mean the row came from a sync). An order line WITH a
+ * size for such an item is decided by its size row, never by the item's name only row. PURE.
+ */
+export function liveSizedNames(links: any): Set<string> {
+  const out = new Set<string>();
+  for (const r of linkRowsOf(links)) {
+    if ((text(r.kind) || 'item') !== 'item') continue;
+    const key = text(r.ez_key) || text(r.ezKey);
+    const cut = key.indexOf(SIZE_SEP);
+    if (cut <= 0) continue;
+    const ids = Array.isArray(r.ez_ids) ? r.ez_ids : r.ezIds;
+    if (Array.isArray(ids) && !ids.length) continue;
+    out.add(key.slice(0, cut));
+  }
+  return out;
+}
+
+/** True when an order line names a size: ezCater's size id or its size name. */
+export const lineHasSize = (line: any): boolean => !!text(line?.ezSizeId) || !!text(line?.sizeName);
 
 /**
  * Which decision a line gets when its published id landed on a synced row whose key the NAME
@@ -407,9 +476,10 @@ export function planLineMatches(input: {
   const applied = applyLinks(lines, links, codes);
   const haveItems = ourItems.length > 0;
   const haveGroups = ourGroups.length > 0;
-  const idx = indexLinks(links);
+  const idx = indexLinksWithMarks(links);
   const byId = indexLinkIds(links);
   const unseen = unseenMenuIds(lines, links);
+  const sizedNames = liveSizedNames(links);
 
   /**
    * The synced row a line's published id lands on, when the NAME rules would not have found that
@@ -426,21 +496,57 @@ export function planLineMatches(input: {
     return link ? { key, link } : null;
   };
 
+  /**
+   * THE SIZE ROW A SIZED LINE IS DECIDED BY (review round 5). A line that names a size (ezSizeId
+   * or sizeName) of an item that HAS size rows ('soup#small', 'soup#large') is never decided by
+   * the item's name only row ('soup', perhaps a staff match to our Soup Small from before the
+   * sync). Its published id finds the size row; an id we do not know yet (the first order after
+   * every ezCater republish) finds it by name and size; when neither does, the line stays
+   * unmatched and prints by name until the re-sync, never the wrong size.
+   *
+   *   { key, link }       the size row that decides the line
+   *   { key: '', link: null }  the item has size rows but this line's size is not one we hold
+   *   null                the item has no size rows (or the line names no size): the name rules
+   *                       decide, exactly as before
+   */
+  const sizeRowFor = (src: any): { key: string; link: any } | null => {
+    if (!lineHasSize(src)) return null;
+    const id = text(src?.ezSizeId);
+    const byIdKey = id ? byId.get('item:' + id) : null;
+    const byIdLink = byIdKey ? idx.get('item:' + byIdKey) : null;
+    if (byIdKey && byIdLink) return isSizeRowKey(byIdKey) ? { key: byIdKey, link: byIdLink } : null;
+    const base = linkKeyCandidates(src, 'item').find((k) => sizedNames.has(k));
+    if (!base) return null;
+    const part = sizeKeyPart(src?.sizeName);
+    const key = part ? base + SIZE_SEP + part : '';
+    const link = key ? idx.get('item:' + key) : null;
+    return link ? { key, link } : { key: '', link: null };
+  };
+
+  /** What a size row says for a line when there is no menu to check its target against. */
+  const fromSizeRowOnly = (sized: { key: string; link: any }) => {
+    const id = sized.link ? (text(sized.link.menuItemId) || null) : null;
+    return { itemId: id, source: id ? (text(sized.link.source) || 'auto') : null };
+  };
+
   if (!locationId || !menuOk || (!haveItems && !haveGroups)) {
     // Saved links only. A synced row a line's id lands on still counts, when it has a target and
     // the name pass found nothing: it is a saved decision like any other.
     const withIds = applied.map((appliedLine: any, i: number) => {
       const src = lines[i] || {};
       let out = appliedLine;
-      const hit = syncedRowFor(src, 'item');
+      const sized = sizeRowFor(src);
+      const hit = sized ? null : syncedRowFor(src, 'item');
       const certain = appliedLine.match && (appliedLine.match.source === 'itemCode' || appliedLine.match.source === 'posItemId');
-      if (hit && isSizeRowKey(hit.key) && !certain) {
+      if (sized && !certain) {
         // A size row decides a sized line on its own, even here: never the old name only row.
-        const id = text(hit.link.menuItemId) || null;
-        out = { ...out, itemId: id, match: { matched: !!id, source: id ? (hit.link.source || 'auto') : null } };
+        const r = fromSizeRowOnly(sized);
+        out = { ...out, itemId: r.itemId, match: { matched: !!r.itemId, source: r.source } };
       } else if (hit && !appliedLine.itemId && text(hit.link.menuItemId)) {
         out = { ...out, itemId: text(hit.link.menuItemId), match: { matched: true, source: hit.link.source || 'auto' } };
       }
+      // Stamped so a later re-ask knows how this line was decided (carryMatchedItems).
+      out = { ...out, match: { ...(out.match || { matched: !!out.itemId, source: null }), sizeKey: sized ? sized.key : null } };
       const srcMods = Array.isArray(src.mods) ? src.mods : [];
       const mods = (Array.isArray(out.mods) ? out.mods : []).map((m: any, j: number) => {
         const mh = syncedRowFor(srcMods[j] || {}, 'option');
@@ -545,13 +651,23 @@ export function planLineMatches(input: {
     const src = lines[i] || {};
     let itemId = appliedLine.itemId != null ? String(appliedLine.itemId) : null;
     let source = appliedLine.match ? appliedLine.match.source : null;
+    const sized = sizeRowFor(src);
 
     if (haveItems) {
       // codes is passed in rather than rebuilt per line: one index for the
       // whole order, and the option arm cannot build one at all.
       let d = noOverPersonsNo(autoLinkDecision(src, ourItems, links, { kind: 'item', itemCodes: codes }), src, 'item');
-      const synced = syncedRowFor(src, 'item');
-      if (synced) {
+      const synced = sized ? null : syncedRowFor(src, 'item');
+      if (sized) {
+        // A sized line of an item with size rows (review round 5): its size row decides, or
+        // nothing does. No name only sighting is written or filled beside it.
+        if (sized.link) {
+          d = decideWithSyncedRow(d, sized.link, 'item', ourItemIds);
+          sawExisting('item', sized.key);
+        } else if (!(d && d.action === 'linked' && d.source === 'itemCode')) {
+          d = { action: 'none', reason: 'this ezCater size is not synced yet' };
+        }
+      } else if (synced) {
         // The line's published id is on a synced row the name would not find. That row is the
         // one this line is counted on; no name only sighting is written beside it.
         d = decideWithSyncedRow(d, synced.link, 'item', ourItemIds);
@@ -564,6 +680,11 @@ export function planLineMatches(input: {
       }
       itemId = d.action === 'linked' && d.itemId != null ? String(d.itemId) : null;
       source = d.action === 'linked' ? (d.source || null) : null;
+    } else if (sized && source !== 'itemCode' && source !== 'posItemId') {
+      // Only our modifier groups were read: the size row still decides a sized line.
+      const r = fromSizeRowOnly(sized);
+      itemId = r.itemId;
+      source = r.source;
     }
 
     const srcMods = Array.isArray(src.mods) ? src.mods : [];
@@ -594,7 +715,9 @@ export function planLineMatches(input: {
       };
     });
 
-    return { ...appliedLine, itemId, mods, match: { matched: !!itemId, source } };
+    // sizeKey: the size row that decided this line ('' when the item has size rows but none for
+    // this size, null when the name rules decided). A re-ask reads it (carryMatchedItems).
+    return { ...appliedLine, itemId, mods, match: { matched: !!itemId, source, sizeKey: sized ? sized.key : null } };
   });
 
   const writes = Array.from(fresh.values()).slice(0, MAX_LINK_WRITES);
@@ -667,6 +790,13 @@ async function readPaged(
 export const LINK_COLUMNS = 'kind, ez_key, ez_name, ez_group, menu_item_id, option_id, source, matched_by, seen_count, last_seen_at';
 /** Plus the columns "Sync ezCater menu" adds (20260918_OPS_ezcater_menu_sync.sql). */
 export const LINK_COLUMNS_SYNC = LINK_COLUMNS + ', ez_ids, ez_prior_ids, ez_original_ids, ez_size_name, ez_category, ez_menu, synced_at';
+/**
+ * The sync columns of the FIRST version of 20260918_OPS_ezcater_menu_sync.sql, which had no
+ * ez_prior_ids (review round 5). A database that ran only that version still has synced size
+ * rows, and they must keep deciding sized lines, so ez_ids is read even when ez_prior_ids is not
+ * there yet.
+ */
+export const LINK_COLUMNS_IDS = LINK_COLUMNS + ', ez_ids, ez_original_ids, ez_size_name, ez_category, ez_menu, synced_at';
 /** Rows per page. PostgREST answers at most 1000 rows to one select. */
 export const LINK_PAGE_SIZE = 1000;
 /** Pages. 50,000 names at one venue is far past any real menu. */
@@ -694,7 +824,7 @@ export async function readAllLinks(
   sb: any,
   locationId: string,
   opts: { deadline?: number | null; pageSize?: number; maxPages?: number } = {},
-): Promise<{ rows: any[]; ok: boolean; complete: boolean; synced: boolean; absent: boolean; error: any }> {
+): Promise<{ rows: any[]; ok: boolean; complete: boolean; synced: boolean; idsRead: boolean; absent: boolean; error: any }> {
   const size = opts.pageSize || LINK_PAGE_SIZE;
   const maxPages = opts.maxPages || LINK_MAX_PAGES;
   const readWith = async (columns: string) => {
@@ -714,17 +844,25 @@ export async function readAllLinks(
     return { rows, ok: true, complete: false, error: null };
   };
   try {
+    // synced: every sync column is there (a sync may run). idsRead: the published ids came back,
+    // so synced rows decide their lines, even on the first version of the migration.
     let r = await readWith(LINK_COLUMNS_SYNC);
     let synced = r.ok;
+    let idsRead = r.ok;
     if (!r.ok && isMissingColumn(r.error)) {
-      r = await readWith(LINK_COLUMNS);
+      r = await readWith(LINK_COLUMNS_IDS);
       synced = false;
+      idsRead = r.ok;
+      if (!r.ok && isMissingColumn(r.error)) {
+        r = await readWith(LINK_COLUMNS);
+        idsRead = false;
+      }
     }
     const code = String(r.error?.code || '');
     const absent = !r.ok && (code === '42P01' || code === 'PGRST205' || /does not exist|could not find the table/i.test(String(r.error?.message || '')));
-    return { rows: r.rows, ok: r.ok, complete: r.complete, synced: synced && r.ok, absent, error: r.error };
+    return { rows: r.rows, ok: r.ok, complete: r.complete, synced: synced && r.ok, idsRead: idsRead && r.ok, absent, error: r.error };
   } catch (e) {
-    return { rows: [], ok: false, complete: false, synced: false, absent: false, error: e };
+    return { rows: [], ok: false, complete: false, synced: false, idsRead: false, absent: false, error: e };
   }
 }
 

@@ -285,8 +285,32 @@ export function carryMatchedItems(newItems: any[], oldItems: any[]): any[] {
       if (!m || m.itemId || m.optionId || !om || lname(om.label) !== lname(m.label)) return m;
       return { ...m, itemId: om.itemId ?? null, optionId: om.optionId ?? null, ...(om.match ? { match: om.match } : {}) };
     });
+    if (!mayCarryItem(line, old)) return { ...line, mods };
     return { ...line, itemId: old.itemId, mods, ...(old.match ? { match: old.match } : {}) };
   });
+}
+
+/**
+ * NEVER THE WRONG SIZE ON A RE-ASK (review round 5). A line that names a size (ezSizeId or
+ * sizeName) takes the old line's product only when the old decision is known to be about that
+ * size:
+ *   * this answer's own matching went through the item's size rows (match.sizeKey is a string)
+ *     and found no match: the size row is unmatched or undecided, so nothing is carried and the
+ *     line prints by name;
+ *   * the old decision was made by our item code or ezCater's posItemId (certain), through its
+ *     size row (match.sizeKey a key), or by the name rules for an item with no size rows
+ *     (match.sizeKey null): carried;
+ *   * the old decision carries no sizeKey at all (made before size rows existed, possibly by an
+ *     old name only row matched to another size): not carried.
+ * A line with no size carries exactly as before. PURE.
+ */
+export function mayCarryItem(line: any, old: any): boolean {
+  const sized = !!String(line?.ezSizeId ?? '').trim() || !!String(line?.sizeName ?? '').trim();
+  if (!sized) return true;
+  if (line?.match && typeof line.match.sizeKey === 'string') return false;
+  const om = old?.match || {};
+  if (om.source === 'itemCode' || om.source === 'posItemId') return true;
+  return om.sizeKey !== undefined;
 }
 
 // ── The write ────────────────────────────────────────────────────────────────

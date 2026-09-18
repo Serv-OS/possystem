@@ -13,7 +13,7 @@
 -- Peter: "we cant have it that we match products after an order has been placed".
 --
 -- WHAT THIS FILE ADDS
---   ezcater_item_links, six columns (all nullable or defaulted, nothing existing changes):
+--   ezcater_item_links, seven columns (all nullable or defaulted, nothing existing changes):
 --     ez_ids           text[]  the PUBLISHED ezCater ids on the menu right now (a size id for an
 --                              item, a customization value id for an option). An order line's
 --                              menuItemSizeId / customizationId is one of these, so the line
@@ -29,20 +29,31 @@
 --   ezcater_menu_syncs: one row per venue, the last sync (time, counts, menus, error), and
 --     unresolved_ids jsonb (review round 4): ids a re-sync could not find, so it backs off.
 --     The row is also the one sync per venue lock, claimed by a conditional insert or update.
---
--- RE-RUNNING: a database that ran the first version of this file gets the two new columns from
--- a re-run (add column if not exists). Until then Sync menu says this file has to be run.
 --   pg_cron 'ezcater-menu-sync-hourly': calls ezcater-connect 'menu_sync_due' every hour; the
 --   function syncs each venue whose last sync is a day old. Nothing is due, nothing happens.
+--
+-- RE-RUNNING: a database that ran the first version of this file gets the two new columns
+-- (ez_prior_ids, ezcater_menu_syncs.unresolved_ids) from a re-run (add column if not exists).
+-- Until then Sync menu says this file has to be run, and orders still read ez_ids, so the size
+-- rows the first version synced keep deciding their lines (review round 5).
+--
+-- NO SCHEMA CHANGE, FOR THE RECORD (review round 5): a staff clear on the Item matching screen is
+-- now written with matched_by 'cleared' (matched_by is plain text). Only such a clear is a
+-- permanent no; rows cleared before the deploy (matched_by null) keep auto linking by exact name.
 --
 -- THE APP WORKS BEFORE THIS FILE RUNS. Orders match by name exactly as before; the Item matching
 -- screen lists what it always listed; "Sync menu" says this file has to be run first.
 --
 -- ORDER OF OPERATIONS
---   1. Deploy ezcater-connect and ezcater-webhook FIRST (edge functions do not deploy with the
---      web app):
---        npx supabase functions deploy ezcater-connect --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
---        npx supabase functions deploy ezcater-webhook --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
+--   0. 20260918_OPS_ezcater_catering_order_screens.sql first (it says to run BEFORE the deploy).
+--   1. Deploy ALL SIX edge functions of this branch FIRST (edge functions do not deploy with the
+--      web app; each imports a changed _shared file):
+--        npx supabase functions deploy ezcater-connect  --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
+--        npx supabase functions deploy ezcater-webhook  --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
+--        npx supabase functions deploy catering-release --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
+--        npx supabase functions deploy order-notify     --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
+--        npx supabase functions deploy review-request   --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
+--        npx supabase functions deploy uber-direct      --project-ref tbetcegmszzotrwdtqhi --no-verify-jwt
 --      A schedule pointing at a function that does not know 'menu_sync_due' logs a 400 an hour.
 --   2. Run this file.
 
@@ -127,8 +138,14 @@ end;
 $$;
 
 -- ── Verify after applying ───────────────────────────────────────────────────
+--   seven rows expected:
 --   select column_name from information_schema.columns
---    where table_name = 'ezcater_item_links' and column_name in ('ez_ids','ez_original_ids','ez_size_name','ez_category','ez_menu','synced_at');
+--    where table_name = 'ezcater_item_links' and column_name in ('ez_ids','ez_original_ids','ez_prior_ids','ez_size_name','ez_category','ez_menu','synced_at');
+--   one row expected:
+--   select column_name from information_schema.columns
+--    where table_name = 'ezcater_menu_syncs' and column_name = 'unresolved_ids';
+--   the six functions are deployed (Supabase dashboard, Edge Functions): ezcater-connect,
+--   ezcater-webhook, catering-release, order-notify, review-request, uber-direct.
 --   select jobname, schedule, active from cron.job where jobname = 'ezcater-menu-sync-hourly';
 --   select location_id, status, reason, last_synced_at, counts from public.ezcater_menu_syncs;
 --
@@ -139,7 +156,11 @@ $$;
 -- drop index if exists public.ezcater_item_links_ez_ids_idx;
 -- alter table public.ezcater_item_links drop column if exists synced_at, drop column if exists ez_menu,
 --   drop column if exists ez_category, drop column if exists ez_size_name,
---   drop column if exists ez_original_ids, drop column if exists ez_ids;
+--   drop column if exists ez_prior_ids, drop column if exists ez_original_ids, drop column if exists ez_ids;
 -- commit;
+-- (dropping ezcater_menu_syncs above also drops unresolved_ids.) The six functions work without
+-- these columns (they fall back to name matching), so rolling back needs no redeploy; to roll the
+-- functions back too, redeploy ezcater-connect, ezcater-webhook, catering-release, order-notify,
+-- review-request and uber-direct from main.
 -- Rows a sync inserted stay (they are ordinary unmatched or matched rows); only the ezCater ids
 -- on them go, and orders fall back to name matching exactly as before this file.

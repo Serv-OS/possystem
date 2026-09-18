@@ -47,10 +47,10 @@
 // NOTHING HERE CAN DELAY OR REFUSE AN ORDER. The webhook runs a re-sync only after the order is
 // written, in the background, and a failed sync changes nothing about any order.
 
-import { autoLinkDecision, buildLinkKey, normaliseKeyName, indexItemCodes } from './ezcaterMatch.ts';
+import { autoLinkDecision, buildLinkKey, indexItemCodes } from './ezcaterMatch.ts';
 import { menuSelectionFor, listMenus, readMenu, currentMenus, flattenMenu, venueDate } from './ezcaterMenu.ts';
 import type { EzAsk } from './ezcaterMenu.ts';
-import { readAllLinks, readMatchInputs, indexLinkIds } from './ezcater-match-ingest.ts';
+import { readAllLinks, readMatchInputs, indexLinkIds, sizeKeyPart } from './ezcater-match-ingest.ts';
 import { runWithBudget } from './budget.js';
 import { readConnection, readCateringVenue } from './ezcaterIngest.ts';
 import { ez } from './ezcater.ts';
@@ -72,13 +72,8 @@ const INSERT_BATCH = 200;
 
 const t = (v: unknown): string => (v == null ? '' : String(v).trim());
 
-/** A size's part of a size row key: its key form, else a plain fold (a size can be only noise). */
-export function sizeKeyPart(size: unknown): string {
-  const k = normaliseKeyName(size);
-  if (k) return k;
-  return String(size == null ? '' : size).toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
-    .replace(/[^a-z0-9]+/g, ' ').trim();
-}
+/** A size's part of a size row key. Defined with the order side matcher so both use one rule. */
+export { sizeKeyPart };
 
 /** The row key of one ezCater size. PURE. '' when the item cannot be named. */
 export function sizeRowKey(itemName: string, sizeName: string, sizeCount: number): string {
@@ -97,6 +92,8 @@ export interface SyncEntity {
   name: string;
   group: string | null;
   sizeName: string | null;
+  /** The ezCater size name as read, also for an item with ONE size (sizeName is then null). */
+  sizeLabel?: string | null;
   category: string | null;
   menu: string | null;
   ids: string[];
@@ -124,6 +121,7 @@ export function syncEntities(flat: Array<{ sizes: any[]; values: any[] }>): Map<
       add({
         kind: 'item', key, name: z.itemName, group: null,
         sizeName: key.includes(SIZE_KEY_SEP) ? (t(z.sizeName) || null) : null,
+        sizeLabel: t(z.sizeName) || null,
         category: t(z.category) || null, menu: t(z.menuName) || null,
       }, t(z.sizeId), t(z.sizeOriginalId));
     }
@@ -173,8 +171,12 @@ export interface SyncPlan {
   inserts: any[];
   /** Menu facts on an existing row: ids, originals, size, category, menu. Never a decision. */
   facts: Array<{ kind: string; ezKey: string; patch: any }>;
-  /** A decision written onto a row that is still undecided, guarded in SQL to exactly that. */
-  decisions: Array<{ kind: string; ezKey: string; guard: 'undecided'; patch: any }>;
+  /**
+   * A decision written onto a row, guarded in SQL: 'undecided' only onto a row still undecided;
+   * 'asRead' (review round 5, an item shrinking to one size) only while the row's decision is
+   * still exactly `expect`, the one this sync read, so a staff save in the same moment wins.
+   */
+  decisions: Array<{ kind: string; ezKey: string; guard: 'undecided' | 'asRead'; expect?: any; patch: any }>;
   counts: SyncCounts;
 }
 
@@ -240,6 +242,19 @@ export function planMenuSync(input: {
   const decisions: SyncPlan['decisions'] = [];
   const claimedOriginals = new Set<string>();   // 'kind:original' now held by a synced row
 
+  // Size rows still ON the menu (current published ids), by their item's name key. An item that
+  // had several sizes and now has one is found through these (review round 5).
+  const liveSizeRows = new Map<string, any[]>();
+  for (const r of links) {
+    if (!r || (t(r.kind) || 'item') !== 'item') continue;
+    const k = t(r.ez_key);
+    const cut = k.indexOf(SIZE_KEY_SEP);
+    if (cut <= 0 || !idsOf(r, 'ez_ids').length) continue;
+    const list = liveSizeRows.get(k.slice(0, cut)) || [];
+    list.push(r);
+    liveSizeRows.set(k.slice(0, cut), list);
+  }
+
   for (const e of entities.values()) {
     if (e.kind === 'item') { counts.sizes += Math.max(1, e.ids.length); itemNames.add(buildLinkKey({ name: e.name }, 'item')); }
     else counts.options++;
@@ -247,14 +262,45 @@ export function planMenuSync(input: {
 
     const ex = byKey.get(e.kind + ':' + e.key) || null;
     let decision: any = null;          // the patch to write, if any
-    const guard = 'undecided' as const;
+    let guard: 'undecided' | 'asRead' = 'undecided';
+    let expect: any = null;
     let finalRow: any = ex ? { ...ex } : {};
+
+    // 0) SHRINKING TO ONE SIZE (review round 5). The item had several sizes, so its old name only
+    // row (say 'soup', a staff match to our Soup Small from before the sync) was hidden and its
+    // size rows were the ones staff matched. Now it has ONE size and that size is keyed by the
+    // name again. The hidden row's old target must not come back: the row takes the decision of
+    // the one size's OWN row (the size row holding its original id, else the size row of the same
+    // size name), or none, and is then matched afresh. Only while the name row is still hidden
+    // (no current published ids) and its size rows are still on the menu, so it happens once.
+    const liveSizes = e.kind === 'item' && !e.key.includes(SIZE_KEY_SEP) && ex && !idsOf(ex, 'ez_ids').length
+      ? (liveSizeRows.get(e.key) || []) : [];
+    const shrunk = liveSizes.length > 0;
+    if (shrunk) {
+      const byOrig = liveSizes.filter((r) => idsOf(r, 'ez_original_ids').some((o) => e.originals.includes(o)));
+      let own: any = byOrig.length === 1 ? byOrig[0] : null;
+      if (!own && byOrig.length === 0 && t(e.sizeLabel)) {
+        own = liveSizes.find((r) => t(r.ez_key) === e.key + SIZE_KEY_SEP + sizeKeyPart(e.sizeLabel)) || null;
+      }
+      const next = own && hasDecision(own)
+        ? { menu_item_id: t(own.menu_item_id) || null, option_id: null, source: isManual(own) ? 'manual' : 'auto', matched_by: t(own.matched_by) || null }
+        : { menu_item_id: null, option_id: null, source: 'auto', matched_by: null };
+      guard = 'asRead';
+      expect = {
+        menu_item_id: t(ex.menu_item_id) || null, option_id: t(ex.option_id) || null,
+        source: t(ex.source) || null, matched_by: t(ex.matched_by) || null,
+      };
+      finalRow = { ...finalRow, ...next };
+      if (own && hasDecision(own)) counts.carried++;
+      const same = (Object.keys(next) as Array<keyof typeof next>).every((k) => (next[k] || null) === (expect[k] || null));
+      if (!same) decision = next;
+    }
 
     // 1) The row's OWN decision (by its key, its name) always stands: a sync never overwrites a
     // decision, a person's or an automatic one (review round 4). Only an UNDECIDED row may take
     // one carried from another row by an original id (a republish that renamed it), and only
     // when that original is on exactly one saved row and on exactly one thing in this read.
-    if (!hasDecision(ex)) {
+    if (!shrunk && !hasDecision(ex)) {
       let carried: any = null;
       for (const o of e.originals) {
         const k = e.kind + ':' + o;
@@ -341,7 +387,11 @@ export function planMenuSync(input: {
       facts.push({ kind: e.kind, ezKey: e.key, patch: { ...menuFacts, synced_at: nowIso, updated_at: nowIso } });
       counts.updated++;
     }
-    if (decision) decisions.push({ kind: e.kind, ezKey: e.key, guard, patch: { ...decision, updated_at: nowIso } });
+    if (decision) {
+      decisions.push(guard === 'asRead'
+        ? { kind: e.kind, ezKey: e.key, guard, expect, patch: { ...decision, updated_at: nowIso } }
+        : { kind: e.kind, ezKey: e.key, guard, patch: { ...decision, updated_at: nowIso } });
+    }
   }
   counts.items = itemNames.size;
 
@@ -403,7 +453,15 @@ export async function applyMenuSync(sb: any, locationId: string, plan: SyncPlan,
         .eq('location_id', locationId).eq('kind', d.kind).eq('ez_key', d.ezKey);
       // The guard lives in SQL, so a person saving in the same moment always wins: only a row
       // with no target, not silenced, and never saved by a person (a clear is source 'manual').
-      q = q.is('menu_item_id', null).is('option_id', null).is('matched_by', null).eq('source', 'auto');
+      // 'asRead': only while the row's decision is exactly the one the plan read.
+      if (d.guard === 'asRead' && d.expect) {
+        for (const c of ['menu_item_id', 'option_id', 'source', 'matched_by']) {
+          const want = d.expect[c];
+          q = want == null ? q.is(c, null) : q.eq(c, want);
+        }
+      } else {
+        q = q.is('menu_item_id', null).is('option_id', null).is('matched_by', null).eq('source', 'auto');
+      }
       const { error } = await q;
       if (error) { failed++; log('decision failed:', d.ezKey, error.message); }
     } catch (e) { failed++; log('decision threw:', e instanceof Error ? e.message : String(e)); }
@@ -495,6 +553,23 @@ export interface SyncResult {
 }
 
 const MIGRATION = '20260918_OPS_ezcater_menu_sync.sql';
+/** Written on the sync state when the hourly run's time budget cut a venue off. */
+export const BUDGET_CUT_ERROR = 'The hourly menu sync ran out of time before this venue finished. Nothing was changed; it will be tried again.';
+
+/**
+ * Release a lock THIS sync claimed (status 'running', claimed at claimedAtIso) when the hourly
+ * budget cut it off (review round 5). Conditional on both, so it can never release a lock a later
+ * sync (staff, or a re-sync after an order) claimed since. Never throws.
+ */
+export async function releaseSyncLock(sb: any, locationId: string, claimedAtIso: string, message: string = BUDGET_CUT_ERROR): Promise<boolean> {
+  try {
+    const { data, error } = await sb.from('ezcater_menu_syncs')
+      .update({ status: 'error', error: message.slice(0, 1000), updated_at: new Date().toISOString() })
+      .eq('location_id', locationId).eq('status', 'running').eq('last_attempt_at', claimedAtIso)
+      .select('location_id');
+    return !error && Array.isArray(data) && data.length > 0;
+  } catch { return false; }
+}
 
 /**
  * Sync one venue: every current menu of every caterer mapped to it. Never throws.
@@ -512,6 +587,11 @@ export async function syncVenueMenus(sb: any, platform: any, locationId: string,
   unseen?: string[];
   /** The sync state read before this sync, for the unresolved ids already remembered. */
   priorState?: any;
+  /**
+   * Wall clock (Date.now() ms) past which this sync gives up before writing anything and
+   * releases its lock (the hourly run's budget, review round 5). None means no limit.
+   */
+  deadlineMs?: number | null;
 } = {}): Promise<SyncResult> {
   const log = opts.log || (() => {});
   const nowMs = Number.isFinite(opts.nowMs as number) ? (opts.nowMs as number) : Date.now();
@@ -593,8 +673,14 @@ export async function syncVenueMenus(sb: any, platform: any, locationId: string,
       return { ok: false, enabled: true, error: msg, errors };
     }
 
+    // Out of time (the hourly budget): stop before writing and release the lock now, so the
+    // venue is not blocked for SYNC_STALE_RUNNING_MS by a sync nobody is waiting for.
+    const outOfBudget = () => opts.deadlineMs != null && Number.isFinite(opts.deadlineMs) && Date.now() >= (opts.deadlineMs as number);
+    if (outOfBudget()) return giveUp({ ok: false, enabled: true, error: BUDGET_CUT_ERROR });
+
     // 4) Our menu, whole or not at all for auto matching.
     const ours = await readMatchInputs(sb, locationId, { skipLinks: true });
+    if (outOfBudget()) return giveUp({ ok: false, enabled: true, error: BUDGET_CUT_ERROR });
 
     // 5) Plan and write.
     const entities = syncEntities(flat);
@@ -606,11 +692,13 @@ export async function syncVenueMenus(sb: any, platform: any, locationId: string,
 
     const status = applied.failed ? 'partial' : (complete ? 'ok' : 'partial');
     // Published ids an order carried that this sync still could not find: remembered, so the
-    // next order carrying them does not re-sync again (review round 4, resyncForUnseen).
+    // next order carrying them does not re-sync again (review round 4, resyncForUnseen). Only
+    // after a COMPLETE read (review round 5): an id missing from a caterer or menu we could not
+    // read says nothing, so it is not given up on; ids remembered earlier are kept.
     const known = new Set<string>();
     for (const e of entities.values()) for (const id of e.ids) known.add(e.kind + ':' + id);
     for (const k of indexLinkIds(links.rows).keys()) known.add(k);
-    const unresolved = nextUnresolved(opts.priorState?.unresolved_ids ?? null, opts.unseen || [], known, nowMs, nowIso);
+    const unresolved = nextUnresolved(opts.priorState?.unresolved_ids ?? null, complete ? (opts.unseen || []) : [], known, nowMs, nowIso);
     await writeSyncState(sb, {
       location_id: locationId, status, reason, last_attempt_at: nowIso, last_synced_at: nowIso,
       counts: { ...plan.counts, menuOk: ours.menuOk, complete, failedWrites: applied.failed },
@@ -733,9 +821,16 @@ export async function syncDueVenues(sb: any, platform: any, opts: {
     if (error) { log('daily sync: could not read the sync states:', error.message); return []; }
     for (const r of rows || []) if (r && t(r.location_id)) states.set(t(r.location_id), r);
     const due = dueVenuesInOrder(venues, states, nowMs).slice(0, opts.maxVenues || 20);
+    const nowIso = new Date(nowMs).toISOString();
+    const budgetMs = opts.budgetMs ?? DUE_SYNC_BUDGET_MS;
+    const deadlineMs = Date.now() + budgetMs;
     const results = await runWithBudget(due, (locationId: string) => syncVenueMenus(sb, platform, locationId, {
-      askFactory: opts.askFactory, nowMs, reason: 'daily', log, priorState: states.get(locationId) || null,
-    }), { concurrency: opts.concurrency || DUE_SYNC_CONCURRENCY, budgetMs: opts.budgetMs ?? DUE_SYNC_BUDGET_MS });
+      askFactory: opts.askFactory, nowMs, nowIso, reason: 'daily', log, priorState: states.get(locationId) || null, deadlineMs,
+    }), { concurrency: opts.concurrency || DUE_SYNC_CONCURRENCY, budgetMs });
+    // A venue the budget cut off mid sync still holds its lock: release it (review round 5), only
+    // where the lock is still the one this run claimed. A venue never reached claimed nothing.
+    await Promise.all(due.map((locationId: string, i: number) => (results[i] && (results[i] as any).skipped
+      ? releaseSyncLock(sb, locationId, nowIso) : Promise.resolve(false))));
     return due.map((locationId: string, i: number) => {
       const r: any = results[i];
       if (r?.ok) return { locationId, ok: !!r.value?.ok, ...(r.value?.error ? { error: r.value.error } : {}) };

@@ -65,7 +65,7 @@ import {
   connectionForLocation as connectionForLocationOf, connectionCompany as connectionCompanyOf,
   venueCompany as venueCompanyOf, venueCompanyStrict,
 } from '../_shared/ezcaterConnections.ts';
-import { readAllLinks } from '../_shared/ezcater-match-ingest.ts';
+import { readAllLinks, CLEARED_MARK } from '../_shared/ezcater-match-ingest.ts';
 import { syncVenueMenus, syncDueVenues, readSyncState, publicSyncState, SIZE_KEY_SEP } from '../_shared/ezcaterMenuSync.ts';
 import { EZ_PREP_FALLBACK_MINUTES } from '../_shared/cateringRules.js';
 
@@ -768,10 +768,11 @@ Deno.serve(async (req) => {
         }
 
         // matched_by carries WHO, and doubles as the "Not on our menu" marker.
-        // A cleared row goes back to null, which is the same shape the webhook
-        // writes when it first sees a name.
+        // A clear is recorded EXPLICITLY as 'cleared' (review round 5): from this deploy a clear
+        // is a permanent no that nothing automatic matches over. Rows cleared before it carry
+        // matched_by null and keep auto linking by exact name, exactly as they did yesterday.
         const matchedBy = ignored ? 'ignored'
-          : ((menuItemId || optionId) ? (access.userId === 'service' ? 'service' : access.userId) : null);
+          : ((menuItemId || optionId) ? (access.userId === 'service' ? 'service' : access.userId) : CLEARED_MARK);
 
         const { error } = await sb.from('ezcater_item_links').upsert({
           location_id: opsLocationId,
