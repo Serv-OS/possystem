@@ -27,7 +27,7 @@
 
 import {
   cors, json, opsAdmin, platformAdmin, authenticateCaller,
-  resolveCompanyForLocation, checkLoyaltyAuthority,
+  resolveCompanyForLocation, checkLoyaltyAuthority, deviceHintOf,
 } from '../_shared/loyalty-utils.ts';
 
 Deno.serve(async (req) => {
@@ -77,6 +77,7 @@ Deno.serve(async (req) => {
     memberToken: member_token,
     closedCheckId: closed_check_id,
     channel,
+    deviceHint: deviceHintOf(body),
   });
   if (!gate.allow) return gate.response!;
 

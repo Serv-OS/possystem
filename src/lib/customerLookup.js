@@ -416,7 +416,9 @@ export async function attributeOnlineOrder({
         const earnBody = {
           customer_id: customerId,
           location_id: locationId,
-          closed_check_id: orderRecord.ref || `online-${Date.now()}`,
+          // Round three (18 Sep 2026): loyalty-earn now earns from the server's own closed_checks
+          // row, so this must be that row's id (checkId, 'chk-OL-...'), not the display ref.
+          closed_check_id: orderRecord.checkId || orderRecord.ref || `online-${Date.now()}`,
           channel: 'online',
           items: (orderRecord.items || []).map(i => ({
             name: i.name, qty: i.qty || 1, price: i.price || 0,
@@ -431,7 +433,7 @@ export async function attributeOnlineOrder({
           // LOYALTY_AUTHORITY_MODE=report records and enforce would refuse.
           ...(memberToken && memberCustomerId && memberCustomerId === customerId ? { member_token: String(memberToken) } : {}),
         };
-        const res = await fetch(
+        const sendEarn = () => fetch(
           `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/loyalty-earn`,
           {
             method: 'POST',
@@ -439,6 +441,17 @@ export async function attributeOnlineOrder({
             body: JSON.stringify(earnBody),
           }
         );
+        let res = await sendEarn();
+        // Round three: 409 check_not_found means the closed_checks row has not landed yet
+        // (enforce only). Try again a little later; idempotent on the check id server side.
+        for (const waitMs of [3000, 10000]) {
+          if (res.status !== 409) break;
+          let code = null;
+          try { code = (await res.clone().json())?.code || null; } catch { /* not json */ }
+          if (code !== 'check_not_found') break;
+          await new Promise((r) => setTimeout(r, waitMs));
+          res = await sendEarn();
+        }
         const j = await res.json().catch(() => ({}));
         if (res.ok) {
           console.info('[attributeOnlineOrder] loyalty earn:', j.points_earned, 'pts → balance:', j.balance);

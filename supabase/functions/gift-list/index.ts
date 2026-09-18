@@ -39,7 +39,7 @@ Deno.serve(async (req) => {
   const staff = await callerIsStaffFor(caller, (body.location_id as string) || null, companyId);
   const authority = decideGiftListAuthority({ user: caller, staff });
   if (!authority.ok) {
-    await recordAuthority(authorityLogRow({
+    recordAuthority(authorityLogRow({
       fn: 'gift-list', mode: 'enforce', outcome: 'refused',
       decision: { ok: false, reason: authority.reason, callerKind: caller?.is_anonymous ? 'anonymous' : 'user_no_access' },
       user: caller, companyId, locationId: body.location_id,

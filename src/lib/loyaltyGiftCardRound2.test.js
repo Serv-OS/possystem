@@ -138,10 +138,12 @@ test('checkLoyaltyAuthority reads the switch per request, records via the log, a
   assert.ok(src.includes("loyaltyAuthorityMode(Deno.env.get('LOYALTY_AUTHORITY_MODE'))"));
   const body = src.slice(src.indexOf('export async function checkLoyaltyAuthority'));
   assert.ok(body.includes('const applied = applyAuthorityMode(decision, mode);'));
-  assert.ok(body.includes('if (applied.record) {') && body.includes('await recordAuthority(authorityLogRow({'));
+  // Round three: the log write is NOT awaited (fire and forget, rate limited).
+  assert.ok(body.includes('if (applied.record) {') && body.includes('recordAuthority(authorityLogRow({'));
+  assert.ok(!body.includes('await recordAuthority('), 'the till never waits on the log');
   assert.ok(body.includes('if (!applied.allow && !decision.ok) {'), 'only a refusal under enforce stops the call');
-  assert.ok(src.includes("from('caller_authority_log').insert(row)"), 'writes to the new table');
-  assert.ok(/console\.warn\('\[authority\]', JSON\.stringify\(row\)\)/.test(src), 'and to the function log, before the migration runs');
+  assert.ok(src.includes("from('caller_authority_log').insert(full)"), 'writes to the new table');
+  assert.ok(/console\.warn\('\[authority\]', JSON\.stringify\(full\)\)/.test(src), 'and to the function log, before the migration runs');
 });
 
 test('the migration creates the log table, service role only', () => {
@@ -218,7 +220,9 @@ test('a customer typing their full code at checkout still works (kiosk, online, 
   // And the debit: a code that resolves is proof of possession, no authority needed.
   const red = fnSrc('gift-redeem');
   assert.ok(red.indexOf('if (card) provedByCode = true;') < red.indexOf(".eq('id', card_id)"), 'code_plain and HMAC come before card_id');
-  assert.ok(red.includes('if (card && !provedByCode) {'));
+  // Round three: the card_id authority runs after "Card not found" and after the idempotency check.
+  assert.ok(red.includes('if (!provedByCode) {'));
+  assert.ok(red.indexOf("return json({ error: 'Card not found' }, 404);") < red.indexOf('if (!provedByCode) {'));
 });
 
 test('a code holder sees balance and status, never the email, note or history', () => {
@@ -390,18 +394,14 @@ test('the kiosk keeps the member token from verify and publishes it (outside the
   assert.ok(!submit.includes('setActiveMemberSession') && !submit.includes('memberToken'), 'submitOrder untouched (card path guard)');
 });
 
-test('the kiosk re-claims its device on every boot with the code it paired with', () => {
+// Round three REVERSED round two here (18 Sep 2026, B2): keeping the code on the row let a second
+// tablet steal the link through the live claim_device. The kiosk rules are pinned in
+// loyaltyGiftCardRound3.test.js ('a kiosk pairing code is cleared on the row ...').
+test('round two\'s kiosk boot re-claim is gone (it needed the code left on the row)', () => {
   const sb = read('./supabase.js');
-  assert.ok(sb.includes('if (!dev) return _claimKiosk();'), 'claimPairedDeviceOnBoot covers kiosks');
-  const kc = sb.slice(sb.indexOf('const _claimKiosk = async () => {'), sb.indexOf('const _claimDevice = async () => {'));
-  assert.ok(kc.includes("supabase.rpc('claim_device', { p_code: code })"));
-  assert.ok(!kc.includes("from('devices')"), 'never reads a code off the row (Back Office "new code" must still move a kiosk)');
-  assert.ok(sb.includes("'rpos-kiosk-pairing-code',"), 'kept across a tenant wipe');
-  const ks = read('../surfaces/KioskSurface.jsx');
-  assert.ok(!ks.includes('pairing_code: null,'), 'the code is no longer cleared at pairing');
-  assert.ok(ks.includes('localStorage.setItem(KIOSK_CODE_KEY, codeNorm)'));
-  assert.ok(ks.includes('claimPairedDeviceOnBoot();'), 'loadPaired re-claims');
-  assert.equal((ks.match(/localStorage\.removeItem\(KIOSK_CODE_KEY\)/g) || []).length, 2, 'unpair and a missing row forget it');
+  assert.ok(!sb.includes('_claimKiosk'), 'no kiosk re-claim by code');
+  assert.ok(!sb.includes("'rpos-kiosk-pairing-code'"), 'no stored kiosk pairing code');
+  assert.ok(sb.includes("if (!dev || !dev.id || dev.id === 'admin' || dev.adminMode || !dev.locationId) return;"), 'tills only');
 });
 
 test('the till waits for its device claim before earn, redeem and refund, and re-claims once on a 403', () => {

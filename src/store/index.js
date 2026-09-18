@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { supabase, platformSupabase, isMock, getLocationId, ensureAuthToken, getActiveLocationSync, isHostStandMode, whenDeviceClaimed, claimPairedDeviceOnBoot } from '../lib/supabase';
+import { supabase, platformSupabase, isMock, getLocationId, ensureAuthToken, getActiveLocationSync, isHostStandMode, whenDeviceClaimed, claimPairedDeviceOnBoot, localDeviceHint } from '../lib/supabase';
 import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
 import { resolveServiceCharge } from '../lib/serviceCharge';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
@@ -50,19 +50,33 @@ setDeviceClaimHooks({ waitForClaim: () => whenDeviceClaimed(), reclaim: () => cl
 // claim, and on a 403 re-claim and try ONCE more. Returns the last Response. Never used for a call
 // whose retry could double count: earn and refund are idempotent on the check id server side.
 async function postLoyaltyWithDeviceClaim(fn, body) {
+  // Round three: device_hint names this till or kiosk in caller_authority_log (never trusted).
+  const hint = localDeviceHint();
+  const payload = hint && !body.device_hint ? { ...body, device_hint: hint } : body;
   const send = async () => {
     const token = await ensureAuthToken();
     if (!token) return null;
     return fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/${fn}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-      body: JSON.stringify(body),
+      body: JSON.stringify(payload),
     });
   };
   await whenDeviceClaimed();
   let res = await send();
   if (res && res.status === 403) {
     try { await claimPairedDeviceOnBoot(); } catch { /* best effort */ }
+    res = await send();
+  }
+  // Round three: loyalty-earn reads the server's own closed_checks row. When the till calls it a
+  // moment before that row has landed it answers 409 check_not_found (under enforce); wait and
+  // try again a few times. Idempotent server side on the check id, so a retry never double earns.
+  for (const waitMs of [3000, 10000, 30000]) {
+    if (fn !== 'loyalty-earn' || !res || res.status !== 409) break;
+    let code = null;
+    try { code = (await res.clone().json())?.code || null; } catch { /* not json */ }
+    if (code !== 'check_not_found') break;
+    await new Promise((r) => setTimeout(r, waitMs));
     res = await send();
   }
   return res;
@@ -6449,7 +6463,12 @@ export const useStore = create((set, get) => ({
               staffId: manager?.id || null,
             });
             if (r.ok) console.info('[refundCheck] gift card reversed:', r.status || 'ok', 'restored:', r.restored);
-            else console.warn('[refundCheck] gift reversal failed for leg:', r.error);
+            else {
+              console.warn('[refundCheck] gift reversal failed for leg:', r.error);
+              // Round three: gift-reverse-redeem now needs a claimed till or a manager. Say so
+              // instead of losing the customer's balance silently.
+              get().showToast?.(`Gift card balance NOT restored: ${r.error || 'reversal failed'}. Restore it from Back Office.`, 'error');
+            }
           }
         } catch (e) {
           console.warn('[refundCheck] gift reversal failed:', e?.message || e);

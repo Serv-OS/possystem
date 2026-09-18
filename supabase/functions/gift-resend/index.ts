@@ -16,6 +16,7 @@
 import {
   cors, json, platformAdmin, authenticateCaller, resolveCompanyForLocation,
 } from '../_shared/gift-card-utils.ts';
+import { requireStaff } from '../_shared/loyalty-utils.ts';
 
 const OPS_SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const CUSTOMER_DOMAIN = Deno.env.get('CUSTOMER_DOMAIN') ?? 'serv-os.app';
@@ -95,6 +96,15 @@ Deno.serve(async (req) => {
   const companyResult = await resolveCompanyForLocation(caller.id, body.location_id as string);
   if (companyResult instanceof Response) return companyResult;
   const companyId = companyResult;
+
+  // ── Staff only (18 Sep 2026, round three, enforced now) ────────────────
+  // The header always said "back office user"; nothing checked it. The only caller is Back
+  // Office (GiftCards.jsx Resend). The email still only ever goes to the card's own recipient.
+  const refused = await requireStaff({
+    fn: 'gift-resend', caller, locationId: (body.location_id as string) || null, companyId,
+    what: 'resend gift cards', body,
+  });
+  if (refused) return refused;
 
   const cardId = body.card_id as string;
   if (!cardId) return json({ error: 'card_id required' }, 400);

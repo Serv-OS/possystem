@@ -1130,7 +1130,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         email: customer.email,
         marketingOptIn: false,
         locationId: opsLocationId,
-        orderRecord: { ref, total: discountedSubtotalMinor / 100, items, type: orderType },
+        orderRecord: { ref, checkId, total: discountedSubtotalMinor / 100, items, type: orderType },
         // loyalty-earn's proof that this browser is the member (18 Sep 2026, report first).
         memberToken: loyalty?.token || null,
         memberCustomerId,
@@ -1285,7 +1285,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         email: customer.email,
         marketingOptIn: false,
         locationId: opsLocationId,
-        orderRecord: { ref, total: discountedSubtotalMinor / 100, items, type: orderType },
+        orderRecord: { ref, checkId, total: discountedSubtotalMinor / 100, items, type: orderType },
         // loyalty-earn's proof that this browser is the member (18 Sep 2026, report first).
         memberToken: loyalty?.token || null,
         memberCustomerId,

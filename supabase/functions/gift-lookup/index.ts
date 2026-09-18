@@ -55,7 +55,7 @@ Deno.serve(async (req) => {
   const authority = decideGiftLookupAuthority(lookupKind, { user: caller, staff });
   if (!authority.ok) {
     if (authority.status === 403) {
-      await recordAuthority(authorityLogRow({
+      recordAuthority(authorityLogRow({
         fn: 'gift-lookup', mode: 'enforce', outcome: 'refused',
         decision: { ok: false, reason: authority.reason, callerKind: caller?.is_anonymous ? 'anonymous' : 'user_no_access' },
         user: caller, companyId, locationId: bodyLocationId,

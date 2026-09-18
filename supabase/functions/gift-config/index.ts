@@ -16,6 +16,15 @@
 import {
   cors, json, platformAdmin, authenticateCaller, resolveCompanyForLocation, generateHmacSecret,
 } from '../_shared/gift-card-utils.ts';
+import { requireStaff } from '../_shared/loyalty-utils.ts';
+
+// The per company HMAC secret gift codes are looked up with never leaves the server
+// (INVARIANTS: "Never log or expose these"). Back Office never read it.
+function withoutSecret(c: any) {
+  if (!c || typeof c !== 'object') return c;
+  const { hmac_secret: _drop, ...rest } = c;
+  return rest;
+}
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -33,6 +42,17 @@ Deno.serve(async (req) => {
   if (companyResult instanceof Response) return companyResult;
   const companyId = companyResult;
 
+  // ── Staff only, every action (18 Sep 2026, round three, enforced now) ──
+  // Any session could switch a venue's gift cards off, change the card value limits or the
+  // branding, and 'get' returned the whole row (including the HMAC secret the codes are looked
+  // up with). The only caller is Back Office (GiftCards.jsx). Customer pages read
+  // gift-branding-public instead.
+  const refused = await requireStaff({
+    fn: 'gift-config', caller, locationId: (body.location_id as string) || null, companyId,
+    what: 'change gift card settings', body,
+  });
+  if (refused) return refused;
+
   const action = body.action as string;
 
   // ── GET — return current config ──────────────────────────────────────
@@ -42,7 +62,7 @@ Deno.serve(async (req) => {
       .select('*')
       .eq('company_id', companyId)
       .maybeSingle();
-    return json({ config: data });
+    return json({ config: withoutSecret(data) });
   }
 
   // ── ENABLE — create or enable ────────────────────────────────────────
@@ -70,7 +90,7 @@ Deno.serve(async (req) => {
       if (error) return json({ error: error.message }, 500);
       config = newConfig;
     }
-    return json({ config });
+    return json({ config: withoutSecret(config) });
   }
 
   // ── DISABLE ──────────────────────────────────────────────────────────
@@ -87,7 +107,7 @@ Deno.serve(async (req) => {
         .eq('company_id', companyId);
       if (error) return json({ error: error.message }, 500);
     }
-    return json({ config: config ? { ...config, enabled: false } : null });
+    return json({ config: config ? withoutSecret({ ...config, enabled: false }) : null });
   }
 
   // ── SETTINGS — update min/max/expiry/currency ────────────────────────
@@ -110,7 +130,7 @@ Deno.serve(async (req) => {
       .select('*')
       .eq('company_id', companyId)
       .maybeSingle();
-    return json({ config });
+    return json({ config: withoutSecret(config) });
   }
 
   // ── BRANDING — update branding JSONB ─────────────────────────────────
@@ -126,7 +146,7 @@ Deno.serve(async (req) => {
       .select('*')
       .eq('company_id', companyId)
       .maybeSingle();
-    return json({ config });
+    return json({ config: withoutSecret(config) });
   }
 
   return json({ error: `Unknown action: ${action}` }, 400);

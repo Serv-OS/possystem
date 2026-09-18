@@ -25,7 +25,7 @@
 
 import {
   cors, json, opsAdmin, platformAdmin, authenticateCaller,
-  resolveCompanyForLocation, updateBalance, checkLoyaltyAuthority,
+  resolveCompanyForLocation, updateBalance, checkLoyaltyAuthority, deviceHintOf,
 } from '../_shared/loyalty-utils.ts';
 
 Deno.serve(async (req) => {
@@ -63,9 +63,8 @@ Deno.serve(async (req) => {
 
   // ── Authority (18 Sep 2026) ────────────────────────────────────────────
   // Resolving the company proves nothing about the caller (the location id is public), so any
-  // anonymous session could reverse anybody's transactions. Same rule as loyalty-redeem: a
-  // claimed device of this company, a Back Office user with the location, or the member's own
-  // token. REPORT FIRST: LOYALTY_AUTHORITY_MODE unset or 'report' refunds exactly as before and
+  // anonymous session could reverse anybody's transactions. A claimed device of this company or
+  // a Back Office user with the location; NOT the member's own token (round three). REPORT FIRST: LOYALTY_AUTHORITY_MODE unset or 'report' refunds exactly as before and
   // records the calls enforce would refuse (caller_authority_log); 'enforce' refuses them.
   const gate = await checkLoyaltyAuthority({
     fn: 'loyalty-refund',
@@ -76,6 +75,11 @@ Deno.serve(async (req) => {
     memberToken: (body as any).member_token,
     closedCheckId: closed_check_id,
     channel: (body as any).channel ?? null,
+    // Round three: a refund is a TILL action. A member's own token never passes it (a member
+    // refunding their own redemption would keep the reward and get the points back); only a
+    // claimed device of the company or staff may refund.
+    memberAllowed: false,
+    deviceHint: deviceHintOf(body),
   });
   if (!gate.allow) return gate.response!;
 

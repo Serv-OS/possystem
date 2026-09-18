@@ -13,6 +13,7 @@ import {
   generateCode, normalizeCode, codeLast4, formatCode,
   hmacLookup, hashValue, generateHmacSecret,
 } from '../_shared/gift-card-utils.ts';
+import { requireStaff } from '../_shared/loyalty-utils.ts';
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -40,13 +41,35 @@ Deno.serve(async (req) => {
     channel = 'backoffice',
   } = body as any;
 
-  // v5.5.207: resolve company via location_id (reliable) with user fallback
-  let companyId = org_id as string | undefined;
-  if (!companyId) {
+  // v5.5.207: resolve company via location_id (reliable) with user fallback.
+  // 18 Sep 2026 (round three): the company always comes from the location when one is sent; a
+  // body org_id can no longer point the card at another company. org_id alone (no location) is
+  // only accepted for staff of that company (checked below).
+  let companyId: string | undefined;
+  if (location_id) {
     const resolved = await resolveCompanyForLocation(caller.id, location_id as string);
     if (resolved instanceof Response) return resolved;
     companyId = resolved;
+    if (org_id && String(org_id) !== String(companyId)) {
+      return json({ error: 'org_id does not match the location', code: 'company_mismatch' }, 403);
+    }
+  } else if (org_id) {
+    companyId = String(org_id);
+  } else {
+    const resolved = await resolveCompanyForLocation(caller.id, null);
+    if (resolved instanceof Response) return resolved;
+    companyId = resolved;
   }
+
+  // ── Staff only (18 Sep 2026, round three, enforced now) ────────────────
+  // Any session used to be able to create a card for any amount here and be handed the code
+  // (an anonymous one is free with the public anon key). The only caller is Back Office
+  // (GiftCards.jsx, a signed in user). Same access rule as the database (_shared/staffAccess.ts).
+  const refused = await requireStaff({
+    fn: 'gift-issue', caller, locationId: (location_id as string) || null, companyId: companyId!,
+    what: 'issue gift cards', body,
+  });
+  if (refused) return refused;
 
   // Validate amount
   const amountMinor = Math.round(Number(amount));

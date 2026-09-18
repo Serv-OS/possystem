@@ -36,7 +36,7 @@ import {
   cors, json, platformAdmin, authenticateCaller, resolveCompanyForLocation,
   normalizeCode, hmacLookup,
 } from '../_shared/gift-card-utils.ts';
-import { callerIsStaffFor, callerDeviceCompany, recordAuthority, OTP_SECRET } from '../_shared/loyalty-utils.ts';
+import { callerIsStaffFor, callerDeviceCompany, recordAuthority, OTP_SECRET, deviceHintOf } from '../_shared/loyalty-utils.ts';
 import { verifySessionToken } from '../_shared/loyalty-session.ts';
 import { decideGiftCardIdAuthority } from '../_shared/gift-authority.ts';
 import { cardBelongsToPhone } from '../_shared/giftCardMatch.ts';
@@ -145,38 +145,6 @@ Deno.serve(async (req) => {
     }
   }
 
-  // ── Authority for a card_id spend (18 Sep 2026, enforced now) ──────────
-  // Spending by card_id used to need nothing but a session (an anonymous one is free), and
-  // gift-lookup's name and email search handed card ids out. Now a card NOT proved by its code
-  // may only be spent by staff with the location, a claimed device of this company, or the
-  // member whose PROVEN phone (loyalty session token) the card is addressed to: the kiosk
-  // spending a card it listed after the one time code. See _shared/gift-authority.ts.
-  if (card && !provedByCode) {
-    const memberToken = (body as any).member_token;
-    const memberTokenSent = typeof memberToken === 'string' && memberToken.length > 0;
-    const memberSession = memberTokenSent ? await verifySessionToken(memberToken, OTP_SECRET) : null;
-    const staff = await callerIsStaffFor(caller, (location_id as string) || null, companyId);
-    const deviceCompanyId = staff ? null : await callerDeviceCompany(caller.id);
-    const authority = decideGiftCardIdAuthority({
-      user: caller,
-      staff,
-      deviceCompanyId,
-      companyId: String(companyId),
-      memberTokenSent,
-      memberSession,
-      cardOnMemberPhone: !!memberSession && cardBelongsToPhone(card, memberSession.phone),
-    });
-    if (!authority.ok) {
-      await recordAuthority(authorityLogRow({
-        fn: 'gift-redeem', mode: 'enforce', outcome: 'refused',
-        decision: { ok: false, reason: authority.reason, callerKind: memberTokenSent ? 'member' : (caller?.is_anonymous ? 'anonymous' : 'user_no_access') },
-        user: caller, companyId, locationId: location_id, closedCheckId: closed_check_id, channel,
-        detail: { card_last4: card.code_last4 ?? null },
-      }));
-      return json({ error: authority.error, code: 'gift_card_code_required' }, authority.status);
-    }
-  }
-
   if (!card) {
     console.error('[gift-redeem] Card not found', {
       hasCode: !!code, hasCardId: !!card_id, companyId,
@@ -212,6 +180,43 @@ Deno.serve(async (req) => {
       idempotency_key: idemKey,
       idempotent: true,
     });
+  }
+
+  // ── Authority for a card_id spend (18 Sep 2026, enforced now) ──────────
+  // Spending by card_id used to need nothing but a session (an anonymous one is free), and
+  // gift-lookup's name and email search handed card ids out. Now a card NOT proved by its code
+  // may only be spent by staff with the location, a claimed device of this company, or the
+  // member whose PROVEN phone (loyalty session token) the card is addressed to: the kiosk
+  // spending a card it listed after the one time code. See _shared/gift-authority.ts.
+  // Round three: this runs AFTER the idempotency check above. A retry of a debit that already
+  // landed (a till whose claim lapsed, a member token that expired in between) is answered with
+  // the debit it already made; it moves no money, so it needs no fresh authority, and refusing
+  // it would strand an order whose card was really charged.
+  if (!provedByCode) {
+    const memberToken = (body as any).member_token;
+    const memberTokenSent = typeof memberToken === 'string' && memberToken.length > 0;
+    const memberSession = memberTokenSent ? await verifySessionToken(memberToken, OTP_SECRET) : null;
+    const staff = await callerIsStaffFor(caller, (location_id as string) || null, companyId);
+    const deviceCompanyId = staff ? null : await callerDeviceCompany(caller.id);
+    const authority = decideGiftCardIdAuthority({
+      user: caller,
+      staff,
+      deviceCompanyId,
+      companyId: String(companyId),
+      memberTokenSent,
+      memberSession,
+      cardOnMemberPhone: !!memberSession && cardBelongsToPhone(card, memberSession.phone),
+    });
+    if (!authority.ok) {
+      recordAuthority(authorityLogRow({
+        fn: 'gift-redeem', mode: 'enforce', outcome: 'refused',
+        decision: { ok: false, reason: authority.reason, callerKind: memberTokenSent ? 'member' : (caller?.is_anonymous ? 'anonymous' : 'user_no_access') },
+        user: caller, companyId, locationId: location_id, closedCheckId: closed_check_id, channel,
+        deviceHint: deviceHintOf(body),
+        detail: { card_last4: card.code_last4 ?? null },
+      }));
+      return json({ error: authority.error, code: 'gift_card_code_required' }, authority.status);
+    }
   }
 
   // ── Status checks ─────────────────────────────────────────────────────

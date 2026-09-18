@@ -26,6 +26,19 @@
 
 import { activeMemberToken } from './memberSession.js';
 
+// Round three (18 Sep 2026): the id this browser was paired as (till rpos-device, or kiosk
+// rpos-kiosk-id), sent as device_hint so caller_authority_log can name a till or kiosk to
+// re-pair. Never trusted by the server. Same rule as lib/supabase.js localDeviceHint, inline so
+// this module stays importable by node tests.
+const deviceHint = () => {
+  try {
+    if (typeof localStorage === 'undefined') return null;
+    const dev = JSON.parse(localStorage.getItem('rpos-device') || 'null');
+    if (dev && dev.id && dev.id !== 'admin' && !dev.adminMode) return String(dev.id);
+    return localStorage.getItem('rpos-kiosk-id') || null;
+  } catch { return null; }
+};
+
 const newId = () => (
   typeof crypto !== 'undefined' && crypto.randomUUID
     ? crypto.randomUUID()
@@ -120,6 +133,7 @@ export async function commitGiftCard(staged, { functionsUrl, token, locationId, 
         // The kiosk's frozen submitOrder cannot pass it, so the member signed in on this screen
         // (lib/memberSession) is used when the caller gave none.
         ...((memberToken || activeMemberToken()) ? { member_token: String(memberToken || activeMemberToken()) } : {}),
+        ...(deviceHint() ? { device_hint: deviceHint() } : {}),
       }),
     });
     const j = await res.json().catch(() => ({}));
@@ -221,6 +235,7 @@ export async function reverseGiftCard(record, { functionsUrl, token, locationId,
         reason: reason || 'Payment did not complete',
         staff_id: staffId,
         location_id: locationId,
+        ...(deviceHint() ? { device_hint: deviceHint() } : {}),
       }),
     });
     const j = await res.json().catch(() => ({}));

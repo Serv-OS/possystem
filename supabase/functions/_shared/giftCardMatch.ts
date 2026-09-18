@@ -38,6 +38,88 @@ export function normaliseMemberPhone(raw: unknown): string | null {
 
 const NORMALISED_RE = /^\+?\d{6,16}$/;
 
+// ── Round three (18 Sep 2026): match GB and US numbers on their digits ─────
+// normaliseMemberPhone above is UK only and stays byte for byte the app's rule (customers.phone
+// is written with it). Used as the MATCH it failed twice:
+//   * a US card typed '(415) 555-0123' never matched the proven '+14155550123';
+//   * '+44 (0) 7931 123456' became '+4407931123456' and never matched '+447931123456'.
+// phoneShape reads a number into what it can honestly say: its country code when it has one
+// (+CC, 00CC, a NANP number, or a bare 44 number the app already treats as +44), and its national
+// significant number (NSN, the digits after the country code and any trunk 0). It never invents
+// a country code: a national number written with a trunk 0 ('07931 123456') is "some country
+// that uses a trunk 0", which rules out +1 (NANP has no trunk 0) and nothing else.
+
+export type PhoneShape =
+  | { kind: 'intl'; cc: string | null; digits: string; nsn: string | null }   // +CC..., cc known for 1 and 44
+  | { kind: 'nanp'; nsn: string }                                            // a US / Canada number, no +
+  | { kind: 'trunk'; nsn: string }                                           // national with a trunk 0
+  | { kind: 'bare'; nsn: string };                                           // digits, no + and no trunk 0
+
+const NANP_NSN = /^[2-9]\d{2}[2-9]\d{6}$/;
+
+export function phoneShape(raw: unknown): PhoneShape | null {
+  if (raw === null || raw === undefined) return null;
+  let s = String(raw).trim();
+  if (!s) return null;
+  // '+44 (0) 7931 ...' : a bracketed trunk 0 inside an international number is not dialled.
+  s = s.replace(/\(\s*0\s*\)/g, '');
+  const intl = s.startsWith('+') || /^00[1-9]/.test(s.replace(/[^\d+]/g, ''));
+  let d = s.replace(/\D/g, '');
+  if (intl && d.startsWith('00')) d = d.slice(2);
+  if (d.length < 6 || d.length > 16) return null;
+  if (intl) {
+    if (d.startsWith('1') && NANP_NSN.test(d.slice(1))) return { kind: 'intl', cc: '1', digits: d, nsn: d.slice(1) };
+    if (d.startsWith('44')) return { kind: 'intl', cc: '44', digits: d, nsn: d.slice(2).replace(/^0/, '') };
+    return { kind: 'intl', cc: null, digits: d, nsn: null };
+  }
+  if (d.startsWith('0')) return { kind: 'trunk', nsn: d.slice(1) };
+  if (d.length === 11 && d.startsWith('1') && NANP_NSN.test(d.slice(1))) return { kind: 'nanp', nsn: d.slice(1) };
+  if (d.length === 10 && NANP_NSN.test(d)) return { kind: 'nanp', nsn: d };
+  // The app's rule already reads a bare 44... as +44 (normaliseMemberPhone).
+  if (d.startsWith('44') && d.length >= 11 && d.length <= 13) return { kind: 'intl', cc: '44', digits: d, nsn: d.slice(2).replace(/^0/, '') };
+  return { kind: 'bare', nsn: d };
+}
+
+/** Does an international number end with this national number behind a 1 to 3 digit code other than 1? */
+function intlCarriesNsn(a: Extract<PhoneShape, { kind: 'intl' }>, nsn: string): boolean {
+  if (a.cc === '1') return false;
+  if (a.nsn !== null) return a.nsn === nsn;
+  if (!a.digits.endsWith(nsn)) return false;
+  const ccLen = a.digits.length - nsn.length;
+  return ccLen >= 1 && ccLen <= 3 && !a.digits.startsWith('1');
+}
+
+/**
+ * Are these the same phone number? GB and US (and any +CC number written in full) are matched
+ * on their digits without guessing a country:
+ *   +447931123456 = 07931 123456 = +44 (0) 7931 123456 = 447931123456
+ *   +14155550123  = (415) 555-0123 = 1 415 555 0123
+ *   +17021234567 != 07021234567 (a trunk 0 is never NANP), != +447021234567 (country differs)
+ * Seven significant digits at least, so short fragments never match anything.
+ */
+export function phonesMatch(a: unknown, b: unknown): boolean {
+  const x = phoneShape(a);
+  const y = phoneShape(b);
+  if (!x || !y) return false;
+  const sig = (p: PhoneShape) => (p.kind === 'intl' ? (p.nsn ?? p.digits) : p.nsn);
+  if (sig(x).length < 7 || sig(y).length < 7) return false;
+  const one = (p: PhoneShape, q: PhoneShape): boolean | null => {
+    if (p.kind === 'intl' && q.kind === 'intl') {
+      if (p.cc && q.cc) return p.cc === q.cc && p.nsn === q.nsn;
+      return p.digits === q.digits;
+    }
+    if (p.kind === 'intl' && q.kind === 'nanp') return p.cc === '1' && p.nsn === q.nsn;
+    if (p.kind === 'intl' && (q.kind === 'trunk' || q.kind === 'bare')) return intlCarriesNsn(p, q.nsn);
+    if (p.kind === 'nanp' && q.kind === 'nanp') return p.nsn === q.nsn;
+    if (p.kind === 'nanp' && (q.kind === 'trunk' || q.kind === 'bare')) return false;   // NANP never has a trunk 0
+    if ((p.kind === 'trunk' || p.kind === 'bare') && (q.kind === 'trunk' || q.kind === 'bare')) return p.nsn === q.nsn;
+    return null;
+  };
+  const r = one(x, y);
+  if (r !== null) return r;
+  return one(y, x) === true;
+}
+
 /**
  * The proven phone, normalised, or null when it is not a usable phone number. Anything that is
  * not a plain phone number after normalising is refused, so nothing can be smuggled into the
@@ -72,9 +154,13 @@ export function phoneMatchVariants(phone: unknown): string[] {
 export function giftCardRecipientFilter(verifiedPhone: unknown): string | null {
   const key = provenKey(verifiedPhone);
   if (!key) return null;
-  // The subscriber part: drop '+', and the 44 of a UK number (stored as 0... or +44...).
+  // The national part: the NSN when the country is known (GB, NANP), else the last 9 digits
+  // (enough to fetch '06 12 34 56 78' for '+33612345678'). phonesMatch then decides.
+  const shape = phoneShape(key);
   let core = key.replace(/^\+/, '');
-  if (key.startsWith('+44')) core = core.slice(2);
+  if (shape && shape.kind === 'intl' && shape.nsn) core = shape.nsn;
+  else if (shape && shape.kind !== 'intl') core = shape.nsn;
+  else if (core.length > 9) core = core.slice(-9);
   if (!/^\d{6,16}$/.test(core)) return null;
   return `recipient_phone.ilike.%${core.split('').join('%')}%`;
 }
@@ -108,11 +194,16 @@ export function memberGiftCards(rows: any[] | null | undefined, verifiedPhone: u
     }));
 }
 
-/** Is this card addressed to the phone the member proved? Normalised on both sides. */
+/**
+ * Is this card addressed to the phone the member proved? Round three: phonesMatch (GB and US,
+ * digits, no invented country code). Round two compared normaliseMemberPhone values, which is UK
+ * only; that equality is kept as the first test so nothing it matched stops matching.
+ */
 export function cardBelongsToPhone(card: { recipient_phone?: unknown } | null | undefined, verifiedPhone: unknown): boolean {
   const key = provenKey(verifiedPhone);
   if (!key || !card || typeof card.recipient_phone !== 'string') return false;
-  return normaliseMemberPhone(card.recipient_phone.trim()) === key;
+  if (normaliseMemberPhone(card.recipient_phone.trim()) === key) return true;
+  return phonesMatch(card.recipient_phone, key);
 }
 
 /** The columns memberGiftCards needs. recipient_phone is required for the row by row check. */

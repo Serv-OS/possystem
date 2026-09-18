@@ -135,8 +135,12 @@ test('the member may redeem their OWN rewards with their token, never somebody e
   assert.equal(decideRedeemAuthority({ ...own, customerId: 'cust-2' }).ok, false, 'other customer');
   assert.equal(decideRedeemAuthority({ ...own, companyId: 'co-2' }).ok, false, 'other company');
   assert.equal(decideRedeemAuthority({ ...own, memberSession: null }).ok, false, 'expired or forged token');
-  // A bad token never falls through to a device arm.
-  assert.equal(decideRedeemAuthority({ ...own, memberSession: null, deviceCompanyId: 'co-1' }).ok, false);
+  // Round three (18 Sep 2026, C4): a bad or expired token no longer refuses a claimed device of
+  // the company (a kiosk keeps the last member's token for a short grace). It still never lets a
+  // device of ANOTHER company or a bare anonymous session through.
+  assert.deepEqual(decideRedeemAuthority({ ...own, memberSession: null, deviceCompanyId: 'co-1' }), { ok: true, via: 'device', callerKind: 'device' });
+  assert.equal(decideRedeemAuthority({ ...own, memberSession: null, deviceCompanyId: 'co-2' }).ok, false);
+  assert.equal(decideRedeemAuthority({ ...own, memberSession: null }).reason, 'member_token_invalid');
 });
 
 test('loyalty-redeem decides authority before it reads or moves any balance', () => {

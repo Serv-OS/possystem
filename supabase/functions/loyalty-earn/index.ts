@@ -6,15 +6,23 @@
 // Body: {
 //   customer_id,     -- ops DB customer UUID
 //   location_id,     -- ops location_id
-//   closed_check_id, -- for idempotency + audit trail
+//   closed_check_id, -- the closed_checks.id of the order (idempotency + the source of the earn)
 //   channel,         -- 'pos'|'kiosk'|'online'|'qr'
-//   items,           -- line items array for qualifying amount calc
-//   subtotal,        -- order subtotal (fallback if items not detailed)
+//   items,           -- line items; used ONLY while the check row has not landed (report mode)
+//   subtotal,        -- same
 //   staff_id?,       -- who processed the order
 //   member_token?,   -- the member's loyalty session token (kiosk or online, when signed in)
+//   device_hint?,    -- the till's or kiosk's own id, for caller_authority_log only
 // }
 //
 // AUTHORITY: see the gate below and _shared/loyalty-authority.ts (report first).
+//
+// ROUND THREE (18 Sep 2026): the earn comes from the server's own closed_checks row for that id
+// at that location (_shared/earnFromCheck.ts), not from the body: amount and items from the
+// check, capped at its own subtotal or total; a check that does not exist, is voided or refunded,
+// or (for a member token) is not the member's own, is refused under enforce and recorded under
+// report; one earn per check whatever the key; the ledger row is written FIRST as the claim, so
+// two racing calls can never both move the balance.
 //
 // Returns: { points_earned, balance, member_code, tier, is_new_member }
 
@@ -22,7 +30,12 @@ import {
   cors, json, opsAdmin, platformAdmin, authenticateCaller,
   resolveCompanyForLocation, getOrCreateConfig, ensureMembership,
   calculatePoints, calculateQualifyingAmount, updateBalance, checkLoyaltyAuthority,
+  recordAuthority, deviceHintOf, uuidOr0,
 } from '../_shared/loyalty-utils.ts';
+import { authorityLogRow } from '../_shared/loyalty-authority.ts';
+import {
+  decideEarnSource, earnItemsFromCheck, checkItemIds, checkCapMinor, type CheckRow,
+} from '../_shared/earnFromCheck.ts';
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -42,7 +55,7 @@ Deno.serve(async (req) => {
     location_id,
     closed_check_id,
     channel = 'pos',
-    items = [],
+    items: bodyItems = [],
     subtotal,
     staff_id,
   } = body as any;
@@ -59,9 +72,9 @@ Deno.serve(async (req) => {
   const companyId = resolved;
 
   // ── Authority (18 Sep 2026) ────────────────────────────────────────────
-  // customer_id, items, subtotal and closed_check_id all come from the body, so an anonymous
-  // session could mint points for itself. Same rule as loyalty-redeem: a claimed device of this
-  // company, a Back Office user with the location, or the member's own token. REPORT FIRST:
+  // customer_id and closed_check_id come from the body, so an anonymous session could mint
+  // points for itself. Same rule as loyalty-redeem: a claimed device of this company, a Back
+  // Office user with the location, or the member's own token. REPORT FIRST:
   // LOYALTY_AUTHORITY_MODE unset or 'report' earns exactly as before and records the calls
   // enforce would refuse (caller_authority_log); 'enforce' refuses them. Before any read.
   const gate = await checkLoyaltyAuthority({
@@ -73,17 +86,70 @@ Deno.serve(async (req) => {
     memberToken: (body as any).member_token,
     closedCheckId: closed_check_id,
     channel,
+    deviceHint: deviceHintOf(body),
   });
   if (!gate.allow) return gate.response!;
 
+  // ── The check itself (round three) ────────────────────────────────────
+  // Read at THIS location (the id may arrive as the Ops or the Platform id).
+  const locKeys = [String(location_id)];
+  {
+    const { data: pl } = await platformAdmin.from('locations')
+      .select('ops_location_id')
+      .or(`id.eq.${uuidOr0(location_id)},ops_location_id.eq.${uuidOr0(location_id)}`)
+      .limit(1).maybeSingle();
+    if (pl?.ops_location_id && !locKeys.includes(String(pl.ops_location_id))) locKeys.push(String(pl.ops_location_id));
+  }
+  const { data: check } = await opsAdmin
+    .from('closed_checks')
+    .select('id, location_id, items, subtotal, total, status, voided, refunded, customer, customer_id, customer_phone')
+    .eq('id', String(closed_check_id))
+    .in('location_id', locKeys)
+    .maybeSingle();
+  const via = gate.decision.ok ? gate.decision.via : null;
+  const source = decideEarnSource({
+    mode: gate.mode,
+    check: (check as CheckRow) ?? null,
+    via,
+    member: via === 'member' && gate.memberSession
+      ? { customerId: gate.memberSession.customerId, phone: gate.memberSession.phone }
+      : null,
+  });
+  if (source.record) {
+    recordAuthority(authorityLogRow({
+      fn: 'loyalty-earn', mode: gate.mode,
+      outcome: source.use === 'refuse' ? 'refused' : 'would_refuse',
+      decision: { ok: false, reason: source.record, callerKind: gate.decision.callerKind },
+      user: caller, companyId, locationId: location_id, customerId: customer_id,
+      closedCheckId: closed_check_id, channel, deviceHint: deviceHintOf(body),
+    }));
+  }
+  if (source.use === 'refuse') {
+    return json({ error: source.error, code: source.code, retryable: source.retryable }, source.status);
+  }
+
   // ── Idempotency check (scoped to company) ─────────────────────────────
   const idempotencyKey = `earn:${closed_check_id}`;
-  const { data: existingTx } = await opsAdmin
-    .from('loyalty_transactions')
-    .select('id, points, balance_after')
-    .eq('idempotency_key', idempotencyKey)
-    .eq('company_id', companyId)
-    .maybeSingle();
+  const alreadyEarned = async () => {
+    const { data: byKey } = await opsAdmin
+      .from('loyalty_transactions')
+      .select('id, points, balance_after')
+      .eq('idempotency_key', idempotencyKey)
+      .eq('company_id', companyId)
+      .maybeSingle();
+    if (byKey) return byKey;
+    // Round three: one earn per CHECK, whatever key an older client used for it.
+    const { data: byCheck } = await opsAdmin
+      .from('loyalty_transactions')
+      .select('id, points, balance_after')
+      .eq('closed_check_id', String(closed_check_id))
+      .eq('company_id', companyId)
+      .eq('type', 'earn')
+      .limit(1)
+      .maybeSingle();
+    return byCheck;
+  };
+  const existingTx = await alreadyEarned();
 
   if (existingTx) {
     // Already processed — return the same result
@@ -112,9 +178,31 @@ Deno.serve(async (req) => {
   if (memberResult instanceof Response) return memberResult;
   const { membership, isNew } = memberResult;
 
-  // ── Calculate qualifying amount ────────────────────────────────────────
+  // ── What to earn on: the check (round three), or the body while the check has not landed ──
+  let items: any[] = Array.isArray(bodyItems) ? bodyItems : [];
   let qualifyingMinor: number;
-  if (Array.isArray(items) && items.length > 0) {
+  if (source.use === 'check' && check) {
+    const ids = checkItemIds(check as CheckRow);
+    let menu: any[] = [];
+    if (ids.length) {
+      const { data: m } = await opsAdmin
+        .from('menu_items')
+        .select('id, cat, cats, parent_id')
+        .in('location_id', locKeys)
+        .in('id', ids.slice(0, 500));
+      menu = m || [];
+      // A variant's parent may not be on the check: fetch the parents the menu rows name.
+      const parents = [...new Set(menu.map((r: any) => r.parent_id).filter((p: any) => p && !menu.some((x: any) => x.id === p)))];
+      if (parents.length) {
+        const { data: pm } = await opsAdmin.from('menu_items').select('id, cat, cats, parent_id').in('location_id', locKeys).in('id', parents.slice(0, 500));
+        menu = menu.concat(pm || []);
+      }
+    }
+    items = earnItemsFromCheck(check as CheckRow, menu);
+    const cap = checkCapMinor(check as CheckRow);
+    qualifyingMinor = items.length ? calculateQualifyingAmount(items, config) : cap;
+    if (cap > 0) qualifyingMinor = Math.min(qualifyingMinor, cap);
+  } else if (items.length > 0) {
     qualifyingMinor = calculateQualifyingAmount(items, config);
   } else {
     // Fallback: use subtotal (already in currency units, convert to minor)
@@ -167,11 +255,41 @@ Deno.serve(async (req) => {
       config.points_rounding || 'floor',
     );
     if (pointsEarned > 0) {
+      // Round three: the ledger row is the CLAIM and goes in first. earn:<check> is unique, so
+      // of two racing calls exactly one writes it; the other is told already_processed and moves
+      // nothing. balance_after is corrected once the balance has moved.
+      const { data: claim, error: claimErr } = await opsAdmin.from('loyalty_transactions').insert({
+        customer_id,
+        company_id: companyId,
+        location_id,
+        type: 'earn',
+        points: pointsEarned,
+        balance_after: (membership.points_balance || 0) + pointsEarned,
+        source: 'purchase',
+        channel,
+        closed_check_id,
+        idempotency_key: idempotencyKey,
+        qualifying_amount_minor: qualifyingMinor,
+        multiplier_applied: tierMultiplier,
+        tier_at_time: tierName,
+        staff_id: staff_id || null,
+      }).select('id').single();
+      if (claimErr || !claim) {
+        const again = await alreadyEarned();
+        if (again) {
+          return json({ status: 'already_processed', points_earned: again.points, balance: again.balance_after, member_code: membership.member_code });
+        }
+        return json({ error: `Failed to record the earn: ${claimErr?.message || 'no row'}` }, 500);
+      }
+
       const nb = await updateBalance(membership.id, pointsEarned);
       if (nb === null) {
+        // The balance did not move: take the claim back so a retry can do the whole job.
+        await opsAdmin.from('loyalty_transactions').delete().eq('id', claim.id);
         return json({ error: 'Failed to update balance — concurrent modification' }, 409);
       }
       newBalance = nb;
+      await opsAdmin.from('loyalty_transactions').update({ balance_after: nb }).eq('id', claim.id);
 
       // Lifetime stats
       await platformAdmin
@@ -182,24 +300,6 @@ Deno.serve(async (req) => {
           lifetime_spend_minor: (membership.lifetime_spend_minor || 0) + qualifyingMinor,
         })
         .eq('id', membership.id);
-
-      // Transaction ledger
-      await opsAdmin.from('loyalty_transactions').insert({
-        customer_id,
-        company_id: companyId,
-        location_id,
-        type: 'earn',
-        points: pointsEarned,
-        balance_after: newBalance,
-        source: 'purchase',
-        channel,
-        closed_check_id,
-        idempotency_key: idempotencyKey,
-        qualifying_amount_minor: qualifyingMinor,
-        multiplier_applied: tierMultiplier,
-        tier_at_time: tierName,
-        staff_id: staff_id || null,
-      });
 
       // Registration bonus transaction (if new member with bonus). v5.5.321: the bonus was
       // already credited into points_balance at enrollment, so balance_after is the bonus itself.

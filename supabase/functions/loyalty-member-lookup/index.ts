@@ -14,8 +14,10 @@
 //   found, customer_id, member_code, name, phone, email,
 //   points_balance, tier, rewards_available[], gift_cards[]
 // }
-// or, for a caller without authority once LOYALTY_AUTHORITY_MODE=enforce, the limited reply
+// or, for a caller without authority, the limited reply
 // { found, enrolled, limited, loyalty_enabled, points_enabled, stamps_enabled } (_shared/memberReply.ts).
+// Round three (18 Sep 2026): ENFORCED NOW (modeOverride 'enforce', no report period, as it has no
+// callers), every customer read fenced to the venue's org, location_id must be an id.
 //
 // CALLERS (checked 18 Sep 2026): none in src/. The till, host stand and kiosk look members up
 // through loyalty-balance (src/lib/customerLookup.js fetchCustomerByPhone) or loyalty-otp.
@@ -23,6 +25,7 @@
 import {
   cors, json, opsAdmin, platformAdmin, authenticateCaller,
   resolveCompanyForLocation, getOrCreateConfig, ensureMembership, checkLoyaltyAuthority,
+  uuidOr0, deviceHintOf,
 } from '../_shared/loyalty-utils.ts';
 import { giftCardRecipientFilter, cardBelongsToPhone } from '../_shared/giftCardMatch.ts';
 import { limitedMemberReply } from '../_shared/memberReply.ts';
@@ -53,17 +56,20 @@ Deno.serve(async (req) => {
   const companyId = resolved;
 
   // ── Resolve org_id for customer queries ────────────────────────────────
+  // Round three: location_id reaches a PostgREST filter, so only a real id gets there.
   const { data: locData } = await platformAdmin
     .from('locations')
     .select('org_id, ops_location_id')
-    .or(`ops_location_id.eq.${location_id},id.eq.${location_id}`)
+    .or(`ops_location_id.eq.${uuidOr0(location_id)},id.eq.${uuidOr0(location_id)}`)
     .limit(1)
     .maybeSingle();
 
   const orgId = locData?.org_id;
+  // Every customer read below is fenced to this venue's org. Without an org nothing is found.
+  if (!orgId) return json({ found: false, error: 'Customer not found' }, 404);
 
   // ── Find the customer ──────────────────────────────────────────────────
-  let custId: string | null = customer_id || null;
+  let custId: string | null = customer_id ? String(customer_id) : null;
   let custData: any = null;
 
   if (member_code && !custId) {
@@ -97,10 +103,13 @@ Deno.serve(async (req) => {
   }
 
   // ── Get customer profile from ops DB ───────────────────────────────────
+  // Round three: customer_id came from the body and was read with no org filter, so any
+  // customer of any tenant could be looked up (and enrolled below) by id. Fenced to this org.
   const { data: customer } = await opsAdmin
     .from('customers')
     .select('id, name, phone, email, allergens')
-    .eq('id', custId)
+    .eq('id', uuidOr0(custId))
+    .eq('org_id', orgId)
     .is('deleted_at', null)
     .maybeSingle();
 
@@ -123,6 +132,10 @@ Deno.serve(async (req) => {
     customerId: String(customer.id),
     memberToken: (body as any).member_token,
     channel: (body as any).channel ?? null,
+    // Round three: ENFORCED NOW, whatever LOYALTY_AUTHORITY_MODE says. Nothing in src/ calls
+    // this function, so there is no real caller a refusal could break.
+    modeOverride: 'enforce',
+    deviceHint: deviceHintOf(body),
   });
   if (!gate.allow) {
     const [{ data: cfg }, { data: member }] = await Promise.all([

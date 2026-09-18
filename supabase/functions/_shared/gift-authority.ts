@@ -119,3 +119,64 @@ export function decideGiftCardIdAuthority(i: GiftCallerFacts & {
     reason: i.memberTokenSent ? (i.memberSession ? 'member_not_card_owner' : 'member_token_invalid') : 'card_id_without_code',
   };
 }
+
+// ── Round three (18 Sep 2026): the money holes, enforced now ─────────────
+//
+// gift-issue, gift-import, gift-bulk-create, gift-config, gift-void and gift-resend accepted any
+// session, including an anonymous one anybody can mint with the public anon key, and took the
+// company from a public location id. So anybody could create a gift card for any amount and be
+// handed the code, void a stranger's card, or switch a venue's gift cards off. Their only
+// legitimate caller is Back Office (GiftCards.jsx callGift, a signed in user). Staff only.
+
+export type GiftStaffAuthority = { ok: true } | { ok: false; status: number; error: string; reason: string };
+
+export function decideGiftStaffOnly(f: GiftCallerFacts, what = 'manage gift cards'): GiftStaffAuthority {
+  if (!f.user) return { ok: false, status: 401, error: 'Unauthorized', reason: 'no_session' };
+  if (!f.user.is_anonymous && f.staff) return { ok: true };
+  return {
+    ok: false, status: 403,
+    error: `Only staff can ${what}.`,
+    reason: f.user.is_anonymous ? 'anonymous' : 'no_location_access',
+  };
+}
+
+/**
+ * gift-reverse-redeem puts a spend back on a card. Open to any session it refilled a spent card
+ * for ever: spend the card on an order, then reverse the spend (the key is
+ * giftcommit:<check>:<card>, both of which the customer knows). Its callers are the till's refund
+ * (store.refundCheck: a paired till, MPOS, or Back Office Transactions) and the till's dead card
+ * machine job undo (CheckoutModal, store._reverseTerminalJobGift). So: staff, or a claimed device
+ * of the card's company. NOT "the session that made the spend": for an online or kiosk customer
+ * that session IS the attacker (spend, eat, reverse). Once per spend is the ledger's job
+ * (refund:<original key>, unique per card).
+ */
+export function decideGiftReverseAuthority(i: GiftCallerFacts & {
+  deviceCompanyId: string | null;
+  companyId: string;
+}): { ok: true; via: 'staff' | 'device' } | { ok: false; status: number; error: string; reason: string } {
+  if (!i.user) return { ok: false, status: 401, error: 'Unauthorized', reason: 'no_session' };
+  if (!i.user.is_anonymous && i.staff) return { ok: true, via: 'staff' };
+  if (i.deviceCompanyId && i.deviceCompanyId === i.companyId) return { ok: true, via: 'device' };
+  return {
+    ok: false, status: 403,
+    error: 'Only a till of this venue or a manager can put a gift card spend back. Re-pair this till if it should be allowed.',
+    reason: i.deviceCompanyId ? 'device_other_company' : (i.user.is_anonymous ? 'anonymous_no_device' : 'no_location_access'),
+  };
+}
+
+/**
+ * gift-fulfill issues the card for an online purchase and (to Back Office) returns its code.
+ * Callers: the processor webhooks (stripe-webhook-connect, ryft-webhook) with the service role
+ * key, and Back Office "Fulfill" (staff). Anybody else is refused before anything is read.
+ * Payment is proven separately for EVERY caller (giftPurchaseProof.ts).
+ */
+export function decideGiftFulfilAuthority(i: { serviceRole: boolean } & GiftCallerFacts):
+  { ok: true; via: 'webhook' | 'staff' } | { ok: false; status: number; error: string; reason: string } {
+  if (i.serviceRole) return { ok: true, via: 'webhook' };
+  if (!i.user) return { ok: false, status: 401, error: 'Unauthorized', reason: 'no_session' };
+  if (!i.user.is_anonymous && i.staff) return { ok: true, via: 'staff' };
+  return {
+    ok: false, status: 403, error: 'Only staff can fulfil a gift card purchase.',
+    reason: i.user.is_anonymous ? 'anonymous' : 'no_location_access',
+  };
+}

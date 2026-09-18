@@ -13,7 +13,8 @@
 //     its own devices row by claim_device (pairing code = proof). Staff at the venue pick the
 //     customer, so a device may act for any member of ITS OWN company.
 //   * a Back Office user acting as a till: a real (non anonymous) user with access to the
-//     location (user_locations, or super_admin).
+//     location by the database's own rule (user_locations UNION user_profiles.location_id, see
+//     staffAccess.ts), super_admin, or a company role for the location's company.
 //   * the member themselves: the loyalty session token loyalty-otp minted after the one time
 //     code, and only for THEIR OWN customer id in THAT company.
 //
@@ -39,6 +40,7 @@ export type RefusalReason =
   | 'no_session'
   | 'member_token_invalid'
   | 'member_token_other_customer'
+  | 'member_token_not_accepted'
   | 'device_other_company'
   | 'no_location_access'
   | 'anonymous_no_device';
@@ -55,32 +57,53 @@ export type RedeemAuthorityInput = {
   deviceCompanyId: string | null;
   customerId: string;
   companyId: string;
+  /**
+   * May the member's own token authorise this call? Default true. FALSE for till actions a member
+   * must never do for themselves: loyalty-refund (a member refunding their own redemption would
+   * keep the reward AND get the points back).
+   */
+  memberAllowed?: boolean;
 };
 
 export type LoyaltyAuthority =
   | { ok: true; via: 'member' | 'staff' | 'device'; callerKind: CallerKind }
   | { ok: false; status: number; error: string; reason: RefusalReason; callerKind: CallerKind };
 
+/**
+ * ROUND THREE ORDER (18 Sep 2026):
+ *   1. a GOOD member token for this very customer and company passes, even with no session at
+ *      all. The portal refresh (loyalty-otp) calls loyalty-balance server to server with only
+ *      x-member-token; round two answered no_session first, so enforce would have broken every
+ *      portal refresh.
+ *   2. otherwise the staff and device arms are tried whatever token was sent. A bad or expired
+ *      member token must never lock out a claimed till or a signed in manager (a kiosk keeps the
+ *      last member's token for a short grace after a reset).
+ *   3. only when nothing passes is the call refused, with the member reason when a token was
+ *      sent, so the log says why.
+ * memberAllowed false (loyalty-refund) skips step 1 entirely.
+ */
 export function decideLoyaltyAuthority(i: RedeemAuthorityInput): LoyaltyAuthority {
-  if (!i.user) return { ok: false, status: 401, error: 'Unauthorized', reason: 'no_session', callerKind: 'none' };
+  const memberAllowed = i.memberAllowed !== false;
+  const s = i.memberSession;
+  const memberMatches = !!s && s.customerId === i.customerId && s.companyId === i.companyId;
+  if (memberAllowed && i.memberTokenSent && memberMatches) return { ok: true, via: 'member', callerKind: 'member' };
 
-  // A member token is an explicit claim to act AS that member. If it is sent it must be good
-  // and must be for this very customer in this company; a bad one never falls through to the
-  // device or staff arms.
-  if (i.memberTokenSent) {
-    const s = i.memberSession;
-    if (!s) {
-      return { ok: false, status: 403, error: 'Your loyalty session has expired. Please sign in again.', reason: 'member_token_invalid', callerKind: 'member' };
+  const memberRefusal = (): LoyaltyAuthority | null => {
+    if (!i.memberTokenSent) return null;
+    if (!memberAllowed) {
+      return { ok: false, status: 403, error: 'A loyalty member cannot do this themselves. Ask a member of staff.', reason: 'member_token_not_accepted', callerKind: 'member' };
     }
-    if (s.customerId !== i.customerId || s.companyId !== i.companyId) {
-      return { ok: false, status: 403, error: 'This loyalty session is not for that customer.', reason: 'member_token_other_customer', callerKind: 'member' };
-    }
-    return { ok: true, via: 'member', callerKind: 'member' };
-  }
+    if (!s) return { ok: false, status: 403, error: 'Your loyalty session has expired. Please sign in again.', reason: 'member_token_invalid', callerKind: 'member' };
+    return { ok: false, status: 403, error: 'This loyalty session is not for that customer.', reason: 'member_token_other_customer', callerKind: 'member' };
+  };
+
+  if (!i.user) return memberRefusal() ?? { ok: false, status: 401, error: 'Unauthorized', reason: 'no_session', callerKind: 'none' };
 
   if (!i.user.is_anonymous && i.staffHasLocation) return { ok: true, via: 'staff', callerKind: 'staff' };
   if (i.deviceCompanyId && i.deviceCompanyId === i.companyId) return { ok: true, via: 'device', callerKind: 'device' };
 
+  const m = memberRefusal();
+  if (m) return m;
   const error = 'Not allowed to act for this loyalty member.';
   if (i.deviceCompanyId) return { ok: false, status: 403, error, reason: 'device_other_company', callerKind: 'device_other' };
   if (!i.user.is_anonymous) return { ok: false, status: 403, error, reason: 'no_location_access', callerKind: 'user_no_access' };
@@ -142,8 +165,11 @@ export function authorityLogRow(p: {
   customerId?: unknown;
   closedCheckId?: unknown;
   channel?: unknown;
+  /** What the client says it is (its rpos-device id or rpos-kiosk-id). Untrusted; uuid only. */
+  deviceHint?: unknown;
   detail?: Record<string, unknown> | null;
 }) {
+  const hint = uuidOrNull(p.deviceHint);
   return {
     fn: clip(p.fn, 60),
     mode: p.mode,
@@ -157,6 +183,6 @@ export function authorityLogRow(p: {
     customer_id: clip(p.customerId, 80),
     closed_check_id: clip(p.closedCheckId, 120),
     channel: clip(p.channel, 30),
-    detail: p.detail ?? null,
+    detail: hint ? { ...(p.detail ?? {}), device_hint: hint } : (p.detail ?? null),
   };
 }

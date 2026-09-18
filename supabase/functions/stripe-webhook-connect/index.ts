@@ -111,7 +111,12 @@ async function dispatch(event: Stripe.Event, accountId: string | null) {
       // call the gift-fulfill edge function to issue the card and email it.
       const session = event.data.object as Stripe.Checkout.Session;
       const meta = session.metadata ?? {};
-      if (meta.type === 'gift_card_purchase' && meta.purchase_id) {
+      // 18 Sep 2026: a completed session is not always a paid one (delayed payment methods send
+      // checkout.session.async_payment_succeeded later). Only a paid session marks the purchase
+      // paid; gift-fulfill asks Stripe again itself before issuing anything.
+      if (meta.type === 'gift_card_purchase' && meta.purchase_id && (session as any).payment_status !== 'paid') {
+        console.warn('[stripe-webhook-connect] gift purchase session completed but not paid yet:', meta.purchase_id, (session as any).payment_status);
+      } else if (meta.type === 'gift_card_purchase' && meta.purchase_id) {
         console.log('[stripe-webhook-connect] fulfilling gift card purchase:', meta.purchase_id);
         // Update purchase status to 'paid' first
         await platformDb.from('gift_card_purchases')
