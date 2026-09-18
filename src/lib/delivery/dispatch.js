@@ -5,6 +5,7 @@
  * holds the creds. Returns { ok, deliveryId, trackingUrl, status, deferred?, reason? }.
  */
 import { toE164 } from './manifest.js';
+import { mayBookOurCourier } from '../ezcaterCatering.js';
 
 async function invoke(action, payload) {
   const { supabase } = await import('../supabase.js');
@@ -22,6 +23,8 @@ async function invoke(action, payload) {
  * server-side from config; currency comes off the quote.
  */
 export async function dispatchDelivery({ opsLocationId, order, quote }, deps = {}) {
+  // NEVER book our courier for an ezCater order: the caterer or ezCater delivers it.
+  if (!mayBookOurCourier(order)) return { ok: false, reason: 'ezcater_delivers' };
   const send = deps.invoke || invoke;
   // Send the raw order + accepted quote; the edge fn builds the manifest / HubRise order
   // server-side and dispatches idempotently (same path the catering fire-time cron uses).

@@ -47,6 +47,10 @@ import { bumpChallenge21 } from '../lib/challenge21Counter';
 import { shouldKeepPaidOrderInQueue, markQueueEntryPaid, paidQueueRefToClearOnRefund } from '../lib/orderScreen/keepPaidOrder';
 import { alcoholCategorySet, orderHasAlcohol, kioskTicketLabels, kioskTableForTicket } from '../lib/kioskStaffFlags';
 import { resolveSoldAlone, soldAlonePatchForTypeChange } from '../lib/menuRules';
+import {
+  NOT_RELEASABLE_STATUSES_PG, RELEASABLE_OR_FILTER, mayBookOurCourier, mayTakeOrRefundMoney,
+  isEzcaterOrder, ezcaterOrderNumber,
+} from '../lib/ezcaterCatering';
 
 // Kiosk ticket flags (table, CHECK ID): reads made after routeKioskOrderPrints has claimed an
 // order must never hold its ticket. A plain function timer, never a timer called as an object
@@ -3045,7 +3049,12 @@ export const useStore = create((set, get) => ({
           // till reload before the fire moment lost it and the order never reached the
           // kitchen. Same due-and-unrouted filter; routeKioskOrderPrints dedups by claim.
           .eq('location_id', locId).in('source', ['catering', 'online'])
-          .is('kitchen_routed_at', null).neq('status', 'collected')
+          .is('kitchen_routed_at', null)
+          // 18 Sep 2026: ezCater orders are catering orders. One ezCater cancelled before it
+          // fired, or not yet accepted by ezCater, is never released (lib/ezcaterCatering).
+          // Every other row has no hold key and a live status, so it reads exactly as before.
+          .not('status', 'in', NOT_RELEASABLE_STATUSES_PG)
+          .or(RELEASABLE_OR_FILTER)
           .lte('sent_at', new Date().toISOString())
           .gte('sent_at', floorIso)
           .order('sent_at', { ascending: true })
@@ -3063,7 +3072,8 @@ export const useStore = create((set, get) => ({
           // dispatches its courier now (event day), not at order time. Master-only (this fn is
           // master-gated) + each row routes once (kitchen_routed_at), so no double dispatch.
           // Self-delivery orders just fire to the kitchen above (no dispatch).
-          if (row.source === 'catering' && row.type === 'delivery' && row.customer?.delivery_mode === 'uber' && !isTrainingMode()) {
+          // Never for an ezCater order: the caterer or ezCater delivers it (mayBookOurCourier).
+          if (row.source === 'catering' && row.type === 'delivery' && row.customer?.delivery_mode === 'uber' && mayBookOurCourier(row) && !isTrainingMode()) {
             const quote = { customerFeeMinor: Math.round(Number(row.customer.delivery_fee || 0) * 100), dropoff: row.customer.address || null, currency: 'GBP', dispatchable: true, quoteId: null };
             dispatchDelivery({ opsLocationId: locId, order: { ref: row.ref, items: row.items || [], total: row.total, customer: row.customer }, quote })
               .then((res) => { if (res?.trackingUrl) sendDeliveryTrackingSMS({ opsLocationId: locId, phone: row.customer?.phone, trackingUrl: res.trackingUrl, ref: row.ref }); })
@@ -6405,6 +6415,10 @@ export const useStore = create((set, get) => ({
       console.warn('[refundCheck] no such check', checkId);
       return { ok: false, amount: 0, cardStatus: 'none', legs: [], message: 'Check not found' };
     }
+    // ezCater collected this money, so it is never refunded through our processors.
+    if (!mayTakeOrRefundMoney(chkBefore)) {
+      return { ok: false, amount: 0, cardStatus: 'none', legs: [], message: 'Paid through ezCater: refund it on ezCater' };
+    }
 
     // THE STORE COMPUTES THE MONEY, NOT THE CALLER. `opts.amount` used to decide
     // it, and the three refund screens each derived it differently (two from
@@ -7169,6 +7183,10 @@ export const useStore = create((set, get) => ({
         .eq('ref', order.ref)
         .eq('location_id', locId)
         .is('kitchen_routed_at', null)
+        // 18 Sep 2026: a cancel (an ezCater order cancelled on ezCater) that lands between the
+        // release's read and this claim must not reach the kitchen. Nothing else is cancelled
+        // before it is routed, so every other claim is exactly as before.
+        .or('status.is.null,status.neq.cancelled')
         // v5.8.63: `type` comes back with the claim so the order type rule works even when
         // a caller passed no type. Free, and it covers any future caller too.
         .select('ref, type');
@@ -7333,13 +7351,14 @@ export const useStore = create((set, get) => ({
       // Drive thru (16 Sep 2026) joins so the customer name reaches the ticket.
       const _isDeliveryish = _svcType === 'delivery' || _svcType === 'collection' || _svcType === 'drive-thru' || order.source === 'hubrise';
       const deliveryBlock = _isDeliveryish ? {
-        channel: order.customer?.channel || (order.source && order.source !== 'hubrise' ? srcLabel : null),
+        channel: isEzcaterOrder(order) ? 'ezCater'
+          : (order.customer?.channel || (order.source && order.source !== 'hubrise' ? srcLabel : null)),
         serviceType: _svcType,
         paid: order.customer?.paid != null ? order.customer.paid : (order.source !== 'hubrise'),  // online/kiosk/catering are pre-paid
         // v5.5.850: partial channel payments — printed as PART-PAID £x / COLLECT £y (printer.js)
         paidAmount: order.customer?.paidAmount ?? null,
         due: order.customer?.due ?? null,
-        collectionCode: order.customer?.collectionCode || null,
+        collectionCode: order.customer?.collectionCode || (isEzcaterOrder(order) ? ezcaterOrderNumber(order) : null) || null,
         name: order.customer?.name,
         phone: order.customer?.phone,
         address: order.customer?.address,
@@ -7375,8 +7394,12 @@ export const useStore = create((set, get) => ({
         isTable: ticketIsTable,
         customerName: order.customer?.name,
         orderRef: order.ref,
-        appCode: order.source === 'hubrise' ? order.customer?.collectionCode : null,
-        source: order.source === 'hubrise' ? (order.customer?.channel || srcLabel) : srcLabel,
+        // An ezCater order is a catering order marked by customer.channel: the KDS shows
+        // "ezCater" and ezCater's own order number, as it does for a delivery app.
+        appCode: order.source === 'hubrise' ? order.customer?.collectionCode
+          : (isEzcaterOrder(order) ? ezcaterOrderNumber(order) : null),
+        source: order.source === 'hubrise' ? (order.customer?.channel || srcLabel)
+          : (isEzcaterOrder(order) ? 'ezCater' : srcLabel),
         note: flagNote ? joinNotes(flagNote, order.customer?.notes) : order.customer?.notes,
       });
       const tickets = Object.entries(byCentre).map(([centreId, items]) => ({

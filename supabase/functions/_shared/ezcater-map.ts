@@ -667,6 +667,10 @@ export function orderToQueueRow(
 }
 
 /**
+ * NO LONGER USED BY THE WEBHOOK (18 Sep 2026). ezCater orders are now written as ServOS catering
+ * orders by ezcaterCateringRow in _shared/ezcaterCatering.js; this is kept only because older
+ * tests pin it. Do not reintroduce it: a row with source 'ezcater' is reached by no catering path.
+ *
  * The subset of the row that is safe to write to order_queue on every venue.
  * Same guarantee as hubrise-ingest's queuePayload: only columns that exist in
  * the ops baseline, so an insert can never fail on a missing column.

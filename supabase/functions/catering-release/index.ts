@@ -18,6 +18,9 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { dispatchCourier } from '../_shared/delivery-dispatch.ts';
+import {
+  NOT_RELEASABLE_STATUSES_PG, RELEASABLE_OR_FILTER, mayBookOurCourier, isEzcaterOrder, ezcaterOrderNumber,
+} from '../_shared/ezcaterCatering.js';
 
 const URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
@@ -40,7 +43,11 @@ Deno.serve(async (req) => {
   // Due (fire time + grace passed), not yet fired by any device, not finished. Oldest first.
   const { data, error } = await sb.from('order_queue')
     .select('ref, location_id, type, total, items, customer, sent_at')
-    .eq('source', 'catering').is('kitchen_routed_at', null).neq('status', 'collected')
+    .eq('source', 'catering').is('kitchen_routed_at', null)
+    // 18 Sep 2026: ezCater orders are catering orders. One cancelled before it fired, or not yet
+    // accepted by ezCater, is never released. Our own rows carry no hold key: unchanged for them.
+    .not('status', 'in', NOT_RELEASABLE_STATUSES_PG)
+    .or(RELEASABLE_OR_FILTER)
     .lte('sent_at', cutoff)
     .order('sent_at', { ascending: true })
     .limit(BATCH);
@@ -52,6 +59,8 @@ Deno.serve(async (req) => {
     const claim = await sb.from('order_queue')
       .update({ kitchen_routed_at: new Date().toISOString() })
       .eq('ref', row.ref).eq('location_id', row.location_id).is('kitchen_routed_at', null)
+      // A cancel landing between the read above and this claim must not reach the kitchen.
+      .neq('status', 'cancelled')
       .select('ref');
     if (claim.error || !claim.data?.length) continue;   // a device just claimed it — leave the routed fire to them
 
@@ -59,7 +68,8 @@ Deno.serve(async (req) => {
     // this order → no device will dispatch the courier either. If it's an uber-mode delivery,
     // dispatch server-side now (idempotent on order_ref, so a device that comes online won't
     // double-send). Self-delivery just gets the KDS ticket below. Independent of KDS success.
-    if (row.type === 'delivery' && row.customer?.delivery_mode === 'uber') {
+    // Never for an ezCater order: the caterer or ezCater delivers it.
+    if (row.type === 'delivery' && row.customer?.delivery_mode === 'uber' && mayBookOurCourier(row)) {
       try {
         const { data: cfg } = await sb.from('venue_uber_config').select('*').eq('location_id', row.location_id).maybeSingle();
         if (cfg?.enabled) {
@@ -71,10 +81,13 @@ Deno.serve(async (req) => {
 
     // Consolidated KDS ticket (all items, centre_id null → shows on the all-items KDS view).
     const who = row.customer?.name || 'Catering';
+    // An ezCater order shows ezCater and ezCater's own order number (customer.channel).
+    const ez = isEzcaterOrder(row);
+    const ezNo = ez ? ezcaterOrderNumber(row) : null;
     const ticket = {
       id: `kds-cat-${row.ref}`,
       location_id: row.location_id,
-      table_label: `Catering ${row.ref}`,
+      table_label: `Catering ${ezNo || row.ref}`,
       items: row.items || [],
       status: 'pending', course: 'main', centre_id: null,
       server: who, covers: 1,
@@ -86,7 +99,7 @@ Deno.serve(async (req) => {
       v: 1, channel: 'catering', isTable: false,
       orderType: ['takeaway', 'collection', 'delivery'].includes(row.type) ? row.type : 'collection',
       customerName: row.customer?.name || null,
-      orderNo: row.ref, source: 'Catering', staff: null,
+      orderNo: ezNo || row.ref, source: ez ? 'ezCater' : 'Catering', staff: null,
       note: (typeof row.customer?.notes === 'string' && row.customer.notes.trim()) || null,
     };
     let { error: kErr } = await sb.from('kds_tickets').insert({ ...ticket, meta });
