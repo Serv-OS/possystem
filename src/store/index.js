@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { supabase, platformSupabase, isMock, getLocationId, ensureAuthToken, getActiveLocationSync, isHostStandMode, whenDeviceClaimed, claimPairedDeviceOnBoot } from '../lib/supabase';
+import { supabase, platformSupabase, isMock, getLocationId, ensureAuthToken, getActiveLocationSync, isHostStandMode, isBackOfficeMode, getDeviceMode, whenDeviceClaimed, claimPairedDeviceOnBoot } from '../lib/supabase';
 import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
 import { resolveServiceCharge } from '../lib/serviceCharge';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
@@ -4881,6 +4881,20 @@ export const useStore = create((set, get) => ({
     if (isMock) return;
     // A host stand is not a till. See canRunShiftLifecycle below.
     if (!get().canRunShiftLifecycle()) return;
+    // Back Office is not a till. It runs this boot hook too (App mounts
+    // useSupabaseInit before the Back Office route), and it used to auto open
+    // or auto close the venue's till shift with the owner's login. The shifts
+    // policy (pos_can_access) often refuses that login for the venue picked in
+    // the switcher (company level access, Ops and Platform location id drift),
+    // and the refusal lit the red "YOUR CHANGES ARE NOT SAVING" bar on every
+    // Back Office load, although nothing the owner edited had failed.
+    // So here it only READS the open shift (EOD close and the Shift page use
+    // it). The tills open and roll over their own shifts; the Shift page's
+    // Open shift button is still there for a manual open.
+    if (!get().canAutoRunShiftLifecycle()) {
+      await get().loadCurrentShift?.();
+      return;
+    }
     try {
       await get().loadCurrentShift?.();
       const current = get().currentShift;
@@ -4941,6 +4955,18 @@ export const useStore = create((set, get) => ({
   // Nothing on a host stand reads currentShift and nothing on it takes money,
   // so the honest answer is to leave the till tables alone entirely.
   canRunShiftLifecycle: () => !isHostStandMode(),
+
+  // May this browser open or roll over the till shift BY ITSELF at boot?
+  // Only a till: ?mode=pos, ?mode=mpos, or a paired device that never picked a
+  // mode (it falls through to the POS). Every other surface mounts the same boot
+  // hook (Back Office, admin, manager, owner, staff, kiosk, menu board, order
+  // screen, customer display, time clock, host stands) and must only READ the
+  // shift. A person can still open one from the Back Office Shift page.
+  canAutoRunShiftLifecycle: () => {
+    if (isHostStandMode() || isBackOfficeMode()) return false;
+    const mode = getDeviceMode();
+    return mode === '' || mode === 'pos' || mode === 'mpos';
+  },
 
   // ── Petty cash + cash drawer (v4.6.30) ────────
   pettyCashEntries: [],
