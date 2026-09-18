@@ -5,6 +5,7 @@ import BOLogin from '../backoffice/BOLogin';
 import AdminBillingManager from './sections/AdminBillingManager';
 import AdminRevenue from './sections/AdminRevenue';
 import AdminReseller from './sections/AdminReseller';
+import AdminCustomerImport from './sections/AdminCustomerImport';
 import { money, CURRENCIES } from '../lib/currency';
 import { ServOSIcon, ServOSWordmark } from '../components/ServOSBrand';
 
@@ -439,6 +440,7 @@ function AdminPanel({ authUser }) {
           { id:'billing', label:'Processing', icon:'💳' },
           { id:'revenue', label:'Revenue', icon:'📈' },
           { id:'reseller', label:'FranPOS', icon:'🧾' },
+          { id:'customer-import', label:'Import customers', icon:'📥' },
         ].map(n => (
           <button key={n.id} onClick={() => { setSection(n.id); setMsg({ type:'', text:'' }); }}
             style={{ display:'flex', alignItems:'center', gap:10, padding:'8px 16px', margin:'1px 8px', borderRadius:8, cursor:'pointer', fontSize:13,
@@ -476,6 +478,8 @@ function AdminPanel({ authUser }) {
         {/* ── Revenue: what the platform makes (payments + SaaS) ── */}
         {section === 'revenue' && <AdminRevenue />}
         {section === 'reseller' && <AdminReseller />}
+        {/* Customer import: ServOS staff only, never in Back Office. */}
+        {section === 'customer-import' && <AdminCustomerImport orgs={orgs} sbFetch={sbFetch} />}
 
         {/* ── Orgs list ── */}
         {section === 'orgs' && (

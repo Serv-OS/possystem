@@ -7,6 +7,20 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.4',
+    date: '18 Sep 2026',
+    items: [
+      'New, ServOS staff only: Import customers, in the admin portal. Upload a CSV of loyalty members from another system and each person gets a customer record, a loyalty membership at every site of the company, their stamp balance and any free drinks they are owed. There is a Download template button.',
+      'Only named ServOS staff can use it, checked on the server as well as on screen, so a venue login cannot run it even if it found the address.',
+      'Pick the company first. The confirm step shows the company name large, so a file can never go into the wrong brand. Preview writes nothing.',
+      'A file that has been opened and saved in Excel or Google Sheets still reads: phone numbers that lost their 0, dates written day first, TRUE and FALSE, 2.0 for stamps, a semicolon separator, re-typed headers and blank rows are all handled. Anything that cannot be read safely is listed with a plain reason, never guessed.',
+      'Phones are written exactly as the till writes them, so every member can be looked up at the till. No country code is ever invented.',
+      'A yes to marketing in the file only ever adds consent. A no in the file never switches off somebody who said yes here, and somebody who opted out here is never switched back on.',
+      'People deleted here are left out by name and never recreated. Running the same file twice changes nothing and doubles no stamps.',
+      'Nothing is sent to customers: no welcome texts or emails.',
+    ],
+  },
+  {
     v: '5.9.3',
     date: '18 Sep 2026',
     items: [
