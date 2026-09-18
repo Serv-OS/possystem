@@ -19,11 +19,13 @@ import { fetchFloorPlanVersioned, fetchTableTombstones } from '../lib/db';
 import { isSessionClosed } from './sessionClosure';
 import {
   applyPlanRead, applyTombstones, normaliseFloorRow, loadPlanState, savePlanState,
-  mergeTombs, tombstonesFromRows, pruneClosedRemoved, nextSeq,
+  mergeTombs, tombstonesFromRows, pruneClosedRemoved, nextSeq, makeKeyedFlight,
 } from '../lib/tablePlan';
 
 const REFRESH_MS = 3 * 60 * 1000;
-let _inFlight = null;
+// One read in flight per (location, mode, Back Office flag): a caller is never handed a read made
+// for another location, mode or flag (it waits, then reads its own).
+const _flight = makeKeyedFlight();
 let _started = false;
 let _timer = null;
 let _debounce = null;
@@ -37,8 +39,8 @@ export async function refreshTablePlan({ locationId = null, mode = 'full', reaso
   if (isMock) return { applied: false, changed: false, sections: null };
   const loc = locationId || getActiveLocationSync();
   if (!loc || loc === 'loc-demo') return { applied: false, changed: false, sections: null };
-  if (_inFlight) return _inFlight;
-  _inFlight = (async () => {
+  const key = `${loc}|${mode}|${backOffice ? 'bo' : 'till'}`;
+  return _flight.run(key, async () => {
     try {
       const readSeq = nextSeq();   // taken BEFORE the request: anything observed later is newer
       const [fp, tr] = await Promise.all([
@@ -59,7 +61,7 @@ export async function refreshTablePlan({ locationId = null, mode = 'full', reaso
       let next;
       if (read) {
         next = mode === 'full' ? pruneClosedRemoved(read.tables, isSessionClosed) : read.tables;
-        savePlanState(loc, { plan: mode === 'full' ? read.plan : null, tombs, cleared: read.cleared, labels: read.labels });
+        savePlanState(loc, { plan: mode === 'full' ? read.plan : null, tombs, cleared: read.cleared, labels: read.labels, sections: read.sections });
         if (read.dropped.length) console.log('[TablePlanSync]', reason, 'removed', read.dropped.join(', '), '(deleted from the plan)');
         if (read.keptOpen.length) console.warn('[TablePlanSync]', reason, 'kept', read.keptOpen.join(', '), 'reachable: gone from the plan but an order is open on it');
       } else {
@@ -72,11 +74,8 @@ export async function refreshTablePlan({ locationId = null, mode = 'full', reaso
     } catch (e) {
       console.warn('[TablePlanSync] refresh failed:', e?.message || e);
       return { applied: false, changed: false, sections: null };
-    } finally {
-      _inFlight = null;
     }
-  })();
-  return _inFlight;
+  });
 }
 
 // Coalesce bursts (a push arrives, the app comes online and visible at once).

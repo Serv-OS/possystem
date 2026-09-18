@@ -250,8 +250,8 @@ export async function startSessionReconciler() {
           if (localHome && localHome !== tid) continue;
           orphanSessions.set(tid, c.session);
         }
-        const { labels, tombs } = loadPlanState(_locationId);
-        const withOrphans = rebuildOrphans(prunedTables, orphanSessions, { isClosed: isSessionClosed, labels, tombs });
+        const { labels, tombs, sections } = loadPlanState(_locationId);
+        const withOrphans = rebuildOrphans(prunedTables, orphanSessions, { isClosed: isSessionClosed, labels, tombs, sections });
         if (withOrphans !== prunedTables) {
           console.warn('[SessionReconciler] rebuilt', withOrphans.length - prunedTables.length, 'table(s) for open orders whose table was missing');
           prunedTables = withOrphans;

@@ -4,6 +4,16 @@
 -- Claude cannot apply production DDL by any route.
 --
 -- Idempotent: create if not exists, drop policy if exists before create. Safe to run twice.
+-- Run both files back to back, outside service.
+--
+-- PETER'S CHECKLIST (the same in both files)
+--   1. Run 20260918_OPS_floor_table_tombstones.sql, then 20260918b_OPS_floor_tables_server_time.sql,
+--      back to back, OUTSIDE SERVICE (both lock floor_tables briefly; if either says "lock timeout",
+--      nothing changed, just run it again).
+--   2. Run the three check queries at the bottom of 20260918b. Each must answer without an error.
+--   3. After the deploy, reload every Back Office tab on every machine.
+--   4. Force stop and reopen every Sunmi and Android till; fully reload every iPad and browser.
+--   5. Press Push to POS once per venue.
 --
 -- ----------------------------------------------------------------------------
 -- WHAT THIS IS
@@ -19,9 +29,10 @@
 -- that reads it (booking widget, kiosk, QR, manager snapshot, edge functions)
 -- has to learn about soft deletes.
 --
--- deleted_at is never sent by the app: the default here, and the trigger in
--- 20260918b_OPS_floor_tables_server_time.sql (run it NEXT), set it from the
--- database clock, so no device clock ever orders a delete.
+-- deleted_at is never sent by the app: the default and the trigger here set it from
+-- the database clock on every insert AND every update, so no device clock ever
+-- orders a delete and a repeat delete of the same id (the app's upsert) moves
+-- deleted_at forward even if 20260918b has not run yet.
 --
 -- BEFORE THIS RUNS the app still works: the tombstone read and write report the
 -- table as missing and are skipped, and the tombstones travel on the deleting
@@ -29,6 +40,8 @@
 -- ----------------------------------------------------------------------------
 
 begin;
+
+set local lock_timeout = '5s';
 
 create table if not exists public.floor_table_tombstones (
   location_id text        not null,
@@ -63,12 +76,30 @@ create policy floor_table_tombstones_update on public.floor_table_tombstones
   using     (pos_can_access(location_id) or is_super_admin())
   with check (pos_can_access(location_id) or is_super_admin());
 
--- No DELETE policy: a tombstone is a record of a decision. Old ones are ignored by
--- the app after 90 days; prune them here by hand if the table ever grows.
+-- No DELETE policy: a tombstone is a record of a decision. The app reads the newest
+-- 2000 per venue (no date cut off, that would need a device clock); prune old ones
+-- here by hand if the table ever grows past that.
 
 grant select, insert, update on public.floor_table_tombstones to anon, authenticated;
 
+-- deleted_at from the database clock on every insert and update (the value a client
+-- sends is ignored). Milliseconds, like floor_tables.updated_at in 20260918b.
+create or replace function public.floor_table_tombstones_stamp_deleted_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.deleted_at := date_trunc('milliseconds', clock_timestamp());
+  return new;
+end;
+$$;
+
+drop trigger if exists floor_table_tombstones_stamp_deleted_at on public.floor_table_tombstones;
+create trigger floor_table_tombstones_stamp_deleted_at
+  before insert or update on public.floor_table_tombstones
+  for each row execute function public.floor_table_tombstones_stamp_deleted_at();
+
 commit;
 
--- Check after running:
---   select count(*) from public.floor_table_tombstones;   -- 0 rows, no error
+-- Check after running (then run 20260918b straight away):
+--   select count(*) from public.floor_table_tombstones;   -- a number, no error

@@ -31,10 +31,19 @@
 //                     the row supersedes it (the row was re-created).
 //
 //   A SUCCESSFUL, NON-EMPTY plan read is the plan version { seq, ids, srvReadAt }. A table the read
-//   lacks is retired only if this machine observed its copy before the read began (or, with server
-//   times, if its srvAt is not after the read's server time). An incoming table (push, broadcast,
-//   cache) the last read lacked is added only when it is newer than that read by the same rules;
-//   an old-code push (no stamps) can add only what the database had at the last read.
+//   lacks is retired only if this machine observed its copy before the read began. An incoming
+//   table (push, broadcast, cache) the last read lacked is added only if this machine observed it
+//   after that read began; an old-code push (no marks) can add only what the database had at the
+//   last read. Membership is NEVER decided by a server time (final review): updated_at is stamped
+//   before the writer commits, so no read time can prove a row absent; this machine's observation
+//   order can (a copy observed before the read was sent was committed before its snapshot).
+//   srvReadAt is the highest updated_at the read saw, kept for diagnosis only. Server times order
+//   two copies of the SAME row, and a server tombstone against that row's updated_at.
+//
+//   THE DATABASE GUARD (20260918b floor_tables_guard_tombstone): an insert or update of an id whose
+//   tombstone is newer than the row's updated_at is refused, unless the write sets
+//   recreate_deleted = true (this client, only on the insert of a table a person just added). Old
+//   code gets a refused save, never a silent resurrection (lib/tablePlanDb.js).
 //
 //   ABSENCE ALONE NEVER REMOVES A TABLE: a failed read, an empty read, an empty or partial config,
 //   a broadcast without the table, a wake from sleep. None of those are markers.
@@ -207,15 +216,19 @@ export function tombBeats(tomb, copy) {
  * May an incoming table (push, broadcast, cache) that the store does not hold be added?
  *   no plan read yet            yes (nothing better to go on, the pre-existing behaviour)
  *   in the last plan read       yes (the database had it)
- *   server times on both sides  only if it is newer than that read
  *   otherwise                   only if this machine observed it after that read began
- * An old-code push carries neither mark (seq 0), so it can add only what the database had.
+ * An old-code push carries no mark (seq 0), so it can add only what the database had.
+ *
+ * Why not a server time (final review): updated_at is stamped by the trigger BEFORE the writer
+ * commits, so a row can carry a stamp earlier than a read's time and still commit after that
+ * read's snapshot. No database time can therefore prove "this row was absent from the read because
+ * it was deleted". This machine's observation order can: a copy observed before the read was sent
+ * was committed before the read's snapshot. Deletes are decided by tombstones (explicit markers),
+ * checked before this.
  */
 export function admits(inc, plan) {
   if (!plan) return true;
   if (Array.isArray(plan.ids) && plan.ids.includes(inc.id)) return true;
-  const s = srvAtOf(inc);
-  if (s > 0 && num(plan.srvReadAt) > 0) return s > num(plan.srvReadAt);
   return seqOf(inc) > num(plan.seq);
 }
 
@@ -298,8 +311,9 @@ function hasOpenChild(tables, id, isClosed) {
  *              'upsertOnly'  add and update only, never retire (useSupabaseInit: it has no
  *                            sessions to check, so it must never drop a table)
  *
- * A table the read lacks is retired unless this machine observed it after the read began, or its
- * server time is after the read's server time. A tombstone against a row the read DID return wins
+ * A table the read lacks is retired unless this machine observed it after the read began (never by
+ * a server time: see admits for why no database time can prove absence). srvReadAt is kept in the
+ * plan for diagnosis only. A tombstone against a row the read DID return wins
  * only if it is newer than the read (server: deleted_at later than the row's updated_at; local:
  * learned after the read began). A local tombstone the read outlived is returned in `cleared`.
  *
@@ -312,12 +326,14 @@ export function applyPlanRead({ local, rows, srvReadAt = 0, readSeq = 0, tombs =
   const byId = new Map(loc.map(t => [t.id, t]));
   const ids = [], dropped = [], keptOpen = [], added = [], cleared = {};
   const labels = {};
+  const sections = {};
   const out = [];
   const opened = (t) => openSession(t, isClosed) || !!(isOpen && isOpen(t.id)) || hasOpenChild(loc, t.id, isClosed);
   for (const row of rows) {
     if (!row || !row.id) continue;
     ids.push(row.id);
     if (row.label != null) labels[row.id] = String(row.label);
+    sections[row.id] = row.section ?? null;
     const r = { ...row, _seq: num(readSeq) };
     const l = byId.get(row.id);
     const keepLocal = !!l && (l._pending || seqOf(l) > num(readSeq) || srvAtOf(l) > srvAtOf(r));
@@ -345,13 +361,14 @@ export function applyPlanRead({ local, rows, srvReadAt = 0, readSeq = 0, tombs =
     // Split child checks are never in floor_tables: they live while their order is open.
     if (l.parentId) { if (openSession(l, isClosed)) out.push(l); else dropped.push(l.id); continue; }
     // Observed after the read began (Back Office added it mid-read, a live push, a pending edit).
-    const newer = l._pending || l._isNew || seqOf(l) > num(readSeq)
-      || (srvAtOf(l) > 0 && num(srvReadAt) > 0 && srvAtOf(l) > num(srvReadAt));
+    // Observation order only: a copy observed BEFORE the read was sent was committed before the
+    // read's snapshot, so its absence is a delete. No server time is used here (see admits).
+    const newer = l._pending || l._isNew || seqOf(l) > num(readSeq);
     if (newer && !tombBeats(tombs[l.id], l)) { out.push(l); continue; }
     const x = retire(l, opened(l), dropped, keptOpen);
     if (x) out.push(x);
   }
-  return { tables: out, plan: { seq: num(readSeq), ids, srvReadAt: num(srvReadAt) }, dropped, keptOpen, added, cleared, labels };
+  return { tables: out, plan: { seq: num(readSeq), ids, srvReadAt: num(srvReadAt) }, dropped, keptOpen, added, cleared, labels, sections };
 }
 
 // Tombstones only (no incoming list): used when a read failed or came back empty.
@@ -386,6 +403,7 @@ export function pruneClosedRemoved(tables, isClosed = noClosed) {
  *   sessions   Map or object { tableId: session } from every source the caller has (active_sessions,
  *              rpos-session-backup, rpos-session-snapshot)
  *   labels     last known names (plan state), so the rebuilt table reads as it did
+ *   sections   last known sections (plan state), so a section filtered till still shows it
  *   tombs      tombstones (their label, if the database row carried one)
  *
  * A closed session (isClosed) is skipped, so a leftover row never rebuilds a table. A session whose
@@ -393,7 +411,7 @@ export function pruneClosedRemoved(tables, isClosed = noClosed) {
  * rebuilt as a child of its parent; a missing parent is rebuilt as an empty retired table so the
  * child stays reachable. Rebuilt tables are flagged planRemoved and placed in a row below the plan.
  */
-export function rebuildOrphans(tables, sessions, { isClosed = noClosed, labels = {}, tombs = {} } = {}) {
+export function rebuildOrphans(tables, sessions, { isClosed = noClosed, labels = {}, tombs = {}, sections = {} } = {}) {
   const list = Array.isArray(tables) ? tables : [];
   const entries = sessions instanceof Map ? [...sessions.entries()] : Object.entries(sessions || {});
   const have = new Set(list.map(t => t.id));
@@ -416,19 +434,20 @@ export function rebuildOrphans(tables, sessions, { isClosed = noClosed, labels =
   let slot = 0;
   const place = () => ({ x: 8 + (slot % 8) * 96, y: bottom + 24 + Math.floor(slot++ / 8) * 96 });
   const nameOf = (id) => labels[id] ?? normTomb(tombs[id])?.label ?? null;
+  const sectionOf = (id) => (sections && sections[id] != null ? sections[id] : null);
   const occupied = (s) => ({ status: 'occupied', session: s, firedCourses: s.firedCourses || [], sentAt: s.sentAt || null });
   const byId = () => new Map(out.map(t => [t.id, t]));
   // Parents / standalone tables first, then children.
   const standalone = open.filter(([id]) => !childOf(id));
   const children = open.filter(([id]) => childOf(id));
   for (const [id, s] of standalone) {
-    out.push({ id, label: nameOf(id) || 'Removed table', ...place(), w: 80, h: 80, shape: 'rect', maxCovers: num(s.covers) || 4, section: null, planRemoved: true, rebuilt: true, ...occupied(s) });
+    out.push({ id, label: nameOf(id) || 'Removed table', ...place(), w: 80, h: 80, shape: 'rect', maxCovers: num(s.covers) || 4, section: sectionOf(id), planRemoved: true, rebuilt: true, ...occupied(s) });
   }
   for (const [id, s] of children) {
     const { parentId, n } = childOf(id);
     let parent = byId().get(parentId);
     if (!parent) {
-      parent = { id: parentId, label: nameOf(parentId) || 'Removed table', ...place(), w: 80, h: 80, shape: 'rect', maxCovers: 4, section: null, planRemoved: true, rebuilt: true, status: 'available', session: null, firedCourses: [], sentAt: null };
+      parent = { id: parentId, label: nameOf(parentId) || 'Removed table', ...place(), w: 80, h: 80, shape: 'rect', maxCovers: 4, section: sectionOf(parentId), planRemoved: true, rebuilt: true, status: 'available', session: null, firedCourses: [], sentAt: null };
       out.push(parent);
     }
     const { session: _s, childIds: _c, planRemoved: _p, rebuilt: _r, ...layout } = parent;
@@ -522,7 +541,7 @@ export function applyPushTables(local, snap, { tombs = {}, plan = null, pushSeq 
  * failed read changes no definition, but sessions still attach and orphans are still rebuilt, so
  * an offline boot mid order shows every order.
  */
-export function bootTables({ local, floorRows, srvReadAt = 0, readSeq = 0, tombs = {}, sessions = {}, isClosed = noClosed, labels = {} } = {}) {
+export function bootTables({ local, floorRows, srvReadAt = 0, readSeq = 0, tombs = {}, sessions = {}, isClosed = noClosed, labels = {}, sections = {} } = {}) {
   const sess = sessions instanceof Map ? Object.fromEntries(sessions) : (sessions || {});
   const openIn = (id) => !!sess[id] && !isClosed(id, sess[id]);
   const read = applyPlanRead({ local, rows: floorRows, srvReadAt, readSeq, tombs, isOpen: openIn, isClosed, mode: 'full' });
@@ -539,7 +558,8 @@ export function bootTables({ local, floorRows, srvReadAt = 0, readSeq = 0, tombs
     };
   });
   const allLabels = { ...labels, ...(read?.labels || {}) };
-  const rebuilt = rebuildOrphans(attached, sess, { isClosed, labels: allLabels, tombs });
+  const allSections = { ...sections, ...(read?.sections || {}) };
+  const rebuilt = rebuildOrphans(attached, sess, { isClosed, labels: allLabels, tombs, sections: allSections });
   return { tables: pruneClosedRemoved(rebuilt, isClosed), read };
 }
 
@@ -575,8 +595,28 @@ export function deleteRefusalReason(table, { tables = [], dbRows = [], qrRows = 
   return null;
 }
 
+// The compare-and-set base: the RAW database values of the definition columns (null stays null).
+// Final review: the base used to hold the display defaults (max_covers ?? 4, sort_order ?? 0), so a
+// row with a NULL in a nullable column could never match `.eq(col, 4)` and could never be saved.
+// saveTableChecked compares a null with `.is(col, null)`.
+const rawCol = (t, snake, camel) => {
+  if (t && snake in t) return t[snake] ?? null;
+  if (t && camel in t) return t[camel] ?? null;
+  return null;
+};
+export function baseOfRow(t) {
+  return {
+    label: rawCol(t, 'label', 'label'),
+    x: rawCol(t, 'x', 'x'), y: rawCol(t, 'y', 'y'), w: rawCol(t, 'w', 'w'), h: rawCol(t, 'h', 'h'),
+    shape: rawCol(t, 'shape', 'shape'),
+    maxCovers: rawCol(t, 'max_covers', 'maxCovers'),
+    section: rawCol(t, 'section', 'section'),
+    sortOrder: rawCol(t, 'sort_order', 'sortOrder'),
+  };
+}
+
 // floor_tables row (snake) -> store table definition (camel), stamped with its version marks and,
-// for Back Office compare-and-set, the base it was read as.
+// for Back Office compare-and-set, the base it was read as (raw database values, baseOfRow).
 export function normaliseFloorRow(t, { locationId = null, readSeq = 0 } = {}) {
   const def = {
     label: t.label,
@@ -594,7 +634,7 @@ export function normaliseFloorRow(t, { locationId = null, readSeq = 0 } = {}) {
     srvAt: num(t.updated_at) || num(t.srvAt) || 0,
     srvIso: srvIso ? String(srvIso) : null,
     _seq: num(readSeq),
-    _base: { ...def },
+    _base: baseOfRow(t),
   };
 }
 
@@ -624,6 +664,28 @@ export function writeRefusal(table, tombs = {}) {
   if (tomb && (table._isNew ? false : tombBeats(tomb, table))) return 'deleted';
   if (!table._isNew && !table._base) return 'no-base';
   return null;
+}
+
+/**
+ * One request in flight per KEY (TablePlanSync). A caller asking for the same key shares the
+ * running request; a caller asking for a different key (another location, mode or Back Office
+ * flag) waits for the running one to finish and then runs its own, so it is never handed a read
+ * made for someone else.
+ */
+export function makeKeyedFlight() {
+  let cur = null;   // { key, promise }
+  const run = async (key, fn) => {
+    for (;;) {
+      if (cur && cur.key === key) return cur.promise;
+      if (!cur) break;
+      await cur.promise.catch(() => {});
+    }
+    const promise = (async () => fn())();
+    const entry = { key, promise };
+    cur = entry;
+    try { return await promise; } finally { if (cur === entry) cur = null; }
+  };
+  return { run, busy: () => !!cur };
 }
 
 // ── Local persistence (shared by every tab on the machine) ─────────────────────────────────
@@ -665,7 +727,7 @@ function validPlan(p) {
 }
 
 export function loadPlanState(locationId) {
-  const empty = { plan: null, tombs: {}, cleared: {}, pushes: {}, labels: {} };
+  const empty = { plan: null, tombs: {}, cleared: {}, pushes: {}, labels: {}, sections: {} };
   if (!locationId) return empty;
   const e = readAll()[locationId] || {};
   return {
@@ -674,15 +736,16 @@ export function loadPlanState(locationId) {
     cleared: e.cleared && typeof e.cleared === 'object' ? e.cleared : {},
     pushes: e.pushes && typeof e.pushes === 'object' ? e.pushes : {},
     labels: e.labels && typeof e.labels === 'object' ? e.labels : {},
+    sections: e.sections && typeof e.sections === 'object' ? e.sections : {},
   };
 }
 
 /**
  * Save plan state. A plan is kept only if it is at least as new (by seq) as the saved one, so a
- * slower tab cannot put an older read back. Tombstones and labels merge; cleared tombstones are
+ * slower tab cannot put an older read back. Tombstones, labels and sections merge; cleared tombstones are
  * removed from the set and remembered.
  */
-export function savePlanState(locationId, { plan, tombs, cleared, labels } = {}) {
+export function savePlanState(locationId, { plan, tombs, cleared, labels, sections } = {}) {
   if (!locationId) return;
   const all = readAll();
   const cur = all[locationId] || {};
@@ -705,6 +768,12 @@ export function savePlanState(locationId, { plan, tombs, cleared, labels } = {})
     const lk = Object.keys(l);
     if (lk.length > MAX_LABELS) for (const k of lk.slice(0, lk.length - MAX_LABELS)) delete l[k];
     next.labels = l;
+  }
+  if (sections) {
+    const sc = { ...(cur.sections || {}), ...sections };
+    const sk = Object.keys(sc);
+    if (sk.length > MAX_LABELS) for (const k of sk.slice(0, sk.length - MAX_LABELS)) delete sc[k];
+    next.sections = sc;
   }
   all[locationId] = next;
   writeAll(all);

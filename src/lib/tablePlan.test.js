@@ -21,9 +21,9 @@ import {
   mergeBroadcastTables, applyPushTables, bootTables, admits, tombBeats, newerDef,
   mergeTombs, tombstonesFromRows, normaliseFloorRow, deleteRefusalReason, writeRefusal,
   loadPlanState, savePlanState, recordTombstone, forgetTombstone, pushSeqFor, nextSeq,
-  _resetForTests,
+  _resetForTests, baseOfRow, floorRowOf, makeKeyedFlight,
 } from './tablePlan.js';
-import { saveTableChecked, openOrdersFor } from './tablePlanDb.js';
+import { saveTableChecked, openOrdersFor, readFloorPlan, isTombstoneRefusal, QR_TAB_LIMIT, PLAN_RPC_RETRY_MS } from './tablePlanDb.js';
 
 const read = (rel) => fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
 const LOC = 'loc-provo';
@@ -55,8 +55,9 @@ const closedFor = (dev) => (tableId, session) => !!session?.seatedAt
 
 // ── The database double ─────────────────────────────────────────────────────────────────────
 // mode 'none'  = neither migration has run
-// mode 'tombs' = 20260918 only (tombstone table, deleted_at default now())
-// mode 'both'  = 20260918 + 20260918b (server updated_at, trigger deleted_at, floor_plan_read)
+// mode 'tombs' = 20260918 only (tombstone table, deleted_at set by trigger on insert AND update)
+// mode 'both'  = 20260918 + 20260918b (server updated_at, the tombstone guard with its
+//                recreate_deleted signal, floor_plan_read returning the highest updated_at)
 
 function makeDb(mode = 'both') {
   const db = {
@@ -65,15 +66,44 @@ function makeDb(mode = 'both') {
   };
   db.tick = () => (db.clock += 1000);
   db.iso = (ms) => new Date(ms).toISOString();
-  db.hasUpdatedAt = mode === 'both';
-  db.hasTombs = mode !== 'none';
+  db.setMode = (m) => {
+    db.mode = m;
+    db.hasUpdatedAt = m === 'both';
+    db.hasGuard = m === 'both';
+    db.hasTombs = m !== 'none';
+  };
+  db.setMode(mode);
   db.put = (row) => {
-    const r = { location_id: LOC, x: 10, y: 20, w: 80, h: 80, shape: 'rect', max_covers: 4, section: 'main', sort_order: 0, ...row };
+    const { recreate_deleted: _rc, ...rest } = row;
+    const r = { location_id: LOC, x: 10, y: 20, w: 80, h: 80, shape: 'rect', max_covers: 4, section: 'main', sort_order: 0, ...rest };
     if (db.hasUpdatedAt) r.updated_at = db.iso(db.tick());
+    if (db.hasGuard) r.recreate_deleted = false;       // the trigger never stores true
     db.rows.set(r.id, r);
     return r;
   };
-  db.readPlan = () => ({ tables: [...db.rows.values()].map(r => ({ ...r })), at: db.hasUpdatedAt ? db.clock : 0 });
+  // floor_tables_guard_tombstone: null when the write may go ahead, else the error it raises.
+  db.guard = (row, existing) => {
+    if (!db.hasGuard || row.recreate_deleted === true) return null;
+    const t = db.tombs.get(row.id);
+    if (!t || (t.location_id ?? LOC) !== (row.location_id ?? LOC)) return null;
+    const last = existing?.updated_at ? Date.parse(existing.updated_at) : null;
+    if (last != null && last >= Date.parse(t.deleted_at)) return null;
+    return { code: 'P0001', message: `floor_table_deleted: table ${row.id} was deleted from the floor plan, reload Back Office` };
+  };
+  // Run the migrations the way Peter will (20260918, then 20260918b): the backfill stamps EVERY
+  // existing row with the one time of the migration's transaction.
+  db.migrate = (to) => {
+    if (to === 'tombs' || to === 'both') db.setMode('tombs');
+    if (to === 'both') {
+      const at = db.iso(db.tick());
+      for (const [id, r] of db.rows) db.rows.set(id, { ...r, updated_at: r.updated_at || at, recreate_deleted: false });
+      db.setMode('both');
+    }
+  };
+  const maxAt = () => Math.max(0, ...[...db.rows.values()].map(r => (r.updated_at ? Date.parse(r.updated_at) : 0)));
+  // floor_plan_read: rows plus the highest updated_at among them (0 before 20260918b: plain select).
+  db.readPlan = () => ({ tables: [...db.rows.values()].map(r => ({ ...r })), at: db.hasUpdatedAt ? maxAt() : 0 });
+  db.maxAt = maxAt;
   db.tombRows = () => (db.hasTombs ? [...db.tombs.values()].map(t => ({ ...t })) : null);
   db.deleteRow = (id, label = null) => {
     db.rows.delete(id);
@@ -96,40 +126,74 @@ function makeClient(db) {
     select() { return this; }
     insert(row) { this.op = 'insert'; this.row = row; return this; }
     update(p) { this.op = 'update'; this.patch = p; return this; }
-    eq(c, v) { this.f.push(r => (r[c] ?? null) === v); if (c === 'updated_at' && !db.hasUpdatedAt) this.badCol = c; return this; }
+    eq(c, v) {
+      const m = /^(\w+)->>(\w+)$/.exec(c);
+      if (m) { this.f.push(r => { const j = r[m[1]]; const x = j && typeof j === 'object' ? j[m[2]] : undefined; return x == null ? false : String(x) === String(v); }); this.jsonFilter = true; return this; }
+      this.f.push(r => (r[c] ?? null) === v); if (c === 'updated_at' && !db.hasUpdatedAt) this.badCol = c; return this;
+    }
+    upsert(row) { this.op = 'upsert'; this.row = row; return this; }
     is(c, v) { this.f.push(r => (r[c] ?? null) === v); return this; }
     neq(c, v) { this.f.push(r => r[c] !== v); return this; }
     like(c, pat) {
       const re = new RegExp('^' + pat.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/%/g, '.*') + '$');
       this.f.push(r => re.test(String(r[c] ?? ''))); return this;
     }
-    order() { return this; }
-    limit() { return this; }
+    order(c, o) { this.ord = { c, asc: o?.ascending !== false }; return this; }
+    limit(n) { this.lim = n; return this; }
     maybeSingle() { this.one = true; return this; }
     then(res, rej) { return Promise.resolve().then(() => this.exec()).then(res, rej); }
     exec() {
       db.calls.push(`${this.op}:${this.t}`);
       if (db.fail.has(this.t)) return { data: null, error: { message: 'network down' } };
       if (this.badCol) return { data: null, error: { code: '42703', message: `column ${this.badCol} does not exist` } };
-      if (this.op === 'insert') {
-        if (db.rows.has(this.row.id)) return { data: null, error: { code: '23505', message: 'duplicate key' } };
-        return { data: [{ ...db.put(this.row) }], error: null };
+      const row = this.row || this.patch;
+      if (this.t === 'floor_tables' && row && 'recreate_deleted' in row && !db.hasGuard) {
+        return { data: null, error: { code: 'PGRST204', message: "Could not find the 'recreate_deleted' column of 'floor_tables' in the schema cache" } };
       }
-      const hits = tableRows(this.t).filter(r => this.f.every(fn => fn(r)));
+      if (this.t === 'floor_table_tombstones' && (this.op === 'upsert' || this.op === 'insert')) {
+        if (!db.hasTombs) return { data: null, error: { code: '42P01', message: 'relation "public.floor_table_tombstones" does not exist' } };
+        // deleted_at comes from the trigger (20260918) on insert AND on the upsert's update.
+        const t = { location_id: LOC, ...this.row, deleted_at: db.iso(db.tick()) };
+        db.tombs.set(t.table_id, t);
+        return { data: [{ ...t }], error: null };
+      }
+      if (this.op === 'insert' || this.op === 'upsert') {
+        const existing = db.rows.get(this.row.id);
+        if (this.op === 'insert' && existing) return { data: null, error: { code: '23505', message: 'duplicate key' } };
+        const refused = db.guard(this.row, existing) || (existing ? db.guard({ ...existing, ...this.row }, existing) : null);
+        if (refused) return { data: null, error: refused };
+        return { data: [{ ...db.put(existing ? { ...existing, ...this.row } : this.row) }], error: null };
+      }
+      let hits = tableRows(this.t).filter(r => this.f.every(fn => fn(r)));
       if (this.op === 'update') {
+        for (const r of hits) { const e = db.guard({ ...r, ...this.patch }, r); if (e) return { data: null, error: e }; }
         const out = hits.map(r => {
           const n = { ...r, ...this.patch };
           if (db.hasUpdatedAt) n.updated_at = db.iso(db.tick());
+          if (db.hasGuard) n.recreate_deleted = false;
           db.rows.set(n.id, n);
           return { ...n };
         });
         return { data: out, error: null };
       }
+      if (this.ord) {
+        const { c, asc } = this.ord;
+        hits = [...hits].sort((a, b) => (String(a[c] ?? '') < String(b[c] ?? '') ? -1 : String(a[c] ?? '') > String(b[c] ?? '') ? 1 : 0) * (asc ? 1 : -1));
+      }
+      if (this.lim != null) hits = hits.slice(0, this.lim);
       if (this.one) return { data: hits[0] ? { ...hits[0] } : null, error: null };
       return { data: hits.map(r => ({ ...r })), error: null };
     }
   }
-  return { from: (t) => new Q(t) };
+  return {
+    from: (t) => new Q(t),
+    rpc: async (fn, args) => {
+      db.calls.push(`rpc:${fn}`);
+      if (fn !== 'floor_plan_read' || !db.hasUpdatedAt) return { data: null, error: { code: 'PGRST202', message: `Could not find the function public.${fn}(p_location_id) in the schema cache` } };
+      const r = db.readPlan();
+      return { data: { at: r.at, tables: r.tables.filter(t => t.location_id === args.p_location_id) }, error: null };
+    },
+  };
 }
 
 // ── Back Office actions (what FloorPlanBuilder + Push to POS do, on the database double) ────────
@@ -206,8 +270,8 @@ function boot(dev, db, { online = true } = {}) {
     let tombs = mergeTombs(st.tombs, snap?.tableTombstones, { seq: pushSeq, cleared: st.cleared });
     tombs = mergeTombs(tombs, tombstonesFromRows(tombRows, readSeq), { cleared: st.cleared });
     const rows = fp ? fp.tables.map(t => normaliseFloorRow(t, { locationId: LOC, readSeq })) : null;
-    const { tables, read: r } = bootTables({ local: dev.tables, floorRows: rows, srvReadAt: fp?.at || 0, readSeq, tombs, sessions, isClosed: closedFor(dev), labels: st.labels });
-    savePlanState(LOC, { plan: r?.plan || null, tombs, cleared: r?.cleared || null, labels: r?.labels || null });
+    const { tables, read: r } = bootTables({ local: dev.tables, floorRows: rows, srvReadAt: fp?.at || 0, readSeq, tombs, sessions, isClosed: closedFor(dev), labels: st.labels, sections: st.sections });
+    savePlanState(LOC, { plan: r?.plan || null, tombs, cleared: r?.cleared || null, labels: r?.labels || null, sections: r?.sections || null });
     dev.tables = tables;
   });
 }
@@ -220,7 +284,7 @@ function refresh(dev, db) {
     const tombs = mergeTombs(st.tombs, tombstonesFromRows(db.tombRows(), readSeq), { cleared: st.cleared });
     const rows = fp.tables.map(t => normaliseFloorRow(t, { locationId: LOC, readSeq }));
     const r = applyPlanRead({ local: dev.tables, rows, srvReadAt: fp.at, readSeq, tombs, isClosed: closedFor(dev), mode: 'full' });
-    if (r) { dev.tables = pruneClosedRemoved(r.tables, closedFor(dev)); savePlanState(LOC, { plan: r.plan, tombs, cleared: r.cleared, labels: r.labels }); }
+    if (r) { dev.tables = pruneClosedRemoved(r.tables, closedFor(dev)); savePlanState(LOC, { plan: r.plan, tombs, cleared: r.cleared, labels: r.labels, sections: r.sections }); }
   });
 }
 // SessionReconciler: open active_sessions rows whose table this device lacks get a table.
@@ -228,7 +292,7 @@ function reconcile(dev, db) {
   onDevice(dev, () => {
     const st = loadPlanState(LOC);
     const open = new Map([...db.sessions].filter(([id, s]) => !closedFor(dev)(id, s)));
-    dev.tables = rebuildOrphans(pruneClosedRemoved(dev.tables, closedFor(dev)), open, { isClosed: closedFor(dev), labels: st.labels, tombs: st.tombs });
+    dev.tables = rebuildOrphans(pruneClosedRemoved(dev.tables, closedFor(dev)), open, { isClosed: closedFor(dev), labels: st.labels, tombs: st.tombs, sections: st.sections });
   });
 }
 
@@ -756,13 +820,16 @@ test('a table observed AFTER the read began is kept; one observed before it and 
   assert.deepEqual(r.tables.map(t => t.id).sort(), ['t1', 't7', 't9']);
   assert.deepEqual(r.dropped, ['t8']);
   assert.equal(r.tables.find(t => t.id === 't7').planRemoved, true);
-  // With server times: srvAt after the read's server time is kept, at or before it is retired.
+  // Final review: a server time never decides absence (updated_at is stamped before the writer
+  // commits, so no read time can prove a row was deleted). Observed before the read and absent =
+  // deleted, whatever its stamp; observed after the read began = kept, whatever its stamp.
   const r2 = applyPlanRead({
-    local: [{ id: 'a', srvAt: 500, _seq: 1 }, { id: 'b', srvAt: 300, _seq: 1 }],
+    local: [{ id: 'a', srvAt: 500, _seq: 1 }, { id: 'b', srvAt: 300, _seq: 1 }, { id: 'c', srvAt: 50, _seq: 9 }],
     rows: [normaliseFloorRow({ id: 't1', updated_at: new Date(100).toISOString() }, { readSeq: 5 })],
     srvReadAt: 400, readSeq: 5,
   });
-  assert.deepEqual(r2.tables.map(t => t.id).sort(), ['a', 't1']);
+  assert.deepEqual(r2.tables.map(t => t.id).sort(), ['c', 't1']);
+  assert.deepEqual(r2.dropped.sort(), ['a', 'b']);
   // The boot itself: the cached push was observed BEFORE the boot read, so its deleted table goes.
   const src = read('../sync/SyncBridge.jsx');
   const boot = src.slice(src.indexOf('const rpos'), src.length);
@@ -779,7 +846,8 @@ test('observation order, not clocks, for unstamped copies; server time beats it 
   assert.equal(admits({ id: 'x', _seq: 3 }, { seq: 5, ids: [] }), false);
   assert.equal(admits({ id: 'x', _seq: 6 }, { seq: 5, ids: [] }), true);
   assert.equal(admits({ id: 'x', _seq: 0 }, { seq: 5, ids: ['x'] }), true);
-  assert.equal(admits({ id: 'x', srvAt: 50, _seq: 99 }, { seq: 5, ids: [], srvReadAt: 60 }), false, 'server times decide when both exist');
+  assert.equal(admits({ id: 'x', srvAt: 50, _seq: 99 }, { seq: 5, ids: [], srvReadAt: 60 }), true, 'observed after the read: a stamp earlier than the read proves nothing (stamped before commit)');
+  assert.equal(admits({ id: 'x', srvAt: 500, _seq: 1 }, { seq: 5, ids: [], srvReadAt: 60 }), false, 'observed before the read and absent from it: deleted, whatever its stamp');
   assert.equal(admits({ id: 'x', _seq: 0 }, null), true);
 });
 
@@ -825,7 +893,7 @@ test('floor_tables rows map to the store shape with version marks and the compar
   assert.equal(t.srvAt, Date.parse('2026-09-18T10:00:00.123+00:00'));
   assert.equal(t.srvIso, '2026-09-18T10:00:00.123+00:00', 'kept verbatim for the compare');
   assert.equal(t._seq, 4);
-  assert.deepEqual(t._base, { label: 'T1', x: undefined, y: undefined, w: undefined, h: undefined, shape: undefined, maxCovers: 6, section: 'patio', sortOrder: 3 });
+  assert.deepEqual(t._base, { label: 'T1', x: null, y: null, w: null, h: null, shape: null, maxCovers: 6, section: 'patio', sortOrder: 3 });
 });
 
 // ── 11. Every path goes through the module ──────────────────────────────────────────────────
@@ -881,6 +949,330 @@ test('the migrations: tombstones first, then server times; the app works before 
   assert.match(m2, /create or replace function public\.floor_plan_read\(p_location_id text\)/);
   assert.match(m2, /security invoker/);
   const db = read('./db.js');
-  assert.match(db, /isMissingFunction\(r\.error\)\) _noPlanRpc = true/, 'missing function falls back to the plain read');
+  assert.match(db, /readFloorPlan\(supabase, locationId\)/, 'the read goes through tablePlanDb.readFloorPlan (retried, never latched)');
+  assert.doesNotMatch(db, /_noPlanRpc/);
   assert.doesNotMatch(db.slice(db.indexOf('export const insertTableTombstone'), db.indexOf('export const insertTableTombstone') + 800), /deleted_at: new Date/, 'deleted_at is never sent from a device');
+});
+
+// ── 12. Final review (release pass) ─────────────────────────────────────────────────────────
+
+// Back Office delete as FloorPlanBuilder does it: row delete, then the tombstone upsert (deleted_at
+// is never sent; the trigger sets it).
+async function boDeleteViaClient(db, bo, id) {
+  const label = db.rows.get(id)?.label || null;
+  db.rows.delete(id);
+  const tr = await db.client.from('floor_table_tombstones').upsert({ location_id: LOC, table_id: id, label }, { onConflict: 'location_id,table_id' }).select('table_id, deleted_at');
+  onDevice(bo, () => {
+    const row = tr.data?.[0];
+    recordTombstone(LOC, id, row ? { at: Date.parse(row.deleted_at), srv: true, label } : { at: Date.now(), srv: false, label });
+  });
+  return tr;
+}
+// A Back Office tab or WebView still on the OLD bundle: upsertFloorTable, a blind upsert.
+const oldCodeUpsert = (db, table) => db.client.from('floor_tables').upsert(floorRowOf(table, LOC), { onConflict: 'id' });
+
+for (const mode of ['none', 'both']) {
+  test(`[${mode}] item 1: a row with NULL max_covers and sort_order can be saved, and saved again`, async () => {
+    const db = venue(mode);
+    db.put({ id: 't9', label: 'T9', max_covers: null, sort_order: null, section: null, shape: null });
+    const tab = boTab(db, 't9');
+    assert.equal(tab.maxCovers, 4, 'the screen still shows the default');
+    assert.equal(tab._base.maxCovers, null, 'the base keeps the database value');
+    assert.equal(tab._base.sortOrder, null);
+    const r1 = await saveTableChecked(db.client, { ...tab, label: 'Window' }, LOC);
+    assert.equal(r1.ok, true, JSON.stringify(r1.error || r1.conflict));
+    assert.equal(db.rows.get('t9').label, 'Window');
+    // The next edit compares with what the database now holds (the save wrote the defaults).
+    const next = { ...tab, ...normaliseFloorRow(r1.row, { locationId: LOC }), label: 'Window 2', locationId: LOC };
+    const r2 = await saveTableChecked(db.client, next, LOC);
+    assert.equal(r2.ok, true);
+    assert.equal(db.rows.get('t9').label, 'Window 2');
+  });
+}
+
+test('item 1: the fallback base (no row came back) is the raw row that was sent', () => {
+  const b = baseOfRow(floorRowOf({ id: 'x', label: 'X' }, LOC));
+  assert.deepEqual(b, { label: 'X', x: 0, y: 0, w: 80, h: 80, shape: 'rect', maxCovers: 4, section: null, sortOrder: 0 });
+  const fpb = read('../backoffice/sections/FloorPlanBuilder.jsx');
+  assert.match(fpb, /const sentBase = baseOfRow\(floorRowOf\(table, locId\)\)/);
+  assert.match(fpb, /const base = saved \? saved\._base : sentBase;/);
+});
+
+test('item 2: the database guard refuses an old code blind upsert of a deleted table; the new client re-creates through recreate_deleted', async () => {
+  const db = venue('both');
+  const bo = makeDevice('bo');
+  const staleOld = { ...boTab(db, 't4') };               // an old bundle's copy, taken before the delete
+  await boDeleteViaClient(db, bo, 't4');
+  const res = await oldCodeUpsert(db, { ...staleOld, x: 300 });
+  assert.ok(res.error, 'refused');
+  assert.equal(isTombstoneRefusal(res.error), true);
+  assert.equal(db.rows.has('t4'), false, 'never a silent resurrection');
+  // Old code editing a table that was NOT deleted is untouched by the guard.
+  assert.equal((await oldCodeUpsert(db, { ...boTab(db, 't1'), x: 55 })).error, null);
+  // The new client: a stale tab's UPDATE of the deleted id is reported as deleted.
+  const upd = await saveTableChecked(db.client, { ...staleOld, label: 'T4 again' }, LOC);
+  assert.equal(upd.ok, false);
+  assert.equal(upd.conflict, 'deleted');
+  // A person really adds the id back in Back Office (insert, flagged _isNew): allowed, stored false.
+  const add = await saveTableChecked(db.client, { id: 't4', label: 'T4', x: 1, y: 1, _isNew: true }, LOC);
+  assert.equal(add.ok, true, JSON.stringify(add.error));
+  assert.equal(db.rows.get('t4').recreate_deleted, false, 'the signal is never stored');
+  assert.ok(Date.parse(db.rows.get('t4').updated_at) > Date.parse(db.tombs.get('t4').deleted_at));
+  // Re-created: ordinary edits (even an old code upsert) now pass, the row is newer than the tombstone.
+  assert.equal((await oldCodeUpsert(db, { ...boTab(db, 't4'), x: 9 })).error, null);
+  // A tombstone refusal on an insert is reported as deleted too (a stale new-client insert).
+  db.rows.delete('t4');
+  db.tombs.set('t4', { table_id: 't4', location_id: LOC, deleted_at: db.iso(db.tick()) });
+  const refusedInsert = await db.client.from('floor_tables').insert(floorRowOf({ id: 't4', label: 'T4' }, LOC)).select('*');
+  assert.equal(isTombstoneRefusal(refusedInsert.error), true, 'an insert without the signal is refused');
+  // The new client's refusal text is the plain "deleted on another screen".
+  const fpb = read('../backoffice/sections/FloorPlanBuilder.jsx');
+  assert.match(fpb, /deleted: 'was deleted on another screen, so your change was NOT saved/);
+});
+
+test('item 2: before 20260918b the new client inserts without the flag (the column is not there yet)', async () => {
+  for (const mode of ['none', 'tombs']) {
+    const db = venue(mode);
+    const add = await saveTableChecked(db.client, { id: 't-new', label: 'New', _isNew: true }, LOC);
+    assert.equal(add.ok, true, mode);
+    assert.equal(db.rows.get('t-new').label, 'New');
+    assert.ok(!('recreate_deleted' in db.rows.get('t-new')));
+  }
+});
+
+test('item 3: with only 20260918 run, a repeat delete moves deleted_at forward (server side)', async () => {
+  const db = venue('tombs');
+  const bo = makeDevice('bo');
+  const a = await boDeleteViaClient(db, bo, 't4');
+  const first = Date.parse(a.data[0].deleted_at);
+  db.put({ id: 't4', label: 'T4' });                   // came back somehow (old code, before the guard)
+  const b = await boDeleteViaClient(db, bo, 't4');
+  assert.ok(Date.parse(b.data[0].deleted_at) > first);
+  const m1 = read('../../supabase/migrations/20260918_OPS_floor_table_tombstones.sql');
+  assert.match(m1, /before insert or update on public\.floor_table_tombstones/);
+  assert.match(m1, /new\.deleted_at := date_trunc\('milliseconds', clock_timestamp\(\)\)/);
+  const dbSrc = read('./db.js');
+  const ins = dbSrc.slice(dbSrc.indexOf('export const insertTableTombstone'), dbSrc.indexOf('export const insertTableTombstone') + 700);
+  assert.match(ins, /upsert\(/);
+  assert.doesNotMatch(ins, /deleted_at:/, 'the device never sends deleted_at');
+});
+
+test('item 3: floor_plan_read gives the highest updated_at it saw; no table is removed or blocked by a server time', async () => {
+  const db = venue('both');
+  const r = await readFloorPlan(db.client, LOC, { latch: { until: 0 } });
+  assert.equal(r.srvReadAt, db.maxAt());
+  // A row stamped BEFORE the read's time but committed after its snapshot (the race a clock read
+  // cannot see): a till that observed it after the read began keeps it, a push observed after the
+  // read may add it, whatever the stamps say.
+  const late = { id: 'late', label: 'Late', srvAt: r.srvReadAt - 5000, _seq: 50 };
+  const kept = applyPlanRead({ local: [late], rows: r.tables.map(t => normaliseFloorRow(t, { readSeq: 40 })), srvReadAt: r.srvReadAt, readSeq: 40 });
+  assert.ok(kept.tables.some(t => t.id === 'late'));
+  assert.equal(admits(late, kept.plan), true);
+  const src = read('./tablePlan.js');
+  const fn = src.slice(src.indexOf('export function applyPlanRead'), src.indexOf('export function applyTombstones'));
+  assert.doesNotMatch(fn.slice(fn.indexOf('const inRead'), fn.indexOf('return { tables: out')), /srvReadAt/, 'absence is never decided by the read time');
+  assert.doesNotMatch(src.slice(src.indexOf('export function admits'), src.indexOf('function retire')), /srvReadAt|srvAtOf/, 'nor is admission');
+  const m2 = read('../../supabase/migrations/20260918b_OPS_floor_tables_server_time.sql');
+  assert.match(m2, /'at', coalesce\(\(select floor\(extract\(epoch from max\(t\.updated_at\)\) \* 1000\)::bigint from t\), 0\)/);
+});
+
+test('item 3: both migrations take a 5 s lock timeout, say run back to back outside service, and carry the checklist', () => {
+  for (const f of ['20260918_OPS_floor_table_tombstones.sql', '20260918b_OPS_floor_tables_server_time.sql']) {
+    const m = read(`../../supabase/migrations/${f}`);
+    assert.match(m, /begin;\n\nset local lock_timeout = '5s';/, f);
+    assert.match(m, /Run both files back to back, outside service\./, f);
+    assert.match(m, /reload every Back Office tab on every machine/, f);
+    assert.match(m, /Force stop and reopen every Sunmi and Android till; fully reload every iPad and browser/, f);
+    assert.match(m, /Press Push to POS once per venue/, f);
+    assert.doesNotMatch(m, /90 days/, f);
+  }
+  const m2 = read('../../supabase/migrations/20260918b_OPS_floor_tables_server_time.sql');
+  assert.match(m2, /add column if not exists recreate_deleted boolean not null default false/);
+  assert.match(m2, /before insert or update on public\.floor_tables\n  for each row execute function public\.floor_tables_guard_tombstone\(\)/);
+  assert.match(m2, /floor_table_deleted:/);
+  // Backfill before any trigger exists, so it stamps every row once and is refused by nothing.
+  assert.ok(m2.indexOf('set updated_at = date_trunc') < m2.indexOf('create trigger floor_tables_stamp_updated_at'));
+  assert.ok(m2.indexOf('set updated_at = date_trunc') < m2.indexOf('create trigger floor_tables_guard_tombstone'));
+});
+
+test('item 4: a missing floor_plan_read is retried after a while, never latched for the life of the page', async () => {
+  const db = venue('none');
+  const latch = { until: 0 };
+  let now = 1_000_000;
+  const clock = () => now;
+  const a = await readFloorPlan(db.client, LOC, { latch, now: clock });
+  assert.ok(Array.isArray(a.tables) && a.tables.length === 3, 'plain select fallback');
+  assert.equal(a.srvReadAt, 0);
+  assert.equal(db.calls.filter(c => c === 'rpc:floor_plan_read').length, 1);
+  await readFloorPlan(db.client, LOC, { latch, now: clock });
+  assert.equal(db.calls.filter(c => c === 'rpc:floor_plan_read').length, 1, 'not asked again straight away');
+  db.migrate('both');                                    // Peter runs the migrations; the page stays open
+  now += PLAN_RPC_RETRY_MS + 1;
+  const c = await readFloorPlan(db.client, LOC, { latch, now: clock });
+  assert.equal(db.calls.filter(x => x === 'rpc:floor_plan_read').length, 2, 'asked again after the wait');
+  assert.equal(c.srvReadAt, db.maxAt());
+  assert.equal(latch.until, 0);
+  assert.doesNotMatch(read('./db.js'), /_noPlanRpc/);
+});
+
+test('item 4: a plan read for one location, mode or Back Office flag is never handed to a caller asking for another', async () => {
+  const f = makeKeyedFlight();
+  let release;
+  const gate = new Promise(r => { release = r; });
+  const calls = [];
+  const a = f.run('L1|full|till', async () => { calls.push('a'); await gate; return 'L1'; });
+  const a2 = f.run('L1|full|till', async () => { calls.push('a2'); return 'dup'; });
+  const b = f.run('L2|full|bo', async () => { calls.push('b'); return 'L2'; });
+  const c = f.run('L1|upsertOnly|till', async () => { calls.push('c'); return 'L1 upsert'; });
+  release();
+  assert.deepEqual(await Promise.all([a, a2, b, c]), ['L1', 'L1', 'L2', 'L1 upsert']);
+  assert.deepEqual(calls.sort(), ['a', 'b', 'c'], 'the same key shares, another key runs its own');
+  assert.equal(f.busy(), false);
+  const sync = read('../sync/TablePlanSync.js');
+  assert.match(sync, /const key = `\$\{loc\}\|\$\{mode\}\|\$\{backOffice \? 'bo' : 'till'\}`;/);
+  assert.match(sync, /return _flight\.run\(key, async \(\) => \{/);
+  assert.doesNotMatch(sync, /if \(_inFlight\) return _inFlight/);
+});
+
+for (const mode of MODES) {
+  test(`[${mode}] item 4: a rebuilt table keeps its last known section, so a section filtered till still shows it`, () => {
+    const db = venue(mode);
+    db.rows.set('t4', { ...db.rows.get('t4'), section: 'patio' });
+    const tillA = makeDevice('A'), fresh = makeDevice('fresh');
+    boot(tillA, db);
+    boot(fresh, db);                                      // learns the plan (labels and sections)
+    const s = sess(2);
+    db.sessions.set('t4', s);                             // an order on t4 on another till
+    boDelete(db, makeDevice('bo'), 't4');                 // then t4 is deleted in Back Office
+    fresh.tables = [];                                    // cold boot: nothing cached
+    boot(fresh, db);
+    const t4 = byId(fresh, 't4');
+    assert.ok(t4, 'rebuilt for its open order');
+    assert.equal(t4.rebuilt, true);
+    assert.equal(t4.section, 'patio');
+    assert.equal(t4.label, 'T4');
+    // SessionReconciler path too.
+    tillA.tables = tillA.tables.filter(t => t.id !== 't4');
+    reconcile(tillA, db);
+    assert.equal(byId(tillA, 't4')?.section, 'patio');
+  });
+}
+
+test('item 4: rebuildOrphans puts a split child with its rebuilt parent in the parent\'s section', () => {
+  const out = rebuildOrphans([], { 't4-2': sess(1) }, { labels: { t4: 'T4' }, sections: { t4: 'bar' } });
+  assert.equal(out.find(t => t.id === 't4').section, 'bar');
+  assert.equal(out.find(t => t.id === 't4-2').section, 'bar');
+  const src = read('../sync/SyncBridge.jsx');
+  assert.match(src, /labels: state\.labels, sections: state\.sections/);
+  assert.match(read('../sync/SessionReconciler.js'), /const \{ labels, tombs, sections \} = loadPlanState\(_locationId\);/);
+});
+
+test('item 4: the QR guard filters open tabs on the server, newest first, and refuses when the limit is hit', async () => {
+  const db = venue('both');
+  db.orderQueue.push({ location_id: LOC, source: 'qr', status: 'collected', created_at: '2026-09-18T09:00:00Z', customer: { tab_open: true, tableId: 't4' } });
+  db.orderQueue.push({ location_id: LOC, source: 'qr', status: 'new', created_at: '2026-09-18T09:01:00Z', customer: { tab_open: false, tableId: 't4' } });
+  db.orderQueue.push({ location_id: LOC, source: 'qr', status: 'new', created_at: '2026-09-18T09:02:00Z', customer: { tableId: 't4' } });
+  let g = await openOrdersFor(db.client, LOC, 't4');
+  assert.deepEqual(g.qrRows, [], 'only open tabs come back');
+  assert.deepEqual(g.failed, []);
+  db.orderQueue.push({ location_id: LOC, source: 'qr', status: 'prep', created_at: '2026-09-18T09:03:00Z', customer: { tab_open: true, tableId: 't4' } });
+  db.orderQueue.push({ location_id: LOC, source: 'qr', status: 'prep', created_at: '2026-09-18T09:04:00Z', customer: { tab_open: true, tableId: 't1' } });
+  g = await openOrdersFor(db.client, LOC, 't4');
+  assert.deepEqual(g.qrRows.map(r => r.customer.tableId), ['t1', 't4'], 'newest first');
+  assert.match(deleteRefusalReason({ id: 't4', label: 'T4' }, g), /open QR tab/);
+  // Fill the limit with other tables' open tabs: the result may be missing one, so refuse.
+  const db2 = venue('both');
+  for (let i = 0; i < QR_TAB_LIMIT; i++) db2.orderQueue.push({ location_id: LOC, source: 'qr', status: 'prep', created_at: `2026-09-18T10:${String(i % 60).padStart(2, '0')}:00Z`, customer: { tab_open: true, tableId: `x${i}` } });
+  const g2 = await openOrdersFor(db2.client, LOC, 't4');
+  assert.ok(g2.failed.some(f => /QR tabs/.test(f)));
+  assert.match(deleteRefusalReason({ id: 't4', label: 'T4' }, g2), /Could not check T4 for open orders/);
+  const src = read('./tablePlanDb.js');
+  assert.match(src, /\.eq\('customer->>tab_open', 'true'\)/);
+  assert.match(src, /\.order\('created_at', \{ ascending: false \}\)\.limit\(QR_TAB_LIMIT\)/);
+});
+
+// THE REAL ROLLOUT: devices booted with no migrations; Back Office (new code) edits; 20260918 and
+// 20260918b run (backfill stamps every row with one time); re-reads, pushes, deletes, and a tab
+// still on the old bundle doing a blind upsert. No table is lost, nothing deleted comes back.
+test('rollout: no migrations, then both (backfill), then re-reads, pushes, deletes and an old code blind upsert', async () => {
+  const db = venue('none');
+  db.put({ id: 't6', label: 'T6', max_covers: null, sort_order: null });   // a legacy row with NULLs
+  const bo = makeDevice('bo');
+  const tillA = makeDevice('A', { skew: 3 * HOUR });                       // clock hours ahead
+  const tillB = makeDevice('B', { skew: -2 * HOUR });                      // clock hours behind
+  const order = sess(3);
+  db.sessions.set('t1', order);
+
+  // 1. Before any migration: everyone boots, Back Office pushes.
+  boPush(db, bo);
+  boot(tillA, db); boot(tillB, db);
+  assert.deepEqual(ids(tillA), ['t1', 't4', 't5', 't6']);
+  assert.equal(byId(tillA, 't1').session?.id, order.id);
+
+  // 2. Still no migrations: rename (column compare, the NULL row too) and delete, then push.
+  const r1 = await saveTableChecked(db.client, { ...boTab(db, 't6'), label: 'Snug' }, LOC);
+  assert.equal(r1.ok, true, 'the NULL row saves before 20260918b');
+  const r2 = await saveTableChecked(db.client, { ...boTab(db, 't4'), label: 'Four' }, LOC);
+  assert.equal(r2.ok, true);
+  boDelete(db, bo, 't5');                                                  // local tombstone only
+  livePush(tillA, boPush(db, bo));
+  refresh(tillB, db);
+  for (const d of [tillA, tillB]) {
+    assert.deepEqual(ids(d), ['t1', 't4', 't6'], d.name);
+    assert.equal(labelOf(d, 't4'), 'Four');
+    assert.equal(labelOf(d, 't6'), 'Snug');
+  }
+
+  // 3. Peter runs 20260918 then 20260918b. The backfill stamps EVERY row with the same time.
+  db.migrate('both');
+  const stamps = new Set([...db.rows.values()].map(r => r.updated_at));
+  assert.equal(stamps.size, 1, 'one backfill time for every row');
+  assert.ok([...db.rows.values()].every(r => r.updated_at && r.recreate_deleted === false));
+
+  // 4. Re-reads on running tills, then a cold reboot: nothing lost, nothing back, names kept.
+  refresh(tillA, db); refresh(tillB, db);
+  boot(tillB, db);
+  for (const d of [tillA, tillB]) {
+    assert.deepEqual(ids(d), ['t1', 't4', 't6'], d.name);
+    assert.equal(labelOf(d, 't4'), 'Four');
+    assert.equal(byId(d, 't1').session?.id, order.id, 'the open order is still on its table');
+    assert.ok(byId(d, 't4').srvAt > 0, 'copies now carry the database time');
+  }
+
+  // 5. Push to POS after the migration (stamped, v2), then an edit through updated_at.
+  livePush(tillA, boPush(db, bo));
+  const tab6 = boTab(db, 't6');
+  assert.ok(tab6.srvIso);
+  assert.equal((await saveTableChecked(db.client, { ...tab6, label: 'Snug Bar' }, LOC)).ok, true);
+  refresh(tillA, db); refresh(tillB, db);
+  assert.equal(labelOf(tillA, 't6'), 'Snug Bar');
+  assert.equal(labelOf(tillB, 't6'), 'Snug Bar');
+
+  // 6. A delete after the migration (server tombstone), pushed.
+  const staleOld = boTab(db, 't4');                    // an old bundle's copy, loaded before the delete
+  await boDeleteViaClient(db, bo, 't4');
+  livePush(tillA, boPush(db, bo));
+  refresh(tillB, db);
+  assert.deepEqual(ids(tillA), ['t1', 't6']);
+  assert.deepEqual(ids(tillB), ['t1', 't6']);
+
+  // 7. A tab still on the OLD bundle drags the deleted table: a blind upsert. The guard refuses it.
+  const res = await oldCodeUpsert(db, { ...staleOld, x: 400 });
+  assert.equal(isTombstoneRefusal(res.error), true, 'old code gets a refusal (a failed save), not a resurrection');
+  assert.equal(db.rows.has('t4'), false);
+  // An OLD code push of its stale store (no stamps) cannot bring it back either.
+  livePush(tillA, oldBoPush(db, [staleOld, boTab(db, 't1'), boTab(db, 't6')]));
+  refresh(tillA, db); refresh(tillB, db);
+  boot(tillB, db);
+  assert.deepEqual(ids(tillA), ['t1', 't6']);
+  assert.deepEqual(ids(tillB), ['t1', 't6']);
+  assert.equal(byId(tillB, 't1').session?.id, order.id);
+
+  // 8. A person re-adds the id in Back Office (new client, explicit re-create): it shows everywhere.
+  const add = await saveTableChecked(db.client, { id: 't4', label: 'Four again', x: 5, y: 5, _isNew: true }, LOC);
+  assert.equal(add.ok, true);
+  livePush(tillA, boPush(db, bo));
+  refresh(tillB, db);
+  assert.equal(labelOf(tillA, 't4'), 'Four again');
+  assert.equal(labelOf(tillB, 't4'), 'Four again');
 });

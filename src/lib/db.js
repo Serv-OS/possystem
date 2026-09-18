@@ -21,7 +21,7 @@ import { categoryImageField, categoryPhotoUrl, checkPhotoFile, categoryPhotoPath
 import { itemCodeForSave, isMissingItemCodeColumn, isDuplicateItemCodeError } from './itemCode';
 import { peerMenuPlan } from './menuMembership';
 import { resolveSoldAlone } from './menuRules';
-import { saveTableChecked, openOrdersFor } from './tablePlanDb';
+import { saveTableChecked, openOrdersFor, readFloorPlan } from './tablePlanDb';
 
 // ── Order number generation ──────────────────────────────────────────────────
 // The order number is the order's IDENTITY: unique per location and unlimited.
@@ -488,9 +488,6 @@ export const deleteFloorTable = async (id, locationId = null) => {
 const TOMBSTONE_ABSENT = ['42P01', 'PGRST205', 'PGRST202', 'PGRST204'];
 const isAbsentTable = (err) => !!err && (TOMBSTONE_ABSENT.includes(err.code)
   || (/floor_table_tombstones/.test(String(err.message || '')) && /does not exist|schema cache/i.test(String(err.message || ''))));
-const isMissingFunction = (err) => !!err && (err.code === 'PGRST202' || err.code === '42883'
-  || /floor_plan_read/.test(String(err.message || '')));
-let _noPlanRpc = false;
 
 const resolveLoc = async (locationId) => {
   if (!locationId || locationId === 'loc-demo') {
@@ -500,9 +497,12 @@ const resolveLoc = async (locationId) => {
 };
 
 /**
- * The floor plan WITH its version: { tables, sections, srvReadAt }. srvReadAt is the database clock
- * at the read (floor_plan_read), 0 before migration 20260918b (plain select, no server time).
+ * The floor plan WITH its version: { tables, sections, srvReadAt }. srvReadAt is the highest
+ * updated_at the read saw (floor_plan_read), 0 before migration 20260918b (plain select). It is
+ * for diagnosis only: no table is ever removed or blocked by a server time (tablePlan.admits).
  * `tables` is null when the read failed: absence in a failed read never removes a table.
+ * A missing floor_plan_read is retried after a while (tablePlanDb.readFloorPlan), never latched
+ * for the life of the page.
  */
 export const fetchFloorPlanVersioned = async (locationId = null) => {
   if (isMock || !supabase) return { data: null, error: null };
@@ -510,23 +510,7 @@ export const fetchFloorPlanVersioned = async (locationId = null) => {
   if (!locationId) return { data: null, error: new Error('No location') };
   const sectionsP = Promise.resolve(supabase.from('sections').select('*').eq('location_id', locationId).order('sort_order'))
     .catch(e => ({ data: null, error: e }));
-  let tables = null, srvReadAt = 0, error = null;
-  if (!_noPlanRpc) {
-    try {
-      const r = await supabase.rpc('floor_plan_read', { p_location_id: locationId });
-      if (!r.error && r.data && Array.isArray(r.data.tables)) {
-        tables = r.data.tables;
-        srvReadAt = Number(r.data.at) || 0;
-      } else if (r.error && isMissingFunction(r.error)) _noPlanRpc = true;
-    } catch { /* fall back to the plain read */ }
-  }
-  if (!tables) {
-    try {
-      const t = await supabase.from('floor_tables').select('*').eq('location_id', locationId).order('sort_order');
-      if (t.error) error = t.error;
-      else tables = Array.isArray(t.data) ? t.data : null;
-    } catch (e) { error = e; }
-  }
+  const { tables, srvReadAt, error } = await readFloorPlan(supabase, locationId);
   const s = await sectionsP;
   return { data: { tables, sections: s.data || null, srvReadAt }, error: error || s.error || null };
 };
@@ -541,8 +525,8 @@ export const fetchTableTombstones = async (locationId) => {
   return { data: res.data || [], error: null };
 };
 
-// Record a delete. deleted_at is NOT sent: the database sets it (default, and the 20260918b
-// trigger), and the value it chose is read back so this machine holds the server time too.
+// Record a delete. deleted_at is NOT sent: the database sets it (the 20260918 trigger, on insert
+// AND on the upsert of a repeat delete), and the value it chose is read back for this machine.
 export const insertTableTombstone = async (locationId, tableId, label = null) => {
   if (isMock || !supabase || !locationId || locationId === 'loc-demo' || !tableId) return { error: null, row: null };
   const res = await supabase.from('floor_table_tombstones').upsert(

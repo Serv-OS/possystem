@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { useStore } from '../../store';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
 import { saveFloorTableChecked, insertTableTombstone, fetchTableOpenOrders } from '../../lib/db';
-import { deleteRefusalReason, writeRefusal, loadPlanState, normaliseFloorRow, pickDef, num, nextSeq } from '../../lib/tablePlan';
+import { deleteRefusalReason, writeRefusal, loadPlanState, normaliseFloorRow, pickDef, num, nextSeq, baseOfRow, floorRowOf } from '../../lib/tablePlan';
 import { isSessionClosed } from '../../sync/sessionClosure';
 import { reportSave } from '../../lib/saveHealth';
 
@@ -93,6 +93,9 @@ export default function FloorPlanBuilder() {
         return false;
       }
       const sent = pickDef(table);
+      // What the database will hold if the write goes through (raw columns, nulls kept), the base
+      // for the next compare when the response carries no row.
+      const sentBase = baseOfRow(floorRowOf(table, locId));
       const res = await saveFloorTableChecked(table, locId);
       reportSave('floor plan table', res.ok ? null : (res.error || new Error('not saved')));
       if (!res.ok) {
@@ -109,7 +112,7 @@ export default function FloorPlanBuilder() {
       const seq = nextSeq();
       useStore.setState(s => ({ tables: s.tables.map(t => {
         if (t.id !== id) return t;
-        const base = saved ? saved._base : { ...sent };
+        const base = saved ? saved._base : sentBase;
         const stillEditing = Object.keys(sent).some(k => t[k] !== sent[k]);
         const { _isNew: _n, ...rest } = t;
         return {

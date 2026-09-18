@@ -667,9 +667,9 @@ export default function SyncBridge({ onSyncPulse }) {
             const cur = useStore.getState().tables || [];
             const { tables: bootList, read } = bootTables({
               local: cur, floorRows, srvReadAt: floorSrvReadAt, readSeq: planReadSeq, tombs,
-              sessions: bootSessions, isClosed: isSessionClosed, labels: state.labels,
+              sessions: bootSessions, isClosed: isSessionClosed, labels: state.labels, sections: state.sections,
             });
-            savePlanState(locationId, { plan: read?.plan || null, tombs, cleared: read?.cleared || null, labels: read?.labels || null });
+            savePlanState(locationId, { plan: read?.plan || null, tombs, cleared: read?.cleared || null, labels: read?.labels || null, sections: read?.sections || null });
             if (read?.dropped?.length) console.log('[SyncBridge] table plan: removed', read.dropped.join(', '), '(deleted, or not in the saved plan)');
             if (read?.keptOpen?.length) console.warn('[SyncBridge] table plan: kept', read.keptOpen.join(', '), 'reachable: gone from the plan but an order is open on it');
             const rebuiltIds = bootList.filter(t => t.rebuilt && !cur.some(c => c.id === t.id)).map(t => t.id);
