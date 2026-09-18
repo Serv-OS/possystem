@@ -21,9 +21,14 @@
 //   answer from ezCater that it is live again revives it, and the mark moves to
 //   customer.replacedByCleared (review round 3: replacedBy is not sticky forever).
 //
-//   A fire moment that is ALREADY PAST when the order is (re)timed fires now and is flagged
-//   plainly as late (customer.lateFire): a Dispatch pickup moved earlier, a longer prep time
-//   set later, or an order placed at shorter notice than the venue's prep time.
+//   A fire moment that is ALREADY PAST when the order is (re)timed fires now. It is flagged
+//   plainly as late (customer.lateFire) ONLY when a CHANGE moved it into the past (a Dispatch
+//   pickup moved earlier, a longer prep time set later): review round 4. A routine pre fire
+//   check, or the backstop firing a few minutes after the fire moment, is never "late".
+//
+//   A HELD order (not accepted on ezCater, and no staff "Send anyway") keeps its real fire moment
+//   in sent_at even once it is past (review round 4): it is not due, it is held, and rewriting
+//   sent_at to now on every re-ask made it never age out and always sort first.
 //
 //   ALREADY FIRED (kitchen_routed_at set, or unknown because the venue lacks the column). The
 //   kitchen has the ticket, so the fire time, date and time the kitchen was given never move.
@@ -60,6 +65,12 @@ const COMMITTED = ['accepted', 'relish_finalized', 'ready', 'ready_for_pickup'];
 const STICKY = [
   'replacedBy', 'possibleReplacement', 'ezcaterCheck', 'resyncedAt', 'ezcaterRecheck',
   'unacceptedAlert', 'replacementDismissed', 'replacedByCleared', 'lateFire', 'prepRecomputedAt',
+  // Staff released a held order by hand (review round 4): it stays released whatever ezCater
+  // answers next, unless ezCater says it is cancelled (a cancel always wins).
+  'sendAnyway',
+  // When the ezCater answer the row holds was read (review round 4, answerOlderThanRow). Every
+  // answer sets its own; kept across anything else that writes the row.
+  'ezcaterAnswer',
 ];
 
 // Statuses staff reach by hand that an unfired row keeps. Anything else on an unfired row is
@@ -105,37 +116,62 @@ function timeMoved(prev, next) {
  * @param {string} args.nowIso    the write time
  * @returns {{ row: object, reschedule: boolean, fired: boolean, restored: boolean, changedAfterFire: object|null }}
  */
-/** Committed on ezCater, so the release will fire it (a held order is not "late", it is held). */
-const mayFireLife = (customer) => COMMITTED.includes(String(customer?.ezcater_lifecycle || '').toLowerCase());
+/**
+ * Released: committed on ezCater, or released by staff with "Send anyway" (a held order is not
+ * "late", it is held, and its fire moment is not moved to now).
+ */
+const mayFireLife = (customer) => COMMITTED.includes(String(customer?.ezcater_lifecycle || '').toLowerCase()) || !!customer?.sendAnyway;
 
 /**
- * Is this order being fired LATE? Its kitchen fire moment (fireAt) is more than a minute in the
- * past at the moment it is (re)timed, so it fires now, and staff must be told plainly: the food
- * will be ready later than ezCater expects unless the kitchen catches up. The same late moment is
- * reported once: an earlier flag for the same fire moment is kept as it was.
+ * Is this order being fired LATE BECAUSE OF A CHANGE? (review round 4). Only when its new kitchen
+ * fire moment (fireAt) is more than a minute in the past AND a change moved it EARLIER than the
+ * fire moment the order had before (prevFireAt: a Dispatch pickup moved earlier, a longer prep
+ * time). A routine fire, a pre fire check at or after the fire moment, or the backstop a few
+ * minutes after it, is never late: the fire moment did not move. No previous fire moment (a new
+ * order) is not a change either. The same late moment is reported once: an earlier flag for the
+ * same fire moment is kept as it was.
+ * @param {{ fireAt: string|null, prevFireAt: string|null, nowIso: string, prevLate?: object|null }} a
  */
-export function lateFirePlan(fireAt, nowIso, prevLate) {
+export function lateFirePlan({ fireAt, prevFireAt, nowIso, prevLate = null }) {
   const f = msOf(fireAt);
+  const was = msOf(prevFireAt);
   const now = msOf(nowIso);
-  if (!Number.isFinite(f) || !Number.isFinite(now) || f >= now - MINUTE) return null;
+  if (!Number.isFinite(f) || !Number.isFinite(now) || !Number.isFinite(was)) return null;
+  if (f >= now - MINUTE) return null;          // not in the past
+  if (f >= was - MINUTE) return null;          // not moved earlier by a change
   if (prevLate && prevLate.fireAt === fireAt) return prevLate;
-  return { at: nowIso, fireAt, minutesLate: Math.round((now - f) / MINUTE) };
+  return { at: nowIso, fireAt, wasFireAt: new Date(was).toISOString(), minutesLate: Math.round((now - f) / MINUTE) };
+}
+
+/**
+ * Is `startedAtIso` (when OUR ezCater read began) older than the ezCater answer the row already
+ * holds? (review round 4). An answer's truth lies somewhere between when its read began and
+ * when it came back, so ours is only PROVABLY newer when it began after the row's answer came
+ * back (customer.ezcaterAnswer.receivedAt). Anything else is older or overlapping, and must not
+ * overwrite the row: a pre fire check that read "accepted" before a cancel was written would
+ * otherwise revive the cancelled order. A row with no recorded answer (written by older code)
+ * or a caller with no start time is not judged.
+ */
+export function answerOlderThanRow(existing, startedAtIso) {
+  const started = msOf(startedAtIso);
+  const had = msOf(existing?.customer?.ezcaterAnswer?.receivedAt);
+  if (!Number.isFinite(started) || !Number.isFinite(had)) return false;
+  return started < had;
 }
 
 /** Plain words for a late fire, for the Orders Hub, the advance list and the till alert. */
 export function lateFireText(late) {
   if (!late || !late.fireAt) return null;
   const m = Number(late.minutesLate) || 0;
-  return `Sent to the kitchen LATE: it should have started ${m} minute${m === 1 ? '' : 's'} earlier (the pickup moved earlier, the prep time is longer, or it arrived at short notice). Check the kitchen can still make the ezCater time.`;
+  return `Sent to the kitchen LATE: it should have started ${m} minute${m === 1 ? '' : 's'} earlier (the pickup moved earlier or the prep time is longer). Check the kitchen can still make the ezCater time.`;
 }
 
 export function ezcaterWritePlan({ row, existing, terminal, nowIso }) {
   const nowMs = msOf(nowIso);
   if (!existing) {
-    const fire_at = terminal ? row.fire_at : fireNowIfDue(row.fire_at, nowMs, nowIso);
-    const late = terminal || !mayFireLife(row.customer) ? null : lateFirePlan(row.fire_at, nowIso, null);
-    const out = late ? { ...row, customer: { ...(row.customer || {}), lateFire: late } } : row;
-    return { row: { ...out, fire_at }, reschedule: false, fired: false, restored: false, changedAfterFire: null, late: !!late };
+    // A new order is never "late" (nothing moved it), and a held one keeps its real fire moment.
+    const fire_at = terminal || !mayFireLife(row.customer) ? row.fire_at : fireNowIfDue(row.fire_at, nowMs, nowIso);
+    return { row: { ...row, fire_at }, reschedule: false, fired: false, restored: false, changedAfterFire: null, late: false };
   }
 
   const fired = !!existing.kitchen_routed_at;
@@ -220,14 +256,20 @@ export function ezcaterWritePlan({ row, existing, terminal, nowIso }) {
   }
   if (restored) customer.restoredAt = nowIso;
 
-  // Late: only for an order that is live, unfired and being (re)timed now.
+  // Late: only for an order that is live, unfired, and whose fire moment a CHANGE just moved into
+  // the past (lateFirePlan). A flag already raised for the same fire moment is kept; one for a
+  // fire moment the order no longer has goes.
   let late = false;
-  if (reschedule && !isCancelledStatus(String(status || '').toLowerCase()) && mayFireLife(customer)) {
-    const lf = lateFirePlan(row.fire_at, nowIso, prevCustomer.lateFire || null);
-    if (lf) { customer.lateFire = lf; late = true; } else delete customer.lateFire;
+  const live = !isCancelledStatus(String(status || '').toLowerCase()) && mayFireLife(customer);
+  if (reschedule && live) {
+    const lf = lateFirePlan({ fireAt: row.fire_at, prevFireAt: prevCustomer.fireAt ?? null, nowIso, prevLate: prevCustomer.lateFire || null });
+    if (lf) { customer.lateFire = lf; late = true; }
+    else if (!(prevCustomer.lateFire && prevCustomer.lateFire.fireAt === row.fire_at)) delete customer.lateFire;
   }
 
-  const fire_at = reschedule ? fireNowIfDue(row.fire_at, nowMs, nowIso) : row.fire_at;
+  // A released order whose fire moment is past fires now; a HELD one keeps its real fire moment
+  // (review round 4), so it ages out of the re-ask windows and never sorts first for ever.
+  const fire_at = reschedule && live ? fireNowIfDue(row.fire_at, nowMs, nowIso) : row.fire_at;
   return { row: { ...row, status, customer, fire_at }, reschedule, fired, restored, changedAfterFire, late };
 }
 
@@ -313,7 +355,9 @@ export function ezcaterOrderWarnings(row) {
   if (c.modificationRejected) {
     out.push('A change to this order was REJECTED on ezCater. The order as it was accepted still stands and still goes to the kitchen. Check ezCater for what the customer asked for.');
   }
-  if (c.unacceptedAlert && String(c.ezcater_lifecycle || '').toLowerCase() && !COMMITTED.includes(String(c.ezcater_lifecycle).toLowerCase())) {
+  if (c.sendAnyway && !COMMITTED.includes(String(c.ezcater_lifecycle || '').toLowerCase())) {
+    out.push(`Sent anyway by staff (${c.sendAnyway.byName || c.sendAnyway.by || 'staff'}) without ezCater's acceptance. Check ezCater that the order stands.`);
+  } else if (c.unacceptedAlert && String(c.ezcater_lifecycle || '').toLowerCase() && !COMMITTED.includes(String(c.ezcater_lifecycle).toLowerCase())) {
     out.push(`Still NOT accepted on ezCater (ezCater says ${c.unacceptedAlert.lifecycle || c.ezcater_lifecycle}) and it is due in the kitchen${c.unacceptedAlert.fireTime ? ` at ${c.unacceptedAlert.fireTime}` : ''}. Accept it on ezCater, or it will not be sent.`);
   }
   if (c.prepFallback) {

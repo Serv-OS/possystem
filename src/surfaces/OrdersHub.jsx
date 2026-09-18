@@ -23,7 +23,7 @@ import { hubrisePushStatus } from '../lib/hubrise';
 import { getDeliveryDetail } from '../lib/delivery/deliveryConfig';
 import { dispatchDelivery, sendDeliveryTrackingSMS } from '../lib/delivery/dispatch';
 import { isCateringSource, cateringSourceLabel, cateringHoldReason, mayBookOurCourier, changedAfterFireText, ezcaterOrderWarnings } from '../lib/cateringRules';
-import { ezcaterResyncOrder, ezcaterUndoReplacement } from '../lib/ezcater';
+import { ezcaterResyncOrder, ezcaterUndoReplacement, ezcaterSendAnyway } from '../lib/ezcater';
 import { statusLabel, statusColor, statusIcon } from '../lib/delivery/status';
 import { courierPhase, courierLegs, courierLateness } from '../lib/delivery/courierTimes';
 import { buildChannelCloseFields } from '../lib/channelMoney';
@@ -143,6 +143,31 @@ export default function OrdersHub() {
       else { setResyncState({ ref: o.ref, busy: false, msg: r?.message || 'Replacement mark cleared.', err: null }); showToast?.(r?.message || 'Replacement mark cleared', 'success'); }
     } catch (e) {
       setResyncState({ ref: o.ref, busy: false, msg: null, err: e?.message || 'Could not undo.' });
+    }
+  };
+
+  // "Send anyway" (ezCater review round 4): release a HELD ezCater order (not accepted on ezCater)
+  // by hand, for an ezCater outage. Two taps (the first arms it), then the same fence as re-sync;
+  // the server records who. A due order then goes through releaseCateringOrderNow, the same
+  // checks and the same printed, routed ticket as the scheduled release.
+  const [sendArmed, setSendArmed] = useState(null);   // ref armed by the first tap
+  const sendAnywayOf = async (o) => {
+    const locId = getActiveLocationSync();
+    if (!locId || locId === 'loc-demo' || resyncState?.busy) return;
+    if (sendArmed !== o.ref) { setSendArmed(o.ref); return; }
+    setSendArmed(null);
+    if (!staff?.pin) { setResyncState({ ref: o.ref, busy: false, msg: null, err: 'Sign in with your PIN first.' }); return; }
+    setResyncState({ ref: o.ref, busy: true, msg: null, err: null });
+    try {
+      const r = await ezcaterSendAnyway(locId, o.ref, staff.pin);
+      if (r?.ok === false) { setResyncState({ ref: o.ref, busy: false, msg: null, err: r.error || 'Could not send it.' }); return; }
+      setResyncState({ ref: o.ref, busy: false, msg: r?.message || 'Released.', err: null });
+      const released = { ...o, customer: { ...(o.customer || {}), ...(r?.row?.customer || {}) } };
+      const due = !o.sentAt || Number(o.sentAt) <= Date.now();
+      if (due) await useStore.getState().releaseCateringOrderNow?.(released);
+      showToast?.(r?.message || 'Released', 'success');
+    } catch (e) {
+      setResyncState({ ref: o.ref, busy: false, msg: null, err: e?.message || 'Could not send it.' });
     }
   };
 
@@ -1165,6 +1190,13 @@ export default function OrdersHub() {
                     style={{ padding:'6px 12px', borderRadius:8, border:'1px solid var(--bdr2)', background:'transparent', color:'var(--t1)', fontSize:12, fontWeight:700, cursor:'pointer', fontFamily:'inherit' }}>
                     {resyncState?.busy && resyncState.ref === viewOrder.ref ? 'Re-syncing…' : 'Re-sync from ezCater'}
                   </button>
+                  {cateringHoldReason(viewOrder) === 'awaiting_ezcater_acceptance' && (
+                    <button onClick={() => sendAnywayOf(viewOrder)} disabled={resyncState?.busy}
+                      title="ezCater has not accepted this order (or cannot be reached). Send it to the kitchen anyway. Your name is recorded on the order."
+                      style={{ padding:'6px 12px', borderRadius:8, border:'1px solid #f59e0b88', background: sendArmed === viewOrder.ref ? '#f59e0b22' : 'transparent', color:'#b45309', fontSize:12, fontWeight:700, cursor:'pointer', fontFamily:'inherit' }}>
+                      {sendArmed === viewOrder.ref ? 'Tap again: send without ezCater acceptance' : 'Send anyway'}
+                    </button>
+                  )}
                   {(viewOrder.customer?.replacedBy || viewOrder.customer?.possibleReplacement) && (
                     <button onClick={() => undoReplacementOf(viewOrder)} disabled={resyncState?.busy}
                       title="These two ezCater orders are both real. Clear the replacement mark and let ezCater decide this order."

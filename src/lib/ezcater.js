@@ -146,8 +146,16 @@ export const ezcaterUndoReplacement = (locId, ref, pin = null) =>
 
 /**
  * The venue's catering prep time was just saved: re-time every ezCater order the kitchen does
- * not have yet (ready time minus the new prep). One already past fires now, flagged late. The
- * catering-release cron runs the same sweep every 5 minutes, so a failure here is not fatal.
+ * not have yet (ready time minus the new prep), only with the prep time the server just read. The
+ * ONLY path that re-times on a prep change (review round 4: the cron sweep was removed).
  */
 export const ezcaterRecomputePrep = (locId) =>
   call('ezcater-connect', { action: 'recompute_prep', ops_location_id: locId });
+
+/**
+ * Staff "Send anyway": release a HELD ezCater order (not accepted on ezCater) by hand, for an
+ * ezCater outage. Same fence as re-sync (a Back Office user who is staff here, or this till plus
+ * the signed in staff member's PIN). The server records who, and a cancel still wins.
+ */
+export const ezcaterSendAnyway = (locId, ref, pin = null) =>
+  call('ezcater-connect', { action: 'send_anyway', ops_location_id: locId, ref, ...(pin ? { pin: String(pin) } : {}) });

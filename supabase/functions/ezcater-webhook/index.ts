@@ -53,7 +53,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { verifyEzcaterSignature, getOrder, isPermanent, isSchemaError } from '../_shared/ezcater.ts';
 import { ezLifecycle, EZ_TERMINAL } from '../_shared/ezcater-map.ts';
-import { readCateringVenue, readConnection, writeEzcaterOrder, checkReplacements } from '../_shared/ezcaterIngest.ts';
+import { readCateringVenue, readConnection, writeEzcaterOrder, checkReplacements, refetchWith } from '../_shared/ezcaterIngest.ts';
 import { resyncForUnseen } from '../_shared/ezcaterMenuSync.ts';
 
 const cors = {
@@ -228,10 +228,15 @@ Deno.serve(async (req) => {
     }
 
     let order: any = null;
+    // When this ezCater read began and came back (review round 4): a write never lets an older
+    // answer undo a newer one already on the row (writeEzcaterOrder, answerOlderThanRow).
+    const fetchStartedAt = new Date().toISOString();
+    let answer: { startedAt: string; receivedAt: string } | null = null;
     try {
       // api_url is the sandbox address when the operator typed one, and null
       // (so, the live ezCater API) for every other connection.
       order = await getOrder(token, entityId, conn?.api_url ?? null);
+      answer = { startedAt: fetchStartedAt, receivedAt: new Date().toISOString() };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
 
@@ -296,12 +301,20 @@ Deno.serve(async (req) => {
     //     so a fired order is never changed without staff being told.
     const writeNow = new Date().toISOString();
     const w = await writeEzcaterOrder(sb, {
-      order, locationId, venue, priorLink, eventAt, nowIso: writeNow,
+      order, answer, locationId, venue, priorLink, eventAt, nowIso: writeNow,
+      // The row already holds an answer newer than ours: read ezCater again, never write ours.
+      refetch: refetchWith((signal: AbortSignal) => getOrder(token, entityId, conn?.api_url ?? null, signal), 10_000),
       log: (...a: unknown[]) => console.log('[ezcater-webhook]', ...a),
     });
     if (!w.ok) {
       await failEvent(w.error, 'error');
       return retry('queue write failed');
+    }
+    if (w.stale) {
+      // The order already reflects a newer ezCater answer and ezCater could not be read again:
+      // ask ezCater to send this notification again rather than write an older answer.
+      await failEvent('the order holds a newer ezCater answer and ezCater could not be read again', 'error');
+      return retry('stale answer');
     }
     const row = w.plan.row;
     console.log('[ezcater-webhook] timing', row.ref,

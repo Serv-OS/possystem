@@ -27,13 +27,16 @@
 //     recompute_prep -> the venue's catering prep time changed: re-time every ezCater order
 //                       the kitchen does not have yet (Back Office calls it after a save)
 //
-//   Three ORDER actions, each with its own fence (they are not Back Office only):
+//   Four ORDER actions, each with its own fence (they are not Back Office only):
+//     send_anyway    -> staff release a HELD order (not accepted on ezCater) by hand, for an
+//                       ezCater outage. Same fence as resync; who did it is on the order.
 //     undo_replacement -> staff say two ezCater orders are NOT a replacement pair: clear the
 //                       marks and let ezCater's current answer decide. Same fence as resync.
 //     prefire        -> the till's catering release asks ezCater about one order right
 //                       before firing it (ezCater advises this). Service role, staff of the
 //                       venue, or a till paired to the venue. Answers { fire, outcome, row }
 //                       and NEVER blocks the kitchen: no answer in time means fire as planned.
+//                       The row carries NO customer contact details (prefireRowForTill).
 //     resync_order   -> staff "Re-sync from ezCater": re-ask ezCater about one order and
 //                       rewrite it through the same write plan. Staff only: a Back Office user
 //                       who is staff of the venue, or a till of the venue plus a staff PIN.
@@ -56,8 +59,12 @@ import {
   isSandboxApi, resolveEzcaterApi,
 } from '../_shared/ezcater.ts';
 import { buildLinkKey } from '../_shared/ezcaterMatch.ts';
-import { prefireCheck, resyncOrder, readCateringVenue, undoReplacement, recomputePrepForVenue } from '../_shared/ezcaterIngest.ts';
-import { staffForLocation, deviceAtLocation, staffActor, platformLocation } from '../_shared/staffAuthority.ts';
+import { prefireCheck, resyncOrder, readCateringVenue, undoReplacement, recomputePrepForVenue, sendAnyway, prefireRowForTill } from '../_shared/ezcaterIngest.ts';
+import { staffForLocation, deviceAtLocation, staffActor } from '../_shared/staffAuthority.ts';
+import {
+  connectionForLocation as connectionForLocationOf, connectionCompany as connectionCompanyOf,
+  venueCompany as venueCompanyOf, venueCompanyStrict,
+} from '../_shared/ezcaterConnections.ts';
 import { readAllLinks } from '../_shared/ezcater-match-ingest.ts';
 import { syncVenueMenus, syncDueVenues, readSyncState, publicSyncState, SIZE_KEY_SEP } from '../_shared/ezcaterMenuSync.ts';
 import { EZ_PREP_FALLBACK_MINUTES } from '../_shared/cateringRules.js';
@@ -139,51 +146,17 @@ async function requireAccess(req: Request, opsLocationId: string): Promise<{ ok:
 }
 
 /** The company that owns an Ops location (Platform locations.company_id), or null. */
-async function venueCompany(opsLocationId: string): Promise<string | null> {
-  const loc = await platformLocation(platform, opsLocationId);
-  return loc.companyId ? String(loc.companyId) : null;
-}
+const venueCompany = (opsLocationId: string) => venueCompanyOf(platform, opsLocationId);
+
+/** The company an ezCater connection belongs to (_shared/ezcaterConnections.ts). */
+const connectionCompany = (conn: any) => connectionCompanyOf(sb, platform, conn);
 
 /**
- * The company an ezCater connection belongs to: its company_id (written by connect_token from
- * this release on), else the company of a venue one of its caterers is mapped to (a connection
- * made before, whose company_id was never written). null when neither says.
+ * The connection serving a location (_shared/ezcaterConnections.ts): its mapped caterer's, else
+ * one of the SAME COMPANY, filtered by company in the query (review round 4), never another
+ * company's (review round 3, F).
  */
-async function connectionCompany(conn: any): Promise<string | null> {
-  if (!conn?.id) return null;
-  if (conn.company_id) return String(conn.company_id);
-  const { data: cats } = await sb.from('ezcater_caterers').select('location_id')
-    .eq('connection_id', conn.id).not('location_id', 'is', null).limit(5);
-  for (const c of cats || []) {
-    const co = await venueCompany(String(c.location_id));
-    if (co) return co;
-  }
-  return null;
-}
-
-/**
- * The connection serving a location: the one its mapped caterer belongs to, else a connected
- * row OF THE SAME COMPANY (the state every operator starts in, before any caterer is mapped).
- * NEVER another company's connection (review round 3, F): the old fallback was "the oldest
- * connected row", which let staff of one company see, map against, resubscribe or DISCONNECT
- * another company's ezCater. A venue whose company cannot be told gets null (not connected).
- */
-async function connectionForLocation(opsLocationId: string): Promise<any | null> {
-  const { data: cat } = await sb.from('ezcater_caterers')
-    .select('connection_id').eq('location_id', opsLocationId).not('connection_id', 'is', null).limit(1).maybeSingle();
-  if (cat?.connection_id) {
-    const { data } = await sb.from('ezcater_connections').select('*').eq('id', cat.connection_id).maybeSingle();
-    if (data) return data;
-  }
-  const company = await venueCompany(opsLocationId);
-  if (!company) return null;
-  const { data: rows } = await sb.from('ezcater_connections')
-    .select('*').eq('status', 'connected').order('connected_at', { ascending: true }).limit(20);
-  for (const c of rows || []) {
-    if (await connectionCompany(c) === company) return c;
-  }
-  return null;
-}
+const connectionForLocation = (opsLocationId: string) => connectionForLocationOf(sb, platform, opsLocationId);
 
 /** SCRUBBED projection. api_token and signing_secret must never appear here. */
 function publicStatus(c: any) {
@@ -380,7 +353,7 @@ Deno.serve(async (req) => {
   if (!opsLocationId) return json({ error: 'ops_location_id required' }, 400);
 
   // ── Order actions, each with its own fence ──────────────────────────────────
-  if (action === 'prefire' || action === 'resync_order' || action === 'undo_replacement') {
+  if (action === 'prefire' || action === 'resync_order' || action === 'undo_replacement' || action === 'send_anyway') {
     const ref = String(body?.ref || '').trim();
     if (!ref) return json({ error: 'ref required' }, 400);
     const { service, user } = await callerOf(req);
@@ -394,15 +367,20 @@ Deno.serve(async (req) => {
           locationId: opsLocationId, ref,
           log: (...a: unknown[]) => console.log('[ezcater-connect prefire]', ...a),
         });
-        const row = r.row ? {
-          ref: r.row.ref, type: r.row.type ?? null, source: r.row.source ?? 'ezcater', status: r.row.status,
-          items: r.row.items || [], customer: r.row.customer || null, sent_at: r.row.sent_at ?? null,
-          collection_time: r.row.collection_time ?? null, event_date: r.row.event_date ?? null,
-        } : null;
-        return json({ ok: true, fire: r.fire, outcome: r.outcome, checked: r.checked, why: r.why ?? null, row });
+        // No customer contact details in the answer (review round 4): the till merges this over
+        // the row it read itself.
+        return json({ ok: true, fire: r.fire, outcome: r.outcome, checked: r.checked, why: r.why ?? null, row: prefireRowForTill(r.row) });
       }
-      const who = service ? { ok: true as const, by: 'service' } : await staffActor(sb, platform, user, opsLocationId, body?.pin);
+      const who = service ? { ok: true as const, by: 'service', name: null } : await staffActor(sb, platform, user, opsLocationId, body?.pin);
       if (!who.ok) return json({ error: who.error }, who.status);
+      if (action === 'send_anyway') {
+        // Staff release a HELD order by hand (review round 4: an ezCater outage must not strand
+        // an order). Recorded on the order with who did it; a cancel still wins.
+        const s = await sendAnyway(sb, { locationId: opsLocationId, ref, by: who.by, byName: (who as any).name ?? null });
+        console.log('[ezcater-connect] send anyway', ref, 'by', who.by, s.ok ? 'released' : s.error);
+        if (!s.ok) return json({ ok: false, error: s.error });
+        return json({ ok: true, message: s.message, row: prefireRowForTill(s.row) });
+      }
       if (action === 'undo_replacement') {
         // Staff say these two ezCater orders are NOT a replacement pair. The marks are cleared
         // and, if the kitchen does not have it yet, the order becomes whatever ezCater says now.
@@ -427,6 +405,7 @@ Deno.serve(async (req) => {
       // A prefire that breaks must still let the kitchen have the order.
       if (action === 'prefire') return json({ ok: false, fire: true, outcome: 'fire', checked: false, why: 'the check failed', row: null });
       if (action === 'undo_replacement') return json({ ok: false, error: 'Could not undo. Nothing was changed.' });
+      if (action === 'send_anyway') return json({ ok: false, error: 'Could not send it. Nothing was changed, try again.' });
       return json({ ok: false, error: 'Could not re-sync this order. Nothing was changed.' });
     }
   }
@@ -480,15 +459,22 @@ Deno.serve(async (req) => {
           catch { return json({ error: 'The API address has to start with https://, because your ezCater token travels with every call. Leave it empty to use the live ezCater API.' }, 400); }
         }
 
+        // The company this connection belongs to, so it is never used for another company's venue
+        // (connectionForLocation, ezcaterAccessFor). Column from 20260825e_ezcater.sql. A FAILED
+        // lookup refuses the connect (review round 4): storing company_id null because Platform
+        // blinked would leave a connection its own company can never find again.
+        const co = await venueCompanyStrict(platform, opsLocationId);
+        if (!co.ok) {
+          console.warn('[ezcater-connect] connect_token: company lookup failed:', co.error);
+          return json({ error: 'Could not confirm which company this venue belongs to, so nothing was saved. Try again in a moment.' }, 503);
+        }
         const row: Record<string, unknown> = {
           api_token: apiToken,
           label,
           webhook_url: WEBHOOK_URL,
           status: 'connected',
           connected_by: access.userId === 'service' ? null : access.userId,
-          // The company this connection belongs to, so it is never used for another company's
-          // venue (connectionForLocation, ezcaterAccessFor). Column from 20260825e_ezcater.sql.
-          company_id: await venueCompany(opsLocationId),
+          company_id: co.companyId,
         };
         if (apiUrl) row.api_url = apiUrl;
 
@@ -684,14 +670,15 @@ Deno.serve(async (req) => {
       // ── The venue's catering prep time changed (review round 3, C) ──────
       // Back Office calls this right after saving Catering settings. Every ezCater order the
       // kitchen does not have yet is re-timed on the new prep time (ready time minus prep);
-      // one whose new fire moment is already past fires now and is flagged late. The
-      // catering-release cron runs the same sweep every 5 minutes as the backstop.
+      // one whose new fire moment is already past fires now and is flagged late. This is the ONLY
+      // re-time on a prep change (review round 4: the cron's automatic sweep was removed), and it
+      // changes nothing unless the prep time was read successfully and is set.
       case 'recompute_prep': {
         const r = await recomputePrepForVenue(sb, platform, {
           locationId: opsLocationId,
           log: (...a: unknown[]) => console.log('[ezcater-connect recompute_prep]', ...a),
         });
-        return json({ ok: true, checked: r.checked, retimed: r.retimed, late: r.late });
+        return json({ ok: r.ok, why: r.why ?? null, checked: r.checked, retimed: r.retimed, late: r.late });
       }
 
       // ── Item matching ───────────────────────────────────────────────────

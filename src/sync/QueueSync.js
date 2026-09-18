@@ -23,6 +23,7 @@ import { useStore } from '../store';
 import { isTrainingMode } from '../lib/trainingMode';
 import { reconcileList, syncStamp, canonicalJson, digest, stampedKeys } from '../lib/queueReconcile';
 import { keptOutOfLiveQueue, liveQueueOrFilter } from '../lib/cateringRules';
+import { tillQueueWrite } from '../lib/ezcaterTillWrite';
 
 // Bounded boot and reconcile reads: a healthy venue never has this many open rows.
 export const QUEUE_ROW_CAP = 500;
@@ -429,11 +430,23 @@ export async function flushQueues() {
     const payload = rowHash(row);
     if (_lastSentQueue[o.ref] === payload) continue;
     _lastSentQueue[o.ref] = payload;
+    // An ezCater order (ezCater review round 4): the till writes ONLY the fields staff change here
+    // (status, staff), as an UPDATE, never onto a cancelled row. The lifecycle, the times and the
+    // customer jsonb are the server's (lib/ezcaterTillWrite.js). The hash stays the whole row, so
+    // echo detection and the reconciler are unchanged.
+    const ez = tillQueueWrite(row);
+    if (ez.mode === 'skip') continue;
+    if (ez.mode === 'update') {
+      const match = { location_id: _locationId, ref: o.ref };
+      queueWrite({ type: 'update', table: 'order_queue', payload: ez.payload, match, notMatch: ez.notMatch });
+      queueUpdates.push({ row, write: ez.payload, notMatch: ez.notMatch });
+      continue;
+    }
     if (o._sync?.hash) {
       // The server has confirmed this row: UPDATE it. An update of a row another till has since
       // removed touches nothing, so an edit here can never re-create a collected order.
       queueWrite({ type: 'update', table: 'order_queue', payload: row, match: { location_id: _locationId, ref: o.ref } });
-      queueUpdates.push(row);
+      queueUpdates.push({ row, write: row, notMatch: null });
     } else {
       // order_queue is keyed (location_id, ref), not ref alone, see the batch write below.
       queueWrite({ type: 'upsert', table: 'order_queue', payload: row, onConflict: 'location_id,ref' });
@@ -495,8 +508,10 @@ export async function flushQueues() {
         })
         .catch(e => console.warn('[QueueSync] order_queue batch upsert:', e.message));
     }
-    for (const row of queueUpdates) {
-      Promise.resolve(supabase.from('order_queue').update(row).eq('location_id', _locationId).eq('ref', row.ref).select('ref, updated_at'))
+    for (const { row, write, notMatch } of queueUpdates) {
+      let q = supabase.from('order_queue').update(write).eq('location_id', _locationId).eq('ref', row.ref);
+      for (const [k, v] of Object.entries(notMatch || {})) q = q.neq(k, v);
+      Promise.resolve(q.select('ref, updated_at'))
         .then(({ data, error }) => {
           if (error) { console.warn('[QueueSync] order_queue update:', error.message); return; }
           const at = new Map((data || []).map(r => [r.ref, r.updated_at ? new Date(r.updated_at).getTime() : Date.now()]));

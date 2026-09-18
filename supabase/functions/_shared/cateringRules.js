@@ -264,9 +264,17 @@ export function cateringHoldReason(row) {
   if (st === 'collected') return 'collected';
   if (isEzcaterOrder(row)) {
     const life = norm(row.customer?.ezcater_lifecycle);
-    if (life && !EZ_COMMITTED.has(life)) return 'awaiting_ezcater_acceptance';
+    // Staff pressed "Send anyway" (review round 4, an ezCater outage): released, and who did it
+    // is on the order (customer.sendAnyway). A cancel above still wins.
+    if (life && !EZ_COMMITTED.has(life) && !isSentAnyway(row)) return 'awaiting_ezcater_acceptance';
   }
   return null;
+}
+
+/** Staff released this held ezCater order by hand ("Send anyway"): customer.sendAnyway = { at, by }. */
+export function isSentAnyway(row) {
+  const s = row?.customer?.sendAnyway;
+  return !!(s && typeof s === 'object' && s.at && s.by);
 }
 
 /** The release (POS master or the catering-release cron) may fire this row. */
@@ -281,7 +289,7 @@ export function cateringMayFire(row) {
  * lifecycle is set and not committed; any other source, or no lifecycle, may fire.
  */
 export function releasableOrFilter() {
-  return `source.neq.ezcater,customer->>ezcater_lifecycle.is.null,customer->>ezcater_lifecycle.in.(${[...EZ_COMMITTED].join(',')})`;
+  return `source.neq.ezcater,customer->>ezcater_lifecycle.is.null,customer->>ezcater_lifecycle.in.(${[...EZ_COMMITTED].join(',')}),customer->sendAnyway.not.is.null`;
 }
 
 /**

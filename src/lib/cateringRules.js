@@ -11,7 +11,7 @@ export {
   liveQueueOrFilter, isFutureCatering, isCancelledUnfiredCatering, keptOutOfLiveQueue,
   wallTimeToInstantMs, venueWallClock,
   cateringPrepMinutes, cateringFireMs, cateringPrepSetting, ezcaterPrepFor, EZ_PREP_FALLBACK_MINUTES,
-  cateringHoldReason, cateringMayFire, cateringReleaseWindow, cateringReleaseDecision,
+  cateringHoldReason, cateringMayFire, isSentAnyway, cateringReleaseWindow, cateringReleaseDecision,
   releasableOrFilter, CATERING_STALE_FLOOR_MS, cateringDayLoad,
   inAdvanceList, advanceListStatus,
   mayBookOurCourier, mayMessageCustomer,

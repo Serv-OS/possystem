@@ -570,7 +570,7 @@ test('staff only means the Back Office staff rule, or a till of the venue plus a
   assert.equal(await staffForLocation(sb, null, { id: 'anon-1' }, PROVO), false, 'signed in is not staff');
   assert.equal((await staffActor(sb, null, { id: 'till-1', is_anonymous: true }, PROVO, null)).ok, false, 'a till alone is not staff');
   assert.equal((await staffActor(sb, null, { id: 'till-1', is_anonymous: true }, PROVO, '9999')).ok, false, 'an inactive PIN');
-  assert.deepEqual(await staffActor(sb, null, { id: 'till-1', is_anonymous: true }, PROVO, '1234'), { ok: true, by: 'staff:s1' });
+  assert.deepEqual(await staffActor(sb, null, { id: 'till-1', is_anonymous: true }, PROVO, '1234'), { ok: true, by: 'staff:s1', name: 'Jane' });
   assert.equal((await staffActor(sb, null, { id: 'stranger', is_anonymous: true }, PROVO, '1234')).ok, false, 'a PIN from a device that is not the venue\'s');
   assert.equal((await staffActor(sb, null, null, PROVO, '1234')).status, 401);
 });

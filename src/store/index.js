@@ -33,6 +33,7 @@ import { dispatchDelivery, sendDeliveryTrackingSMS } from '../lib/delivery/dispa
 import { STALE_ORDER_FLOOR_MS } from '../sync/staleness';
 import { CATERING_SOURCES, cateringMayFire, cateringHoldReason, cateringReleaseWindow, cateringSourceLabel, isEzcaterOrder, mayBookOurCourier, releasableOrFilter, UNCLAIMABLE_STATUSES_PG } from '../lib/cateringRules';
 import { ezcaterPrefire } from '../lib/ezcater';
+import { mergePrefireRow } from '../lib/ezcaterTillWrite';
 import { giftRecordFrom, giftLegs, reverseGiftCard } from '../lib/giftCommit';
 import { categoryImageField, isMissingImageColumn } from '../lib/categoryPhoto';
 // v5.6.79 (#107/#108) — refund money maths + the per-leg processor router.
@@ -3078,7 +3079,7 @@ export const useStore = create((set, get) => ({
               continue;
             }
             if (!pf.checked) get().showToast?.(`ezCater order ${row.customer?.ezcater_order_number || row.ref} sent without a last check (${pf.why || 'ezCater did not answer'}). Check ezCater for changes.`, 'info', 8000);
-            if (pf.row) row = { ...row, items: pf.row.items || row.items, customer: pf.row.customer || row.customer, type: pf.row.type || row.type };
+            if (pf.row) row = mergePrefireRow(row, pf.row);   // the answer carries no contact details: merged over our own row
           }
           await get().routeKioskOrderPrints?.({
             ref: row.ref, source: row.source || 'catering',
@@ -3130,7 +3131,7 @@ export const useStore = create((set, get) => ({
         return { fired: false, why: pf.outcome };
       }
       if (!pf.checked) get().showToast?.(`ezCater order ${label} sent without a last check (${pf.why || 'ezCater did not answer'}). Check ezCater for changes.`, 'info', 8000);
-      if (pf.row) row = { ...row, items: pf.row.items || row.items, customer: pf.row.customer || row.customer, type: pf.row.type || row.type };
+      if (pf.row) row = mergePrefireRow(row, pf.row);   // the answer carries no contact details: merged over our own row
     }
     await get().routeKioskOrderPrints?.({
       ref: row.ref, source: row.source, type: row.type || row._raw?.type || null,

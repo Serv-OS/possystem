@@ -36,17 +36,28 @@
 //     (PREFIRE_BUDGET_MS, _shared/budget.js). An ezCater outage costs the budget once, not four
 //     to seven seconds per order: every order the budget did not reach fires UNCHECKED, flagged
 //     (customer.ezcaterCheck.ok = false), never late and never not at all.
-//   * EARLIER PICKUP AND LONGER PREP ARE SEEN IN TIME (C). Before the release, each run
-//     (1) re-times unfired ezCater orders whose venue prep time changed (recomputePrepSweep) and
-//     (2) re-asks upcoming ezCater orders on a schedule (recheckUpcoming: every 15 minutes for
-//     those due in the next 4 hours, once a day for the week ahead). A fire time that is now
-//     past fires NOW, in this run, without the grace wait, and is flagged late for staff.
+//   * EARLIER PICKUP IS SEEN IN TIME (C). Before the release, each run re-asks upcoming ezCater
+//     orders on a schedule (recheckUpcoming: every 15 minutes for those due in the next 4 hours,
+//     once a day for the week ahead). A moved time moves sent_at; the till fires it (round 4:
+//     this cron no longer fires those itself, and no longer re-times on prep, see below).
 //   * HELD ORDERS ARE RE-ASKED (D). The scheduled re-ask includes held (not accepted) orders as
 //     they near or pass their fire time: a missed accepted notification releases them; one still
 //     not accepted is flagged for staff (customer.unacceptedAlert, a till alert).
 //   * THE CLAIM CHECKS STATUS (E). The kitchen_routed_at claim also requires a releasable status
 //     in the same UPDATE (not cancelled, not collected, not held), so a cancel landing between the
 //     pre fire decision and the claim can never fire a cancelled order.
+//
+// Review round 4 (same day): WHERE AUTOMATIC BEHAVIOUR CAUSED A BUG, IT WAS REMOVED OR NARROWED.
+//   * NO PREP SWEEP HERE ANY MORE. The every run re-time of unfired ezCater orders read a failed
+//     catering settings read as "no prep set" and re-timed every order to the 60 minute fallback,
+//     which cannot be undone. Orders are re-timed on a prep change ONLY when staff save Catering
+//     settings (ezcater-connect 'recompute_prep'), and only with a successfully read, set prep.
+//   * THIS CRON IS ONLY A BACKSTOP AGAIN. It fires only rows past the grace window that no till
+//     has claimed, exactly as before this branch. The scheduled re-ask may move sent_at (so the
+//     till's release fires it, printed and routed to production centres) but never makes this
+//     cron fire a routine due order itself: its KDS only ticket has no printing and no routing.
+//   * The "fired unchecked" flag is written inside the fire budget, in parallel, not in a serial
+//     loop outside every budget.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { dispatchCourier } from '../_shared/delivery-dispatch.ts';
@@ -54,7 +65,7 @@ import {
   CATERING_SOURCES, CATERING_STALE_FLOOR_MS, cateringMayFire, mayBookOurCourier, cateringSourceLabel,
   isEzcaterOrder, releasableOrFilter, UNCLAIMABLE_STATUSES_PG,
 } from '../_shared/cateringRules.js';
-import { prefireCheck, recheckUpcoming, recomputePrepSweep, flagUnchecked } from '../_shared/ezcaterIngest.ts';
+import { prefireCheck, recheckUpcoming, flagUnchecked } from '../_shared/ezcaterIngest.ts';
 import { runWithBudget } from '../_shared/budget.js';
 
 const URL = Deno.env.get('SUPABASE_URL')!;
@@ -72,9 +83,8 @@ const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: 
 
 const GRACE_MIN = 3;     // let the POS master fire the normal routed version first
 const BATCH = 200;
-// Time budgets. Supabase's edge wall clock is 150 s; these three add up to well under it, and
-// the claims after them are plain database writes.
-const PREP_SWEEP_BUDGET_MS = 10_000;
+// Time budgets. Supabase's edge wall clock is 150 s; these three add up to well under it (100 s),
+// and everything slow (ezCater, the unchecked flag, the claim and ticket) runs inside one of them.
 const RECHECK_BUDGET_MS = 25_000;
 const PREFIRE_BUDGET_MS = 30_000;
 const PREFIRE_CONCURRENCY = 8;
@@ -96,25 +106,16 @@ Deno.serve(async (req) => {
   const runSec = req.headers.get('x-run-secret') ?? '';
   if (auth !== SERVICE_ROLE && !(RUN_SECRET && runSec === RUN_SECRET)) return json({ error: 'unauthorized' }, 401);
 
-  // 1) A venue's catering prep time changed: re-time its unfired ezCater orders (C).
-  const prep = await withTimeout(recomputePrepSweep(sb, platform, { log }), PREP_SWEEP_BUDGET_MS, { venues: 0, retimed: 0, late: 0, refs: [] as string[] });
-
-  // 2) Scheduled re-asks of upcoming ezCater orders, held ones included (C, D).
+  // 1) Scheduled re-asks of upcoming ezCater orders, held ones included (C, D). They may move
+  // sent_at; they never fire anything and never make this run fire anything early (round 4).
   const rechecks = await withTimeout(recheckUpcoming(sb, platform, { budgetMs: RECHECK_BUDGET_MS - 2_000, log }), RECHECK_BUDGET_MS, []);
-  // Orders a re-ask (or the prep re-time) just made due, often because the pickup moved earlier:
-  // fired NOW, in this run, without the grace wait, and without asking ezCater a second time.
-  const lateKeys = new Set<string>();
   const justChecked = new Set<string>();
-  for (const r of rechecks) {
-    const k = `${r.locationId}|${r.ref}`;
-    if (r.outcome === 'checked') justChecked.add(k);
-    if (r.outcome === 'checked' && r.dueNow) lateKeys.add(k);
-  }
+  for (const r of rechecks) if (r.outcome === 'checked') justChecked.add(`${r.locationId}|${r.ref}`);
 
+  // 2) THE BACKSTOP: due (fire time + grace passed, not older than the floor), not yet fired by
+  // any device, not finished, not held. Oldest first. Nothing else is fired here.
   const cutoff = new Date(Date.now() - GRACE_MIN * 60_000).toISOString();
   const floor = new Date(Date.now() - CATERING_STALE_FLOOR_MS).toISOString();
-  // Due (fire time + grace passed, not older than the floor), not yet fired by any device, not
-  // finished, not held. Oldest first.
   const { data, error } = await sb.from('order_queue')
     .select(ROW_COLS)
     .in('source', CATERING_SOURCES).is('kitchen_routed_at', null).not('status', 'in', '(collected,cancelled)')
@@ -125,20 +126,6 @@ Deno.serve(async (req) => {
     .limit(BATCH);
   if (error) return json({ error: error.message }, 500);
   const rows: any[] = [...(data || [])];
-  // The late ones (re-asked or re-timed into the past this run) that the grace window left out.
-  const haveKeys = new Set(rows.map((r) => `${r.location_id}|${r.ref}`));
-  const lateRefsByLoc = new Map<string, string[]>();
-  for (const k of lateKeys) {
-    if (haveKeys.has(k)) continue;
-    const [loc, ref] = k.split('|');
-    lateRefsByLoc.set(loc, [...(lateRefsByLoc.get(loc) || []), ref]);
-  }
-  for (const [loc, refs] of lateRefsByLoc) {
-    const { data: extra } = await sb.from('order_queue').select(ROW_COLS)
-      .eq('location_id', loc).in('ref', refs).is('kitchen_routed_at', null)
-      .not('status', 'in', UNCLAIMABLE_STATUSES_PG).or(releasableOrFilter());
-    for (const r of extra || []) rows.push(r);
-  }
 
   let held = 0;
   let rescheduled = 0;
@@ -146,14 +133,14 @@ Deno.serve(async (req) => {
   const toFire: any[] = [];
 
   // 3) THE PRE FIRE RE-ASKS, IN PARALLEL, INSIDE ONE BUDGET (G). A row just re-asked this run is
-  // not asked twice. Every ezCater row the budget did not reach fires unchecked, flagged.
+  // not asked twice. Every ezCater row the budget did not reach fires unchecked, flagged (the flag
+  // is written in fireOne, inside the fire budget).
   const releasable = rows.filter((r) => { if (!cateringMayFire(r)) { held++; return false; } return true; });
   const needCheck = releasable.filter((r) => isEzcaterOrder(r) && !justChecked.has(`${r.location_id}|${r.ref}`));
   const checks = await runWithBudget(needCheck, (r: any) => prefireCheck(sb, platform, { locationId: r.location_id, ref: r.ref, log }),
     { concurrency: PREFIRE_CONCURRENCY, budgetMs: PREFIRE_BUDGET_MS });
   const checkOf = new Map<string, any>();
   needCheck.forEach((r, i) => checkOf.set(`${r.location_id}|${r.ref}`, checks[i]));
-  const nowIso = new Date().toISOString();
   for (let row of releasable) {
     const res = checkOf.get(`${row.location_id}|${row.ref}`);
     if (res) {
@@ -170,26 +157,29 @@ Deno.serve(async (req) => {
         // The budget ran out, or the check threw. Never block the kitchen on the check.
         unchecked++;
         const why = res.skipped ? 'the ServOS check ran out of time before ezCater answered' : `the check failed: ${res.error}`;
-        const f = await flagUnchecked(sb, row.location_id, row.ref, why, nowIso);
-        if (f.row?.customer) row = { ...row, customer: f.row.customer };
+        row = { ...row, _uncheckedWhy: why };
         log('ezCater', row.ref, 'firing unchecked:', why);
       }
     }
     toFire.push(row);
   }
 
-  // 4) Claim and fire, a few at a time.
-  const fires = await runWithBudget(toFire, (row: any) => fireOne(row), { concurrency: FIRE_CONCURRENCY, budgetMs: FIRE_BUDGET_MS });
+  // 4) Claim and fire, a few at a time, inside the fire budget.
+  const nowIso = new Date().toISOString();
+  const fires = await runWithBudget(toFire, (row: any) => fireOne(row, nowIso), { concurrency: FIRE_CONCURRENCY, budgetMs: FIRE_BUDGET_MS });
   const fired = fires.filter((f: any) => f.ok && f.value === true).length;
 
-  return json({
-    ok: true, scanned: rows.length, fired, held, rescheduled, unchecked,
-    rechecked: rechecks.length, late: lateKeys.size, prep_retimed: prep.retimed,
-  });
+  return json({ ok: true, scanned: rows.length, fired, held, rescheduled, unchecked, rechecked: rechecks.length });
 });
 
 /** Claim one row for the kitchen and drop its KDS ticket. true when this run fired it. */
-async function fireOne(row: any): Promise<boolean> {
+async function fireOne(row: any, nowIso: string): Promise<boolean> {
+  // An ezCater order going without its last check says so on the order, BEFORE the claim (the
+  // flag only writes while unfired). Inside the fire budget and in parallel (round 4).
+  if (row._uncheckedWhy) {
+    const f = await flagUnchecked(sb, row.location_id, row.ref, row._uncheckedWhy, nowIso);
+    if (f.row?.customer) row = { ...row, customer: f.row.customer };
+  }
   // Atomic claim: only one firer (this cron OR a device) ever proceeds for a given order, and
   // ONLY while the order is still releasable (E): not cancelled, not collected, not held. A
   // cancel that landed after the checks above makes this match nothing.
