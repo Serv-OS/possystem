@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.8',
+    date: '18 Sep 2026',
+    items: [
+      'Floor plan sections now save. Renaming Main dining to Up (or adding, recolouring, reordering, hiding or removing a section) used to change only your screen and the next Push to POS; nothing was ever saved, so every reload went back to the built in Main dining, Bar and Patio. The database could only hold one "main" for the whole system, which is why. Each venue now keeps its own sections, saved the moment you change them.',
+      'Tills pick up section changes on Push to POS, or by themselves within a few minutes.',
+      'A section that still has tables cannot be removed; Back Office says how many to move first. A table whose section is gone still shows on the till under All and a new Other view, and a till or handheld assigned to a removed section shows every table instead of an empty floor.',
+      'Needs one small database update (20260918c) before section changes can save; until then Back Office says plainly that the change was not saved.',
+    ],
+  },
+  {
     v: '5.9.7',
     date: '18 Sep 2026',
     items: [

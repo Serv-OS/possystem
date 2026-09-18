@@ -903,7 +903,9 @@ export const useStore = create((set, get) => ({
     const n = normaliseSections(list);
     if (!loc || !n || !n.length) return;
     storeSavedSections(loc, n);
-    set({ _sectionsLocationId: loc, _sectionsBase: { loc, sig: sectionsSignature(n) } });
+    // Also put the saved list back on screen: a plan read that landed while the save was in
+    // flight may have shown the old rows, and the next edit would then save over this change.
+    set({ locationSections: n, _sectionsLocationId: loc, _sectionsBase: { loc, sig: sectionsSignature(n) } });
   },
   setLocationSections: (list) => {
     const n = normaliseSections(list);

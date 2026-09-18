@@ -302,3 +302,22 @@ test('every load path applies the saved sections', () => {
   assert.match(fpb, /saveLocationSections\(next, loc, \{ base \}\)/);
   assert.match(fpb, /\{TILLS_TEXT\}/);
 });
+
+// Release review (18 Sep 2026): a plan read landing mid save could put the old list back on
+// screen and the next edit then saved over the change; and a handheld whose assigned section
+// was removed showed an empty floor.
+test('a successful save puts the saved list back on screen', async () => {
+  const fs = await import('node:fs');
+  const store = fs.readFileSync(new URL('../store/index.js', import.meta.url), 'utf8');
+  const i = store.indexOf('  markSectionsSaved: (loc, list) => {');
+  const fn = store.slice(i, store.indexOf('\n  },', i));
+  assert.ok(fn.includes('set({ locationSections: n,'), 'the screen shows what was saved');
+});
+
+test('a handheld restricted to a section with no tables left shows tables, not an empty floor', async () => {
+  const fs = await import('node:fs');
+  const list = fs.readFileSync(new URL('../surfaces/mpos/MTablesList.jsx', import.meta.url), 'utf8');
+  const plan = fs.readFileSync(new URL('../surfaces/mpos/MFloorPlan.jsx', import.meta.url), 'utf8');
+  assert.ok(list.includes('tables.some(t => t.section === assignedSection) ? assignedSection : null'));
+  assert.ok(plan.includes('sections.includes(assignedSection) ? assignedSection : null'));
+});

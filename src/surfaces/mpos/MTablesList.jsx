@@ -20,7 +20,10 @@ export default function MTablesList({ onPickTable }) {
     catch { return 'list'; }
   });
   const myName = staff?.name?.toLowerCase();
-  const restrictedSection = deviceConfig?.assignedSection || null;
+  // A handheld restricted to a section that no longer has any tables (it was removed after its
+  // tables moved) shows every table, never an empty list. TablesSurface does the same.
+  const assignedSection = deviceConfig?.assignedSection || null;
+  const restrictedSection = assignedSection && tables.some(t => t.section === assignedSection) ? assignedSection : null;
 
   // Persist view choice
   useEffect(() => {
