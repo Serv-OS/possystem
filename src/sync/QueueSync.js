@@ -22,7 +22,7 @@ import { queueWrite, isOnline, bufferedUpsertKeys } from './OfflineQueue';
 import { useStore } from '../store';
 import { isTrainingMode } from '../lib/trainingMode';
 import { reconcileList, syncStamp, canonicalJson, digest, stampedKeys } from '../lib/queueReconcile';
-import { keptOutOfLiveQueue, liveQueueOrFilter } from '../lib/cateringRules';
+import { keptOutOfLiveQueue, liveQueueOrFilter, isServerOwnedQueueRow, tillDeletableOrFilter } from '../lib/cateringRules';
 import { tillQueueWrite } from '../lib/ezcaterTillWrite';
 
 // Bounded boot and reconcile reads: a healthy venue never has this many open rows.
@@ -77,6 +77,17 @@ let _bootCaptured = false;
 // Back Office): it never reached the kitchen, so it must never load into every till once its old
 // fire time passes (liveQueueOrFilter keeps the server read in step).
 const _isFutureCatering = (row) => keptOutOfLiveQueue(row, Date.now());
+
+// SERVER OWNED ROWS (ezCater review round 5, item 1): refs of catering and ezCater rows this till
+// has seen. The row is the server's: the till may drop it from memory (held, moved later,
+// cancelled before firing) but never deletes it in the database. Remembered by ref because the
+// flush decides deletes from the latch, after the row has already left the store. Every delete
+// statement also carries tillDeletableOrFilter, so a ref this till never saw the source of is
+// still safe.
+const _serverOwnedQueue = new Set();
+function noteServerOwned(o) { if (o?.ref && isServerOwnedQueueRow(o)) _serverOwnedQueue.add(String(o.ref)); }
+/** Test seam: is this ref known here as a server owned row. */
+export function isKnownServerOwned(ref) { return _serverOwnedQueue.has(String(ref)); }
 
 // numeric(10,2) columns: round here so the row we hash is the row the server echoes back
 // (a float such as 35.199999 would otherwise never match its own echo).
@@ -349,7 +360,7 @@ function duePublish(keys, marks) {
  * till had collected it in that half second the upsert re-created it (a zombie). Pending rows
  * (a local change the server has not seen) are left alone: the flush must send those.
  */
-export function latchQueueRows(rows) { for (const o of rows || []) if (o?.ref && o._sync?.hash && !isPendingLocal(o, queueHash)) _lastSentQueue[o.ref] = o._sync.hash; }
+export function latchQueueRows(rows) { for (const o of rows || []) { noteServerOwned(o); if (o?.ref && o._sync?.hash && !isPendingLocal(o, queueHash)) _lastSentQueue[o.ref] = o._sync.hash; } }
 export function latchTabRows(rows) { for (const t of rows || []) if (t?.id && t._sync?.hash && !isPendingLocal(t, tabHash)) _lastSentTab[t.id] = t._sync.hash; }
 
 /** Stamp rows the server just confirmed, when their payload is still what was sent. */
@@ -422,7 +433,10 @@ export async function flushQueues() {
     // never published, even after training is switched off. Without this, the next flush
     // once the device profile turned training off upserted the trainee's orders to live.
     if (o.training === true) continue;
-    if (o.status === 'collected') continue;
+    noteServerOwned(o);
+    // A collected order is deleted once it leaves the store, except a SERVER OWNED one (catering,
+    // ezCater): staff finishing it here is written as its status (collected), never a delete.
+    if (o.status === 'collected' && !isServerOwnedQueueRow(o)) continue;
     activeQueueRefs.add(o.ref);
     // A copy from before this boot waits for the first full read to judge it (old copy or unsent).
     if (!_judged && !o._sync && _bootUnstampedQ.has(String(o.ref))) continue;
@@ -458,6 +472,8 @@ export async function flushQueues() {
     if (_lastSentQueue[ref] === 'cleared') continue;
     _lastSentQueue[ref] = 'cleared';
     _finishedQueue.set(String(ref), { finishedAt: Date.now() });
+    // Server owned (catering, ezCater): dropped from this till's memory only, never deleted.
+    if (_serverOwnedQueue.has(String(ref))) continue;
     queueWrite({ type: 'delete', table: 'order_queue', match: { location_id: _locationId, ref } });
     queueDeletes.push(ref);
   }
@@ -519,7 +535,7 @@ export async function flushQueues() {
         })
         .catch(e => console.warn('[QueueSync] order_queue update:', e.message));
     }
-    if (queueDeletes.length) Promise.resolve(supabase.from('order_queue').delete().eq('location_id', _locationId).in('ref', queueDeletes)).catch(e => console.warn('[QueueSync] order_queue batch delete:', e.message));
+    if (queueDeletes.length) Promise.resolve(supabase.from('order_queue').delete().eq('location_id', _locationId).in('ref', queueDeletes).or(tillDeletableOrFilter())).catch(e => console.warn('[QueueSync] order_queue batch delete:', e.message));
     if (tabUpserts.length) {
       const sent = new Map(tabUpserts.map(r => [r.id, rowHash(r)]));
       Promise.resolve(supabase.from('bar_tabs').upsert(tabUpserts, { onConflict: 'id' }).select('id, updated_at'))
@@ -657,8 +673,10 @@ export function applyQueueRealtimeEvent(payload) {
   }
   const row = payload.new;
   if (!row?.ref) return;
+  noteServerOwned(row);
   // Don't pull a FUTURE catering pre-order into the live queue (it's released on its event day),
-  // nor one cancelled before it ever fired. If one is lingering from a prior state, evict it.
+  // nor one cancelled before it ever fired. If one is lingering from a prior state, evict it,
+  // from THIS till's memory only: it is server owned, the flush never deletes it (round 5).
   if (_isFutureCatering(row)) {
     const next = queue.filter(o => o.ref !== row.ref);
     if (next.length !== queue.length) useStore.setState({ orderQueue: next });

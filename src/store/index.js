@@ -31,7 +31,7 @@ import { setTrainingMode as applyTrainingFlag, isTrainingMode } from '../lib/tra
 import { getDeliveryQuote, recordDeliverySurcharge } from '../lib/delivery/quoteService';
 import { dispatchDelivery, sendDeliveryTrackingSMS } from '../lib/delivery/dispatch';
 import { STALE_ORDER_FLOOR_MS } from '../sync/staleness';
-import { CATERING_SOURCES, cateringMayFire, cateringHoldReason, cateringReleaseWindow, cateringSourceLabel, isEzcaterOrder, mayBookOurCourier, releasableOrFilter, UNCLAIMABLE_STATUSES_PG } from '../lib/cateringRules';
+import { CATERING_SOURCES, cateringMayFire, cateringHoldReason, cateringReleaseWindow, cateringSourceLabel, isEzcaterOrder, isServerOwnedQueueRow, mayBookOurCourier, releasableOrFilter, UNCLAIMABLE_STATUSES_PG, tillDeletableOrFilter } from '../lib/cateringRules';
 import { ezcaterPrefire } from '../lib/ezcater';
 import { mergePrefireRow } from '../lib/ezcaterTillWrite';
 import { giftRecordFrom, giftLegs, reverseGiftCard } from '../lib/giftCommit';
@@ -3987,7 +3987,11 @@ export const useStore = create((set, get) => ({
   updateQueueStatus: (ref, status) => set(s => ({ orderQueue: s.orderQueue.map(o => o.ref===ref ? {...o, status} : o) })),
   updateQueueItem: (ref, patch) => set(s => ({ orderQueue: s.orderQueue.map(o => o.ref===ref ? {...o,...patch} : o) })),
   removeFromQueue: ref => {
+    const gone = (get().orderQueue || []).find(o => o.ref === ref);
     set(s => ({ orderQueue: s.orderQueue.filter(o => o.ref!==ref) }));
+    // ezCater review round 5: a catering or ezCater row is SERVER OWNED. It leaves this till's
+    // screen, but the database row stays (a collected one was written as collected by the flush).
+    if (isServerOwnedQueueRow(gone)) return;
     // v5.5.557: also delete the DB row. Previously this only cleared the local screen;
     // the order_queue row lingered (QueueSync only writes/deletes via in-memory tracking
     // that resets on reload), so a finished/collected order RESURRECTED on the next boot
@@ -3998,7 +4002,8 @@ export const useStore = create((set, get) => ({
       if (supabase && locId && ref) {
         // v5.5.971: PostgREST resolves with { error } — the old .catch()-only handler
         // never saw a refusal, which is exactly how the order RESURRECTS at next boot.
-        Promise.resolve(supabase.from('order_queue').delete().eq('ref', ref).eq('location_id', locId))
+        // tillDeletableOrFilter: never a server owned row, even one this till never had in memory.
+        Promise.resolve(supabase.from('order_queue').delete().eq('ref', ref).eq('location_id', locId).or(tillDeletableOrFilter()))
           .then(({ error }) => reportSave('order queue delete', error))
           .catch(e => { reportSave('order queue delete', e); console.warn('[removeFromQueue] db delete:', e?.message); });
       }

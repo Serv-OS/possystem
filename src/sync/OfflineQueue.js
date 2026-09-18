@@ -9,6 +9,7 @@
  */
 
 import { REPLAY_MAX_AGE_MS } from './staleness';
+import { tillDeletableOrFilter } from '../lib/cateringRules';
 
 const DB_NAME = 'rpos-offline';
 const STORE_NAME = 'queue';
@@ -174,6 +175,9 @@ async function replayItem(supabase, item) {
     } else if (item.type === 'delete') {
       let q = supabase.from(item.table).delete();
       for (const [k, v] of Object.entries(item.match || {})) q = q.eq(k, v);
+      // ezCater review round 5: a till never deletes a server owned (catering, ezCater) queue row,
+      // including a delete buffered by older code and replayed now.
+      if (item.table === 'order_queue') q = q.or(tillDeletableOrFilter());
       const { error } = await q;
       if (error) throw error;
     } else {
