@@ -121,6 +121,7 @@ Tables MUST never be lost between updates. These safeguards exist:
 - **Realtime DELETE guard:** Both `realtime.js` and `SessionSync.js` DELETE handlers check `activeTableId` and compare `seatedAt` timestamps before clearing a table.
 - **3-second grace period:** `flushSessions` waits 3 seconds before deleting `active_sessions` rows for empty tables, preventing momentary clears from cascading into permanent deletion.
 - **MasterSync:** `forceSyncFromSupabase` preserves local sessions with items when the Supabase row is missing (unflushed). Newer local sessions always win.
+- **Table DEFINITIONS vs SESSIONS (`src/lib/tablePlan.js`, v5.9.4):** a table's definition (label, layout, section, covers) has one owner, the saved plan (`floor_tables`). Every merge (config push apply, cached snapshot, cross-tab broadcast, boot read, Back Office load) goes through `mergeDefinitions` / `applyPlanRead`: the newer `defAt` wins field by field, a tombstone (`floor_table_tombstones`, local `rpos-table-plan`, `snapshot.tableTombstones`) removes, and a successful non-empty plan read is the plan version (a stale push cannot re-add what it lacked). Absence alone (failed or empty read, empty or partial config, broadcast without the table) never removes a table. A table holding a session is never dropped: it stays reachable as `planRemoved` until the order closes, and Back Office refuses to delete a table with an open order. Never re-introduce a blind `label: st.label` overwrite or an unconditional "add every incoming table".
 
 ---
 

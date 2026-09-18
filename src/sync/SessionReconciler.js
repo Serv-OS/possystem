@@ -11,6 +11,7 @@ import { supabase, getLocationId } from '../lib/supabase';
 import { useStore } from '../store';
 import { reassertSession } from './SessionSync';
 import { isSessionClosed } from './sessionClosure';
+import { pruneClosedRemoved } from '../lib/tablePlan';
 
 // v5.5.639: a table held occupied locally but missing from the DB poll is re-published only if its
 // session is genuinely LIVE — has items, is the active table, or was seated within the business day.
@@ -229,12 +230,17 @@ export async function startSessionReconciler() {
         return t;
       });
 
+      // v5.9.4: a table deleted from the plan while an order was open on it was kept reachable
+      // (lib/tablePlan.js, planRemoved). Once its order is closed it goes.
+      const prunedTables = pruneClosedRemoved(newTables);
+      if (prunedTables !== newTables) changed = true;
+
       if (changed) {
-        useStore.setState({ tables: newTables });
+        useStore.setState({ tables: prunedTables });
 
         // Sync session backup
         const backup = {};
-        newTables.filter(t => t.session).forEach(t => { backup[t.id] = t.session; });
+        prunedTables.filter(t => t.session).forEach(t => { backup[t.id] = t.session; });
         try { localStorage.setItem('rpos-session-backup', JSON.stringify(backup)); } catch {}
       }
 

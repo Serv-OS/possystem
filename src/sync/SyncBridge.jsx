@@ -19,6 +19,7 @@ import { startTerminalJobReconciler, stopTerminalJobReconciler } from './Termina
 import { reconcilePendingChecks, onReconnect, periodicSync } from './DataSafe.js';
 import { getShowItemImages } from '../lib/locationTime';
 import { normaliseMenuRow, assembleTaxProfiles } from '../lib/rowMapping';
+import { mergeDefinitions, applyPlanRead, applyTombstones, normaliseFloorRow, loadPlanState, savePlanState, mergeTombstones, tombstonesFromRows, pruneClosedRemoved } from '../lib/tablePlan';
 
 const OPS_URL = import.meta.env.VITE_SUPABASE_URL;
 
@@ -284,7 +285,7 @@ export default function SyncBridge({ onSyncPulse }) {
             }
           } catch { /* cache is best-effort */ }
 
-          const { fetchLatestConfigPush, fetchFloorPlan, fetchMenuItems, fetchMenuCategories, fetchMenus, fetch86List, fetchStockLevels } = await import('../lib/db.js');
+          const { fetchLatestConfigPush, fetchFloorPlan, fetchMenuItems, fetchMenuCategories, fetchMenus, fetch86List, fetchStockLevels, fetchTableTombstones } = await import('../lib/db.js');
           const { supabase: sb2 } = await import('../lib/supabase.js');
 
           // Load config push (menus, layout, sections)
@@ -313,7 +314,10 @@ export default function SyncBridge({ onSyncPulse }) {
           // unwrap() puts every leg back into the familiar { data, error } shape, so a
           // rejected leg reads as `data: null` and is skipped by the same guards below
           // that already skip an empty read. Nothing downstream changes shape.
-          const [floorSt, itemsSt, catsSt, menusSt, sessionsSt, profilesSt, modGroupsSt, e86St, stockSt, linksSt, taxProfilesSt, taxLinesSt, locTaxSt] = await Promise.allSettled([
+          // v5.9.4: the plan read's version is the moment it STARTED, so a Back Office edit made
+          // while it was in flight counts as newer (lib/tablePlan.js applyPlanRead).
+          const planReadStartedAt = Date.now();
+          const [floorSt, itemsSt, catsSt, menusSt, sessionsSt, profilesSt, modGroupsSt, e86St, stockSt, linksSt, taxProfilesSt, taxLinesSt, locTaxSt, tombsSt] = await Promise.allSettled([
             fetchFloorPlan(locationId),
             fetchMenuItems(locationId),
             fetchMenuCategories(locationId),
@@ -333,6 +337,9 @@ export default function SyncBridge({ onSyncPulse }) {
             sb ? sb.from('tax_profiles').select('*').eq('location_id', locationId).order('sort_order') : Promise.resolve({ data: null }),
             sb ? sb.from('tax_profile_lines').select('*').eq('location_id', locationId).order('sort_order') : Promise.resolve({ data: null }),
             sb ? sb.from('locations').select('default_tax_profile_id').eq('id', locationId).maybeSingle() : Promise.resolve({ data: null }),
+            // v5.9.4: table deletes (explicit markers). Missing table before the migration runs
+            // reads as { data: null } and the local + pushed tombstones are used alone.
+            fetchTableTombstones(locationId),
           ]);
           const unwrap = (r) => (r.status === 'fulfilled' && r.value) ? r.value : { data: null, error: r.reason || new Error('boot fetch failed') };
           const floorRes    = unwrap(floorSt);
@@ -348,6 +355,7 @@ export default function SyncBridge({ onSyncPulse }) {
           const taxProfilesRes = unwrap(taxProfilesSt);
           const taxLinesRes    = unwrap(taxLinesSt);
           const locTaxRes      = unwrap(locTaxSt);
+          const tombsRes       = unwrap(tombsSt);
           [floorSt, itemsSt, catsSt, menusSt, sessionsSt, profilesSt, modGroupsSt, e86St, stockSt, taxProfilesSt, taxLinesSt, locTaxSt]
             .filter(r => r.status === 'rejected')
             .forEach(r => console.warn('[SyncBridge] boot fetch leg failed (other slices still applied):', r.reason?.message || r.reason));
@@ -388,6 +396,18 @@ export default function SyncBridge({ onSyncPulse }) {
             try { localStorage.setItem('rpos-device-profiles', JSON.stringify(mapped)); } catch {}
           }
           const patch = {};
+          // v5.9.4 table plan (lib/tablePlan.js). Tombstones = this machine's + the last push's +
+          // floor_table_tombstones. A delete in any of them wins over every copy of the table.
+          const planState = loadPlanState(locationId);
+          const tombstones = mergeTombstones(
+            planState.tombstones,
+            snap?.tableTombstones,
+            tombstonesFromRows(tombsRes?.data),
+          );
+          savePlanState(locationId, { tombstones });
+          // Sessions known in the database: a table that still holds one is never dropped.
+          const dbOpen = new Set((sessionsRes?.data || []).filter(r => r.table_id && r.session).map(r => r.table_id));
+          const isOpen = (id) => dbOpen.has(id);
           if (floorRes.data?.tables?.length) {
             // Build a session map from Supabase active_sessions
             const sessionMap = {};
@@ -421,31 +441,43 @@ export default function SyncBridge({ onSyncPulse }) {
             // writes weren't reaching DB and the boot rebuild trusted (DB || backup || null).
             // Now: also fall back to whatever is already in the live Zustand store before
             // declaring a table empty. closedChecks already does this kind of additive merge.
+            //
+            // v5.9.4: the read is the PLAN VERSION. Definitions come from it (newer wins field by
+            // field), tombstones remove, and a table it lacks is gone UNLESS a session lives on it
+            // (then it stays reachable, flagged planRemoved). Before this, a table the read lacked
+            // was dropped even with an open order on it; the order sat in active_sessions with no
+            // table to show it on.
+            // v4.6.5 Bug 6 / v5.5.2: snake to camel (max_covers, sort_order) and location_id are
+            // mapped in normaliseFloorRow.
             const existingTablesInStore = useStore.getState().tables || [];
-            const existingById = Object.fromEntries(existingTablesInStore.map(t => [t.id, t]));
+            const rows = floorRes.data.tables.map(t => normaliseFloorRow(t, { locationId, readAt: planReadStartedAt }));
+            const read = applyPlanRead({ local: existingTablesInStore, rows, readAt: planReadStartedAt, tombstones, isOpen });
             // Build tables with sessions already applied — never flash as empty
-            const tables = floorRes.data.tables.map(t => {
-              const inMemory = existingById[t.id];
-              const session = sessionMap[t.id] || inMemory?.session || null;
-              if (!sessionMap[t.id] && inMemory?.session) {
-                console.warn('[SyncBridge] v4.5.0: preserving in-memory session for table', t.label || t.id, '— DB + backup were silent. Items:', inMemory.session.items?.length);
+            const tables = read.tables.map(t => {
+              // Backup and snapshot copies only count for tables in the plan (as before); a
+              // retired table keeps what the database or memory holds.
+              const fromMap = (!t.planRemoved || dbOpen.has(t.id)) ? sessionMap[t.id] : null;
+              const session = fromMap || t.session || null;
+              if (!fromMap && t.session) {
+                console.warn('[SyncBridge] v4.5.0: preserving in-memory session for table', t.label || t.id, ': DB + backup were silent. Items:', t.session.items?.length);
               }
-              // v4.6.5 Bug 6: floor_tables uses snake_case (max_covers, sort_order) but every
-              // TablesSurface read expects camelCase (maxCovers). Rename on hydration.
-              // v5.5.2: also preserve location_id so the cross-location guard in upsertFloorTable
-              // can refuse silent moves when the read/write paths disagree about location.
               return {
                 ...t,
-                maxCovers: t.max_covers ?? t.maxCovers ?? 4,
-                sortOrder: t.sort_order ?? t.sortOrder ?? 0,
-                locationId: t.location_id ?? t.locationId ?? locationId,
                 status: session ? 'occupied' : 'available',
                 session,
-                firedCourses: session?.firedCourses || inMemory?.firedCourses || [],
-                sentAt: session?.sentAt || inMemory?.sentAt || null,
+                firedCourses: session?.firedCourses || t.firedCourses || [],
+                sentAt: session?.sentAt || t.sentAt || null,
               };
             });
-            patch.tables = tables;
+            if (read.dropped.length) console.log('[SyncBridge] table plan: removed', read.dropped.join(', '), '(deleted, or not in the saved plan)');
+            if (read.keptOpen.length) console.warn('[SyncBridge] table plan: kept', read.keptOpen.join(', '), 'reachable: gone from the plan but an order is open on it');
+            savePlanState(locationId, { plan: read.plan });
+            patch.tables = pruneClosedRemoved(tables);
+          } else {
+            // Failed or empty read: absence never removes a table. Tombstones still do.
+            const cur = useStore.getState().tables || [];
+            const r = applyTombstones(cur, tombstones, isOpen);
+            if (r.changed) patch.tables = r.tables;
           }
           if (itemsRes.data?.length && !snapHas('menuItems')) patch.menuItems = itemsRes.data.map(item => ({
             ...item,
@@ -818,14 +850,33 @@ export default function SyncBridge({ onSyncPulse }) {
     //     (x/y/w/h/label/section/shape). Layout only changes via CONFIG_PUSH.
     //   - Tables the receiver has but the sender doesn't are preserved (can't shrink
     //     the floor plan via a stale broadcast).
-    const LAYOUT_FIELDS = ['x','y','w','h','label','section','shape','seats','area'];
+    //
+    // v5.9.4 (Peter 18 Sep, "rename, delete them etc, on refresh they come back"): the layout rule
+    // above kept the RECEIVER's layout for ever and added every table the sender had, so a tab
+    // that had not heard of a rename or delete (a POS tab left open next to Back Office) put the
+    // old name and the deleted table back into the other tab, and Back Office then pushed them to
+    // every till. Definitions now go through lib/tablePlan.js mergeDefinitions: the newer defAt
+    // wins (ties keep the receiver's, as before), a tombstone removes, and a table the last plan
+    // read did not contain is not re-added. Tables the sender lacks are still kept.
+    const LAYOUT_FIELDS = ['x','y','w','h','label','section','shape','seats','area','maxCovers','sortOrder','defAt','editAt','locationId','planRemoved'];
     function mergeTablesSafely(localTables, incomingTables, activeId) {
       if (!Array.isArray(incomingTables)) return localTables;
+      const locId = getActiveLocationSync();
+      const { plan, tombstones } = loadPlanState(locId);
+      // 1. Definitions (layout, name, membership).
+      const defs = mergeDefinitions({ local: localTables || [], incoming: incomingTables, tombstones, plan, fallbackAt: 0, tie: 'local' });
+      const defById = new Map(defs.tables.map(t => [t.id, t]));
+      const localIds = new Set((localTables || []).map(t => t.id));
       const byId = new Map(incomingTables.map(t => [t.id, t]));
-      const merged = (localTables || []).map(local => {
-        if (local.id === activeId) return local;
+      // 2. Sessions (unchanged rules), on the tables that survived step 1.
+      const merged = [];
+      for (const local0 of (localTables || [])) {
+        const def = defById.get(local0.id);
+        if (!def) continue;                       // deleted (tombstoned, no session)
+        const local = def;
+        if (local.id === activeId) { merged.push(local); continue; }
         const incoming = byId.get(local.id);
-        if (!incoming) return local;
+        if (!incoming) { merged.push(local); continue; }
 
         // v4.5.3 STOP-BLEED: never let incoming overwrite local with FEWER items
         // OR destroy a session that the local operator is actively building.
@@ -836,21 +887,23 @@ export default function SyncBridge({ onSyncPulse }) {
         const incomingItems = incoming.session?.items?.length || 0;
         if (local.session && (!incoming.session || incomingItems < localItems)) {
           console.warn('[SyncBridge] mergeTablesSafely: refusing incoming for', local.label || local.id, '— would lose data (local=' + localItems + ' items, incoming=' + incomingItems + ' items)');
-          return local;
+          merged.push(local); continue;
         }
         // v4.5.3 timestamp tiebreaker: if local.session is newer than incoming, keep local.
         // updatedAt is stamped on every store mutation that touches the session.
         if (local.session?.updatedAt && incoming.session?.updatedAt
             && local.session.updatedAt > incoming.session.updatedAt) {
-          return local;
+          merged.push(local); continue;
         }
 
-        const keepLocalLayout = {};
-        for (const f of LAYOUT_FIELDS) if (f in local) keepLocalLayout[f] = local[f];
-        return { ...incoming, ...keepLocalLayout };
-      });
-      const localIds = new Set((localTables || []).map(t => t.id));
-      for (const t of incomingTables) if (!localIds.has(t.id)) merged.push(t);
+        // Operational state from the sender, definition from step 1.
+        const keepDef = {};
+        for (const f of LAYOUT_FIELDS) if (f in local) keepDef[f] = local[f];
+        const m = { ...incoming, ...keepDef };
+        if (!local.planRemoved) delete m.planRemoved;
+        merged.push(m);
+      }
+      for (const t of defs.tables) if (!localIds.has(t.id)) merged.push(t);
       return merged;
     }
     function safeApplyIncoming(data) {

@@ -1,7 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useStore } from '../../store';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
-import { upsertFloorTable } from '../../lib/db';
+import { upsertFloorTable, insertTableTombstone } from '../../lib/db';
+import { deleteRefusalReason, recordTombstone } from '../../lib/tablePlan';
 import { reportSave } from '../../lib/saveHealth';
 
 const SHAPES = [{ id:'sq', label:'Square/Rect' }, { id:'rd', label:'Round' }];
@@ -166,12 +167,30 @@ export default function FloorPlanBuilder() {
   // Delete DB-first: the store's remover drops the table from state and fires a delete whose
   // .catch() can never run (PostgREST resolves with { error }, it never rejects), so a blocked
   // delete looked done and the table walked back in on the next boot.
+  //
+  // v5.9.4: a table with an OPEN ORDER cannot be deleted. The till would otherwise keep the
+  // order on a table that is no longer on the plan (lib/tablePlan.js keeps it reachable as a
+  // backstop, but staff should never be put there). Checked against the database, not just this
+  // browser: the order is usually on a till. A check that cannot run refuses too.
+  // After the row is gone the delete is recorded as a TOMBSTONE (floor_table_tombstones, and on
+  // this machine), so no push, cache or other tab can bring the table back.
   const removeSelectedTable = async () => {
     const table = tablesForThisLocation.find(t => t.id === selected);
     if (!table) return;
+    const locId = table.locationId || activeLocationId || null;
+    {
+      let dbSession = null, checkFailed = false;
+      if (!isMock && supabase && locId) {
+        const { data: rows, error: sErr } = await supabase.from('active_sessions')
+          .select('table_id, session').eq('location_id', locId).eq('table_id', table.id).limit(1);
+        if (sErr) checkFailed = true;
+        else dbSession = rows?.[0]?.session || null;
+      }
+      const reason = deleteRefusalReason(table, { dbSession, checkFailed });
+      if (reason) { showToast(reason, 'error'); return; }
+    }
     if (!isMock && supabase) {
       setSaveStatus('saving');
-      const locId = table.locationId || activeLocationId || null;
       let q = supabase.from('floor_tables').delete().eq('id', table.id);
       if (locId) q = q.eq('location_id', locId);   // same tenant scoping as db.deleteFloorTable
       const { data, error } = await q.select('id');
@@ -189,6 +208,12 @@ export default function FloorPlanBuilder() {
         showToast(`“${table.label}” was NOT deleted — it is still on the floor plan`, 'error');
         return;
       }
+    }
+    recordTombstone(locId, table.id);
+    if (!isMock && supabase && locId) {
+      // Best effort: until 20260918_OPS_floor_table_tombstones.sql runs the table is missing and
+      // the tombstone travels on this machine and in the next Push to POS instead.
+      insertTableTombstone(locId, table.id, table.label).catch(() => {});
     }
     removeTableFromLayout(table.id);
     setSelected(null);

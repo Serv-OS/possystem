@@ -16,6 +16,7 @@ import { normaliseMenuRow, assembleTaxProfiles } from '../lib/rowMapping';
 import { buildLegacyProfiles } from '../lib/taxAdapter';
 import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, upsertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC, upsertModifierGroup, deleteModifierGroup } from '../lib/db';
 import { isSessionClosed } from '../sync/sessionClosure';
+import { mergeDefinitions, loadPlanState, savePlanState, recordTombstone, forgetTombstone, mergeTombstones } from '../lib/tablePlan';
 // Same import shape bookingsSlice already uses; SessionSync touches the store
 // only at call time, so the module cycle is benign.
 import { persistTransfer } from '../sync/SessionSync';
@@ -746,25 +747,29 @@ export const useStore = create((set, get) => ({
       }
     } catch { /* cache is best-effort */ }
 
-    // Tables: merge layout into existing live tables, AND add new tables from snapshot
+    // Tables: merge the snapshot's DEFINITIONS into the live tables (lib/tablePlan.js).
+    // v5.9.4 (Peter 18 Sep: "rename, delete them etc, on refresh they come back and names go
+    // back"): this used to overwrite every label/layout with the snapshot's copy and re-add every
+    // snapshot table the store lacked. The latest push is usually OLDER than the plan (a rename or
+    // delete in Back Office writes floor_tables and is often never pushed), and SyncBridge applies
+    // it at every boot (cache, then fetch) and the banner applies it again, so a deleted table
+    // walked back in and a new name went back. Now: the newer definition wins (defAt, or the push
+    // time for an unstamped legacy snapshot), a tombstone removes, a table the last plan read did
+    // not contain is not re-added, and a table holding a session is never dropped.
+    // v5.5.2: preserve table.locationId on every merge path (snapshot row, else snap.locationId).
     let updatedTables = useStore.getState().tables;
-    if (snap.tables) {
-      // v5.5.2: preserve table.locationId on every merge path so the cross-location upsert
-      // guard has data to work with. Config snapshots may have a top-level snap.locationId
-      // that the snapshot was generated for; fall back to that if the individual table row
-      // doesn't carry it explicitly.
+    if (Array.isArray(snap.tables)) {
       const snapLoc = snap.locationId || null;
-      // Update layout of existing tables
-      updatedTables = updatedTables.map(t => {
-        const st = snap.tables.find(s => s.id === t.id);
-        return st ? { ...t, label:st.label, x:st.x, y:st.y, w:st.w, h:st.h, shape:st.shape, maxCovers:st.maxCovers, section:st.section, locationId: st.locationId ?? st.location_id ?? t.locationId ?? snapLoc } : t;
-      });
-      // Add new tables that exist in snapshot but not in store
-      const existingIds = new Set(updatedTables.map(t => t.id));
-      const newTables = snap.tables
-        .filter(st => !existingIds.has(st.id))
-        .map(st => ({ ...st, locationId: st.locationId ?? st.location_id ?? snapLoc, status:'available', session:null, firedCourses:[], sentAt:null }));
-      updatedTables = [...updatedTables, ...newTables];
+      const planLoc = snapLoc || getActiveLocationSync() || null;
+      const { plan, tombstones: localTombs } = loadPlanState(planLoc);
+      const tombstones = mergeTombstones(localTombs, snap.tableTombstones);
+      if (planLoc && snap.tableTombstones) savePlanState(planLoc, { tombstones });
+      const incoming = snap.tables.map(st => ({ ...st, locationId: st.locationId ?? st.location_id ?? snapLoc }));
+      updatedTables = mergeDefinitions({
+        local: updatedTables, incoming, tombstones, plan,
+        fallbackAt: Number(snap.version) || Date.parse(snap.pushedAt || '') || 0,
+        tie: 'incoming',
+      }).tables;
     }
 
     // v5.5.833: every ARRAY slice below is guarded on `?.length`, NEVER on plain
@@ -1662,7 +1667,10 @@ export const useStore = create((set, get) => ({
   // ── Editable floor plan ────────────────────────────────────────────────────
   // Tables state already exists in `tables` — floor plan builder just edits positions
   updateTableLayout: (id, patch) => {
-    set(s => ({ tables: s.tables.map(t => t.id===id ? { ...t, ...patch } : t) }));
+    // v5.9.4: stamp the definition time. An explicit edit is the newest definition, so no older
+    // copy (a stale push, another tab, a cached snapshot) can put the old value back.
+    const defAt = Date.now();
+    set(s => ({ tables: s.tables.map(t => t.id===id ? { ...t, ...patch, defAt, editAt: defAt } : t) }));
     // v4.6.6 Bug: must upsert the FULL merged table, not { id, ...patch }. upsertFloorTable
     // builds a row from scratch and defaults every column that isn't passed in
     // (w/h→80, shape→'rect', section→null, label→undefined, max_covers→4, ...). Passing a
@@ -1689,7 +1697,7 @@ export const useStore = create((set, get) => ({
       useStore.getState().showToast?.(`Table “${String(table.label || '').trim()}” already exists`, 'error');
       return;
     }
-    const newTable = { id:`t-${Date.now()}`, status:'available', session:null, locationId: locId, ...table };
+    const newTable = { id:`t-${Date.now()}`, status:'available', session:null, locationId: locId, ...table, defAt: Date.now(), editAt: Date.now() };
     // If caller passed an explicit locationId in `table`, that wins (spread above).
     set(s => ({ tables: [...s.tables, newTable] }));
     upsertFloorTable(newTable);
@@ -1700,6 +1708,11 @@ export const useStore = create((set, get) => ({
     const tbl = useStore.getState().tables.find(t => t.id === id);
     const locId = tbl?.locationId || null;
     const removed = useStore.getState().tables.filter(t => t.id === id || t.parentId === id);
+    // v5.9.4: a delete is an explicit marker. Record the tombstone (every tab on this machine
+    // reads it; Push to POS carries it to every till) so no merge can bring the table back.
+    const tombLoc = locId || getActiveLocationSync() || null;
+    const tombAt = Date.now();
+    for (const r of removed) recordTombstone(tombLoc, r.id, tombAt);
     set(s => ({ tables: s.tables.filter(t => t.id!==id && t.parentId!==id) }));
     // v4.6.5 Bug 6: previously removed from local state only, so it re-appeared on every boot.
     // v5.5.971: PostgREST returns { error } on a RESOLVED promise, so the old
@@ -1707,6 +1720,7 @@ export const useStore = create((set, get) => ({
     // screen and came back on the next boot. Report the outcome, not just throws.
     const failed = (err) => {
       reportSave('table delete', err);
+      for (const r of removed) forgetTombstone(tombLoc, r.id);
       // Put them back — the rows still exist and WILL reappear at next boot.
       set(s => ({ tables: [...s.tables, ...removed.filter(r => !s.tables.some(t => t.id === r.id))] }));
       useStore.getState().showToast?.(`"${tbl?.label || 'Table'}" was NOT deleted — check you're signed in, then try again`, 'error');

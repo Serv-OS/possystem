@@ -16,6 +16,7 @@ import {
   primeOrderRefLease,
 } from './db';
 import { getLocationConfig, getBusinessDayStart } from './locationTime';
+import { applyPlanRead, normaliseFloorRow, loadPlanState, savePlanState } from './tablePlan';
 
 // v5.5.890: run-once guard. On MPOS this hook is mounted TWICE in the same render pass
 // (App() calls it unconditionally AND MPOSSurface kept its own v5.5.79-era call), so the
@@ -92,18 +93,22 @@ export default function useSupabaseInit() {
       }
 
       // Floor plan + sections
+      // v5.9.4: through lib/tablePlan.js applyPlanRead, like SyncBridge's boot read. Two fixes:
+      // (1) this read mapped `section: dbT.section_id`, a column floor_tables does not have (it
+      // is `section`), so whenever it landed last every table lost its section, and the next
+      // Back Office save or push wrote that back; (2) the merge is taken against the store AT
+      // APPLY TIME and keeps any table still holding a session.
+      const planReadStartedAt = Date.now();
       const { data: fp } = await fetchFloorPlan();
       if (fp?.tables?.length) {
-        const current = useStore.getState().tables;
-        const merged = fp.tables.map(dbT => {
-          const live = current.find(t => t.id === dbT.id);
-          // v5.5.2: preserve location_id on every hydrated table so upsertFloorTable's
-          // cross-location guard can refuse silent moves between locations.
-          return live
-            ? { ...live, label:dbT.label, x:dbT.x, y:dbT.y, w:dbT.w, h:dbT.h, shape:dbT.shape, maxCovers:dbT.max_covers, section:dbT.section_id, locationId:dbT.location_id }
-            : { id:dbT.id, label:dbT.label, x:dbT.x, y:dbT.y, w:dbT.w, h:dbT.h, shape:dbT.shape, maxCovers:dbT.max_covers, section:dbT.section_id, locationId:dbT.location_id, status:'available', session:null };
-        });
-        useStore.setState({ tables: merged });
+        const loc = fp.tables[0]?.location_id || null;
+        const { tombstones } = loadPlanState(loc);
+        const rows = fp.tables.map(t => normaliseFloorRow(t, { locationId: loc, readAt: planReadStartedAt }));
+        const read = applyPlanRead({ local: useStore.getState().tables, rows, readAt: planReadStartedAt, tombstones });
+        if (read) {
+          savePlanState(loc, { plan: read.plan });
+          useStore.setState({ tables: read.tables });
+        }
       }
       if (fp?.sections?.length) {
         useStore.setState({

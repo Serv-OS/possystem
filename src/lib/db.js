@@ -476,6 +476,33 @@ export const deleteFloorTable = async (id, locationId = null) => {
   return q;
 };
 
+// ── Table tombstones (a delete is an explicit marker, see lib/tablePlan.js) ─────
+// floor_table_tombstones is created by 20260918_OPS_floor_table_tombstones.sql. Until Peter runs
+// it the table is missing: both helpers then return { data: null, missing: true } and every
+// caller falls back to the tombstones this machine holds locally and the ones a Push to POS
+// carries. Nothing fails because the table is not there.
+const TOMBSTONE_ABSENT = ['42P01', 'PGRST205', 'PGRST202', 'PGRST204'];
+const isAbsentTable = (err) => !!err && (TOMBSTONE_ABSENT.includes(err.code)
+  || (/floor_table_tombstones/.test(String(err.message || '')) && /does not exist|schema cache/i.test(String(err.message || ''))));
+
+export const fetchTableTombstones = async (locationId) => {
+  if (isMock || !supabase || !locationId || locationId === 'loc-demo') return { data: null, error: null };
+  const since = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+  const res = await supabase.from('floor_table_tombstones')
+    .select('table_id, deleted_at').eq('location_id', locationId).gte('deleted_at', since).limit(2000);
+  if (res.error) return { data: null, error: res.error, missing: isAbsentTable(res.error) };
+  return { data: res.data || [], error: null };
+};
+
+export const insertTableTombstone = async (locationId, tableId, label = null, at = Date.now()) => {
+  if (isMock || !supabase || !locationId || !tableId) return { error: null };
+  const res = await supabase.from('floor_table_tombstones').upsert(
+    { location_id: locationId, table_id: tableId, label, deleted_at: new Date(at).toISOString() },
+    { onConflict: 'location_id,table_id' });
+  if (res.error && !isAbsentTable(res.error)) console.warn('[DB] floor_table_tombstones write failed:', res.error.message);
+  return { error: res.error || null, missing: isAbsentTable(res.error) };
+};
+
 // ── 86 list ───────────────────────────────────────────────────────────────────
 export const fetch86List = async (locationId = null) => {
   if (isMock) return { data: null, error: null };
