@@ -16,7 +16,7 @@ import { platformSupabase, supabase, getLocationId } from '../../lib/supabase';
 import { patchBranding } from '../../lib/locationAdmin';
 import MenuHeader from '../../surfaces/menu/MenuHeader';
 import { readTheme, deriveVars, THEME_DEFAULTS, DISPLAY_FONT, BODY_FONT, FIXED } from '../../surfaces/menu/menuTheme';
-import { buildGiftTheme } from '../../surfaces/gift/giftHelpers';
+import { buildGiftTheme, fetchGiftLimits, giftPresetsFor, GIFT_DEFAULT_LIMITS, formatAmount } from '../../surfaces/gift/giftHelpers';
 
 const ASSET_BUCKET = 'receipt-assets';
 async function uploadAsset(file, locationId, kind) {
@@ -102,10 +102,45 @@ function PortalPreview({ branding, name, isMobile }) {
   );
 }
 
+// v5.9.7: gift cards work across every site of a company, so their art does too.
+// The art is saved on this site's branding (online_branding.gift.card_art_url) AND on the
+// company's gift settings (gift_brand_config.branding.card_art_url), which every site's gift
+// page falls back to. So a site with no art of its own shows the company's.
+const GIFT_FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
+async function callGiftConfig(opsLocId, body) {
+  const { data: session } = await supabase.auth.getSession();
+  const token = session?.session?.access_token;
+  if (!token) throw new Error('Not signed in');
+  const res = await fetch(`${GIFT_FUNCTIONS_URL}/gift-config`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ ...body, location_id: opsLocId }),
+  });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok || j.error) throw new Error(j.error || `HTTP ${res.status}`);
+  return j;
+}
+/** Returns 'saved', 'unchanged' or 'no_gift_cards' (gift cards not set up for this company). */
+export async function syncCompanyGiftArt(opsLocId, artUrl) {
+  const got = await callGiftConfig(opsLocId, { action: 'get' });
+  if (!got?.config) return 'no_gift_cards';
+  const current = got.config.branding || {};
+  const next = artUrl || null;
+  if ((current.card_art_url || null) === next) return 'unchanged';
+  // Merge over the CURRENT company branding, so nothing else in it is lost.
+  await callGiftConfig(opsLocId, { action: 'branding', branding: { ...current, card_art_url: next } });
+  return 'saved';
+}
+
 // Gift purchase-page preview — same real theme engine.
-function GiftPreview({ branding, name, isMobile }) {
+function GiftPreview({ branding, name, isMobile, companyId }) {
   const t = buildGiftTheme({ online_branding: branding, name });
-  const cardArt = branding.gift?.card_art_url || null;
+  const cardArt = t.cardArt;
+  // v5.9.7: the same amounts customers see, from the same limits (Gift cards, Settings),
+  // not a fixed three. The live page's list lives in giftHelpers.giftPresetsFor.
+  const [limits, setLimits] = useState(GIFT_DEFAULT_LIMITS);
+  useEffect(() => { if (companyId) fetchGiftLimits(companyId).then((l) => { if (l) setLimits(l); }); }, [companyId]);
+  const presets = giftPresetsFor(limits);
   return (
     <div style={{ width: isMobile ? 380 : '100%', maxWidth: 560, background: t.bg, color: t.text, borderRadius: isMobile ? 24 : 14, overflow: 'hidden', border: isMobile ? '10px solid #14100d' : '1px solid var(--bdr)', fontFamily: 'system-ui, sans-serif' }}>
       <div style={{ padding: '28px 22px 32px' }}>
@@ -115,14 +150,13 @@ function GiftPreview({ branding, name, isMobile }) {
             : <div style={{ fontSize: 20, fontWeight: 800 }}>{t.companyName || name}</div>}
           <div style={{ fontSize: 13, color: t.textMuted, marginTop: 6 }}>Gift cards</div>
         </div>
-        <div style={{ borderRadius: 14, overflow: 'hidden', marginBottom: 14, border: `1px solid ${t.border}` }}>
-          {cardArt
-            ? <div style={{ height: 120, backgroundImage: `url(${cardArt})`, backgroundSize: 'cover', backgroundPosition: 'center' }} />
-            : <div style={{ height: 120, background: `linear-gradient(120deg, ${t.accent}, ${t.accent}66)`, display: 'flex', alignItems: 'center', justifyContent: 'center', color: t.accentText, fontWeight: 900, fontSize: 18 }}>{t.companyName || name}</div>}
-        </div>
-        <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-          {['£25', '£50', '£75'].map((a, i) => (
-            <div key={a} style={{ flex: 1, textAlign: 'center', padding: '11px 0', borderRadius: 10, border: `1.5px solid ${i === 1 ? t.accent : t.border}`, background: i === 1 ? t.card : 'transparent', fontWeight: 800, fontSize: 14 }}>{a}</div>
+        {/* Same as the live page: the art in card proportions, or nothing (the live page shows no card without art). */}
+        {cardArt && (
+          <div style={{ borderRadius: 14, overflow: 'hidden', marginBottom: 14, border: `1px solid ${t.border}`, aspectRatio: '1.6 / 1', backgroundImage: `url(${cardArt})`, backgroundSize: 'cover', backgroundPosition: 'center' }} />
+        )}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8, marginBottom: 12 }}>
+          {presets.map((amt, i) => (
+            <div key={amt} style={{ textAlign: 'center', padding: '11px 0', borderRadius: 10, border: `1.5px solid ${i === 0 ? t.accent : t.border}`, background: i === 0 ? t.card : 'transparent', fontWeight: 800, fontSize: 14 }}>{formatAmount(amt)}</div>
           ))}
         </div>
         <button style={{ width: '100%', padding: '13px', borderRadius: 10, border: 'none', background: t.accent, color: t.accentText, fontSize: 14, fontWeight: 800, fontFamily: 'inherit' }}>Buy gift card</button>
@@ -152,8 +186,8 @@ export default function MenuAppearance() {
       try {
         const id = await getLocationId().catch(() => null); setOpsLocId(id);
         if (!platformSupabase || !id) { setLoading(false); return; }
-        let r = (await platformSupabase.from('locations').select('id, name, online_branding').eq('ops_location_id', id).maybeSingle()).data;
-        if (!r) r = (await platformSupabase.from('locations').select('id, name, online_branding').eq('id', id).maybeSingle()).data;
+        let r = (await platformSupabase.from('locations').select('id, name, online_branding, company_id').eq('ops_location_id', id).maybeSingle()).data;
+        if (!r) r = (await platformSupabase.from('locations').select('id, name, online_branding, company_id').eq('id', id).maybeSingle()).data;
         setRow(r); setName(r?.name || 'Your venue');
         const b = r?.online_branding || {};
         // Seed brand_color from any prior brand/accent, else the default orange.
@@ -187,6 +221,13 @@ export default function MenuAppearance() {
       if (error) throw error;
       if (!data) throw new Error('Save returned no branding — reload the page and try again.');
       setRow((r) => ({ ...r, online_branding: data }));
+      // Gift card art is company wide: copy it to the company's gift settings too.
+      try {
+        await syncCompanyGiftArt(opsLocId, data?.gift?.card_art_url || null);
+      } catch (e) {
+        setSave({ err: `Saved for this site, but the gift card art could not be shared with your other sites: ${e.message || e}. Press Save again.` });
+        return;
+      }
       setSave({ done: true }); setTimeout(() => setSave((s) => (s.done ? {} : s)), 2500);
     } catch (e) { setSave({ err: e.message || 'Save failed' }); }
   };
@@ -309,7 +350,7 @@ export default function MenuAppearance() {
                   <button style={S.ghost} onClick={() => artRef.current?.click()} disabled={upArt}>{upArt ? 'Uploading…' : branding.gift?.card_art_url ? 'Replace art' : 'Upload art'}</button>
                   {branding.gift?.card_art_url && <button style={S.ghost} onClick={() => setGift({ card_art_url: null })}>Remove</button>}
                 </div>
-                <div style={S.hint}>Shown on the purchase page and (soon) in gift delivery emails. ~1200×750. No art → a brand-colour card with your name.</div>
+                <div style={S.hint}>Shown at the top of the gift card page for every site in your company, under the logo, in card proportions (about 1200×750). Press Save appearance to apply it. With no art, the page shows your logo only.</div>
               </div>
               <div style={{ padding: '10px 12px', borderRadius: 10, background: 'var(--bg2)', border: '1px solid var(--bdr)', fontSize: 12, color: 'var(--t3)', lineHeight: 1.6 }}>
                 Gift card <b>pages</b> use your brand automatically (colour, logo, display name — set in Brand basics).
@@ -356,7 +397,7 @@ export default function MenuAppearance() {
               </div>
             )}
             {section === 'portal' && <PortalPreview branding={branding} name={name} isMobile={isMobile} />}
-            {section === 'gift' && <GiftPreview branding={branding} name={name} isMobile={isMobile} />}
+            {section === 'gift' && <GiftPreview branding={branding} name={name} isMobile={isMobile} companyId={row?.company_id || null} />}
           </div>
         </div>
       </div>

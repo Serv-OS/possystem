@@ -10,15 +10,20 @@
 //   6. Customer lands on /gift/success with session_id in query string
 
 import { useState, useEffect, useMemo } from 'react';
-import { callGiftPublic, formatAmount, PRESET_AMOUNTS, buildGiftTheme, fetchGiftBranding, giftUrl } from './giftHelpers';
+import { callGiftPublic, formatAmount, buildGiftTheme, fetchGiftBranding, fetchGiftLimits, giftPresetsFor, GIFT_DEFAULT_LIMITS, giftUrl } from './giftHelpers';
 import RyftPaymentForm from '../../components/RyftPaymentForm';
 
 export default function GiftPurchaseSurface({ location }) {
   const [giftBranding, setGiftBranding] = useState(null);
+  // v5.9.7: the card value limits set in Gift cards, Settings (the checkout enforces them),
+  // so presets and the custom amount only offer what the payment will accept.
+  const [limits, setLimits] = useState(GIFT_DEFAULT_LIMITS);
   useEffect(() => {
     fetchGiftBranding(location?.company_id).then(b => { if (b) setGiftBranding(b); });
+    fetchGiftLimits(location?.company_id).then(l => { if (l) setLimits(l); });
   }, [location?.company_id]);
   const t = useMemo(() => buildGiftTheme(location, giftBranding), [location, giftBranding]);
+  const presets = useMemo(() => giftPresetsFor(limits), [limits]);
   // Amount (minor units)
   const [selectedPreset, setSelectedPreset] = useState(null);
   const [customAmount, setCustomAmount] = useState('');
@@ -46,15 +51,17 @@ export default function GiftPurchaseSurface({ location }) {
   const amountMinor = useMemo(() => {
     if (isCustom) {
       const v = parseFloat(customAmount);
-      return Number.isFinite(v) && v >= 5 ? Math.round(v * 100) : 0;
+      const minor = Number.isFinite(v) ? Math.round(v * 100) : 0;
+      return minor >= limits.minMinor && minor <= limits.maxMinor ? minor : 0;
     }
     return selectedPreset || 0;
-  }, [isCustom, customAmount, selectedPreset]);
+  }, [isCustom, customAmount, selectedPreset, limits]);
+  const customOutOfRange = isCustom && customAmount !== '' && amountMinor === 0;
 
   // v5.5.220: phone mandatory — links purchase to customer profile for loyalty
   const phoneClean = senderPhone.replace(/[^\d+]/g, '');
   const phoneValid = phoneClean.length >= 10;
-  const canSubmit = amountMinor >= 500 && senderName.trim() && senderEmail.trim() && phoneValid
+  const canSubmit = amountMinor >= limits.minMinor && amountMinor <= limits.maxMinor && senderName.trim() && senderEmail.trim() && phoneValid
     && (deliveryType === 'self' || (recipientName.trim() && recipientEmail.trim()));
 
   const handleBuy = async () => {
@@ -119,6 +126,17 @@ export default function GiftPurchaseSurface({ location }) {
         </div>
       </div>
 
+      {/* v5.9.7: the gift card art uploaded in Back Office, Appearance, Gift cards.
+          It was saved but this page never showed it. Card proportions (~1200x750). */}
+      {t.cardArt && (
+        <div style={{ width: '100%', maxWidth: 420, marginBottom: 24 }}>
+          <img src={t.cardArt} alt={`${t.companyName || location.name} gift card`} style={{
+            display: 'block', width: '100%', aspectRatio: '1.6 / 1', objectFit: 'cover',
+            borderRadius: 16, border: `1px solid ${t.border}`, boxShadow: '0 10px 30px rgba(0,0,0,0.18)',
+          }}/>
+        </div>
+      )}
+
       <div style={{ width: '100%', maxWidth: 420 }}>
 
         {/* ── Amount selection ───────────────────────────── */}
@@ -126,7 +144,7 @@ export default function GiftPurchaseSurface({ location }) {
           <div style={{
             display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10,
           }}>
-            {PRESET_AMOUNTS.map(amt => (
+            {presets.map(amt => (
               <AmountChip
                 key={amt}
                 label={formatAmount(amt)}
@@ -160,12 +178,12 @@ export default function GiftPurchaseSurface({ location }) {
                 }}>£</span>
                 <input
                   type="number"
-                  min="5"
-                  max="500"
+                  min={limits.minMinor / 100}
+                  max={limits.maxMinor / 100}
                   step="0.01"
                   value={customAmount}
                   onChange={e => setCustomAmount(e.target.value)}
-                  placeholder="25.00"
+                  placeholder={(Math.min(Math.max(2500, limits.minMinor), limits.maxMinor) / 100).toFixed(2)}
                   autoFocus
                   style={{
                     width: '100%', padding: '14px 16px 14px 32px', borderRadius: 10,
@@ -175,8 +193,10 @@ export default function GiftPurchaseSurface({ location }) {
                   onFocus={e => e.target.style.borderColor = t.accent}
                   onBlur={e => e.target.style.borderColor = t.border}
                 />
-                {customAmount && parseFloat(customAmount) < 5 && (
-                  <div style={{ fontSize: 11, color: t.error, marginTop: 4 }}>Minimum £5.00</div>
+                {customOutOfRange && (
+                  <div style={{ fontSize: 11, color: t.error, marginTop: 4 }}>
+                    Choose between {formatAmount(limits.minMinor)} and {formatAmount(limits.maxMinor)}
+                  </div>
                 )}
               </div>
             )}

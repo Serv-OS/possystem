@@ -7,6 +7,16 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.7',
+    date: '18 Sep 2026',
+    items: [
+      'The gift card art you upload in Back Office, Appearance, Gift cards now shows on the live gift card page, under your logo, and on the thank you page after purchase. It was saved but the customer pages never read it.',
+      'Gift card art is now company wide, like gift cards themselves: press Save appearance once and every site\'s gift card page shows it. A site can still have its own.',
+      'The Back Office preview now shows exactly what customers see: the same art in the same card shape and the same amounts, instead of a fixed three.',
+      'The amounts offered, and the custom amount box, now follow the minimum and maximum in Gift cards, Settings, the same limits the checkout enforces, so a customer is never offered an amount the payment refuses.',
+    ],
+  },
+  {
     v: '5.9.6',
     date: '18 Sep 2026',
     items: [

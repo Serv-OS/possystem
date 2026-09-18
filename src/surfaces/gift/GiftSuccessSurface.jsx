@@ -129,6 +129,14 @@ export default function GiftSuccessSurface({ location }) {
 
         {status === 'complete' && purchase && (
           <>
+            {/* v5.9.7: the gift card art from Back Office, as on the purchase page. */}
+            {t.cardArt && (
+              <img src={t.cardArt} alt={`${t.companyName || location.name} gift card`} style={{
+                display: 'block', width: '100%', aspectRatio: '1.6 / 1', objectFit: 'cover',
+                borderRadius: 16, border: `1px solid ${t.border}`, marginBottom: 16,
+                boxShadow: '0 10px 30px rgba(0,0,0,0.18)',
+              }}/>
+            )}
             {/* Success card */}
             <div style={{
               background: t.card, border: `1px solid ${t.border}`, borderRadius: t.radius,
