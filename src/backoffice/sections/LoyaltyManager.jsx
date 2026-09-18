@@ -10,9 +10,50 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase, platformSupabase, getLocationId, getActiveLocationSync } from '../../lib/supabase';
 import { customerUrl } from '../../lib/env';
 import { money } from '../../lib/currency';
-import { groupCategoriesByName, isGroupSelected, toggleGroup, selectedGroupCount } from '../../lib/stampCategoryGroups';
+import { groupCategoriesByPath, isGroupSelected, isGroupCovered, toggleGroup, selectedGroupCount, missingCategoryState, PATH_SEP } from '../../lib/stampCategoryGroups';
+import { groupItemsForPicker, pickGroupSelected, togglePickGroup, selectedChips, removeChip } from '../../lib/loyaltyItemPicker';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
+
+// Loyalty is per COMPANY, menus are per SITE (Peter, 18 Sep 2026). The pickers list items and
+// categories from every site of the company, so a reward or stamp card set up while logged into
+// one site works at all of them. Ops and Platform ids can differ per venue, so both are asked for.
+async function loadCompanySites(locId) {
+  const siteIds = locId ? [locId] : [];
+  let companyId = null;
+  if (!platformSupabase || !locId) return { companyId, siteIds };
+  const { data: loc } = await platformSupabase
+    .from('locations')
+    .select('company_id')
+    .or(`ops_location_id.eq.${locId},id.eq.${locId}`)
+    .limit(1).maybeSingle();
+  companyId = loc?.company_id || null;
+  if (!companyId) return { companyId, siteIds };
+  try {
+    const { data: sites } = await platformSupabase
+      .from('locations')
+      .select('id, ops_location_id')
+      .eq('company_id', companyId);
+    for (const site of sites || []) {
+      for (const sid of [site.ops_location_id, site.id]) if (sid && !siteIds.includes(sid)) siteIds.push(sid);
+    }
+  } catch (e) { console.warn('[Loyalty] company sites:', e?.message); }
+  return { companyId, siteIds };
+}
+
+// Every row of a menu query across the company's sites, a page at a time (the API returns at
+// most 1000 rows per request). Bounded at 20 pages. Returns { rows, ok }.
+async function loadAllPages(build) {
+  const rows = [];
+  const PAGE = 1000;
+  for (let page = 0; page < 20; page++) {
+    const { data, error } = await build().range(page * PAGE, page * PAGE + PAGE - 1);
+    if (error) return { rows, ok: false, error };
+    rows.push(...(data || []));
+    if (!data || data.length < PAGE) break;
+  }
+  return { rows, ok: true };
+}
 
 const S = {
   page:    { padding: '32px 40px', maxWidth: 1080 },
@@ -142,15 +183,20 @@ export default function LoyaltyManager() {
     // NB: menu_items has 'pricing' jsonb, NOT a 'price' column.
     // Keep full master/variant structure so the two-step picker can
     // show products first, then drill into variants.
+    // Items from EVERY site of the company (18 Sep 2026): the picker groups them by name and
+    // saves every site's id, so a Free Drink set up here works at every site.
     try {
       const locId = getActiveLocationSync() || await getLocationId();
       if (locId && supabase) {
-        const { data: items, error: itemsErr } = await supabase
+        let siteIds = [locId];
+        try { siteIds = (await loadCompanySites(locId)).siteIds; } catch (e) { console.warn('[LoyaltyManager] company sites:', e?.message); }
+        const { rows: items, error: itemsErr } = await loadAllPages(() => supabase
           .from('menu_items')
-          .select('id, name, pricing, archived, parent_id')
-          .eq('location_id', locId)
+          .select('id, name, pricing, archived, parent_id, location_id')
+          .in('location_id', siteIds)
           .eq('archived', false)
-          .order('name');
+          .order('name')
+          .order('id'));
         if (itemsErr) console.error('[LoyaltyManager] menu items load:', itemsErr.message);
         setMenuItems((items || []).map(i => ({ ...i, price: i.pricing?.base ?? 0 })));
       }
@@ -317,74 +363,34 @@ function LoyTypeToggle({ label, desc, on, disabled, onToggle }) {
   );
 }
 
-// ═══════════════════════════════════════════════════════════════════════
-// ItemMultiPicker — two-step product → variant picker
-// Step 1: searchable list of products (masters + standalone items)
-// Step 2: when a master is tapped, drill into its variants to pick sizes
-// Standalone items (no variants) are toggled directly from step 1.
-// ═══════════════════════════════════════════════════════════════════════
+// ItemMultiPicker: two step product then size picker, across EVERY site of the company.
+// Step 1: searchable list of products, one row per name (lib/loyaltyItemPicker.js).
+// Step 2: when a product has sizes, drill in to pick sizes (one row per "<product> - <size>").
+// Ticking saves every site's id under one name, so the free item works at every site
+// (Peter, 18 Sep 2026: loyalty is per company; lib/loyaltyMenuMatch.js matches by id, then name).
 function ItemMultiPicker({ items = [], selected = [], onChange }) {
   const [search, setSearch] = useState('');
-  const [drillId, setDrillId] = useState(null); // parent id being drilled into
+  const [drillKey, setDrillKey] = useState(null); // product key being drilled into
 
-  const selectedIds = useMemo(() => new Set(selected.map(s => s.id)), [selected]);
+  const products = useMemo(() => groupItemsForPicker(items), [items]);
+  const chipCount = selectedChips(selected).length;
 
-  // Derive structure: top-level products + variant map
-  const { products, variantMap, parentNames } = useMemo(() => {
-    const childrenOf = {};   // parentId → [variant, ...]
-    const names = {};        // id → name
-    const hasChildren = new Set();
-    for (const i of items) {
-      names[i.id] = i.name;
-      if (i.parent_id) {
-        hasChildren.add(i.parent_id);
-        if (!childrenOf[i.parent_id]) childrenOf[i.parent_id] = [];
-        childrenOf[i.parent_id].push(i);
-      }
-    }
-    // Sort variants by name within each parent
-    for (const pid of Object.keys(childrenOf)) {
-      childrenOf[pid].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-    }
-    // Products = master items (have children) + standalone items (no parent, no children)
-    const prods = items
-      .filter(i => !i.parent_id) // top-level only
-      .map(i => ({
-        ...i,
-        hasVariants: hasChildren.has(i.id),
-        variantCount: (childrenOf[i.id] || []).length,
-      }));
-    prods.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-    return { products: prods, variantMap: childrenOf, parentNames: names };
-  }, [items]);
+  // How many sizes (and the plain version) of a product are selected
+  const selectedVariantCount = (product) =>
+    product.variants.filter(v => pickGroupSelected(v, selected)).length
+    + (product.ids.length && pickGroupSelected(product, selected) ? 1 : 0);
 
-  // How many variants of a given parent are selected
-  const selectedVariantCount = useCallback((parentId) => {
-    const variants = variantMap[parentId] || [];
-    return variants.filter(v => selectedIds.has(v.id)).length;
-  }, [variantMap, selectedIds]);
-
-  // Search filter — matches product names AND variant names (shows the parent if a variant matches)
+  // Search filter: matches product names AND size names (shows the product if a size matches)
   const filtered = useMemo(() => {
     if (!search.trim()) return products;
     const q = search.toLowerCase();
-    return products.filter(p => {
-      if (p.name?.toLowerCase().includes(q)) return true;
-      // Also match if any variant name matches
-      const variants = variantMap[p.id] || [];
-      return variants.some(v => v.name?.toLowerCase().includes(q));
-    });
-  }, [products, search, variantMap]);
+    return products.filter(p => p.name.toLowerCase().includes(q)
+      || p.variants.some(v => v.name.toLowerCase().includes(q)));
+  }, [products, search]);
 
-  const toggle = (item, displayName) => {
-    if (selectedIds.has(item.id)) {
-      onChange(selected.filter(s => s.id !== item.id));
-    } else {
-      onChange([...selected, { id: item.id, name: displayName || item.name }]);
-    }
-  };
-
-  const removeItem = (id) => onChange(selected.filter(s => s.id !== id));
+  const toggle = (group) => onChange(togglePickGroup(group, selected));
+  const removeItem = (key) => onChange(removeChip(key, selected));
+  const siteNote = (g) => (g.siteCount > 1 ? `${g.siteCount} sites` : '');
 
   if (items.length === 0) {
     return (
@@ -394,44 +400,44 @@ function ItemMultiPicker({ items = [], selected = [], onChange }) {
     );
   }
 
-  // ── Drill-in view: picking variants for a specific master product ──
-  const drillParent = drillId ? products.find(p => p.id === drillId) : null;
-  const drillVariants = drillId ? (variantMap[drillId] || []) : [];
+  // Drill in view: picking sizes for one product
+  const drillParent = drillKey ? products.find(p => p.key === drillKey) : null;
 
   if (drillParent) {
+    // A product can have sizes at one site and be plain at another: the plain one is a row too.
+    const rows = [
+      ...(drillParent.ids.length ? [{ ...drillParent, label: drillParent.name, name: 'Single size', plain: true }] : []),
+      ...drillParent.variants,
+    ];
     return (
       <div>
-        {/* Selected chips */}
         <SelectedChips selected={selected} onRemove={removeItem} />
 
-        {/* Back header */}
         <div
-          onClick={() => setDrillId(null)}
+          onClick={() => setDrillKey(null)}
           style={{
             display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px',
             background: 'var(--bg2)', borderRadius: '8px 8px 0 0', border: '1px solid var(--bdr)',
             borderBottom: 'none', cursor: 'pointer', fontSize: 12, color: 'var(--acc)', fontWeight: 700,
           }}
         >
-          <span style={{ fontSize: 14 }}>←</span>
+          <span style={{ fontSize: 14 }}>{'←'}</span>
           <span>{drillParent.name}</span>
           <span style={{ color: 'var(--t4)', fontWeight: 400, marginLeft: 'auto', fontSize: 11 }}>
             Pick sizes
           </span>
         </div>
 
-        {/* Variant list */}
         <div style={{
           maxHeight: 220, overflowY: 'auto', border: '1px solid var(--bdr)',
           borderRadius: '0 0 8px 8px', background: 'var(--bg2)',
         }}>
-          {drillVariants.map(v => {
-            const isSelected = selectedIds.has(v.id);
-            const displayName = `${drillParent.name} — ${v.name}`;
+          {rows.map(v => {
+            const isSelected = pickGroupSelected(v, selected);
             return (
               <div
-                key={v.id}
-                onClick={() => toggle(v, displayName)}
+                key={v.plain ? `plain:${v.key}` : v.key}
+                onClick={() => toggle(v)}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 10,
                   padding: '8px 12px', cursor: 'pointer',
@@ -441,6 +447,7 @@ function ItemMultiPicker({ items = [], selected = [], onChange }) {
               >
                 <Checkbox checked={isSelected} />
                 <div style={{ flex: 1, fontWeight: 600 }}>{v.name}</div>
+                {siteNote(v) && <div style={{ fontSize: 11, color: 'var(--t4)' }}>{siteNote(v)}</div>}
                 <div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 600 }}>
                   {money((Number(v.price) || 0))}
                 </div>
@@ -450,19 +457,17 @@ function ItemMultiPicker({ items = [], selected = [], onChange }) {
         </div>
 
         <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 4 }}>
-          {selected.length} item{selected.length !== 1 ? 's' : ''} selected total
+          {chipCount} item{chipCount !== 1 ? 's' : ''} selected total
         </div>
       </div>
     );
   }
 
-  // ── Step 1: product list ───────────────────────────────────────────
+  // Step 1: product list
   return (
     <div>
-      {/* Selected chips */}
       <SelectedChips selected={selected} onRemove={removeItem} />
 
-      {/* Search */}
       <input
         value={search}
         onChange={e => setSearch(e.target.value)}
@@ -470,7 +475,6 @@ function ItemMultiPicker({ items = [], selected = [], onChange }) {
         style={{ ...S.input, marginBottom: 6 }}
       />
 
-      {/* Products list */}
       <div style={{
         maxHeight: 240, overflowY: 'auto', border: '1px solid var(--bdr)',
         borderRadius: 8, background: 'var(--bg2)',
@@ -481,13 +485,13 @@ function ItemMultiPicker({ items = [], selected = [], onChange }) {
           </div>
         )}
         {filtered.map(product => {
-          if (product.hasVariants) {
-            // Master item — tap to drill into variants
-            const selCount = selectedVariantCount(product.id);
+          if (product.variants.length > 0) {
+            // Product with sizes: tap to drill into its sizes
+            const selCount = selectedVariantCount(product);
             return (
               <div
-                key={product.id}
-                onClick={() => { setDrillId(product.id); setSearch(''); }}
+                key={product.key}
+                onClick={() => { setDrillKey(product.key); setSearch(''); }}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 10,
                   padding: '8px 12px', cursor: 'pointer',
@@ -504,18 +508,19 @@ function ItemMultiPicker({ items = [], selected = [], onChange }) {
                     {selCount} selected
                   </span>
                 )}
+                {siteNote(product) && <span style={{ fontSize: 11, color: 'var(--t4)' }}>{siteNote(product)}</span>}
                 <span style={{ fontSize: 11, color: 'var(--t4)' }}>
-                  {product.variantCount} size{product.variantCount !== 1 ? 's' : ''} →
+                  {product.variants.length} size{product.variants.length !== 1 ? 's' : ''} {'→'}
                 </span>
               </div>
             );
           }
-          // Standalone item — toggle directly
-          const isSelected = selectedIds.has(product.id);
+          // Plain item: toggle directly
+          const isSelected = pickGroupSelected(product, selected);
           return (
             <div
-              key={product.id}
-              onClick={() => toggle(product, product.name)}
+              key={product.key}
+              onClick={() => toggle(product)}
               style={{
                 display: 'flex', alignItems: 'center', gap: 10,
                 padding: '8px 12px', cursor: 'pointer',
@@ -525,6 +530,7 @@ function ItemMultiPicker({ items = [], selected = [], onChange }) {
             >
               <Checkbox checked={isSelected} />
               <div style={{ flex: 1, fontWeight: 600 }}>{product.name}</div>
+              {siteNote(product) && <div style={{ fontSize: 11, color: 'var(--t4)' }}>{siteNote(product)}</div>}
               <div style={{ fontSize: 11, color: 'var(--t4)', fontWeight: 600 }}>
                 {money((Number(product.price) || 0))}
               </div>
@@ -534,7 +540,7 @@ function ItemMultiPicker({ items = [], selected = [], onChange }) {
       </div>
 
       <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 4 }}>
-        {selected.length} item{selected.length !== 1 ? 's' : ''} selected
+        {chipCount} item{chipCount !== 1 ? 's' : ''} selected. An item counts at every site with the same name, including sites added later.
       </div>
     </div>
   );
@@ -557,21 +563,23 @@ function Checkbox({ checked }) {
 }
 
 function SelectedChips({ selected, onRemove }) {
-  if (!selected.length) return null;
+  // One chip per item name: a reward saved for four sites holds four ids with one name.
+  const chips = selectedChips(selected);
+  if (!chips.length) return null;
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
-      {selected.map(s => (
-        <span key={s.id} style={{
+      {chips.map(c => (
+        <span key={c.key} style={{
           display: 'inline-flex', alignItems: 'center', gap: 4,
           padding: '3px 10px', borderRadius: 14, fontSize: 11, fontWeight: 600,
           background: 'var(--acc-d, rgba(232,116,60,0.15))', color: 'var(--acc)',
           border: '1px solid var(--acc)',
         }}>
-          {s.name}
+          {c.name}{c.count > 1 ? ` · ${c.count} sites` : ''}
           <span
-            onClick={() => onRemove(s.id)}
+            onClick={() => onRemove(c.key)}
             style={{ cursor: 'pointer', fontWeight: 800, marginLeft: 2, fontSize: 13, lineHeight: 1 }}
-          >×</span>
+          >{'×'}</span>
         </span>
       ))}
     </div>
@@ -1648,7 +1656,9 @@ function StampCardsPanel({ menuItems = [] }) {
   const [editing, setEditing] = useState(null);   // null = list view, 'new' = create, program object = edit
   const [companyId, setCompanyId] = useState(null);
   const [categories, setCategories] = useState([]);
-  const categoryGroups = useMemo(() => groupCategoriesByName(categories), [categories]);
+  // true once the company's categories actually loaded; the "no longer exist" warning waits for it
+  const [categoriesLoaded, setCategoriesLoaded] = useState(false);
+  const categoryGroups = useMemo(() => groupCategoriesByPath(categories), [categories]);
 
   // Load programs + categories
   useEffect(() => {
@@ -1657,43 +1667,27 @@ function StampCardsPanel({ menuItems = [] }) {
         const locId = getActiveLocationSync() || await getLocationId();
         // Stamp cards are per COMPANY, menus are per SITE (18 Sep 2026): list categories from
         // every site of the company so the picker is not limited to the site you are logged into.
-        let siteIds = locId ? [locId] : [];
-        // Resolve company_id
-        if (platformSupabase && locId) {
-          const { data: loc } = await platformSupabase
-            .from('locations')
-            .select('company_id')
-            .or(`ops_location_id.eq.${locId},id.eq.${locId}`)
-            .limit(1).maybeSingle();
-          if (loc?.company_id) {
-            setCompanyId(loc.company_id);
-            // Fetch stamp card programs
-            const { data: progs } = await platformSupabase
-              .from('stamp_card_programs')
-              .select('*')
-              .eq('company_id', loc.company_id)
-              .order('created_at', { ascending: false });
-            setPrograms(progs || []);
-            try {
-              const { data: sites } = await platformSupabase
-                .from('locations')
-                .select('id, ops_location_id')
-                .eq('company_id', loc.company_id);
-              // Ops and Platform ids can differ per venue, so ask for both.
-              for (const site of sites || []) {
-                for (const sid of [site.ops_location_id, site.id]) if (sid && !siteIds.includes(sid)) siteIds.push(sid);
-              }
-            } catch (e) { console.warn('[StampCards] company sites:', e?.message); }
-          }
+        const { companyId: cid, siteIds } = await loadCompanySites(locId);
+        if (cid) {
+          setCompanyId(cid);
+          // Fetch stamp card programs
+          const { data: progs } = await platformSupabase
+            .from('stamp_card_programs')
+            .select('*')
+            .eq('company_id', cid)
+            .order('created_at', { ascending: false });
+          setPrograms(progs || []);
         }
         // Fetch menu categories for qualifier picker (every site of the company)
         if (supabase && siteIds.length) {
-          const { data: cats } = await supabase
+          const { rows: cats, ok } = await loadAllPages(() => supabase
             .from('menu_categories')
             .select('id, label, parent_id, location_id')
             .in('location_id', siteIds)
-            .order('sort_order');
+            .order('sort_order')
+            .order('id'));
           setCategories(cats || []);
+          setCategoriesLoaded(ok);
         }
       } catch (e) {
         console.error('[StampCards] load:', e);
@@ -1721,6 +1715,8 @@ function StampCardsPanel({ menuItems = [] }) {
         program={editing === 'new' ? null : editing}
         companyId={companyId}
         categoryGroups={categoryGroups}
+        categories={categories}
+        categoriesLoaded={categoriesLoaded}
         menuItems={menuItems}
         onClose={() => setEditing(null)}
         onSaved={() => { setEditing(null); reload(); }}
@@ -1756,7 +1752,7 @@ function StampCardsPanel({ menuItems = [] }) {
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {programs.map(p => (
-            <StampCardRow key={p.id} program={p} categoryGroups={categoryGroups} onEdit={() => setEditing(p)} onToggle={async () => {
+            <StampCardRow key={p.id} program={p} categoryGroups={categoryGroups} categories={categories} categoriesLoaded={categoriesLoaded} onEdit={() => setEditing(p)} onToggle={async () => {
               await platformSupabase.from('stamp_card_programs').update({ active: !p.active, updated_at: new Date().toISOString() }).eq('id', p.id);
               reload();
             }} />
@@ -1767,9 +1763,11 @@ function StampCardsPanel({ menuItems = [] }) {
   );
 }
 
-function StampCardRow({ program: p, categoryGroups = [], onEdit, onToggle }) {
-  // Counts category NAMES: one "Hot Coffee" saved for 4 sites is 1 category, not 4.
+function StampCardRow({ program: p, categoryGroups = [], categories = [], categoriesLoaded = false, onEdit, onToggle }) {
+  // Counts category PATHS: one "Hot Coffee" saved for 4 sites is 1 category, not 4.
   const catCount = selectedGroupCount(p.qualifying_category_ids || [], categoryGroups);
+  // A card whose saved categories were all deleted or rebuilt earns nothing: say so plainly.
+  const missing = missingCategoryState(p.qualifying_category_ids || [], categories, categoriesLoaded);
   return (
     <div style={{ ...S.card, display: 'flex', alignItems: 'center', gap: 14, padding: 16, marginBottom: 0 }}>
       <div style={{ width: 48, height: 48, borderRadius: 12, background: p.active ? 'var(--acc-d)' : 'var(--bg3)',
@@ -1782,9 +1780,14 @@ function StampCardRow({ program: p, categoryGroups = [], onEdit, onToggle }) {
         <div style={{ fontSize: 12, color: 'var(--t3)', marginTop: 2 }}>
           Collect {p.stamps_required} stamps → {p.reward_description || 'Free item'}
         </div>
-        {catCount > 0 && (
+        {missing.allMissing ? (
+          <div style={{ fontSize: 11, color: 'var(--red, #e5484d)', fontWeight: 700, marginTop: 2 }}>
+            These categories no longer exist, pick them again. Until you do, this card earns no stamps.
+          </div>
+        ) : catCount > 0 && (
           <div style={{ fontSize: 11, color: 'var(--t4)', marginTop: 2 }}>
-            {catCount} qualifying {catCount === 1 ? 'category' : 'categories'}
+            {catCount - missing.missing} qualifying {catCount - missing.missing === 1 ? 'category' : 'categories'}
+            {missing.missing > 0 ? ` (${missing.missing} no longer ${missing.missing === 1 ? 'exists' : 'exist'})` : ''}
           </div>
         )}
       </div>
@@ -1808,7 +1811,7 @@ function StampCardRow({ program: p, categoryGroups = [], onEdit, onToggle }) {
   );
 }
 
-function StampCardForm({ program, companyId, categoryGroups = [], menuItems = [], onClose, onSaved }) {
+function StampCardForm({ program, companyId, categoryGroups = [], categories = [], categoriesLoaded = false, menuItems = [], onClose, onSaved }) {
   const isNew = !program;
   const [name, setName] = useState(program?.name || '');
   const [description, setDescription] = useState(program?.description || '');
@@ -1877,10 +1880,14 @@ function StampCardForm({ program, companyId, categoryGroups = [], menuItems = []
     }
   };
 
-  // Separate top-level and subcategories (grouped by name across the company's sites)
+  // Separate top-level and subcategories (grouped by PATH across the company's sites, so
+  // "Drinks / Coffee" and "Retail / Coffee" stay apart)
   const topCats = categoryGroups.filter(g => !g.parentKey);
   const subCats = categoryGroups.filter(g => g.parentKey);
   const siteNote = (g) => (g.siteCount > 1 ? ` \u00b7 ${g.siteCount} sites` : '');
+  // Every subcategory below a top-level one (any depth), shown under it
+  const descendantsOf = (top) => subCats.filter(sc => sc.key.startsWith(top.key + PATH_SEP));
+  const missingCats = missingCategoryState(selectedCatIds, categories, categoriesLoaded);
 
   return (
     <div>
@@ -1991,12 +1998,18 @@ function StampCardForm({ program, companyId, categoryGroups = [], menuItems = []
           <label style={S.label}>Qualifying categories</label>
           <div style={{ fontSize: 12, color: 'var(--t4)', marginBottom: 8, lineHeight: 1.4 }}>
             Select which menu categories earn stamps. If none are selected, <b>all items</b> qualify.
-            A category counts at every site with the same name, including sites added later.
+            A category counts at every site with the same name under the same parent, including
+            sites added later. Ticking a category also covers every subcategory inside it.
           </div>
+          {missingCats.allMissing && (
+            <div style={{ fontSize: 12, color: 'var(--red, #e5484d)', fontWeight: 700, marginBottom: 8 }}>
+              These categories no longer exist, pick them again. Until you do, this card earns no stamps.
+            </div>
+          )}
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
             {topCats.map(cat => {
               const isSelected = isGroupSelected(cat, selectedCatIds, categoryGroups);
-              const children = subCats.filter(sc => sc.parentKey === cat.key);
+              const children = descendantsOf(cat);
               return (
                 <div key={cat.groupId} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                   <button
@@ -2011,19 +2024,23 @@ function StampCardForm({ program, companyId, categoryGroups = [], menuItems = []
                     {cat.label}{siteNote(cat)}
                   </button>
                   {children.map(sc => {
-                    const subSel = isGroupSelected(sc, selectedCatIds, categoryGroups);
+                    // Covered = a ticked parent already earns for it (the same rule as the till).
+                    const covered = !isGroupSelected(sc, selectedCatIds, categoryGroups) && isGroupCovered(sc, selectedCatIds, categoryGroups);
+                    const subSel = covered || isGroupSelected(sc, selectedCatIds, categoryGroups);
                     return (
                       <button key={sc.groupId}
-                        onClick={() => toggleCat(sc)}
+                        onClick={() => { if (!covered) toggleCat(sc); }}
+                        disabled={covered}
+                        title={covered ? 'Included: its parent category is ticked' : undefined}
                         style={{
-                          padding: '3px 10px', borderRadius: 16, fontSize: 11, fontWeight: 600, cursor: 'pointer',
-                          marginLeft: 12,
+                          padding: '3px 10px', borderRadius: 16, fontSize: 11, fontWeight: 600, cursor: covered ? 'default' : 'pointer',
+                          marginLeft: 12 * Math.max(1, sc.depth || 1), opacity: covered ? 0.75 : 1,
                           border: `1px solid ${subSel ? 'var(--acc)' : 'var(--bdr)'}`,
                           background: subSel ? 'var(--acc-d)' : 'transparent',
                           color: subSel ? 'var(--acc)' : 'var(--t4)',
                         }}
                       >
-                        {sc.label}{siteNote(sc)}
+                        {sc.label}{siteNote(sc)}{covered ? ' (included)' : ''}
                       </button>
                     );
                   })}

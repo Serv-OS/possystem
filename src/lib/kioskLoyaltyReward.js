@@ -14,22 +14,23 @@
 //   2. A reward that takes nothing off is never committed. The kiosk refuses to apply it,
 //      and submitOrder only redeems when the live credit is above zero.
 //
+// Eligibility (which lines a free item reward covers) is lib/loyaltyMenuMatch.js, the same
+// rule as the till and online: saved id first, then the item's name across the company.
+//
 // Units: the basket (cart lines) is in MAJOR units like the rest of KioskApp; everything this
 // module returns is an integer in MINOR units (pence / cents).
+
+import { eligibleMatcher, eligibleItemNames, kioskLineCandidates } from './loyaltyMenuMatch.js';
 
 function toMinor(major) {
   const n = Number(major);
   return Number.isFinite(n) ? Math.round(n * 100) : 0;
 }
 
-function lineMatches(line, eligibleIds) {
-  const ids = [line?.item?.id, line?.variant?.id].filter(Boolean);
-  return ids.some(id => eligibleIds.has(id));
-}
-
-// Eligible item ids configured on a free_item reward (empty set when none are configured).
-function eligibleIdSet(value) {
-  return new Set((value?.eligible_items || []).map(ei => ei?.id).filter(Boolean));
+// Eligible lines match by saved id first, then by item name across every site of the company
+// (lib/loyaltyMenuMatch.js: loyalty is per company, menus are per site, 18 Sep 2026).
+function lineMatches(line, matcher) {
+  return matcher.matches(kioskLineCandidates(line));
 }
 
 /**
@@ -38,10 +39,10 @@ function eligibleIdSet(value) {
  */
 export function kioskRewardMissingItems(type, value, cart = []) {
   if (type !== 'free_item') return null;
-  const ids = eligibleIdSet(value);
-  if (ids.size === 0) return null;
-  if ((cart || []).some(l => lineMatches(l, ids))) return null;
-  return (value?.eligible_items || []).map(ei => ei?.name).filter(Boolean).join(', ');
+  const matcher = eligibleMatcher(value);
+  if (!matcher.configured) return null;
+  if ((cart || []).some(l => lineMatches(l, matcher))) return null;
+  return eligibleItemNames(value).join(', ');
 }
 
 /**
@@ -64,8 +65,8 @@ export function kioskRewardDiscountMinor(type, value, { cart = [], goodsMinor = 
     const pct = Math.min(100, Math.max(0, Number(rv.percent) || 0));
     off = Math.round(goods * pct / 100);
   } else if (type === 'free_item') {
-    const ids = eligibleIdSet(rv);
-    const matching = ids.size ? (cart || []).filter(l => lineMatches(l, ids) && (l.qty || 0) > 0) : [];
+    const matcher = eligibleMatcher(rv);
+    const matching = matcher.configured ? (cart || []).filter(l => lineMatches(l, matcher) && (l.qty || 0) > 0) : [];
     if (matching.length) off = Math.min(...matching.map(l => toMinor(l.linePrice)));
   }
   return Math.max(0, Math.min(off, goods));
