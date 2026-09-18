@@ -10,5 +10,5 @@ export {
   cateringChannelLabel, ezcaterOrderNumber, cateringOrderNumber, ezcaterBadge, ezcaterFlagText,
   isAwaitingEzcaterAcceptance, RELEASABLE_OR_FILTER, NOT_RELEASABLE_STATUSES_PG, cateringMayRelease,
   advanceStatusLabel, ezLifecycleState, ezcaterPrep, ezcaterCateringTiming, ezcaterCateringRow,
-  kitchenFingerprint, ezcaterWritePlan,
+  kitchenFingerprint, ezcaterWritePlan, channelCancelAlert, ezcaterHoldAlertDue, ezcaterHoldAlertText,
 } from '../../supabase/functions/_shared/ezcaterCatering.js';

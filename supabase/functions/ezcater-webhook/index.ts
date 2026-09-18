@@ -356,7 +356,6 @@ Deno.serve(async (req) => {
     };
 
     let written = false;
-    let inserted = false;
     let flagged: any = null;
     for (let attempt = 0; attempt < 3 && !written; attempt++) {
       const existing = await readExisting();
@@ -365,14 +364,17 @@ Deno.serve(async (req) => {
         priorAccepted: Number(priorLink?.accepted_count) || 0,
         prevLifecycle: existing?.customer?.ezcater_lifecycle ?? priorLink?.ez_lifecycle ?? null,
       });
-      const plan: any = ezcaterWritePlan({ next, existing, nowIso: new Date().toISOString() });
+      // linkKnown: priorLink was read in step 5, BEFORE this run writes its own link below, so
+      // the first notification of a new order is never blocked by it. A known order with no
+      // queue row was finished by staff and is not brought back (ezcaterWritePlan).
+      const plan: any = ezcaterWritePlan({ next, existing, nowIso: new Date().toISOString(), linkKnown: !!priorLink });
 
       if (plan.kind === 'skip') {
         console.log('[ezcater-webhook]', row.ref, 'queue row not written:', plan.reason);
         written = true;
       } else if (plan.kind === 'insert') {
         const { error } = await sb.from('order_queue').insert(plan.row);
-        if (!error) { written = true; inserted = true; continue; }
+        if (!error) { written = true; continue; }
         // A duplicate notification racing this one inserted first: read it and plan again.
         if (!/23505|duplicate key/i.test(`${error.code || ''} ${error.message || ''}`)) {
           await failEvent(`order_queue insert failed: ${error.message}`, 'error');
@@ -404,17 +406,16 @@ Deno.serve(async (req) => {
       return retry('queue write contended');
     }
 
-    // Staff see a new ezCater order and, above all, a change or a cancel that came in after the
-    // kitchen already had it (the bell in the till's shift bar). Best effort: the order itself
-    // is already written.
-    if (inserted || flagged) {
+    // Staff see a change or a cancel that came in after the kitchen already had it (the bell in
+    // the till's shift bar). A NEW order gets no entry from here: the order_queue_activity
+    // trigger already logs every insert ("Catering order"), and a second entry was a duplicate.
+    // Best effort: the order itself is already written.
+    if (flagged) {
       const badge = ezcaterBadge({ customer: { channel: 'ezcater', ezcater_order_number: link.order_number } }) || 'ezCater';
       try {
         await sb.from('activity_events').insert({
-          location_id: locationId, kind: 'order',
-          severity: flagged ? 'urgent' : 'info',
-          title: flagged ? `${badge}: ${flagged.text}` : `${badge} catering order`,
-          body: flagged ? null : `${queueRow.customer?.name || 'ezCater customer'}, for ${queueRow.event_date || 'its event'}`,
+          location_id: locationId, kind: 'order', severity: 'urgent',
+          title: `${badge}: ${flagged.text}`, body: null,
           ref_type: 'order', ref_id: row.ref,
         });
       } catch { /* the feed is best effort */ }

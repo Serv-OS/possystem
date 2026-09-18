@@ -256,4 +256,11 @@ Short ADR entries for non-obvious choices in the codebase.
 
 **Deliberately left out of v1:** scheduled re-asks of ezCater, a re-check of the order just before it fires (ezCater recommends one), and detection of "cancelled for replacement" orders (ezCater sends no notification for the original). If ezCater replaces an order, the original stays in our queue until staff cancel it. Also not changed: the order screen (TV) SQL, so an ezCater order shows there as a catering order.
 
-**Consequences:** No new catering path and no queue code change. The row written before this change (HKX77V, `source 'ezcater'`) is left exactly as it is by the webhook; staff cancel it by hand.
+**Consequences:** No new catering path. There IS one queue code change: the kitchen claim in `routeKioskOrderPrints` (`src/store/index.js`) now refuses a cancelled row for every source, not only ezCater (`.or('status.is.null,status.neq.cancelled')`), so a cancel that lands between a release's read and its claim never reaches the kitchen. Nothing else is cancelled before it is routed today, so every other order behaves as before. The row written before this change (HKX77V, `source 'ezcater'`) is left exactly as it is by the webhook; staff cancel it by hand.
+
+**Review round (18 Sep 2026):**
+- A finished order is never brought back: when `ezcater_order_links` already knows the order and there is no queue row (staff collected or removed it), a later notification writes nothing. A new order has no link until after its first write, so it still inserts.
+- An ezCater order cancelled AFTER it went to the kitchen raises the same red cancel popup and chime a HubRise cancel does (`channelCancelAlert`). HubRise is unchanged.
+- An ezCater order still awaiting acceptance when its fire time passes gets one urgent activity entry from the catering-release cron, stamped once per order (`customer.ezcater_hold_alerted_at`).
+- The webhook no longer writes its own "new order" activity entry; the `order_queue_activity` trigger already logs every insert, as "Catering order". Showing "ezCater" there would need SQL, so it was left.
+- Release steps: `docs/EZCATER_V1_RELEASE.md`. ezCater sales are not written to `closed_checks`, so they are in no sales report (older than this work, not fixed here).

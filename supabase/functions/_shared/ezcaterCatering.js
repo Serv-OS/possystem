@@ -302,6 +302,9 @@ export function kitchenFingerprint(row) {
  *   next      the ezcaterCateringRow for this notification (never null)
  *   existing  the order_queue row now (ref, source, status, kitchen_routed_at, customer, items,
  *             total, type, event_date, collection_time), or null
+ *   linkKnown true when ezcater_order_links already has this order (read BEFORE this run
+ *             writes its own link): with no queue row that means it was finished, so nothing
+ *             is written
  * Returns one of:
  *   { kind: 'skip', reason }
  *   { kind: 'insert', row }                  first sight of a live order
@@ -310,12 +313,20 @@ export function kitchenFingerprint(row) {
  * 'unfired' writes are made only while kitchen_routed_at is still null; when that loses a race
  * the webhook re-reads the row and asks again, and gets 'fired'.
  */
-export function ezcaterWritePlan({ next, existing, nowIso }) {
+export function ezcaterWritePlan({ next, existing, nowIso, linkKnown = false }) {
   const state = ezLifecycleState(next?.customer?.ezcater_lifecycle);
   const dead = EZ_DEAD.has(norm(next?.customer?.ezcater_lifecycle));
 
   if (!existing) {
     if (dead) return { kind: 'skip', reason: 'cancelled before we ever had it' };
+    // NEVER BRING A FINISHED ORDER BACK. ezcater_order_links is written only AFTER a
+    // notification has been handled, so a link with no queue row means we had this order and it
+    // has since left the queue (staff collected or removed it). A later notification (a status
+    // step, a repeat) must not write it again: that would put a fresh row in the queue with a
+    // fire time in the past and the catering release would send the kitchen a second ticket.
+    // The first notification of a new order has no link yet (its link is written after this
+    // plan runs), so it still inserts.
+    if (linkKnown) return { kind: 'skip', reason: 'already handled and no longer in the queue (finished), not brought back' };
     return { kind: 'insert', row: next };
   }
   // The live test order written before this change (source 'ezcater') stays exactly as it is.
@@ -339,6 +350,10 @@ export function ezcaterWritePlan({ next, existing, nowIso }) {
     // status is never touched here (staff progress stands); kitchen_routed_at is never written.
     const patch = { ...next };
     for (const k of ['ref', 'location_id', 'status', 'kitchen_routed_at']) delete patch[k];
+    // The held past its fire time alert is once per order: its stamp survives the replace.
+    if (prevCustomer.ezcater_hold_alerted_at) {
+      patch.customer = { ...patch.customer, ezcater_hold_alerted_at: prevCustomer.ezcater_hold_alerted_at };
+    }
     return { kind: 'unfired', patch };
   }
 
@@ -351,4 +366,63 @@ export function ezcaterWritePlan({ next, existing, nowIso }) {
     return { kind: 'fired', flag: null, patch: { customer: { ...prevCustomer, ezcater_lifecycle: next.customer.ezcater_lifecycle, ezcater_awaiting_acceptance: false } } };
   }
   return { kind: 'skip', reason: 'already in the kitchen, nothing changed' };
+}
+
+// ── Alerts staff must see ────────────────────────────────────────────────────
+
+/**
+ * The cancel alert (the red popup and the chime a HubRise cancel raises) for one order_queue
+ * realtime event, or null. Two cases, nothing else:
+ *   HubRise    a channel cancel, exactly as before (v5.5.550), whether or not it was routed
+ *   ezCater    a catering row marked customer.channel 'ezcater' that turns cancelled AFTER it
+ *              went to the kitchen (kitchen_routed_at set). One cancelled before the kitchen had
+ *              it was never cooked, so it needs no alarm.
+ * payload is the Supabase postgres_changes payload ({ eventType, new, old }). order_queue is
+ * REPLICA IDENTITY FULL, so old carries the previous status and kitchen_routed_at.
+ */
+export function channelCancelAlert(payload) {
+  if (!payload || payload.eventType !== 'UPDATE') return null;
+  const n = payload.new;
+  const o = payload.old || {};
+  if (!n || n.status !== 'cancelled' || o.status === 'cancelled') return null;
+  if (n.source === 'hubrise') {
+    return {
+      source: 'hubrise', kind: 'cancel',
+      who: `${n.customer?.channel || 'HubRise'}`,
+      ref: n.ref || '', total: 0, orderType: n.type || null, status: 'cancelled',
+    };
+  }
+  if (norm(n.source) === 'catering' && isEzcaterOrder(n) && (n.kitchen_routed_at || o.kitchen_routed_at)) {
+    return {
+      source: 'catering', kind: 'cancel',
+      who: ezcaterBadge(n) || 'ezCater',
+      ref: n.ref || '', total: 0, orderType: n.type || null, status: 'cancelled',
+    };
+  }
+  return null;
+}
+
+/**
+ * HELD PAST ITS FIRE TIME. An ezCater order still awaiting acceptance on ezCater is correctly
+ * never cooked, but when its fire time passes somebody must be told, once. The catering-release
+ * cron reads candidates with the filters below, checks each with ezcaterHoldAlertDue, stamps
+ * customer.ezcater_hold_alerted_at with a conditional update (so two runs never both win) and
+ * writes one urgent activity entry.
+ */
+export function ezcaterHoldAlertDue(row, nowMs) {
+  if (!row || norm(row.source) !== 'catering' || !isEzcaterOrder(row)) return false;
+  if (!isAwaitingEzcaterAcceptance(row)) return false;
+  if (row.kitchen_routed_at) return false;
+  const st = norm(row.status);
+  if (st === 'collected' || st === 'cancelled') return false;
+  if (row.customer?.ezcater_hold_alerted_at) return false;
+  const due = ms(row.sent_at);
+  return Number.isFinite(due) && Number.isFinite(nowMs) && due <= nowMs;
+}
+
+/** The plain words of that alert. */
+export function ezcaterHoldAlertText(row) {
+  const n = ezcaterOrderNumber(row);
+  const who = n ? `ezCater ${n}` : 'An ezCater order';
+  return `${who} is due in the kitchen but has not been accepted on ezCater. Accept it on ezCater and it will fire.`;
 }

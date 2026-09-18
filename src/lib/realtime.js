@@ -16,6 +16,7 @@ import { isSessionClosed } from '../sync/sessionClosure';
 import { playOrderChime } from './orderChime';
 import { receiveKioskAlertRow, kioskAlertsRealtimeStarted, kioskAlertsRealtimeStopped, restoreKioskAlerts } from './kioskStaffAlerts';
 import { isHubriseAutoReceipt } from './hubrise';
+import { channelCancelAlert } from './ezcaterCatering';
 // v5.6.83: the same prepend-only ceiling the store applies. Cross-device inserts and
 // refund echoes land here, so capping only the local sale paths would still let a busy
 // venue grow this array without limit.
@@ -566,21 +567,14 @@ export function startRealtime(store, locationId = LOCATION_ID) {
       // v5.5.550: a channel-side cancellation (HubRise order.update -> status cancelled,
       // written by hubrise-webhook) must NOT be silent — the kitchen may be mid-prep.
       // Fire the chime + a banner so staff stop and reconcile.
-      if (payload.eventType === 'UPDATE'
-          && payload.new?.source === 'hubrise'
-          && payload.new?.status === 'cancelled'
-          && payload.old?.status !== 'cancelled') {
+      // 18 Sep 2026: the same alert for an ezCater catering order cancelled AFTER it went to the
+      // kitchen (the Orders Hub drops a cancelled card, so without this only the activity bell
+      // knew). The rule is pure and tested: channelCancelAlert (lib/ezcaterCatering).
+      const cancelAlert = channelCancelAlert(payload);
+      if (cancelAlert) {
         if (orderNotificationsEnabled()) {
           playOrderChime();
-          store.getState().showOrderAlert?.({
-            source: 'hubrise',
-            kind: 'cancel',
-            who: `${payload.new.customer?.channel || 'HubRise'}`,
-            ref: payload.new.ref || '',
-            total: 0,
-            orderType: payload.new.type || null,
-            status: 'cancelled',
-          });
+          store.getState().showOrderAlert?.(cancelAlert);
         }
       }
     })

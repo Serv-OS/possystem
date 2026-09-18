@@ -20,6 +20,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { dispatchCourier } from '../_shared/delivery-dispatch.ts';
 import {
   NOT_RELEASABLE_STATUSES_PG, RELEASABLE_OR_FILTER, mayBookOurCourier, isEzcaterOrder, ezcaterOrderNumber,
+  ezcaterHoldAlertDue, ezcaterHoldAlertText,
 } from '../_shared/ezcaterCatering.js';
 
 const URL = Deno.env.get('SUPABASE_URL')!;
@@ -111,5 +112,61 @@ Deno.serve(async (req) => {
     if (kErr) { console.warn('[catering-release] kds insert', row.ref, kErr.message); continue; }
     fired++;
   }
-  return json({ ok: true, scanned: data?.length || 0, fired });
+
+  // HELD PAST ITS FIRE TIME (18 Sep 2026). An ezCater order ezCater has not accepted is never
+  // released above, correctly, but once its fire time passes somebody must be told. One urgent
+  // activity entry per order, ever: customer.ezcater_hold_alerted_at is stamped first with a
+  // conditional update, so two overlapping runs never both write it. Best effort: a failure
+  // here never fails the release.
+  let holdAlerts = 0;
+  try {
+    holdAlerts = await alertHeldEzcaterOrders();
+  } catch (e) { console.warn('[catering-release] held ezCater alert', (e as Error)?.message); }
+
+  return json({ ok: true, scanned: data?.length || 0, fired, holdAlerts });
 });
+
+async function alertHeldEzcaterOrders(): Promise<number> {
+  const nowMs = Date.now();
+  const nowIso = new Date(nowMs).toISOString();
+  const { data, error } = await sb.from('order_queue')
+    .select('ref, location_id, source, status, sent_at, kitchen_routed_at, customer')
+    .eq('source', 'catering').is('kitchen_routed_at', null)
+    .not('status', 'in', NOT_RELEASABLE_STATUSES_PG)
+    .eq('customer->>ezcater_awaiting_acceptance', 'true')
+    .is('customer->>ezcater_hold_alerted_at', null)
+    .lte('sent_at', nowIso)
+    .order('sent_at', { ascending: true })
+    .limit(BATCH);
+  if (error) { console.warn('[catering-release] held ezCater read', error.message); return 0; }
+
+  let n = 0;
+  for (const row of (data || [])) {
+    if (!ezcaterHoldAlertDue(row, nowMs)) continue;   // the pure rule, the filters above mirror it
+    // Claim: only while still held, unrouted and not yet alerted.
+    const claim = await sb.from('order_queue')
+      .update({ customer: { ...(row.customer || {}), ezcater_hold_alerted_at: nowIso } })
+      .eq('ref', row.ref).eq('location_id', row.location_id)
+      .is('kitchen_routed_at', null)
+      .eq('customer->>ezcater_awaiting_acceptance', 'true')
+      .is('customer->>ezcater_hold_alerted_at', null)
+      .select('ref');
+    if (claim.error || !claim.data?.length) continue;
+    const { error: aErr } = await sb.from('activity_events').insert({
+      location_id: row.location_id, kind: 'order', severity: 'urgent',
+      title: ezcaterHoldAlertText(row), body: null,
+      ref_type: 'order', ref_id: row.ref,
+    });
+    if (aErr) {
+      // Take the stamp back off so the next run tries again (only if it is still ours).
+      console.warn('[catering-release] held ezCater alert write', row.ref, aErr.message);
+      await sb.from('order_queue').update({ customer: row.customer || {} })
+        .eq('ref', row.ref).eq('location_id', row.location_id)
+        .eq('customer->>ezcater_hold_alerted_at', nowIso)
+        .then(() => {}, () => {});
+      continue;
+    }
+    n++;
+  }
+  return n;
+}

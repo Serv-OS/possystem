@@ -27,7 +27,7 @@ import {
   isAwaitingEzcaterAcceptance, RELEASABLE_OR_FILTER, NOT_RELEASABLE_STATUSES_PG, cateringMayRelease,
   advanceStatusLabel, ezLifecycleState, ezcaterPrep, ezcaterCateringRow, ezcaterWritePlan,
   kitchenFingerprint, EZ_PREP_FALLBACK_MINUTES, FLAG_CHANGED_AFTER_FIRE, FLAG_CANCELLED_AFTER_FIRE,
-  AWAITING_LABEL,
+  AWAITING_LABEL, channelCancelAlert, ezcaterHoldAlertDue, ezcaterHoldAlertText,
 } from './ezcaterCatering.js';
 import { orderToQueueRow } from '../../supabase/functions/_shared/ezcater-map.ts';
 import { dispatchDelivery } from './delivery/dispatch.js';
@@ -486,4 +486,149 @@ test('no em or en dashes in the files this change wrote', () => {
   for (const p of ['../../supabase/functions/_shared/ezcaterCatering.js', '../../supabase/functions/_shared/cateringRules.js', './ezcaterCatering.js', './cateringRules.js']) {
     assert.doesNotMatch(read(p), /[–—]/, p);
   }
+});
+
+// ── Review fixes (18 Sep 2026, round 2) ──────────────────────────────────────
+
+test('A. never bring a finished order back: a known order with no queue row writes nothing', () => {
+  // Staff collected it, removeFromQueue deleted the row, then ezCater sends a later notification.
+  const row = build(HKX77V());
+  const plan = ezcaterWritePlan({ next: row, existing: null, nowIso: 'n', linkKnown: true });
+  assert.equal(plan.kind, 'skip');
+  assert.match(plan.reason, /not brought back/);
+  // Whatever the lifecycle says: a repeat, a status step, a held one.
+  for (const life of ['accepted', 'submitted', 'ready', 'completed', 'cancelled']) {
+    const next = build(HKX77V({ lifecycle: { orderIsCurrently: life } }));
+    assert.equal(ezcaterWritePlan({ next, existing: null, nowIso: 'n', linkKnown: true }).kind, 'skip', life);
+  }
+});
+
+test('A. a genuinely new order (no link yet) still inserts, and the default is "not known"', () => {
+  const row = build(HKX77V());
+  assert.deepEqual(ezcaterWritePlan({ next: row, existing: null, nowIso: 'n', linkKnown: false }), { kind: 'insert', row });
+  assert.deepEqual(ezcaterWritePlan({ next: row, existing: null, nowIso: 'n' }), { kind: 'insert', row });
+  // A known order that IS still in the queue is handled exactly as before.
+  assert.equal(ezcaterWritePlan({ next: build(HKX77V()), existing: stored(row), nowIso: 'n', linkKnown: true }).kind, 'unfired');
+});
+
+test('A. webhook: the link is read BEFORE the write and written AFTER it, so a first notification is never blocked by its own link', () => {
+  const src = read('../../supabase/functions/ezcater-webhook/index.ts');
+  const readAt = src.indexOf(".from('ezcater_order_links')\n      .select(");
+  const planAt = src.indexOf('ezcaterWritePlan({ next, existing,');
+  const upsertAt = src.indexOf(".from('ezcater_order_links')\n      .upsert(");
+  assert.ok(readAt > 0 && planAt > readAt && upsertAt > planAt, 'read link, plan, then write link');
+  assert.match(src, /linkKnown: !!priorLink/);
+  // The queue insert flag went with the duplicate activity entry. It had re-declared the name of
+  // the ezcater_events upsert result in the same block, which Deno refuses to load at all.
+  assert.equal((src.match(/let inserted\b/g) || []).length, 0);
+  assert.equal((src.match(/data: inserted/g) || []).length, 1);
+});
+
+test('B. an ezCater catering order cancelled AFTER it went to the kitchen raises the HubRise cancel alert', () => {
+  const fired = { ...build(HKX77V()), kitchen_routed_at: '2026-09-23T17:30:05Z', status: 'prep' };
+  const a = channelCancelAlert({ eventType: 'UPDATE', old: fired, new: { ...fired, status: 'cancelled' } });
+  assert.deepEqual(a, {
+    source: 'catering', kind: 'cancel', who: 'ezCater HKX77V',
+    ref: fired.ref, total: 0, orderType: 'delivery', status: 'cancelled',
+  });
+});
+
+test('B. no alert when it was cancelled before the kitchen had it, when it was already cancelled, or for our own catering', () => {
+  const unfired = { ...build(HKX77V()), kitchen_routed_at: null, status: 'received' };
+  assert.equal(channelCancelAlert({ eventType: 'UPDATE', old: unfired, new: { ...unfired, status: 'cancelled' } }), null);
+  const fired = { ...unfired, kitchen_routed_at: 'x', status: 'cancelled' };
+  assert.equal(channelCancelAlert({ eventType: 'UPDATE', old: fired, new: fired }), null);
+  assert.equal(channelCancelAlert({ eventType: 'UPDATE', old: { ...fired, status: 'prep' }, new: { ...fired, status: 'ready' } }), null);
+  assert.equal(channelCancelAlert({ eventType: 'INSERT', new: fired }), null);
+  assert.equal(channelCancelAlert({ eventType: 'DELETE', old: fired }), null);
+  const own = { ref: 'CA-ABCDE', source: 'catering', status: 'prep', kitchen_routed_at: 'x', customer: { name: 'Sam' } };
+  assert.equal(channelCancelAlert({ eventType: 'UPDATE', old: own, new: { ...own, status: 'cancelled' } }), null);
+  assert.equal(channelCancelAlert(null), null);
+});
+
+test('B. HubRise cancels raise exactly the alert they always did', () => {
+  const h = { ref: 'HR-1', source: 'hubrise', type: 'delivery', status: 'prep', customer: { channel: 'Deliveroo' } };
+  assert.deepEqual(channelCancelAlert({ eventType: 'UPDATE', old: h, new: { ...h, status: 'cancelled' } }), {
+    source: 'hubrise', kind: 'cancel', who: 'Deliveroo', ref: 'HR-1', total: 0, orderType: 'delivery', status: 'cancelled',
+  });
+  // Routed or not (the old rule never looked), and with no old image at all.
+  assert.equal(channelCancelAlert({ eventType: 'UPDATE', old: {}, new: { ...h, status: 'cancelled', customer: null } }).who, 'HubRise');
+  assert.equal(channelCancelAlert({ eventType: 'UPDATE', new: { ...h, status: 'cancelled' } }).kind, 'cancel');
+  assert.equal(channelCancelAlert({ eventType: 'UPDATE', old: { ...h, status: 'cancelled' }, new: { ...h, status: 'cancelled' } }), null);
+});
+
+test('B. realtime raises it through channelCancelAlert with the same chime and popup, no new UI', () => {
+  const rt = read('./realtime.js');
+  assert.match(rt, /import \{ channelCancelAlert \} from '\.\/ezcaterCatering'/);
+  assert.match(rt, /const cancelAlert = channelCancelAlert\(payload\);\n\s+if \(cancelAlert\) \{\n\s+if \(orderNotificationsEnabled\(\)\) \{\n\s+playOrderChime\(\);\n\s+store\.getState\(\)\.showOrderAlert\?\.\(cancelAlert\);/);
+  assert.doesNotMatch(rt, /payload\.new\?\.source === 'hubrise'\n\s+&& payload\.new\?\.status === 'cancelled'/);
+});
+
+test('C. held past its fire time: the selection rule', () => {
+  const held = { ...build(HKX77V({ lifecycle: { orderIsCurrently: 'submitted' } })), kitchen_routed_at: null };
+  const due = Date.parse(held.sent_at);
+  assert.equal(ezcaterHoldAlertDue(held, due - 1), false, 'not before its fire time');
+  assert.equal(ezcaterHoldAlertDue(held, due), true, 'at its fire time');
+  assert.equal(ezcaterHoldAlertDue(held, due + 3600_000), true);
+  // Once only.
+  assert.equal(ezcaterHoldAlertDue({ ...held, customer: { ...held.customer, ezcater_hold_alerted_at: 'x' } }, due + 1), false);
+  // Accepted, routed, finished, cancelled, ours, or no fire time: never.
+  assert.equal(ezcaterHoldAlertDue(build(HKX77V()), due + 1), false);
+  assert.equal(ezcaterHoldAlertDue({ ...held, kitchen_routed_at: 'x' }, due + 1), false);
+  assert.equal(ezcaterHoldAlertDue({ ...held, status: 'cancelled' }, due + 1), false);
+  assert.equal(ezcaterHoldAlertDue({ ...held, status: 'collected' }, due + 1), false);
+  assert.equal(ezcaterHoldAlertDue({ ...ours, sent_at: held.sent_at, customer: { ...ours.customer, ezcater_awaiting_acceptance: true } }, due + 1), false);
+  assert.equal(ezcaterHoldAlertDue({ ...held, sent_at: null }, due + 1), false);
+  assert.equal(ezcaterHoldAlertDue(null, due), false);
+});
+
+test('C. held past its fire time: plain words, and the stamp survives a change before firing', () => {
+  const held = { ...build(HKX77V({ lifecycle: { orderIsCurrently: 'submitted' } })), kitchen_routed_at: null };
+  assert.equal(ezcaterHoldAlertText(held), 'ezCater HKX77V is due in the kitchen but has not been accepted on ezCater. Accept it on ezCater and it will fire.');
+  assert.match(ezcaterHoldAlertText({ customer: { channel: 'ezcater' } }), /^An ezCater order is due in the kitchen/);
+  const alerted = { ...held, customer: { ...held.customer, ezcater_hold_alerted_at: '2026-09-23T17:30:00Z' } };
+  const plan = ezcaterWritePlan({ next: build(HKX77V({ lifecycle: { orderIsCurrently: 'submitted' } })), existing: alerted, nowIso: 'n' });
+  assert.equal(plan.kind, 'unfired');
+  assert.equal(plan.patch.customer.ezcater_hold_alerted_at, '2026-09-23T17:30:00Z');
+  assert.equal(ezcaterHoldAlertDue({ ...alerted, ...plan.patch }, Date.parse('2026-09-24T00:00:00Z')), false);
+  // Never added to an order that was not alerted.
+  const fresh = ezcaterWritePlan({ next: build(HKX77V()), existing: held, nowIso: 'n' });
+  assert.equal('ezcater_hold_alerted_at' in fresh.patch.customer, false);
+});
+
+test('C. catering-release: reads held rows, claims with a conditional stamp, writes one urgent entry', () => {
+  const cron = read('../../supabase/functions/catering-release/index.ts');
+  assert.match(cron, /\.eq\('customer->>ezcater_awaiting_acceptance', 'true'\)\n\s+\.is\('customer->>ezcater_hold_alerted_at', null\)\n\s+\.lte\('sent_at', nowIso\)/);
+  assert.match(cron, /if \(!ezcaterHoldAlertDue\(row, nowMs\)\) continue;/);
+  assert.match(cron, /ezcater_hold_alerted_at: nowIso \} \}\)\n\s+\.eq\('ref', row\.ref\)\.eq\('location_id', row\.location_id\)\n\s+\.is\('kitchen_routed_at', null\)/);
+  assert.match(cron, /severity: 'urgent',\n\s+title: ezcaterHoldAlertText\(row\)/);
+  // The release itself is unchanged: held rows are still never fired.
+  assert.match(cron, /\.or\(RELEASABLE_OR_FILTER\)/);
+});
+
+test('D. one activity entry per new order: the trigger logs it, the webhook only logs flags', () => {
+  const src = read('../../supabase/functions/ezcater-webhook/index.ts');
+  assert.doesNotMatch(src, /catering order`/);
+  assert.match(src, /if \(flagged\) \{/);
+  assert.match(src, /severity: 'urgent',\n\s+title: `\$\{badge\}: \$\{flagged\.text\}`/);
+  // The trigger titles every insert by source, so an ezCater order reads "Catering order".
+  const trig = read('../../supabase/migrations/20260629d_order_activity_trigger.sql');
+  assert.match(trig, /after insert on order_queue/);
+  assert.match(trig, /initcap\(coalesce\(nullif\(new\.source, ''\)/);
+});
+
+test('E. ADR-023 says the claim refuses cancelled rows for every source, and the release note exists', () => {
+  const d = read('../../DECISIONS.md');
+  assert.doesNotMatch(d, /no queue code change/);
+  assert.match(d, /refuses a cancelled row for every source/);
+  const store = read('../store/index.js');
+  assert.match(store, /\.or\('status\.is\.null,status\.neq\.cancelled'\)/);
+  const note = read('../../docs/EZCATER_V1_RELEASE.md');
+  for (const fn of ['catering-release', 'order-notify', 'review-request', 'uber-direct', 'ezcater-webhook']) {
+    assert.match(note, new RegExp('`' + fn + '`'), fn);
+  }
+  assert.ok(note.indexOf('`ezcater-webhook`') > note.indexOf('`uber-direct`'), 'the webhook goes last');
+  assert.match(note, /closed_checks/);
+  assert.match(note, /HKX77V/);
+  assert.doesNotMatch(note, /[\u2013\u2014]/);
 });
