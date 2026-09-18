@@ -10,6 +10,9 @@ import LocationSwitcher from './LocationSwitcher';
 import { VERSION } from '../lib/version';
 import { CUSTOMER_ROOT, customerUrl } from '../lib/env';
 import { normaliseMenuRow, assembleTaxProfiles } from '../lib/rowMapping';
+import { fetchTableTombstones, fetchFloorPlanVersioned } from '../lib/db';
+import { loadPlanState, mergeTombs, tombstonesFromRows, normaliseFloorRow, nextSeq } from '../lib/tablePlan';
+import { refreshTablePlan } from '../sync/TablePlanSync';
 import MenuManager from './sections/MenuManager';
 import FloorPlanBuilder from './sections/FloorPlanBuilder';
 import DeviceProfiles from './sections/DeviceProfiles';
@@ -460,12 +463,11 @@ export default function BackOfficeApp() {
 
   const loadLocationData = async (locationId) => {
     if (!locationId) return;
-    const { fetchMenus, fetchMenuCategories, fetchMenuItems, fetchFloorPlan } = await import('../lib/db.js');
-    const [menusRes, catsRes, itemsRes, floorRes, modGroupsRes] = await Promise.all([
+    const { fetchMenus, fetchMenuCategories, fetchMenuItems } = await import('../lib/db.js');
+    const [menusRes, catsRes, itemsRes, modGroupsRes] = await Promise.all([
       fetchMenus(locationId),
       fetchMenuCategories(locationId),
       fetchMenuItems(locationId),
-      fetchFloorPlan(locationId),
       // Load modifier group definitions from Supabase
       supabase ? supabase.from('modifier_groups').select('*').eq('location_id', locationId).order('sort_order') : { data: null },
     ]);
@@ -513,21 +515,6 @@ export default function BackOfficeApp() {
       lockPricing:  item.lock_pricing  ?? item.lockPricing  ?? false,
       lockedFields: item.locked_fields ?? item.lockedFields ?? [],
     }));
-    // v5.5.2: map raw floor_tables rows to the camelCase shape the rest of the app expects
-    // (maxCovers, sortOrder) AND preserve locationId so the cross-location guard in
-    // upsertFloorTable has data to work with. Previously the BO just spread raw DB rows in.
-    if (floorRes.data?.tables?.length) patch.tables = floorRes.data.tables.map(t => ({
-      id: t.id,
-      label: t.label,
-      x: t.x, y: t.y, w: t.w, h: t.h,
-      shape: t.shape,
-      maxCovers: t.max_covers ?? t.maxCovers ?? 4,
-      section: t.section ?? null,
-      sortOrder: t.sort_order ?? t.sortOrder ?? 0,
-      locationId: t.location_id,
-      status: 'available',
-      session: null,
-    }));
     // Map modifier groups from snake_case DB columns to camelCase store format
     if (modGroupsRes.data?.length) patch.modifierGroupDefs = modGroupsRes.data.map(g => ({
       id: g.id, name: g.name, min: g.min ?? 0, max: g.max ?? 1,
@@ -571,6 +558,14 @@ export default function BackOfficeApp() {
     }
 
     if (Object.keys(patch).length) useStore.setState(patch);
+
+    // v5.9.4: the floor plan, through sync/TablePlanSync (lib/tablePlan.js), applied to the store
+    // AS IT IS NOW (not a copy taken before the waits above). The read is the plan version:
+    // definitions from it, each stamped with the database updated_at and the compare-and-set base
+    // this tab's edits are checked against (FloorPlanBuilder); tombstones remove; the sessions
+    // SyncBridge loaded into this store are kept (this loader used to null every session); a table
+    // holding an open order stays reachable, flagged planRemoved (shown read only, never editable).
+    await refreshTablePlan({ locationId, mode: 'full', reason: 'backoffice', backOffice: true });
   };
 
   // Show spinner while checking session
@@ -979,6 +974,56 @@ function PushToPOSButton() {
       snapshotLocationId = await getLocationId();
     } catch (e) { console.warn('[handlePush] snapshot locationId resolve failed:', e?.message); }
 
+    // v5.9.4 table plan (lib/tablePlan.js). The tables in a push come from a FRESH read of the
+    // plan, never from this tab's store: a Back Office tab left open for hours (or one that missed
+    // another Back Office's delete) used to push its old names and deleted tables to every till.
+    // Each table carries the database updated_at it was read with (srvAt), and the snapshot says
+    // so (tablePlan.v 2, fromRead), so a till keeps whichever copy the database stamped later.
+    // The deletes ride along as tombstones: the database's (server deleted_at) plus any this
+    // machine holds locally (a delete made before the tombstone table existed). Their local seq
+    // is stripped: it is this machine's counter and means nothing on a till.
+    // If the fresh read fails, this tab's tables go out UNSTAMPED (fromRead false): a till then
+    // treats them like an old push and adds or renames nothing its own plan read has decided.
+    let pushTombstones = {};
+    let pushTables = null;
+    let pushPlan = { v: 2, fromRead: false, srvReadAt: 0 };
+    if (snapshotLocationId) {
+      try {
+        const readSeq = nextSeq();
+        const [fp, tRes] = await Promise.all([
+          fetchFloorPlanVersioned(snapshotLocationId).catch(e => ({ data: null, error: e })),
+          fetchTableTombstones(snapshotLocationId).catch(e => ({ data: null, error: e })),
+        ]);
+        const state = loadPlanState(snapshotLocationId);
+        const tombs = mergeTombs(state.tombs, tombstonesFromRows(tRes?.data, readSeq), { cleared: state.cleared });
+        // A LOCAL mark for a table the fresh read still has is out of date (the row was re-created,
+        // or the delete never went through): never send it. Server marks go as they are; a till
+        // compares them with each copy's updated_at.
+        const inRead = new Set((Array.isArray(fp?.data?.tables) ? fp.data.tables : []).map(r => r.id));
+        for (const [id, t] of Object.entries(tombs)) if (!t.srv && inRead.has(id)) delete tombs[id];
+        pushTombstones = Object.fromEntries(Object.entries(tombs).map(([id, t]) => [id, { at: t.at, srv: !!t.srv, ...(t.label ? { label: t.label } : {}) }]));
+        if (Array.isArray(fp?.data?.tables) && fp.data.tables.length) {
+          pushTables = fp.data.tables.map(r => {
+            const t = normaliseFloorRow(r, { locationId: snapshotLocationId });
+            return {
+              id: t.id, label: t.label, x: t.x, y: t.y, w: t.w, h: t.h,
+              shape: t.shape, maxCovers: t.maxCovers, section: t.section, sortOrder: t.sortOrder,
+              locationId: t.locationId || snapshotLocationId,
+              srvAt: t.srvAt || 0, srvIso: t.srvIso || null,
+            };
+          });
+          pushPlan = { v: 2, fromRead: true, srvReadAt: fp.data.srvReadAt || 0 };
+        }
+      } catch (e) { console.warn('[handlePush] table plan read failed, pushing unstamped tables:', e?.message || e); }
+    }
+    if (!pushTables) {
+      pushTables = tables.filter(t => !t.planRemoved && !t.parentId && !t._isNew).map(t => ({
+        id:t.id, label:t.label, x:t.x, y:t.y, w:t.w, h:t.h,
+        shape:t.shape, maxCovers:t.maxCovers, section:t.section, sortOrder:t.sortOrder,
+        locationId: t.locationId || snapshotLocationId,
+      }));
+    }
+
     const snapshot = {
       version: Date.now(),
       pushedAt: new Date().toISOString(),
@@ -986,11 +1031,10 @@ function PushToPOSButton() {
       locationId: snapshotLocationId,
       printRouting: printRouting || { centres:[], routing:{} },
       printers,
-      tables: tables.map(t => ({
-        id:t.id, label:t.label, x:t.x, y:t.y, w:t.w, h:t.h,
-        shape:t.shape, maxCovers:t.maxCovers, section:t.section,
-        locationId: t.locationId || snapshotLocationId,
-      })),
+      // v5.9.4: see the table plan note above (fresh read, database times, tombstones).
+      tables: pushTables,
+      tablePlan: pushPlan,
+      tableTombstones: pushTombstones,
       locationSections,
       menus,
       menuItems,

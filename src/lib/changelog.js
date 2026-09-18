@@ -7,6 +7,17 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.6',
+    date: '18 Sep 2026',
+    items: [
+      'Renaming, moving or deleting a table in the floor plan now sticks after a refresh, on every till. Tills used to put the old name back from an older copy of the plan, and a deleted table came back because a device treated "not in the latest copy" as "lost" rather than "deleted".',
+      'A delete is now recorded as a delete, and the newest edit to a table wins, decided by the database\'s own clock, never a device\'s, so a till with its clock set wrong cannot hide a new table or undo an edit.',
+      'Tables are still never lost: a failed or empty load, a till waking up offline, or a second tab can never remove a table nobody deleted.',
+      'Back Office refuses to delete a table that has an open order on it, including split checks and open QR tabs, and says why. If an order ever does end up on a deleted table, the table stays on the till, marked Removed, until the order is closed.',
+      'If a Back Office tab left open from before this update tries to save an old copy of a table, or bring back a deleted one, it is refused with a message to reload, instead of silently overwriting the newer plan.',
+    ],
+  },
+  {
     v: '5.9.5',
     date: '18 Sep 2026',
     items: [
