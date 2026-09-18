@@ -1,37 +1,43 @@
 // src/lib/customerImportScreen.js
 //
-// The parts of the Import customers screen that are just rules, pulled out of
-// the JSX so node:test can run them. No React, no DOM, no fetch, no clock read
-// the caller cannot override.
+// The parts of the admin portal's Import customers screen that are just rules,
+// pulled out of the JSX so node:test can run them. No React, no DOM, no fetch,
+// no clock read the caller cannot override.
+//
+// The screen is SERVOS STAFF ONLY and lives in the admin portal (?mode=admin,
+// src/admin/sections/AdminCustomerImport.jsx). Venue owners and managers never
+// see it. The edge function refuses anybody else too, because hiding a screen
+// is not security.
 //
 // The reading of the file itself is NOT here. That lives in
 // src/lib/customerImport.js and is mirrored for the edge function in
 // supabase/functions/_shared/customerImport.ts, so the screen and the thing
-// that writes the rows always agree about what the file said. This file only
-// decides what the screen shows and when the Import button may be pressed.
+// that writes the rows always agree about what the file said.
 //
 // ============================================================================
 //  WHAT THE IMPORT BUTTON IS GUARDING
 // ============================================================================
 //
-//  * Stamps have to land on a stamp card programme. Coffee Boy has ZERO
-//    programmes today (checked live, 17 Sep 2026), so a file full of stamps
-//    would have nowhere to put them. We never invent a programme, and we never
-//    quietly drop the stamps: the button stays off and the screen says, in
-//    plain words, to make a stamp card first.
-//  * A file with NO stamps in it does not need a programme, so we do not block
-//    that one. Nobody's stamps can be lost by importing people who have none.
+//  * The COMPANY. The operator picks the company first and a venue of it, and
+//    the confirm step shows the company's name large, so nobody imports Coffee
+//    Boy into the wrong brand. The edge function checks the venue is in the
+//    company that was picked.
+//  * The server's word on who is new. The preview asks the edge function, which
+//    runs the same matching the import will, and the tiles and the table both
+//    read that one answer. Until it has answered, the button stays off.
+//  * Stamps have to land on a stamp card programme. We never invent one.
 //  * Consent is a tick the operator makes, once, before anything is written.
-//    The people are coming from another marketing system where they opted in,
-//    and the tick is what puts that in writing on every row.
 //
 // Every message in here is read out loud by somebody who is not technical.
 // Short words, no jargon, and never a number without saying what it counts.
 
-import { TEMPLATE_COLUMNS, toCsv, buildExistingKeys } from './customerImport.js';
+import { TEMPLATE_COLUMNS, toCsv, verdictsByRow } from './customerImport.js';
 
-/** How many rows go to the server in one request. */
+/** How many rows go to the server in one import request. */
 export const CHUNK_SIZE = 200;
+
+/** How many rows go to the server in one preview request (it writes nothing). */
+export const PREVIEW_CHUNK_SIZE = 500;
 
 /** How many rows the preview table shows. */
 export const PREVIEW_ROWS = 20;
@@ -59,7 +65,9 @@ export function count(n, one, many) {
  * Why the Import button is off, in plain words, or null when it may be pressed.
  *
  * state:
+ *   company       the company picked, and its venue, and the server has said who they are
  *   fileRead      true once a file has been read
+ *   previewed     true once the server has said who is new and who is known
  *   ready         how many rows we would write
  *   withStamps    how many of those rows carry stamps or unused rewards
  *   programmes    the stamp card programmes this company has
@@ -74,10 +82,11 @@ export function importBlockReason(state) {
   if (s.busy) return 'Importing. Please wait.';
   if (s.demo) return 'This is a demo screen. Nothing can be imported here.';
   // A second press on the same file would send it all over again. People are
-  // safe from that (we fill blanks, we never add the same phone twice), but
-  // stamps are not, so the button goes off the moment a run finishes.
+  // safe from that, stamps are not, so the button goes off when a run finishes.
   if (s.alreadyRan) return 'This file has gone in. Pick another file to import more.';
+  if (!s.company) return 'Pick the company first.';
   if (!s.fileRead) return 'Pick a file first.';
+  if (!s.previewed) return 'Wait for the check to finish.';
   const ready = Number(s.ready) || 0;
   if (ready < 1) return 'Nothing in this file we can import. Fix the problems and pick it again.';
 
@@ -99,28 +108,48 @@ export function noProgrammeLine(withStamps) {
   return 'Stamps are waiting for ' + count(n, 'person', 'people') + ' in this file. Make a stamp card in Loyalty first, then come back and import.';
 }
 
+/** The line that says how phones and dates in the file are being read. */
+export function countryLine(country, source) {
+  const c = String(country || '').toUpperCase();
+  const from = source === 'country' ? 'the venue\'s country' : source === 'currency' ? 'the venue\'s currency' : '';
+  if (c === 'GB') {
+    return 'Phones and dates are read as United Kingdom (from ' + (from || 'the venue') + '). A phone that lost its 0 gets it back, and 05/09/1984 is 5 September.';
+  }
+  if (c) {
+    return 'Phones and dates are read as ' + c + (from ? ' (from ' + from + ')' : '') + '. No 0 is put on any phone, and no country code is added.';
+  }
+  return 'We do not know this venue\'s country, so no 0 is put on any phone and a date like 05/09/1984 is refused. Set the venue\'s currency or country first.';
+}
+
 // ── the confirm ─────────────────────────────────────────────────────────────
 
 /**
- * What the operator reads before anything is written. It says the numbers and
- * it says it cannot be undone from this screen, because it cannot.
+ * What the operator reads on the confirm step, one line each, under the
+ * company name. It says the numbers and it says it cannot be undone.
  */
-export function confirmMessage(summary) {
+export function confirmLines(summary) {
   const s = summary || {};
   const made = Number(s.newCustomers) || 0;
   const known = Number(s.alreadyKnown) || 0;
   const lines = [];
   lines.push('This will add ' + count(made, 'new customer') + '.');
-  if (known > 0) lines.push('It will also fill in blanks on ' + count(known, 'customer') + ' you already have. It never overwrites what is there.');
+  if (known > 0) lines.push('It will also fill in blanks on ' + count(known, 'customer') + ' they already have. It never overwrites what is there.');
   const stamps = Number(s.stampsTotal) || 0;
   const rewards = Number(s.rewardsTotal) || 0;
   if (stamps > 0 || rewards > 0) lines.push('Stamps going on: ' + count(stamps, 'stamp') + ' and ' + count(rewards, 'free item') + '.');
   lines.push('It cannot be undone from this screen.');
+  return lines;
+}
+
+/** The confirm as one block of text, with the company named first. */
+export function confirmMessage(summary, companyName) {
+  const name = String(companyName || '').trim();
+  const lines = (name ? ['Import into ' + name + '.'] : []).concat(confirmLines(summary));
   lines.push('Import now?');
   return lines.join('\n\n');
 }
 
-// ── the preview table ───────────────────────────────────────────────────────
+// ── the preview ─────────────────────────────────────────────────────────────
 
 /**
  * Every row number that has something wrong with it, and the plain words for
@@ -147,17 +176,56 @@ export function skippedRowNumbers(checked) {
   return Array.from(problemsByRow(checked).keys()).sort((a, b) => a - b);
 }
 
+/** The words for a row that is the same person as an earlier one. The edge
+ *  function says exactly this (sameAsReason in customerImportPlan.ts), and
+ *  customerImportScreen.test.js holds the two together. */
+export function sameAsReason(firstRowNumber) {
+  const n = Number(firstRowNumber) || 0;
+  return 'Same person as row ' + n + '. We already have them, and row ' + n + ' fills them in, so we left this row out.';
+}
+
+/**
+ * The server decides one slice at a time, so row 12 in the first slice and row
+ * 4,012 in the twentieth can land on one customer without either slice seeing
+ * the other. The screen has every verdict, so it runs this over the whole file
+ * before it sends anything: the later row is left out with the same words the
+ * server would use, and never sent.
+ */
+export function sameCustomerAcrossFile(verdicts) {
+  const list = Array.isArray(verdicts) ? verdicts : [];
+  const first = new Map();
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    const v = list[i];
+    if (!v || typeof v !== 'object') continue;
+    const n = Number(v.row_number) || 0;
+    const id = v.customer_id != null ? String(v.customer_id) : null;
+    const item = { row_number: n, verdict: String(v.verdict || ''), reason: String(v.reason || ''), customer_id: id };
+    if (id && item.verdict === 'update') {
+      const had = first.get(id);
+      if (had !== undefined && had !== n) {
+        item.verdict = 'blocked';
+        item.reason = sameAsReason(had);
+        item.same_as = had;
+      } else if (had === undefined) first.set(id, n);
+    }
+    out.push(item);
+  }
+  return out;
+}
+
 /**
  * The first rows of the file, in file order, ready to put in a table.
  *
  * Each one is { rowNumber, name, phone, email, stamps, rewards, status, note }.
- * status is 'new', 'known' or 'problem'. 'known' means we already have that
- * person, so the import fills their blanks instead of adding them twice.
+ * status is 'new', 'known', 'blocked', 'unchecked' or 'problem', and it comes
+ * from the SAME verdicts the tiles count (see summarise), so the table and the
+ * tiles can never disagree about who is already in.
  */
 export function previewRows(checked, opts) {
   const o = opts || {};
   const limit = Number.isFinite(o.limit) ? o.limit : PREVIEW_ROWS;
-  const keys = buildExistingKeys(o.existingKeys);
+  const byRow = verdictsByRow(o.verdicts);
   const raw = Array.isArray(o.raw) ? o.raw : [];
   const rawByRow = new Map();
   for (let i = 0; i < raw.length; i++) {
@@ -170,17 +238,20 @@ export function previewRows(checked, opts) {
   const ready = checked && Array.isArray(checked.ready) ? checked.ready : [];
   for (let i = 0; i < ready.length; i++) {
     const r = ready[i];
-    const known = (r.phone && keys.has('p:' + r.phone)) || (r.email && keys.has('e:' + r.email));
+    const v = byRow ? byRow.get(r.rowNumber) : null;
+    const verdict = v ? v.verdict : '';
+    const status = verdict === 'update' ? 'known' : verdict === 'new' ? 'new' : verdict === 'blocked' ? 'blocked' : 'unchecked';
     const notes = [];
+    if (verdict === 'blocked' && v.reason) notes.push(v.reason);
     for (let j = 0; j < (r.warnings || []).length; j++) notes.push(r.warnings[j].message);
     list.push({
       rowNumber: r.rowNumber,
       name: r.name || '',
-      phone: r.phone || r.phoneRaw || '',
+      phone: r.phone || '',
       email: r.email || '',
       stamps: r.stamps || 0,
       rewards: r.rewardsUnused || 0,
-      status: known ? 'known' : 'new',
+      status,
       note: notes.join(' '),
     });
   }
@@ -203,6 +274,15 @@ export function previewRows(checked, opts) {
 
   list.sort((a, b) => a.rowNumber - b.rowNumber);
   return limit > 0 ? list.slice(0, limit) : list;
+}
+
+/** Row numbers the server refused in the preview, with its words. */
+export function blockedByRow(verdicts) {
+  const out = new Map();
+  const byRow = verdictsByRow(verdicts);
+  if (!byRow) return out;
+  byRow.forEach((v, n) => { if (v.verdict === 'blocked') out.set(n, v.reason || 'We left this row out.'); });
+  return out;
 }
 
 // ── the file of rows to fix ─────────────────────────────────────────────────
@@ -249,25 +329,60 @@ export function chunkRows(rows, size) {
 }
 
 /** The function's name for this import. It is the DIRECTORY under
- *  supabase/functions, and nothing else: a name that does not match is a 404
- *  the screen dresses up as "not live on this site yet". */
+ *  supabase/functions, and nothing else. */
 export const IMPORT_FUNCTION = 'customer-import';
 
 /**
- * The body we post, exactly the keys index.ts reads and no others.
- *
- * This lived inline in the JSX and drifted from the function on FIVE keys at
- * once: no `action` at all (400 'action required'), `location_id` where the
- * function reads `ops_location_id`, and `batch_key` where it reads `batch_id`,
- * which minted a fresh batch id for every chunk, so a 20,000 row file wrote 100
- * import_batches rows and the "carry on" guard had nothing to recognise. It is
- * a function here so a test can hold it against what index.ts actually reads.
+ * A batch id: a uuid, because import_batches.id is one and the edge function
+ * refuses anything else. `rand` is for tests; the browser's own crypto is used
+ * when there is one.
+ */
+export function newBatchId(rand) {
+  try {
+    if (!rand && typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+  } catch { /* older browser, fall through */ }
+  const r = typeof rand === 'function' ? rand : Math.random;
+  const hex = [];
+  for (let i = 0; i < 32; i++) hex.push(Math.floor(r() * 16) & 15);
+  hex[12] = 4;
+  hex[16] = (hex[16] & 3) | 8;
+  const s = hex.map((h) => h.toString(16)).join('');
+  return s.slice(0, 8) + '-' + s.slice(8, 12) + '-' + s.slice(12, 16) + '-' + s.slice(16, 20) + '-' + s.slice(20);
+}
+
+/** The body for 'who am I importing into'. Reads nothing from a file. */
+export function contextRequestBody(args) {
+  const a = args || {};
+  return {
+    action: 'context',
+    ops_location_id: String(a.opsLocationId || ''),
+    org_id: String(a.orgId || ''),
+  };
+}
+
+/** The body for the preview: the rows, the day and the stamp card. Writes nothing. */
+export function previewRequestBody(args) {
+  const a = args || {};
+  return {
+    action: 'preview',
+    ops_location_id: String(a.opsLocationId || ''),
+    org_id: String(a.orgId || ''),
+    rows: Array.isArray(a.rows) ? a.rows : [],
+    today: String(a.today || ''),
+    program_id: a.programId || null,
+  };
+}
+
+/**
+ * The body we post to import one slice, exactly the keys index.ts reads.
+ * customerImportWiring.test.js holds this against the function key for key.
  */
 export function importRequestBody(args) {
   const a = args || {};
   return {
     action: 'import',
     ops_location_id: String(a.opsLocationId || ''),
+    org_id: String(a.orgId || ''),
     rows: Array.isArray(a.rows) ? a.rows : [],
     batch_id: String(a.batchId || ''),
     filename: String(a.filename || ''),
@@ -279,24 +394,55 @@ export function importRequestBody(args) {
   };
 }
 
+function rowList(value) {
+  const list = Array.isArray(value) ? value : [];
+  const out = [];
+  for (let i = 0; i < list.length; i++) {
+    const f = list[i];
+    if (!f || typeof f !== 'object') continue;
+    const n = Number(f.row_number != null ? f.row_number : f.rowNumber) || 0;
+    const reason = String(f.reason || f.message || '');
+    out.push({ rowNumber: n, reason, text: n ? 'Row ' + n + ': ' + reason : reason });
+  }
+  return out;
+}
+
 /**
- * The rows that did not go in, out of one chunk's answer.
+ * The rows that did not go in, out of one chunk's answer: every one with a row
+ * number the Download the rows to fix button can find again.
  *
- * The writer reports them as plain lines, 'Row 44: we could not add this
- * person.', because that is what the operator reads. We keep the line AND pull
- * the row number back out of it, so the Download the rows to fix button can
- * find that row in the file again.
+ * ONLY rows. A line about the whole run ('Loyalty is switched off for this
+ * company') is a note, never a failed row: counting those as rows is how a run
+ * reported people as failed who had gone in fine, and never showed the words.
+ * An older answer that put both in one `errors` list is split here: a line
+ * that starts 'Row N:' is a row, anything else is a note (see notesFromChunk).
  */
 export function failedFromChunk(chunk) {
   const c = chunk || {};
-  const out = [];
+  const out = rowList(c.failed);
   const lines = Array.isArray(c.errors) ? c.errors : [];
   for (let i = 0; i < lines.length; i++) {
     const text = String(lines[i] == null ? '' : lines[i]);
-    if (!text) continue;
     const m = text.match(/^Row (\d+): ?(.*)$/);
-    out.push({ rowNumber: m ? Number(m[1]) : 0, reason: m ? m[2] : text, text });
+    if (m) out.push({ rowNumber: Number(m[1]), reason: m[2], text });
   }
+  return out;
+}
+
+/** Rows the server left out on purpose, by row. */
+export function skippedFromChunk(chunk) {
+  return rowList((chunk || {}).skipped_rows);
+}
+
+/** The lines about the whole run. Every one is shown, none is counted. */
+export function notesFromChunk(chunk) {
+  const c = chunk || {};
+  const out = [];
+  const add = (t) => { const s = String(t == null ? '' : t).trim(); if (s && out.indexOf(s) < 0) out.push(s); };
+  const notes = Array.isArray(c.notes) ? c.notes : [];
+  for (let i = 0; i < notes.length; i++) add(notes[i]);
+  const lines = Array.isArray(c.errors) ? c.errors : [];
+  for (let i = 0; i < lines.length; i++) if (!/^Row \d+:/.test(String(lines[i] || ''))) add(lines[i]);
   return out;
 }
 
@@ -304,20 +450,18 @@ export function failedFromChunk(chunk) {
  * Add one chunk's answer to what we have so far.
  *
  * The writer puts this chunk's numbers under `chunk` and the running file
- * totals under `totals`. Reading the top level instead found nothing at all, so
- * every count came back 0 and a run that worked perfectly reported "0 customers
- * added" to the operator.
+ * totals under `totals`.
  */
 export function mergeResult(sofar, next) {
   const a = sofar || {};
   const b = next || {};
   const c = b.chunk && typeof b.chunk === 'object' ? b.chunk : b;
   const num = (x) => (Number.isFinite(Number(x)) ? Number(x) : 0);
-  const failed = (Array.isArray(a.failed) ? a.failed : [])
-    .concat(Array.isArray(b.failed) ? b.failed : [])
-    .concat(failedFromChunk(c));
-  const notes = (Array.isArray(a.notes) ? a.notes : [])
-    .concat(Array.isArray(c.notes) ? c.notes.map((n) => String(n)) : []);
+  const failed = (Array.isArray(a.failed) ? a.failed : []).concat(failedFromChunk(c));
+  const skippedRows = (Array.isArray(a.skippedRows) ? a.skippedRows : []).concat(skippedFromChunk(c));
+  const notes = (Array.isArray(a.notes) ? a.notes : []).slice();
+  const more = notesFromChunk(c);
+  for (let i = 0; i < more.length; i++) if (notes.indexOf(more[i]) < 0) notes.push(more[i]);
   return {
     created: num(a.created) + num(c.created),
     updated: num(a.updated) + num(c.updated),
@@ -327,6 +471,7 @@ export function mergeResult(sofar, next) {
     alreadyStamped: num(a.alreadyStamped) + num(c.already_stamped) + num(c.alreadyStamped),
     consentWithheld: num(a.consentWithheld) + num(c.consent_withheld) + num(c.consentWithheld),
     failed,
+    skippedRows,
     notes,
     batchId: b.batch_id || b.batchId || a.batchId || null,
   };
@@ -351,9 +496,7 @@ export function progressPercent(done, total) {
 
 /**
  * One plain line for a request that did not work, so the screen can say it and
- * carry on. The import is new, so the realistic case is that it is not live on
- * this project yet: that is a 404 from the functions host, and it must read as
- * "nothing happened", never as an error the operator caused.
+ * carry on.
  */
 export function importErrorMessage(status, body) {
   const code = Number(status) || 0;
@@ -361,7 +504,8 @@ export function importErrorMessage(status, body) {
   if (code === 404 || /not\s*found/i.test(text || '')) {
     return 'The import is not live on this site yet, so nothing was sent. Nothing has changed.';
   }
-  if (code === 401 || code === 403) return 'You are not allowed to import here. Sign in again, or ask Peter.';
+  if (code === 401 || code === 403) return 'You are not allowed to import here. Only ServOS staff can. Sign in again with your ServOS login.';
+  if (code === 409 && body && typeof body === 'object' && typeof body.error === 'string') return 'It stopped: ' + body.error;
   if (code === 413) return 'That was too much in one go. Split the file and try again.';
   if (code === 429) return 'The server asked us to slow down. Wait a minute and try again.';
   if (code >= 500) return 'The server had a problem. Nothing more was sent. Try again in a minute.';
@@ -369,13 +513,14 @@ export function importErrorMessage(status, body) {
   return plain ? 'It stopped: ' + plain : 'It stopped and we do not know why. Nothing more was sent.';
 }
 
-/** The line shown after a run that worked. */
+/** The line shown after a run. Skipped (left out on purpose) and did not go in
+ *  (a write that failed) are different things and are counted apart. */
 export function resultLine(result) {
   const r = result || {};
   const bits = [];
   bits.push(count(Number(r.created) || 0, 'customer') + ' added');
   if ((Number(r.updated) || 0) > 0) bits.push(count(Number(r.updated) || 0, 'customer') + ' filled in');
-  if ((Number(r.skipped) || 0) > 0) bits.push(count(Number(r.skipped) || 0, 'row') + ' skipped');
+  if ((Number(r.skipped) || 0) > 0) bits.push(count(Number(r.skipped) || 0, 'row') + ' left out');
   const failed = Array.isArray(r.failed) ? r.failed.length : 0;
   if (failed > 0) bits.push(count(failed, 'row') + ' did not go in');
   return bits.join(', ') + '.';

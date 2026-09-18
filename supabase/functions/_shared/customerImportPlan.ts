@@ -36,7 +36,7 @@
 //                      member_code, UNIQUE referral_code.
 //   Platform customer_stamp_cards   UNIQUE (customer_id, program_id, company_id).
 
-import { normalisePhoneUk, normaliseEmail, phoneKeys } from './customerImport.ts';
+import { normaliseEmail, phoneKeys, rawPhoneKeys, normaliseCountry } from './customerImport.ts';
 import type { ImportRow } from './customerImport.ts';
 
 // ── sizes ───────────────────────────────────────────────────────────────────
@@ -69,9 +69,15 @@ export interface ExistingCustomer {
 }
 
 export interface ExistingIndex {
+  /** customers.phone, under every shape readPhone gives it for this country. */
   byPhone: Map<string, ExistingCustomer>;
+  /** customers.phone_raw: the text as typed, and that text read as a phone. */
+  byRaw: Map<string, ExistingCustomer>;
   byEmail: Map<string, ExistingCustomer>;
 }
+
+/** The company's country, which is how a phone cell is read. See countryFromVenue. */
+export interface MatchOpts { country?: string | null }
 
 export type Verdict = 'new' | 'update' | 'blocked';
 
@@ -84,6 +90,8 @@ export interface Decision {
   customerId: string | null;
   matchedOn: 'phone' | 'email' | '';
   row: ImportRow;
+  /** The earlier row this one is the same person as, when that is why it was left out. */
+  sameAs?: number;
 }
 
 export interface PlanCounts {
@@ -182,60 +190,116 @@ export function chunk<T>(list: T[], size: number): T[][] {
 // ── who do we already have ──────────────────────────────────────────────────
 
 /**
- * The venue's existing customers, keyed the way the file will be read, so a
+ * The company's existing customers, keyed the way the file will be read, so a
  * phone typed four different ways still finds the one person.
  *
+ * byPhone holds customers.phone EXACTLY as stored, plus that value read with
+ * the company's country (a GB landline stored as 01614960000 is also
+ * +441614960000, the shape an earlier version of this importer wrote). byRaw
+ * holds customers.phone_raw as typed, and that text read as a phone, because
+ * Back Office saves an edited phone into phone_raw. byEmail is lower case.
+ *
  * The FIRST row wins on a clash, which cannot happen in practice because both
- * keys are unique indexes on the live table, but a soft deleted row read in by
- * mistake should never displace a live one.
+ * keys are unique indexes on the live table.
  */
-export function indexExisting(rows: unknown): ExistingIndex {
+export function indexExisting(rows: unknown, opts?: MatchOpts | null): ExistingIndex {
+  const country = normaliseCountry(opts?.country);
   const byPhone = new Map<string, ExistingCustomer>();
+  const byRaw = new Map<string, ExistingCustomer>();
   const byEmail = new Map<string, ExistingCustomer>();
+  const put = (map: Map<string, ExistingCustomer>, key: string, c: ExistingCustomer): void => {
+    if (key && !map.has(key)) map.set(key, c);
+  };
   const list: unknown[] = Array.isArray(rows) ? rows : [];
   for (let i = 0; i < list.length; i++) {
     const c = list[i] as ExistingCustomer;
     if (!c || typeof c !== 'object' || !c.id) continue;
-    // One person, every shape their number could be on file in: what the app's
-    // own rule produces (01614960000), the E.164 form an older run of this
-    // importer wrote (+441614960000), and phone_raw, which is whatever they
-    // typed. Index them ALL, or the same person is imported a second time with
-    // the stamps on the row the till cannot find.
-    const forms = phoneKeys(c.phone).concat(phoneKeys(c.phone_raw));
-    for (let j = 0; j < forms.length; j++) if (!byPhone.has(forms[j])) byPhone.set(forms[j], c);
+    put(byPhone, text(c.phone), c);
+    const forms = phoneKeys(c.phone, { country });
+    for (let j = 0; j < forms.length; j++) put(byPhone, forms[j], c);
+    const raws = rawPhoneKeys(c.phone_raw);
+    for (let j = 0; j < raws.length; j++) put(byRaw, 'r:' + raws[j], c);
+    const rawForms = phoneKeys(c.phone_raw, { country });
+    for (let j = 0; j < rawForms.length; j++) put(byRaw, 'p:' + rawForms[j], c);
     const e = normaliseEmail(c.email);
-    if (e.email && !byEmail.has(e.email)) byEmail.set(e.email, c);
+    if (e.email) put(byEmail, e.email, c);
   }
-  return { byPhone, byEmail };
+  return { byPhone, byRaw, byEmail };
 }
 
-function asIndex(existing: unknown): ExistingIndex {
+function asIndex(existing: unknown, opts?: MatchOpts | null): ExistingIndex {
   const maybe = existing as ExistingIndex | null;
-  if (maybe && maybe.byPhone instanceof Map && maybe.byEmail instanceof Map) return maybe;
-  return indexExisting(existing);
+  if (maybe && maybe.byPhone instanceof Map && maybe.byEmail instanceof Map && maybe.byRaw instanceof Map) return maybe;
+  return indexExisting(existing, opts);
+}
+
+/** '+441614960000' back to the way it is dialled in the UK, '01614960000'. */
+function ukNationalForm(e164: string | null): string {
+  const v = text(e164);
+  return /^\+44\d{9,10}$/.test(v) ? '0' + v.slice(3) : '';
+}
+
+/** The phone keys one row is looked up under. See phoneKeys. */
+function rowPhoneKeys(r: ImportRow): string[] {
+  const out: string[] = [];
+  const list = [r.phone, r.phoneE164, r.phoneApp];
+  for (let i = 0; i < list.length; i++) {
+    const v = list[i];
+    if (v && out.indexOf(v) < 0) out.push(v);
+  }
+  return out;
 }
 
 /**
- * The phones and emails a chunk needs to look up, deduped.
+ * What to ask the database for, deduped.
  *
- * EVERY shape of each phone, not just the one we would write. The customer we
- * are looking for may be on file under the app's shape, under the E.164 form an
- * older run of this importer wrote, or under what they typed in phone_raw, and
- * index.ts asks the database for all of them against both phone and phone_raw.
+ *  - phones  compared with customers.phone: the shape we write, the E.164 form
+ *            (only where readPhone built one), and the app's rule on the cell
+ *  - raws    compared with customers.phone_raw, which is TEXT AS TYPED. So it
+ *            is asked for the cell exactly as the file wrote it, plus the ways a
+ *            person would type the same number ('07954412324', '+447954412324').
+ *            A digits only key can only ever find a phone_raw that was typed as
+ *            digits, and that is exactly what it is asked for.
+ *  - emails  lower case
  */
-export function lookupKeys(rows: unknown): { phones: string[]; emails: string[] } {
+export function lookupKeys(rows: unknown): { phones: string[]; raws: string[]; emails: string[] } {
   const phones = new Set<string>();
+  const raws = new Set<string>();
   const emails = new Set<string>();
   const list: unknown[] = Array.isArray(rows) ? rows : [];
   for (let i = 0; i < list.length; i++) {
     const r = list[i] as ImportRow;
     if (!r || typeof r !== 'object') continue;
-    const forms = phoneKeys(r.phone).concat(phoneKeys(r.phoneRaw));
-    for (let j = 0; j < forms.length; j++) phones.add(forms[j]);
+    const keys = rowPhoneKeys(r);
+    for (let j = 0; j < keys.length; j++) { phones.add(keys[j]); raws.add(keys[j]); }
+    const national = ukNationalForm(r.phoneE164);
+    if (national) raws.add(national);
+    const typed = rawPhoneKeys(r.phoneRaw);
+    for (let j = 0; j < typed.length; j++) raws.add(typed[j]);
     const e = normaliseEmail(r.email);
     if (e.email) emails.add(e.email);
   }
-  return { phones: Array.from(phones), emails: Array.from(emails) };
+  return { phones: Array.from(phones), raws: Array.from(raws), emails: Array.from(emails) };
+}
+
+/** The customer this row's phone already belongs to, if any: customers.phone
+ *  first, then phone_raw as typed, then phone_raw read as a phone. */
+function findByPhone(row: ImportRow, index: ExistingIndex): ExistingCustomer | undefined {
+  const keys = rowPhoneKeys(row);
+  for (let j = 0; j < keys.length; j++) {
+    const c = index.byPhone.get(keys[j]);
+    if (c) return c;
+  }
+  const typed = rawPhoneKeys(row.phoneRaw);
+  for (let j = 0; j < typed.length; j++) {
+    const c = index.byRaw.get('r:' + typed[j]);
+    if (c) return c;
+  }
+  for (let j = 0; j < keys.length; j++) {
+    const c = index.byRaw.get('p:' + keys[j]);
+    if (c) return c;
+  }
+  return undefined;
 }
 
 // ── the verdict on each row ─────────────────────────────────────────────────
@@ -243,60 +307,75 @@ export function lookupKeys(rows: unknown): { phones: string[]; emails: string[] 
 /**
  * New, update, or leave alone, one per row, in file order.
  *
- * Phone first, then email, the same order as every other writer. The one row we
- * refuse is a row with a phone we have never seen whose EMAIL already belongs to
- * somebody with a different phone: writing it would either fail on the unique
- * email index or quietly staple two different people together, and an operator
- * can fix a named row in a minute.
+ * Phone first, then email, the same order as every other writer. Two kinds of
+ * row are refused:
  *
- * Rows already decided (an array of Decisions) are passed straight back, so
- * running this on its own output changes nothing.
+ *  - a row with a phone we have never seen whose EMAIL already belongs to
+ *    somebody with a different phone: writing it would either fail on the
+ *    unique email index or quietly staple two different people together.
+ *  - a row that lands on a customer an EARLIER row already landed on (row A
+ *    found them by phone, row B by email). Both patches in one bulk write is
+ *    Postgres 21000 "ON CONFLICT DO UPDATE command cannot affect row a second
+ *    time", which refuses the WHOLE statement, and it is two lines of the file
+ *    claiming to be one person. The first row wins, and the second names it.
+ *
+ * opts.country is the company's country, which is how the stored phones are
+ * read for comparing. Rows already decided (an array of Decisions) are passed
+ * straight back, so running this on its own output changes nothing.
  */
-export function decideRows(rows: unknown, existing: unknown): Decision[] {
+export function decideRows(rows: unknown, existing: unknown, opts?: MatchOpts | null): Decision[] {
   const list: unknown[] = Array.isArray(rows) ? rows : [];
-  const index = asIndex(existing);
+  const index = asIndex(existing, opts);
   const out: Decision[] = [];
+  const claimedBy = new Map<string, number>();
+
+  const claim = (d: Decision): Decision => {
+    if (!d.customerId || d.verdict === 'blocked') return d;
+    const first = claimedBy.get(d.customerId);
+    if (first !== undefined && first !== d.rowNumber) {
+      return {
+        ...d,
+        verdict: 'blocked',
+        reason: sameAsReason(first),
+        sameAs: first,
+      };
+    }
+    claimedBy.set(d.customerId, d.rowNumber);
+    return d;
+  };
 
   for (let i = 0; i < list.length; i++) {
     const maybe = list[i] as Decision;
     if (maybe && typeof maybe === 'object' && 'verdict' in maybe && maybe.row) {
-      out.push(maybe);
+      out.push(claim(maybe));
       continue;
     }
     const row = list[i] as ImportRow;
     if (!row || typeof row !== 'object') continue;
     const rowNumber = typeof row.rowNumber === 'number' ? row.rowNumber : i + 2;
-
-    const phone = normalisePhoneUk(row.phone);
     const email = normaliseEmail(row.email).email;
 
-    // Every shape this cell could already be filed under, so one person is
-    // never imported twice under two spellings of one number.
-    const forms = phoneKeys(row.phone).concat(phoneKeys(row.phoneRaw));
-    let byPhone: ExistingCustomer | undefined;
-    for (let j = 0; j < forms.length && !byPhone; j++) byPhone = index.byPhone.get(forms[j]);
+    const byPhone = row.phone ? findByPhone(row, index) : undefined;
     if (byPhone) {
-      out.push({ rowNumber, verdict: 'update', reason: '', customerId: byPhone.id, matchedOn: 'phone', row });
+      out.push(claim({ rowNumber, verdict: 'update', reason: '', customerId: byPhone.id, matchedOn: 'phone', row }));
       continue;
     }
 
     const byEmail = email ? index.byEmail.get(email) : undefined;
     if (byEmail) {
-      const theirForms = phoneKeys(byEmail.phone).concat(phoneKeys(byEmail.phone_raw));
-      const sameNumber = forms.some((f) => theirForms.indexOf(f) >= 0);
-      const theirPhone = normalisePhoneUk(byEmail.phone);
-      if (phone && theirPhone && !sameNumber) {
+      // The row has a phone that is not theirs, and they already have one.
+      if (row.phone && text(byEmail.phone)) {
         out.push({
           rowNumber,
           verdict: 'blocked',
-          reason: 'That email already belongs to somebody else here. We left both alone.',
+          reason: 'That email already belongs to somebody else here, with a different phone. We left both alone.',
           customerId: byEmail.id,
           matchedOn: 'email',
           row,
         });
         continue;
       }
-      out.push({ rowNumber, verdict: 'update', reason: '', customerId: byEmail.id, matchedOn: 'email', row });
+      out.push(claim({ rowNumber, verdict: 'update', reason: '', customerId: byEmail.id, matchedOn: 'email', row }));
       continue;
     }
 
@@ -304,6 +383,12 @@ export function decideRows(rows: unknown, existing: unknown): Decision[] {
   }
 
   return out;
+}
+
+/** The words for a row that is the same person as an earlier one. */
+export function sameAsReason(firstRowNumber: unknown): string {
+  const n = Number(firstRowNumber) || 0;
+  return 'Same person as row ' + n + '. We already have them, and row ' + n + ' fills them in, so we left this row out.';
 }
 
 /** The numbers the screen shows before anybody presses Import. */
@@ -488,7 +573,34 @@ export function buildPatch(
 }
 
 /**
- * Patches sorted into groups that share the same columns.
+ * One patch per customer. decideRows already refuses a second row for the same
+ * customer, and this is the belt over that brace: two patches for one id in
+ * one bulk upsert is Postgres 21000, which refuses the WHOLE statement. The
+ * FIRST patch wins every column it has; a later one only adds columns the first
+ * did not touch. Nothing is ever padded with a value we were not changing.
+ */
+export function collapsePatches(patches: unknown): Record<string, unknown>[] {
+  const list: Record<string, unknown>[] = Array.isArray(patches) ? (patches as Record<string, unknown>[]) : [];
+  const byId = new Map<string, Record<string, unknown>>();
+  const order: string[] = [];
+  for (let i = 0; i < list.length; i++) {
+    const p = list[i];
+    if (!p || typeof p !== 'object' || p.id == null) continue;
+    const id = String(p.id);
+    const had = byId.get(id);
+    if (!had) {
+      byId.set(id, { ...p });
+      order.push(id);
+      continue;
+    }
+    for (const k of Object.keys(p)) if (!(k in had)) had[k] = p[k];
+  }
+  return order.map((id) => byId.get(id) as Record<string, unknown>);
+}
+
+/**
+ * Patches sorted into groups that share the same columns, one patch per
+ * customer (see collapsePatches).
  *
  * PostgREST needs every object in one bulk write to carry the same keys, and we
  * refuse to pad the others with the values we are NOT changing, because padding
@@ -497,12 +609,11 @@ export function buildPatch(
  * real file that is a handful of writes per chunk.
  */
 export function groupPatches(patches: unknown): Array<Record<string, unknown>[]> {
-  const list: Record<string, unknown>[] = Array.isArray(patches) ? (patches as Record<string, unknown>[]) : [];
+  const list = collapsePatches(patches);
   const groups = new Map<string, Record<string, unknown>[]>();
   const order: string[] = [];
   for (let i = 0; i < list.length; i++) {
     const p = list[i];
-    if (!p || typeof p !== 'object') continue;
     const sig = Object.keys(p).sort().join('|');
     if (!groups.has(sig)) { groups.set(sig, []); order.push(sig); }
     (groups.get(sig) as Record<string, unknown>[]).push(p);
@@ -571,30 +682,36 @@ export interface ConsentVerdict {
  * NEVER CLEAR A YES has to have a mirror, or it is only half a rule.
  *
  * "Never clear a yes" stops an import erasing consent. Nothing stopped an
- * import RESTORING it. Somebody who unsubscribed at this venue (marketing_opt_in
- * false plus a customer_consents row saying consented false, or a
- * marketing_suppressions row) was re-consented the moment a stale third party
- * export was loaded: buildPatch set the flag back to true and index.ts wrote a
- * consent row dated NOW, which is newer than their withdrawal, and
- * marketing-send's hasConsent takes the NEWEST row. The person who pressed
- * unsubscribe starts getting the emails again, which is the venue's fine, not
- * ours.
+ * import RESTORING it. A stale export loaded after somebody opted out here
+ * re-consented them, and the emails started again, which is the venue's fine.
  *
- * So before a yes is written:
- *  - a marketing_suppressions row, or a consent row saying no that is NEWER
- *    than the file's own opt in date, holds the yes back. The flag is left
- *    alone and the operator is told, by name, which rows we would not re-consent
- *  - the consent row we do write is dated with the FILE's opt in date, not with
- *    now, so it can never jump the queue in front of a later withdrawal
- *  - a file that gives no date at all (5Loyalty export none) cannot prove it is
- *    newer than anything, so a withdrawal always wins, and no row is written
- *    for it, because the only date we could put on it is now
+ * THERE ARE THREE WAYS SOMEBODY SAYS STOP HERE, and every one of them holds a
+ * yes in the file back:
+ *  - customers.marketing_opt_in = false. The two live opt out paths write ONLY
+ *    this: Back Office (staff untick Marketing because the customer asked,
+ *    src/backoffice/sections/Customers.jsx) and the customer's own toggle in the
+ *    loyalty portal (loyalty-otp update profile). Neither writes a consent row,
+ *    so reading only the ledger missed both. An existing false is a withdrawal
+ *    made here, and a file's yes never overturns it. (A person an earlier
+ *    import brought in as a no reads the same way, which is the safe side:
+ *    staff can switch them on by hand with the customer's say so.)
+ *  - a customer_consents row saying no, newer than the file's own opt in date
+ *  - a marketing_suppressions row (an unsubscribe click or a STOP text)
+ *
+ * When a yes is held back the flag is left alone and the operator is told, by
+ * row and name, which people. A consent row is written for it ONLY when the
+ * ledger already holds a newer no, dated with the file's own day so it can
+ * never jump that no. Against a flag only withdrawal a yes row of any date
+ * would become the newest ledger row, and marketing-send reads the ledger
+ * FIRST, so it would switch the emails back on. None is written.
  *
  * A NO in the file is never held back. A no is always recorded.
  */
 export function consentDecision(row: ImportRow, args: {
   priorConsents?: unknown;
   suppressed?: boolean;
+  /** customers.marketing_opt_in as it stands now, for somebody we already have. */
+  currentFlag?: boolean | null;
   now: string;
 }): ConsentVerdict | null {
   const answer = row?.marketingOptIn;
@@ -622,19 +739,34 @@ export function consentDecision(row: ImportRow, args: {
   }
 
   const suppressed = args?.suppressed === true;
+  const switchedOff = args?.currentFlag === false;
   const staleYes = !!newestNo && (!fileAt || fileAt <= newestNo);
-  if (suppressed || staleYes) {
+  if (suppressed || staleYes || switchedOff) {
     return {
-      write: !!fileAt,       // dated with the file's own day, so it cannot jump the withdrawal
+      write: !!fileAt && staleYes,
       consented: true,
       createdAt: fileAt || now,
       setFlag: false,
       withheld: true,
-      reason: 'They opted out here after this file was exported, so we left them opted out.',
+      reason: switchedOff
+        ? 'They switched marketing off here, so we left it off.'
+        : 'They opted out here after this file was exported, so we left them opted out.',
     };
   }
 
   return { write: true, consented: true, createdAt: fileAt || now, setFlag: true, withheld: false, reason: '' };
+}
+
+/**
+ * The line the operator reads about the people whose yes we held back, by row
+ * and by name. Empty when there are none.
+ */
+export function withheldLine(people: unknown): string {
+  const list: Array<{ rowNumber?: unknown; name?: unknown }> = Array.isArray(people) ? people : [];
+  if (!list.length) return '';
+  const who = list.length === 1 ? '1 person' : list.length + ' people';
+  const named = list.map((p) => 'row ' + (Number(p?.rowNumber) || 0) + ' (' + (text(p?.name) || 'no name') + ')');
+  return 'We left marketing OFF for ' + who + ' who said stop here, although the file says yes: ' + named.join(', ') + '.';
 }
 
 /**
@@ -763,6 +895,9 @@ export function alreadyStampedLine(count: unknown): string {
 
 // ── progress ────────────────────────────────────────────────────────────────
 
+/** One row that did not go in, with the plain reason. */
+export interface RowFailure { rowNumber: number; reason: string }
+
 export interface Progress {
   rows: number;
   created: number;
@@ -772,13 +907,147 @@ export interface Progress {
   enrolled: number;
   /** People whose cards we left alone because an import already stamped them. */
   alreadyStamped: number;
-  /** People we would not re-consent, because they opted out here since. */
+  /** People we would not re-consent, because they said stop here. */
   consentWithheld: number;
-  errors: string[];
-  /** Named lines the screen shows on their own, not as errors. */
+  /** Rows we left out on purpose (a problem, a repeat, a refusal), by row. */
+  skippedRows: RowFailure[];
+  /** Rows we tried to write and could not, by row. */
+  failed: RowFailure[];
+  /** Lines about the whole run, not about one row. The screen shows every one. */
   notes: string[];
 }
 
 export function emptyProgress(): Progress {
-  return { rows: 0, created: 0, updated: 0, skipped: 0, stamped: 0, enrolled: 0, alreadyStamped: 0, consentWithheld: 0, errors: [], notes: [] };
+  return {
+    rows: 0, created: 0, updated: 0, skipped: 0, stamped: 0, enrolled: 0, alreadyStamped: 0, consentWithheld: 0,
+    skippedRows: [], failed: [], notes: [],
+  };
+}
+
+/** A row we left out on purpose. Counted once, said by row. */
+export function skipRow(progress: Progress, rowNumber: unknown, reason: string): void {
+  progress.skipped++;
+  progress.skippedRows.push({ rowNumber: Number(rowNumber) || 0, reason: text(reason) });
+}
+
+/** A row we tried to write and could not. */
+export function failRow(progress: Progress, rowNumber: unknown, reason: string): void {
+  progress.failed.push({ rowNumber: Number(rowNumber) || 0, reason: text(reason) });
+}
+
+/** A line about the whole run. Never counted as a row. */
+export function runNote(progress: Progress, line: string): void {
+  const t = text(line);
+  if (t && progress.notes.indexOf(t) < 0) progress.notes.push(t);
+}
+
+/**
+ * The chunk part of the answer. `failed` and `skipped_rows` are by row, with a
+ * row number the screen can find in the file; `notes` are about the run and are
+ * never counted as rows.
+ */
+export function chunkAnswer(progress: Progress): Record<string, unknown> {
+  const rowList = (list: RowFailure[]) => list.map((f) => ({ row_number: f.rowNumber, reason: f.reason }));
+  return {
+    rows: progress.rows,
+    created: progress.created,
+    updated: progress.updated,
+    skipped: progress.skipped,
+    stamped: progress.stamped,
+    enrolled: progress.enrolled,
+    already_stamped: progress.alreadyStamped,
+    consent_withheld: progress.consentWithheld,
+    skipped_rows: rowList(progress.skippedRows),
+    failed: rowList(progress.failed),
+    notes: progress.notes.slice(),
+  };
+}
+
+// ── who may run it ──────────────────────────────────────────────────────────
+
+/** ServOS's own email domains. Overridden with SERVOS_STAFF_EMAIL_DOMAINS. */
+export const STAFF_EMAIL_DOMAINS = ['posup.co.uk', 'serv-os.app'];
+
+/**
+ * SERVOS STAFF ONLY. Peter, 18 Sep 2026: "I dont want customer able to mess
+ * something up so can we hide it or make it so only internal to servos can
+ * access it?". Hiding the screen is not security, so this is the rule the edge
+ * function applies to EVERY action, preview included.
+ *
+ * A caller passes when:
+ *  - it is the service role, or
+ *  - it is a signed in, non anonymous user whose user_profiles.role is
+ *    'super_admin' AND whose CONFIRMED email is on a ServOS domain.
+ *
+ * Having a user_locations row for the venue is NOT enough: that is exactly the
+ * venue owner Peter wants kept out.
+ *
+ * Why the email as well as the role. Until migration
+ * 20260915c_OPS_user_profiles_admin_guard.sql is live, any owner login can
+ * delete its own user_profiles row and insert it again as super_admin. The
+ * role alone would then let a venue owner in. A confirmed email on a ServOS
+ * domain cannot be given to yourself: changing it needs the new address to
+ * click the link. So the email half keeps this check shut whether or not that
+ * migration has been run, and the role half keeps it shut to ServOS people who
+ * are not admins.
+ */
+export function staffVerdict(args: {
+  serviceRole?: boolean;
+  user?: { id?: unknown; email?: unknown; email_confirmed_at?: unknown; is_anonymous?: unknown } | null;
+  role?: unknown;
+  domains?: unknown;
+}): { ok: boolean; reason: string } {
+  if (args?.serviceRole === true) return { ok: true, reason: '' };
+  const user = args?.user ?? null;
+  if (!user || !text(user.id)) return { ok: false, reason: 'Sign in first.' };
+  if (user.is_anonymous === true) return { ok: false, reason: 'Sign in first.' };
+  if (text(args?.role) !== 'super_admin') return { ok: false, reason: 'Only ServOS staff can import customers.' };
+  const email = text(user.email).toLowerCase();
+  const at = email.lastIndexOf('@');
+  const domain = at > 0 ? email.slice(at + 1) : '';
+  const listed = Array.isArray(args?.domains) && (args.domains as unknown[]).length
+    ? (args.domains as unknown[]).map((d) => text(d).toLowerCase()).filter(Boolean)
+    : STAFF_EMAIL_DOMAINS;
+  if (!domain || listed.indexOf(domain) < 0) return { ok: false, reason: 'Only ServOS staff can import customers.' };
+  if (!text(user.email_confirmed_at)) return { ok: false, reason: 'Confirm your email first.' };
+  return { ok: true, reason: '' };
+}
+
+// ── the batch row ───────────────────────────────────────────────────────────
+
+/** A batch id has to be a uuid: import_batches.id is one. */
+export function isBatchId(value: unknown): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(text(value));
+}
+
+/**
+ * The import_batches row, written (upserted on its id) by EVERY chunk. The
+ * screen mints the id and sends it on every chunk, so "the first chunk is the
+ * one with no batch id" was never true and the row was never written. An
+ * upsert that ignores a row already there is right whichever chunk arrives
+ * first, and a chunk sent again after a dropped connection.
+ */
+export function batchRecord(args: {
+  batchId: string;
+  orgId: string;
+  companyId?: string | null;
+  programId?: string | null;
+  filename?: unknown;
+  userId?: string | null;
+  consentText?: unknown;
+}): Record<string, unknown> {
+  const note = text(args?.consentText);
+  return {
+    id: args.batchId,
+    org_id: args.orgId,
+    company_id: args?.companyId || null,
+    program_id: args?.programId || null,
+    filename: text(args?.filename).slice(0, 200) || null,
+    row_count: 0,
+    created_count: 0,
+    updated_count: 0,
+    skipped_count: 0,
+    created_by: args?.userId || null,
+    notes: note ? note.slice(0, 500) : null,
+  };
 }

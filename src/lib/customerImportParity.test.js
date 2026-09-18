@@ -1,7 +1,7 @@
 // src/lib/customerImportParity.test.js
 //
 // The import rules exist TWICE:
-//   src/lib/customerImport.js                    the Back Office screen
+//   src/lib/customerImport.js                    the admin portal screen
 //   supabase/functions/_shared/customerImport.ts the edge function that writes
 //
 // They have to live twice because an edge function is deployed on its own, and
@@ -17,12 +17,15 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
 import * as js from './customerImport.js';
 import * as ts from '../../supabase/functions/_shared/customerImport.ts';
 
 // The day is pinned, so a clock read creeping into either file shows up here.
-const OPTS = { today: '2026-09-17' };
+const OPTS = { today: '2026-09-17', country: 'GB' };
+// Every rule that depends on the company's country runs under all of these.
+const COUNTRIES = [{ country: 'GB' }, { country: 'US' }, {}, { country: 'IE' }, null];
 
 // ── the shared case table ───────────────────────────────────────────────────
 
@@ -34,6 +37,8 @@ const PHONES = [
   '07700', '123', '', '   ', 'n/a', 'N/A', 'none', '-', 'ask at till',
   '07700 90012A', '999999999999999999', '+44 7700 9001234', '++4477', '07700-900-123',
   '07700.900.123', '0770090012', '077009001234', null, undefined, 447700900123, 0,
+  '7954412324', '7.954412324E9', '7.95441E+09', '7954412324.0', "'07954 412324", '4405551234',
+  '7001234567', '(773) 555-0188', '+44 (0)161 496 0000', '440161', '1614960000', '2125550199',
 ];
 
 const EMAILS = [
@@ -120,16 +125,13 @@ const RAW_ROWS = [
   42,
 ];
 
-const EXISTING = [
+const VERDICTS = [
   null,
   undefined,
   [],
-  ['07700 900123', 'gina@example.com'],
-  [{ phone: '+447700900123', email: null }, { phone: null, email: 'GINA@example.com' }],
-  { phones: ['07700900123'], emails: ['jane@example.com'] },
-  { phones: new Set(['07700900123']), emails: new Set() },
-  new Set(['p:+447700900123']),
-  [null, 'nonsense', {}, 42],
+  [{ row_number: 2, verdict: 'update', customer_id: 'c1' }, { row_number: 3, verdict: 'blocked', reason: 'no' }],
+  [{ rowNumber: 2, verdict: 'new' }, { row_number: 4, verdict: 'new' }, null, 'junk', { verdict: 'new' }],
+  new Map([[2, { verdict: 'update', reason: '', customerId: 'c1' }]]),
   'rubbish',
 ];
 
@@ -189,8 +191,13 @@ test('readCsv returns the identical rows and the identical column report', () =>
 test('every phone reads the same, including the ones we refuse', () => {
   let compared = 0;
   for (const p of PHONES) {
-    assert.deepEqual(ts.readPhone(p), js.readPhone(p), 'readPhone: ' + String(p));
-    assert.equal(ts.normalisePhoneUk(p), js.normalisePhoneUk(p), 'normalisePhoneUk: ' + String(p));
+    for (const c of COUNTRIES) {
+      assert.deepEqual(ts.readPhone(p, c), js.readPhone(p, c), 'readPhone: ' + String(p) + ' ' + JSON.stringify(c));
+      assert.equal(ts.writtenPhone(p, c), js.writtenPhone(p, c), 'writtenPhone: ' + String(p));
+      assert.deepEqual(ts.phoneKeys(p, c), js.phoneKeys(p, c), 'phoneKeys: ' + String(p));
+    }
+    assert.deepEqual(ts.rawPhoneKeys(p), js.rawPhoneKeys(p), 'rawPhoneKeys: ' + String(p));
+    assert.equal(ts.appPhone(p), js.appPhone(p), 'appPhone: ' + String(p));
     compared++;
   }
   assert.ok(compared >= 30, 'the case table should be big enough to mean something');
@@ -206,8 +213,23 @@ test('emails, counts and yes or no all agree', () => {
   for (const v of YES_NOS) assert.deepEqual(ts.readYesNo(v), js.readYesNo(v), 'readYesNo: ' + String(v));
 });
 
-test('every date reads the same, on the same day', () => {
+test('the country is read the same', () => {
+  for (const v of ['GB', 'uk', 'United Kingdom', 'US', 'usa', 'IE', 'Narnia', '', null, undefined, 42]) {
+    assert.equal(ts.normaliseCountry(v), js.normaliseCountry(v));
+    assert.equal(ts.countryLabel(v), js.countryLabel(v));
+  }
+  for (const venue of [{ country: 'GB' }, { currency: 'GBP' }, { currency: 'USD' }, { currency: 'EUR' }, { country: 'uk', currency: 'USD' }, null, {}]) {
+    assert.deepEqual(ts.countryFromVenue(venue), js.countryFromVenue(venue));
+  }
+  for (const t of ['a,b;c', 'a;b;c', 'a\tb\tc', '"a;b",c', '', null]) assert.equal(ts.detectDelimiter(t), js.detectDelimiter(t));
+});
+
+test('every date reads the same, on the same day, in every country', () => {
   for (const d of DATES) {
+    for (const c of COUNTRIES) {
+      const o = { today: OPTS.today, ...(c || {}) };
+      assert.deepEqual(ts.readDate(d, o), js.readDate(d, o), 'readDate: ' + String(d) + ' ' + JSON.stringify(c));
+    }
     assert.deepEqual(ts.readDate(d, OPTS), js.readDate(d, OPTS), 'readDate: ' + String(d));
     assert.deepEqual(
       ts.readDate(d, { today: OPTS.today, earliestYear: ts.EARLIEST_BIRTH_YEAR }),
@@ -242,19 +264,30 @@ test('validateRows sorts every file the same way', () => {
   assert.deepEqual(ts.validateRows(once.ready, OPTS), js.validateRows(once.ready, OPTS));
 });
 
-test('buildExistingKeys builds the identical key set from every shape', () => {
-  for (const e of EXISTING) {
-    const a = ts.buildExistingKeys(e);
-    const b = js.buildExistingKeys(e);
-    assert.deepEqual(Array.from(a).sort(), Array.from(b).sort(), 'buildExistingKeys: ' + JSON.stringify(e));
+test('verdictsByRow reads every shape the same', () => {
+  for (const v of VERDICTS) {
+    const a = ts.verdictsByRow(v);
+    const b = js.verdictsByRow(v);
+    assert.deepEqual(a ? Array.from(a.entries()) : a, b ? Array.from(b.entries()) : b);
+  }
+});
+
+test('rowsToSend sends the same cells', () => {
+  for (const f of FILES) {
+    const rows = js.readCsv(f).rows;
+    assert.deepEqual(ts.rowsToSend(rows, ts.validateRows(rows, OPTS)), js.rowsToSend(rows, js.validateRows(rows, OPTS)));
   }
 });
 
 test('summarise counts the same, against every shape of what we already have', () => {
   for (const f of FILES) {
     const rows = js.readCsv(f).rows;
-    for (const e of EXISTING) {
-      assert.deepEqual(ts.summarise(rows, e, OPTS), js.summarise(rows, e, OPTS), 'summarise: ' + String(f).slice(0, 20));
+    for (const v of VERDICTS) {
+      assert.deepEqual(ts.summarise(rows, v, OPTS), js.summarise(rows, v, OPTS), 'summarise: ' + String(f).slice(0, 20));
+    }
+    for (const c of COUNTRIES) {
+      const o = { today: OPTS.today, ...(c || {}) };
+      assert.deepEqual(ts.validateRows(rows, o), js.validateRows(rows, o), 'validateRows by country');
     }
   }
   const checked = js.validateRows(RAW_ROWS, OPTS);
@@ -272,4 +305,51 @@ test('one module can finish what the other started', () => {
   const mixedTwo = js.summarise(ts.validateRows(ts.readCsv(text).rows, OPTS), null, OPTS);
   assert.deepEqual(mixedOne, mixedTwo);
   assert.deepEqual(mixedOne, js.summarise(js.readCsv(text).rows, null, OPTS));
+});
+
+// ── the app's own phone rule, the three live copies ─────────────────────────
+
+/**
+ * The body of one live copy of the till's phone rule, as a function. Read from
+ * the file itself, so a change to any of the three shows up here.
+ */
+function liveRule(rel, start) {
+  const src = fs.readFileSync(new URL(rel, import.meta.url), 'utf8');
+  const at = src.indexOf(start);
+  assert.ok(at >= 0, 'found the rule in ' + rel);
+  const open = src.indexOf('{', at);
+  let depth = 0;
+  let end = open;
+  for (let i = open; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
+  }
+  return new Function('raw', src.slice(open + 1, end));
+}
+
+test('A: appPhone IS the till, the kiosk and the loyalty login, cell for cell', () => {
+  // The invariant is shape parity: customers.phone is looked up with .eq(), so
+  // what we write must be exactly what these three produce for the same cell.
+  const copies = [
+    liveRule('./customerLookup.js', 'export function normalisePhone(raw)'),
+    liveRule('../store/index.js', '_normalisePhone: (raw) =>'),
+    liveRule('../../supabase/functions/loyalty-otp/index.ts', 'function normalisePhone(raw: string): string | null'),
+  ];
+  const cells = PHONES.concat(['7700900123', '447700900123', '4405551234', '+14155551234', '07700900123', '0161 496 0000']);
+  for (const cell of cells) {
+    for (const rule of copies) {
+      assert.equal(js.appPhone(cell), rule(cell), 'appPhone disagrees with a live copy for ' + String(cell));
+      assert.equal(ts.appPhone(cell), rule(cell));
+    }
+  }
+});
+
+test('A: for a cell with nothing to repair, what we write is what the till writes', () => {
+  const till = liveRule('./customerLookup.js', 'export function normalisePhone(raw)');
+  for (const cell of ['07954 412324', '0161 496 0000', '447954412324', '+44 7954 412324', '+1 415 555 1234', '+353 86 123 4567']) {
+    assert.equal(js.writtenPhone(cell, { country: 'GB' }), till(cell), cell);
+  }
+  for (const cell of ['4155551234', '7001234567', '4405551234', '07954 412324', '+1 415 555 1234']) {
+    for (const c of [{ country: 'US' }, {}]) assert.equal(js.writtenPhone(cell, c), till(cell), cell + ' ' + JSON.stringify(c));
+  }
 });

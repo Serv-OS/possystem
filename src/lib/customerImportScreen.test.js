@@ -1,5 +1,6 @@
 // The Import customers screen: its rules, and the things about the screen file
-// itself that must stay true.
+// itself that must stay true. The screen is ServOS staff only and lives in the
+// admin portal (?mode=admin), never in Back Office.
 //
 // The rules that read the file are tested in customerImport.test.js. This one
 // covers what the screen does with the answer: when the Import button may be
@@ -33,14 +34,27 @@ import {
   progressPercent,
   importErrorMessage,
   resultLine,
+  countryLine,
+  confirmLines,
+  sameCustomerAcrossFile,
+  sameAsReason,
+  blockedByRow,
+  failedFromChunk,
+  notesFromChunk,
+  newBatchId,
+  PREVIEW_CHUNK_SIZE,
 } from './customerImportScreen.js';
 
 const read = (rel) => fs.readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
 
 const PROGRAMMES = [{ id: 'prog-1', name: 'Coffee card', stamps_required: 9 }];
 
+const GB_OPTS = { today: '2026-09-18', country: 'GB' };
+
 const READY_STATE = {
+  company: true,
   fileRead: true,
+  previewed: true,
   ready: 12,
   withStamps: 0,
   programmes: [],
@@ -62,10 +76,15 @@ test('a number on the screen always says what it counts', () => {
 
 // ── when the Import button may be pressed ───────────────────────────────────
 
-test('no file, no import', () => {
+test('no company, no file, no import', () => {
+  assert.equal(importBlockReason({ ...READY_STATE, company: false }), 'Pick the company first.');
   assert.equal(importBlockReason({ ...READY_STATE, fileRead: false }), 'Pick a file first.');
-  assert.equal(importBlockReason(null), 'Pick a file first.');
-  assert.equal(importBlockReason(undefined), 'Pick a file first.');
+  assert.equal(importBlockReason(null), 'Pick the company first.');
+  assert.equal(importBlockReason(undefined), 'Pick the company first.');
+});
+
+test('F3: the button waits for the server to say who is new', () => {
+  assert.equal(importBlockReason({ ...READY_STATE, previewed: false }), 'Wait for the check to finish.');
 });
 
 test('a file with stamps and no stamp card keeps the Import button off', () => {
@@ -136,6 +155,12 @@ test('the no stamp card line changes with what is in the file', () => {
 
 // ── the confirm ─────────────────────────────────────────────────────────────
 
+test('G: the confirm names the company first', () => {
+  const text = confirmMessage({ newCustomers: 7977 }, 'Coffee Boy');
+  assert.ok(text.startsWith('Import into Coffee Boy.'), 'the company comes before any number');
+  assert.deepEqual(confirmLines({ newCustomers: 1 }), ['This will add 1 new customer.', 'It cannot be undone from this screen.']);
+});
+
 test('the confirm says the number and says it cannot be undone here', () => {
   const text = confirmMessage({ newCustomers: 412, alreadyKnown: 6, stampsTotal: 1204, rewardsTotal: 38 });
   assert.match(text, /412 new customers/);
@@ -167,8 +192,13 @@ const MESSY = [
 
 test('the preview is the file in file order, with the problems said in words', () => {
   const parsed = readCsv(MESSY);
-  const checked = validateRows(parsed.rows);
-  const rows = previewRows(checked, { raw: parsed.rows, existingKeys: ['+447700900456'] });
+  const checked = validateRows(parsed.rows, GB_OPTS);
+  const verdicts = [
+    { row_number: 2, verdict: 'new' },
+    { row_number: 4, verdict: 'new' },
+    { row_number: 5, verdict: 'update', customer_id: 'c-ann' },
+  ];
+  const rows = previewRows(checked, { raw: parsed.rows, verdicts });
 
   assert.deepEqual(rows.map((r) => r.rowNumber), [2, 3, 4, 5], 'file order, header is line 1');
   assert.equal(rows[0].status, 'new');
@@ -180,10 +210,45 @@ test('the preview is the file in file order, with the problems said in words', (
   assert.match(rows[1].note, /phone/i);
   assert.equal(rows[1].phone, 'banana', 'a problem row still shows what was typed');
 
-  assert.equal(rows[2].status, 'problem', 'the same phone twice is a problem row');
+  assert.equal(rows[2].status, 'new', 'the same phone with its own email goes in, by email');
+  assert.equal(rows[2].phone, '', 'without the phone');
   assert.match(rows[2].note, /row 2/i);
 
-  assert.equal(rows[3].status, 'known', 'we already have Ann');
+  assert.equal(rows[3].status, 'known', 'the server says we already have Ann');
+});
+
+test('F3: the table and the tiles read the SAME verdicts, so they cannot disagree', () => {
+  const parsed = readCsv(MESSY);
+  const checked = validateRows(parsed.rows, GB_OPTS);
+  const verdicts = [
+    { row_number: 2, verdict: 'update', customer_id: 'c1' },
+    { row_number: 4, verdict: 'blocked', reason: 'That email already belongs to somebody else here, with a different phone. We left both alone.' },
+    { row_number: 5, verdict: 'new' },
+  ];
+  const rows = previewRows(checked, { raw: parsed.rows, verdicts, limit: 0 });
+  const tiles = summarise(checked, verdicts);
+  assert.equal(rows.filter((r) => r.status === 'known').length, tiles.alreadyKnown);
+  assert.equal(rows.filter((r) => r.status === 'new').length, tiles.newCustomers);
+  assert.equal(rows.filter((r) => r.status === 'blocked').length, tiles.blocked);
+  assert.match(rows.find((r) => r.rowNumber === 4).note, /belongs to somebody else/);
+  assert.deepEqual(Array.from(blockedByRow(verdicts).keys()), [4]);
+  // Before the server answers, nobody is anything.
+  const before = previewRows(checked, { raw: parsed.rows, limit: 0 });
+  assert.ok(before.filter((r) => r.status !== 'problem').every((r) => r.status === 'unchecked'));
+  assert.equal(summarise(checked, null).newCustomers, 0);
+});
+
+test('E: two rows on one customer across the whole file: the later one is left out and named', () => {
+  const out = sameCustomerAcrossFile([
+    { row_number: 12, verdict: 'update', customer_id: 'c1' },
+    { row_number: 13, verdict: 'new', customer_id: null },
+    { row_number: 4012, verdict: 'update', customer_id: 'c1' },
+  ]);
+  assert.equal(out[0].verdict, 'update');
+  assert.equal(out[2].verdict, 'blocked');
+  assert.equal(out[2].same_as, 12);
+  assert.equal(out[2].reason, sameAsReason(12));
+  assert.deepEqual(sameCustomerAcrossFile(null), []);
 });
 
 test('the preview stops at twenty rows', () => {
@@ -220,7 +285,7 @@ test('the preview survives a file it has never seen', () => {
 
 test('the rows to fix come back as the same file plus a problem column', () => {
   const parsed = readCsv(MESSY);
-  const checked = validateRows(parsed.rows);
+  const checked = validateRows(parsed.rows, GB_OPTS);
   const byRow = problemsByRow(checked);
   const byNumber = new Map(parsed.rows.map((r) => [r.rowNumber, r]));
   const entries = Array.from(byRow.keys()).sort((a, b) => a - b)
@@ -229,13 +294,13 @@ test('the rows to fix come back as the same file plus a problem column', () => {
   const csv = failedCsv(entries);
   const lines = csv.trim().split('\r\n');
   assert.equal(lines[0], TEMPLATE_COLUMNS.join(',') + ',problem');
-  assert.equal(lines.length, 3, 'the header and the two rows that did not go in');
+  assert.equal(lines.length, 2, 'the header and the one row that did not go in');
   assert.ok(lines[1].includes('banana'), 'the cells come back as they were typed');
   assert.ok(lines[1].includes('phone') || lines[1].includes('Phone'));
   // it drops straight back into the screen: our own reader can read it again
   const again = readCsv(csv);
   assert.equal(again.found, true);
-  assert.equal(again.rows.length, 2);
+  assert.equal(again.rows.length, 1);
 });
 
 test('a formula in a cell cannot run when the file is reopened', () => {
@@ -279,7 +344,7 @@ test('batching never loops for ever on a silly size', () => {
 test('each batch adds to the running total', () => {
   let acc = { created: 0, updated: 0, skipped: 0, failed: [] };
   acc = mergeResult(acc, { created: 200, updated: 0, skipped: 0, failed: [], batch_id: 'b1' });
-  acc = mergeResult(acc, { created: 190, updated: 6, skipped: 4, failed: [{ rowNumber: 44 }] });
+  acc = mergeResult(acc, { created: 190, updated: 6, skipped: 4, failed: [{ row_number: 44, reason: 'no' }] });
   assert.equal(acc.created, 390);
   assert.equal(acc.updated, 6);
   assert.equal(acc.skipped, 4);
@@ -326,7 +391,7 @@ test('the result line counts only what happened', () => {
   const full = resultLine({ created: 1, updated: 2, skipped: 3, failed: [{}, {}] });
   assert.match(full, /1 customer added/);
   assert.match(full, /2 customers filled in/);
-  assert.match(full, /3 rows skipped/);
+  assert.match(full, /3 rows left out/);
   assert.match(full, /2 rows did not go in/);
   assert.equal(resultLine(null), '0 customers added.');
 });
@@ -345,8 +410,8 @@ test('a real file: read it, check it, count it, decide about the button', () => 
   assert.equal(parsed.found, true);
   assert.deepEqual(parsed.ignored, ['Points'], 'points are recognised and left out on purpose');
 
-  const checked = validateRows(parsed.rows);
-  const sum = summarise(checked, []);
+  const checked = validateRows(parsed.rows, GB_OPTS);
+  const sum = summarise(checked, checked.ready.map((r) => ({ row_number: r.rowNumber, verdict: 'new' })));
   assert.equal(sum.ready, 2);
   assert.equal(sum.newCustomers, 2);
   assert.equal(sum.withStamps, 1);
@@ -356,7 +421,7 @@ test('a real file: read it, check it, count it, decide about the button', () => 
 
   // stamps in the file and no stamp card at this company: the button stays off
   const blocked = importBlockReason({
-    fileRead: true, ready: sum.ready, withStamps: sum.withStamps,
+    company: true, previewed: true, fileRead: true, ready: sum.ready, withStamps: sum.withStamps,
     programmes: [], programId: '', consentGiven: true, busy: false,
   });
   assert.ok(blocked, 'off');
@@ -364,7 +429,7 @@ test('a real file: read it, check it, count it, decide about the button', () => 
 
   // pick the card and it goes on
   const free = importBlockReason({
-    fileRead: true, ready: sum.ready, withStamps: sum.withStamps,
+    company: true, previewed: true, fileRead: true, ready: sum.ready, withStamps: sum.withStamps,
     programmes: PROGRAMMES, programId: 'prog-1', consentGiven: true, busy: false,
   });
   assert.equal(free, null);
@@ -372,8 +437,9 @@ test('a real file: read it, check it, count it, decide about the button', () => 
 
 // ── the screen file itself ──────────────────────────────────────────────────
 
-const SCREEN = '../backoffice/sections/CustomerImport.jsx';
-const APP = '../backoffice/BackOfficeApp.jsx';
+const SCREEN = '../admin/sections/AdminCustomerImport.jsx';
+const ADMIN = '../admin/CompanyAdminApp.jsx';
+const BACK_OFFICE = '../backoffice/BackOfficeApp.jsx';
 
 test('the screen reads the file with the shared rules, it never rolls its own', () => {
   const src = read(SCREEN);
@@ -383,6 +449,7 @@ test('the screen reads the file with the shared rules, it never rolls its own', 
   assert.ok(!/\.split\(','\)/.test(src), 'no hand rolled CSV splitting, quoted commas would break it');
   assert.ok(!/replace\(\/\[\^\\d/.test(src), 'no second phone normaliser in the screen');
   assert.ok(!/startsWith\('07'\)|\+44/.test(src), 'the screen knows nothing about phone shapes');
+  assert.ok(src.includes("country: ctx?.country || ''"), 'the file is read for the COMPANY\'s country, the one the server uses');
 });
 
 test('the Download template button uses the template from the rules library', () => {
@@ -393,11 +460,30 @@ test('the Download template button uses the template from the rules library', ()
   assert.ok(src.includes(TEMPLATE_FILE_NAME) || src.includes('TEMPLATE_FILE_NAME'));
 });
 
+test('G: the company is picked first, and a file cannot be picked before it', () => {
+  const src = read(SCREEN);
+  assert.ok(src.includes('1. Pick the company'), 'it is the first step');
+  assert.ok(src.includes('contextRequestBody({ opsLocationId: venueId, orgId })'), 'the server says who the company is');
+  assert.ok(src.includes('disabled={busy || !ctx}'), 'no file until the company is known');
+  assert.ok(src.includes('if (!file || !ctx) return;'), 'and pickFile refuses without it too');
+  assert.ok(src.includes('company: !!ctx'), 'the Import button knows');
+});
+
+test('G: the confirm step shows the company name large', () => {
+  const src = read(SCREEN);
+  assert.ok(src.includes('Importing into'), 'the confirm step says where');
+  assert.match(src, /fontSize: 34, fontWeight: 800[^}]*\}\}>\{companyName/, 'the company name, large');
+  assert.ok(src.includes('Yes, import into {companyName'), 'and the button repeats it');
+  assert.ok(src.includes('confirmLines(summary)'), 'with the numbers under it');
+  assert.ok(!src.includes('window.confirm('), 'not a small browser box that is easy to click through');
+});
+
 test('the Import button is off unless importBlockReason says it may be pressed', () => {
   const src = read(SCREEN);
   assert.ok(src.includes('importBlockReason('), 'the screen asks the rule');
   assert.match(src, /disabled=\{!!blockReason\}/, 'the button is disabled straight from that answer');
-  assert.ok(src.includes('window.confirm(confirmMessage('), 'a confirm with the numbers comes first');
+  assert.ok(src.includes('onClick={() => setConfirming(true)}'), 'a confirm step with the numbers comes first');
+  assert.ok(src.includes('previewed: !!verdicts && !previewing'), 'and not until the server has answered');
 });
 
 test('nothing is written before the operator presses Import', () => {
@@ -406,46 +492,63 @@ test('nothing is written before the operator presses Import', () => {
   assert.ok(!/\.insert\(|\.upsert\(|\.update\(|\.delete\(/.test(body),
     'the screen never writes to a table itself, the edge function does the writing');
   const pick = body.slice(body.indexOf('const pickFile'), body.indexOf('const summary'));
-  assert.ok(!pick.includes('fetch('), 'picking a file sends nothing anywhere');
+  assert.ok(!pick.includes('importRequestBody('), 'picking a file only ever previews');
+  assert.ok(pick.includes('previewRequestBody('), 'which the edge function answers without writing');
+});
+
+test('F3: who is already in comes from the server, one answer for tiles and table', () => {
+  const src = read(SCREEN);
+  assert.ok(!src.includes('lookupExisting'), 'no second, browser side lookup that asks a different question');
+  assert.ok(!src.includes('buildExistingKeys'), 'the old key set is gone');
+  assert.ok(src.includes('summarise(checked, verdicts)'), 'the tiles read the verdicts');
+  assert.ok(src.includes('previewRows(checked, { raw, verdicts, limit: PREVIEW_ROWS })'), 'the table reads the same verdicts');
+  assert.ok(src.includes('setVerdicts(sameCustomerAcrossFile(all))'), 'and two rows on one customer are caught across the whole file');
 });
 
 test('the rows posted are the raw cells, so the server reads them again itself', () => {
   const src = read(SCREEN);
-  assert.ok(src.includes('byNumber.get(checked.ready[i].rowNumber)'),
-    'we send what was in the file, not our reading of it');
+  assert.ok(src.includes('rowsToSend(raw, checked)'), 'we send what was in the file, with a shared phone moved to notes');
+  assert.ok(src.includes("!== 'blocked'"), 'a row the server will not touch is never sent');
   assert.ok(src.includes('rows: chunks[i]'));
   assert.ok(src.includes('chunkRows(toSend, CHUNK_SIZE)'), 'it goes up in batches so progress is real');
 });
 
 test('a run that stops half way carries on instead of starting over', () => {
-  // Half a file in and the connection drops. Starting again would send the
-  // first half twice, and a second set of stamps is real money.
   const src = read(SCREEN);
-  assert.ok(src.includes('const key = batchKey || newBatchKey();'), 'one batch key per file, kept across attempts');
+  assert.ok(src.includes('const key = batchId || newBatchId();'), 'one batch id per file, kept across attempts');
   assert.ok(src.includes('const startAt = Math.min(doneBatches, chunks.length);'), 'it picks up where it stopped');
   assert.ok(src.includes('setDoneBatches(i + 1);'), 'progress is remembered batch by batch');
   assert.ok(src.includes('alreadyRan: finished'), 'only a finished run turns the button off for good');
   assert.ok(src.includes('Carry on importing'), 'the button says what it will do');
 });
 
+test('F1: the run notes are shown, and the failed rows are rows', () => {
+  const src = read(SCREEN);
+  assert.ok(src.includes('(result.notes || []).map((n, i) => <div key={i}>{n}</div>)'), 'every run note is shown');
+  assert.ok(src.includes('label="Did not go in"'), 'failed rows have their own tile');
+});
+
 test('the screen still works when the writer is not deployed and when a load fails', () => {
   const src = read(SCREEN);
   assert.ok(src.includes('importErrorMessage('), 'a stop turns into one plain line');
   assert.ok(src.includes('catch'), 'every load is wrapped');
-  assert.ok(src.includes('setLoadNote('), 'a failed load leaves a line, not a crash');
-  assert.ok(src.includes('You can still get the template'), 'the template works even then');
+  assert.ok(src.includes('setCtxNote('), 'a failed load leaves a line, not a crash');
   assert.ok(!/await import\(|import\(/.test(src.replace(/^import .*$/gm, '')),
     'no dynamic import, they fail silently in the production bundle');
 });
 
-test('the screen is registered in Back Office the way the others are', () => {
-  const src = read(APP);
-  assert.ok(src.includes("import CustomerImport from './sections/CustomerImport';"), 'imported');
-  assert.match(src, /\{ id:'customer-import', label:'Import customers'/, 'in NAV');
-  assert.ok(src.includes("['customer-import','Import customers']"), 'in the Customers group of the sidebar');
-  assert.ok(src.includes("{section === 'customer-import' && <CustomerImport setSection={setSection} />}"), 'rendered');
-  const ia = src.slice(src.indexOf("{ label:'Customers',"), src.indexOf("{ label:'Channels',"));
-  assert.ok(ia.includes("['customer-import','Import customers']"), 'it sits in the Customers group, not somewhere else');
+test('G: the screen lives in the admin portal and NOWHERE in Back Office', () => {
+  const admin = read(ADMIN);
+  assert.ok(admin.includes("import AdminCustomerImport from './sections/AdminCustomerImport';"), 'imported by the admin portal');
+  assert.ok(admin.includes("{ id:'customer-import', label:'Import customers'"), 'in the admin sidebar');
+  assert.ok(admin.includes("{section === 'customer-import' && <AdminCustomerImport orgs={orgs} sbFetch={sbFetch} />}"), 'rendered there');
+  // The admin portal only renders its panel for super_admin.
+  assert.ok(admin.includes("setIsSuperAdmin(role === 'super_admin')"));
+  assert.ok(admin.includes('if (!isSuperAdmin) return ('), 'anybody else gets Access denied');
+
+  const bo = read(BACK_OFFICE);
+  assert.ok(!/CustomerImport|customer-import|Import customers/.test(bo), 'Back Office has no tab, no import and no route for it');
+  assert.ok(!fs.existsSync(fileURLToPath(new URL('../backoffice/sections/CustomerImport.jsx', import.meta.url))), 'the old Back Office screen is gone');
 });
 
 test('the screen and its rules are written in plain words with no dashes', () => {
@@ -458,8 +561,50 @@ test('the screen and its rules are written in plain words with no dashes', () =>
 
 test('the caps are sane numbers, not magic ones', () => {
   assert.equal(CHUNK_SIZE, 200);
+  assert.equal(PREVIEW_CHUNK_SIZE, 500, 'a preview call is the most one call may carry');
   assert.equal(PREVIEW_ROWS, 20);
   assert.ok(MAX_ROWS >= 10000);
   assert.ok(MAX_FILE_BYTES >= 1024 * 1024);
   assert.equal(TEMPLATE_FILE_NAME, 'customer-import-template.csv');
+});
+
+// ── F: run notes are shown, never counted as failed rows ────────────────────
+
+test('F1: a run note is a note, and its words are shown', () => {
+  const chunk = {
+    created: 3,
+    skipped: 1,
+    skipped_rows: [{ row_number: 7, reason: 'Same person as row 2.' }],
+    failed: [{ row_number: 9, reason: 'We could not add this person.' }],
+    notes: ['Loyalty is switched off for this company, so nobody can use their card yet. Turn it on in Loyalty.'],
+  };
+  const acc = mergeResult(null, { chunk });
+  assert.equal(acc.failed.length, 1, 'only the row that failed is a failed row');
+  assert.equal(acc.failed[0].rowNumber, 9);
+  assert.equal(acc.skippedRows.length, 1);
+  assert.equal(acc.notes.length, 1, 'the run line is kept, word for word');
+  assert.match(acc.notes[0], /Loyalty is switched off/);
+  // An older answer mixed both into `errors`: rows and notes are split apart.
+  const old = { errors: ['Row 44: we could not add this person.', 'We had to update 100 of these people one at a time: boom.'] };
+  assert.deepEqual(failedFromChunk(old).map((f) => f.rowNumber), [44], 'no row 0 is ever invented');
+  assert.deepEqual(notesFromChunk(old), ['We had to update 100 of these people one at a time: boom.']);
+  const line = resultLine(mergeResult(null, { chunk: old }));
+  assert.match(line, /1 row did not go in/, 'the run line is not counted as a row');
+});
+
+test('A: the country line says how the file is being read', () => {
+  assert.match(countryLine('GB', 'currency'), /United Kingdom/);
+  assert.match(countryLine('GB', 'currency'), /currency/);
+  assert.match(countryLine('US', 'country'), /No 0 is put on any phone/);
+  assert.match(countryLine('', ''), /do not know/);
+});
+
+test('B: the batch id the screen makes is a uuid the edge function accepts', () => {
+  let seed = 1;
+  const rand = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+  for (let i = 0; i < 50; i++) {
+    const id = newBatchId(rand);
+    assert.match(id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/, id);
+  }
+  assert.match(newBatchId(), /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
 });

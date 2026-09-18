@@ -18,62 +18,77 @@
 //  WHY THIS EXISTS. READ BEFORE CHANGING THE PHONE RULE.
 // ============================================================================
 //
-// Coffee Boy is moving its loyalty customers off another marketing system: one
-// CSV of people, their stamps and the rewards they have not used yet. All three
-// Coffee Boy sites share ONE org, so a person imported once is a member at
-// every site.
+// Coffee Boy is moving about 8,000 loyalty members off 5Loyalty: one CSV of
+// people, their stamps and the rewards they have not used yet. Every Coffee Boy
+// site shares ONE org, so a person imported once is a member at every site.
+// The import is run by ServOS staff from the admin portal, after Peter's team
+// has corrected the export in a spreadsheet. Assume the spreadsheet mangled it.
 //
 // THE PHONE IS THE KEY, and it is the whole risk in this job.
 //
 //  * Every customer writer in the app looks a person up with an EXACT match on
 //    `customers.phone` (customerLookup.js, store/index.js, loyalty-otp). A phone
-//    stored in a different shape is invisible at the till: the customer says
-//    "I have stamps", the screen says no.
+//    stored in a different shape is invisible at the till.
 //  * Customers sign in to loyalty with their phone and a one time code, so the
-//    phone we store IS their login. Get it wrong and they cannot get in, and no
-//    password reset exists to save them.
+//    phone we store IS their login. A wrong number is a stranger's login.
 //  * `customers` has a UNIQUE index on (org_id, phone) and another on
-//    (org_id, lower(email)), both where not deleted. Two shapes of one phone
-//    both insert and the person exists twice.
+//    (org_id, lower(email)), both where not deleted.
 //
-// So this file writes a phone in THE SHAPE THE APP ITSELF PRODUCES, which is
-// what `appPhone` below is: a character for character copy of the rule in
-// store/index.js, customerLookup.js and loyalty-otp. A leading + is kept, 07
-// plus eleven digits becomes +44..., 44... becomes +44..., and everything else
-// is the bare digits exactly as typed. A Manchester landline the till stored as
-// 01614960000 is written back as 01614960000, not as +441614960000, because the
-// second one is a customer nobody can find.
+// THE INVARIANT IS SHAPE PARITY WITH THE TILL. For any cell, the phone we write
+// is exactly what the app's own rule (`appPhone` below, a copy of the three live
+// copies) produces for that cell. The ONLY edits made to a cell before the rule
+// runs are ones that undo damage and invent nothing:
 //
-// And we look a person up under EVERY shape they could already be filed under:
-// what the app produces, the E.164 form the first version of this importer
-// wrote, and phone_raw. See `phoneKeys`.
+//  1. A spreadsheet number shape is turned back into its digits: 7.954412324E9
+//     is 7954412324. If the spreadsheet ROUNDED it (7.95441E+09) the digits are
+//     gone and the row is refused, never guessed.
+//  2. 00 on the front is the international dialling prefix, so it reads as +.
+//  3. After +44, a trunk 0 is dropped, because +44 (0)7700 900123 is how people
+//     write a UK number and +4407700900123 is nobody's.
+//  4. ONLY FOR A GB COMPANY, a bare ten digit UK shaped number gets its leading
+//     0 back, because Excel eats it. Peter, 17 Sep 2026: "just insert a 0 in
+//     front of the number". That was about the UK file from 5Loyalty, so it is
+//     a GB rule and nothing else. `assumed` comes back true and the screen says
+//     how many rows it did that to.
 //
-// Anything we cannot make sense of is REFUSED. A refused row is shown to the
-// operator with its row number, and nothing is written for it. We never guess a
-// phone into the database: a wrong number is a stranger's phone.
+// For any other country, or when we do not know the country, the cell goes
+// through the app's rule UNCHANGED: no zero, no country code, and a leading 44
+// is not read as the UK code (a US area code 440 to 449 is not Britain). The
+// first two versions of this file put a zero on every bare ten digit number and
+// then let the app's rule turn 07 into +44, which wrote a US number with a 7xx
+// area code as a real UK mobile belonging to somebody else.
 //
-// The one inference we DO make is named and flagged, and it adds nothing but a
-// zero. Excel eats the leading zero off 07700900123 and hands back 7700900123,
-// which is not a rare accident, it is what happens to nearly every phone column
-// a shop opens in a spreadsheet before sending it. Peter, 17 Sep 2026: "dont
-// worry about country code it should always start with a 0 just insert a 0 in
-// front of the number." So a bare 10 digit number gets its zero back, `assumed`
-// comes back true so the screen can say how many rows it did that to, and no
-// country code is invented. Anything shorter stays an error, because a 9 digit
-// fragment could be anything.
+// WE LOOK A PERSON UP under the shape we write, under the E.164 form an earlier
+// version of this importer wrote (only when the cell carried a + or the company
+// is GB and the number is a real UK shape, never invented for a US row), under
+// the app's rule on the untouched cell, and in phone_raw under the cell exactly
+// as the file wrote it. See `phoneKeys`.
 //
-// NOTHING HERE ASSUMES A COUNTRY. The old rule read every bare 10 digit number
-// as British, so a US list of 4155551234 came out as +444155551234 for every
-// single row, which is somebody else's phone and their loyalty login. RPOS runs
-// US venues. A number already written in full international form (+353..., +1...)
-// is kept as it stands, because that is not a guess.
+// Anything we cannot make sense of is REFUSED with a plain reason and its row
+// number. A refused row is never written.
 //
-// A PHONE WE CANNOT READ STOPS THE ROW. A BAD EMAIL DOES NOT. That asymmetry is
-// deliberate. The phone is the login and the till's search key, so a person
-// imported without it is half a customer nobody can find or fix later, and the
-// operator would never be told. An email is only a way to write to them: it is
-// dropped, said out loud on screen, and the person still goes in. A row with a
-// bad email AND no phone has nothing left, so that one stops too.
+// A PHONE WE CANNOT READ STOPS THE ROW. A BAD EMAIL DOES NOT. The phone is the
+// login and the till's search key; an email is only a way to write to them. A
+// bad email is dropped, said out loud, and the person still goes in. A row with
+// a bad email AND no phone has nothing left, so that one stops too.
+//
+// ============================================================================
+//  WHAT A SPREADSHEET DOES TO THE FILE, AND WHAT WE DO ABOUT IT
+// ============================================================================
+//
+//  * a BOM on the front, and a semicolon or tab between the columns: read
+//  * the header row re-typed in other capitals or punctuation: read
+//  * blank rows and trailing empty columns: dropped
+//  * phones without their 0, or as 7.954412324E9: see the phone rule above
+//  * dates as 05/09/1984 or 5/9/1984: day first for a GB company. If one date
+//    in a column can only be month first, the spreadsheet has turned that
+//    column American, and every date in it that could be read both ways is
+//    refused instead of guessed. For any other country a date that could be
+//    read both ways is refused.
+//  * stamps as 2.0, or 2,0 from a comma decimal spreadsheet: 2
+//  * yes and no as TRUE, FALSE, Yes, Y: read
+//  * a file saved in the wrong text encoding (a name full of the character
+//    that means "unreadable"): the row is refused with the fix in words
 //
 // ============================================================================
 //  OTHER THINGS THE DATABASE MAKES TRUE
@@ -94,15 +109,20 @@
 // words, what is in it and what is wrong with it.
 // ============================================================================
 
-export interface PhoneRead { phone: string | null; local: string | null; e164: string | null; ok: boolean; empty: boolean; assumed: boolean; reason: string }
+export interface PhoneOpts { country?: string | null }
+export interface PhoneRead { phone: string | null; e164: string | null; app: string | null; ok: boolean; empty: boolean; assumed: boolean; reason: string }
 export interface EmailRead { email: string | null; ok: boolean; empty: boolean; reason: string }
 export interface NumberRead { value: number; ok: boolean; empty: boolean; reason: string }
 export interface YesNoRead { value: boolean | null; ok: boolean; empty: boolean; reason: string }
-export interface DateRead { date: string | null; ok: boolean; empty: boolean; monthFirst: boolean; reason: string }
-export interface ReadOpts { today?: string | Date | null; earliestYear?: number }
+export interface DateRead { date: string | null; ok: boolean; empty: boolean; monthFirst: boolean; ambiguous: boolean; unusual: boolean; reason: string }
+export interface ReadOpts { today?: string | Date | null; earliestYear?: number; country?: string | null }
+export interface CountryRead { country: string; source: string; label: string }
+export interface CsvRecord { record: number; cells: string[] }
 export interface Note { field: string; message: string }
 export interface RowNote { rowNumber: number; field: string; message: string; text: string }
 export interface DuplicateNote extends RowNote { value: string; firstRowNumber: number }
+export interface SharedWith { field: string; rowNumber: number; value: string }
+export interface RowVerdict { verdict: string; reason: string; customerId: string | null }
 export interface HeaderMap {
   found: boolean;
   index: Record<string, number>;
@@ -114,15 +134,15 @@ export interface HeaderMap {
   hasEmail: boolean;
 }
 export interface RawRow { rowNumber?: number; [key: string]: unknown }
-export interface FileRead extends HeaderMap { rows: RawRow[] }
+export interface FileRead extends HeaderMap { delimiter: string; rows: RawRow[] }
 export interface ImportRow {
   rowNumber: number;
   name: string;
   firstName: string;
   lastName: string;
   phone: string | null;
-  phoneLocal: string | null;
   phoneE164: string | null;
+  phoneApp: string | null;
   phoneRaw: string | null;
   phoneAssumed: boolean;
   email: string | null;
@@ -135,6 +155,9 @@ export interface ImportRow {
   birthday: string | null;
   externalId: string;
   notes: string;
+  dates: Record<string, string>;
+  dateFlags: Record<string, string>;
+  sharedWith: SharedWith | null;
   problems: Note[];
   warnings: Note[];
 }
@@ -148,6 +171,8 @@ export interface Totals {
   ready: number;
   newCustomers: number;
   alreadyKnown: number;
+  blocked: number;
+  unchecked: number;
   withStamps: number;
   stampsTotal: number;
   rewardsTotal: number;
@@ -156,6 +181,8 @@ export interface Totals {
   optedOut: number;
   notSaid: number;
   phoneFixed: number;
+  sharedPhone: number;
+  sharedEmail: number;
   problems: number;
   duplicates: number;
   total: number;
@@ -280,30 +307,63 @@ const NO_WORDS: string[] = ['no', 'n', 'false', 'f', '0', 'off', 'opted out', 'o
 // ── CSV in ──────────────────────────────────────────────────────────────────
 
 /**
- * A small correct CSV reader. Quoted fields, embedded commas, "" for a quote
- * inside a quoted field, newlines inside a quoted field, CR / LF / CRLF line
- * endings, and a UTF-8 BOM on the front. Rows where every cell is empty are
- * dropped, because a spreadsheet leaves a trail of them at the bottom of a file.
+ * Which character separates the columns: comma, semicolon or tab.
  *
- * Returns an array of arrays of strings. Never throws, never uses a library.
+ * Excel in much of Europe saves "CSV" with semicolons, because the comma is its
+ * decimal point. We look at the header line only (outside quotes) and take the
+ * separator it uses most. A plain file with commas is always a comma file.
  */
-export function parseCsv(text: unknown): string[][] {
-  const rows: string[][] = [];
-  if (typeof text !== 'string' || !text) return rows;
+export function detectDelimiter(text: unknown): string {
+  if (typeof text !== 'string' || !text) return ',';
   const src = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  let commas = 0;
+  let semis = 0;
+  let tabs = 0;
+  let inQuotes = false;
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    if (c === '"') inQuotes = !inQuotes;
+    else if (!inQuotes && (c === '\n' || c === '\r')) break;
+    else if (!inQuotes && c === ',') commas++;
+    else if (!inQuotes && c === ';') semis++;
+    else if (!inQuotes && c === '\t') tabs++;
+  }
+  if (tabs > commas && tabs > semis) return '\t';
+  if (semis > commas) return ';';
+  return ',';
+}
+
+/**
+ * A small correct CSV reader. Quoted fields, embedded separators, "" for a
+ * quote inside a quoted field, newlines inside a quoted field, CR / LF / CRLF
+ * line endings, a UTF-8 BOM on the front, and a comma, semicolon or tab
+ * between the columns (see detectDelimiter).
+ *
+ * Returns one entry per record that has anything in it, as { record, cells }.
+ * `record` counts EVERY record, blank ones included, with the first as 1, so it
+ * is the row number a spreadsheet shows even when somebody left an empty row in
+ * the middle of the sheet. Never throws, never uses a library.
+ */
+export function parseCsvRecords(text: unknown, delimiter?: unknown): CsvRecord[] {
+  const out: CsvRecord[] = [];
+  if (typeof text !== 'string' || !text) return out;
+  const src = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  const sep = delimiter === ';' || delimiter === '\t' || delimiter === ',' ? delimiter : detectDelimiter(src);
 
   let field = '';
   let row: string[] = [];
   let inQuotes = false;
+  let record = 0;
 
   const endRow = (): void => {
     row.push(field);
     field = '';
+    record++;
     let blank = true;
     for (let j = 0; j < row.length; j++) {
       if (row[j].trim() !== '') { blank = false; break; }
     }
-    if (!blank) rows.push(row);
+    if (!blank) out.push({ record, cells: row });
     row = [];
   };
 
@@ -315,7 +375,7 @@ export function parseCsv(text: unknown): string[][] {
       } else field += c;
     } else if (c === '"') {
       inQuotes = true;
-    } else if (c === ',') {
+    } else if (c === sep) {
       row.push(field);
       field = '';
     } else if (c === '\n' || c === '\r') {
@@ -324,6 +384,17 @@ export function parseCsv(text: unknown): string[][] {
     } else field += c;
   }
   if (field !== '' || row.length) endRow();
+  return out;
+}
+
+/**
+ * The same reader, cells only. Rows where every cell is empty are dropped,
+ * because a spreadsheet leaves a trail of them at the bottom of a file.
+ */
+export function parseCsv(text: unknown, delimiter?: unknown): string[][] {
+  const records = parseCsvRecords(text, delimiter);
+  const rows: string[][] = [];
+  for (let i = 0; i < records.length; i++) rows.push(records[i].cells);
   return rows;
 }
 
@@ -379,6 +450,8 @@ export function isIgnoredHeader(raw: unknown): boolean {
 /**
  * Work out which column is where. First match wins, so a file with two phone
  * columns uses the first and names the second in `duplicates`.
+ *
+ * Returns { found, index, unknown, ignored, duplicates, missing, hasPhone, hasEmail }.
  */
 export function mapHeaders(headerRow: unknown): HeaderMap {
   const index: Record<string, number> = {};
@@ -401,7 +474,7 @@ export function mapHeaders(headerRow: unknown): HeaderMap {
     }
   }
 
-  const missing = TEMPLATE_COLUMNS.filter((c: string) => index[c] === undefined);
+  const missing = TEMPLATE_COLUMNS.filter((c) => index[c] === undefined);
   return {
     found: Object.keys(index).length > 0,
     index,
@@ -417,14 +490,17 @@ export function mapHeaders(headerRow: unknown): HeaderMap {
 /**
  * Read a whole file into raw rows keyed by our column names.
  *
- * Row numbers count the lines of the file with the header as line 1, so the
- * first person is row 2 and the number matches what a spreadsheet shows. Blank
- * lines are not counted, because a spreadsheet hides them too.
+ * Row numbers are the rows a spreadsheet shows, with the header as row 1, so
+ * the first person is row 2. A blank row in the middle of the sheet still
+ * counts, because the spreadsheet still shows it, so "Row 44" in a message is
+ * row 44 in the sheet the operator has open.
  */
 export function readCsv(text: unknown): FileRead {
-  const table = parseCsv(text);
-  if (!table.length) {
+  const delimiter = detectDelimiter(text);
+  const records = parseCsvRecords(text, delimiter);
+  if (!records.length) {
     return {
+      delimiter,
       found: false,
       index: {},
       unknown: [],
@@ -436,12 +512,15 @@ export function readCsv(text: unknown): FileRead {
       rows: [],
     };
   }
-  const head = mapHeaders(table[0]);
+  const head = mapHeaders(records[0].cells);
+  // Row numbers are counted from the header, which a spreadsheet shows as row
+  // 1, so a blank row ABOVE the header does not shift every number by one.
+  const base = records[0].record - 1;
   const rows: RawRow[] = [];
   if (head.found) {
-    for (let i = 1; i < table.length; i++) {
-      const cells = table[i];
-      const row: RawRow = { rowNumber: i + 1 };
+    for (let i = 1; i < records.length; i++) {
+      const cells = records[i].cells;
+      const row: RawRow = { rowNumber: records[i].record - base };
       for (let c = 0; c < TEMPLATE_COLUMNS.length; c++) {
         const col = TEMPLATE_COLUMNS[c];
         const at = head.index[col];
@@ -452,6 +531,7 @@ export function readCsv(text: unknown): FileRead {
     }
   }
   return {
+    delimiter,
     found: head.found,
     index: head.index,
     unknown: head.unknown,
@@ -482,7 +562,7 @@ export function toCsv(rows: unknown): string {
   const list: unknown[] = Array.isArray(rows) ? rows : [];
   const lines: string[] = [];
   for (let i = 0; i < list.length; i++) {
-    const cells: unknown[] = Array.isArray(list[i]) ? list[i] as unknown[] : [list[i]];
+    const cells = (Array.isArray(list[i]) ? list[i] : [list[i]]) as unknown[];
     const out: string[] = [];
     for (let j = 0; j < cells.length; j++) out.push(csvEscape(cells[j]));
     lines.push(out.join(','));
@@ -518,6 +598,54 @@ function isBlankWord(text: string): boolean {
   return false;
 }
 
+// ── the company's country ───────────────────────────────────────────────────
+
+const GB_NAMES: string[] = ['GB', 'UK', 'GBR', 'UNITED KINGDOM', 'GREAT BRITAIN', 'BRITAIN', 'ENGLAND', 'SCOTLAND', 'WALES', 'NORTHERN IRELAND'];
+const US_NAMES: string[] = ['US', 'USA', 'UNITED STATES', 'UNITED STATES OF AMERICA', 'AMERICA'];
+
+/**
+ * A country written any way at all, as a two letter code, or '' when it says
+ * nothing we can trust. 'uk', 'GBR' and 'United Kingdom' are all 'GB'.
+ */
+export function normaliseCountry(value: unknown): string {
+  if (value == null) return '';
+  const t = String(value).toUpperCase().replace(/[^A-Z]+/g, ' ').trim();
+  if (!t) return '';
+  if (GB_NAMES.indexOf(t) >= 0) return 'GB';
+  if (US_NAMES.indexOf(t) >= 0) return 'US';
+  return /^[A-Z]{2}$/.test(t) ? t : '';
+}
+
+/** The country in words for the preview line. */
+export function countryLabel(country: unknown): string {
+  const c = normaliseCountry(country);
+  if (c === 'GB') return 'United Kingdom';
+  if (c === 'US') return 'United States';
+  return c || 'not known';
+}
+
+/**
+ * The country a venue's phones and dates are read as, and where we got it.
+ *
+ * locations.country wins when the venue has one. Otherwise the currency
+ * decides, and only GBP means GB (USD means US, which changes nothing about a
+ * phone, it just says so). Anything else is '' and nothing is assumed: no zero
+ * is put on a phone and no date is read day first.
+ *
+ * Returns { country, source, label }, source 'country', 'currency' or ''.
+ */
+export function countryFromVenue(venue: unknown): CountryRead {
+  const v = (venue && typeof venue === 'object' ? venue : {}) as { country?: unknown; currency?: unknown };
+  const fromCountry = normaliseCountry(v.country);
+  if (fromCountry) return { country: fromCountry, source: 'country', label: countryLabel(fromCountry) };
+  const cur = String(v.currency == null ? '' : v.currency).trim().toUpperCase();
+  if (cur === 'GBP') return { country: 'GB', source: 'currency', label: countryLabel('GB') };
+  if (cur === 'USD') return { country: 'US', source: 'currency', label: countryLabel('US') };
+  return { country: '', source: '', label: countryLabel('') };
+}
+
+// ── phones ──────────────────────────────────────────────────────────────────
+
 /**
  * The app's OWN phone rule, character for character.
  *
@@ -529,13 +657,11 @@ function isBlankWord(text: string): boolean {
  *
  * It keeps a leading +, turns 07 plus eleven digits into +44..., turns 44...
  * into +44..., and hands EVERYTHING ELSE back as the bare digits exactly as
- * typed. So a Manchester landline sits in customers.phone as 01614960000, not
- * as +441614960000, and an importer that writes the E.164 form creates a second
- * customer the till can never find, with the stamps on the row nobody sees.
+ * typed. customerImportParity.test.js holds this copy against customerLookup.js
+ * on a table of cells, so it cannot drift.
  *
- * This is a copy on purpose: an edge function cannot import out of src/, and
- * this file is mirrored into supabase/functions/_shared. Do NOT change the
- * shape here without changing the three above, which is a different job.
+ * Do NOT change the shape here without changing the three above, which is a
+ * different job.
  */
 export function appPhone(raw: unknown): string | null {
   if (!raw) return null;
@@ -547,107 +673,162 @@ export function appPhone(raw: unknown): string | null {
   return digits;
 }
 
+/** A UK number once its 0 is off: 9 or 10 digits, starting with a digit a UK
+ *  number can start with. 4 and 6 are not used, and 0 would be a second zero. */
+function ukNational(n: string): boolean {
+  return /^[1235789]\d{8,9}$/.test(n);
+}
+
+function ukProblem(n: string): string {
+  if (n.length < 9) return 'That phone number is too short.';
+  if (n.length > 10) return 'That phone number is too long.';
+  return 'We cannot read that phone number.';
+}
+
 /**
  * One phone cell read, or refused with a reason.
  *
- * Returns { phone, local, e164, ok, empty, assumed, reason }.
- *  - phone   what we WRITE: the cell put through the app's own rule above, so
- *            the till finds the person it already knows. '+447700900123' for a
- *            mobile, '01614960000' for a landline, '+353861234567' for a number
- *            that already carried its own country code.
- *  - local   the number the way the operator would key it in, leading zero and
- *            all, or null when the cell was already international.
- *  - e164    the full international form, kept as a SECOND key to look under,
- *            because the first version of this importer wrote that shape and
- *            those rows have to be found, not doubled.
- *  - empty   true when the cell was blank (not an error on its own)
- *  - assumed true when we put back a leading zero a spreadsheet ate
- *  - reason  short plain words for the operator when ok is false
+ * opts.country is the COMPANY's country ('GB', 'US', or '' for not known). See
+ * countryFromVenue. It is the only thing that lets us put a 0 back.
  *
- * Peter, 17 Sep 2026: "dont worry about country code it should always start
- * with a 0 just insert a 0 in front of the number." So a bare ten digit number
- * gets its zero back and then goes through the same rule as every other number.
- * We never bolt a country code onto a number that did not carry one: the old
- * rule read every bare ten digit number as British, and a US list of
- * 4155551234 came out as +444155551234, which is a stranger's phone and their
- * loyalty login. A number that DOES carry its own + is kept as it stands,
- * because that is not a guess.
+ * Returns { phone, e164, app, ok, empty, assumed, reason }.
+ *  - phone   what we WRITE. Always what appPhone gives for the cell, after the
+ *            four repairs listed at the top of this file and nothing else.
+ *  - e164    the full international form, ONLY when the cell carried a + (or
+ *            00) or the company is GB and this is a real UK shape. It is a
+ *            second key to look under, because an earlier version of this
+ *            importer wrote that shape for a landline. Never invented for a
+ *            number from anywhere else.
+ *  - app     appPhone on the cell exactly as typed, which is how the till would
+ *            have stored it if somebody keyed it in the same way. A third key.
+ *  - empty   true when the cell was blank (not an error on its own)
+ *  - assumed true when we put back a leading zero a spreadsheet ate (GB only)
+ *  - reason  short plain words for the operator when ok is false
  */
-export function readPhone(raw: unknown): PhoneRead {
-  const text = cleanText(raw);
-  const no = (reason: string): PhoneRead => ({ phone: null, local: null, e164: null, ok: false, empty: false, assumed: false, reason });
-  if (!text || isBlankWord(text)) return { phone: null, local: null, e164: null, ok: true, empty: true, assumed: false, reason: '' };
-  if (/[a-z]/i.test(text)) return no('We cannot read that phone number.');
+export function readPhone(raw: unknown, opts?: PhoneOpts | null): PhoneRead {
+  const gb = normaliseCountry(opts && opts.country) === 'GB';
+  const none: PhoneRead = { phone: null, e164: null, app: null, ok: true, empty: true, assumed: false, reason: '' };
+  const no = (reason: string): PhoneRead => ({ phone: null, e164: null, app: null, ok: false, empty: false, assumed: false, reason });
+  let text = cleanText(raw);
+  if (!text || isBlankWord(text)) return none;
+  // A leading apostrophe is how a spreadsheet marks "this is text", and it is
+  // what our own rows to fix file puts in front of a +.
+  if (text.charAt(0) === "'") text = text.slice(1).trim();
+  if (!text) return none;
 
-  let s = text.replace(/[\s()\-.\u2010-\u2015/\\]/g, '');
+  // Repair 1: a spreadsheet turned the phone into a number.
+  const sci = text.match(/^(\d)(?:[.,](\d+))?[eE]\+?(\d{1,2})$/);
+  if (sci) {
+    const digits = sci[1] + (sci[2] || '');
+    const places = Number(sci[3]);
+    if (digits.length < places + 1) return no('A spreadsheet rounded this phone number. Type it in full.');
+    if (digits.length > places + 1) return no('We cannot read that phone number.');
+    text = digits;
+  } else if (/^\d+[.,]0+$/.test(text)) {
+    text = text.replace(/[.,]0+$/, '');
+  }
+
+  if (/[a-z]/i.test(text)) return no('We cannot read that phone number.');
+  // The till's rule on the cell as it was typed, once a spreadsheet's damage
+  // is undone. A key to look under, never what we write.
+  const typed = appPhone(text);
+  let s = text.replace(/[\s()\-.‐-―/\\]/g, '');
+  // Repair 2: 00 is the international dialling prefix.
   if (s.startsWith('00')) s = '+' + s.slice(2);
   const plus = s.startsWith('+');
   const digits = plus ? s.slice(1) : s;
   if (!digits || !/^\d+$/.test(digits)) return no('We cannot read that phone number.');
+  const ok = (phone: string | null, e164: string | null, assumed: boolean): PhoneRead => ({ phone, e164, app: typed, ok: true, empty: false, assumed, reason: '' });
 
-  // A number with no country code on it: 9 or 10 digits once the trunk zero is
-  // off. We put the zero back and let the app's rule say what gets stored.
-  const dialled = (national: string, assumed: boolean): PhoneRead => {
-    if (national.length < 9) return no('That phone number is too short.');
-    if (national.length > 10) return no('That phone number is too long.');
-    if (national.charAt(0) === '0') return no('We cannot read that phone number.');
-    const local = '0' + national;
-    return { phone: appPhone(local), local, e164: '+44' + national, ok: true, empty: false, assumed, reason: '' };
-  };
-
-  if (digits.startsWith('44')) {
-    let national = digits.slice(2);
-    if (national.charAt(0) === '0') national = national.slice(1);
-    return dialled(national, false);
-  }
   if (plus) {
+    if (digits.startsWith('44')) {
+      // Repair 3: +44 (0)7700 900123.
+      let national = digits.slice(2);
+      if (national.charAt(0) === '0') national = national.slice(1);
+      if (!ukNational(national)) return no(ukProblem(national));
+      return ok('+44' + national, '+44' + national, false);
+    }
     if (digits.length < 8) return no('That phone number is too short.');
     if (digits.length > 15) return no('That phone number is too long.');
-    return { phone: '+' + digits, local: null, e164: '+' + digits, ok: true, empty: false, assumed: false, reason: '' };
+    return ok('+' + digits, '+' + digits, false);
   }
-  if (digits.charAt(0) === '0') return dialled(digits.slice(1), false);
-  // Excel ate the leading zero off the phone column, which is what happens to
-  // nearly every list a shop opens in a spreadsheet. Put it back. Nine digits
-  // or fewer stays an error, because a short fragment could be anything.
-  if (digits.length === 10) return dialled(digits, true);
-  if (digits.length < 10) return no('That phone number is too short.');
-  return no('We cannot read that phone number. Put + and the country code on the front.');
+
+  if (gb) {
+    if (digits.startsWith('44') && digits.length > 10) {
+      // Excel ate the + off +44 7954 412324. For a GB company 44 IS the UK code.
+      const national = digits.slice(2);
+      if (national.charAt(0) === '0') return no('That number has 44 and a 0 on the front. Write it as 07... or +44 7...');
+      if (!ukNational(national)) return no(ukProblem(national));
+      return ok(appPhone(digits), '+44' + national, false);
+    }
+    if (digits.charAt(0) === '0') {
+      const national = digits.slice(1);
+      if (!ukNational(national)) return no(ukProblem(national));
+      return ok(appPhone(digits), '+44' + national, false);
+    }
+    // Repair 4: Excel ate the leading zero. Put it back and let the app's rule
+    // decide. Only a real UK shape: a US 415 number in a UK file is refused.
+    if (digits.length === 10 && ukNational(digits)) return ok(appPhone('0' + digits), '+44' + digits, true);
+    if (digits.length < 10) return no('That phone number is too short. If it lost its 0, put the 0 back.');
+    return no('We cannot read that phone number. Put + and the country code on the front.');
+  }
+
+  // Not GB, or we do not know the country: the app's own rule on the cell as it
+  // stands. No zero, no country code, and a leading 44 is just digits.
+  if (digits.length < 7) return no('That phone number is too short.');
+  if (digits.length > 15) return no('That phone number is too long.');
+  return ok(appPhone(digits), null, false);
 }
 
-/** The phone in the shape the whole app looks customers up by, or null. */
-export function normalisePhoneUk(raw: unknown): string | null {
-  const r = readPhone(raw);
+/** The phone we would write for this cell, or null. */
+export function writtenPhone(raw: unknown, opts?: PhoneOpts | null): string | null {
+  const r = readPhone(raw, opts);
   return r.ok ? r.phone : null;
 }
 
 /**
- * Every shape one phone can already be sitting in the database under.
- *
- * A person's number can be on file three ways at once: what the app's rule
- * produced when the till saved them (01614960000), the E.164 form an earlier
- * run of this importer wrote (+441614960000), and phone_raw, which is whatever
- * somebody typed. Matching on only one of them is how one customer becomes two,
- * with the stamps on the row the till cannot find. So we look under all of
- * them, and we write only the one the app itself produces.
+ * Every value customers.phone could already hold for this cell: the shape we
+ * write, the E.164 form an earlier importer wrote (only where readPhone would
+ * build one, never invented), and the app's rule on the cell as typed. Empty
+ * for a cell we cannot read.
  */
-export function phoneKeys(raw: unknown): string[] {
+export function phoneKeys(raw: unknown, opts?: PhoneOpts | null): string[] {
   const out: string[] = [];
-  const add = (v: string | null) => { if (v && out.indexOf(v) < 0) out.push(v); };
-  const r = readPhone(raw);
-  if (r.ok) { add(r.phone); add(r.e164); add(r.local); }
-  add(appPhone(raw));
+  const add = (v: string | null): void => { if (v && out.indexOf(v) < 0) out.push(v); };
+  const r = readPhone(raw, opts);
+  if (r.ok) { add(r.phone); add(r.e164); add(r.app); }
   return out;
 }
 
 /**
+ * The values customers.phone_raw could hold for this cell. phone_raw is what
+ * somebody TYPED ('0161 496 0000'), so it is compared with the cell as the file
+ * wrote it, never with a digits only key that it could not possibly equal.
+ */
+export function rawPhoneKeys(raw: unknown): string[] {
+  const out: string[] = [];
+  if (raw == null) return out;
+  const trimmed = String(raw).trim();
+  const collapsed = cleanText(raw);
+  if (trimmed && !isBlankWord(trimmed)) out.push(trimmed);
+  if (collapsed && out.indexOf(collapsed) < 0 && !isBlankWord(collapsed)) out.push(collapsed);
+  return out;
+}
+
+// ── other single values ─────────────────────────────────────────────────────
+
+/**
  * An email in the shape the unique index uses: trimmed, lower case, and pulled
- * out of "Jane Smith <jane@x.com>" if that is how the old system wrote it.
+ * out of "Jane Smith <jane@x.com>" or "mailto:jane@x.com" if that is how the
+ * old system or the spreadsheet wrote it.
+ * Returns { email, ok, empty, reason }.
  */
 export function normaliseEmail(raw: unknown): EmailRead {
   let text = cleanText(raw);
   if (!text || isBlankWord(text)) return { email: null, ok: true, empty: true, reason: '' };
   const angled = text.match(/<([^>]+)>/);
   if (angled) text = angled[1].trim();
+  if (/^mailto:/i.test(text)) text = text.slice(7).trim();
   const value = text.toLowerCase();
   if (!/^[^\s@,;]+@[^\s@,;.]+(\.[^\s@,;.]+)+$/.test(value)) {
     return { email: null, ok: false, empty: false, reason: 'We cannot read that email.' };
@@ -657,23 +838,32 @@ export function normaliseEmail(raw: unknown): EmailRead {
 
 /**
  * A count of things: a whole number, 0 or more, blank meaning 0.
+ * Returns { value, ok, empty, reason }.
+ *
+ * A spreadsheet writes 2 as 2.0, or as 2,0 where the comma is the decimal
+ * point. Both are 2. 1,200 with a thousands comma is 1200. 2,5 is not a whole
+ * number and is refused, never rounded.
  */
 export function readWholeNumber(raw: unknown, max?: number, label?: string): NumberRead {
-  const text = cleanText(raw).replace(/,/g, '');
+  let text = cleanText(raw).replace(/\s/g, '');
   const what = label || 'That number';
   if (!text || isBlankWord(text)) return { value: 0, ok: true, empty: true, reason: '' };
+  if (/^[+-]?\d{1,3}(,\d{3})+(\.\d+)?$/.test(text)) text = text.replace(/,/g, '');
+  else if (/^[+-]?\d+,\d+$/.test(text)) text = text.replace(',', '.');
   if (!/^[+-]?\d+(\.\d+)?$/.test(text)) return { value: 0, ok: false, empty: false, reason: 'We cannot read ' + what.toLowerCase() + '.' };
   const n = Number(text);
   if (!Number.isFinite(n)) return { value: 0, ok: false, empty: false, reason: 'We cannot read ' + what.toLowerCase() + '.' };
   if (n < 0) return { value: 0, ok: false, empty: false, reason: what + ' cannot be less than 0.' };
   if (!Number.isInteger(n)) return { value: 0, ok: false, empty: false, reason: what + ' must be a whole number.' };
   if (typeof max === 'number' && n > max) return { value: 0, ok: false, empty: false, reason: what + ' is too high. Check the column.' };
-  return { value: n, ok: true, empty: false, reason: '' };
+  return { value: n === 0 ? 0 : n, ok: true, empty: false, reason: '' };
 }
 
 /**
- * Yes or no out of whatever the other system wrote. Blank is null, which means
- * nobody said. It is not a yes.
+ * Yes or no out of whatever the other system, or the spreadsheet, wrote.
+ * TRUE and FALSE are what a spreadsheet tick box saves as.
+ * Returns { value, ok, empty, reason }, value true, false or null.
+ * Blank is null, which means nobody said. It is not a yes.
  */
 export function readYesNo(raw: unknown): YesNoRead {
   const text = cleanText(raw).toLowerCase();
@@ -707,25 +897,40 @@ function todayIso(opts?: ReadOpts | null): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+const DMY = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})(?:[T ]\d{1,2}:\d{2}(?::\d{2})?(?:\.\d+)?\s*(?:am|pm)?)?$/i;
+
 /**
- * A date out of ISO or the shapes a UK export writes. Day comes FIRST, because
- * the file is British: 03/04/2025 is 3 April. Month first is only read when day
- * first is impossible (04/25/2025), and then `monthFirst` comes back true so the
- * screen can say so.
+ * A date out of ISO or the shapes a spreadsheet writes.
  *
+ * opts.country decides a date like 05/09/1984 that could be either:
+ *  - GB: day first, 5 September. `ambiguous` comes back true, so validateRows
+ *    can refuse it if the same column also holds a date that can only be month
+ *    first (the sign a spreadsheet turned the column American).
+ *  - US: month first, 9 May, and `ambiguous` is true the same way.
+ *  - anything else, or not known: refused. We do not guess.
+ * A date that can only be read one way is read that way, and `unusual` comes
+ * back true when that is the opposite of the country's own order.
+ *
+ * Returns { date, ok, empty, monthFirst, ambiguous, unusual, reason }.
  * A date after today is refused. Pass { earliestYear } for a birthday.
  */
 export function readDate(raw: unknown, opts?: ReadOpts | null): DateRead {
   const text = cleanText(raw);
-  if (!text || isBlankWord(text)) return { date: null, ok: true, empty: true, monthFirst: false, reason: '' };
+  if (!text || isBlankWord(text)) return { date: null, ok: true, empty: true, monthFirst: false, ambiguous: false, unusual: false, reason: '' };
+  const country = normaliseCountry(opts && opts.country);
 
   let y = 0;
   let m = 0;
   let d = 0;
   let monthFirst = false;
+  let ambiguous = false;
+  let unusual = false;
+  const refuse = (reason: string): DateRead => ({ date: null, ok: false, empty: false, monthFirst, ambiguous, unusual, reason });
+
+  if (/^\d{5}(\.\d+)?$/.test(text)) return refuse('That is a spreadsheet date number. Format the column as a date and save again.');
 
   const iso = text.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[T ].*)?$/);
-  const dmy = text.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})$/);
+  const dmy = text.match(DMY);
   const dMonY = text.match(/^(\d{1,2})[\s-]+([a-z]+)[\s-]+(\d{2,4})$/i);
   const monDY = text.match(/^([a-z]+)[\s-]+(\d{1,2}),?[\s-]+(\d{2,4})$/i);
 
@@ -735,7 +940,22 @@ export function readDate(raw: unknown, opts?: ReadOpts | null): DateRead {
     const a = Number(dmy[1]);
     const b = Number(dmy[2]);
     y = fullYear(Number(dmy[3]));
-    if (isRealDate(y, b, a)) { d = a; m = b; } else if (isRealDate(y, a, b)) { d = b; m = a; monthFirst = true; } else { d = a; m = b; }
+    const dayFirstOk = isRealDate(y, b, a);
+    const monthFirstOk = isRealDate(y, a, b);
+    if (dayFirstOk && monthFirstOk && a !== b) {
+      ambiguous = true;
+      if (country === 'GB') { d = a; m = b; } else if (country === 'US') { m = a; d = b; monthFirst = true; } else {
+        return refuse('We cannot tell the day from the month. Write it as 1984-09-05.');
+      }
+    } else if (dayFirstOk) {
+      d = a; m = b;
+      unusual = country === 'US' && a !== b;
+    } else if (monthFirstOk) {
+      m = a; d = b; monthFirst = true;
+      unusual = country !== 'US';
+    } else {
+      d = a; m = b;
+    }
   } else if (dMonY) {
     d = Number(dMonY[1]);
     m = MONTHS[dMonY[2].toLowerCase()] || 0;
@@ -745,19 +965,22 @@ export function readDate(raw: unknown, opts?: ReadOpts | null): DateRead {
     d = Number(monDY[2]);
     y = fullYear(Number(monDY[3]));
   } else {
-    return { date: null, ok: false, empty: false, monthFirst: false, reason: 'We cannot read that date. Use 2025-04-12.' };
+    return refuse('We cannot read that date. Use 2025-04-12.');
   }
 
-  if (!isRealDate(y, m, d)) return { date: null, ok: false, empty: false, monthFirst: false, reason: 'That date is not a real day.' };
+  if (!isRealDate(y, m, d)) return refuse('That date is not a real day.');
 
   const value = y + '-' + pad2(m) + '-' + pad2(d);
-  if (value > todayIso(opts)) return { date: null, ok: false, empty: false, monthFirst, reason: 'That date is in the future.' };
+  if (value > todayIso(opts)) return refuse('That date is in the future.');
   const earliest = opts && typeof opts.earliestYear === 'number' ? opts.earliestYear : 0;
-  if (earliest && y < earliest) return { date: null, ok: false, empty: false, monthFirst, reason: 'That date is too long ago to be right.' };
-  return { date: value, ok: true, empty: false, monthFirst, reason: '' };
+  if (earliest && y < earliest) return refuse('That date is too long ago to be right.');
+  return { date: value, ok: true, empty: false, monthFirst, ambiguous, unusual, reason: '' };
 }
 
 // ── one row ─────────────────────────────────────────────────────────────────
+
+/** The date columns, which validateRows checks as a column as well as a cell. */
+const DATE_COLUMNS: string[] = ['opt_in_date', 'signed_up_date', 'birthday'];
 
 function looksNormalised(row: unknown): boolean {
   const r = row as ImportRow | null;
@@ -769,21 +992,21 @@ function looksNormalised(row: unknown): boolean {
  *
  * normaliseRow hands an ALREADY normalised row straight back, which is the only
  * reason validateRows is safe to run on its own output. That passthrough is a
- * hole the moment the rows came off the wire: any signed in Back Office user of
- * the venue could POST { problems: [], phoneRaw: null, stamps: 100000,
- * marketingOptIn: true } and walk straight past validateRows, which is the edge
- * function's single guard, into a hundred thousand free coffees.
+ * hole the moment the rows came off the wire: a caller could POST
+ * { problems: [], phoneRaw: null, stamps: 100000, marketingOptIn: true } and
+ * walk straight past validateRows, which is the edge function's single guard,
+ * into a hundred thousand free coffees.
  *
  * So anything arriving from a browser goes through here first. Every key that
  * is not a template column is dropped, every cell becomes a string, and the
  * rules then run on the cells instead of on somebody's idea of the answer.
  */
-export function rawRowsOnly(rows: unknown): Record<string, unknown>[] {
+export function rawRowsOnly(rows: unknown): RawRow[] {
   const list: unknown[] = Array.isArray(rows) ? rows : [];
-  const out: Record<string, unknown>[] = [];
+  const out: RawRow[] = [];
   for (let i = 0; i < list.length; i++) {
-    const src = (list[i] && typeof list[i] === 'object' ? list[i] : {}) as Record<string, unknown>;
-    const row: Record<string, unknown> = { rowNumber: typeof src.rowNumber === 'number' ? src.rowNumber : i + 2 };
+    const src = (list[i] && typeof list[i] === 'object' ? list[i] : {}) as RawRow;
+    const row: RawRow = { rowNumber: typeof src.rowNumber === 'number' ? src.rowNumber : i + 2 };
     for (let c = 0; c < TEMPLATE_COLUMNS.length; c++) {
       const col = TEMPLATE_COLUMNS[c];
       const cell = src[col];
@@ -798,6 +1021,8 @@ export function rawRowsOnly(rows: unknown): Record<string, unknown>[] {
  * One raw row from readCsv into the shape we would write, with everything that
  * is wrong with it listed in plain words.
  *
+ * opts: { today, country }. country is the company's, see countryFromVenue.
+ *
  * `problems` stop the row being written. `warnings` do not: they are things we
  * dropped or read a particular way, and the screen shows them.
  *
@@ -807,12 +1032,24 @@ export function rawRowsOnly(rows: unknown): Record<string, unknown>[] {
 export function normaliseRow(row: unknown, opts?: ReadOpts | null): ImportRow {
   if (looksNormalised(row)) return row as ImportRow;
   const src = (row && typeof row === 'object' ? row : {}) as RawRow;
+  const country = normaliseCountry(opts && opts.country);
   const problems: Note[] = [];
   const warnings: Note[] = [];
   const say = (list: Note[], field: string, message: string): void => { list.push({ field, message }); };
 
-  const phoneRaw = cleanText(src.phone);
-  const p = readPhone(src.phone);
+  // A file saved in the wrong text encoding turns every accented letter into
+  // the character that means "unreadable". Writing that into somebody's name is
+  // worse than stopping, and the fix is one menu choice in the spreadsheet.
+  for (let c = 0; c < TEMPLATE_COLUMNS.length; c++) {
+    const cell = src[TEMPLATE_COLUMNS[c]];
+    if (cell != null && String(cell).indexOf('�') >= 0) {
+      say(problems, TEMPLATE_COLUMNS[c], 'This row has letters we cannot read. Save the file as CSV UTF-8 and pick it again.');
+      break;
+    }
+  }
+
+  const phoneRaw = src.phone == null ? '' : String(src.phone).trim();
+  const p = readPhone(src.phone, { country });
   if (!p.ok) say(problems, 'phone', p.reason);
   if (p.assumed) say(warnings, 'phone', 'We put a 0 back on the front of that number.');
 
@@ -845,16 +1082,19 @@ export function normaliseRow(row: unknown, opts?: ReadOpts | null): ImportRow {
   const optIn = readYesNo(src.marketing_opt_in);
   if (!optIn.ok) say(problems, 'marketing_opt_in', optIn.reason);
 
-  const optInDate = readDate(src.opt_in_date, opts);
-  if (!optInDate.ok) say(problems, 'opt_in_date', optInDate.reason);
-  const signedUpDate = readDate(src.signed_up_date, opts);
-  if (!signedUpDate.ok) say(problems, 'signed_up_date', signedUpDate.reason);
-  const birthOpts: ReadOpts = { today: opts ? opts.today : null, earliestYear: EARLIEST_BIRTH_YEAR };
-  const birthday = readDate(src.birthday, birthOpts);
-  if (!birthday.ok) say(problems, 'birthday', birthday.reason);
-
-  if (optInDate.monthFirst || signedUpDate.monthFirst || birthday.monthFirst) {
-    say(warnings, 'opt_in_date', 'We read that date as month first.');
+  const today = opts ? opts.today : null;
+  const reads: Record<string, DateRead> = {
+    opt_in_date: readDate(src.opt_in_date, { today, country }),
+    signed_up_date: readDate(src.signed_up_date, { today, country }),
+    birthday: readDate(src.birthday, { today, country, earliestYear: EARLIEST_BIRTH_YEAR }),
+  };
+  const dateFlags: Record<string, string> = {};
+  for (let i = 0; i < DATE_COLUMNS.length; i++) {
+    const col = DATE_COLUMNS[i];
+    const r = reads[col];
+    if (!r.ok) say(problems, col, r.reason);
+    else if (r.unusual) say(warnings, col, country === 'US' ? 'We read that date as day first.' : 'We read that date as month first.');
+    dateFlags[col] = r.ok && r.unusual ? 'unusual' : (r.ok && r.ambiguous ? 'ambiguous' : '');
   }
 
   return {
@@ -863,20 +1103,27 @@ export function normaliseRow(row: unknown, opts?: ReadOpts | null): ImportRow {
     firstName,
     lastName,
     phone: p.phone,
-    phoneLocal: p.local,
     phoneE164: p.e164,
+    phoneApp: p.app,
     phoneRaw: phoneRaw || null,
     phoneAssumed: !!p.assumed,
     email: e.email,
     stamps: stamps.value,
     rewardsUnused: rewards.value,
     marketingOptIn: optIn.value,
-    optInDate: optInDate.date,
+    optInDate: reads.opt_in_date.date,
     optInSource: cleanText(src.opt_in_source),
-    signedUpDate: signedUpDate.date,
-    birthday: birthday.date,
+    signedUpDate: reads.signed_up_date.date,
+    birthday: reads.birthday.date,
     externalId,
     notes: cleanText(src.notes),
+    dates: {
+      opt_in_date: cleanText(src.opt_in_date),
+      signed_up_date: cleanText(src.signed_up_date),
+      birthday: cleanText(src.birthday),
+    },
+    dateFlags,
+    sharedWith: null,
     problems,
     warnings,
   };
@@ -888,16 +1135,40 @@ function lineOf(rowNumber: number, message: string): string {
   return 'Row ' + rowNumber + ': ' + message;
 }
 
+/** The keys two rows' phones can collide on: what we write and its E.164 form,
+ *  so 0161 496 0000 on one row and +44 161 496 0000 on another are one number. */
+function rowPhoneForms(r: ImportRow): string[] {
+  const out: string[] = [];
+  const list = [r.phone, r.phoneE164];
+  for (let i = 0; i < list.length; i++) if (list[i] && out.indexOf(list[i]) < 0) out.push(list[i]);
+  return out;
+}
+
 /**
  * Every row of the file, sorted into what we can write and what we cannot.
  *
+ * opts: { today, country }.
+ *
+ * Returns { ready, errors, duplicatesInFile, warnings }.
  *  - ready            rows we would write, in file order
  *  - errors           one per problem, each naming its row number
- *  - duplicatesInFile the same person twice in one file. The FIRST one is kept
- *                     and the rest are reported, never written, because
- *                     (org_id, phone) and (org_id, lower(email)) are unique and
- *                     the second write would fail or split the person in two.
+ *  - duplicatesInFile rows left out because an earlier row already is them
  *  - warnings         things we did that the operator should see
+ *
+ * TWO ROWS, ONE PHONE. 5Loyalty let two accounts share a number, and the Coffee
+ * Boy file has 140 numbers on 283 rows ("shares this phone with N other
+ * account(s)" in notes). (org_id, phone) is unique, so only one of them can
+ * have it. The FIRST row in the file keeps the phone. A later row that has its
+ * own email still goes in, by email only, with the number named in the warning
+ * so the operator can fix the sheet; nobody's stamps are dropped because of
+ * somebody else's number. The same for two rows with one email: the later one
+ * goes in by phone only. A row that has nothing of its own left (same phone and
+ * no email, same email and no phone, or both the same) is left out and named,
+ * because it IS the earlier row.
+ *
+ * THE DATE COLUMN CHECK. If any date in a column can only be read month first,
+ * a spreadsheet has turned that column American, so every date in the same
+ * column that could be read either way is refused instead of guessed.
  *
  * Rows may be raw (from readCsv) or already normalised. Running it twice on its
  * own output gives the same answer.
@@ -910,110 +1181,147 @@ export function validateRows(rows: unknown, opts?: ReadOpts | null): Checked {
   const warnings: RowNote[] = [];
   const seenPhone = new Map<string, number>();
   const seenEmail = new Map<string, number>();
+  const country = normaliseCountry(opts && opts.country);
 
+  const all: Array<{ r: ImportRow; rowNumber: number }> = [];
   for (let i = 0; i < list.length; i++) {
     const r = normaliseRow(list[i], opts);
-    const rowNumber = r.rowNumber || i + 2;
+    all.push({ r, rowNumber: r.rowNumber || i + 2 });
+  }
 
-    for (let j = 0; j < r.warnings.length; j++) {
-      const w = r.warnings[j];
-      warnings.push({ rowNumber, field: w.field, message: w.message, text: lineOf(rowNumber, w.message) });
+  for (let c = 0; c < DATE_COLUMNS.length; c++) {
+    const col = DATE_COLUMNS[c];
+    let witness: { r: ImportRow; rowNumber: number } | null = null;
+    for (let i = 0; i < all.length && !witness; i++) {
+      if (all[i].r.dateFlags && all[i].r.dateFlags[col] === 'unusual') witness = all[i];
     }
+    if (!witness) continue;
+    const order = country === 'US' ? 'day first' : 'month first';
+    const shown = (witness as { r: ImportRow }).r.dates ? (witness as { r: ImportRow }).r.dates[col] : '';
+    for (let i = 0; i < all.length; i++) {
+      const it = all[i];
+      if (!it.r.dateFlags || it.r.dateFlags[col] !== 'ambiguous') continue;
+      const message = 'Row ' + (witness as { rowNumber: number }).rowNumber + ' has a ' + order + ' date in this column (' + shown + '), so we cannot trust this one. Write it as 1984-09-05.';
+      const flags = { ...it.r.dateFlags };
+      flags[col] = '';
+      it.r = { ...it.r, dateFlags: flags, problems: it.r.problems.concat([{ field: col, message }]) };
+    }
+  }
+
+  for (let i = 0; i < all.length; i++) {
+    let r = all[i].r;
+    const rowNumber = all[i].rowNumber;
 
     if (r.problems.length) {
       for (let j = 0; j < r.problems.length; j++) {
         const p = r.problems[j];
         errors.push({ rowNumber, field: p.field, message: p.message, text: lineOf(rowNumber, p.message) });
       }
-      continue;
+    } else {
+      const forms = rowPhoneForms(r);
+      let phoneFirst = 0;
+      for (let j = 0; j < forms.length && !phoneFirst; j++) phoneFirst = seenPhone.get(forms[j]) || 0;
+      const emailFirst = r.email ? (seenEmail.get(r.email) || 0) : 0;
+
+      let dup = '';
+      let dupField = '';
+      let dupFirst = 0;
+      if (phoneFirst && emailFirst) {
+        dup = phoneFirst === emailFirst
+          ? 'Same phone and email as row ' + phoneFirst + '. We keep the first one.'
+          : 'Same phone as row ' + phoneFirst + ' and same email as row ' + emailFirst + '. We keep the first ones.';
+        dupField = 'phone';
+        dupFirst = phoneFirst;
+      } else if (phoneFirst && !r.email) {
+        dup = 'Same phone as row ' + phoneFirst + ', and no email to tell them apart. We keep the first one.';
+        dupField = 'phone';
+        dupFirst = phoneFirst;
+      } else if (emailFirst && !r.phone) {
+        dup = 'Same email as row ' + emailFirst + ', and no phone to tell them apart. We keep the first one.';
+        dupField = 'email';
+        dupFirst = emailFirst;
+      } else if (phoneFirst) {
+        const message = 'Shares a phone with row ' + phoneFirst + ', so this one goes in by email only. The phone stays with row ' + phoneFirst + '.';
+        r = {
+          ...r,
+          phone: null,
+          phoneE164: null,
+          phoneApp: null,
+          phoneRaw: null,
+          phoneAssumed: false,
+          sharedWith: { field: 'phone', rowNumber: phoneFirst, value: r.phone || r.phoneRaw || '' },
+          warnings: r.warnings.filter((w) => w.field !== 'phone').concat([{ field: 'phone', message }]),
+        };
+      } else if (emailFirst) {
+        const message = 'Shares an email with row ' + emailFirst + ', so this one goes in by phone only. The email stays with row ' + emailFirst + '.';
+        r = {
+          ...r,
+          email: null,
+          sharedWith: { field: 'email', rowNumber: emailFirst, value: r.email || '' },
+          warnings: r.warnings.concat([{ field: 'email', message }]),
+        };
+      }
+
+      if (dup) {
+        const value = dupField === 'phone' ? (r.phone || '') : (r.email || '');
+        duplicatesInFile.push({ rowNumber, field: dupField, value, firstRowNumber: dupFirst, message: dup, text: lineOf(rowNumber, dup) });
+      } else {
+        const keep = rowPhoneForms(r);
+        for (let j = 0; j < keep.length; j++) if (!seenPhone.has(keep[j])) seenPhone.set(keep[j], rowNumber);
+        if (r.email && !seenEmail.has(r.email)) seenEmail.set(r.email, rowNumber);
+        ready.push(r);
+      }
     }
 
-    if (r.phone && seenPhone.has(r.phone)) {
-      const first = seenPhone.get(r.phone) as number;
-      const message = 'Same phone as row ' + first + '. We keep the first one.';
-      duplicatesInFile.push({ rowNumber, field: 'phone', value: r.phone, firstRowNumber: first, message, text: lineOf(rowNumber, message) });
-      continue;
+    for (let j = 0; j < r.warnings.length; j++) {
+      const w = r.warnings[j];
+      warnings.push({ rowNumber, field: w.field, message: w.message, text: lineOf(rowNumber, w.message) });
     }
-    if (r.email && seenEmail.has(r.email)) {
-      const first = seenEmail.get(r.email) as number;
-      const message = 'Same email as row ' + first + '. We keep the first one.';
-      duplicatesInFile.push({ rowNumber, field: 'email', value: r.email, firstRowNumber: first, message, text: lineOf(rowNumber, message) });
-      continue;
-    }
-
-    if (r.phone) seenPhone.set(r.phone, rowNumber);
-    if (r.email) seenEmail.set(r.email, rowNumber);
-    ready.push(r);
   }
 
   return { ready, errors, duplicatesInFile, warnings };
 }
 
 /**
- * The people already in the database, as keys this file can compare against.
- * Takes customer rows ({ phone, email }), plain strings, a { phones, emails }
- * pair, or a Set this function already built, and gives back a Set of
- * 'p:+44...' / 'e:jane@x.com'. Running it on its own output changes nothing.
- */
-export function buildExistingKeys(source: unknown): Set<string> {
-  const keys = new Set<string>();
-  if (!source) return keys;
-  if (source instanceof Set) return buildExistingKeys(Array.from(source));
-
-  const addPhone = (v: unknown): void => { const list = phoneKeys(v); for (let i = 0; i < list.length; i++) keys.add('p:' + list[i]); };
-  const addEmail = (v: unknown): void => { const n = normaliseEmail(v); if (n.email) keys.add('e:' + n.email); };
-
-  if (Array.isArray(source)) {
-    for (let i = 0; i < source.length; i++) {
-      const item = source[i];
-      if (item == null) continue;
-      if (typeof item === 'string') {
-        if (item.startsWith('p:') || item.startsWith('e:')) keys.add(item);
-        else if (item.indexOf('@') >= 0) addEmail(item);
-        else addPhone(item);
-      } else if (typeof item === 'object') {
-        const c = item as { phone?: unknown; phone_raw?: unknown; phoneRaw?: unknown; email?: unknown };
-        addPhone(c.phone);
-        addPhone(c.phone_raw);
-        addPhone(c.phoneRaw);
-        addEmail(c.email);
-      }
-    }
-    return keys;
-  }
-  if (typeof source === 'object') {
-    const pair = source as { phones?: unknown; emails?: unknown };
-    const phones = pair.phones;
-    const emails = pair.emails;
-    const ph: unknown[] = phones instanceof Set ? Array.from(phones) : (Array.isArray(phones) ? phones : []);
-    const em: unknown[] = emails instanceof Set ? Array.from(emails) : (Array.isArray(emails) ? emails : []);
-    for (let i = 0; i < ph.length; i++) addPhone(ph[i]);
-    for (let i = 0; i < em.length; i++) addEmail(em[i]);
-  }
-  return keys;
-}
-
-/**
- * True when this row is somebody the venue already has.
+ * The raw cells we POST for the rows we would write, in file order.
  *
- * Checked against EVERY shape of their phone, not just the one we would write,
- * because the same person can be on file under the app's shape or under the
- * E.164 form an older run of this importer wrote.
+ * The server reads every row again from its cells, and it only ever sees one
+ * slice of the file, so a row whose phone (or email) stays with an earlier row
+ * has to ARRIVE without it. The number that stayed behind is written into the
+ * notes, so it is not lost.
  */
-export function matchesExisting(row: unknown, keys: unknown): boolean {
-  const r = row as ImportRow | null;
-  const set = keys as Set<string> | null;
-  if (!r || !set || typeof set.has !== 'function') return false;
-  const forms = [r.phone, r.phoneE164, r.phoneLocal];
-  for (let i = 0; i < forms.length; i++) if (forms[i] && set.has('p:' + forms[i])) return true;
-  return !!(r.email && set.has('e:' + r.email));
+export function rowsToSend(raw: unknown, checked: unknown): RawRow[] {
+  const cells = new Map<number, RawRow>();
+  const list = (Array.isArray(raw) ? raw : []) as RawRow[];
+  for (let i = 0; i < list.length; i++) if (list[i] && list[i].rowNumber) cells.set(list[i].rowNumber as number, list[i]);
+  const c = checked as Checked | null;
+  const ready: ImportRow[] = c && Array.isArray(c.ready) ? c.ready : [];
+  const out: RawRow[] = [];
+  for (let i = 0; i < ready.length; i++) {
+    const r = ready[i];
+    const src = cells.get(r.rowNumber);
+    if (!src) continue;
+    const row: RawRow = { rowNumber: r.rowNumber };
+    for (let c = 0; c < TEMPLATE_COLUMNS.length; c++) {
+      const v = src[TEMPLATE_COLUMNS[c]];
+      row[TEMPLATE_COLUMNS[c]] = v == null ? '' : String(v);
+    }
+    if (r.sharedWith) {
+      const f = r.sharedWith.field;
+      const line = (f === 'phone' ? 'Phone ' : 'Email ') + r.sharedWith.value + ' kept on row ' + r.sharedWith.rowNumber + '.';
+      row[f] = '';
+      row.notes = cleanText(row.notes) ? cleanText(row.notes) + ' | ' + line : line;
+    }
+    out.push(row);
+  }
+  return out;
 }
 
 /** Distinct row numbers with something wrong with them. One row with three
  *  problems is ONE row, not three. */
 export function problemRowNumbers(checked: unknown): number[] {
-  const c = (checked || {}) as Checked;
-  const errors = Array.isArray(c.errors) ? c.errors : [];
+  const c = (checked || {}) as Partial<Checked>;
+  const errors: RowNote[] = Array.isArray(c.errors) ? c.errors : [];
   const seen = new Set<number>();
   for (let i = 0; i < errors.length; i++) {
     const n = errors[i] && errors[i].rowNumber;
@@ -1023,24 +1331,51 @@ export function problemRowNumbers(checked: unknown): number[] {
 }
 
 /**
+ * What the server said about each row, keyed by row number, or null when we
+ * have not asked it. Takes a Map, or the `verdicts` list a preview answers with
+ * ({ row_number, verdict, reason, customer_id }).
+ *
+ * This is THE answer to "do we already have this person", and the preview
+ * tiles and the preview table both read it, so they can never disagree.
+ */
+export function verdictsByRow(verdicts: unknown): Map<number, RowVerdict> | null {
+  if (verdicts == null) return null;
+  if (verdicts instanceof Map) return verdicts as Map<number, RowVerdict>;
+  const out = new Map<number, RowVerdict>();
+  const list: unknown[] = Array.isArray(verdicts) ? verdicts : [];
+  for (let i = 0; i < list.length; i++) {
+    const v = list[i] as Record<string, unknown>;
+    if (!v || typeof v !== 'object') continue;
+    const n = Number(v.row_number != null ? v.row_number : v.rowNumber);
+    if (!n) continue;
+    const id = v.customer_id != null ? v.customer_id : v.customerId;
+    out.set(n, { verdict: String(v.verdict || ''), reason: String(v.reason || ''), customerId: id != null ? String(id) : null });
+  }
+  return out;
+}
+
+/**
  * The numbers the preview screen shows before anybody presses Import.
  *
  * `rows` may be raw rows, normalised rows, or the result of validateRows.
- * `existingKeys` is whatever buildExistingKeys accepts, or nothing on a venue
- * with no customers yet (Coffee Boy today), in which case everybody is new.
+ * `verdicts` is what the server said about each row (see verdictsByRow), or
+ * null before it has been asked, in which case nobody is counted as new or
+ * known: they are `unchecked`, and the screen says so.
  *
  * Counted as they can be emailed only where the file says yes AND there is an
  * email. A blank opt in column is nobody's yes.
  */
-export function summarise(rows: unknown, existingKeys?: unknown, opts?: ReadOpts | null): Totals {
-  const asChecked = rows as Checked | null;
-  const checked: Checked = rows && !Array.isArray(rows) && asChecked && Array.isArray(asChecked.ready)
-    ? asChecked
+export function summarise(rows: unknown, verdicts?: unknown, opts?: ReadOpts | null): Totals {
+  const maybe = rows as Checked | null;
+  const checked: Checked = maybe && !Array.isArray(rows) && Array.isArray(maybe.ready)
+    ? maybe
     : validateRows(Array.isArray(rows) ? rows : [], opts);
-  const keys = buildExistingKeys(existingKeys);
+  const byRow = verdictsByRow(verdicts);
 
   let newCustomers = 0;
   let alreadyKnown = 0;
+  let blocked = 0;
+  let unchecked = 0;
   let withStamps = 0;
   let stampsTotal = 0;
   let rewardsTotal = 0;
@@ -1049,10 +1384,17 @@ export function summarise(rows: unknown, existingKeys?: unknown, opts?: ReadOpts
   let optedOut = 0;
   let notSaid = 0;
   let phoneFixed = 0;
+  let sharedPhone = 0;
+  let sharedEmail = 0;
 
   for (let i = 0; i < checked.ready.length; i++) {
     const r = checked.ready[i];
-    if (matchesExisting(r, keys)) alreadyKnown++; else newCustomers++;
+    const v = byRow ? byRow.get(r.rowNumber) : null;
+    const verdict = v ? v.verdict : '';
+    if (verdict === 'blocked') { blocked++; continue; }
+    if (verdict === 'update') alreadyKnown++;
+    else if (verdict === 'new') newCustomers++;
+    else unchecked++;
     if (r.stamps > 0 || r.rewardsUnused > 0) withStamps++;
     stampsTotal += r.stamps;
     rewardsTotal += r.rewardsUnused;
@@ -1062,14 +1404,18 @@ export function summarise(rows: unknown, existingKeys?: unknown, opts?: ReadOpts
     } else if (r.marketingOptIn === false) optedOut++;
     else notSaid++;
     if (r.phoneAssumed) phoneFixed++;
+    if (r.sharedWith && r.sharedWith.field === 'phone') sharedPhone++;
+    if (r.sharedWith && r.sharedWith.field === 'email') sharedEmail++;
   }
 
   const problemRows = problemRowNumbers(checked);
 
   return {
-    ready: checked.ready.length,
+    ready: checked.ready.length - blocked,
     newCustomers,
     alreadyKnown,
+    blocked,
+    unchecked,
     withStamps,
     stampsTotal,
     rewardsTotal,
@@ -1078,6 +1424,8 @@ export function summarise(rows: unknown, existingKeys?: unknown, opts?: ReadOpts
     optedOut,
     notSaid,
     phoneFixed,
+    sharedPhone,
+    sharedEmail,
     problems: problemRows.length,
     duplicates: checked.duplicatesInFile.length,
     total: checked.ready.length + problemRows.length + checked.duplicatesInFile.length,

@@ -29,6 +29,8 @@ import { fileURLToPath } from 'node:url';
 import {
   IMPORT_FUNCTION,
   importRequestBody,
+  previewRequestBody,
+  contextRequestBody,
   mergeResult,
   failedFromChunk,
   resultLine,
@@ -40,19 +42,18 @@ import {
   rawRowsOnly,
   problemRowNumbers,
   normaliseRow,
-  buildExistingKeys,
-  matchesExisting,
   appPhone,
 } from './customerImport.js';
+import { decideRows, indexExisting } from '../../supabase/functions/_shared/customerImportPlan.ts';
 
 const here = (rel) => fileURLToPath(new URL(rel, import.meta.url));
 const read = (rel) => fs.readFileSync(here(rel), 'utf8');
 
-const SCREEN = '../backoffice/sections/CustomerImport.jsx';
+const SCREEN = '../admin/sections/AdminCustomerImport.jsx';
 const FUNCTION_INDEX = '../../supabase/functions/customer-import/index.ts';
 const FUNCTIONS_DIR = '../../supabase/functions';
 
-const OPTS = { today: '2026-09-18' };
+const OPTS = { today: '2026-09-18', country: 'GB' };
 
 // ── 1. the URL names a function that exists ─────────────────────────────────
 
@@ -90,7 +91,7 @@ function keysTheFunctionReads() {
 
 test('the posted body is exactly the keys the edge function reads', () => {
   const posted = Object.keys(importRequestBody({
-    opsLocationId: 'loc-1', rows: [{ name: 'Jane' }], batchId: 'b1',
+    opsLocationId: 'loc-1', orgId: 'org-1', rows: [{ name: 'Jane' }], batchId: 'b1',
     filename: 'coffeeboy.csv', today: '2026-09-18', programId: 'prog-1',
     consentText: 'Imported from 5Loyalty.', chunkIndex: 0,
   })).sort();
@@ -105,6 +106,14 @@ test('the posted body is exactly the keys the edge function reads', () => {
   assert.ok(posted.includes('batch_id'), 'the function reads batch_id, never batch_key');
   assert.ok(!posted.includes('location_id'));
   assert.ok(!posted.includes('batch_key'));
+  assert.ok(posted.includes('org_id'), 'the company the operator picked, which the function checks');
+
+  // The preview and context bodies only carry keys the function reads.
+  for (const body of [previewRequestBody({}), contextRequestBody({})]) {
+    for (const key of Object.keys(body)) assert.ok(reads.includes(key), key + ' is read by the function');
+  }
+  assert.equal(previewRequestBody({}).action, 'preview');
+  assert.equal(contextRequestBody({}).action, 'context');
 });
 
 test('the screen sends the body through that one builder, not by hand', () => {
@@ -140,7 +149,8 @@ const RECORDED_ANSWER = {
     enrolled: 188,
     already_stamped: 4,
     consent_withheld: 1,
-    errors: ['Row 44: we could not add this person. duplicate key value'],
+    skipped_rows: [{ row_number: 7, reason: 'Same phone and email as row 2. We keep the first one.' }],
+    failed: [{ row_number: 44, reason: 'We could not add this person. duplicate key value' }],
     notes: ['We already imported stamps for 4 of these people, so we left their cards alone.'],
   },
   totals: { row_count: 200, created_count: 188, updated_count: 9, skipped_count: 3 },
@@ -169,17 +179,17 @@ test('a real answer from the writer produces real numbers on the screen', () => 
 
 test('two chunks add up, and the batch id survives the second one', () => {
   let acc = mergeResult(null, RECORDED_ANSWER);
-  acc = mergeResult(acc, { ...RECORDED_ANSWER, batch_id: undefined, chunk: { ...RECORDED_ANSWER.chunk, created: 12, errors: [], notes: [] } });
+  acc = mergeResult(acc, { ...RECORDED_ANSWER, batch_id: undefined, chunk: { ...RECORDED_ANSWER.chunk, created: 12, failed: [], notes: [] } });
   assert.equal(acc.created, 200);
   assert.equal(acc.batchId, RECORDED_ANSWER.batch_id, 'one batch id for the whole file, or the stamps double');
 });
 
-test('failedFromChunk keeps the words and finds the row', () => {
+test('failedFromChunk keeps the words and finds the row, and never makes a row out of a run line', () => {
   const out = failedFromChunk({ errors: ['Row 7: That date is not a real day.', 'something with no row number'] });
-  assert.equal(out.length, 2);
+  assert.equal(out.length, 1, 'a line with no row number is a note, not a failed row 0');
   assert.equal(out[0].rowNumber, 7);
   assert.equal(out[0].reason, 'That date is not a real day.');
-  assert.equal(out[1].rowNumber, 0);
+  assert.deepEqual(failedFromChunk({ failed: [{ row_number: 9, reason: 'no' }] }).map((f) => f.rowNumber), [9]);
   assert.deepEqual(failedFromChunk(null), []);
 });
 
@@ -267,13 +277,15 @@ test('one row with three problems is one skipped row, not three', () => {
   assert.equal(summarise(rows, null, OPTS).total, 1, 'the total is the file, not the complaints');
 });
 
+const allNew = (checked) => checked.ready.map((r) => ({ row_number: r.rowNumber, verdict: 'new' }));
+
 test('the writer counts skipped ROWS and only counts an update it actually made', () => {
   const src = read(FUNCTION_INDEX);
-  assert.ok(src.includes('problemRowNumbers(checked).length'), 'skipped counts distinct rows');
+  assert.ok(src.includes('for (const n of problemRowNumbers(checked)) skipRow(progress, n'), 'skipped counts distinct rows');
   assert.ok(!/progress\.skipped = checked\.errors\.length/.test(src), 'never the number of complaints');
   assert.ok(!/progress\.updated = updated\.size/.test(src), 'never every match');
-  assert.ok(/if \(!patch\) continue;\s*\n\s*patches\.push\(patch\);\s*\n\s*progress\.updated\+\+;/.test(src),
-    'updated goes up only when there was something to change');
+  assert.ok(!/patches\.push\(patch\);\s*\n\s*progress\.updated\+\+;/.test(src), 'never when the patch is only built');
+  assert.ok(src.includes('if (!error) { progress.updated += slice.length; continue; }'), 'updated goes up when the write lands');
 });
 
 // ── the file Coffee Boy is actually going to hand us ────────────────────────
@@ -338,7 +350,7 @@ test('the Coffee Boy file off 5Loyalty imports cleanly, end to end', () => {
   // Every one of them has a name, because customers.name is NOT NULL.
   for (const r of checked.ready) assert.ok(r.name && r.name.length > 0);
 
-  const s = summarise(checked, null, OPTS);
+  const s = summarise(checked, allNew(checked), OPTS);
   assert.equal(s.ready, 5);
   assert.equal(s.newCustomers, 5, 'Coffee Boy have nobody in RPOS yet');
   assert.equal(s.problems, 0);
@@ -358,7 +370,7 @@ test('the same Coffee Boy file read twice says exactly the same thing', () => {
   const once = validateRows(rawRowsOnly(readCsv(COFFEE_BOY).rows), OPTS);
   const twice = validateRows(rawRowsOnly(readCsv(COFFEE_BOY).rows), OPTS);
   assert.deepEqual(twice, once);
-  assert.deepEqual(summarise(twice, null, OPTS), summarise(once, null, OPTS));
+  assert.deepEqual(summarise(twice, allNew(twice), OPTS), summarise(once, allNew(once), OPTS));
 });
 
 test('a second Coffee Boy row for somebody we already have is an update, not a twin', () => {
@@ -366,14 +378,16 @@ test('a second Coffee Boy row for somebody we already have is an update, not a t
   const checked = validateRows(rawRowsOnly(rows), OPTS);
   // The till already has Mo, stored the way the app stores a landline, and Jane
   // under the E.164 form an earlier run of this importer wrote.
-  const keys = buildExistingKeys([
-    { phone: '01614960000', email: null },
-    { phone: '+447954412324', email: null },
-  ]);
-  const known = checked.ready.filter((r) => matchesExisting(r, keys));
-  assert.equal(known.length, 2, 'both shapes find their person');
-  assert.equal(summarise(checked, keys, OPTS).alreadyKnown, 2);
-  assert.equal(summarise(checked, keys, OPTS).newCustomers, 3);
+  const existing = [
+    { id: 'mo', phone: '01614960000', email: null },
+    { id: 'jane', phone: '+447954412324', email: null },
+  ];
+  const decisions = decideRows(checked.ready, indexExisting(existing, { country: 'GB' }), { country: 'GB' });
+  const known = decisions.filter((d) => d.verdict === 'update').map((d) => d.customerId).sort();
+  assert.deepEqual(known, ['jane', 'mo'], 'both shapes find their person');
+  const verdicts = decisions.map((d) => ({ row_number: d.rowNumber, verdict: d.verdict, customer_id: d.customerId }));
+  assert.equal(summarise(checked, verdicts, OPTS).alreadyKnown, 2);
+  assert.equal(summarise(checked, verdicts, OPTS).newCustomers, 3);
 });
 
 // ── the words on the screen ─────────────────────────────────────────────────
@@ -384,18 +398,26 @@ test('the screen and its wiring have no em or en dashes', () => {
   }
 });
 
-test('the rules never say +44 about a number that did not carry a country code', () => {
-  // The guard behind finding 4. A bare ten digit number gets a zero and nothing
-  // else, whatever country the venue is in.
-  for (const bare of ['4155551234', '2125550199', '7954412327', '1614960000']) {
+test('A: only a GB company gets a 0 put back, and nobody gets a country code invented', () => {
+  // A GB file: a bare ten digit UK number gets its 0 and then the app rule.
+  for (const bare of ['7954412327', '1614960000']) {
     const r = normaliseRow({ rowNumber: 2, name: 'X', phone: bare }, OPTS);
     assert.deepEqual(r.problems, [], bare + ' is readable');
-    assert.equal(r.phoneLocal, '0' + bare, 'a zero on the front, nothing invented');
-    assert.equal(r.phone, appPhone('0' + bare), 'and then the app rule, and only the app rule, decides');
+    assert.equal(r.phone, appPhone('0' + bare), 'a zero on the front, then the app rule and only the app rule');
+    assert.equal(r.phoneAssumed, true);
   }
-  // A US list is the case that used to hand every single person somebody
-  // else's phone number as their loyalty login.
-  const us = normaliseRow({ rowNumber: 2, name: 'Hank', phone: '4155551234' }, OPTS);
-  assert.equal(us.phone, '04155551234');
-  assert.ok(!String(us.phone).startsWith('+44'), 'never +444155551234');
+  // A US company, or one whose country we do not know: the cell goes through
+  // the app rule UNCHANGED. 7xx is a US area code, not a UK mobile.
+  for (const country of ['US', '']) {
+    for (const bare of ['4155551234', '7185550123', '4405551234']) {
+      const r = normaliseRow({ rowNumber: 2, name: 'Hank', phone: bare }, { today: OPTS.today, country });
+      assert.deepEqual(r.problems, [], bare + ' is readable');
+      assert.equal(r.phone, appPhone(bare), 'exactly what the till writes for that cell');
+      assert.equal(r.phoneAssumed, false);
+      assert.equal(r.phoneE164, null, 'no +44 key invented');
+      assert.ok(!String(r.phone).startsWith('+447'), bare + ' is nobody\'s UK mobile');
+    }
+  }
+  // A US number in a GB file is refused, not turned into a UK one.
+  assert.ok(normaliseRow({ rowNumber: 2, name: 'Hank', phone: '4155551234' }, OPTS).problems.length > 0);
 });

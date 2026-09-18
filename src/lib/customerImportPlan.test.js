@@ -33,7 +33,10 @@ import {
   indexExisting, lookupKeys, decideRows, planCounts, needsProgramme, programmeCheck,
   buildInsert, buildPatch, groupPatches, buildConsent, consentIsNew, consentDecision,
   stampPlan, stampsOwed, stampsSkipped, alreadyStampedLine, emptyProgress,
+  collapsePatches, withheldLine, sameAsReason, skipRow, failRow, runNote, chunkAnswer,
+  staffVerdict, STAFF_EMAIL_DOMAINS, isBatchId, batchRecord,
 } from '../../supabase/functions/_shared/customerImportPlan.ts';
+import { sameAsReason as screenSameAsReason } from './customerImportScreen.js';
 
 const read = (rel) => fs.readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
 
@@ -41,7 +44,8 @@ const BATCH = '7f0a2c1e-1111-4b2a-9c3d-abcdefabcdef';
 const ORG = 'cd97f0f0-4807-4e45-801e-56114b22128a';
 const NOW = '2026-09-18T09:00:00.000Z';
 const CTX = { orgId: ORG, batchId: BATCH, now: NOW };
-const OPTS = { today: '2026-09-18' };
+const OPTS = { today: '2026-09-18', country: 'GB' };
+const GB = { country: 'GB' };
 
 const row = (fields) => normaliseRow(fields, OPTS);
 
@@ -90,9 +94,9 @@ test('existing customers are keyed the way the file will be read', () => {
     { id: null, phone: '07700900999' },
     null,
     'nonsense',
-  ]);
+  ], GB);
   assert.equal(index.byPhone.get('+447700900123').id, 'a');
-  assert.equal(index.byPhone.get('07700900123').id, 'a', 'and under the local shape too');
+  assert.equal(index.byPhone.get('07700900456').id, 'b', 'exactly as stored');
   assert.equal(index.byPhone.get('+447700900456').id, 'b', 'a stored 07 number is found by its international form');
   assert.equal(index.byEmail.get('jane@example.com').id, 'a', 'stored case does not matter');
   assert.equal(index.byEmail.get('bob@example.com').id, 'c');
@@ -124,12 +128,40 @@ test('a lookup asks for every shape a phone could be on file in', () => {
     row({ name: 'C', phone: '0161 496 0000', email: '' }),
   ]);
   assert.ok(keys.phones.includes('+447700900123'), 'the app shape for a mobile');
-  assert.ok(keys.phones.includes('07700900123'), 'and the local shape');
+  assert.ok(!keys.phones.includes('07700900123'), 'customers.phone never holds a 07 mobile, the app turns it into +44');
   assert.ok(keys.phones.includes('01614960000'), 'the app shape for a landline');
   assert.ok(keys.phones.includes('+441614960000'), 'and the shape the old importer wrote');
   assert.equal(new Set(keys.phones).size, keys.phones.length, 'each one asked for once');
   assert.deepEqual(keys.emails, ['jane@example.com']);
-  assert.deepEqual(lookupKeys(null), { phones: [], emails: [] });
+  assert.deepEqual(lookupKeys(null), { phones: [], raws: [], emails: [] });
+});
+
+test('D: phone_raw is asked for the cell as typed, and the ways a person types the number', () => {
+  const keys = lookupKeys([row({ name: 'A', phone: '0161 496 0000' }), row({ name: 'B', phone: '07700 900123' })]);
+  assert.ok(keys.raws.includes('0161 496 0000'), 'the cell exactly as the file wrote it');
+  assert.ok(keys.raws.includes('07700 900123'));
+  assert.ok(keys.raws.includes('07700900123'), 'the number typed without spaces');
+  assert.ok(keys.raws.includes('+447700900123'));
+  assert.ok(keys.raws.includes('01614960000'));
+  // And the index agrees with what was asked: a phone_raw found by any of
+  // those values is matched to the row, never read and then ignored.
+  for (const typed of ['0161 496 0000', '01614960000', '+441614960000']) {
+    const index = indexExisting([{ id: 'c-raw', phone: null, phone_raw: typed, email: null }], GB);
+    const [d] = decideRows([row({ name: 'Mo', phone: '0161 496 0000' })], index, GB);
+    assert.equal(d.customerId, 'c-raw', 'phone_raw ' + typed);
+    assert.ok(keys.raws.includes(typed), 'and it is one of the values the database is asked for: ' + typed);
+  }
+});
+
+test('A: a US number never matches a UK customer through an invented +44 key', () => {
+  // The old dialled() made '+44' + national for every number, so a US row
+  // 7001234567 was looked up as +447001234567 and could land on a stranger.
+  const ukCustomer = [{ id: 'uk-1', phone: '+447001234567', email: null }];
+  const us = normaliseRow({ rowNumber: 2, name: 'Hank', phone: '7001234567' }, { today: '2026-09-18', country: 'US' });
+  assert.equal(us.phone, '7001234567');
+  const [d] = decideRows([us], indexExisting(ukCustomer, { country: 'US' }), { country: 'US' });
+  assert.equal(d.verdict, 'new', 'Hank is not the UK customer');
+  assert.ok(!lookupKeys([us]).phones.some((k) => k.startsWith('+44')), 'no +44 key is ever asked for');
 });
 
 // ── new, update, or leave alone ─────────────────────────────────────────────
@@ -643,8 +675,11 @@ test('the writer counts and reports the cards it left alone', () => {
   const src = read('../../supabase/functions/customer-import/index.ts');
   assert.ok(src.includes('stampsSkipped(decisions, stamped)'), 'it works out who it skipped');
   assert.ok(src.includes('alreadyStampedLine('), 'and turns that into a line');
-  assert.ok(src.includes('progress.notes.push(line)'), 'which comes back as a note, not as an error');
-  assert.ok(src.includes('already_stamped: progress.alreadyStamped'), 'and as a number the screen puts in a tile');
+  assert.ok(src.includes('runNote(progress, alreadyStampedLine(leftAlone.length))'), 'which comes back as a note, not as a row');
+  assert.ok(src.includes('chunk: chunkAnswer(progress)'), 'and the answer is built in one place');
+  const p = emptyProgress();
+  p.alreadyStamped = 4;
+  assert.equal(chunkAnswer(p).already_stamped, 4, 'as a number the screen puts in a tile');
   assert.equal(emptyProgress().alreadyStamped, 0);
 });
 
@@ -668,19 +703,42 @@ test('the importer only ever uses the service role, never a browser key', () => 
   assert.ok(!/ANON_KEY/.test(FN), 'no anon key anywhere near a customer import');
 });
 
-test('the caller must have the location, or be super_admin, or be the service role', () => {
-  assert.ok(FN.includes("from('user_locations')"), 'a staff token is checked against user_locations');
-  assert.ok(FN.includes("prof?.role === 'super_admin'"), 'super_admin is the fallback, same as marketing-admin');
-  assert.ok(FN.includes('if (token === SERVICE_ROLE) return'), 'a service role bearer passes');
-  assert.ok(FN.includes("if (!auth.ok) return json({ error: 'no access to this location' }, 403)"), 'no access is a 403 and stops there');
+test('G: every action, preview included, is ServOS staff only', () => {
+  assert.ok(FN.includes('const auth = await staffAuth(req);'), 'one staff check');
+  const check = FN.indexOf('const auth = await staffAuth(req);');
+  assert.ok(check < FN.indexOf("if (action === 'context')"), 'before context');
+  assert.ok(check < FN.indexOf("if (action === 'preview')"), 'before preview');
+  assert.ok(check < FN.indexOf("from('locations')", FN.indexOf('Deno.serve')), 'before anything about the venue is even read');
+  assert.ok(!FN.includes("from('user_locations')"), 'a user_locations row, which a venue owner has, is NOT enough any more');
+  assert.ok(FN.includes('staffVerdict({ user, role: prof?.role, domains: STAFF_DOMAINS })'), 'the rule is the pure one below');
+  assert.ok(FN.includes('if (SERVICE_ROLE && token === SERVICE_ROLE)'), 'a service role bearer passes');
+  assert.ok(FN.includes('if (!auth.ok) return json({ error: auth.reason'), 'anybody else is a 403');
 });
 
-test('the tenant is resolved server side and never taken from the browser', () => {
-  assert.ok(FN.includes("from('locations').select('org_id').eq('id', opsLocationId)"), 'org_id comes from the location');
-  assert.ok(FN.includes("select('company_id').eq('ops_location_id', opsLocationId)"), 'company_id comes from the location');
-  assert.ok(!/body\??\.\s*org_id|body\[.org_id.\]/.test(FN), 'org_id is never read off the body');
-  assert.ok(!/body\??\.\s*company_id|body\[.company_id.\]/.test(FN), 'company_id is never read off the body');
-  assert.ok(FN.includes("eq('org_id', orgId)"), 'reads are fenced to the org');
+test('G: the staff rule: service role, or a super_admin on a ServOS email', () => {
+  const peter = { id: 'u1', email: 'peter@posup.co.uk', email_confirmed_at: '2026-01-01T00:00:00Z' };
+  assert.equal(staffVerdict({ serviceRole: true }).ok, true);
+  assert.equal(staffVerdict({ user: peter, role: 'super_admin' }).ok, true);
+  assert.equal(staffVerdict({ user: { ...peter, email: 'Someone@Serv-OS.app' }, role: 'super_admin' }).ok, true);
+  // The venue owner Peter wants kept out, however they got in.
+  const owner = { id: 'u2', email: 'owner@coffeeboy.co.uk', email_confirmed_at: '2026-01-01T00:00:00Z' };
+  assert.equal(staffVerdict({ user: owner, role: 'owner' }).ok, false, 'an owner');
+  assert.equal(staffVerdict({ user: owner, role: 'super_admin' }).ok, false,
+    'an owner who made themselves super_admin through the 15 Sep gap is STILL refused: not a ServOS email');
+  assert.equal(staffVerdict({ user: peter, role: 'owner' }).ok, false, 'a ServOS email alone is not enough either');
+  assert.equal(staffVerdict({ user: { ...peter, email_confirmed_at: null }, role: 'super_admin' }).ok, false, 'an unconfirmed email proves nothing');
+  assert.equal(staffVerdict({ user: { ...peter, is_anonymous: true }, role: 'super_admin' }).ok, false);
+  assert.equal(staffVerdict({ user: { ...peter, email: 'peter@posup.co.uk.evil.com' }, role: 'super_admin' }).ok, false, 'the domain is the whole domain');
+  assert.equal(staffVerdict({ user: null, role: 'super_admin' }).ok, false);
+  assert.equal(staffVerdict({}).ok, false);
+  assert.equal(staffVerdict({ user: { ...peter, email: 'a@other.com' }, role: 'super_admin', domains: ['other.com'] }).ok, true, 'the list can be set');
+  assert.deepEqual(STAFF_EMAIL_DOMAINS, ['posup.co.uk', 'serv-os.app']);
+  for (const v of [staffVerdict({ user: owner, role: 'owner' }), staffVerdict({})]) assert.ok(v.reason.length > 0 && v.reason.length < 60);
+});
+
+test('G: the venue picked must be in the company picked', () => {
+  assert.ok(FN.includes("const pickedOrg = String(body?.org_id ?? '').trim();"), 'the screen says which company it means');
+  assert.ok(FN.includes("if (orgId !== pickedOrg) return json({ error: 'That venue is not in the company you picked."), 'and a mismatch stops everything');
 });
 
 test('preview writes nothing at all', () => {
@@ -713,16 +771,16 @@ test('a bulk patch that is refused is SAID, never quietly swallowed', () => {
   // customer and nobody ever saw why.
   const bulk = FN.indexOf("from('customers').upsert(slice, { onConflict: 'id' })");
   assert.ok(bulk > 0, 'the bulk write is still the fast path');
-  const after = FN.slice(bulk, bulk + 900);
-  assert.ok(/progress\.errors\.push\(/.test(after), 'a refused bulk write is reported before anything else');
-  assert.ok(after.indexOf('progress.errors.push(') < after.indexOf("from('customers').update("),
+  const after = FN.slice(bulk, bulk + 1200);
+  assert.ok(/runNote\(progress, 'We had to fill in/.test(after), 'a refused bulk write is reported, as a note about the run');
+  assert.ok(after.indexOf('runNote(') < after.indexOf("from('customers').update("),
     'the reason is said out loud FIRST, then we go row by row');
   assert.ok(after.includes(".eq('id', id).eq('org_id', orgId)"), 'and the row by row path is a real update, fenced to this tenant');
 });
 
 test('the tenant fence is on the one at a time update, not carried in the row', () => {
   const bulk = FN.indexOf("from('customers').upsert(slice, { onConflict: 'id' })");
-  const after = FN.slice(bulk, bulk + 900);
+  const after = FN.slice(bulk, bulk + 1200);
   assert.ok(/org_id: _org/.test(after), 'org_id comes off the patch and goes into the where clause');
 });
 
@@ -791,4 +849,127 @@ test('the app works before the migration is applied', () => {
   assert.ok(FN.includes('batch_table: batchTable'), 'the screen is told, so it can say one plain line');
   const missing = FN.indexOf('if (!tableMissing(error)) return json');
   assert.ok(missing > 0, 'a real error still fails, only a missing table is shrugged off');
+});
+
+// ── C: a withdrawal made HERE, through the only two paths this app has ───────
+
+test('C: an existing marketing_opt_in false is a withdrawal, and a file yes never overturns it', () => {
+  // Back Office (staff untick Marketing) and the loyalty portal toggle write
+  // ONLY customers.marketing_opt_in = false. No ledger row, no suppression.
+  for (const fileDay of ['2025-04-12', '']) {
+    const v = consentDecision(yesRow({ opt_in_date: fileDay }), { priorConsents: [], suppressed: false, currentFlag: false, now: NOW });
+    assert.equal(v.withheld, true, 'held back, file dated ' + JSON.stringify(fileDay));
+    assert.equal(v.setFlag, false, 'the flag stays off');
+    assert.equal(v.write, false, 'and no yes row: marketing-send reads the ledger FIRST, so any yes row would switch them back on');
+    assert.match(v.reason, /switched marketing off here/);
+  }
+  // Somebody who never said anything (null) is not a withdrawal.
+  const never = consentDecision(yesRow({ opt_in_date: '2025-04-12' }), { priorConsents: [], suppressed: false, currentFlag: null, now: NOW });
+  assert.equal(never.setFlag, true);
+  // A no in the file for somebody switched off is simply recorded.
+  const no = consentDecision(row({ name: 'A', phone: '07700900123', marketing_opt_in: 'no' }), { priorConsents: [], currentFlag: false, now: NOW });
+  assert.equal(no.withheld, false);
+  assert.equal(no.consented, false);
+});
+
+test('C: the patch for a switched off customer never turns the flag back on', () => {
+  const was = { id: 'cust-1', name: 'Jane', marketing_opt_in: false, sources: [] };
+  const v = consentDecision(yesRow({ opt_in_date: '2025-04-12' }), { priorConsents: [], currentFlag: was.marketing_opt_in, now: NOW });
+  const patch = buildPatch(yesRow({ opt_in_date: '2025-04-12' }), was, CTX, { allowOptIn: !v || v.setFlag });
+  assert.equal('marketing_opt_in' in (patch || {}), false);
+});
+
+test('C: the edge function hands the current flag to the rule and names the rows', () => {
+  assert.ok(FN.includes("currentFlag: was ? (was.marketing_opt_in ?? null) : null"), 'the flag it already read is used');
+  assert.ok(FN.includes('marketing_opt_in, marketing_opt_in_at'), 'and it is one of the columns read');
+  assert.ok(FN.includes('withheld.push({ rowNumber: d.rowNumber, name: d.row.name })'), 'by row and by name');
+  assert.ok(FN.includes('runNote(progress, withheldLine(withheld))'));
+  const line = withheldLine([{ rowNumber: 14, name: 'Jane Smith' }, { rowNumber: 20, name: 'Bob Jones' }]);
+  assert.match(line, /2 people/);
+  assert.match(line, /row 14 \(Jane Smith\)/);
+  assert.match(line, /row 20 \(Bob Jones\)/);
+  assert.equal(withheldLine([]), '');
+});
+
+// ── E: two rows, one customer ───────────────────────────────────────────────
+
+test('E: row A by phone and row B by email on ONE customer: the second is left out and named', () => {
+  const existing = [{ id: 'cust-1', phone: '+447700900123', email: 'jane@example.com', name: 'Jane' }];
+  const a = normaliseRow({ rowNumber: 2, name: 'Jane', phone: '07700 900123', email: 'other@example.com' }, OPTS);
+  const b = normaliseRow({ rowNumber: 3, name: 'Jane S', email: 'jane@example.com' }, OPTS);
+  const [da, db] = decideRows([a, b], existing, GB);
+  assert.equal(da.verdict, 'update');
+  assert.equal(da.customerId, 'cust-1');
+  assert.equal(db.verdict, 'blocked', 'never a second patch for the same customer');
+  assert.equal(db.sameAs, 2);
+  assert.equal(db.reason, sameAsReason(2));
+  assert.match(db.reason, /Same person as row 2/);
+  assert.equal(screenSameAsReason(2), sameAsReason(2), 'the screen says exactly what the server says');
+  // Deciding again on its own output keeps the same answer.
+  assert.deepEqual(decideRows([da, db], existing, GB).map((d) => d.verdict), ['update', 'blocked']);
+});
+
+test('E: patches are collapsed to ONE per customer before grouping, so 21000 cannot happen', () => {
+  const groups = groupPatches([
+    { id: 'c1', org_id: ORG, name: 'Jane', sources: ['a'] },
+    { id: 'c1', org_id: ORG, name: 'Other', email: 'x@y.com' },
+    { id: 'c2', org_id: ORG, name: 'Bob', sources: ['b'] },
+  ]);
+  const ids = groups.flat().map((p) => p.id);
+  assert.equal(new Set(ids).size, ids.length, 'no id twice in any write');
+  const c1 = groups.flat().find((p) => p.id === 'c1');
+  assert.equal(c1.name, 'Jane', 'the first patch wins what it has');
+  assert.equal(c1.email, 'x@y.com', 'a later one only adds what the first did not touch');
+  assert.deepEqual(collapsePatches(null), []);
+});
+
+// ── F: counting honestly ────────────────────────────────────────────────────
+
+test('F: run notes and row failures are kept apart, and only rows are rows', () => {
+  const p = emptyProgress();
+  skipRow(p, 5, 'Same person as row 2.');
+  failRow(p, 9, 'We could not add this person.');
+  runNote(p, 'Loyalty is switched off for this company.');
+  runNote(p, 'Loyalty is switched off for this company.');
+  runNote(p, '');
+  const answer = chunkAnswer(p);
+  assert.equal(answer.skipped, 1);
+  assert.deepEqual(answer.skipped_rows, [{ row_number: 5, reason: 'Same person as row 2.' }]);
+  assert.deepEqual(answer.failed, [{ row_number: 9, reason: 'We could not add this person.' }]);
+  assert.deepEqual(answer.notes, ['Loyalty is switched off for this company.'], 'said once, never counted');
+  assert.ok(!('errors' in answer), 'no mixed list of rows and run lines any more');
+});
+
+test('F: updated is counted when the write lands, never when the patch is built', () => {
+  assert.ok(!/patches\.push\(patch\);\s*\n\s*progress\.updated\+\+/.test(FN), 'not when the patch is built');
+  assert.ok(FN.includes('if (!error) { progress.updated += slice.length; continue; }'), 'the bulk write landed');
+  assert.ok(FN.includes('if (!oneErr) { progress.updated++; continue; }'), 'or the one at a time write landed');
+  assert.ok(!FN.includes('progress.errors'), 'nothing mixes run lines into the row list');
+});
+
+// ── B: the batch row ────────────────────────────────────────────────────────
+
+test('B: the batch row is written on EVERY chunk, as an upsert on the id the screen sent', () => {
+  assert.ok(!FN.includes('if (!body?.batch_id)'), 'the old never-true first chunk test is gone');
+  assert.ok(FN.includes("from('import_batches')\n      .upsert(batchRecord("), 'an upsert');
+  assert.ok(FN.includes("{ onConflict: 'id', ignoreDuplicates: true }"), 'that never overwrites the row a first chunk made');
+  assert.ok(FN.includes('userId: auth.userId'), 'recording the ServOS staff member who ran it');
+  assert.ok(FN.includes('if (!isBatchId(batchId)) return json('), 'a batch id that is not a uuid is refused before anything is written');
+  assert.ok(FN.includes("if (mine && String(mine.org_id) !== orgId)"), 'another company\'s batch id is refused');
+  const rec = batchRecord({ batchId: BATCH, orgId: ORG, companyId: 'co', programId: null, filename: 'coffeeboy.csv', userId: 'staff-1', consentText: 'Imported from 5Loyalty.' });
+  assert.equal(rec.id, BATCH);
+  assert.equal(rec.org_id, ORG);
+  assert.equal(rec.created_by, 'staff-1');
+  assert.equal(rec.filename, 'coffeeboy.csv');
+  assert.equal(rec.notes, 'Imported from 5Loyalty.');
+  assert.equal(isBatchId(BATCH), true);
+  assert.equal(isBatchId('imp-abc-123'), false);
+  assert.equal(isBatchId(''), false);
+});
+
+test('B: the totals update finds the row, because the row now exists', () => {
+  const up = FN.indexOf("from('import_batches')\n      .upsert(");
+  const totals = FN.indexOf(".update(totals).eq('id', batchId).eq('org_id', orgId)");
+  assert.ok(up > 0 && totals > up, 'written first, totalled last');
+  assert.ok(FN.includes('We could not find the record of this import'), 'and if it is somehow not there, that is said, not swallowed');
 });
