@@ -7,6 +7,15 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.2',
+    date: '18 Sep 2026',
+    items: [
+      'The red "YOUR CHANGES ARE NOT SAVING: new row violates row-level security policy for table shifts" bar in Back Office is fixed. Back Office was running the till\'s start up code, including "open today\'s shift", every time it loaded, often before you had even signed in. The database rightly refused it and the bar reported that as your changes failing, although nothing you had edited was lost.',
+      'Only a real till (the till or MPOS) now opens or rolls over a shift by itself. Back Office, the admin portal, the manager and staff apps, kiosks, menu boards, order screens, customer displays and the time clock only read the open shift.',
+      'You can still open a shift by hand from the Back Office Shift page.',
+    ],
+  },
+  {
     v: '5.9.1',
     date: '17 Sep 2026',
     items: [

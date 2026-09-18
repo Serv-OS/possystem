@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { supabase, platformSupabase, isMock, getLocationId, ensureAuthToken, getActiveLocationSync, isHostStandMode, isBackOfficeMode, whenDeviceClaimed, claimPairedDeviceOnBoot } from '../lib/supabase';
+import { supabase, platformSupabase, isMock, getLocationId, ensureAuthToken, getActiveLocationSync, isHostStandMode, isBackOfficeMode, getDeviceMode, whenDeviceClaimed, claimPairedDeviceOnBoot } from '../lib/supabase';
 import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
 import { resolveServiceCharge } from '../lib/serviceCharge';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
@@ -4957,9 +4957,16 @@ export const useStore = create((set, get) => ({
   canRunShiftLifecycle: () => !isHostStandMode(),
 
   // May this browser open or roll over the till shift BY ITSELF at boot?
-  // Only a till surface. Back Office reads the shift and can open one when a
-  // person presses the button, but never writes shifts on its own.
-  canAutoRunShiftLifecycle: () => !isHostStandMode() && !isBackOfficeMode(),
+  // Only a till: ?mode=pos, ?mode=mpos, or a paired device that never picked a
+  // mode (it falls through to the POS). Every other surface mounts the same boot
+  // hook (Back Office, admin, manager, owner, staff, kiosk, menu board, order
+  // screen, customer display, time clock, host stands) and must only READ the
+  // shift. A person can still open one from the Back Office Shift page.
+  canAutoRunShiftLifecycle: () => {
+    if (isHostStandMode() || isBackOfficeMode()) return false;
+    const mode = getDeviceMode();
+    return mode === '' || mode === 'pos' || mode === 'mpos';
+  },
 
   // ── Petty cash + cash drawer (v4.6.30) ────────
   pettyCashEntries: [],

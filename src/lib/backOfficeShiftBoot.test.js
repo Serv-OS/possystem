@@ -20,8 +20,33 @@ const body = (name) => {
 };
 
 test('only a till may open or roll over a shift by itself at boot', () => {
-  assert.ok(store.includes('canAutoRunShiftLifecycle: () => !isHostStandMode() && !isBackOfficeMode(),'));
-  assert.ok(/import \{[^}]*\bisBackOfficeMode\b[^}]*\} from '\.\.\/lib\/supabase'/.test(store), 'imported statically');
+  const i = store.indexOf('  canAutoRunShiftLifecycle: () => {');
+  assert.ok(i > 0, 'the gate exists');
+  const gate = store.slice(i, store.indexOf('\n  },', i));
+  assert.ok(gate.includes('if (isHostStandMode() || isBackOfficeMode()) return false;'), 'host stands and Back Office never write');
+  assert.ok(gate.includes("return mode === '' || mode === 'pos' || mode === 'mpos';"), 'an allowlist of till modes, not a denylist');
+  for (const m of ['getDeviceMode', 'isBackOfficeMode', 'isHostStandMode']) {
+    assert.ok(new RegExp('import \\{[^}]*\\b' + m + '\\b[^}]*\\} from \'\\.\\./lib/supabase\'').test(store), m + ' imported statically');
+  }
+});
+
+test('the allowlist decides correctly for every surface the app has', async () => {
+  // Evaluate the gate's rule against every ?mode= the app routes (App.jsx).
+  const rule = (mode, backOffice, hostStand) => {
+    if (hostStand || backOffice) return false;
+    return mode === '' || mode === 'pos' || mode === 'mpos';
+  };
+  const tills = ['', 'pos', 'mpos'];
+  const notTills = ['office', 'backoffice', 'admin', 'manager', 'owner', 'ops', 'staff', 'kiosk', 'menuboard',
+    'orderscreen', 'customer-display', 'clock', 'readerdemo', 'waitlist', 'bookings'];
+  for (const m of tills) assert.equal(rule(m, false, false), true, m + ' is a till');
+  const bo = new Set(['office', 'backoffice', 'admin']);
+  const hs = new Set(['waitlist', 'bookings']);
+  for (const m of notTills) assert.equal(rule(m, bo.has(m), hs.has(m)), false, m + ' must only read the shift');
+  // Every mode App.jsx routes is classified here, so a new surface cannot slip in unnoticed.
+  const app = read('../App.jsx');
+  const routed = new Set([...app.matchAll(/deviceMode === '([a-z_-]+)'/g)].map((x) => x[1]));
+  for (const m of routed) assert.ok(tills.includes(m) || notTills.includes(m), 'classify the new surface: ' + m);
 });
 
 test('the boot reconcile in Back Office reads the shift and returns before any write', () => {
