@@ -22,6 +22,7 @@ import { normaliseMenuRow, assembleTaxProfiles } from '../lib/rowMapping';
 import { mergeBroadcastTables, bootTables, normaliseFloorRow, loadPlanState, savePlanState, mergeTombs, tombstonesFromRows, nextSeq, pushSeqFor } from '../lib/tablePlan';
 import { isSessionClosed } from './sessionClosure';
 import { startTablePlanSync } from './TablePlanSync';
+import { defaultSections } from '../lib/sectionPlan';
 
 const OPS_URL = import.meta.env.VITE_SUPABASE_URL;
 
@@ -264,6 +265,11 @@ export default function SyncBridge({ onSyncPulse }) {
               modifierGroupDefs: [],
               tables: [],
               sections: [],
+              // The other venue's floor plan sections (lib/sectionPlan.js): back to the defaults
+              // until this venue's saved list (or its pushed list) is applied below.
+              locationSections: defaultSections(),
+              _sectionsLocationId: null,
+              _sectionsBase: null,
               closedChecks: [],
               _dataLocationId: null,
             });
@@ -676,6 +682,11 @@ export default function SyncBridge({ onSyncPulse }) {
             if (rebuiltIds.length) console.warn('[SyncBridge] table plan: rebuilt', rebuiltIds.join(', '), 'for open orders whose table was missing');
             useStore.setState({ tables: bootList });
           }
+          // Sections (lib/sectionPlan.js): the venue's saved list from the same plan read wins over
+          // the pushed list applied above and the built in defaults. A failed read (offline boot)
+          // falls back to this device's copy of the saved list; with nothing saved the pushed list
+          // (or the defaults) stays exactly as before.
+          useStore.getState().applySavedSections?.(locationId, Array.isArray(floorRes.data?.sections) ? floorRes.data.sections : null);
 
           // v5.5.238: Stamp the store with the location this data belongs to,
           // and validate that no cross-location items snuck in.

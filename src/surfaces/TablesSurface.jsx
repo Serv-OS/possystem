@@ -8,6 +8,7 @@ import { resolveServiceCharge } from '../lib/serviceCharge';
 import CheckSelectorModal from '../components/CheckSelectorModal';
 import CustomerModal from '../components/CustomerModal';
 import { money, currencySymbol } from '../lib/currency';
+import { OTHER_SECTION, orphanSectionTables, tablesForSectionView, effectiveSectionView } from '../lib/sectionPlan';
 
 const STATUS = {
   available: { color:'#22c55e', bg:'rgba(34,197,94,.12)',  border:'rgba(34,197,94,.35)', label:'Available' },
@@ -474,12 +475,17 @@ export default function TablesSurface() {
     ? upcomingBookingForTable?.(selectedTable.id) : null;
 
   // v4.6.56: filter hidden sections from the tab list. Hidden flag set in Back Office.
+  // Sections (lib/sectionPlan.js): a table whose section is not in the list (removed, renamed id,
+  // or none) is never hidden: it shows under All and under its own Other chip. A device profile's
+  // assigned section that no longer exists shows All, never an empty floor.
   const visibleSections = (locationSections || []).filter(s => !s.hidden);
-  const hiddenSectionIds = new Set((locationSections || []).filter(s => s.hidden).map(s => s.id));
+  const orphanCount = orphanSectionTables(tables, locationSections).length;
   const sections = [
     { id:'all', label:'All' },
     ...visibleSections,
+    ...(orphanCount ? [{ id: OTHER_SECTION, label: 'Other' }] : []),
   ];
+  const sectionView = effectiveSectionView(section, locationSections, tables);
 
   // v5.6.27: reserved = tables claimed by an upcoming live booking (no session),
   // never the dead persisted status. Booked tables leave the available count so
@@ -540,19 +546,17 @@ export default function TablesSurface() {
   };
 
   // v4.6.56: in 'all' view exclude tables whose section is hidden.
-  const filteredTables = (section === 'all'
-      ? tables.filter(t => !hiddenSectionIds.has(t.section))
-      : tables.filter(t => t.section === section))
-    .filter(t => !t.parentId);  // never render child tables (T1.2) on the floor plan
+  // Child tables (T1.2) are never rendered on the floor plan.
+  const filteredTables = tablesForSectionView(tables, locationSections, sectionView);
   // v4.6.56: per-section auto-fit. When a single section is selected, shift
   // tables to top-left of the canvas (subtract section's min-x/min-y) so the
   // user sees just that section filling the viewport. 'All' view keeps absolute
   // positions so multi-section layouts retain their relative geometry.
   const _tbls = filteredTables.length ? filteredTables : tables;
-  const _minX = section === 'all' ? 0 : Math.min(..._tbls.map(t => t.x || 0));
-  const _minY = section === 'all' ? 0 : Math.min(..._tbls.map(t => t.y || 0));
-  const _offX = section === 'all' ? 0 : Math.max(0, _minX - 20);
-  const _offY = section === 'all' ? 0 : Math.max(0, _minY - 40);
+  const _minX = sectionView === 'all' ? 0 : Math.min(..._tbls.map(t => t.x || 0));
+  const _minY = sectionView === 'all' ? 0 : Math.min(..._tbls.map(t => t.y || 0));
+  const _offX = sectionView === 'all' ? 0 : Math.max(0, _minX - 20);
+  const _offY = sectionView === 'all' ? 0 : Math.max(0, _minY - 40);
   const canvasW = (_tbls.length ? Math.max(..._tbls.map(t => (t.x || 0) + (t.w || 80))) : 0) - _offX + 40;
   const canvasH = (_tbls.length ? Math.max(..._tbls.map(t => (t.y || 0) + (t.h || 64))) : 0) - _offY + 40;
   // v4.6.57: derive fit zoom from viewport + canvas. Cap zoom at 1 (don't enlarge,
@@ -605,9 +609,9 @@ export default function TablesSurface() {
                 {sections.map(s=>(
                   <button key={s.id} onClick={()=>setSection(s.id)} style={{
                     padding:'4px 12px', borderRadius:20, fontSize:12, fontWeight:600, cursor:'pointer', fontFamily:'inherit',
-                    border:`1px solid ${section===s.id?'var(--acc-b)':'var(--bdr)'}`,
-                    background:section===s.id?'var(--acc-d)':'transparent',
-                    color:section===s.id?'var(--acc)':'var(--t3)',
+                    border:`1px solid ${sectionView===s.id?'var(--acc-b)':'var(--bdr)'}`,
+                    background:sectionView===s.id?'var(--acc-d)':'transparent',
+                    color:sectionView===s.id?'var(--acc)':'var(--t3)',
                   }}>{s.label}</button>
                 ))}
               </div>
@@ -791,7 +795,8 @@ export default function TablesSurface() {
                 tables were placed past the Bar lane's hardcoded x=488 boundary. */}
             {(() => {
               const sectionSet = new Set(filteredTables.map(t => t.section).filter(Boolean));
-              const SECTION_LABELS = { main: 'Main dining', bar: 'Bar', patio: 'Patio' };
+              // The venue's own names (a renamed section shows its new name, never 'Main dining').
+              const SECTION_LABELS = Object.fromEntries((locationSections || []).map(s => [s.id, s.label]));
               return [...sectionSet].map(secKey => {
                 const secTables = filteredTables.filter(t => t.section === secKey);
                 if (!secTables.length) return null;
