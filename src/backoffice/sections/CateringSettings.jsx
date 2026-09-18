@@ -10,6 +10,7 @@ import { useEffect, useState } from 'react';
 import { supabase, platformSupabase, getActiveLocationSync } from '../../lib/supabase';
 import { CUSTOMER_ROOT, customerUrl, groupCaterUrl } from '../../lib/env';
 import { parsePctList } from '../../lib/tipping';
+import { ezcaterRecomputePrep } from '../../lib/ezcater';
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -146,6 +147,10 @@ export default function CateringSettings() {
       if (s.enabled && need.length) { setSave({ err: `Complete setup before turning the site on: ${need.join(', ')}.` }); return; }
       const { error } = await supabase.from('catering_site_settings').upsert(toRow(s), { onConflict: 'location_id' });
       if (error) throw error;
+      // The prep time may have changed: re-time every ezCater order the kitchen does not have yet,
+      // now, instead of waiting for the catering-release cron's sweep (up to 5 minutes).
+      // Best effort: the cron does the same, so a failure here loses nothing.
+      if (locId) ezcaterRecomputePrep(locId).catch(() => {});
       setSave({ done: true }); setTimeout(() => setSave((v) => (v.done ? {} : v)), 2500);
     } catch (e) { setSave({ err: e.message || 'Save failed' }); }
   };

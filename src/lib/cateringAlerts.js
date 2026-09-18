@@ -9,7 +9,7 @@
 // payload) or a fired catering order has just turned cancelled. The key is the change's own time,
 // so the caller shows each change once even when realtime delivers the same UPDATE twice.
 import { isCateringSource, cateringSourceLabel } from './cateringRules.js';
-import { changedAfterFireText } from '../../supabase/functions/_shared/ezcaterCatering.js';
+import { changedAfterFireText, lateFireText } from '../../supabase/functions/_shared/ezcaterCatering.js';
 
 export function cateringChangeAlert(row, oldRow) {
   if (!row || !isCateringSource(row.source) || !row.ref) return null;
@@ -25,6 +25,25 @@ export function cateringChangeAlert(row, oldRow) {
         who, ref: row.ref, total: 0, orderType: row.type || null, status: row.status || null,
         message: changedAfterFireText(change),
       },
+    };
+  }
+  // 18 Sep 2026 (ezCater review round 3, C and D): an order sent to the kitchen LATE (its fire
+  // moment was already past when it was re-timed), and a held ezCater order still NOT accepted as
+  // it nears or passes its fire time. Each is shown once per stamp.
+  const late = row.customer?.lateFire;
+  if (late?.at && late.at !== (oldRow?.customer?.lateFire?.at || null)) {
+    return {
+      key: `${row.ref}:late:${late.at}`,
+      alert: { source: row.source, kind: 'changed', who, ref: row.ref, total: 0, orderType: row.type || null, status: row.status || null,
+        message: lateFireText(late) },
+    };
+  }
+  const ua = row.customer?.unacceptedAlert;
+  if (ua?.at && ua.at !== (oldRow?.customer?.unacceptedAlert?.at || null) && !row.kitchen_routed_at) {
+    return {
+      key: `${row.ref}:unaccepted:${ua.at}`,
+      alert: { source: row.source, kind: 'changed', who, ref: row.ref, total: 0, orderType: row.type || null, status: row.status || null,
+        message: `Not accepted on ezCater yet and due in the kitchen${ua.fireTime ? ` at ${ua.fireTime}` : ''}. Accept it on ezCater or it will not be sent.` },
     };
   }
   // A fired catering order cancelled with no stamp (our own catering, cancelled by staff

@@ -127,3 +127,19 @@ export async function ezcaterPrefire(locId, ref, { timeoutMs = 12000 } = {}) {
  */
 export const ezcaterResyncOrder = (locId, ref, pin = null) =>
   call('ezcater-connect', { action: 'resync_order', ops_location_id: locId, ref, ...(pin ? { pin: String(pin) } : {}) });
+
+/**
+ * Staff "Not a replacement (undo)": clear the replaced / possible replacement marks on an ezCater
+ * order and its pair, never flag the two against each other again, and let ezCater's current
+ * answer decide the order (it comes back if ezCater says it is live). Same fence as re-sync.
+ */
+export const ezcaterUndoReplacement = (locId, ref, pin = null) =>
+  call('ezcater-connect', { action: 'undo_replacement', ops_location_id: locId, ref, ...(pin ? { pin: String(pin) } : {}) });
+
+/**
+ * The venue's catering prep time was just saved: re-time every ezCater order the kitchen does
+ * not have yet (ready time minus the new prep). One already past fires now, flagged late. The
+ * catering-release cron runs the same sweep every 5 minutes, so a failure here is not fatal.
+ */
+export const ezcaterRecomputePrep = (locId) =>
+  call('ezcater-connect', { action: 'recompute_prep', ops_location_id: locId });

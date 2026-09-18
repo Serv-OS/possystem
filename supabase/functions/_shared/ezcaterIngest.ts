@@ -25,13 +25,26 @@
 //  3. A REPLACED ORDER STOPS. ezCater sends nothing for an order it cancels for replacement and
 //     its schema has no field linking the two (see ezcaterCatering.js). So when a new order looks
 //     like a replacement for one we hold, that one is re-asked at once, and it is re-asked again
-//     right before it fires. Whatever ezCater says about THAT order decides.
+//     right before it fires. Whatever ezCater says about THAT order decides, and ONLY a cancel is
+//     proof it is dead (a 'rejected' is not: review round 3).
+//
+//  4. NO STALE OVERWRITES (review round 3). Every write to an existing order_queue row is
+//     conditional on the row being exactly as it was read: `updated_at` is stamped by the
+//     trg_order_queue_updated_at trigger on EVERY update from anyone (a till, Back Office, this
+//     file), so `.eq('updated_at', <as read>)` matches nothing if anything wrote in between, and
+//     the write is planned again from a fresh read. A flag write (patchCustomer) reads, changes
+//     only its own keys, and writes with the same guard. Nothing writes a customer jsonb read
+//     before a slow ezCater call.
 
 import { getOrder } from './ezcater.ts';
 import { orderToQueueRow, queuePayload, ezLifecycle, EZ_TERMINAL } from './ezcater-map.ts';
-import { ezcaterWritePlan, prefireOutcome, likelyReplacement } from './ezcaterCatering.js';
-import { DEFAULT_VENUE_TZ, EZ_COMMITTED, ezcaterPrepFor, cateringHoldReason, isEzcaterOrder } from './cateringRules.js';
+import { ezcaterWritePlan, prefireOutcome, likelyReplacement, lateFirePlan } from './ezcaterCatering.js';
+import {
+  DEFAULT_VENUE_TZ, EZ_COMMITTED, ezcaterPrepFor, cateringHoldReason, isEzcaterOrder,
+  cateringFireMs, venueWallClock, CATERING_STALE_FLOOR_MS,
+} from './cateringRules.js';
 import { matchQueueRow, MATCH_BUDGET_MS } from './ezcater-match-ingest.ts';
+import { runWithBudget } from './budget.js';
 
 /** How long the pre fire re-ask may wait for ezCater before the order fires as planned. */
 export const EZ_PREFIRE_TIMEOUT_MS = 4000;
@@ -40,7 +53,10 @@ export const EZ_PREFIRE_MATCH_BUDGET_MS = 2500;
 /** At most this many held orders are re-asked about when one new order arrives. */
 export const EZ_REPLACEMENT_MAX_CHECKS = 5;
 
-const EXISTING_COLUMNS = 'ref, source, type, status, sent_at, kitchen_routed_at, customer, event_date, collection_time, items, total';
+const EXISTING_COLUMNS = 'ref, location_id, source, type, status, sent_at, kitchen_routed_at, updated_at, customer, event_date, collection_time, items, total';
+
+/** How many times a guarded write reads and plans again before giving up. */
+const WRITE_ATTEMPTS = 4;
 
 // ── Reads ────────────────────────────────────────────────────────────────────
 
@@ -89,9 +105,49 @@ export async function readCateringVenue(sb: any, platform: any, opsLocationId: s
 export async function readExisting(sb: any, locationId: string, ref: string): Promise<any | null> {
   const full = await sb.from('order_queue').select(EXISTING_COLUMNS).eq('location_id', locationId).eq('ref', ref).maybeSingle();
   if (!full.error) return full.data || null;
-  const bare = await sb.from('order_queue').select('ref, source, type, status, sent_at, customer, items, total')
+  const bare = await sb.from('order_queue').select('ref, location_id, source, type, status, sent_at, updated_at, customer, items, total')
     .eq('location_id', locationId).eq('ref', ref).maybeSingle();
   return bare.data ? { ...bare.data, kitchen_routed_at: 'unknown' } : null;
+}
+
+/**
+ * THE GUARDED UPDATE (rule 4). Writes `payload` to one row only while it is exactly as `existing`
+ * was read: the same updated_at (bumped by the trigger on every update), and, for a plan made for
+ * an unfired row, kitchen_routed_at still null. { matched: false } means someone wrote in between:
+ * read again and plan again. A row read without updated_at (it cannot happen on the baseline, the
+ * column and its trigger are in 000_baseline_ops.sql) is guarded by kitchen_routed_at alone.
+ */
+export async function guardedUpdate(sb: any, locationId: string, ref: string, existing: any, payload: any,
+  opts: { unfiredOnly?: boolean } = {}): Promise<{ matched: boolean; error: string | null }> {
+  let q = sb.from('order_queue').update(payload).eq('location_id', locationId).eq('ref', ref);
+  if (opts.unfiredOnly) q = q.is('kitchen_routed_at', null);
+  if (existing?.updated_at) q = q.eq('updated_at', existing.updated_at);
+  const { data, error } = await q.select('ref');
+  if (error) return { matched: false, error: error.message || String(error) };
+  return { matched: !!data?.length, error: null };
+}
+
+/**
+ * Change ONLY some keys of one row's customer jsonb, never the rest (rule 4): read the row now,
+ * let `change` return the new customer (or null to leave it alone), write it with the guard, and
+ * start again from a fresh read if anything wrote in between. Never throws.
+ */
+export async function patchCustomer(sb: any, locationId: string, ref: string,
+  change: (customer: any, row: any) => any | null,
+  opts: { unfiredOnly?: boolean } = {}): Promise<{ ok: boolean; written: boolean; row: any | null; error?: string }> {
+  for (let attempt = 1; attempt <= WRITE_ATTEMPTS; attempt++) {
+    let row: any;
+    try { row = await readExisting(sb, locationId, ref); } catch (e) { return { ok: false, written: false, row: null, error: e instanceof Error ? e.message : String(e) }; }
+    if (!row) return { ok: true, written: false, row: null };
+    if (opts.unfiredOnly && row.kitchen_routed_at) return { ok: true, written: false, row };
+    const before = row.customer && typeof row.customer === 'object' ? row.customer : {};
+    const next = change({ ...before }, row);
+    if (!next) return { ok: true, written: false, row };
+    const g = await guardedUpdate(sb, locationId, ref, row, { customer: next }, { unfiredOnly: !!opts.unfiredOnly });
+    if (g.error) return { ok: false, written: false, row, error: g.error };
+    if (g.matched) return { ok: true, written: true, row: { ...row, customer: next } };
+  }
+  return { ok: false, written: false, row: null, error: 'the order kept changing, try again' };
 }
 
 /** The token and API address of one connection. api_url is read defensively (20260917 migration). */
@@ -121,13 +177,11 @@ export async function ezcaterAccessFor(sb: any, locationId: string, ref: string,
   const { data: cat } = await sb.from('ezcater_caterers')
     .select('connection_id, location_id, active').eq('caterer_uuid', catererUuid).maybeSingle();
   if (!cat || cat.location_id !== locationId) return { ok: false, why: 'that ezCater caterer is not mapped to this venue' };
-  let conn = cat.connection_id ? await readConnection(sb, cat.connection_id) : null;
-  if (!conn?.api_token) {
-    const { data: any1 } = await sb.from('ezcater_connections').select('id')
-      .eq('status', 'connected').order('connected_at', { ascending: true }).limit(1).maybeSingle();
-    conn = any1?.id ? await readConnection(sb, any1.id) : null;
-  }
-  if (!conn?.api_token) return { ok: false, why: 'ezCater is not connected' };
+  // ONLY the caterer's own connection. There used to be a fallback to "the oldest connected row",
+  // which on a multi tenant database is another company's ezCater token (review round 3, F).
+  // A caterer with no connection of its own is not connected: the check fires as planned, flagged.
+  const conn = cat.connection_id ? await readConnection(sb, cat.connection_id) : null;
+  if (!conn?.api_token) return { ok: false, why: 'ezCater is not connected for this caterer' };
   return { ok: true, token: conn.api_token, apiUrl: conn.api_url ?? null, ezOrderId, catererUuid, priorLink: link || null };
 }
 
@@ -218,7 +272,7 @@ export async function writeEzcaterOrder(sb: any, args: {
   if (args.extraCustomer) queueRow = { ...queueRow, customer: { ...(queueRow.customer || {}), ...args.extraCustomer } };
   const terminal = EZ_TERMINAL.has(ezLifecycle(order));
 
-  for (let attempt = 1; attempt <= 3; attempt++) {
+  for (let attempt = 1; attempt <= WRITE_ATTEMPTS; attempt++) {
     const existing = await readExisting(sb, locationId, row.ref);
     let planned = queueRow;
     if (existing && Array.isArray(existing.items)) planned = { ...queueRow, items: carryMatchedItems(queueRow.items, existing.items) };
@@ -229,16 +283,14 @@ export async function writeEzcaterOrder(sb: any, args: {
       const { error } = await sb.from('order_queue').insert(payload);
       if (error && isUniqueViolation(error)) continue;   // written by a parallel notification: plan against it
       if (error) return { ok: false, error: `order_queue insert failed: ${error.message}` };
-    } else if (!plan.fired) {
-      // Only while the kitchen still does not have it. If the release claimed it since the read,
-      // nothing matches, and the next pass plans it as FIRED.
-      const { data, error } = await sb.from('order_queue').update(payload)
-        .eq('location_id', locationId).eq('ref', row.ref).is('kitchen_routed_at', null).select('ref');
-      if (error) return { ok: false, error: `order_queue update failed: ${error.message}` };
-      if (!data?.length) { log('fired between read and write, planning again as fired:', row.ref); continue; }
     } else {
-      const { error } = await sb.from('order_queue').update(payload).eq('location_id', locationId).eq('ref', row.ref);
-      if (error) return { ok: false, error: `order_queue update failed: ${error.message}` };
+      // Rule 4: only while the row is exactly as read. For an unfired plan, also only while the
+      // kitchen still does not have it: if the release claimed it since the read, nothing
+      // matches, and the next pass plans it as FIRED. Any other write in between (an accepted
+      // notification, a staff Undo, a flag) likewise means read again and plan again.
+      const g = await guardedUpdate(sb, locationId, row.ref, existing, payload, { unfiredOnly: !plan.fired });
+      if (g.error) return { ok: false, error: `order_queue update failed: ${g.error}` };
+      if (!g.matched) { log('the order changed between read and write, planning again:', row.ref); continue; }
     }
 
     // The link row. A re-ask only refreshes what ezCater told us now: it never rewrites the
@@ -298,11 +350,14 @@ export async function checkReplacements(sb: any, args: {
       const res = await fetchOrderWithin(args.fetchFor(access), args.timeoutMs ?? EZ_PREFIRE_TIMEOUT_MS);
       if (res.order) {
         says = ezLifecycle(res.order) || null;
-        const dead = EZ_TERMINAL.has(says || '') || (!!says && !EZ_COMMITTED.has(says) && says !== 'submitted' && says !== 'draft');
-        if (dead) {
+        // ONLY a cancel is proof the original is dead (review round 3). A 'rejected' can be a
+        // rejected modification on an order that stands; anything else we do not know: both of
+        // those only flag the two orders for staff.
+        if (EZ_TERMINAL.has(says || '')) {
+          // Written through the guarded write from a FRESH read, never from `cand` (read before the
+          // ezCater call): an accepted notification that landed meanwhile is planned against.
           const w = await writeEzcaterOrder(sb, {
-            order: res.order.lifecycle && EZ_TERMINAL.has(says || '') ? res.order : { ...res.order, lifecycle: { orderIsCurrently: 'cancelled_for_replacement' } },
-            locationId, venue: args.venue, priorLink: access.priorLink, requery: true, nowIso, match: false,
+            order: res.order, locationId, venue: args.venue, priorLink: access.priorLink, requery: true, nowIso, match: false,
             extraCustomer: { replacedBy: { ref: newRow.ref, orderNumber: newNumber, at: nowIso, ezcaterSaid: says } },
             log,
           });
@@ -311,19 +366,60 @@ export async function checkReplacements(sb: any, args: {
         }
       }
     }
-    // Live on ezCater, or ezCater could not be asked: both are flagged, neither is stopped.
+    // Live on ezCater, or ezCater could not be asked: both are flagged, neither is stopped. Each
+    // flag touches only possibleReplacement, on the row as it is NOW, with the guard (rule 4).
     const flagOther = { ref: newRow.ref, orderNumber: newNumber, ezcaterSays: says, at: nowIso };
     const flagNew = { ref: cand.ref, orderNumber: cand.customer?.ezcater_order_number || null, ezcaterSays: null, at: nowIso };
-    await sb.from('order_queue').update({ customer: { ...(cand.customer || {}), possibleReplacement: flagOther } })
-      .eq('location_id', locationId).eq('ref', cand.ref);
-    const fresh = await readExisting(sb, locationId, newRow.ref);
-    if (fresh) {
-      await sb.from('order_queue').update({ customer: { ...(fresh.customer || {}), possibleReplacement: flagNew } })
-        .eq('location_id', locationId).eq('ref', newRow.ref);
-    }
+    await patchCustomer(sb, locationId, cand.ref, (c) => ({ ...c, possibleReplacement: flagOther }));
+    await patchCustomer(sb, locationId, newRow.ref, (c) => ({ ...c, possibleReplacement: flagNew }));
     out.push({ ref: cand.ref, outcome: 'flagged', ezcaterSays: says });
   }
   return out;
+}
+
+/**
+ * Staff UNDO of a replacement mark (review round 3: replacedBy is not sticky forever). Clears
+ * replacedBy and possibleReplacement on this order and the other one, remembers the pair so the
+ * two are never flagged against each other again (customer.replacementDismissed), and, when the
+ * kitchen does not have the order yet, re-asks ezCater so the order becomes whatever ezCater
+ * says it is now (live again, or still cancelled). An order the kitchen already has is never
+ * moved: only its marks are cleared.
+ */
+export async function undoReplacement(sb: any, platform: any, args: {
+  locationId: string; ref: string; by: string; nowIso?: string; timeoutMs?: number;
+  fetchFor?: (access: any) => (signal: AbortSignal) => Promise<any>;
+  log?: (...a: unknown[]) => void;
+}): Promise<{ ok: true; message: string; resynced: boolean } | { ok: false; error: string }> {
+  const nowIso = args.nowIso || new Date().toISOString();
+  const existing = await readExisting(sb, args.locationId, args.ref);
+  if (!existing) return { ok: false, error: 'That order is not on this venue.' };
+  if (!isEzcaterOrder(existing)) return { ok: false, error: 'That is not an ezCater order.' };
+  const c0 = existing.customer || {};
+  const otherRef = String(c0.replacedBy?.ref || c0.possibleReplacement?.ref || '').trim();
+  if (!otherRef) return { ok: false, error: 'This order is not marked as replaced.' };
+  const dismiss = (c: any, pairRef: string) => {
+    const refs = Array.isArray(c.replacementDismissed?.refs) ? c.replacementDismissed.refs : [];
+    return { at: nowIso, by: args.by, refs: refs.includes(pairRef) ? refs : [...refs, pairRef] };
+  };
+  const mine = await patchCustomer(sb, args.locationId, args.ref, (c) => {
+    const next = { ...c, replacementDismissed: dismiss(c, otherRef) };
+    if (c.replacedBy) next.replacedByCleared = { ...c.replacedBy, clearedAt: nowIso, by: args.by };
+    delete next.replacedBy; delete next.possibleReplacement;
+    return next;
+  });
+  if (!mine.ok) return { ok: false, error: `Could not undo: ${mine.error || 'try again'}.` };
+  await patchCustomer(sb, args.locationId, otherRef, (c) => {
+    if (c.possibleReplacement?.ref !== args.ref && c.replacedBy?.ref !== args.ref) return { ...c, replacementDismissed: dismiss(c, args.ref) };
+    const next = { ...c, replacementDismissed: dismiss(c, args.ref) };
+    delete next.possibleReplacement;
+    return next;
+  });
+  if (existing.kitchen_routed_at) {
+    return { ok: true, resynced: false, message: 'Replacement mark cleared. The kitchen already has this order, so nothing else was changed.' };
+  }
+  const r = await resyncOrder(sb, platform, { locationId: args.locationId, ref: args.ref, nowIso, timeoutMs: args.timeoutMs, fetchFor: args.fetchFor, log: args.log });
+  if (!r.ok) return { ok: true, resynced: false, message: `Replacement mark cleared. ${r.error} Press Re-sync from ezCater to bring it up to date.` };
+  return { ok: true, resynced: true, message: `Replacement mark cleared. ${r.message}` };
 }
 
 // ── The pre fire check ───────────────────────────────────────────────────────
@@ -366,11 +462,11 @@ export async function prefireCheck(sb: any, platform: any, args: {
   // Fire as planned, and say so on the order. Only ever reached while unfired.
   const asPlanned = async (why: string): Promise<PrefireResult> => {
     log('pre fire check could not ask ezCater, firing as planned:', args.ref, why);
-    const customer = { ...(existing.customer || {}), ezcaterCheck: { at: nowIso, ok: false, why } };
-    await sb.from('order_queue').update({ customer })
-      .eq('location_id', args.locationId).eq('ref', args.ref).is('kitchen_routed_at', null)
-      .then(() => {}, () => {});
-    return { fire: !plannedHold, outcome: plannedHold || 'fire', checked: false, why, row: { ...existing, customer } };
+    // Only the check flag, on the row as it is NOW (rule 4), and only while it is unfired.
+    const p = await flagUnchecked(sb, args.locationId, args.ref, why, nowIso);
+    const now = p.row || existing;
+    const hold = cateringHoldReason(now);
+    return { fire: !hold, outcome: hold || 'fire', checked: false, why, row: now };
   };
 
   let access: any;
@@ -440,4 +536,272 @@ export async function resyncOrder(sb: any, platform: any, args: {
     message = `Up to date with ezCater. ${c.event_date ? `${c.event_date} ` : ''}${c.event_time || ''}, goes to the kitchen at ${c.fire_time || 'its fire time'}${c.prepFallback ? ' (60 minute fallback prep, set your catering prep time)' : ''}.`;
   }
   return { ok: true, fired: !!w.plan.fired, changed, row: r, message };
+}
+
+// ── The check flag ───────────────────────────────────────────────────────────
+
+/**
+ * Mark an unfired order as going to the kitchen WITHOUT a last check with ezCater (no answer in
+ * time, no token, the cron's time budget spent). Touches only customer.ezcaterCheck, on the row
+ * as it is now, and only while the kitchen does not have it. Never throws.
+ */
+export async function flagUnchecked(sb: any, locationId: string, ref: string, why: string, nowIso: string) {
+  try {
+    return await patchCustomer(sb, locationId, ref, (c) => ({ ...c, ezcaterCheck: { at: nowIso, ok: false, why } }), { unfiredOnly: true });
+  } catch (e) {
+    return { ok: false, written: false, row: null, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+// ── Scheduled re-asks (review round 3, C and D) ──────────────────────────────
+//
+// The pre fire check only runs at the OLD fire time. A Dispatch pickup moved EARLIER without a
+// notification, or a missed accepted notification, was therefore only seen when it was already
+// too late (or never: a held order is not released, so it was never re-asked at all). So the
+// catering-release cron (every 5 minutes) also re-asks, in small bounded batches:
+//   * every order due in the next EZ_RECHECK_NEAR_MS (or already due, down to the stale floor),
+//     held ones included, when it was last re-asked more than EZ_RECHECK_NEAR_EVERY_MS ago;
+//   * every order due within the week ahead, once a day.
+// A re-ask never fires anything itself. It writes ezCater's answer through the same guarded write
+// plan, so a moved time moves the fire time; a fire time now in the past becomes NOW and is
+// flagged late (customer.lateFire) for the release to fire at once. A held order still not
+// accepted as it nears or passes its fire time is flagged for staff (customer.unacceptedAlert).
+
+export const EZ_RECHECK_NEAR_MS = 4 * 60 * 60 * 1000;
+export const EZ_RECHECK_NEAR_EVERY_MS = 15 * 60 * 1000;
+export const EZ_RECHECK_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+export const EZ_RECHECK_WEEK_EVERY_MS = 24 * 60 * 60 * 1000;
+export const EZ_RECHECK_NEAR_LIMIT = 20;
+export const EZ_RECHECK_WEEK_LIMIT = 10;
+/** A held order this close to (or past) its fire time and still not accepted is shown to staff. */
+export const EZ_UNACCEPTED_WARN_MS = 30 * 60 * 1000;
+
+const msOf = (v: unknown) => { const t = v == null || v === '' ? NaN : new Date(v as any).getTime(); return Number.isFinite(t) ? t : NaN; };
+
+/**
+ * Is this unfired row due for a scheduled re-ask now? Pure. Mirrors the two query windows, so a
+ * database that ignored the json filter still only re-asks what is due.
+ */
+export function needsRecheck(row: any, nowMs: number): boolean {
+  if (!row || row.kitchen_routed_at) return false;
+  const st = String(row.status || '').toLowerCase();
+  if (st === 'cancelled' || st === 'canceled' || st === 'collected') return false;
+  const fire = msOf(row.sent_at);
+  if (!Number.isFinite(fire) || fire < nowMs - CATERING_STALE_FLOOR_MS || fire > nowMs + EZ_RECHECK_WEEK_MS) return false;
+  const last = msOf(row.customer?.ezcaterRecheck?.at);
+  const every = fire <= nowMs + EZ_RECHECK_NEAR_MS ? EZ_RECHECK_NEAR_EVERY_MS : EZ_RECHECK_WEEK_EVERY_MS;
+  return !Number.isFinite(last) || nowMs - last >= every;
+}
+
+/** The unaccepted flag for a held order near or past its fire time, or null. The same fire moment is reported once. */
+export function unacceptedAlertFor(row: any, nowMs: number, nowIso: string): any | null {
+  if (!row || row.kitchen_routed_at || cateringHoldReason(row) !== 'awaiting_ezcater_acceptance') return null;
+  // The order's own computed fire moment (customer.fireAt), not sent_at: an unfired order past its
+  // fire moment has sent_at moved to now on every write, which would read as a new moment each time.
+  const own = msOf(row.customer?.fireAt);
+  const fire = Number.isFinite(own) ? own : msOf(row.sent_at);
+  if (!Number.isFinite(fire) || fire > nowMs + EZ_UNACCEPTED_WARN_MS) return null;
+  const prev = row.customer?.unacceptedAlert;
+  const fireAt = new Date(fire).toISOString();
+  if (prev && prev.fireAt === fireAt) return prev;
+  return { at: nowIso, fireAt, fireTime: row.customer?.fire_time || null, lifecycle: row.customer?.ezcaterSays || row.customer?.ezcater_lifecycle || null };
+}
+
+export type RecheckResult = {
+  ref: string; locationId: string;
+  outcome: 'checked' | 'unreachable' | 'fired' | 'missing' | 'skipped' | 'error';
+  lifecycle?: string | null; late?: boolean; dueNow?: boolean; unaccepted?: boolean; why?: string;
+};
+
+/**
+ * Re-ask ezCater about ONE unfired order on the schedule. Never fires it; says whether it is now
+ * due (dueNow) so the cron can fire it in the same run.
+ */
+export async function recheckOrder(sb: any, platform: any, args: {
+  locationId: string; ref: string; nowIso?: string; timeoutMs?: number; venue?: any;
+  fetchFor?: (access: any) => (signal: AbortSignal) => Promise<any>;
+  log?: (...a: unknown[]) => void;
+}): Promise<RecheckResult> {
+  const nowIso = args.nowIso || new Date().toISOString();
+  const nowMs = Date.parse(nowIso);
+  const base = { ref: args.ref, locationId: args.locationId };
+  const existing = await readExisting(sb, args.locationId, args.ref);
+  if (!existing) return { ...base, outcome: 'missing' };
+  if (existing.kitchen_routed_at) return { ...base, outcome: 'fired' };
+  if (!isEzcaterOrder(existing)) return { ...base, outcome: 'skipped' };
+  const fetchFor = args.fetchFor || ((a: any) => (signal: AbortSignal) => getOrder(a.token, a.ezOrderId, a.apiUrl, signal));
+
+  const unreachable = async (why: string): Promise<RecheckResult> => {
+    // Record the attempt (so the batch moves on to other orders) and, for a held order near its
+    // fire time, tell staff it is still not accepted as far as we know.
+    let unaccepted = false;
+    await patchCustomer(sb, args.locationId, args.ref, (c, row) => {
+      const next = { ...c, ezcaterRecheck: { at: nowIso, ok: false, why } };
+      const ua = unacceptedAlertFor({ ...row, customer: next }, nowMs, nowIso);
+      if (ua) { next.unacceptedAlert = ua; unaccepted = true; }
+      return next;
+    }, { unfiredOnly: true });
+    return { ...base, outcome: 'unreachable', why, unaccepted };
+  };
+
+  let access: any;
+  try { access = await ezcaterAccessFor(sb, args.locationId, args.ref, existing); } catch (e) { access = { ok: false, why: e instanceof Error ? e.message : String(e) }; }
+  if (!access.ok) return unreachable(access.why);
+  const res = await fetchOrderWithin(fetchFor(access), args.timeoutMs ?? EZ_PREFIRE_TIMEOUT_MS);
+  if (!res.order) return unreachable(res.timedOut ? 'ezCater did not answer in time' : `ezCater answered with an error: ${res.error}`);
+  const venue = args.venue || await readCateringVenue(sb, platform, args.locationId);
+  const lifecycle = ezLifecycle(res.order) || null;
+  const w = await writeEzcaterOrder(sb, {
+    order: res.order, locationId: args.locationId, venue, priorLink: access.priorLink, requery: true, nowIso,
+    match: { budgetMs: EZ_PREFIRE_MATCH_BUDGET_MS },
+    extraCustomer: { ezcaterRecheck: { at: nowIso, ok: true, lifecycle } },
+    log: args.log,
+  });
+  if (!w.ok) return { ...base, outcome: 'error', why: w.error, lifecycle };
+  if (w.plan.fired) return { ...base, outcome: 'fired', lifecycle };
+  const now = { ...existing, ...w.plan.row, sent_at: w.payload.sent_at ?? existing.sent_at, kitchen_routed_at: null };
+  let unaccepted = false;
+  const ua = unacceptedAlertFor(now, nowMs, nowIso);
+  if (ua && ua !== now.customer?.unacceptedAlert) {
+    const p = await patchCustomer(sb, args.locationId, args.ref, (c) => ({ ...c, unacceptedAlert: ua }), { unfiredOnly: true });
+    unaccepted = p.written;
+  } else if (ua) unaccepted = true;
+  const dueNow = !cateringHoldReason(now) && msOf(now.sent_at) <= nowMs + 60000;
+  return { ...base, outcome: 'checked', lifecycle, late: !!w.plan.late, dueNow, unaccepted };
+}
+
+/**
+ * The scheduled batch: pick the orders due a re-ask (two windows, bounded) and re-ask them IN
+ * PARALLEL inside one time budget. Never throws; a failed read re-asks nothing.
+ */
+export async function recheckUpcoming(sb: any, platform: any, args: {
+  nowIso?: string; budgetMs?: number; concurrency?: number; timeoutMs?: number;
+  fetchFor?: (access: any) => (signal: AbortSignal) => Promise<any>;
+  log?: (...a: unknown[]) => void;
+} = {}): Promise<RecheckResult[]> {
+  const nowIso = args.nowIso || new Date().toISOString();
+  const nowMs = Date.parse(nowIso);
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const cols = 'ref, location_id, source, status, sent_at, kitchen_routed_at, customer';
+  const windowQuery = (from: number, to: number, everyMs: number, limit: number) => sb.from('order_queue').select(cols)
+    .eq('source', 'ezcater').is('kitchen_routed_at', null).not('status', 'in', '(cancelled,canceled,collected)')
+    .gte('sent_at', iso(from)).lte('sent_at', iso(to))
+    .or(`customer->ezcaterRecheck->>at.is.null,customer->ezcaterRecheck->>at.lt.${iso(nowMs - everyMs)}`)
+    .order('sent_at', { ascending: true }).limit(limit);
+  let rows: any[] = [];
+  try {
+    const [near, week] = await Promise.all([
+      windowQuery(nowMs - CATERING_STALE_FLOOR_MS, nowMs + EZ_RECHECK_NEAR_MS, EZ_RECHECK_NEAR_EVERY_MS, EZ_RECHECK_NEAR_LIMIT),
+      windowQuery(nowMs + EZ_RECHECK_NEAR_MS + 1, nowMs + EZ_RECHECK_WEEK_MS, EZ_RECHECK_WEEK_EVERY_MS, EZ_RECHECK_WEEK_LIMIT),
+    ]);
+    if (near.error) args.log?.('recheck near read failed:', near.error.message);
+    if (week.error) args.log?.('recheck week read failed:', week.error.message);
+    const seen = new Set<string>();
+    for (const r of [...(near.data || []), ...(week.data || [])]) {
+      const k = `${r.location_id}|${r.ref}`;
+      if (seen.has(k) || !needsRecheck(r, nowMs)) continue;
+      seen.add(k); rows.push(r);
+    }
+  } catch (e) {
+    args.log?.('recheck read failed:', e instanceof Error ? e.message : String(e));
+    return [];
+  }
+  rows = rows.slice(0, EZ_RECHECK_NEAR_LIMIT + EZ_RECHECK_WEEK_LIMIT);
+  const venues = new Map<string, Promise<any>>();
+  const venueFor = (loc: string) => { if (!venues.has(loc)) venues.set(loc, readCateringVenue(sb, platform, loc)); return venues.get(loc)!; };
+  const results = await runWithBudget(rows, async (r: any) => recheckOrder(sb, platform, {
+    locationId: r.location_id, ref: r.ref, nowIso, timeoutMs: args.timeoutMs, venue: await venueFor(r.location_id),
+    fetchFor: args.fetchFor, log: args.log,
+  }), { concurrency: args.concurrency ?? 6, budgetMs: args.budgetMs ?? 20000 });
+  return results.map((x: any, i: number) => x.ok ? x.value : { ref: rows[i].ref, locationId: rows[i].location_id, outcome: 'skipped', why: x.error });
+}
+
+// ── A venue's catering prep time changed (review round 3, C) ─────────────────
+
+/**
+ * Re-time every UNFIRED ezCater order at a venue whose stored prep time differs from the venue's
+ * catering prep time now: new fire moment = ezCater's ready time (customer.readyAt, an instant)
+ * minus the prep, on the venue clock. No call to ezCater is needed. A fire moment already past
+ * becomes NOW and is flagged late. Each order is written with the guard (rule 4), so an order
+ * the kitchen took in the meantime is left alone. Bounded; never throws.
+ */
+export async function recomputePrepForVenue(sb: any, platform: any, args: {
+  locationId: string; nowIso?: string; limit?: number; venue?: any; log?: (...a: unknown[]) => void;
+}): Promise<{ checked: number; retimed: number; late: number; refs: string[] }> {
+  const nowIso = args.nowIso || new Date().toISOString();
+  const nowMs = Date.parse(nowIso);
+  const out = { checked: 0, retimed: 0, late: 0, refs: [] as string[] };
+  let venue: any;
+  try { venue = args.venue || await readCateringVenue(sb, platform, args.locationId); } catch { return out; }
+  const { data, error } = await sb.from('order_queue').select('ref, location_id, source, status, sent_at, kitchen_routed_at, customer')
+    .eq('location_id', args.locationId).eq('source', 'ezcater').is('kitchen_routed_at', null)
+    .not('status', 'in', '(cancelled,canceled,collected)')
+    .gte('sent_at', new Date(nowMs - CATERING_STALE_FLOOR_MS).toISOString())
+    .order('sent_at', { ascending: true }).limit(args.limit ?? 200);
+  if (error) { args.log?.('prep recompute read failed:', error.message); return out; }
+  for (const r of data || []) {
+    out.checked++;
+    const c = r.customer || {};
+    if (Number(c.prepMinutes) === venue.prepMinutes && !!c.prepFallback === !!venue.prepFallback) continue;
+    if (!Number.isFinite(msOf(c.readyAt))) continue;
+    const res = await retimeForPrep(sb, args.locationId, r.ref, venue, nowIso);
+    if (res.retimed) { out.retimed++; out.refs.push(r.ref); }
+    if (res.late) out.late++;
+  }
+  return out;
+}
+
+async function retimeForPrep(sb: any, locationId: string, ref: string, venue: any, nowIso: string): Promise<{ retimed: boolean; late: boolean }> {
+  const nowMs = Date.parse(nowIso);
+  for (let attempt = 1; attempt <= WRITE_ATTEMPTS; attempt++) {
+    const row = await readExisting(sb, locationId, ref);
+    if (!row || row.kitchen_routed_at) return { retimed: false, late: false };
+    const c = row.customer || {};
+    const st = String(row.status || '').toLowerCase();
+    if (st === 'cancelled' || st === 'canceled' || st === 'collected') return { retimed: false, late: false };
+    if (Number(c.prepMinutes) === venue.prepMinutes && !!c.prepFallback === !!venue.prepFallback) return { retimed: false, late: false };
+    const fireMs = cateringFireMs(msOf(c.readyAt), venue.prepMinutes);
+    if (!Number.isFinite(fireMs)) return { retimed: false, late: false };
+    const fireAt = new Date(fireMs).toISOString();
+    const committed = EZ_COMMITTED.has(String(c.ezcater_lifecycle || '').toLowerCase());
+    const late = committed ? lateFirePlan(fireAt, nowIso, c.lateFire || null) : null;
+    const customer: any = {
+      ...c, prepMinutes: venue.prepMinutes, prepFallback: !!venue.prepFallback, fireAt,
+      fire_time: venueWallClock(fireMs, venue.timeZone || c.venueTimeZone)?.time ?? c.fire_time ?? null,
+      prepRecomputedAt: nowIso,
+    };
+    if (late) customer.lateFire = late; else delete customer.lateFire;
+    const sent_at = fireMs < nowMs ? nowIso : fireAt;
+    const g = await guardedUpdate(sb, locationId, ref, row, { customer, sent_at }, { unfiredOnly: true });
+    if (g.error) return { retimed: false, late: false };
+    if (g.matched) {
+      await sb.from('ezcater_order_links').update({ fire_at: fireAt, updated_at: nowIso }).eq('location_id', locationId).eq('ref', ref).then(() => {}, () => {});
+      return { retimed: true, late: !!late };
+    }
+  }
+  return { retimed: false, late: false };
+}
+
+/**
+ * The cron's sweep for prep changes: every venue with unfired ezCater orders coming up, re-timed
+ * where its prep time no longer matches. Bounded by venues per run.
+ */
+export async function recomputePrepSweep(sb: any, platform: any, args: { nowIso?: string; maxVenues?: number; log?: (...a: unknown[]) => void } = {}) {
+  const nowIso = args.nowIso || new Date().toISOString();
+  const nowMs = Date.parse(nowIso);
+  const { data, error } = await sb.from('order_queue').select('location_id')
+    .eq('source', 'ezcater').is('kitchen_routed_at', null).not('status', 'in', '(cancelled,canceled,collected)')
+    .gte('sent_at', new Date(nowMs - CATERING_STALE_FLOOR_MS).toISOString())
+    .lte('sent_at', new Date(nowMs + EZ_RECHECK_WEEK_MS).toISOString())
+    .limit(1000);
+  if (error) { args.log?.('prep sweep read failed:', error.message); return { venues: 0, retimed: 0, late: 0, refs: [] as string[] }; }
+  const locs = [...new Set((data || []).map((r: any) => String(r.location_id || '')).filter(Boolean))].slice(0, args.maxVenues ?? 25);
+  const total = { venues: locs.length, retimed: 0, late: 0, refs: [] as string[] };
+  for (const loc of locs) {
+    try {
+      const r = await recomputePrepForVenue(sb, platform, { locationId: loc, nowIso, log: args.log });
+      total.retimed += r.retimed; total.late += r.late; total.refs.push(...r.refs);
+    } catch (e) { args.log?.('prep recompute failed for', loc, e instanceof Error ? e.message : String(e)); }
+  }
+  return total;
 }

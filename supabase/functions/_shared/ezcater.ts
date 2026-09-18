@@ -511,7 +511,7 @@ mutation ServOsEzDeleteSubscriptions {
 export const EZ_EVENTS = [
   'accepted',           // also arrives a SECOND time for a modification, there is no modified event
   'submitted',
-  'rejected',           // see below. Without it a rejected order keeps its till ticket forever
+  'rejected',           // see below. Tells us a caterer rejected an order or a modification
   'cancelled',
   'relish_finalized',   // Meal Program orders arrive ONLY through this
   // 'uncancelled',     // subscribable, never fires. Do not enable.
@@ -521,9 +521,14 @@ export const EZ_EVENTS = [
 // meaning the order "has been rejected by a caterer or on behalf of a caterer",
 // and the Partner Portal is where an operator rejects, because a modification
 // on an API-accepted order CANNOT be rejected through the API at all. Without
-// this subscription that rejection never reaches us: ezStatusToQueueStatus
-// already maps rejected to cancelled and EZ_TERMINAL already holds it, and both
-// were dead code, so the kitchen kept cooking an order nobody was paying for.
+// this subscription that rejection never reaches us.
+//
+// A REJECTED IS NOT A CANCEL (review round 3, 18 Sep 2026). A rejected NEW order is
+// followed by ezCater's own cancelled notification, which is what stops it. A
+// rejected MODIFICATION sends no cancelled at all ("ezCater is working behind the
+// scenes to save the order"): the accepted order stands and still has to be cooked.
+// So rejected holds a never accepted order and flags an accepted one for staff
+// (ezEffectiveLifecycle in cateringRules.js); only cancelled stops the kitchen.
 
 // ────────────────────────────────────────────────────────────────────────────
 // Typed wrappers

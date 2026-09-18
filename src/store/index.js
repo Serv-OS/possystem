@@ -30,7 +30,7 @@ import { setTrainingMode as applyTrainingFlag, isTrainingMode } from '../lib/tra
 import { getDeliveryQuote, recordDeliverySurcharge } from '../lib/delivery/quoteService';
 import { dispatchDelivery, sendDeliveryTrackingSMS } from '../lib/delivery/dispatch';
 import { STALE_ORDER_FLOOR_MS } from '../sync/staleness';
-import { CATERING_SOURCES, cateringMayFire, cateringReleaseWindow, cateringSourceLabel, isEzcaterOrder, mayBookOurCourier, releasableOrFilter } from '../lib/cateringRules';
+import { CATERING_SOURCES, cateringMayFire, cateringHoldReason, cateringReleaseWindow, cateringSourceLabel, isEzcaterOrder, mayBookOurCourier, releasableOrFilter, UNCLAIMABLE_STATUSES_PG } from '../lib/cateringRules';
 import { ezcaterPrefire } from '../lib/ezcater';
 import { giftRecordFrom, giftLegs, reverseGiftCard } from '../lib/giftCommit';
 import { categoryImageField, isMissingImageColumn } from '../lib/categoryPhoto';
@@ -3061,6 +3061,40 @@ export const useStore = create((set, get) => ({
       }
     } catch (e) { console.warn('[releaseDueCateringOrders]', e?.message); }
     finally { useStore._cateringReleaseRunning = false; }
+  },
+
+  // 18 Sep 2026 (ezCater review round 3, E): ONE catering order to the kitchen NOW, outside the
+  // scheduled release (the Orders Hub opening a pay-later catering order before its fire time).
+  // The same checks as releaseDueCateringOrders, never fewer: a cancelled, collected or held
+  // (not accepted on ezCater) order is never fired, and an ezCater order is re-asked first
+  // (ezcaterPrefire, which never blocks the kitchen). The claim in routeKioskOrderPrints then
+  // checks the status again in the same UPDATE, so it still fires exactly once.
+  releaseCateringOrderNow: async (o) => {
+    if (!o?.ref || !supabase) return { fired: false, why: 'no order' };
+    const label = o.customer?.ezcater_order_number || o.ref;
+    const hold = cateringHoldReason(o);
+    if (hold) {
+      if (hold === 'awaiting_ezcater_acceptance') get().showToast?.(`ezCater order ${label} is not accepted on ezCater yet, so it was not sent to the kitchen.`, 'info', 8000);
+      return { fired: false, why: hold };
+    }
+    let row = o;
+    if (isEzcaterOrder(o)) {
+      const locId = getActiveLocationSync() || await getLocationId().catch(() => null);
+      if (!locId || locId === 'loc-demo') return { fired: false, why: 'no location' };
+      const pf = await ezcaterPrefire(locId, o.ref);
+      if (!pf.fire && pf.outcome !== 'rescheduled') {
+        get().showToast?.(`ezCater order ${label} was not sent to the kitchen: ${pf.outcome === 'cancelled' ? 'it is cancelled on ezCater' : 'it is not accepted on ezCater'}.`, 'info', 8000);
+        return { fired: false, why: pf.outcome };
+      }
+      if (!pf.checked) get().showToast?.(`ezCater order ${label} sent without a last check (${pf.why || 'ezCater did not answer'}). Check ezCater for changes.`, 'info', 8000);
+      if (pf.row) row = { ...row, items: pf.row.items || row.items, customer: pf.row.customer || row.customer, type: pf.row.type || row.type };
+    }
+    await get().routeKioskOrderPrints?.({
+      ref: row.ref, source: row.source, type: row.type || row._raw?.type || null,
+      items: row.items || [], customer: row.customer || null,
+      collectionTime: row.collectionTime || null, isASAP: !!row.isASAP, sentAt: Date.now(),
+    });
+    return { fired: true };
   },
 
   fireCourse: (courseNum) => {
@@ -7156,6 +7190,12 @@ export const useStore = create((set, get) => ({
         .eq('ref', order.ref)
         .eq('location_id', locId)
         .is('kitchen_routed_at', null)
+        // 18 Sep 2026 (ezCater review round 3, E): the claim ALSO requires a releasable status,
+        // in the same UPDATE: not cancelled, not collected, not held (an ezCater order not
+        // accepted on ezCater). A cancel that lands between the pre fire decision and this claim
+        // makes it match nothing, so a cancelled order is never fired silently.
+        .not('status', 'in', UNCLAIMABLE_STATUSES_PG)
+        .or(releasableOrFilter())
         // v5.8.63: `type` comes back with the claim so the order type rule works even when
         // a caller passed no type. Free, and it covers any future caller too.
         .select('ref, type');
@@ -7180,7 +7220,22 @@ export const useStore = create((set, get) => ({
         markRouted(order.ref);   // v5.5.860: survives refresh — the in-memory set doesn't
       } else {
         if (r.error) { console.warn('[routeKioskOrderPrints] claim failed', r.error); return; }
-        if (!r.data?.length && !opts?.force) return; // Another device already routed
+        if (!r.data?.length && !opts?.force) return; // Another device already routed, or it is no longer releasable
+        if (!r.data?.length && opts?.force) {
+          // A FORCED re-send ("Send to kitchen again") of a row the claim did not match. Fine for
+          // an order the kitchen already had (a lost ticket); never for one that is cancelled or
+          // held (an ezCater order not accepted on ezCater): that would cook what nobody ordered.
+          const { data: now } = await supabase.from('order_queue')
+            .select('ref, source, status, kitchen_routed_at, customer')
+            .eq('ref', order.ref).eq('location_id', locId).maybeSingle();
+          const hold = now ? cateringHoldReason(now) : null;
+          if (hold === 'cancelled' || hold === 'awaiting_ezcater_acceptance') {
+            showToast?.(hold === 'cancelled'
+              ? `${order.ref} is cancelled, so it was not sent to the kitchen.`
+              : `${order.ref} is not accepted on ezCater yet, so it was not sent to the kitchen.`, 'error', 8000);
+            return;
+          }
+        }
         markRouted(order.ref);   // v5.5.860: claim won — remember locally too, so a later claim-reset can never re-print here
       }
       const claimedRow = r.data?.[0] || null;

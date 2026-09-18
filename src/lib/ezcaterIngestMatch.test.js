@@ -985,7 +985,9 @@ test('the webhook calls the matcher, inside a try, before the order_queue upsert
   assert.ok(WEBHOOK.includes('await writeEzcaterOrder(sb, {'));
   const call = WRITE.indexOf('await matchQueueRow(');
   const insert = WRITE.indexOf(".from('order_queue').insert(");
-  const update = WRITE.indexOf(".from('order_queue').update(payload)");
+  // Review round 3: every update of an existing row is the guarded update (updated_at and
+  // kitchen_routed_at conditions), called from the write loop after matching.
+  const update = WRITE.indexOf('await guardedUpdate(sb, locationId, row.ref, existing, payload');
   assert.ok(call > 0, 'the matcher is never called');
   assert.ok(insert > call && update > call, 'matching must happen before the row is written');
 

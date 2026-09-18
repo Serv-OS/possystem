@@ -19,7 +19,12 @@
 //     items_save     -> match one of their names to one of ours, silence it, or
 //                       clear it back to unmatched
 //
-//   Two ORDER actions, each with its own fence (they are not Back Office only):
+//     recompute_prep -> the venue's catering prep time changed: re-time every ezCater order
+//                       the kitchen does not have yet (Back Office calls it after a save)
+//
+//   Three ORDER actions, each with its own fence (they are not Back Office only):
+//     undo_replacement -> staff say two ezCater orders are NOT a replacement pair: clear the
+//                       marks and let ezCater's current answer decide. Same fence as resync.
 //     prefire        -> the till's catering release asks ezCater about one order right
 //                       before firing it (ezCater advises this). Service role, staff of the
 //                       venue, or a till paired to the venue. Answers { fire, outcome, row }
@@ -46,8 +51,8 @@ import {
   isSandboxApi, resolveEzcaterApi,
 } from '../_shared/ezcater.ts';
 import { buildLinkKey } from '../_shared/ezcaterMatch.ts';
-import { prefireCheck, resyncOrder, readCateringVenue } from '../_shared/ezcaterIngest.ts';
-import { staffForLocation, deviceAtLocation, staffActor } from '../_shared/staffAuthority.ts';
+import { prefireCheck, resyncOrder, readCateringVenue, undoReplacement, recomputePrepForVenue } from '../_shared/ezcaterIngest.ts';
+import { staffForLocation, deviceAtLocation, staffActor, platformLocation } from '../_shared/staffAuthority.ts';
 import { EZ_PREP_FALLBACK_MINUTES } from '../_shared/cateringRules.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
@@ -111,9 +116,12 @@ async function callerOf(req: Request): Promise<{ service: boolean; user: any | n
 }
 
 /**
- * Back Office staff of this venue (the staff rule in _shared/staffAuthority.ts: never an
- * anonymous session, super_admin, user_locations or user_profiles.location_id, or a company
- * role for the venue's company), or the service role.
+ * Who may run a CONFIG action (connect_token, list_caterers, map_caterer, unmap_caterer,
+ * set_policy, resubscribe, disconnect, items_list, items_save, recompute_prep, status): the
+ * service role, or Back Office staff of this venue under the strict rule in
+ * _shared/staffAuthority.ts (never an anonymous session; super_admin, a user_locations row for the
+ * venue, or a company role that really grants it). user_profiles.location_id and org_id are NOT
+ * trusted: any signed in user can write them on any row today (review round 3, F).
  */
 async function requireAccess(req: Request, opsLocationId: string): Promise<{ ok: true; userId: string } | { ok: false; res: Response }> {
   const { service, user } = await callerOf(req);
@@ -123,10 +131,35 @@ async function requireAccess(req: Request, opsLocationId: string): Promise<{ ok:
   return { ok: true, userId: user.id };
 }
 
+/** The company that owns an Ops location (Platform locations.company_id), or null. */
+async function venueCompany(opsLocationId: string): Promise<string | null> {
+  const loc = await platformLocation(platform, opsLocationId);
+  return loc.companyId ? String(loc.companyId) : null;
+}
+
 /**
- * The connection serving a location: the one its mapped caterer belongs to,
- * falling back to the single connected row when nothing is mapped yet (which is
- * the state every operator starts in).
+ * The company an ezCater connection belongs to: its company_id (written by connect_token from
+ * this release on), else the company of a venue one of its caterers is mapped to (a connection
+ * made before, whose company_id was never written). null when neither says.
+ */
+async function connectionCompany(conn: any): Promise<string | null> {
+  if (!conn?.id) return null;
+  if (conn.company_id) return String(conn.company_id);
+  const { data: cats } = await sb.from('ezcater_caterers').select('location_id')
+    .eq('connection_id', conn.id).not('location_id', 'is', null).limit(5);
+  for (const c of cats || []) {
+    const co = await venueCompany(String(c.location_id));
+    if (co) return co;
+  }
+  return null;
+}
+
+/**
+ * The connection serving a location: the one its mapped caterer belongs to, else a connected
+ * row OF THE SAME COMPANY (the state every operator starts in, before any caterer is mapped).
+ * NEVER another company's connection (review round 3, F): the old fallback was "the oldest
+ * connected row", which let staff of one company see, map against, resubscribe or DISCONNECT
+ * another company's ezCater. A venue whose company cannot be told gets null (not connected).
  */
 async function connectionForLocation(opsLocationId: string): Promise<any | null> {
   const { data: cat } = await sb.from('ezcater_caterers')
@@ -135,9 +168,14 @@ async function connectionForLocation(opsLocationId: string): Promise<any | null>
     const { data } = await sb.from('ezcater_connections').select('*').eq('id', cat.connection_id).maybeSingle();
     if (data) return data;
   }
-  const { data } = await sb.from('ezcater_connections')
-    .select('*').eq('status', 'connected').order('connected_at', { ascending: true }).limit(1).maybeSingle();
-  return data || null;
+  const company = await venueCompany(opsLocationId);
+  if (!company) return null;
+  const { data: rows } = await sb.from('ezcater_connections')
+    .select('*').eq('status', 'connected').order('connected_at', { ascending: true }).limit(20);
+  for (const c of rows || []) {
+    if (await connectionCompany(c) === company) return c;
+  }
+  return null;
 }
 
 /** SCRUBBED projection. api_token and signing_secret must never appear here. */
@@ -317,7 +355,7 @@ Deno.serve(async (req) => {
   if (!opsLocationId) return json({ error: 'ops_location_id required' }, 400);
 
   // ── Order actions, each with its own fence ──────────────────────────────────
-  if (action === 'prefire' || action === 'resync_order') {
+  if (action === 'prefire' || action === 'resync_order' || action === 'undo_replacement') {
     const ref = String(body?.ref || '').trim();
     if (!ref) return json({ error: 'ref required' }, 400);
     const { service, user } = await callerOf(req);
@@ -340,6 +378,17 @@ Deno.serve(async (req) => {
       }
       const who = service ? { ok: true as const, by: 'service' } : await staffActor(sb, platform, user, opsLocationId, body?.pin);
       if (!who.ok) return json({ error: who.error }, who.status);
+      if (action === 'undo_replacement') {
+        // Staff say these two ezCater orders are NOT a replacement pair. The marks are cleared
+        // and, if the kitchen does not have it yet, the order becomes whatever ezCater says now.
+        const u = await undoReplacement(sb, platform, {
+          locationId: opsLocationId, ref, by: who.by,
+          log: (...a: unknown[]) => console.log('[ezcater-connect undo]', ...a),
+        });
+        console.log('[ezcater-connect] undo replacement', ref, 'by', who.by, u.ok ? u.message : u.error);
+        if (!u.ok) return json({ ok: false, error: u.error });
+        return json({ ok: true, message: u.message, resynced: u.resynced });
+      }
       const r = await resyncOrder(sb, platform, {
         locationId: opsLocationId, ref,
         log: (...a: unknown[]) => console.log('[ezcater-connect resync]', ...a),
@@ -352,6 +401,7 @@ Deno.serve(async (req) => {
       console.error('[ezcater-connect]', action, ref, msg);
       // A prefire that breaks must still let the kitchen have the order.
       if (action === 'prefire') return json({ ok: false, fire: true, outcome: 'fire', checked: false, why: 'the check failed', row: null });
+      if (action === 'undo_replacement') return json({ ok: false, error: 'Could not undo. Nothing was changed.' });
       return json({ ok: false, error: 'Could not re-sync this order. Nothing was changed.' });
     }
   }
@@ -365,9 +415,13 @@ Deno.serve(async (req) => {
         const conn = await connectionForLocation(opsLocationId);
         // Caterers already on this venue, plus anything the webhook has seen but
         // nobody has mapped yet, so the operator can adopt it.
+        // Unmapped caterers of THIS company's connection only: never another company's caterer
+        // names, and never one this venue could then map and receive another company's orders.
         const [{ data: mine }, { data: unmapped }] = await Promise.all([
           sb.from('ezcater_caterers').select('*').eq('location_id', opsLocationId),
-          sb.from('ezcater_caterers').select('*').is('location_id', null),
+          conn?.id
+            ? sb.from('ezcater_caterers').select('*').is('location_id', null).eq('connection_id', conn.id)
+            : Promise.resolve({ data: [] as any[] }),
         ]);
         // No catering prep time set means every ezCater order here is timed with the fallback.
         // The Connect screen says so until the venue sets one.
@@ -407,6 +461,9 @@ Deno.serve(async (req) => {
           webhook_url: WEBHOOK_URL,
           status: 'connected',
           connected_by: access.userId === 'service' ? null : access.userId,
+          // The company this connection belongs to, so it is never used for another company's
+          // venue (connectionForLocation, ezcaterAccessFor). Column from 20260825e_ezcater.sql.
+          company_id: await venueCompany(opsLocationId),
         };
         if (apiUrl) row.api_url = apiUrl;
 
@@ -500,9 +557,25 @@ Deno.serve(async (req) => {
         const catererUuid = String(body?.caterer_uuid || '').trim();
         if (!catererUuid) return json({ error: 'caterer_uuid required' }, 400);
         const conn = await connectionForLocation(opsLocationId);
+        // The caterer must belong to THIS company's ezCater (review round 3, F): mapping another
+        // company's caterer here would route that company's orders to this venue. A caterer
+        // mapped to another venue is unmapped there first, never taken over.
+        const { data: known } = await sb.from('ezcater_caterers')
+          .select('connection_id, location_id').eq('caterer_uuid', catererUuid).maybeSingle();
+        if (known?.location_id && known.location_id !== opsLocationId) {
+          return json({ error: 'That ezCater caterer is mapped to another venue. Unmap it there first.' }, 409);
+        }
+        let connId: string | null = conn?.id || null;
+        if (known?.connection_id && known.connection_id !== connId) {
+          const { data: theirs } = await sb.from('ezcater_connections').select('*').eq('id', known.connection_id).maybeSingle();
+          const [mineCo, theirCo] = await Promise.all([venueCompany(opsLocationId), connectionCompany(theirs)]);
+          if (!mineCo || !theirCo || mineCo !== theirCo) return json({ error: 'That ezCater caterer belongs to another ezCater connection.' }, 403);
+          connId = known.connection_id;
+        }
+        if (!connId) return json({ error: 'Connect ezCater for this venue first.' }, 400);
         const { error } = await sb.from('ezcater_caterers').upsert({
           caterer_uuid: catererUuid,
-          connection_id: conn?.id || null,
+          connection_id: connId,
           location_id: opsLocationId,
           caterer_name: body?.caterer_name || null,
           active: true,
@@ -581,6 +654,19 @@ Deno.serve(async (req) => {
           await sb.from('ezcater_connections').delete().eq('id', conn.id);
         }
         return json({ ok: true });
+      }
+
+      // ── The venue's catering prep time changed (review round 3, C) ──────
+      // Back Office calls this right after saving Catering settings. Every ezCater order the
+      // kitchen does not have yet is re-timed on the new prep time (ready time minus prep);
+      // one whose new fire moment is already past fires now and is flagged late. The
+      // catering-release cron runs the same sweep every 5 minutes as the backstop.
+      case 'recompute_prep': {
+        const r = await recomputePrepForVenue(sb, platform, {
+          locationId: opsLocationId,
+          log: (...a: unknown[]) => console.log('[ezcater-connect recompute_prep]', ...a),
+        });
+        return json({ ok: true, checked: r.checked, retimed: r.retimed, late: r.late });
       }
 
       // ── Item matching ───────────────────────────────────────────────────

@@ -23,7 +23,7 @@ import { hubrisePushStatus } from '../lib/hubrise';
 import { getDeliveryDetail } from '../lib/delivery/deliveryConfig';
 import { dispatchDelivery, sendDeliveryTrackingSMS } from '../lib/delivery/dispatch';
 import { isCateringSource, cateringSourceLabel, cateringHoldReason, mayBookOurCourier, changedAfterFireText, ezcaterOrderWarnings } from '../lib/cateringRules';
-import { ezcaterResyncOrder } from '../lib/ezcater';
+import { ezcaterResyncOrder, ezcaterUndoReplacement } from '../lib/ezcater';
 import { statusLabel, statusColor, statusIcon } from '../lib/delivery/status';
 import { courierPhase, courierLegs, courierLateness } from '../lib/delivery/courierTimes';
 import { buildChannelCloseFields } from '../lib/channelMoney';
@@ -128,6 +128,21 @@ export default function OrdersHub() {
       else { setResyncState({ ref: o.ref, busy: false, msg: r?.message || 'Re-synced.', err: null }); showToast?.(r?.message || 'Re-synced from ezCater', 'success'); }
     } catch (e) {
       setResyncState({ ref: o.ref, busy: false, msg: null, err: e?.message || 'Could not re-sync.' });
+    }
+  };
+  // "Not a replacement (undo)": staff say the two ezCater orders are both real. Same fence as
+  // re-sync (this till plus the signed in staff member's PIN, checked server side).
+  const undoReplacementOf = async (o) => {
+    const locId = getActiveLocationSync();
+    if (!locId || locId === 'loc-demo' || resyncState?.busy) return;
+    if (!staff?.pin) { setResyncState({ ref: o.ref, busy: false, msg: null, err: 'Sign in with your PIN first.' }); return; }
+    setResyncState({ ref: o.ref, busy: true, msg: null, err: null });
+    try {
+      const r = await ezcaterUndoReplacement(locId, o.ref, staff.pin);
+      if (r?.ok === false) setResyncState({ ref: o.ref, busy: false, msg: null, err: r.error || 'Could not undo.' });
+      else { setResyncState({ ref: o.ref, busy: false, msg: r?.message || 'Replacement mark cleared.', err: null }); showToast?.(r?.message || 'Replacement mark cleared', 'success'); }
+    } catch (e) {
+      setResyncState({ ref: o.ref, busy: false, msg: null, err: e?.message || 'Could not undo.' });
     }
   };
 
@@ -944,9 +959,11 @@ export default function OrdersHub() {
       // kitchen miss. Fire it now (idempotent: routeKioskOrderPrints' kitchen_routed_at claim
       // dedups against the scheduled release), so the kitchen ticket is guaranteed.
       // Every catering source (lib/cateringRules.js), and never a cancelled one.
-      if (isCateringSource(o.source) && o.status !== 'cancelled') {
-        // v5.8.63: `type` rides along so production centres by order type apply here too.
-        try { useStore.getState().routeKioskOrderPrints?.({ ref: o.ref, source: o.source, type: o.type || o._raw?.type || null, items: o.items || [], customer: o.customer || null, collectionTime: o.collectionTime || null, isASAP: o.isASAP, sentAt: Date.now() }); } catch { /* best-effort */ }
+      // 18 Sep 2026 (ezCater review round 3, E): through releaseCateringOrderNow, the same checks
+      // as the scheduled release: never a cancelled, collected or held (not accepted on ezCater)
+      // order, and an ezCater order is re-asked first. The claim re-checks the status too.
+      if (isCateringSource(o.source)) {
+        try { useStore.getState().releaseCateringOrderNow?.(o)?.catch?.(() => {}); } catch { /* best-effort */ }
       }
       // Walk-in / takeaway / delivery / counter order — load it back into the
       // walk-in slot so the POS actually shows the items. Previously this branch
@@ -1148,6 +1165,13 @@ export default function OrdersHub() {
                     style={{ padding:'6px 12px', borderRadius:8, border:'1px solid var(--bdr2)', background:'transparent', color:'var(--t1)', fontSize:12, fontWeight:700, cursor:'pointer', fontFamily:'inherit' }}>
                     {resyncState?.busy && resyncState.ref === viewOrder.ref ? 'Re-syncing…' : 'Re-sync from ezCater'}
                   </button>
+                  {(viewOrder.customer?.replacedBy || viewOrder.customer?.possibleReplacement) && (
+                    <button onClick={() => undoReplacementOf(viewOrder)} disabled={resyncState?.busy}
+                      title="These two ezCater orders are both real. Clear the replacement mark and let ezCater decide this order."
+                      style={{ padding:'6px 12px', borderRadius:8, border:'1px solid var(--bdr2)', background:'transparent', color:'var(--t1)', fontSize:12, fontWeight:700, cursor:'pointer', fontFamily:'inherit' }}>
+                      Not a replacement (undo)
+                    </button>
+                  )}
                   {resyncState?.ref === viewOrder.ref && resyncState.msg && <span style={{ fontSize:12, color:'var(--grn)' }}>{resyncState.msg}</span>}
                   {resyncState?.ref === viewOrder.ref && resyncState.err && <span style={{ fontSize:12, color:'#dc2626' }}>{resyncState.err}</span>}
                 </div>
@@ -1497,7 +1521,7 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
             {order.source === 'hubrise' && <span style={{ fontSize:9, fontWeight:800, padding:'1px 6px', borderRadius:8, background:'#ef444418', border:'1px solid #ef444455', color:'#ef4444', letterSpacing:'.03em' }}>{(order.customer?.channel || 'HUBRISE').toUpperCase()}</span>}
             {/* Catering keeps its channel on the card: CATERING or EZCATER (lib/cateringRules.js). */}
             {isCateringSource(order.source) && <span style={{ fontSize:9, fontWeight:800, padding:'1px 6px', borderRadius:8, background:'#14b8a618', border:'1px solid #14b8a655', color:'#14b8a6', letterSpacing:'.03em' }}>{cateringSourceLabel(order.source).toUpperCase()}{order.source === 'ezcater' && order.customer?.ezcater_order_number ? ` ${order.customer.ezcater_order_number}` : ''}</span>}
-            {order.source === 'ezcater' && ezcaterOrderWarnings(order).length > 0 && <span title={ezcaterOrderWarnings(order).join(' ')} style={{ fontSize:9, fontWeight:800, padding:'1px 6px', borderRadius:8, background:'#f59e0b18', border:'1px solid #f59e0b44', color:'#b45309' }}>{order.customer?.replacedBy ? 'REPLACED ON EZCATER' : order.customer?.possibleReplacement ? 'POSSIBLE REPLACEMENT' : order.customer?.prepFallback ? 'NO CATERING PREP SET' : 'NOT RE-CHECKED'}</span>}
+            {order.source === 'ezcater' && ezcaterOrderWarnings(order).length > 0 && <span title={ezcaterOrderWarnings(order).join(' ')} style={{ fontSize:9, fontWeight:800, padding:'1px 6px', borderRadius:8, background:'#f59e0b18', border:'1px solid #f59e0b44', color:'#b45309' }}>{order.customer?.lateFire ? 'SENT LATE' : order.customer?.replacedBy ? 'REPLACED ON EZCATER' : order.customer?.modificationRejected ? 'CHANGE REJECTED' : order.customer?.possibleReplacement ? 'POSSIBLE REPLACEMENT' : order.customer?.prepFallback ? 'NO CATERING PREP SET' : 'NOT RE-CHECKED'}</span>}
             {cateringHoldReason(order) === 'awaiting_ezcater_acceptance' && <span style={{ fontSize:9, fontWeight:800, padding:'1px 6px', borderRadius:8, background:'#f59e0b18', border:'1px solid #f59e0b44', color:'#f59e0b' }}>NOT ACCEPTED ON EZCATER</span>}
             {changedAfterFireText(order.customer?.changedAfterFire) && <span title={changedAfterFireText(order.customer.changedAfterFire)} style={{ fontSize:9, fontWeight:800, padding:'1px 6px', borderRadius:8, background:'#dc262618', border:'1px solid #dc262666', color:'#dc2626' }}>{order.status === 'cancelled' ? 'CANCELLED AFTER KITCHEN' : 'CHANGED AFTER KITCHEN'}</span>}
             {(order.paid || order.customer?.paid) && <span style={{ fontSize:9, fontWeight:700, padding:'1px 6px', borderRadius:8, background:'#22c55e18', border:'1px solid #22c55e44', color:'#22c55e' }}>PAID</span>}

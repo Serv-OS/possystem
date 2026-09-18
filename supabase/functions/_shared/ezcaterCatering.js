@@ -5,7 +5,8 @@
 // ezcater-webhook/index.ts and unit tested from src/lib/ezcaterCatering.test.js.
 //
 // ezCater has no "modified" event: a changed order arrives as another accepted notification,
-// a cancel as a cancelled or rejected one, and an UNCANCEL sends nothing until the order is
+// a cancel as a cancelled one (a REJECTED is not a cancel, see EZ_DEAD in cateringRules.js),
+// and an UNCANCEL sends nothing until the order is
 // accepted again (ezCater, "Order Event Notification Flows": Submitted, Accepted, Cancelled,
 // Uncancelled, Accepted sends submitted, accepted, cancelled, accepted). Whatever arrives, an
 // ezCater order follows the same rules as a ServOS catering order:
@@ -15,11 +16,19 @@
 //   moment, and a fire time that is already past becomes NOW (fire now if due). A cancel marks it
 //   cancelled: the advance list and the release both skip it. A later non terminal lifecycle
 //   (the uncancel then accept flow) RESTORES it to the held catering state with a freshly
-//   computed fire time. The one exception is an order ezCater replaced with a new order
-//   (customer.replacedBy): that stays stopped whatever arrives, so the kitchen never makes both.
+//   computed fire time. That includes an order we marked replaced (customer.replacedBy): the
+//   mark is only ever written when ezCater itself said that order is cancelled, so a later
+//   answer from ezCater that it is live again revives it, and the mark moves to
+//   customer.replacedByCleared (review round 3: replacedBy is not sticky forever).
+//
+//   A fire moment that is ALREADY PAST when the order is (re)timed fires now and is flagged
+//   plainly as late (customer.lateFire): a Dispatch pickup moved earlier, a longer prep time
+//   set later, or an order placed at shorter notice than the venue's prep time.
 //
 //   ALREADY FIRED (kitchen_routed_at set, or unknown because the venue lacks the column). The
 //   kitchen has the ticket, so the fire time, date and time the kitchen was given never move.
+//   A fired order marked replaced stays cancelled and is never flagged 'uncancelled': staff were
+//   told to make the new order instead, and flipping it back would have them make both.
 //   Any change (items, time, cancel, uncancel, replaced) is stamped on customer.changedAfterFire,
 //   which the Orders Hub shows on the card and every till raises as an alert
 //   (src/lib/realtime.js), so staff see it plainly instead of cooking the old order.
@@ -41,9 +50,17 @@ const msOf = (v) => {
 
 const isCancelledStatus = (st) => st === 'cancelled' || st === 'canceled';
 
-// Markers that belong to the ROW, not to one ezCater answer. The customer jsonb is rewritten
-// whole on every write, so these are carried across unless the new answer sets them itself.
-const STICKY = ['replacedBy', 'possibleReplacement', 'ezcaterCheck', 'resyncedAt'];
+// ezCater lifecycle values the caterer is committed to cooking. Kept in step with EZ_COMMITTED
+// in cateringRules.js (a test pins the two equal); this file keeps no import of its own.
+const COMMITTED = ['accepted', 'relish_finalized', 'ready', 'ready_for_pickup'];
+
+// Markers that belong to the ROW, not to one ezCater answer. The write carries them across from
+// the row as it is NOW (read inside the same guarded write, never from an earlier read) unless the
+// new answer sets them itself.
+const STICKY = [
+  'replacedBy', 'possibleReplacement', 'ezcaterCheck', 'resyncedAt', 'ezcaterRecheck',
+  'unacceptedAlert', 'replacementDismissed', 'replacedByCleared', 'lateFire', 'prepRecomputedAt',
+];
 
 // Statuses staff reach by hand that an unfired row keeps. Anything else on an unfired row is
 // what ezCater says it is (an old 'prep' on an order the kitchen never had, like HKX77V, is not
@@ -88,11 +105,37 @@ function timeMoved(prev, next) {
  * @param {string} args.nowIso    the write time
  * @returns {{ row: object, reschedule: boolean, fired: boolean, restored: boolean, changedAfterFire: object|null }}
  */
+/** Committed on ezCater, so the release will fire it (a held order is not "late", it is held). */
+const mayFireLife = (customer) => COMMITTED.includes(String(customer?.ezcater_lifecycle || '').toLowerCase());
+
+/**
+ * Is this order being fired LATE? Its kitchen fire moment (fireAt) is more than a minute in the
+ * past at the moment it is (re)timed, so it fires now, and staff must be told plainly: the food
+ * will be ready later than ezCater expects unless the kitchen catches up. The same late moment is
+ * reported once: an earlier flag for the same fire moment is kept as it was.
+ */
+export function lateFirePlan(fireAt, nowIso, prevLate) {
+  const f = msOf(fireAt);
+  const now = msOf(nowIso);
+  if (!Number.isFinite(f) || !Number.isFinite(now) || f >= now - MINUTE) return null;
+  if (prevLate && prevLate.fireAt === fireAt) return prevLate;
+  return { at: nowIso, fireAt, minutesLate: Math.round((now - f) / MINUTE) };
+}
+
+/** Plain words for a late fire, for the Orders Hub, the advance list and the till alert. */
+export function lateFireText(late) {
+  if (!late || !late.fireAt) return null;
+  const m = Number(late.minutesLate) || 0;
+  return `Sent to the kitchen LATE: it should have started ${m} minute${m === 1 ? '' : 's'} earlier (the pickup moved earlier, the prep time is longer, or it arrived at short notice). Check the kitchen can still make the ezCater time.`;
+}
+
 export function ezcaterWritePlan({ row, existing, terminal, nowIso }) {
   const nowMs = msOf(nowIso);
   if (!existing) {
     const fire_at = terminal ? row.fire_at : fireNowIfDue(row.fire_at, nowMs, nowIso);
-    return { row: { ...row, fire_at }, reschedule: false, fired: false, restored: false, changedAfterFire: null };
+    const late = terminal || !mayFireLife(row.customer) ? null : lateFirePlan(row.fire_at, nowIso, null);
+    const out = late ? { ...row, customer: { ...(row.customer || {}), lateFire: late } } : row;
+    return { row: { ...out, fire_at }, reschedule: false, fired: false, restored: false, changedAfterFire: null, late: !!late };
   }
 
   const fired = !!existing.kitchen_routed_at;
@@ -103,22 +146,38 @@ export function ezcaterWritePlan({ row, existing, terminal, nowIso }) {
   for (const k of STICKY) {
     if (customer[k] === undefined && prevCustomer[k] !== undefined) customer[k] = prevCustomer[k];
   }
+  // A REJECTED answer never downgrades an order that was accepted (a rejected modification: the
+  // accepted order stands). The mapper catches it from the accepted count; this catches it from
+  // the row itself, for a link that was never written or a count that was lost.
+  const prevLife = String(prevCustomer.ezcater_lifecycle || '').toLowerCase();
+  const saidNow = String(customer.ezcaterSays || '').toLowerCase();
+  if (saidNow === 'rejected' && COMMITTED.includes(prevLife) && !COMMITTED.includes(String(customer.ezcater_lifecycle || '').toLowerCase())) {
+    customer.ezcater_lifecycle = prevLife;
+    customer.modificationRejected = true;
+  }
   const replaced = !!customer.replacedBy;
 
   let status;
   if (terminal) status = 'cancelled';
-  else if (replaced && !fired) status = 'cancelled';
+  // A fired order we told staff was replaced stays cancelled: they were told to make the new one.
+  else if (fired && wasCancelled && replaced) status = existing.status;
   else if (fired) status = wasCancelled ? 'prep' : existing.status;
   else status = STAFF_PROGRESS.includes(prevStatus) ? existing.status : row.status;
 
-  const reschedule = !fired && !terminal && !replaced;
+  const reschedule = !fired && !terminal;
   const restored = wasCancelled && status !== 'cancelled';
+  // ezCater says the order is live again and the kitchen never had it: the replaced mark was about
+  // an answer ezCater has since taken back. Kept for the record, no longer acted on.
+  if (restored && replaced && !fired) {
+    customer.replacedByCleared = { ...customer.replacedBy, clearedAt: nowIso, ezcaterSaid: saidNow || null };
+    delete customer.replacedBy;
+  }
 
   const kinds = [];
   if (fired) {
     if (terminal && !wasCancelled) kinds.push(replaced ? 'replaced' : 'cancelled');
     if (!terminal) {
-      if (wasCancelled) kinds.push('uncancelled');
+      if (wasCancelled && !replaced) kinds.push('uncancelled');
       // The food itself changed. Judged on the lines when both are known (a modification that
       // only moved the time is not an items change); the modification count otherwise.
       const was = itemsSignature(existing.items);
@@ -161,8 +220,15 @@ export function ezcaterWritePlan({ row, existing, terminal, nowIso }) {
   }
   if (restored) customer.restoredAt = nowIso;
 
+  // Late: only for an order that is live, unfired and being (re)timed now.
+  let late = false;
+  if (reschedule && !isCancelledStatus(String(status || '').toLowerCase()) && mayFireLife(customer)) {
+    const lf = lateFirePlan(row.fire_at, nowIso, prevCustomer.lateFire || null);
+    if (lf) { customer.lateFire = lf; late = true; } else delete customer.lateFire;
+  }
+
   const fire_at = reschedule ? fireNowIfDue(row.fire_at, nowMs, nowIso) : row.fire_at;
-  return { row: { ...row, status, customer, fire_at }, reschedule, fired, restored, changedAfterFire };
+  return { row: { ...row, status, customer, fire_at }, reschedule, fired, restored, changedAfterFire, late };
 }
 
 /**
@@ -212,6 +278,9 @@ export function likelyReplacement(newRow, other) {
   if (!a.ezcater_order_id || !b.ezcater_order_id || a.ezcater_order_id === b.ezcater_order_id) return false;
   const st = String(other.status || '').toLowerCase();
   if (isCancelledStatus(st) || st === 'collected' || b.replacedBy) return false;
+  // Staff said these two are NOT a replacement pair (Undo): never flag them against each other again.
+  const dismissed = (c, ref) => Array.isArray(c.replacementDismissed?.refs) && c.replacementDismissed.refs.includes(ref);
+  if (dismissed(b, newRow.ref) || dismissed(a, other.ref)) return false;
   if (a.ezcater_caterer_id && b.ezcater_caterer_id && a.ezcater_caterer_id !== b.ezcater_caterer_id) return false;
   if ((newRow.type || '') !== (other.type || '')) return false;
   const pa = digits(a.phone); const pb = digits(b.phone);
@@ -239,6 +308,13 @@ export function ezcaterOrderWarnings(row) {
   } else if (c.possibleReplacement) {
     const p = c.possibleReplacement;
     out.push(`ezCater order ${p.orderNumber || p.ref} is for the same customer, place and time. ${p.ezcaterSays ? `ezCater still lists this one as ${p.ezcaterSays}` : 'ezCater could not be asked about this one'}: check it is not a replacement before making both.`);
+  }
+  if (c.lateFire) out.push(lateFireText(c.lateFire));
+  if (c.modificationRejected) {
+    out.push('A change to this order was REJECTED on ezCater. The order as it was accepted still stands and still goes to the kitchen. Check ezCater for what the customer asked for.');
+  }
+  if (c.unacceptedAlert && String(c.ezcater_lifecycle || '').toLowerCase() && !COMMITTED.includes(String(c.ezcater_lifecycle).toLowerCase())) {
+    out.push(`Still NOT accepted on ezCater (ezCater says ${c.unacceptedAlert.lifecycle || c.ezcater_lifecycle}) and it is due in the kitchen${c.unacceptedAlert.fireTime ? ` at ${c.unacceptedAlert.fireTime}` : ''}. Accept it on ezCater, or it will not be sent.`);
   }
   if (c.prepFallback) {
     out.push(`No catering prep time is set for this venue, so the kitchen was timed with ${c.prepMinutes ?? 60} minutes. Set it in Back Office, Catering settings.`);

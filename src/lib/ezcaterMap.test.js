@@ -590,7 +590,8 @@ test('lifecycle maps to queue status, quirks included', () => {
   assert.equal(ezStatusToQueueStatus('submitted'), 'received');
   assert.equal(ezStatusToQueueStatus('accepted'), 'prep');
   assert.equal(ezStatusToQueueStatus('completed'), 'collected');
-  assert.equal(ezStatusToQueueStatus('rejected'), 'cancelled');
+  // A rejected is NOT a cancel (review round 3): held until ezCater's own cancelled arrives.
+  assert.equal(ezStatusToQueueStatus('rejected'), 'received');
   assert.equal(ezStatusToQueueStatus('cancelled'), 'cancelled');
   assert.equal(ezStatusToQueueStatus('cancelled_for_replacement'), 'cancelled');
 
@@ -1294,17 +1295,26 @@ test('TIME: the order row and the handoff both go through the venue zone', () =>
 
 // ── 4. 'rejected' has to be subscribed or the till ticket never dies ────────
 
-test('EVENTS: rejected is subscribed, so a Partner Portal rejection cancels the ticket', () => {
+test('EVENTS: rejected is subscribed, and holds (never cancels) the ticket: only cancelled does', () => {
   // Documented EventKey: "An Order entity event indicating an order has been
   // rejected by a caterer or on behalf of a caterer through a partner
   // integration". A modification on an API-accepted order can ONLY be rejected
   // in the Partner Portal, so this is the common case, not the rare one.
   assert.ok(EZ_EVENTS.includes('rejected'), 'rejected must be subscribed');
 
-  // The rest of the chain was already there and was dead without it.
-  assert.equal(ezStatusToQueueStatus('rejected'), 'cancelled');
+  // Review round 3 (18 Sep 2026): ezCater's documented flows send a CANCELLED after a rejected
+  // new order, and nothing after a rejected MODIFICATION (the accepted order stands). So a
+  // rejected never cancels: a never accepted order is held, an accepted one stays accepted.
+  assert.equal(ezStatusToQueueStatus('rejected'), 'received');
   const rejected = { ...TAKEOUT_ORDER, lifecycle: { orderIsCurrently: 'rejected' } };
-  assert.equal(orderToQueueRow(rejected, LOC).row.status, 'cancelled');
+  const fresh = orderToQueueRow(rejected, LOC).row;
+  assert.equal(fresh.status, 'received');
+  assert.equal(fresh.customer.ezcater_lifecycle, 'rejected', 'never accepted: held, not committed');
+  const modRejected = orderToQueueRow(rejected, LOC, { priorAcceptedCount: 1 }).row;
+  assert.equal(modRejected.status, 'received');
+  assert.equal(modRejected.customer.ezcater_lifecycle, 'accepted', 'a rejected modification leaves it accepted');
+  assert.equal(modRejected.customer.modificationRejected, true);
+  assert.equal(modRejected.customer.ezcaterSays, 'rejected');
 
   // Every key we send is one ezCater publishes for the Order entity.
   const documented = ['submitted', 'accepted', 'rejected', 'cancelled', 'uncancelled', 'relish_finalized'];

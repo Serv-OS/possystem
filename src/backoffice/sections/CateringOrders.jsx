@@ -10,7 +10,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../lib/supabase';
 import { getLocationConfig } from '../../lib/locationTime';
 import { CATERING_SOURCES, cateringSourceLabel, advanceListStatus, inAdvanceList, changedAfterFireText, ezcaterOrderWarnings } from '../../lib/cateringRules';
-import { ezcaterResyncOrder } from '../../lib/ezcater';
+import { ezcaterResyncOrder, ezcaterUndoReplacement } from '../../lib/ezcater';
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -110,6 +110,18 @@ export default function CateringOrders() {
       setResync({ ref: o.ref, busy: false, msg: null, err: e?.message || 'Could not re-sync.' });
     }
   };
+  // Staff say the two ezCater orders are both real (the Back Office staff rule, server side).
+  const undoOne = async (o) => {
+    if (!locId || resync?.busy) return;
+    setResync({ ref: o.ref, busy: true, msg: null, err: null });
+    try {
+      const r = await ezcaterUndoReplacement(locId, o.ref);
+      if (r?.ok === false) setResync({ ref: o.ref, busy: false, msg: null, err: r.error || 'Could not undo.' });
+      else { setResync({ ref: o.ref, busy: false, msg: r?.message || 'Replacement mark cleared.', err: null }); await load(locId); }
+    } catch (e) {
+      setResync({ ref: o.ref, busy: false, msg: null, err: e?.message || 'Could not undo.' });
+    }
+  };
   const itemsCount = (o) => (o.items || []).reduce((n, i) => n + (i.qty || 1), 0);
 
   if (loading) return <div style={S.empty}>Loading…</div>;
@@ -166,6 +178,13 @@ export default function CateringOrders() {
                             onClick={(e) => { e.stopPropagation(); resyncOne(o); }}>
                             {resync?.busy && resync.ref === o.ref ? 'Re-syncing…' : 'Re-sync from ezCater'}
                           </button>
+                          {(c.replacedBy || c.possibleReplacement) && (
+                            <button type="button" style={{ ...S.seg(false), fontSize: 12 }} disabled={resync?.busy}
+                              title="These two ezCater orders are both real. Clear the replacement mark and let ezCater decide this order."
+                              onClick={(e) => { e.stopPropagation(); undoOne(o); }}>
+                              Not a replacement (undo)
+                            </button>
+                          )}
                           {resync?.ref === o.ref && resync.msg && <span style={{ fontSize: 12, color: 'var(--grn)' }}>{resync.msg}</span>}
                           {resync?.ref === o.ref && resync.err && <span style={{ fontSize: 12, color: '#dc2626' }}>{resync.err}</span>}
                         </div>

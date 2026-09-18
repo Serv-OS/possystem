@@ -218,6 +218,44 @@ export function cateringFireMs(readyMs, prepMinutes) {
  */
 export const EZ_COMMITTED = new Set(['accepted', 'relish_finalized', 'ready', 'ready_for_pickup']);
 
+/**
+ * The ONLY ezCater lifecycle values that mean the order is dead. 'rejected' is NOT one of them
+ * (review round 3, 18 Sep 2026). ezCater's documented flows ("Order Event Notification Flows"):
+ *   * Submitted, Rejected sends submitted, rejected AND cancelled. The cancelled is what kills it.
+ *   * Submitted, Accepted, Modified, Rejected sends submitted, accepted, rejected and NO
+ *     cancelled: "rejected order modifications will not result in a canceled notification,
+ *     ezCater is working behind the scenes to save the order". The accepted order stands.
+ * So a rejected answer never cancels an order here; a cancelled one does.
+ */
+export const EZ_DEAD = new Set(['cancelled', 'canceled', 'cancelled_for_replacement']);
+
+/**
+ * What an ezCater lifecycle answer means for an order we may already have seen accepted.
+ * A 'rejected' on an order that was accepted before is a rejected MODIFICATION: the order stays
+ * accepted (committed, it still fires) and modificationRejected tells staff to check ezCater.
+ * A 'rejected' on an order never accepted stays 'rejected', which is not committed, so it is
+ * held and visible until ezCater's cancelled arrives. Every other value passes through.
+ *   priorAccepted   accepted notifications seen before this answer (ezcater_order_links)
+ *   prevLifecycle   the lifecycle stored on the row before this answer (customer.ezcater_lifecycle)
+ */
+export function ezEffectiveLifecycle(raw, { priorAccepted = 0, prevLifecycle = null } = {}) {
+  const life = norm(raw);
+  const prev = norm(prevLifecycle);
+  if (life === 'rejected' && (Number(priorAccepted) >= 1 || EZ_COMMITTED.has(prev))) {
+    return { lifecycle: EZ_COMMITTED.has(prev) ? prev : 'accepted', modificationRejected: true };
+  }
+  return { lifecycle: life, modificationRejected: false };
+}
+
+/**
+ * Statuses a row must NOT have for anything to claim it for the kitchen. Used by BOTH
+ * kitchen_routed_at claims (the till's routeKioskOrderPrints and the catering-release cron) in the
+ * same UPDATE as `kitchen_routed_at is null`, together with releasableOrFilter, so a cancel (or
+ * an ezCater order falling back to not accepted) landing between the pre fire decision and the
+ * claim can never fire the order silently.
+ */
+export const UNCLAIMABLE_STATUSES_PG = '(cancelled,canceled,collected)';
+
 /** Why a catering row may NOT fire now, or null when the release may fire it. */
 export function cateringHoldReason(row) {
   if (!row) return 'missing';

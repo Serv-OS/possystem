@@ -14,6 +14,8 @@
 // frequency-capped so asks stay welcome (and don't get Google-filtered as spam).
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+// ezCater owns its customer: we never text one (mayMessageCustomer, the ONE catering rule set).
+import { mayMessageCustomer } from '../_shared/cateringRules.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -62,7 +64,7 @@ async function scanLocation(opsLocationId: string, opts: { test?: boolean } = {}
   const now = Date.now();
   const delayMs = Number(cfg.ask_delay_minutes ?? 45) * 60000;
   const { data: checks } = await opsAdmin.from('closed_checks')
-    .select('id, customer, customer_phone, total, closed_at')
+    .select('id, source, customer, customer_phone, total, closed_at')
     .eq('location_id', opsLocationId)
     .gte('closed_at', new Date(now - 24 * 3600 * 1000).toISOString())
     .lte('closed_at', new Date(now - delayMs).toISOString())
@@ -70,6 +72,10 @@ async function scanLocation(opsLocationId: string, opts: { test?: boolean } = {}
 
   let sent = 0, suppressed = 0, considered = 0;
   for (const c of checks || []) {
+    // Never a review ask to an ezCater customer (18 Sep 2026, ezCater review round 3). ezCater owns
+    // that relationship; the check is by source AND by the ezCater order id on the customer, so a
+    // check closed on a till from an ezCater order (source pos) is caught too.
+    if (!mayMessageCustomer({ source: c.source, customer: c.customer })) continue;
     const phone = c.customer_phone || (c.customer && c.customer.phone) || null;
     if (!phone || Number(c.total) <= 0) continue;
     considered++;

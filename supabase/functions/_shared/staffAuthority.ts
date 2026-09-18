@@ -7,9 +7,10 @@
 // caller is for THIS venue, using the same rule Back Office uses:
 //
 //   staffForLocation   a signed in, NON anonymous user who is super_admin, or has the venue in
-//                      user_locations or as user_profiles.location_id (the two arms of
-//                      user_accessible_locations()), or holds a company role for the company
-//                      that owns the venue (user_company_roles, Platform).
+//                      user_locations, or holds a company role that grants it for the company
+//                      that owns the venue (user_company_roles, Platform). NOT
+//                      user_profiles.location_id: any signed in user can write that column on
+//                      any row today (review round 3, F), so it proves nothing.
 //   deviceAtLocation   the caller's OWN paired device row at this venue (devices.device_uid is
 //                      stamped by claim_device() from the JWT, nothing else writes it). A till
 //                      runs on an anonymous session, so this is how a till is recognised. Until
@@ -20,8 +21,15 @@
 //
 // The Supabase clients are passed in so this file has no Deno globals and is tested under node.
 
+/**
+ * Company roles that really grant running a venue's settings. A user_company_roles row with any
+ * other role (a viewer, an accountant, a role added later) is NOT staff for a config action.
+ * 'admin' is the column's default and what every owner login has today.
+ */
+export const GRANTING_COMPANY_ROLES = Object.freeze(['owner', 'admin', 'manager', 'super_admin']);
+
 /** The Platform location ids and company for one Ops location id (ops_location_id first, then id). */
-async function platformLocation(platform: any, opsLocationId: string): Promise<{ ids: string[]; companyId: string | null }> {
+export async function platformLocation(platform: any, opsLocationId: string): Promise<{ ids: string[]; companyId: string | null }> {
   const ids = [String(opsLocationId)];
   if (!platform) return { ids, companyId: null };
   try {
@@ -32,20 +40,30 @@ async function platformLocation(platform: any, opsLocationId: string): Promise<{
   } catch { return { ids, companyId: null }; }
 }
 
-/** Staff of this venue under the Back Office rule. An anonymous user is never staff. */
+/**
+ * Staff of this venue. An anonymous user is never staff. Three arms only (review round 3, F):
+ *   * super_admin (user_profiles.role),
+ *   * a user_locations row for this venue,
+ *   * a company role that really grants it (GRANTING_COMPANY_ROLES) for the venue's company.
+ *
+ * user_profiles.location_id and user_profiles.org_id are NOT trusted. Claude confirmed on live
+ * (18 Sep 2026) that ANY signed in, non anonymous user can UPDATE user_profiles.location_id,
+ * org_id and bo_access on ANY row (policy "Allow authenticated access" FOR ALL, column UPDATE
+ * granted to authenticated), so "my profile says this venue" proves nothing. Do not add that arm
+ * back until that hole is closed (a separate fix).
+ */
 export async function staffForLocation(sb: any, platform: any, user: any, opsLocationId: string): Promise<boolean> {
   if (!user || !user.id || user.is_anonymous) return false;
-  const { data: prof } = await sb.from('user_profiles').select('role, location_id').eq('id', user.id).maybeSingle();
+  const { data: prof } = await sb.from('user_profiles').select('role').eq('id', user.id).maybeSingle();
   if (prof?.role === 'super_admin') return true;
   const loc = await platformLocation(platform, opsLocationId);
-  if (prof?.location_id && loc.ids.includes(String(prof.location_id))) return true;
   const { data: ul } = await sb.from('user_locations').select('location_id').eq('user_id', user.id).in('location_id', loc.ids).limit(1);
   if (ul?.length) return true;
   if (platform && loc.companyId) {
     try {
-      const { data: ucr } = await platform.from('user_company_roles').select('company_id')
-        .eq('user_id', user.id).eq('company_id', loc.companyId).limit(1);
-      if (ucr?.length) return true;
+      const { data: ucr } = await platform.from('user_company_roles').select('company_id, role')
+        .eq('user_id', user.id).eq('company_id', loc.companyId).limit(5);
+      if ((ucr || []).some((r: any) => GRANTING_COMPANY_ROLES.includes(String(r?.role || '').trim().toLowerCase()))) return true;
     } catch { /* no company roles table reachable: not staff by this arm */ }
   }
   return false;

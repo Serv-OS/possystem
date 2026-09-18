@@ -12,7 +12,7 @@
 // Plan: EZCATER_INTEGRATION_PLAN.md.
 
 import { subunitsToNumber, moneyToAmount, moneyCurrency, dollarsToNumber } from './ezcater.ts';
-import { cateringFireMs, venueWallClock, DEFAULT_VENUE_TZ } from './cateringRules.js';
+import { cateringFireMs, venueWallClock, DEFAULT_VENUE_TZ, EZ_DEAD, ezEffectiveLifecycle } from './cateringRules.js';
 
 // ════════════════════════════════════════════════════════════════════════════
 //  TAX. READ THIS BEFORE CHANGING ANYTHING BELOW.
@@ -96,7 +96,11 @@ export function ezStatusToQueueStatus(lifecycleValue: unknown): string {
     case 'fulfilled':
     case 'delivered':
       return 'collected';
+    // 'rejected' is NOT a cancel (ezCater, "Order Event Notification Flows"): a rejected
+    // modification leaves the order accepted, and a rejected new order is followed by its own
+    // cancelled notification. Held until ezCater says what it is (ezEffectiveLifecycle).
     case 'rejected':
+      return 'received';
     case 'cancelled':
     case 'canceled':
     case 'cancelled_for_replacement':
@@ -106,8 +110,11 @@ export function ezStatusToQueueStatus(lifecycleValue: unknown): string {
   }
 }
 
-/** Lifecycle values that mean the order is dead and must not be prepared. */
-export const EZ_TERMINAL = new Set(['rejected', 'cancelled', 'canceled', 'cancelled_for_replacement']);
+/**
+ * Lifecycle values that mean the order is dead and must not be prepared. Only a cancel: see
+ * EZ_DEAD in cateringRules.js for why 'rejected' is not in here (review round 3, 18 Sep 2026).
+ */
+export const EZ_TERMINAL = EZ_DEAD;
 
 /**
  * Pull the lifecycle value off an order.
@@ -504,6 +511,10 @@ export function orderToQueueRow(
 
   const lifecycle = ezLifecycle(order);
   const terminal = EZ_TERMINAL.has(lifecycle);
+  const priorAccepted = Number(opts.priorAcceptedCount) || 0;
+  // A 'rejected' on an order already accepted is a rejected MODIFICATION: the order stays
+  // accepted and fires, and staff are told (customer.modificationRejected).
+  const effective = ezEffectiveLifecycle(lifecycle, { priorAccepted });
   // A live ezCater order lands exactly as a ServOS catering order does (CateringCheckout writes
   // 'received'): held, visible in the advance list, fired to the kitchen by the release at its
   // fire time. 'prep' is what the release and staff move it to, never what it arrives as.
@@ -698,14 +709,16 @@ export function orderToQueueRow(
     ezcater_caterer_name: str(order?.caterer?.name) || null,
     ezcater_store_number: str(order?.caterer?.storeNumber) || null,
     ezcater_delivery_id: str(order?.deliveryId) || null,
-    ezcater_lifecycle: lifecycle || null,
+    // The lifecycle the catering rules act on (ezEffectiveLifecycle), and what ezCater said.
+    ezcater_lifecycle: effective.lifecycle || null,
+    ezcaterSays: lifecycle || null,
+    ...(effective.modificationRejected ? { modificationRejected: true } : {}),
   };
 
   // A modification is a SECOND accepted for an order we have already seen
   // accepted. Marked on the row so the floor can see the ticket changed, and
   // because acceptOrder then needs acceptModification: true or ezCater answers
   // invalid_state_transition.
-  const priorAccepted = Number(opts.priorAcceptedCount) || 0;
   // A re-query never adds an accepted: it keeps the count, except that an order seen accepted by
   // the re-query and never by a notification (a missed notification) counts once.
   const acceptedCount = opts.requery

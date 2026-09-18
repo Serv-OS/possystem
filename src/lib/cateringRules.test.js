@@ -328,7 +328,8 @@ test('QueueSync holds every future catering order out of the live queue', () => 
 test('the Orders Hub treats ezCater as catering and shows the channel', () => {
   const s = read('../surfaces/OrdersHub.jsx');
   assert.ok(s.includes("const PREPAID_CHANNELS = ['online', 'kiosk', 'ezcater'];"));
-  assert.ok(s.includes("isCateringSource(o.source) && o.status !== 'cancelled'"));
+  // Review round 3 (E): through the store's releaseCateringOrderNow, the release's own checks.
+  assert.ok(s.includes('releaseCateringOrderNow?.(o)'));
   assert.ok(s.includes('cateringSourceLabel(viewOrder.source)'));
   assert.ok(s.includes('cateringSourceLabel(order.source).toUpperCase()'));
   assert.ok(s.includes('mayBookOurCourier({ ...viewOrder'));
@@ -339,7 +340,7 @@ test('the catering-release cron fires ezCater too, never a held one, and never o
   const s = read('../../supabase/functions/catering-release/index.ts');
   assert.ok(s.includes(".in('source', CATERING_SOURCES)"));
   assert.ok(s.includes(".not('status', 'in', '(collected,cancelled)')"));
-  assert.ok(s.includes('if (!cateringMayFire(row)) { held++; continue; }'));
+  assert.ok(s.includes('if (!cateringMayFire(r)) { held++; return false; }'));
   assert.ok(s.includes('if (mayBookOurCourier(row)) {'));
   assert.ok(!s.includes(".eq('source', 'catering')"));
 });
@@ -364,6 +365,8 @@ test('the webhook times the order from the venue settings and plans the write wi
     "return bare.data ? { ...bare.data, kitchen_routed_at: 'unknown' } : null;",
     // The pre fire result handed back to the caller: still unfired, never a write.
     'const row = { ...existing, ...w.plan.row, sent_at: w.payload.sent_at ?? existing.sent_at, kitchen_routed_at: null };',
+    // The scheduled re-ask's view of the row after its write: still unfired, never a write.
+    'const now = { ...existing, ...w.plan.row, sent_at: w.payload.sent_at ?? existing.sent_at, kitchen_routed_at: null };',
   ]);
   assert.equal((read('../../supabase/functions/_shared/ezcater-map.ts').match(/kitchen_routed_at\s*:/g) || []).length, 0);
 });

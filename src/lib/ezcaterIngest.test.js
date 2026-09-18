@@ -227,10 +227,13 @@ test('replacement: a new order that replaces a held one STOPS the original (ezCa
   assert.equal(orig.customer.replacedBy.orderNumber, 'NEW01');
   assert.equal(cateringMayFire(orig), false, 'the release never fires it');
   assert.match(ezcaterOrderWarnings(orig)[0], /Replaced on ezCater by order NEW01\. Not sent to the kitchen\./);
-  // It stays stopped: a stray later answer for the original cannot bring it back.
-  const late = ezcaterWritePlan({ row: orderToQueueRow(ezOrder(), PROVO, { venue: LONDON, priorAcceptedCount: 1 }).row, existing: orig, terminal: false, nowIso });
-  assert.equal(late.row.status, 'cancelled');
-  assert.equal(late.reschedule, false);
+  // Review round 3: the mark is not sticky forever. A later answer from ezCater that the original
+  // is live again (uncancelled and accepted) REVIVES it while the kitchen does not have it.
+  const later = ezcaterWritePlan({ row: orderToQueueRow(ezOrder(), PROVO, { venue: LONDON, priorAcceptedCount: 1 }).row, existing: orig, terminal: false, nowIso });
+  assert.equal(later.row.status, 'received');
+  assert.equal(later.restored, true);
+  assert.equal(later.row.customer.replacedBy, undefined);
+  assert.equal(later.row.customer.replacedByCleared.ref, `EZ-${REPL_UUID}`);
 });
 
 test('replacement AFTER the kitchen had the original: nothing moves, staff told to make the new one, not both', () => {
@@ -335,8 +338,8 @@ test('the till release and the cron both re-check ezCater before firing, and kee
   assert.ok(lib.includes("action: 'prefire'"));
   assert.ok(lib.includes("PREFIRE_AS_PLANNED('the ServOS check did not answer in time')"), 'the till fires as planned if the server is slow');
   const cron = read('../../supabase/functions/catering-release/index.ts');
-  assert.ok(cron.includes('const pf = await prefireCheck(sb, platform, {'));
-  assert.ok(cron.indexOf('prefireCheck(') < cron.indexOf(".update({ kitchen_routed_at: new Date().toISOString() })"), 'checked before the claim');
+  assert.ok(cron.includes('prefireCheck(sb, platform, { locationId: r.location_id, ref: r.ref, log })'));
+  assert.ok(cron.indexOf('prefireCheck(sb, platform') < cron.indexOf(".update({ kitchen_routed_at: new Date().toISOString() })"), 'checked before the claim');
   assert.ok(cron.includes(".is('kitchen_routed_at', null)"));
   // The check itself never writes kitchen_routed_at.
   const ing = read('../../supabase/functions/_shared/ezcaterIngest.ts');
@@ -560,7 +563,8 @@ test('staff only means the Back Office staff rule, or a till of the venue plus a
     devices: [{ id: 'd1', device_uid: 'till-1', location_id: PROVO, status: 'active' }],
     staff_members: [{ id: 's1', location_id: PROVO, pin: '1234', active: true, name: 'Jane' }, { id: 's2', location_id: PROVO, pin: '9999', active: false }],
   });
-  assert.equal(await staffForLocation(sb, null, { id: 'bo-1' }, PROVO), true, 'user_profiles.location_id');
+  // Review round 3 (F): user_profiles.location_id is NOT trusted (any signed in user can write it).
+  assert.equal(await staffForLocation(sb, null, { id: 'bo-1' }, PROVO), false, 'user_profiles.location_id proves nothing');
   assert.equal(await staffForLocation(sb, null, { id: 'bo-2' }, PROVO), true, 'user_locations');
   assert.equal(await staffForLocation(sb, null, { id: 'bo-2', is_anonymous: true }, PROVO), false, 'never an anonymous session');
   assert.equal(await staffForLocation(sb, null, { id: 'anon-1' }, PROVO), false, 'signed in is not staff');
