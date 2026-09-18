@@ -8,11 +8,12 @@
 export {
   CATERING_SOURCES, CATERING_SOURCES_PG_LIST, DEFAULT_VENUE_TZ, EZ_COMMITTED,
   isCateringSource, isEzcaterOrder, cateringSourceLabel,
-  liveQueueOrFilter, isFutureCatering,
+  liveQueueOrFilter, isFutureCatering, isCancelledUnfiredCatering, keptOutOfLiveQueue,
   wallTimeToInstantMs, venueWallClock,
-  cateringPrepMinutes, cateringFireMs,
+  cateringPrepMinutes, cateringFireMs, cateringPrepSetting, ezcaterPrepFor, EZ_PREP_FALLBACK_MINUTES,
   cateringHoldReason, cateringMayFire, cateringReleaseWindow, cateringReleaseDecision,
+  releasableOrFilter, CATERING_STALE_FLOOR_MS, cateringDayLoad,
   inAdvanceList, advanceListStatus,
   mayBookOurCourier, mayMessageCustomer,
 } from '../../supabase/functions/_shared/cateringRules.js';
-export { changedAfterFireText } from '../../supabase/functions/_shared/ezcaterCatering.js';
+export { changedAfterFireText, ezcaterOrderWarnings } from '../../supabase/functions/_shared/ezcaterCatering.js';

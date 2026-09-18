@@ -974,20 +974,26 @@ test('THE ORDER ALWAYS WINS: a read that never comes back cannot delay it', asyn
 
 const read = (p) => fs.readFileSync(new URL('../../' + p, import.meta.url), 'utf8');
 const WEBHOOK = read('supabase/functions/ezcater-webhook/index.ts');
+// 18 Sep 2026: the match and the write moved from the webhook into _shared/ezcaterIngest.ts
+// (writeEzcaterOrder), shared by the webhook, the pre fire check and staff re-sync. The rules
+// pinned below are the same; they are pinned where the code now lives.
+const WRITE = read('supabase/functions/_shared/ezcaterIngest.ts');
 const INGEST = read('supabase/functions/_shared/ezcater-match-ingest.ts');
 
 test('the webhook calls the matcher, inside a try, before the order_queue upsert', () => {
-  assert.ok(WEBHOOK.includes("from '../_shared/ezcater-match-ingest.ts'"));
-  const call = WEBHOOK.indexOf('await matchQueueRow(');
-  const upsert = WEBHOOK.indexOf(".from('order_queue')\n      .upsert(");
+  assert.ok(WRITE.includes("from './ezcater-match-ingest.ts'"));
+  assert.ok(WEBHOOK.includes('await writeEzcaterOrder(sb, {'));
+  const call = WRITE.indexOf('await matchQueueRow(');
+  const insert = WRITE.indexOf(".from('order_queue').insert(");
+  const update = WRITE.indexOf(".from('order_queue').update(payload)");
   assert.ok(call > 0, 'the matcher is never called');
-  assert.ok(upsert > call, 'matching must happen before the row is written');
+  assert.ok(insert > call && update > call, 'matching must happen before the row is written');
 
   // The call sits inside a try whose catch falls back to the mapper's own row.
-  const before = WEBHOOK.slice(0, call);
+  const before = WRITE.slice(0, call);
   const tryAt = before.lastIndexOf('try {');
   assert.ok(tryAt > 0);
-  const after = WEBHOOK.slice(call);
+  const after = WRITE.slice(call);
   const catchAt = after.indexOf('} catch');
   assert.ok(catchAt > 0);
   assert.ok(/queueRow = row;/.test(after.slice(catchAt, catchAt + 400)), 'the catch must fall back to the unmatched row');
@@ -997,11 +1003,12 @@ test('the upsert writes the matched row, and the status logic is untouched', () 
   // 18 Sep 2026: the status and timing rules for an existing row moved into the pure
   // _shared/ezcaterCatering.js (ezcaterWritePlan, unit tested in cateringRules.test.js). The
   // matched row still goes in, and the rule a cancellation always wins is unchanged there.
-  assert.ok(WEBHOOK.includes('ezcaterWritePlan({ row: queueRow, existing, terminal, nowIso: writeNow })'), 'the matched row is what reaches order_queue');
-  assert.ok(WEBHOOK.includes('queuePayload(plan.row, !existing, writeNow, { reschedule: plan.reschedule })'));
+  assert.ok(WRITE.includes("let planned = queueRow;"), 'the matched row is what reaches order_queue');
+  assert.ok(WRITE.includes('ezcaterWritePlan({ row: planned, existing, terminal, nowIso })'));
+  assert.ok(WRITE.includes('queuePayload(plan.row, !existing, nowIso, { reschedule: plan.reschedule })'));
   const PLAN = fs.readFileSync(new URL('../../supabase/functions/_shared/ezcaterCatering.js', import.meta.url), 'utf8');
-  assert.ok(PLAN.includes("const status = terminal ? 'cancelled' : existing.status;"), 'a cancellation still always wins');
-  assert.ok(WEBHOOK.includes('let queueRow = row;'), 'the fallback value is the mapper row itself');
+  assert.ok(PLAN.includes("if (terminal) status = 'cancelled';"), 'a cancellation still always wins');
+  assert.ok(WRITE.includes('let queueRow = row;'), 'the fallback value is the mapper row itself');
 });
 
 test('the webhook still answers ezCater the same way it did', () => {
@@ -1030,7 +1037,7 @@ test('every impure export in the ingest module is wrapped', () => {
 });
 
 test('the webhook puts a clock on matching, and the order is what it protects', () => {
-  assert.ok(WEBHOOK.includes('budgetMs: MATCH_BUDGET_MS'), 'the call has no budget on it');
+  assert.ok(WRITE.includes('budgetMs: args.match?.budgetMs ?? MATCH_BUDGET_MS'), 'the call has no budget on it');
   assert.ok(INGEST.includes('export const MATCH_BUDGET_MS'));
   // The budget is checked between reads AND raced, because a hung read never
   // resolves and a deadline alone would wait for it forever.
@@ -1039,13 +1046,13 @@ test('the webhook puts a clock on matching, and the order is what it protects', 
 });
 
 test('no em dash or en dash anywhere in the files this change owns', () => {
-  for (const [name, src] of [['webhook', WEBHOOK], ['ingest', INGEST], ['map', read('supabase/functions/_shared/ezcater-map.ts')]]) {
+  for (const [name, src] of [['webhook', WEBHOOK], ['ingest', INGEST], ['write', WRITE], ['map', read('supabase/functions/_shared/ezcater-map.ts')]]) {
     assert.equal(/[–—]/.test(src), false, name + ' has a dash');
   }
 });
 
 test('no dynamic import anywhere in the files this change owns', () => {
-  for (const [name, src] of [['webhook', WEBHOOK], ['ingest', INGEST]]) {
+  for (const [name, src] of [['webhook', WEBHOOK], ['ingest', INGEST], ['write', WRITE]]) {
     assert.equal(/\bimport\s*\(/.test(src), false, name + ' has a dynamic import');
   }
 });

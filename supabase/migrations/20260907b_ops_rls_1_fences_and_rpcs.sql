@@ -1137,19 +1137,43 @@ as $fn$
 $fn$;
 
 -- Catering capacity: CateringSurface.jsx:131 and :217. Count and value only.
+--
+-- 18 Sep 2026: an ezCater order IS a catering order (DECISIONS.md ADR-023), so it counts toward
+-- the day's capacity like one of ours. Mirrors cateringDayLoad in
+-- supabase/functions/_shared/cateringRules.js (change both together):
+--   order_count           every catering order that day, ezCater included, cancelled excluded.
+--   order_value           only orders in the VENUE's catering currency (catering_site_settings
+--                         .currency, default gbp). An ezCater order carries ezCater's own
+--                         currency in customer.totals.currency and is NEVER converted: a dollar
+--                         total is not added to a pound limit as if it were pounds.
+--   other_currency_count  catering orders that day in any other currency, so a venue on value
+--                         capacity can still see them.
 create or replace function public.catering_day_load(p_location_id text, p_date date)
-returns table (order_count integer, order_value numeric)
+returns table (order_count integer, order_value numeric, other_currency_count integer)
 language sql
 stable
 security definer
 set search_path = public
 as $fn$
-  select count(*)::int, coalesce(sum(q.total), 0)
-    from public.order_queue q
-   where q.location_id = p_location_id
-     and q.source = 'catering'
-     and q.event_date = p_date
-     and q.status is distinct from 'cancelled';
+  with v as (
+    select lower(coalesce(nullif(btrim(s.currency), ''), 'gbp')) as cur
+      from (select 1) one
+      left join public.catering_site_settings s on s.location_id::text = p_location_id
+     limit 1
+  ), rows as (
+    select q.total,
+           lower(coalesce(nullif(btrim(q.customer->'totals'->>'currency'), ''), v.cur)) as cur,
+           v.cur as venue_cur
+      from public.order_queue q, v
+     where q.location_id = p_location_id
+       and q.source in ('catering', 'ezcater')
+       and q.event_date = p_date
+       and q.status is distinct from 'cancelled'
+  )
+  select count(*)::int,
+         coalesce(sum(r.total) filter (where r.cur = r.venue_cur), 0),
+         (count(*) filter (where r.cur <> r.venue_cur))::int
+    from rows r;
 $fn$;
 
 -- Floor plan sync for QR tabs: src/lib/qrTableSession.js, moved server side.

@@ -29,7 +29,8 @@ import { setTrainingMode as applyTrainingFlag, isTrainingMode } from '../lib/tra
 import { getDeliveryQuote, recordDeliverySurcharge } from '../lib/delivery/quoteService';
 import { dispatchDelivery, sendDeliveryTrackingSMS } from '../lib/delivery/dispatch';
 import { STALE_ORDER_FLOOR_MS } from '../sync/staleness';
-import { CATERING_SOURCES, cateringMayFire, cateringReleaseWindow, cateringSourceLabel, isEzcaterOrder, mayBookOurCourier } from '../lib/cateringRules';
+import { CATERING_SOURCES, cateringMayFire, cateringReleaseWindow, cateringSourceLabel, isEzcaterOrder, mayBookOurCourier, releasableOrFilter } from '../lib/cateringRules';
+import { ezcaterPrefire } from '../lib/ezcater';
 import { giftRecordFrom, giftLegs, reverseGiftCard } from '../lib/giftCommit';
 import { categoryImageField, isMissingImageColumn } from '../lib/categoryPhoto';
 // v5.6.79 (#107/#108) — refund money maths + the per-leg processor router.
@@ -2970,16 +2971,34 @@ export const useStore = create((set, get) => ({
           // never fired.
           .eq('location_id', locId).in('source', [...CATERING_SOURCES, 'online'])
           .is('kitchen_routed_at', null).not('status', 'in', '(collected,cancelled)')
+          // Held rows (ezCater orders not accepted on ezCater) are never read at all, so a pile
+          // of them can never fill this page and starve the due orders behind them.
+          .or(releasableOrFilter())
           .lte('sent_at', dueIso)
           .gte('sent_at', floorIso)
           .order('sent_at', { ascending: true })
           .limit(PAGE);
         if (error || !data?.length) break;
         let attempted = 0;
-        for (const row of data) {
+        for (let row of data) {
           // An ezCater order not yet accepted in ezCater stays held (and visible) until it is.
           if (!cateringMayFire(row)) continue;
           attempted++;
+          // 18 Sep 2026: an ezCater order is RE-ASKED right before it fires (ezCater advises it),
+          // by the server, which holds the token. A cancel we missed, a replacement or a moved
+          // Dispatch pickup stops or moves it; otherwise it fires with ezCater's current items.
+          // NEVER blocks the kitchen: no answer in time means fire as planned (ezcaterPrefire).
+          // The kitchen_routed_at claim stays in routeKioskOrderPrints: it still fires once.
+          if (isEzcaterOrder(row)) {
+            const pf = await ezcaterPrefire(locId, row.ref);
+            if (!pf.fire) {
+              console.log('[releaseDueCateringOrders] ezCater', row.ref, 'not fired:', pf.outcome);
+              if (pf.outcome === 'cancelled') get().showToast?.(`ezCater order ${row.customer?.ezcater_order_number || row.ref} was cancelled on ezCater: not sent to the kitchen`, 'info', 8000);
+              continue;
+            }
+            if (!pf.checked) get().showToast?.(`ezCater order ${row.customer?.ezcater_order_number || row.ref} sent without a last check (${pf.why || 'ezCater did not answer'}). Check ezCater for changes.`, 'info', 8000);
+            if (pf.row) row = { ...row, items: pf.row.items || row.items, customer: pf.row.customer || row.customer, type: pf.row.type || row.type };
+          }
           await get().routeKioskOrderPrints?.({
             ref: row.ref, source: row.source || 'catering',
             type: row.type || null,                          // v5.8.63: production centres by order type

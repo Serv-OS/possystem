@@ -22,7 +22,7 @@ import { queueWrite, isOnline, bufferedUpsertKeys } from './OfflineQueue';
 import { useStore } from '../store';
 import { isTrainingMode } from '../lib/trainingMode';
 import { reconcileList, syncStamp, canonicalJson, digest, stampedKeys } from '../lib/queueReconcile';
-import { isFutureCatering, liveQueueOrFilter } from '../lib/cateringRules';
+import { keptOutOfLiveQueue, liveQueueOrFilter } from '../lib/cateringRules';
 
 // Bounded boot and reconcile reads: a healthy venue never has this many open rows.
 export const QUEUE_ROW_CAP = 500;
@@ -72,7 +72,10 @@ let _bootCaptured = false;
 // visibility boundary is identical to the fire boundary and immune to per-device clock/tz skew.
 // 18 Sep 2026: every catering source (lib/cateringRules.js), so a held ezCater order stays out
 // of the live queue until its kitchen fire time, exactly like one of ours.
-const _isFutureCatering = (row) => isFutureCatering(row, Date.now());
+// Also a catering order cancelled before it fired (an ezCater cancel, or one of ours cancelled in
+// Back Office): it never reached the kitchen, so it must never load into every till once its old
+// fire time passes (liveQueueOrFilter keeps the server read in step).
+const _isFutureCatering = (row) => keptOutOfLiveQueue(row, Date.now());
 
 // numeric(10,2) columns: round here so the row we hash is the row the server echoes back
 // (a float such as 35.199999 would otherwise never match its own echo).
@@ -639,8 +642,8 @@ export function applyQueueRealtimeEvent(payload) {
   }
   const row = payload.new;
   if (!row?.ref) return;
-  // Don't pull a FUTURE catering pre-order into the live queue (it's released on its event day).
-  // If one is lingering from a prior state, evict it.
+  // Don't pull a FUTURE catering pre-order into the live queue (it's released on its event day),
+  // nor one cancelled before it ever fired. If one is lingering from a prior state, evict it.
   if (_isFutureCatering(row)) {
     const next = queue.filter(o => o.ref !== row.ref);
     if (next.length !== queue.length) useStore.setState({ orderQueue: next });

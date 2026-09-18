@@ -20,15 +20,34 @@
 // backstop as one of ours. A cancelled order, or an ezCater order not yet accepted in ezCater, is
 // never fired (cateringMayFire). A ServOS courier is never booked for an ezCater order
 // (mayBookOurCourier): the caterer's own fleet or ezCater Dispatch delivers those.
+//
+// Also 18 Sep 2026 (review round 2):
+//   * HELD rows (ezCater orders not accepted on ezCater) are filtered IN THE QUERY
+//     (releasableOrFilter), so a pile of them sorted oldest first can never fill the batch and
+//     starve the due orders behind them.
+//   * A sent_at FLOOR (CATERING_STALE_FLOOR_MS, the tills' two hours): an order whose fire moment
+//     is older than that is never auto fired by anything, it stays visible for staff to send.
+//   * Every ezCater order is RE-ASKED right before it fires (prefireCheck, ezCater advises it):
+//     a missed cancel, a replacement or a moved Dispatch pickup is caught. The re-ask has a
+//     short timeout and NEVER blocks the kitchen: no answer means fire as planned, flagged.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { dispatchCourier } from '../_shared/delivery-dispatch.ts';
-import { CATERING_SOURCES, cateringMayFire, mayBookOurCourier, cateringSourceLabel, isEzcaterOrder } from '../_shared/cateringRules.js';
+import {
+  CATERING_SOURCES, CATERING_STALE_FLOOR_MS, cateringMayFire, mayBookOurCourier, cateringSourceLabel,
+  isEzcaterOrder, releasableOrFilter,
+} from '../_shared/cateringRules.js';
+import { prefireCheck } from '../_shared/ezcaterIngest.ts';
 
 const URL = Deno.env.get('SUPABASE_URL')!;
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 const RUN_SECRET = Deno.env.get('CATERING_RELEASE_SECRET') ?? '';
 const sb = createClient(URL, SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } });
+const PLATFORM_URL = Deno.env.get('PLATFORM_SUPABASE_URL') ?? '';
+const PLATFORM_KEY = Deno.env.get('PLATFORM_SUPABASE_SERVICE_ROLE_KEY') ?? Deno.env.get('PLATFORM_SERVICE_KEY') ?? '';
+const platform = PLATFORM_URL && PLATFORM_KEY
+  ? createClient(PLATFORM_URL, PLATFORM_KEY, { auth: { autoRefreshToken: false, persistSession: false } })
+  : null;
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, content-type, x-run-secret' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -43,26 +62,52 @@ Deno.serve(async (req) => {
   if (auth !== SERVICE_ROLE && !(RUN_SECRET && runSec === RUN_SECRET)) return json({ error: 'unauthorized' }, 401);
 
   const cutoff = new Date(Date.now() - GRACE_MIN * 60_000).toISOString();
-  // Due (fire time + grace passed), not yet fired by any device, not finished. Oldest first.
+  const floor = new Date(Date.now() - CATERING_STALE_FLOOR_MS).toISOString();
+  // Due (fire time + grace passed, not older than the floor), not yet fired by any device, not
+  // finished, not held. Oldest first.
   const { data, error } = await sb.from('order_queue')
     .select('ref, location_id, source, status, type, total, items, customer, sent_at')
     .in('source', CATERING_SOURCES).is('kitchen_routed_at', null).not('status', 'in', '(collected,cancelled)')
+    .or(releasableOrFilter())
     .lte('sent_at', cutoff)
+    .gte('sent_at', floor)
     .order('sent_at', { ascending: true })
     .limit(BATCH);
   if (error) return json({ error: error.message }, 500);
 
   let fired = 0;
   let held = 0;
-  for (const row of (data || [])) {
+  let rescheduled = 0;
+  let unchecked = 0;
+  for (let row of (data || [])) {
     // Not accepted on ezCater yet: stays held and visible, fires once the accepted notification lands.
     if (!cateringMayFire(row)) { held++; continue; }
-    // Atomic claim — only one firer (this cron OR a device) ever proceeds for a given order.
+    // ezCater: ask ezCater what the order is NOW, then fire the answer (fresh items and times).
+    if (isEzcaterOrder(row)) {
+      try {
+        const pf = await prefireCheck(sb, platform, {
+          locationId: row.location_id, ref: row.ref,
+          log: (...a: unknown[]) => console.log('[catering-release]', ...a),
+        });
+        if (!pf.fire) {
+          if (pf.outcome === 'rescheduled') rescheduled++; else held++;
+          console.log('[catering-release] ezCater', row.ref, 'not fired:', pf.outcome);
+          continue;
+        }
+        if (!pf.checked) unchecked++;
+        if (pf.row) row = { ...row, items: pf.row.items || row.items, customer: pf.row.customer || row.customer, type: pf.row.type || row.type };
+      } catch (e) {
+        // Never block the kitchen on the check.
+        unchecked++;
+        console.warn('[catering-release] ezCater check failed, firing as planned', row.ref, (e as Error)?.message);
+      }
+    }
+    // Atomic claim: only one firer (this cron OR a device) ever proceeds for a given order.
     const claim = await sb.from('order_queue')
       .update({ kitchen_routed_at: new Date().toISOString() })
       .eq('ref', row.ref).eq('location_id', row.location_id).is('kitchen_routed_at', null)
       .select('ref');
-    if (claim.error || !claim.data?.length) continue;   // a device just claimed it — leave the routed fire to them
+    if (claim.error || !claim.data?.length) continue;   // a device just claimed it, leave the routed fire to them
 
     // v5.5.654: BULLETPROOF fire-time courier dispatch. We won the claim, so no POS device fired
     // this order → no device will dispatch the courier either. If it's an uber-mode delivery,
@@ -109,5 +154,5 @@ Deno.serve(async (req) => {
     if (kErr) { console.warn('[catering-release] kds insert', row.ref, kErr.message); continue; }
     fired++;
   }
-  return json({ ok: true, scanned: data?.length || 0, fired, held });
+  return json({ ok: true, scanned: data?.length || 0, fired, held, rescheduled, unchecked });
 });

@@ -62,13 +62,19 @@ export function cateringSourceLabel(source) {
 export const CATERING_SOURCES_PG_LIST = `(${CATERING_SOURCES.join(',')})`;
 
 /**
- * The PostgREST .or() filter for the LIVE queue: every row except a catering order whose kitchen
- * fire moment is still in the future. A held catering order lives in the database (Back Office
- * advance list) until the release fires it, so thousands of future bookings never load into
- * every till. NULL source is kept explicitly (a NULL never matches not.in).
+ * The PostgREST .or() filter for the LIVE queue: every row except a catering order that the
+ * kitchen does not have and should not see yet:
+ *   * its kitchen fire moment is still in the future (held in the database, Back Office advance
+ *     list, until the release fires it, so thousands of future bookings never load into every
+ *     till), or
+ *   * it was CANCELLED before it ever fired. Without this a cancelled future order (an ezCater
+ *     cancel, or one of ours cancelled in Back Office) loaded into every till the moment its old
+ *     fire time passed. One cancelled AFTER firing still loads, so staff see the kitchen must stop.
+ * NULL source is kept explicitly (a NULL never matches not.in).
  */
 export function liveQueueOrFilter(nowIso) {
-  return `source.is.null,source.not.in.${CATERING_SOURCES_PG_LIST},sent_at.lte.${nowIso}`;
+  return `source.is.null,source.not.in.${CATERING_SOURCES_PG_LIST},`
+    + `and(sent_at.lte.${nowIso},or(status.neq.cancelled,kitchen_routed_at.not.is.null))`;
 }
 
 /** True for a catering row whose fire moment is still ahead of nowMs: it stays out of the live queue. */
@@ -77,6 +83,18 @@ export function isFutureCatering(row, nowMs) {
   if (row.status === 'collected') return false;
   const t = new Date(row.sent_at).getTime();
   return Number.isFinite(t) && t > nowMs;
+}
+
+/** A catering row cancelled before the kitchen ever had it: never in the live queue. */
+export function isCancelledUnfiredCatering(row) {
+  if (!row || !isCateringSource(row.source)) return false;
+  const st = norm(row.status);
+  return (st === 'cancelled' || st === 'canceled') && !row.kitchen_routed_at;
+}
+
+/** The till's own mirror of liveQueueOrFilter, for realtime rows: true means keep it out. */
+export function keptOutOfLiveQueue(row, nowMs) {
+  return isFutureCatering(row, nowMs) || isCancelledUnfiredCatering(row);
 }
 
 // ── Venue clock ──────────────────────────────────────────────────────────────
@@ -143,6 +161,43 @@ export function cateringPrepMinutes(settings) {
 }
 
 /**
+ * THE FALLBACK PREP TIME for an ezCater order at a venue that has not set a catering prep time.
+ *
+ * A ServOS catering order cannot be placed at such a venue at all (CateringSettings refuses to
+ * switch catering on without a prep time), but an ezCater order arrives whatever we have set.
+ * Reading the gap as 0 would start the kitchen at the very moment the food must be handed over.
+ * 60 minutes is the fallback, not the venue's online collection lead time: that lead time is
+ * sized for a single online order (often 15 to 20 minutes), not for a catering tray for a room
+ * of people, and starting a held catering order early is recoverable while starting it late is
+ * not. It is shown as a warning on the ezCater Connect screen and on every order it timed, until
+ * the venue sets its own catering prep time.
+ */
+export const EZ_PREP_FALLBACK_MINUTES = 60;
+
+/**
+ * The catering prep time a venue has actually SET: { minutes, isSet }. A saved 0 is a real
+ * choice (the kitchen starts at the ready time), a missing row or a blank field is not set.
+ */
+export function cateringPrepSetting(settings) {
+  const raw = settings?.prep_time_minutes;
+  if (raw == null || raw === '') return { minutes: 0, isSet: false };
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return { minutes: 0, isSet: false };
+  return { minutes: Math.round(n), isSet: true };
+}
+
+/**
+ * The prep time an ezCater order is timed by, and where it came from. The venue's own catering
+ * prep time whenever it is set, else EZ_PREP_FALLBACK_MINUTES with prepFallback true, so the
+ * webhook, the Connect screen and the order can all say so.
+ */
+export function ezcaterPrepFor(settings) {
+  const s = cateringPrepSetting(settings);
+  if (s.isSet) return { prepMinutes: s.minutes, prepFallback: false, prepSource: 'catering_settings' };
+  return { prepMinutes: EZ_PREP_FALLBACK_MINUTES, prepFallback: true, prepSource: 'fallback' };
+}
+
+/**
  * THE KITCHEN FIRE TIME for a catering order: the instant the food must be ready, minus the
  * venue's catering prep time (catering_site_settings.prep_time_minutes). NaN when the ready
  * instant is unknown. This is the only place the rule is written.
@@ -180,6 +235,23 @@ export function cateringHoldReason(row) {
 export function cateringMayFire(row) {
   return cateringHoldReason(row) === null;
 }
+
+/**
+ * The same hold rule as a PostgREST .or() filter, so the release queries never read held rows
+ * at all: a batch of unaccepted ezCater orders sorted oldest first must never fill the page and
+ * starve the due orders behind them. Mirrors cateringHoldReason: an ezCater row is held when its
+ * lifecycle is set and not committed; any other source, or no lifecycle, may fire.
+ */
+export function releasableOrFilter() {
+  return `source.neq.ezcater,customer->>ezcater_lifecycle.is.null,customer->>ezcater_lifecycle.in.(${[...EZ_COMMITTED].join(',')})`;
+}
+
+/**
+ * How far back the catering-release cron looks. The same two hours as the tills'
+ * STALE_ORDER_FLOOR_MS (src/sync/staleness.js, pinned equal by a test): an order whose fire
+ * moment is older than that is never auto fired by anything, it stays visible for staff to send.
+ */
+export const CATERING_STALE_FLOOR_MS = 2 * 60 * 60 * 1000;
 
 /**
  * The sent_at window the POS master's release (store.releaseDueCateringOrders) reads: due now,
@@ -229,12 +301,41 @@ export function inAdvanceList(row) {
 export function advanceListStatus(row) {
   const st = norm(row?.status);
   const change = row?.customer?.changedAfterFire;
-  if (st === 'cancelled' || st === 'canceled') return row?.kitchen_routed_at ? 'Cancelled after kitchen' : 'Cancelled';
+  if (st === 'cancelled' || st === 'canceled') {
+    if (row?.customer?.replacedBy) return row?.kitchen_routed_at ? 'Replaced after kitchen' : 'Replaced';
+    return row?.kitchen_routed_at ? 'Cancelled after kitchen' : 'Cancelled';
+  }
   if (change && Array.isArray(change.kinds) && change.kinds.length) return 'Changed after kitchen';
   if (st === 'done' || st === 'collected') return 'Completed';
   if (st === 'prep' || row?.kitchen_routed_at) return 'In kitchen';
   if (cateringHoldReason(row) === 'awaiting_ezcater_acceptance') return 'Awaiting ezCater acceptance';
   return 'Scheduled';
+}
+
+// ── Catering capacity ────────────────────────────────────────────────────────
+
+/**
+ * One day's catering load for the capacity gate on our own catering site: { count, value,
+ * otherCurrency }. Every catering order counts toward the COUNT, ezCater included. The VALUE
+ * adds an order only in the venue's own catering currency: an ezCater order carries ezCater's
+ * figures in ezCater's currency (customer.totals.currency), and a dollar total is never added to
+ * a pound limit as if it were pounds. Such an order is counted in otherCurrency instead, so a
+ * venue on value capacity still sees it. Nothing is ever converted.
+ * rows: { source, status, total, currency } where currency is the row's own (null = the venue's).
+ */
+export function cateringDayLoad(rows, venueCurrency) {
+  const venueCur = norm(venueCurrency) || 'gbp';
+  let count = 0; let value = 0; let otherCurrency = 0;
+  for (const r of rows || []) {
+    if (!r || !isCateringSource(r.source)) continue;
+    const st = norm(r.status);
+    if (st === 'cancelled' || st === 'canceled') continue;
+    count++;
+    const cur = norm(r.currency) || venueCur;
+    if (cur === venueCur) value += Number(r.total) || 0;
+    else otherCurrency++;
+  }
+  return { count, value: Math.round(value * 100) / 100, otherCurrency };
 }
 
 // ── What we never do for an ezCater order ────────────────────────────────────

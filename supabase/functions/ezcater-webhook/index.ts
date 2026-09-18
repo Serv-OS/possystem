@@ -40,17 +40,20 @@
 //     order id, because there is no modified event. accepted_count on
 //     ezcater_order_links is the only signal, and it is what tells phase 2 to
 //     send acceptModification: true.
-//   * uncancelled is subscribable but never fires. Nothing waits on it.
+//   * uncancelled is subscribable but never fires. The order comes back as a later accepted
+//     (or rejected) notification, and the write plan RESTORES a cancelled, unfired order to the
+//     held catering state with a fresh fire time (_shared/ezcaterCatering.js).
+//   * cancelled for replacement sends NOTHING for the original. A new order that looks like its
+//     replacement makes us re-ask ezCater about the original at once (checkReplacements), and
+//     every ezCater order is re-asked again right before it fires (_shared/ezcaterIngest.ts).
 //   * Meal Program (Club Soda) orders never send submitted or accepted, only
 //     relish_finalized about 90 minutes before the event. It is a first sight
 //     event like any other here.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { verifyEzcaterSignature, getOrder, isPermanent, isSchemaError } from '../_shared/ezcater.ts';
-import { orderToQueueRow, queuePayload, ezLifecycle, EZ_TERMINAL } from '../_shared/ezcater-map.ts';
-import { ezcaterWritePlan } from '../_shared/ezcaterCatering.js';
-import { DEFAULT_VENUE_TZ, cateringPrepMinutes } from '../_shared/cateringRules.js';
-import { matchQueueRow, MATCH_BUDGET_MS } from '../_shared/ezcater-match-ingest.ts';
+import { ezLifecycle, EZ_TERMINAL } from '../_shared/ezcater-map.ts';
+import { readCateringVenue, readConnection, writeEzcaterOrder, checkReplacements } from '../_shared/ezcaterIngest.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -114,80 +117,9 @@ async function verifyBody(raw: string, header: string | null): Promise<{ ok: boo
   return { ok: false, connectionId: null };
 }
 
-/**
- * The token, and the API address to use it against.
- *
- * READ DEFENSIVELY. api_url arrives with 20260917_OPS_ezcater_api_url.sql, which
- * Peter runs by hand, and PostgREST fails the WHOLE select when it is asked for
- * a column that is not there. So it is asked for, and asked for again without it
- * if that is why it failed, exactly as the item matching screen does for
- * menu_items.item_code. Before that file runs, every order fetch still goes to
- * the live ezCater API, which is where it went before any of this existed.
- */
-async function readConnection(connId: string): Promise<any | null> {
-  const first = await sb.from('ezcater_connections').select('id, api_token, api_url').eq('id', connId).maybeSingle();
-  if (!first.error) return first.data || null;
-  const again = await sb.from('ezcater_connections').select('id, api_token').eq('id', connId).maybeSingle();
-  return again.data || null;
-}
-
-/**
- * The venue's clock and catering prep time: the SAME settings a ServOS catering order is timed
- * by (CateringCheckout reads catering_site_settings.prep_time_minutes for this Ops location).
- *
- * Timezone, in order: Platform locations.timezone joined on ops_location_id (then on id, for
- * legacy rows where the two are equal), exactly as src/lib/locationTime.js resolves it; then
- * Ops locations.timezone, which is what catering_public_settings returns to the storefront;
- * then Europe/London. Never ezCater's own zone and never this function's UTC clock.
- *
- * Fail soft: a read that errors falls through to the next source, and no catering settings
- * row means a prep time of 0, the same answer CateringCheckout gives a blank setting.
- */
-async function readCateringVenue(opsLocationId: string): Promise<{ timeZone: string; prepMinutes: number; tzSource: string; hasCateringSettings: boolean }> {
-  let timeZone = '';
-  let tzSource = 'default';
-  if (platform) {
-    try {
-      const a = await platform.from('locations').select('timezone').eq('ops_location_id', opsLocationId).maybeSingle();
-      let tz = a.data?.timezone || '';
-      if (!tz && !a.data) {
-        const b = await platform.from('locations').select('timezone').eq('id', opsLocationId).maybeSingle();
-        tz = b.data?.timezone || '';
-      }
-      if (tz) { timeZone = tz; tzSource = 'platform'; }
-    } catch (e) { console.warn('[ezcater-webhook] platform timezone read failed:', e instanceof Error ? e.message : String(e)); }
-  }
-  if (!timeZone) {
-    try {
-      const { data } = await sb.from('locations').select('timezone').eq('id', opsLocationId).maybeSingle();
-      if (data?.timezone) { timeZone = data.timezone; tzSource = 'ops'; }
-    } catch { /* default below */ }
-  }
-  let prepMinutes = 0;
-  let hasCateringSettings = false;
-  try {
-    const { data } = await sb.from('catering_site_settings').select('prep_time_minutes').eq('location_id', opsLocationId).maybeSingle();
-    if (data) { hasCateringSettings = true; prepMinutes = cateringPrepMinutes(data); }
-  } catch { /* no settings: 0, as CateringCheckout */ }
-  return { timeZone: timeZone || DEFAULT_VENUE_TZ, prepMinutes, tzSource, hasCateringSettings };
-}
-
-/**
- * The existing order_queue row, if any. kitchen_routed_at is the release's claim, so it is what
- * says whether the kitchen has this order yet. Asked for defensively: a venue without the column
- * still gets its order written, it simply cannot tell fired from not fired (and so never moves
- * the fire time of an order it cannot prove is unfired).
- */
-async function readExisting(locationId: string, ref: string): Promise<any | null> {
-  const full = await sb.from('order_queue')
-    .select('ref, status, sent_at, kitchen_routed_at, customer, event_date, collection_time')
-    .eq('location_id', locationId).eq('ref', ref).maybeSingle();
-  if (!full.error) return full.data || null;
-  const bare = await sb.from('order_queue')
-    .select('ref, status, sent_at, customer')
-    .eq('location_id', locationId).eq('ref', ref).maybeSingle();
-  return bare.data ? { ...bare.data, kitchen_routed_at: 'unknown' } : null;
-}
+// readConnection, readCateringVenue and the order write live in _shared/ezcaterIngest.ts, shared
+// with the pre fire check and staff "Re-sync from ezCater", so all three write an order the same
+// way. readConnection reads api_url defensively (20260917_OPS_ezcater_api_url.sql is run by hand).
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -285,7 +217,7 @@ Deno.serve(async (req) => {
     // Guard the id before querying: a bare '' against a uuid column is a
     // Postgres type error, not an empty result.
     const connId = cat.connection_id || verified.connectionId || null;
-    const conn = connId ? await readConnection(connId) : null;
+    const conn = connId ? await readConnection(sb, connId) : null;
     const token = conn?.api_token || '';
     if (!token) {
       // Not strictly transient, but a retry costs nothing and self heals the
@@ -342,80 +274,64 @@ Deno.serve(async (req) => {
 
     // THE CATERING RULE (18 Sep 2026). An ezCater order is timed exactly like a ServOS catering
     // order: on the venue's clock, fired to the kitchen at (food ready time) minus the venue's
-    // catering prep time, and held until then. See ezCateringTiming in _shared/ezcater-map.ts.
-    const venue = await readCateringVenue(locationId);
-    const { row, link } = orderToQueueRow(order, locationId, {
-      priorAcceptedCount: Number(priorLink?.accepted_count) || 0,
-      eventAt,
-      venue: { timeZone: venue.timeZone, prepMinutes: venue.prepMinutes },
-    });
-    console.log('[ezcater-webhook] timing', row.ref,
-      `ready ${row.customer?.readyAt} (${row.customer?.readySource}), prep ${venue.prepMinutes} min`,
-      `${venue.hasCateringSettings ? '' : '(no catering settings, so 0) '}fires ${row.fire_at} on ${venue.timeZone} (${venue.tzSource})`);
-
+    // catering prep time, and held until then. A venue with NO catering prep time set is timed
+    // with the fallback (EZ_PREP_FALLBACK_MINUTES, 60) and the order says so, never with 0.
+    const venue = await readCateringVenue(sb, platform, locationId);
     const lifecycle = ezLifecycle(order);
     const terminal = EZ_TERMINAL.has(lifecycle);
-    if (link.accepted_count > 1) {
-      console.warn('[ezcater-webhook] MODIFICATION on', row.ref,
-        `- accepted seen ${link.accepted_count} times. Accepting this needs acceptModification: true.`);
+    if (venue.prepFallback) {
+      console.warn('[ezcater-webhook] NO CATERING PREP TIME SET for', locationId,
+        `- timing ${entityId} with the ${venue.prepMinutes} minute fallback. Set it in Back Office, Catering settings.`);
     }
 
-    // 6) ITEM MATCHING. ezCater gave us no Menus API, so a Partner Portal line
-    // arrives with posItemId = null and itemId null means no station routing, no
-    // stock, no product mix. This fills itemId in from the venue's saved links
-    // and, where one of our items has exactly that name and nothing else does,
-    // saves a new link so the next order is instant.
-    //
-    // IT CANNOT FAIL THE ORDER, AND IT CANNOT DELAY IT. matchQueueRow swallows
-    // everything, including the window before the 20260917_OPS_ezcater_item_links
-    // migration is run, and returns the mapper's own row. It is also on a clock:
-    // past MATCH_BUDGET_MS a slow menu read is abandoned and the order goes
-    // through unmatched, which is a plain text ticket and exactly today. This
-    // try is the second guard, not the first.
-    let queueRow = row;
-    try {
-      const m = await matchQueueRow(sb, locationId, row, { budgetMs: MATCH_BUDGET_MS });
-      queueRow = m.row;
-      if (m.ran) {
-        console.log('[ezcater-webhook] items matched on', row.ref,
-          `- ${m.matched}/${m.lines} lines, ${m.inserted} new links, ${m.bumped} seen`);
-      }
-    } catch (e) {
-      // Unreachable by construction. Here so it stays unreachable.
-      console.warn('[ezcater-webhook] item matching threw, order continues unmatched:',
-        e instanceof Error ? e.message : String(e));
-      queueRow = row;
-    }
-
-    // 7) Upsert. onConflict is (location_id, ref): order_queue's primary key has
-    // spanned both since 20260806k and a bare 'ref' throws 42P10, which is how
-    // inbound channel orders got dropped on the floor once already.
-    const existing = await readExisting(locationId, row.ref);
-
-    // What this notification does to the row (_shared/ezcaterCatering.js, unit tested):
-    //   * an order already in preparation keeps its progress, a cancellation always wins;
-    //   * NOT fired yet (kitchen_routed_at null): a changed time moves the fire time, event date
-    //     and time, a cancel just marks it cancelled (the advance list and the release skip it);
-    //   * ALREADY fired: sent_at never moves, and any change (items, time, cancel) is stamped on
-    //     customer.changedAfterFire so the Orders Hub and every till shows it plainly.
+    // 6) + 7) Item matching and the write, in _shared/ezcaterIngest.ts writeEzcaterOrder:
+    //   * ITEM MATCHING cannot fail the order and cannot delay it (budgeted, swallows everything).
+    //   * THE WRITE PLAN (_shared/ezcaterCatering.js): an order in preparation keeps its progress,
+    //     a cancel wins, an uncancel then accept restores a cancelled unfired order; NOT fired yet
+    //     means a changed time moves the fire time (a past one becomes now); ALREADY fired means
+    //     nothing moves and any change is stamped on customer.changedAfterFire for staff.
+    //   * THE RACE: a plan for an unfired row is written only while kitchen_routed_at is still
+    //     null. If the release claimed it in between, the row is read again and planned as fired,
+    //     so a fired order is never changed without staff being told.
     const writeNow = new Date().toISOString();
-    const plan = ezcaterWritePlan({ row: queueRow, existing, terminal, nowIso: writeNow });
-    if (plan.changedAfterFire) {
-      console.warn('[ezcater-webhook] CHANGED AFTER THE KITCHEN HAD IT:', row.ref, plan.changedAfterFire.kinds.join(', '));
+    const w = await writeEzcaterOrder(sb, {
+      order, locationId, venue, priorLink, eventAt, nowIso: writeNow,
+      log: (...a: unknown[]) => console.log('[ezcater-webhook]', ...a),
+    });
+    if (!w.ok) {
+      await failEvent(w.error, 'error');
+      return retry('queue write failed');
+    }
+    const row = w.plan.row;
+    console.log('[ezcater-webhook] timing', row.ref,
+      `ready ${row.customer?.readyAt} (${row.customer?.readySource}), prep ${venue.prepMinutes} min`,
+      `${venue.prepFallback ? '(FALLBACK, no catering prep set) ' : ''}fires ${w.payload.sent_at ?? '(unchanged)'} on ${venue.timeZone} (${venue.tzSource})`);
+    if (w.link.accepted_count > 1) {
+      console.warn('[ezcater-webhook] MODIFICATION on', row.ref,
+        `- accepted seen ${w.link.accepted_count} times. Accepting this needs acceptModification: true.`);
+    }
+    if (w.plan.restored) console.warn('[ezcater-webhook] RESTORED after a cancel (uncancelled on ezCater):', row.ref);
+    if (w.plan.changedAfterFire) {
+      console.warn('[ezcater-webhook] CHANGED AFTER THE KITCHEN HAD IT:', row.ref, w.plan.changedAfterFire.kinds.join(', '));
     }
 
-    const { error: qErr } = await sb.from('order_queue')
-      .upsert(queuePayload(plan.row, !existing, writeNow, { reschedule: plan.reschedule }), { onConflict: 'location_id,ref' });
-    if (qErr) {
-      await failEvent(`order_queue upsert failed: ${qErr.message}`, 'error');
-      return retry('queue write failed');
+    // 8) CANCELLED FOR REPLACEMENT. ezCater sends nothing for the original, so a new, live order
+    // that looks like a replacement for one we hold makes us re-ask ezCater about that one now.
+    // Best effort and bounded: it can never fail or delay this order, which is already written.
+    if (w.isNew && !terminal) {
+      try {
+        const found = await checkReplacements(sb, {
+          locationId, newRow: row, venue, nowIso: writeNow,
+          fetchFor: (a: any) => (signal: AbortSignal) => getOrder(a.token, a.ezOrderId, a.apiUrl, signal),
+          log: (...a: unknown[]) => console.log('[ezcater-webhook]', ...a),
+        });
+        for (const f of found) console.warn('[ezcater-webhook] possible replacement:', row.ref, 'for', f.ref, f.outcome, `(ezCater says ${f.ezcaterSays ?? 'nothing'})`);
+      } catch (e) {
+        console.warn('[ezcater-webhook] replacement check failed, order unaffected:', e instanceof Error ? e.message : String(e));
+      }
     }
 
     const nowIso = new Date().toISOString();
-    const { error: lErr } = await sb.from('ezcater_order_links')
-      .upsert({ ...link, updated_at: nowIso }, { onConflict: 'location_id,ref' });
-    if (lErr) console.warn('[ezcater-webhook] link upsert failed:', lErr.message);
-
     if (cat.connection_id) {
       await sb.from('ezcater_connections')
         .update({ last_event_at: nowIso, last_error: null }).eq('id', cat.connection_id);
@@ -425,11 +341,9 @@ Deno.serve(async (req) => {
       status: 'processed', location_id: locationId, error: null, processed_at: nowIso,
     }).eq('notification_id', notificationId);
 
-    // Reminder for phase 3, not a TODO in this file: ezCater explicitly advises
-    // re-querying an order immediately before it goes to the kitchen, because
-    // catering orders get edited for days and a "Cancelled for Replacement"
-    // sends NO notification at all for the original. ezcater_order_links.fire_at
-    // is the column that cron keys on, and it is now the KITCHEN fire instant.
+    // ezCater advises re-querying an order immediately before it goes to the kitchen. That is
+    // done by the release (ezcater-connect prefire from the till, and catering-release), with a
+    // short timeout that never blocks the kitchen: _shared/ezcaterIngest.ts prefireCheck.
     return ok();
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

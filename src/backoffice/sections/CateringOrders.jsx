@@ -9,7 +9,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { supabase, getActiveLocationSync } from '../../lib/supabase';
 import { getLocationConfig } from '../../lib/locationTime';
-import { CATERING_SOURCES, cateringSourceLabel, advanceListStatus, inAdvanceList, changedAfterFireText } from '../../lib/cateringRules';
+import { CATERING_SOURCES, cateringSourceLabel, advanceListStatus, inAdvanceList, changedAfterFireText, ezcaterOrderWarnings } from '../../lib/cateringRules';
+import { ezcaterResyncOrder } from '../../lib/ezcater';
 
 const S = {
   h1: { fontSize: 22, fontWeight: 800, color: 'var(--t1)', margin: 0, letterSpacing: '-.01em' },
@@ -39,6 +40,8 @@ export default function CateringOrders() {
   const [range, setRange] = useState('upcoming');
   const [paidFilter, setPaidFilter] = useState('all'); // all | paid | unpaid
   const [open, setOpen] = useState(null);
+  // "Re-sync from ezCater": { ref, busy, msg, err } for the one order being re-synced.
+  const [resync, setResync] = useState(null);
 
   const load = async (id) => {
     const [{ data }, { data: cfg }] = await Promise.all([
@@ -87,9 +90,26 @@ export default function CateringOrders() {
     return Object.entries(g);
   }, [filtered]);
 
-  const totalValue = filtered.reduce((s, o) => s + Number(o.total || 0), 0);
-  // ezCater orders carry their own currency (ezCater's figures, never converted).
+  // ezCater orders carry their own currency (ezCater's figures, never converted), so a total only
+  // adds orders in the venue's own currency; the others are counted and said, never converted.
   const rowCur = (o) => (o.source === 'ezcater' && o.customer?.totals?.currency ? String(o.customer.totals.currency).toLowerCase() : cur);
+  const sumInCur = (list) => list.reduce((s, o) => s + (rowCur(o) === cur ? Number(o.total || 0) : 0), 0);
+  const otherCur = (list) => list.filter((o) => rowCur(o) !== cur).length;
+  const totalValue = sumInCur(filtered);
+
+  // Staff only, checked server side (the Back Office staff rule). Re-asks ezCater and rewrites the
+  // order through the same catering rules; an order the kitchen already has is never moved.
+  const resyncOne = async (o) => {
+    if (!locId || resync?.busy) return;
+    setResync({ ref: o.ref, busy: true, msg: null, err: null });
+    try {
+      const r = await ezcaterResyncOrder(locId, o.ref);
+      if (r?.ok === false) setResync({ ref: o.ref, busy: false, msg: null, err: r.error || 'Could not re-sync.' });
+      else { setResync({ ref: o.ref, busy: false, msg: r?.message || 'Re-synced.', err: null }); await load(locId); }
+    } catch (e) {
+      setResync({ ref: o.ref, busy: false, msg: null, err: e?.message || 'Could not re-sync.' });
+    }
+  };
   const itemsCount = (o) => (o.items || []).reduce((n, i) => n + (i.qty || 1), 0);
 
   if (loading) return <div style={S.empty}>Loading…</div>;
@@ -102,7 +122,7 @@ export default function CateringOrders() {
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(150px,1fr))', gap: 10, marginBottom: 16, maxWidth: 620 }}>
         <div style={S.kpi}><div style={{ fontSize: 22, fontWeight: 800, color: 'var(--t1)' }}>{filtered.length}</div><div style={{ fontSize: 11.5, color: 'var(--t3)', fontWeight: 600 }}>Orders ({range})</div></div>
-        <div style={S.kpi}><div style={{ fontSize: 22, fontWeight: 800, color: 'var(--t1)' }}>{money(totalValue, cur)}</div><div style={{ fontSize: 11.5, color: 'var(--t3)', fontWeight: 600 }}>Total value</div></div>
+        <div style={S.kpi}><div style={{ fontSize: 22, fontWeight: 800, color: 'var(--t1)' }}>{money(totalValue, cur)}</div><div style={{ fontSize: 11.5, color: 'var(--t3)', fontWeight: 600 }}>Total value{otherCur(filtered) ? ` (plus ${otherCur(filtered)} in another currency)` : ''}</div></div>
         <div style={S.kpi}><div style={{ fontSize: 22, fontWeight: 800, color: 'var(--t1)' }}>{filtered.filter((o) => !o.paid).length}</div><div style={{ fontSize: 11.5, color: 'var(--t3)', fontWeight: 600 }}>Awaiting payment</div></div>
       </div>
 
@@ -113,7 +133,7 @@ export default function CateringOrders() {
 
       {groups.map(([date, list]) => (
         <div key={date}>
-          <div style={S.dayHdr}>{fmtDay(date)} <span style={{ ...S.pill }}>{list.length} order{list.length === 1 ? '' : 's'}</span> <span style={{ fontSize: 12, color: 'var(--t3)', fontWeight: 600 }}>· {money(list.reduce((s, o) => s + Number(o.total || 0), 0), cur)}</span></div>
+          <div style={S.dayHdr}>{fmtDay(date)} <span style={{ ...S.pill }}>{list.length} order{list.length === 1 ? '' : 's'}</span> <span style={{ fontSize: 12, color: 'var(--t3)', fontWeight: 600 }}>· {money(sumInCur(list), cur)}{otherCur(list) ? ` plus ${otherCur(list)} in another currency` : ''}</span></div>
           {list.map((o) => {
             const c = o.customer || {};
             const isOpen = open === o.ref;
@@ -137,6 +157,19 @@ export default function CateringOrders() {
                           {c.prepMinutes != null ? ` (${c.prepMinutes} min prep)` : ''}{c.thirdPartyDelivery ? ' · ezCater Dispatch delivers' : ((c.fulfilment || o.type) === 'delivery' ? ' · your own driver delivers' : '')}</div>
                       )}
                       {changedAfterFireText(c.changedAfterFire) && <div style={{ gridColumn: '1 / -1', color: '#dc2626', fontWeight: 700 }}>{changedAfterFireText(c.changedAfterFire)}</div>}
+                      {o.source === 'ezcater' && ezcaterOrderWarnings(o).map((w, wi) => (
+                        <div key={wi} style={{ gridColumn: '1 / -1', color: '#b45309', fontWeight: 700 }}>{w}</div>
+                      ))}
+                      {o.source === 'ezcater' && (
+                        <div style={{ gridColumn: '1 / -1', display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                          <button type="button" style={{ ...S.seg(false), fontSize: 12 }} disabled={resync?.busy}
+                            onClick={(e) => { e.stopPropagation(); resyncOne(o); }}>
+                            {resync?.busy && resync.ref === o.ref ? 'Re-syncing…' : 'Re-sync from ezCater'}
+                          </button>
+                          {resync?.ref === o.ref && resync.msg && <span style={{ fontSize: 12, color: 'var(--grn)' }}>{resync.msg}</span>}
+                          {resync?.ref === o.ref && resync.err && <span style={{ fontSize: 12, color: '#dc2626' }}>{resync.err}</span>}
+                        </div>
+                      )}
                       {c.promo_code && <div><b>Promo:</b> {c.promo_code}{c.promo_discount ? ` (−${money(c.promo_discount, cur)})` : ''}</div>}
                       {c.tax_id && <div><b>Tax/VAT id:</b> {c.tax_id}</div>}
                       {c.notes && <div style={{ gridColumn: '1 / -1' }}><b>Notes:</b> {c.notes}</div>}

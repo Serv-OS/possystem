@@ -93,3 +93,37 @@ export const ezcaterItemsList = (locId) =>
  */
 export const ezcaterItemsSave = (locId, body) =>
   call('ezcater-connect', { action: 'items_save', ops_location_id: locId, ...body });
+
+// ── Orders (till and Back Office) ───────────────────────────────────────────
+
+const PREFIRE_AS_PLANNED = (why) => ({ ok: false, fire: true, outcome: 'fire', checked: false, why, row: null });
+
+/**
+ * The till's catering release asks the server to re-check one ezCater order with ezCater right
+ * before it fires (ezcater-connect 'prefire'). The till cannot hold the ezCater token, so the
+ * server asks. NEVER BLOCKS THE KITCHEN: the server answers "fire as planned" when ezCater is
+ * slow or down, and if the server itself does not answer within timeoutMs this resolves to
+ * { fire: true, checked: false } so the till fires as planned. Never throws.
+ */
+export async function ezcaterPrefire(locId, ref, { timeoutMs = 12000 } = {}) {
+  let timer = null;
+  try {
+    const deadline = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(PREFIRE_AS_PLANNED('the ServOS check did not answer in time')), timeoutMs);
+    });
+    const ask = call('ezcater-connect', { action: 'prefire', ops_location_id: locId, ref })
+      .catch((e) => PREFIRE_AS_PLANNED(e?.message || 'the ServOS check failed'));
+    const r = await Promise.race([ask, deadline]);
+    return r && typeof r.fire === 'boolean' ? r : PREFIRE_AS_PLANNED('no answer');
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * Staff "Re-sync from ezCater": re-ask ezCater about one order and rewrite it through the same
+ * rules. A Back Office user needs no PIN; on a till the signed in staff member's PIN is sent and
+ * checked server side. Never moves an order the kitchen already has.
+ */
+export const ezcaterResyncOrder = (locId, ref, pin = null) =>
+  call('ezcater-connect', { action: 'resync_order', ops_location_id: locId, ref, ...(pin ? { pin: String(pin) } : {}) });

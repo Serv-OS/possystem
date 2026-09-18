@@ -450,7 +450,12 @@ test('camelCase in, snake_case out, every time', () => {
 // ---------------------------------------------------------------------------
 
 const actionsSent = [...LIB.matchAll(/action:\s*'([a-z_]+)'/g)].map((m) => m[1]);
-const actionsImplemented = [...CONNECT_FN.matchAll(/case '([a-z_]+)':/g)].map((m) => m[1]);
+// The order actions (prefire, resync_order) are handled before the Back Office fence, each with
+// its own authority check, so they are matched by their own test, not a case label.
+const actionsImplemented = [
+  ...[...CONNECT_FN.matchAll(/case '([a-z_]+)':/g)].map((m) => m[1]),
+  ...[...CONNECT_FN.matchAll(/action === '([a-z_]+)'/g)].map((m) => m[1]),
+];
 
 test('EVERY action the screen sends is one the edge function implements', () => {
   assert.ok(actionsSent.length >= 9, 'expected the whole lifecycle, got ' + actionsSent.join(', '));
@@ -510,8 +515,11 @@ test('no dynamic imports in the screen, they die silently in the bundle', () => 
 test('the webhook reads api_url DEFENSIVELY, and works before the migration', () => {
   // Naming a column that is not there fails the WHOLE select, which is the same
   // trap as menu_items.item_code on the matching screen.
-  assert.match(WEBHOOK_FN, /select\('id, api_token, api_url'\)/);
-  assert.match(WEBHOOK_FN, /select\('id, api_token'\)/, 'there must be a select without the column to fall back to');
+  // readConnection moved to _shared/ezcaterIngest.ts, shared with the pre fire check and re-sync.
+  const INGEST_FN = read('../../supabase/functions/_shared/ezcaterIngest.ts');
+  assert.match(INGEST_FN, /select\('id, api_token, api_url'\)/);
+  assert.match(INGEST_FN, /select\('id, api_token'\)/, 'there must be a select without the column to fall back to');
+  assert.match(WEBHOOK_FN, /readConnection\(sb, connId\)/);
   assert.match(WEBHOOK_FN, /getOrder\(token, entityId, conn\?\.api_url \?\? null\)/);
 });
 

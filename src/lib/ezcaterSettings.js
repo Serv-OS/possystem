@@ -430,3 +430,16 @@ export function gateWords(value) {
   if (value === false) return 'ezCater have not switched accept and reject on. Staff accept orders in the ezCater Partner Portal.';
   return 'Nobody has said yet whether ezCater switched accept and reject on for this account.';
 }
+
+/**
+ * The warning the Connect screen shows while the venue has NO catering prep time set. ezCater
+ * orders are then timed with the fallback (EZ_PREP_FALLBACK_MINUTES in cateringRules.js) instead
+ * of the venue's own setting, so the kitchen starts that long before the food must be ready.
+ * null when the prep time is set, or when the status answer does not say (an older function).
+ */
+export function cateringPrepWarning(answer) {
+  const p = answer && typeof answer === 'object' ? answer.catering_prep : null;
+  if (!p || typeof p !== 'object' || p.set !== false) return null;
+  const m = Number(p.fallback_minutes) > 0 ? Number(p.fallback_minutes) : 60;
+  return `No catering prep time is set for this venue, so ezCater orders go to the kitchen ${m} minutes before the food must be ready. Set your prep time in Back Office, Catering settings, and new ezCater orders use it (held ones pick it up at their next check, or press Re-sync from ezCater on the order).`;
+}

@@ -94,7 +94,9 @@ const NAME_CONTACT_RE = new RegExp(NAME_CONTACT_PATTERN);
 // Mirrors '[^[:alpha:][:space:]''’-]' in _osd_name: letters, spaces, apostrophes and hyphens only.
 const NAME_STRIP_RE = /[^\p{L}\s'’-]/gu;
 // Sources where the customer types the name. Mirrors the name gate in order_status_feed.
-export const CUSTOMER_TYPED_SOURCES = ['kiosk', 'online', 'qr', 'catering'];
+// ezCater is catering (20260918): its on site contact name is typed by ezCater's customer, so it
+// follows the same rule as a catering name.
+export const CUSTOMER_TYPED_SOURCES = ['kiosk', 'online', 'qr', 'catering', 'ezcater'];
 // Refs that are order tracking lookup keys. Mirrors '^(OL|CA|QR)-' in _osd_number.
 const TRACKING_REF_RE = /^(OL|CA|QR)-/;
 
@@ -257,7 +259,8 @@ export function newDisplayTemplate() {
         channels: ['till', 'kiosk'], orderTypes: ['dine-in'],
         statuses: ['received', 'preparing', 'ready'], nameFormat: 'short', showChannel: true },
       { id: 's2', title: 'Takeaway and collection', subtitle: 'Pick up from the shelf',
-        channels: ['till', 'kiosk', 'online', 'catering'], orderTypes: ['takeaway', 'collection'],
+        // ezCater is catering: an ezCater collection shows here with our own catering collections.
+        channels: ['till', 'kiosk', 'online', 'catering', 'ezcater'], orderTypes: ['takeaway', 'collection'],
         statuses: ['received', 'preparing', 'ready'], nameFormat: 'short', showChannel: true },
       { id: 's3', title: 'Delivery and app orders', subtitle: 'Find your app name and order code',
         channels: ['deliveroo', 'ubereats', 'justeat', 'other_app', 'ezcater', 'till', 'online', 'catering'],

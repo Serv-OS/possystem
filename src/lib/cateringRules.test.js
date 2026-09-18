@@ -88,7 +88,7 @@ test('an ezCater order IS a catering order, and keeps its channel name', () => {
 
 test('the live queue read keeps every held catering order out, ezCater included', () => {
   const f = liveQueueOrFilter('2026-09-18T10:00:00.000Z');
-  assert.equal(f, 'source.is.null,source.not.in.(catering,ezcater),sent_at.lte.2026-09-18T10:00:00.000Z');
+  assert.equal(f, 'source.is.null,source.not.in.(catering,ezcater),and(sent_at.lte.2026-09-18T10:00:00.000Z,or(status.neq.cancelled,kitchen_routed_at.not.is.null))');
   const now = Date.parse('2026-09-18T10:00:00Z');
   assert.equal(isFutureCatering({ source: 'ezcater', sent_at: '2026-09-23T17:00:00Z', status: 'received' }, now), true);
   assert.equal(isFutureCatering({ source: 'catering', sent_at: '2026-09-23T17:00:00Z', status: 'received' }, now), true);
@@ -245,7 +245,10 @@ test('a cancel BEFORE firing takes it off the advance list and the release never
 });
 
 test('a change AFTER firing never moves the ticket, and is shown to staff plainly', () => {
-  const fired = { ...heldRow(), status: 'received', kitchen_routed_at: '2026-09-23T17:00:10Z' };
+  // The fired row carries the ezCater times it was last written with (customer.readyAt, eventAt):
+  // a time change is judged against those, never against sent_at.
+  const firstSeen = orderToQueueRow(HKX77V, PROVO, { venue: LONDON }).row;
+  const fired = { ...heldRow(), status: 'received', kitchen_routed_at: '2026-09-23T17:00:10Z', customer: { ...firstSeen.customer, modificationCount: 0 } };
   // More items: a second accepted (ezCater has no modified event).
   const modified = orderToQueueRow(HKX77V, PROVO, { venue: LONDON, priorAcceptedCount: 1 }).row;
   const a = ezcaterWritePlan({ row: modified, existing: fired, terminal: false, nowIso: NOW_ISO });
@@ -283,7 +286,7 @@ test('a change AFTER firing never moves the ticket, and is shown to staff plainl
 
 test('a first sight order is written whole, and existing progress is never moved backwards', () => {
   const { row } = orderToQueueRow(HKX77V, PROVO, { venue: LONDON });
-  assert.equal(ezcaterWritePlan({ row, existing: null, terminal: false, nowIso: NOW_ISO }).row, row);
+  assert.deepEqual(ezcaterWritePlan({ row, existing: null, terminal: false, nowIso: NOW_ISO }).row, row);
   const prepping = ezcaterWritePlan({ row, existing: { ...heldRow(), status: 'ready' }, terminal: false, nowIso: NOW_ISO });
   assert.equal(prepping.row.status, 'ready');
   // A venue without kitchen_routed_at cannot prove the order is unfired: nothing is moved.
@@ -317,7 +320,7 @@ test('the Back Office advance list includes ezCater and drops a cancel before fi
 
 test('QueueSync holds every future catering order out of the live queue', () => {
   const s = read('../sync/QueueSync.js');
-  assert.ok(s.includes('const _isFutureCatering = (row) => isFutureCatering(row, Date.now());'));
+  assert.ok(s.includes('const _isFutureCatering = (row) => keptOutOfLiveQueue(row, Date.now());'));
   assert.ok(s.includes('.or(liveQueueOrFilter(new Date().toISOString()))'));
   assert.ok(!s.includes('source.neq.catering'));
 });
@@ -343,15 +346,25 @@ test('the catering-release cron fires ezCater too, never a held one, and never o
 
 test('the webhook times the order from the venue settings and plans the write with the catering rules', () => {
   const s = read('../../supabase/functions/ezcater-webhook/index.ts');
-  assert.ok(s.includes("from('catering_site_settings').select('prep_time_minutes')"));
-  assert.ok(s.includes("platform.from('locations').select('timezone').eq('ops_location_id', opsLocationId)"));
-  assert.ok(s.includes('venue: { timeZone: venue.timeZone, prepMinutes: venue.prepMinutes }'));
-  assert.ok(s.includes('ezcaterWritePlan({ row: queueRow, existing, terminal, nowIso: writeNow })'));
-  assert.ok(s.includes('{ reschedule: plan.reschedule }'));
+  // The venue read and the write live in _shared/ezcaterIngest.ts, shared with the pre fire check
+  // and staff re-sync, so every path writes an ezCater order the same way.
+  const ing = read('../../supabase/functions/_shared/ezcaterIngest.ts');
+  assert.ok(s.includes('const venue = await readCateringVenue(sb, platform, locationId);'));
+  assert.ok(s.includes('await writeEzcaterOrder(sb, {'));
+  assert.ok(ing.includes("from('catering_site_settings').select('prep_time_minutes')"));
+  assert.ok(ing.includes("platform.from('locations').select('timezone').eq('ops_location_id', opsLocationId)"));
+  assert.ok(ing.includes('venue: { timeZone: venue.timeZone, prepMinutes: venue.prepMinutes, prepFallback: !!venue.prepFallback }'));
+  assert.ok(ing.includes('ezcaterWritePlan({ row: planned, existing, terminal, nowIso })'));
+  assert.ok(ing.includes('{ reschedule: plan.reschedule }'));
   // It never writes kitchen_routed_at: only the release claims it. The one mention as a key is
   // the in-memory marker for a venue without the column, which is read, never written.
-  const keyed = s.split('\n').filter((l) => /kitchen_routed_at\s*:/.test(l));
-  assert.deepEqual(keyed.map((l) => l.trim()), ["return bare.data ? { ...bare.data, kitchen_routed_at: 'unknown' } : null;"]);
+  assert.equal(s.split('\n').filter((l) => /kitchen_routed_at\s*:/.test(l)).length, 0);
+  const keyed = ing.split('\n').filter((l) => /kitchen_routed_at\s*:/.test(l));
+  assert.deepEqual(keyed.map((l) => l.trim()), [
+    "return bare.data ? { ...bare.data, kitchen_routed_at: 'unknown' } : null;",
+    // The pre fire result handed back to the caller: still unfired, never a write.
+    'const row = { ...existing, ...w.plan.row, sent_at: w.payload.sent_at ?? existing.sent_at, kitchen_routed_at: null };',
+  ]);
   assert.equal((read('../../supabase/functions/_shared/ezcater-map.ts').match(/kitchen_routed_at\s*:/g) || []).length, 0);
 });
 

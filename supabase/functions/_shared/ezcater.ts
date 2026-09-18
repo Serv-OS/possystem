@@ -235,8 +235,10 @@ export async function ez<T = any>(
   query: string,
   variables: Record<string, unknown> = {},
   endpoint?: string | null,
+  signal?: AbortSignal | null,
 ): Promise<T> {
   const res = await fetch(resolveEzcaterApi(endpoint), {
+    ...(signal ? { signal } : {}),
     method: 'POST',
     headers: {
       'Authorization': token, // RAW token, no Bearer prefix. CONFIRM with ezCater.
@@ -528,8 +530,8 @@ export const EZ_EVENTS = [
 // ────────────────────────────────────────────────────────────────────────────
 
 /** Fetch one order. The webhook gives us a pointer, this is the second leg. */
-export async function getOrder(token: string, orderId: string, endpoint?: string | null): Promise<any> {
-  const data = await ez<any>(token, 'ServOsEzOrder', ORDER_QUERY, { id: orderId, types: EZ_FEE_TYPES }, endpoint);
+export async function getOrder(token: string, orderId: string, endpoint?: string | null, signal?: AbortSignal | null): Promise<any> {
+  const data = await ez<any>(token, 'ServOsEzOrder', ORDER_QUERY, { id: orderId, types: EZ_FEE_TYPES }, endpoint, signal);
   return data?.order ?? null;
 }
 

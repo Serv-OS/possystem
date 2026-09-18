@@ -16,20 +16,28 @@
 --   2. visible: the 60 minute early allowance for ezCater is gone. It existed because sent_at
 --      used to be the event time; sent_at is now the kitchen fire time, so an ezCater order
 --      shows when it fires, exactly like a catering order.
+--   3. names: an ezCater name is typed by ezCater's customer, so it follows the catering name
+--      rule (shown only after a status change made in a separate request).
+--   4. the due index: the release reads "due, unfired catering" for BOTH sources now
+--      (catering and ezcater). The old partial index covers source = 'catering' only, so two
+--      partial indexes cover both: one per venue (the till release), one across venues (the
+--      catering-release cron). The old index is left in place; it is harmless.
 --
 -- Nothing else in the function changes. The ezCater CHANNEL key (_osd_channel_key 'ezcater')
 -- and its order number (_osd_number reads customer.ezcater_order_number) are untouched, so a
 -- section can still pick ezCater on its own and the TV still shows ezCater's number.
 --
--- Until this runs: an ezCater order written by the new webhook shows on a TV only once staff
--- move it to preparing (or when the unaccepted setting is on), and up to 60 minutes before it
--- fires. Nothing breaks and no order is lost; this only lines the TVs up with catering.
+-- RUN THIS FIRST, BEFORE THE EDGE FUNCTIONS ARE DEPLOYED. From that deploy the webhook writes a
+-- new ezCater order as 'received', and until this file runs the TV feed hides a 'received'
+-- ezCater order (it waits behind the "show unaccepted delivery app orders" setting) and shows it
+-- up to 60 minutes before it fires. Nothing breaks and no order is lost either way; running this
+-- first simply means the TVs are right from the first order.
 --
 -- Mirrors src/lib/orderScreen/orderScreenStatus.js evaluateOrder. Change both together.
 -- src/lib/orderScreen/orderScreenSql.test.js pins this file to 20260911c line for line except
 -- the two lines above.
 --
--- Safe to run twice: it replaces one function and touches nothing else. Ownership, the security
+-- Safe to run twice: it replaces one function and adds two indexes if missing, nothing else. Ownership, the security
 -- barrier and every permission are untouched. Run it after
 -- 20260911c_OPS_order_screen_names_follow_the_section.sql.
 --
@@ -227,7 +235,7 @@ begin
              -- a determined writer while anyone can update order_queue, which is the risk
              -- named at the top of this file.
              'name', case
-               when l.source in ('kiosk','online','qr','catering')
+               when l.source in ('kiosk','online','qr','catering','ezcater')
                 and not coalesce(l.status_changed_at > l.first_seen_at, false) then null
                else public._osd_name(l.cust->>'name', l.sec->>'nameFormat')
              end,
@@ -255,3 +263,11 @@ begin
        'labels', d.labels, 'settings', d.settings, 'theme', d.theme),
     'rows', v_rows, 'truncated', v_count > 200);
 end $function$;
+
+-- The due index for every catering source (point 4 above). IF NOT EXISTS, so safe to run twice.
+create index if not exists idx_order_queue_catering_sources_due
+  on public.order_queue (location_id, sent_at)
+  where source in ('catering', 'ezcater') and kitchen_routed_at is null;
+create index if not exists idx_order_queue_catering_sources_due_all
+  on public.order_queue (sent_at)
+  where source in ('catering', 'ezcater') and kitchen_routed_at is null;

@@ -19,6 +19,15 @@
 //     items_save     -> match one of their names to one of ours, silence it, or
 //                       clear it back to unmatched
 //
+//   Two ORDER actions, each with its own fence (they are not Back Office only):
+//     prefire        -> the till's catering release asks ezCater about one order right
+//                       before firing it (ezCater advises this). Service role, staff of the
+//                       venue, or a till paired to the venue. Answers { fire, outcome, row }
+//                       and NEVER blocks the kitchen: no answer in time means fire as planned.
+//     resync_order   -> staff "Re-sync from ezCater": re-ask ezCater about one order and
+//                       rewrite it through the same write plan. Staff only: a Back Office user
+//                       who is staff of the venue, or a till of the venue plus a staff PIN.
+//
 // There is NO OAuth. ezCater issues a static token by email request, generated
 // once in the Partner Portal, and it CANNOT be recovered if lost. So unlike
 // HubRise there is no authorize redirect here, the operator pastes the token
@@ -37,6 +46,9 @@ import {
   isSandboxApi, resolveEzcaterApi,
 } from '../_shared/ezcater.ts';
 import { buildLinkKey } from '../_shared/ezcaterMatch.ts';
+import { prefireCheck, resyncOrder, readCateringVenue } from '../_shared/ezcaterIngest.ts';
+import { staffForLocation, deviceAtLocation, staffActor } from '../_shared/staffAuthority.ts';
+import { EZ_PREP_FALLBACK_MINUTES } from '../_shared/cateringRules.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -44,6 +56,12 @@ const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const sb = createClient(SUPABASE_URL, SERVICE_ROLE, { auth: { autoRefreshToken: false, persistSession: false } });
+// Platform: company roles for the staff rule, and locations.timezone for the venue clock.
+const PLATFORM_URL = Deno.env.get('PLATFORM_SUPABASE_URL') ?? '';
+const PLATFORM_KEY = Deno.env.get('PLATFORM_SUPABASE_SERVICE_ROLE_KEY') ?? Deno.env.get('PLATFORM_SERVICE_KEY') ?? '';
+const platform = PLATFORM_URL && PLATFORM_KEY
+  ? createClient(PLATFORM_URL, PLATFORM_KEY, { auth: { autoRefreshToken: false, persistSession: false } })
+  : null;
 
 // No ?loc= on purpose. ezCater allows one subscriber per API user covering many
 // caterers, so the webhook resolves the location from the notification's
@@ -81,20 +99,28 @@ function isAbsentColumn(err: any, column: string): boolean {
   return msg.includes(`column "${column}"`) || msg.includes(`'${column}' column`);
 }
 
-/** Signed in Ops user with access to this location, or super_admin. Same fence as hubrise-connect. */
+/** The bearer, as a user (or the service role). null when there is none or it is not valid. */
+async function callerOf(req: Request): Promise<{ service: boolean; user: any | null }> {
+  const token = (req.headers.get('Authorization') || '').replace('Bearer ', '').trim();
+  if (!token) return { service: false, user: null };
+  if (token === SERVICE_ROLE) return { service: true, user: null };
+  try {
+    const { data: { user } } = await sb.auth.getUser(token);
+    return { service: false, user: user || null };
+  } catch { return { service: false, user: null }; }
+}
+
+/**
+ * Back Office staff of this venue (the staff rule in _shared/staffAuthority.ts: never an
+ * anonymous session, super_admin, user_locations or user_profiles.location_id, or a company
+ * role for the venue's company), or the service role.
+ */
 async function requireAccess(req: Request, opsLocationId: string): Promise<{ ok: true; userId: string } | { ok: false; res: Response }> {
-  const authHeader = req.headers.get('Authorization') || '';
-  const token = authHeader.replace('Bearer ', '').trim();
-  if (!token) return { ok: false, res: json({ error: 'Unauthorized' }, 401) };
-  if (token === SERVICE_ROLE) return { ok: true, userId: 'service' };
-  const { data: { user: caller } } = await sb.auth.getUser(token);
-  if (!caller) return { ok: false, res: json({ error: 'Invalid token' }, 401) };
-  const [{ data: ul }, { data: prof }] = await Promise.all([
-    sb.from('user_locations').select('location_id').eq('user_id', caller.id).eq('location_id', opsLocationId).maybeSingle(),
-    sb.from('user_profiles').select('role').eq('id', caller.id).maybeSingle(),
-  ]);
-  if (!ul && prof?.role !== 'super_admin') return { ok: false, res: json({ error: 'No access to this location' }, 403) };
-  return { ok: true, userId: caller.id };
+  const { service, user } = await callerOf(req);
+  if (service) return { ok: true, userId: 'service' };
+  if (!user) return { ok: false, res: json({ error: 'Unauthorized' }, 401) };
+  if (!(await staffForLocation(sb, platform, user, opsLocationId))) return { ok: false, res: json({ error: 'No access to this location' }, 403) };
+  return { ok: true, userId: user.id };
 }
 
 /**
@@ -290,6 +316,46 @@ Deno.serve(async (req) => {
   if (!action) return json({ error: 'action required' }, 400);
   if (!opsLocationId) return json({ error: 'ops_location_id required' }, 400);
 
+  // ── Order actions, each with its own fence ──────────────────────────────────
+  if (action === 'prefire' || action === 'resync_order') {
+    const ref = String(body?.ref || '').trim();
+    if (!ref) return json({ error: 'ref required' }, 400);
+    const { service, user } = await callerOf(req);
+    try {
+      if (action === 'prefire') {
+        // The till's own catering release. What it can do is bounded: re-ask ezCater about an
+        // order of THIS venue and save what ezCater says. It never fires anything itself.
+        const allowed = service || (!!user && (await staffForLocation(sb, platform, user, opsLocationId) || await deviceAtLocation(sb, user, opsLocationId)));
+        if (!allowed) return json({ error: 'No access to this location' }, 403);
+        const r = await prefireCheck(sb, platform, {
+          locationId: opsLocationId, ref,
+          log: (...a: unknown[]) => console.log('[ezcater-connect prefire]', ...a),
+        });
+        const row = r.row ? {
+          ref: r.row.ref, type: r.row.type ?? null, source: r.row.source ?? 'ezcater', status: r.row.status,
+          items: r.row.items || [], customer: r.row.customer || null, sent_at: r.row.sent_at ?? null,
+          collection_time: r.row.collection_time ?? null, event_date: r.row.event_date ?? null,
+        } : null;
+        return json({ ok: true, fire: r.fire, outcome: r.outcome, checked: r.checked, why: r.why ?? null, row });
+      }
+      const who = service ? { ok: true as const, by: 'service' } : await staffActor(sb, platform, user, opsLocationId, body?.pin);
+      if (!who.ok) return json({ error: who.error }, who.status);
+      const r = await resyncOrder(sb, platform, {
+        locationId: opsLocationId, ref,
+        log: (...a: unknown[]) => console.log('[ezcater-connect resync]', ...a),
+      });
+      console.log('[ezcater-connect] resync', ref, 'by', who.by, r.ok ? (r.fired ? 'fired order, not moved' : 'rewritten') : r.error);
+      if (!r.ok) return json({ ok: false, error: r.error });
+      return json({ ok: true, fired: r.fired, changed: r.changed, message: r.message, status: r.row?.status ?? null });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error('[ezcater-connect]', action, ref, msg);
+      // A prefire that breaks must still let the kitchen have the order.
+      if (action === 'prefire') return json({ ok: false, fire: true, outcome: 'fire', checked: false, why: 'the check failed', row: null });
+      return json({ ok: false, error: 'Could not re-sync this order. Nothing was changed.' });
+    }
+  }
+
   const access = await requireAccess(req, opsLocationId);
   if (!access.ok) return access.res;
 
@@ -303,11 +369,19 @@ Deno.serve(async (req) => {
           sb.from('ezcater_caterers').select('*').eq('location_id', opsLocationId),
           sb.from('ezcater_caterers').select('*').is('location_id', null),
         ]);
+        // No catering prep time set means every ezCater order here is timed with the fallback.
+        // The Connect screen says so until the venue sets one.
+        let cateringPrep: any = null;
+        try {
+          const v = await readCateringVenue(sb, platform, opsLocationId);
+          cateringPrep = { set: !v.prepFallback, minutes: v.prepFallback ? null : v.prepMinutes, fallback_minutes: EZ_PREP_FALLBACK_MINUTES };
+        } catch { cateringPrep = null; }
         return json({
           ok: true,
           status: publicStatus(conn),
           caterers: (mine || []).map(catererRow),
           unmapped: (unmapped || []).map(catererRow),
+          catering_prep: cateringPrep,
         });
       }
 

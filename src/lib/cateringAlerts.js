@@ -21,7 +21,7 @@ export function cateringChangeAlert(row, oldRow) {
     return {
       key: `${row.ref}:${change.at}`,
       alert: {
-        source: row.source, kind: change.kinds.includes('cancelled') ? 'cancel' : 'changed',
+        source: row.source, kind: (change.kinds.includes('cancelled') || change.kinds.includes('replaced')) ? 'cancel' : 'changed',
         who, ref: row.ref, total: 0, orderType: row.type || null, status: row.status || null,
         message: changedAfterFireText(change),
       },

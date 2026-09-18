@@ -103,9 +103,13 @@ test('numbers: online, catering and QR refs show their last 3 only (mirrors orde
   assert.ok(body.includes('right(p_ref, 3)'));
 });
 
+// The customer typed list BEFORE 20260918 made ezCater catering. The older files keep it; the
+// newest feed (20260918) must carry CUSTOMER_TYPED_SOURCES itself, pinned below.
+const TYPED_BEFORE_20260918 = ['kiosk', 'online', 'qr', 'catering'];
+
 test('the feed hides customer typed names until a server stamped status change', () => {
   const feed = fnText('order_status_feed');
-  const quoted = CUSTOMER_TYPED_SOURCES.map(s => `'${s}'`).join(',');
+  const quoted = TYPED_BEFORE_20260918.map(s => `'${s}'`).join(',');
   assert.ok(feed.includes(`l.source in (${quoted})`), quoted);
   assert.ok(feed.includes('l.status_changed_at > l.first_seen_at'));
   assert.ok(sql.includes('first_seen_at     timestamptz not null default now()'));
@@ -220,7 +224,7 @@ test('20260911c: one section setting decides the name, and the global block is g
   // A name is the section's own nameFormat through _osd_name, which gives null for 'number'.
   assert.ok(sqlFollow.includes("else public._osd_name(l.cust->>'name', l.sec->>'nameFormat')"));
   // The customer typed rule still holds: kiosk, online, QR and catering wait for a status change.
-  const quoted = CUSTOMER_TYPED_SOURCES.map(s => `'${s}'`).join(',');
+  const quoted = TYPED_BEFORE_20260918.map(s => `'${s}'`).join(',');
   assert.ok(sqlFollow.includes(`l.source in (${quoted})`), quoted);
   assert.ok(sqlFollow.includes('l.status_changed_at > l.first_seen_at'));
   // names_enabled is still computed and still returned. Back Office calls the gate function
@@ -316,7 +320,7 @@ test('20260917: replaces two functions and nothing else, idempotent, guarded, no
 // nothing else moves.
 const sqlEz = fs.readFileSync(new URL('../../../supabase/migrations/20260918_OPS_ezcater_catering_order_screens.sql', import.meta.url), 'utf8');
 
-test('20260918: exactly two feed lines change, both ezCater exceptions, and nothing else moves', () => {
+test('20260918: exactly three feed lines change, all ezCater is catering, and nothing else moves', () => {
   const base = feedCode(sqlFollow);
   const next = feedCode(sqlEz);
   assert.equal(base.length, next.length);
@@ -326,7 +330,16 @@ test('20260918: exactly two feed lines change, both ezCater exceptions, and noth
      "            case when j.source = 'hubrise' and not v_unaccepted then null else 'received' end"],
     ["                 or b.sent_at <= v_now + case when b.source = 'ezcater' then interval '60 minutes' else interval '0 minutes' end)",
      "                 or b.sent_at <= v_now)"],
+    // An ezCater name is typed by ezCater's customer: the catering name rule (CUSTOMER_TYPED_SOURCES).
+    ["               when l.source in ('kiosk','online','qr','catering')",
+     `               when l.source in (${CUSTOMER_TYPED_SOURCES.map(s => `'${s}'`).join(',')})`],
   ]);
+  assert.ok(CUSTOMER_TYPED_SOURCES.includes('ezcater'));
+  // The due indexes cover both catering sources, and are safe to run twice.
+  assert.ok(sqlEz.includes("where source in ('catering', 'ezcater') and kitchen_routed_at is null"));
+  assert.equal((sqlEz.match(/create index if not exists/g) || []).length, 2);
+  // Run order: this file BEFORE the edge functions.
+  assert.ok(sqlEz.includes('RUN THIS FIRST, BEFORE THE EDGE FUNCTIONS ARE DEPLOYED'));
   // The ezCater channel and number helpers are not touched: ezCater stays visible as a channel.
   const l = sqlEz.toLowerCase();
   assert.equal((l.match(/create or replace function/g) || []).length, 1);

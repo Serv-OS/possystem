@@ -22,7 +22,8 @@ import { getActiveLocationSync } from '../lib/supabase';
 import { hubrisePushStatus } from '../lib/hubrise';
 import { getDeliveryDetail } from '../lib/delivery/deliveryConfig';
 import { dispatchDelivery, sendDeliveryTrackingSMS } from '../lib/delivery/dispatch';
-import { isCateringSource, cateringSourceLabel, cateringHoldReason, mayBookOurCourier, changedAfterFireText } from '../lib/cateringRules';
+import { isCateringSource, cateringSourceLabel, cateringHoldReason, mayBookOurCourier, changedAfterFireText, ezcaterOrderWarnings } from '../lib/cateringRules';
+import { ezcaterResyncOrder } from '../lib/ezcater';
 import { statusLabel, statusColor, statusIcon } from '../lib/delivery/status';
 import { courierPhase, courierLegs, courierLateness } from '../lib/delivery/courierTimes';
 import { buildChannelCloseFields } from '../lib/channelMoney';
@@ -110,6 +111,25 @@ export default function OrdersHub() {
   // v5.5.850: known menu-item ids — flags HubRise order lines whose sku_ref isn't in our
   // catalog ("not in menu" chip on the card) so staff see a stale published menu at a glance.
   const knownIds = useMemo(() => new Set((menuItems || []).map(m => m.id)), [menuItems]);
+
+  // "Re-sync from ezCater" on an ezCater order's detail. Staff only, checked SERVER side: this
+  // till must be paired to the venue AND the signed in staff member's PIN must match an active
+  // staff member there (the till's session alone is anonymous, so it proves nothing). Re-asks
+  // ezCater and rewrites the order through the catering rules; never moves a fired order.
+  const [resyncState, setResyncState] = useState(null);   // { ref, busy, msg, err }
+  const resyncFromEzcater = async (o) => {
+    const locId = getActiveLocationSync();
+    if (!locId || locId === 'loc-demo' || resyncState?.busy) return;
+    if (!staff?.pin) { setResyncState({ ref: o.ref, busy: false, msg: null, err: 'Sign in with your PIN first.' }); return; }
+    setResyncState({ ref: o.ref, busy: true, msg: null, err: null });
+    try {
+      const r = await ezcaterResyncOrder(locId, o.ref, staff.pin);
+      if (r?.ok === false) setResyncState({ ref: o.ref, busy: false, msg: null, err: r.error || 'Could not re-sync.' });
+      else { setResyncState({ ref: o.ref, busy: false, msg: r?.message || 'Re-synced.', err: null }); showToast?.(r?.message || 'Re-synced from ezCater', 'success'); }
+    } catch (e) {
+      setResyncState({ ref: o.ref, busy: false, msg: null, err: e?.message || 'Could not re-sync.' });
+    }
+  };
 
   const [filter, setFilter]     = useState('all');
   // v5.8.18: which DAY. Advance orders stay on the till but off today's list.
@@ -1118,6 +1138,21 @@ export default function OrdersHub() {
               {viewOrder.ref} · {isCateringSource(viewOrder.source) ? cateringSourceLabel(viewOrder.source) : viewOrder.channel}
               {viewOrder.customer?.event_date ? ` · ${viewOrder.customer.event_date}${(viewOrder.customer?.event_time || viewOrder.collectionTime) ? ` at ${viewOrder.customer.event_time || viewOrder.collectionTime}` : ''}` : ''}
             </div>
+            {viewOrder.source === 'ezcater' && (
+              <div style={{ marginBottom:12 }}>
+                {[changedAfterFireText(viewOrder.customer?.changedAfterFire), ...ezcaterOrderWarnings({ ...(viewOrder._raw || {}), customer: viewOrder.customer })].filter(Boolean).map((w, i) => (
+                  <div key={i} style={{ fontSize:12, fontWeight:700, color:'#b45309', background:'#f59e0b14', border:'1px solid #f59e0b44', borderRadius:8, padding:'6px 9px', marginBottom:6, lineHeight:1.45 }}>{w}</div>
+                ))}
+                <div style={{ display:'flex', gap:8, alignItems:'center', flexWrap:'wrap' }}>
+                  <button onClick={() => resyncFromEzcater(viewOrder)} disabled={resyncState?.busy}
+                    style={{ padding:'6px 12px', borderRadius:8, border:'1px solid var(--bdr2)', background:'transparent', color:'var(--t1)', fontSize:12, fontWeight:700, cursor:'pointer', fontFamily:'inherit' }}>
+                    {resyncState?.busy && resyncState.ref === viewOrder.ref ? 'Re-syncing…' : 'Re-sync from ezCater'}
+                  </button>
+                  {resyncState?.ref === viewOrder.ref && resyncState.msg && <span style={{ fontSize:12, color:'var(--grn)' }}>{resyncState.msg}</span>}
+                  {resyncState?.ref === viewOrder.ref && resyncState.err && <span style={{ fontSize:12, color:'#dc2626' }}>{resyncState.err}</span>}
+                </div>
+              </div>
+            )}
             {viewOrder.customer && (viewOrder.customer.name || viewOrder.customer.phone || viewOrder.customer.address) && (
               <div style={{ fontSize:12.5, color:'var(--t2)', marginBottom:12, lineHeight:1.5 }}>
                 {viewOrder.customer.name && <div>{viewOrder.customer.name}</div>}
@@ -1462,6 +1497,7 @@ function OrderCardInner({ order, onAdvance, onAccept, onAcceptDelay, onReject, o
             {order.source === 'hubrise' && <span style={{ fontSize:9, fontWeight:800, padding:'1px 6px', borderRadius:8, background:'#ef444418', border:'1px solid #ef444455', color:'#ef4444', letterSpacing:'.03em' }}>{(order.customer?.channel || 'HUBRISE').toUpperCase()}</span>}
             {/* Catering keeps its channel on the card: CATERING or EZCATER (lib/cateringRules.js). */}
             {isCateringSource(order.source) && <span style={{ fontSize:9, fontWeight:800, padding:'1px 6px', borderRadius:8, background:'#14b8a618', border:'1px solid #14b8a655', color:'#14b8a6', letterSpacing:'.03em' }}>{cateringSourceLabel(order.source).toUpperCase()}{order.source === 'ezcater' && order.customer?.ezcater_order_number ? ` ${order.customer.ezcater_order_number}` : ''}</span>}
+            {order.source === 'ezcater' && ezcaterOrderWarnings(order).length > 0 && <span title={ezcaterOrderWarnings(order).join(' ')} style={{ fontSize:9, fontWeight:800, padding:'1px 6px', borderRadius:8, background:'#f59e0b18', border:'1px solid #f59e0b44', color:'#b45309' }}>{order.customer?.replacedBy ? 'REPLACED ON EZCATER' : order.customer?.possibleReplacement ? 'POSSIBLE REPLACEMENT' : order.customer?.prepFallback ? 'NO CATERING PREP SET' : 'NOT RE-CHECKED'}</span>}
             {cateringHoldReason(order) === 'awaiting_ezcater_acceptance' && <span style={{ fontSize:9, fontWeight:800, padding:'1px 6px', borderRadius:8, background:'#f59e0b18', border:'1px solid #f59e0b44', color:'#f59e0b' }}>NOT ACCEPTED ON EZCATER</span>}
             {changedAfterFireText(order.customer?.changedAfterFire) && <span title={changedAfterFireText(order.customer.changedAfterFire)} style={{ fontSize:9, fontWeight:800, padding:'1px 6px', borderRadius:8, background:'#dc262618', border:'1px solid #dc262666', color:'#dc2626' }}>{order.status === 'cancelled' ? 'CANCELLED AFTER KITCHEN' : 'CHANGED AFTER KITCHEN'}</span>}
             {(order.paid || order.customer?.paid) && <span style={{ fontSize:9, fontWeight:700, padding:'1px 6px', borderRadius:8, background:'#22c55e18', border:'1px solid #22c55e44', color:'#22c55e' }}>PAID</span>}

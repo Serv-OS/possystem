@@ -479,7 +479,12 @@ export function orderToQueueRow(
     priorAcceptedCount?: number; eventAt?: string | null;
     // The venue's clock and catering prep time. The webhook always passes both (locations.timezone
     // and catering_site_settings.prep_time_minutes); see ezCateringTiming.
-    venue?: { timeZone?: string | null; prepMinutes?: number | null } | null;
+    venue?: { timeZone?: string | null; prepMinutes?: number | null; prepFallback?: boolean } | null;
+    // A RE-QUERY (the pre fire check, or staff pressing "Re-sync from ezCater"), not a
+    // notification. ezCater sent no new accepted event, so it must not count as one: the
+    // accepted count is what tells a modification apart, and a re-query that counted would
+    // mark every re-asked order modified.
+    requery?: boolean;
   } = {},
 ): { row: any; link: any } {
   const uuid = str(order?.uuid);
@@ -639,6 +644,12 @@ export function orderToQueueRow(
     fireAt: timing.fireAt,
     fire_time: timing.fire_time,
     prepMinutes: timing.prepMinutes,
+    // The venue has no catering prep time set, so the fallback (EZ_PREP_FALLBACK_MINUTES in
+    // cateringRules.js) timed this order. Shown on the order until the venue sets its own.
+    prepFallback: opts.venue?.prepFallback === true,
+    // ezCater's own instants, as last written. A time change after firing is judged against
+    // these, never against sent_at (see ezcaterCatering.js).
+    eventAt: timing.eventAt,
 
     // Plates, napkins and cups ezCater has promised the customer. The kitchen
     // packs these, so they belong on the ticket.
@@ -695,8 +706,12 @@ export function orderToQueueRow(
   // because acceptOrder then needs acceptModification: true or ezCater answers
   // invalid_state_transition.
   const priorAccepted = Number(opts.priorAcceptedCount) || 0;
-  const acceptedCount = lifecycle === 'accepted' ? priorAccepted + 1 : priorAccepted;
-  const isModification = lifecycle === 'accepted' && priorAccepted >= 1;
+  // A re-query never adds an accepted: it keeps the count, except that an order seen accepted by
+  // the re-query and never by a notification (a missed notification) counts once.
+  const acceptedCount = opts.requery
+    ? Math.max(priorAccepted, lifecycle === 'accepted' ? 1 : 0)
+    : (lifecycle === 'accepted' ? priorAccepted + 1 : priorAccepted);
+  const isModification = opts.requery ? acceptedCount >= 2 : (lifecycle === 'accepted' && priorAccepted >= 1);
   if (isModification) {
     customer.modified = true;
     customer.modificationCount = acceptedCount - 1;
@@ -735,7 +750,7 @@ export function orderToQueueRow(
     order_type: orderType || null,
     ez_lifecycle: lifecycle || null,
     accepted_count: acceptedCount,
-    modification_seen_at: isModification ? (opts.eventAt || null) : null,
+    modification_seen_at: isModification && !opts.requery ? (opts.eventAt || null) : null,
     event_at: opts.eventAt || null,
     // The KITCHEN FIRE instant (18 Sep 2026), the same value as order_queue.sent_at. It used to
     // be the event time, which is when the customer eats, not when the kitchen starts. The

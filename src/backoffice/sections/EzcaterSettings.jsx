@@ -32,7 +32,7 @@ import {
 import {
   statusFrom, isConnected, statusWords, errorWords, isSetupOff,
   catererRows, caterersWhere, catererLine, connectBody, mapBody, unmapBody,
-  policyPayload, apiEnvironment, gateWords, SWITCH_HELP,
+  policyPayload, apiEnvironment, gateWords, SWITCH_HELP, cateringPrepWarning,
 } from '../../lib/ezcaterSettings';
 
 // Same vocabulary as HubRise.jsx and EzcaterItemMatching.jsx, the cards this
@@ -327,6 +327,8 @@ export default function EzcaterSettings({ locationId }) {
       ) : (
         <>
           {msg && <div style={S.note(msg.kind)}>{msg.text}</div>}
+          {/* No catering prep time set: every ezCater order here is timed with the fallback. */}
+          {cateringPrepWarning(answer) && <div style={S.note('warn')}>{cateringPrepWarning(answer)}</div>}
 
           {!connected ? (
             <>

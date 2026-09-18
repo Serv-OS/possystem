@@ -244,20 +244,22 @@ test('evaluateOrder: a till pre order with no fire time stays hidden until the t
 });
 
 test('evaluateOrder: customer typed names show only after a server stamped status change', () => {
-  assert.deepEqual(CUSTOMER_TYPED_SOURCES, ['kiosk', 'online', 'qr', 'catering']);
+  assert.deepEqual(CUSTOMER_TYPED_SOURCES, ['kiosk', 'online', 'qr', 'catering', 'ezcater']);
   for (const source of CUSTOMER_TYPED_SOURCES) {
     const type = source === 'qr' ? 'dine-in' : 'collection';
     const fresh = ev({ source, type, ref: 'R1047', status: 'prep', statusChangedAt: NOW - 5 * MIN, firstSeenAt: NOW - 5 * MIN });
     assert.equal(fresh.visible, true, source);
     assert.equal(fresh.row.name, null, `${source} untouched shows the number`);
-    assert.equal(fresh.row.number, '47');
+    // ezCater shows its own order number (none on this sample); the others the last 2 of the ref.
+    if (source !== 'ezcater') assert.equal(fresh.row.number, '47');
     const noMark = ev({ source, type, ref: 'R1047', status: 'prep', statusChangedAt: null, firstSeenAt: null });
     assert.equal(noMark.row.name, null, `${source} with no mark`);
     const moved = ev({ source, type, ref: 'R1047', status: 'ready', statusChangedAt: NOW - MIN, firstSeenAt: NOW - 5 * MIN });
     assert.equal(moved.row.name, 'Joseph W', `${source} moved by staff`);
   }
-  // Till, delivery app and ezCater names are not customer typed on a public device.
-  for (const source of ['pos', 'hubrise', 'ezcater']) {
+  // Till and delivery app names are not customer typed. ezCater IS since 20260918: it is
+  // catering, and its contact name is typed by ezCater's customer, so it is in the loop above.
+  for (const source of ['pos', 'hubrise']) {
     const r = ev({ source, type: 'delivery', status: 'prep', statusChangedAt: NOW - 5 * MIN, firstSeenAt: NOW - 5 * MIN, customer: { name: 'Joseph Wong', channel: 'Deliveroo' } });
     assert.equal(r.row.name, 'Joseph W', source);
   }

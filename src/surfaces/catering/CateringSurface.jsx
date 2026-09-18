@@ -15,7 +15,9 @@ import OnlineItemSheet from '../online/OnlineItemSheet';
 import OnlineCart from '../online/OnlineCart';
 import CateringCheckout from './CateringCheckout';
 // Per day capacity counts every catering order the kitchen has that day, ezCater included.
-import { CATERING_SOURCES } from '../../lib/cateringRules';
+// Only the order's own currency is read from its customer record, nothing personal.
+const DAY_LOAD_COLUMNS = 'total, status, source, currency:customer->totals->>currency';
+import { CATERING_SOURCES, cateringDayLoad } from '../../lib/cateringRules';
 import MenuHeader from '../menu/MenuHeader';
 import { readTheme, deriveVars, FIXED, BODY_FONT, DISPLAY_FONT } from '../menu/menuTheme';
 
@@ -130,13 +132,14 @@ export default function CateringSurface({ location }) {
     if (!eventDate || !cfg) { setDayLoad(null); return; }
     let live = true;
     (async () => {
-      const { data } = await supabase.from('order_queue').select('total, status').eq('location_id', opsId).in('source', CATERING_SOURCES).eq('event_date', eventDate);
+      const { data } = await supabase.from('order_queue').select(DAY_LOAD_COLUMNS).eq('location_id', opsId).in('source', CATERING_SOURCES).eq('event_date', eventDate);
       if (!live) return;
-      const rows = (data || []).filter((r) => r.status !== 'cancelled');
-      setDayLoad({ count: rows.length, value: rows.reduce((s, r) => s + Number(r.total || 0), 0) });
+      // Count: every catering order, ezCater included. Value: only orders in this venue's own
+      // currency, never converted (cateringDayLoad, mirrored by the catering_day_load RPC).
+      setDayLoad(cateringDayLoad(data, cur));
     })();
     return () => { live = false; };
-  }, [eventDate, cfg, opsId]);
+  }, [eventDate, cfg, opsId, cur]);
 
   const subtotal = useMemo(() => cart.reduce((s, l) => s + (l.price + (l.mods || []).reduce((m, x) => m + (Number(x.price) || 0), 0)) * (l.qty || 1), 0), [cart]);
 
@@ -216,9 +219,9 @@ export default function CateringSurface({ location }) {
         if (dateClosed(ds)) continue;
         const lim = cfg.capacity_overrides?.[ds] ?? cfg.capacity_per_day;
         if (lim == null || lim === '') { found = ds; break; }
-        const { data } = await supabase.from('order_queue').select('total, status').eq('location_id', opsId).in('source', CATERING_SOURCES).eq('event_date', ds);
-        const rows = (data || []).filter((r) => r.status !== 'cancelled');
-        const used = cfg.capacity_mode === 'value' ? rows.reduce((s, r) => s + Number(r.total || 0), 0) : rows.length;
+        const { data } = await supabase.from('order_queue').select(DAY_LOAD_COLUMNS).eq('location_id', opsId).in('source', CATERING_SOURCES).eq('event_date', ds);
+        const load = cateringDayLoad(data, cur);
+        const used = cfg.capacity_mode === 'value' ? load.value : load.count;
         const cap = cfg.capacity_mode === 'value' ? Number(lim) / 100 : Number(lim);
         if (used < cap) found = ds;
       }
