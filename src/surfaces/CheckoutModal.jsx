@@ -1006,6 +1006,8 @@ function LoyaltyRewardsEntry({ customer, loyaltyData, items = [], total, onAppli
       const applied = await redeemLoyaltyReward(reward, {
         customerId: loyaltyData.customerId || customer?.customerId,
         items, total,
+        // This site's menu, so a reward saved at another site matches by name (18 Sep 2026).
+        menuItems: useStore.getState().menuItems || [],
       });
       onApplied(applied);
     } catch (e) {
@@ -1241,6 +1243,7 @@ export default function CheckoutModal({ items, subtotal, service, deliveryFee = 
     let alive = true;
     redeemLoyaltyReward(pendingLoyaltyReward, {
       customerId: loyaltyData.customerId || customer?.customerId, items, total,
+      menuItems: useStore.getState().menuItems || [],
     })
       .then(r => { if (alive) { setLoyaltyApplied(r); setPendingLoyaltyReward?.(null); } })
       .catch(() => { /* leave for manual apply */ });

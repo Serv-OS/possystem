@@ -21,6 +21,7 @@
 import { stageGiftCard } from './giftCommit.js';
 import { kioskOrderItem } from './kioskLine.js';
 import { kioskRewardTapCheck, kioskRewardMissingItems, kioskLoyaltyCreditMinor } from './kioskLoyaltyReward.js';
+import { eligibleItemNames } from './loyaltyMenuMatch.js';
 
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 const isObj = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -146,8 +147,9 @@ export function stageKioskReward(reward, { cart = [], discountedSubtotal = 0, to
   const check = kioskRewardTapCheck(reward.type, rv, ctx);
   if (check.error) {
     if (kioskRewardMissingItems(reward.type, rv, ctx.cart) !== null) {
-      const eligible = Array.isArray(rv.eligible_items) ? rv.eligible_items : [];
-      return { ok: false, reason: 'needsItem', items: eligible.map(ei => ei?.name).filter(Boolean) };
+      // One name per item even when the reward was saved for every site (four Lattes read
+      // "Latte"); lib/loyaltyMenuMatch.js, the same rule the tap check matched with.
+      return { ok: false, reason: 'needsItem', items: eligibleItemNames(rv) };
     }
     // The gift card is the only reason when the same check passes without it.
     if (ctx.giftMinor > 0 && !kioskRewardTapCheck(reward.type, rv, { ...ctx, giftMinor: 0 }).error) {

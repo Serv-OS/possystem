@@ -22,6 +22,7 @@ import { supabase, ensureAuthToken } from '../lib/supabase';
 import { money, setActiveCurrency } from '../lib/currency';
 import { subscribeDisplay, getDisplayTargetId, publishCustomerPhone, publishRedeemReward, publishCustomerTip, isLoyaltyEnabled } from '../lib/customerDisplay';
 import { ServOSIcon } from '../components/ServOSBrand';
+import { eligibleItemNames } from '../lib/loyaltyMenuMatch';
 
 const IDLE_AFTER_MS = 45000;
 const SLIDE_MS = 7000;
@@ -348,7 +349,8 @@ function rewardBenefit(r) {
   if (r?.type === 'discount_fixed' && v.amount_minor) return `${money(v.amount_minor / 100)} off`;
   if (r?.type === 'discount_percent' && v.percent) return `${v.percent}% off`;
   if (r?.type === 'free_item') {
-    const names = (v.eligible_items || []).map(ei => ei.name).filter(Boolean);
+    // One name per item: a reward saved for every site of the company stores one id per site.
+    const names = eligibleItemNames(v);
     return names.length ? `Free ${names.slice(0, 2).join(' or ')}` : 'Free item';
   }
   if (r?.type === 'free_delivery') return 'Free delivery';
