@@ -19,6 +19,10 @@
 -- that reads it (booking widget, kiosk, QR, manager snapshot, edge functions)
 -- has to learn about soft deletes.
 --
+-- deleted_at is never sent by the app: the default here, and the trigger in
+-- 20260918b_OPS_floor_tables_server_time.sql (run it NEXT), set it from the
+-- database clock, so no device clock ever orders a delete.
+--
 -- BEFORE THIS RUNS the app still works: the tombstone read and write report the
 -- table as missing and are skipped, and the tombstones travel on the deleting
 -- machine and in the next Push to POS instead.

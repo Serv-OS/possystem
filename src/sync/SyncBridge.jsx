@@ -19,7 +19,9 @@ import { startTerminalJobReconciler, stopTerminalJobReconciler } from './Termina
 import { reconcilePendingChecks, onReconnect, periodicSync } from './DataSafe.js';
 import { getShowItemImages } from '../lib/locationTime';
 import { normaliseMenuRow, assembleTaxProfiles } from '../lib/rowMapping';
-import { mergeDefinitions, applyPlanRead, applyTombstones, normaliseFloorRow, loadPlanState, savePlanState, mergeTombstones, tombstonesFromRows, pruneClosedRemoved } from '../lib/tablePlan';
+import { mergeBroadcastTables, bootTables, normaliseFloorRow, loadPlanState, savePlanState, mergeTombs, tombstonesFromRows, nextSeq, pushSeqFor } from '../lib/tablePlan';
+import { isSessionClosed } from './sessionClosure';
+import { startTablePlanSync } from './TablePlanSync';
 
 const OPS_URL = import.meta.env.VITE_SUPABASE_URL;
 
@@ -285,7 +287,7 @@ export default function SyncBridge({ onSyncPulse }) {
             }
           } catch { /* cache is best-effort */ }
 
-          const { fetchLatestConfigPush, fetchFloorPlan, fetchMenuItems, fetchMenuCategories, fetchMenus, fetch86List, fetchStockLevels, fetchTableTombstones } = await import('../lib/db.js');
+          const { fetchLatestConfigPush, fetchFloorPlanVersioned, fetchMenuItems, fetchMenuCategories, fetchMenus, fetch86List, fetchStockLevels, fetchTableTombstones } = await import('../lib/db.js');
           const { supabase: sb2 } = await import('../lib/supabase.js');
 
           // Load config push (menus, layout, sections)
@@ -314,11 +316,12 @@ export default function SyncBridge({ onSyncPulse }) {
           // unwrap() puts every leg back into the familiar { data, error } shape, so a
           // rejected leg reads as `data: null` and is skipped by the same guards below
           // that already skip an empty read. Nothing downstream changes shape.
-          // v5.9.4: the plan read's version is the moment it STARTED, so a Back Office edit made
-          // while it was in flight counts as newer (lib/tablePlan.js applyPlanRead).
-          const planReadStartedAt = Date.now();
+          // v5.9.4: the plan read's version is this machine's observation counter taken just BEFORE
+          // it is sent (never a clock), plus the database time of the read when floor_plan_read
+          // exists (lib/tablePlan.js applyPlanRead). Anything observed after this counts as newer.
+          const planReadSeq = nextSeq();
           const [floorSt, itemsSt, catsSt, menusSt, sessionsSt, profilesSt, modGroupsSt, e86St, stockSt, linksSt, taxProfilesSt, taxLinesSt, locTaxSt, tombsSt] = await Promise.allSettled([
-            fetchFloorPlan(locationId),
+            fetchFloorPlanVersioned(locationId),
             fetchMenuItems(locationId),
             fetchMenuCategories(locationId),
             fetchMenus(locationId),
@@ -396,89 +399,42 @@ export default function SyncBridge({ onSyncPulse }) {
             try { localStorage.setItem('rpos-device-profiles', JSON.stringify(mapped)); } catch {}
           }
           const patch = {};
-          // v5.9.4 table plan (lib/tablePlan.js). Tombstones = this machine's + the last push's +
-          // floor_table_tombstones. A delete in any of them wins over every copy of the table.
-          const planState = loadPlanState(locationId);
-          const tombstones = mergeTombstones(
-            planState.tombstones,
-            snap?.tableTombstones,
-            tombstonesFromRows(tombsRes?.data),
-          );
-          savePlanState(locationId, { tombstones });
-          // Sessions known in the database: a table that still holds one is never dropped.
-          const dbOpen = new Set((sessionsRes?.data || []).filter(r => r.table_id && r.session).map(r => r.table_id));
-          const isOpen = (id) => dbOpen.has(id);
-          if (floorRes.data?.tables?.length) {
-            // Build a session map from Supabase active_sessions
-            const sessionMap = {};
-            (sessionsRes?.data || []).forEach(row => {
-              if (row.table_id && row.session) sessionMap[row.table_id] = row.session;
+          // v5.9.4 table plan (lib/tablePlan.js). The tables are computed further down, AFTER the
+          // closed checks have loaded (isSessionClosed needs them) and from the store as it is AT
+          // THAT MOMENT, never from a copy taken before the network waits. Here we only gather the
+          // inputs: tombstones (this machine's + the push's + floor_table_tombstones) and every
+          // session source (active_sessions first, then rpos-session-backup, then the emergency
+          // rpos-session-snapshot).
+          const bootSessions = {};
+          (sessionsRes?.data || []).forEach(row => {
+            if (row.table_id && row.session) bootSessions[row.table_id] = row.session;
+          });
+          // Also check localStorage backup for any sessions not yet written to Supabase
+          try {
+            const lsBackup = JSON.parse(localStorage.getItem('rpos-session-backup') || '{}');
+            Object.entries(lsBackup).forEach(([tid, sess]) => {
+              if (!bootSessions[tid] && sess) bootSessions[tid] = sess;
             });
-            // Also check localStorage backup for any sessions not yet written to Supabase
-            try {
-              const lsBackup = JSON.parse(localStorage.getItem('rpos-session-backup') || '{}');
-              Object.entries(lsBackup).forEach(([tid, sess]) => {
-                if (!sessionMap[tid]) sessionMap[tid] = sess;
+          } catch {}
+          // v4.5.0: ALSO check the synchronous emergency snapshot (written from SyncBridge's
+          // subscribe handler on every meaningful change). This bypasses the SessionSync write path
+          // entirely and survives wake-from-sleep even if the active_sessions write was failing.
+          try {
+            const emergency = JSON.parse(localStorage.getItem('rpos-session-snapshot') || '{}');
+            if (emergency?.sessions) {
+              Object.entries(emergency.sessions).forEach(([tid, sess]) => {
+                if (!bootSessions[tid] && sess) {
+                  bootSessions[tid] = sess;
+                  console.log('[SyncBridge] v4.5.0: rescued session for table', tid, 'from emergency snapshot');
+                }
               });
-            } catch {}
-            // v4.5.0: ALSO check the synchronous emergency snapshot (written from
-            // SyncBridge's subscribe handler on every meaningful change). This bypasses
-            // the SessionSync write path entirely and survives wake-from-sleep even if
-            // the active_sessions table write was silently failing.
-            try {
-              const snap = JSON.parse(localStorage.getItem('rpos-session-snapshot') || '{}');
-              if (snap?.sessions) {
-                Object.entries(snap.sessions).forEach(([tid, sess]) => {
-                  if (!sessionMap[tid]) {
-                    sessionMap[tid] = sess;
-                    console.log('[SyncBridge] v4.5.0: rescued session for table', tid, 'from emergency snapshot');
-                  }
-                });
-              }
-            } catch {}
-            // v4.5.0: PRESERVE in-memory sessions when DB + backup are silent.
-            // Mac wake / page re-init was wiping live sessions because active_sessions
-            // writes weren't reaching DB and the boot rebuild trusted (DB || backup || null).
-            // Now: also fall back to whatever is already in the live Zustand store before
-            // declaring a table empty. closedChecks already does this kind of additive merge.
-            //
-            // v5.9.4: the read is the PLAN VERSION. Definitions come from it (newer wins field by
-            // field), tombstones remove, and a table it lacks is gone UNLESS a session lives on it
-            // (then it stays reachable, flagged planRemoved). Before this, a table the read lacked
-            // was dropped even with an open order on it; the order sat in active_sessions with no
-            // table to show it on.
-            // v4.6.5 Bug 6 / v5.5.2: snake to camel (max_covers, sort_order) and location_id are
-            // mapped in normaliseFloorRow.
-            const existingTablesInStore = useStore.getState().tables || [];
-            const rows = floorRes.data.tables.map(t => normaliseFloorRow(t, { locationId, readAt: planReadStartedAt }));
-            const read = applyPlanRead({ local: existingTablesInStore, rows, readAt: planReadStartedAt, tombstones, isOpen });
-            // Build tables with sessions already applied — never flash as empty
-            const tables = read.tables.map(t => {
-              // Backup and snapshot copies only count for tables in the plan (as before); a
-              // retired table keeps what the database or memory holds.
-              const fromMap = (!t.planRemoved || dbOpen.has(t.id)) ? sessionMap[t.id] : null;
-              const session = fromMap || t.session || null;
-              if (!fromMap && t.session) {
-                console.warn('[SyncBridge] v4.5.0: preserving in-memory session for table', t.label || t.id, ': DB + backup were silent. Items:', t.session.items?.length);
-              }
-              return {
-                ...t,
-                status: session ? 'occupied' : 'available',
-                session,
-                firedCourses: session?.firedCourses || t.firedCourses || [],
-                sentAt: session?.sentAt || t.sentAt || null,
-              };
-            });
-            if (read.dropped.length) console.log('[SyncBridge] table plan: removed', read.dropped.join(', '), '(deleted, or not in the saved plan)');
-            if (read.keptOpen.length) console.warn('[SyncBridge] table plan: kept', read.keptOpen.join(', '), 'reachable: gone from the plan but an order is open on it');
-            savePlanState(locationId, { plan: read.plan });
-            patch.tables = pruneClosedRemoved(tables);
-          } else {
-            // Failed or empty read: absence never removes a table. Tombstones still do.
-            const cur = useStore.getState().tables || [];
-            const r = applyTombstones(cur, tombstones, isOpen);
-            if (r.changed) patch.tables = r.tables;
-          }
+            }
+          } catch {}
+          const floorRows = Array.isArray(floorRes.data?.tables)
+            ? floorRes.data.tables.map(t => normaliseFloorRow(t, { locationId, readSeq: planReadSeq }))
+            : null;
+          const floorSrvReadAt = floorRes.data?.srvReadAt || 0;
+          const bootTombRows = tombsRes?.data || null;
           if (itemsRes.data?.length && !snapHas('menuItems')) patch.menuItems = itemsRes.data.map(item => ({
             ...item,
             price: item.pricing?.base ?? item.price ?? 0,
@@ -693,6 +649,34 @@ export default function SyncBridge({ onSyncPulse }) {
 
           if (Object.keys(patch).length) useStore.setState(patch);
 
+          // v5.9.4 tables, at apply time (closed checks are in the store now). bootTables:
+          //   - a successful, non-empty plan read is the plan version (definitions from it, a table
+          //     it lacks is retired unless an order is open on it, then it stays reachable);
+          //   - a failed or empty read changes no definition (absence never removes a table);
+          //   - either way every open session gets its table: sessions attach to their tables, and
+          //     an open session whose table is missing (deleted table, split child check, cold boot
+          //     with an empty store) gets a rebuilt table flagged planRemoved. Closed sessions
+          //     (isSessionClosed) are ignored, so a leftover row rebuilds nothing.
+          // Before this, a cold boot (empty store, cached tables stripped) dropped every order on a
+          // deleted table, and an OFFLINE boot attached no session at all.
+          {
+            const state = loadPlanState(locationId);
+            const pushSeq = snap ? pushSeqFor(locationId, snap.version) : 0;
+            let tombs = mergeTombs(state.tombs, snap?.tableTombstones, { seq: pushSeq, cleared: state.cleared });
+            tombs = mergeTombs(tombs, tombstonesFromRows(bootTombRows, planReadSeq), { cleared: state.cleared });
+            const cur = useStore.getState().tables || [];
+            const { tables: bootList, read } = bootTables({
+              local: cur, floorRows, srvReadAt: floorSrvReadAt, readSeq: planReadSeq, tombs,
+              sessions: bootSessions, isClosed: isSessionClosed, labels: state.labels,
+            });
+            savePlanState(locationId, { plan: read?.plan || null, tombs, cleared: read?.cleared || null, labels: read?.labels || null });
+            if (read?.dropped?.length) console.log('[SyncBridge] table plan: removed', read.dropped.join(', '), '(deleted, or not in the saved plan)');
+            if (read?.keptOpen?.length) console.warn('[SyncBridge] table plan: kept', read.keptOpen.join(', '), 'reachable: gone from the plan but an order is open on it');
+            const rebuiltIds = bootList.filter(t => t.rebuilt && !cur.some(c => c.id === t.id)).map(t => t.id);
+            if (rebuiltIds.length) console.warn('[SyncBridge] table plan: rebuilt', rebuiltIds.join(', '), 'for open orders whose table was missing');
+            useStore.setState({ tables: bootList });
+          }
+
           // v5.5.238: Stamp the store with the location this data belongs to,
           // and validate that no cross-location items snuck in.
           useStore.setState({ _dataLocationId: locationId });
@@ -733,6 +717,8 @@ export default function SyncBridge({ onSyncPulse }) {
     // This is the reliable fix for cross-device close sync
     // Realtime DELETE events are unreliable; polling guarantees consistency
     if (!isMock) startSessionReconciler();
+    // v5.9.4: re-read the table plan on push / online / foreground / every few minutes.
+    if (!isMock) startTablePlanSync();
     if (!isMock) startTerminalJobReconciler();   // v5.5.846 — close tables paid on the PAX
 
 
@@ -855,56 +841,21 @@ export default function SyncBridge({ onSyncPulse }) {
     // above kept the RECEIVER's layout for ever and added every table the sender had, so a tab
     // that had not heard of a rename or delete (a POS tab left open next to Back Office) put the
     // old name and the deleted table back into the other tab, and Back Office then pushed them to
-    // every till. Definitions now go through lib/tablePlan.js mergeDefinitions: the newer defAt
-    // wins (ties keep the receiver's, as before), a tombstone removes, and a table the last plan
-    // read did not contain is not re-added. Tables the sender lacks are still kept.
-    const LAYOUT_FIELDS = ['x','y','w','h','label','section','shape','seats','area','maxCovers','sortOrder','defAt','editAt','locationId','planRemoved'];
+    // every till. Definitions now go through lib/tablePlan.js: the newer copy wins (database time,
+    // else this machine's observation order; ties keep the receiver's, as before), a tombstone
+    // removes, and a table the last plan read did not contain is not re-added unless it is newer
+    // than that read. Tables the sender lacks are still kept.
+    // v5.9.4 review: the merge lives in lib/tablePlan.js mergeBroadcastTables (pure, tested with
+    // the real code). The sender's OPEN sessions count as open, so a table this tab holds as
+    // deleted but the sender has an order on is kept reachable and gets that order, never
+    // discarded. Sessions follow the unchanged v4.5.3 rules.
     function mergeTablesSafely(localTables, incomingTables, activeId) {
       if (!Array.isArray(incomingTables)) return localTables;
-      const locId = getActiveLocationSync();
-      const { plan, tombstones } = loadPlanState(locId);
-      // 1. Definitions (layout, name, membership).
-      const defs = mergeDefinitions({ local: localTables || [], incoming: incomingTables, tombstones, plan, fallbackAt: 0, tie: 'local' });
-      const defById = new Map(defs.tables.map(t => [t.id, t]));
-      const localIds = new Set((localTables || []).map(t => t.id));
-      const byId = new Map(incomingTables.map(t => [t.id, t]));
-      // 2. Sessions (unchanged rules), on the tables that survived step 1.
-      const merged = [];
-      for (const local0 of (localTables || [])) {
-        const def = defById.get(local0.id);
-        if (!def) continue;                       // deleted (tombstoned, no session)
-        const local = def;
-        if (local.id === activeId) { merged.push(local); continue; }
-        const incoming = byId.get(local.id);
-        if (!incoming) { merged.push(local); continue; }
-
-        // v4.5.3 STOP-BLEED: never let incoming overwrite local with FEWER items
-        // OR destroy a session that the local operator is actively building.
-        // Caught 26 Apr 2026 by v4.5.2 forensic logging — cross-tab BroadcastChannel
-        // races were wiping in-progress orders (e.g. T1 with 3 items wiped to 0
-        // while user was actively at the POS).
-        const localItems = local.session?.items?.length || 0;
-        const incomingItems = incoming.session?.items?.length || 0;
-        if (local.session && (!incoming.session || incomingItems < localItems)) {
-          console.warn('[SyncBridge] mergeTablesSafely: refusing incoming for', local.label || local.id, '— would lose data (local=' + localItems + ' items, incoming=' + incomingItems + ' items)');
-          merged.push(local); continue;
-        }
-        // v4.5.3 timestamp tiebreaker: if local.session is newer than incoming, keep local.
-        // updatedAt is stamped on every store mutation that touches the session.
-        if (local.session?.updatedAt && incoming.session?.updatedAt
-            && local.session.updatedAt > incoming.session.updatedAt) {
-          merged.push(local); continue;
-        }
-
-        // Operational state from the sender, definition from step 1.
-        const keepDef = {};
-        for (const f of LAYOUT_FIELDS) if (f in local) keepDef[f] = local[f];
-        const m = { ...incoming, ...keepDef };
-        if (!local.planRemoved) delete m.planRemoved;
-        merged.push(m);
-      }
-      for (const t of defs.tables) if (!localIds.has(t.id)) merged.push(t);
-      return merged;
+      const { plan, tombs } = loadPlanState(getActiveLocationSync());
+      return mergeBroadcastTables(localTables, incomingTables, activeId, {
+        tombs, plan, isClosed: isSessionClosed,
+        warn: (t, l, i) => console.warn('[SyncBridge] mergeTablesSafely: refusing incoming for', t.label || t.id, ': would lose data (local=' + l + ' items, incoming=' + i + ' items)'),
+      });
     }
     function safeApplyIncoming(data) {
       if (!data || typeof data !== 'object') return;

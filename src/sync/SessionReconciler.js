@@ -11,7 +11,7 @@ import { supabase, getLocationId } from '../lib/supabase';
 import { useStore } from '../store';
 import { reassertSession } from './SessionSync';
 import { isSessionClosed } from './sessionClosure';
-import { pruneClosedRemoved } from '../lib/tablePlan';
+import { pruneClosedRemoved, rebuildOrphans, loadPlanState } from '../lib/tablePlan';
 
 // v5.5.639: a table held occupied locally but missing from the DB poll is re-published only if its
 // session is genuinely LIVE — has items, is the active table, or was seated within the business day.
@@ -231,9 +231,33 @@ export async function startSessionReconciler() {
       });
 
       // v5.9.4: a table deleted from the plan while an order was open on it was kept reachable
-      // (lib/tablePlan.js, planRemoved). Once its order is closed it goes.
-      const prunedTables = pruneClosedRemoved(newTables);
+      // (lib/tablePlan.js, planRemoved). Once its order is closed (isSessionClosed, or no session
+      // and no open split child) it goes.
+      let prunedTables = pruneClosedRemoved(newTables, isSessionClosed);
       if (prunedTables !== newTables) changed = true;
+
+      // v5.9.4 review: an OPEN order in active_sessions whose table this device does not hold at
+      // all (a table deleted in Back Office while another till had an order on it, a split child
+      // check, a till that booted before the table was lost) gets its table REBUILT, reachable and
+      // flagged planRemoved, instead of sitting in the database where no floor shows it. Closed
+      // rows were excluded above; a session this device holds on ANOTHER table (moved here) is
+      // skipped. Only once the boot has loaded the plan (_dataLocationId), so a boot in progress is
+      // never pre-empted.
+      if (store._dataLocationId) {
+        const orphanSessions = new Map();
+        for (const [tid, c] of supabaseOpen) {
+          const localHome = c.session?.id ? localTableBySession.get(c.session.id) : null;
+          if (localHome && localHome !== tid) continue;
+          orphanSessions.set(tid, c.session);
+        }
+        const { labels, tombs } = loadPlanState(_locationId);
+        const withOrphans = rebuildOrphans(prunedTables, orphanSessions, { isClosed: isSessionClosed, labels, tombs });
+        if (withOrphans !== prunedTables) {
+          console.warn('[SessionReconciler] rebuilt', withOrphans.length - prunedTables.length, 'table(s) for open orders whose table was missing');
+          prunedTables = withOrphans;
+          changed = true;
+        }
+      }
 
       if (changed) {
         useStore.setState({ tables: prunedTables });

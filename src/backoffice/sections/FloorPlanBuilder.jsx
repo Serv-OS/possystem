@@ -1,12 +1,26 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useStore } from '../../store';
 import { supabase, isMock, getLocationId } from '../../lib/supabase';
-import { upsertFloorTable, insertTableTombstone } from '../../lib/db';
-import { deleteRefusalReason, recordTombstone } from '../../lib/tablePlan';
+import { saveFloorTableChecked, insertTableTombstone, fetchTableOpenOrders } from '../../lib/db';
+import { deleteRefusalReason, writeRefusal, loadPlanState, normaliseFloorRow, pickDef, num, nextSeq } from '../../lib/tablePlan';
+import { isSessionClosed } from '../../sync/sessionClosure';
 import { reportSave } from '../../lib/saveHealth';
 
 const SHAPES = [{ id:'sq', label:'Square/Rect' }, { id:'rd', label:'Round' }];
 const SECTION_PALETTE = ['#3b82f6','#e8a020','#22c55e','#a855f7','#ef4444','#22d3ee','#f97316','#ec4899'];
+
+// v5.9.4: one write at a time per table. A second edit waits for the first, so it is checked
+// against the updated_at (or columns) the first one produced, never against a stale base.
+const _writeChains = new Map();
+const CONFLICT_TEXT = {
+  changed: 'was changed on another screen, so your change was NOT saved. Reload Back Office to see the latest floor plan',
+  deleted: 'was deleted on another screen, so your change was NOT saved. Reload Back Office to see the latest floor plan',
+  exists: 'already exists in the database, so it was NOT added again. Reload Back Office to see the latest floor plan',
+  removed: 'is not on the floor plan any more (it still has an open order on a till), so it cannot be edited',
+  'no-base': 'has no saved copy in this tab, so your change was NOT saved. Reload Back Office first',
+  child: 'is a split check, not a table on the plan',
+  missing: 'is not in this tab any more',
+};
 
 export default function FloorPlanBuilder() {
   const {
@@ -51,37 +65,83 @@ export default function FloorPlanBuilder() {
     }, 300);
   }, [markBOChange]);
 
-  // Table mutations are applied to the store first (the canvas has to feel instant) and the
-  // store's own write is fire-and-forget — it reported nothing, so a rejected save still
-  // showed "✓ Staged" and the table was simply gone at the next boot. Re-issue the SAME row
-  // as an awaited, checked upsert and UNDO the canvas when it fails: what is on screen must
-  // be what the database accepted (INVARIANTS.md — tables must never be lost).
-  const confirmTable = useCallback(async (id, undo) => {
-    setSaveStatus('saving');
-    markBOChange();
-    clearTimeout(saveTimer.current);
-    const table = useStore.getState().tables.find(t => t.id === id);
-    if (!table) { setSaveStatus('saved'); return false; }
-    const { error } = await upsertFloorTable(table);
-    reportSave('floor plan table', error);
-    if (error) {
-      undo?.();
-      setSaveStatus('failed');
-      showToast(`“${table.label}” was NOT saved — the floor plan has been put back`, 'error');
-      return false;
-    }
-    setSaveStatus('pushed');
-    saveTimer.current = setTimeout(() => setSaveStatus('saved'), 2500);
-    return true;
-  }, [markBOChange, showToast]);
+  // Table mutations are applied to the store first (the canvas has to feel instant); this is the
+  // ONLY writer, and what is on screen must be what the database accepted (INVARIANTS.md, tables
+  // must never be lost).
+  // v5.9.4 review: the write is COMPARE-AND-SET (db.saveFloorTableChecked): a new table is
+  // inserted (never upserted over an existing id), an existing one is updated only if the row
+  // still has the updated_at (or, before migration 20260918b, the columns) this tab last read.
+  // An out of date tab can therefore never put back an old name, a moved table or a deleted
+  // table: the save is refused, the canvas is put back and the operator is asked to reload.
+  // A retired table (planRemoved, still holding an order on a till) or a tombstoned one is refused
+  // before any request goes out. Writes to one table are serialised.
+  const confirmTable = useCallback((id, undo) => {
+    const prev = _writeChains.get(id) || Promise.resolve();
+    const run = prev.catch(() => {}).then(async () => {
+      setSaveStatus('saving');
+      markBOChange();
+      clearTimeout(saveTimer.current);
+      const table = useStore.getState().tables.find(t => t.id === id);
+      const locId = table?.locationId || activeLocationId || null;
+      const why = writeRefusal(table, loadPlanState(locId).tombs);
+      const clearPending = () => useStore.setState(s => ({ tables: s.tables.map(t => (t.id === id && t._pending) ? { ...t, _pending: false } : t) }));
+      if (why) {
+        undo?.();
+        clearPending();
+        setSaveStatus('failed');
+        if (table) showToast(`“${table.label}” ${CONFLICT_TEXT[why] || 'was NOT saved'}`, 'error');
+        return false;
+      }
+      const sent = pickDef(table);
+      const res = await saveFloorTableChecked(table, locId);
+      reportSave('floor plan table', res.ok ? null : (res.error || new Error('not saved')));
+      if (!res.ok) {
+        undo?.();
+        clearPending();
+        setSaveStatus('failed');
+        showToast(`“${table.label}” ${res.conflict ? (CONFLICT_TEXT[res.conflict] || 'was NOT saved') : 'was NOT saved, the floor plan has been put back'}`, 'error');
+        return false;
+      }
+      // Saved: the database copy is now this tab's base (and its updated_at the next compare).
+      const saved = res.row ? normaliseFloorRow(res.row, { locationId: locId }) : null;
+      // Observed now: a plan read that started before this write landed cannot put the old copy
+      // back (before migration 20260918b there is no updated_at to tell them apart).
+      const seq = nextSeq();
+      useStore.setState(s => ({ tables: s.tables.map(t => {
+        if (t.id !== id) return t;
+        const base = saved ? saved._base : { ...sent };
+        const stillEditing = Object.keys(sent).some(k => t[k] !== sent[k]);
+        const { _isNew: _n, ...rest } = t;
+        return {
+          ...rest,
+          _base: base,
+          srvAt: saved ? saved.srvAt : num(t.srvAt),
+          srvIso: saved ? saved.srvIso : (t.srvIso || null),
+          _seq: Math.max(num(t._seq), seq),
+          _pending: stillEditing,
+        };
+      }) }));
+      setSaveStatus('pushed');
+      saveTimer.current = setTimeout(() => setSaveStatus('saved'), 2500);
+      return true;
+    });
+    _writeChains.set(id, run);
+    run.finally(() => { if (_writeChains.get(id) === run) _writeChains.delete(id); }).catch(() => {});
+    return run;
+  }, [markBOChange, showToast, activeLocationId]);
 
   // v5.5.2: only show tables that belong to the active location. A table without a locationId
   // is a freshly-added one (stamped on save) and is OK to show. Pre-v5.5.2 data lacks
   // locationId entirely — those will appear at every location, but the cross-location guard
   // in upsertFloorTable still prevents corruption.
-  const tablesForThisLocation = tables.filter(t =>
+  const tablesAtThisLocation = tables.filter(t =>
     !t.locationId || !activeLocationId || t.locationId === activeLocationId
   );
+  // v5.9.4 review: a table that is off the plan but still holds an open order on a till
+  // (planRemoved) is NOT on the editable canvas: dragging or renaming it used to upsert it straight
+  // back into floor_tables. It is listed read only below the canvas instead.
+  const tablesForThisLocation = tablesAtThisLocation.filter(t => !t.planRemoved);
+  const retiredTables = tablesAtThisLocation.filter(t => t.planRemoved && !t.parentId);
   const displayTables = tablesForThisLocation.filter(t =>
     !t.parentId && (viewSection === 'all' || t.section === viewSection)
   );
@@ -115,7 +175,11 @@ export default function FloorPlanBuilder() {
     dragStart.current = null;
     const now = useStore.getState().tables.find(t => t.id === id);
     // A plain click to select isn't a change — don't write, and don't claim a save either.
-    if (!now || (from && from.id === id && from.x === now.x && from.y === now.y)) return;
+    if (!now || (from && from.id === id && from.x === now.x && from.y === now.y)) {
+      // Nothing moved: no write, and the table is no longer "being edited".
+      if (now?._pending) useStore.setState(s => ({ tables: s.tables.map(t => t.id === id ? { ...t, _pending: false } : t) }));
+      return;
+    }
     confirmTable(id, from && from.id === id ? () => updateTableLayout(id, { x: from.x, y: from.y }) : undefined);
   }, [dragging, confirmTable, updateTableLayout]);
 
@@ -168,54 +232,70 @@ export default function FloorPlanBuilder() {
   // .catch() can never run (PostgREST resolves with { error }, it never rejects), so a blocked
   // delete looked done and the table walked back in on the next boot.
   //
-  // v5.9.4: a table with an OPEN ORDER cannot be deleted. The till would otherwise keep the
-  // order on a table that is no longer on the plan (lib/tablePlan.js keeps it reachable as a
-  // backstop, but staff should never be put there). Checked against the database, not just this
-  // browser: the order is usually on a till. A check that cannot run refuses too.
-  // After the row is gone the delete is recorded as a TOMBSTONE (floor_table_tombstones, and on
-  // this machine), so no push, cache or other tab can bring the table back.
+  // v5.9.4: a table with an OPEN ORDER cannot be deleted. Checked against the database, not just
+  // this browser (the order is usually on a till), and every leg must RUN or the delete is refused:
+  //   - this browser: the table's session and its split child checks (T1 closed, T1.2 open);
+  //   - active_sessions: the table AND its split children (id-n);
+  //   - order_queue: open QR tabs at the table (customer jsonb, never bar_tabs);
+  //   - active_sessions again 1.5 s later: a till's order can still be in its 600 ms write
+  //     debounce when the first look runs.
+  // A closed session (isSessionClosed) never blocks. What cannot be seen from here: an order on a
+  // till that is OFFLINE and has not synced. The till keeps that order reachable (planRemoved),
+  // and SessionReconciler rebuilds its table on every other till once it syncs.
+  // After the row is gone the delete is a TOMBSTONE (floor_table_tombstones with the database's
+  // deleted_at, and on this machine), and the store is told the row is already deleted, so a
+  // second delete can never fail on a network blip and put the table back.
   const removeSelectedTable = async () => {
     const table = tablesForThisLocation.find(t => t.id === selected);
     if (!table) return;
     const locId = table.locationId || activeLocationId || null;
-    {
-      let dbSession = null, checkFailed = false;
-      if (!isMock && supabase && locId) {
-        const { data: rows, error: sErr } = await supabase.from('active_sessions')
-          .select('table_id, session').eq('location_id', locId).eq('table_id', table.id).limit(1);
-        if (sErr) checkFailed = true;
-        else dbSession = rows?.[0]?.session || null;
+    const refuse = (g) => deleteRefusalReason(table, {
+      tables: useStore.getState().tables, dbRows: g.dbRows, qrRows: g.qrRows, failed: g.failed, isClosed: isSessionClosed,
+    });
+    if (!isMock && supabase) {
+      if (!locId) { showToast(refuse({ dbRows: [], qrRows: [], failed: ['location'] }), 'error'); return; }
+      setSaveStatus('saving');
+      let g = await fetchTableOpenOrders(locId, table.id);
+      let reason = refuse(g);
+      if (!reason) {
+        await new Promise(r => setTimeout(r, 1500));
+        const g2 = await fetchTableOpenOrders(locId, table.id);
+        g = { dbRows: [...g.dbRows, ...g2.dbRows], qrRows: [...g.qrRows, ...g2.qrRows], failed: g2.failed };
+        reason = refuse(g);
       }
-      const reason = deleteRefusalReason(table, { dbSession, checkFailed });
+      if (reason) { setSaveStatus('saved'); showToast(reason, 'error'); return; }
+    } else {
+      const reason = refuse({ dbRows: [], qrRows: [], failed: [] });
       if (reason) { showToast(reason, 'error'); return; }
     }
+    let tomb = null;
     if (!isMock && supabase) {
-      setSaveStatus('saving');
       let q = supabase.from('floor_tables').delete().eq('id', table.id);
       if (locId) q = q.eq('location_id', locId);   // same tenant scoping as db.deleteFloorTable
       const { data, error } = await q.select('id');
-      // Zero rows is what an RLS-filtered delete looks like — and also what a table that never
+      // Zero rows is what an RLS-filtered delete looks like, and also what a table that never
       // reached the DB looks like. Probe before refusing, or a phantom becomes undeletable.
       let blocked = null;
       if (error) blocked = error;
       else if (!data || data.length === 0) {
-        const { data: still } = await supabase.from('floor_tables').select('id').eq('id', table.id).maybeSingle();
-        if (still) blocked = new Error('Table delete matched 0 rows — RLS blocked it');
+        const { data: still, error: probeErr } = await supabase.from('floor_tables').select('id').eq('id', table.id).maybeSingle();
+        if (still) blocked = new Error('Table delete matched 0 rows, RLS blocked it');
+        else if (probeErr) blocked = probeErr;
       }
       reportSave('floor plan table delete', blocked);
       if (blocked) {
         setSaveStatus('failed');
-        showToast(`“${table.label}” was NOT deleted — it is still on the floor plan`, 'error');
+        showToast(`“${table.label}” was NOT deleted, it is still on the floor plan`, 'error');
         return;
       }
+      // The database's own record of the delete (deleted_at from the database clock). Until
+      // 20260918_OPS_floor_table_tombstones.sql runs this is skipped and the tombstone travels on
+      // this machine and in the next Push to POS instead.
+      const tr = await insertTableTombstone(locId, table.id, table.label).catch(() => ({ row: null }));
+      const at = num(tr?.row?.deleted_at);
+      if (at > 0) tomb = { at, srv: true };
     }
-    recordTombstone(locId, table.id);
-    if (!isMock && supabase && locId) {
-      // Best effort: until 20260918_OPS_floor_table_tombstones.sql runs the table is missing and
-      // the tombstone travels on this machine and in the next Push to POS instead.
-      insertTableTombstone(locId, table.id, table.label).catch(() => {});
-    }
-    removeTableFromLayout(table.id);
+    removeTableFromLayout(table.id, { dbDeleted: true, tomb });
     setSelected(null);
     markChanged();
     showToast(`Table “${table.label}” removed`, 'info');
@@ -493,6 +573,17 @@ export default function FloorPlanBuilder() {
             <span>{displayTables.length} table{displayTables.length !== 1 ? 's' : ''}</span>
           </span>
         </div>
+
+        {/* v5.9.4: tables deleted from the plan that still hold an open order on a till. Read only:
+            they are not on the canvas and nothing here can write them back into the plan. */}
+        {retiredTables.length > 0 && (
+          <div style={{ margin:'12px 20px 0', padding:'8px 12px', borderRadius:10, border:'1px solid var(--bdr)', background:'var(--bg2)', fontSize:12, color:'var(--t2)' }}>
+            <div style={{ fontWeight:700, marginBottom:4 }}>Deleted, still has an open order</div>
+            <div style={{ color:'var(--t3)' }}>
+              {retiredTables.map(t => t.label || t.id).join(', ')}. Close or move the order on the till and the table goes by itself.
+            </div>
+          </div>
+        )}
 
         <div
           ref={canvasRef}

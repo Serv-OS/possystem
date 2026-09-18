@@ -11,12 +11,12 @@ import { useEffect } from 'react';
 import { useStore } from '../store';
 import { supabase, isMock, getLocationId, ensureAuthToken, claimPairedDeviceOnBoot } from './supabase';
 import {
-  fetchMenuItems, fetchFloorPlan, fetch86List,
+  fetchMenuItems, fetch86List,
   fetchKDSTickets, fetchClosedChecks, fetchLatestConfigPush, getPosHistorySince,
   primeOrderRefLease,
 } from './db';
 import { getLocationConfig, getBusinessDayStart } from './locationTime';
-import { applyPlanRead, normaliseFloorRow, loadPlanState, savePlanState } from './tablePlan';
+import { refreshTablePlan } from '../sync/TablePlanSync';
 
 // v5.5.890: run-once guard. On MPOS this hook is mounted TWICE in the same render pass
 // (App() calls it unconditionally AND MPOSSurface kept its own v5.5.79-era call), so the
@@ -93,26 +93,18 @@ export default function useSupabaseInit() {
       }
 
       // Floor plan + sections
-      // v5.9.4: through lib/tablePlan.js applyPlanRead, like SyncBridge's boot read. Two fixes:
-      // (1) this read mapped `section: dbT.section_id`, a column floor_tables does not have (it
-      // is `section`), so whenever it landed last every table lost its section, and the next
-      // Back Office save or push wrote that back; (2) the merge is taken against the store AT
-      // APPLY TIME and keeps any table still holding a session.
-      const planReadStartedAt = Date.now();
-      const { data: fp } = await fetchFloorPlan();
-      if (fp?.tables?.length) {
-        const loc = fp.tables[0]?.location_id || null;
-        const { tombstones } = loadPlanState(loc);
-        const rows = fp.tables.map(t => normaliseFloorRow(t, { locationId: loc, readAt: planReadStartedAt }));
-        const read = applyPlanRead({ local: useStore.getState().tables, rows, readAt: planReadStartedAt, tombstones });
-        if (read) {
-          savePlanState(loc, { plan: read.plan });
-          useStore.setState({ tables: read.tables });
-        }
-      }
-      if (fp?.sections?.length) {
+      // v5.9.4: through sync/TablePlanSync (lib/tablePlan.js), in 'upsertOnly' mode: this read may
+      // ADD or UPDATE table definitions but never removes a table. It has no sessions to check, so
+      // on a cold boot (store empty, cached tables stripped) it must not decide that a table is
+      // gone before SyncBridge has looked at active_sessions and the local backups; SyncBridge's
+      // boot read (bootTables) is the one that retires tables and rebuilds tables for open orders.
+      // Also fixes the old mapping here: `section: dbT.section_id`, a column floor_tables does not
+      // have, so whenever this read landed last every table lost its section.
+      const fpRes = await refreshTablePlan({ locationId: locId, mode: 'upsertOnly', reason: 'init' });
+      const fpSections = fpRes?.sections;
+      if (fpSections?.length) {
         useStore.setState({
-          locationSections: fp.sections.map(s => ({ id:s.id, label:s.label, color:s.color, icon:s.icon }))
+          locationSections: fpSections.map(s => ({ id:s.id, label:s.label, color:s.color, icon:s.icon }))
         });
       }
 

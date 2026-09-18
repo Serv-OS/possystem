@@ -412,6 +412,13 @@ function TableNode({ table, onClick }) {
           {childCount+1} checks
         </div>
       )}
+      {/* v5.9.4: deleted from the floor plan in Back Office while this order was open. Kept so the
+          order can be finished; it goes once the order is closed or moved. */}
+      {table.planRemoved && (
+        <div style={{ position:'absolute', bottom:4, left:5, fontSize:8, fontWeight:800, padding:'1px 5px', borderRadius:8, background:'var(--red-b, rgba(220,40,40,.2))', color:'var(--red)', lineHeight:1.4, textTransform:'uppercase' }}>
+          Removed
+        </div>
+      )}
     </div>
   );
 }
