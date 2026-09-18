@@ -25,7 +25,7 @@
 
 import {
   cors, json, opsAdmin, platformAdmin, authenticateCaller,
-  resolveCompanyForLocation, updateBalance,
+  resolveCompanyForLocation, updateBalance, checkLoyaltyAuthority,
 } from '../_shared/loyalty-utils.ts';
 
 Deno.serve(async (req) => {
@@ -60,6 +60,24 @@ Deno.serve(async (req) => {
   const resolved = await resolveCompanyForLocation(caller.id, location_id as string);
   if (resolved instanceof Response) return resolved;
   const companyId = resolved;
+
+  // ── Authority (18 Sep 2026) ────────────────────────────────────────────
+  // Resolving the company proves nothing about the caller (the location id is public), so any
+  // anonymous session could reverse anybody's transactions. Same rule as loyalty-redeem: a
+  // claimed device of this company, a Back Office user with the location, or the member's own
+  // token. REPORT FIRST: LOYALTY_AUTHORITY_MODE unset or 'report' refunds exactly as before and
+  // records the calls enforce would refuse (caller_authority_log); 'enforce' refuses them.
+  const gate = await checkLoyaltyAuthority({
+    fn: 'loyalty-refund',
+    caller,
+    locationId: String(location_id),
+    companyId: String(companyId),
+    customerId: String(customer_id),
+    memberToken: (body as any).member_token,
+    closedCheckId: closed_check_id,
+    channel: (body as any).channel ?? null,
+  });
+  if (!gate.allow) return gate.response!;
 
   // ── Idempotency check (scoped to company) ─────────────────────────────
   const idempotencyKey = `refund:${closed_check_id}`;

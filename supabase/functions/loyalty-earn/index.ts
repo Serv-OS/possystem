@@ -11,14 +11,17 @@
 //   items,           -- line items array for qualifying amount calc
 //   subtotal,        -- order subtotal (fallback if items not detailed)
 //   staff_id?,       -- who processed the order
+//   member_token?,   -- the member's loyalty session token (kiosk or online, when signed in)
 // }
+//
+// AUTHORITY: see the gate below and _shared/loyalty-authority.ts (report first).
 //
 // Returns: { points_earned, balance, member_code, tier, is_new_member }
 
 import {
   cors, json, opsAdmin, platformAdmin, authenticateCaller,
   resolveCompanyForLocation, getOrCreateConfig, ensureMembership,
-  calculatePoints, calculateQualifyingAmount, updateBalance,
+  calculatePoints, calculateQualifyingAmount, updateBalance, checkLoyaltyAuthority,
 } from '../_shared/loyalty-utils.ts';
 
 Deno.serve(async (req) => {
@@ -54,6 +57,24 @@ Deno.serve(async (req) => {
   const resolved = await resolveCompanyForLocation(caller.id, location_id);
   if (resolved instanceof Response) return resolved;
   const companyId = resolved;
+
+  // ── Authority (18 Sep 2026) ────────────────────────────────────────────
+  // customer_id, items, subtotal and closed_check_id all come from the body, so an anonymous
+  // session could mint points for itself. Same rule as loyalty-redeem: a claimed device of this
+  // company, a Back Office user with the location, or the member's own token. REPORT FIRST:
+  // LOYALTY_AUTHORITY_MODE unset or 'report' earns exactly as before and records the calls
+  // enforce would refuse (caller_authority_log); 'enforce' refuses them. Before any read.
+  const gate = await checkLoyaltyAuthority({
+    fn: 'loyalty-earn',
+    caller,
+    locationId: String(location_id),
+    companyId: String(companyId),
+    customerId: String(customer_id),
+    memberToken: (body as any).member_token,
+    closedCheckId: closed_check_id,
+    channel,
+  });
+  if (!gate.allow) return gate.response!;
 
   // ── Idempotency check (scoped to company) ─────────────────────────────
   const idempotencyKey = `earn:${closed_check_id}`;

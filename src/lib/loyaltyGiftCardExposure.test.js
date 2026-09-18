@@ -54,11 +54,15 @@ test('an unverified email never surfaces a card', () => {
   assert.deepEqual(memberGiftCards(rows, ''), []);
 });
 
-test('the gift card filter matches the proven phone only, in both UK forms, and refuses junk', () => {
-  assert.equal(giftCardRecipientFilter(ALICE), 'recipient_phone.eq.+447700900001,recipient_phone.eq.07700900001');
-  assert.equal(giftCardRecipientFilter('07700900001'), 'recipient_phone.eq.07700900001,recipient_phone.eq.+447700900001');
+test('the gift card filter fetches the proven phone however it was typed, and refuses junk', () => {
+  // Round two: a wide net of digits (the MATCH is the normalised row by row check).
+  const net = '%7%7%0%0%9%0%0%0%0%1%';
+  assert.equal(giftCardRecipientFilter(ALICE), `recipient_phone.ilike.${net}`);
+  assert.equal(giftCardRecipientFilter('07700900001'), `recipient_phone.ilike.${net}`, 'both UK forms give the same net');
+  assert.equal(giftCardRecipientFilter('07700 900 001'), `recipient_phone.ilike.${net}`);
   assert.equal(giftCardRecipientFilter(null), null);
   assert.equal(giftCardRecipientFilter('x,recipient_name.eq.Sam'), null, 'no filter injection');
+  assert.ok(/^recipient_phone\.ilike\.[%0-9]+$/.test(giftCardRecipientFilter('+1 (650) 555-0100')), 'digits and wildcards only');
   assert.deepEqual(phoneMatchVariants('+1 555'), []);
   assert.ok(MEMBER_GIFT_CARD_COLUMNS.includes('recipient_phone'), 'rows carry the phone for the row by row check');
 });
@@ -116,18 +120,18 @@ test('a bare anonymous session cannot spend anybody\'s points', () => {
 });
 
 test('a paired device may redeem for members of its own company only', () => {
-  assert.deepEqual(decideRedeemAuthority({ ...base, user: anon, deviceCompanyId: 'co-1' }), { ok: true, via: 'device' });
+  assert.deepEqual(decideRedeemAuthority({ ...base, user: anon, deviceCompanyId: 'co-1' }), { ok: true, via: 'device', callerKind: 'device' });
   assert.equal(decideRedeemAuthority({ ...base, user: anon, deviceCompanyId: 'co-2' }).ok, false);
 });
 
 test('a Back Office user with the location may redeem; an anonymous "staff" claim may not', () => {
-  assert.deepEqual(decideRedeemAuthority({ ...base, user: { id: 'u1', is_anonymous: false }, staffHasLocation: true }), { ok: true, via: 'staff' });
+  assert.deepEqual(decideRedeemAuthority({ ...base, user: { id: 'u1', is_anonymous: false }, staffHasLocation: true }), { ok: true, via: 'staff', callerKind: 'staff' });
   assert.equal(decideRedeemAuthority({ ...base, user: anon, staffHasLocation: true }).ok, false);
 });
 
 test('the member may redeem their OWN rewards with their token, never somebody else\'s', () => {
   const own = { ...base, user: anon, memberTokenSent: true, memberSession: { customerId: 'cust-1', companyId: 'co-1' } };
-  assert.deepEqual(decideRedeemAuthority(own), { ok: true, via: 'member' });
+  assert.deepEqual(decideRedeemAuthority(own), { ok: true, via: 'member', callerKind: 'member' });
   assert.equal(decideRedeemAuthority({ ...own, customerId: 'cust-2' }).ok, false, 'other customer');
   assert.equal(decideRedeemAuthority({ ...own, companyId: 'co-2' }).ok, false, 'other company');
   assert.equal(decideRedeemAuthority({ ...own, memberSession: null }).ok, false, 'expired or forged token');
@@ -137,9 +141,9 @@ test('the member may redeem their OWN rewards with their token, never somebody e
 
 test('loyalty-redeem decides authority before it reads or moves any balance', () => {
   const src = code(read('../../supabase/functions/loyalty-redeem/index.ts'));
-  const fence = src.indexOf('decideRedeemAuthority({');
+  const fence = src.indexOf('checkLoyaltyAuthority({');
   assert.ok(fence > 0);
-  assert.ok(src.indexOf('if (!authority.ok)') > fence);
+  assert.ok(src.indexOf('if (!gate.allow) return gate.response!;') > fence);
   for (const later of ["from('customer_stamp_cards')", "from('customer_loyalty')", "rpc('loyalty_redeem_points'", "from('stamp_transactions')"]) {
     assert.ok(src.indexOf(later) > fence, `${later} comes after the fence`);
   }
@@ -147,7 +151,7 @@ test('loyalty-redeem decides authority before it reads or moves any balance', ()
 
 test('every caller of loyalty-redeem still carries an authority the fence accepts', () => {
   const cr = read('./commitRedemptions.js');
-  assert.ok(cr.includes('member_token: String(spec.memberToken)'), 'commitRedemptions forwards the member token');
+  assert.ok(cr.includes('member_token: String(memberTokenOf(spec))'), 'commitRedemptions forwards the member token');
   const online = read('../surfaces/online/OnlineCheckout.jsx');
   assert.ok(online.includes('memberToken: loyalty?.token || null,'), 'online sends the member token');
   // The kiosk (submitOrder is frozen by the card path guard) and the till rely on their claimed

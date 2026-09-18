@@ -194,10 +194,34 @@ export const claimPairedDeviceOnBoot = () => {
   return _claimPromise;
 };
 
+// 18 Sep 2026: a KIOSK is paired through rpos-kiosk-id, not rpos-device, so the boot claim above
+// never ran for one: it claimed once at pairing, best effort, then cleared its code, and a kiosk
+// whose claim failed or whose anonymous session changed stayed unlinked for good. Loyalty
+// earn/redeem/refund now check that link (report first, LOYALTY_AUTHORITY_MODE). The kiosk keeps
+// its pairing code (KioskSurface stores it here and no longer clears it on the devices row, the
+// same as every till), and re-claims with it on every boot and after a refusal.
+export const KIOSK_ID_KEY = 'rpos-kiosk-id';
+export const KIOSK_CODE_KEY = 'rpos-kiosk-pairing-code';
+
+const _claimKiosk = async () => {
+  let kioskId = null, code = null;
+  try { kioskId = localStorage.getItem(KIOSK_ID_KEY); code = localStorage.getItem(KIOSK_CODE_KEY); } catch { return; }
+  // Only the code this kiosk paired with. Never read a code off the row: Back Office "new code"
+  // writes one there to MOVE a kiosk, and a kiosk picking it up would pair itself back.
+  if (!kioskId || !code) return;
+  try {
+    await ensureAuthToken();
+    await supabase.rpc('claim_device', { p_code: code });
+  } catch (e) {
+    console.warn('[boot] kiosk device claim failed (non-fatal):', e?.message);
+  }
+};
+
 const _claimDevice = async () => {
   if (!supabase) return;
   let dev; try { dev = JSON.parse(localStorage.getItem('rpos-device') || 'null'); } catch { return; }
-  if (!dev || !dev.id || dev.id === 'admin' || dev.adminMode || !dev.locationId) return;
+  if (!dev) return _claimKiosk();
+  if (!dev.id || dev.id === 'admin' || dev.adminMode || !dev.locationId) return;
   try {
     await ensureAuthToken();
     let code = dev.pairingCode;
@@ -272,6 +296,7 @@ const TENANT_FENCE_KEEP = new Set([
   // has no rpos-device, so without these a location switch would unpair it.
   'rpos-kiosk-id',
   'rpos-kiosk-token',
+  'rpos-kiosk-pairing-code',   // the code it re-claims its device link with on every boot
   'rpos-kiosk-lang',
 ]);
 

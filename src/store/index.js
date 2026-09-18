@@ -37,7 +37,36 @@ import {
   rollUpLegStatus, retryableLegs, r2, toMinor as toMinorAmt,
 } from '../lib/payments/refundMath';
 import { reverseCardLeg } from '../lib/payments/cardReversal';
-import { commitRedemption } from '../lib/commitRedemptions';
+import { commitRedemption, setDeviceClaimHooks } from '../lib/commitRedemptions';
+import { memberTokenFor } from '../lib/memberSession.js';
+
+// 18 Sep 2026: loyalty-redeem, loyalty-earn and loyalty-refund check that a till or kiosk session
+// is linked to its devices row. Every loyalty call from this store (and the kiosk's, which uses
+// commitRedemption) waits for the boot claim first and re-claims once after a 403, the way
+// openShift does since v5.8.97. See lib/commitRedemptions setDeviceClaimHooks.
+setDeviceClaimHooks({ waitForClaim: () => whenDeviceClaimed(), reclaim: () => claimPairedDeviceOnBoot() });
+
+// POST to a loyalty edge function the way openShift writes a shift: wait (bounded) for the device
+// claim, and on a 403 re-claim and try ONCE more. Returns the last Response. Never used for a call
+// whose retry could double count: earn and refund are idempotent on the check id server side.
+async function postLoyaltyWithDeviceClaim(fn, body) {
+  const send = async () => {
+    const token = await ensureAuthToken();
+    if (!token) return null;
+    return fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/${fn}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+    });
+  };
+  await whenDeviceClaimed();
+  let res = await send();
+  if (res && res.status === 403) {
+    try { await claimPairedDeviceOnBoot(); } catch { /* best effort */ }
+    res = await send();
+  }
+  return res;
+}
 import { waitlistSlice } from './waitlistSlice';
 import { bookingsSlice } from './bookingsSlice';
 import { reportSave } from '../lib/saveHealth';
@@ -3752,15 +3781,14 @@ export const useStore = create((set, get) => ({
             }),
             subtotal: Number(orderRecord.total) || 0,
             staff_id: orderRecord.staffId || null,
+            // 18 Sep 2026: the member signed in at the kiosk proves the earn is theirs even when
+            // the kiosk's device link is missing (lib/memberSession, only for THIS customer).
+            ...(memberTokenFor(customerId) ? { member_token: memberTokenFor(customerId) } : {}),
           };
-          const res = await fetch(
-            `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/loyalty-earn`,
-            {
-              method: 'POST',
-              headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-              body: JSON.stringify(earnBody),
-            }
-          );
+          // Waits for the device claim and re-claims once on a 403 (postLoyaltyWithDeviceClaim).
+          // Idempotent server side on earn:<closed_check_id>, so the retry cannot double earn.
+          const res = await postLoyaltyWithDeviceClaim('loyalty-earn', earnBody);
+          if (!res) { console.warn('[attributeOrderToCustomer] loyalty earn skipped: no auth token'); return; }
           const j = await res.json().catch(() => ({}));
           if (res.ok) {
             console.info('[loyalty-earn] ✓', j.points_earned, 'pts → balance:', j.balance, j.is_new_member ? '(new member)' : '');
@@ -6442,23 +6470,19 @@ export const useStore = create((set, get) => ({
             console.warn('[refundCheck] loyalty reversal skipped — no customer_id on check');
             return;
           }
-          const res = await fetch(
-            `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/loyalty-refund`,
-            {
-              method: 'POST',
-              headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-              body: JSON.stringify({
-                customer_id: customerId,
-                location_id: getActiveLocationSync(),
-                // v5.5.311: must match the unique id used at earn time (chk-<ts>)
-                // so loyalty-refund finds the right earn rows. Was check.ref
-                // which cycles R1–R99 and could reverse the WRONG order's points.
-                closed_check_id: check.id || check.ref,
-                reason: reason || 'refund',
-                staff_id: manager?.id || null,
-              }),
-            }
-          );
+          // Waits for the device claim and re-claims once on a 403 (18 Sep 2026). Idempotent
+          // server side on refund:<closed_check_id>, so the retry cannot reverse twice.
+          const res = await postLoyaltyWithDeviceClaim('loyalty-refund', {
+            customer_id: customerId,
+            location_id: getActiveLocationSync(),
+            // v5.5.311: must match the unique id used at earn time (chk-<ts>)
+            // so loyalty-refund finds the right earn rows. Was check.ref
+            // which cycles R1 to R99 and could reverse the WRONG order's points.
+            closed_check_id: check.id || check.ref,
+            reason: reason || 'refund',
+            staff_id: manager?.id || null,
+          });
+          if (!res) { console.warn('[refundCheck] loyalty reversal skipped: no auth token'); return; }
           const j = await res.json().catch(() => ({}));
           if (res.ok) {
             console.info('[refundCheck] loyalty reversed:', j.status, 'points:', j.points_reversed);

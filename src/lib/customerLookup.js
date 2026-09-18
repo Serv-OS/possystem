@@ -13,7 +13,7 @@
 // same key resolves whether saved via POS or kiosk.
 // ============================================================
 
-import { supabase, platformSupabase, getLocationId, ensureAuthToken } from './supabase';
+import { supabase, platformSupabase, getLocationId, ensureAuthToken, whenDeviceClaimed } from './supabase';
 
 // Mirror of store._normalisePhone — kept local so this util can be used
 // without depending on the Zustand store (the kiosk's customer-details
@@ -111,9 +111,16 @@ export async function fetchCustomerByPhone(rawPhone, locationId) {
         .maybeSingle();
       const companyId = locRow?.company_id;
       if (companyId) {
+        // 18 Sep 2026: loyalty-balance returns full detail only to staff with the location, a
+        // claimed device of the company or the member (report first: LOYALTY_AUTHORITY_MODE).
+        // Send who we are: this session's token (till, host stand, customer display or Back
+        // Office) and the venue, after the device claim has had its chance to land.
         const balanceUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/loyalty-balance`
-          + `?customer_id=${encodeURIComponent(data.id)}&company_id=${encodeURIComponent(companyId)}`;
-        const balRes = await fetch(balanceUrl);
+          + `?customer_id=${encodeURIComponent(data.id)}&company_id=${encodeURIComponent(companyId)}`
+          + `&location_id=${encodeURIComponent(locId)}`;
+        await whenDeviceClaimed().catch(() => false);
+        const authToken = await ensureAuthToken().catch(() => null);
+        const balRes = await fetch(balanceUrl, authToken ? { headers: { authorization: `Bearer ${authToken}` } } : undefined);
         if (balRes.ok) {
           loyaltyData = await balRes.json();
           credit = loyaltyData.points_balance || 0;
@@ -258,6 +265,8 @@ export async function attributeOnlineOrder({
   phone, name, email, marketingOptIn = false,
   locationId,                    // ops_location_id (locations.id in ops DB)
   orderRecord,                   // { ref, total, items, type }
+  memberToken = null,            // the signed in member's loyalty session token (online)
+  memberCustomerId = null,       // ...and whose it is (sent only when it is this order's customer)
 }) {
   if (!supabase || !phone || !locationId || !orderRecord) return null;
   const phoneN = normalisePhone(phone);
@@ -416,6 +425,11 @@ export async function attributeOnlineOrder({
             isGiftCard: !!i.isGiftCard,
           })),
           subtotal: Number(orderRecord.total) || 0,
+          // 18 Sep 2026: loyalty-earn checks the caller (report first). An online customer's
+          // browser is anonymous, so the member's own token is its only proof. Sent only when
+          // the signed in member IS this customer; a guest order earns without one, which
+          // LOYALTY_AUTHORITY_MODE=report records and enforce would refuse.
+          ...(memberToken && memberCustomerId && memberCustomerId === customerId ? { member_token: String(memberToken) } : {}),
         };
         const res = await fetch(
           `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/loyalty-earn`,

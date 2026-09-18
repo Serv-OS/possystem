@@ -14,12 +14,18 @@
 //   found, customer_id, member_code, name, phone, email,
 //   points_balance, tier, rewards_available[], gift_cards[]
 // }
+// or, for a caller without authority once LOYALTY_AUTHORITY_MODE=enforce, the limited reply
+// { found, enrolled, limited, loyalty_enabled, points_enabled, stamps_enabled } (_shared/memberReply.ts).
+//
+// CALLERS (checked 18 Sep 2026): none in src/. The till, host stand and kiosk look members up
+// through loyalty-balance (src/lib/customerLookup.js fetchCustomerByPhone) or loyalty-otp.
 
 import {
   cors, json, opsAdmin, platformAdmin, authenticateCaller,
-  resolveCompanyForLocation, getOrCreateConfig, ensureMembership,
+  resolveCompanyForLocation, getOrCreateConfig, ensureMembership, checkLoyaltyAuthority,
 } from '../_shared/loyalty-utils.ts';
-import { giftCardRecipientFilter } from '../_shared/giftCardMatch.ts';
+import { giftCardRecipientFilter, cardBelongsToPhone } from '../_shared/giftCardMatch.ts';
+import { limitedMemberReply } from '../_shared/memberReply.ts';
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -102,6 +108,31 @@ Deno.serve(async (req) => {
     return json({ found: false, error: 'Customer not found' }, 404);
   }
 
+  // ── Who may see the full member (18 Sep 2026) ──────────────────────────
+  // This returns name, phone, email, allergens, points and rewards for a phone number, and any
+  // session could call it. Full detail now needs staff with the location, a claimed device of
+  // this company, or the member's own token (same rule as loyalty-redeem). Anybody else gets
+  // only what a sign in prompt needs: is this number a member, and are points and stamps on.
+  // REPORT FIRST: LOYALTY_AUTHORITY_MODE unset or 'report' still returns full detail and
+  // records the caller; 'enforce' returns the limited reply. The limited reply never enrols.
+  const gate = await checkLoyaltyAuthority({
+    fn: 'loyalty-member-lookup',
+    caller,
+    locationId: String(location_id),
+    companyId: String(companyId),
+    customerId: String(customer.id),
+    memberToken: (body as any).member_token,
+    channel: (body as any).channel ?? null,
+  });
+  if (!gate.allow) {
+    const [{ data: cfg }, { data: member }] = await Promise.all([
+      platformAdmin.from('loyalty_config').select('enabled, points_enabled, stamps_enabled').eq('company_id', companyId).maybeSingle(),
+      platformAdmin.from('customer_loyalty').select('id').eq('customer_id', customer.id).eq('company_id', companyId).maybeSingle(),
+    ]);
+    if (!member) return json({ found: false, error: 'Customer not found' }, 404);
+    return json(limitedMemberReply(cfg));
+  }
+
   // ── Get or create loyalty membership ───────────────────────────────────
   const config = await getOrCreateConfig(companyId);
   const loyaltyEnabled = config?.enabled ?? false;
@@ -151,11 +182,13 @@ Deno.serve(async (req) => {
     if (filter) {
       const { data: cards } = await platformAdmin
         .from('gift_cards')
-        .select('code_last4, balance_minor, status, expires_at')
+        .select('code_last4, balance_minor, status, expires_at, recipient_phone')
         .eq('company_id', companyId)
         .eq('status', 'active')
         .or(filter);
-      giftCards = (cards || []).map(c => ({
+      // The filter is a wide net (cards typed as '07931 123 456' must still be found); the match
+      // is the normalised phone, row by row.
+      giftCards = (cards || []).filter(c => cardBelongsToPhone(c, customer.phone)).map(c => ({
         last4: c.code_last4,
         balance: c.balance_minor,
         expires_at: c.expires_at,

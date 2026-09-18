@@ -591,7 +591,9 @@ Deno.serve(async (req) => {
     // Fetch fresh loyalty data
     const balanceUrl = `${OPS_URL}/functions/v1/loyalty-balance`
       + `?customer_id=${encodeURIComponent(session.customerId)}&company_id=${encodeURIComponent(session.companyId)}`;
-    const balRes = await fetch(balanceUrl);
+    // The member's own token proves to loyalty-balance that this is the member (18 Sep 2026: the
+    // full reply needs staff, a paired device or the member; report first, see loyalty-authority).
+    const balRes = await fetch(balanceUrl, { headers: { 'x-member-token': token } });
     if (!balRes.ok) return json({ error: 'Failed to fetch loyalty data' }, 500);
     const loyaltyData = await balRes.json();
 

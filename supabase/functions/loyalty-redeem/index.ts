@@ -14,8 +14,11 @@
 //
 // AUTHORITY (18 Sep 2026): the caller must be a paired device of this company, a Back Office user
 // with access to the location, or the member themselves via their loyalty session token for
-// their own customer_id. Any other session, including a bare anonymous one, is refused before a
-// balance is read. See _shared/loyalty-authority.ts.
+// their own customer_id (a token past its 24 hours still counts for the order it was live for,
+// so a parked redemption can replay). Decided before a balance is read. REPORT FIRST: with
+// LOYALTY_AUTHORITY_MODE unset or 'report' every call goes through and the ones enforce would
+// refuse are written to caller_authority_log; 'enforce' refuses them. See
+// _shared/loyalty-authority.ts and checkLoyaltyAuthority in _shared/loyalty-utils.ts.
 //
 // Returns: { status, points_deducted, balance, reward }
 //
@@ -24,10 +27,8 @@
 
 import {
   cors, json, opsAdmin, platformAdmin, authenticateCaller,
-  resolveCompanyForLocation, callerHasStaffAccess, callerDeviceCompany, OTP_SECRET,
+  resolveCompanyForLocation, checkLoyaltyAuthority,
 } from '../_shared/loyalty-utils.ts';
-import { verifySessionToken } from '../_shared/loyalty-session.ts';
-import { decideRedeemAuthority } from '../_shared/loyalty-authority.ts';
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -65,23 +66,19 @@ Deno.serve(async (req) => {
   // ── Authority: who may spend THIS customer's rewards ───────────────────
   // customer_id comes from the body, so it proves nothing on its own. Decided before any
   // balance is read or moved. Facts are gathered only as far as needed.
-  const memberTokenSent = typeof member_token === 'string' && member_token.length > 0;
-  const memberSession = memberTokenSent ? await verifySessionToken(member_token, OTP_SECRET) : null;
-  const staffHasLocation = memberTokenSent ? false : await callerHasStaffAccess(caller, String(location_id));
-  const deviceCompanyId = (memberTokenSent || staffHasLocation) ? null : await callerDeviceCompany(caller.id);
-  const authority = decideRedeemAuthority({
-    user: caller,
-    memberTokenSent,
-    memberSession,
-    staffHasLocation,
-    deviceCompanyId,
-    customerId: String(customer_id),
+  // LOYALTY_AUTHORITY_MODE=report (the default) allows the call and records it when enforce
+  // would refuse; =enforce refuses. See _shared/loyalty-authority.ts.
+  const gate = await checkLoyaltyAuthority({
+    fn: 'loyalty-redeem',
+    caller,
+    locationId: String(location_id),
     companyId: String(companyId),
+    customerId: String(customer_id),
+    memberToken: member_token,
+    closedCheckId: closed_check_id,
+    channel,
   });
-  if (!authority.ok) {
-    console.warn('[loyalty-redeem] refused:', authority.error, { caller: caller.id, anonymous: !!caller.is_anonymous, location_id });
-    return json({ error: authority.error }, authority.status);
-  }
+  if (!gate.allow) return gate.response!;
 
   // ── Stamp-card reward redemption ───────────────────────────────────────
   // A completed stamp card IS the reward — there is no voucher row. Availability is derived:

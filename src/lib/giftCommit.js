@@ -24,6 +24,8 @@
 //      caller that mints a fresh key per attempt still can't debit twice for one order.
 // Callers MUST pass a closedCheckId that is STABLE across retries of the same order.
 
+import { activeMemberToken } from './memberSession.js';
+
 const newId = () => (
   typeof crypto !== 'undefined' && crypto.randomUUID
     ? crypto.randomUUID()
@@ -73,11 +75,13 @@ export function stageGiftCard({ cardId, code = null, codeLast4 = null, balanceMi
  *        commit, take whatever IS left. Correct when the card leg has already been charged
  *        (kiosk, online+Stripe). Pass FALSE on a gift-only order, where a short card must
  *        debit NOTHING so the customer can go back and pay by card with the balance intact.
+ * @param {string|null} [opts.memberToken] the member's loyalty-otp session token (kiosk linked
+ *        cards, which gift-redeem may only spend by card_id for the member they belong to).
  * @returns {Promise<{ ok:boolean, applied:number, remaining_balance:number|null,
  *                     idempotency_key:string|null, card_id:string|null,
  *                     shortfall:number, error:string|null }>}
  */
-export async function commitGiftCard(staged, { functionsUrl, token, locationId, channel, closedCheckId, allowPartial = true }) {
+export async function commitGiftCard(staged, { functionsUrl, token, locationId, channel, closedCheckId, allowPartial = true, memberToken = null }) {
   const wanted = staged?.applied || 0;
   const fail = (error) => ({
     ok: false, applied: 0, remaining_balance: null, idempotency_key: null,
@@ -109,6 +113,13 @@ export async function commitGiftCard(staged, { functionsUrl, token, locationId, 
         location_id: locationId,
         channel,
         idempotency_key: staged.commit_key,
+        // 18 Sep 2026: gift-redeem spends a card by card_id ALONE (no code) only for staff, a
+        // claimed device, or the member whose proven phone the card is addressed to. A kiosk
+        // card listed after the member's one time code may have no stored code, so the kiosk
+        // sends the member's loyalty session token. A card entered by its code needs nothing.
+        // The kiosk's frozen submitOrder cannot pass it, so the member signed in on this screen
+        // (lib/memberSession) is used when the caller gave none.
+        ...((memberToken || activeMemberToken()) ? { member_token: String(memberToken || activeMemberToken()) } : {}),
       }),
     });
     const j = await res.json().catch(() => ({}));

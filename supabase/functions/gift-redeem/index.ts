@@ -20,6 +20,12 @@
 // devices which authenticate via anonymous auth and have no user_company_roles
 // row. Resolution order: user_company_roles → locations.company_id.
 //
+// 18 Sep 2026 (enforced now): lookup order is HMAC, code_plain, THEN card_id. A card found by
+// its code is proof of possession and needs nothing more. A card found by card_id alone needs
+// staff with the location, a claimed device of the company, or `member_token` (the loyalty
+// session token) whose proven phone the card is addressed to. Anything else is 403
+// { code: 'gift_card_code_required' } and a caller_authority_log row. _shared/gift-authority.ts.
+//
 // Validations:
 //   1. Code resolves to active card in caller's org
 //   2. Card not expired, not void
@@ -30,6 +36,11 @@ import {
   cors, json, platformAdmin, authenticateCaller, resolveCompanyForLocation,
   normalizeCode, hmacLookup,
 } from '../_shared/gift-card-utils.ts';
+import { callerIsStaffFor, callerDeviceCompany, recordAuthority, OTP_SECRET } from '../_shared/loyalty-utils.ts';
+import { verifySessionToken } from '../_shared/loyalty-session.ts';
+import { decideGiftCardIdAuthority } from '../_shared/gift-authority.ts';
+import { cardBelongsToPhone } from '../_shared/giftCardMatch.ts';
+import { authorityLogRow } from '../_shared/loyalty-authority.ts';
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -82,6 +93,10 @@ Deno.serve(async (req) => {
   // was never tried, causing "Card not found" on kiosk. Now card_id is always
   // tried as a fallback when the code-based HMAC lookup fails.
   let card: any = null;
+  // 18 Sep 2026: a card found by its CODE is proof of possession. A card found by card_id alone
+  // is not, and needs authority (below). Order: HMAC, then code_plain, THEN card_id, so a code
+  // that resolves is never mistaken for a card_id spend.
+  let provedByCode = false;
 
   // 1. Try code-based HMAC lookup first (works for manual entry + linked cards)
   if (code) {
@@ -95,11 +110,28 @@ Deno.serve(async (req) => {
       .maybeSingle();
     card = found;
     if (!card) {
-      console.warn('[gift-redeem] HMAC lookup miss for code; trying card_id fallback');
+      console.warn('[gift-redeem] HMAC lookup miss for code; trying code_plain');
     }
   }
 
-  // 2. Fallback: direct card_id lookup (reliable — used by kiosk linked cards)
+  // 2. match code_plain directly (handles HMAC secret rotation). Was step 3; it now runs before
+  // the card_id step so a code that resolves counts as the proof it is.
+  if (!card && code) {
+    const normalized = normalizeCode(code as string);
+    const { data: found } = await platformAdmin
+      .from('gift_cards')
+      .select('*')
+      .eq('code_plain', normalized)
+      .eq('company_id', companyId)
+      .maybeSingle();
+    card = found;
+    if (found) {
+      console.warn('[gift-redeem] Matched via code_plain fallback: HMAC may be stale');
+    }
+  }
+  if (card) provedByCode = true;
+
+  // 3. Last resort: direct card_id lookup (kiosk linked cards, which may have no stored code).
   if (!card && card_id) {
     const { data: found } = await platformAdmin
       .from('gift_cards')
@@ -113,18 +145,35 @@ Deno.serve(async (req) => {
     }
   }
 
-  // 3. Last resort: match code_plain directly (handles HMAC secret rotation)
-  if (!card && code) {
-    const normalized = normalizeCode(code as string);
-    const { data: found } = await platformAdmin
-      .from('gift_cards')
-      .select('*')
-      .eq('code_plain', normalized)
-      .eq('company_id', companyId)
-      .maybeSingle();
-    card = found;
-    if (found) {
-      console.warn('[gift-redeem] Matched via code_plain fallback — HMAC may be stale');
+  // ── Authority for a card_id spend (18 Sep 2026, enforced now) ──────────
+  // Spending by card_id used to need nothing but a session (an anonymous one is free), and
+  // gift-lookup's name and email search handed card ids out. Now a card NOT proved by its code
+  // may only be spent by staff with the location, a claimed device of this company, or the
+  // member whose PROVEN phone (loyalty session token) the card is addressed to: the kiosk
+  // spending a card it listed after the one time code. See _shared/gift-authority.ts.
+  if (card && !provedByCode) {
+    const memberToken = (body as any).member_token;
+    const memberTokenSent = typeof memberToken === 'string' && memberToken.length > 0;
+    const memberSession = memberTokenSent ? await verifySessionToken(memberToken, OTP_SECRET) : null;
+    const staff = await callerIsStaffFor(caller, (location_id as string) || null, companyId);
+    const deviceCompanyId = staff ? null : await callerDeviceCompany(caller.id);
+    const authority = decideGiftCardIdAuthority({
+      user: caller,
+      staff,
+      deviceCompanyId,
+      companyId: String(companyId),
+      memberTokenSent,
+      memberSession,
+      cardOnMemberPhone: !!memberSession && cardBelongsToPhone(card, memberSession.phone),
+    });
+    if (!authority.ok) {
+      await recordAuthority(authorityLogRow({
+        fn: 'gift-redeem', mode: 'enforce', outcome: 'refused',
+        decision: { ok: false, reason: authority.reason, callerKind: memberTokenSent ? 'member' : (caller?.is_anonymous ? 'anonymous' : 'user_no_access') },
+        user: caller, companyId, locationId: location_id, closedCheckId: closed_check_id, channel,
+        detail: { card_last4: card.code_last4 ?? null },
+      }));
+      return json({ error: authority.error, code: 'gift_card_code_required' }, authority.status);
     }
   }
 

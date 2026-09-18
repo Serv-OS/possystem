@@ -11,6 +11,9 @@
 import {
   cors, json, platformAdmin, authenticateCaller, resolveCompanyForLocation,
 } from '../_shared/gift-card-utils.ts';
+import { callerIsStaffFor, recordAuthority } from '../_shared/loyalty-utils.ts';
+import { decideGiftListAuthority } from '../_shared/gift-authority.ts';
+import { authorityLogRow } from '../_shared/loyalty-authority.ts';
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -27,6 +30,22 @@ Deno.serve(async (req) => {
   const companyResult = await resolveCompanyForLocation(caller.id, body.location_id as string);
   if (companyResult instanceof Response) return companyResult;
   const companyId = companyResult;
+
+  // ── Staff only (18 Sep 2026, enforced now) ─────────────────────────────
+  // This returns code_plain and the recipient's name, email and phone for every card of the
+  // company. It used to answer ANY session, anonymous included, for any public location_id: a
+  // full dump of spendable codes. Its callers are Back Office GiftCards.jsx (All cards) and
+  // Customers.jsx (a customer's cards), both signed in staff. See _shared/gift-authority.ts.
+  const staff = await callerIsStaffFor(caller, (body.location_id as string) || null, companyId);
+  const authority = decideGiftListAuthority({ user: caller, staff });
+  if (!authority.ok) {
+    await recordAuthority(authorityLogRow({
+      fn: 'gift-list', mode: 'enforce', outcome: 'refused',
+      decision: { ok: false, reason: authority.reason, callerKind: caller?.is_anonymous ? 'anonymous' : 'user_no_access' },
+      user: caller, companyId, locationId: body.location_id,
+    }));
+    return json({ error: authority.error }, authority.status);
+  }
 
   const limit = Math.min(Number(body.limit) || 500, 1000);
 

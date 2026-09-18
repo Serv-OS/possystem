@@ -164,7 +164,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   const memberCustomerId = loyalty?.customer?.id || loyalty?.loyalty?.customer_id || null;
 
   // v5.5.243: Phone → loyalty member detection
-  const [loyaltyHint, setLoyaltyHint] = useState(null); // { enrolled, points_balance, member_code, points_enabled, stamps_enabled }
+  const [loyaltyHint, setLoyaltyHint] = useState(null); // { enrolled, points_enabled, stamps_enabled } (loyalty-balance view=summary)
 
   // Loyalty program mode flags (from loyalty-balance / loyalty-member-lookup).
   // A venue can run points-only, stamp-cards-only, or both. Treat a
@@ -195,8 +195,12 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   // await the SAME request instead of firing a second cold call — the double
   // fetch was the multi-second freeze on "Continue to payment".
   const loyaltyLookupRef = useRef({ phone: null, promise: null });
+  // 18 Sep 2026: view=summary. This browser is anonymous and only needs "is this number a member"
+  // plus the points and stamps switches; loyalty-balance no longer hands a stranger's balance,
+  // member code or history to an anonymous caller (the full reply needs the member's own token).
+  // A member is recognised by `enrolled`, which both the summary and the full reply carry.
   const lookupLoyaltyMember = (normalised, companyId) =>
-    fetch(`${FUNCTIONS_URL}/loyalty-balance?phone=${encodeURIComponent(normalised)}&company_id=${encodeURIComponent(companyId)}`)
+    fetch(`${FUNCTIONS_URL}/loyalty-balance?view=summary&phone=${encodeURIComponent(normalised)}&company_id=${encodeURIComponent(companyId)}`)
       .then(r => (r.ok ? r.json() : null))
       .catch(() => null);
   useEffect(() => {
@@ -208,7 +212,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
     const timer = setTimeout(() => {
       const promise = lookupLoyaltyMember(normalised, companyId);
       loyaltyLookupRef.current = { phone: normalised, promise };
-      promise.then(j => { if (j?.member_code) setLoyaltyHint(j); });
+      promise.then(j => { if (j?.enrolled) setLoyaltyHint(j); });
     }, 600);
     return () => clearTimeout(timer);
   }, [phone, loyalty?.verified, loyaltyHintDismissed, location.company_id]);
@@ -520,9 +524,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         const j = await Promise.race([p, new Promise(res => setTimeout(() => res('timeout'), 2500))]);
         if (j === 'timeout') {
           p.then(late => {
-            if (late?.member_code && stepRef.current === 'gift') { setLoyaltyHint(late); setShowLoyaltyGate(true); }
+            if (late?.enrolled && stepRef.current === 'gift') { setLoyaltyHint(late); setShowLoyaltyGate(true); }
           });
-        } else if (j?.member_code) {
+        } else if (j?.enrolled) {
           setLoyaltyHint(j); setShowLoyaltyGate(true); return;
         }
       } finally {
@@ -1127,6 +1131,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         marketingOptIn: false,
         locationId: opsLocationId,
         orderRecord: { ref, total: discountedSubtotalMinor / 100, items, type: orderType },
+        // loyalty-earn's proof that this browser is the member (18 Sep 2026, report first).
+        memberToken: loyalty?.token || null,
+        memberCustomerId,
       }).catch(e => console.warn('[OnlineCheckout] attribute failed:', e?.message || e));
 
       // v5.5.287: Decrement stock for each item in the order
@@ -1279,6 +1286,9 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         marketingOptIn: false,
         locationId: opsLocationId,
         orderRecord: { ref, total: discountedSubtotalMinor / 100, items, type: orderType },
+        // loyalty-earn's proof that this browser is the member (18 Sep 2026, report first).
+        memberToken: loyalty?.token || null,
+        memberCustomerId,
       }).catch(e => console.warn('[OnlineCheckout] attribute failed:', e?.message || e));
 
       // v5.5.287: Decrement stock for each item in the order

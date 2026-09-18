@@ -40,6 +40,23 @@ export async function verifySessionToken(
   secret: string,
   now: number = Date.now(),
 ): Promise<{ customerId: string; companyId: string; phone: string | null } | null> {
+  const t = await inspectSessionToken(token, secret, now);
+  if (!t || t.expired) return null;
+  return { customerId: t.customerId, companyId: t.companyId, phone: t.phone };
+}
+
+/**
+ * Like verifySessionToken, but a correctly SIGNED token that is past its 24 hours still comes
+ * back, flagged expired, with the time it was issued. Only one caller may use an expired token:
+ * the replay of a redemption parked while the token was live (loyalty-redeem, via
+ * memberTokenCoversCheck below). Everything else must treat expired as absent.
+ * A bad signature, a malformed token or a token from the future returns null.
+ */
+export async function inspectSessionToken(
+  token: unknown,
+  secret: string,
+  now: number = Date.now(),
+): Promise<{ customerId: string; companyId: string; phone: string | null; issuedAt: number; expired: boolean } | null> {
   try {
     if (typeof token !== 'string') return null;
     const [payloadB64, sig] = token.split('.');
@@ -47,13 +64,31 @@ export async function verifySessionToken(
     const payload = atob(payloadB64);
     const [customerId, companyId, timestampStr, phone] = payload.split(':');
     if (!customerId || !companyId || !timestampStr) return null;
-    const age = now - Number(timestampStr);
-    if (!Number.isFinite(age) || age > SESSION_TTL_MS) return null;
+    const issuedAt = Number(timestampStr);
+    const age = now - issuedAt;
+    if (!Number.isFinite(age) || age < -CLOCK_SKEW_MS) return null;
     const sigBytes = new Uint8Array(sig.match(/.{2}/g)!.map((h) => parseInt(h, 16)));
     const valid = await crypto.subtle.verify('HMAC', await hmacKey(secret, 'verify'), sigBytes, enc.encode(payload));
     if (!valid) return null;
-    return { customerId, companyId, phone: phone || null };
+    return { customerId, companyId, phone: phone || null, issuedAt, expired: age > SESSION_TTL_MS };
   } catch {
     return null;
   }
+}
+
+/** Server clocks and the order's own timestamp may differ a little. */
+export const CLOCK_SKEW_MS = 5 * 60 * 1000;
+
+/**
+ * Did the member's session cover this order? True when the order was closed while the token was
+ * live: at or after it was issued and within its 24 hours. A redemption parked by a failed call
+ * (commitRedemptions.js) replays with the SAME token, possibly days later; this is what lets that
+ * replay through for the order it belongs to, and for no other (the order is looked up server
+ * side by closed_check_id, so the time cannot be supplied by the caller).
+ */
+export function memberTokenCoversCheck(issuedAt: unknown, checkClosedAtMs: unknown): boolean {
+  const i = Number(issuedAt);
+  const c = Number(checkClosedAtMs);
+  if (!Number.isFinite(i) || !Number.isFinite(c) || i <= 0 || c <= 0) return false;
+  return c >= i - CLOCK_SKEW_MS && c <= i + SESSION_TTL_MS + CLOCK_SKEW_MS;
 }

@@ -23,6 +23,7 @@
 
 import { queueWrite, getFailedItems, dismissItem } from '../sync/OfflineQueue';
 import { reportSave } from './saveHealth';
+import { memberTokenFor } from './memberSession.js';
 
 const KIND = 'redemption';
 const MAX_RETRIES = 5;
@@ -50,6 +51,22 @@ function browserOnline() {
 function isReplayable(spec) {
   if (typeof spec?.canReplay === 'boolean') return spec.canReplay;
   return !NON_REPLAYABLE_CHANNELS.has(String(spec?.channel || 'pos'));
+}
+
+function memberTokenOf(spec) {
+  return spec?.memberToken || memberTokenFor(spec?.customerId) || null;
+}
+
+// ── The device link (18 Sep 2026) ────────────────────────────────────────
+// loyalty-redeem checks that a till or kiosk session is linked to its devices row (claim_device).
+// The claim is a round trip at boot, and a sale can land first; the store registers
+// whenDeviceClaimed / claimPairedDeviceOnBoot here (this module stays free of lib/supabase so
+// node tests can load it). Before the first POST a loyalty redemption waits for the claim
+// (bounded, 4 s), and a 403 from loyalty-redeem re-claims and tries ONCE more, the way openShift
+// does since v5.8.97. In report mode (the default) loyalty-redeem never answers 403 for this.
+let _deviceHooks = { waitForClaim: null, reclaim: null };
+export function setDeviceClaimHooks({ waitForClaim = null, reclaim = null } = {}) {
+  _deviceHooks = { waitForClaim, reclaim };
 }
 
 // Build the edge-function call from a channel-agnostic spec. Returns null when the spec can't
@@ -99,10 +116,14 @@ function buildCall(spec) {
       channel: spec.channel || 'pos',
       closed_check_id: checkId,
       staff_id: spec.staffId || null,
-      // The member's own loyalty session token (online). loyalty-redeem only lets a caller spend a
-      // member's rewards when it is that member (this token), a paired device of the venue, or a
-      // Back Office user; an anonymous customer browser is none of the last two (18 Sep 2026).
-      ...(spec.memberToken ? { member_token: String(spec.memberToken) } : {}),
+      // The member's own loyalty session token (online, or the member signed in at a kiosk).
+      // loyalty-redeem only lets a caller spend a member's rewards when it is that member (this
+      // token), a paired device of the venue, or a Back Office user; an anonymous customer
+      // browser is none of the last two (18 Sep 2026). The kiosk's frozen submitOrder cannot pass
+      // it, so the signed in member published in lib/memberSession is used for THEIR reward only.
+      // The body is parked verbatim, and loyalty-redeem accepts the token past its 24 hours for
+      // the check it was live for, so a parked replay still carries its authority.
+      ...(memberTokenOf(spec) ? { member_token: String(memberTokenOf(spec)) } : {}),
     },
   };
 }
@@ -151,7 +172,10 @@ function outcome(res, j, bodyRead) {
   return {
     ok: false,
     error: j?.error || j?.reason || `HTTP ${res.status}`,
-    retryable: res.status === 401 || res.status === 408 || res.status === 429 || res.status >= 500,
+    // An authority refusal (18 Sep 2026, LOYALTY_AUTHORITY_MODE=enforce) is not a business "no":
+    // the device link may be restored by the next boot's claim, so it stays in the replay queue.
+    retryable: res.status === 401 || res.status === 408 || res.status === 429 || res.status >= 500
+      || (res.status === 403 && j?.code === 'loyalty_authority'),
   };
 }
 
@@ -247,6 +271,12 @@ export async function commitRedemption(spec, { functionsUrl, token } = {}) {
 
   if (!functionsUrl || !token) return fail('no auth session', true);
 
+  // A loyalty redemption waits (bounded) for this till's or kiosk's device claim, see above.
+  const loyaltyCall = call.fn === 'loyalty-redeem';
+  if (loyaltyCall && _deviceHooks.waitForClaim) {
+    try { await _deviceHooks.waitForClaim(); } catch { /* never blocks the redemption */ }
+  }
+
   let result;
   try {
     result = await post(call.fn, call.body, { functionsUrl, token });
@@ -264,7 +294,18 @@ export async function commitRedemption(spec, { functionsUrl, token } = {}) {
     }
   }
 
-  const o = outcome(result.res, result.j, result.bodyRead);
+  let o = outcome(result.res, result.j, result.bodyRead);
+  // Refused as "not this venue's device" (403): re-claim the device and try ONCE more before the
+  // refusal becomes final. Same idempotency key, so a call that did land cannot deduct twice.
+  if (!o.ok && loyaltyCall && result.res?.status === 403 && _deviceHooks.reclaim) {
+    try {
+      await _deviceHooks.reclaim();
+      result = await post(call.fn, call.body, { functionsUrl, token });
+      o = outcome(result.res, result.j, result.bodyRead);
+    } catch (e) {
+      return fail(e?.name === 'AbortError' ? `timed out after ${POST_TIMEOUT_MS / 1000}s` : (e?.message || 'network error'), true);
+    }
+  }
   if (!o.ok) return fail(o.error, o.retryable);
 
   reportSave(call.entity, null);

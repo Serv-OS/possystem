@@ -13,7 +13,7 @@
 */
 
 import { useState, useEffect, useCallback } from 'react';
-import { supabase, ensureAuthToken } from '../lib/supabase';
+import { supabase, ensureAuthToken, claimPairedDeviceOnBoot, KIOSK_CODE_KEY } from '../lib/supabase';
 import KioskApp from './KioskApp';
 import { getLocationConfig } from '../lib/locationTime';
 import { isOpenNow, nextOpensAt, formatHoursPreview } from '../lib/openingHours';
@@ -47,10 +47,14 @@ function KioskSurfaceInner() {
       console.warn('[KioskSurface] paired kiosk not found, clearing local pairing', error);
       localStorage.removeItem(LS_KIOSK_ID);
       localStorage.removeItem(LS_KIOSK_TOKEN);
+      localStorage.removeItem(KIOSK_CODE_KEY);
       setPaired(false);
       return;
     }
     setKiosk(data);
+    // Re-link this kiosk's session to its devices row on every boot (was: once, at pairing).
+    // Best effort and not awaited: whenDeviceClaimed() lets loyalty calls wait for it.
+    claimPairedDeviceOnBoot();
     await supabase.from('devices').update({ last_seen: new Date().toISOString() }).eq('id', id);
   }, []);
 
@@ -89,10 +93,15 @@ function KioskSurfaceInner() {
       }
 
       const token = (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2)) + '.' + Date.now();
+      // 18 Sep 2026: the pairing code is KEPT (on the row and in rpos-kiosk-pairing-code), the
+      // same as every till, so the kiosk can re-claim its device link on every boot
+      // (claimPairedDeviceOnBoot). It used to be cleared here, which left a kiosk whose one claim
+      // failed, or whose anonymous session changed, unlinked for good; loyalty now checks that
+      // link. Back Office "new code" still moves the kiosk: the kiosk only ever uses the code
+      // it paired with.
       const { error: e2 } = await supabase
         .from('devices').update({
           paired_at: new Date().toISOString(),
-          pairing_code: null,
           session_token: token,
           last_seen: new Date().toISOString(),
           status: 'online',
@@ -100,6 +109,7 @@ function KioskSurfaceInner() {
       if (e2) throw e2;
       localStorage.setItem(LS_KIOSK_ID, data.id);
       localStorage.setItem(LS_KIOSK_TOKEN, token);
+      try { localStorage.setItem(KIOSK_CODE_KEY, codeNorm); } catch { /* quota */ }
       setKiosk(Object.assign({}, data, { paired_at: new Date().toISOString(), session_token: token }));
       setPaired(true);
     } catch (e) {
@@ -114,6 +124,7 @@ function KioskSurfaceInner() {
     if (!confirm('Unpair this kiosk?')) return;
     localStorage.removeItem(LS_KIOSK_ID);
     localStorage.removeItem(LS_KIOSK_TOKEN);
+    localStorage.removeItem(KIOSK_CODE_KEY);
     setPaired(false);
     setKiosk(null);
     setCode('');

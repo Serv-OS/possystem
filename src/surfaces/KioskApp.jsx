@@ -51,6 +51,7 @@ import { kioskNewDesignOn, kioskResetAllowed } from '../lib/kioskFlow';
 import KioskCardScreen from './kiosk/KioskCardScreen';
 import { kioskLineKeyV2 } from '../lib/kioskBasket';
 import { kioskCardEligible, itemInCategory, kioskLegacyCategoryShown } from '../lib/kioskMenu';
+import { setActiveMemberSession } from '../lib/memberSession.js';
 // networkReader import removed — kiosk payment now uses server-side edge function directly
 // v5.5.871: card payment is processor-aware — Stripe reader (edge fn) OR Ryft PAX
 // terminal (the same "send to terminal" job path the POS/Table-Pay use).
@@ -466,7 +467,17 @@ export default function KioskApp({ kioskId, onUnpair }) {
   // giftCardPayment: { card_id, code, applied (minor), remaining_balance }
   // v5.5.265: Verified customer loyalty data (from OTP flow)
   const [verifiedLoyalty, setVerifiedLoyalty] = useState(null);
-  // verifiedLoyalty: { customer, loyalty, stampCards, giftCards }
+  // verifiedLoyalty: { customer, loyalty, stampCards, giftCards, token }
+  // 18 Sep 2026: publish the signed in member's session token for the loyalty and gift card
+  // calls submitOrder fires (earn, reward redemption, linked gift card by card_id). submitOrder
+  // is frozen by the card path guard, so it cannot pass the token itself; lib/memberSession
+  // carries it, only for THIS member, and it is cleared the moment the session resets.
+  useEffect(() => {
+    setActiveMemberSession(verifiedLoyalty?.token
+      ? { token: verifiedLoyalty.token, customerId: verifiedLoyalty.customer?.id || null }
+      : null);
+  }, [verifiedLoyalty]);
+  useEffect(() => () => setActiveMemberSession(null), []);
   // Track where to return after early loyalty sign-in (from orderType screen)
   const [loyaltyReturnScreen, setLoyaltyReturnScreen] = useState(null);
   const [selectedItem, setSelectedItem] = useState(null);
@@ -3630,6 +3641,9 @@ function ScreenLoyalty({ brandColor, customerName, customerPhone, customerEmail,
           },
           stampCards: data.stamp_cards || [],
           giftCards: data.gift_cards || [],
+          // The member's loyalty session token: proves earn, reward and linked gift card calls
+          // are this member's own (18 Sep 2026). Never shown.
+          token: data.token || null,
         });
         setOtpStep('verified');
       }
