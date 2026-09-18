@@ -9,7 +9,13 @@
 //   channel,         -- 'pos'|'kiosk'|'online'|'qr'
 //   closed_check_id, -- for audit trail (optional at time of redeem)
 //   staff_id?,
+//   member_token?,   -- the member's loyalty session token (online checkout)
 // }
+//
+// AUTHORITY (18 Sep 2026): the caller must be a paired device of this company, a Back Office user
+// with access to the location, or the member themselves via their loyalty session token for
+// their own customer_id. Any other session, including a bare anonymous one, is refused before a
+// balance is read. See _shared/loyalty-authority.ts.
 //
 // Returns: { status, points_deducted, balance, reward }
 //
@@ -18,8 +24,10 @@
 
 import {
   cors, json, opsAdmin, platformAdmin, authenticateCaller,
-  resolveCompanyForLocation,
+  resolveCompanyForLocation, callerHasStaffAccess, callerDeviceCompany, OTP_SECRET,
 } from '../_shared/loyalty-utils.ts';
+import { verifySessionToken } from '../_shared/loyalty-session.ts';
+import { decideRedeemAuthority } from '../_shared/loyalty-authority.ts';
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -42,6 +50,7 @@ Deno.serve(async (req) => {
     channel = 'pos',
     closed_check_id,
     staff_id,
+    member_token,
   } = body as any;
 
   if (!customer_id) return json({ error: 'customer_id required' }, 400);
@@ -52,6 +61,27 @@ Deno.serve(async (req) => {
   const resolved = await resolveCompanyForLocation(caller.id, location_id);
   if (resolved instanceof Response) return resolved;
   const companyId = resolved;
+
+  // ── Authority: who may spend THIS customer's rewards ───────────────────
+  // customer_id comes from the body, so it proves nothing on its own. Decided before any
+  // balance is read or moved. Facts are gathered only as far as needed.
+  const memberTokenSent = typeof member_token === 'string' && member_token.length > 0;
+  const memberSession = memberTokenSent ? await verifySessionToken(member_token, OTP_SECRET) : null;
+  const staffHasLocation = memberTokenSent ? false : await callerHasStaffAccess(caller, String(location_id));
+  const deviceCompanyId = (memberTokenSent || staffHasLocation) ? null : await callerDeviceCompany(caller.id);
+  const authority = decideRedeemAuthority({
+    user: caller,
+    memberTokenSent,
+    memberSession,
+    staffHasLocation,
+    deviceCompanyId,
+    customerId: String(customer_id),
+    companyId: String(companyId),
+  });
+  if (!authority.ok) {
+    console.warn('[loyalty-redeem] refused:', authority.error, { caller: caller.id, anonymous: !!caller.is_anonymous, location_id });
+    return json({ error: authority.error }, authority.status);
+  }
 
   // ── Stamp-card reward redemption ───────────────────────────────────────
   // A completed stamp card IS the reward — there is no voucher row. Availability is derived:

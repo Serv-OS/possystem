@@ -157,6 +157,11 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
   const [rewardError, setRewardError] = useState('');
   const [availableRewards, setAvailableRewards] = useState(null); // fetched when entering rewards step
   const hasLoyalty = !!(loyalty?.verified && loyalty?.loyalty);
+  // The signed in member's customer id. loyalty-otp verify puts it on `customer.id`; its `loyalty`
+  // block has no customer_id, so reading loyalty.loyalty.customer_id sent null and every online
+  // reward failed to deduct (loyalty-redeem 400 'customer_id required'), and promo codes lost
+  // their customer. The old field is kept as a fallback only.
+  const memberCustomerId = loyalty?.customer?.id || loyalty?.loyalty?.customer_id || null;
 
   // v5.5.243: Phone → loyalty member detection
   const [loyaltyHint, setLoyaltyHint] = useState(null); // { enrolled, points_balance, member_code, points_enabled, stamps_enabled }
@@ -598,7 +603,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         headers: { 'content-type': 'application/json', 'authorization': `Bearer ${token}` },
         body: JSON.stringify({
           action: 'validate', code, location_id: opsLocationId,
-          customer_id: loyalty?.loyalty?.customer_id || null,
+          customer_id: memberCustomerId,
           basket: { subtotal: discountedSubtotalMinor / 100 },
         }),
       });
@@ -936,7 +941,7 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       // v5.5.888: same customer identity as validate — without it a customer-locked
       // code fails redeem with customer_required AFTER the discount was granted,
       // and per-customer limits lose their attribution in the ledger.
-      customerId: loyalty?.loyalty?.customer_id || null,
+      customerId: memberCustomerId,
       channel: 'online',
       code: promoApplied.code,
       basketValue: discountedSubtotalMinor / 100,
@@ -961,10 +966,13 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
       closedCheckId: orderShape.checkId,
       // v5.5.885: loyalty-redeem REQUIRES location_id (it 400s without one).
       locationId: opsLocationId,
-      customerId: loyalty?.loyalty?.customer_id || null,
+      customerId: memberCustomerId,
       channel: 'online',
       stampProgramId: rewardApplied.stamp_program_id || null,
       rewardId: rewardApplied.reward_id || null,
+      // Proves to loyalty-redeem that this browser IS the member (an anonymous online session
+      // on its own may not spend anybody's points).
+      memberToken: loyalty?.token || null,
     }, { functionsUrl: FUNCTIONS_URL, token: await getAuthToken().catch(() => null) });
     if (!r.ok && !r.queued) {
       logActivity(opsLocationId, {

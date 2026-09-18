@@ -292,22 +292,38 @@ export async function attributeOnlineOrder({
       const { error: updErr } = await supabase.from('customers').update(patch).eq('id', customerId);
       if (updErr) console.warn('[attributeOnlineOrder] customer update:', updErr.message);
     } else {
+      // customers.name is NOT NULL with no default: a null name was refused, so a nameless online
+      // order never linked to a member (same bug loyalty-otp had, fixed 17 Sep 2026). Store an
+      // empty name; the operator UI treats '' exactly like no name.
       const { data: ins, error: insErr } = await supabase
         .from('customers')
         .insert({
           org_id: orgId, phone: phoneN, phone_raw: phone,
-          name: name || null, email: email || null,
+          name: typeof name === 'string' ? name.trim() : '', email: email || null,
           marketing_opt_in: !!marketingOptIn,
         })
         .select('id').maybeSingle();
       if (insErr) {
-        console.warn('[attributeOnlineOrder] customer insert:', insErr.message);
-        return null;
+        // Lost a race with another tab or device creating the same phone: use the winner's row.
+        const { data: again } = await supabase
+          .from('customers')
+          .select('id')
+          .eq('org_id', orgId)
+          .eq('phone', phoneN)
+          .is('deleted_at', null)
+          .maybeSingle();
+        if (!again?.id) {
+          console.warn('[attributeOnlineOrder] customer insert:', insErr.code, insErr.message);
+          return null;
+        }
+        customerId = again.id;
+      } else {
+        customerId = ins?.id;
       }
-      customerId = ins?.id;
 
-      // Fire-and-forget: send branded welcome SMS + email for new customers
-      if (customerId) {
+      // Fire-and-forget: send branded welcome SMS + email for new customers (only when THIS call
+      // created the row; a lost race means the winner already welcomed them)
+      if (customerId && !insErr) {
         try {
           let companyId = null;
           if (platformSupabase) {

@@ -49,6 +49,44 @@ export async function authenticateCaller(
   return { user };
 }
 
+// ── Redeem authority facts (see loyalty-authority.ts for the decision) ─────
+// The secret loyalty-otp signs member session tokens with. Same fallback chain as loyalty-otp.
+export const OTP_SECRET =
+  Deno.env.get('OTP_HMAC_SECRET') ?? Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? 'fallback-secret';
+
+/** A signed in Back Office user (never anonymous) with access to this ops location, or super_admin. */
+export async function callerHasStaffAccess(user: any, opsLocationId: string): Promise<boolean> {
+  if (!user || user.is_anonymous || !opsLocationId) return false;
+  const [{ data: ul }, { data: prof }] = await Promise.all([
+    opsAdmin.from('user_locations').select('location_id').eq('user_id', user.id).eq('location_id', opsLocationId).maybeSingle(),
+    opsAdmin.from('user_profiles').select('role').eq('id', user.id).maybeSingle(),
+  ]);
+  return !!ul || prof?.role === 'super_admin';
+}
+
+/**
+ * The company of the caller's OWN paired device, or null when this session holds none.
+ * claim_device() stamps devices.device_uid from the JWT and nothing else writes it, so a session
+ * cannot forge a link to a venue it never held the pairing code for (same fence as
+ * challenge21-counter). The location comes from that row, never from the request body.
+ */
+export async function callerDeviceCompany(userId: string): Promise<string | null> {
+  if (!userId) return null;
+  const { data: dev } = await opsAdmin
+    .from('devices')
+    .select('location_id, last_seen')
+    .eq('device_uid', userId)
+    .neq('status', 'removed')
+    .not('location_id', 'is', null)
+    .order('last_seen', { ascending: false, nullsFirst: false })
+    .limit(1)
+    .maybeSingle();
+  if (!dev?.location_id) return null;
+  let { data: loc } = await platformAdmin.from('locations').select('company_id').eq('ops_location_id', dev.location_id).maybeSingle();
+  if (!loc) ({ data: loc } = await platformAdmin.from('locations').select('company_id').eq('id', dev.location_id).maybeSingle());
+  return loc?.company_id ?? null;
+}
+
 // ── Company resolution (location-based, same as gift-card-utils) ──────────
 export async function resolveCompanyForLocation(
   userId: string,

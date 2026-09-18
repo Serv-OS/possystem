@@ -7,7 +7,8 @@
 //   or ?phone=+447700900000&company_id=xxx
 //   or ?customer_id=xxx&company_id=xxx
 //
-// Returns: { member_code, points_balance, tier, rewards_available[], enrolled_at }
+// Returns: { member_code, points_balance, tier, rewards_available[], enrolled_at, gift_cards: [] }
+// gift_cards is ALWAYS empty here: a public lookup never returns gift card codes, ids or balances.
 
 import { cors, json, platformAdmin, opsAdmin } from '../_shared/loyalty-utils.ts';
 
@@ -221,38 +222,16 @@ Deno.serve(async (req) => {
     }
   } catch {}
 
-  // ── v5.5.264: Gift cards linked to this customer ─────────────────────
-  let giftCards: any[] = [];
-  try {
-    // Resolve customer phone/email/name from ops DB for gift card lookup
-    const { data: custRow } = await opsAdmin
-      .from('customers')
-      .select('phone, email, name')
-      .eq('id', membership.customer_id)
-      .maybeSingle();
-    if (custRow) {
-      const conditions: string[] = [];
-      if (custRow.phone) conditions.push(`recipient_phone.eq.${custRow.phone}`);
-      if (custRow.email) conditions.push(`recipient_email.eq.${custRow.email}`);
-      if (custRow.name) conditions.push(`recipient_name.eq.${custRow.name}`);
-      if (conditions.length > 0) {
-        const { data: cards } = await platformAdmin
-          .from('gift_cards')
-          .select('id, code_last4, code_plain, balance_minor, status, expires_at, initial_amount_minor')
-          .eq('company_id', companyId)
-          .eq('status', 'active')
-          .or(conditions.join(','));
-        giftCards = (cards || []).map((c: any) => ({
-          id: c.id,
-          last4: c.code_last4,
-          code: c.code_plain || null,
-          balance: c.balance_minor,
-          initial: c.initial_amount_minor,
-          expires_at: c.expires_at,
-        }));
-      }
-    }
-  } catch {}
+  // ── Gift cards: NEVER from this endpoint (18 Sep 2026) ───────────────
+  // This is a public GET that needs only company_id plus a phone number, member code or
+  // customer id; it cannot tell who is asking. It used to return every active card addressed to
+  // the member's phone, email or NAME, with the full code. A code is spendable money, and so is a
+  // card id (gift-redeem accepts card_id), and even last4 plus balance tells a stranger what a
+  // phone number's owner holds. No caller needs it: the till shows no linked cards from this
+  // lookup, and the kiosk and portal get the member's own cards from loyalty-otp AFTER the one
+  // time code (matched on the proven phone only, see _shared/giftCardMatch.ts). `gift_cards`
+  // stays in the reply, always empty, so older clients reading it keep working.
+  const giftCards: never[] = [];
 
   // Loyalty type availability (points vs stamp cards) so client surfaces hide the disabled half.
   const { data: _cfg } = await platformAdmin.from('loyalty_config').select('enabled, points_enabled, stamps_enabled').eq('company_id', companyId).maybeSingle();
@@ -285,11 +264,12 @@ Deno.serve(async (req) => {
     })),
     enrolled_at: membership.enrolled_at,
     last_earn_at: membership.last_earn_at,
-    // v5.5.264: stamp cards and gift cards for kiosk/online surfaces
+    // v5.5.264: stamp cards for kiosk/online surfaces
     stamp_cards: stampCards,
     // v5.5.884: earned stamp-card rewards (completed cards not yet redeemed) — the POS/portal
     // rewards lists were points-only, so a completed card never appeared anywhere.
     stamp_rewards: stampRewards,
+    // Always empty: gift cards are only shown to a member who has proven their phone (loyalty-otp).
     gift_cards: giftCards,
     // v5.5.218: referral_code and birthday redacted from public endpoint.
     // These are returned by the authenticated loyalty-member-lookup instead.

@@ -99,6 +99,10 @@ function buildCall(spec) {
       channel: spec.channel || 'pos',
       closed_check_id: checkId,
       staff_id: spec.staffId || null,
+      // The member's own loyalty session token (online). loyalty-redeem only lets a caller spend a
+      // member's rewards when it is that member (this token), a paired device of the venue, or a
+      // Back Office user; an anonymous customer browser is none of the last two (18 Sep 2026).
+      ...(spec.memberToken ? { member_token: String(spec.memberToken) } : {}),
     },
   };
 }
@@ -203,6 +207,8 @@ async function park(entry, lastError, attempts) {
  * @param {string} [spec.channel='pos']      'pos' | 'kiosk' | 'online' | 'qr' | 'catering'
  * @param {string} [spec.rewardId]           loyalty: points reward
  * @param {string} [spec.stampProgramId]     loyalty: stamp card (wins over rewardId)
+ * @param {string} [spec.memberToken]        loyalty: the member's loyalty-otp session token. Required
+ *                                           when the caller is the customer's own browser (online).
  * @param {string} [spec.code]               promo: the code
  * @param {number} [spec.basketValue]        promo: subtotal the discount was granted against
  * @param {boolean} [spec.canReplay]         override the channel default (see isReplayable)

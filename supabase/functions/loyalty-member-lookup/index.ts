@@ -19,6 +19,7 @@ import {
   cors, json, opsAdmin, platformAdmin, authenticateCaller,
   resolveCompanyForLocation, getOrCreateConfig, ensureMembership,
 } from '../_shared/loyalty-utils.ts';
+import { giftCardRecipientFilter } from '../_shared/giftCardMatch.ts';
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
@@ -142,20 +143,19 @@ Deno.serve(async (req) => {
   // ── Get linked gift cards ──────────────────────────────────────────────
   let giftCards: any[] = [];
   try {
-    // Find gift cards linked to this customer's email or phone
-    const conditions: string[] = [];
-    if (customer.email) conditions.push(`recipient_email.eq.${customer.email}`);
-    if (customer.phone) conditions.push(`recipient_phone.eq.${customer.phone}`);
-
-    if (conditions.length > 0) {
+    // 18 Sep 2026: matched on the customer's PHONE only (never email: a member can set any email
+    // in the portal with no verification) and returned WITHOUT the card id. This function accepts
+    // any session including an anonymous one, and gift-redeem spends a card by its id, so an id
+    // here is as good as the code. last4 and balance are all a lookup needs.
+    const filter = giftCardRecipientFilter(customer.phone);
+    if (filter) {
       const { data: cards } = await platformAdmin
         .from('gift_cards')
-        .select('id, code_last4, balance_minor, status, expires_at')
+        .select('code_last4, balance_minor, status, expires_at')
         .eq('company_id', companyId)
         .eq('status', 'active')
-        .or(conditions.join(','));
+        .or(filter);
       giftCards = (cards || []).map(c => ({
-        id: c.id,
         last4: c.code_last4,
         balance: c.balance_minor,
         expires_at: c.expires_at,
