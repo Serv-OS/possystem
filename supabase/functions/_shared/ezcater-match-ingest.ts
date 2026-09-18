@@ -191,38 +191,64 @@ const rawGroup = (line: any): string => {
 // have never seen means ezCater republished: the caller re-syncs, and the line
 // meanwhile falls back to name matching exactly as before.
 
-/** 'kind:publishedId' -> the key of the row that holds it. PURE. */
+/**
+ * 'kind:publishedId' -> the key of the row that holds it. PURE.
+ *
+ * Current published ids (ez_ids) first, then the ids a row held on earlier versions of ezCater's
+ * menu (ez_prior_ids, review round 4): an order placed on the previous version still lands on its
+ * size after a republish. Published ids are regenerated, never reused, so a current id always
+ * wins a clash.
+ */
 export function indexLinkIds(links: any): Map<string, string> {
   const out = new Map<string, string>();
-  for (const row of Array.isArray(links) ? links : []) {
-    if (!row) continue;
-    const kind = text(row.kind) || 'item';
-    const key = text(row.ez_key) || text(row.ezKey);
-    const ids = Array.isArray(row.ez_ids) ? row.ez_ids : (Array.isArray(row.ezIds) ? row.ezIds : []);
-    if (!key) continue;
-    for (const id of ids) {
-      const v = text(id);
-      if (v && !out.has(kind + ':' + v)) out.set(kind + ':' + v, key);
+  const list = Array.isArray(links) ? links : [];
+  const pass = (snake: string, camel: string) => {
+    for (const row of list) {
+      if (!row) continue;
+      const kind = text(row.kind) || 'item';
+      const key = text(row.ez_key) || text(row.ezKey);
+      const ids = Array.isArray(row[snake]) ? row[snake] : (Array.isArray(row[camel]) ? row[camel] : []);
+      if (!key) continue;
+      for (const id of ids) {
+        const v = text(id);
+        if (v && !out.has(kind + ':' + v)) out.set(kind + ':' + v, key);
+      }
     }
-  }
+  };
+  pass('ez_ids', 'ezIds');
+  pass('ez_prior_ids', 'ezPriorIds');
   return out;
 }
 
 /** True once the venue's menu has been synced at least once (some row carries ezCater ids). */
 export function hasSyncedMenu(links: any): boolean {
+  return hasSyncedKind(links, 'item') || hasSyncedKind(links, 'option');
+}
+
+/**
+ * True once some row of this KIND carries ezCater ids. Items and options are asked separately:
+ * when a menu's option values could not be read (a schema without a readable value level), the
+ * items are synced and the options are not, and every customizationId on every order would
+ * otherwise look "unseen" and ask for a re-sync that can never find it (review round 4). PURE.
+ */
+export function hasSyncedKind(links: any, kind: 'item' | 'option'): boolean {
   return (Array.isArray(links) ? links : []).some((r) => {
-    const ids = r && (Array.isArray(r.ez_ids) ? r.ez_ids : r.ezIds);
-    return Array.isArray(ids) && ids.length > 0;
+    if (!r || (text(r.kind) || 'item') !== kind) return false;
+    const ids = Array.isArray(r.ez_ids) ? r.ez_ids : r.ezIds;
+    const prior = Array.isArray(r.ez_prior_ids) ? r.ez_prior_ids : r.ezPriorIds;
+    return (Array.isArray(ids) && ids.length > 0) || (Array.isArray(prior) && prior.length > 0);
   });
 }
 
 /**
  * The published ids on these lines that no synced row holds: the sign ezCater republished the
- * menu since our last sync. Empty until the venue has synced once, because before that every id
- * is unseen and none of them means anything. PURE.
+ * menu since our last sync. Per kind, empty until that kind has synced once, because before that
+ * every id is unseen and none of them means anything. PURE.
  */
 export function unseenMenuIds(lines: any[], links: any, max = 20): string[] {
-  if (!hasSyncedMenu(links)) return [];
+  const items = hasSyncedKind(links, 'item');
+  const options = hasSyncedKind(links, 'option');
+  if (!items && !options) return [];
   const ids = indexLinkIds(links);
   const out: string[] = [];
   const add = (kind: string, id: unknown) => {
@@ -231,21 +257,37 @@ export function unseenMenuIds(lines: any[], links: any, max = 20): string[] {
   };
   for (const l of Array.isArray(lines) ? lines : []) {
     if (!l) continue;
-    add('item', l.ezSizeId);
-    for (const m of Array.isArray(l.mods) ? l.mods : []) add('option', m && m.ezItemId);
+    if (items) add('item', l.ezSizeId);
+    if (options) for (const m of Array.isArray(l.mods) ? l.mods : []) add('option', m && m.ezItemId);
   }
   return out;
 }
+
+/** '#' separates an item's name key from its size on a size row. Mirrors SIZE_KEY_SEP. */
+const SIZE_SEP = '#';
+/** A row for ONE size of an item with several sizes on ezCater. */
+export const isSizeRowKey = (key: unknown): boolean => text(key).includes(SIZE_SEP);
+
+/**
+ * A person's "no": a row staff saved with no target (a cleared match, or Not on our menu).
+ * Review round 4: a clear is a DECISION, and nothing automatic ever matches over it.
+ */
+export const personSaidNo = (link: any): boolean =>
+  !!link && text(link.source) === 'manual' && !text(link.menuItemId) && !text(link.optionId);
 
 /**
  * Which decision a line gets when its published id landed on a synced row whose key the NAME
  * rules would not have found (a size of an item with several sizes, or a renamed item).
  *
  *   * our item code on their line is certain, and wins, exactly as today;
- *   * a PERSON's decision beats an automatic one: the synced row's manual match first, then a
- *     manual match the name rules found;
- *   * then the synced row's automatic match (made at sync time, with the size in the name);
- *   * then whatever the name rules decided, which is exactly today's behaviour.
+ *   * a SIZE ROW decides a sized line on its own (review round 4). An old name only row for a
+ *     multi size item ("soup" matched to our Soup Small before the sync) must never decide a
+ *     line whose id says Large, whoever saved that old row. No valid target on the size row
+ *     means the line is not matched and prints by name, never a guess at the size;
+ *   * a person's "no" on the synced row (cleared, Not on our menu) means not matched;
+ *   * otherwise a PERSON's decision beats an automatic one: the synced row's manual match
+ *     first, then a manual match the name rules found; then the synced row's automatic match;
+ *     then whatever the name rules decided, which is exactly today's behaviour.
  *
  * A synced target that is no longer on our menu is never used. PURE.
  */
@@ -260,6 +302,10 @@ export function decideWithSyncedRow(d: any, link: any, kind: 'item' | 'option', 
     reason: 'on the ezCater menu we synced',
     source: text(link.source) || 'auto',
   });
+  if (kind === 'item' && isSizeRowKey(link?.ezKey)) {
+    return valid ? fromLink() : { action: 'none', reason: 'this ezCater size is not matched yet' };
+  }
+  if (personSaidNo(link)) return { action: 'none', reason: 'a person cleared this match' };
   if (valid && text(link.source) === 'manual') return fromLink();
   if (d && d.action === 'linked' && d.source === 'manual') return d;
   if (valid) return fromLink();
@@ -387,7 +433,12 @@ export function planLineMatches(input: {
       const src = lines[i] || {};
       let out = appliedLine;
       const hit = syncedRowFor(src, 'item');
-      if (hit && !appliedLine.itemId && text(hit.link.menuItemId)) {
+      const certain = appliedLine.match && (appliedLine.match.source === 'itemCode' || appliedLine.match.source === 'posItemId');
+      if (hit && isSizeRowKey(hit.key) && !certain) {
+        // A size row decides a sized line on its own, even here: never the old name only row.
+        const id = text(hit.link.menuItemId) || null;
+        out = { ...out, itemId: id, match: { matched: !!id, source: id ? (hit.link.source || 'auto') : null } };
+      } else if (hit && !appliedLine.itemId && text(hit.link.menuItemId)) {
         out = { ...out, itemId: text(hit.link.menuItemId), match: { matched: true, source: hit.link.source || 'auto' } };
       }
       const srcMods = Array.isArray(src.mods) ? src.mods : [];
@@ -429,6 +480,17 @@ export function planLineMatches(input: {
   /** A row that is still only a sighting: no target, and nobody has touched it. */
   const isBareSighting = (link: any) =>
     !!link && !link.menuItemId && !link.optionId && String(link.source || '') === 'auto';
+
+  /**
+   * A person cleared this name, or said it is Not on our menu: an automatic name match must not
+   * put it back, on an order any more than on a sync (review round 4). The line prints by name.
+   * Our item code on their line is certain and still wins.
+   */
+  const noOverPersonsNo = (d: any, src: any, kind: 'item' | 'option') => {
+    if (!d || d.action !== 'linked' || d.source !== 'auto') return d;
+    const hit = findLink(idx, src, kind);
+    return hit && personSaidNo(hit.link) ? { action: 'none', reason: 'a person cleared this match' } : d;
+  };
 
   // One key, one decision, one bookkeeping entry. kind switches which arm of
   // autoLinkDecision runs and which id column a new row fills.
@@ -487,7 +549,7 @@ export function planLineMatches(input: {
     if (haveItems) {
       // codes is passed in rather than rebuilt per line: one index for the
       // whole order, and the option arm cannot build one at all.
-      let d = autoLinkDecision(src, ourItems, links, { kind: 'item', itemCodes: codes });
+      let d = noOverPersonsNo(autoLinkDecision(src, ourItems, links, { kind: 'item', itemCodes: codes }), src, 'item');
       const synced = syncedRowFor(src, 'item');
       if (synced) {
         // The line's published id is on a synced row the name would not find. That row is the
@@ -508,7 +570,7 @@ export function planLineMatches(input: {
     const mods = (Array.isArray(appliedLine.mods) ? appliedLine.mods : []).map((appliedMod: any, j: number) => {
       if (!haveGroups) return appliedMod;
       const srcMod = srcMods[j] || {};
-      let d = autoLinkDecision(srcMod, ourGroups, links, { kind: 'option', itemCodes: codes });
+      let d = noOverPersonsNo(autoLinkDecision(srcMod, ourGroups, links, { kind: 'option', itemCodes: codes }), srcMod, 'option');
       const synced = syncedRowFor(srcMod, 'option');
       if (synced) {
         d = decideWithSyncedRow(d, synced.link, 'option', ourOptionIds);
@@ -604,7 +666,7 @@ async function readPaged(
 /** Link columns every version of the table has (20260917_OPS_ezcater_item_links.sql). */
 export const LINK_COLUMNS = 'kind, ez_key, ez_name, ez_group, menu_item_id, option_id, source, matched_by, seen_count, last_seen_at';
 /** Plus the columns "Sync ezCater menu" adds (20260918_OPS_ezcater_menu_sync.sql). */
-export const LINK_COLUMNS_SYNC = LINK_COLUMNS + ', ez_ids, ez_original_ids, ez_size_name, ez_category, ez_menu, synced_at';
+export const LINK_COLUMNS_SYNC = LINK_COLUMNS + ', ez_ids, ez_prior_ids, ez_original_ids, ez_size_name, ez_category, ez_menu, synced_at';
 /** Rows per page. PostgREST answers at most 1000 rows to one select. */
 export const LINK_PAGE_SIZE = 1000;
 /** Pages. 50,000 names at one venue is far past any real menu. */

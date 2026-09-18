@@ -24,11 +24,13 @@ import {
 } from '../../supabase/functions/_shared/ezcaterMenu.ts';
 import {
   syncEntities, planMenuSync, syncVenueMenus, resyncForUnseen, syncDue, sizeRowKey, SIZE_KEY_SEP,
+  applyMenuSync, nextPriorIds, EZ_PRIOR_IDS_MAX, liveUnresolved, claimSyncLock, dueVenuesInOrder, syncDueVenues,
 } from '../../supabase/functions/_shared/ezcaterMenuSync.ts';
 import {
   planLineMatches, readAllLinks, unseenMenuIds, matchQueueRow, menuItemsForMatch, modifierGroupsForMatch,
+  decideWithSyncedRow, hasSyncedKind,
 } from '../../supabase/functions/_shared/ezcater-match-ingest.ts';
-import { toRow, saveBody, syncSummary } from './ezcaterItemRows.js';
+import { toRow, saveBody, syncSummary, rowsFrom, replacedBySizes } from './ezcaterItemRows.js';
 
 const LOC = 'loc-1';
 const NOW = '2026-09-18T12:00:00.000Z';
@@ -69,17 +71,29 @@ function fakeDb(tables) {
         log.push({ table, op: 'upsert', n: list.length });
         return { data: null, error: null };
       }
+      if (st.op === 'insert') {
+        // A real INSERT: a row with the same primary key is a unique violation, as in Postgres.
+        const list = Array.isArray(st.payload) ? st.payload : [st.payload];
+        const keys = keysFor(table, null);
+        for (const p of list) {
+          if (rows.some((r) => keys.every((k) => r[k] === p[k]))) return { data: null, error: { code: '23505', message: 'duplicate key' } };
+        }
+        for (const p of list) rows.push(JSON.parse(JSON.stringify(p)));
+        log.push({ table, op: 'insert', n: list.length });
+        return { data: null, error: null };
+      }
       if (st.op === 'update') {
         const hit = rows.filter(match);
         for (const r of hit) Object.assign(r, JSON.parse(JSON.stringify(st.payload)));
         log.push({ table, op: 'update', n: hit.length, payload: st.payload });
-        return { data: null, error: null };
+        // .update().select() returns the rows it changed, as PostgREST does.
+        return { data: hit.map((r) => ({ ...r })), error: null };
       }
       return { data: null, error: null };
     };
     const api = {
       select() { return api; },
-      insert(p) { st.op = 'upsert'; st.payload = p; return api; },
+      insert(p) { st.op = 'insert'; st.payload = p; return api; },
       upsert(p, o) { st.op = 'upsert'; st.payload = p; st.opts = o; return api; },
       update(p) { st.op = 'update'; st.payload = p; return api; },
       eq(c, v) { st.filters.push((r) => r[c] === v); return api; },
@@ -486,4 +500,202 @@ test('screen: a size row shows its size, saves under its own key, and the sync l
   assert.equal(s.what, '7 items, 9 sizes, 6 options. 9 matched, 3 need a decision, 3 not on our menu.');
   assert.equal(syncSummary(null, NOW_MS).when, 'Not synced yet.');
   assert.ok(!/[\u2013\u2014]/.test(JSON.stringify(s)), 'no dashes in copy');
+});
+
+// \u2500\u2500 Review round 4 \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
+test('R4 item 1: a sized line lands on its size row, never on an old name only row for the item', async () => {
+  // "soup" was matched by staff to our Soup Small BEFORE the sync (an order by name).
+  const sb = fakeDb(baseTables({ ezcater_item_links: [{ location_id: LOC, kind: 'item', ez_key: 'soup', ez_name: 'Soup', source: 'manual', menu_item_id: 'm-soup-s', matched_by: 'user-1', ez_ids: ['pub-soup-old'], ez_prior_ids: [], ez_original_ids: [] }] }));
+  await sync(sb, potbelly());
+  Object.assign(row(sb, 'item', 'soup#large'), { menu_item_id: 'm-soup-l', source: 'auto', matched_by: 'name' });
+  const links = sb.db.ezcater_item_links;
+  const large = [line({ name: 'Soup', ezSizeId: 'pub-soup-l-v1', sizeName: 'Large' })];
+
+  const plan = planLineMatches({ lines: large, ourItems, ourGroups, links, locationId: LOC, nowIso: NOW });
+  assert.equal(plan.lines[0].itemId, 'm-soup-l', 'the Large the id says, not the Small the old name row says');
+  assert.deepEqual(plan.bumps.map((b) => b.ezKey), ['soup#large']);
+  assert.deepEqual(plan.upgrades, []);
+
+  // Same with only part of our menu read (the saved links only path).
+  const part = planLineMatches({ lines: large, ourItems, ourGroups, links, locationId: LOC, nowIso: NOW, menuOk: false });
+  assert.equal(part.lines[0].itemId, 'm-soup-l');
+
+  // A size row nobody has matched yet: the line is NOT matched (prints by name), never the old Small.
+  const small = [line({ name: 'Soup', ezSizeId: 'pub-soup-s-v1', sizeName: 'Small' })];
+  assert.equal(row(sb, 'item', 'soup#small').menu_item_id, null);
+  assert.equal(planLineMatches({ lines: small, ourItems, ourGroups, links, locationId: LOC, nowIso: NOW }).lines[0].itemId, null);
+  assert.equal(planLineMatches({ lines: small, ourItems, ourGroups, links, locationId: LOC, nowIso: NOW, menuOk: false }).lines[0].itemId, null);
+
+  // decideWithSyncedRow directly: a person's name match never beats a size row.
+  const d = decideWithSyncedRow({ action: 'linked', itemId: 'm-soup-s', source: 'manual' }, { ezKey: 'soup#large', menuItemId: 'm-soup-l', source: 'auto' }, 'item', new Set(['m-soup-s', 'm-soup-l']));
+  assert.equal(d.itemId, 'm-soup-l');
+
+  // The screen: the old "soup" row left the menu and is replaced by its size rows, so it is not
+  // offered for matching. Its old id moved to the prior ids.
+  assert.deepEqual(row(sb, 'item', 'soup').ez_ids, []);
+  assert.deepEqual(row(sb, 'item', 'soup').ez_prior_ids, ['pub-soup-old']);
+  assert.deepEqual([...replacedBySizes(links)], ['soup']);
+  const shown = rowsFrom(links).map((r) => r.ezKey);
+  assert.ok(!shown.includes('soup'), 'hidden');
+  assert.ok(shown.includes('soup#large') && shown.includes('soup#small'));
+  assert.ok(shown.includes('turkey breast'), 'a one size item is never hidden');
+});
+
+test('R4 item 2: a staff clear is a decision; no sync and no order auto matches over it', async () => {
+  const sb = fakeDb(baseTables());
+  await sync(sb, potbelly());
+  assert.equal(row(sb, 'item', 'turkey breast').menu_item_id, 'm-turkey');
+  // items_save with no target: source manual, no target, matched_by null.
+  Object.assign(row(sb, 'item', 'turkey breast'), { menu_item_id: null, source: 'manual', matched_by: null });
+  Object.assign(row(sb, 'option', 'bread|white'), { option_id: null, menu_item_id: null, source: 'manual', matched_by: null });
+
+  const r = await sync(sb, potbelly(), { nowIso: '2026-09-19T12:00:00.000Z' });
+  assert.equal(r.ok, true);
+  assert.equal(row(sb, 'item', 'turkey breast').menu_item_id, null, 'the clear stuck');
+  assert.equal(row(sb, 'item', 'turkey breast').source, 'manual');
+  assert.equal(row(sb, 'option', 'bread|white').option_id, null);
+
+  // An order: the exact name no longer auto links over the person's clear, and nothing is written.
+  const lines = [line({ name: 'Turkey Breast', ezSizeId: 'pub-turkey-v1', mods: [{ label: 'White', groupLabel: 'Bread', ezItemId: 'pub-white-turkey-v1', itemId: null, qty: 1 }] })];
+  const plan = planLineMatches({ lines, ourItems, ourGroups, links: sb.db.ezcater_item_links, locationId: LOC, nowIso: NOW });
+  assert.equal(plan.lines[0].itemId, null);
+  assert.equal(plan.lines[0].mods[0].optionId ?? null, null);
+  assert.deepEqual(plan.upgrades, []);
+
+  // The SQL guard: a decision planned while the row was undecided is not written once staff clear it.
+  const sb2 = fakeDb(baseTables());
+  await sync(sb2, potbelly(), { nowIso: '2026-09-17T12:00:00.000Z' });
+  Object.assign(row(sb2, 'item', 'turkey breast'), { menu_item_id: null, source: 'auto', matched_by: null });
+  const p = planMenuSync({
+    entities: syncEntities([flattenMenu(potbelly())]), links: JSON.parse(JSON.stringify(sb2.db.ezcater_item_links)),
+    ourItems, ourGroups, menuOk: true, complete: true, locationId: LOC, nowIso: NOW,
+  });
+  assert.ok(p.decisions.some((x) => x.ezKey === 'turkey breast'));
+  Object.assign(row(sb2, 'item', 'turkey breast'), { source: 'manual' });   // staff clear lands first
+  await applyMenuSync(sb2, LOC, p);
+  assert.equal(row(sb2, 'item', 'turkey breast').menu_item_id, null);
+});
+
+test('R4 item 3: an original id carries only when unique, only onto an undecided row, never over a decision', () => {
+  const entities = syncEntities([flattenMenu(potbelly('v2', { wreckName: 'The Wreck' }))]);
+  const base = { entities, ourItems, ourGroups, menuOk: true, complete: true, locationId: LOC, nowIso: NOW };
+  const old = (extra) => ({ location_id: LOC, kind: 'item', ez_key: 'a wreck', ez_name: 'A Wreck', source: 'manual', menu_item_id: 'm-wreck-2', matched_by: 'u', ez_ids: ['pub-wreck-v1'], ez_prior_ids: [], ez_original_ids: ['orig-wreck'], ...extra });
+  const inserted = (plan) => plan.inserts.find((i) => i.ez_key === 'the wreck');
+
+  // Unique: carried onto the new, undecided row.
+  assert.equal(inserted(planMenuSync({ ...base, links: [old()] })).menu_item_id, 'm-wreck-2');
+
+  // The same original on two saved rows says nothing certain: not carried (the name rule decides).
+  const two = planMenuSync({ ...base, links: [old(), old({ ez_key: 'wreck old', ez_name: 'Wreck Old', menu_item_id: 'm-turkey' })] });
+  assert.notEqual(inserted(two).menu_item_id, 'm-wreck-2');
+  assert.notEqual(inserted(two).menu_item_id, 'm-turkey');
+
+  // The row already has its own decision (an automatic name match): never overwritten.
+  const own = { location_id: LOC, kind: 'item', ez_key: 'the wreck', ez_name: 'The Wreck', source: 'auto', menu_item_id: 'm-wreck', matched_by: 'name', ez_ids: [], ez_prior_ids: [], ez_original_ids: [] };
+  const kept = planMenuSync({ ...base, links: [old(), own] });
+  assert.ok(!kept.decisions.some((x) => x.ezKey === 'the wreck'), 'no decision written over its own');
+
+  // The same original twice in THIS read: not carried either.
+  const dup = new Map(entities);
+  dup.set('item:wreck twin', { ...entities.get('item:the wreck'), key: 'wreck twin', name: 'Wreck Twin', ids: ['pub-twin'] });
+  const twice = planMenuSync({ ...base, entities: dup, links: [old()] });
+  assert.ok(!twice.inserts.some((i) => i.menu_item_id === 'm-wreck-2'));
+});
+
+test('R4 item 4: a republish ADDS the new published ids; an order on the previous version still lands on its size', async () => {
+  const sb = fakeDb(baseTables());
+  await sync(sb, potbelly('v1'));
+  Object.assign(row(sb, 'item', 'soup#large'), { menu_item_id: 'm-soup-l', source: 'manual', matched_by: 'user-1' });
+  await sync(sb, potbelly('v2'), { nowIso: '2026-09-19T12:00:00.000Z' });
+  assert.deepEqual(row(sb, 'item', 'soup#large').ez_ids, ['pub-soup-l-v2']);
+  assert.deepEqual(row(sb, 'item', 'soup#large').ez_prior_ids, ['pub-soup-l-v1']);
+  await sync(sb, potbelly('v3'), { nowIso: '2026-09-20T12:00:00.000Z' });
+  assert.deepEqual(row(sb, 'item', 'soup#large').ez_prior_ids, ['pub-soup-l-v2', 'pub-soup-l-v1'], 'newest first');
+
+  const onOld = [line({ name: 'Soup', ezSizeId: 'pub-soup-l-v1', sizeName: 'Large' })];
+  const plan = planLineMatches({ lines: onOld, ourItems, ourGroups, links: sb.db.ezcater_item_links, locationId: LOC, nowIso: NOW });
+  assert.equal(plan.lines[0].itemId, 'm-soup-l');
+  assert.deepEqual(plan.unseen, [], 'an old id is known, not a reason to re-sync');
+
+  // Capped, newest first.
+  const many = Array.from({ length: 300 }, (_, i) => `old-${i}`);
+  const kept = nextPriorIds(['cur-1'], many, ['cur-2']);
+  assert.equal(kept.length, EZ_PRIOR_IDS_MAX);
+  assert.equal(kept[0], 'cur-1');
+  assert.ok(!kept.includes('cur-2'));
+});
+
+test('R4 item 5: ids a re-sync could not find are remembered and do not re-sync again', async () => {
+  const sb = fakeDb(baseTables());
+  await sync(sb, potbelly('v1'));
+  const first = await resyncForUnseen(sb, null, LOC, ['pub-ghost'], { askFactory: () => fakeEz(potbelly('v1')), nowMs: NOW_MS + 16 * 60_000 });
+  assert.equal(first.ok, true);
+  assert.ok(sb.db.ezcater_menu_syncs[0].unresolved_ids['pub-ghost'], 'remembered');
+  const again = await resyncForUnseen(sb, null, LOC, ['pub-ghost'], { askFactory: () => fakeEz(potbelly('v1')), nowMs: NOW_MS + 60 * 60_000 });
+  assert.equal(again.skipped, 'looked for already');
+  const fresh = await resyncForUnseen(sb, null, LOC, ['pub-ghost', 'pub-new'], { askFactory: () => fakeEz(potbelly('v1')), nowMs: NOW_MS + 60 * 60_000 });
+  assert.equal(fresh.ok, true, 'a new id still re-syncs');
+  assert.ok(sb.db.ezcater_menu_syncs[0].unresolved_ids['pub-new']);
+  assert.ok(sb.db.ezcater_menu_syncs[0].unresolved_ids['pub-ghost'], 'the older one is still remembered');
+  // After the back off the old ones may be tried again (the daily sync would have anyway).
+  assert.equal(liveUnresolved({ 'pub-ghost': NOW }, NOW_MS + 24 * 3600_000).size, 0);
+});
+
+test('R4 item 5: options that could not be read never make every customizationId "unseen"', () => {
+  const links = [
+    { kind: 'item', ez_key: 'turkey breast', ez_ids: ['pub-turkey-v1'] },
+    { kind: 'option', ez_key: 'bread|white', ez_ids: [] },   // the value level was not readable
+  ];
+  const lines = [line({ name: 'Turkey Breast', ezSizeId: 'pub-turkey-v1', mods: [{ label: 'White', groupLabel: 'Bread', ezItemId: 'cust-1' }] })];
+  assert.deepEqual(unseenMenuIds(lines, links), []);
+  const lines2 = [line({ name: 'Turkey Breast', ezSizeId: 'pub-turkey-v9', mods: [{ label: 'White', ezItemId: 'cust-1' }] })];
+  assert.deepEqual(unseenMenuIds(lines2, links), ['pub-turkey-v9'], 'items still count');
+  assert.equal(hasSyncedKind(links, 'option'), false);
+});
+
+test('R4 item 5: one sync per venue, claimed atomically, both for a new venue and an existing one', async () => {
+  const sb = fakeDb(baseTables());
+  const [a, b] = await Promise.all([sync(sb, potbelly()), sync(sb, potbelly())]);
+  assert.equal([a, b].filter((r) => r.ok).length, 1, 'exactly one ran');
+  assert.equal([a, b].filter((r) => r.skipped === 'running').length, 1);
+  assert.equal(sb.db.ezcater_menu_syncs.length, 1);
+
+  const later = '2026-09-19T12:00:00.000Z';
+  const [c, d] = await Promise.all([sync(sb, potbelly(), { nowIso: later }), sync(sb, potbelly(), { nowIso: later })]);
+  assert.equal([c, d].filter((r) => r.ok).length, 1, 'the conditional update lets one through');
+
+  // A lock still running is respected, a stale one is taken over.
+  Object.assign(sb.db.ezcater_menu_syncs[0], { status: 'running', last_attempt_at: later });
+  const ms = Date.parse(later);
+  assert.equal((await claimSyncLock(sb, LOC, 'staff', new Date(ms + 60_000).toISOString(), ms + 60_000)).claimed, false);
+  assert.equal((await claimSyncLock(sb, LOC, 'staff', new Date(ms + 6 * 60_000).toISOString(), ms + 6 * 60_000)).claimed, true);
+});
+
+test('R4 item 5: the hourly due sync is fair: longest waiting first, within its budget', async () => {
+  const h = 3600_000;
+  const states = new Map([
+    ['loc-a', { status: 'error', last_attempt_at: new Date(NOW_MS - 2 * h).toISOString(), last_synced_at: new Date(NOW_MS - 30 * h).toISOString() }],
+    ['loc-c', { status: 'ok', last_attempt_at: new Date(NOW_MS - 25 * h).toISOString(), last_synced_at: new Date(NOW_MS - 25 * h).toISOString() }],
+    ['loc-d', { status: 'ok', last_attempt_at: new Date(NOW_MS - 1 * h).toISOString(), last_synced_at: new Date(NOW_MS - 1 * h).toISOString() }],
+  ]);
+  assert.deepEqual(dueVenuesInOrder(['loc-a', 'loc-b', 'loc-c', 'loc-d'], states, NOW_MS), ['loc-b', 'loc-c', 'loc-a']);
+
+  const venues = ['loc-a', 'loc-b', 'loc-c'];
+  const caterers = venues.map((id, i) => ({ caterer_uuid: 'cat-' + i, location_id: id, connection_id: 'conn-1', active: true }));
+  const sb = fakeDb(baseTables({
+    ezcater_caterers: caterers,
+    ezcater_menu_syncs: [...states].filter(([id]) => venues.includes(id)).map(([id, s]) => ({ location_id: id, ...s })),
+    menu_items: [], modifier_groups: [],
+  }));
+  const out = await syncDueVenues(sb, null, { askFactory: () => fakeEz(potbelly()), nowMs: NOW_MS, maxVenues: 2, concurrency: 1 });
+  assert.deepEqual(out.map((o) => o.locationId), ['loc-b', 'loc-c'], 'the two waiting longest; the recent failure waits');
+  assert.ok(out.every((o) => o.ok), JSON.stringify(out));
+
+  // A budget that runs out: a venue not reached comes back skipped, still due for next hour.
+  const slow = () => async (op, q, vars) => { await new Promise((r) => setTimeout(r, 30)); return fakeEz(potbelly())(op, q, vars); };
+  const sb2 = fakeDb(baseTables({ ezcater_caterers: caterers, menu_items: [], modifier_groups: [] }));
+  const cut = await syncDueVenues(sb2, null, { askFactory: slow, nowMs: NOW_MS, concurrency: 1, budgetMs: 50 });
+  assert.equal(cut.length, 3);
+  assert.ok(cut.some((o) => o.skipped), 'unreached venues are reported, not dropped');
 });

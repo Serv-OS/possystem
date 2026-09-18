@@ -179,12 +179,45 @@ export function sortRows(rows) {
   });
 }
 
-/** Table rows straight from the edge function into the list the screen renders. */
+/**
+ * The keys of old NAME ONLY item rows that ezCater's menu has replaced with one row per size
+ * (review round 4). "soup", seen on an order or matched before the menu sync, is replaced once
+ * "soup#small" and "soup#large" are on ezCater's current menu and "soup" itself is not. Such a
+ * row never decides a sized line (the size row does), so staff must not be invited to match it.
+ * Takes the table rows (snake_case) or screen rows. PURE.
+ */
+export function replacedBySizes(list) {
+  const rows = Array.isArray(list) ? list : [];
+  const idsOf = (r) => (Array.isArray(r.ez_ids) ? r.ez_ids : (Array.isArray(r.ezIds) ? r.ezIds : []));
+  const onMenu = (r) => (typeof r.onMenu === 'boolean' ? r.onMenu : idsOf(r).length > 0);
+  const keyOf = (r) => String(r.ez_key || r.ezKey || '');
+  const isItem = (r) => (r.kind || 'item') !== 'option';
+  const sized = new Set();
+  for (const r of rows) {
+    if (!r || !isItem(r) || !onMenu(r)) continue;
+    const k = keyOf(r);
+    const cut = k.indexOf('#');
+    if (cut > 0) sized.add(k.slice(0, cut));
+  }
+  const out = new Set();
+  for (const r of rows) {
+    if (!r || !isItem(r) || onMenu(r)) continue;
+    const k = keyOf(r);
+    if (k && !k.includes('#') && sized.has(k)) out.add(k);
+  }
+  return out;
+}
+
+/**
+ * Table rows straight from the edge function into the list the screen renders. An old name only
+ * row replaced by its size rows is left out (replacedBySizes): its sizes are the rows to match.
+ */
 export function rowsFrom(list) {
   const out = [];
+  const replaced = replacedBySizes(list);
   for (const raw of Array.isArray(list) ? list : []) {
     const row = toRow(raw);
-    if (row) out.push(row);
+    if (row && !(row.kind === 'item' && replaced.has(row.ezKey))) out.push(row);
   }
   return sortRows(out);
 }

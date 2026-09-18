@@ -24,7 +24,14 @@
 --     ez_category      text    the ezCater category, for the screen
 --     ez_menu          text    the ezCater menu name, for the screen
 --     synced_at        timestamptz  when a menu sync last changed this row's ezCater facts
---   ezcater_menu_syncs: one row per venue, the last sync (time, counts, menus, error).
+--     ez_prior_ids     text[]  (review round 4) published ids from EARLIER menu versions, added
+--                              not replaced, so an order on the previous version still lands
+--   ezcater_menu_syncs: one row per venue, the last sync (time, counts, menus, error), and
+--     unresolved_ids jsonb (review round 4): ids a re-sync could not find, so it backs off.
+--     The row is also the one sync per venue lock, claimed by a conditional insert or update.
+--
+-- RE-RUNNING: a database that ran the first version of this file gets the two new columns from
+-- a re-run (add column if not exists). Until then Sync menu says this file has to be run.
 --   pg_cron 'ezcater-menu-sync-hourly': calls ezcater-connect 'menu_sync_due' every hour; the
 --   function syncs each venue whose last sync is a day old. Nothing is due, nothing happens.
 --
@@ -52,6 +59,9 @@ begin;
 
 alter table public.ezcater_item_links add column if not exists ez_ids text[] not null default '{}';
 alter table public.ezcater_item_links add column if not exists ez_original_ids text[] not null default '{}';
+-- Review round 4: published ids from EARLIER versions of ezCater's menu, kept (capped at 200 in
+-- the function) so an order placed on the previous version still lands on its size row.
+alter table public.ezcater_item_links add column if not exists ez_prior_ids text[] not null default '{}';
 alter table public.ezcater_item_links add column if not exists ez_size_name text;
 alter table public.ezcater_item_links add column if not exists ez_category text;
 alter table public.ezcater_item_links add column if not exists ez_menu text;
@@ -73,6 +83,10 @@ create table if not exists public.ezcater_menu_syncs (
   error            text,
   updated_at       timestamptz not null default now()
 );
+-- Review round 4: published ids an order carried that a re-sync looked for and could not find
+-- ({ id: first given up at }), so the next order carrying them does not re-sync again. Added
+-- separately so a database that ran the first version of this file gets it on a re-run.
+alter table public.ezcater_menu_syncs add column if not exists unresolved_ids jsonb;
 
 -- Service role only, the same fence as ezcater_item_links: Back Office reads it through
 -- ezcater-connect, never straight off the table.

@@ -28,14 +28,17 @@
 //   ez_original_ids  the original...Id of each: very likely the ids that SURVIVE a republish.
 //                    Likely, not proven, so they are only ever used to carry a saved match
 //                    across, and a name match is the fallback.
+//   ez_prior_ids     published ids the row held on EARLIER versions (added, never replaced,
+//                    capped): an order placed on the previous version still lands on its size.
 //   ez_ids empty on a row that has them before means it is no longer on ezCater's menu.
 //
-// CARRYING MATCHES ACROSS A REPUBLISH OR A RENAME
-//   For each synced row: a decision found through its original ids first, then its own key
-//   (name). A PERSON's decision beats an automatic one; a person's decision already on the row
-//   itself is never overwritten. Every write of a decision is guarded in SQL to rows that are
-//   still undecided (or still automatic, for a person's decision carried over), so a staff save
-//   landing in the same moment always wins.
+// CARRYING MATCHES ACROSS A REPUBLISH OR A RENAME (review round 4: narrowed)
+//   A row's own decision always stands; a sync never overwrites a decision. A person's clear is
+//   a decision too (source 'manual', no target), so nothing automatic matches over it. Only an
+//   UNDECIDED row takes a decision carried by an original id, and only when that original is on
+//   exactly one saved row and one thing in this read. Every write of a decision is guarded in
+//   SQL to rows still undecided and never saved by a person, so a staff save landing in the same
+//   moment always wins.
 //
 // AUTO MATCH AT SYNC TIME uses the existing rules (autoLinkDecision): one exact name and no size
 // clash links; anything else only suggests. A size row is matched on "<item> <size>", so the
@@ -47,7 +50,8 @@
 import { autoLinkDecision, buildLinkKey, normaliseKeyName, indexItemCodes } from './ezcaterMatch.ts';
 import { menuSelectionFor, listMenus, readMenu, currentMenus, flattenMenu, venueDate } from './ezcaterMenu.ts';
 import type { EzAsk } from './ezcaterMenu.ts';
-import { readAllLinks, readMatchInputs } from './ezcater-match-ingest.ts';
+import { readAllLinks, readMatchInputs, indexLinkIds } from './ezcater-match-ingest.ts';
+import { runWithBudget } from './budget.js';
 import { readConnection, readCateringVenue } from './ezcaterIngest.ts';
 import { ez } from './ezcater.ts';
 
@@ -136,16 +140,41 @@ export function syncEntities(flat: Array<{ sizes: any[]; values: any[] }>): Map<
 }
 
 const idsOf = (row: any, snake: string): string[] => (Array.isArray(row?.[snake]) ? row[snake].map((x: any) => t(x)).filter(Boolean) : []);
-const hasDecision = (row: any) => !!row && (!!t(row.menu_item_id) || !!t(row.option_id) || t(row.matched_by) === 'ignored');
 const isManual = (row: any) => t(row?.source) === 'manual';
+/**
+ * A row somebody or something has decided. A PERSON's save is always a decision, including a
+ * clear (items_save writes source 'manual' with no target): review round 4, a staff clear must
+ * stick, so nothing automatic ever matches over it.
+ */
+const hasDecision = (row: any) => !!row && (!!t(row.menu_item_id) || !!t(row.option_id) || t(row.matched_by) === 'ignored' || isManual(row));
 const sameList = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
+
+/**
+ * Published ids a row keeps from earlier versions of ezCater's menu (ez_prior_ids). Review round
+ * 4: an order placed on the previous version must still land on its size after a republish, so
+ * ids are ADDED, never replaced. Newest first, capped: an option on many sizes holds one id per
+ * size per version, and 200 keeps several versions of even a large menu.
+ */
+export const EZ_PRIOR_IDS_MAX = 200;
+
+/** The prior ids a row keeps when its current ids change to `next`. PURE. */
+export function nextPriorIds(currentIds: string[], priorIds: string[], next: string[]): string[] {
+  const keep = new Set(next);
+  const out: string[] = [];
+  for (const id of [...currentIds, ...priorIds]) {
+    if (!id || keep.has(id) || out.includes(id)) continue;
+    out.push(id);
+    if (out.length >= EZ_PRIOR_IDS_MAX) break;
+  }
+  return out;
+}
 
 export interface SyncPlan {
   inserts: any[];
   /** Menu facts on an existing row: ids, originals, size, category, menu. Never a decision. */
   facts: Array<{ kind: string; ezKey: string; patch: any }>;
-  /** A decision written onto a row. guard 'undecided': only while it has none; 'auto': only while automatic. */
-  decisions: Array<{ kind: string; ezKey: string; guard: 'undecided' | 'auto'; patch: any }>;
+  /** A decision written onto a row that is still undecided, guarded in SQL to exactly that. */
+  decisions: Array<{ kind: string; ezKey: string; guard: 'undecided'; patch: any }>;
   counts: SyncCounts;
 }
 
@@ -183,15 +212,21 @@ export function planMenuSync(input: {
 
   const byKey = new Map<string, any>();
   for (const r of links) if (r && t(r.ez_key)) byKey.set((t(r.kind) || 'item') + ':' + t(r.ez_key), r);
-  // original id -> the row that holds it now. The row most recently synced wins a tie.
-  const byOriginal = new Map<string, any>();
-  const syncedMs = (r: any) => { const n = Date.parse(t(r?.synced_at)); return Number.isFinite(n) ? n : 0; };
+  // original id -> every saved row that holds it, and how many rows of THIS read carry it. A
+  // decision is carried by an original id only when both are exactly one (review round 4): an
+  // original on two rows, or on two things on ezCater's menu, says nothing certain.
+  const byOriginal = new Map<string, any[]>();
   for (const r of links) {
     for (const o of idsOf(r, 'ez_original_ids')) {
       const k = (t(r.kind) || 'item') + ':' + o;
-      const prev = byOriginal.get(k);
-      if (!prev || syncedMs(r) > syncedMs(prev)) byOriginal.set(k, r);
+      const list = byOriginal.get(k) || [];
+      if (!list.includes(r)) list.push(r);
+      byOriginal.set(k, list);
     }
+  }
+  const originalsInRead = new Map<string, number>();
+  for (const e of entities.values()) {
+    for (const o of e.originals) originalsInRead.set(e.kind + ':' + o, (originalsInRead.get(e.kind + ':' + o) || 0) + 1);
   }
 
   const counts: SyncCounts = {
@@ -211,31 +246,32 @@ export function planMenuSync(input: {
     for (const o of e.originals) claimedOriginals.add(e.kind + ':' + o);
 
     const ex = byKey.get(e.kind + ':' + e.key) || null;
-    // 1) A saved decision: through an original id first, then the row's own key (its name).
-    let viaOriginal: any = null;
-    for (const o of e.originals) {
-      const r = byOriginal.get(e.kind + ':' + o);
-      if (r && hasDecision(r)) { viaOriginal = r; break; }
-    }
-    const cands = [viaOriginal, hasDecision(ex) ? ex : null].filter(Boolean) as any[];
-    const pick = cands.find(isManual) || cands[0] || null;
-
     let decision: any = null;          // the patch to write, if any
-    let guard: 'undecided' | 'auto' = 'undecided';
+    const guard = 'undecided' as const;
     let finalRow: any = ex ? { ...ex } : {};
-    if (pick && pick !== ex) {
-      // Carried from another row (a republish that renamed it, or a size that became its own
-      // row). Onto this row only while it is undecided, or automatic and the carried one is a
-      // person's: a person's decision already on this row is never overwritten.
-      const can = !hasDecision(ex) || (!isManual(ex) && isManual(pick));
-      if (can) {
+
+    // 1) The row's OWN decision (by its key, its name) always stands: a sync never overwrites a
+    // decision, a person's or an automatic one (review round 4). Only an UNDECIDED row may take
+    // one carried from another row by an original id (a republish that renamed it), and only
+    // when that original is on exactly one saved row and on exactly one thing in this read.
+    if (!hasDecision(ex)) {
+      let carried: any = null;
+      for (const o of e.originals) {
+        const k = e.kind + ':' + o;
+        const holders = byOriginal.get(k) || [];
+        if (holders.length !== 1 || (originalsInRead.get(k) || 0) !== 1) continue;
+        const r = holders[0];
+        if (r !== ex && hasDecision(r)) { carried = r; break; }
+      }
+      if (carried) {
+        const target = !!(t(carried.menu_item_id) || t(carried.option_id));
         decision = {
-          menu_item_id: t(pick.menu_item_id) || null,
-          option_id: t(pick.option_id) || null,
-          source: isManual(pick) ? 'manual' : 'auto',
-          matched_by: t(pick.matched_by) || (isManual(pick) ? 'carried' : 'name'),
+          menu_item_id: t(carried.menu_item_id) || null,
+          option_id: t(carried.option_id) || null,
+          source: isManual(carried) ? 'manual' : 'auto',
+          // A carried clear stays a clear (matched_by null); a carried match says it was carried.
+          matched_by: t(carried.matched_by) || (target ? (isManual(carried) ? 'carried' : 'name') : null),
         };
-        guard = hasDecision(ex) ? 'auto' : 'undecided';
         counts.carried++;
         finalRow = { ...finalRow, ...decision };
       }
@@ -256,7 +292,6 @@ export function planMenuSync(input: {
         const optionId = e.kind === 'option' && d.optionId != null ? t(d.optionId) || null : null;
         if (menuItemId || optionId) {
           decision = { menu_item_id: menuItemId, option_id: optionId, source: 'auto', matched_by: 'name' };
-          guard = 'undecided';
           counts.autoMatched++;
           finalRow = { ...finalRow, ...decision };
         }
@@ -269,8 +304,10 @@ export function planMenuSync(input: {
     else if (autoAction === 'none') counts.notOnOurMenu++;
     else counts.needsDecision++;
 
+    const priorIds = ex ? nextPriorIds(idsOf(ex, 'ez_ids'), idsOf(ex, 'ez_prior_ids'), e.ids) : [];
     const menuFacts = {
       ez_ids: e.ids,
+      ez_prior_ids: priorIds,
       ez_original_ids: e.originals,
       ez_size_name: e.sizeName,
       ez_category: e.category,
@@ -296,7 +333,8 @@ export function planMenuSync(input: {
       counts.inserted++;
       continue;
     }
-    const changed = !sameList(idsOf(ex, 'ez_ids'), e.ids) || !sameList(idsOf(ex, 'ez_original_ids'), e.originals)
+    const changed = !sameList(idsOf(ex, 'ez_ids'), e.ids) || !sameList(idsOf(ex, 'ez_prior_ids'), priorIds)
+      || !sameList(idsOf(ex, 'ez_original_ids'), e.originals)
       || t(ex.ez_size_name) !== t(e.sizeName) || t(ex.ez_category) !== t(e.category) || t(ex.ez_menu) !== t(e.menu)
       || !t(ex.synced_at);
     if (changed) {
@@ -307,9 +345,13 @@ export function planMenuSync(input: {
   }
   counts.items = itemNames.size;
 
-  // Rows no longer on ezCater's menu: they lose their published ids (an order cannot land on them
-  // by id) and the originals another row now holds. Only after a COMPLETE read: a caterer or menu
-  // we could not read says nothing about what is on it.
+  // Rows no longer on ezCater's menu: they have no CURRENT published id (the screen says "no
+  // longer on the ezCater menu"), their ids move to ez_prior_ids so an order placed on the old
+  // version still lands here, and they lose the originals another row now holds. Only after a
+  // COMPLETE read: a caterer or menu we could not read says nothing about what is on it.
+  // An old name only row of an item that now has several sizes ends up here too: the screen
+  // hides it as replaced by its size rows (ezcaterItemRows.js replacedBySizes), and it can never
+  // decide a line whose id lands on a size row (decideWithSyncedRow).
   if (input.complete) {
     for (const r of links) {
       const kind = t(r.kind) || 'item';
@@ -318,7 +360,8 @@ export function planMenuSync(input: {
       const originals = idsOf(r, 'ez_original_ids');
       const kept = originals.filter((o) => !claimedOriginals.has(kind + ':' + o));
       if (!ids.length && kept.length === originals.length) continue;
-      facts.push({ kind, ezKey: t(r.ez_key), patch: { ez_ids: [], ez_original_ids: kept, updated_at: nowIso } });
+      const prior = nextPriorIds(ids, idsOf(r, 'ez_prior_ids'), []);
+      facts.push({ kind, ezKey: t(r.ez_key), patch: { ez_ids: [], ez_prior_ids: prior, ez_original_ids: kept, updated_at: nowIso } });
       if (ids.length) counts.offMenu++;
     }
   }
@@ -358,9 +401,9 @@ export async function applyMenuSync(sb: any, locationId: string, plan: SyncPlan,
     try {
       let q = sb.from('ezcater_item_links').update(d.patch)
         .eq('location_id', locationId).eq('kind', d.kind).eq('ez_key', d.ezKey);
-      // The guard lives in SQL, so a person saving in the same moment always wins.
-      if (d.guard === 'undecided') q = q.is('menu_item_id', null).is('option_id', null).is('matched_by', null);
-      else q = q.eq('source', 'auto');
+      // The guard lives in SQL, so a person saving in the same moment always wins: only a row
+      // with no target, not silenced, and never saved by a person (a clear is source 'manual').
+      q = q.is('menu_item_id', null).is('option_id', null).is('matched_by', null).eq('source', 'auto');
       const { error } = await q;
       if (error) { failed++; log('decision failed:', d.ezKey, error.message); }
     } catch (e) { failed++; log('decision threw:', e instanceof Error ? e.message : String(e)); }
@@ -370,7 +413,7 @@ export async function applyMenuSync(sb: any, locationId: string, plan: SyncPlan,
 
 // ── Sync state (ezcater_menu_syncs) ─────────────────────────────────────────────────────────
 
-const STATE_COLUMNS = 'location_id, status, reason, last_attempt_at, last_synced_at, counts, menus, error';
+const STATE_COLUMNS = 'location_id, status, reason, last_attempt_at, last_synced_at, counts, menus, error, unresolved_ids';
 
 /** The venue's sync state, or null (never synced, or the table is not there yet). Never throws. */
 export async function readSyncState(sb: any, locationId: string): Promise<any | null> {
@@ -379,6 +422,48 @@ export async function readSyncState(sb: any, locationId: string): Promise<any | 
     if (error) return null;
     return data || null;
   } catch { return null; }
+}
+
+/** True while a sync marked running is younger than SYNC_STALE_RUNNING_MS. PURE. */
+export function isRunning(state: any, nowMs: number): boolean {
+  const last = Date.parse(t(state?.last_attempt_at));
+  return state?.status === 'running' && Number.isFinite(last) && nowMs - last < SYNC_STALE_RUNNING_MS;
+}
+
+/**
+ * ONE SYNC PER VENUE, claimed atomically (review round 4). Read the state, then claim it with a
+ * conditional write that only succeeds if nobody changed it in between:
+ *   no row yet    INSERT; a second claimant hits the primary key and loses
+ *   a row         UPDATE ... WHERE last_attempt_at and status are what we read; a second claimant
+ *                 matches no row (the first one moved last_attempt_at) and loses
+ * Never throws. absent: the table is not there yet (its migration is run by hand).
+ */
+export async function claimSyncLock(sb: any, locationId: string, reason: string, nowIso: string, nowMs: number): Promise<{
+  claimed: boolean; absent?: boolean; running?: boolean; error?: string;
+}> {
+  try {
+    const { data: cur, error } = await sb.from('ezcater_menu_syncs').select(STATE_COLUMNS).eq('location_id', locationId).maybeSingle();
+    if (error) {
+      const code = String(error.code || '');
+      const absent = code === '42P01' || code === 'PGRST205' || code === '42703' || /does not exist|could not find/i.test(String(error.message || ''));
+      return { claimed: false, absent, error: String(error.message || code || 'could not read the sync state') };
+    }
+    if (isRunning(cur, nowMs)) return { claimed: false, running: true };
+    const running = { status: 'running', reason, last_attempt_at: nowIso, updated_at: nowIso };
+    if (!cur) {
+      const { error: e2 } = await sb.from('ezcater_menu_syncs').insert({ location_id: locationId, ...running });
+      if (!e2) return { claimed: true };
+      return String(e2.code || '') === '23505' ? { claimed: false, running: true } : { claimed: false, error: String(e2.message || e2.code) };
+    }
+    let q = sb.from('ezcater_menu_syncs').update(running).eq('location_id', locationId);
+    q = cur.last_attempt_at == null ? q.is('last_attempt_at', null) : q.eq('last_attempt_at', cur.last_attempt_at);
+    q = cur.status == null ? q.is('status', null) : q.eq('status', cur.status);
+    const { data, error: e3 } = await q.select('location_id');
+    if (e3) return { claimed: false, error: String(e3.message || e3.code) };
+    return Array.isArray(data) && data.length === 1 ? { claimed: true } : { claimed: false, running: true };
+  } catch (e) {
+    return { claimed: false, error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 async function writeSyncState(sb: any, row: any): Promise<void> {
@@ -423,6 +508,10 @@ export async function syncVenueMenus(sb: any, platform: any, locationId: string,
   nowMs?: number;
   reason?: string;
   log?: (...a: unknown[]) => void;
+  /** Published ids an order carried that no row held (resyncForUnseen). */
+  unseen?: string[];
+  /** The sync state read before this sync, for the unresolved ids already remembered. */
+  priorState?: any;
 } = {}): Promise<SyncResult> {
   const log = opts.log || (() => {});
   const nowMs = Number.isFinite(opts.nowMs as number) ? (opts.nowMs as number) : Date.now();
@@ -430,21 +519,24 @@ export async function syncVenueMenus(sb: any, platform: any, locationId: string,
   const reason = opts.reason || 'staff';
   const errors: string[] = [];
 
+  let claimed = false;
   try {
-    // 1) The table, with the sync columns. Before the migration there is nothing to write to.
-    const links = await readAllLinks(sb, locationId);
-    if (links.absent) return { ok: false, enabled: false, error: 'Item matching is not switched on yet.' };
-    if (!links.ok) return { ok: false, enabled: true, error: 'Could not read the saved matches. Nothing was changed.' };
-    if (!links.synced) return { ok: false, enabled: false, error: `Menu sync needs ${MIGRATION} to be run first.` };
-    if (!links.complete) return { ok: false, enabled: true, error: 'Could not read every saved match. Nothing was changed.' };
+    // 1) One sync at a time per venue, claimed atomically BEFORE anything is read.
+    const claim = await claimSyncLock(sb, locationId, reason, nowIso, nowMs);
+    if (claim.running) return { ok: false, enabled: true, skipped: 'running', error: 'A menu sync is already running. Try again in a minute.' };
+    claimed = claim.claimed;
+    if (!claimed && !claim.absent) return { ok: false, enabled: true, error: `Could not start the menu sync: ${claim.error || 'unknown'}` };
+    const giveUp = async (res: SyncResult): Promise<SyncResult> => {
+      if (claimed) await writeSyncState(sb, { location_id: locationId, status: 'error', reason, last_attempt_at: nowIso, error: t(res.error).slice(0, 1000), updated_at: nowIso });
+      return res;
+    };
 
-    // 2) One sync at a time per venue.
-    const state = await readSyncState(sb, locationId);
-    const lastAttempt = Date.parse(t(state?.last_attempt_at));
-    if (state?.status === 'running' && Number.isFinite(lastAttempt) && nowMs - lastAttempt < SYNC_STALE_RUNNING_MS) {
-      return { ok: false, enabled: true, skipped: 'running', error: 'A menu sync is already running. Try again in a minute.' };
-    }
-    await writeSyncState(sb, { location_id: locationId, status: 'running', reason, last_attempt_at: nowIso, updated_at: nowIso });
+    // 2) The table, with the sync columns. Before the migration there is nothing to write to.
+    const links = await readAllLinks(sb, locationId);
+    if (links.absent) return giveUp({ ok: false, enabled: false, error: 'Item matching is not switched on yet.' });
+    if (!links.ok) return giveUp({ ok: false, enabled: true, error: 'Could not read the saved matches. Nothing was changed.' });
+    if (!links.synced || !claimed) return giveUp({ ok: false, enabled: false, error: `Menu sync needs ${MIGRATION} to be run first.` });
+    if (!links.complete) return giveUp({ ok: false, enabled: true, error: 'Could not read every saved match. Nothing was changed.' });
 
     // 3) The caterers mapped to this venue, each through ITS OWN connection only.
     const { data: cats } = await sb.from('ezcater_caterers')
@@ -513,10 +605,17 @@ export async function syncVenueMenus(sb: any, platform: any, locationId: string,
     const applied = await applyMenuSync(sb, locationId, plan, (...a) => log('[menu sync]', ...a));
 
     const status = applied.failed ? 'partial' : (complete ? 'ok' : 'partial');
+    // Published ids an order carried that this sync still could not find: remembered, so the
+    // next order carrying them does not re-sync again (review round 4, resyncForUnseen).
+    const known = new Set<string>();
+    for (const e of entities.values()) for (const id of e.ids) known.add(e.kind + ':' + id);
+    for (const k of indexLinkIds(links.rows).keys()) known.add(k);
+    const unresolved = nextUnresolved(opts.priorState?.unresolved_ids ?? null, opts.unseen || [], known, nowMs, nowIso);
     await writeSyncState(sb, {
       location_id: locationId, status, reason, last_attempt_at: nowIso, last_synced_at: nowIso,
       counts: { ...plan.counts, menuOk: ours.menuOk, complete, failedWrites: applied.failed },
-      menus: menuNames, error: errors.length ? errors.join('; ').slice(0, 1000) : null, updated_at: nowIso,
+      menus: menuNames, error: errors.length ? errors.join('; ').slice(0, 1000) : null,
+      unresolved_ids: unresolved, updated_at: nowIso,
     });
     log('synced', locationId, menuNames.join(', '), JSON.stringify(plan.counts));
     return {
@@ -525,14 +624,51 @@ export async function syncVenueMenus(sb: any, platform: any, locationId: string,
     };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    await writeSyncState(sb, { location_id: locationId, status: 'error', reason, last_attempt_at: nowIso, error: msg.slice(0, 1000), updated_at: nowIso });
+    if (claimed) await writeSyncState(sb, { location_id: locationId, status: 'error', reason, last_attempt_at: nowIso, error: msg.slice(0, 1000), updated_at: nowIso });
     return { ok: false, enabled: true, error: `The menu sync failed: ${msg}`, errors };
   }
 }
 
+/** How long a published id a re-sync could not find is left alone before it may re-sync again. */
+export const UNRESOLVED_BACKOFF_MS = MENU_SYNC_EVERY_MS;
+/** Unresolved ids remembered per venue. */
+export const UNRESOLVED_MAX = 500;
+
+/** The remembered unresolved ids still inside their back off: id -> when first given up on. PURE. */
+export function liveUnresolved(stored: any, nowMs: number): Map<string, string> {
+  const out = new Map<string, string>();
+  if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return out;
+  for (const [id, at] of Object.entries(stored)) {
+    const ms = Date.parse(t(at));
+    if (t(id) && Number.isFinite(ms) && nowMs - ms < UNRESOLVED_BACKOFF_MS) out.set(t(id), t(at));
+  }
+  return out;
+}
+
+/**
+ * The unresolved ids to remember after a sync: the ones still live from before plus the ones
+ * this sync was asked to find, minus every id a row now holds (known is 'kind:id'). PURE.
+ */
+export function nextUnresolved(stored: any, unseen: string[], known: Set<string>, nowMs: number, nowIso: string): Record<string, string> {
+  const isKnown = (id: string) => known.has('item:' + id) || known.has('option:' + id);
+  const live = liveUnresolved(stored, nowMs);
+  for (const id of Array.isArray(unseen) ? unseen : []) if (t(id) && !live.has(t(id))) live.set(t(id), nowIso);
+  const out: Record<string, string> = {};
+  let n = 0;
+  for (const [id, at] of live) {
+    if (isKnown(id)) continue;
+    out[id] = at;
+    if (++n >= UNRESOLVED_MAX) break;
+  }
+  return out;
+}
+
 /**
  * An order carried published ids no synced row holds: ezCater republished. Re-sync, at most once
- * per UNSEEN_RESYNC_MIN_MS per venue. Called AFTER the order is written. Never throws.
+ * per UNSEEN_RESYNC_MIN_MS per venue, and never again for ids an earlier re-sync already looked
+ * for and could not find (an order on a menu that is not current, an option the schema would not
+ * let us read): those wait for the daily sync (review round 4). Called AFTER the order is
+ * written. Never throws.
  */
 export async function resyncForUnseen(sb: any, platform: any, locationId: string, unseen: string[], opts: {
   askFactory?: (conn: any) => EzAsk; nowMs?: number; log?: (...a: unknown[]) => void;
@@ -540,14 +676,18 @@ export async function resyncForUnseen(sb: any, platform: any, locationId: string
   if (!Array.isArray(unseen) || !unseen.length) return { ok: false, enabled: true, skipped: 'nothing unseen' };
   const nowMs = Number.isFinite(opts.nowMs as number) ? (opts.nowMs as number) : Date.now();
   const state = await readSyncState(sb, locationId);
+  const tried = liveUnresolved(state?.unresolved_ids, nowMs);
+  const fresh = unseen.map((x) => t(x)).filter((x) => x && !tried.has(x));
+  if (!fresh.length) return { ok: false, enabled: true, skipped: 'looked for already' };
   const last = Date.parse(t(state?.last_attempt_at));
   if (Number.isFinite(last) && nowMs - last < UNSEEN_RESYNC_MIN_MS) return { ok: false, enabled: true, skipped: 'synced recently' };
-  return syncVenueMenus(sb, platform, locationId, { ...opts, nowMs, reason: 'republish' });
+  return syncVenueMenus(sb, platform, locationId, { ...opts, nowMs, reason: 'republish', unseen: fresh, priorState: state });
 }
 
 /** True when a venue is due its daily sync. PURE. */
 export function syncDue(state: any, nowMs: number): boolean {
   if (!state) return true;
+  if (isRunning(state, nowMs)) return false;
   const synced = Date.parse(t(state.last_synced_at));
   const tried = Date.parse(t(state.last_attempt_at));
   if (Number.isFinite(tried) && nowMs - tried < 60 * 60 * 1000 && !(Number.isFinite(synced) && synced >= tried)) {
@@ -556,29 +696,55 @@ export function syncDue(state: any, nowMs: number): boolean {
   return !Number.isFinite(synced) || nowMs - synced >= MENU_SYNC_EVERY_MS;
 }
 
+/** The whole hourly run, inside the edge function's wall clock (150 s) with room to answer. */
+export const DUE_SYNC_BUDGET_MS = 100_000;
+/** Venues synced side by side in the hourly run. */
+export const DUE_SYNC_CONCURRENCY = 3;
+
 /**
- * The daily re-sync: every venue with a mapped caterer whose last sync is a day old. Runs from
- * pg_cron (hourly) through ezcater-connect 'menu_sync_due'. Never throws.
+ * The due venues in FAIR order (review round 4): the one waiting longest first (never tried, then
+ * oldest last attempt), so a venue that keeps failing, or a long list, can never starve the
+ * venues behind it. PURE.
+ */
+export function dueVenuesInOrder(venues: string[], states: Map<string, any>, nowMs: number): string[] {
+  const at = (id: string) => { const n = Date.parse(t(states.get(id)?.last_attempt_at)); return Number.isFinite(n) ? n : -Infinity; };
+  return venues.filter((id) => syncDue(states.get(id) || null, nowMs))
+    .sort((a, b) => (at(a) - at(b)) || (a < b ? -1 : a > b ? 1 : 0));
+}
+
+/**
+ * The daily re-sync: every venue with a mapped caterer whose last sync is a day old, longest
+ * waiting first, a few side by side, inside one time budget (_shared/budget.js). A venue the
+ * budget did not reach is still due, and first in line next hour. Runs from pg_cron (hourly)
+ * through ezcater-connect 'menu_sync_due'. Never throws.
  */
 export async function syncDueVenues(sb: any, platform: any, opts: {
-  askFactory?: (conn: any) => EzAsk; nowMs?: number; maxVenues?: number; log?: (...a: unknown[]) => void;
-} = {}): Promise<Array<{ locationId: string; ok: boolean; error?: string }>> {
+  askFactory?: (conn: any) => EzAsk; nowMs?: number; maxVenues?: number; budgetMs?: number; concurrency?: number;
+  log?: (...a: unknown[]) => void;
+} = {}): Promise<Array<{ locationId: string; ok: boolean; error?: string; skipped?: boolean }>> {
   const nowMs = Number.isFinite(opts.nowMs as number) ? (opts.nowMs as number) : Date.now();
-  const out: Array<{ locationId: string; ok: boolean; error?: string }> = [];
+  const log = opts.log || (() => {});
   try {
     const { data } = await sb.from('ezcater_caterers').select('location_id, active').not('location_id', 'is', null).limit(1000);
-    const venues = [...new Set((data || []).filter((c: any) => c && c.active !== false && t(c.location_id)).map((c: any) => t(c.location_id)))];
-    for (const locationId of venues) {
-      if (out.length >= (opts.maxVenues || 10)) break;
-      const state = await readSyncState(sb, locationId);
-      if (!syncDue(state, nowMs)) continue;
-      const r = await syncVenueMenus(sb, platform, locationId, { ...opts, nowMs, reason: 'daily' });
-      out.push({ locationId, ok: r.ok, ...(r.error ? { error: r.error } : {}) });
-    }
+    const venues = [...new Set((data || []).filter((c: any) => c && c.active !== false && t(c.location_id)).map((c: any) => t(c.location_id)))] as string[];
+    if (!venues.length) return [];
+    const states = new Map<string, any>();
+    const { data: rows, error } = await sb.from('ezcater_menu_syncs').select(STATE_COLUMNS).in('location_id', venues);
+    if (error) { log('daily sync: could not read the sync states:', error.message); return []; }
+    for (const r of rows || []) if (r && t(r.location_id)) states.set(t(r.location_id), r);
+    const due = dueVenuesInOrder(venues, states, nowMs).slice(0, opts.maxVenues || 20);
+    const results = await runWithBudget(due, (locationId: string) => syncVenueMenus(sb, platform, locationId, {
+      askFactory: opts.askFactory, nowMs, reason: 'daily', log, priorState: states.get(locationId) || null,
+    }), { concurrency: opts.concurrency || DUE_SYNC_CONCURRENCY, budgetMs: opts.budgetMs ?? DUE_SYNC_BUDGET_MS });
+    return due.map((locationId: string, i: number) => {
+      const r: any = results[i];
+      if (r?.ok) return { locationId, ok: !!r.value?.ok, ...(r.value?.error ? { error: r.value.error } : {}) };
+      return { locationId, ok: false, error: r?.error || 'not run', ...(r?.skipped ? { skipped: true } : {}) };
+    });
   } catch (e) {
-    (opts.log || (() => {}))('daily sync failed:', e instanceof Error ? e.message : String(e));
+    log('daily sync failed:', e instanceof Error ? e.message : String(e));
+    return [];
   }
-  return out;
 }
 
 /** The sync state as the Back Office card shows it. */
