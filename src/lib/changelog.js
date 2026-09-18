@@ -7,6 +7,26 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.3',
+    date: '18 Sep 2026',
+    items: [
+      'Stamp cards now work the same at every site of a company, as the rest of loyalty already does. Ticking which categories earn a stamp used to save only the site you were logged into, because each site keeps its own copy of the menu, so a card limited to "Hot Coffee" set up at one site earned nothing at the others. Categories now match by name across every site, including sites added later, and cards saved before this change start working everywhere without being saved again.',
+      'Ticking a parent category, for example Coffee, now covers everything underneath it, such as Hot Coffee and Iced Coffee. Two categories with the same name under different parents, such as Drinks > Coffee and Retail > Coffee, stay separate.',
+      'The free item a reward gives now redeems at every site. A Free Drink set up while logged into one site used to be refused at the others with "Add Latte to the order first". It now matches the same item by name on the till, the kiosk and online.',
+      'The reward pickers in Back Office list items and categories from every site of the company, one row per name.',
+      'A stamp card whose saved categories have since been deleted now says so, instead of quietly earning nothing.',
+    ],
+  },
+  {
+    v: '5.9.2',
+    date: '18 Sep 2026',
+    items: [
+      'The red "YOUR CHANGES ARE NOT SAVING: new row violates row-level security policy for table shifts" bar in Back Office is fixed. Back Office was running the till\'s start up code, including "open today\'s shift", every time it loaded, often before you had even signed in. The database rightly refused it and the bar reported that as your changes failing, although nothing you had edited was lost.',
+      'Only a real till (the till or MPOS) now opens or rolls over a shift by itself. Back Office, the admin portal, the manager and staff apps, kiosks, menu boards, order screens, customer displays and the time clock only read the open shift.',
+      'You can still open a shift by hand from the Back Office Shift page.',
+    ],
+  },
+  {
     v: '5.9.1',
     date: '17 Sep 2026',
     items: [

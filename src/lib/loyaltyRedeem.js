@@ -13,14 +13,16 @@
 // can never burn a reward. Training mode needs no special casing here (nothing hits the
 // server at apply time); the commit-time call is training-gated in the store.
 
+import { eligibleMatcher, eligibleItemNames, eligibleOrderLines } from './loyaltyMenuMatch.js';
+
 /**
  * @param {{id:string,label?:string,value?:object,type?:string,pointsCost?:number,stamp?:boolean,stampProgramId?:string}} reward
- * @param {{ customerId:string, items?:Array, total?:number }} ctx
+ * @param {{ customerId:string, items?:Array, total?:number, menuItems?:Array }} ctx  menuItems = the till's menu
  * @returns staged result { reward_id|stampProgramId, customer_id, reward_name, points_deducted,
  *          discount_type, discount_value, pending_commit:true }
  * @throws when a free-item reward has no eligible item in the basket (apply refused).
  */
-export async function redeemLoyaltyReward(reward, { customerId, items = [], total = 0 }) {
+export async function redeemLoyaltyReward(reward, { customerId, items = [], total = 0, menuItems = [] }) {
   const rv = reward.value || {};
   const type = reward.type;
   let discountMinor = 0;
@@ -29,10 +31,13 @@ export async function redeemLoyaltyReward(reward, { customerId, items = [], tota
   } else if (type === 'discount_percent') {
     discountMinor = Math.round(total * 100 * (rv.percent || 0) / 100);
   } else if (type === 'free_item') {
-    const eligibleIds = new Set((rv.eligible_items || []).map(ei => ei.id));
-    const matching = (items || []).filter(i => !i.voided && eligibleIds.has(i.itemId));
-    if (eligibleIds.size > 0 && matching.length === 0) {
-      const names = (rv.eligible_items || []).map(ei => ei.name).filter(Boolean).join(', ');
+    // Saved id first, then the item's name across every site of the company (18 Sep 2026:
+    // loyalty is per company, menus are per site). lib/loyaltyMenuMatch.js, same rule as the
+    // kiosk and online. menuItems (this site's menu) resolves a size's "<parent> - <size>".
+    const configured = eligibleMatcher(rv).configured;
+    const matching = eligibleOrderLines(rv, items || [], menuItems);
+    if (configured && matching.length === 0) {
+      const names = eligibleItemNames(rv).join(', ');
       throw new Error(names
         ? `Add ${names} to the order first — the reward makes it free.`
         : 'Add the eligible item to the order first.');
