@@ -914,7 +914,7 @@ test('SyncBridge boot: tables are computed AFTER closed checks, from the store a
 
 test('store: pushes go through applyPushTables; first observation recorded in setConfigUpdate', () => {
   const store = read('../store/index.js');
-  const apply = store.slice(store.indexOf('applyConfigUpdate: () => {'), store.indexOf('locationSections: snap.locationSections'));
+  const apply = store.slice(store.indexOf('applyConfigUpdate: () => {'), store.indexOf('// Sections (lib/sectionPlan.js'));
   assert.match(apply, /applyPushTables\(updatedTables, snap, \{ tombs: state\.tombs, plan: state\.plan, pushSeq/);
   assert.doesNotMatch(apply, /label:st\.label/);
   assert.match(store, /setConfigUpdate: \(snapshot\) => \{[\s\S]{0,400}pushSeqFor\(/);
