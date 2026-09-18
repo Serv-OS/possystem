@@ -123,11 +123,24 @@ export function toRow(dbRow) {
   if (menuItemId || optionId) state = 'matched';
   else if (matchedBy === 'ignored') state = 'ignored';
 
+  // From "Sync menu" (20260918_OPS_ezcater_menu_sync.sql). A row the sync wrote carries
+  // ezCater's published ids; a row with none was only ever seen on an order, or has left
+  // ezCater's menu since.
+  const ids = Array.isArray(dbRow.ez_ids) ? dbRow.ez_ids : (Array.isArray(dbRow.ezIds) ? dbRow.ezIds : []);
+  const syncedAt = first(dbRow, 'synced_at', 'syncedAt');
+  const ezSizeName = first(dbRow, 'ez_size_name', 'ezSizeName');
+
   return {
     kind,
     ezKey,
     ezName,
     ezGroup: first(dbRow, 'ez_group', 'ezGroup'),
+    ezSizeName,
+    displayName: ezSizeName ? `${ezName}, ${ezSizeName}` : ezName,
+    ezCategory: first(dbRow, 'ez_category', 'ezCategory'),
+    ezMenu: first(dbRow, 'ez_menu', 'ezMenu'),
+    onMenu: ids.length > 0,
+    synced: !!syncedAt,
     menuItemId,
     optionId,
     source: first(dbRow, 'source', 'source') || 'auto',
@@ -209,7 +222,7 @@ export function outstandingLine(counts, kind) {
   const c = counts || {};
   const n = Number(c.outstanding) || 0;
   const noun = kind === 'option' ? 'options' : 'items';
-  if (!c.total) return `Nothing from ezCater yet. Their ${noun} show up here after the first order.`;
+  if (!c.total) return `Nothing from ezCater yet. Press Sync menu to bring in their ${noun}.`;
   if (n === 0) return `All their ${noun} are matched.`;
   if (n === 1) return `1 of their ${noun} is not matched yet.`;
   return `${n} of their ${noun} are not matched yet.`;
@@ -218,8 +231,52 @@ export function outstandingLine(counts, kind) {
 /** The small grey line under a row: how often ezCater has sent it. */
 export function seenLine(row) {
   const n = row ? row.seenCount : 0;
-  if (!n) return 'Not on an order yet';
-  return n === 1 ? 'On 1 order' : `On ${n} orders`;
+  const gone = row && row.synced && !row.onMenu ? ' · no longer on the ezCater menu' : '';
+  if (!n) return 'Not on an order yet' + gone;
+  return (n === 1 ? 'On 1 order' : `On ${n} orders`) + gone;
+}
+
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+
+/**
+ * The line under the Sync menu button: when the menu was last synced, and what it found, in
+ * the screen's three words. `sync` is the edge function's sync state. `nowMs` is passed in so
+ * the words are testable. Returns { when, what, problem }.
+ */
+export function syncSummary(sync, nowMs) {
+  if (!sync || !sync.last_synced_at) {
+    const problem = sync && sync.status === 'error' && sync.error ? `The last sync did not finish: ${sync.error}` : null;
+    return { when: 'Not synced yet.', what: '', problem };
+  }
+  const at = Date.parse(sync.last_synced_at);
+  const now = Number.isFinite(nowMs) ? nowMs : Date.now();
+  let when = 'Last synced ';
+  if (!Number.isFinite(at)) when += 'at an unknown time';
+  else {
+    const mins = Math.max(0, Math.round((now - at) / 60000));
+    if (mins < 1) when += 'just now';
+    else if (mins < 60) when += plural(mins, 'minute', 'minutes') + ' ago';
+    else if (mins < 60 * 24) when += plural(Math.round(mins / 60), 'hour', 'hours') + ' ago';
+    else when += plural(Math.round(mins / 1440), 'day', 'days') + ' ago';
+  }
+  const menus = Array.isArray(sync.menus) && sync.menus.length ? ` from ${sync.menus.join(', ')}` : '';
+  when += menus + '.';
+  const c = sync.counts || {};
+  const parts = [];
+  if (Number.isFinite(c.items)) parts.push(plural(c.items, 'item', 'items'));
+  if (Number.isFinite(c.sizes)) parts.push(plural(c.sizes, 'size', 'sizes'));
+  if (Number.isFinite(c.options)) parts.push(plural(c.options, 'option', 'options'));
+  const found = parts.length ? parts.join(', ') + '. ' : '';
+  const verdict = [];
+  if (Number.isFinite(c.matched)) verdict.push(`${c.matched} matched`);
+  if (Number.isFinite(c.needsDecision)) verdict.push(`${c.needsDecision} ${c.needsDecision === 1 ? 'needs' : 'need'} a decision`);
+  if (Number.isFinite(c.notOnOurMenu)) verdict.push(`${c.notOnOurMenu} not on our menu`);
+  const what = (found + (verdict.length ? verdict.join(', ') + '.' : '')).trim();
+  let problem = null;
+  if (sync.status === 'partial') problem = 'Part of the menu could not be read, so nothing was marked as gone. Sync again in a while.';
+  if (sync.status === 'error' && sync.error) problem = `The last sync did not finish: ${sync.error}`;
+  if (c.menuOk === false) problem = 'We could not read all of our own menu, so nothing was matched automatically this time.';
+  return { when, what, problem };
 }
 
 // ----------------------------------------------------------------------------
@@ -340,7 +397,9 @@ export function suggestionsFor(row, ourItems, ourGroups, opts) {
   }
 
   const prices = pricesById(ourItems);
-  return suggestMatches({ name: row.ezName }, ourItems, { limit }).map((s) => ({
+  // A row for one size of an item is suggested on its full name, size included.
+  const theirName = row.ezSizeName ? `${row.ezName} ${row.ezSizeName}` : row.ezName;
+  return suggestMatches({ name: theirName }, ourItems, { limit }).map((s) => ({
     id: s.itemId,
     name: s.name,
     note: '',
@@ -487,8 +546,12 @@ export function saveBody(row, choice) {
   const line = kind === 'option'
     ? { name: row.ezName, groupLabel: row.ezGroup || '' }
     : { name: row.ezName };
-  const ezKey = buildLinkKey(line, kind);
+  let ezKey = buildLinkKey(line, kind);
   if (!ezKey) return { error: 'that name cannot be matched' };
+  // A row for ONE SIZE of an item with several (written by Sync menu) is keyed
+  // '<name key>#<size>', not by its name. It is saved under its own key; the edge function
+  // accepts that key only for a size row that already exists.
+  if (kind === 'item' && row.ezKey && row.ezKey !== ezKey && row.ezKey.startsWith(ezKey + '#')) ezKey = row.ezKey;
 
   const c = choice || {};
   const ignored = c.ignored === true;

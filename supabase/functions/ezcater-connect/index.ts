@@ -18,6 +18,11 @@
 //                       each one is matched to
 //     items_save     -> match one of their names to one of ours, silence it, or
 //                       clear it back to unmatched
+//     menu_sync      -> read every current ezCater menu of the caterers mapped to this venue
+//                       and write every item, size and option as a row, matched to our menu
+//                       by name where the rules allow (_shared/ezcaterMenuSync.ts)
+//     menu_sync_due  -> SERVICE ROLE ONLY, no ops_location_id: the hourly pg_cron tick; syncs
+//                       every venue whose last menu sync is a day old, in the background
 //
 //     recompute_prep -> the venue's catering prep time changed: re-time every ezCater order
 //                       the kitchen does not have yet (Back Office calls it after a save)
@@ -53,6 +58,8 @@ import {
 import { buildLinkKey } from '../_shared/ezcaterMatch.ts';
 import { prefireCheck, resyncOrder, readCateringVenue, undoReplacement, recomputePrepForVenue } from '../_shared/ezcaterIngest.ts';
 import { staffForLocation, deviceAtLocation, staffActor, platformLocation } from '../_shared/staffAuthority.ts';
+import { readAllLinks } from '../_shared/ezcater-match-ingest.ts';
+import { syncVenueMenus, syncDueVenues, readSyncState, publicSyncState, SIZE_KEY_SEP } from '../_shared/ezcaterMenuSync.ts';
 import { EZ_PREP_FALLBACK_MINUTES } from '../_shared/cateringRules.js';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
@@ -117,7 +124,7 @@ async function callerOf(req: Request): Promise<{ service: boolean; user: any | n
 
 /**
  * Who may run a CONFIG action (connect_token, list_caterers, map_caterer, unmap_caterer,
- * set_policy, resubscribe, disconnect, items_list, items_save, recompute_prep, status): the
+ * set_policy, resubscribe, disconnect, items_list, items_save, menu_sync, recompute_prep, status): the
  * service role, or Back Office staff of this venue under the strict rule in
  * _shared/staffAuthority.ts (never an anonymous session; super_admin, a user_locations row for the
  * venue, or a company role that really grants it). user_profiles.location_id and org_id are NOT
@@ -352,6 +359,24 @@ Deno.serve(async (req) => {
   const action = String(body?.action || '');
   const opsLocationId = String(body?.ops_location_id || body?.location_id || '');
   if (!action) return json({ error: 'action required' }, 400);
+
+  // ── The daily menu re-sync (pg_cron, hourly). Service role only, every venue. ─────────────
+  // Answers at once and syncs in the background, so the cron's HTTP call never waits on ezCater.
+  if (action === 'menu_sync_due') {
+    const { service } = await callerOf(req);
+    if (!service) return json({ error: 'service role only' }, 403);
+    const job = syncDueVenues(sb, platform, {
+      maxVenues: 10,
+      log: (...a: unknown[]) => console.log('[ezcater-connect menu_sync_due]', ...a),
+    }).then((r) => console.log('[ezcater-connect] daily menu sync:', JSON.stringify(r)))
+      .catch((e) => console.warn('[ezcater-connect] daily menu sync failed:', e instanceof Error ? e.message : String(e)));
+    // deno-lint-ignore no-explicit-any
+    const rt = (globalThis as any).EdgeRuntime;
+    if (rt?.waitUntil) { rt.waitUntil(job); return json({ ok: true, started: true }); }
+    await job;
+    return json({ ok: true, started: true });
+  }
+
   if (!opsLocationId) return json({ error: 'ops_location_id required' }, 400);
 
   // ── Order actions, each with its own fence ──────────────────────────────────
@@ -680,16 +705,31 @@ Deno.serve(async (req) => {
       // screen has to work before he does.
 
       case 'items_list': {
-        const { data, error } = await sb.from('ezcater_item_links')
-          .select('kind, ez_key, ez_name, ez_group, menu_item_id, option_id, source, matched_by, seen_count, last_seen_at')
-          .eq('location_id', opsLocationId)
-          .order('last_seen_at', { ascending: false, nullsFirst: false })
-          .limit(1000);
-        if (error) {
-          if (isAbsentTable(error)) return json({ ok: true, enabled: false, links: [] });
-          return json({ error: error.message }, 500);
+        // EVERY row, paged past PostgREST's 1000 (a synced menu is hundreds of rows). The sync
+        // columns come back once 20260918_OPS_ezcater_menu_sync.sql has run; before that, the
+        // older columns, and menu_sync says what is missing.
+        const r = await readAllLinks(sb, opsLocationId);
+        if (!r.ok) {
+          if (r.absent || isAbsentTable(r.error)) return json({ ok: true, enabled: false, links: [] });
+          return json({ error: r.error?.message || 'could not read the matches' }, 500);
         }
-        return json({ ok: true, enabled: true, links: data || [] });
+        const sync = r.synced ? publicSyncState(await readSyncState(sb, opsLocationId)) : null;
+        return json({ ok: true, enabled: true, links: r.rows, complete: r.complete, menu_sync_ready: r.synced, sync });
+      }
+
+      // ── Sync ezCater menu (staff, the strict rule above) ─────────────────────────────────
+      case 'menu_sync': {
+        const r = await syncVenueMenus(sb, platform, opsLocationId, {
+          reason: 'staff',
+          log: (...a: unknown[]) => console.log('[ezcater-connect menu_sync]', ...a),
+        });
+        console.log('[ezcater-connect] menu sync for', opsLocationId, 'by', access.userId, r.ok ? JSON.stringify(r.counts) : r.error);
+        const sync = publicSyncState(await readSyncState(sb, opsLocationId));
+        if (!r.ok) return json({ ok: false, enabled: r.enabled, error: r.error, sync });
+        return json({
+          ok: true, enabled: true, complete: r.complete, menu_ok: r.menuOk, menus: r.menus,
+          counts: r.counts, failed_writes: r.failedWrites, problems: r.errors || [], sync,
+        });
       }
 
       case 'items_save': {
@@ -703,6 +743,19 @@ Deno.serve(async (req) => {
         // with its own name would be a row nothing ever looks up again.
         const ezKey = buildLinkKey({ name: ezName, groupLabel: ezGroup || '' }, kind);
         if (!ezKey) return json({ error: 'that name cannot be matched' }, 400);
+
+        // A SIZE ROW (an item with several sizes on ezCater, written by the menu sync) has a key
+        // that is not its name's: '<name key>#<size>'. Its key is taken from the request ONLY
+        // when that row already exists for this venue, so no new key can ever be made up here.
+        let saveKey = ezKey;
+        const askedKey = String(body?.ez_key || '').trim();
+        if (kind === 'item' && askedKey && askedKey !== ezKey && askedKey.includes(SIZE_KEY_SEP)
+          && askedKey.startsWith(ezKey + SIZE_KEY_SEP)) {
+          const { data: sizeRow } = await sb.from('ezcater_item_links').select('ez_key')
+            .eq('location_id', opsLocationId).eq('kind', 'item').eq('ez_key', askedKey).maybeSingle();
+          if (!sizeRow) return json({ error: 'that ezCater size is not on this venue' }, 400);
+          saveKey = askedKey;
+        }
 
         const ignored = body?.ignored === true;
         const menuItemId = ignored ? null : (String(body?.menu_item_id || '').trim() || null);
@@ -736,7 +789,7 @@ Deno.serve(async (req) => {
         const { error } = await sb.from('ezcater_item_links').upsert({
           location_id: opsLocationId,
           kind,
-          ez_key: ezKey,
+          ez_key: saveKey,
           ez_name: ezName,
           ez_group: ezGroup,
           menu_item_id: menuItemId,
@@ -749,7 +802,7 @@ Deno.serve(async (req) => {
           if (isAbsentTable(error)) return json({ ok: true, enabled: false });
           return json({ error: error.message }, 500);
         }
-        return json({ ok: true, enabled: true, ez_key: ezKey });
+        return json({ ok: true, enabled: true, ez_key: saveKey });
       }
 
       default:

@@ -246,6 +246,9 @@ export async function ez<T = any>(
       'apollographql-client-version': EZCATER_CLIENT_VERSION,
       'Content-Type': 'application/json',
       'Accept': 'application/json',
+      // A plain, named agent. ezCater sits behind Cloudflare, which answered error 1010 to a
+      // default scripting agent in the live menu read of 18 Sep 2026.
+      'User-Agent': `ServOS/${EZCATER_CLIENT_VERSION} (+https://serv-os.app)`,
     },
     body: JSON.stringify({ operationName, query, variables }),
   });

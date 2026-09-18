@@ -3,12 +3,18 @@
 // Back Office, Channels, 3rd Party orders, "Item matching" (ezCater).
 //
 // WHY THIS SCREEN EXISTS
-// ezCater gave us the Orders API but NOT the Menus API, so the venue builds its
-// ezCater menu by hand in the Partner Portal and their order lines arrive with
-// posItemId = null. itemId is what KDS station routing, 86, stock depletion and
-// product reporting all key on, so an unmatched ezCater order is a plain text
-// ticket: no station, no stock, no product mix. This is where a person says,
-// once, which of our products each of their names is.
+// The venue builds its ezCater menu in ezCater's Partner Portal, so their order
+// lines arrive with posItemId = null. itemId is what KDS station routing, 86,
+// stock depletion and product reporting all key on, so an unmatched ezCater
+// order is a plain text ticket: no station, no stock, no product mix. This is
+// where a person says, once, which of our products each of their names is.
+//
+// SYNC MENU (18 Sep 2026). The connected ezCater token can read the caterer's
+// menus, so every item, size and option is brought in BEFORE any order and
+// matched to ours by name at sync time (ezcater-connect 'menu_sync'). Peter:
+// "we cant have it that we match products after an order has been placed".
+// It also re-syncs by itself once a day, and whenever an order carries ezCater
+// ids we have not seen (they republished).
 //
 // The rules are in src/lib/ezcaterMatch.js. The view model, every derived
 // state, the ordering and all the copy are in src/lib/ezcaterItemRows.js, which
@@ -21,9 +27,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { getActiveLocationSync, isMock, supabase } from '../../lib/supabase';
 import { money } from '../../lib/currency';
-import { ezcaterItemsList, ezcaterItemsSave } from '../../lib/ezcater';
+import { ezcaterItemsList, ezcaterItemsSave, ezcaterMenuSync } from '../../lib/ezcater';
 import {
-  rowsFrom, ofKind, countRows, outstandingLine, seenLine,
+  rowsFrom, ofKind, countRows, outstandingLine, seenLine, syncSummary,
   ourItemsFrom, ourGroupsFrom, suggestionsFor, searchOurItems,
   matchedLabel, saveBody, applySaved, isMatchingOff,
 } from '../../lib/ezcaterItemRows';
@@ -80,9 +86,9 @@ function MatchRow({ row, ourItems, ourGroups, suggestions, busy, onSave }) {
     <div style={S.item}>
       <div style={{ ...S.row, justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div style={{ minWidth: 180, flex: '1 1 200px' }}>
-          <div style={S.theirName}>{row.ezName}</div>
+          <div style={S.theirName}>{row.displayName || row.ezName}</div>
           <div style={S.meta}>
-            {row.ezGroup ? row.ezGroup + ' · ' : ''}{seenLine(row)}
+            {row.ezGroup ? row.ezGroup + ' · ' : ''}{row.ezCategory ? row.ezCategory + ' · ' : ''}{seenLine(row)}
           </div>
         </div>
 
@@ -156,6 +162,9 @@ export default function EzcaterItemMatching({ locationId }) {
   const [msg, setMsg] = useState(null);
   const [codesOn, setCodesOn] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [sync, setSync] = useState(null);
+  const [syncReady, setSyncReady] = useState(true);
+  const [syncing, setSyncing] = useState(false);
 
   const ourItems = useMemo(() => ourItemsFrom(rawItems), [rawItems]);
   const ourGroups = useMemo(() => ourGroupsFrom(rawGroups), [rawGroups]);
@@ -220,7 +229,13 @@ export default function EzcaterItemMatching({ locationId }) {
       }
       setCodesOn(haveCodes);
       if (links && links.enabled === false) { setEnabled(false); setRows([]); }
-      else { setEnabled(true); setRows(rowsFrom(links?.links)); }
+      else {
+        setEnabled(true);
+        setRows(rowsFrom(links?.links));
+        setSync(links?.sync || null);
+        // An older edge function does not say; only an explicit false means "run the migration".
+        setSyncReady(links?.menu_sync_ready !== false);
+      }
       setRawItems(itemsRes?.data || []);
       setRawGroups(groupsRes?.data || []);
       // An empty picker must never look like an empty menu. Say it out loud
@@ -264,6 +279,25 @@ export default function EzcaterItemMatching({ locationId }) {
     } finally { setBusy(''); }
   }, [locId]);
 
+  const runSync = useCallback(async () => {
+    if (!locId || syncing) return;
+    setSyncing(true); setMsg(null);
+    try {
+      const r = await ezcaterMenuSync(locId);
+      if (r && r.sync) setSync(r.sync);
+      if (r && r.ok) {
+        await load(locId);
+        if (r.problems && r.problems.length) setMsg({ kind: 'err', text: 'Part of the ezCater menu could not be read: ' + r.problems[0] });
+      } else {
+        setMsg({ kind: 'err', text: (r && r.error) || 'The menu sync did not finish. Nothing was changed.' });
+      }
+    } catch (e) {
+      setMsg({ kind: 'err', text: e.message || 'The menu sync did not finish. Nothing was changed.' });
+    } finally { setSyncing(false); }
+  }, [locId, syncing, load]);
+
+  const syncText = useMemo(() => syncSummary(sync, Date.now()), [sync]);
+
   const shown = useMemo(() => ofKind(rows, tab), [rows, tab]);
   const counts = useMemo(() => countRows(shown), [shown]);
   const itemCount = useMemo(() => countRows(ofKind(rows, 'item')), [rows]);
@@ -287,9 +321,10 @@ export default function EzcaterItemMatching({ locationId }) {
     <div style={S.card}>
       <div style={S.h2}>Item matching</div>
       <div style={{ ...S.sub, marginTop: 0 }}>
-        ezCater does not send us their menu, so tell us once what each of their items is.
-        Matched items go to the right station, take the right stock and show up in your reports.
-        Unmatched ones still print, as plain text.
+        Sync menu brings in every item, size and option on your ezCater menu and matches it to
+        yours by name. Orders then match themselves. Anything new or unmatched still prints by
+        name, and never holds up an order. Matched items go to the right station, take the right
+        stock and show up in your reports.
       </div>
 
       {loading ? (
@@ -299,6 +334,23 @@ export default function EzcaterItemMatching({ locationId }) {
       ) : (
         <>
           {msg && <div style={S.note(msg.kind)}>{msg.text}</div>}
+
+          <div style={{ marginTop: 14 }}>
+            <div style={S.row}>
+              <button style={{ ...S.btn, ...(syncing || !syncReady ? { opacity: 0.6, cursor: 'default' } : {}) }}
+                disabled={syncing || !syncReady} onClick={runSync}>
+                {syncing ? 'Syncing…' : 'Sync menu'}
+              </button>
+              <span style={{ fontSize: 12.5, color: 'var(--t3)' }}>
+                {syncReady ? syncText.when : 'Menu sync is not switched on yet.'}
+              </span>
+            </div>
+            {syncReady && syncText.what && <div style={{ ...S.sub, marginTop: 6 }}>{syncText.what}</div>}
+            {syncReady && syncText.problem && <div style={S.note('err')}>{syncText.problem}</div>}
+            <div style={{ ...S.sub, marginTop: 6 }}>
+              It syncs again by itself once a day, and whenever ezCater changes the menu.
+            </div>
+          </div>
 
           {/* v5.8.100: hand the codes over. Nothing here is required: an item
               with no code still arrives, it just has to be matched by name. */}

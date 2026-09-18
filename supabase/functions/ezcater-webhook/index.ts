@@ -54,6 +54,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { verifyEzcaterSignature, getOrder, isPermanent, isSchemaError } from '../_shared/ezcater.ts';
 import { ezLifecycle, EZ_TERMINAL } from '../_shared/ezcater-map.ts';
 import { readCateringVenue, readConnection, writeEzcaterOrder, checkReplacements } from '../_shared/ezcaterIngest.ts';
+import { resyncForUnseen } from '../_shared/ezcaterMenuSync.ts';
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -340,6 +341,24 @@ Deno.serve(async (req) => {
     await sb.from('ezcater_events').update({
       status: 'processed', location_id: locationId, error: null, processed_at: nowIso,
     }).eq('notification_id', notificationId);
+
+    // 9) EZCATER REPUBLISHED ITS MENU. The order carried published ids no synced menu row holds
+    // (published ids change on every republish), so the menu is synced again, carrying every
+    // saved match across by original id, then name. The order is ALREADY written: it matched by
+    // name exactly as before, and nothing here can change or delay it. Background, and at most
+    // once every 15 minutes per venue (_shared/ezcaterMenuSync.ts resyncForUnseen).
+    if (w.menuUnseen?.length) {
+      console.log('[ezcater-webhook]', row.ref, 'carries', w.menuUnseen.length, 'ezCater menu ids we have not synced, re-syncing the menu');
+      const job = resyncForUnseen(sb, platform, locationId, w.menuUnseen, {
+        log: (...a: unknown[]) => console.log('[ezcater-webhook menu sync]', ...a),
+      }).then(
+        (r: any) => console.log('[ezcater-webhook] menu re-sync:', r?.ok ? 'done' : (r?.skipped || r?.error || 'not run')),
+        (e: unknown) => console.warn('[ezcater-webhook] menu re-sync failed, orders unaffected:', e instanceof Error ? e.message : String(e)),
+      );
+      // deno-lint-ignore no-explicit-any
+      const rt = (globalThis as any).EdgeRuntime;
+      if (rt?.waitUntil) rt.waitUntil(job);
+    }
 
     // ezCater advises re-querying an order immediately before it goes to the kitchen. That is
     // done by the release (ezcater-connect prefire from the till, and catering-release), with a

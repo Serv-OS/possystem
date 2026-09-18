@@ -94,6 +94,14 @@ export const ezcaterItemsList = (locId) =>
 export const ezcaterItemsSave = (locId, body) =>
   call('ezcater-connect', { action: 'items_save', ops_location_id: locId, ...body });
 
+/**
+ * "Sync menu": read every current ezCater menu of the caterers linked to this venue and write
+ * every item, size and option as a row, matched to our menu by name where the rules allow.
+ * Answers { ok, counts, menus, sync } or { ok: false, error, sync }.
+ */
+export const ezcaterMenuSync = (locId) =>
+  call('ezcater-connect', { action: 'menu_sync', ops_location_id: locId });
+
 // ── Orders (till and Back Office) ───────────────────────────────────────────
 
 const PREFIRE_AS_PLANNED = (why) => ({ ok: false, fire: true, outcome: 'fire', checked: false, why, row: null });

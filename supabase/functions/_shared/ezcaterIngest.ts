@@ -251,7 +251,7 @@ export async function writeEzcaterOrder(sb: any, args: {
   match?: { budgetMs?: number } | false;
   extraCustomer?: Record<string, unknown> | null;
   log?: (...a: unknown[]) => void;
-}): Promise<{ ok: true; plan: any; payload: any; isNew: boolean; link: any; attempts: number } | { ok: false; error: string }> {
+}): Promise<{ ok: true; plan: any; payload: any; isNew: boolean; link: any; attempts: number; menuUnseen: string[] } | { ok: false; error: string }> {
   const { order, locationId, venue, nowIso } = args;
   const log = args.log || (() => {});
   const { row, link } = orderToQueueRow(order, locationId, {
@@ -262,10 +262,14 @@ export async function writeEzcaterOrder(sb: any, args: {
   });
 
   let queueRow = row;
+  // Published ezCater ids on this order that no synced menu row holds: ezCater republished its
+  // menu. The caller re-syncs the menu AFTER the order is written, never before it.
+  let menuUnseen: string[] = [];
   if (args.match !== false) {
     try {
       const m = await matchQueueRow(sb, locationId, row, { budgetMs: args.match?.budgetMs ?? MATCH_BUDGET_MS });
       queueRow = m.row;
+      menuUnseen = Array.isArray(m.unseen) ? m.unseen : [];
       if (m.ran) log('items matched on', row.ref, `${m.matched}/${m.lines} lines`);
     } catch { queueRow = row; }
   }
@@ -307,7 +311,7 @@ export async function writeEzcaterOrder(sb: any, args: {
       const { error: lErr } = await sb.from('ezcater_order_links').upsert({ ...link, updated_at: nowIso }, { onConflict: 'location_id,ref' });
       if (lErr) log('link upsert failed:', lErr.message);
     }
-    return { ok: true, plan, payload, isNew: !existing, link, attempts: attempt };
+    return { ok: true, plan, payload, isNew: !existing, link, attempts: attempt, menuUnseen };
   }
   return { ok: false, error: 'the order kept changing while it was being written, try again' };
 }
