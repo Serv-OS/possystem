@@ -59,6 +59,11 @@ import {
 // The ezMatch stamp lives with the rest of the customer jsonb shape, in the
 // mapper, not here.
 import { withMatchedItems } from './ezcater-map.ts';
+// The synced menu (feat/ezcater-menu-sync-v1): the published size id rule and the paged link read.
+import {
+  indexPublishedIds, sizeRouteFor, readAllLinks, isMissingSyncColumn,
+  LINK_COLUMNS, LINK_COLUMNS_WITH_SYNC,
+} from './ezcaterMenuSync.ts';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Limits. All of them are about one pathological order, not about normal use.
@@ -246,6 +251,13 @@ export function planLineMatches(input: {
   nowIso: string;
   /** false when what we hold is only part of the menu. Default true. */
   menuOk?: boolean;
+  /**
+   * true when the links were read WITH the menu sync columns (ez_ids, ez_size_name), i.e.
+   * migration 20260918e has run. Then the published size id rule applies (sizeRouteFor): a
+   * sized line resolves only through a synced size row that has a decision, and any other
+   * sized line stays unmatched. false or absent is the behaviour before this change.
+   */
+  sizeIds?: boolean;
 }): MatchPlan {
   const lines = Array.isArray(input.lines) ? input.lines : [];
   const ourItems = Array.isArray(input.ourItems) ? input.ourItems : [];
@@ -254,6 +266,19 @@ export function planLineMatches(input: {
   const locationId = text(input.locationId);
   const nowIso = text(input.nowIso) || new Date(0).toISOString();
   const menuOk = input.menuOk !== false;
+
+  // Per line: may the old name rules decide it ('plain'), does a synced size row ('size'), or
+  // nothing at all ('unmatched')? Without the sync columns every line is 'plain', as before.
+  const idIdx = input.sizeIds ? indexPublishedIds(links) : null;
+  const routes = lines.map((l: any) => (idIdx ? sizeRouteFor(l, idIdx) : { mode: 'plain' as const }));
+  /** A line the name rules may not decide: the size row's answer, or no match at all. */
+  const routed = (appliedLine: any, i: number, known: Set<string> | null) => {
+    const r: any = routes[i];
+    let itemId: string | null = r.mode === 'size' && r.itemId ? String(r.itemId) : null;
+    // A size row pointing at an item that is gone (only checkable with the whole menu) routes nothing.
+    if (itemId && known && known.size && !known.has(itemId)) itemId = null;
+    return { ...appliedLine, itemId, match: { matched: !!itemId, source: itemId ? 'menuSync' : null } };
+  };
 
   // Our item codes, from whatever menu we hold.
   //
@@ -270,8 +295,10 @@ export function planLineMatches(input: {
   const haveItems = ourItems.length > 0;
   const haveGroups = ourGroups.length > 0;
   if (!locationId || !menuOk || (!haveItems && !haveGroups)) {
-    return { lines: applied, writes: [], bumps: [], upgrades: [] };
+    const out = applied.map((l: any, i: number) => (routes[i].mode === 'plain' ? l : routed(l, i, null)));
+    return { lines: out, writes: [], bumps: [], upgrades: [] };
   }
+  const knownIds = new Set<string>(ourItems.map((it: any) => String(it.id)));
 
   const idx = indexLinks(links);
   const counts = linkSeenCounts(links);
@@ -348,8 +375,15 @@ export function planLineMatches(input: {
     const src = lines[i] || {};
     let itemId = appliedLine.itemId != null ? String(appliedLine.itemId) : null;
     let source = appliedLine.match ? appliedLine.match.source : null;
+    const route: any = routes[i];
 
-    if (haveItems) {
+    if (route.mode !== 'plain') {
+      // Sized: never the name rules, never a name row written or filled from this line.
+      const r = routed(appliedLine, i, haveItems ? knownIds : null);
+      itemId = r.itemId;
+      source = r.match.source;
+      if (route.mode === 'size' && route.ezKey) sawExisting('item', route.ezKey);
+    } else if (haveItems) {
       // codes is passed in rather than rebuilt per line: one index for the
       // whole order, and the option arm cannot build one at all.
       const d = autoLinkDecision(src, ourItems, links, { kind: 'item', itemCodes: codes });
@@ -414,6 +448,8 @@ export interface MatchInputs {
    * the whole answer and no new link may be written.
    */
   menuOk: boolean;
+  /** true when the links came with ez_ids and ez_size_name (migration 20260918e has run). */
+  sizeIds?: boolean;
 }
 
 /** True once the budget is spent. No deadline means never. */
@@ -482,21 +518,32 @@ export async function readMatchInputs(
   locationId: string,
   opts: { deadline?: number | null } = {},
 ): Promise<MatchInputs> {
-  const out: MatchInputs = { links: [], ourItems: [], ourGroups: [], linksOk: false, menuOk: false };
+  const out: MatchInputs = { links: [], ourItems: [], ourGroups: [], linksOk: false, menuOk: false, sizeIds: false };
   if (!sb || !locationId) return out;
   const deadline = opts.deadline == null ? null : opts.deadline;
 
   // 1) Saved links. 42P01 (table missing, the migration is run by hand) is the
   // expected failure here and reads the same as "no links saved yet".
+  //
+  // PAGED (feat/ezcater-menu-sync-v1): a synced menu can pass PostgREST's 1000 row cap, and a
+  // row cut off by the cap would read as "never seen". An incomplete read keeps the rows it got
+  // but writes nothing (linksOk false), the same answer as a failed read.
+  // The sync columns are asked for first; before 20260918e runs they are not there, and the
+  // read is repeated without them (sizeIds false: the rules before this change).
   try {
-    const { data, error } = await sb.from('ezcater_item_links')
-      .select('kind, ez_key, ez_name, ez_group, menu_item_id, option_id, source, seen_count')
-      .eq('location_id', locationId);
-    if (error) {
+    let res = await readAllLinks(sb, locationId, LINK_COLUMNS_WITH_SYNC, deadline);
+    if (!res.ok && isMissingSyncColumn(res.error)) {
+      res = await readAllLinks(sb, locationId, LINK_COLUMNS, deadline);
+    } else if (res.ok) {
+      out.sizeIds = true;
+    }
+    if (!res.ok) {
+      const error = res.error || {};
       console.warn('[ezcater-match] no saved links (' + (error.code || 'error') + '):', error.message);
     } else {
-      out.links = Array.isArray(data) ? data : [];
-      out.linksOk = true;
+      out.links = res.rows;
+      out.linksOk = res.complete;
+      if (!res.complete) console.warn('[ezcater-match] saved links read incomplete, nothing will be written');
     }
   } catch (e) {
     console.warn('[ezcater-match] links read threw:', e instanceof Error ? e.message : String(e));
@@ -683,6 +730,7 @@ export async function matchQueueRow(
         locationId,
         nowIso,
         menuOk: input.menuOk,
+        sizeIds: input.sizeIds === true,
       });
 
       // Only write when the links table answered a read. If it did not, an insert

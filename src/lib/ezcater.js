@@ -93,3 +93,11 @@ export const ezcaterItemsList = (locId) =>
  */
 export const ezcaterItemsSave = (locId, body) =>
   call('ezcater-connect', { action: 'items_save', ops_location_id: locId, ...body });
+
+/**
+ * "Sync ezCater menu": read the venue's current ezCater menus into the matching list, exact
+ * names matched automatically. Answers { ok, status, message, counts } and never throws for a
+ * sync that did not complete (status busy, not_ready, partial or error says why).
+ */
+export const ezcaterMenuSync = (locId) =>
+  call('ezcater-connect', { action: 'menu_sync', ops_location_id: locId });

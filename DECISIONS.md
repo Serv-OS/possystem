@@ -264,3 +264,17 @@ Short ADR entries for non-obvious choices in the codebase.
 - An ezCater order still awaiting acceptance when its fire time passes gets one urgent activity entry from the catering-release cron, stamped once per order (`customer.ezcater_hold_alerted_at`).
 - The webhook no longer writes its own "new order" activity entry; the `order_queue_activity` trigger already logs every insert, as "Catering order". Showing "ezCater" there would need SQL, so it was left.
 - Release steps: `docs/EZCATER_V1_RELEASE.md`. ezCater sales are not written to `closed_checks`, so they are in no sales report (older than this work, not fixed here).
+
+---
+
+## ADR-024: ezCater menu sync, the conservative version (v1)
+
+**Context:** Peter (18 Sep 2026) wants ezCater items matched BEFORE any order, not pasted by hand and not left to ezCater's menu team. The connected token can read menus (proven live, read only). The full sync on `feat/ezcater-menu-sync` routed wrong sizes and wrong items in review. Peter chose the simpler version.
+
+**Decision:**
+- "Sync ezCater menu" (staff only, Item matching card) and a daily sync (pg_cron hourly, a venue is due after 20 hours without a good sync) read the CURRENT menus (venue date) of every caterer mapped to the venue and write `ezcater_item_links` rows with their published ids (`ez_ids`): one row per plain item, one row per SIZE of a multi size item (key `<item>|size:<size>`, `ez_size_name` set), one row per option value when ezCater lets us read values. New rows are not yet ordered (`seen_count` 0). A sync never deletes a row, never changes a decision and never touches `seen_count`; a second sync inserts nothing.
+- Auto links: exact names only, never across a size clash. A size row links only when exactly one of our items has the same key name INCLUDING the size, and the size survives into that key and is not shared with a sibling size.
+- Order time: a line resolves to a synced size row ONLY when its published size id is on that row and the row has a decision. A plain single size item (size id on a plain row, or no size on the line) resolves by name as before. ANY other sized line stays unmatched and prints by name. Before migration 20260918e runs, nothing changes.
+- One sync per venue at a time (`ezcater_menu_sync_claim`, one conditional upsert, stale after 10 minutes). Link reads page past 1000 rows.
+
+**Consequences:** after ezCater republishes a menu, sized lines are unmatched (they print by name) until the next sync; staff can press Sync. Staff clears made before this change behave as before.

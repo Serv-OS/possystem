@@ -123,10 +123,19 @@ export function toRow(dbRow) {
   if (menuItemId || optionId) state = 'matched';
   else if (matchedBy === 'ignored') state = 'ignored';
 
+  // A synced SIZE row: one size of an item ezCater sells in several sizes. Its key comes from
+  // the menu sync ('<item>|size:<size>'), so it is saved by that key (saveBody), never rebuilt.
+  const ezSizeName = kind === 'item' ? first(dbRow, 'ez_size_name', 'ezSizeName') : null;
+  const sizeRow = !!ezSizeName && ezKey.indexOf('|size:') !== -1;
+
   return {
     kind,
     ezKey,
     ezName,
+    ezSizeName: sizeRow ? ezSizeName : null,
+    sizeRow,
+    ezCategory: first(dbRow, 'ez_category', 'ezCategory'),
+    syncedAt: first(dbRow, 'synced_at', 'syncedAt'),
     ezGroup: first(dbRow, 'ez_group', 'ezGroup'),
     menuItemId,
     optionId,
@@ -209,16 +218,39 @@ export function outstandingLine(counts, kind) {
   const c = counts || {};
   const n = Number(c.outstanding) || 0;
   const noun = kind === 'option' ? 'options' : 'items';
-  if (!c.total) return `Nothing from ezCater yet. Their ${noun} show up here after the first order.`;
+  if (!c.total) return `Nothing from ezCater yet. Press Sync ezCater menu to load their ${noun}.`;
   if (n === 0) return `All their ${noun} are matched.`;
   if (n === 1) return `1 of their ${noun} is not matched yet.`;
   return `${n} of their ${noun} are not matched yet.`;
 }
 
+/** Their name as the screen shows it: a size row carries its size. */
+export function theirLabel(row) {
+  if (!row) return '';
+  return row.sizeRow && row.ezSizeName ? `${row.ezName} (${row.ezSizeName})` : row.ezName;
+}
+
+/**
+ * The line under the Sync button: the last sync, in plain words. `sync` is the
+ * ezcater_menu_syncs row items_list returns (null before the first sync).
+ */
+export function syncLine(sync) {
+  if (!sync) return 'Not synced yet.';
+  const when = (v) => {
+    const t = v ? Date.parse(v) : NaN;
+    return Number.isFinite(t) ? new Date(t).toLocaleString() : null;
+  };
+  if (sync.status === 'running') return 'Syncing now.';
+  const ok = when(sync.last_ok_at);
+  const last = ok ? `Last synced ${ok}.` : 'Not synced yet.';
+  if (sync.status === 'ok' || !sync.error) return last;
+  return `${last} The last try did not complete: ${String(sync.error).slice(0, 200)}`;
+}
+
 /** The small grey line under a row: how often ezCater has sent it. */
 export function seenLine(row) {
   const n = row ? row.seenCount : 0;
-  if (!n) return 'Not on an order yet';
+  if (!n) return row && row.syncedAt ? 'On their menu, not ordered yet' : 'Not on an order yet';
   return n === 1 ? 'On 1 order' : `On ${n} orders`;
 }
 
@@ -340,7 +372,10 @@ export function suggestionsFor(row, ourItems, ourGroups, opts) {
   }
 
   const prices = pricesById(ourItems);
-  return suggestMatches({ name: row.ezName }, ourItems, { limit }).map((s) => ({
+  // A size row is suggested on its item AND size, so "Caesar Salad" "Half Tray" puts our
+  // "Caesar Salad Half" first. Suggestions only: a person still picks.
+  const theirName = row.sizeRow && row.ezSizeName ? `${row.ezName} ${row.ezSizeName}` : row.ezName;
+  return suggestMatches({ name: theirName }, ourItems, { limit }).map((s) => ({
     id: s.itemId,
     name: s.name,
     note: '',
@@ -484,6 +519,27 @@ export function matchedLabel(row, ourItems, ourGroups) {
 export function saveBody(row, choice) {
   if (!row || !row.ezName) return { error: 'nothing to save' };
   const kind = row.kind === 'option' ? 'option' : 'item';
+
+  // A synced size row is saved by the key the sync gave it. The edge function only ever
+  // UPDATES such a row, so this can decide a size but never invent one.
+  if (kind === 'item' && row.sizeRow) {
+    const c = choice || {};
+    const ignored = c.ignored === true;
+    if (!ignored && str(c.optionId)) return { error: 'an item cannot be matched to an option' };
+    return {
+      body: {
+        kind: 'item',
+        size_row: true,
+        ez_key: row.ezKey,
+        ez_name: row.ezName,
+        ez_group: null,
+        menu_item_id: ignored ? null : str(c.menuItemId),
+        option_id: null,
+        ignored,
+      },
+    };
+  }
+
   const line = kind === 'option'
     ? { name: row.ezName, groupLabel: row.ezGroup || '' }
     : { name: row.ezName };
