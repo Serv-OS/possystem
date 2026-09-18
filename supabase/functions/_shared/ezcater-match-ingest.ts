@@ -54,7 +54,7 @@
 //     suggests instead, and the line stays unmatched until a person picks.
 
 import {
-  applyLinks, autoLinkDecision, buildLinkKey, findLink, indexItemCodes, indexLinks,
+  applyLinks, autoLinkDecision, buildLinkKey, ezLineName, findLink, indexItemCodes, indexLinks, ourSizeName,
 } from './ezcaterMatch.ts';
 // The ezMatch stamp lives with the rest of the customer jsonb shape, in the
 // mapper, not here.
@@ -116,14 +116,27 @@ function basePrice(pricing: any): number | null {
  */
 export function menuItemsForMatch(rows: any): any[] {
   const out: any[] = [];
-  for (const r of Array.isArray(rows) ? rows : []) {
+  const list = Array.isArray(rows) ? rows : [];
+  // A size is its own row under its product (parent_id) and is usually named
+  // only "Large" or "Half Tray", so it is matched by the product name joined to
+  // its own (ourSizeName). Parents are looked up among ALL rows, archived too:
+  // a live size under an archived product still has that product's name.
+  const parents = new Map<string, any>();
+  for (const r of list) if (r && text(r.id)) parents.set(text(r.id), r);
+  for (const r of list) {
     if (!r || r.archived === true) continue;
     const id = text(r.id);
     if (!id) continue;
+    const parent = text(r.parent_id) ? parents.get(text(r.parent_id)) : null;
+    const name = parent ? ourSizeName(text(parent.name), text(r.name)) : text(r.name);
+    const ownMenu = text(r.menu_name);
+    const menuName = parent && ownMenu
+      ? ourSizeName(text(parent.menu_name) || text(parent.name), ownMenu)
+      : ownMenu;
     out.push({
       id,
-      name: text(r.name),
-      menuName: text(r.menu_name) || null,
+      name,
+      menuName: menuName || null,
       price: basePrice(r.pricing),
       itemCode: text(r.item_code) || null,
     });
@@ -167,11 +180,19 @@ export function modifierGroupsForMatch(rows: any): any[] {
 // The plan. PURE: a function of its arguments, testable without a database.
 // ────────────────────────────────────────────────────────────────────────────
 
-/** Their side's verbatim text. A line calls it name, a customization label. */
+/**
+ * Their side's verbatim text. A line calls it name, a customization label.
+ *
+ * A line with a size keeps it: "Caesar Salad, Half Tray". buildLinkKey reads the
+ * size the same way (ezLineName), and ez_name has to agree with its own key,
+ * because items_save rebuilds the key from ez_name. It is also the name a menu
+ * pasted into Back Office gives the same size, so the two land on one row.
+ */
 const rawName = (line: any): string => {
   if (typeof line === 'string') return line.trim();
   const l = line || {};
-  return text(l.name) || text(l.label);
+  const bare = text(l.name) || text(l.label);
+  return text(l.sizeName) ? ezLineName(bare, l.sizeName) : bare;
 };
 
 const rawGroup = (line: any): string => {
@@ -399,6 +420,131 @@ export function planLineMatches(input: {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// A whole menu, pasted in Back Office BEFORE any order. PURE.
+// ────────────────────────────────────────────────────────────────────────────
+
+/** Names one paste may carry. The screen caps at the same number. */
+export const MAX_PASTE_ENTRIES = 1500;
+
+export interface PastePlan {
+  /** New rows to INSERT (on conflict do nothing). seen_count 0, never on an order. */
+  writes: any[];
+  /** Bare sightings on the table already that the menu can now answer. */
+  upgrades: { kind: string; ezKey: string; menuItemId: string | null; optionId: string | null }[];
+  counts: {
+    total: number; fresh: number; already: number;
+    matched: number; decide: number; none: number; skipped: number;
+  };
+}
+
+/**
+ * Plan the rows for a menu pasted into Back Office (ezcater-connect items_paste).
+ *
+ * WHY. Peter, 18 Sep 2026: matching only after an order "makes no sense, someone
+ * would have to order the entire menu". There is no Menus API, so the caterer
+ * pastes their menu and every name on it becomes a row now.
+ *
+ * Each entry is { kind, ez_name, ez_group }. An item entry is already one SIZE
+ * where the item has sizes ("Caesar Salad, Half Tray", built by ezLineName, the
+ * same function a real order line goes through), so a pasted row and a later
+ * order land on ONE key. The key is rebuilt here, never taken from the client.
+ *
+ * The rules are the webhook's, nothing new:
+ *   * a name already on the table is NEVER overwritten: not a person's match,
+ *     not their "Not on our menu", not a row an order wrote. It is counted as
+ *     already there. The one change: a bare sighting (no target, nobody has
+ *     touched it, source auto) that the menu can now answer is filled in, the
+ *     same upgrade an order applies, re-checked in SQL by saveLinkWrites.
+ *   * a new name gets a target only on one exact name of ours with no size
+ *     clash (autoLinkDecision). Anything else is written with no target, and
+ *     the screen asks a person, exactly like a name first seen on an order.
+ *   * a partly read menu (menuOk false) writes names only, never a target.
+ *
+ * New rows: source 'auto' (so a later order may still fill a bare one in),
+ * matched_by 'pasted' when we linked it and null when we did not (null is
+ * "nobody has decided", which the screen lists), seen_count 0 and last_seen_at
+ * null (never on an order yet). No new column and no migration: every value
+ * fits 20260917_OPS_ezcater_item_links.sql as written.
+ */
+export function planPastedMenu(input: {
+  entries: any[];
+  ourItems?: any[];
+  ourGroups?: any[];
+  links?: any;
+  locationId: string;
+  nowIso: string;
+  menuOk?: boolean;
+}): PastePlan {
+  const entries = (Array.isArray(input.entries) ? input.entries : []).slice(0, MAX_PASTE_ENTRIES);
+  const ourItems = Array.isArray(input.ourItems) ? input.ourItems : [];
+  const ourGroups = Array.isArray(input.ourGroups) ? input.ourGroups : [];
+  const links = input.links || [];
+  const locationId = text(input.locationId);
+  const nowIso = text(input.nowIso) || new Date(0).toISOString();
+  const menuOk = input.menuOk !== false;
+  const counts = { total: 0, fresh: 0, already: 0, matched: 0, decide: 0, none: 0, skipped: 0 };
+  const plan: PastePlan = { writes: [], upgrades: [], counts };
+  if (!locationId) return plan;
+
+  const idx = indexLinks(links);
+  const seen = new Set<string>();
+  const fill = new Map<string, any>();
+
+  for (const e of entries) {
+    const kind: 'item' | 'option' = e && e.kind === 'option' ? 'option' : 'item';
+    const name = text(e && e.ez_name).slice(0, 200);
+    const group = kind === 'option' ? text(e && e.ez_group).slice(0, 200) : '';
+    const line = kind === 'option' ? { name, groupLabel: group } : { name };
+    const key = name ? buildLinkKey(line, kind) : '';
+    if (!key) { counts.skipped++; continue; }
+    if (seen.has(kind + ':' + key)) continue;       // the same name twice in one paste
+    seen.add(kind + ':' + key);
+    counts.total++;
+
+    const menu = kind === 'option' ? ourGroups : ourItems;
+    const canMatch = menuOk && menu.length > 0;
+    const d = canMatch ? autoLinkDecision(line, menu, [], { kind }) : { action: 'none' as const, source: undefined };
+    const linked = d.action === 'linked' && d.source === 'auto';
+    const menuItemId = linked && (d as any).itemId != null ? String((d as any).itemId) : null;
+    const optionId = linked && kind === 'option' && (d as any).optionId != null ? String((d as any).optionId) : null;
+
+    const hit = findLink(idx, line, kind);
+    if (hit) {
+      counts.already++;
+      const l = hit.link;
+      if (l.menuItemId || l.optionId) counts.matched++;
+      else if ((menuItemId || optionId) && String(l.source || '') === 'auto') {
+        fill.set(kind + ':' + hit.key, { kind, ezKey: hit.key, menuItemId, optionId });
+        counts.matched++;
+      } else if (d.action === 'suggest') counts.decide++;
+      else counts.none++;
+      continue;
+    }
+
+    counts.fresh++;
+    if (menuItemId || optionId) counts.matched++;
+    else if (d.action === 'suggest') counts.decide++;
+    else counts.none++;
+    plan.writes.push({
+      location_id: locationId,
+      kind,
+      ez_key: key,
+      ez_name: name,
+      ez_group: group || null,
+      menu_item_id: menuItemId,
+      option_id: optionId,
+      source: 'auto',
+      matched_by: (menuItemId || optionId) ? 'pasted' : null,
+      seen_count: 0,
+      last_seen_at: null,
+      updated_at: nowIso,
+    });
+  }
+  plan.upgrades = Array.from(fill.values());
+  return plan;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // The database side. None of these throw. Ever.
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -449,7 +595,7 @@ async function readPaged(
 }
 
 /** The menu_items columns the matcher needs. item_code is the optional one. */
-export const MENU_ITEM_COLUMNS = 'id, name, menu_name, pricing, archived';
+export const MENU_ITEM_COLUMNS = 'id, name, menu_name, pricing, archived, parent_id';
 export const MENU_ITEM_COLUMNS_WITH_CODE = MENU_ITEM_COLUMNS + ', item_code';
 
 /**

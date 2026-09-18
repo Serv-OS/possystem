@@ -18,6 +18,9 @@
 //                       each one is matched to
 //     items_save     -> match one of their names to one of ours, silence it, or
 //                       clear it back to unmatched
+//     items_paste    -> every name on the caterer's ezCater menu, pasted in
+//                       Back Office before any order: new rows only, matched
+//                       by name where the rules are sure, nothing overwritten
 //
 // There is NO OAuth. ezCater issues a static token by email request, generated
 // once in the Partner Portal, and it CANNOT be recovered if lost. So unlike
@@ -37,6 +40,9 @@ import {
   isSandboxApi, resolveEzcaterApi,
 } from '../_shared/ezcater.ts';
 import { buildLinkKey } from '../_shared/ezcaterMatch.ts';
+import {
+  MAX_PASTE_ENTRIES, planPastedMenu, readMatchInputs, saveLinkWrites,
+} from '../_shared/ezcater-match-ingest.ts';
 
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type' };
 const json = (b: unknown, s = 200) => new Response(JSON.stringify(b), { status: s, headers: { ...cors, 'Content-Type': 'application/json' } });
@@ -590,6 +596,59 @@ Deno.serve(async (req) => {
           return json({ error: error.message }, 500);
         }
         return json({ ok: true, enabled: true, ez_key: ezKey });
+      }
+
+      // The caterer's WHOLE ezCater menu, pasted in Back Office before any
+      // order (Peter, 18 Sep 2026). Names only come from the browser: the keys
+      // are rebuilt and the menu is read HERE, with the same rules the webhook
+      // uses, so nothing the browser sends can link anything by itself.
+      // Existing rows are never overwritten (insert on conflict do nothing).
+      case 'items_paste': {
+        const raw = Array.isArray(body?.entries) ? body.entries : null;
+        if (!raw) return json({ error: 'entries required' }, 400);
+        if (raw.length > MAX_PASTE_ENTRIES) {
+          return json({ error: `That is more than ${MAX_PASTE_ENTRIES} names. Paste the menu in two parts.` }, 400);
+        }
+        const entries = raw.map((e: any) => ({
+          kind: e?.kind === 'option' ? 'option' : 'item',
+          ez_name: String(e?.ez_name || '').trim().slice(0, 200),
+          ez_group: e?.kind === 'option' ? (String(e?.ez_group || '').trim().slice(0, 200) || null) : null,
+        })).filter((e: any) => e.ez_name);
+
+        // Is the table there at all? Same calm answer as items_list if not.
+        const probe = await sb.from('ezcater_item_links').select('ez_key').eq('location_id', opsLocationId).limit(1);
+        if (probe.error) {
+          if (isAbsentTable(probe.error)) return json({ ok: true, enabled: false });
+          return json({ error: probe.error.message }, 500);
+        }
+
+        // No order is waiting on this, so the menu read gets a longer budget
+        // than the webhook's, but still a finite one.
+        const input = await readMatchInputs(sb, opsLocationId, { deadline: Date.now() + 20000 });
+        if (!input.linksOk) return json({ error: 'We could not read your matching list. Nothing was saved. Try again.' }, 500);
+        const nowIso = new Date().toISOString();
+        const plan = planPastedMenu({
+          entries, ourItems: input.ourItems, ourGroups: input.ourGroups, links: input.links,
+          locationId: opsLocationId, nowIso, menuOk: input.menuOk,
+        });
+
+        let written = 0;
+        for (let i = 0; i < plan.writes.length; i += 500) {
+          const chunk = plan.writes.slice(i, i + 500);
+          const { error } = await sb.from('ezcater_item_links')
+            .upsert(chunk, { onConflict: 'location_id,kind,ez_key', ignoreDuplicates: true });
+          if (error) {
+            if (isAbsentTable(error)) return json({ ok: true, enabled: false });
+            return json({ error: error.message, written }, 500);
+          }
+          written += chunk.length;
+        }
+        let filled = 0;
+        for (let i = 0; i < plan.upgrades.length; i += 200) {
+          const r = await saveLinkWrites(sb, opsLocationId, [], [], nowIso, plan.upgrades.slice(i, i + 200));
+          filled += r.filled;
+        }
+        return json({ ok: true, enabled: true, menu_ok: input.menuOk, written, filled, counts: plan.counts });
       }
 
       default:

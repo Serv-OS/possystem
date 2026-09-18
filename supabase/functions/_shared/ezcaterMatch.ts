@@ -250,6 +250,69 @@ export function sizeWordOf(value: unknown): string | null {
   return found;
 }
 
+/**
+ * Size names that say nothing about the product, so they never join a name.
+ * ezCater allows an item with one size to leave the size blank or give it a
+ * placeholder, and "Chocolate Cake, 1" must still be our "Chocolate Cake".
+ * Compared in key form (normaliseKeyName).
+ */
+export const GENERIC_SIZE_NAMES: string[] = Object.freeze([
+  '1', 'one', 'each', 'ea', 'item', 'default', 'standard', 'single', 'one size', 'n a', 'na', 'none',
+]) as string[];
+
+/**
+ * The name one ezCater SELLABLE THING is known by: the item name, plus the size
+ * the customer picked when that size says something.
+ *
+ * WHY. An ezCater order line carries the item name ("Caesar Salad") and the size
+ * separately (menuItemSizeName, "Half Tray"). Keyed on the name alone, a Half
+ * Tray and a Full Tray were ONE link row, so one match routed both and took the
+ * same stock for both. Joined here, they are two rows, which is what the key
+ * rule (normaliseKeyName keeps the size word) always intended.
+ *
+ * The SAME function builds the name for a line on a real order (ingest) and for
+ * a size on a menu pasted into Back Office, so a pasted row and a later order
+ * land on the same key and never make two rows.
+ *
+ * The size is left off when it is blank, a placeholder (GENERIC_SIZE_NAMES),
+ * nothing but catering noise ("Serves 10", which the key would strip anyway),
+ * or already inside the name.
+ *
+ * Rows saved before this kept only the name. For a size made of size words
+ * ("Half Tray", "Large") the older key is exactly legacyLinkKey of the joined
+ * name, so every earlier match is still found.
+ */
+export function ezLineName(name: unknown, sizeName?: unknown): string {
+  const n = String(name == null ? '' : name).replace(/\s+/g, ' ').trim();
+  const s = String(sizeName == null ? '' : sizeName).replace(/\s+/g, ' ').trim();
+  if (!s || !n) return n;
+  const sk = normaliseKeyName(s);
+  if (!sk || GENERIC_SIZE_NAMES.indexOf(sk) !== -1) return n;
+  const nk = normaliseKeyName(n);
+  if ((' ' + nk + ' ').indexOf(' ' + sk + ' ') !== -1) return n;
+  return n + ', ' + s;
+}
+
+/**
+ * The name one of OUR sizes is matched by. On our menu a size is its own
+ * menu_items row under the product (parent_id), usually called just "Large" or
+ * "Half Tray". Matched as "Large" it would find every large thing ezCater sells
+ * and none of them rightly, so it is matched as "Caesar Salad, Half Tray": the
+ * same shape ezLineName gives their side.
+ *
+ * A size already named in full ("Caesar Salad Large") is left as it is.
+ */
+export function ourSizeName(parentName: unknown, sizeName: unknown): string {
+  const p = String(parentName == null ? '' : parentName).replace(/\s+/g, ' ').trim();
+  const s = String(sizeName == null ? '' : sizeName).replace(/\s+/g, ' ').trim();
+  if (!p) return s;
+  if (!s) return p;
+  const pk = normaliseKeyName(p);
+  const sk = normaliseKeyName(s);
+  if (pk && (' ' + sk + ' ').indexOf(' ' + pk + ' ') !== -1) return s;
+  return ezLineName(p, s);
+}
+
 // ----------------------------------------------------------------------------
 // scoreMatch
 // ----------------------------------------------------------------------------
@@ -283,7 +346,9 @@ export function displayNameOf(item: any): string {
 function theirParts(theirLine: any): { name: string; price: number | null; group: string } {
   if (typeof theirLine === 'string') return { name: theirLine, price: null, group: '' };
   const l = theirLine || {};
-  const name = l.name != null ? l.name : (l.label != null ? l.label : '');
+  const bare = l.name != null ? l.name : (l.label != null ? l.label : '');
+  // A line from a real order carries its size apart from its name. See ezLineName.
+  const name = l.sizeName != null && l.sizeName !== '' ? ezLineName(bare, l.sizeName) : bare;
   const group = l.groupLabel != null ? l.groupLabel
     : (l.customizationTypeName != null ? l.customizationTypeName : '');
   return { name: String(name || ''), price: numOrNull(l.price), group: String(group || '') };

@@ -93,3 +93,12 @@ export const ezcaterItemsList = (locId) =>
  */
 export const ezcaterItemsSave = (locId, body) =>
   call('ezcater-connect', { action: 'items_save', ops_location_id: locId, ...body });
+
+/**
+ * Put every name on the caterer's pasted ezCater menu on the matching list,
+ * before any order. `body` is pasteBody() from src/lib/ezcaterMenuPaste.js:
+ * names only. The function re-keys them and reads our menu itself, and never
+ * overwrites a row that is already there.
+ */
+export const ezcaterItemsPaste = (locId, body) =>
+  call('ezcater-connect', { action: 'items_paste', ops_location_id: locId, ...body });

@@ -218,18 +218,20 @@ test('THE SCREEN READS menu_items.pricing, because there is no price column', ()
   const jsx = fs.readFileSync(new URL('../backoffice/sections/EzcaterItemMatching.jsx', import.meta.url), 'utf8');
   assert.ok(/from\('menu_items'\)\s*\.select\(/.test(jsx), 'the menu_items select is gone');
 
-  // Every column list the screen asks menu_items for, in the order it asks.
-  const lists = (jsx.match(/'id,name,menu_name[^']*'/g) || []).map((s) => s.slice(1, -1).split(',').map((c) => c.trim()));
-  assert.equal(lists.length, 2, 'one list with the item code, one without');
-  for (const cols of lists) {
-    assert.ok(cols.includes('pricing'), 'the price is in the pricing jsonb');
-    assert.ok(!cols.includes('price'), 'menu_items has no price column, see db.js');
-  }
-  // v5.8.100: item_code is asked for FIRST, and asked for again without it when
-  // the column is not there yet. Same trap as the price column, same cure.
-  assert.deepEqual(lists[0], ['id', 'name', 'menu_name', 'pricing', 'archived', 'item_code']);
-  assert.deepEqual(lists[1], ['id', 'name', 'menu_name', 'pricing', 'archived']);
-  assert.ok(jsx.includes('isMissingItemCodeColumn'), 'nothing falls back without the test for it');
+  // 18 Sep 2026: the screen reads menu_items with '*'. It now needs the sizes
+  // (parent_id), category, type and sort order as well, and '*' is the one
+  // select that can never name a column that is not there: not a `price`
+  // column (there is none), and not item_code before its migration is run.
+  // Before this it named its columns and asked twice, with and without
+  // item_code (v5.8.100). Same trap, closed for good.
+  const selects = jsx.match(/from\('menu_items'\)\s*\.select\(([^)]*)\)/g) || [];
+  assert.ok(selects.length >= 1);
+  for (const s of selects) assert.match(s, /\.select\('\*'\)/, 'menu_items is read with * only: ' + s);
+  assert.ok(!/'[^']*\bprice\b[^']*'\s*\)\s*\.eq\('location_id'/.test(jsx.replace(/pricing/g, '')), 'menu_items has no price column, see db.js');
+  // ourItemsFrom still turns the pricing jsonb into the number the matcher wants.
+  assert.equal(ourItemsFrom([{ id: 'x', name: 'X', pricing: { base: 3 } }])[0].price, 3);
+  // Codes are read off the rows, so a missing column simply means no codes.
+  assert.ok(jsx.includes("hasOwnProperty.call(r, 'item_code')"));
 });
 
 test('itemPriceOf reads pricing.base, then the older pricing.price, then the scalar', () => {

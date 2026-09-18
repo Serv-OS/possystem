@@ -29,7 +29,7 @@
 // most useful unmatched item is the one that just arrived on an order, because
 // that is the order sitting on the pass as a plain text ticket right now.
 
-import { suggestMatches, matchOptions, buildLinkKey, normaliseItemName, displayNameOf } from './ezcaterMatch.js';
+import { suggestMatches, matchOptions, buildLinkKey, normaliseItemName, displayNameOf, ourSizeName } from './ezcaterMatch.js';
 
 // ----------------------------------------------------------------------------
 // "Matching is not switched on yet"
@@ -209,7 +209,7 @@ export function outstandingLine(counts, kind) {
   const c = counts || {};
   const n = Number(c.outstanding) || 0;
   const noun = kind === 'option' ? 'options' : 'items';
-  if (!c.total) return `Nothing from ezCater yet. Their ${noun} show up here after the first order.`;
+  if (!c.total) return `Nothing from ezCater yet. Load your ezCater menu above and their ${noun} show up here straight away.`;
   if (n === 0) return `All their ${noun} are matched.`;
   if (n === 1) return `1 of their ${noun} is not matched yet.`;
   return `${n} of their ${noun} are not matched yet.`;
@@ -257,12 +257,29 @@ export function itemPriceOf(it) {
 /** Our menu items in the shape scoreMatch wants, archived ones dropped. */
 export function ourItemsFrom(list) {
   const out = [];
-  for (const it of Array.isArray(list) ? list : []) {
+  const rows = Array.isArray(list) ? list : [];
+  // A size is its own row under its product (parent_id), usually named only
+  // "Large". It is matched and shown as "Caesar Salad, Large" (ourSizeName), the
+  // same rule the webhook's menuItemsForMatch uses, so the screen and ingest
+  // agree about what our sizes are called.
+  const parents = new Map();
+  for (const it of rows) if (it && it.id != null) parents.set(String(it.id), it);
+  const parentOf = (it) => {
+    const pid = it.parent_id != null ? it.parent_id : it.parentId;
+    return pid != null && pid !== '' ? parents.get(String(pid)) || null : null;
+  };
+  for (const it of rows) {
     if (!it || it.archived) continue;
     const id = it.id != null ? String(it.id) : '';
     if (!id) continue;
-    const name = it.name != null ? String(it.name) : '';
-    const menuName = (it.menu_name != null ? it.menu_name : it.menuName);
+    const parent = parentOf(it);
+    const ownName = it.name != null ? String(it.name) : '';
+    const name = parent ? ourSizeName(parent.name != null ? String(parent.name) : '', ownName) : ownName;
+    const ownMenu = (it.menu_name != null ? it.menu_name : it.menuName);
+    const parentMenu = parent ? (parent.menu_name != null ? parent.menu_name : (parent.menuName != null ? parent.menuName : parent.name)) : null;
+    const menuName = parent && ownMenu != null && String(ownMenu).trim()
+      ? ourSizeName(String(parentMenu || ''), String(ownMenu))
+      : ownMenu;
     if (!name && !menuName) continue;
     const price = itemPriceOf(it);
     out.push({
