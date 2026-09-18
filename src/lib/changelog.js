@@ -7,6 +7,70 @@
 
 export const CHANGELOG = [
   {
+    v: '5.9.7',
+    date: '18 Sep 2026',
+    items: [
+      'The gift card art you upload in Back Office, Appearance, Gift cards now shows on the live gift card page, under your logo, and on the thank you page after purchase. It was saved but the customer pages never read it.',
+      'Gift card art is now company wide, like gift cards themselves: press Save appearance once and every site\'s gift card page shows it. A site can still have its own.',
+      'The Back Office preview now shows exactly what customers see: the same art in the same card shape and the same amounts, instead of a fixed three.',
+      'The amounts offered, and the custom amount box, now follow the minimum and maximum in Gift cards, Settings, the same limits the checkout enforces, so a customer is never offered an amount the payment refuses.',
+    ],
+  },
+  {
+    v: '5.9.6',
+    date: '18 Sep 2026',
+    items: [
+      'Renaming, moving or deleting a table in the floor plan now sticks after a refresh, on every till. Tills used to put the old name back from an older copy of the plan, and a deleted table came back because a device treated "not in the latest copy" as "lost" rather than "deleted".',
+      'A delete is now recorded as a delete, and the newest edit to a table wins, decided by the database\'s own clock, never a device\'s, so a till with its clock set wrong cannot hide a new table or undo an edit.',
+      'Tables are still never lost: a failed or empty load, a till waking up offline, or a second tab can never remove a table nobody deleted.',
+      'Back Office refuses to delete a table that has an open order on it, including split checks and open QR tabs, and says why. If an order ever does end up on a deleted table, the table stays on the till, marked Removed, until the order is closed.',
+      'If a Back Office tab left open from before this update tries to save an old copy of a table, or bring back a deleted one, it is refused with a message to reload, instead of silently overwriting the newer plan.',
+    ],
+  },
+  {
+    v: '5.9.5',
+    date: '18 Sep 2026',
+    items: [
+      'The table QR code downloads in Back Office, Online Ordering now work. Each JPEG button drew the code first and only then started the download, and Safari refuses a download that is not started straight from your click, so nothing happened. The codes are now drawn as soon as the section opens, so a click saves a finished file instantly.',
+      'Download all is now one PDF with every table\'s QR code, one per page, ready to print. It used to start a separate download for every table, which browsers block as a flood of files after the first one or two.',
+      'While the codes are being drawn the buttons say Preparing, and if a code cannot be drawn the section says which table and why.',
+    ],
+  },
+  {
+    v: '5.9.4',
+    date: '18 Sep 2026',
+    items: [
+      'New, ServOS staff only: Import customers, in the admin portal. Upload a CSV of loyalty members from another system and each person gets a customer record, a loyalty membership at every site of the company, their stamp balance and any free drinks they are owed. There is a Download template button.',
+      'Only named ServOS staff can use it, checked on the server as well as on screen, so a venue login cannot run it even if it found the address.',
+      'Pick the company first. The confirm step shows the company name large, so a file can never go into the wrong brand. Preview writes nothing.',
+      'A file that has been opened and saved in Excel or Google Sheets still reads: phone numbers that lost their 0, dates written day first, TRUE and FALSE, 2.0 for stamps, a semicolon separator, re-typed headers and blank rows are all handled. Anything that cannot be read safely is listed with a plain reason, never guessed.',
+      'Phones are written exactly as the till writes them, so every member can be looked up at the till. No country code is ever invented.',
+      'A yes to marketing in the file only ever adds consent. A no in the file never switches off somebody who said yes here, and somebody who opted out here is never switched back on.',
+      'People deleted here are left out by name and never recreated. Running the same file twice changes nothing and doubles no stamps.',
+      'Nothing is sent to customers: no welcome texts or emails.',
+    ],
+  },
+  {
+    v: '5.9.3',
+    date: '18 Sep 2026',
+    items: [
+      'Stamp cards now work the same at every site of a company, as the rest of loyalty already does. Ticking which categories earn a stamp used to save only the site you were logged into, because each site keeps its own copy of the menu, so a card limited to "Hot Coffee" set up at one site earned nothing at the others. Categories now match by name across every site, including sites added later, and cards saved before this change start working everywhere without being saved again.',
+      'Ticking a parent category, for example Coffee, now covers everything underneath it, such as Hot Coffee and Iced Coffee. Two categories with the same name under different parents, such as Drinks > Coffee and Retail > Coffee, stay separate.',
+      'The free item a reward gives now redeems at every site. A Free Drink set up while logged into one site used to be refused at the others with "Add Latte to the order first". It now matches the same item by name on the till, the kiosk and online.',
+      'The reward pickers in Back Office list items and categories from every site of the company, one row per name.',
+      'A stamp card whose saved categories have since been deleted now says so, instead of quietly earning nothing.',
+    ],
+  },
+  {
+    v: '5.9.2',
+    date: '18 Sep 2026',
+    items: [
+      'The red "YOUR CHANGES ARE NOT SAVING: new row violates row-level security policy for table shifts" bar in Back Office is fixed. Back Office was running the till\'s start up code, including "open today\'s shift", every time it loaded, often before you had even signed in. The database rightly refused it and the bar reported that as your changes failing, although nothing you had edited was lost.',
+      'Only a real till (the till or MPOS) now opens or rolls over a shift by itself. Back Office, the admin portal, the manager and staff apps, kiosks, menu boards, order screens, customer displays and the time clock only read the open shift.',
+      'You can still open a shift by hand from the Back Office Shift page.',
+    ],
+  },
+  {
     v: '5.9.1',
     date: '17 Sep 2026',
     items: [

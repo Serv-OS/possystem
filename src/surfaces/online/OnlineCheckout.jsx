@@ -41,6 +41,7 @@ import { getDayWindows, resolveLocalDateTime } from '../../lib/openingHours';
 import { computeOrderTaxUnified } from '../../lib/taxCompute';
 import { breakdownIsExclusive, taxTermFor } from '../../lib/receiptTax';   // v5.7.34: rate-null guards + VAT/Sales Tax wording
 import { money, stripeCurrency } from '../../lib/currency';
+import { eligibleMatcher, eligibleItemNames, eligibleOrderLines } from '../../lib/loyaltyMenuMatch';
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
@@ -80,7 +81,7 @@ function decrementOnlineStock(cart, locationId) {
 // orderAheadOnly (v5.5.802): the venue is currently CLOSED and the customer is
 // ordering ahead for reopening — timing is forced to a scheduled slot (slots only
 // ever fall inside opening windows) and the ASAP option isn't offered.
-export default function OnlineCheckout({ cart, theme, location, orderType, loyalty, taxRates = [], taxCtx = null, onClose, onPlaced, onOpenLoyalty, onLoyaltyVerified, orderAheadOnly = false }) {
+export default function OnlineCheckout({ cart, theme, location, orderType, loyalty, taxRates = [], taxCtx = null, onClose, onPlaced, onOpenLoyalty, onLoyaltyVerified, orderAheadOnly = false, menuItems = [] }) {
   const opsLocationId = location.ops_location_id || location.id; // ops DB
   const platformLocationId = location.id;                         // platform DB
   const tz = location.timezone || 'Europe/London';
@@ -878,10 +879,12 @@ export default function OnlineCheckout({ cart, theme, location, orderType, loyal
         // v5.5.247: free item — find cheapest eligible item in cart. Block when the
         // eligible item isn't in the basket (previously the server consumed the reward
         // anyway, for a £0 discount).
-        const eligibleIds = new Set((rValue.eligible_items || []).map(ei => ei.id));
-        const matching = cart.filter(l => eligibleIds.has(l.itemId));
-        if (eligibleIds.size > 0 && matching.length === 0) {
-          const names = (rValue.eligible_items || []).map(ei => ei.name).filter(Boolean).join(', ');
+        // Saved id first, then the item's name across every site of the company (18 Sep 2026:
+        // loyalty is per company, menus are per site). lib/loyaltyMenuMatch.js, the till's rule.
+        const configured = eligibleMatcher(rValue).configured;
+        const matching = eligibleOrderLines(rValue, cart, menuItems);
+        if (configured && matching.length === 0) {
+          const names = eligibleItemNames(rValue).join(', ');
           throw new Error(names
             ? `Add ${names} to your order first — the reward makes it free.`
             : 'Add the eligible item to your order first.');

@@ -37,6 +37,8 @@ import {
   decideEarnSource, earnItemsFromCheck, checkItemIds, checkCapMinor, type CheckRow,
 } from '../_shared/earnFromCheck.ts';
 
+import { countQualifyingStamps, loadStampNameIndex } from '../_shared/stampQualify.ts';
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors });
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
@@ -331,24 +333,11 @@ Deno.serve(async (req) => {
       .eq('active', true);
 
     if (programs && programs.length > 0 && Array.isArray(items) && items.length > 0) {
+      // Qualifying categories/items match by id OR by name across the company (18 Sep 2026:
+      // menus are per site, cards are per company). Never throws; null = id match only.
+      const stampNames = await loadStampNameIndex(opsAdmin, programs, items as any[]);
       for (const prog of programs) {
-        const qualCats: string[] = prog.qualifying_category_ids || [];
-        const qualItems: string[] = prog.qualifying_item_ids || [];
-        const allQualify = qualCats.length === 0 && qualItems.length === 0;
-
-        // Count qualifying items in the order
-        let qualifyingCount = 0;
-        for (const item of items as any[]) {
-          if (item.isComp || item.isGiftCard) continue;
-          const qty = Number(item.qty) || 1;
-          if (allQualify) {
-            qualifyingCount += qty;
-          } else if (qualItems.length > 0 && item.id && qualItems.includes(item.id)) {
-            qualifyingCount += qty;
-          } else if (qualCats.length > 0 && item.cat && qualCats.includes(item.cat)) {
-            qualifyingCount += qty;
-          }
-        }
+        const qualifyingCount = countQualifyingStamps(items as any[], prog, stampNames);
 
         if (qualifyingCount <= 0) continue;
 

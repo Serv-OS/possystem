@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { supabase, platformSupabase, isMock, getLocationId, ensureAuthToken, getActiveLocationSync, isHostStandMode, whenDeviceClaimed, claimPairedDeviceOnBoot, localDeviceHint } from '../lib/supabase';
+import { supabase, platformSupabase, isMock, getLocationId, ensureAuthToken, getActiveLocationSync, isHostStandMode, isBackOfficeMode, getDeviceMode, whenDeviceClaimed, claimPairedDeviceOnBoot, localDeviceHint } from '../lib/supabase';
 import { computeOrderTaxUnified, taxCtxHasConfig } from '../lib/taxCompute';
 import { resolveServiceCharge } from '../lib/serviceCharge';
 import { evaluateAutoDiscounts, toAppliedDiscount } from '../lib/discountEngine';
@@ -16,6 +16,7 @@ import { normaliseMenuRow, assembleTaxProfiles } from '../lib/rowMapping';
 import { buildLegacyProfiles } from '../lib/taxAdapter';
 import { upsertMenuItem, upsertFloorTable, deleteFloorTable, insertKDSTicket, insertClosedCheck, upsertClosedCheck, toggle86DB, getNextOrderRefLocal, updateClosedCheckRefunds, upsertStockLevel, deleteStockLevel, decrementStockRPC, restoreStockRPC, upsertModifierGroup, deleteModifierGroup } from '../lib/db';
 import { isSessionClosed } from '../sync/sessionClosure';
+import { applyPushTables, loadPlanState, savePlanState, recordTombstone, forgetTombstone, pushSeqFor, nextSeq } from '../lib/tablePlan';
 // Same import shape bookingsSlice already uses; SessionSync touches the store
 // only at call time, so the module cycle is benign.
 import { persistTransfer } from '../sync/SessionSync';
@@ -773,7 +774,13 @@ export const useStore = create((set, get) => ({
   configUpdateSnapshot: null,
   markBOChange: () => set(s => ({ pendingBOChanges: s.pendingBOChanges + 1 })),
   clearBOChanges: () => set({ pendingBOChanges: 0 }),
-  setConfigUpdate: (snapshot) => set({ configUpdateAvailable: true, configUpdateSnapshot: snapshot }),
+  setConfigUpdate: (snapshot) => {
+    // v5.9.4 table plan: remember when THIS machine first saw this push (a counter, never a
+    // clock). Every later apply of the same push (boot cache, banner, refetch) is judged by it,
+    // so an old push never counts as newer than a plan read made after it arrived.
+    try { pushSeqFor(snapshot?.locationId || getActiveLocationSync() || null, snapshot?.version); } catch { /* best effort */ }
+    set({ configUpdateAvailable: true, configUpdateSnapshot: snapshot });
+  },
   applyConfigUpdate: () => {
     const snap = useStore.getState().configUpdateSnapshot;
     if (!snap) return;
@@ -789,25 +796,32 @@ export const useStore = create((set, get) => ({
       }
     } catch { /* cache is best-effort */ }
 
-    // Tables: merge layout into existing live tables, AND add new tables from snapshot
+    // Tables: merge the snapshot's DEFINITIONS into the live tables (lib/tablePlan.js).
+    // v5.9.4 (Peter 18 Sep: "rename, delete them etc, on refresh they come back and names go
+    // back"): this used to overwrite every label/layout with the snapshot's copy and re-add every
+    // snapshot table the store lacked. The latest push is usually OLDER than the plan (a rename or
+    // delete in Back Office writes floor_tables and is often never pushed), and SyncBridge applies
+    // it at every boot (cache, then fetch) and the banner applies it again, so a deleted table
+    // walked back in and a new name went back. Now (applyPushTables): a copy wins only if it is
+    // newer by the database clock (srvAt), or, unstamped, if this machine saw the push after its
+    // last plan read; an old-code push (no stamps) can rename or add nothing a plan read has
+    // decided; the push's tombstones remove; a table holding an open order is never dropped.
+    // No device clock is compared anywhere. Sessions are never touched here.
+    // v5.5.2: preserve table.locationId on every merge path (snapshot row, else snap.locationId).
     let updatedTables = useStore.getState().tables;
-    if (snap.tables) {
-      // v5.5.2: preserve table.locationId on every merge path so the cross-location upsert
-      // guard has data to work with. Config snapshots may have a top-level snap.locationId
-      // that the snapshot was generated for; fall back to that if the individual table row
-      // doesn't carry it explicitly.
-      const snapLoc = snap.locationId || null;
-      // Update layout of existing tables
-      updatedTables = updatedTables.map(t => {
-        const st = snap.tables.find(s => s.id === t.id);
-        return st ? { ...t, label:st.label, x:st.x, y:st.y, w:st.w, h:st.h, shape:st.shape, maxCovers:st.maxCovers, section:st.section, locationId: st.locationId ?? st.location_id ?? t.locationId ?? snapLoc } : t;
-      });
-      // Add new tables that exist in snapshot but not in store
-      const existingIds = new Set(updatedTables.map(t => t.id));
-      const newTables = snap.tables
-        .filter(st => !existingIds.has(st.id))
-        .map(st => ({ ...st, locationId: st.locationId ?? st.location_id ?? snapLoc, status:'available', session:null, firedCourses:[], sentAt:null }));
-      updatedTables = [...updatedTables, ...newTables];
+    {
+      const planLoc = snap.locationId || getActiveLocationSync() || null;
+      if (planLoc && (Array.isArray(snap.tables) || snap.tableTombstones)) {
+        const state = loadPlanState(planLoc);
+        const pushSeq = pushSeqFor(planLoc, snap.version);
+        const r = applyPushTables(updatedTables, snap, { tombs: state.tombs, plan: state.plan, pushSeq, cleared: state.cleared, isClosed: isSessionClosed });
+        savePlanState(planLoc, { tombs: r.tombs });
+        updatedTables = r.tables;
+      } else if (!planLoc && Array.isArray(snap.tables) && !updatedTables.length) {
+        // No location at all (should not happen on a paired till): the pre-existing behaviour
+        // for an empty store, add the snapshot's tables.
+        updatedTables = applyPushTables([], snap, {}).tables;
+      }
     }
 
     // v5.5.833: every ARRAY slice below is guarded on `?.length`, NEVER on plain
@@ -1705,20 +1719,17 @@ export const useStore = create((set, get) => ({
   // ── Editable floor plan ────────────────────────────────────────────────────
   // Tables state already exists in `tables` — floor plan builder just edits positions
   updateTableLayout: (id, patch) => {
-    set(s => ({ tables: s.tables.map(t => t.id===id ? { ...t, ...patch } : t) }));
-    // v4.6.6 Bug: must upsert the FULL merged table, not { id, ...patch }. upsertFloorTable
-    // builds a row from scratch and defaults every column that isn't passed in
-    // (w/h→80, shape→'rect', section→null, label→undefined, max_covers→4, ...). Passing a
-    // partial patch like {x,y} from a drag wiped label/size/shape/section on every mousemove,
-    // so after a refresh every table came back as an 80×80 unlabelled rect with no section —
-    // visually stacked/overlapping. Read the freshly-merged table and upsert the full object.
-    const full = useStore.getState().tables.find(t => t.id === id);
-    if (full) upsertFloorTable(full);
+    // v5.9.4: LOCAL ONLY. The write is FloorPlanBuilder.confirmTable (compare-and-set against what
+    // this tab last read, serialised per table). This used to upsert the whole row on every drag
+    // mousemove with no conflict check, so an out of date Back Office tab could put back an old
+    // name or a deleted table, and overlapping writes raced each other. The edit is marked
+    // _pending (no push, broadcast or read can replace it under the operator) and gets a fresh
+    // observation mark (_seq, a counter, never a clock).
+    const seq = nextSeq();
+    set(s => ({ tables: s.tables.map(t => t.id===id ? { ...t, ...patch, _seq: seq, _pending: true } : t) }));
   },
   addTableToLayout: async (table) => {
-    // v5.5.2: stamp locationId at creation time so the cross-location guard in upsertFloorTable
-    // has data to work with from the very first upsert. Without this, a brand-new table has no
-    // locationId and the guard can't tell whether subsequent moves are legitimate.
+    // v5.5.2: stamp locationId at creation time so the cross-location guard has data to work with.
     let locId = null;
     try { locId = getActiveLocationSync() || await getLocationId(); } catch {}
     const wantLoc = table.locationId || locId || null;
@@ -1726,37 +1737,64 @@ export const useStore = create((set, get) => ({
     // session sync (matched by table) and reports. Backstop the UI guard here so no path creates one.
     const norm = (s) => String(s || '').trim().toLowerCase();
     const dup = useStore.getState().tables.some(t =>
-      !t.parentId && norm(t.label) === norm(table.label) &&
+      !t.parentId && !t.planRemoved && norm(t.label) === norm(table.label) &&
       (!t.locationId || !wantLoc || t.locationId === wantLoc));
     if (dup) {
       useStore.getState().showToast?.(`Table “${String(table.label || '').trim()}” already exists`, 'error');
       return;
     }
-    const newTable = { id:`t-${Date.now()}`, status:'available', session:null, locationId: locId, ...table };
+    // v5.9.4: LOCAL ONLY, flagged _isNew. FloorPlanBuilder.confirmTable INSERTS it (never an
+    // upsert, so an id that already exists is refused rather than overwritten).
+    const newTable = { id:`t-${Date.now()}`, status:'available', session:null, locationId: locId, ...table, _isNew: true, _pending: true, _seq: nextSeq() };
     // If caller passed an explicit locationId in `table`, that wins (spread above).
     set(s => ({ tables: [...s.tables, newTable] }));
-    upsertFloorTable(newTable);
   },
-  removeTableFromLayout: (id) => {
+  // v5.9.4: `dbDeleted` = the caller (FloorPlanBuilder) has already deleted the row and checked it
+  // is gone. Then this is local only: the second delete it used to send could fail on a network
+  // blip, "forget" the tombstone and put the table back on the screen although the row was gone.
+  // Without it, a delete is sent here, and the table is put back ONLY when the database provably
+  // still holds the row (a probe read), never on a mere network error.
+  removeTableFromLayout: (id, { dbDeleted = false, tomb = null } = {}) => {
     // v5.5.2: pull the table's locationId BEFORE we filter it out of state, so the DB delete
     // can be scoped to that exact location (defense against the cross-location-leak class).
     const tbl = useStore.getState().tables.find(t => t.id === id);
     const locId = tbl?.locationId || null;
     const removed = useStore.getState().tables.filter(t => t.id === id || t.parentId === id);
+    // A delete is an explicit marker. Record the tombstone (every tab on this machine reads it;
+    // Push to POS carries it to every till) so no merge can bring the table back. `tomb` is the
+    // server's copy (deleted_at from floor_table_tombstones) when the caller has it.
+    const tombLoc = locId || getActiveLocationSync() || null;
+    const seq = nextSeq();
+    recordTombstone(tombLoc, id, tomb?.at ? { at: tomb.at, srv: !!tomb.srv, seq, label: tbl?.label || null } : { at: Date.now(), srv: false, seq, label: tbl?.label || null });
     set(s => ({ tables: s.tables.filter(t => t.id!==id && t.parentId!==id) }));
+    if (dbDeleted) { reportSave('table delete', null); return; }
     // v4.6.5 Bug 6: previously removed from local state only, so it re-appeared on every boot.
-    // v5.5.971: PostgREST returns { error } on a RESOLVED promise, so the old
-    // .catch()-only handler never saw an RLS refusal — the table vanished from the
-    // screen and came back on the next boot. Report the outcome, not just throws.
-    const failed = (err) => {
+    // v5.5.971: PostgREST returns { error } on a RESOLVED promise, so check the outcome.
+    const putBack = (err) => {
       reportSave('table delete', err);
-      // Put them back — the rows still exist and WILL reappear at next boot.
+      forgetTombstone(tombLoc, id);
       set(s => ({ tables: [...s.tables, ...removed.filter(r => !s.tables.some(t => t.id === r.id))] }));
-      useStore.getState().showToast?.(`"${tbl?.label || 'Table'}" was NOT deleted — check you're signed in, then try again`, 'error');
+      useStore.getState().showToast?.(`"${tbl?.label || 'Table'}" was NOT deleted, check you're signed in, then try again`, 'error');
+    };
+    const stillThere = async () => {
+      try {
+        if (!supabase) return false;
+        let q = supabase.from('floor_tables').select('id').eq('id', id);
+        if (locId) q = q.eq('location_id', locId);
+        const { data, error } = await q.maybeSingle();
+        return !error && !!data;
+      } catch { return false; }
     };
     Promise.resolve(deleteFloorTable(id, locId))
-      .then(({ error }) => { if (error) failed(error); else reportSave('table delete', null); })
-      .catch(e => { console.warn('[removeTableFromLayout] DB delete failed:', e?.message || e); failed(e); });
+      .then(async ({ error }) => {
+        if (!error) { reportSave('table delete', null); return; }
+        if (await stillThere()) putBack(error);
+        else console.warn('[removeTableFromLayout] delete reported an error but the row is not there (or could not be checked); keeping the tombstone:', error?.message || error);
+      })
+      .catch(async e => {
+        console.warn('[removeTableFromLayout] DB delete failed:', e?.message || e);
+        if (await stillThere()) putBack(e);
+      });
   },
 
   // ── Tables (source of truth for all orders) ──────────
@@ -4923,6 +4961,20 @@ export const useStore = create((set, get) => ({
     if (isMock) return;
     // A host stand is not a till. See canRunShiftLifecycle below.
     if (!get().canRunShiftLifecycle()) return;
+    // Back Office is not a till. It runs this boot hook too (App mounts
+    // useSupabaseInit before the Back Office route), and it used to auto open
+    // or auto close the venue's till shift with the owner's login. The shifts
+    // policy (pos_can_access) often refuses that login for the venue picked in
+    // the switcher (company level access, Ops and Platform location id drift),
+    // and the refusal lit the red "YOUR CHANGES ARE NOT SAVING" bar on every
+    // Back Office load, although nothing the owner edited had failed.
+    // So here it only READS the open shift (EOD close and the Shift page use
+    // it). The tills open and roll over their own shifts; the Shift page's
+    // Open shift button is still there for a manual open.
+    if (!get().canAutoRunShiftLifecycle()) {
+      await get().loadCurrentShift?.();
+      return;
+    }
     try {
       await get().loadCurrentShift?.();
       const current = get().currentShift;
@@ -4983,6 +5035,18 @@ export const useStore = create((set, get) => ({
   // Nothing on a host stand reads currentShift and nothing on it takes money,
   // so the honest answer is to leave the till tables alone entirely.
   canRunShiftLifecycle: () => !isHostStandMode(),
+
+  // May this browser open or roll over the till shift BY ITSELF at boot?
+  // Only a till: ?mode=pos, ?mode=mpos, or a paired device that never picked a
+  // mode (it falls through to the POS). Every other surface mounts the same boot
+  // hook (Back Office, admin, manager, owner, staff, kiosk, menu board, order
+  // screen, customer display, time clock, host stands) and must only READ the
+  // shift. A person can still open one from the Back Office Shift page.
+  canAutoRunShiftLifecycle: () => {
+    if (isHostStandMode() || isBackOfficeMode()) return false;
+    const mode = getDeviceMode();
+    return mode === '' || mode === 'pos' || mode === 'mpos';
+  },
 
   // ── Petty cash + cash drawer (v4.6.30) ────────
   pettyCashEntries: [],

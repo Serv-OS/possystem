@@ -40,6 +40,9 @@ export function kioskVariant(parent, child) {
   return {
     id: child.id,
     lineName: `${nameOf(parent)} — ${nameOf(child)}`,
+    // The size's own menu name, so a free item reward can match "<parent> - <size>" by name
+    // at every site of the company (lib/loyaltyMenuMatch.js kioskLineCandidates).
+    itemName: typeof child.name === 'string' ? child.name : '',
     kitchenName: kitchenOverride(child),
     receiptName: receiptOverride(child),
   };
