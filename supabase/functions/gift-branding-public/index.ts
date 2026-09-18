@@ -5,7 +5,7 @@
 // colours, logo, and hero image before rendering.
 //
 // Body: { company_id }
-// Returns: { branding, enabled }
+// Returns: { branding, enabled, limits: { min_minor, max_minor } }
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
@@ -37,12 +37,18 @@ Deno.serve(async (req) => {
 
   const { data } = await platformAdmin
     .from('gift_brand_config')
-    .select('branding, enabled')
+    .select('branding, enabled, min_card_value_minor, max_card_value_minor')
     .eq('company_id', companyId)
     .maybeSingle();
 
   return json({
     branding: data?.branding || null,
     enabled: !!data?.enabled,
+    // The same limits gift-checkout-session enforces, so the page only offers
+    // amounts the payment will accept. Null means the checkout default applies.
+    limits: {
+      min_minor: data?.min_card_value_minor ?? null,
+      max_minor: data?.max_card_value_minor ?? null,
+    },
   });
 });
